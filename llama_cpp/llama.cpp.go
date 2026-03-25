@@ -84,15 +84,31 @@ const (
 )
 
 type Model struct {
-	mu            sync.Mutex
-	path          string
-	model         *C.struct_llama_model
-	ctx           *C.struct_llama_context
-	vocab         *C.struct_llama_vocab
-	nCtx          int
-	loadedAt      time.Time
-	seed          uint32
-	stopOnCtxFull bool
+	mu               sync.Mutex
+	path             string
+	model            *C.struct_llama_model
+	ctx              *C.struct_llama_context
+	vocab            *C.struct_llama_vocab
+	nCtx             int
+	loadedAt         time.Time
+	seed             uint32
+	stopOnCtxFull    bool
+	chFlushThreshold int
+}
+
+type generationPerf struct {
+	total        time.Duration
+	tokenize     time.Duration
+	clear        time.Duration
+	prefill      time.Duration
+	sample       time.Duration
+	piece        time.Duration
+	stopCheck    time.Duration
+	accept       time.Duration
+	decode       time.Duration
+	emit         time.Duration
+	promptTokens int
+	generated    int
 }
 
 func Load(path string, opts LoadOptions) (*Model, error) {
@@ -130,7 +146,7 @@ func Load(path string, opts LoadOptions) (*Model, error) {
 
 	model := C.llama_model_load_from_file(cPath, mparams)
 	if model == nil {
-		return nil, fmt.Errorf("llama.cpp failed to load model: %s", absPath)
+		return nil, fmt.Errorf("llama_cpp failed to load model: %s", absPath)
 	}
 
 	ctxSize := opts.ContextSize
@@ -166,18 +182,19 @@ func Load(path string, opts LoadOptions) (*Model, error) {
 	ctx := C.llama_init_from_model(model, cparams)
 	if ctx == nil {
 		C.llama_model_free(model)
-		return nil, errors.New("llama.cpp failed to initialize context")
+		return nil, errors.New("llama_cpp failed to initialize context")
 	}
 
 	m := &Model{
-		path:          absPath,
-		model:         model,
-		ctx:           ctx,
-		vocab:         (*C.struct_llama_vocab)(unsafe.Pointer(C.llama_model_get_vocab(model))),
-		nCtx:          int(C.llama_n_ctx(ctx)),
-		loadedAt:      time.Now(),
-		seed:          uint32(time.Now().UnixNano()),
-		stopOnCtxFull: opts.StopOnContextFull,
+		path:             absPath,
+		model:            model,
+		ctx:              ctx,
+		vocab:            (*C.struct_llama_vocab)(unsafe.Pointer(C.llama_model_get_vocab(model))),
+		nCtx:             int(C.llama_n_ctx(ctx)),
+		loadedAt:         time.Now(),
+		seed:             uint32(time.Now().UnixNano()),
+		stopOnCtxFull:    opts.StopOnContextFull,
+		chFlushThreshold: 8,
 	}
 
 	logger.Debug("model loaded",
@@ -255,7 +272,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, options GenerateOpt
 	return resultCh, errCh
 }
 
-func (m *Model) generate(ctx context.Context, prompt string, opts GenerateOptions, resultCh chan<- GenerateResult) error {
+func (m *Model) generate(ctx context.Context, prompt string, opts GenerateOptions, resultCh chan<- GenerateResult) (err error) {
 	if strings.TrimSpace(prompt) == "" {
 		return errors.New("prompt is required")
 	}
@@ -267,7 +284,20 @@ func (m *Model) generate(ctx context.Context, prompt string, opts GenerateOption
 		return errors.New("model is closed")
 	}
 
+	var perf generationPerf
+	var sampler *C.struct_llama_sampler
+	stopReason := StopReasonNone
+	totalStarted := time.Now()
+	defer func() {
+		perf.total = time.Since(totalStarted)
+		if sampler != nil {
+			m.logGenerationPerf(perf, sampler, stopReason)
+		}
+	}()
+
+	tokenizeStarted := time.Now()
 	tokens, err := m.tokenize(prompt, opts.AddSpecial)
+	perf.tokenize = time.Since(tokenizeStarted)
 	if err != nil {
 		return err
 	}
@@ -277,82 +307,130 @@ func (m *Model) generate(ctx context.Context, prompt string, opts GenerateOption
 	if len(tokens) >= m.nCtx {
 		return fmt.Errorf("prompt token count %d exceeds context size %d", len(tokens), m.nCtx)
 	}
+	perf.promptTokens = len(tokens)
 
+	clearStarted := time.Now()
 	C.llama_memory_clear(C.llama_get_memory(m.ctx), C.bool(true))
+	perf.clear = time.Since(clearStarted)
 
-	if err := m.decode(tokens); err != nil {
-		return err
-	}
-
-	sampler := m.newSampler(opts)
+	sampler = m.newSampler(opts)
 	if sampler == nil {
 		return errors.New("failed to initialize sampler")
 	}
 	defer C.llama_sampler_free(sampler)
 
-	var output strings.Builder
-	emitted := 0
+	C.llama_perf_context_reset(m.ctx)
+	C.llama_perf_sampler_reset(sampler)
+
+	prefillStarted := time.Now()
+	if err := m.decode(tokens); err != nil {
+		return err
+	}
+	perf.prefill = time.Since(prefillStarted)
+
+	matcher := newStopMatcher(opts.Stop)
+	pending := make([]byte, 0, m.chFlushThreshold+matcher.maxLen)
+	pieceBuf := make([]byte, 64)
+	var sampled [1]C.llama_token
 	maxTokens := opts.MaxTokens
+	flush := func(content []byte, tokenCount int) {
+		if len(content) == 0 {
+			return
+		}
+
+		emittedStarted := time.Now()
+		resultCh <- GenerateResult{
+			Content:    string(content),
+			TokenCount: tokenCount,
+		}
+		perf.emit += time.Since(emittedStarted)
+	}
+	sendStop := func(reason string, tokenCount int) {
+		emittedStarted := time.Now()
+		resultCh <- GenerateResult{
+			StopReason: reason,
+			TokenCount: tokenCount,
+		}
+		perf.emit += time.Since(emittedStarted)
+	}
 
 	for generated := 0; generated < maxTokens; generated++ {
 		if ctx != nil {
 			select {
 			case <-ctx.Done():
+				stopReason = StopReasonCancelled
 				return ctx.Err()
 			default:
 			}
 		}
 
+		sampleStarted := time.Now()
 		token := C.llama_sampler_sample(sampler, m.ctx, -1)
+		perf.sample += time.Since(sampleStarted)
 		if bool(C.llama_vocab_is_eog(m.vocab, token)) {
-			resultCh <- GenerateResult{
-				StopReason: StopReasonEndOfGeneration,
-				TokenCount: generated,
-			}
+			perf.generated = generated
+			flush(pending, generated)
+			pending = pending[:0]
+			stopReason = StopReasonEndOfGeneration
+			sendStop(stopReason, generated)
 			return nil
 		}
 
-		piece, err := m.tokenToPiece(token)
+		pieceStarted := time.Now()
+		var piece []byte
+		pieceBuf, piece, err = m.tokenToPieceBytes(token, pieceBuf)
+		perf.piece += time.Since(pieceStarted)
 		if err != nil {
 			return err
 		}
 
-		output.WriteString(piece)
-		visible, stopped := trimStopSuffix(output.String(), opts.Stop)
-		if len(visible) > emitted {
-			resultCh <- GenerateResult{
-				Content:    visible[emitted:],
-				TokenCount: generated + 1,
-			}
-			emitted = len(visible)
-		}
+		stopStarted := time.Now()
+		previousPendingLen := len(pending)
+		pending = append(pending, piece...)
+		searchStart := previousPendingLen - matcher.maxLen + 1
+		stopIndex, stopped := matcher.find(pending, searchStart)
+		perf.stopCheck += time.Since(stopStarted)
 		if stopped {
-			resultCh <- GenerateResult{
-				StopReason: StopReasonStopSequence,
-				TokenCount: generated + 1,
-			}
+			perf.generated = generated + 1
+			flush(pending[:stopIndex], generated+1)
+			pending = pending[:0]
+			stopReason = StopReasonStopSequence
+			sendStop(stopReason, generated+1)
 			return nil
 		}
 
+		if safe := len(pending) - matcher.holdback(); safe >= m.chFlushThreshold {
+			flush(pending[:safe], generated+1)
+			copy(pending, pending[safe:])
+			pending = pending[:len(pending)-safe]
+		}
+
+		acceptStarted := time.Now()
 		C.llama_sampler_accept(sampler, token)
+		perf.accept += time.Since(acceptStarted)
 
 		if m.stopOnCtxFull && len(tokens)+generated+1 >= m.nCtx {
-			resultCh <- GenerateResult{
-				StopReason: StopReasonContextFull,
-				TokenCount: generated + 1,
-			}
+			perf.generated = generated + 1
+			flush(pending, generated+1)
+			pending = pending[:0]
+			stopReason = StopReasonContextFull
+			sendStop(stopReason, generated+1)
 			return nil
 		}
 
-		if err := m.decode([]C.llama_token{token}); err != nil {
+		sampled[0] = token
+		decodeStarted := time.Now()
+		if err := m.decode(sampled[:]); err != nil {
 			return err
 		}
+		perf.decode += time.Since(decodeStarted)
+		perf.generated = generated + 1
 	}
 
-	resultCh <- GenerateResult{
-		StopReason: StopReasonMaxTokens,
-		TokenCount: maxTokens,
-	}
+	perf.generated = maxTokens
+	flush(pending, maxTokens)
+	stopReason = StopReasonMaxTokens
+	sendStop(stopReason, maxTokens)
 	return nil
 }
 
@@ -376,7 +454,7 @@ func (m *Model) tokenize(text string, addSpecial bool) ([]C.llama_token, error) 
 		required = -required
 	}
 	if required <= 0 {
-		return nil, errors.New("llama.cpp returned invalid token count")
+		return nil, errors.New("llama_cpp returned invalid token count")
 	}
 
 	tokens := make([]C.llama_token, required)
@@ -390,7 +468,7 @@ func (m *Model) tokenize(text string, addSpecial bool) ([]C.llama_token, error) 
 		C.bool(false),
 	))
 	if actual < 0 {
-		return nil, fmt.Errorf("llama.cpp tokenization failed: %d", actual)
+		return nil, fmt.Errorf("llama_cpp tokenization failed: %d", actual)
 	}
 
 	return tokens[:actual], nil
@@ -409,31 +487,35 @@ func (m *Model) decode(tokens []C.llama_token) error {
 		),
 	)
 	if rc != 0 {
-		return fmt.Errorf("llama.cpp decode failed: %d", int(rc))
+		return fmt.Errorf("llama_cpp decode failed: %d", int(rc))
 	}
 	return nil
 }
 
-func (m *Model) tokenToPiece(token C.llama_token) (string, error) {
-	size := 32
+func (m *Model) tokenToPieceBytes(token C.llama_token, scratch []byte) ([]byte, []byte, error) {
+	if len(scratch) == 0 {
+		scratch = make([]byte, 32)
+	}
+
 	for i := 0; i < 4; i++ {
-		buf := make([]byte, size)
 		n := int(C.falcon_llama_token_to_piece(
 			m.vocab,
 			token,
-			(*C.char)(unsafe.Pointer(&buf[0])),
-			C.int32_t(len(buf)),
+			(*C.char)(unsafe.Pointer(&scratch[0])),
+			C.int32_t(len(scratch)),
 		))
 		if n >= 0 {
-			return string(buf[:n]), nil
+			return scratch, scratch[:n], nil
 		}
-		size = -n
-		if size <= 0 {
-			size *= 2
+
+		size := -n
+		if size <= len(scratch) {
+			size = len(scratch) * 2
 		}
+		scratch = make([]byte, size)
 	}
 
-	return "", errors.New("llama.cpp token_to_piece buffer exhausted")
+	return scratch, nil, errors.New("llama_cpp token_to_piece buffer exhausted")
 }
 
 func (m *Model) newSampler(opts GenerateOptions) *C.struct_llama_sampler {
@@ -475,37 +557,32 @@ func (m *Model) newSampler(opts GenerateOptions) *C.struct_llama_sampler {
 }
 
 func (m *Model) resolveGenerateOption(options GenerateOptions) GenerateOptions {
-	if options.MaxTokens <= 0 {
-		options.MaxTokens = 4000
-	}
-	if options.Seed == 0 {
-		options.Seed = m.seed
-	}
-	if options.Temperature == 0 {
-		options.Temperature = 0.8
-	}
-	if options.TopP == 0 {
-		options.TopP = 0.95
-	}
-	if options.TopK <= 0 {
-		options.TopK = 20
-	}
-	return options
+	return resolveGenerateOptions(m.seed, options)
 }
 
-func trimStopSuffix(text string, stops []string) (string, bool) {
-	cut := -1
-	for _, stop := range stops {
-		if stop == "" {
-			continue
-		}
-		idx := strings.Index(text, stop)
-		if idx >= 0 && (cut < 0 || idx < cut) {
-			cut = idx
-		}
-	}
-	if cut >= 0 {
-		return text[:cut], true
-	}
-	return text, false
+func (m *Model) logGenerationPerf(perf generationPerf, sampler *C.struct_llama_sampler, stopReason string) {
+	ctxPerf := C.llama_perf_context(m.ctx)
+	samplerPerf := C.llama_perf_sampler(sampler)
+
+	logger.Debug("generation finished",
+		zap.String("stop_reason", stopReason),
+		zap.Int("prompt_tokens", perf.promptTokens),
+		zap.Int("generated_tokens", perf.generated),
+		zap.Duration("go_total", perf.total),
+		zap.Duration("go_tokenize", perf.tokenize),
+		zap.Duration("go_clear", perf.clear),
+		zap.Duration("go_prefill", perf.prefill),
+		zap.Duration("go_sample", perf.sample),
+		zap.Duration("go_piece", perf.piece),
+		zap.Duration("go_stop_check", perf.stopCheck),
+		zap.Duration("go_accept", perf.accept),
+		zap.Duration("go_decode", perf.decode),
+		zap.Duration("go_emit", perf.emit),
+		zap.Float64("llama_prompt_eval_ms", float64(ctxPerf.t_p_eval_ms)),
+		zap.Float64("llama_eval_ms", float64(ctxPerf.t_eval_ms)),
+		zap.Int("llama_prompt_eval_tokens", int(ctxPerf.n_p_eval)),
+		zap.Int("llama_eval_tokens", int(ctxPerf.n_eval)),
+		zap.Float64("llama_sample_ms", float64(samplerPerf.t_sample_ms)),
+		zap.Int("llama_sample_tokens", int(samplerPerf.n_sample)),
+	)
 }

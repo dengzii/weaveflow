@@ -8,16 +8,17 @@ import (
 	"time"
 )
 
-var errBackendUnavailable = errors.New("llama.cpp backend requires Windows + CGO_ENABLED=1 + a working gcc/clang toolchain in PATH")
+var errBackendUnavailable = errors.New("llama_cpp backend requires Windows + CGO_ENABLED=1 + a working gcc/clang toolchain in PATH")
 
 type LoadOptions struct {
-	ContextSize  int
-	BatchSize    int
-	Threads      int
-	ThreadsBatch int
-	GPULayers    int
-	UseMMap      bool
-	UseMLock     bool
+	ContextSize       int
+	BatchSize         int
+	Threads           int
+	ThreadsBatch      int
+	GPULayers         int
+	UseMMap           bool
+	UseMLock          bool
+	StopOnContextFull bool
 }
 
 type GenerateOptions struct {
@@ -43,7 +44,7 @@ type GenerateSummary struct {
 }
 
 const (
-	StopReasonUnknown         = ""
+	StopReasonNone            = ""
 	StopReasonEndOfGeneration = "end_of_generation"
 	StopReasonStopSequence    = "stop_sequence"
 	StopReasonMaxTokens       = "max_tokens"
