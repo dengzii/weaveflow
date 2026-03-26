@@ -54,5 +54,5 @@ func main() {
 	speed := int(float64(finalResult.TokenCount) / span)
 	fmt.Printf("stop_reason=%s token_count=%d, speed=%dtokens/s\n", finalResult.StopReason, finalResult.TokenCount, speed)
 
-	_ = model.Close()
+	_ = model.Release()
 }

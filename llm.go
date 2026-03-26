@@ -37,11 +37,13 @@ func (L *LLMNode[S]) Description() string {
 
 func (L *LLMNode[S]) Invoke(ctx context.Context, state S) (S, error) {
 	if state.IterationCount() >= state.MaxIterations() {
+		message := "Maximum tool iterations reached. Please simplify the question or reduce tool usage."
 		finalMessage := llms.TextParts(
 			llms.ChatMessageTypeAI,
-			"Maximum tool iterations reached. Please simplify the question or reduce tool usage.",
+			message,
 		)
 		state.UpdateMessage(append(state.GetMessages(), finalMessage))
+		state.SetFinalAnswer(message)
 
 		return state, nil
 	}
