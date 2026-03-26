@@ -1,8 +1,11 @@
 package main
 
-import "falcon/server"
+import (
+	"falcon"
+	"falcon/server"
+)
 
 func main() {
 	srv := server.NewServer()
-	srv.Run()
+	srv.Run(falcon.NewModelManager())
 }

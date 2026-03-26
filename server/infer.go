@@ -3,6 +3,7 @@ package server
 import (
 	"encoding/json"
 	"errors"
+	"falcon/llama_cpp"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -11,90 +12,78 @@ import (
 	"sync"
 	"time"
 
-	llama_cpp "falcon/llama.cpp"
-
 	"github.com/gin-gonic/gin"
 )
 
 type Infer struct {
+	modelManager ModelManager
+	mu           sync.RWMutex
+	items        map[string]*loadedModel
 }
 
 type loadedModel struct {
-	info  ModelInfo
-	path  string
-	model *llama_cpp.Model
+	info ModelInfo
+	path string
 }
 
-var inferModels = struct {
-	sync.RWMutex
-	items map[string]*loadedModel
-}{
-	items: map[string]*loadedModel{},
-}
-
-func (r Infer) ReleaseModel(ctx *gin.Context) error {
+func (r *Infer) ReleaseModel(ctx *gin.Context) error {
 	id := ctx.Param("id")
 	if strings.TrimSpace(id) == "" {
 		return errorInvalidParam
 	}
 
-	inferModels.Lock()
-	defer inferModels.Unlock()
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
-	item, ok := inferModels.items[id]
+	_, ok := r.items[id]
 	if !ok {
 		return fmt.Errorf("model %q not found", id)
 	}
 
-	delete(inferModels.items, id)
-	if item.model != nil {
-		_ = item.model.Close()
+	if err := r.modelManager.Release(id); err != nil {
+		return err
 	}
+	delete(r.items, id)
 
 	return responseSuccess(ctx, gin.H{"id": id})
 }
 
-func (r Infer) LoadModel(ctx *gin.Context, param *LoadModelRequest) error {
+func (r *Infer) LoadModel(ctx *gin.Context, param *LoadModelRequest) error {
 	backend := normalizeBackend(param.Backend)
-	if backend != "llama.cpp" {
+	if backend != "llama_cpp" {
 		return fmt.Errorf("unsupported backend %q", param.Backend)
 	}
 
-	model, err := llama_cpp.Load(param.Path, llama_cpp.LoadOptions{})
-	if err != nil {
+	id := inferModelID(param.Path)
+	if err := r.modelManager.Load(id, param.Path, backend); err != nil {
 		return err
 	}
 
-	id := inferModelID(param.Path)
 	item := &loadedModel{
 		info: ModelInfo{
 			Id:          id,
 			Object:      "model",
 			OwnedBy:     "falcon",
 			Backend:     backend,
-			LastUpdated: model.LoadedAt(),
+			LastUpdated: time.Now(),
 		},
-		path:  param.Path,
-		model: model,
+		path: param.Path,
 	}
 
-	inferModels.Lock()
-	if prev, ok := inferModels.items[id]; ok && prev.model != nil {
-		_ = prev.model.Close()
-	}
-	inferModels.items[id] = item
-	inferModels.Unlock()
+	r.mu.Lock()
+	r.items[id] = item
+	r.mu.Unlock()
 
 	return responseSuccess(ctx, item.info)
 }
 
-func (r Infer) ModelList(ctx *gin.Context) error {
-	inferModels.RLock()
-	models := make([]ModelInfo, 0, len(inferModels.items))
-	for _, item := range inferModels.items {
+func (r *Infer) ModelList(ctx *gin.Context) error {
+	r.mu.RLock()
+	models := make([]ModelInfo, 0, len(r.items))
+	for _, item := range r.items {
 		models = append(models, item.info)
 	}
-	inferModels.RUnlock()
+	r.mu.RUnlock()
 
 	sort.Slice(models, func(i, j int) bool {
 		return models[i].Id < models[j].Id
@@ -103,8 +92,12 @@ func (r Infer) ModelList(ctx *gin.Context) error {
 	return responseSuccess(ctx, models)
 }
 
-func (r Infer) Chat(ctx *gin.Context, request *ChatRequest) error {
-	model, modelID, err := resolveChatModel(request.Model)
+func (r *Infer) Chat(ctx *gin.Context, request *ChatRequest) error {
+	if !request.Stream {
+		return errors.New("only support stream chat yet")
+	}
+
+	modelID, err := r.resolveChatModel(request.Model)
 	if err != nil {
 		return err
 	}
@@ -117,77 +110,23 @@ func (r Infer) Chat(ctx *gin.Context, request *ChatRequest) error {
 		return errors.New("messages are required")
 	}
 
-	if request.Stream {
-		prepareSSE(ctx)
+	prepareSSE(ctx)
 
-		err = writeSSE(ctx, gin.H{
-			"object": "chat.completion.chunk",
-			"model":  modelID,
-			"choices": []gin.H{
-				{
-					"index": 0,
-					"delta": gin.H{"role": "assistant"},
-				},
+	err = writeSSE(ctx, gin.H{
+		"object": "chat.completion.chunk",
+		"model":  modelID,
+		"choices": []gin.H{
+			{
+				"index": 0,
+				"delta": gin.H{"role": "assistant"},
 			},
-		})
-		if err != nil {
-			return err
-		}
-
-		resultCh, errCh := model.Generate(ctx.Request.Context(), prompt, llama_cpp.GenerateOptions{
-			MaxTokens:   request.MaxTokens,
-			Temperature: request.Temperature,
-			TopP:        request.TopP,
-			TopK:        int(request.TopK),
-			Stop:        request.Stop,
-			AddSpecial:  true,
-		})
-
-		finalResult := llama_cpp.GenerateResult{StopReason: llama_cpp.StopReasonNone}
-		for result := range resultCh {
-			if result.Content != "" {
-				if err := writeSSE(ctx, gin.H{
-					"object": "chat.completion.chunk",
-					"model":  modelID,
-					"choices": []gin.H{
-						{
-							"index": 0,
-							"delta": gin.H{"content": result.Content},
-						},
-					},
-				}); err != nil {
-					return err
-				}
-			}
-			if result.StopReason != llama_cpp.StopReasonNone {
-				finalResult = result
-			}
-		}
-
-		if err, ok := <-errCh; ok && err != nil {
-			return err
-		}
-
-		if err := writeSSE(ctx, gin.H{
-			"object": "chat.completion.chunk",
-			"model":  modelID,
-			"choices": []gin.H{
-				{
-					"index":         0,
-					"delta":         gin.H{},
-					"finish_reason": finishReasonFromStopReason(finalResult.StopReason),
-				},
-			},
-		}); err != nil {
-			return err
-		}
-
-		_, _ = fmt.Fprint(ctx.Writer, "data: [DONE]\n\n")
-		ctx.Writer.Flush()
-		return nil
+		},
+	})
+	if err != nil {
+		return err
 	}
 
-	resultCh, errCh := model.Generate(ctx.Request.Context(), prompt, llama_cpp.GenerateOptions{
+	resultCh, errCh := r.modelManager.Generate(ctx.Request.Context(), modelID, prompt, llama_cpp.GenerateOptions{
 		MaxTokens:   request.MaxTokens,
 		Temperature: request.Temperature,
 		TopP:        request.TopP,
@@ -195,29 +134,49 @@ func (r Infer) Chat(ctx *gin.Context, request *ChatRequest) error {
 		Stop:        request.Stop,
 		AddSpecial:  true,
 	})
-	result, err := llama_cpp.Collect(resultCh, errCh)
-	if err != nil {
+
+	finalResult := llama_cpp.GenerateResult{StopReason: llama_cpp.StopReasonNone}
+	for result := range resultCh {
+		if result.Content != "" {
+			if err := writeSSE(ctx, gin.H{
+				"object": "chat.completion.chunk",
+				"model":  modelID,
+				"choices": []gin.H{
+					{
+						"index": 0,
+						"delta": gin.H{"content": result.Content},
+					},
+				},
+			}); err != nil {
+				return err
+			}
+		}
+		if result.StopReason != llama_cpp.StopReasonNone {
+			finalResult = result
+		}
+	}
+
+	if err, ok := <-errCh; ok && err != nil {
 		return err
 	}
 
-	return responseSuccess(ctx, gin.H{
-		"id":      fmt.Sprintf("chatcmpl-%d", time.Now().UnixNano()),
-		"object":  "chat.completion",
-		"created": time.Now().Unix(),
-		"model":   modelID,
+	if err := writeSSE(ctx, gin.H{
+		"object": "chat.completion.chunk",
+		"model":  modelID,
 		"choices": []gin.H{
 			{
-				"index": 0,
-				"message": gin.H{
-					"role":    "assistant",
-					"content": result.Content,
-				},
-				"finish_reason": finishReasonFromStopReason(result.StopReason),
-				"stop_reason":   result.StopReason,
-				"token_count":   result.TokenCount,
+				"index":         0,
+				"delta":         gin.H{},
+				"finish_reason": finishReasonFromStopReason(finalResult.StopReason),
 			},
 		},
-	})
+	}); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprint(ctx.Writer, "data: [DONE]\n\n")
+	ctx.Writer.Flush()
+	return nil
 }
 
 func finishReasonFromStopReason(stopReason string) string {
@@ -235,8 +194,8 @@ func finishReasonFromStopReason(stopReason string) string {
 
 func normalizeBackend(backend string) string {
 	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", "llama.cpp", "llamacpp":
-		return "llama.cpp"
+	case "", "llama_cpp", "llama":
+		return "llama_cpp"
 	default:
 		return strings.TrimSpace(backend)
 	}
@@ -248,29 +207,29 @@ func inferModelID(path string) string {
 	return strings.TrimSuffix(base, ext)
 }
 
-func resolveChatModel(requestedID string) (*llama_cpp.Model, string, error) {
-	inferModels.RLock()
-	defer inferModels.RUnlock()
+func (r *Infer) resolveChatModel(requestedID string) (string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
 	if requestedID != "" {
-		item, ok := inferModels.items[requestedID]
+		_, ok := r.items[requestedID]
 		if !ok {
-			return nil, "", fmt.Errorf("model %q not found", requestedID)
+			return "", fmt.Errorf("model %q not found", requestedID)
 		}
-		return item.model, requestedID, nil
+		return requestedID, nil
 	}
 
-	if len(inferModels.items) == 1 {
-		for id, item := range inferModels.items {
-			return item.model, id, nil
+	if len(r.items) == 1 {
+		for id := range r.items {
+			return id, nil
 		}
 	}
 
-	if len(inferModels.items) == 0 {
-		return nil, "", errors.New("no model loaded")
+	if len(r.items) == 0 {
+		return "", errors.New("no model loaded")
 	}
 
-	return nil, "", errors.New("multiple models loaded, request.model is required")
+	return "", errors.New("multiple models loaded, request.model is required")
 }
 
 func buildPrompt(request *ChatRequest) (string, error) {
@@ -306,7 +265,7 @@ func buildPrompt(request *ChatRequest) (string, error) {
 
 func prepareSSE(ctx *gin.Context) {
 	ctx.Status(http.StatusOK)
-	ctx.Header("Content-Type", "text/event-stream")
+	ctx.Header("Text-Type", "text/event-stream")
 	ctx.Header("Cache-Control", "no-cache")
 	ctx.Header("Connection", "keep-alive")
 	ctx.Header("X-Accel-Buffering", "no")
