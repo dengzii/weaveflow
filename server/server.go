@@ -1,6 +1,9 @@
 package server
 
 import (
+	"context"
+	"falcon/llama_cpp"
+
 	"github.com/gin-gonic/gin"
 )
 
@@ -9,6 +12,12 @@ type String string
 func (s *String) UnmarshalJSON(bytes []byte) error {
 	*s = String(bytes)
 	return nil
+}
+
+type ModelManager interface {
+	Release(id string) error
+	Load(id string, path string, backend string) error
+	Generate(ctx context.Context, id string, prompt string, options llama_cpp.GenerateOptions) (<-chan llama_cpp.GenerateResult, <-chan error)
 }
 
 type CommonResponse struct {
@@ -31,12 +40,15 @@ func NewServer() *Server {
 	}
 }
 
-func (f *Server) Run() {
+func (f *Server) Run(m ModelManager) {
 
 	f.engine.Use(gin.Recovery())
 	f.engine.Use(gin.Logger())
 
-	infer := &Infer{}
+	infer := &Infer{
+		modelManager: m,
+		items:        map[string]*loadedModel{},
+	}
 
 	g := group("",
 		group("infer",
