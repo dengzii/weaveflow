@@ -74,11 +74,11 @@ func (m *Model) ContextSize() int {
 	return 0
 }
 
-func (m *Model) Close() error {
+func (m *Model) Release() error {
 	return nil
 }
 
-func (m *Model) Generate(ctx context.Context, prompt string, opts GenerateOptions) (<-chan GenerateResult, <-chan error) {
+func (m *Model) Generate(ctx context.Context, prompt string, options GenerateOptions) (<-chan GenerateResult, <-chan error) {
 	resultCh := make(chan GenerateResult)
 	errCh := make(chan error, 1)
 

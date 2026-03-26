@@ -224,7 +224,7 @@ func (m *Model) ContextSize() int {
 	return m.nCtx
 }
 
-func (m *Model) Close() error {
+func (m *Model) Release() error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
