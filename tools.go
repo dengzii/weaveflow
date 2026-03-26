@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -17,15 +18,23 @@ type AgentTool interface {
 }
 
 type ToolsNode[S BaseState] struct {
+	NodeInfo
 	Tools map[string]AgentTool
 }
 
-func (t *ToolsNode[S]) Name() string {
-	return "tools"
-}
-
-func (t *ToolsNode[S]) Description() string {
-	return "tools node"
+func NewToolsNode[S BaseState](tools map[string]AgentTool) *ToolsNode[S] {
+	id, err := uuid.NewUUID()
+	if err != nil {
+		panic(err)
+	}
+	return &ToolsNode[S]{
+		NodeInfo: NodeInfo{
+			NodeID:          id.String(),
+			NodeName:        "Tools Node",
+			NodeDescription: "Tools Node",
+		},
+		Tools: tools,
+	}
 }
 
 func (t *ToolsNode[S]) Invoke(ctx context.Context, state S) (S, error) {

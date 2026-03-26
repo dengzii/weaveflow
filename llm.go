@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/google/uuid"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -11,6 +12,7 @@ import (
 )
 
 type LLMNode[S BaseState] struct {
+	NodeInfo
 	model llms.Model
 	tools map[string]llms.Tool
 }
@@ -21,18 +23,20 @@ func NewLLMNode[S BaseState](model llms.Model, tools map[string]llms.Tool) *LLMN
 		clonedTools[name] = tool
 	}
 
+	id, err := uuid.NewUUID()
+	if err != nil {
+		panic(err)
+	}
+
 	return &LLMNode[S]{
+		NodeInfo: NodeInfo{
+			NodeID:          id.String(),
+			NodeName:        "LLM Node",
+			NodeDescription: "LLM Node",
+		},
 		model: model,
 		tools: clonedTools,
 	}
-}
-
-func (L *LLMNode[S]) Name() string {
-	return "LLM"
-}
-
-func (L *LLMNode[S]) Description() string {
-	return "LLM Node"
 }
 
 func (L *LLMNode[S]) Invoke(ctx context.Context, state S) (S, error) {

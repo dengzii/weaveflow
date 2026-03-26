@@ -1,39 +1,71 @@
 package falcon
 
-import "context"
+import (
+	"context"
+)
 
-type NodeDef[S BaseState] interface {
+const (
+	IdStartNode = "id_start_node"
+	IdEndNode   = "id_end_node"
+)
+
+type NodeDefinition[S BaseState] interface {
+	ID() string
 	Name() string
 	Description() string
 	Invoke(ctx context.Context, state S) (S, error)
 }
 
-type StartNodeDef[S BaseState] struct {
+type NodeInfo struct {
+	NodeID          string `json:"id" yaml:"id"`
+	NodeName        string `json:"name" yaml:"name"`
+	NodeDescription string `json:"description" yaml:"description"`
 }
 
-func (s *StartNodeDef[S]) Name() string {
-	return "start"
+func (n *NodeInfo) Name() string {
+	return n.NodeName
 }
 
-func (s *StartNodeDef[S]) Description() string {
-	return "start node"
+func (n *NodeInfo) ID() string {
+	return n.NodeID
 }
 
-func (s *StartNodeDef[S]) Invoke(ctx context.Context, state S) (S, error) {
+func (n *NodeInfo) Description() string {
+	return n.NodeDescription
+}
+
+type StartNode[S BaseState] struct {
+	NodeInfo
+}
+
+func NewStartNode[S BaseState]() *StartNode[S] {
+	return &StartNode[S]{
+		NodeInfo: NodeInfo{
+			NodeID:          IdStartNode,
+			NodeName:        "Start Node",
+			NodeDescription: "start",
+		},
+	}
+}
+
+func (s *StartNode[S]) Invoke(_ context.Context, state S) (S, error) {
 	return state, nil
 }
 
-type EndNodeDef[S BaseState] struct {
+func NewEndNode[S BaseState]() *StartNode[S] {
+	return &StartNode[S]{
+		NodeInfo: NodeInfo{
+			NodeID:          IdEndNode,
+			NodeName:        "End Node",
+			NodeDescription: "end node",
+		},
+	}
 }
 
-func (e *EndNodeDef[S]) Name() string {
-	return "end"
+type EndNode[S BaseState] struct {
+	NodeInfo
 }
 
-func (e *EndNodeDef[S]) Description() string {
-	return "end node"
-}
-
-func (e *EndNodeDef[S]) Invoke(ctx context.Context, state S) (S, error) {
+func (e *EndNode[S]) Invoke(_ context.Context, state S) (S, error) {
 	return state, nil
 }

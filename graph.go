@@ -16,7 +16,8 @@ type conditionalEdge[S BaseState] struct {
 }
 
 type Graph[S BaseState] struct {
-	nodes            map[string]NodeDef[S]
+	nodes            map[string]NodeDefinition[S]
+	nodeNames        map[string][]string
 	edges            map[string]string
 	conditionalEdges map[string][]conditionalEdge[S]
 	entryPoint       string
@@ -26,33 +27,38 @@ type Graph[S BaseState] struct {
 
 func NewGraph[S BaseState]() *Graph[S] {
 	g := &Graph[S]{
-		nodes:            map[string]NodeDef[S]{},
+		nodes:            map[string]NodeDefinition[S]{},
+		nodeNames:        map[string][]string{},
 		edges:            map[string]string{},
 		conditionalEdges: map[string][]conditionalEdge[S]{},
-		entryPoint:       "start",
-		finishPoint:      "end",
 	}
 
-	_ = g.AddNode(&StartNodeDef[S]{})
-	_ = g.AddNode(&EndNodeDef[S]{})
+	g.entryPoint = IdStartNode
+	g.finishPoint = IdEndNode
 
 	return g
 }
 
-func (g *Graph[S]) AddNode(node NodeDef[S]) error {
+func (g *Graph[S]) AddNode(node NodeDefinition[S]) error {
 	if node == nil {
 		return fmt.Errorf("node is nil")
+	}
+
+	id := strings.TrimSpace(resolveOrCreateNodeID(node))
+	if id == "" {
+		return fmt.Errorf("node id is empty")
+	}
+	if _, exists := g.nodes[id]; exists {
+		return fmt.Errorf("node %q already exists", id)
 	}
 
 	name := strings.TrimSpace(node.Name())
 	if name == "" {
 		return fmt.Errorf("node name is empty")
 	}
-	if _, exists := g.nodes[name]; exists {
-		return fmt.Errorf("node %q already exists", name)
-	}
 
-	g.nodes[name] = node
+	g.nodes[id] = node
+	g.nodeNames[name] = append(g.nodeNames[name], id)
 	return nil
 }
 
@@ -69,47 +75,47 @@ func (g *Graph[S]) SetStepLimit(limit int) {
 }
 
 func (g *Graph[S]) AddEdge(from, to string) error {
-	from = strings.TrimSpace(from)
-	to = strings.TrimSpace(to)
-	if err := g.requireKnownNode(from); err != nil {
+	fromID, err := g.resolveNodeRef(from)
+	if err != nil {
 		return err
 	}
-	if err := g.requireKnownNode(to); err != nil {
+	toID, err := g.resolveNodeRef(to)
+	if err != nil {
 		return err
 	}
-	if _, exists := g.edges[from]; exists {
-		return fmt.Errorf("node %q already has a default edge", from)
+	if _, exists := g.edges[fromID]; exists {
+		return fmt.Errorf("node %q already has a default edge", g.nodeLabel(fromID))
 	}
 
-	g.edges[from] = to
+	g.edges[fromID] = toID
 	return nil
 }
 
 func (g *Graph[S]) AddConditionalEdge(from, to string, condition EdgeCondition[S]) error {
-	from = strings.TrimSpace(from)
-	to = strings.TrimSpace(to)
-	if err := g.requireKnownNode(from); err != nil {
+	fromID, err := g.resolveNodeRef(from)
+	if err != nil {
 		return err
 	}
-	if err := g.requireKnownNode(to); err != nil {
+	toID, err := g.resolveNodeRef(to)
+	if err != nil {
 		return err
 	}
 	if condition == nil {
 		return fmt.Errorf("condition is nil")
 	}
 
-	g.conditionalEdges[from] = append(g.conditionalEdges[from], conditionalEdge[S]{
-		to:   to,
+	g.conditionalEdges[fromID] = append(g.conditionalEdges[fromID], conditionalEdge[S]{
+		to:   toID,
 		when: condition,
 	})
 	return nil
 }
 
 func (g *Graph[S]) Validate() error {
-	if err := g.requireKnownNode(g.entryPoint); err != nil {
+	if _, err := g.resolveNodeRef(g.entryPoint); err != nil {
 		return fmt.Errorf("invalid entry point: %w", err)
 	}
-	if err := g.requireKnownNode(g.finishPoint); err != nil {
+	if _, err := g.resolveNodeRef(g.finishPoint); err != nil {
 		return fmt.Errorf("invalid finish point: %w", err)
 	}
 
@@ -133,15 +139,15 @@ func (g *Graph[S]) Validate() error {
 	}
 
 	if !reachable[g.finishPoint] {
-		return fmt.Errorf("finish point %q is unreachable from %q", g.finishPoint, g.entryPoint)
+		return fmt.Errorf("finish point %q is unreachable from %q", g.nodeLabel(g.finishPoint), g.nodeLabel(g.entryPoint))
 	}
 
-	for name := range reachable {
-		if name == g.finishPoint {
+	for nodeID := range reachable {
+		if nodeID == g.finishPoint {
 			continue
 		}
-		if len(g.outgoing(name)) == 0 {
-			return fmt.Errorf("node %q has no outgoing edge", name)
+		if len(g.outgoing(nodeID)) == 0 {
+			return fmt.Errorf("node %q has no outgoing edge", g.nodeLabel(nodeID))
 		}
 	}
 
@@ -164,12 +170,12 @@ func (g *Graph[S]) Run(ctx context.Context, state S) (S, error) {
 
 		node, ok := g.nodes[current]
 		if !ok {
-			return state, fmt.Errorf("node %q not found", current)
+			return state, fmt.Errorf("node %q not found", g.nodeLabel(current))
 		}
 
 		nextState, err := node.Invoke(ctx, state)
 		if err != nil {
-			return state, fmt.Errorf("invoke node %q: %w", current, err)
+			return state, fmt.Errorf("invoke node %q: %w", g.nodeLabel(current), err)
 		}
 		state = nextState
 
@@ -184,7 +190,7 @@ func (g *Graph[S]) Run(ctx context.Context, state S) (S, error) {
 
 		steps++
 		if limit > 0 && steps > limit {
-			return state, fmt.Errorf("graph exceeded step limit %d, last node %q", limit, current)
+			return state, fmt.Errorf("graph exceeded step limit %d, last node %q", limit, g.nodeLabel(current))
 		}
 		current = next
 	}
@@ -227,7 +233,7 @@ func (g *Graph[S]) nextNode(ctx context.Context, current string, state S) (strin
 	for _, edge := range g.conditionalEdges[current] {
 		matched, err := edge.when(ctx, state)
 		if err != nil {
-			return "", fmt.Errorf("evaluate conditional edge from %q to %q: %w", current, edge.to, err)
+			return "", fmt.Errorf("evaluate conditional edge from %q to %q: %w", g.nodeLabel(current), g.nodeLabel(edge.to), err)
 		}
 		if matched {
 			return edge.to, nil
@@ -238,43 +244,68 @@ func (g *Graph[S]) nextNode(ctx context.Context, current string, state S) (strin
 		return next, nil
 	}
 
-	return "", fmt.Errorf("node %q has no matching outgoing edge", current)
+	return "", fmt.Errorf("node %q has no matching outgoing edge", g.nodeLabel(current))
 }
 
-func (g *Graph[S]) outgoing(name string) []string {
-	next := make([]string, 0, len(g.conditionalEdges[name])+1)
-	if to, ok := g.edges[name]; ok {
+func (g *Graph[S]) outgoing(nodeID string) []string {
+	next := make([]string, 0, len(g.conditionalEdges[nodeID])+1)
+	if to, ok := g.edges[nodeID]; ok {
 		next = append(next, to)
 	}
-	for _, edge := range g.conditionalEdges[name] {
+	for _, edge := range g.conditionalEdges[nodeID] {
 		next = append(next, edge.to)
 	}
 	return next
 }
 
-func (g *Graph[S]) requireKnownNode(name string) error {
-	if strings.TrimSpace(name) == "" {
-		return fmt.Errorf("node name is empty")
+func (g *Graph[S]) resolveNodeRef(ref string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", fmt.Errorf("node reference is empty")
 	}
-	if _, ok := g.nodes[name]; !ok {
-		return fmt.Errorf("node %q not found", name)
+	if _, ok := g.nodes[ref]; ok {
+		return ref, nil
 	}
-	return nil
+
+	ids := g.nodeNames[ref]
+	switch len(ids) {
+	case 0:
+		return "", fmt.Errorf("node %q not found", ref)
+	case 1:
+		return ids[0], nil
+	default:
+		return "", fmt.Errorf("node name %q is ambiguous; use node ID instead: %s", ref, strings.Join(ids, ", "))
+	}
 }
 
 func (g *Graph[S]) setSpecialPoint(name string, entry bool) error {
-	name = strings.TrimSpace(name)
-	if err := g.requireKnownNode(name); err != nil {
+	nodeID, err := g.resolveNodeRef(name)
+	if err != nil {
 		return err
 	}
 
 	if entry {
-		g.entryPoint = name
+		g.entryPoint = nodeID
 		return nil
 	}
 
-	g.finishPoint = name
+	g.finishPoint = nodeID
 	return nil
+}
+
+func (g *Graph[S]) nodeLabel(nodeID string) string {
+	node, ok := g.nodes[nodeID]
+	if !ok {
+		return nodeID
+	}
+	return fmt.Sprintf("%s (%s)", node.Name(), nodeID)
+}
+
+func resolveOrCreateNodeID[S BaseState](node NodeDefinition[S]) string {
+	if ensured, ok := any(node).(interface{ EnsureID() string }); ok {
+		return ensured.EnsureID()
+	}
+	return node.ID()
 }
 
 func (g *Graph[S]) resolveStepLimit(state S) int {
