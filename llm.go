@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
+	"sort"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
@@ -13,16 +15,12 @@ import (
 
 type LLMNode[S BaseState] struct {
 	NodeInfo
-	model llms.Model
-	tools map[string]llms.Tool
+	model      llms.Model
+	tools      map[string]Tool
+	StateScope string
 }
 
-func NewLLMNode[S BaseState](model llms.Model, tools map[string]llms.Tool) *LLMNode[S] {
-	clonedTools := make(map[string]llms.Tool, len(tools))
-	for name, tool := range tools {
-		clonedTools[name] = tool
-	}
-
+func NewLLMNode[S BaseState](model llms.Model, tools map[string]Tool) *LLMNode[S] {
 	id, err := uuid.NewUUID()
 	if err != nil {
 		panic(err)
@@ -35,33 +33,33 @@ func NewLLMNode[S BaseState](model llms.Model, tools map[string]llms.Tool) *LLMN
 			NodeDescription: "LLM Node",
 		},
 		model: model,
-		tools: clonedTools,
+		tools: cloneTools(tools),
 	}
 }
 
 func (L *LLMNode[S]) Invoke(ctx context.Context, state S) (S, error) {
-	if state.IterationCount() >= state.MaxIterations() {
+	stateView := scopedState(state, L.StateScope)
+
+	if stateView.IterationCount() >= stateView.MaxIterations() {
 		message := "Maximum tool iterations reached. Please simplify the question or reduce tool usage."
 		finalMessage := llms.TextParts(
 			llms.ChatMessageTypeAI,
 			message,
 		)
-		state.UpdateMessage(append(state.GetMessages(), finalMessage))
-		state.SetFinalAnswer(message)
+		stateView.UpdateMessage(append(stateView.GetMessages(), finalMessage))
+		stateView.SetFinalAnswer(message)
 
 		return state, nil
 	}
 
 	var tools []llms.Tool
-	for _, id := range state.EnabledTools() {
-		if tool, ok := L.tools[id]; ok {
-			tools = append(tools, tool)
-		}
+	for _, tool := range L.tools {
+		tools = append(tools, tool.LLMTool())
 	}
 
 	resp, err := L.model.GenerateContent(
 		ctx,
-		state.GetMessages(),
+		stateView.GetMessages(),
 		llms.WithTools(tools),
 		llms.WithTemperature(0.1),
 		llms.WithStreamingReasoningFunc(onStreamingResponse),
@@ -83,14 +81,33 @@ func (L *LLMNode[S]) Invoke(ctx context.Context, state S) (S, error) {
 		aiMessage.Parts = append(aiMessage.Parts, toolCall)
 	}
 
-	state.UpdateMessage(append(state.GetMessages(), aiMessage))
-	state.IncrementIteration()
+	stateView.UpdateMessage(append(stateView.GetMessages(), aiMessage))
+	stateView.IncrementIteration()
 
 	if len(choice.ToolCalls) == 0 {
-		state.SetFinalAnswer(extractText(aiMessage))
+		stateView.SetFinalAnswer(extractText(aiMessage))
 	}
 
 	return state, nil
+}
+
+func (L *LLMNode[S]) GraphNodeSpec() GraphNodeSpec {
+	toolIDs := make([]string, 0, len(L.tools))
+	for id := range L.tools {
+		toolIDs = append(toolIDs, id)
+	}
+	sort.Strings(toolIDs)
+
+	return GraphNodeSpec{
+		ID:          L.ID(),
+		Name:        L.Name(),
+		Type:        "llm",
+		Description: L.Description(),
+		Config: map[string]any{
+			"tool_ids":    toolIDs,
+			"state_scope": L.StateScope,
+		},
+	}
 }
 
 func onStreamingResponse(_ context.Context, reasoningChunk, chunk []byte) error {

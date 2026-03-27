@@ -5,24 +5,42 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/google/uuid"
+	"sort"
 	"strings"
+
+	"github.com/google/uuid"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
-type AgentTool interface {
-	Name() string
-	Description() string
-	Call(ctx context.Context, input string) (string, error)
+type ToolHandler func(ctx context.Context, input string) (string, error)
+
+type Tool struct {
+	Function *llms.FunctionDefinition
+	Handler  ToolHandler
+}
+
+func (t Tool) Name() string {
+	if t.Function == nil {
+		return ""
+	}
+	return t.Function.Name
+}
+
+func (t Tool) LLMTool() llms.Tool {
+	return llms.Tool{
+		Type:     "function",
+		Function: cloneFunctionDefinition(t.Function),
+	}
 }
 
 type ToolsNode[S BaseState] struct {
 	NodeInfo
-	Tools map[string]AgentTool
+	Tools      map[string]Tool
+	StateScope string
 }
 
-func NewToolsNode[S BaseState](tools map[string]AgentTool) *ToolsNode[S] {
+func NewToolsNode[S BaseState](tools map[string]Tool) *ToolsNode[S] {
 	id, err := uuid.NewUUID()
 	if err != nil {
 		panic(err)
@@ -33,17 +51,18 @@ func NewToolsNode[S BaseState](tools map[string]AgentTool) *ToolsNode[S] {
 			NodeName:        "Tools Node",
 			NodeDescription: "Tools Node",
 		},
-		Tools: tools,
+		Tools: cloneTools(tools),
 	}
 }
 
 func (t *ToolsNode[S]) Invoke(ctx context.Context, state S) (S, error) {
+	stateView := scopedState(state, t.StateScope)
 
-	if len(state.GetMessages()) == 0 {
+	if len(stateView.GetMessages()) == 0 {
 		return state, errors.New("no messages available for tool execution")
 	}
 
-	lastMessage := state.GetMessages()[len(state.GetMessages())-1]
+	lastMessage := stateView.GetMessages()[len(stateView.GetMessages())-1]
 	if lastMessage.Role != llms.ChatMessageTypeAI {
 		return state, errors.New("last message is not an AI message")
 	}
@@ -72,9 +91,28 @@ func (t *ToolsNode[S]) Invoke(ctx context.Context, state S) (S, error) {
 		})
 	}
 
-	state.UpdateMessage(append(state.GetMessages(), toolMessages...))
+	stateView.UpdateMessage(append(stateView.GetMessages(), toolMessages...))
 
 	return state, nil
+}
+
+func (t *ToolsNode[S]) GraphNodeSpec() GraphNodeSpec {
+	toolIDs := make([]string, 0, len(t.Tools))
+	for id := range t.Tools {
+		toolIDs = append(toolIDs, id)
+	}
+	sort.Strings(toolIDs)
+
+	return GraphNodeSpec{
+		ID:          t.ID(),
+		Name:        t.Name(),
+		Type:        "tools",
+		Description: t.Description(),
+		Config: map[string]any{
+			"tool_ids":    toolIDs,
+			"state_scope": t.StateScope,
+		},
+	}
 }
 
 func (t *ToolsNode[S]) executeToolCall(ctx context.Context, toolCall llms.ToolCall) (string, error) {
@@ -86,9 +124,15 @@ func (t *ToolsNode[S]) executeToolCall(ctx context.Context, toolCall llms.ToolCa
 	if !ok {
 		return "", fmt.Errorf("tool %q not found", toolCall.FunctionCall.Name)
 	}
+	if tool.Function == nil {
+		return "", fmt.Errorf("tool %q has no function definition", toolCall.FunctionCall.Name)
+	}
+	if tool.Handler == nil {
+		return "", fmt.Errorf("tool handler %q not found", tool.Function.Name)
+	}
 
 	input := decodeToolInput(toolCall.FunctionCall.Arguments)
-	return tool.Call(ctx, input)
+	return tool.Handler(ctx, input)
 }
 
 func decodeToolInput(arguments string) string {
@@ -116,4 +160,26 @@ func decodeToolInput(arguments string) string {
 	}
 
 	return raw
+}
+
+func cloneTools(all map[string]Tool) map[string]Tool {
+	if len(all) == 0 {
+		return nil
+	}
+	cloned := make(map[string]Tool, len(all))
+	for key, value := range all {
+		cloned[key] = Tool{
+			Function: cloneFunctionDefinition(value.Function),
+			Handler:  value.Handler,
+		}
+	}
+	return cloned
+}
+
+func cloneFunctionDefinition(function *llms.FunctionDefinition) *llms.FunctionDefinition {
+	if function == nil {
+		return nil
+	}
+	cloned := *function
+	return &cloned
 }

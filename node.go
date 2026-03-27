@@ -1,15 +1,8 @@
 package falcon
 
-import (
-	"context"
-)
+import "context"
 
-const (
-	IdStartNode = "id_start_node"
-	IdEndNode   = "id_end_node"
-)
-
-type NodeDefinition[S BaseState] interface {
+type Node[S any] interface {
 	ID() string
 	Name() string
 	Description() string
@@ -27,45 +20,12 @@ func (n *NodeInfo) Name() string {
 }
 
 func (n *NodeInfo) ID() string {
-	return n.NodeID
+	if n.NodeID != "" {
+		return n.NodeID
+	}
+	return n.NodeName
 }
 
 func (n *NodeInfo) Description() string {
 	return n.NodeDescription
-}
-
-type StartNode[S BaseState] struct {
-	NodeInfo
-}
-
-func NewStartNode[S BaseState]() *StartNode[S] {
-	return &StartNode[S]{
-		NodeInfo: NodeInfo{
-			NodeID:          IdStartNode,
-			NodeName:        "Start Node",
-			NodeDescription: "start",
-		},
-	}
-}
-
-func (s *StartNode[S]) Invoke(_ context.Context, state S) (S, error) {
-	return state, nil
-}
-
-func NewEndNode[S BaseState]() *StartNode[S] {
-	return &StartNode[S]{
-		NodeInfo: NodeInfo{
-			NodeID:          IdEndNode,
-			NodeName:        "End Node",
-			NodeDescription: "end node",
-		},
-	}
-}
-
-type EndNode[S BaseState] struct {
-	NodeInfo
-}
-
-func (e *EndNode[S]) Invoke(_ context.Context, state S) (S, error) {
-	return state, nil
 }
