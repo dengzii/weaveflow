@@ -59,7 +59,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 		tools = append(tools, tool.LLMTool())
 	}
 	if payload, err := buildLLMPromptArtifact(messages, tools, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
-		_, _ = saveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
 	}
 
 	resp, err := L.model.GenerateContent(
@@ -71,16 +71,16 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 		openai.WithMaxCompletionTokens(10000),
 	)
 	if err != nil {
-		_, _ = saveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
 	if resp == nil || len(resp.Choices) == 0 {
 		err := errors.New("llm returned no choices")
-		_, _ = saveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
 	if payload := buildLLMResponseArtifact(resp); len(payload.Choices) > 0 {
-		_, _ = saveJSONArtifactBestEffort(ctx, "llm.response", payload)
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.response", payload)
 	}
 
 	choice := resp.Choices[0]
@@ -128,7 +128,7 @@ func onStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) erro
 func emitStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) error {
 	reasoning := string(reasoningChunk)
 	if strings.TrimSpace(reasoning) != "" {
-		if err := publishRunnerContextEvent(ctx, EventLLMReasoningChunk, map[string]any{"text": reasoning}); err != nil {
+		if err := fruntime.PublishRunnerContextEvent(ctx, EventLLMReasoningChunk, map[string]any{"text": reasoning}); err != nil {
 			return err
 		}
 		if !hasRunnerEventPublisher(ctx) {
@@ -137,7 +137,7 @@ func emitStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) er
 	}
 	content := string(chunk)
 	if strings.TrimSpace(content) != "" {
-		if err := publishRunnerContextEvent(ctx, EventLLMContentChunk, map[string]any{"text": content}); err != nil {
+		if err := fruntime.PublishRunnerContextEvent(ctx, EventLLMContentChunk, map[string]any{"text": content}); err != nil {
 			return err
 		}
 		if !hasRunnerEventPublisher(ctx) {
@@ -190,7 +190,7 @@ type llmResponseArtifactChoice struct {
 }
 
 func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, stateScope string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
-	serializedMessages, err := serializeMessages(messages)
+	serializedMessages, err := fruntime.SerializeMessages(messages)
 	if err != nil {
 		return llmPromptArtifact{}, err
 	}

@@ -5,7 +5,10 @@ import (
 	"time"
 )
 
-const DefaultStateVersion = "falcon.state.v2"
+const (
+	CommonStateSchemaID = "falcon.state.v2"
+	DefaultStateVersion = CommonStateSchemaID
+)
 
 type GraphState map[string]json.RawMessage
 

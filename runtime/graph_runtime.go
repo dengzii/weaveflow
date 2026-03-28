@@ -1,9 +1,8 @@
-package falcon
+package runtime
 
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sync"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -59,13 +58,13 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState St
 	}
 }
 
-func (e *graphRunnerExecution) invokeNode(ctx context.Context, nodeName string, node Node[State], state State) (State, error) {
+func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeName string, invoke NodeInvoker, state State) (State, error) {
 	nodeCtx, err := e.beforeNode(ctx, nodeName, state)
 	if err != nil {
 		return state, err
 	}
 
-	result, invokeErr := node.Invoke(nodeCtx, state.CloneState())
+	result, invokeErr := invoke(nodeCtx, state.CloneState())
 	if invokeErr != nil {
 		var interrupt *langgraph.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
@@ -166,16 +165,16 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, 
 	stepID := step.StepID
 	nodeID := step.NodeID
 	runID := e.run.RunID
-	nodeCtx := withRunnerEventPublisher(ctx, func(eventType EventType, payload any) error {
+	nodeCtx := WithRunnerEventPublisher(ctx, func(eventType EventType, payload any) error {
 		return e.runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, eventType, payload)
 	})
-	nodeCtx = withRunnerMetadata(nodeCtx, RunnerMetadata{
+	nodeCtx = WithRunnerMetadata(nodeCtx, RunnerMetadata{
 		RunID:   runID,
 		StepID:  stepID,
 		NodeID:  nodeID,
 		Attempt: active.attempts,
 	})
-	nodeCtx = withRunnerArtifactRecorder(nodeCtx, func(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
+	nodeCtx = WithRunnerArtifactRecorder(nodeCtx, func(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
 		ref, err := e.runner.recordArtifact(ctx, artifact)
 		if err != nil {
 			return ArtifactRef{}, err
@@ -186,7 +185,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, 
 	return nodeCtx, nil
 }
 
-func (e *graphRunnerExecution) onGraphStep(ctx context.Context, nodeName string, state State) error {
+func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeName string, state State) error {
 	e.mu.Lock()
 	active := e.active
 	if active == nil {
@@ -345,18 +344,11 @@ func (e *graphRunnerExecution) snapshotArtifacts() []ArtifactRef {
 }
 
 func (e *graphRunnerExecution) afterInterruptNodes() ([]string, error) {
-	nodes := make([]string, 0, len(e.runner.Breakpoints))
-	for _, breakpoint := range e.runner.Breakpoints {
-		if !breakpoint.Enabled || breakpoint.Stage != string(CheckpointAfterNode) {
-			continue
-		}
-		name, err := e.runner.Graph.resolveNodeRef(breakpoint.NodeID)
-		if err != nil {
-			return nil, fmt.Errorf("resolve after-node breakpoint %q: %w", breakpoint.NodeID, err)
-		}
-		nodes = append(nodes, name)
+	graph := e.runner.runnerGraph()
+	if graph == nil {
+		return nil, errors.New("graph runner graph is nil")
 	}
-	return nodes, nil
+	return graph.AfterInterruptNodes(e.runner.Breakpoints)
 }
 
 func (e *graphRunnerExecution) markNodeInterrupt(nodeName string) {
@@ -381,5 +373,5 @@ func (c *runnerGraphCallbacks) OnGraphStep(ctx context.Context, stepNode string,
 	if !ok {
 		return
 	}
-	_ = c.execution.onGraphStep(ctx, stepNode, typed)
+	_ = c.execution.OnGraphStep(ctx, stepNode, typed)
 }
