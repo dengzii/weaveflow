@@ -2,6 +2,7 @@ package falcon
 
 import (
 	"context"
+	fruntime "falcon/runtime"
 	"fmt"
 	"os"
 	"sort"
@@ -348,7 +349,7 @@ func (g *Graph) Compile() (*Runnable, error) {
 	return &Runnable{runnable: runnable}, nil
 }
 
-func (g *Graph) compileForRunner(execution *graphRunnerExecution) (*langgraph.StateRunnable[State], error) {
+func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[State], error) {
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
@@ -365,7 +366,11 @@ func (g *Graph) compileForRunner(execution *graphRunnerExecution) (*langgraph.St
 		nodeDef := node
 		nodeName := name
 		compiled.AddNode(name, node.Description(), func(ctx context.Context, state State) (State, error) {
-			return execution.invokeNode(ctx, nodeName, nodeDef, state)
+			return execution.InvokeNode(ctx, nodeName,
+				func(ctx context.Context, state State) (State, error) {
+					return nodeDef.Invoke(ctx, state)
+				}, state,
+			)
 		})
 	}
 

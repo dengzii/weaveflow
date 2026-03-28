@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	fruntime "falcon/runtime"
 	"github.com/google/uuid"
 
 	"github.com/tmc/langchaingo/llms"
@@ -75,11 +76,11 @@ func (t *ToolsNode) Invoke(ctx context.Context, state State) (State, error) {
 			continue
 		}
 
-		_ = publishRunnerContextEvent(ctx, EventToolCalled, map[string]any{
+		_ = fruntime.PublishRunnerContextEvent(ctx, EventToolCalled, map[string]any{
 			"tool_call_id": toolCall.ID,
 			"name":         toolCallName(toolCall),
 		})
-		_, _ = saveJSONArtifactBestEffort(ctx, "tool.input", map[string]any{
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.input", map[string]any{
 			"tool_call_id": toolCall.ID,
 			"name":         toolCallName(toolCall),
 			"arguments":    toolCallArguments(toolCall),
@@ -88,24 +89,24 @@ func (t *ToolsNode) Invoke(ctx context.Context, state State) (State, error) {
 
 		result, err := t.executeToolCall(ctx, toolCall)
 		if err != nil {
-			_ = publishRunnerContextEvent(ctx, EventToolFailed, map[string]any{
+			_ = fruntime.PublishRunnerContextEvent(ctx, EventToolFailed, map[string]any{
 				"tool_call_id": toolCall.ID,
 				"name":         toolCallName(toolCall),
 				"error":        err.Error(),
 			})
-			_, _ = saveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
 				"tool_call_id": toolCall.ID,
 				"name":         toolCallName(toolCall),
 				"error":        err.Error(),
 			})
 			result = "tool execution failed: " + err.Error()
 		} else {
-			_ = publishRunnerContextEvent(ctx, EventToolReturned, map[string]any{
+			_ = fruntime.PublishRunnerContextEvent(ctx, EventToolReturned, map[string]any{
 				"tool_call_id": toolCall.ID,
 				"name":         toolCallName(toolCall),
 				"content":      result,
 			})
-			_, _ = saveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
 				"tool_call_id": toolCall.ID,
 				"name":         toolCallName(toolCall),
 				"content":      result,

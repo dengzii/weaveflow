@@ -45,31 +45,9 @@ func NewRegistry() *Registry {
 func DefaultRegistry() *Registry {
 	r := NewRegistry()
 
-	r.RegisterStateField(StateFieldDefinition{
-		Name:        StateKeyMessages,
-		Description: "Chat messages accumulated during the graph run.",
-		Schema: JSONSchema{
-			"type": "array",
-			"items": JSONSchema{
-				"type": "object",
-			},
-		},
-	})
-	r.RegisterStateField(StateFieldDefinition{
-		Name:        StateKeyIterationCount,
-		Description: "Current tool-using iteration count.",
-		Schema:      JSONSchema{"type": "integer", "minimum": 0},
-	})
-	r.RegisterStateField(StateFieldDefinition{
-		Name:        StateKeyMaxIterations,
-		Description: "Maximum iteration count allowed for the run.",
-		Schema:      JSONSchema{"type": "integer", "minimum": 1},
-	})
-	r.RegisterStateField(StateFieldDefinition{
-		Name:        StateKeyFinalAnswer,
-		Description: "Final answer produced by the graph.",
-		Schema:      JSONSchema{"type": "string"},
-	})
+	for _, field := range defaultStateFieldDefinitions() {
+		r.RegisterStateField(field)
+	}
 
 	r.RegisterNodeType(NodeTypeDefinition{
 		Type:        "llm",

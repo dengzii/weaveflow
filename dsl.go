@@ -22,10 +22,7 @@ func (r JSONSchema) WriteToFile(path string) error {
 	return err
 }
 
-const (
-	GraphDefinitionVersion = "1.0"
-	CommonStateSchemaID    = "falcon.state.v2"
-)
+const GraphDefinitionVersion = "1.0"
 
 type StateFieldDefinition struct {
 	Name        string     `json:"name"`

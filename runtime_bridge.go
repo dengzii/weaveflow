@@ -8,6 +8,7 @@ import (
 )
 
 const (
+	CommonStateSchemaID = fruntime.CommonStateSchemaID
 	DefaultStateVersion = fruntime.DefaultStateVersion
 
 	StateKeyMessages       = fruntime.StateKeyMessages
@@ -63,6 +64,45 @@ type (
 	FileCheckpointStore = fruntime.FileCheckpointStore
 	FileEventSink       = fruntime.FileEventSink
 )
+
+func defaultStateFieldDefinitions() []StateFieldDefinition {
+	defs := fruntime.DefaultStateFieldDefinitions()
+	result := make([]StateFieldDefinition, 0, len(defs))
+	for _, def := range defs {
+		result = append(result, StateFieldDefinition{
+			Name:        def.Name,
+			Description: def.Description,
+			Schema:      cloneJSONSchema(def.Schema),
+		})
+	}
+	return result
+}
+
+func cloneJSONSchema(input map[string]any) JSONSchema {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make(JSONSchema, len(input))
+	for key, value := range input {
+		cloned[key] = cloneJSONSchemaValue(value)
+	}
+	return cloned
+}
+
+func cloneJSONSchemaValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return map[string]any(cloneJSONSchema(typed))
+	case []any:
+		cloned := make([]any, len(typed))
+		for i, item := range typed {
+			cloned[i] = cloneJSONSchemaValue(item)
+		}
+		return cloned
+	default:
+		return value
+	}
+}
 
 const (
 	RunStatusPending   = fruntime.RunStatusPending
@@ -159,43 +199,6 @@ func SaveArtifact(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
 
 func SaveJSONArtifact(ctx context.Context, artifactType string, payload any) (ArtifactRef, error) {
 	return fruntime.SaveJSONArtifact(ctx, artifactType, payload)
-}
-
-func withRunnerEventPublisher(ctx context.Context, publisher func(EventType, any) error) context.Context {
-	return fruntime.WithRunnerEventPublisher(ctx, publisher)
-}
-
-func withRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Context {
-	return fruntime.WithRunnerMetadata(ctx, metadata)
-}
-
-func withRunnerArtifactRecorder(ctx context.Context, recorder func(context.Context, Artifact) (ArtifactRef, error)) context.Context {
-	return fruntime.WithRunnerArtifactRecorder(ctx, recorder)
-}
-
-func publishRunnerContextEvent(ctx context.Context, eventType EventType, payload any) error {
-	return fruntime.PublishRunnerContextEvent(ctx, eventType, payload)
-}
-
-func saveArtifactBestEffort(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
-	return fruntime.SaveArtifactBestEffort(ctx, artifact)
-}
-
-func saveJSONArtifactBestEffort(ctx context.Context, artifactType string, payload any) (ArtifactRef, error) {
-	return fruntime.SaveJSONArtifactBestEffort(ctx, artifactType, payload)
-}
-
-func serializeMessages(messages []llms.MessageContent) ([]StateMessage, error) {
-	return fruntime.SerializeMessages(messages)
-}
-
-func cloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {
-	if len(artifacts) == 0 {
-		return nil
-	}
-	cloned := make([]ArtifactRef, len(artifacts))
-	copy(cloned, artifacts)
-	return cloned
 }
 
 func NormalizeStateNamespace(namespace string) string {
