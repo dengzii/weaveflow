@@ -7,26 +7,27 @@ import (
 	"sort"
 	"strings"
 
+	fruntime "falcon/runtime"
 	"github.com/google/uuid"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
 )
 
-type LLMNode[S BaseState] struct {
+type LLMNode struct {
 	NodeInfo
 	model      llms.Model
 	tools      map[string]Tool
 	StateScope string
 }
 
-func NewLLMNode[S BaseState](model llms.Model, tools map[string]Tool) *LLMNode[S] {
+func NewLLMNode(model llms.Model, tools map[string]Tool) *LLMNode {
 	id, err := uuid.NewUUID()
 	if err != nil {
 		panic(err)
 	}
 
-	return &LLMNode[S]{
+	return &LLMNode{
 		NodeInfo: NodeInfo{
 			NodeID:          id.String(),
 			NodeName:        "LLM Node",
@@ -37,17 +38,18 @@ func NewLLMNode[S BaseState](model llms.Model, tools map[string]Tool) *LLMNode[S
 	}
 }
 
-func (L *LLMNode[S]) Invoke(ctx context.Context, state S) (S, error) {
-	stateView := scopedState(state, L.StateScope)
+func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
+	conversation := Conversation(state, L.StateScope)
+	messages := conversation.Messages()
 
-	if stateView.IterationCount() >= stateView.MaxIterations() {
+	if conversation.IterationCount() >= conversation.MaxIterations() {
 		message := "Maximum tool iterations reached. Please simplify the question or reduce tool usage."
 		finalMessage := llms.TextParts(
 			llms.ChatMessageTypeAI,
 			message,
 		)
-		stateView.UpdateMessage(append(stateView.GetMessages(), finalMessage))
-		stateView.SetFinalAnswer(message)
+		conversation.UpdateMessage(append(messages, finalMessage))
+		conversation.SetFinalAnswer(message)
 
 		return state, nil
 	}
@@ -56,20 +58,29 @@ func (L *LLMNode[S]) Invoke(ctx context.Context, state S) (S, error) {
 	for _, tool := range L.tools {
 		tools = append(tools, tool.LLMTool())
 	}
+	if payload, err := buildLLMPromptArtifact(messages, tools, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
+		_, _ = saveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
+	}
 
 	resp, err := L.model.GenerateContent(
 		ctx,
-		stateView.GetMessages(),
+		messages,
 		llms.WithTools(tools),
 		llms.WithTemperature(0.1),
 		llms.WithStreamingReasoningFunc(onStreamingResponse),
 		openai.WithMaxCompletionTokens(10000),
 	)
 	if err != nil {
+		_, _ = saveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
 	if resp == nil || len(resp.Choices) == 0 {
-		return state, errors.New("llm returned no choices")
+		err := errors.New("llm returned no choices")
+		_, _ = saveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
+		return state, err
+	}
+	if payload := buildLLMResponseArtifact(resp); len(payload.Choices) > 0 {
+		_, _ = saveJSONArtifactBestEffort(ctx, "llm.response", payload)
 	}
 
 	choice := resp.Choices[0]
@@ -81,17 +92,17 @@ func (L *LLMNode[S]) Invoke(ctx context.Context, state S) (S, error) {
 		aiMessage.Parts = append(aiMessage.Parts, toolCall)
 	}
 
-	stateView.UpdateMessage(append(stateView.GetMessages(), aiMessage))
-	stateView.IncrementIteration()
+	conversation.UpdateMessage(append(messages, aiMessage))
+	conversation.IncrementIteration()
 
 	if len(choice.ToolCalls) == 0 {
-		stateView.SetFinalAnswer(extractText(aiMessage))
+		conversation.SetFinalAnswer(extractText(aiMessage))
 	}
 
 	return state, nil
 }
 
-func (L *LLMNode[S]) GraphNodeSpec() GraphNodeSpec {
+func (L *LLMNode) GraphNodeSpec() GraphNodeSpec {
 	toolIDs := make([]string, 0, len(L.tools))
 	for id := range L.tools {
 		toolIDs = append(toolIDs, id)
@@ -110,16 +121,34 @@ func (L *LLMNode[S]) GraphNodeSpec() GraphNodeSpec {
 	}
 }
 
-func onStreamingResponse(_ context.Context, reasoningChunk, chunk []byte) error {
+func onStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) error {
+	return emitStreamingResponse(ctx, reasoningChunk, chunk)
+}
+
+func emitStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) error {
 	reasoning := string(reasoningChunk)
 	if strings.TrimSpace(reasoning) != "" {
-		fmt.Print(reasoning)
+		if err := publishRunnerContextEvent(ctx, EventLLMReasoningChunk, map[string]any{"text": reasoning}); err != nil {
+			return err
+		}
+		if !hasRunnerEventPublisher(ctx) {
+			fmt.Print(reasoning)
+		}
 	}
 	content := string(chunk)
 	if strings.TrimSpace(content) != "" {
-		fmt.Print(content)
+		if err := publishRunnerContextEvent(ctx, EventLLMContentChunk, map[string]any{"text": content}); err != nil {
+			return err
+		}
+		if !hasRunnerEventPublisher(ctx) {
+			fmt.Print(content)
+		}
 	}
 	return nil
+}
+
+func hasRunnerEventPublisher(ctx context.Context) bool {
+	return fruntime.HasRunnerEventPublisher(ctx)
 }
 
 func extractText(message llms.MessageContent) string {
@@ -133,4 +162,82 @@ func extractText(message llms.MessageContent) string {
 		}
 	}
 	return strings.Join(parts, "\n")
+}
+
+type llmPromptArtifact struct {
+	StateScope     string            `json:"state_scope,omitempty"`
+	IterationCount int               `json:"iteration_count,omitempty"`
+	MaxIterations  int               `json:"max_iterations,omitempty"`
+	Messages       []StateMessage    `json:"messages,omitempty"`
+	Tools          []llmToolArtifact `json:"tools,omitempty"`
+}
+
+type llmToolArtifact struct {
+	Type     string                   `json:"type,omitempty"`
+	Function *llms.FunctionDefinition `json:"function,omitempty"`
+}
+
+type llmResponseArtifact struct {
+	Choices []llmResponseArtifactChoice `json:"choices,omitempty"`
+}
+
+type llmResponseArtifactChoice struct {
+	Content          string             `json:"content,omitempty"`
+	StopReason       string             `json:"stop_reason,omitempty"`
+	ToolCalls        []llms.ToolCall    `json:"tool_calls,omitempty"`
+	FunctionCall     *llms.FunctionCall `json:"function_call,omitempty"`
+	ReasoningContent string             `json:"reasoning_content,omitempty"`
+}
+
+func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, stateScope string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
+	serializedMessages, err := serializeMessages(messages)
+	if err != nil {
+		return llmPromptArtifact{}, err
+	}
+
+	payload := llmPromptArtifact{
+		StateScope:     stateScope,
+		IterationCount: iterationCount,
+		MaxIterations:  maxIterations,
+		Messages:       serializedMessages,
+	}
+	if len(tools) > 0 {
+		payload.Tools = make([]llmToolArtifact, 0, len(tools))
+		for _, tool := range tools {
+			payload.Tools = append(payload.Tools, llmToolArtifact{
+				Type:     tool.Type,
+				Function: cloneFunctionDefinition(tool.Function),
+			})
+		}
+	}
+	return payload, nil
+}
+
+func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
+	if resp == nil || len(resp.Choices) == 0 {
+		return llmResponseArtifact{}
+	}
+
+	payload := llmResponseArtifact{
+		Choices: make([]llmResponseArtifactChoice, 0, len(resp.Choices)),
+	}
+	for _, choice := range resp.Choices {
+		if choice == nil {
+			continue
+		}
+		item := llmResponseArtifactChoice{
+			Content:          choice.Content,
+			StopReason:       choice.StopReason,
+			ReasoningContent: choice.ReasoningContent,
+		}
+		if choice.FuncCall != nil {
+			copyCall := *choice.FuncCall
+			item.FunctionCall = &copyCall
+		}
+		if len(choice.ToolCalls) > 0 {
+			item.ToolCalls = append(item.ToolCalls, choice.ToolCalls...)
+		}
+		payload.Choices = append(payload.Choices, item)
+	}
+	return payload
 }

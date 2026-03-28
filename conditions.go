@@ -8,7 +8,7 @@ import (
 
 func LastMessageHasToolCalls(scope string) EdgeCondition {
 	return func(_ context.Context, state State) bool {
-		messages := scopedState(state, scope).GetMessages()
+		messages := Conversation(state, scope).Messages()
 		if len(messages) == 0 {
 			return false
 		}
@@ -30,7 +30,7 @@ func LastMessageHasToolCalls(scope string) EdgeCondition {
 
 func HasFinalAnswer(scope string) EdgeCondition {
 	return func(_ context.Context, state State) bool {
-		return scopedState(state, scope).FinalAnswer() != ""
+		return Conversation(state, scope).FinalAnswer() != ""
 	}
 }
 

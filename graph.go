@@ -348,6 +348,76 @@ func (g *Graph) Compile() (*Runnable, error) {
 	return &Runnable{runnable: runnable}, nil
 }
 
+func (g *Graph) compileForRunner(execution *graphRunnerExecution) (*langgraph.StateRunnable[State], error) {
+	if err := g.Validate(); err != nil {
+		return nil, err
+	}
+	if execution == nil {
+		return nil, fmt.Errorf("runner execution is nil")
+	}
+
+	compiled := langgraph.NewStateGraph[State]()
+	if g.retryPolicy != nil {
+		compiled.SetRetryPolicy(g.retryPolicy)
+	}
+
+	for name, node := range g.nodes {
+		nodeDef := node
+		nodeName := name
+		compiled.AddNode(name, node.Description(), func(ctx context.Context, state State) (State, error) {
+			return execution.invokeNode(ctx, nodeName, nodeDef, state)
+		})
+	}
+
+	for from, conditional := range g.conditionalEdges {
+		edges := append([]conditionalEdge(nil), conditional...)
+		defaultTarget, hasDefaultTarget := g.edges[from]
+		isFinishPoint := from == g.finishPoint
+
+		compiled.AddConditionalEdge(from, func(ctx context.Context, state State) string {
+			for _, edge := range edges {
+				if edge.when(ctx, state) {
+					return edge.to
+				}
+			}
+			if hasDefaultTarget {
+				return defaultTarget
+			}
+			if isFinishPoint {
+				return langgraph.END
+			}
+			return ""
+		})
+	}
+
+	for from, to := range g.edges {
+		if _, hasConditional := g.conditionalEdges[from]; hasConditional {
+			continue
+		}
+		compiled.AddEdge(from, to)
+	}
+
+	if g.finishPoint != "" {
+		if _, hasConditional := g.conditionalEdges[g.finishPoint]; !hasConditional {
+			if _, hasDefaultEdge := g.edges[g.finishPoint]; !hasDefaultEdge {
+				compiled.AddEdge(g.finishPoint, langgraph.END)
+			}
+		}
+	}
+
+	compiled.SetEntryPoint(g.entryPoint)
+
+	runnable, err := compiled.Compile()
+	if err != nil {
+		return nil, err
+	}
+	if g.tracer != nil {
+		runnable.SetTracer(g.tracer)
+	}
+
+	return runnable, nil
+}
+
 func (g *Graph) Run(ctx context.Context, initialState State) (State, error) {
 	runnable, err := g.Compile()
 	if err != nil {

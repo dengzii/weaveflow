@@ -46,7 +46,7 @@ func DefaultRegistry() *Registry {
 	r := NewRegistry()
 
 	r.RegisterStateField(StateFieldDefinition{
-		Name:        stateKeyMessages,
+		Name:        StateKeyMessages,
 		Description: "Chat messages accumulated during the graph run.",
 		Schema: JSONSchema{
 			"type": "array",
@@ -56,17 +56,17 @@ func DefaultRegistry() *Registry {
 		},
 	})
 	r.RegisterStateField(StateFieldDefinition{
-		Name:        stateKeyIterationCount,
+		Name:        StateKeyIterationCount,
 		Description: "Current tool-using iteration count.",
 		Schema:      JSONSchema{"type": "integer", "minimum": 0},
 	})
 	r.RegisterStateField(StateFieldDefinition{
-		Name:        stateKeyMaxIterations,
+		Name:        StateKeyMaxIterations,
 		Description: "Maximum iteration count allowed for the run.",
 		Schema:      JSONSchema{"type": "integer", "minimum": 1},
 	})
 	r.RegisterStateField(StateFieldDefinition{
-		Name:        stateKeyFinalAnswer,
+		Name:        StateKeyFinalAnswer,
 		Description: "Final answer produced by the graph.",
 		Schema:      JSONSchema{"type": "string"},
 	})
@@ -90,7 +90,7 @@ func DefaultRegistry() *Registry {
 			if ctx.Model == nil {
 				return nil, fmt.Errorf("build llm node %q: model is required", spec.ID)
 			}
-			node := NewLLMNode[State](ctx.Model, filterTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids")))
+			node := NewLLMNode(ctx.Model, filterTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids")))
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -120,7 +120,7 @@ func DefaultRegistry() *Registry {
 		},
 		Build: func(ctx BuildContext, spec GraphNodeSpec) (Node[State], error) {
 			toolIDs := stringSliceConfig(spec.Config, "tool_ids")
-			node := NewToolsNode[State](filterTools(ctx.Tools, toolIDs))
+			node := NewToolsNode(filterTools(ctx.Tools, toolIDs))
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
