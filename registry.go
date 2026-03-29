@@ -171,6 +171,28 @@ func (r *Registry) RegisterCondition(def ConditionDefinition) {
 	r.Conditions[def.Type] = def
 }
 
+func (r *Registry) ResolveCondition(spec GraphConditionSpec) (EdgeCondition, error) {
+	if r == nil {
+		return nil, fmt.Errorf("registry is nil")
+	}
+	conditionDef, ok := r.Conditions[spec.Type]
+	if !ok {
+		return nil, fmt.Errorf("condition %q is not registered", spec.Type)
+	}
+	return conditionDef.Resolve(spec)
+}
+
+func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphConditionSpec) error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+	condition, err := r.ResolveCondition(spec)
+	if err != nil {
+		return err
+	}
+	return g.AddConditionalEdgeWithSpec(from, to, spec, condition)
+}
+
 func (r *Registry) BuildGraph(def GraphDefinition, ctx BuildContext) (*Graph, error) {
 	def = normalizeGraphDefinition(def)
 	if err := def.Validate(); err != nil {
@@ -201,11 +223,7 @@ func (r *Registry) BuildGraph(def GraphDefinition, ctx BuildContext) (*Graph, er
 			}
 			continue
 		}
-		conditionDef, ok := r.Conditions[edge.Condition.Type]
-		if !ok {
-			return nil, fmt.Errorf("condition %q is not registered", edge.Condition.Type)
-		}
-		condition, err := conditionDef.Resolve(*edge.Condition)
+		condition, err := r.ResolveCondition(*edge.Condition)
 		if err != nil {
 			return nil, err
 		}
