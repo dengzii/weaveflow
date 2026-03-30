@@ -53,6 +53,7 @@ type (
 	RunFilter          = fruntime.RunFilter
 	Breakpoint         = fruntime.Breakpoint
 	BreakpointHit      = fruntime.BreakpointHit
+	GraphRunner        = fruntime.GraphRunner
 	ExecutionStore     = fruntime.ExecutionStore
 	CheckpointStore    = fruntime.CheckpointStore
 	EventSink          = fruntime.EventSink
@@ -188,6 +189,10 @@ func NewFileCheckpointStore(baseDir string) *FileCheckpointStore {
 
 func NewFileEventSink(baseDir string) *FileEventSink {
 	return fruntime.NewFileEventSink(baseDir)
+}
+
+func NewGraphRunner(graph *Graph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec StateCodec, eventSink EventSink) *fruntime.GraphRunner {
+	return fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
 }
 
 func RunnerMetadataFromContext(ctx context.Context) (RunnerMetadata, bool) {

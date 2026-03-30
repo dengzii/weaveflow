@@ -67,7 +67,8 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 		ctx,
 		messages,
 		llms.WithTools(tools),
-		llms.WithTemperature(0.1),
+		llms.WithThinkingMode(llms.ThinkingModeHigh),
+		llms.WithTemperature(0.8),
 		llms.WithStreamingReasoningFunc(onStreamingResponse),
 		openai.WithMaxCompletionTokens(10000),
 	)
