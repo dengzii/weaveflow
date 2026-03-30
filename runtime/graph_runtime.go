@@ -58,8 +58,8 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState St
 	}
 }
 
-func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeName string, invoke NodeInvoker, state State) (State, error) {
-	nodeCtx, err := e.beforeNode(ctx, nodeName, state)
+func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, invoke NodeInvoker, state State) (State, error) {
+	nodeCtx, err := e.beforeNode(ctx, nodeID, state)
 	if err != nil {
 		return state, err
 	}
@@ -68,13 +68,13 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeName string, 
 	if invokeErr != nil {
 		var interrupt *langgraph.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
-			e.markNodeInterrupt(nodeName)
+			e.markNodeInterrupt(nodeID)
 		}
 	}
 	return result, invokeErr
 }
 
-func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, state State) (context.Context, error) {
+func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, state State) (context.Context, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -88,16 +88,16 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, 
 
 	if e.run.CancelRequested {
 		e.pending = &runnerPendingControl{kind: runnerControlCancel}
-		return ctx, &langgraph.NodeInterrupt{Node: nodeName, Value: string(runnerControlCancel)}
+		return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlCancel)}
 	}
 
 	active := e.active
-	if active == nil || active.step.NodeName != nodeName {
+	if active == nil || active.step.NodeID != nodeID {
 		step := StepRecord{
 			StepID:    newRunnerID(),
 			RunID:     e.run.RunID,
-			NodeID:    e.runner.nodeID(nodeName),
-			NodeName:  nodeName,
+			NodeID:    nodeID,
+			NodeName:  e.runner.nodeName(nodeID),
 			Status:    StepStatusScheduled,
 			StartedAt: e.runner.now(),
 			UpdatedAt: e.runner.now(),
@@ -114,7 +114,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, 
 			return ctx, err
 		}
 
-		beforeID, err := e.runner.saveCheckpoint(ctx, e.run, step, nodeName, CheckpointBeforeNode, state, 0, nil, cloneArtifactRefs(e.artifacts))
+		beforeID, err := e.runner.saveCheckpoint(ctx, e.run, step, nodeID, CheckpointBeforeNode, state, 0, nil, cloneArtifactRefs(e.artifacts))
 		if err != nil {
 			return ctx, err
 		}
@@ -140,17 +140,17 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, 
 		if e.run.PauseRequested {
 			active.beforeInterrupted = true
 			e.pending = &runnerPendingControl{kind: runnerControlPause}
-			return ctx, &langgraph.NodeInterrupt{Node: nodeName, Value: string(runnerControlPause)}
+			return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlPause)}
 		}
 		if hit := e.runner.matchBreakpoint(step.NodeID, string(CheckpointBeforeNode), e.skip); hit != nil {
 			active.beforeInterrupted = true
 			e.pending = &runnerPendingControl{kind: runnerControlPause, hit: hit}
-			return ctx, &langgraph.NodeInterrupt{Node: nodeName, Value: hit}
+			return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: hit}
 		}
 
-		e.runner.notifyListeners(ctx, langgraph.NodeEventStart, nodeName, state, nil)
+		e.runner.notifyListeners(ctx, langgraph.NodeEventStart, nodeID, state, nil)
 		if err := e.runner.publishEvent(ctx, e.run, step.StepID, step.NodeID, EventNodeStarted, map[string]any{
-			"node_name": nodeName,
+			"node_name": step.NodeName,
 		}); err != nil {
 			return ctx, err
 		}
@@ -163,7 +163,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, 
 	}
 
 	stepID := step.StepID
-	nodeID := step.NodeID
+	nodeID = step.NodeID
 	runID := e.run.RunID
 	nodeCtx := WithRunnerEventPublisher(ctx, func(eventType EventType, payload any) error {
 		return e.runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, eventType, payload)
@@ -185,7 +185,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeName string, 
 	return nodeCtx, nil
 }
 
-func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeName string, state State) error {
+func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, state State) error {
 	e.mu.Lock()
 	active := e.active
 	if active == nil {
@@ -203,7 +203,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeName string,
 	beforeState := e.lastState.CloneState()
 	e.mu.Unlock()
 
-	afterID, err := e.runner.saveCheckpoint(ctx, run, step, nodeName, CheckpointAfterNode, state, attempts, nil, e.snapshotArtifacts())
+	afterID, err := e.runner.saveCheckpoint(ctx, run, step, nodeID, CheckpointAfterNode, state, attempts, nil, e.snapshotArtifacts())
 	if err != nil {
 		return err
 	}
@@ -221,7 +221,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeName string,
 		return err
 	}
 
-	e.runner.notifyListeners(ctx, langgraph.NodeEventComplete, nodeName, state, nil)
+	e.runner.notifyListeners(ctx, langgraph.NodeEventComplete, nodeID, state, nil)
 	if err := e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeFinished, map[string]any{
 		"attempt": attempts,
 	}); err != nil {
@@ -256,7 +256,7 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 	}
 	step := active.step
 	attempts := active.attempts
-	nodeName := step.NodeName
+	nodeID := step.NodeID
 	state := e.lastState.CloneState()
 	run := e.run
 	e.active = nil
@@ -274,7 +274,7 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 		return updateErr
 	}
 
-	e.runner.notifyListeners(ctx, langgraph.NodeEventError, nodeName, state, err)
+	e.runner.notifyListeners(ctx, langgraph.NodeEventError, nodeID, state, err)
 	return e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeFailed, map[string]any{
 		"error":   err.Error(),
 		"attempt": attempts,
@@ -314,13 +314,13 @@ func (e *graphRunnerExecution) consumePendingControl() (*runnerPendingControl, *
 	return &control, activeCopy
 }
 
-func (e *graphRunnerExecution) consumeLastCompleted(nodeName string) *runnerCompletedStep {
+func (e *graphRunnerExecution) consumeLastCompleted(nodeID string) *runnerCompletedStep {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	if e.lastCompleted == nil {
 		return nil
 	}
-	if nodeName != "" && e.lastCompleted.step.NodeName != nodeName {
+	if nodeID != "" && e.lastCompleted.step.NodeID != nodeID {
 		return nil
 	}
 	completed := *e.lastCompleted
@@ -351,10 +351,10 @@ func (e *graphRunnerExecution) afterInterruptNodes() ([]string, error) {
 	return graph.AfterInterruptNodes(e.runner.Breakpoints)
 }
 
-func (e *graphRunnerExecution) markNodeInterrupt(nodeName string) {
+func (e *graphRunnerExecution) markNodeInterrupt(nodeID string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.active == nil || e.active.step.NodeName != nodeName {
+	if e.active == nil || e.active.step.NodeID != nodeID {
 		return
 	}
 	e.pending = &runnerPendingControl{kind: runnerControlPause}
@@ -365,7 +365,7 @@ type runnerGraphCallbacks struct {
 	execution *graphRunnerExecution
 }
 
-func (c *runnerGraphCallbacks) OnGraphStep(ctx context.Context, stepNode string, state any) {
+func (c *runnerGraphCallbacks) OnGraphStep(ctx context.Context, stepNodeID string, state any) {
 	if c == nil || c.execution == nil {
 		return
 	}
@@ -373,5 +373,5 @@ func (c *runnerGraphCallbacks) OnGraphStep(ctx context.Context, stepNode string,
 	if !ok {
 		return
 	}
-	_ = c.execution.OnGraphStep(ctx, stepNode, typed)
+	_ = c.execution.OnGraphStep(ctx, stepNodeID, typed)
 }

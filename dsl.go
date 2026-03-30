@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 )
 
 type JSONSchema map[string]any
@@ -30,6 +31,9 @@ type StateFieldDefinition struct {
 	Schema      JSONSchema `json:"schema"`
 }
 
+// GraphNodeSpec describes a static node inside GraphDefinition.
+// Runtime-bound values such as model paths, secret references, and per-instance
+// overrides should live in GraphInstanceConfig instead of Config.
 type GraphNodeSpec struct {
 	ID          string         `json:"id"`
 	Name        string         `json:"name"`
@@ -68,17 +72,25 @@ func normalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 	if def.StateSchema == "" {
 		def.StateSchema = CommonStateSchemaID
 	}
+	for i := range def.Nodes {
+		def.Nodes[i].ID = strings.TrimSpace(def.Nodes[i].ID)
+		def.Nodes[i].Name = strings.TrimSpace(def.Nodes[i].Name)
+		def.Nodes[i].Type = strings.TrimSpace(def.Nodes[i].Type)
+		if def.Nodes[i].Name == "" && def.Nodes[i].ID != "" {
+			def.Nodes[i].Name = def.Nodes[i].ID
+		}
+	}
 	return def
 }
 
 func (d GraphDefinition) Validate() error {
-	d = normalizeGraphDefinition(d)
+	def := normalizeGraphDefinition(d)
 
-	if len(d.Nodes) == 0 {
+	if len(def.Nodes) == 0 {
 		return fmt.Errorf("graph definition must include at least one node")
 	}
 	nodeIDs := map[string]struct{}{}
-	for _, node := range d.Nodes {
+	for _, node := range def.Nodes {
 		if node.ID == "" {
 			return fmt.Errorf("graph node id is required")
 		}
@@ -91,18 +103,18 @@ func (d GraphDefinition) Validate() error {
 		nodeIDs[node.ID] = struct{}{}
 	}
 
-	if d.EntryPoint != "" {
-		if _, ok := nodeIDs[d.EntryPoint]; !ok {
-			return fmt.Errorf("graph entry point %q not found", d.EntryPoint)
+	if def.EntryPoint != "" {
+		if _, ok := nodeIDs[def.EntryPoint]; !ok {
+			return fmt.Errorf("graph entry point %q not found", def.EntryPoint)
 		}
 	}
-	if d.FinishPoint != "" {
-		if _, ok := nodeIDs[d.FinishPoint]; !ok {
-			return fmt.Errorf("graph finish point %q not found", d.FinishPoint)
+	if def.FinishPoint != "" {
+		if _, ok := nodeIDs[def.FinishPoint]; !ok {
+			return fmt.Errorf("graph finish point %q not found", def.FinishPoint)
 		}
 	}
 
-	for _, edge := range d.Edges {
+	for _, edge := range def.Edges {
 		if edge.From == "" || edge.To == "" {
 			return fmt.Errorf("graph edge requires from and to")
 		}
