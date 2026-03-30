@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	fruntime "falcon/runtime"
 	"fmt"
+	"github.com/google/uuid"
 	"sort"
 	"strings"
-
-	fruntime "falcon/runtime"
-	"github.com/google/uuid"
+	"sync"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -39,6 +39,7 @@ type ToolsNode struct {
 	NodeInfo
 	Tools      map[string]Tool
 	StateScope string
+	Parallel   bool
 }
 
 func NewToolsNode(tools map[string]Tool) *ToolsNode {
@@ -52,7 +53,8 @@ func NewToolsNode(tools map[string]Tool) *ToolsNode {
 			NodeName:        "Tools Node",
 			NodeDescription: "Tools Node",
 		},
-		Tools: cloneTools(tools),
+		Tools:    cloneTools(tools),
+		Parallel: true,
 	}
 }
 
@@ -69,60 +71,34 @@ func (t *ToolsNode) Invoke(ctx context.Context, state State) (State, error) {
 		return state, errors.New("last message is not an AI message")
 	}
 
-	toolMessages := make([]llms.MessageContent, 0, len(lastMessage.Parts))
+	toolCalls := make([]llms.ToolCall, 0, len(lastMessage.Parts))
 	for _, part := range lastMessage.Parts {
 		toolCall, ok := part.(llms.ToolCall)
 		if !ok {
 			continue
 		}
+		toolCalls = append(toolCalls, toolCall)
+	}
 
-		_ = fruntime.PublishRunnerContextEvent(ctx, EventToolCalled, map[string]any{
-			"tool_call_id": toolCall.ID,
-			"name":         toolCallName(toolCall),
-		})
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.input", map[string]any{
-			"tool_call_id": toolCall.ID,
-			"name":         toolCallName(toolCall),
-			"arguments":    toolCallArguments(toolCall),
-			"input":        decodeToolInput(toolCallArguments(toolCall)),
-		})
+	toolMessages := make([]llms.MessageContent, len(toolCalls))
 
-		result, err := t.executeToolCall(ctx, toolCall)
-		if err != nil {
-			_ = fruntime.PublishRunnerContextEvent(ctx, EventToolFailed, map[string]any{
-				"tool_call_id": toolCall.ID,
-				"name":         toolCallName(toolCall),
-				"error":        err.Error(),
-			})
-			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
-				"tool_call_id": toolCall.ID,
-				"name":         toolCallName(toolCall),
-				"error":        err.Error(),
-			})
-			result = "tool execution failed: " + err.Error()
-		} else {
-			_ = fruntime.PublishRunnerContextEvent(ctx, EventToolReturned, map[string]any{
-				"tool_call_id": toolCall.ID,
-				"name":         toolCallName(toolCall),
-				"content":      result,
-			})
-			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
-				"tool_call_id": toolCall.ID,
-				"name":         toolCallName(toolCall),
-				"content":      result,
-			})
+	if t.Parallel {
+		var wg sync.WaitGroup
+		wg.Add(len(toolCalls))
+		for index, toolCall := range toolCalls {
+			t.publishToolCallStart(ctx, toolCall)
+
+			go func(index int, toolCall llms.ToolCall) {
+				defer wg.Done()
+				toolMessages[index] = t.executeToolCallMessage(ctx, toolCall)
+			}(index, toolCall)
 		}
-
-		toolMessages = append(toolMessages, llms.MessageContent{
-			Role: llms.ChatMessageTypeTool,
-			Parts: []llms.ContentPart{
-				llms.ToolCallResponse{
-					ToolCallID: toolCall.ID,
-					Name:       toolCall.FunctionCall.Name,
-					Content:    result,
-				},
-			},
-		})
+		wg.Wait()
+	} else {
+		for index, toolCall := range toolCalls {
+			t.publishToolCallStart(ctx, toolCall)
+			toolMessages[index] = t.executeToolCallMessage(ctx, toolCall)
+		}
 	}
 
 	conversation.UpdateMessage(append(messages, toolMessages...))
@@ -167,6 +143,62 @@ func (t *ToolsNode) executeToolCall(ctx context.Context, toolCall llms.ToolCall)
 
 	input := decodeToolInput(toolCall.FunctionCall.Arguments)
 	return tool.Handler(ctx, input)
+}
+
+func (t *ToolsNode) publishToolCallStart(ctx context.Context, toolCall llms.ToolCall) {
+	name := toolCallName(toolCall)
+	arguments := toolCallArguments(toolCall)
+
+	_ = fruntime.PublishRunnerContextEvent(ctx, EventToolCalled, map[string]any{
+		"tool_call_id": toolCall.ID,
+		"name":         name,
+	})
+	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.input", map[string]any{
+		"tool_call_id": toolCall.ID,
+		"name":         name,
+		"arguments":    arguments,
+		"input":        decodeToolInput(arguments),
+	})
+}
+
+func (t *ToolsNode) executeToolCallMessage(ctx context.Context, toolCall llms.ToolCall) llms.MessageContent {
+	name := toolCallName(toolCall)
+	result, err := t.executeToolCall(ctx, toolCall)
+	if err != nil {
+		_ = fruntime.PublishRunnerContextEvent(ctx, EventToolFailed, map[string]any{
+			"tool_call_id": toolCall.ID,
+			"name":         name,
+			"error":        err.Error(),
+		})
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
+			"tool_call_id": toolCall.ID,
+			"name":         name,
+			"error":        err.Error(),
+		})
+		result = "tool execution failed: " + err.Error()
+	} else {
+		_ = fruntime.PublishRunnerContextEvent(ctx, EventToolReturned, map[string]any{
+			"tool_call_id": toolCall.ID,
+			"name":         name,
+			"content":      result,
+		})
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
+			"tool_call_id": toolCall.ID,
+			"name":         name,
+			"content":      result,
+		})
+	}
+
+	return llms.MessageContent{
+		Role: llms.ChatMessageTypeTool,
+		Parts: []llms.ContentPart{
+			llms.ToolCallResponse{
+				ToolCallID: toolCall.ID,
+				Name:       name,
+				Content:    result,
+			},
+		},
+	}
 }
 
 func decodeToolInput(arguments string) string {
