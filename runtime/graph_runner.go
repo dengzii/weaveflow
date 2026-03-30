@@ -46,13 +46,13 @@ func (r *GraphRunner) Start(ctx context.Context, initialState State) (RunRecord,
 	}
 
 	now := r.now()
-	entryPoint := r.entryPoint()
+	entryPoint := r.entryPointID()
 	run := RunRecord{
 		RunID:        newRunnerID(),
 		GraphID:      r.graphID(),
 		GraphVersion: r.graphVersion(),
 		Status:       RunStatusPending,
-		EntryNodeID:  r.nodeID(entryPoint),
+		EntryNodeID:  entryPoint,
 		StartedAt:    now,
 		UpdatedAt:    now,
 	}
@@ -120,11 +120,10 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string) (RunRecord, Stat
 		}
 		return run, checkpoint.Business, nil
 	}
-	currentNodeID := checkpoint.Runtime.CurrentNodeID
-	if checkpoint.Record.Stage != CheckpointBeforeNode || currentNodeID == "" {
-		currentNodeID = r.nodeID(startNode)
+	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
+	if checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "" {
+		run.CurrentNodeID = startNode
 	}
-	run.CurrentNodeID = currentNodeID
 	run.UpdatedAt = r.now()
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, nil, err
@@ -312,7 +311,7 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 		}
 	}
 
-	if hit := r.matchBreakpoint(r.nodeID(interrupt.Node), string(CheckpointAfterNode), nil); hit != nil {
+	if hit := r.matchBreakpoint(interrupt.Node, string(CheckpointAfterNode), nil); hit != nil {
 		completed := execution.consumeLastCompleted(interrupt.Node)
 		if completed == nil {
 			return r.failRun(ctx, run, state, "interrupt_failed", fmt.Sprintf("after-node interrupt missing completed step for %q", interrupt.Node))
@@ -356,11 +355,11 @@ func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, state State)
 	return run, state, nil
 }
 
-func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step StepRecord, nodeName string, stage CheckpointStage, state State, attempts int, hit *BreakpointHit, artifacts []ArtifactRef) (string, error) {
+func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step StepRecord, nodeID string, stage CheckpointStage, state State, attempts int, hit *BreakpointHit, artifacts []ArtifactRef) (string, error) {
 	snapshot, err := SnapshotFromStateWithRuntime(state, RuntimeState{
 		RunID:           run.RunID,
 		CurrentStepID:   step.StepID,
-		CurrentNodeID:   r.nodeID(nodeName),
+		CurrentNodeID:   nodeID,
 		Status:          string(run.Status),
 		RetryCount:      attempts,
 		PauseRequested:  run.PauseRequested,
@@ -381,7 +380,7 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 		CheckpointID: newRunnerID(),
 		RunID:        run.RunID,
 		StepID:       step.StepID,
-		NodeID:       r.nodeID(nodeName),
+		NodeID:       nodeID,
 		Stage:        stage,
 		StateCodec:   r.StateCodec.Name(),
 		StateVersion: r.StateCodec.Version(),
@@ -468,16 +467,16 @@ func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, state State, c
 }
 
 func (r *GraphRunner) resumeTarget(checkpoint CheckpointRecord, state State) (string, *breakpointSkip, error) {
-	nodeName, err := r.runnerGraph().ResolveNodeRef(checkpoint.NodeID)
+	nodeID, err := r.runnerGraph().ResolveNodeID(checkpoint.NodeID)
 	if err != nil {
 		return "", nil, err
 	}
 	switch checkpoint.Stage {
 	case CheckpointBeforeNode:
-		return nodeName, &breakpointSkip{NodeID: checkpoint.NodeID, Stage: string(CheckpointBeforeNode)}, nil
+		return nodeID, &breakpointSkip{NodeID: checkpoint.NodeID, Stage: string(CheckpointBeforeNode)}, nil
 	case CheckpointAfterNode:
-		nextName, err := r.runnerGraph().ResolveNextNode(nodeName, state)
-		return nextName, nil, err
+		nextNodeID, err := r.runnerGraph().ResolveNextNode(nodeID, state)
+		return nextNodeID, nil, err
 	default:
 		return "", nil, fmt.Errorf("unsupported checkpoint stage %q", checkpoint.Stage)
 	}
@@ -491,12 +490,12 @@ func (r *GraphRunner) resolveNextNode(currentName string, state State) (string, 
 	return graph.ResolveNextNode(currentName, state)
 }
 
-func (r *GraphRunner) notifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeName string, state State, err error) {
+func (r *GraphRunner) notifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state State, err error) {
 	graph := r.runnerGraph()
 	if graph == nil {
 		return
 	}
-	graph.NotifyListeners(ctx, event, nodeName, state, err)
+	graph.NotifyListeners(ctx, event, nodeID, state, err)
 }
 
 func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpointSkip) *BreakpointHit {
@@ -641,20 +640,20 @@ func (r *GraphRunner) graphVersion() string {
 	return DefaultGraphVersion
 }
 
-func (r *GraphRunner) nodeID(nodeName string) string {
+func (r *GraphRunner) nodeName(nodeID string) string {
 	graph := r.runnerGraph()
 	if graph == nil {
-		return nodeName
+		return nodeID
 	}
-	return graph.NodeID(nodeName)
+	return graph.NodeName(nodeID)
 }
 
-func (r *GraphRunner) entryPoint() string {
+func (r *GraphRunner) entryPointID() string {
 	graph := r.runnerGraph()
 	if graph == nil {
 		return ""
 	}
-	return graph.EntryPointName()
+	return graph.EntryPointID()
 }
 
 func (r *GraphRunner) runnerGraph() RunnerGraph {

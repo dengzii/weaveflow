@@ -26,7 +26,7 @@ func (g *graphRunnerGraph) Validate() error {
 	return g.graph.Validate()
 }
 
-func (g *graphRunnerGraph) EntryPointName() string {
+func (g *graphRunnerGraph) EntryPointID() string {
 	if g == nil || g.graph == nil {
 		return ""
 	}
@@ -40,59 +40,57 @@ func (g *graphRunnerGraph) CompileForRunner(execution fruntime.RunnerExecution) 
 	return g.graph.compileForRunner(execution)
 }
 
-func (g *graphRunnerGraph) ResolveNodeRef(ref string) (string, error) {
+func (g *graphRunnerGraph) ResolveNodeID(nodeID string) (string, error) {
 	if g == nil || g.graph == nil {
 		return "", fmt.Errorf("graph runner graph is nil")
 	}
-	return g.graph.resolveNodeRef(ref)
+	return g.graph.resolveNodeID(nodeID)
 }
 
-func (g *graphRunnerGraph) ResolveNextNode(currentName string, state State) (string, error) {
+func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state State) (string, error) {
 	if g == nil || g.graph == nil {
 		return "", fmt.Errorf("graph runner graph is nil")
 	}
-	if conditional := g.graph.conditionalEdges[currentName]; len(conditional) > 0 {
+	if conditional := g.graph.conditionalEdges[currentNodeID]; len(conditional) > 0 {
 		for _, edge := range conditional {
 			if edge.when(context.Background(), state) {
 				return edge.to, nil
 			}
 		}
-		if target, ok := g.graph.edges[currentName]; ok {
+		if target, ok := g.graph.edges[currentNodeID]; ok {
 			return target, nil
 		}
-		if currentName == g.graph.finishPoint {
+		if currentNodeID == g.graph.finishPoint {
 			return langgraph.END, nil
 		}
-		return "", fmt.Errorf("node %q produced no matching conditional edge", currentName)
+		return "", fmt.Errorf("node %q produced no matching conditional edge", currentNodeID)
 	}
-	if target, ok := g.graph.edges[currentName]; ok {
+	if target, ok := g.graph.edges[currentNodeID]; ok {
 		return target, nil
 	}
-	if currentName == g.graph.finishPoint {
+	if currentNodeID == g.graph.finishPoint {
 		return langgraph.END, nil
 	}
-	return "", fmt.Errorf("node %q has no outgoing edge", currentName)
+	return "", fmt.Errorf("node %q has no outgoing edge", currentNodeID)
 }
 
-func (g *graphRunnerGraph) NodeID(nodeName string) string {
+func (g *graphRunnerGraph) NodeName(nodeID string) string {
 	if g == nil || g.graph == nil {
-		return nodeName
+		return nodeID
 	}
-	if spec, ok := g.graph.nodeSpecs[nodeName]; ok && spec.ID != "" {
-		return spec.ID
-	}
-	return nodeName
+	return g.graph.nodeDisplayName(nodeID)
 }
 
-func (g *graphRunnerGraph) NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeName string, state State, err error) {
+func (g *graphRunnerGraph) NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state State, err error) {
 	if g == nil || g.graph == nil {
 		return
 	}
+	displayName := g.graph.nodeDisplayName(nodeID)
 	for _, listener := range g.graph.globalListeners {
-		listener.OnNodeEvent(ctx, event, nodeName, state, err)
+		listener.OnNodeEvent(ctx, event, displayName, state, err)
 	}
-	for _, listener := range g.graph.nodeListeners[nodeName] {
-		listener.OnNodeEvent(ctx, event, nodeName, state, err)
+	for _, listener := range g.graph.nodeListeners[nodeID] {
+		listener.OnNodeEvent(ctx, event, displayName, state, err)
 	}
 }
 
@@ -105,11 +103,11 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 		if !breakpoint.Enabled || breakpoint.Stage != string(CheckpointAfterNode) {
 			continue
 		}
-		name, err := g.graph.resolveNodeRef(breakpoint.NodeID)
+		nodeID, err := g.graph.resolveNodeID(breakpoint.NodeID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve after-node breakpoint %q: %w", breakpoint.NodeID, err)
 		}
-		nodes = append(nodes, name)
+		nodes = append(nodes, nodeID)
 	}
 	return nodes, nil
 }

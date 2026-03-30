@@ -16,14 +16,17 @@ type NodeInfo struct {
 }
 
 func (n *NodeInfo) Name() string {
+	if n.NodeName == "" {
+		return n.NodeID
+	}
 	return n.NodeName
 }
 
 func (n *NodeInfo) ID() string {
-	if n.NodeID != "" {
-		return n.NodeID
+	if n.NodeID == "" {
+		panic("NodeID is empty " + n.Name())
 	}
-	return n.NodeName
+	return n.NodeID
 }
 
 func (n *NodeInfo) Description() string {

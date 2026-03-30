@@ -24,13 +24,12 @@ type conditionalEdge struct {
 // Graph is a thin falcon wrapper around langgraphgo's typed graph.
 // It centralizes project-level conventions such as:
 // - registering nodes via Node
-// - resolving node refs by name or ID
+// - resolving node refs by ID
 // - copy-on-write node invocation
 // - serializable conditional edges
 type Graph struct {
 	nodes            map[string]Node[State]
 	nodeSpecs        map[string]GraphNodeSpec
-	nodeIDs          map[string]string
 	edges            map[string]string
 	conditionalEdges map[string][]conditionalEdge
 	edgeSpecs        []GraphEdgeSpec
@@ -46,7 +45,6 @@ func NewGraph() *Graph {
 	return &Graph{
 		nodes:            map[string]Node[State]{},
 		nodeSpecs:        map[string]GraphNodeSpec{},
-		nodeIDs:          map[string]string{},
 		edges:            map[string]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
 		nodeListeners:    map[string][]langgraph.NodeListener[State]{},
@@ -79,36 +77,34 @@ func (g *Graph) AddNode(node Node[State]) error {
 		return fmt.Errorf("node is nil")
 	}
 
-	name := strings.TrimSpace(node.Name())
-	if name == "" {
-		return fmt.Errorf("node name is empty")
-	}
-	if _, exists := g.nodes[name]; exists {
-		return fmt.Errorf("node name %q already exists", name)
-	}
-
 	id := strings.TrimSpace(node.ID())
 	if id == "" {
-		id = name
+		return fmt.Errorf("node id is empty")
 	}
-	if existing, exists := g.nodeIDs[id]; exists {
-		return fmt.Errorf("node id %q already exists for %q", id, existing)
+	if _, exists := g.nodes[id]; exists {
+		return fmt.Errorf("node id %q already exists", id)
 	}
 
-	g.nodes[name] = node
-	g.nodeIDs[id] = name
+	g.nodes[id] = node
 	if provider, ok := node.(GraphNodeSpecProvider); ok {
 		spec := provider.GraphNodeSpec()
 		spec.ID = id
 		if spec.Name == "" {
-			spec.Name = name
+			spec.Name = strings.TrimSpace(node.Name())
 		}
 		if spec.Description == "" {
 			spec.Description = node.Description()
 		}
-		g.nodeSpecs[name] = spec
+		if spec.Name == "" {
+			spec.Name = id
+		}
+		g.nodeSpecs[id] = spec
 	} else {
-		g.nodeSpecs[name] = GraphNodeSpec{
+		name := strings.TrimSpace(node.Name())
+		if name == "" {
+			name = id
+		}
+		g.nodeSpecs[id] = GraphNodeSpec{
 			ID:          id,
 			Name:        name,
 			Description: node.Description(),
@@ -118,20 +114,20 @@ func (g *Graph) AddNode(node Node[State]) error {
 }
 
 func (g *Graph) SetEntryPoint(ref string) error {
-	name, err := g.resolveNodeRef(ref)
+	nodeID, err := g.resolveNodeID(ref)
 	if err != nil {
 		return err
 	}
-	g.entryPoint = name
+	g.entryPoint = nodeID
 	return nil
 }
 
 func (g *Graph) SetFinishPoint(ref string) error {
-	name, err := g.resolveNodeRef(ref)
+	nodeID, err := g.resolveNodeID(ref)
 	if err != nil {
 		return err
 	}
-	g.finishPoint = name
+	g.finishPoint = nodeID
 	return nil
 }
 
@@ -140,22 +136,22 @@ func (g *Graph) AddEdge(from, to string) error {
 }
 
 func (g *Graph) addEdge(from, to string, serialize bool) error {
-	fromName, err := g.resolveNodeRef(from)
+	fromID, err := g.resolveNodeID(from)
 	if err != nil {
 		return err
 	}
-	toName, err := g.resolveEdgeTarget(to)
+	toID, err := g.resolveEdgeTarget(to)
 	if err != nil {
 		return err
 	}
-	if _, exists := g.edges[fromName]; exists {
-		return fmt.Errorf("node %q already has a default edge", fromName)
+	if _, exists := g.edges[fromID]; exists {
+		return fmt.Errorf("node %q already has a default edge", fromID)
 	}
-	g.edges[fromName] = toName
+	g.edges[fromID] = toID
 	if serialize {
 		g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
-			From: g.nodeSpecs[fromName].ID,
-			To:   g.serializeNodeRef(toName),
+			From: g.nodeSpecs[fromID].ID,
+			To:   g.serializeNodeRef(toID),
 		})
 	}
 	return nil
@@ -174,24 +170,24 @@ func (g *Graph) addConditionalEdgeWithSpec(from, to string, conditionSpec *Graph
 		return fmt.Errorf("condition is nil")
 	}
 
-	fromName, err := g.resolveNodeRef(from)
+	fromID, err := g.resolveNodeID(from)
 	if err != nil {
 		return err
 	}
-	toName, err := g.resolveEdgeTarget(to)
+	toID, err := g.resolveEdgeTarget(to)
 	if err != nil {
 		return err
 	}
 
-	g.conditionalEdges[fromName] = append(g.conditionalEdges[fromName], conditionalEdge{
-		to:        toName,
+	g.conditionalEdges[fromID] = append(g.conditionalEdges[fromID], conditionalEdge{
+		to:        toID,
 		when:      condition,
 		condition: conditionSpec,
 	})
 	if serialize {
 		edgeSpec := GraphEdgeSpec{
-			From: g.nodeSpecs[fromName].ID,
-			To:   g.serializeNodeRef(toName),
+			From: g.nodeSpecs[fromID].ID,
+			To:   g.serializeNodeRef(toID),
 		}
 		if conditionSpec != nil {
 			copySpec := *conditionSpec
@@ -217,11 +213,11 @@ func (g *Graph) AddNodeListener(nodeRef string, listener langgraph.NodeListener[
 	if listener == nil {
 		return fmt.Errorf("listener is nil")
 	}
-	name, err := g.resolveNodeRef(nodeRef)
+	nodeID, err := g.resolveNodeID(nodeRef)
 	if err != nil {
 		return err
 	}
-	g.nodeListeners[name] = append(g.nodeListeners[name], listener)
+	g.nodeListeners[nodeID] = append(g.nodeListeners[nodeID], listener)
 	return nil
 }
 
@@ -286,18 +282,19 @@ func (g *Graph) Compile() (*Runnable, error) {
 		compiled.SetRetryPolicy(g.retryPolicy)
 	}
 
-	for name, node := range g.nodes {
+	for nodeID, node := range g.nodes {
+		nodeID := nodeID
 		nodeDef := node
-		listenableNode := compiled.AddNode(name, node.Description(), func(ctx context.Context, state State) (State, error) {
+		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
 			return nodeDef.Invoke(ctx, state.CloneState())
 		})
-		for _, listener := range g.nodeListeners[name] {
-			listenableNode.AddListener(listener)
+		for _, listener := range g.nodeListeners[nodeID] {
+			listenableNode.AddListener(g.displayNameListener(listener))
 		}
 	}
 
 	for _, listener := range g.globalListeners {
-		compiled.AddGlobalListener(listener)
+		compiled.AddGlobalListener(g.displayNameListener(listener))
 	}
 
 	for from, conditional := range g.conditionalEdges {
@@ -362,11 +359,11 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 		compiled.SetRetryPolicy(g.retryPolicy)
 	}
 
-	for name, node := range g.nodes {
+	for nodeID, node := range g.nodes {
+		nodeID := nodeID
 		nodeDef := node
-		nodeName := name
-		compiled.AddNode(name, node.Description(), func(ctx context.Context, state State) (State, error) {
-			return execution.InvokeNode(ctx, nodeName,
+		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
+			return execution.InvokeNode(ctx, nodeID,
 				func(ctx context.Context, state State) (State, error) {
 					return nodeDef.Invoke(ctx, state)
 				}, state,
@@ -374,6 +371,10 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 		})
 	}
 
+	return g.compileRunnable(compiled)
+}
+
+func (g *Graph) compileRunnable(compiled *langgraph.StateGraph[State]) (*langgraph.StateRunnable[State], error) {
 	for from, conditional := range g.conditionalEdges {
 		edges := append([]conditionalEdge(nil), conditional...)
 		defaultTarget, hasDefaultTarget := g.edges[from]
@@ -419,7 +420,6 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	if g.tracer != nil {
 		runnable.SetTracer(g.tracer)
 	}
-
 	return runnable, nil
 }
 
@@ -431,18 +431,15 @@ func (g *Graph) Run(ctx context.Context, initialState State) (State, error) {
 	return runnable.Invoke(ctx, initialState)
 }
 
-func (g *Graph) resolveNodeRef(ref string) (string, error) {
+func (g *Graph) resolveNodeID(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return "", fmt.Errorf("node reference is empty")
+		return "", fmt.Errorf("node id is empty")
 	}
 	if _, ok := g.nodes[ref]; ok {
 		return ref, nil
 	}
-	if name, ok := g.nodeIDs[ref]; ok {
-		return name, nil
-	}
-	return "", fmt.Errorf("node %q not found", ref)
+	return "", fmt.Errorf("node id %q not found", ref)
 }
 
 func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
@@ -453,7 +450,7 @@ func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
 	if ref == langgraph.END || ref == EndNodeRef {
 		return langgraph.END, nil
 	}
-	return g.resolveNodeRef(ref)
+	return g.resolveNodeID(ref)
 }
 
 func (g *Graph) Definition() (GraphDefinition, error) {
@@ -461,24 +458,24 @@ func (g *Graph) Definition() (GraphDefinition, error) {
 		return GraphDefinition{}, err
 	}
 
-	nodeNames := make([]string, 0, len(g.nodes))
-	for name := range g.nodes {
-		nodeNames = append(nodeNames, name)
+	nodeIDs := make([]string, 0, len(g.nodes))
+	for nodeID := range g.nodes {
+		nodeIDs = append(nodeIDs, nodeID)
 	}
-	sort.Slice(nodeNames, func(i, j int) bool {
-		left := g.nodeSpecs[nodeNames[i]]
-		right := g.nodeSpecs[nodeNames[j]]
+	sort.Slice(nodeIDs, func(i, j int) bool {
+		left := g.nodeSpecs[nodeIDs[i]]
+		right := g.nodeSpecs[nodeIDs[j]]
 		if left.ID == right.ID {
 			return left.Name < right.Name
 		}
 		return left.ID < right.ID
 	})
 
-	nodes := make([]GraphNodeSpec, 0, len(nodeNames))
-	for _, name := range nodeNames {
-		spec := g.nodeSpecs[name]
+	nodes := make([]GraphNodeSpec, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		spec := g.nodeSpecs[nodeID]
 		if spec.Type == "" {
-			return GraphDefinition{}, fmt.Errorf("node %q is not serializable: missing registered type", name)
+			return GraphDefinition{}, fmt.Errorf("node %q is not serializable: missing registered type", nodeID)
 		}
 		if len(spec.Config) > 0 {
 			spec.Config = cloneMap(spec.Config)
@@ -506,17 +503,41 @@ func (g *Graph) Definition() (GraphDefinition, error) {
 	}, nil
 }
 
-func (g *Graph) serializeNodeRef(name string) string {
-	if name == "" {
+func (g *Graph) serializeNodeRef(nodeID string) string {
+	if nodeID == "" {
 		return ""
 	}
-	if name == langgraph.END {
+	if nodeID == langgraph.END {
 		return EndNodeRef
 	}
-	if spec, ok := g.nodeSpecs[name]; ok && spec.ID != "" {
-		return spec.ID
+	return nodeID
+}
+
+func (g *Graph) nodeDisplayName(nodeID string) string {
+	if nodeID == "" {
+		return ""
 	}
-	return name
+	if spec, ok := g.nodeSpecs[nodeID]; ok {
+		if name := strings.TrimSpace(spec.Name); name != "" {
+			return name
+		}
+		if id := strings.TrimSpace(spec.ID); id != "" {
+			return id
+		}
+	}
+	return nodeID
+}
+
+func (g *Graph) displayNameListener(listener langgraph.NodeListener[State]) langgraph.NodeListener[State] {
+	if listener == nil {
+		return nil
+	}
+	return nodeDisplayListener{
+		inner: listener,
+		resolve: func(nodeID string) string {
+			return g.nodeDisplayName(nodeID)
+		},
+	}
 }
 
 func cloneMap(input map[string]any) map[string]any {
@@ -532,6 +553,24 @@ func cloneMap(input map[string]any) map[string]any {
 
 type Runnable struct {
 	runnable *langgraph.ListenableRunnable[State]
+}
+
+type nodeDisplayListener struct {
+	inner   langgraph.NodeListener[State]
+	resolve func(string) string
+}
+
+func (l nodeDisplayListener) OnNodeEvent(ctx context.Context, event langgraph.NodeEvent, nodeID string, state State, err error) {
+	if l.inner == nil {
+		return
+	}
+	name := nodeID
+	if l.resolve != nil {
+		if resolved := strings.TrimSpace(l.resolve(nodeID)); resolved != "" {
+			name = resolved
+		}
+	}
+	l.inner.OnNodeEvent(ctx, event, name, state, err)
 }
 
 func (r *Runnable) Invoke(ctx context.Context, initialState State) (State, error) {
