@@ -53,7 +53,7 @@ func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state State) (s
 	}
 	if conditional := g.graph.conditionalEdges[currentNodeID]; len(conditional) > 0 {
 		for _, edge := range conditional {
-			if edge.when(context.Background(), state) {
+			if edge.condition.Match(context.Background(), state) {
 				return edge.to, nil
 			}
 		}
@@ -100,7 +100,7 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 	}
 	nodes := make([]string, 0, len(breakpoints))
 	for _, breakpoint := range breakpoints {
-		if !breakpoint.Enabled || breakpoint.Stage != string(CheckpointAfterNode) {
+		if !breakpoint.Enabled || breakpoint.Stage != string(fruntime.CheckpointAfterNode) {
 			continue
 		}
 		nodeID, err := g.graph.resolveNodeID(breakpoint.NodeID)

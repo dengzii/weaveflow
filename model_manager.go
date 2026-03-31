@@ -7,9 +7,12 @@ import (
 	"sync"
 
 	"falcon/llama_cpp"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 type llm interface {
+	llms.Model
 	Generate(ctx context.Context, prompt string, options llama_cpp.GenerateOptions) (<-chan llama_cpp.GenerateResult, <-chan error)
 	Release() error
 }
@@ -69,6 +72,32 @@ func (m *ModelHub) Generate(ctx context.Context, id string, prompt string, optio
 	}
 
 	return model.Generate(ctx, prompt, options)
+}
+
+func (m *ModelHub) ResolveModel(id string) (llms.Model, error) {
+	m.mu.RLock()
+	model, ok := m.models[id]
+	m.mu.RUnlock()
+	if !ok {
+		return nil, errors.New("model not found: " + id)
+	}
+	return model, nil
+}
+
+func (m *ModelHub) ResolveDefaultModel() (string, llms.Model, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if len(m.models) == 0 {
+		return "", nil, errors.New("no model loaded")
+	}
+	if len(m.models) > 1 {
+		return "", nil, errors.New("multiple models loaded, model_id is required")
+	}
+	for id, model := range m.models {
+		return id, model, nil
+	}
+	return "", nil, errors.New("no model loaded")
 }
 
 func failedGeneration(err error) (<-chan llama_cpp.GenerateResult, <-chan error) {

@@ -21,6 +21,7 @@ import "C"
 import (
 	"context"
 	"errors"
+	"falcon/internal/redact"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -138,7 +139,7 @@ func Load(path string, opts LoadOptions) (*Model, error) {
 	mparams.use_mlock = C.bool(opts.UseMLock)
 
 	logger.Debug("loading model",
-		zap.String("path", path),
+		zap.String("path", redact.Path(path)),
 		zap.Bool("use_mmap", opts.UseMMap),
 		zap.Bool("use_mlock", opts.UseMLock),
 		zap.Int("gpu_layers", opts.GPULayers),
@@ -255,7 +256,7 @@ func (m *Model) Generate(ctx context.Context, prompt string, options GenerateOpt
 		zap.Strings("stops", opts.Stop),
 		zap.Uint32("seed", opts.Seed),
 		zap.Bool("add_special", opts.AddSpecial),
-		zap.String("prompt", prompt),
+		zap.String("prompt", redact.Text(prompt)),
 	)
 
 	go func() {

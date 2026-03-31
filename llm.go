@@ -31,8 +31,8 @@ func NewLLMNode(model llms.Model, tools map[string]Tool) *LLMNode {
 	return &LLMNode{
 		NodeInfo: NodeInfo{
 			NodeID:          id.String(),
-			NodeName:        "LLM Node",
-			NodeDescription: "LLM Node",
+			NodeName:        "LLM",
+			NodeDescription: "LLM",
 		},
 		model: model,
 		tools: cloneTools(tools),
@@ -40,7 +40,7 @@ func NewLLMNode(model llms.Model, tools map[string]Tool) *LLMNode {
 }
 
 func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
-	conversation := Conversation(state, L.StateScope)
+	conversation := fruntime.Conversation(state, L.StateScope)
 	messages := conversation.Messages()
 
 	if conversation.IterationCount() >= conversation.MaxIterations() {
@@ -57,7 +57,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 
 	var tools []llms.Tool
 	for _, tool := range L.tools {
-		tools = append(tools, tool.LLMTool())
+		tools = append(tools, tool.ToolCallNode())
 	}
 	if payload, err := buildLLMPromptArtifact(messages, tools, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
@@ -130,7 +130,7 @@ func onStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) erro
 func emitStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) error {
 	reasoning := string(reasoningChunk)
 	if strings.TrimSpace(reasoning) != "" {
-		if err := fruntime.PublishRunnerContextEvent(ctx, EventLLMReasoningChunk, map[string]any{"text": reasoning}); err != nil {
+		if err := fruntime.PublishRunnerContextEvent(ctx, fruntime.EventLLMReasoningChunk, map[string]any{"text": reasoning}); err != nil {
 			return err
 		}
 		if !hasRunnerEventPublisher(ctx) {
@@ -139,7 +139,7 @@ func emitStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) er
 	}
 	content := string(chunk)
 	if strings.TrimSpace(content) != "" {
-		if err := fruntime.PublishRunnerContextEvent(ctx, EventLLMContentChunk, map[string]any{"text": content}); err != nil {
+		if err := fruntime.PublishRunnerContextEvent(ctx, fruntime.EventLLMContentChunk, map[string]any{"text": content}); err != nil {
 			return err
 		}
 		if !hasRunnerEventPublisher(ctx) {
@@ -167,11 +167,11 @@ func extractText(message llms.MessageContent) string {
 }
 
 type llmPromptArtifact struct {
-	StateScope     string            `json:"state_scope,omitempty"`
-	IterationCount int               `json:"iteration_count,omitempty"`
-	MaxIterations  int               `json:"max_iterations,omitempty"`
-	Messages       []StateMessage    `json:"messages,omitempty"`
-	Tools          []llmToolArtifact `json:"tools,omitempty"`
+	StateScope     string                  `json:"state_scope,omitempty"`
+	IterationCount int                     `json:"iteration_count,omitempty"`
+	MaxIterations  int                     `json:"max_iterations,omitempty"`
+	Messages       []fruntime.StateMessage `json:"messages,omitempty"`
+	Tools          []llmToolArtifact       `json:"tools,omitempty"`
 }
 
 type llmToolArtifact struct {
@@ -237,9 +237,26 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 			item.FunctionCall = &copyCall
 		}
 		if len(choice.ToolCalls) > 0 {
-			item.ToolCalls = append(item.ToolCalls, choice.ToolCalls...)
+			item.ToolCalls = redactToolCalls(choice.ToolCalls)
 		}
 		payload.Choices = append(payload.Choices, item)
 	}
 	return payload
+}
+
+func redactToolCalls(toolCalls []llms.ToolCall) []llms.ToolCall {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+
+	redacted := make([]llms.ToolCall, len(toolCalls))
+	for i, toolCall := range toolCalls {
+		redacted[i] = toolCall
+		if toolCall.FunctionCall == nil {
+			continue
+		}
+		copyCall := *toolCall.FunctionCall
+		redacted[i].FunctionCall = &copyCall
+	}
+	return redacted
 }

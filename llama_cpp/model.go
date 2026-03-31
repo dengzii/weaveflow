@@ -147,9 +147,11 @@ func generateOptionsFromCallOptions(opts llms.CallOptions) GenerateOptions {
 }
 
 func collectPromptTools(opts llms.CallOptions) []llms.Tool {
-	tools := make([]llms.Tool, 0, len(opts.Tools))
-	tools = append(tools, opts.Tools...)
+	tools := make([]llms.Tool, 0, len(opts.Tools)+len(opts.Functions))
 	for _, fn := range opts.Tools {
+		if fn.Function == nil {
+			continue
+		}
 		tools = append(tools, llms.Tool{
 			Type: "function",
 			Function: &llms.FunctionDefinition{
@@ -157,6 +159,17 @@ func collectPromptTools(opts llms.CallOptions) []llms.Tool {
 				Description: fn.Function.Description,
 				Parameters:  fn.Function.Parameters,
 				Strict:      fn.Function.Strict,
+			},
+		})
+	}
+	for _, fn := range opts.Functions {
+		tools = append(tools, llms.Tool{
+			Type: "function",
+			Function: &llms.FunctionDefinition{
+				Name:        fn.Name,
+				Description: fn.Description,
+				Parameters:  fn.Parameters,
+				Strict:      fn.Strict,
 			},
 		})
 	}

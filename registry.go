@@ -1,8 +1,10 @@
 package falcon
 
 import (
+	fruntime "falcon/runtime"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -68,7 +70,11 @@ func DefaultRegistry() *Registry {
 			if ctx.Model == nil {
 				return nil, fmt.Errorf("build llm node %q: model is required", spec.ID)
 			}
-			node := NewLLMNode(ctx.Model, filterTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids")))
+			tools, err := resolveTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids"))
+			if err != nil {
+				return nil, fmt.Errorf("build llm node %q: %w", spec.ID, err)
+			}
+			node := NewLLMNode(ctx.Model, tools)
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -98,7 +104,11 @@ func DefaultRegistry() *Registry {
 		},
 		Build: func(ctx BuildContext, spec GraphNodeSpec) (Node[State], error) {
 			toolIDs := stringSliceConfig(spec.Config, "tool_ids")
-			node := NewToolsNode(filterTools(ctx.Tools, toolIDs))
+			tools, err := resolveTools(ctx.Tools, toolIDs)
+			if err != nil {
+				return nil, fmt.Errorf("build tools node %q: %w", spec.ID, err)
+			}
+			node := NewToolCallNode(tools)
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -173,13 +183,21 @@ func (r *Registry) RegisterCondition(def ConditionDefinition) {
 
 func (r *Registry) ResolveCondition(spec GraphConditionSpec) (EdgeCondition, error) {
 	if r == nil {
-		return nil, fmt.Errorf("registry is nil")
+		return EdgeCondition{}, fmt.Errorf("registry is nil")
+	}
+	spec = normalizeGraphConditionSpec(spec)
+	if spec.Type == "" {
+		return EdgeCondition{}, fmt.Errorf("condition type is required")
 	}
 	conditionDef, ok := r.Conditions[spec.Type]
 	if !ok {
-		return nil, fmt.Errorf("condition %q is not registered", spec.Type)
+		return EdgeCondition{}, fmt.Errorf("condition %q is not registered", spec.Type)
 	}
-	return conditionDef.Resolve(spec)
+	condition, err := conditionDef.Resolve(spec)
+	if err != nil {
+		return EdgeCondition{}, err
+	}
+	return condition.withSpec(spec), nil
 }
 
 func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphConditionSpec) error {
@@ -190,7 +208,7 @@ func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphCondi
 	if err != nil {
 		return err
 	}
-	return g.AddConditionalEdgeWithSpec(from, to, spec, condition)
+	return g.AddConditionalEdge(from, to, condition)
 }
 
 func (r *Registry) BuildGraph(def GraphDefinition, ctx BuildContext) (*Graph, error) {
@@ -198,7 +216,7 @@ func (r *Registry) BuildGraph(def GraphDefinition, ctx BuildContext) (*Graph, er
 	if err := def.Validate(); err != nil {
 		return nil, err
 	}
-	if def.StateSchema != "" && def.StateSchema != CommonStateSchemaID {
+	if def.StateSchema != "" && def.StateSchema != fruntime.CommonStateSchemaID {
 		return nil, fmt.Errorf("unsupported state schema %q", def.StateSchema)
 	}
 
@@ -227,7 +245,7 @@ func (r *Registry) BuildGraph(def GraphDefinition, ctx BuildContext) (*Graph, er
 		if err != nil {
 			return nil, err
 		}
-		if err := g.AddConditionalEdgeWithSpec(edge.From, edge.To, *edge.Condition, condition); err != nil {
+		if err := g.AddConditionalEdge(edge.From, edge.To, condition); err != nil {
 			return nil, err
 		}
 	}
@@ -241,6 +259,10 @@ func (r *Registry) BuildGraph(def GraphDefinition, ctx BuildContext) (*Graph, er
 		if err := g.SetFinishPoint(def.FinishPoint); err != nil {
 			return nil, err
 		}
+	}
+
+	if err := g.Validate(); err != nil {
+		return nil, err
 	}
 
 	return g, nil
@@ -291,7 +313,7 @@ func (r *Registry) JSONSchema() JSONSchema {
 			"version":      JSONSchema{"type": "string"},
 			"name":         JSONSchema{"type": "string"},
 			"description":  JSONSchema{"type": "string"},
-			"state_schema": JSONSchema{"const": CommonStateSchemaID},
+			"state_schema": JSONSchema{"const": fruntime.CommonStateSchemaID},
 			"entry_point":  JSONSchema{"type": "string"},
 			"finish_point": JSONSchema{"type": "string"},
 			"nodes": JSONSchema{
@@ -335,6 +357,26 @@ func filterTools(all map[string]Tool, ids []string) map[string]Tool {
 		}
 	}
 	return filtered
+}
+
+func resolveTools(all map[string]Tool, ids []string) (map[string]Tool, error) {
+	if len(ids) == 0 {
+		return cloneTools(all), nil
+	}
+
+	filtered := make(map[string]Tool, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			return nil, fmt.Errorf("tool id is empty")
+		}
+		tool, ok := all[id]
+		if !ok {
+			return nil, fmt.Errorf("tool_id %q is not registered", id)
+		}
+		filtered[id] = tool
+	}
+	return filtered, nil
 }
 
 func stringSliceConfig(config map[string]any, key string) []string {

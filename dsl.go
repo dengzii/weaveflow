@@ -2,6 +2,7 @@ package falcon
 
 import (
 	"encoding/json"
+	fruntime "falcon/runtime"
 	"fmt"
 	"os"
 	"strings"
@@ -65,12 +66,20 @@ type GraphDefinition struct {
 	Metadata    map[string]any  `json:"metadata,omitempty"`
 }
 
+func normalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
+	spec.Type = strings.TrimSpace(spec.Type)
+	if len(spec.Config) == 0 {
+		spec.Config = nil
+	}
+	return spec
+}
+
 func normalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 	if def.Version == "" {
 		def.Version = GraphDefinitionVersion
 	}
 	if def.StateSchema == "" {
-		def.StateSchema = CommonStateSchemaID
+		def.StateSchema = fruntime.CommonStateSchemaID
 	}
 	for i := range def.Nodes {
 		def.Nodes[i].ID = strings.TrimSpace(def.Nodes[i].ID)
@@ -78,6 +87,14 @@ func normalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 		def.Nodes[i].Type = strings.TrimSpace(def.Nodes[i].Type)
 		if def.Nodes[i].Name == "" && def.Nodes[i].ID != "" {
 			def.Nodes[i].Name = def.Nodes[i].ID
+		}
+	}
+	for i := range def.Edges {
+		def.Edges[i].From = strings.TrimSpace(def.Edges[i].From)
+		def.Edges[i].To = strings.TrimSpace(def.Edges[i].To)
+		if def.Edges[i].Condition != nil {
+			condition := normalizeGraphConditionSpec(*def.Edges[i].Condition)
+			def.Edges[i].Condition = &condition
 		}
 	}
 	return def

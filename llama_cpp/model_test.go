@@ -134,6 +134,36 @@ func TestSplitThinkingContent(t *testing.T) {
 	}
 }
 
+func TestCollectPromptToolsIncludesLegacyFunctionsWithoutDuplication(t *testing.T) {
+	t.Parallel()
+
+	tools := collectPromptTools(llms.CallOptions{
+		Tools: []llms.Tool{
+			{
+				Type: "function",
+				Function: &llms.FunctionDefinition{
+					Name: "current_time",
+				},
+			},
+		},
+		Functions: []llms.FunctionDefinition{
+			{
+				Name: "calculator",
+			},
+		},
+	})
+
+	if len(tools) != 2 {
+		t.Fatalf("expected 2 tools, got %d", len(tools))
+	}
+	if tools[0].Function == nil || tools[0].Function.Name != "current_time" {
+		t.Fatalf("unexpected first tool %#v", tools[0].Function)
+	}
+	if tools[1].Function == nil || tools[1].Function.Name != "calculator" {
+		t.Fatalf("unexpected second tool %#v", tools[1].Function)
+	}
+}
+
 func TestThinkStreamParserAcrossChunks(t *testing.T) {
 	t.Parallel()
 

@@ -13,12 +13,47 @@ import (
 
 const EndNodeRef = "__end__"
 
-type EdgeCondition func(ctx context.Context, state State) bool
+type EdgeConditionMatcher func(ctx context.Context, state State) bool
+
+type EdgeCondition struct {
+	Spec  GraphConditionSpec
+	Match EdgeConditionMatcher
+}
+
+func NewEdgeCondition(spec GraphConditionSpec, match EdgeConditionMatcher) EdgeCondition {
+	return EdgeCondition{
+		Spec:  normalizeGraphConditionSpec(spec),
+		Match: match,
+	}
+}
+
+func (c EdgeCondition) validate() error {
+	spec := normalizeGraphConditionSpec(c.Spec)
+	if spec.Type == "" {
+		return fmt.Errorf("condition spec type is required")
+	}
+	if c.Match == nil {
+		return fmt.Errorf("condition matcher is nil")
+	}
+	return nil
+}
+
+func (c EdgeCondition) withSpec(spec GraphConditionSpec) EdgeCondition {
+	c.Spec = normalizeGraphConditionSpec(spec)
+	return c
+}
+
+func (c EdgeCondition) cloneSpec() GraphConditionSpec {
+	spec := normalizeGraphConditionSpec(c.Spec)
+	if len(spec.Config) > 0 {
+		spec.Config = cloneMap(spec.Config)
+	}
+	return spec
+}
 
 type conditionalEdge struct {
 	to        string
-	when      EdgeCondition
-	condition *GraphConditionSpec
+	condition EdgeCondition
 }
 
 // Graph is a thin falcon wrapper around langgraphgo's typed graph.
@@ -158,16 +193,12 @@ func (g *Graph) addEdge(from, to string, serialize bool) error {
 }
 
 func (g *Graph) AddConditionalEdge(from, to string, condition EdgeCondition) error {
-	return g.addConditionalEdgeWithSpec(from, to, nil, condition, true)
+	return g.addConditionalEdge(from, to, condition, true)
 }
 
-func (g *Graph) AddConditionalEdgeWithSpec(from, to string, conditionSpec GraphConditionSpec, condition EdgeCondition) error {
-	return g.addConditionalEdgeWithSpec(from, to, &conditionSpec, condition, true)
-}
-
-func (g *Graph) addConditionalEdgeWithSpec(from, to string, conditionSpec *GraphConditionSpec, condition EdgeCondition, serialize bool) error {
-	if condition == nil {
-		return fmt.Errorf("condition is nil")
+func (g *Graph) addConditionalEdge(from, to string, condition EdgeCondition, serialize bool) error {
+	if err := condition.validate(); err != nil {
+		return err
 	}
 
 	fromID, err := g.resolveNodeID(from)
@@ -181,22 +212,15 @@ func (g *Graph) addConditionalEdgeWithSpec(from, to string, conditionSpec *Graph
 
 	g.conditionalEdges[fromID] = append(g.conditionalEdges[fromID], conditionalEdge{
 		to:        toID,
-		when:      condition,
-		condition: conditionSpec,
+		condition: condition,
 	})
 	if serialize {
-		edgeSpec := GraphEdgeSpec{
-			From: g.nodeSpecs[fromID].ID,
-			To:   g.serializeNodeRef(toID),
-		}
-		if conditionSpec != nil {
-			copySpec := *conditionSpec
-			if len(copySpec.Config) > 0 {
-				copySpec.Config = cloneMap(copySpec.Config)
-			}
-			edgeSpec.Condition = &copySpec
-		}
-		g.edgeSpecs = append(g.edgeSpecs, edgeSpec)
+		spec := condition.cloneSpec()
+		g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
+			From:      g.nodeSpecs[fromID].ID,
+			To:        g.serializeNodeRef(toID),
+			Condition: &spec,
+		})
 	}
 	return nil
 }
@@ -261,6 +285,9 @@ func (g *Graph) Validate() error {
 			return fmt.Errorf("conditional edge source %q not found", from)
 		}
 		for _, edge := range edges {
+			if err := edge.condition.validate(); err != nil {
+				return fmt.Errorf("conditional edge from %q to %q: %w", from, edge.to, err)
+			}
 			if edge.to != langgraph.END {
 				if _, ok := g.nodes[edge.to]; !ok {
 					return fmt.Errorf("conditional edge target %q not found", edge.to)
@@ -304,7 +331,7 @@ func (g *Graph) Compile() (*Runnable, error) {
 
 		compiled.AddConditionalEdge(from, func(ctx context.Context, state State) string {
 			for _, edge := range edges {
-				if edge.when(ctx, state) {
+				if edge.condition.Match(ctx, state) {
 					return edge.to
 				}
 			}
@@ -382,7 +409,7 @@ func (g *Graph) compileRunnable(compiled *langgraph.StateGraph[State]) (*langgra
 
 		compiled.AddConditionalEdge(from, func(ctx context.Context, state State) string {
 			for _, edge := range edges {
-				if edge.when(ctx, state) {
+				if edge.condition.Match(ctx, state) {
 					return edge.to
 				}
 			}
@@ -495,7 +522,7 @@ func (g *Graph) Definition() (GraphDefinition, error) {
 
 	return GraphDefinition{
 		Version:     GraphDefinitionVersion,
-		StateSchema: CommonStateSchemaID,
+		StateSchema: fruntime.CommonStateSchemaID,
 		EntryPoint:  g.serializeNodeRef(g.entryPoint),
 		FinishPoint: g.serializeNodeRef(g.finishPoint),
 		Nodes:       nodes,

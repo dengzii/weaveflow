@@ -2,6 +2,7 @@ package falcon
 
 import (
 	"encoding/json"
+	fruntime "falcon/runtime"
 	"fmt"
 	"strings"
 )
@@ -9,6 +10,9 @@ import (
 const (
 	GraphInstanceConfigVersion = "1.0"
 	RunRequestVersion          = "1.0"
+
+	RunRedactionModeSafe = "safe"
+	RunRedactionModeRaw  = "raw"
 )
 
 // SecretRef points to a secret value stored outside GraphDefinition.
@@ -132,7 +136,7 @@ func normalizeDebugBreakpoint(bp DebugBreakpoint) DebugBreakpoint {
 	bp.NodeID = strings.TrimSpace(bp.NodeID)
 	bp.Stage = strings.TrimSpace(bp.Stage)
 	if bp.Stage == "" {
-		bp.Stage = string(CheckpointBeforeNode)
+		bp.Stage = string(fruntime.CheckpointBeforeNode)
 	}
 	return bp
 }
@@ -148,7 +152,7 @@ func (b DebugBreakpoint) Validate() error {
 	return nil
 }
 
-func (b DebugBreakpoint) RuntimeBreakpoint() Breakpoint {
+func (b DebugBreakpoint) RuntimeBreakpoint() fruntime.Breakpoint {
 	b = normalizeDebugBreakpoint(b)
 	id := b.ID
 	if id == "" {
@@ -158,7 +162,7 @@ func (b DebugBreakpoint) RuntimeBreakpoint() Breakpoint {
 	if b.Enabled != nil {
 		enabled = *b.Enabled
 	}
-	return Breakpoint{
+	return fruntime.Breakpoint{
 		ID:      id,
 		NodeID:  b.NodeID,
 		Stage:   b.Stage,
@@ -172,6 +176,7 @@ type RunDebugOptions struct {
 	Breakpoints      []DebugBreakpoint `json:"breakpoints,omitempty"`
 	PauseBefore      []string          `json:"pause_before,omitempty"`
 	PauseAfter       []string          `json:"pause_after,omitempty"`
+	RedactionMode    string            `json:"redaction_mode,omitempty"`
 	IncludeState     bool              `json:"include_state,omitempty"`
 	IncludeStateDiff bool              `json:"include_state_diff,omitempty"`
 	IncludeArtifacts bool              `json:"include_artifacts,omitempty"`
@@ -179,6 +184,11 @@ type RunDebugOptions struct {
 }
 
 func (o RunDebugOptions) Validate() error {
+	switch o.EffectiveRedactionMode() {
+	case RunRedactionModeSafe, RunRedactionModeRaw:
+	default:
+		return fmt.Errorf("redaction_mode %q is invalid", strings.TrimSpace(o.RedactionMode))
+	}
 	for _, bp := range o.Breakpoints {
 		if err := bp.Validate(); err != nil {
 			return err
@@ -197,10 +207,21 @@ func (o RunDebugOptions) Validate() error {
 	return nil
 }
 
-func (o RunDebugOptions) EffectiveBreakpoints() []Breakpoint {
+func (o RunDebugOptions) EffectiveRedactionMode() string {
+	switch strings.ToLower(strings.TrimSpace(o.RedactionMode)) {
+	case "", RunRedactionModeSafe:
+		return RunRedactionModeSafe
+	case RunRedactionModeRaw:
+		return RunRedactionModeRaw
+	default:
+		return strings.ToLower(strings.TrimSpace(o.RedactionMode))
+	}
+}
+
+func (o RunDebugOptions) EffectiveBreakpoints() []fruntime.Breakpoint {
 	seen := map[string]struct{}{}
-	items := make([]Breakpoint, 0, len(o.Breakpoints)+len(o.PauseBefore)+len(o.PauseAfter))
-	appendBreakpoint := func(bp Breakpoint) {
+	items := make([]fruntime.Breakpoint, 0, len(o.Breakpoints)+len(o.PauseBefore)+len(o.PauseAfter))
+	appendBreakpoint := func(bp fruntime.Breakpoint) {
 		key := bp.NodeID + "|" + bp.Stage
 		if _, exists := seen[key]; exists {
 			return
@@ -216,10 +237,10 @@ func (o RunDebugOptions) EffectiveBreakpoints() []Breakpoint {
 		if trimmed == "" {
 			continue
 		}
-		appendBreakpoint(Breakpoint{
-			ID:      fmt.Sprintf("%s:%s", CheckpointBeforeNode, trimmed),
+		appendBreakpoint(fruntime.Breakpoint{
+			ID:      fmt.Sprintf("%s:%s", fruntime.CheckpointBeforeNode, trimmed),
 			NodeID:  trimmed,
-			Stage:   string(CheckpointBeforeNode),
+			Stage:   string(fruntime.CheckpointBeforeNode),
 			Enabled: true,
 		})
 	}
@@ -228,10 +249,10 @@ func (o RunDebugOptions) EffectiveBreakpoints() []Breakpoint {
 		if trimmed == "" {
 			continue
 		}
-		appendBreakpoint(Breakpoint{
-			ID:      fmt.Sprintf("%s:%s", CheckpointAfterNode, trimmed),
+		appendBreakpoint(fruntime.Breakpoint{
+			ID:      fmt.Sprintf("%s:%s", fruntime.CheckpointAfterNode, trimmed),
 			NodeID:  trimmed,
-			Stage:   string(CheckpointAfterNode),
+			Stage:   string(fruntime.CheckpointAfterNode),
 			Enabled: true,
 		})
 	}
@@ -298,7 +319,7 @@ func DeserializeRunRequest(data []byte) (RunRequest, error) {
 
 func isValidCheckpointStage(stage string) bool {
 	switch stage {
-	case string(CheckpointBeforeNode), string(CheckpointAfterNode):
+	case string(fruntime.CheckpointBeforeNode), string(fruntime.CheckpointAfterNode):
 		return true
 	default:
 		return false

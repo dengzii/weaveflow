@@ -323,7 +323,7 @@ func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
 }
 
 func (s *FileEventSink) eventsPath(runID string) string {
-	return filepath.Join(s.baseDir, "events", runID+".jsonl")
+	return filepath.Join(s.baseDir, runID+".jsonl")
 }
 
 func writeRunnerJSONFile(path string, value any) error {

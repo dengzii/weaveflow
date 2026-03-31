@@ -6,10 +6,11 @@ import (
 	"errors"
 	fruntime "falcon/runtime"
 	"fmt"
-	"github.com/google/uuid"
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/google/uuid"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -28,7 +29,7 @@ func (t Tool) Name() string {
 	return t.Function.Name
 }
 
-func (t Tool) LLMTool() llms.Tool {
+func (t Tool) ToolCallNode() llms.Tool {
 	return llms.Tool{
 		Type:     "function",
 		Function: cloneFunctionDefinition(t.Function),
@@ -42,7 +43,7 @@ type ToolsNode struct {
 	Parallel   bool
 }
 
-func NewToolsNode(tools map[string]Tool) *ToolsNode {
+func NewToolCallNode(tools map[string]Tool) *ToolsNode {
 	id, err := uuid.NewUUID()
 	if err != nil {
 		panic(err)
@@ -50,8 +51,8 @@ func NewToolsNode(tools map[string]Tool) *ToolsNode {
 	return &ToolsNode{
 		NodeInfo: NodeInfo{
 			NodeID:          id.String(),
-			NodeName:        "Tools Node",
-			NodeDescription: "Tools Node",
+			NodeName:        "ToolCall",
+			NodeDescription: "ToolCall",
 		},
 		Tools:    cloneTools(tools),
 		Parallel: true,
@@ -59,7 +60,7 @@ func NewToolsNode(tools map[string]Tool) *ToolsNode {
 }
 
 func (t *ToolsNode) Invoke(ctx context.Context, state State) (State, error) {
-	conversation := Conversation(state, t.StateScope)
+	conversation := fruntime.Conversation(state, t.StateScope)
 
 	messages := conversation.Messages()
 	if len(messages) == 0 {
@@ -149,7 +150,7 @@ func (t *ToolsNode) publishToolCallStart(ctx context.Context, toolCall llms.Tool
 	name := toolCallName(toolCall)
 	arguments := toolCallArguments(toolCall)
 
-	_ = fruntime.PublishRunnerContextEvent(ctx, EventToolCalled, map[string]any{
+	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolCalled, map[string]any{
 		"tool_call_id": toolCall.ID,
 		"name":         name,
 	})
@@ -165,7 +166,7 @@ func (t *ToolsNode) executeToolCallMessage(ctx context.Context, toolCall llms.To
 	name := toolCallName(toolCall)
 	result, err := t.executeToolCall(ctx, toolCall)
 	if err != nil {
-		_ = fruntime.PublishRunnerContextEvent(ctx, EventToolFailed, map[string]any{
+		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolFailed, map[string]any{
 			"tool_call_id": toolCall.ID,
 			"name":         name,
 			"error":        err.Error(),
@@ -177,7 +178,7 @@ func (t *ToolsNode) executeToolCallMessage(ctx context.Context, toolCall llms.To
 		})
 		result = "tool execution failed: " + err.Error()
 	} else {
-		_ = fruntime.PublishRunnerContextEvent(ctx, EventToolReturned, map[string]any{
+		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolReturned, map[string]any{
 			"tool_call_id": toolCall.ID,
 			"name":         name,
 			"content":      result,
