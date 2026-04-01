@@ -29,7 +29,7 @@ func (t Tool) Name() string {
 	return t.Function.Name
 }
 
-func (t Tool) ToolCallNode() llms.Tool {
+func (t Tool) NewTool() llms.Tool {
 	return llms.Tool{
 		Type:     "function",
 		Function: cloneFunctionDefinition(t.Function),

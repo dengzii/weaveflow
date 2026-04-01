@@ -7,31 +7,9 @@ type StateFieldDefinition struct {
 }
 
 func DefaultStateFieldDefinitions() []StateFieldDefinition {
-	return []StateFieldDefinition{
-		{
-			Name:        StateKeyMessages,
-			Description: "Chat messages accumulated during the graph run.",
-			Schema: map[string]any{
-				"type": "array",
-				"items": map[string]any{
-					"type": "object",
-				},
-			},
-		},
-		{
-			Name:        StateKeyIterationCount,
-			Description: "Current tool-using iteration count.",
-			Schema:      map[string]any{"type": "integer", "minimum": 0},
-		},
-		{
-			Name:        StateKeyMaxIterations,
-			Description: "Maximum iteration count allowed for the run.",
-			Schema:      map[string]any{"type": "integer", "minimum": 1},
-		},
-		{
-			Name:        StateKeyFinalAnswer,
-			Description: "Final answer produced by the graph.",
-			Schema:      map[string]any{"type": "string"},
-		},
+	result := []StateFieldDefinition{}
+	for _, extension := range defaultStateExtensions() {
+		result = append(result, extension.FieldDefinitions()...)
 	}
+	return result
 }

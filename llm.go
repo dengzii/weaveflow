@@ -57,7 +57,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 
 	var tools []llms.Tool
 	for _, tool := range L.tools {
-		tools = append(tools, tool.ToolCallNode())
+		tools = append(tools, tool.NewTool())
 	}
 	if payload, err := buildLLMPromptArtifact(messages, tools, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)

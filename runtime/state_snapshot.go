@@ -41,13 +41,6 @@ type RuntimeState struct {
 	BreakpointHit   *BreakpointHit `json:"breakpoint_hit,omitempty"`
 }
 
-type ConversationState struct {
-	Messages       []StateMessage `json:"messages,omitempty"`
-	FinalAnswer    string         `json:"final_answer,omitempty"`
-	IterationCount int            `json:"iteration_count,omitempty"`
-	MaxIterations  int            `json:"max_iterations,omitempty"`
-}
-
 type ArtifactRef struct {
 	ID        string    `json:"id"`
 	RunID     string    `json:"run_id,omitempty"`
