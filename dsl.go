@@ -43,6 +43,10 @@ type GraphNodeSpec struct {
 	Config      map[string]any `json:"config,omitempty"`
 }
 
+type GraphNodeSpecProvider interface {
+	GraphNodeSpec() GraphNodeSpec
+}
+
 type GraphConditionSpec struct {
 	Type   string         `json:"type"`
 	Config map[string]any `json:"config,omitempty"`
@@ -165,8 +169,4 @@ func DeserializeGraphDefinition(data []byte) (GraphDefinition, error) {
 	}
 	def = normalizeGraphDefinition(def)
 	return def, def.Validate()
-}
-
-type GraphNodeSpecProvider interface {
-	GraphNodeSpec() GraphNodeSpec
 }

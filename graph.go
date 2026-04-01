@@ -13,44 +13,6 @@ import (
 
 const EndNodeRef = "__end__"
 
-type EdgeConditionMatcher func(ctx context.Context, state State) bool
-
-type EdgeCondition struct {
-	Spec  GraphConditionSpec
-	Match EdgeConditionMatcher
-}
-
-func NewEdgeCondition(spec GraphConditionSpec, match EdgeConditionMatcher) EdgeCondition {
-	return EdgeCondition{
-		Spec:  normalizeGraphConditionSpec(spec),
-		Match: match,
-	}
-}
-
-func (c EdgeCondition) validate() error {
-	spec := normalizeGraphConditionSpec(c.Spec)
-	if spec.Type == "" {
-		return fmt.Errorf("condition spec type is required")
-	}
-	if c.Match == nil {
-		return fmt.Errorf("condition matcher is nil")
-	}
-	return nil
-}
-
-func (c EdgeCondition) withSpec(spec GraphConditionSpec) EdgeCondition {
-	c.Spec = normalizeGraphConditionSpec(spec)
-	return c
-}
-
-func (c EdgeCondition) cloneSpec() GraphConditionSpec {
-	spec := normalizeGraphConditionSpec(c.Spec)
-	if len(spec.Config) > 0 {
-		spec.Config = cloneMap(spec.Config)
-	}
-	return spec
-}
-
 type conditionalEdge struct {
 	to        string
 	condition EdgeCondition
@@ -135,6 +97,7 @@ func (g *Graph) AddNode(node Node[State]) error {
 		}
 		g.nodeSpecs[id] = spec
 	} else {
+		// this is a node that doesn't provide a spec, should we add a default spec? or throw an error?
 		name := strings.TrimSpace(node.Name())
 		if name == "" {
 			name = id
@@ -167,10 +130,6 @@ func (g *Graph) SetFinishPoint(ref string) error {
 }
 
 func (g *Graph) AddEdge(from, to string) error {
-	return g.addEdge(from, to, true)
-}
-
-func (g *Graph) addEdge(from, to string, serialize bool) error {
 	fromID, err := g.resolveNodeID(from)
 	if err != nil {
 		return err
@@ -183,20 +142,14 @@ func (g *Graph) addEdge(from, to string, serialize bool) error {
 		return fmt.Errorf("node %q already has a default edge", fromID)
 	}
 	g.edges[fromID] = toID
-	if serialize {
-		g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
-			From: g.nodeSpecs[fromID].ID,
-			To:   g.serializeNodeRef(toID),
-		})
-	}
+	g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
+		From: g.nodeSpecs[fromID].ID,
+		To:   g.serializeNodeRef(toID),
+	})
 	return nil
 }
 
 func (g *Graph) AddConditionalEdge(from, to string, condition EdgeCondition) error {
-	return g.addConditionalEdge(from, to, condition, true)
-}
-
-func (g *Graph) addConditionalEdge(from, to string, condition EdgeCondition, serialize bool) error {
 	if err := condition.validate(); err != nil {
 		return err
 	}
@@ -214,14 +167,12 @@ func (g *Graph) addConditionalEdge(from, to string, condition EdgeCondition, ser
 		to:        toID,
 		condition: condition,
 	})
-	if serialize {
-		spec := condition.cloneSpec()
-		g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
-			From:      g.nodeSpecs[fromID].ID,
-			To:        g.serializeNodeRef(toID),
-			Condition: &spec,
-		})
-	}
+	spec := condition.cloneSpec()
+	g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
+		From:      g.nodeSpecs[fromID].ID,
+		To:        g.serializeNodeRef(toID),
+		Condition: &spec,
+	})
 	return nil
 }
 
@@ -300,17 +251,8 @@ func (g *Graph) Validate() error {
 }
 
 func (g *Graph) Compile() (*Runnable, error) {
-	if err := g.Validate(); err != nil {
-		return nil, err
-	}
-
 	compiled := langgraph.NewListenableStateGraph[State]()
-	if g.retryPolicy != nil {
-		compiled.SetRetryPolicy(g.retryPolicy)
-	}
-
-	for nodeID, node := range g.nodes {
-		nodeID := nodeID
+	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node Node[State]) {
 		nodeDef := node
 		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
 			return nodeDef.Invoke(ctx, state.CloneState())
@@ -318,57 +260,19 @@ func (g *Graph) Compile() (*Runnable, error) {
 		for _, listener := range g.nodeListeners[nodeID] {
 			listenableNode.AddListener(g.displayNameListener(listener))
 		}
+	}); err != nil {
+		return nil, err
 	}
 
 	for _, listener := range g.globalListeners {
 		compiled.AddGlobalListener(g.displayNameListener(listener))
 	}
 
-	for from, conditional := range g.conditionalEdges {
-		edges := append([]conditionalEdge(nil), conditional...)
-		defaultTarget, hasDefaultTarget := g.edges[from]
-		isFinishPoint := from == g.finishPoint
-
-		compiled.AddConditionalEdge(from, func(ctx context.Context, state State) string {
-			for _, edge := range edges {
-				if edge.condition.Match(ctx, state) {
-					return edge.to
-				}
-			}
-			if hasDefaultTarget {
-				return defaultTarget
-			}
-			if isFinishPoint {
-				return langgraph.END
-			}
-			return ""
-		})
-	}
-
-	for from, to := range g.edges {
-		if _, hasConditional := g.conditionalEdges[from]; hasConditional {
-			continue
-		}
-		compiled.AddEdge(from, to)
-	}
-
-	if g.finishPoint != "" {
-		if _, hasConditional := g.conditionalEdges[g.finishPoint]; !hasConditional {
-			if _, hasDefaultEdge := g.edges[g.finishPoint]; !hasDefaultEdge {
-				compiled.AddEdge(g.finishPoint, langgraph.END)
-			}
-		}
-	}
-
-	compiled.SetEntryPoint(g.entryPoint)
-
 	runnable, err := compiled.CompileListenable()
 	if err != nil {
 		return nil, err
 	}
-	if g.tracer != nil {
-		runnable.SetTracer(g.tracer)
-	}
+	g.applyTracer(runnable)
 
 	return &Runnable{runnable: runnable}, nil
 }
@@ -382,12 +286,7 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	}
 
 	compiled := langgraph.NewStateGraph[State]()
-	if g.retryPolicy != nil {
-		compiled.SetRetryPolicy(g.retryPolicy)
-	}
-
-	for nodeID, node := range g.nodes {
-		nodeID := nodeID
+	if err := g.configureStateGraph(compiled, func(nodeID string, node Node[State]) {
 		nodeDef := node
 		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
 			return execution.InvokeNode(ctx, nodeID,
@@ -396,31 +295,42 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 				}, state,
 			)
 		})
+	}); err != nil {
+		return nil, err
 	}
 
-	return g.compileRunnable(compiled)
+	runnable, err := compiled.Compile()
+	if err != nil {
+		return nil, err
+	}
+	g.applyTracer(runnable)
+	return runnable, nil
 }
 
-func (g *Graph) compileRunnable(compiled *langgraph.StateGraph[State]) (*langgraph.StateRunnable[State], error) {
-	for from, conditional := range g.conditionalEdges {
-		edges := append([]conditionalEdge(nil), conditional...)
-		defaultTarget, hasDefaultTarget := g.edges[from]
-		isFinishPoint := from == g.finishPoint
+func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node Node[State])) error {
+	if err := g.Validate(); err != nil {
+		return err
+	}
+	return g.configureStateGraph(compiled, addNode)
+}
 
-		compiled.AddConditionalEdge(from, func(ctx context.Context, state State) string {
-			for _, edge := range edges {
-				if edge.condition.Match(ctx, state) {
-					return edge.to
-				}
-			}
-			if hasDefaultTarget {
-				return defaultTarget
-			}
-			if isFinishPoint {
-				return langgraph.END
-			}
-			return ""
-		})
+func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node Node[State])) error {
+	if compiled == nil {
+		return fmt.Errorf("compiled graph is nil")
+	}
+	if addNode == nil {
+		return fmt.Errorf("add node callback is nil")
+	}
+	if g.retryPolicy != nil {
+		compiled.SetRetryPolicy(g.retryPolicy)
+	}
+
+	for nodeID, node := range g.nodes {
+		addNode(nodeID, node)
+	}
+
+	for from, conditional := range g.conditionalEdges {
+		compiled.AddConditionalEdge(from, g.conditionalEdgeResolver(from, conditional))
 	}
 
 	for from, to := range g.edges {
@@ -439,15 +349,34 @@ func (g *Graph) compileRunnable(compiled *langgraph.StateGraph[State]) (*langgra
 	}
 
 	compiled.SetEntryPoint(g.entryPoint)
+	return nil
+}
 
-	runnable, err := compiled.Compile()
-	if err != nil {
-		return nil, err
+func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEdge) func(ctx context.Context, state State) string {
+	edges := append([]conditionalEdge(nil), conditional...)
+	defaultTarget, hasDefaultTarget := g.edges[from]
+	isFinishPoint := from == g.finishPoint
+
+	return func(ctx context.Context, state State) string {
+		for _, edge := range edges {
+			if edge.condition.Match(ctx, state) {
+				return edge.to
+			}
+		}
+		if hasDefaultTarget {
+			return defaultTarget
+		}
+		if isFinishPoint {
+			return langgraph.END
+		}
+		return ""
 	}
+}
+
+func (g *Graph) applyTracer(target interface{ SetTracer(*langgraph.Tracer) }) {
 	if g.tracer != nil {
-		runnable.SetTracer(g.tracer)
+		target.SetTracer(g.tracer)
 	}
-	return runnable, nil
 }
 
 func (g *Graph) Run(ctx context.Context, initialState State) (State, error) {

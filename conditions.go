@@ -3,10 +3,50 @@ package falcon
 import (
 	"context"
 	fruntime "falcon/runtime"
+	"fmt"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
 )
+
+type EdgeConditionMatcher func(ctx context.Context, state State) bool
+
+// EdgeCondition is a condition that can be applied to an edge in a graph.
+type EdgeCondition struct {
+	Spec  GraphConditionSpec
+	Match EdgeConditionMatcher
+}
+
+func NewEdgeCondition(spec GraphConditionSpec, match EdgeConditionMatcher) EdgeCondition {
+	return EdgeCondition{
+		Spec:  normalizeGraphConditionSpec(spec),
+		Match: match,
+	}
+}
+
+func (c EdgeCondition) validate() error {
+	spec := normalizeGraphConditionSpec(c.Spec)
+	if spec.Type == "" {
+		return fmt.Errorf("condition spec type is required")
+	}
+	if c.Match == nil {
+		return fmt.Errorf("condition matcher is nil")
+	}
+	return nil
+}
+
+func (c EdgeCondition) withSpec(spec GraphConditionSpec) EdgeCondition {
+	c.Spec = normalizeGraphConditionSpec(spec)
+	return c
+}
+
+func (c EdgeCondition) cloneSpec() GraphConditionSpec {
+	spec := normalizeGraphConditionSpec(c.Spec)
+	if len(spec.Config) > 0 {
+		spec.Config = cloneMap(spec.Config)
+	}
+	return spec
+}
 
 func LastMessageHasToolCalls(scope string) EdgeCondition {
 	scope = strings.TrimSpace(scope)
