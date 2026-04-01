@@ -96,13 +96,12 @@ func SnapshotFromState(state State) (StateSnapshot, error) {
 		Scopes:  map[string]GraphState{},
 	}
 
-	if conversation, err := extractConversationState(state); err != nil {
-		return StateSnapshot{}, err
-	} else if conversation != nil {
-		snapshot.Conversation = conversation
+	for _, extension := range defaultStateExtensions() {
+		if err := extension.ExtractRootSnapshot(state, &snapshot); err != nil {
+			return StateSnapshot{}, err
+		}
 	}
 
-	scopeNames := state.scopeNames()
 	for scopeName, scopeState := range state.scopes() {
 		scope, err := encodeGraphState(scopeState)
 		if err != nil {
@@ -112,13 +111,13 @@ func SnapshotFromState(state State) (StateSnapshot, error) {
 	}
 
 	for key, value := range state {
-		if isConversationKey(key) || isInfrastructureStateKey(key) {
-			continue
-		}
-		if _, ok := scopeNames[key]; ok {
+		if isSpecialStateKey(key) || isInfrastructureStateKey(key) {
 			continue
 		}
 
+		if err := validatePersistableStateValue(key, value); err != nil {
+			return StateSnapshot{}, err
+		}
 		raw, err := encodeGraphValue(key, value)
 		if err != nil {
 			return StateSnapshot{}, fmt.Errorf("marshal state key %q: %w", key, err)
@@ -150,8 +149,10 @@ func SnapshotFromStateWithRuntime(state State, runtime RuntimeState, artifacts [
 
 func RestoreStateSnapshot(snapshot StateSnapshot) (RestoredStateSnapshot, error) {
 	state := State{}
-	if err := applyConversationState(state, snapshot.Conversation); err != nil {
-		return RestoredStateSnapshot{}, err
+	for _, extension := range defaultStateExtensions() {
+		if err := extension.ApplyRootSnapshot(state, snapshot); err != nil {
+			return RestoredStateSnapshot{}, err
+		}
 	}
 
 	for key, raw := range snapshot.Shared {
@@ -196,41 +197,17 @@ func SerializeMessages(messages []llms.MessageContent) ([]StateMessage, error) {
 
 func encodeGraphState(values map[string]any) (GraphState, error) {
 	scope := GraphState{}
-	if conversation, err := extractConversationState(values); err != nil {
-		return nil, err
-	} else if conversation != nil {
-		if len(conversation.Messages) > 0 {
-			raw, err := json.Marshal(conversation.Messages)
-			if err != nil {
-				return nil, fmt.Errorf("marshal scope key %q: %w", stateKeyMessages, err)
-			}
-			scope[stateKeyMessages] = raw
-		}
-		if conversation.FinalAnswer != "" {
-			raw, err := json.Marshal(conversation.FinalAnswer)
-			if err != nil {
-				return nil, fmt.Errorf("marshal scope key %q: %w", stateKeyFinalAnswer, err)
-			}
-			scope[stateKeyFinalAnswer] = raw
-		}
-		if conversation.IterationCount != 0 {
-			raw, err := json.Marshal(conversation.IterationCount)
-			if err != nil {
-				return nil, fmt.Errorf("marshal scope key %q: %w", stateKeyIterationCount, err)
-			}
-			scope[stateKeyIterationCount] = raw
-		}
-		if conversation.MaxIterations != 0 {
-			raw, err := json.Marshal(conversation.MaxIterations)
-			if err != nil {
-				return nil, fmt.Errorf("marshal scope key %q: %w", stateKeyMaxIterations, err)
-			}
-			scope[stateKeyMaxIterations] = raw
+	for _, extension := range defaultStateExtensions() {
+		if err := extension.EncodeScopedState(values, scope); err != nil {
+			return nil, err
 		}
 	}
 	for key, value := range values {
-		if isInfrastructureStateKey(key) || isConversationKey(key) {
+		if isInfrastructureStateKey(key) || isSpecialStateKey(key) {
 			continue
+		}
+		if err := validatePersistableStateValue(key, value); err != nil {
+			return nil, err
 		}
 		raw, err := encodeGraphValue(key, value)
 		if err != nil {
@@ -244,83 +221,12 @@ func encodeGraphState(values map[string]any) (GraphState, error) {
 	return scope, nil
 }
 
-func extractConversationState(values map[string]any) (*ConversationState, error) {
-	values = conversationSource(values)
-	if values == nil {
-		return nil, nil
-	}
-
-	conv := &ConversationState{}
-	hasValue := false
-
-	if rawMessages, ok := conversationMessages(values); ok {
-		messages, err := serializeMessages(rawMessages)
-		if err != nil {
-			return nil, err
-		}
-		conv.Messages = messages
-		hasValue = hasValue || len(messages) > 0
-	}
-	if answer, ok := conversationString(values, stateKeyFinalAnswer); ok && answer != "" {
-		conv.FinalAnswer = answer
-		hasValue = true
-	}
-	if iterationCount, ok := conversationInt(values, stateKeyIterationCount); ok && iterationCount != 0 {
-		conv.IterationCount = iterationCount
-		hasValue = true
-	}
-	if maxIterations, ok := conversationInt(values, stateKeyMaxIterations); ok && maxIterations != 0 {
-		conv.MaxIterations = maxIterations
-		hasValue = true
-	}
-
-	if !hasValue {
-		return nil, nil
-	}
-	return conv, nil
-}
-
-func applyConversationState(target map[string]any, conversation *ConversationState) error {
-	if conversation == nil {
-		return nil
-	}
-	if len(conversation.Messages) > 0 {
-		messages, err := deserializeMessages(conversation.Messages)
-		if err != nil {
-			return err
-		}
-		setConversationMessages(target, messages)
-	}
-	if conversation.FinalAnswer != "" {
-		setConversationString(target, stateKeyFinalAnswer, conversation.FinalAnswer)
-	}
-	if conversation.IterationCount != 0 {
-		setConversationInt(target, stateKeyIterationCount, conversation.IterationCount)
-	}
-	if conversation.MaxIterations != 0 {
-		setConversationInt(target, stateKeyMaxIterations, conversation.MaxIterations)
-	}
-	return nil
-}
-
 func applyDecodedGraphValue(target State, key string, value any) {
 	if target == nil {
 		return
 	}
-	switch key {
-	case stateKeyMessages:
-		if messages, ok := value.([]llms.MessageContent); ok {
-			setConversationMessages(target, messages)
-			return
-		}
-	case stateKeyFinalAnswer:
-		if text, ok := value.(string); ok {
-			setConversationString(target, key, text)
-			return
-		}
-	case stateKeyIterationCount, stateKeyMaxIterations:
-		if count, ok := value.(int); ok {
-			setConversationInt(target, key, count)
+	for _, extension := range defaultStateExtensions() {
+		if extension.DecodeStateField(target, key, value) {
 			return
 		}
 	}
@@ -443,12 +349,10 @@ func flattenSnapshot(snapshot StateSnapshot) (map[string]json.RawMessage, error)
 	}
 	result["runtime"] = rawRuntime
 
-	if snapshot.Conversation != nil {
-		rawConversation, err := json.Marshal(snapshot.Conversation)
-		if err != nil {
+	for _, extension := range defaultStateExtensions() {
+		if err := extension.AppendSnapshotFields(snapshot, result); err != nil {
 			return nil, err
 		}
-		result["conversation"] = rawConversation
 	}
 
 	for key, raw := range snapshot.Shared {
@@ -470,15 +374,6 @@ func flattenSnapshot(snapshot StateSnapshot) (map[string]json.RawMessage, error)
 	}
 
 	return result, nil
-}
-
-func isConversationKey(key string) bool {
-	switch key {
-	case stateKeyMessages, stateKeyIterationCount, stateKeyMaxIterations, stateKeyFinalAnswer:
-		return true
-	default:
-		return false
-	}
 }
 
 func jsonEqual(left, right json.RawMessage) bool {
@@ -565,6 +460,12 @@ func normalizeJSONValue(value any) any {
 		for index, item := range typed {
 			items[index] = normalizeJSONValue(item)
 		}
+		if str := normalizeStringSlice(items); str != nil {
+			return str
+		}
+		if maps := normalizeMapSlice(items); maps != nil {
+			return maps
+		}
 		return items
 	case map[string]any:
 		items := make(map[string]any, len(typed))
@@ -575,6 +476,38 @@ func normalizeJSONValue(value any) any {
 	default:
 		return value
 	}
+}
+
+func normalizeStringSlice(values []any) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	items := make([]string, len(values))
+	for i, value := range values {
+		text, ok := value.(string)
+		if !ok {
+			return nil
+		}
+		items[i] = text
+	}
+	return items
+}
+
+func normalizeMapSlice(values []any) []map[string]any {
+	if len(values) == 0 {
+		return nil
+	}
+
+	items := make([]map[string]any, len(values))
+	for i, value := range values {
+		mapped, ok := value.(map[string]any)
+		if !ok {
+			return nil
+		}
+		items[i] = mapped
+	}
+	return items
 }
 
 func cloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {

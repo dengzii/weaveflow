@@ -56,7 +56,9 @@ func (g *Graph) WriteToFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() {
+		_ = f.Close()
+	}()
 	def, err := g.Definition()
 	if err != nil {
 		return err
@@ -67,6 +69,17 @@ func (g *Graph) WriteToFile(path string) error {
 	}
 	_, err = f.WriteString(string(bytes))
 	return err
+}
+
+func (g *Graph) DrawMermaid() (string, error) {
+	graph := langgraph.NewStateGraph[State]()
+	err := g.buildStateGraph(graph, func(nodeID string, node Node[State]) {})
+	if err != nil {
+		return "", err
+	}
+	exporter := langgraph.NewExporter(graph)
+	return exporter.DrawMermaid(), nil
+
 }
 
 func (g *Graph) AddNode(node Node[State]) error {

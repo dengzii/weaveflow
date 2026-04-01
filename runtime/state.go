@@ -7,11 +7,6 @@ import (
 )
 
 const (
-	StateKeyMessages       = "messages"
-	StateKeyIterationCount = "iteration_count"
-	StateKeyMaxIterations  = "max_iterations"
-	StateKeyFinalAnswer    = "final_answer"
-
 	StateNamespacePrefix       = "__falcon_"
 	stateNamespaceConversation = "__falcon_conversation"
 	stateNamespaceScopes       = "__falcon_scopes"
@@ -20,11 +15,6 @@ const (
 )
 
 const (
-	stateKeyMessages       = StateKeyMessages
-	stateKeyIterationCount = StateKeyIterationCount
-	stateKeyMaxIterations  = StateKeyMaxIterations
-	stateKeyFinalAnswer    = StateKeyFinalAnswer
-
 	stateNamespacePrefix = StateNamespacePrefix
 
 	defaultMaxIterations = DefaultMaxIterations
@@ -32,6 +22,14 @@ const (
 
 // State stores shared business data at the root level.
 // Falcon-managed scope and conversation state live under reserved namespaces.
+//
+// Persisted state is intentionally constrained to:
+// - primitives
+// - map[string]any / State
+// - []any
+// - []string
+// - []map[string]any
+// - []llms.MessageContent for conversation messages
 type State map[string]any
 
 func NewBaseState(messages []llms.MessageContent, maxIterations int) State {
@@ -48,12 +46,8 @@ func (s State) CloneState() State {
 	}
 
 	cloned := State{}
-	scopeNames := s.scopeNames()
 	for key, value := range s {
-		if isInfrastructureStateKey(key) || isConversationKey(key) {
-			continue
-		}
-		if _, ok := scopeNames[key]; ok {
+		if isInfrastructureStateKey(key) || isSpecialStateKey(key) {
 			continue
 		}
 		cloned[key] = cloneStateValue(value)
@@ -147,29 +141,12 @@ func (s State) scopes() map[string]State {
 	return scopes
 }
 
-func (s State) scopeNames() map[string]struct{} {
-	scopes := s.scopes()
-	if len(scopes) == 0 {
-		return nil
-	}
-
-	names := make(map[string]struct{}, len(scopes))
-	for scopeName := range scopes {
-		names[scopeName] = struct{}{}
-	}
-	return names
-}
-
 func setScopeState(root State, scope string, scopeState State) {
 	if root == nil || scope == "" {
 		return
 	}
 	scopes := root.scopesNamespace(true)
 	scopes[scope] = scopeState
-}
-
-func isInternalStateKey(key string) bool {
-	return strings.HasPrefix(key, stateNamespacePrefix)
 }
 
 func isInfrastructureStateKey(key string) bool {
@@ -197,7 +174,7 @@ func asStateMap(value any) (State, bool) {
 	case State:
 		return typed, true
 	case map[string]any:
-		return State(typed), true
+		return typed, true
 	default:
 		return nil, false
 	}
@@ -228,7 +205,7 @@ func cloneStateValue(value any) any {
 	case map[string]any:
 		return map[string]any(cloneStateMap(typed))
 	case State:
-		return State(cloneStateMap(typed))
+		return cloneStateMap(typed)
 	default:
 		return value
 	}
@@ -250,7 +227,7 @@ func cloneMapSlice(values []map[string]any) []map[string]any {
 
 	cloned := make([]map[string]any, len(values))
 	for i, value := range values {
-		cloned[i] = map[string]any(cloneStateMap(value))
+		cloned[i] = cloneStateMap(value)
 	}
 	return cloned
 }
