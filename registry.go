@@ -154,16 +154,48 @@ func DefaultRegistry() *Registry {
 	})
 
 	r.RegisterCondition(ConditionDefinition{
-		Type:        "express_conditions",
-		Title:       "Express Conditions",
-		Description: "Reserved placeholder condition for future expression-based routing.",
+		Type:        "expression_conditions",
+		Title:       "Expression Conditions",
+		Description: "Routes by evaluating serializable expressions against the current state.",
 		ConfigSchema: JSONSchema{
-			"type":                 "object",
+			"type": "object",
+			"properties": JSONSchema{
+				"state_scope": JSONSchema{"type": "string"},
+				"match": JSONSchema{
+					"type": "string",
+					"enum": []string{ExpressionMatchAll, ExpressionMatchAny},
+				},
+				"expressions": JSONSchema{
+					"type": "array",
+					"items": JSONSchema{
+						"type": "object",
+						"properties": JSONSchema{
+							"value1": JSONSchema{"type": "string"},
+							"op": JSONSchema{
+								"type": "string",
+								"enum": []string{
+									OperationEqual,
+									OperationNotEqual,
+									OperationContains,
+									OperationNotContain,
+								},
+							},
+							"value2": JSONSchema{"type": "string"},
+						},
+						"required":             []string{"value1", "op", "value2"},
+						"additionalProperties": false,
+					},
+				},
+			},
+			"required":             []string{"expressions"},
 			"additionalProperties": false,
 		},
 		Resolve: func(spec GraphConditionSpec) (EdgeCondition, error) {
-			_ = spec
-			return ExpressConditions(), nil
+			config, err := ParseExpressionConditionConfig(spec.Config)
+			if err != nil {
+				return EdgeCondition{}, fmt.Errorf("resolve expression condition: %w", err)
+			}
+			return ExpressionConditions(config)
 		},
 	})
 	return r
