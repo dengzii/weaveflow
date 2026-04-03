@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"falcon"
 	"falcon/llama_cpp"
 
 	"github.com/gin-gonic/gin"
@@ -40,14 +41,19 @@ func NewServer() *Server {
 	}
 }
 
-func (f *Server) Run(m ModelManager) {
+func (f *Server) Run() {
 
 	f.engine.Use(gin.Recovery())
 	f.engine.Use(gin.Logger())
 
-	infer := &Infer{
-		modelManager: m,
+	modelHub := falcon.NewModelManager()
+	infer := &interApi{
+		modelManager: modelHub,
 		items:        map[string]*loadedModel{},
+	}
+	graph, err := newRunnerApi()
+	if err != nil {
+		panic(err)
 	}
 
 	g := group("",
@@ -60,11 +66,14 @@ func (f *Server) Run(m ModelManager) {
 			post("chat/completions", infer.Chat),
 			get("models", infer.ModelList),
 		),
+		group("graph",
+			get("run", graph.NewRun),
+		),
 	)
 
 	g.setup(f.engine)
 
-	err := f.engine.Run(":8080")
+	err = f.engine.Run(":8080")
 
 	if err != nil {
 		panic(err)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	fruntime "falcon/runtime"
+
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
@@ -12,7 +13,7 @@ type graphRunnerGraph struct {
 	graph *Graph
 }
 
-func newRunnerGraph(graph *Graph) fruntime.RunnerGraph {
+func NewRunnerGraph(graph *Graph) fruntime.RunnerGraph {
 	if graph == nil {
 		return nil
 	}

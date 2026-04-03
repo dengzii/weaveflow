@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"
+	"go.uber.org/zap"
 )
 
 type GraphRunner struct {
@@ -95,6 +96,11 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string) (RunRecord, Stat
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
+	logger.Info("checkpoint loaded",
+		zap.String("checkpoint_id", run.LastCheckpointID),
+		zap.String("current_node_id", checkpoint.Runtime.CurrentNodeID),
+		zap.String("current_step_id", checkpoint.Runtime.CurrentStepID),
+	)
 
 	startNode, skip, err := r.resumeTarget(checkpoint.Record, checkpoint.Business)
 	if err != nil {
@@ -135,7 +141,38 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string) (RunRecord, Stat
 		return RunRecord{}, nil, err
 	}
 
+	logger.Info("resuming run", zap.String("start_node", startNode), zap.Any("state", checkpoint.Business))
 	return r.execute(ctx, run, checkpoint.Business, startNode, skip, checkpoint.Artifacts)
+}
+
+func (r *GraphRunner) GetResumableRun(ctx context.Context) (*RunRecord, error) {
+	runs, err := r.ListRuns(ctx, RunFilter{})
+	if err != nil {
+		return nil, err
+	}
+	var candidate *RunRecord
+	for i := range runs {
+		run := runs[i]
+		if run.LastCheckpointID == "" {
+			continue
+		}
+		if !isResumableRunStatus(run.Status) {
+			continue
+		}
+		if candidate == nil || candidate.UpdatedAt.Before(run.UpdatedAt) {
+			candidate = &run
+		}
+	}
+	return candidate, nil
+}
+
+func isResumableRunStatus(status RunStatus) bool {
+	switch status {
+	case RunStatusPaused, RunStatusRunning, RunStatusPending:
+		return true
+	default:
+		return false
+	}
 }
 
 func (r *GraphRunner) execute(ctx context.Context, run RunRecord, state State, startNode string, skip *breakpointSkip, artifacts []ArtifactRef) (RunRecord, State, error) {
@@ -298,6 +335,7 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 
 func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, state State, interrupt *langgraph.GraphInterrupt) (RunRecord, State, error) {
 	run := execution.currentRun()
+	logger.Info("run interrupt")
 
 	if control, active := execution.consumePendingControl(); control != nil {
 		switch control.kind {

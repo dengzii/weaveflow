@@ -29,7 +29,7 @@ func TestBuildGraphRequiresEntryPoint(t *testing.T) {
 		},
 	}
 
-	_, err := registry.BuildGraph(def, BuildContext{})
+	_, err := registry.BuildGraph(def, &BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "entry point") {
 		t.Fatalf("expected missing entry point error, got %v", err)
 	}
@@ -53,7 +53,7 @@ func TestBuildGraphRejectsUnknownToolIDs(t *testing.T) {
 		},
 	}
 
-	_, err := registry.BuildGraph(def, BuildContext{
+	_, err := registry.BuildGraph(def, &BuildContext{
 		Model: stubBuildModel{},
 		Tools: map[string]Tool{},
 	})

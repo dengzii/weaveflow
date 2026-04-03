@@ -6,9 +6,16 @@ import (
 	"sync"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
+	"go.uber.org/zap"
 )
 
 type runnerControlKind string
+
+var logger = zap.NewNop()
+
+func SetLogger(l *zap.Logger) {
+	logger = l
+}
 
 const (
 	runnerControlPause  runnerControlKind = "pause"
@@ -357,6 +364,8 @@ func (e *graphRunnerExecution) markNodeInterrupt(nodeID string) {
 	if e.active == nil || e.active.step.NodeID != nodeID {
 		return
 	}
+	/// make sure the node resume at the same node after restart
+	e.active.beforeInterrupted = true
 	e.pending = &runnerPendingControl{kind: runnerControlPause}
 }
 

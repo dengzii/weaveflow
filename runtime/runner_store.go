@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"go.uber.org/zap"
 )
 
 type FileExecutionStore struct {
@@ -25,6 +27,59 @@ type FileCheckpointStore struct {
 type FileEventSink struct {
 	baseDir string
 	mu      sync.Mutex
+}
+
+type CombineEventSink struct {
+	sinks []EventSink
+}
+
+func NewCombineEventSink(sinks ...EventSink) EventSink {
+	return &CombineEventSink{
+		sinks: sinks,
+	}
+}
+
+func (c *CombineEventSink) Publish(ctx context.Context, event Event) error {
+	for _, sink := range c.sinks {
+		if err := sink.Publish(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *CombineEventSink) PublishBatch(ctx context.Context, events []Event) error {
+	for _, sink := range c.sinks {
+		if err := sink.PublishBatch(ctx, events); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type LoggerEventSink struct {
+	logger *zap.Logger
+}
+
+func NewLoggerEventSink(logger *zap.Logger) EventSink {
+	return &LoggerEventSink{
+		logger: logger,
+	}
+}
+
+func (l *LoggerEventSink) Publish(ctx context.Context, event Event) error {
+	l.logger.Info("Publish",
+		zap.Any("type", event.Type),
+		zap.String("node_id", event.NodeID),
+		zap.ByteString("payload", event.Payload),
+		zap.Any("event", event),
+	)
+	return nil
+}
+
+func (l *LoggerEventSink) PublishBatch(ctx context.Context, events []Event) error {
+	l.logger.Info("EventBatch", zap.Any("events", events))
+	return nil
 }
 
 func NewFileExecutionStore(baseDir string) *FileExecutionStore {

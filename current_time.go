@@ -1,8 +1,7 @@
-package tools
+package falcon
 
 import (
 	"context"
-	"falcon"
 	"fmt"
 	"strings"
 	"time"
@@ -10,8 +9,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func NewCurrentTime() falcon.Tool {
-	return falcon.Tool{
+func NewCurrentTime() Tool {
+	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name:        "current_time",
 			Description: "Return the current local time and UTC time. Use this when the user asks for the current time or date.",

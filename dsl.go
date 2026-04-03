@@ -154,12 +154,12 @@ func (d GraphDefinition) Validate() error {
 	return nil
 }
 
-func SerializeGraphDefinition(def GraphDefinition) ([]byte, error) {
-	def = normalizeGraphDefinition(def)
-	if err := def.Validate(); err != nil {
+func (d GraphDefinition) Serialize() ([]byte, error) {
+	nd := normalizeGraphDefinition(d)
+	if err := nd.Validate(); err != nil {
 		return nil, err
 	}
-	return json.MarshalIndent(def, "", "  ")
+	return json.MarshalIndent(nd, "", "  ")
 }
 
 func DeserializeGraphDefinition(data []byte) (GraphDefinition, error) {
