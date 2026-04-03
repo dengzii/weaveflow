@@ -44,15 +44,12 @@ type ToolsNode struct {
 }
 
 func NewToolCallNode(tools map[string]Tool) *ToolsNode {
-	id, err := uuid.NewUUID()
-	if err != nil {
-		panic(err)
-	}
+	id := uuid.New()
 	return &ToolsNode{
 		NodeInfo: NodeInfo{
-			NodeID:          id.String(),
+			NodeID:          "ToolCall_" + id.String(),
 			NodeName:        "ToolCall",
-			NodeDescription: "ToolCall",
+			NodeDescription: "Execute tool calls emitted by the model.",
 		},
 		Tools:    cloneTools(tools),
 		Parallel: true,

@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
+	"go.uber.org/zap"
 )
 
 const EndNodeRef = "__end__"
@@ -16,6 +17,13 @@ const EndNodeRef = "__end__"
 type conditionalEdge struct {
 	to        string
 	condition EdgeCondition
+}
+
+var logger = zap.NewNop()
+
+func SetLogger(l *zap.Logger) {
+	logger = l
+	fruntime.SetLogger(l)
 }
 
 // Graph is a thin falcon wrapper around langgraphgo's typed graph.
@@ -47,6 +55,20 @@ func NewGraph() *Graph {
 		nodeListeners:    map[string][]langgraph.NodeListener[State]{},
 	}
 }
+
+func LoadGraphFromFile(buildContext *BuildContext, path string) (*Graph, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	def, err := DeserializeGraphDefinition(data)
+	if err != nil {
+		return nil, fmt.Errorf("load graph definition from %q: %w", path, err)
+	}
+	registry := DefaultRegistry()
+	return registry.BuildGraph(def, buildContext)
+}
+
 func (g *Graph) EnableLogging() {
 	_ = g.AddGlobalListener(NewLoggingListener())
 }
@@ -63,7 +85,7 @@ func (g *Graph) WriteToFile(path string) error {
 	if err != nil {
 		return err
 	}
-	bytes, err := SerializeGraphDefinition(def)
+	bytes, err := def.Serialize()
 	if err != nil {
 		return err
 	}

@@ -36,10 +36,10 @@ import (
 
 var backendOnce sync.Once
 
-var logger *zap.Logger
+var logger *zap.Logger = zap.NewNop()
 
-func init() {
-	logger, _ = zap.NewDevelopment()
+func SetLogger(l *zap.Logger) {
+	logger = l
 }
 
 type LoadOptions struct {

@@ -15,11 +15,11 @@ type BuildContext struct {
 }
 
 type NodeTypeDefinition struct {
-	Type         string                                                 `json:"type"`
-	Title        string                                                 `json:"title,omitempty"`
-	Description  string                                                 `json:"description,omitempty"`
-	ConfigSchema JSONSchema                                             `json:"config_schema"`
-	Build        func(BuildContext, GraphNodeSpec) (Node[State], error) `json:"-"`
+	Type         string                                                  `json:"type"`
+	Title        string                                                  `json:"title,omitempty"`
+	Description  string                                                  `json:"description,omitempty"`
+	ConfigSchema JSONSchema                                              `json:"config_schema"`
+	Build        func(*BuildContext, GraphNodeSpec) (Node[State], error) `json:"-"`
 }
 
 type ConditionDefinition struct {
@@ -52,6 +52,37 @@ func DefaultRegistry() *Registry {
 	}
 
 	r.RegisterNodeType(NodeTypeDefinition{
+		Type:        "human_message",
+		Title:       "Human Message Node",
+		Description: "Pause the graph until the latest message in scope is a human message.",
+		ConfigSchema: JSONSchema{
+			"type": "object",
+			"properties": JSONSchema{
+				"state_scope":       JSONSchema{"type": "string"},
+				"interrupt_message": JSONSchema{"type": "string"},
+			},
+			"additionalProperties": false,
+		},
+		Build: func(ctx *BuildContext, spec GraphNodeSpec) (Node[State], error) {
+			node := NewHumanMessageNode()
+			node.NodeID = spec.ID
+			if spec.Name != "" {
+				node.NodeName = spec.Name
+			}
+			if spec.Description != "" {
+				node.NodeDescription = spec.Description
+			}
+			if scope := stringConfig(spec.Config, "state_scope"); scope != "" {
+				node.StateScope = scope
+			}
+			if message := stringConfig(spec.Config, "interrupt_message"); message != "" {
+				node.InterruptMessage = message
+			}
+			return node, nil
+		},
+	})
+
+	r.RegisterNodeType(NodeTypeDefinition{
 		Type:        "llm",
 		Title:       "LLM Node",
 		Description: "Built-in model inference node.",
@@ -66,7 +97,7 @@ func DefaultRegistry() *Registry {
 			},
 			"additionalProperties": false,
 		},
-		Build: func(ctx BuildContext, spec GraphNodeSpec) (Node[State], error) {
+		Build: func(ctx *BuildContext, spec GraphNodeSpec) (Node[State], error) {
 			if ctx.Model == nil {
 				return nil, fmt.Errorf("build llm node %q: model is required", spec.ID)
 			}
@@ -102,7 +133,7 @@ func DefaultRegistry() *Registry {
 			},
 			"additionalProperties": false,
 		},
-		Build: func(ctx BuildContext, spec GraphNodeSpec) (Node[State], error) {
+		Build: func(ctx *BuildContext, spec GraphNodeSpec) (Node[State], error) {
 			toolIDs := stringSliceConfig(spec.Config, "tool_ids")
 			tools, err := resolveTools(ctx.Tools, toolIDs)
 			if err != nil {
@@ -243,7 +274,7 @@ func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphCondi
 	return g.AddConditionalEdge(from, to, condition)
 }
 
-func (r *Registry) BuildGraph(def GraphDefinition, ctx BuildContext) (*Graph, error) {
+func (r *Registry) BuildGraph(def GraphDefinition, ctx *BuildContext) (*Graph, error) {
 	def = normalizeGraphDefinition(def)
 	if err := def.Validate(); err != nil {
 		return nil, err
@@ -443,6 +474,14 @@ func stringConfig(config map[string]any, key string) string {
 		return value
 	}
 	return ""
+}
+
+func boolConfig(config map[string]any, key string) (bool, bool) {
+	if len(config) == 0 {
+		return false, false
+	}
+	value, ok := config[key].(bool)
+	return value, ok
 }
 
 func sortedStateFieldKeys(input map[string]StateFieldDefinition) []string {

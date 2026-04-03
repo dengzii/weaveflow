@@ -23,14 +23,10 @@ type LLMNode struct {
 }
 
 func NewLLMNode(model llms.Model, tools map[string]Tool) *LLMNode {
-	id, err := uuid.NewUUID()
-	if err != nil {
-		panic(err)
-	}
-
+	id := uuid.New()
 	return &LLMNode{
 		NodeInfo: NodeInfo{
-			NodeID:          id.String(),
+			NodeID:          "LLM_" + id.String(),
 			NodeName:        "LLM",
 			NodeDescription: "LLM",
 		},

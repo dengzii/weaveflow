@@ -15,7 +15,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type Infer struct {
+type interApi struct {
 	modelManager ModelManager
 	mu           sync.RWMutex
 	items        map[string]*loadedModel
@@ -26,7 +26,7 @@ type loadedModel struct {
 	path string
 }
 
-func (r *Infer) ReleaseModel(ctx *gin.Context) error {
+func (r *interApi) ReleaseModel(ctx *gin.Context) error {
 	id := ctx.Param("id")
 	if strings.TrimSpace(id) == "" {
 		return errorInvalidParam
@@ -48,7 +48,7 @@ func (r *Infer) ReleaseModel(ctx *gin.Context) error {
 	return responseSuccess(ctx, gin.H{"id": id})
 }
 
-func (r *Infer) LoadModel(ctx *gin.Context, param *LoadModelRequest) error {
+func (r *interApi) LoadModel(ctx *gin.Context, param *LoadModelRequest) error {
 	backend := normalizeBackend(param.Backend)
 	if backend != "llama_cpp" {
 		return fmt.Errorf("unsupported backend %q", param.Backend)
@@ -77,7 +77,7 @@ func (r *Infer) LoadModel(ctx *gin.Context, param *LoadModelRequest) error {
 	return responseSuccess(ctx, item.info)
 }
 
-func (r *Infer) ModelList(ctx *gin.Context) error {
+func (r *interApi) ModelList(ctx *gin.Context) error {
 	r.mu.RLock()
 	models := make([]ModelInfo, 0, len(r.items))
 	for _, item := range r.items {
@@ -92,7 +92,7 @@ func (r *Infer) ModelList(ctx *gin.Context) error {
 	return responseSuccess(ctx, models)
 }
 
-func (r *Infer) Chat(ctx *gin.Context, request *ChatRequest) error {
+func (r *interApi) Chat(ctx *gin.Context, request *ChatRequest) error {
 	if !request.Stream {
 		return errors.New("only support stream chat yet")
 	}
@@ -207,7 +207,7 @@ func inferModelID(path string) string {
 	return strings.TrimSuffix(base, ext)
 }
 
-func (r *Infer) resolveChatModel(requestedID string) (string, error) {
+func (r *interApi) resolveChatModel(requestedID string) (string, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -265,6 +265,7 @@ func buildPrompt(request *ChatRequest) (string, error) {
 
 func prepareSSE(ctx *gin.Context) {
 	ctx.Status(http.StatusOK)
+	ctx.Header("Content-Type", "text/event-stream")
 	ctx.Header("Text-Type", "text/event-stream")
 	ctx.Header("Cache-Control", "no-cache")
 	ctx.Header("Connection", "keep-alive")

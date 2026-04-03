@@ -26,7 +26,7 @@ func (n *NodeInfo) ID() string {
 	if n.NodeID == "" {
 		panic("NodeID is empty " + n.Name())
 	}
-	return n.Name() + "_" + n.NodeID
+	return n.NodeID
 }
 
 func (n *NodeInfo) Description() string {

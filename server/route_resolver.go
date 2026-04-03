@@ -191,6 +191,11 @@ func handle(method, relativePath string, handlerFunc interface{}) *routeInfo {
 	}
 }
 
+func (that *routeInfo) withValidate() *routeInfo {
+	that.validate = true
+	return that
+}
+
 func onHandlerValidateErr(ctx *gin.Context, err error) {
 	ctx.JSON(http.StatusOK, CommonResponse{
 		Code: 40001,

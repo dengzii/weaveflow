@@ -1,9 +1,8 @@
-package tools
+package falcon
 
 import (
 	"context"
 	"errors"
-	"falcon"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -14,8 +13,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func NewCalculator() falcon.Tool {
-	return falcon.Tool{
+func NewCalculator() Tool {
+	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name:        "calculator",
 			Description: "Evaluate a basic arithmetic expression such as 12*(3+4) or 18/6+7.",

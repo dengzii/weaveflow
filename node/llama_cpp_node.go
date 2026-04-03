@@ -57,14 +57,10 @@ type LlamaCppModel struct {
 }
 
 func NewLlamaCppModel(modelPath string) *LlamaCppModel {
-	nodeID, err := uuid.NewUUID()
-	if err != nil {
-		panic(err)
-	}
-
+	id := uuid.New()
 	return &LlamaCppModel{
 		NodeInfo: falcon.NodeInfo{
-			NodeID:          nodeID.String(),
+			NodeID:          id.String(),
 			NodeName:        "llama.cpp Node",
 			NodeDescription: "Load a local llama.cpp model and run inference.",
 		},
