@@ -94,6 +94,10 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, st
 	}
 
 	if e.run.CancelRequested {
+		logger.Info("cancel interrupt requested",
+			zap.String("run_id", e.run.RunID),
+			zap.String("node_id", nodeID),
+		)
 		e.pending = &runnerPendingControl{kind: runnerControlCancel}
 		return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlCancel)}
 	}
@@ -138,20 +142,29 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, st
 			beforeCheckpointID: beforeID,
 		}
 		e.active = active
+		logger.Debug("node scheduled", stepLogFields(step)...)
 	}
 
 	active.attempts++
 	step := active.step
+	logStep := step
+	logStep.Attempt = active.attempts
 
 	if active.attempts == 1 {
 		if e.run.PauseRequested {
 			active.beforeInterrupted = true
 			e.pending = &runnerPendingControl{kind: runnerControlPause}
+			logger.Info("pause interrupt requested", stepLogFields(logStep)...)
 			return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlPause)}
 		}
 		if hit := e.runner.matchBreakpoint(step.NodeID, string(CheckpointBeforeNode), e.skip); hit != nil {
 			active.beforeInterrupted = true
 			e.pending = &runnerPendingControl{kind: runnerControlPause, hit: hit}
+			fields := append(stepLogFields(logStep),
+				zap.String("breakpoint_id", hit.BreakpointID),
+				zap.String("breakpoint_stage", hit.Stage),
+			)
+			logger.Info("breakpoint hit before node", fields...)
 			return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: hit}
 		}
 
@@ -161,12 +174,14 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, st
 		}); err != nil {
 			return ctx, err
 		}
+		logger.Info("node started", append(stepLogFields(logStep), stateSummaryFields(state)...)...)
 	} else {
 		if err := e.runner.publishEvent(ctx, RunRecord{RunID: e.run.RunID}, step.StepID, step.NodeID, EventNodeRetry, map[string]any{
 			"attempt": active.attempts - 1,
 		}); err != nil {
 			return ctx, err
 		}
+		logger.Warn("node retrying", stepLogFields(logStep)...)
 	}
 
 	stepID := step.StepID
@@ -240,6 +255,11 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 	if err := e.runner.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return err
 	}
+	fields := append(stepLogFields(step),
+		zap.String("checkpoint_after_id", afterID),
+	)
+	fields = append(fields, stateSummaryFields(state)...)
+	logger.Info("node completed", fields...)
 
 	e.mu.Lock()
 	e.run = run
@@ -280,6 +300,7 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 	if updateErr := e.runner.ExecutionStore.UpdateStep(ctx, step); updateErr != nil {
 		return updateErr
 	}
+	logger.Error("node failed", append(stepLogFields(step), zap.Error(err))...)
 
 	e.runner.notifyListeners(ctx, langgraph.NodeEventError, nodeID, state, err)
 	return e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeFailed, map[string]any{
@@ -367,6 +388,9 @@ func (e *graphRunnerExecution) markNodeInterrupt(nodeID string) {
 	/// make sure the node resume at the same node after restart
 	e.active.beforeInterrupted = true
 	e.pending = &runnerPendingControl{kind: runnerControlPause}
+	logStep := e.active.step
+	logStep.Attempt = e.active.attempts
+	logger.Info("node interrupt captured", stepLogFields(logStep)...)
 }
 
 type runnerGraphCallbacks struct {

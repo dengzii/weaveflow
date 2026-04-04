@@ -96,3 +96,27 @@ func mergeStateMap(target State, overlay State) {
 		target[key] = cloneStateValue(value)
 	}
 }
+
+func prepareContinuationState(base State, input State) (State, error) {
+	state := State{}
+	if base != nil {
+		state = base.CloneState()
+	}
+	resetConversationTurnState(state)
+	return mergeResumeInput(state, input)
+}
+
+func resetConversationTurnState(state State) {
+	if state == nil {
+		return
+	}
+
+	if conversation := conversationSource(state); conversation != nil {
+		delete(conversation, stateKeyFinalAnswer)
+		delete(conversation, stateKeyIterationCount)
+	}
+
+	for _, scopeState := range state.scopes() {
+		resetConversationTurnState(scopeState)
+	}
+}

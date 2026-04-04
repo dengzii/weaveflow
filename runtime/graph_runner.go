@@ -75,6 +75,7 @@ func (r *GraphRunner) Start(ctx context.Context, initialState State) (RunRecord,
 	if err := r.publishEvent(ctx, run, "", "", EventRunStarted, nil); err != nil {
 		return RunRecord{}, initialState, err
 	}
+	logger.Info("run started", append(runLogFields(run), stateSummaryFields(initialState)...)...)
 
 	return r.execute(ctx, run, initialState.CloneState(), entryPoint, nil, nil)
 }
@@ -96,59 +97,34 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string, input State) (Ru
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
-	if checkpoint.Business, err = mergeResumeInput(checkpoint.Business, input); err != nil {
-		return RunRecord{}, nil, err
-	}
 	logger.Info("checkpoint loaded",
+		zap.String("run_id", run.RunID),
+		zap.String("status", string(run.Status)),
 		zap.String("checkpoint_id", run.LastCheckpointID),
 		zap.String("current_node_id", checkpoint.Runtime.CurrentNodeID),
 		zap.String("current_step_id", checkpoint.Runtime.CurrentStepID),
+		zap.Int("artifact_count", len(checkpoint.Artifacts)),
 	)
 
-	startNode, skip, err := r.resumeTarget(checkpoint.Record, checkpoint.Business)
-	if err != nil {
-		return RunRecord{}, nil, err
+	switch {
+	case isResumableRunStatus(run.Status):
+		return r.resumeExistingRun(ctx, run, checkpoint, input)
+	case isContinuableRunStatus(run.Status):
+		return r.continueRun(ctx, run, checkpoint, input)
+	default:
+		return RunRecord{}, nil, fmt.Errorf("run %q status %q is not resumable", runID, run.Status)
 	}
-
-	run.Status = RunStatusRunning
-	run.PauseRequested = false
-	run.CancelRequested = false
-	run.ErrorCode = ""
-	run.ErrorMessage = ""
-	run.FinishedAt = nil
-	if checkpoint.Runtime.CurrentStepID != "" {
-		run.LastStepID = checkpoint.Runtime.CurrentStepID
-	}
-	if startNode == langgraph.END {
-		now := r.now()
-		run.Status = RunStatusCompleted
-		run.UpdatedAt = now
-		run.FinishedAt = &now
-		if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
-			return RunRecord{}, nil, err
-		}
-		return run, checkpoint.Business, nil
-	}
-	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
-	if checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "" {
-		run.CurrentNodeID = startNode
-	}
-	run.UpdatedAt = r.now()
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
-		return RunRecord{}, nil, err
-	}
-	if err := r.publishEvent(ctx, run, "", "", EventRunResumed, map[string]any{
-		"checkpoint_id": checkpoint.Record.CheckpointID,
-		"node_id":       run.CurrentNodeID,
-	}); err != nil {
-		return RunRecord{}, nil, err
-	}
-
-	logger.Info("resuming run", zap.String("start_node", startNode), zap.Any("state", checkpoint.Business))
-	return r.execute(ctx, run, checkpoint.Business, startNode, skip, checkpoint.Artifacts)
 }
 
 func (r *GraphRunner) GetResumableRun(ctx context.Context) (*RunRecord, error) {
+	return r.latestCheckpointedRun(ctx, isResumableRunStatus)
+}
+
+func (r *GraphRunner) GetContinuableRun(ctx context.Context) (*RunRecord, error) {
+	return r.latestCheckpointedRun(ctx, isContinuableRunStatus)
+}
+
+func (r *GraphRunner) latestCheckpointedRun(ctx context.Context, predicate func(RunStatus) bool) (*RunRecord, error) {
 	runs, err := r.ListRuns(ctx, RunFilter{})
 	if err != nil {
 		return nil, err
@@ -159,7 +135,7 @@ func (r *GraphRunner) GetResumableRun(ctx context.Context) (*RunRecord, error) {
 		if run.LastCheckpointID == "" {
 			continue
 		}
-		if !isResumableRunStatus(run.Status) {
+		if predicate != nil && !predicate(run.Status) {
 			continue
 		}
 		if candidate == nil || candidate.UpdatedAt.Before(run.UpdatedAt) {
@@ -172,6 +148,18 @@ func (r *GraphRunner) GetResumableRun(ctx context.Context) (*RunRecord, error) {
 func isResumableRunStatus(status RunStatus) bool {
 	switch status {
 	case RunStatusPaused, RunStatusRunning, RunStatusPending:
+		return true
+	default:
+		return false
+	}
+}
+
+func isContinuableRunStatus(status RunStatus) bool {
+	if isResumableRunStatus(status) {
+		return true
+	}
+	switch status {
+	case RunStatusCompleted, RunStatusFailed, RunStatusCanceled:
 		return true
 	default:
 		return false
@@ -201,6 +189,14 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, state State, s
 	if len(afterNodes) > 0 {
 		config.InterruptAfter = afterNodes
 	}
+	fields := append(runLogFields(run),
+		zap.String("start_node", startNode),
+		zap.Int("breakpoint_count", len(r.Breakpoints)),
+		zap.Int("interrupt_after_count", len(afterNodes)),
+		zap.Int("artifact_count", len(artifacts)),
+	)
+	fields = append(fields, stateSummaryFields(state)...)
+	logger.Info("run executing", fields...)
 
 	finalState, invokeErr := runnable.InvokeWithConfig(ctx, state.CloneState(), config)
 	finalState = execution.stateOrFallback(finalState)
@@ -217,6 +213,79 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, state State, s
 		return RunRecord{}, finalState, err
 	}
 	return r.failRun(ctx, execution.currentRun(), finalState, "node_failed", invokeErr.Error())
+}
+
+func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input State) (RunRecord, State, error) {
+	var err error
+	if checkpoint.Business, err = mergeResumeInput(checkpoint.Business, input); err != nil {
+		return RunRecord{}, nil, err
+	}
+
+	startNode, skip, err := r.resumeTarget(checkpoint.Record, checkpoint.Business)
+	if err != nil {
+		return RunRecord{}, nil, err
+	}
+
+	run.Status = RunStatusRunning
+	run.PauseRequested = false
+	run.CancelRequested = false
+	run.ErrorCode = ""
+	run.ErrorMessage = ""
+	run.FinishedAt = nil
+	if checkpoint.Runtime.CurrentStepID != "" {
+		run.LastStepID = checkpoint.Runtime.CurrentStepID
+	}
+	if startNode == langgraph.END {
+		now := r.now()
+		run.Status = RunStatusCompleted
+		run.UpdatedAt = now
+		run.FinishedAt = &now
+		if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+			return RunRecord{}, nil, err
+		}
+		logger.Info("resume resolved to completed run", append(runLogFields(run), stateSummaryFields(checkpoint.Business)...)...)
+		return run, checkpoint.Business, nil
+	}
+	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
+	if checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "" {
+		run.CurrentNodeID = startNode
+	}
+	run.UpdatedAt = r.now()
+	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+		return RunRecord{}, nil, err
+	}
+	if err := r.publishEvent(ctx, run, "", "", EventRunResumed, map[string]any{
+		"checkpoint_id": checkpoint.Record.CheckpointID,
+		"node_id":       run.CurrentNodeID,
+	}); err != nil {
+		return RunRecord{}, nil, err
+	}
+
+	fields := append(runLogFields(run),
+		zap.String("start_node", startNode),
+		zap.String("resume_checkpoint_id", checkpoint.Record.CheckpointID),
+		zap.Int("artifact_count", len(checkpoint.Artifacts)),
+	)
+	fields = append(fields, stateSummaryFields(checkpoint.Business)...)
+	logger.Info("resuming run", fields...)
+	return r.execute(ctx, run, checkpoint.Business, startNode, skip, checkpoint.Artifacts)
+}
+
+func (r *GraphRunner) continueRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input State) (RunRecord, State, error) {
+	state, err := prepareContinuationState(checkpoint.Business, input)
+	if err != nil {
+		return RunRecord{}, nil, err
+	}
+
+	fields := []zap.Field{
+		zap.String("run_id", run.RunID),
+		zap.String("status", string(run.Status)),
+		zap.String("checkpoint_id", checkpoint.Record.CheckpointID),
+		zap.Int("artifact_count", len(checkpoint.Artifacts)),
+	}
+	fields = append(fields, stateSummaryFields(state)...)
+	logger.Info("continuing run as new execution", fields...)
+	return r.Start(ctx, state)
 }
 
 func (r *GraphRunner) GetRun(ctx context.Context, runID string) (RunRecord, error) {
@@ -320,6 +389,7 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return err
 	}
+	logger.Info("pause requested", runLogFields(run)...)
 	return r.publishEvent(ctx, run, "", "", EventRunPauseRequested, nil)
 }
 
@@ -333,12 +403,18 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return err
 	}
+	logger.Info("cancel requested", runLogFields(run)...)
 	return r.publishEvent(ctx, run, "", "", EventRunCancelRequested, nil)
 }
 
 func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, state State, interrupt *langgraph.GraphInterrupt) (RunRecord, State, error) {
 	run := execution.currentRun()
-	logger.Info("run interrupt")
+	fields := append(runLogFields(run),
+		zap.String("interrupt_node_id", interrupt.Node),
+		zap.String("interrupt_reason", interrupt.Error()),
+	)
+	fields = append(fields, stateSummaryFields(state)...)
+	logger.Info("run interrupt", fields...)
 
 	if control, active := execution.consumePendingControl(); control != nil {
 		switch control.kind {
@@ -376,6 +452,7 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, state Stat
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, state, err
 	}
+	logger.Info("run completed", append(runLogFields(run), stateSummaryFields(state)...)...)
 	if err := r.publishEvent(ctx, run, run.LastStepID, "", EventRunFinished, nil); err != nil {
 		return RunRecord{}, state, err
 	}
@@ -390,6 +467,7 @@ func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, state State)
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, state, err
 	}
+	logger.Info("run canceled", append(runLogFields(run), stateSummaryFields(state)...)...)
 	if err := r.publishEvent(ctx, run, "", run.CurrentNodeID, EventRunCanceled, nil); err != nil {
 		return RunRecord{}, state, err
 	}
@@ -430,6 +508,18 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 	if err := r.CheckpointStore.Save(ctx, record, payload); err != nil {
 		return "", err
 	}
+	fields := append(checkpointLogFields(record),
+		zap.Int("payload_bytes", len(payload)),
+		zap.Int("attempt", attempts),
+		zap.Int("artifact_count", len(artifacts)),
+	)
+	if hit != nil {
+		fields = append(fields,
+			zap.String("breakpoint_id", hit.BreakpointID),
+			zap.String("breakpoint_stage", hit.Stage),
+		)
+	}
+	logger.Debug("checkpoint saved", fields...)
 	if err := r.publishEvent(ctx, run, step.StepID, record.NodeID, EventCheckpointCreated, map[string]any{
 		"checkpoint_id": record.CheckpointID,
 		"stage":         stage,
@@ -456,6 +546,12 @@ func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step 
 	if len(changes) == 0 {
 		return nil
 	}
+	logger.Debug("state diff computed",
+		zap.String("run_id", run.RunID),
+		zap.String("step_id", step.StepID),
+		zap.String("node_id", step.NodeID),
+		zap.Int("change_count", len(changes)),
+	)
 
 	return r.publishEvent(ctx, run, step.StepID, step.NodeID, EventStateChanged, map[string]any{
 		"changes": changes,
@@ -477,6 +573,15 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, state State, 
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, state, err
 	}
+	fields := append(runLogFields(run), stepLogFields(step)...)
+	fields = append(fields, stateSummaryFields(state)...)
+	if hit != nil {
+		fields = append(fields,
+			zap.String("breakpoint_id", hit.BreakpointID),
+			zap.String("breakpoint_stage", hit.Stage),
+		)
+	}
+	logger.Info("run paused", fields...)
 	if hit != nil {
 		if err := r.publishEvent(ctx, run, step.StepID, step.NodeID, EventBreakpointHit, hit); err != nil {
 			return RunRecord{}, state, err
@@ -498,6 +603,7 @@ func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, state State, c
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, state, err
 	}
+	logger.Error("run failed", append(runLogFields(run), stateSummaryFields(state)...)...)
 	if err := r.publishEvent(ctx, run, "", run.CurrentNodeID, EventRunFailed, map[string]any{
 		"error_code":    code,
 		"error_message": message,
@@ -636,6 +742,8 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (Ar
 	if err != nil {
 		return ArtifactRef{}, err
 	}
+	fields := append(artifactLogFields(ref), zap.Int("bytes", len(artifact.Data)))
+	logger.Debug("artifact recorded", fields...)
 	if artifact.RunID != "" {
 		_ = r.publishEvent(ctx, RunRecord{RunID: artifact.RunID}, artifact.StepID, artifact.NodeID, EventArtifactCreated, map[string]any{
 			"artifact_id": ref.ID,

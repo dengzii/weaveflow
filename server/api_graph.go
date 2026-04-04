@@ -84,12 +84,12 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 
 	if a.graphs[instanceId] != nil {
 		runner = a.graphs[instanceId]
-		record, err := runner.GetResumableRun(ctx)
+		record, err := runner.GetContinuableRun(ctx)
 		if err != nil {
 			return err
 		}
 		if record == nil {
-			return errors.New("no resumable run found")
+			return errors.New("no continuable run found")
 		}
 		var input fruntime.State
 		if request.State != nil {
@@ -123,6 +123,7 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 	runner.ArtifactStore = artifactStore
 	runner.GraphID = "graph-runner"
 	runner.GraphVersion = "v1.0.0"
+	a.graphs[instanceId] = runner
 
 	record, _, err := runner.Start(context.Background(), initState)
 	if err != nil {

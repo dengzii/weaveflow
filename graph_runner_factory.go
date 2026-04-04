@@ -2,6 +2,7 @@ package falcon
 
 import (
 	"context"
+	"errors"
 	fruntime "falcon/runtime"
 	"os"
 	"path/filepath"
@@ -51,7 +52,7 @@ func RunGraphWithRunner(baseDir string, graph *Graph, initState fruntime.State) 
 	return err
 }
 
-func ResumeGraphRunnerFromDirectory(baseDir string, state State) error {
+func ResumeGraphRunnerFromDirectory(baseDir string, state State) (State, error) {
 	toolSets := map[string]Tool{
 		"current_time": NewCurrentTime(),
 		"calculator":   NewCalculator(),
@@ -59,7 +60,7 @@ func ResumeGraphRunnerFromDirectory(baseDir string, state State) error {
 
 	model, err := openai.New()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	buildContext := &BuildContext{
@@ -69,12 +70,12 @@ func ResumeGraphRunnerFromDirectory(baseDir string, state State) error {
 
 	graph, err := LoadGraphFromFile(buildContext, filepath.Join(baseDir, "graph.json"))
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	log, err := zap.NewDevelopment()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	sink := fruntime.NewLoggerEventSink(log)
 
@@ -88,14 +89,14 @@ func ResumeGraphRunnerFromDirectory(baseDir string, state State) error {
 	runner.GraphID = "graph-runner"
 	runner.GraphVersion = "v1.0.0"
 
-	run, err := runner.GetResumableRun(context.Background())
+	run, err := runner.GetContinuableRun(context.Background())
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if run == nil {
-		return nil
+		return nil, errors.New("no continuable run")
 	}
 
-	_, _, err = runner.Resume(context.Background(), run.RunID, state)
-	return err
+	_, state, err = runner.Resume(context.Background(), run.RunID, state)
+	return state, err
 }
