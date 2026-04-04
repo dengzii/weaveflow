@@ -79,7 +79,7 @@ func (r *GraphRunner) Start(ctx context.Context, initialState State) (RunRecord,
 	return r.execute(ctx, run, initialState.CloneState(), entryPoint, nil, nil)
 }
 
-func (r *GraphRunner) Resume(ctx context.Context, runID string) (RunRecord, State, error) {
+func (r *GraphRunner) Resume(ctx context.Context, runID string, input State) (RunRecord, State, error) {
 	if err := r.validate(); err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -94,6 +94,9 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string) (RunRecord, Stat
 
 	checkpoint, err := r.LoadCheckpointState(ctx, run.LastCheckpointID)
 	if err != nil {
+		return RunRecord{}, nil, err
+	}
+	if checkpoint.Business, err = mergeResumeInput(checkpoint.Business, input); err != nil {
 		return RunRecord{}, nil, err
 	}
 	logger.Info("checkpoint loaded",

@@ -2,6 +2,7 @@ package main
 
 import (
 	"falcon"
+	"falcon/runtime"
 	"fmt"
 	"time"
 
@@ -26,7 +27,11 @@ func runWithRunner() {
 }
 
 func resumeFromCheckpoint() {
-	err := falcon.ResumeGraphRunnerFromDirectory(".local/instance")
+	state := runtime.State{}
+	scope := state.EnsureScope(reactAgentStateScope)
+	scope[falcon.PendingHumanInputStateKey] = "What is 64+(12*5), and what time is it now?"
+
+	err := falcon.ResumeGraphRunnerFromDirectory(".local/instance", state)
 	tryPanic(err)
 }
 

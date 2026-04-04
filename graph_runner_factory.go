@@ -51,7 +51,7 @@ func RunGraphWithRunner(baseDir string, graph *Graph, initState fruntime.State) 
 	return err
 }
 
-func ResumeGraphRunnerFromDirectory(baseDir string) error {
+func ResumeGraphRunnerFromDirectory(baseDir string, state State) error {
 	toolSets := map[string]Tool{
 		"current_time": NewCurrentTime(),
 		"calculator":   NewCalculator(),
@@ -96,6 +96,6 @@ func ResumeGraphRunnerFromDirectory(baseDir string) error {
 		return nil
 	}
 
-	_, _, err = runner.Resume(context.Background(), run.RunID)
+	_, _, err = runner.Resume(context.Background(), run.RunID, state)
 	return err
 }
