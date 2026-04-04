@@ -289,9 +289,6 @@ func (r RunRequest) Validate() error {
 	if r.ResumeFromRunID != "" && r.ResumeFromCheckpointID != "" {
 		return fmt.Errorf("run request can specify only one of resume_from_run_id or resume_from_checkpoint_id")
 	}
-	if (r.ResumeFromRunID != "" || r.ResumeFromCheckpointID != "") && len(r.Input) > 0 {
-		return fmt.Errorf("run request input cannot be combined with resume fields")
-	}
 	if r.Debug != nil {
 		if err := r.Debug.Validate(); err != nil {
 			return err

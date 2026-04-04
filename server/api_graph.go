@@ -91,7 +91,11 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 		if record == nil {
 			return errors.New("no resumable run found")
 		}
-		_, _, err = runner.Resume(ctx, record.RunID)
+		var input fruntime.State
+		if request.State != nil {
+			input = *request.State
+		}
+		_, _, err = runner.Resume(ctx, record.RunID, input)
 		return err
 	}
 	systemPrompt := "You are a helpful ReAct agent. " +

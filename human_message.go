@@ -3,6 +3,8 @@ package falcon
 import (
 	"context"
 	fruntime "falcon/runtime"
+	"fmt"
+	"strings"
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -15,7 +17,10 @@ type HumanMessageNode struct {
 	InterruptMessage string
 }
 
-const scopeNodeHumanMessage = "node_human_message"
+const (
+	scopeNodeHumanMessage     = "node_human_message"
+	PendingHumanInputStateKey = "pending_human_input"
+)
 
 func NewHumanMessageNode() *HumanMessageNode {
 	id := uuid.New()
@@ -32,8 +37,17 @@ func NewHumanMessageNode() *HumanMessageNode {
 
 func (n *HumanMessageNode) Invoke(ctx context.Context, state State) (State, error) {
 	conversation := fruntime.Conversation(state, n.StateScope)
-	messages := conversation.Messages()
+	pending, ok, err := n.consumePendingInput(state)
+	if err != nil {
+		return state, err
+	}
+	if ok {
+		messages := conversation.Messages()
+		conversation.UpdateMessage(append(messages, llms.TextParts(llms.ChatMessageTypeHuman, pending)))
+		return state, nil
+	}
 
+	messages := conversation.Messages()
 	if len(messages) <= 0 {
 		return state, nil
 	}
@@ -44,6 +58,42 @@ func (n *HumanMessageNode) Invoke(ctx context.Context, state State) (State, erro
 	}
 
 	return state, nil
+}
+
+func (n *HumanMessageNode) consumePendingInput(state State) (string, bool, error) {
+	target := n.pendingInputState(state)
+	if target == nil {
+		return "", false, nil
+	}
+
+	raw, exists := target[PendingHumanInputStateKey]
+	if !exists {
+		return "", false, nil
+	}
+	delete(target, PendingHumanInputStateKey)
+	if raw == nil {
+		return "", false, nil
+	}
+
+	text, ok := raw.(string)
+	if !ok {
+		return "", false, fmt.Errorf("state scope %q field %q must be string, got %T", n.StateScope, PendingHumanInputStateKey, raw)
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", false, nil
+	}
+	return text, true, nil
+}
+
+func (n *HumanMessageNode) pendingInputState(state State) State {
+	if state == nil {
+		return nil
+	}
+	if n.StateScope == "" {
+		return state
+	}
+	return state.EnsureScope(n.StateScope)
 }
 
 func (n *HumanMessageNode) GraphNodeSpec() GraphNodeSpec {
