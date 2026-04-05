@@ -7,6 +7,9 @@ func Collect(resultCh <-chan GenerateResult, errCh <-chan error) (GenerateSummar
 		if result.Content != "" {
 			summary.Content += result.Content
 		}
+		if result.PromptTokens > 0 {
+			summary.PromptTokens = result.PromptTokens
+		}
 		if result.TokenCount > 0 {
 			summary.TokenCount = result.TokenCount
 		}

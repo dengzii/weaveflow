@@ -57,6 +57,7 @@ const (
 	EventNodeRetry          EventType = "node.retry"
 	EventLLMReasoningChunk  EventType = "llm.reasoning_chunk"
 	EventLLMContentChunk    EventType = "llm.content_chunk"
+	EventLLMUsage           EventType = "llm.usage"
 	EventToolCalled         EventType = "tool.called"
 	EventToolReturned       EventType = "tool.returned"
 	EventToolFailed         EventType = "tool.failed"

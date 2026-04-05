@@ -32,15 +32,17 @@ type GenerateOptions struct {
 }
 
 type GenerateResult struct {
-	StopReason string
-	TokenCount int
-	Content    string
+	StopReason   string
+	PromptTokens int
+	TokenCount   int
+	Content      string
 }
 
 type GenerateSummary struct {
-	StopReason string
-	TokenCount int
-	Content    string
+	StopReason   string
+	PromptTokens int
+	TokenCount   int
+	Content      string
 }
 
 const (

@@ -82,6 +82,20 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 	}
 
 	choice := resp.Choices[0]
+	usage := Extract(choice)
+	record := RecordState(state, Record{
+		NodeID:             L.ID(),
+		Model:              ModelLabel(L.model),
+		StateScope:         L.StateScope,
+		StopReason:         choice.StopReason,
+		PromptTokens:       usage.PromptTokens,
+		CompletionTokens:   usage.CompletionTokens,
+		TotalTokens:        usage.TotalTokens,
+		ReasoningTokens:    usage.ReasoningTokens,
+		PromptCachedTokens: usage.PromptCachedTokens,
+	})
+	_ = PublishEvent(ctx, record)
+
 	aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
 	if strings.TrimSpace(choice.Content) != "" {
 		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
@@ -185,6 +199,7 @@ type llmResponseArtifactChoice struct {
 	ToolCalls        []llms.ToolCall    `json:"tool_calls,omitempty"`
 	FunctionCall     *llms.FunctionCall `json:"function_call,omitempty"`
 	ReasoningContent string             `json:"reasoning_content,omitempty"`
+	Usage            map[string]any     `json:"usage,omitempty"`
 }
 
 func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, stateScope string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
@@ -227,6 +242,9 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 			Content:          choice.Content,
 			StopReason:       choice.StopReason,
 			ReasoningContent: choice.ReasoningContent,
+		}
+		if usage := Extract(choice); !usage.IsZero() {
+			item.Usage = usage.Artifact()
 		}
 		if choice.FuncCall != nil {
 			copyCall := *choice.FuncCall

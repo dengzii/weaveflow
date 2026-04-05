@@ -142,6 +142,19 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 	}
 	reasoning := strings.TrimSpace(choice.ReasoningContent)
 	stopReason, tokenCount := extractGenerationInfo(choice)
+	usage := falcon.Extract(choice)
+	record := falcon.RecordState(state, falcon.Record{
+		NodeID:             l.ID(),
+		Model:              l.modelLabel(),
+		StateScope:         l.StateScope,
+		StopReason:         stopReason,
+		PromptTokens:       usage.PromptTokens,
+		CompletionTokens:   usage.CompletionTokens,
+		TotalTokens:        usage.TotalTokens,
+		ReasoningTokens:    usage.ReasoningTokens,
+		PromptCachedTokens: usage.PromptCachedTokens,
+	})
+	_ = falcon.PublishEvent(ctx, record)
 
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "llama_cpp.response", map[string]any{
 		"content":     output,
@@ -150,6 +163,7 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 		"token_count": tokenCount,
 		"state_scope": l.StateScope,
 		"output_key":  l.effectiveOutputKey(),
+		"usage":       record.ArtifactPayload(),
 		"reasoning_key": func() string {
 			if reasoning == "" {
 				return ""
@@ -393,6 +407,17 @@ func (l *LlamaCppModel) effectiveTokenCountKey() string {
 		return defaultTokenCountKey
 	}
 	return strings.TrimSpace(l.TokenCountKey)
+}
+
+func (l *LlamaCppModel) modelLabel() string {
+	if name := strings.TrimSpace(l.ModelPath); name != "" {
+		name = strings.ReplaceAll(name, "\\", "/")
+		if idx := strings.LastIndex(name, "/"); idx >= 0 && idx+1 < len(name) {
+			name = name[idx+1:]
+		}
+		return name
+	}
+	return l.Name()
 }
 
 func extractGenerationInfo(choice *llms.ContentChoice) (string, int) {

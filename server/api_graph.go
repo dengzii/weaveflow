@@ -112,14 +112,17 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 
 	log, err := zap.NewDevelopment()
 	fruntime.SetLogger(log)
-	sink := fruntime.NewLoggerEventSink(log)
+	sink := fruntime.NewCombineEventSink(
+		fruntime.NewLoggerEventSink(log),
+		fruntime.NewFileEventSink(filepath.Join(baseDir, "events")),
+	)
 
 	executionStore := fruntime.NewFileExecutionStore(filepath.Join(baseDir, "execution"))
 	checkpointStore := fruntime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
 	stateCodec := fruntime.NewJSONStateCodec(fruntime.DefaultStateVersion)
 	artifactStore := fruntime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
 
-	runner = fruntime.NewGraphRunner(falcon.NewRunnerGraph(graph), executionStore, checkpointStore, stateCodec, sink)
+	runner = falcon.NewGraphRunner(graph, executionStore, checkpointStore, stateCodec, sink)
 	runner.ArtifactStore = artifactStore
 	runner.GraphID = "graph-runner"
 	runner.GraphVersion = "v1.0.0"

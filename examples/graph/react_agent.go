@@ -20,35 +20,45 @@ func newReActAgentInitialState() fruntime.State {
 	return fruntime.NewBaseState(messages, 10)
 }
 
-func newReActAgentGraph() *falcon.Graph {
-	graph := falcon.NewGraph()
-
+func newReActAgentBuildContext() *falcon.BuildContext {
 	model, err := openai.New()
 	tryPanic(err)
 
-	toolSets := map[string]falcon.Tool{
+	return &falcon.BuildContext{
+		Model: model,
+		Tools: newReActAgentTools(),
+	}
+}
+
+func newReActAgentTools() map[string]falcon.Tool {
+	return map[string]falcon.Tool{
 		"current_time": falcon.NewCurrentTime(),
 		"calculator":   falcon.NewCalculator(),
 	}
+}
+
+func newReActAgentGraph() *falcon.Graph {
+	graph := falcon.NewGraph()
+	buildCtx := newReActAgentBuildContext()
 
 	humanInLoop := falcon.NewHumanMessageNode()
 	humanInLoop.StateScope = reactAgentStateScope
 
 	tryPanic(graph.AddNode(humanInLoop))
 
-	llm := falcon.NewLLMNode(model, toolSets)
+	llm := falcon.NewLLMNode(buildCtx.Model, buildCtx.Tools)
 	llm.StateScope = reactAgentStateScope
 
 	tryPanic(graph.AddNode(llm))
 
-	toolCall := falcon.NewToolCallNode(toolSets)
+	toolCall := falcon.NewToolCallNode(buildCtx.Tools)
 	toolCall.StateScope = llm.StateScope
 
 	tryPanic(graph.AddNode(toolCall))
 
 	tryPanic(graph.AddEdge(humanInLoop.ID(), llm.ID()))
 
-	err = graph.AddConditionalEdge(llm.ID(), toolCall.ID(), falcon.LastMessageHasToolCalls(llm.StateScope))
+	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), falcon.LastMessageHasToolCalls(llm.StateScope))
 	tryPanic(err)
 
 	err = graph.AddConditionalEdge(llm.ID(), falcon.EndNodeRef, falcon.HasFinalAnswer(llm.StateScope))

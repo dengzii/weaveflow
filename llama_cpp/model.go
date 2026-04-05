@@ -55,6 +55,9 @@ func (m *Model) GenerateContent(ctx context.Context, messages []llms.MessageCont
 		if result.TokenCount > 0 {
 			finalResult.TokenCount = result.TokenCount
 		}
+		if result.PromptTokens > 0 {
+			finalResult.PromptTokens = result.PromptTokens
+		}
 		if result.StopReason != StopReasonNone {
 			finalResult.StopReason = result.StopReason
 		}
@@ -86,8 +89,9 @@ func (m *Model) GenerateContent(ctx context.Context, messages []llms.MessageCont
 			return ""
 		}(),
 		GenerationInfo: map[string]any{
+			"PromptTokens":     finalResult.PromptTokens,
 			"CompletionTokens": finalResult.TokenCount,
-			"TotalTokens":      finalResult.TokenCount,
+			"TotalTokens":      finalResult.PromptTokens + finalResult.TokenCount,
 			"StopReason":       finalResult.StopReason,
 			"ThinkingContent": func() string {
 				if thinking.returnThinking {

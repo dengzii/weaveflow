@@ -64,15 +64,17 @@ type GenerateOptions struct {
 }
 
 type GenerateResult struct {
-	StopReason string
-	TokenCount int
-	Content    string
+	StopReason   string
+	PromptTokens int
+	TokenCount   int
+	Content      string
 }
 
 type GenerateSummary struct {
-	StopReason string
-	TokenCount int
-	Content    string
+	StopReason   string
+	PromptTokens int
+	TokenCount   int
+	Content      string
 }
 
 const (
@@ -341,16 +343,18 @@ func (m *Model) generate(ctx context.Context, prompt string, opts GenerateOption
 
 		emittedStarted := time.Now()
 		resultCh <- GenerateResult{
-			Content:    string(content),
-			TokenCount: tokenCount,
+			Content:      string(content),
+			PromptTokens: perf.promptTokens,
+			TokenCount:   tokenCount,
 		}
 		perf.emit += time.Since(emittedStarted)
 	}
 	sendStop := func(reason string, tokenCount int) {
 		emittedStarted := time.Now()
 		resultCh <- GenerateResult{
-			StopReason: reason,
-			TokenCount: tokenCount,
+			StopReason:   reason,
+			PromptTokens: perf.promptTokens,
+			TokenCount:   tokenCount,
 		}
 		perf.emit += time.Since(emittedStarted)
 	}

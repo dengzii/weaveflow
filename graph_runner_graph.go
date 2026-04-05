@@ -13,7 +13,7 @@ type graphRunnerGraph struct {
 	graph *Graph
 }
 
-func NewRunnerGraph(graph *Graph) fruntime.RunnerGraph {
+func newRunnerGraph(graph *Graph) fruntime.RunnerGraph {
 	if graph == nil {
 		return nil
 	}
