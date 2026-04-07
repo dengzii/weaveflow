@@ -1,7 +1,7 @@
 package main
 
 import (
-	"falcon/internal/server"
+	"weaveflow/internal/server"
 )
 
 func main() {

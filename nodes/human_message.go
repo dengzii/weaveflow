@@ -2,10 +2,10 @@ package nodes
 
 import (
 	"context"
-	"falcon/dsl"
-	fruntime "falcon/runtime"
 	"fmt"
 	"strings"
+	"weaveflow/dsl"
+	fruntime "weaveflow/runtime"
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"

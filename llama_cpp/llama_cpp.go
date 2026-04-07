@@ -21,7 +21,6 @@ import "C"
 import (
 	"context"
 	"errors"
-	"falcon/internal/redact"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -30,6 +29,7 @@ import (
 	"sync"
 	"time"
 	"unsafe"
+	"weaveflow/internal/redact"
 
 	"go.uber.org/zap"
 )

@@ -1,6 +1,6 @@
-package falcon
+package weaveflow
 
-import fruntime "falcon/runtime"
+import fruntime "weaveflow/runtime"
 
 type State = fruntime.State
 

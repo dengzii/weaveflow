@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"falcon/internal/redact"
+	"weaveflow/internal/redact"
 )
 
 func TestRedactMessages(t *testing.T) {

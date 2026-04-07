@@ -1,10 +1,10 @@
-package falcon
+package weaveflow
 
 import (
 	"context"
-	fruntime "falcon/runtime"
 	"strings"
 	"testing"
+	fruntime "weaveflow/runtime"
 )
 
 func TestExpressionConditionsMatchAllAgainstScopedStateAndConversation(t *testing.T) {

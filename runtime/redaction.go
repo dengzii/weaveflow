@@ -1,8 +1,8 @@
 package runtime
 
 import (
-	"falcon/internal/redact"
 	"strings"
+	"weaveflow/internal/redact"
 )
 
 func RedactMessages(messages []StateMessage) []StateMessage {
