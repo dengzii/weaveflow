@@ -1,4 +1,4 @@
-package falcon
+package tools
 
 import (
 	"context"
@@ -15,14 +15,8 @@ func NewCurrentTime() Tool {
 			Name:        "current_time",
 			Description: "Return the current local time and UTC time. Use this when the user asks for the current time or date.",
 			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"input": map[string]any{
-						"type":        "string",
-						"description": "Optional note to include with the response.",
-					},
-				},
-				"required":             []string{"input"},
+				"type":                 "object",
+				"properties":           map[string]any{},
 				"additionalProperties": false,
 			},
 		},

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	fruntime "falcon/runtime"
+	"falcon/tools"
 	"fmt"
 	"sort"
 	"strings"
@@ -15,35 +16,14 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-type ToolHandler func(ctx context.Context, input string) (string, error)
-
-type Tool struct {
-	Function *llms.FunctionDefinition
-	Handler  ToolHandler
-}
-
-func (t Tool) Name() string {
-	if t.Function == nil {
-		return ""
-	}
-	return t.Function.Name
-}
-
-func (t Tool) NewTool() llms.Tool {
-	return llms.Tool{
-		Type:     "function",
-		Function: cloneFunctionDefinition(t.Function),
-	}
-}
-
 type ToolsNode struct {
 	NodeInfo
-	Tools      map[string]Tool
+	Tools      map[string]tools.Tool
 	StateScope string
 	Parallel   bool
 }
 
-func NewToolCallNode(tools map[string]Tool) *ToolsNode {
+func NewToolCallNode(tools map[string]tools.Tool) *ToolsNode {
 	id := uuid.New()
 	return &ToolsNode{
 		NodeInfo: NodeInfo{
@@ -51,7 +31,7 @@ func NewToolCallNode(tools map[string]Tool) *ToolsNode {
 			NodeName:        "ToolCall",
 			NodeDescription: "Execute tool calls emitted by the model.",
 		},
-		Tools:    cloneTools(tools),
+		Tools:    tools,
 		Parallel: true,
 	}
 }
@@ -210,42 +190,16 @@ func decodeToolInput(arguments string) string {
 		return raw
 	}
 
-	if input, ok := payload["input"].(string); ok {
-		return input
-	}
-	if expression, ok := payload["expression"].(string); ok {
-		return expression
-	}
-
-	for _, value := range payload {
-		if text, ok := value.(string); ok {
-			return text
+	if len(payload) == 1 {
+		if input, ok := payload["input"].(string); ok {
+			return input
+		}
+		if expression, ok := payload["expression"].(string); ok {
+			return expression
 		}
 	}
 
 	return raw
-}
-
-func cloneTools(all map[string]Tool) map[string]Tool {
-	if len(all) == 0 {
-		return nil
-	}
-	cloned := make(map[string]Tool, len(all))
-	for key, value := range all {
-		cloned[key] = Tool{
-			Function: cloneFunctionDefinition(value.Function),
-			Handler:  value.Handler,
-		}
-	}
-	return cloned
-}
-
-func cloneFunctionDefinition(function *llms.FunctionDefinition) *llms.FunctionDefinition {
-	if function == nil {
-		return nil
-	}
-	cloned := *function
-	return &cloned
 }
 
 func toolCallName(toolCall llms.ToolCall) string {

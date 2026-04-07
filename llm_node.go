@@ -3,6 +3,7 @@ package falcon
 import (
 	"context"
 	"errors"
+	"falcon/tools"
 	"fmt"
 	"sort"
 	"strings"
@@ -18,11 +19,11 @@ import (
 type LLMNode struct {
 	NodeInfo
 	model      llms.Model
-	tools      map[string]Tool
+	tools      map[string]tools.Tool
 	StateScope string
 }
 
-func NewLLMNode(model llms.Model, tools map[string]Tool) *LLMNode {
+func NewLLMNode(model llms.Model, tools map[string]tools.Tool) *LLMNode {
 	id := uuid.New()
 	return &LLMNode{
 		NodeInfo: NodeInfo{
@@ -31,7 +32,7 @@ func NewLLMNode(model llms.Model, tools map[string]Tool) *LLMNode {
 			NodeDescription: "LLM",
 		},
 		model: model,
-		tools: cloneTools(tools),
+		tools: tools,
 	}
 }
 
@@ -51,18 +52,18 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 		return state, nil
 	}
 
-	var tools []llms.Tool
+	var toolSets []llms.Tool
 	for _, tool := range L.tools {
-		tools = append(tools, tool.NewTool())
+		toolSets = append(toolSets, tool.NewTool())
 	}
-	if payload, err := buildLLMPromptArtifact(messages, tools, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
+	if payload, err := buildLLMPromptArtifact(messages, toolSets, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
 	}
 
 	resp, err := L.model.GenerateContent(
 		ctx,
 		messages,
-		llms.WithTools(tools),
+		llms.WithTools(toolSets),
 		llms.WithThinkingMode(llms.ThinkingModeHigh),
 		llms.WithTemperature(0.8),
 		llms.WithStreamingReasoningFunc(onStreamingResponse),
@@ -219,7 +220,7 @@ func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, s
 		for _, tool := range tools {
 			payload.Tools = append(payload.Tools, llmToolArtifact{
 				Type:     tool.Type,
-				Function: cloneFunctionDefinition(tool.Function),
+				Function: tool.Function,
 			})
 		}
 	}
