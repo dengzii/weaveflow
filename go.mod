@@ -1,4 +1,4 @@
-module falcon
+module weaveflow
 
 go 1.26.1
 

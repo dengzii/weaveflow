@@ -1,10 +1,10 @@
 package main
 
 import (
-	"falcon"
-	"falcon/nodes"
-	fruntime "falcon/runtime"
-	"falcon/tools"
+	"weaveflow"
+	"weaveflow/nodes"
+	fruntime "weaveflow/runtime"
+	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
@@ -22,11 +22,11 @@ func newReActAgentInitialState() fruntime.State {
 	return fruntime.NewBaseState(messages, 10)
 }
 
-func newReActAgentBuildContext() *falcon.BuildContext {
+func newReActAgentBuildContext() *weaveflow.BuildContext {
 	model, err := openai.New()
 	tryPanic(err)
 
-	return &falcon.BuildContext{
+	return &weaveflow.BuildContext{
 		Model: model,
 		Tools: newReActAgentTools(),
 	}
@@ -39,8 +39,8 @@ func newReActAgentTools() map[string]tools.Tool {
 	}
 }
 
-func newReActAgentGraph() *falcon.Graph {
-	graph := falcon.NewGraph()
+func newReActAgentGraph() *weaveflow.Graph {
+	graph := weaveflow.NewGraph()
 	buildCtx := newReActAgentBuildContext()
 
 	humanInLoop := nodes.NewHumanMessageNode()
@@ -60,10 +60,10 @@ func newReActAgentGraph() *falcon.Graph {
 
 	tryPanic(graph.AddEdge(humanInLoop.ID(), llm.ID()))
 
-	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), falcon.LastMessageHasToolCalls(llm.StateScope))
+	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), weaveflow.LastMessageHasToolCalls(llm.StateScope))
 	tryPanic(err)
 
-	err = graph.AddConditionalEdge(llm.ID(), falcon.EndNodeRef, falcon.HasFinalAnswer(llm.StateScope))
+	err = graph.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, weaveflow.HasFinalAnswer(llm.StateScope))
 	tryPanic(err)
 
 	tryPanic(graph.AddEdge(toolCall.ID(), llm.ID()))

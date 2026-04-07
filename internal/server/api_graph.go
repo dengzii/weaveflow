@@ -3,10 +3,10 @@ package server
 import (
 	"context"
 	"errors"
-	"falcon"
-	fruntime "falcon/runtime"
-	"falcon/tools"
 	"path/filepath"
+	"weaveflow"
+	fruntime "weaveflow/runtime"
+	"weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -17,8 +17,8 @@ import (
 
 type apiGraph struct {
 	graphs   map[string]*fruntime.GraphRunner
-	buildCtx *falcon.BuildContext
-	registry *falcon.Registry
+	buildCtx *weaveflow.BuildContext
+	registry *weaveflow.Registry
 	baseDir  string
 }
 
@@ -33,12 +33,12 @@ func newRunnerApi() (*apiGraph, error) {
 		return nil, err
 	}
 
-	buildContext := falcon.BuildContext{
+	buildContext := weaveflow.BuildContext{
 		Model: m,
 		Tools: tootSets,
 	}
 
-	registry := falcon.NewRegistry()
+	registry := weaveflow.NewRegistry()
 
 	return &apiGraph{
 		graphs:   map[string]*fruntime.GraphRunner{},
@@ -49,9 +49,9 @@ func newRunnerApi() (*apiGraph, error) {
 }
 
 type NewRunRequest struct {
-	ID    string                  `json:"ID"`
-	Graph *falcon.GraphDefinition `json:"graph"`
-	State *falcon.State           `json:"state"`
+	ID    string                     `json:"ID"`
+	Graph *weaveflow.GraphDefinition `json:"graph"`
+	State *weaveflow.State           `json:"state"`
 }
 
 func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
@@ -66,7 +66,7 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 	baseDir := filepath.Join(a.baseDir, instanceId)
 	graphPath := filepath.Join(a.baseDir, baseDir, "graph.json")
 
-	var graph *falcon.Graph
+	var graph *weaveflow.Graph
 	var err error
 	if request.Graph != nil {
 		graph, err = a.registry.BuildGraph(*request.Graph, a.buildCtx)
@@ -75,7 +75,7 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 		}
 		err = graph.WriteToFile(graphPath)
 	} else {
-		graph, err = falcon.LoadGraphFromFile(a.buildCtx, graphPath)
+		graph, err = weaveflow.LoadGraphFromFile(a.buildCtx, graphPath)
 	}
 	if err != nil {
 		return err
@@ -123,7 +123,7 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 	stateCodec := fruntime.NewJSONStateCodec(fruntime.DefaultStateVersion)
 	artifactStore := fruntime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
 
-	runner = falcon.NewGraphRunner(graph, executionStore, checkpointStore, stateCodec, sink)
+	runner = weaveflow.NewGraphRunner(graph, executionStore, checkpointStore, stateCodec, sink)
 	runner.ArtifactStore = artifactStore
 	runner.GraphID = "graph-runner"
 	runner.GraphVersion = "v1.0.0"

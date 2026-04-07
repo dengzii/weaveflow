@@ -1,14 +1,14 @@
-package falcon
+package weaveflow
 
 import (
 	"context"
-	"falcon/dsl"
-	"falcon/nodes"
-	fruntime "falcon/runtime"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"weaveflow/dsl"
+	"weaveflow/nodes"
+	fruntime "weaveflow/runtime"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"
@@ -25,7 +25,7 @@ func SetLogger(l *zap.Logger) {
 	fruntime.SetLogger(l)
 }
 
-// Graph is a thin falcon wrapper around langgraphgo's typed graph.
+// Graph is a thin WeaveFlow wrapper around langgraphgo's typed graph.
 // It centralizes project-level conventions such as:
 // - registering nodes via Node
 // - resolving nodes refs by ID

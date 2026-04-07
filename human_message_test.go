@@ -1,11 +1,11 @@
-package falcon
+package weaveflow
 
 import (
 	"context"
-	"falcon/nodes"
 	"testing"
+	"weaveflow/nodes"
 
-	fruntime "falcon/runtime"
+	fruntime "weaveflow/runtime"
 
 	"github.com/tmc/langchaingo/llms"
 )

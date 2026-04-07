@@ -21,7 +21,7 @@ const (
 )
 
 // State stores shared business data at the root level.
-// Falcon-managed scope and conversation state live under reserved namespaces.
+// WeaveFlow-managed scope and conversation state live under reserved namespaces.
 //
 // Persisted state is intentionally constrained to:
 // - primitives

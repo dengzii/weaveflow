@@ -2,20 +2,20 @@ package main
 
 import (
 	"context"
-	"falcon"
-	"falcon/nodes"
-	"falcon/runtime"
 	"fmt"
 	"os"
 	"path/filepath"
 	"time"
+	"weaveflow"
+	"weaveflow/nodes"
+	"weaveflow/runtime"
 
 	"go.uber.org/zap"
 )
 
 func main() {
 	logger, _ := zap.NewDevelopment()
-	falcon.SetLogger(logger)
+	weaveflow.SetLogger(logger)
 
 	runWithRunner()
 
@@ -42,7 +42,7 @@ func resumeFromCheckpoint() {
 
 	baseDir := ".local/instance"
 	buildCtx := newReActAgentBuildContext()
-	graph, err := falcon.LoadGraphFromFile(buildCtx, filepath.Join(baseDir, "graph.json"))
+	graph, err := weaveflow.LoadGraphFromFile(buildCtx, filepath.Join(baseDir, "graph.json"))
 	tryPanic(err)
 
 	runner := newExampleRunner(baseDir, graph)
@@ -66,7 +66,7 @@ func tryPanic(error interface{}) {
 	}
 }
 
-func newExampleRunner(baseDir string, graph *falcon.Graph) *runtime.GraphRunner {
+func newExampleRunner(baseDir string, graph *weaveflow.Graph) *runtime.GraphRunner {
 	log, err := zap.NewDevelopment()
 	tryPanic(err)
 
@@ -75,7 +75,7 @@ func newExampleRunner(baseDir string, graph *falcon.Graph) *runtime.GraphRunner 
 		runtime.NewFileEventSink(filepath.Join(baseDir, "events")),
 	)
 
-	runner := falcon.NewGraphRunner(
+	runner := weaveflow.NewGraphRunner(
 		graph,
 		runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
 		runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),

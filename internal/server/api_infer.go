@@ -3,7 +3,6 @@ package server
 import (
 	"encoding/json"
 	"errors"
-	"falcon/llama_cpp"
 	"fmt"
 	"net/http"
 	"path/filepath"
@@ -11,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"weaveflow/llama_cpp"
 
 	"github.com/gin-gonic/gin"
 )
@@ -63,7 +63,7 @@ func (r *interApi) LoadModel(ctx *gin.Context, param *LoadModelRequest) error {
 		info: ModelInfo{
 			Id:          id,
 			Object:      "model",
-			OwnedBy:     "falcon",
+			OwnedBy:     "weaveflow",
 			Backend:     backend,
 			LastUpdated: time.Now(),
 		},
@@ -194,7 +194,7 @@ func finishReasonFromStopReason(stopReason string) string {
 
 func normalizeBackend(backend string) string {
 	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", "llama_cpp", "llama":
+	case "", "llama_cpp":
 		return "llama_cpp"
 	default:
 		return strings.TrimSpace(backend)

@@ -1,13 +1,13 @@
-package falcon
+package weaveflow
 
 import (
-	"falcon/dsl"
-	"falcon/nodes"
-	fruntime "falcon/runtime"
-	"falcon/tools"
 	"fmt"
 	"sort"
 	"strings"
+	"weaveflow/dsl"
+	"weaveflow/nodes"
+	fruntime "weaveflow/runtime"
+	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )

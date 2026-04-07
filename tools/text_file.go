@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	fileToolWorkspaceEnv = "FALCON_TOOL_WORKDIR"
+	fileToolWorkspaceEnv = "WEAVEFLOW_TOOL_WORKDIR"
 	defaultReadLimit     = 64 * 1024
 	maxReadLimit         = 256 * 1024
 	defaultListLimit     = 100

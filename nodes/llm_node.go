@@ -3,13 +3,13 @@ package nodes
 import (
 	"context"
 	"errors"
-	"falcon/dsl"
-	"falcon/tools"
 	"fmt"
 	"sort"
 	"strings"
+	"weaveflow/dsl"
+	"weaveflow/tools"
 
-	fruntime "falcon/runtime"
+	fruntime "weaveflow/runtime"
 
 	"github.com/google/uuid"
 

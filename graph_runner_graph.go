@@ -1,10 +1,10 @@
-package falcon
+package weaveflow
 
 import (
 	"context"
 	"fmt"
 
-	fruntime "falcon/runtime"
+	fruntime "weaveflow/runtime"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )

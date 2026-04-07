@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"falcon/llama_cpp"
-	"falcon/runtime"
+	"weaveflow/llama_cpp"
+	"weaveflow/runtime"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -60,8 +60,8 @@ func NewLlamaCppModel(modelPath string) *LlamaCppModel {
 	return &LlamaCppModel{
 		NodeInfo: NodeInfo{
 			NodeID:          id.String(),
-			NodeName:        "llama.cpp Node",
-			NodeDescription: "Load a local llama.cpp model and run inference.",
+			NodeName:        "llama_cpp.cpp Node",
+			NodeDescription: "Load a local llama_cpp.cpp model and run inference.",
 		},
 		ModelPath:     strings.TrimSpace(modelPath),
 		InputKey:      defaultInputKey,
@@ -84,27 +84,27 @@ func (l *LlamaCppModel) ID() string {
 
 func (l *LlamaCppModel) Name() string {
 	if l == nil {
-		return "llama.cpp Node"
+		return "llama_cpp.cpp Node"
 	}
 	if strings.TrimSpace(l.NodeName) == "" {
-		return "llama.cpp Node"
+		return "llama_cpp.cpp Node"
 	}
 	return l.NodeInfo.Name()
 }
 
 func (l *LlamaCppModel) Description() string {
 	if l == nil {
-		return "Load a local llama.cpp model and run inference."
+		return "Load a local llama_cpp.cpp model and run inference."
 	}
 	if strings.TrimSpace(l.NodeDescription) == "" {
-		return "Load a local llama.cpp model and run inference."
+		return "Load a local llama_cpp.cpp model and run inference."
 	}
 	return l.NodeInfo.Description()
 }
 
 func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtime.State, error) {
 	if l == nil {
-		return state, errors.New("llama.cpp nodes is nil")
+		return state, errors.New("llama_cpp.cpp nodes is nil")
 	}
 	if state == nil {
 		state = runtime.State{}
@@ -129,7 +129,7 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 		return state, err
 	}
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		err := errors.New("llama.cpp returned no choices")
+		err := errors.New("llama_cpp.cpp returned no choices")
 		_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "llama_cpp.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
@@ -218,7 +218,7 @@ func (l *LlamaCppModel) Release() error {
 func (l *LlamaCppModel) ensureModel() (llamaContentModel, error) {
 	path := strings.TrimSpace(l.ModelPath)
 	if path == "" {
-		return nil, errors.New("llama.cpp nodes model path is required")
+		return nil, errors.New("llama_cpp.cpp nodes model path is required")
 	}
 
 	l.mu.Lock()
@@ -243,7 +243,7 @@ func (l *LlamaCppModel) ensureModel() (llamaContentModel, error) {
 
 	model, err := loader(path, l.LoadOptions)
 	if err != nil {
-		return nil, fmt.Errorf("load llama.cpp model: %w", err)
+		return nil, fmt.Errorf("load llama_cpp.cpp model: %w", err)
 	}
 
 	l.model = model
@@ -260,7 +260,7 @@ func (l *LlamaCppModel) resolveMessages(state runtime.State) ([]llms.MessageCont
 
 	prompt := strings.TrimSpace(l.lookupPrompt(state))
 	if prompt == "" {
-		return nil, "", fmt.Errorf("llama.cpp nodes prompt is required: input key %q is empty", l.effectiveInputKey())
+		return nil, "", fmt.Errorf("llama_cpp.cpp nodes prompt is required: input key %q is empty", l.effectiveInputKey())
 	}
 
 	messages = []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}

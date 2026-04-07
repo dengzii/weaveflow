@@ -6,7 +6,7 @@ import (
 )
 
 const (
-	CommonStateSchemaID = "falcon.state.v2"
+	CommonStateSchemaID = "weaveflow.state.v2"
 	DefaultStateVersion = CommonStateSchemaID
 )
 

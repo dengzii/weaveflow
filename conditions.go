@@ -1,12 +1,12 @@
-package falcon
+package weaveflow
 
 import (
 	"context"
-	"falcon/dsl"
-	fruntime "falcon/runtime"
 	"fmt"
 	"strconv"
 	"strings"
+	"weaveflow/dsl"
+	fruntime "weaveflow/runtime"
 
 	"github.com/tmc/langchaingo/llms"
 )
