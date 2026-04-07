@@ -2,8 +2,6 @@ package falcon
 
 import fruntime "falcon/runtime"
 
-const CommonStateSchemaID = fruntime.CommonStateSchemaID
-
 type State = fruntime.State
 
 func defaultStateFieldDefinitions() []StateFieldDefinition {

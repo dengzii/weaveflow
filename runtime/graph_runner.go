@@ -431,7 +431,7 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 	if hit := r.matchBreakpoint(interrupt.Node, string(CheckpointAfterNode), nil); hit != nil {
 		completed := execution.consumeLastCompleted(interrupt.Node)
 		if completed == nil {
-			return r.failRun(ctx, run, state, "interrupt_failed", fmt.Sprintf("after-node interrupt missing completed step for %q", interrupt.Node))
+			return r.failRun(ctx, run, state, "interrupt_failed", fmt.Sprintf("after-nodes interrupt missing completed step for %q", interrupt.Node))
 		}
 		return r.pauseRun(ctx, run, state, completed.step, completed.afterCheckpointID, hit)
 	}
@@ -770,7 +770,7 @@ func (r *GraphRunner) validateRestoredCheckpoint(checkpoint RestoredCheckpoint) 
 		return fmt.Errorf("checkpoint %q step mismatch: record=%q snapshot=%q", record.CheckpointID, record.StepID, checkpoint.Runtime.CurrentStepID)
 	}
 	if record.NodeID != "" && checkpoint.Runtime.CurrentNodeID != "" && record.NodeID != checkpoint.Runtime.CurrentNodeID {
-		return fmt.Errorf("checkpoint %q node mismatch: record=%q snapshot=%q", record.CheckpointID, record.NodeID, checkpoint.Runtime.CurrentNodeID)
+		return fmt.Errorf("checkpoint %q nodes mismatch: record=%q snapshot=%q", record.CheckpointID, record.NodeID, checkpoint.Runtime.CurrentNodeID)
 	}
 	return nil
 }

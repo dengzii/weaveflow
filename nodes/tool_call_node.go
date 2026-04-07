@@ -1,9 +1,10 @@
-package falcon
+package nodes
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"falcon/dsl"
 	fruntime "falcon/runtime"
 	"falcon/tools"
 	"fmt"
@@ -36,7 +37,7 @@ func NewToolCallNode(tools map[string]tools.Tool) *ToolsNode {
 	}
 }
 
-func (t *ToolsNode) Invoke(ctx context.Context, state State) (State, error) {
+func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
 	conversation := fruntime.Conversation(state, t.StateScope)
 
 	messages := conversation.Messages()
@@ -84,14 +85,14 @@ func (t *ToolsNode) Invoke(ctx context.Context, state State) (State, error) {
 	return state, nil
 }
 
-func (t *ToolsNode) GraphNodeSpec() GraphNodeSpec {
+func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	toolIDs := make([]string, 0, len(t.Tools))
 	for id := range t.Tools {
 		toolIDs = append(toolIDs, id)
 	}
 	sort.Strings(toolIDs)
 
-	return GraphNodeSpec{
+	return dsl.GraphNodeSpec{
 		ID:          t.ID(),
 		Name:        t.Name(),
 		Type:        "tools",

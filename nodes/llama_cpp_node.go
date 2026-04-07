@@ -1,4 +1,4 @@
-package node
+package nodes
 
 import (
 	"context"
@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"falcon"
 	"falcon/llama_cpp"
 	"falcon/runtime"
 
@@ -31,7 +30,7 @@ type llamaContentModel interface {
 type llamaModelLoader func(path string, opts llama_cpp.LoadOptions) (llamaContentModel, error)
 
 type LlamaCppModel struct {
-	falcon.NodeInfo
+	NodeInfo
 
 	ModelPath       string
 	LoadOptions     llama_cpp.LoadOptions
@@ -59,7 +58,7 @@ type LlamaCppModel struct {
 func NewLlamaCppModel(modelPath string) *LlamaCppModel {
 	id := uuid.New()
 	return &LlamaCppModel{
-		NodeInfo: falcon.NodeInfo{
+		NodeInfo: NodeInfo{
 			NodeID:          id.String(),
 			NodeName:        "llama.cpp Node",
 			NodeDescription: "Load a local llama.cpp model and run inference.",
@@ -105,7 +104,7 @@ func (l *LlamaCppModel) Description() string {
 
 func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtime.State, error) {
 	if l == nil {
-		return state, errors.New("llama.cpp node is nil")
+		return state, errors.New("llama.cpp nodes is nil")
 	}
 	if state == nil {
 		state = runtime.State{}
@@ -142,8 +141,8 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 	}
 	reasoning := strings.TrimSpace(choice.ReasoningContent)
 	stopReason, tokenCount := extractGenerationInfo(choice)
-	usage := falcon.Extract(choice)
-	record := falcon.RecordState(state, falcon.Record{
+	usage := Extract(choice)
+	record := RecordState(state, Record{
 		NodeID:             l.ID(),
 		Model:              l.modelLabel(),
 		StateScope:         l.StateScope,
@@ -154,7 +153,7 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 		ReasoningTokens:    usage.ReasoningTokens,
 		PromptCachedTokens: usage.PromptCachedTokens,
 	})
-	_ = falcon.PublishEvent(ctx, record)
+	_ = PublishEvent(ctx, record)
 
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "llama_cpp.response", map[string]any{
 		"content":     output,
@@ -219,7 +218,7 @@ func (l *LlamaCppModel) Release() error {
 func (l *LlamaCppModel) ensureModel() (llamaContentModel, error) {
 	path := strings.TrimSpace(l.ModelPath)
 	if path == "" {
-		return nil, errors.New("llama.cpp node model path is required")
+		return nil, errors.New("llama.cpp nodes model path is required")
 	}
 
 	l.mu.Lock()
@@ -261,7 +260,7 @@ func (l *LlamaCppModel) resolveMessages(state runtime.State) ([]llms.MessageCont
 
 	prompt := strings.TrimSpace(l.lookupPrompt(state))
 	if prompt == "" {
-		return nil, "", fmt.Errorf("llama.cpp node prompt is required: input key %q is empty", l.effectiveInputKey())
+		return nil, "", fmt.Errorf("llama.cpp nodes prompt is required: input key %q is empty", l.effectiveInputKey())
 	}
 
 	messages = []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}

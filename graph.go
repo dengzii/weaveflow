@@ -2,6 +2,8 @@ package falcon
 
 import (
 	"context"
+	"falcon/dsl"
+	"falcon/nodes"
 	fruntime "falcon/runtime"
 	"fmt"
 	"os"
@@ -19,25 +21,22 @@ type conditionalEdge struct {
 	condition EdgeCondition
 }
 
-var logger = zap.NewNop()
-
 func SetLogger(l *zap.Logger) {
-	logger = l
 	fruntime.SetLogger(l)
 }
 
 // Graph is a thin falcon wrapper around langgraphgo's typed graph.
 // It centralizes project-level conventions such as:
 // - registering nodes via Node
-// - resolving node refs by ID
-// - copy-on-write node invocation
+// - resolving nodes refs by ID
+// - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	nodes            map[string]Node[State]
-	nodeSpecs        map[string]GraphNodeSpec
+	nodes            map[string]nodes.Node[State]
+	nodeSpecs        map[string]dsl.GraphNodeSpec
 	edges            map[string]string
 	conditionalEdges map[string][]conditionalEdge
-	edgeSpecs        []GraphEdgeSpec
+	edgeSpecs        []dsl.GraphEdgeSpec
 	entryPoint       string
 	finishPoint      string
 	retryPolicy      *langgraph.RetryPolicy
@@ -48,8 +47,8 @@ type Graph struct {
 
 func NewGraph() *Graph {
 	return &Graph{
-		nodes:            map[string]Node[State]{},
-		nodeSpecs:        map[string]GraphNodeSpec{},
+		nodes:            map[string]nodes.Node[State]{},
+		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
 		edges:            map[string]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
 		nodeListeners:    map[string][]langgraph.NodeListener[State]{},
@@ -61,7 +60,7 @@ func LoadGraphFromFile(buildContext *BuildContext, path string) (*Graph, error) 
 	if err != nil {
 		return nil, err
 	}
-	def, err := DeserializeGraphDefinition(data)
+	def, err := dsl.DeserializeGraphDefinition(data)
 	if err != nil {
 		return nil, fmt.Errorf("load graph definition from %q: %w", path, err)
 	}
@@ -95,7 +94,7 @@ func (g *Graph) WriteToFile(path string) error {
 
 func (g *Graph) DrawMermaid() (string, error) {
 	graph := langgraph.NewStateGraph[State]()
-	err := g.buildStateGraph(graph, func(nodeID string, node Node[State]) {})
+	err := g.buildStateGraph(graph, func(nodeID string, node nodes.Node[State]) {})
 	if err != nil {
 		return "", err
 	}
@@ -104,21 +103,21 @@ func (g *Graph) DrawMermaid() (string, error) {
 
 }
 
-func (g *Graph) AddNode(node Node[State]) error {
+func (g *Graph) AddNode(node nodes.Node[State]) error {
 	if node == nil {
-		return fmt.Errorf("node is nil")
+		return fmt.Errorf("nodes is nil")
 	}
 
 	id := strings.TrimSpace(node.ID())
 	if id == "" {
-		return fmt.Errorf("node id is empty")
+		return fmt.Errorf("nodes id is empty")
 	}
 	if _, exists := g.nodes[id]; exists {
-		return fmt.Errorf("node id %q already exists", id)
+		return fmt.Errorf("nodes id %q already exists", id)
 	}
 
 	g.nodes[id] = node
-	if provider, ok := node.(GraphNodeSpecProvider); ok {
+	if provider, ok := node.(dsl.GraphNodeSpecProvider); ok {
 		spec := provider.GraphNodeSpec()
 		spec.ID = id
 		if spec.Name == "" {
@@ -132,12 +131,12 @@ func (g *Graph) AddNode(node Node[State]) error {
 		}
 		g.nodeSpecs[id] = spec
 	} else {
-		// this is a node that doesn't provide a spec, should we add a default spec? or throw an error?
+		// this is a nodes that doesn't provide a spec, should we add a default spec? or throw an error?
 		name := strings.TrimSpace(node.Name())
 		if name == "" {
 			name = id
 		}
-		g.nodeSpecs[id] = GraphNodeSpec{
+		g.nodeSpecs[id] = dsl.GraphNodeSpec{
 			ID:          id,
 			Name:        name,
 			Description: node.Description(),
@@ -174,10 +173,10 @@ func (g *Graph) AddEdge(from, to string) error {
 		return err
 	}
 	if _, exists := g.edges[fromID]; exists {
-		return fmt.Errorf("node %q already has a default edge", fromID)
+		return fmt.Errorf("nodes %q already has a default edge", fromID)
 	}
 	g.edges[fromID] = toID
-	g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
+	g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
 		From: g.nodeSpecs[fromID].ID,
 		To:   g.serializeNodeRef(toID),
 	})
@@ -203,7 +202,7 @@ func (g *Graph) AddConditionalEdge(from, to string, condition EdgeCondition) err
 		condition: condition,
 	})
 	spec := condition.cloneSpec()
-	g.edgeSpecs = append(g.edgeSpecs, GraphEdgeSpec{
+	g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
 		From:      g.nodeSpecs[fromID].ID,
 		To:        g.serializeNodeRef(toID),
 		Condition: &spec,
@@ -287,7 +286,7 @@ func (g *Graph) Validate() error {
 
 func (g *Graph) Compile() (*Runnable, error) {
 	compiled := langgraph.NewListenableStateGraph[State]()
-	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node Node[State]) {
+	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node nodes.Node[State]) {
 		nodeDef := node
 		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
 			return nodeDef.Invoke(ctx, state.CloneState())
@@ -321,7 +320,7 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	}
 
 	compiled := langgraph.NewStateGraph[State]()
-	if err := g.configureStateGraph(compiled, func(nodeID string, node Node[State]) {
+	if err := g.configureStateGraph(compiled, func(nodeID string, node nodes.Node[State]) {
 		nodeDef := node
 		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
 			return execution.InvokeNode(ctx, nodeID,
@@ -342,19 +341,19 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	return runnable, nil
 }
 
-func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node Node[State])) error {
+func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node nodes.Node[State])) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
 	return g.configureStateGraph(compiled, addNode)
 }
 
-func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node Node[State])) error {
+func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node nodes.Node[State])) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled graph is nil")
 	}
 	if addNode == nil {
-		return fmt.Errorf("add node callback is nil")
+		return fmt.Errorf("add nodes callback is nil")
 	}
 	if g.retryPolicy != nil {
 		compiled.SetRetryPolicy(g.retryPolicy)
@@ -425,12 +424,12 @@ func (g *Graph) Run(ctx context.Context, initialState State) (State, error) {
 func (g *Graph) resolveNodeID(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return "", fmt.Errorf("node id is empty")
+		return "", fmt.Errorf("nodes id is empty")
 	}
 	if _, ok := g.nodes[ref]; ok {
 		return ref, nil
 	}
-	return "", fmt.Errorf("node id %q not found", ref)
+	return "", fmt.Errorf("nodes id %q not found", ref)
 }
 
 func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
@@ -444,9 +443,9 @@ func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
 	return g.resolveNodeID(ref)
 }
 
-func (g *Graph) Definition() (GraphDefinition, error) {
+func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 	if err := g.Validate(); err != nil {
-		return GraphDefinition{}, err
+		return dsl.GraphDefinition{}, err
 	}
 
 	nodeIDs := make([]string, 0, len(g.nodes))
@@ -462,19 +461,19 @@ func (g *Graph) Definition() (GraphDefinition, error) {
 		return left.ID < right.ID
 	})
 
-	nodes := make([]GraphNodeSpec, 0, len(nodeIDs))
+	nodeList := make([]dsl.GraphNodeSpec, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
 		spec := g.nodeSpecs[nodeID]
 		if spec.Type == "" {
-			return GraphDefinition{}, fmt.Errorf("node %q is not serializable: missing registered type", nodeID)
+			return dsl.GraphDefinition{}, fmt.Errorf("nodes %q is not serializable: missing registered type", nodeID)
 		}
 		if len(spec.Config) > 0 {
 			spec.Config = cloneMap(spec.Config)
 		}
-		nodes = append(nodes, spec)
+		nodeList = append(nodeList, spec)
 	}
 
-	edges := make([]GraphEdgeSpec, len(g.edgeSpecs))
+	edges := make([]dsl.GraphEdgeSpec, len(g.edgeSpecs))
 	for i, edge := range g.edgeSpecs {
 		edges[i] = edge
 		if edge.Condition != nil && len(edge.Condition.Config) > 0 {
@@ -484,12 +483,12 @@ func (g *Graph) Definition() (GraphDefinition, error) {
 		}
 	}
 
-	return GraphDefinition{
-		Version:     GraphDefinitionVersion,
+	return dsl.GraphDefinition{
+		Version:     dsl.GraphDefinitionVersion,
 		StateSchema: fruntime.CommonStateSchemaID,
 		EntryPoint:  g.serializeNodeRef(g.entryPoint),
 		FinishPoint: g.serializeNodeRef(g.finishPoint),
-		Nodes:       nodes,
+		Nodes:       nodeList,
 		Edges:       edges,
 	}, nil
 }

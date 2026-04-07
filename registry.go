@@ -1,7 +1,10 @@
 package falcon
 
 import (
+	"falcon/dsl"
+	"falcon/nodes"
 	fruntime "falcon/runtime"
+	"falcon/tools"
 	"fmt"
 	"sort"
 	"strings"
@@ -9,17 +12,23 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+type JSONSchema = dsl.JSONSchema
+type GraphConditionSpec = dsl.GraphConditionSpec
+type GraphNodeSpec = dsl.GraphNodeSpec
+type StateFieldDefinition = dsl.StateFieldDefinition
+type GraphDefinition = dsl.GraphDefinition
+
 type BuildContext struct {
 	Model llms.Model
-	Tools map[string]Tool
+	Tools map[string]tools.Tool
 }
 
 type NodeTypeDefinition struct {
-	Type         string                                                  `json:"type"`
-	Title        string                                                  `json:"title,omitempty"`
-	Description  string                                                  `json:"description,omitempty"`
-	ConfigSchema JSONSchema                                              `json:"config_schema"`
-	Build        func(*BuildContext, GraphNodeSpec) (Node[State], error) `json:"-"`
+	Type         string                                                            `json:"type"`
+	Title        string                                                            `json:"title,omitempty"`
+	Description  string                                                            `json:"description,omitempty"`
+	ConfigSchema JSONSchema                                                        `json:"config_schema"`
+	Build        func(*BuildContext, dsl.GraphNodeSpec) (nodes.Node[State], error) `json:"-"`
 }
 
 type ConditionDefinition struct {
@@ -63,8 +72,8 @@ func DefaultRegistry() *Registry {
 			},
 			"additionalProperties": false,
 		},
-		Build: func(ctx *BuildContext, spec GraphNodeSpec) (Node[State], error) {
-			node := NewHumanMessageNode()
+		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+			node := nodes.NewHumanMessageNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -85,7 +94,7 @@ func DefaultRegistry() *Registry {
 	r.RegisterNodeType(NodeTypeDefinition{
 		Type:        "llm",
 		Title:       "LLM Node",
-		Description: "Built-in model inference node.",
+		Description: "Built-in model inference nodes.",
 		ConfigSchema: JSONSchema{
 			"type": "object",
 			"properties": JSONSchema{
@@ -97,15 +106,15 @@ func DefaultRegistry() *Registry {
 			},
 			"additionalProperties": false,
 		},
-		Build: func(ctx *BuildContext, spec GraphNodeSpec) (Node[State], error) {
+		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			if ctx.Model == nil {
-				return nil, fmt.Errorf("build llm node %q: model is required", spec.ID)
+				return nil, fmt.Errorf("build llm nodes %q: model is required", spec.ID)
 			}
 			tools, err := resolveTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids"))
 			if err != nil {
-				return nil, fmt.Errorf("build llm node %q: %w", spec.ID, err)
+				return nil, fmt.Errorf("build llm nodes %q: %w", spec.ID, err)
 			}
-			node := NewLLMNode(ctx.Model, tools)
+			node := nodes.NewLLMNode(ctx.Model, tools)
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -121,7 +130,7 @@ func DefaultRegistry() *Registry {
 	r.RegisterNodeType(NodeTypeDefinition{
 		Type:        "tools",
 		Title:       "Tools Node",
-		Description: "Built-in tool execution node.",
+		Description: "Built-in tool execution nodes.",
 		ConfigSchema: JSONSchema{
 			"type": "object",
 			"properties": JSONSchema{
@@ -133,13 +142,13 @@ func DefaultRegistry() *Registry {
 			},
 			"additionalProperties": false,
 		},
-		Build: func(ctx *BuildContext, spec GraphNodeSpec) (Node[State], error) {
+		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			toolIDs := stringSliceConfig(spec.Config, "tool_ids")
 			tools, err := resolveTools(ctx.Tools, toolIDs)
 			if err != nil {
-				return nil, fmt.Errorf("build tools node %q: %w", spec.ID, err)
+				return nil, fmt.Errorf("build tools nodes %q: %w", spec.ID, err)
 			}
-			node := NewToolCallNode(tools)
+			node := nodes.NewToolCallNode(tools)
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -248,7 +257,7 @@ func (r *Registry) ResolveCondition(spec GraphConditionSpec) (EdgeCondition, err
 	if r == nil {
 		return EdgeCondition{}, fmt.Errorf("registry is nil")
 	}
-	spec = normalizeGraphConditionSpec(spec)
+	spec = dsl.NormalizeGraphConditionSpec(spec)
 	if spec.Type == "" {
 		return EdgeCondition{}, fmt.Errorf("condition type is required")
 	}
@@ -275,7 +284,7 @@ func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphCondi
 }
 
 func (r *Registry) BuildGraph(def GraphDefinition, ctx *BuildContext) (*Graph, error) {
-	def = normalizeGraphDefinition(def)
+	def = dsl.NormalizeGraphDefinition(def)
 	if err := def.Validate(); err != nil {
 		return nil, err
 	}
@@ -287,7 +296,7 @@ func (r *Registry) BuildGraph(def GraphDefinition, ctx *BuildContext) (*Graph, e
 	for _, nodeSpec := range def.Nodes {
 		nodeDef, ok := r.NodeTypes[nodeSpec.Type]
 		if !ok {
-			return nil, fmt.Errorf("node type %q is not registered", nodeSpec.Type)
+			return nil, fmt.Errorf("nodes type %q is not registered", nodeSpec.Type)
 		}
 		node, err := nodeDef.Build(ctx, nodeSpec)
 		if err != nil {
@@ -409,11 +418,11 @@ func (r *Registry) JSONSchema() JSONSchema {
 	}
 }
 
-func filterTools(all map[string]Tool, ids []string) map[string]Tool {
+func filterTools(all map[string]tools.Tool, ids []string) map[string]tools.Tool {
 	if len(ids) == 0 {
-		return cloneTools(all)
+		return all
 	}
-	filtered := make(map[string]Tool, len(ids))
+	filtered := make(map[string]tools.Tool, len(ids))
 	for _, id := range ids {
 		if tool, ok := all[id]; ok {
 			filtered[id] = tool
@@ -422,12 +431,12 @@ func filterTools(all map[string]Tool, ids []string) map[string]Tool {
 	return filtered
 }
 
-func resolveTools(all map[string]Tool, ids []string) (map[string]Tool, error) {
+func resolveTools(all map[string]tools.Tool, ids []string) (map[string]tools.Tool, error) {
 	if len(ids) == 0 {
-		return cloneTools(all), nil
+		return all, nil
 	}
 
-	filtered := make(map[string]Tool, len(ids))
+	filtered := make(map[string]tools.Tool, len(ids))
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {

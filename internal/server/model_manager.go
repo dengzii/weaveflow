@@ -1,9 +1,8 @@
-package falcon
+package server
 
 import (
 	"context"
 	"errors"
-	"strings"
 	"sync"
 
 	"falcon/llama_cpp"
@@ -107,13 +106,4 @@ func failedGeneration(err error) (<-chan llama_cpp.GenerateResult, <-chan error)
 	errCh <- err
 	close(errCh)
 	return resultCh, errCh
-}
-
-func normalizeBackend(backend string) string {
-	switch strings.ToLower(strings.TrimSpace(backend)) {
-	case "", "llama", "llama.cpp", "llama_cpp":
-		return "llama_cpp"
-	default:
-		return strings.TrimSpace(backend)
-	}
 }

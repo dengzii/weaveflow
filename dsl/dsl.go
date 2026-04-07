@@ -1,4 +1,4 @@
-package falcon
+package dsl
 
 import (
 	"encoding/json"
@@ -9,6 +9,8 @@ import (
 )
 
 type JSONSchema map[string]any
+
+const EndNodeRef = "__end__"
 
 func (r JSONSchema) WriteToFile(path string) error {
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
@@ -30,17 +32,6 @@ type StateFieldDefinition struct {
 	Name        string     `json:"name"`
 	Description string     `json:"description,omitempty"`
 	Schema      JSONSchema `json:"schema"`
-}
-
-// GraphNodeSpec describes a static node inside GraphDefinition.
-// Runtime-bound values such as model paths, secret references, and per-instance
-// overrides should live in GraphInstanceConfig instead of Config.
-type GraphNodeSpec struct {
-	ID          string         `json:"id"`
-	Name        string         `json:"name"`
-	Type        string         `json:"type"`
-	Description string         `json:"description,omitempty"`
-	Config      map[string]any `json:"config,omitempty"`
 }
 
 type GraphNodeSpecProvider interface {
@@ -70,7 +61,7 @@ type GraphDefinition struct {
 	Metadata    map[string]any  `json:"metadata,omitempty"`
 }
 
-func normalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
+func NormalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
 	spec.Type = strings.TrimSpace(spec.Type)
 	if len(spec.Config) == 0 {
 		spec.Config = nil
@@ -78,7 +69,7 @@ func normalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
 	return spec
 }
 
-func normalizeGraphDefinition(def GraphDefinition) GraphDefinition {
+func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 	if def.Version == "" {
 		def.Version = GraphDefinitionVersion
 	}
@@ -97,7 +88,7 @@ func normalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 		def.Edges[i].From = strings.TrimSpace(def.Edges[i].From)
 		def.Edges[i].To = strings.TrimSpace(def.Edges[i].To)
 		if def.Edges[i].Condition != nil {
-			condition := normalizeGraphConditionSpec(*def.Edges[i].Condition)
+			condition := NormalizeGraphConditionSpec(*def.Edges[i].Condition)
 			def.Edges[i].Condition = &condition
 		}
 	}
@@ -105,21 +96,21 @@ func normalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 }
 
 func (d GraphDefinition) Validate() error {
-	def := normalizeGraphDefinition(d)
+	def := NormalizeGraphDefinition(d)
 
 	if len(def.Nodes) == 0 {
-		return fmt.Errorf("graph definition must include at least one node")
+		return fmt.Errorf("graph definition must include at least one nodes")
 	}
 	nodeIDs := map[string]struct{}{}
 	for _, node := range def.Nodes {
 		if node.ID == "" {
-			return fmt.Errorf("graph node id is required")
+			return fmt.Errorf("graph nodes id is required")
 		}
 		if node.Type == "" {
-			return fmt.Errorf("graph node %q type is required", node.ID)
+			return fmt.Errorf("graph nodes %q type is required", node.ID)
 		}
 		if _, exists := nodeIDs[node.ID]; exists {
-			return fmt.Errorf("graph node id %q is duplicated", node.ID)
+			return fmt.Errorf("graph nodes id %q is duplicated", node.ID)
 		}
 		nodeIDs[node.ID] = struct{}{}
 	}
@@ -155,7 +146,7 @@ func (d GraphDefinition) Validate() error {
 }
 
 func (d GraphDefinition) Serialize() ([]byte, error) {
-	nd := normalizeGraphDefinition(d)
+	nd := NormalizeGraphDefinition(d)
 	if err := nd.Validate(); err != nil {
 		return nil, err
 	}
@@ -167,6 +158,6 @@ func DeserializeGraphDefinition(data []byte) (GraphDefinition, error) {
 	if err := json.Unmarshal(data, &def); err != nil {
 		return GraphDefinition{}, err
 	}
-	def = normalizeGraphDefinition(def)
+	def = NormalizeGraphDefinition(def)
 	return def, def.Validate()
 }

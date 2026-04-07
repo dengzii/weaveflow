@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"falcon"
+	"falcon/nodes"
 	"falcon/runtime"
 	"fmt"
 	"os"
@@ -37,7 +38,7 @@ func runWithRunner() {
 func resumeFromCheckpoint() {
 	state := runtime.State{}
 	scope := state.EnsureScope(reactAgentStateScope)
-	scope[falcon.PendingHumanInputStateKey] = "64+(12*5)答案是什么, 现在是几点?"
+	scope[nodes.PendingHumanInputStateKey] = "64+(12*5)答案是什么, 现在是几点?"
 
 	baseDir := ".local/instance"
 	buildCtx := newReActAgentBuildContext()

@@ -1,7 +1,8 @@
-package falcon
+package nodes
 
 import (
 	"context"
+	"falcon/dsl"
 	fruntime "falcon/runtime"
 	"fmt"
 	"strings"
@@ -35,7 +36,7 @@ func NewHumanMessageNode() *HumanMessageNode {
 	}
 }
 
-func (n *HumanMessageNode) Invoke(ctx context.Context, state State) (State, error) {
+func (n *HumanMessageNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
 	conversation := fruntime.Conversation(state, n.StateScope)
 	pending, ok, err := n.consumePendingInput(state)
 	if err != nil {
@@ -60,7 +61,7 @@ func (n *HumanMessageNode) Invoke(ctx context.Context, state State) (State, erro
 	return state, nil
 }
 
-func (n *HumanMessageNode) consumePendingInput(state State) (string, bool, error) {
+func (n *HumanMessageNode) consumePendingInput(state fruntime.State) (string, bool, error) {
 	target := n.pendingInputState(state)
 	if target == nil {
 		return "", false, nil
@@ -86,7 +87,7 @@ func (n *HumanMessageNode) consumePendingInput(state State) (string, bool, error
 	return text, true, nil
 }
 
-func (n *HumanMessageNode) pendingInputState(state State) State {
+func (n *HumanMessageNode) pendingInputState(state fruntime.State) fruntime.State {
 	if state == nil {
 		return nil
 	}
@@ -96,8 +97,8 @@ func (n *HumanMessageNode) pendingInputState(state State) State {
 	return state.EnsureScope(n.StateScope)
 }
 
-func (n *HumanMessageNode) GraphNodeSpec() GraphNodeSpec {
-	return GraphNodeSpec{
+func (n *HumanMessageNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	return dsl.GraphNodeSpec{
 		ID:          n.ID(),
 		Name:        n.Name(),
 		Type:        "human_message",

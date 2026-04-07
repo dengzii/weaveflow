@@ -5,6 +5,7 @@ import (
 	"errors"
 	"falcon"
 	fruntime "falcon/runtime"
+	"falcon/tools"
 	"path/filepath"
 
 	"github.com/gin-gonic/gin"
@@ -22,9 +23,9 @@ type apiGraph struct {
 }
 
 func newRunnerApi() (*apiGraph, error) {
-	tootSets := map[string]falcon.Tool{
-		"current_time": falcon.NewCurrentTime(),
-		"calculator":   falcon.NewCalculator(),
+	tootSets := map[string]tools.Tool{
+		"current_time": tools.NewCurrentTime(),
+		"calculator":   tools.NewCalculator(),
 	}
 
 	m, err := openai.New()

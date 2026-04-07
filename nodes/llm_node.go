@@ -1,8 +1,9 @@
-package falcon
+package nodes
 
 import (
 	"context"
 	"errors"
+	"falcon/dsl"
 	"falcon/tools"
 	"fmt"
 	"sort"
@@ -36,7 +37,7 @@ func NewLLMNode(model llms.Model, tools map[string]tools.Tool) *LLMNode {
 	}
 }
 
-func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
+func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
 	conversation := fruntime.Conversation(state, L.StateScope)
 	messages := conversation.Messages()
 
@@ -115,14 +116,14 @@ func (L *LLMNode) Invoke(ctx context.Context, state State) (State, error) {
 	return state, nil
 }
 
-func (L *LLMNode) GraphNodeSpec() GraphNodeSpec {
+func (L *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	toolIDs := make([]string, 0, len(L.tools))
 	for id := range L.tools {
 		toolIDs = append(toolIDs, id)
 	}
 	sort.Strings(toolIDs)
 
-	return GraphNodeSpec{
+	return dsl.GraphNodeSpec{
 		ID:          L.ID(),
 		Name:        L.Name(),
 		Type:        "llm",

@@ -1,11 +1,12 @@
-package falcon
+package nodes
 
 import (
 	"context"
 	"falcon/runtime"
-	"github.com/tmc/langchaingo/llms"
 	"reflect"
 	"strings"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 const TokenUsageStateKey = StateKey
@@ -215,37 +216,6 @@ func intValueFromKeys(values map[string]any, keys ...string) (int, bool) {
 		}
 	}
 	return 0, false
-}
-
-func intValue(value any) (int, bool) {
-	switch typed := value.(type) {
-	case int:
-		return typed, true
-	case int8:
-		return int(typed), true
-	case int16:
-		return int(typed), true
-	case int32:
-		return int(typed), true
-	case int64:
-		return int(typed), true
-	case uint:
-		return int(typed), true
-	case uint8:
-		return int(typed), true
-	case uint16:
-		return int(typed), true
-	case uint32:
-		return int(typed), true
-	case uint64:
-		return int(typed), true
-	case float32:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	default:
-		return 0, false
-	}
 }
 
 func ensureMap(values map[string]any, key string) map[string]any {

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"falcon"
 	"falcon/llama_cpp"
 
 	"github.com/gin-gonic/gin"
@@ -46,7 +45,7 @@ func (f *Server) Run() {
 	f.engine.Use(gin.Recovery())
 	f.engine.Use(gin.Logger())
 
-	modelHub := falcon.NewModelManager()
+	modelHub := NewModelManager()
 	infer := &interApi{
 		modelManager: modelHub,
 		items:        map[string]*loadedModel{},

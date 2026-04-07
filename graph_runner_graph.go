@@ -9,6 +9,10 @@ import (
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
+func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec fruntime.StateCodec, eventSink fruntime.EventSink) *fruntime.GraphRunner {
+	return fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
+}
+
 type graphRunnerGraph struct {
 	graph *Graph
 }
@@ -64,7 +68,7 @@ func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state State) (s
 		if currentNodeID == g.graph.finishPoint {
 			return langgraph.END, nil
 		}
-		return "", fmt.Errorf("node %q produced no matching conditional edge", currentNodeID)
+		return "", fmt.Errorf("nodes %q produced no matching conditional edge", currentNodeID)
 	}
 	if target, ok := g.graph.edges[currentNodeID]; ok {
 		return target, nil
@@ -72,7 +76,7 @@ func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state State) (s
 	if currentNodeID == g.graph.finishPoint {
 		return langgraph.END, nil
 	}
-	return "", fmt.Errorf("node %q has no outgoing edge", currentNodeID)
+	return "", fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
 }
 
 func (g *graphRunnerGraph) NodeName(nodeID string) string {
@@ -106,7 +110,7 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 		}
 		nodeID, err := g.graph.resolveNodeID(breakpoint.NodeID)
 		if err != nil {
-			return nil, fmt.Errorf("resolve after-node breakpoint %q: %w", breakpoint.NodeID, err)
+			return nil, fmt.Errorf("resolve after-nodes breakpoint %q: %w", breakpoint.NodeID, err)
 		}
 		nodes = append(nodes, nodeID)
 	}

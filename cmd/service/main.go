@@ -1,7 +1,7 @@
 package main
 
 import (
-	"falcon/server"
+	"falcon/internal/server"
 )
 
 func main() {

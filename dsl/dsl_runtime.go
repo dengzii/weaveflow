@@ -1,4 +1,4 @@
-package falcon
+package dsl
 
 import (
 	"encoding/json"
@@ -32,7 +32,7 @@ func (r SecretRef) Validate() error {
 	return nil
 }
 
-// GraphNodeInstanceConfig holds instance-bound values for a single node.
+// GraphNodeInstanceConfig holds instance-bound values for a single nodes.
 type GraphNodeInstanceConfig struct {
 	Config   map[string]any       `json:"config,omitempty"`
 	Secrets  map[string]SecretRef `json:"secrets,omitempty"`
@@ -43,10 +43,10 @@ type GraphNodeInstanceConfig struct {
 func (c GraphNodeInstanceConfig) Validate(nodeID string) error {
 	for key, ref := range c.Secrets {
 		if strings.TrimSpace(key) == "" {
-			return fmt.Errorf("node %q secret key is required", nodeID)
+			return fmt.Errorf("nodes %q secret key is required", nodeID)
 		}
 		if err := ref.Validate(); err != nil {
-			return fmt.Errorf("node %q secret %q: %w", nodeID, key, err)
+			return fmt.Errorf("nodes %q secret %q: %w", nodeID, key, err)
 		}
 	}
 	return nil
@@ -89,7 +89,7 @@ func (c GraphInstanceConfig) Validate() error {
 	for nodeID, nodeConfig := range c.NodeConfigs {
 		trimmed := strings.TrimSpace(nodeID)
 		if trimmed == "" {
-			return fmt.Errorf("graph instance node config key is required")
+			return fmt.Errorf("graph instance nodes config key is required")
 		}
 		if err := nodeConfig.Validate(trimmed); err != nil {
 			return err
@@ -196,12 +196,12 @@ func (o RunDebugOptions) Validate() error {
 	}
 	for _, nodeID := range o.PauseBefore {
 		if strings.TrimSpace(nodeID) == "" {
-			return fmt.Errorf("pause_before contains an empty node id")
+			return fmt.Errorf("pause_before contains an empty nodes id")
 		}
 	}
 	for _, nodeID := range o.PauseAfter {
 		if strings.TrimSpace(nodeID) == "" {
-			return fmt.Errorf("pause_after contains an empty node id")
+			return fmt.Errorf("pause_after contains an empty nodes id")
 		}
 	}
 	return nil
@@ -263,7 +263,7 @@ func (o RunDebugOptions) EffectiveBreakpoints() []fruntime.Breakpoint {
 type RunRequest struct {
 	Version                string           `json:"version,omitempty"`
 	InstanceID             string           `json:"instance_id"`
-	Input                  State            `json:"input,omitempty"`
+	Input                  fruntime.State   `json:"input,omitempty"`
 	Stream                 bool             `json:"stream,omitempty"`
 	Debug                  *RunDebugOptions `json:"debug,omitempty"`
 	ResumeFromRunID        string           `json:"resume_from_run_id,omitempty"`

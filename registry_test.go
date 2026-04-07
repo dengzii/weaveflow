@@ -2,6 +2,7 @@ package falcon
 
 import (
 	"context"
+	"falcon/tools"
 	"strings"
 	"testing"
 
@@ -55,7 +56,7 @@ func TestBuildGraphRejectsUnknownToolIDs(t *testing.T) {
 
 	_, err := registry.BuildGraph(def, &BuildContext{
 		Model: stubBuildModel{},
-		Tools: map[string]Tool{},
+		Tools: map[string]tools.Tool{},
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing_tool") {
 		t.Fatalf("expected unknown tool_id error, got %v", err)

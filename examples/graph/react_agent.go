@@ -2,7 +2,9 @@ package main
 
 import (
 	"falcon"
+	"falcon/nodes"
 	fruntime "falcon/runtime"
+	"falcon/tools"
 
 	"github.com/tmc/langchaingo/llms"
 	"github.com/tmc/langchaingo/llms/openai"
@@ -30,10 +32,10 @@ func newReActAgentBuildContext() *falcon.BuildContext {
 	}
 }
 
-func newReActAgentTools() map[string]falcon.Tool {
-	return map[string]falcon.Tool{
-		"current_time": falcon.NewCurrentTime(),
-		"calculator":   falcon.NewCalculator(),
+func newReActAgentTools() map[string]tools.Tool {
+	return map[string]tools.Tool{
+		"current_time": tools.NewCurrentTime(),
+		"calculator":   tools.NewCalculator(),
 	}
 }
 
@@ -41,17 +43,17 @@ func newReActAgentGraph() *falcon.Graph {
 	graph := falcon.NewGraph()
 	buildCtx := newReActAgentBuildContext()
 
-	humanInLoop := falcon.NewHumanMessageNode()
+	humanInLoop := nodes.NewHumanMessageNode()
 	humanInLoop.StateScope = reactAgentStateScope
 
 	tryPanic(graph.AddNode(humanInLoop))
 
-	llm := falcon.NewLLMNode(buildCtx.Model, buildCtx.Tools)
+	llm := nodes.NewLLMNode(buildCtx.Model, buildCtx.Tools)
 	llm.StateScope = reactAgentStateScope
 
 	tryPanic(graph.AddNode(llm))
 
-	toolCall := falcon.NewToolCallNode(buildCtx.Tools)
+	toolCall := nodes.NewToolCallNode(buildCtx.Tools)
 	toolCall.StateScope = llm.StateScope
 
 	tryPanic(graph.AddNode(toolCall))

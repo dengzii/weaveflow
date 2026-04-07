@@ -2,6 +2,7 @@ package falcon
 
 import (
 	"context"
+	"falcon/nodes"
 	"testing"
 
 	fruntime "falcon/runtime"
@@ -14,22 +15,22 @@ func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 
 	state := fruntime.State{}
 	scope := state.EnsureScope("agent")
-	scope[PendingHumanInputStateKey] = "approved"
+	scope[nodes.PendingHumanInputStateKey] = "approved"
 	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
-	node := NewHumanMessageNode()
+	node := nodes.NewHumanMessageNode()
 	node.StateScope = "agent"
 
 	next, err := node.Invoke(context.Background(), state)
 	if err != nil {
-		t.Fatalf("invoke human message node: %v", err)
+		t.Fatalf("invoke human message nodes: %v", err)
 	}
 	if next == nil {
 		t.Fatal("expected state to be returned")
 	}
-	if _, ok := scope[PendingHumanInputStateKey]; ok {
+	if _, ok := scope[nodes.PendingHumanInputStateKey]; ok {
 		t.Fatal("expected pending human input to be consumed")
 	}
 
@@ -50,7 +51,7 @@ func TestHumanMessageNodeInterruptsWithoutPendingHumanInput(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
-	node := NewHumanMessageNode()
+	node := nodes.NewHumanMessageNode()
 	node.StateScope = "agent"
 
 	_, err := node.Invoke(context.Background(), state)

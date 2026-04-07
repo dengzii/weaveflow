@@ -2,6 +2,7 @@ package falcon
 
 import (
 	"context"
+	"falcon/dsl"
 	fruntime "falcon/runtime"
 	"fmt"
 	"strconv"
@@ -20,13 +21,13 @@ type EdgeCondition struct {
 
 func NewEdgeCondition(spec GraphConditionSpec, match EdgeConditionMatcher) EdgeCondition {
 	return EdgeCondition{
-		Spec:  normalizeGraphConditionSpec(spec),
+		Spec:  dsl.NormalizeGraphConditionSpec(spec),
 		Match: match,
 	}
 }
 
 func (c EdgeCondition) validate() error {
-	spec := normalizeGraphConditionSpec(c.Spec)
+	spec := dsl.NormalizeGraphConditionSpec(c.Spec)
 	if spec.Type == "" {
 		return fmt.Errorf("condition spec type is required")
 	}
@@ -37,12 +38,12 @@ func (c EdgeCondition) validate() error {
 }
 
 func (c EdgeCondition) withSpec(spec GraphConditionSpec) EdgeCondition {
-	c.Spec = normalizeGraphConditionSpec(spec)
+	c.Spec = dsl.NormalizeGraphConditionSpec(spec)
 	return c
 }
 
 func (c EdgeCondition) cloneSpec() GraphConditionSpec {
-	spec := normalizeGraphConditionSpec(c.Spec)
+	spec := dsl.NormalizeGraphConditionSpec(c.Spec)
 	if len(spec.Config) > 0 {
 		spec.Config = cloneMap(spec.Config)
 	}
