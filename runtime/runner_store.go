@@ -57,6 +57,21 @@ func (c *CombineEventSink) PublishBatch(ctx context.Context, events []Event) err
 	return nil
 }
 
+func (c *CombineEventSink) ListEvents(runID string) ([]Event, error) {
+	for _, sink := range c.sinks {
+		reader, ok := sink.(EventReader)
+		if !ok {
+			continue
+		}
+		events, err := reader.ListEvents(runID)
+		if err != nil {
+			return nil, err
+		}
+		return events, nil
+	}
+	return nil, fmt.Errorf("combine event sink does not support listing events")
+}
+
 type LoggerEventSink struct {
 	logger *zap.Logger
 }

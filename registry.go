@@ -19,8 +19,9 @@ type StateFieldDefinition = dsl.StateFieldDefinition
 type GraphDefinition = dsl.GraphDefinition
 
 type BuildContext struct {
-	Model llms.Model
-	Tools map[string]tools.Tool
+	Model          llms.Model
+	Tools          map[string]tools.Tool
+	InstanceConfig *dsl.GraphInstanceConfig
 }
 
 type NodeTypeDefinition struct {
@@ -284,12 +285,37 @@ func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphCondi
 }
 
 func (r *Registry) BuildGraph(def GraphDefinition, ctx *BuildContext) (*Graph, error) {
+	return r.buildGraph(def, nil, ctx)
+}
+
+func (r *Registry) BuildGraphInstance(def GraphDefinition, instance dsl.GraphInstanceConfig, ctx *BuildContext) (*Graph, error) {
+	return r.buildGraph(def, &instance, ctx)
+}
+
+func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceConfig, ctx *BuildContext) (*Graph, error) {
 	def = dsl.NormalizeGraphDefinition(def)
 	if err := def.Validate(); err != nil {
 		return nil, err
 	}
 	if def.StateSchema != "" && def.StateSchema != fruntime.CommonStateSchemaID {
 		return nil, fmt.Errorf("unsupported state schema %q", def.StateSchema)
+	}
+	if instance != nil {
+		normalized := *instance
+		if err := normalized.Validate(); err != nil {
+			return nil, err
+		}
+		applied, err := ApplyGraphInstanceConfig(def, normalized)
+		if err != nil {
+			return nil, err
+		}
+		def = applied
+		if ctx != nil {
+			clonedCtx := *ctx
+			clonedInstance := normalized
+			ctx = &clonedCtx
+			ctx.InstanceConfig = &clonedInstance
+		}
 	}
 
 	g := NewGraph()
