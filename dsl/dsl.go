@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	fruntime "weaveflow/runtime"
 )
 
 type JSONSchema map[string]any
@@ -27,6 +26,7 @@ func (r JSONSchema) WriteToFile(path string) error {
 }
 
 const GraphDefinitionVersion = "1.0"
+const CommonStateSchemaID = "weaveflow.state.v2"
 
 type StateFieldDefinition struct {
 	Name        string     `json:"name"`
@@ -74,7 +74,7 @@ func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 		def.Version = GraphDefinitionVersion
 	}
 	if def.StateSchema == "" {
-		def.StateSchema = fruntime.CommonStateSchemaID
+		def.StateSchema = CommonStateSchemaID
 	}
 	for i := range def.Nodes {
 		def.Nodes[i].ID = strings.TrimSpace(def.Nodes[i].ID)

@@ -133,6 +133,7 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 
 	buildContext := *a.buildCtx
 	buildContext.InstanceConfig = &instance
+	buildContext.GraphResolver = a.resolveGraphDefinitionByRef
 	graph, err := a.registry.BuildGraphInstance(graphDef, instance, &buildContext)
 	if err != nil {
 		return err
@@ -220,6 +221,53 @@ func (a *apiGraph) resolveGraphDefinition(request *NewRunRequest, path string) (
 		return def, def.Validate()
 	}
 	return readGraphDefinitionFile(path)
+}
+
+func (a *apiGraph) resolveGraphDefinitionByRef(graphRef string) (weaveflow.GraphDefinition, error) {
+	graphRef = strings.TrimSpace(graphRef)
+	if graphRef == "" {
+		return weaveflow.GraphDefinition{}, fmt.Errorf("graph_ref is required")
+	}
+
+	entries, err := os.ReadDir(a.baseDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return weaveflow.GraphDefinition{}, fmt.Errorf("graph_ref %q not found", graphRef)
+		}
+		return weaveflow.GraphDefinition{}, err
+	}
+
+	var matchedDir string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		dir := filepath.Join(a.baseDir, entry.Name())
+		instancePath := filepath.Join(dir, "instance.json")
+
+		instance, err := readGraphInstanceConfigFile(instancePath)
+		switch {
+		case err == nil:
+			if instance.GraphRef != graphRef && instance.ID != graphRef {
+				continue
+			}
+		case os.IsNotExist(err):
+			if entry.Name() != graphRef {
+				continue
+			}
+		default:
+			return weaveflow.GraphDefinition{}, err
+		}
+
+		if matchedDir != "" && matchedDir != dir {
+			return weaveflow.GraphDefinition{}, fmt.Errorf("graph_ref %q is ambiguous", graphRef)
+		}
+		matchedDir = dir
+	}
+	if matchedDir == "" {
+		return weaveflow.GraphDefinition{}, fmt.Errorf("graph_ref %q not found", graphRef)
+	}
+	return readGraphDefinitionFile(filepath.Join(matchedDir, "graph.json"))
 }
 
 func (r *NewRunRequest) resolveRunRequest(instanceID string) (wdsl.RunRequest, error) {

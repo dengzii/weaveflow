@@ -485,7 +485,7 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 
 	return dsl.GraphDefinition{
 		Version:     dsl.GraphDefinitionVersion,
-		StateSchema: fruntime.CommonStateSchemaID,
+		StateSchema: dsl.CommonStateSchemaID,
 		EntryPoint:  g.serializeNodeRef(g.entryPoint),
 		FinishPoint: g.serializeNodeRef(g.finishPoint),
 		Nodes:       nodeList,

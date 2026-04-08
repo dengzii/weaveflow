@@ -1,12 +1,11 @@
 package weaveflow
 
 import (
+	"context"
 	"fmt"
-	"sort"
 	"strings"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
-	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -17,27 +16,27 @@ type GraphConditionSpec = dsl.GraphConditionSpec
 type GraphNodeSpec = dsl.GraphNodeSpec
 type StateFieldDefinition = dsl.StateFieldDefinition
 type GraphDefinition = dsl.GraphDefinition
+type NodeTypeSchema = dsl.NodeTypeSchema
+type ConditionSchema = dsl.ConditionSchema
+
+type GraphResolver func(graphRef string) (dsl.GraphDefinition, error)
 
 type BuildContext struct {
 	Model          llms.Model
 	Tools          map[string]tools.Tool
 	InstanceConfig *dsl.GraphInstanceConfig
+	GraphResolver  GraphResolver
+	graphBuildPath []string
 }
 
 type NodeTypeDefinition struct {
-	Type         string                                                            `json:"type"`
-	Title        string                                                            `json:"title,omitempty"`
-	Description  string                                                            `json:"description,omitempty"`
-	ConfigSchema JSONSchema                                                        `json:"config_schema"`
-	Build        func(*BuildContext, dsl.GraphNodeSpec) (nodes.Node[State], error) `json:"-"`
+	dsl.NodeTypeSchema
+	Build func(*BuildContext, dsl.GraphNodeSpec) (nodes.Node[State], error) `json:"-"`
 }
 
 type ConditionDefinition struct {
-	Type         string                                          `json:"type"`
-	Title        string                                          `json:"title,omitempty"`
-	Description  string                                          `json:"description,omitempty"`
-	ConfigSchema JSONSchema                                      `json:"config_schema"`
-	Resolve      func(GraphConditionSpec) (EdgeCondition, error) `json:"-"`
+	dsl.ConditionSchema
+	Resolve func(GraphConditionSpec) (EdgeCondition, error) `json:"-"`
 }
 
 type Registry struct {
@@ -62,16 +61,74 @@ func DefaultRegistry() *Registry {
 	}
 
 	r.RegisterNodeType(NodeTypeDefinition{
-		Type:        "human_message",
-		Title:       "Human Message Node",
-		Description: "Pause the graph until the latest message in scope is a human message.",
-		ConfigSchema: JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"state_scope":       JSONSchema{"type": "string"},
-				"interrupt_message": JSONSchema{"type": "string"},
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "subgraph",
+			Title:       "Subgraph Node",
+			Description: "Invoke another graph resolved by graph_ref using the current state.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"graph_ref": JSONSchema{"type": "string"},
+				},
+				"required":             []string{"graph_ref"},
+				"additionalProperties": false,
 			},
-			"additionalProperties": false,
+		},
+		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+			graphRef := stringConfig(spec.Config, "graph_ref")
+			if graphRef == "" {
+				return nil, fmt.Errorf("build subgraph nodes %q: graph_ref is required", spec.ID)
+			}
+			if ctx == nil || ctx.GraphResolver == nil {
+				return nil, fmt.Errorf("build subgraph nodes %q: graph resolver is required", spec.ID)
+			}
+			if err := validateGraphBuildPath(ctx.graphBuildPath, graphRef); err != nil {
+				return nil, fmt.Errorf("build subgraph nodes %q: %w", spec.ID, err)
+			}
+
+			def, err := ctx.GraphResolver(graphRef)
+			if err != nil {
+				return nil, fmt.Errorf("build subgraph nodes %q resolve %q: %w", spec.ID, graphRef, err)
+			}
+
+			subgraphCtx := cloneBuildContext(ctx)
+			subgraphCtx.InstanceConfig = nil
+			subgraphCtx.graphBuildPath = append(subgraphCtx.graphBuildPath, graphRef)
+
+			subgraph, err := r.buildGraph(def, nil, subgraphCtx)
+			if err != nil {
+				return nil, fmt.Errorf("build subgraph nodes %q graph %q: %w", spec.ID, graphRef, err)
+			}
+
+			node := nodes.NewSubgraphNode()
+			node.NodeID = spec.ID
+			if spec.Name != "" {
+				node.NodeName = spec.Name
+			}
+			if spec.Description != "" {
+				node.NodeDescription = spec.Description
+			}
+			node.GraphRef = graphRef
+			node.InvokeSubgraph = func(ctx context.Context, state State) (State, error) {
+				return subgraph.Run(ctx, state)
+			}
+			return node, nil
+		},
+	})
+
+	r.RegisterNodeType(NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "human_message",
+			Title:       "Human Message Node",
+			Description: "Pause the graph until the latest message in scope is a human message.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"state_scope":       JSONSchema{"type": "string"},
+					"interrupt_message": JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			node := nodes.NewHumanMessageNode()
@@ -93,29 +150,31 @@ func DefaultRegistry() *Registry {
 	})
 
 	r.RegisterNodeType(NodeTypeDefinition{
-		Type:        "llm",
-		Title:       "LLM Node",
-		Description: "Built-in model inference nodes.",
-		ConfigSchema: JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"tool_ids": JSONSchema{
-					"type":  "array",
-					"items": JSONSchema{"type": "string"},
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "llm",
+			Title:       "LLM Node",
+			Description: "Built-in model inference nodes.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"tool_ids": JSONSchema{
+						"type":  "array",
+						"items": JSONSchema{"type": "string"},
+					},
+					"state_scope": JSONSchema{"type": "string"},
 				},
-				"state_scope": JSONSchema{"type": "string"},
+				"additionalProperties": false,
 			},
-			"additionalProperties": false,
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			if ctx.Model == nil {
 				return nil, fmt.Errorf("build llm nodes %q: model is required", spec.ID)
 			}
-			tools, err := resolveTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids"))
+			ts, err := resolveTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids"))
 			if err != nil {
 				return nil, fmt.Errorf("build llm nodes %q: %w", spec.ID, err)
 			}
-			node := nodes.NewLLMNode(ctx.Model, tools)
+			node := nodes.NewLLMNode(ctx.Model, ts)
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -129,27 +188,29 @@ func DefaultRegistry() *Registry {
 	})
 
 	r.RegisterNodeType(NodeTypeDefinition{
-		Type:        "tools",
-		Title:       "Tools Node",
-		Description: "Built-in tool execution nodes.",
-		ConfigSchema: JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"tool_ids": JSONSchema{
-					"type":  "array",
-					"items": JSONSchema{"type": "string"},
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "tools",
+			Title:       "Tools Node",
+			Description: "Built-in tool execution nodes.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"tool_ids": JSONSchema{
+						"type":  "array",
+						"items": JSONSchema{"type": "string"},
+					},
+					"state_scope": JSONSchema{"type": "string"},
 				},
-				"state_scope": JSONSchema{"type": "string"},
+				"additionalProperties": false,
 			},
-			"additionalProperties": false,
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			toolIDs := stringSliceConfig(spec.Config, "tool_ids")
-			tools, err := resolveTools(ctx.Tools, toolIDs)
+			ts, err := resolveTools(ctx.Tools, toolIDs)
 			if err != nil {
 				return nil, fmt.Errorf("build tools nodes %q: %w", spec.ID, err)
 			}
-			node := nodes.NewToolCallNode(tools)
+			node := nodes.NewToolCallNode(ts)
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -163,15 +224,17 @@ func DefaultRegistry() *Registry {
 	})
 
 	r.RegisterCondition(ConditionDefinition{
-		Type:        "last_message_has_tool_calls",
-		Title:       "Last Message Has Tool Calls",
-		Description: "Routes when the last AI message includes tool calls.",
-		ConfigSchema: JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"state_scope": JSONSchema{"type": "string"},
+		ConditionSchema: dsl.ConditionSchema{
+			Type:        "last_message_has_tool_calls",
+			Title:       "Last Message Has Tool Calls",
+			Description: "Routes when the last AI message includes tool calls.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"state_scope": JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
 			},
-			"additionalProperties": false,
 		},
 		Resolve: func(spec GraphConditionSpec) (EdgeCondition, error) {
 			return LastMessageHasToolCalls(stringConfig(spec.Config, "state_scope")), nil
@@ -179,15 +242,17 @@ func DefaultRegistry() *Registry {
 	})
 
 	r.RegisterCondition(ConditionDefinition{
-		Type:        "has_final_answer",
-		Title:       "Has Final Answer",
-		Description: "Routes when the current state already contains a final answer.",
-		ConfigSchema: JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"state_scope": JSONSchema{"type": "string"},
+		ConditionSchema: dsl.ConditionSchema{
+			Type:        "has_final_answer",
+			Title:       "Has Final Answer",
+			Description: "Routes when the current state already contains a final answer.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"state_scope": JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
 			},
-			"additionalProperties": false,
 		},
 		Resolve: func(spec GraphConditionSpec) (EdgeCondition, error) {
 			return HasFinalAnswer(stringConfig(spec.Config, "state_scope")), nil
@@ -195,41 +260,43 @@ func DefaultRegistry() *Registry {
 	})
 
 	r.RegisterCondition(ConditionDefinition{
-		Type:        "expression_conditions",
-		Title:       "Expression Conditions",
-		Description: "Routes by evaluating serializable expressions against the current state.",
-		ConfigSchema: JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"state_scope": JSONSchema{"type": "string"},
-				"match": JSONSchema{
-					"type": "string",
-					"enum": []string{ExpressionMatchAll, ExpressionMatchAny},
-				},
-				"expressions": JSONSchema{
-					"type": "array",
-					"items": JSONSchema{
-						"type": "object",
-						"properties": JSONSchema{
-							"value1": JSONSchema{"type": "string"},
-							"op": JSONSchema{
-								"type": "string",
-								"enum": []string{
-									OperationEqual,
-									OperationNotEqual,
-									OperationContains,
-									OperationNotContain,
+		ConditionSchema: dsl.ConditionSchema{
+			Type:        "expression_conditions",
+			Title:       "Expression Conditions",
+			Description: "Routes by evaluating serializable expressions against the current state.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"state_scope": JSONSchema{"type": "string"},
+					"match": JSONSchema{
+						"type": "string",
+						"enum": []string{ExpressionMatchAll, ExpressionMatchAny},
+					},
+					"expressions": JSONSchema{
+						"type": "array",
+						"items": JSONSchema{
+							"type": "object",
+							"properties": JSONSchema{
+								"value1": JSONSchema{"type": "string"},
+								"op": JSONSchema{
+									"type": "string",
+									"enum": []string{
+										OperationEqual,
+										OperationNotEqual,
+										OperationContains,
+										OperationNotContain,
+									},
 								},
+								"value2": JSONSchema{"type": "string"},
 							},
-							"value2": JSONSchema{"type": "string"},
+							"required":             []string{"value1", "op", "value2"},
+							"additionalProperties": false,
 						},
-						"required":             []string{"value1", "op", "value2"},
-						"additionalProperties": false,
 					},
 				},
+				"required":             []string{"expressions"},
+				"additionalProperties": false,
 			},
-			"required":             []string{"expressions"},
-			"additionalProperties": false,
 		},
 		Resolve: func(spec GraphConditionSpec) (EdgeCondition, error) {
 			config, err := ParseExpressionConditionConfig(spec.Config)
@@ -297,7 +364,7 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 	if err := def.Validate(); err != nil {
 		return nil, err
 	}
-	if def.StateSchema != "" && def.StateSchema != fruntime.CommonStateSchemaID {
+	if def.StateSchema != "" && def.StateSchema != dsl.CommonStateSchemaID {
 		return nil, fmt.Errorf("unsupported state schema %q", def.StateSchema)
 	}
 	if instance != nil {
@@ -367,94 +434,15 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 }
 
 func (r *Registry) JSONSchema() JSONSchema {
-	nodeVariants := make([]any, 0, len(r.NodeTypes))
-	for _, key := range sortedNodeTypeKeys(r.NodeTypes) {
-		nodeDef := r.NodeTypes[key]
-		nodeVariants = append(nodeVariants, JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"id":          JSONSchema{"type": "string"},
-				"name":        JSONSchema{"type": "string"},
-				"type":        JSONSchema{"const": nodeDef.Type},
-				"description": JSONSchema{"type": "string"},
-				"config":      nodeDef.ConfigSchema,
-			},
-			"required":             []string{"id", "type"},
-			"additionalProperties": false,
-		})
+	nodeTypes := make(map[string]dsl.NodeTypeSchema, len(r.NodeTypes))
+	for key, def := range r.NodeTypes {
+		nodeTypes[key] = def.NodeTypeSchema
 	}
-
-	conditionVariants := make([]any, 0, len(r.Conditions))
-	for _, key := range sortedConditionKeys(r.Conditions) {
-		conditionDef := r.Conditions[key]
-		conditionVariants = append(conditionVariants, JSONSchema{
-			"type": "object",
-			"properties": JSONSchema{
-				"type":   JSONSchema{"const": conditionDef.Type},
-				"config": conditionDef.ConfigSchema,
-			},
-			"required":             []string{"type"},
-			"additionalProperties": false,
-		})
+	conditions := make(map[string]dsl.ConditionSchema, len(r.Conditions))
+	for key, def := range r.Conditions {
+		conditions[key] = def.ConditionSchema
 	}
-
-	stateFields := JSONSchema{}
-	for _, key := range sortedStateFieldKeys(r.StateFields) {
-		field := r.StateFields[key]
-		stateFields[field.Name] = field.Schema
-	}
-
-	return JSONSchema{
-		"$schema": "https://json-schema.org/draft/2020-12/schema",
-		"type":    "object",
-		"properties": JSONSchema{
-			"version":      JSONSchema{"type": "string"},
-			"name":         JSONSchema{"type": "string"},
-			"description":  JSONSchema{"type": "string"},
-			"state_schema": JSONSchema{"const": fruntime.CommonStateSchemaID},
-			"entry_point":  JSONSchema{"type": "string"},
-			"finish_point": JSONSchema{"type": "string"},
-			"nodes": JSONSchema{
-				"type":  "array",
-				"items": JSONSchema{"oneOf": nodeVariants},
-			},
-			"edges": JSONSchema{
-				"type": "array",
-				"items": JSONSchema{
-					"type": "object",
-					"properties": JSONSchema{
-						"from":      JSONSchema{"type": "string"},
-						"to":        JSONSchema{"type": "string"},
-						"condition": JSONSchema{"oneOf": conditionVariants},
-					},
-					"required":             []string{"from", "to"},
-					"additionalProperties": false,
-				},
-			},
-			"metadata": JSONSchema{"type": "object"},
-		},
-		"required": []string{"nodes"},
-		"$defs": JSONSchema{
-			"common_state": JSONSchema{
-				"type":                 "object",
-				"properties":           stateFields,
-				"additionalProperties": true,
-			},
-		},
-	}
-}
-
-func filterTools(all map[string]tools.Tool, ids []string) map[string]tools.Tool {
-	if len(ids) == 0 {
-		return all
-	}
-	filtered := make(map[string]tools.Tool, len(ids))
-	for _, id := range ids {
-		if tool, ok := all[id]; ok {
-			filtered[id] = tool
-		}
-	}
-	return filtered
+	return dsl.BuildGraphDefinitionSchema(dsl.CommonStateSchemaID, r.StateFields, nodeTypes, conditions)
 }
 
 func resolveTools(all map[string]tools.Tool, ids []string) (map[string]tools.Tool, error) {
@@ -511,37 +499,27 @@ func stringConfig(config map[string]any, key string) string {
 	return ""
 }
 
-func boolConfig(config map[string]any, key string) (bool, bool) {
-	if len(config) == 0 {
-		return false, false
+func cloneBuildContext(ctx *BuildContext) *BuildContext {
+	if ctx == nil {
+		return &BuildContext{}
 	}
-	value, ok := config[key].(bool)
-	return value, ok
+	cloned := *ctx
+	if len(ctx.graphBuildPath) > 0 {
+		cloned.graphBuildPath = append([]string(nil), ctx.graphBuildPath...)
+	}
+	return &cloned
 }
 
-func sortedStateFieldKeys(input map[string]StateFieldDefinition) []string {
-	keys := make([]string, 0, len(input))
-	for key := range input {
-		keys = append(keys, key)
+func validateGraphBuildPath(path []string, next string) error {
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return fmt.Errorf("graph_ref is required")
 	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedNodeTypeKeys(input map[string]NodeTypeDefinition) []string {
-	keys := make([]string, 0, len(input))
-	for key := range input {
-		keys = append(keys, key)
+	for _, existing := range path {
+		if existing == next {
+			cycle := append(append([]string(nil), path...), next)
+			return fmt.Errorf("cyclic graph_ref dependency detected: %s", strings.Join(cycle, " -> "))
+		}
 	}
-	sort.Strings(keys)
-	return keys
-}
-
-func sortedConditionKeys(input map[string]ConditionDefinition) []string {
-	keys := make([]string, 0, len(input))
-	for key := range input {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
+	return nil
 }
