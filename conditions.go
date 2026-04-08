@@ -3,7 +3,6 @@ package weaveflow
 import (
 	"context"
 	"fmt"
-	"strconv"
 	"strings"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
@@ -316,12 +315,9 @@ func resolveExpressionValue(state State, scope, path string) (any, bool) {
 		return nil, false
 	}
 
-	segments := strings.Split(path, ".")
-	for i := range segments {
-		segments[i] = strings.TrimSpace(segments[i])
-		if segments[i] == "" {
-			return nil, false
-		}
+	segments := fruntime.SplitStatePath(path)
+	if len(segments) == 0 {
+		return nil, false
 	}
 
 	if isConversationField(segments[0]) {
@@ -329,14 +325,17 @@ func resolveExpressionValue(state State, scope, path string) (any, bool) {
 		if !ok {
 			return nil, false
 		}
-		return traverseExpressionValue(value, segments[1:])
+		if len(segments) == 1 {
+			return value, true
+		}
+		return fruntime.ResolveStateValue(value, segments[1:])
 	}
 
 	var base any = state
 	if scope != "" {
 		base = state.Scope(scope)
 	}
-	return traverseExpressionValue(base, segments)
+	return fruntime.ResolveStateValue(base, segments)
 }
 
 func isConversationField(field string) bool {
@@ -362,59 +361,6 @@ func conversationFieldValue(state State, scope, field string) (any, bool) {
 	default:
 		return nil, false
 	}
-}
-
-func traverseExpressionValue(current any, segments []string) (any, bool) {
-	value := current
-	for _, segment := range segments {
-		next, ok := expressionPathSegment(value, segment)
-		if !ok {
-			return nil, false
-		}
-		value = next
-	}
-	return value, true
-}
-
-func expressionPathSegment(current any, segment string) (any, bool) {
-	switch typed := current.(type) {
-	case nil:
-		return nil, false
-	case State:
-		next, ok := typed[segment]
-		return next, ok
-	case map[string]any:
-		next, ok := typed[segment]
-		return next, ok
-	case []any:
-		index, ok := expressionIndex(segment, len(typed))
-		if !ok {
-			return nil, false
-		}
-		return typed[index], true
-	case []map[string]any:
-		index, ok := expressionIndex(segment, len(typed))
-		if !ok {
-			return nil, false
-		}
-		return typed[index], true
-	case []string:
-		index, ok := expressionIndex(segment, len(typed))
-		if !ok {
-			return nil, false
-		}
-		return typed[index], true
-	default:
-		return nil, false
-	}
-}
-
-func expressionIndex(segment string, size int) (int, bool) {
-	index, err := strconv.Atoi(segment)
-	if err != nil || index < 0 || index >= size {
-		return 0, false
-	}
-	return index, true
 }
 
 func expressionValueEquals(left any, right string) bool {

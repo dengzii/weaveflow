@@ -119,6 +119,51 @@ func DefaultRegistry() *Registry {
 
 	r.RegisterNodeType(NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "iterator",
+			Title:       "Iterator Node",
+			Description: "Iterate over a state array and inject the current iteration into temporary state.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"state_key":      JSONSchema{"type": "string"},
+					"max_iterations": JSONSchema{"type": "integer", "minimum": 1},
+					"continue_to":    JSONSchema{"type": "string"},
+					"done_to":        JSONSchema{"type": "string"},
+				},
+				"required":             []string{"state_key", "max_iterations"},
+				"additionalProperties": false,
+			},
+		},
+		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+			_ = ctx
+
+			stateKey := stringConfig(spec.Config, "state_key")
+			if stateKey == "" {
+				return nil, fmt.Errorf("build iterator nodes %q: state_key is required", spec.ID)
+			}
+			maxIterations, ok := intConfig(spec.Config, "max_iterations")
+			if !ok || maxIterations <= 0 {
+				return nil, fmt.Errorf("build iterator nodes %q: max_iterations must be greater than 0", spec.ID)
+			}
+
+			node := nodes.NewIteratorNode()
+			node.NodeID = spec.ID
+			if spec.Name != "" {
+				node.NodeName = spec.Name
+			}
+			if spec.Description != "" {
+				node.NodeDescription = spec.Description
+			}
+			node.StateKey = stateKey
+			node.MaxIterations = maxIterations
+			node.ContinueTo = stringConfig(spec.Config, "continue_to")
+			node.DoneTo = stringConfig(spec.Config, "done_to")
+			return node, nil
+		},
+	})
+
+	r.RegisterNodeType(NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "human_message",
 			Title:       "Human Message Node",
 			Description: "Pause the graph until the latest message in scope is a human message.",
@@ -447,6 +492,9 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 			return nil, err
 		}
 	}
+	if err := r.applyBuiltInNodeEdges(g, def); err != nil {
+		return nil, err
+	}
 	for _, edge := range def.Edges {
 		if edge.Condition == nil {
 			if err := g.AddEdge(edge.From, edge.To); err != nil {
@@ -479,6 +527,59 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 	}
 
 	return g, nil
+}
+
+func (r *Registry) applyBuiltInNodeEdges(g *Graph, def GraphDefinition) error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+
+	for _, nodeSpec := range def.Nodes {
+		if nodeSpec.Type != "iterator" {
+			continue
+		}
+		continueTo := stringConfig(nodeSpec.Config, "continue_to")
+		doneTo := stringConfig(nodeSpec.Config, "done_to")
+		if continueTo == "" && doneTo == "" {
+			continue
+		}
+		if continueTo == "" || doneTo == "" {
+			return fmt.Errorf("build iterator nodes %q: continue_to and done_to must be configured together", nodeSpec.ID)
+		}
+		if hasExplicitOutgoingEdge(def.Edges, nodeSpec.ID) {
+			return fmt.Errorf("build iterator nodes %q: built-in iterator edges cannot be combined with explicit outgoing edges", nodeSpec.ID)
+		}
+
+		condition, err := ExpressionConditions(ExpressionConditionConfig{
+			Expressions: []Expression{
+				{
+					Value1: nodes.IteratorStateRootKey + "." + nodeSpec.ID + ".done",
+					Op:     OperationEqual,
+					Value2: "false",
+				},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("build iterator nodes %q built-in continue edge: %w", nodeSpec.ID, err)
+		}
+		if err := g.addRuntimeConditionalEdge(nodeSpec.ID, continueTo, condition); err != nil {
+			return fmt.Errorf("build iterator nodes %q built-in continue edge: %w", nodeSpec.ID, err)
+		}
+		if err := g.addRuntimeEdge(nodeSpec.ID, doneTo); err != nil {
+			return fmt.Errorf("build iterator nodes %q built-in done edge: %w", nodeSpec.ID, err)
+		}
+	}
+
+	return nil
+}
+
+func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {
+	for _, edge := range edges {
+		if strings.TrimSpace(edge.From) == from {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Registry) JSONSchema() JSONSchema {
