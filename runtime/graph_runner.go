@@ -116,6 +116,37 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string, input State) (Ru
 	}
 }
 
+func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID string, input State) (RunRecord, State, error) {
+	if err := r.validate(); err != nil {
+		return RunRecord{}, nil, err
+	}
+	if strings.TrimSpace(checkpointID) == "" {
+		return RunRecord{}, nil, fmt.Errorf("checkpoint id is required")
+	}
+
+	checkpoint, err := r.LoadCheckpointState(ctx, checkpointID)
+	if err != nil {
+		return RunRecord{}, nil, err
+	}
+	if strings.TrimSpace(checkpoint.Record.RunID) == "" {
+		return RunRecord{}, nil, fmt.Errorf("checkpoint %q has no run id", checkpointID)
+	}
+
+	run, err := r.ExecutionStore.GetRun(ctx, checkpoint.Record.RunID)
+	if err != nil {
+		return RunRecord{}, nil, err
+	}
+
+	switch {
+	case isResumableRunStatus(run.Status):
+		return r.resumeExistingRun(ctx, run, checkpoint, input)
+	case isContinuableRunStatus(run.Status):
+		return r.continueRun(ctx, run, checkpoint, input)
+	default:
+		return RunRecord{}, nil, fmt.Errorf("run %q status %q is not resumable", run.RunID, run.Status)
+	}
+}
+
 func (r *GraphRunner) GetResumableRun(ctx context.Context) (*RunRecord, error) {
 	return r.latestCheckpointedRun(ctx, isResumableRunStatus)
 }

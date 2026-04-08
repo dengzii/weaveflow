@@ -7,9 +7,9 @@ import (
 )
 
 const (
-	StateNamespacePrefix       = "__falcon_"
-	stateNamespaceConversation = "__falcon_conversation"
-	stateNamespaceScopes       = "__falcon_scopes"
+	StateNamespacePrefix       = "__wf_"
+	stateNamespaceConversation = "__wf_conversation"
+	stateNamespaceScopes       = "__wf_scopes"
 
 	DefaultMaxIterations = 8
 )

@@ -1,10 +1,8 @@
-package weaveflow
+package nodes
 
 import (
 	"context"
 	"testing"
-	"weaveflow/nodes"
-
 	fruntime "weaveflow/runtime"
 
 	"github.com/tmc/langchaingo/llms"
@@ -15,12 +13,12 @@ func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 
 	state := fruntime.State{}
 	scope := state.EnsureScope("agent")
-	scope[nodes.PendingHumanInputStateKey] = "approved"
+	scope[PendingHumanInputStateKey] = "approved"
 	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
-	node := nodes.NewHumanMessageNode()
+	node := NewHumanMessageNode()
 	node.StateScope = "agent"
 
 	next, err := node.Invoke(context.Background(), state)
@@ -30,7 +28,7 @@ func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 	if next == nil {
 		t.Fatal("expected state to be returned")
 	}
-	if _, ok := scope[nodes.PendingHumanInputStateKey]; ok {
+	if _, ok := scope[PendingHumanInputStateKey]; ok {
 		t.Fatal("expected pending human input to be consumed")
 	}
 
@@ -51,7 +49,7 @@ func TestHumanMessageNodeInterruptsWithoutPendingHumanInput(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
-	node := nodes.NewHumanMessageNode()
+	node := NewHumanMessageNode()
 	node.StateScope = "agent"
 
 	_, err := node.Invoke(context.Background(), state)

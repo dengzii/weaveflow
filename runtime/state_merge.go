@@ -4,6 +4,10 @@ import "fmt"
 
 const resumeInputScopesKey = "scopes"
 
+func MergeInputState(base State, input State) (State, error) {
+	return mergeResumeInput(base, input)
+}
+
 func mergeResumeInput(base State, input State) (State, error) {
 	if len(input) == 0 {
 		if base == nil {

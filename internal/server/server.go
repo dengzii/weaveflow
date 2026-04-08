@@ -66,6 +66,7 @@ func (f *Server) Run() {
 			get("models", infer.ModelList),
 		),
 		group("graph",
+			post("run", graph.NewRun),
 			get("run", graph.NewRun),
 		),
 	)
