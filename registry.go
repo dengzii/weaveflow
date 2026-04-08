@@ -3,6 +3,7 @@ package weaveflow
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
@@ -144,6 +145,53 @@ func DefaultRegistry() *Registry {
 			}
 			if message := stringConfig(spec.Config, "interrupt_message"); message != "" {
 				node.InterruptMessage = message
+			}
+			return node, nil
+		},
+	})
+
+	r.RegisterNodeType(NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "context_reducer",
+			Title:       "Context Reducer Node",
+			Description: "Compact older conversation context into a summary message before the next model turn.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"state_scope":     JSONSchema{"type": "string"},
+					"max_messages":    JSONSchema{"type": "integer", "minimum": 2},
+					"preserve_system": JSONSchema{"type": "boolean"},
+					"preserve_recent": JSONSchema{"type": "integer", "minimum": 0},
+					"summary_prefix":  JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+			if ctx == nil || ctx.Model == nil {
+				return nil, fmt.Errorf("build context_reducer nodes %q: model is required", spec.ID)
+			}
+
+			node := nodes.NewContextReducerNode(ctx.Model)
+			node.NodeID = spec.ID
+			if spec.Name != "" {
+				node.NodeName = spec.Name
+			}
+			if spec.Description != "" {
+				node.NodeDescription = spec.Description
+			}
+			node.StateScope = stringConfig(spec.Config, "state_scope")
+			if value, ok := intConfig(spec.Config, "max_messages"); ok {
+				node.MaxMessages = value
+			}
+			if value, ok := boolConfig(spec.Config, "preserve_system"); ok {
+				node.PreserveSystem = value
+			}
+			if value, ok := intConfig(spec.Config, "preserve_recent"); ok {
+				node.PreserveRecent = value
+			}
+			if value := stringConfig(spec.Config, "summary_prefix"); value != "" {
+				node.SummaryPrefix = value
 			}
 			return node, nil
 		},
@@ -497,6 +545,54 @@ func stringConfig(config map[string]any, key string) string {
 		return value
 	}
 	return ""
+}
+
+func intConfig(config map[string]any, key string) (int, bool) {
+	if len(config) == 0 {
+		return 0, false
+	}
+
+	switch value := config[key].(type) {
+	case int:
+		return value, true
+	case int8:
+		return int(value), true
+	case int16:
+		return int(value), true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), true
+	case float32:
+		return int(value), true
+	case float64:
+		return int(value), true
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err == nil {
+			return parsed, true
+		}
+	}
+
+	return 0, false
+}
+
+func boolConfig(config map[string]any, key string) (bool, bool) {
+	if len(config) == 0 {
+		return false, false
+	}
+
+	switch value := config[key].(type) {
+	case bool:
+		return value, true
+	case string:
+		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
+		if err == nil {
+			return parsed, true
+		}
+	}
+
+	return false, false
 }
 
 func cloneBuildContext(ctx *BuildContext) *BuildContext {

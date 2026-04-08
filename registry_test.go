@@ -131,6 +131,27 @@ func TestBuildGraphRequiresGraphResolverForSubgraph(t *testing.T) {
 	}
 }
 
+func TestBuildGraphRequiresModelForContextReducer(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	def := GraphDefinition{
+		EntryPoint:  "reduce",
+		FinishPoint: "reduce",
+		Nodes: []GraphNodeSpec{
+			{
+				ID:   "reduce",
+				Type: "context_reducer",
+			},
+		},
+	}
+
+	_, err := registry.BuildGraph(def, &BuildContext{})
+	if err == nil || !strings.Contains(err.Error(), "model is required") {
+		t.Fatalf("expected missing model error, got %v", err)
+	}
+}
+
 func TestBuildGraphInvokesSubgraphByGraphRef(t *testing.T) {
 	t.Parallel()
 

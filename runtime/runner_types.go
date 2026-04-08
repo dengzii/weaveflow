@@ -55,6 +55,7 @@ const (
 	EventNodeFinished       EventType = "nodes.finished"
 	EventNodeFailed         EventType = "nodes.failed"
 	EventNodeRetry          EventType = "nodes.retry"
+	EventNodeCustom         EventType = "nodes.custom"
 	EventLLMReasoningChunk  EventType = "llm.reasoning_chunk"
 	EventLLMContentChunk    EventType = "llm.content_chunk"
 	EventLLMUsage           EventType = "llm.usage"
