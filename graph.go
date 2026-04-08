@@ -164,6 +164,14 @@ func (g *Graph) SetFinishPoint(ref string) error {
 }
 
 func (g *Graph) AddEdge(from, to string) error {
+	return g.addEdgeInternal(from, to, true)
+}
+
+func (g *Graph) addRuntimeEdge(from, to string) error {
+	return g.addEdgeInternal(from, to, false)
+}
+
+func (g *Graph) addEdgeInternal(from, to string, trackSpec bool) error {
 	fromID, err := g.resolveNodeID(from)
 	if err != nil {
 		return err
@@ -176,14 +184,24 @@ func (g *Graph) AddEdge(from, to string) error {
 		return fmt.Errorf("nodes %q already has a default edge", fromID)
 	}
 	g.edges[fromID] = toID
-	g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
-		From: g.nodeSpecs[fromID].ID,
-		To:   g.serializeNodeRef(toID),
-	})
+	if trackSpec {
+		g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
+			From: g.nodeSpecs[fromID].ID,
+			To:   g.serializeNodeRef(toID),
+		})
+	}
 	return nil
 }
 
 func (g *Graph) AddConditionalEdge(from, to string, condition EdgeCondition) error {
+	return g.addConditionalEdgeInternal(from, to, condition, true)
+}
+
+func (g *Graph) addRuntimeConditionalEdge(from, to string, condition EdgeCondition) error {
+	return g.addConditionalEdgeInternal(from, to, condition, false)
+}
+
+func (g *Graph) addConditionalEdgeInternal(from, to string, condition EdgeCondition, trackSpec bool) error {
 	if err := condition.validate(); err != nil {
 		return err
 	}
@@ -201,12 +219,14 @@ func (g *Graph) AddConditionalEdge(from, to string, condition EdgeCondition) err
 		to:        toID,
 		condition: condition,
 	})
-	spec := condition.cloneSpec()
-	g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
-		From:      g.nodeSpecs[fromID].ID,
-		To:        g.serializeNodeRef(toID),
-		Condition: &spec,
-	})
+	if trackSpec {
+		spec := condition.cloneSpec()
+		g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
+			From:      g.nodeSpecs[fromID].ID,
+			To:        g.serializeNodeRef(toID),
+			Condition: &spec,
+		})
+	}
 	return nil
 }
 
