@@ -137,3 +137,52 @@ func TestIteratorNodeReadsNestedStatePath(t *testing.T) {
 		t.Fatalf("expected total 2, got %#v", got)
 	}
 }
+
+func TestIteratorNodeNormalizesStructuredItems(t *testing.T) {
+	t.Parallel()
+
+	type item struct {
+		Name  string `json:"name"`
+		Count int    `json:"count"`
+	}
+
+	node := NewIteratorNode()
+	node.NodeID = "loop"
+	node.StateKey = "items"
+	node.MaxIterations = 1
+
+	state := fruntime.State{
+		"items": []item{{Name: "alpha", Count: 2}},
+	}
+
+	next, err := node.Invoke(context.Background(), state)
+	if err != nil {
+		t.Fatalf("invoke iterator node with structured items: %v", err)
+	}
+
+	namespace := next.Namespace(IteratorStateNamespace)
+	rawLoopState := namespace["loop"]
+	loopState, ok := rawLoopState.(map[string]any)
+	if !ok {
+		if typed, ok := rawLoopState.(fruntime.State); ok {
+			loopState = typed
+		} else {
+			t.Fatalf("expected iterator runtime state map, got %#v", rawLoopState)
+		}
+	}
+
+	itemValue, ok := loopState["item"].(map[string]any)
+	if !ok {
+		if typed, ok := loopState["item"].(fruntime.State); ok {
+			itemValue = typed
+		} else {
+			t.Fatalf("expected normalized iterator item map, got %#v", loopState["item"])
+		}
+	}
+	if got := itemValue["name"]; got != "alpha" {
+		t.Fatalf("expected normalized item name alpha, got %#v", got)
+	}
+	if got := itemValue["count"]; got != float64(2) {
+		t.Fatalf("expected normalized item count 2, got %#v", got)
+	}
+}

@@ -91,9 +91,10 @@ func (c *JSONStateCodec) Diff(before, after StateSnapshot) ([]StateChange, error
 
 func SnapshotFromState(state State) (StateSnapshot, error) {
 	snapshot := StateSnapshot{
-		Version: NewJSONStateCodec("").Version(),
-		Shared:  GraphState{},
-		Scopes:  map[string]GraphState{},
+		Version:  NewJSONStateCodec("").Version(),
+		Shared:   GraphState{},
+		Scopes:   map[string]GraphState{},
+		Internal: map[string]GraphState{},
 	}
 
 	for _, extension := range defaultStateExtensions() {
@@ -114,6 +115,20 @@ func SnapshotFromState(state State) (StateSnapshot, error) {
 		if isSpecialStateKey(key) || isInfrastructureStateKey(key) {
 			continue
 		}
+		if isInternalSnapshotNamespaceKey(key) {
+			namespace, ok := asStateMap(value)
+			if !ok {
+				return StateSnapshot{}, fmt.Errorf("internal state namespace %q must be a map[string]any, got %T", key, value)
+			}
+			encoded, err := encodeGraphState(namespace)
+			if err != nil {
+				return StateSnapshot{}, fmt.Errorf("marshal internal namespace %q: %w", key, err)
+			}
+			if encoded != nil {
+				snapshot.Internal[key] = encoded
+			}
+			continue
+		}
 
 		if err := validatePersistableStateValue(key, value); err != nil {
 			return StateSnapshot{}, err
@@ -130,6 +145,9 @@ func SnapshotFromState(state State) (StateSnapshot, error) {
 	}
 	if len(snapshot.Scopes) == 0 {
 		snapshot.Scopes = nil
+	}
+	if len(snapshot.Internal) == 0 {
+		snapshot.Internal = nil
 	}
 
 	return snapshot, nil
@@ -173,6 +191,18 @@ func RestoreStateSnapshot(snapshot StateSnapshot) (RestoredStateSnapshot, error)
 			applyDecodedGraphValue(scopeState, valueKey, value)
 		}
 		setScopeState(state, key, scopeState)
+	}
+
+	for key, scope := range snapshot.Internal {
+		namespaceState := State{}
+		for valueKey, raw := range scope {
+			value, err := decodeGraphValue(valueKey, raw)
+			if err != nil {
+				return RestoredStateSnapshot{}, fmt.Errorf("unmarshal internal namespace %q key %q: %w", key, valueKey, err)
+			}
+			applyDecodedGraphValue(namespaceState, valueKey, value)
+		}
+		state[key] = namespaceState
 	}
 
 	return RestoredStateSnapshot{
@@ -365,6 +395,12 @@ func flattenSnapshot(snapshot StateSnapshot) (map[string]json.RawMessage, error)
 		}
 	}
 
+	for namespace, values := range snapshot.Internal {
+		for key, raw := range values {
+			result["internal."+namespace+"."+key] = raw
+		}
+	}
+
 	if len(snapshot.Artifacts) > 0 {
 		rawArtifacts, err := json.Marshal(snapshot.Artifacts)
 		if err != nil {
@@ -508,6 +544,10 @@ func normalizeMapSlice(values []any) []map[string]any {
 		items[i] = mapped
 	}
 	return items
+}
+
+func isInternalSnapshotNamespaceKey(key string) bool {
+	return strings.HasPrefix(strings.TrimSpace(key), stateNamespacePrefix) && !isInfrastructureStateKey(key)
 }
 
 func cloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {

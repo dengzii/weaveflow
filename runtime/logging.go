@@ -98,7 +98,7 @@ func countStateKeys(state State) int {
 
 	count := 0
 	for key := range state {
-		if isInfrastructureStateKey(key) || isSpecialStateKey(key) {
+		if isInfrastructureStateKey(key) || isSpecialStateKey(key) || isInternalSnapshotNamespaceKey(key) {
 			continue
 		}
 		count++

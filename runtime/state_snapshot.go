@@ -18,6 +18,7 @@ type StateSnapshot struct {
 	Conversation *ConversationState    `json:"conversation,omitempty"`
 	Shared       GraphState            `json:"shared,omitempty"`
 	Scopes       map[string]GraphState `json:"scopes,omitempty"`
+	Internal     map[string]GraphState `json:"internal,omitempty"`
 	Artifacts    []ArtifactRef         `json:"artifacts,omitempty"`
 }
 

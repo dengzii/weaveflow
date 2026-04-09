@@ -266,6 +266,9 @@ func decodeInputMessages(value any) ([]StateMessage, error) {
 
 	var messages []StateMessage
 	if err := json.Unmarshal(raw, &messages); err == nil && messagesLookValid(messages) {
+		for i := range messages {
+			messages[i].Role = normalizeStateMessageRole(messages[i].Role)
+		}
 		return messages, nil
 	}
 
@@ -279,9 +282,9 @@ func decodeInputMessages(value any) ([]StateMessage, error) {
 
 	messages = make([]StateMessage, 0, len(simpleMessages))
 	for _, message := range simpleMessages {
-		role := strings.TrimSpace(message.Role)
+		role := normalizeStateMessageRole(message.Role)
 		if role == "" {
-			role = "user"
+			role = string(llms.ChatMessageTypeHuman)
 		}
 		messages = append(messages, StateMessage{
 			Role: role,
@@ -306,6 +309,21 @@ func messagesLookValid(messages []StateMessage) bool {
 		}
 	}
 	return true
+}
+
+func normalizeStateMessageRole(role string) string {
+	switch strings.ToLower(strings.TrimSpace(role)) {
+	case "", "user", "human":
+		return string(llms.ChatMessageTypeHuman)
+	case "assistant", "ai":
+		return string(llms.ChatMessageTypeAI)
+	case "system":
+		return string(llms.ChatMessageTypeSystem)
+	case "tool":
+		return string(llms.ChatMessageTypeTool)
+	default:
+		return strings.TrimSpace(role)
+	}
 }
 
 func asString(value any) string {

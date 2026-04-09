@@ -19,7 +19,6 @@ type HumanMessageNode struct {
 }
 
 const (
-	scopeNodeHumanMessage     = "node_human_message"
 	PendingHumanInputStateKey = "pending_human_input"
 )
 
@@ -32,7 +31,7 @@ func NewHumanMessageNode() *HumanMessageNode {
 			NodeDescription: "Pause the graph until a human message is provided.",
 		},
 		InterruptMessage: "interrupt due to waiting a human message",
-		StateScope:       scopeNodeHumanMessage,
+		StateScope:       "",
 	}
 }
 
@@ -94,7 +93,7 @@ func (n *HumanMessageNode) pendingInputState(state fruntime.State) fruntime.Stat
 	if n.StateScope == "" {
 		return state
 	}
-	return state.EnsureScope(n.StateScope)
+	return state.Scope(n.StateScope)
 }
 
 func (n *HumanMessageNode) GraphNodeSpec() dsl.GraphNodeSpec {

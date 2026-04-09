@@ -49,7 +49,11 @@ func TestMergeResumeInputMergesRootAndScopeState(t *testing.T) {
 	}
 	meta, ok := merged["meta"].(map[string]any)
 	if !ok {
-		t.Fatalf("expected merged meta map, got %#v", merged["meta"])
+		if typed, ok := merged["meta"].(State); ok {
+			meta = typed
+		} else {
+			t.Fatalf("expected merged meta map, got %#v", merged["meta"])
+		}
 	}
 	if meta["left"] != "keep" || meta["right"] != "merge" {
 		t.Fatalf("expected merged meta keys, got %#v", meta)
@@ -86,5 +90,35 @@ func TestMergeResumeInputRejectsInvalidScopePayload(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid scopes payload error")
+	}
+}
+
+func TestMergeResumeInputRejectsReservedRootNamespaceKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := mergeResumeInput(State{}, State{
+		NormalizeStateNamespace("iterator"): map[string]any{
+			"loop": map[string]any{"done": false},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected reserved root namespace error")
+	}
+}
+
+func TestMergeResumeInputRejectsReservedScopeNamespaceKey(t *testing.T) {
+	t.Parallel()
+
+	_, err := mergeResumeInput(State{}, State{
+		"scopes": map[string]any{
+			"agent": map[string]any{
+				NormalizeStateNamespace("iterator"): map[string]any{
+					"loop": map[string]any{"done": false},
+				},
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected reserved scope namespace error")
 	}
 }

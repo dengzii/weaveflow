@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"sort"
@@ -78,7 +79,11 @@ func (n *IteratorNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	runtimeState["state_key"] = n.StateKey
 	runtimeState["index"] = nextIndex
 	runtimeState["iteration"] = nextIndex + 1
-	runtimeState["item"] = cloneIteratorValue(items[nextIndex])
+	item, err := persistableIteratorValue(items[nextIndex])
+	if err != nil {
+		return state, fmt.Errorf("iterator node %q item at index %d: %w", n.ID(), nextIndex, err)
+	}
+	runtimeState["item"] = item
 	runtimeState["total"] = total
 	runtimeState["limit"] = limit
 	runtimeState["next_index"] = nextIndex + 1
@@ -211,36 +216,53 @@ func iteratorInt(value any) (int, bool) {
 	}
 }
 
-func cloneIteratorValue(value any) any {
+func persistableIteratorValue(value any) (any, error) {
 	switch typed := value.(type) {
+	case nil, bool, string,
+		int, int8, int16, int32, int64,
+		uint, uint8, uint16, uint32, uint64,
+		float32, float64:
+		return typed, nil
 	case fruntime.State:
-		return cloneIteratorStateMap(typed)
+		return persistableIteratorStateMap(typed)
 	case map[string]any:
-		return map[string]any(cloneIteratorStateMap(typed))
+		mapped, err := persistableIteratorStateMap(typed)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any(mapped), nil
 	case []any:
 		cloned := make([]any, len(typed))
 		for i, item := range typed {
-			cloned[i] = cloneIteratorValue(item)
+			normalized, err := persistableIteratorValue(item)
+			if err != nil {
+				return nil, err
+			}
+			cloned[i] = normalized
 		}
-		return cloned
+		return cloned, nil
 	case []string:
 		cloned := make([]string, len(typed))
 		copy(cloned, typed)
-		return cloned
+		return cloned, nil
 	case []map[string]any:
 		cloned := make([]map[string]any, len(typed))
 		for i, item := range typed {
-			cloned[i] = map[string]any(cloneIteratorStateMap(item))
+			normalized, err := persistableIteratorStateMap(item)
+			if err != nil {
+				return nil, err
+			}
+			cloned[i] = map[string]any(normalized)
 		}
-		return cloned
+		return cloned, nil
 	default:
-		return typed
+		return persistableIteratorReflectedValue(value)
 	}
 }
 
-func cloneIteratorStateMap(values map[string]any) fruntime.State {
+func persistableIteratorStateMap(values map[string]any) (fruntime.State, error) {
 	if values == nil {
-		return nil
+		return nil, nil
 	}
 
 	keys := make([]string, 0, len(values))
@@ -251,7 +273,70 @@ func cloneIteratorStateMap(values map[string]any) fruntime.State {
 
 	cloned := make(fruntime.State, len(values))
 	for _, key := range keys {
-		cloned[key] = cloneIteratorValue(values[key])
+		normalized, err := persistableIteratorValue(values[key])
+		if err != nil {
+			return nil, fmt.Errorf("normalize key %q: %w", key, err)
+		}
+		cloned[key] = normalized
 	}
-	return cloned
+	return cloned, nil
+}
+
+func persistableIteratorReflectedValue(value any) (any, error) {
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() {
+		return nil, nil
+	}
+
+	switch reflected.Kind() {
+	case reflect.Pointer, reflect.Interface:
+		if reflected.IsNil() {
+			return nil, nil
+		}
+		return persistableIteratorValue(reflected.Elem().Interface())
+	case reflect.Map:
+		if reflected.Type().Key().Kind() != reflect.String {
+			return nil, fmt.Errorf("map key type %s is not supported", reflected.Type().Key())
+		}
+		items := make(fruntime.State, reflected.Len())
+		keys := reflected.MapKeys()
+		sort.Slice(keys, func(i, j int) bool {
+			return keys[i].String() < keys[j].String()
+		})
+		for _, key := range keys {
+			normalized, err := persistableIteratorValue(reflected.MapIndex(key).Interface())
+			if err != nil {
+				return nil, fmt.Errorf("normalize key %q: %w", key.String(), err)
+			}
+			items[key.String()] = normalized
+		}
+		return items, nil
+	case reflect.Slice, reflect.Array:
+		items := make([]any, reflected.Len())
+		for i := 0; i < reflected.Len(); i++ {
+			normalized, err := persistableIteratorValue(reflected.Index(i).Interface())
+			if err != nil {
+				return nil, fmt.Errorf("normalize index %d: %w", i, err)
+			}
+			items[i] = normalized
+		}
+		return items, nil
+	case reflect.Struct:
+		return persistableIteratorJSONValue(value)
+	default:
+		return nil, fmt.Errorf("type %T is not supported", value)
+	}
+}
+
+func persistableIteratorJSONValue(value any) (any, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal %T: %w", value, err)
+	}
+
+	var decoded any
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return nil, fmt.Errorf("unmarshal %T: %w", value, err)
+	}
+	return persistableIteratorValue(decoded)
 }

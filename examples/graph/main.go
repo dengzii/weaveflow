@@ -36,9 +36,13 @@ func runWithRunner() {
 }
 
 func resumeFromCheckpoint() {
-	state := runtime.State{}
-	scope := state.EnsureScope(reactAgentStateScope)
-	scope[nodes.PendingHumanInputStateKey] = "64+(12*5)答案是什么, 现在是几点?"
+	state := runtime.State{
+		"scopes": map[string]any{
+			reactAgentStateScope: map[string]any{
+				nodes.PendingHumanInputStateKey: "24+5*8-2=? 现在是几点.",
+			},
+		},
+	}
 
 	baseDir := ".local/instance"
 	buildCtx := newReActAgentBuildContext()
@@ -55,8 +59,7 @@ func resumeFromCheckpoint() {
 	_, state, err = runner.Resume(context.Background(), run.RunID, state)
 	tryPanic(err)
 
-	conv := runtime.Conversation(state, "agent")
-
+	conv := runtime.Conversation(state, reactAgentStateScope)
 	fmt.Println(conv.FinalAnswer())
 }
 

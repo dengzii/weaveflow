@@ -3,11 +3,15 @@ package runtime
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 )
 
 func NormalizeInputState(input State) (State, error) {
 	if len(input) == 0 {
 		return State{}, nil
+	}
+	if err := validateInputStateKeys(input, "$"); err != nil {
+		return nil, err
 	}
 
 	snapshot := StateSnapshot{
@@ -45,4 +49,27 @@ func NormalizeInputState(input State) (State, error) {
 		snapshot.Shared = nil
 	}
 	return StateFromSnapshot(snapshot)
+}
+
+func validateInputStateKeys(input State, location string) error {
+	for key := range input {
+		if !isReservedInputStateKey(key) {
+			continue
+		}
+		return fmt.Errorf("input state key %q at %s is reserved", key, normalizeStatePath(location))
+	}
+	return nil
+}
+
+func isReservedInputStateKey(key string) bool {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false
+	}
+	switch key {
+	case resumeInputScopesKey, stateNamespaceScopes:
+		return true
+	default:
+		return strings.HasPrefix(key, stateNamespacePrefix)
+	}
 }

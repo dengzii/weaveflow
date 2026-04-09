@@ -24,10 +24,12 @@ func mergeResumeInput(base State, input State) (State, error) {
 	rootInput := State{}
 	for key, value := range input {
 		switch key {
-		case resumeInputScopesKey, stateNamespaceScopes:
+		case resumeInputScopesKey:
 			if err := mergeResumeScopes(merged, value); err != nil {
 				return nil, err
 			}
+		case stateNamespaceScopes:
+			return nil, fmt.Errorf("resume input key %q is reserved; use %q instead", stateNamespaceScopes, resumeInputScopesKey)
 		default:
 			rootInput[key] = value
 		}
@@ -64,6 +66,9 @@ func normalizeResumeScopeInput(scopeName string, raw any) (State, error) {
 	input, ok := asStateMap(raw)
 	if !ok {
 		return nil, fmt.Errorf("resume input scope %q must be a map[string]any, got %T", scopeName, raw)
+	}
+	if err := validateInputStateKeys(input, statePathKey(resumeInputScopesKey, scopeName)); err != nil {
+		return nil, err
 	}
 	normalized, err := NormalizeInputState(input)
 	if err != nil {
