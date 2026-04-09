@@ -1,6 +1,8 @@
 package runtime
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -62,6 +64,14 @@ func (s State) CloneState() State {
 	}
 
 	return cloned
+}
+
+func (s State) PrettyString() string {
+	bs, err := json.MarshalIndent(s, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("error: %v", err)
+	}
+	return string(bs)
 }
 
 func (s State) Scope(scope string) State {

@@ -3,10 +3,11 @@ package dsl
 import "sort"
 
 type NodeTypeSchema struct {
-	Type         string     `json:"type"`
-	Title        string     `json:"title,omitempty"`
-	Description  string     `json:"description,omitempty"`
-	ConfigSchema JSONSchema `json:"config_schema"`
+	Type          string         `json:"type"`
+	Title         string         `json:"title,omitempty"`
+	Description   string         `json:"description,omitempty"`
+	ConfigSchema  JSONSchema     `json:"config_schema"`
+	StateContract *StateContract `json:"state_contract,omitempty"`
 }
 
 type ConditionSchema struct {

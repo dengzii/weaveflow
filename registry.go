@@ -16,6 +16,8 @@ type JSONSchema = dsl.JSONSchema
 type GraphConditionSpec = dsl.GraphConditionSpec
 type GraphNodeSpec = dsl.GraphNodeSpec
 type StateFieldDefinition = dsl.StateFieldDefinition
+type StateContract = dsl.StateContract
+type StateFieldRef = dsl.StateFieldRef
 type GraphDefinition = dsl.GraphDefinition
 type NodeTypeSchema = dsl.NodeTypeSchema
 type ConditionSchema = dsl.ConditionSchema
@@ -32,7 +34,8 @@ type BuildContext struct {
 
 type NodeTypeDefinition struct {
 	dsl.NodeTypeSchema
-	Build func(*BuildContext, dsl.GraphNodeSpec) (nodes.Node[State], error) `json:"-"`
+	Build                func(*BuildContext, dsl.GraphNodeSpec) (nodes.Node[State], error) `json:"-"`
+	ResolveStateContract func(dsl.GraphNodeSpec) (dsl.StateContract, error)                `json:"-"`
 }
 
 type ConditionDefinition struct {
@@ -431,6 +434,28 @@ func (r *Registry) ResolveCondition(spec GraphConditionSpec) (EdgeCondition, err
 		return EdgeCondition{}, err
 	}
 	return condition.withSpec(spec), nil
+}
+
+func (r *Registry) ResolveNodeStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+	if r == nil {
+		return dsl.StateContract{}, fmt.Errorf("registry is nil")
+	}
+	spec = dsl.NormalizeGraphDefinition(dsl.GraphDefinition{Nodes: []dsl.GraphNodeSpec{spec}}).Nodes[0]
+	if spec.Type == "" {
+		return dsl.StateContract{}, fmt.Errorf("node type is required")
+	}
+
+	nodeDef, ok := r.NodeTypes[spec.Type]
+	if !ok {
+		return dsl.StateContract{}, fmt.Errorf("node type %q is not registered", spec.Type)
+	}
+	if nodeDef.ResolveStateContract != nil {
+		return nodeDef.ResolveStateContract(spec)
+	}
+	if nodeDef.StateContract == nil {
+		return dsl.StateContract{}, nil
+	}
+	return nodeDef.StateContract.Clone(), nil
 }
 
 func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphConditionSpec) error {

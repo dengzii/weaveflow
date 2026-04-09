@@ -122,3 +122,24 @@ func TestNormalizeInputStateHandlesConversationExtensionFields(t *testing.T) {
 		t.Fatalf("expected shared state to remain intact, got %#v", normalized)
 	}
 }
+
+func TestEnsurePlannerCreatesAndReusesPlannerState(t *testing.T) {
+	t.Parallel()
+
+	state := State{}
+	planner := EnsurePlanner(state)
+	if planner == nil {
+		t.Fatal("expected planner state to be created")
+	}
+
+	planner["objective"] = "Decompose a generic task into executable steps."
+
+	if got := Planner(state); got == nil || got["objective"] != planner["objective"] {
+		t.Fatalf("expected planner state to be readable from root state, got %#v", got)
+	}
+
+	plannerAgain := EnsurePlanner(state)
+	if plannerAgain == nil || plannerAgain["objective"] != planner["objective"] {
+		t.Fatalf("expected ensure planner to reuse the existing state, got %#v", plannerAgain)
+	}
+}
