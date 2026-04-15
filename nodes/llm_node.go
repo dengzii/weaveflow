@@ -3,7 +3,6 @@ package nodes
 import (
 	"context"
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"weaveflow/dsl"
@@ -67,7 +66,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 		llms.WithTools(toolSets),
 		llms.WithThinkingMode(llms.ThinkingModeHigh),
 		llms.WithTemperature(0.8),
-		llms.WithStreamingReasoningFunc(onStreamingResponse),
+		fruntime.WithLLMStreamingResponseEvent(),
 		openai.WithMaxCompletionTokens(10000),
 	)
 	if err != nil {
@@ -133,36 +132,6 @@ func (L *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 			"state_scope": L.StateScope,
 		},
 	}
-}
-
-func onStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) error {
-	return emitStreamingResponse(ctx, reasoningChunk, chunk)
-}
-
-func emitStreamingResponse(ctx context.Context, reasoningChunk, chunk []byte) error {
-	reasoning := string(reasoningChunk)
-	if strings.TrimSpace(reasoning) != "" {
-		if err := fruntime.PublishRunnerContextEvent(ctx, fruntime.EventLLMReasoningChunk, map[string]any{"text": reasoning}); err != nil {
-			return err
-		}
-		if !hasRunnerEventPublisher(ctx) {
-			fmt.Print(reasoning)
-		}
-	}
-	content := string(chunk)
-	if strings.TrimSpace(content) != "" {
-		if err := fruntime.PublishRunnerContextEvent(ctx, fruntime.EventLLMContentChunk, map[string]any{"text": content}); err != nil {
-			return err
-		}
-		if !hasRunnerEventPublisher(ctx) {
-			fmt.Print(content)
-		}
-	}
-	return nil
-}
-
-func hasRunnerEventPublisher(ctx context.Context) bool {
-	return fruntime.HasRunnerEventPublisher(ctx)
 }
 
 func extractText(message llms.MessageContent) string {

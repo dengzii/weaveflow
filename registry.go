@@ -78,6 +78,7 @@ func DefaultRegistry() *Registry {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: resolveSubgraphStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			graphRef := stringConfig(spec.Config, "graph_ref")
 			if graphRef == "" {
@@ -137,6 +138,7 @@ func DefaultRegistry() *Registry {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: resolveIteratorStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			_ = ctx
 
@@ -179,6 +181,7 @@ func DefaultRegistry() *Registry {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: resolveHumanMessageStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			node := nodes.NewHumanMessageNode()
 			node.NodeID = spec.ID
@@ -215,6 +218,7 @@ func DefaultRegistry() *Registry {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: resolveContextReducerStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			if ctx == nil || ctx.Model == nil {
 				return nil, fmt.Errorf("build context_reducer nodes %q: model is required", spec.ID)
@@ -262,6 +266,7 @@ func DefaultRegistry() *Registry {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: resolveLLMStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			if ctx.Model == nil {
 				return nil, fmt.Errorf("build llm nodes %q: model is required", spec.ID)
@@ -300,6 +305,7 @@ func DefaultRegistry() *Registry {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: resolveToolsStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			toolIDs := stringSliceConfig(spec.Config, "tool_ids")
 			ts, err := resolveTools(ctx.Tools, toolIDs)
@@ -318,7 +324,6 @@ func DefaultRegistry() *Registry {
 			return node, nil
 		},
 	})
-
 	r.RegisterCondition(ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{
 			Type:        "last_message_has_tool_calls",

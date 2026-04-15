@@ -532,3 +532,125 @@ func TestBuildGraphDefinitionKeepsIteratorBuiltInEdgesInConfig(t *testing.T) {
 		t.Fatalf("expected done_to to stay in iterator config, got %#v", iteratorNode.Config)
 	}
 }
+
+func TestResolveDefaultNodeStateContracts(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+
+	cases := []struct {
+		name  string
+		spec  GraphNodeSpec
+		paths []string
+		modes []dsl.StateAccessMode
+	}{
+		{
+			name: "subgraph",
+			spec: GraphNodeSpec{
+				ID:   "sub",
+				Type: "subgraph",
+				Config: map[string]any{
+					"graph_ref": "child",
+				},
+			},
+			paths: []string{"*"},
+			modes: []dsl.StateAccessMode{dsl.StateAccessReadWrite},
+		},
+		{
+			name: "iterator",
+			spec: GraphNodeSpec{
+				ID:   "loop",
+				Type: "iterator",
+				Config: map[string]any{
+					"state_key":      "payload.items",
+					"max_iterations": 2,
+				},
+			},
+			paths: []string{"payload.items", nodes.IteratorStateRootKey + ".loop"},
+			modes: []dsl.StateAccessMode{dsl.StateAccessRead, dsl.StateAccessWrite},
+		},
+		{
+			name: "human_message",
+			spec: GraphNodeSpec{
+				ID:   "ask",
+				Type: "human_message",
+				Config: map[string]any{
+					"state_scope": "agent",
+				},
+			},
+			paths: []string{"scopes.agent.messages", "scopes.agent." + nodes.PendingHumanInputStateKey},
+			modes: []dsl.StateAccessMode{dsl.StateAccessReadWrite, dsl.StateAccessReadWrite},
+		},
+		{
+			name: "context_reducer",
+			spec: GraphNodeSpec{
+				ID:   "reduce",
+				Type: "context_reducer",
+				Config: map[string]any{
+					"state_scope": "agent",
+				},
+			},
+			paths: []string{"scopes.agent.messages"},
+			modes: []dsl.StateAccessMode{dsl.StateAccessReadWrite},
+		},
+		{
+			name: "llm",
+			spec: GraphNodeSpec{
+				ID:   "model",
+				Type: "llm",
+				Config: map[string]any{
+					"state_scope": "agent",
+				},
+			},
+			paths: []string{
+				"scopes.agent.messages",
+				"scopes.agent.iteration_count",
+				"scopes.agent.max_iterations",
+				"scopes.agent.final_answer",
+				nodes.TokenUsageStateKey,
+			},
+			modes: []dsl.StateAccessMode{
+				dsl.StateAccessReadWrite,
+				dsl.StateAccessReadWrite,
+				dsl.StateAccessRead,
+				dsl.StateAccessWrite,
+				dsl.StateAccessWrite,
+			},
+		},
+		{
+			name: "tools",
+			spec: GraphNodeSpec{
+				ID:   "call_tools",
+				Type: "tools",
+				Config: map[string]any{
+					"state_scope": "agent",
+				},
+			},
+			paths: []string{"scopes.agent.messages"},
+			modes: []dsl.StateAccessMode{dsl.StateAccessReadWrite},
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			contract, err := registry.ResolveNodeStateContract(tc.spec)
+			if err != nil {
+				t.Fatalf("resolve state contract: %v", err)
+			}
+			if len(contract.Fields) != len(tc.paths) {
+				t.Fatalf("expected %d fields, got %#v", len(tc.paths), contract.Fields)
+			}
+			for i, field := range contract.Fields {
+				if field.Path != tc.paths[i] {
+					t.Fatalf("field %d path: expected %q, got %#v", i, tc.paths[i], field)
+				}
+				if field.Mode != tc.modes[i] {
+					t.Fatalf("field %d mode: expected %q, got %#v", i, tc.modes[i], field)
+				}
+			}
+		})
+	}
+}

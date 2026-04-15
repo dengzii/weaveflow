@@ -7,24 +7,75 @@ import (
 	"fmt"
 	"strings"
 	"weaveflow/dsl"
-	fruntime "weaveflow/runtime"
+	"weaveflow/runtime"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
 const (
-	defaultPlannerStatePath = fruntime.StateKeyPlanner
+	defaultPlannerStatePath = runtime.StateKeyPlanner
 	defaultPlannerMaxSteps  = 6
-	plannerSystemPrompt     = "" +
-		"You are a planning node inside a flexible agent framework. " +
-		"Return only valid JSON and do not use markdown fences. " +
-		"Produce a concise execution plan using the shape " +
-		"{\"objective\":string,\"status\":string,\"summary\":string,\"replan_reason\":string,\"plan\":[...]}. " +
-		"Each plan step must use the shape " +
-		"{\"id\":string,\"title\":string,\"description\":string,\"status\":string,\"kind\":string," +
-		"\"depends_on\":[],\"acceptance_criteria\":[],\"outputs\":[]}. " +
-		"Use pending for unfinished steps and planned for the overall planner status."
+	plannerSystemPrompt     = `你是 Agent 工作流中的 Planner 节点，负责把用户目标转换为可执行的工作流计划。
+
+你的职责是规划，不是执行。
+你不能伪造执行结果，不能假设不存在的节点、工具、API、数据源或权限。
+
+你会收到以下信息：
+1. 用户目标
+2. 当前状态
+3. 可用节点及其能力说明
+4. 已完成步骤
+5. 失败信息或重规划原因（如果有）
+
+你的任务是输出“最小但完整”的执行计划，使后续节点可以按计划执行。
+
+规划原则：
+1. 只使用明确提供的节点能力。
+2. 步骤必须清晰、可执行、可验证，避免空泛描述。
+3. 每一步都要有明确目的、输入、输出和验收标准。
+4. 有依赖关系的步骤必须写入 depends_on。
+5. 无依赖的步骤可标记为可并行。
+6. 优先安排信息收集、校验、澄清，再安排高成本或不可逆操作。
+7. 如果关键信息缺失，不要猜测，应加入澄清或校验步骤。
+8. 不要过度规划，保持步骤数量尽量少。
+9. 如果是重规划，尽量复用已完成且未受影响的步骤。
+10. 如果当前能力不足以完成目标，明确标记 blocked。
+
+输出要求：
+- 仅输出合法 JSON
+- 不要输出 markdown 代码块
+- 不要输出 JSON 之外的任何解释
+- 顶层结构必须为：
+{
+  "objective": "string",
+  "status": "planned | needs_clarification | blocked | replanned",
+  "summary": "string",
+  "replan_reason": "string",
+  "plan": [
+    {
+      "id": "string",
+      "title": "string",
+      "description": "string",
+      "status": "pending | ready | blocked | completed",
+      "kind": "research | transform | decision | action | validation | human_input",
+      "depends_on": [],
+      "node_type": "string",
+      "inputs": [],
+      "outputs": [],
+      "acceptance_criteria": [],
+      "parallelizable": false
+    }
+  ]
+}
+
+补充要求：
+- id 使用稳定短标识，例如 step_1、step_2
+- summary 用简洁语言概括整体方案
+- replan_reason 在非重规划时输出空字符串
+- acceptance_criteria 必须具体且可检查
+- 如果缺少用户输入才能继续，status 输出 needs_clarification
+- 如果当前节点能力无法完成任务，status 输出 blocked`
 )
 
 type PlannerNode struct {
@@ -71,12 +122,12 @@ func NewPlannerNode(model llms.Model) *PlannerNode {
 	}
 }
 
-func (n *PlannerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.State, error) {
 	if n.model == nil {
 		return state, errors.New("planner model is nil")
 	}
 	if state == nil {
-		state = fruntime.State{}
+		state = runtime.State{}
 	}
 
 	plannerPath := n.effectivePlannerStatePath()
@@ -87,7 +138,7 @@ func (n *PlannerNode) Invoke(ctx context.Context, state fruntime.State) (fruntim
 
 	objective, err := n.resolveObjective(state, plannerState)
 	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
+		_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
 
@@ -101,30 +152,32 @@ func (n *PlannerNode) Invoke(ctx context.Context, state fruntime.State) (fruntim
 		"planner_path":     plannerPath,
 		"additional_rules": strings.TrimSpace(n.Instructions),
 	}
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "planner.prompt", promptPayload)
-
+	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.prompt", promptPayload)
 	resp, err := n.model.GenerateContent(
 		ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, plannerSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, buildPlannerPrompt(promptPayload)),
 		},
+		runtime.WithLLMStreamingResponseEvent(),
+		llms.WithThinkingMode(llms.ThinkingModeAuto),
+		llms.WithReturnThinking(false),
 		llms.WithTemperature(0),
 	)
 	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
+		_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
 		err = errors.New("planner returned no choices")
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
+		_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
 
 	content := strings.TrimSpace(resp.Choices[0].Content)
 	parsed, err := parsePlannerResponse(content, objective)
 	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{
+		_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{
 			"error":    err.Error(),
 			"response": content,
 		})
@@ -132,13 +185,13 @@ func (n *PlannerNode) Invoke(ctx context.Context, state fruntime.State) (fruntim
 	}
 
 	applyPlannerResponse(plannerState, parsed)
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
+	_ = runtime.PublishRunnerContextEvent(ctx, runtime.EventNodeCustom, map[string]any{
 		"kind":         "planner",
 		"planner_path": plannerPath,
 		"status":       parsed.Status,
 		"step_count":   len(parsed.Plan),
 	})
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "planner.response", parsed)
+	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.response", parsed)
 
 	return state, nil
 }
@@ -191,8 +244,8 @@ func (n *PlannerNode) effectiveMaxSteps() int {
 	return n.MaxSteps
 }
 
-func (n *PlannerNode) resolveObjective(state fruntime.State, plannerState fruntime.State) (string, error) {
-	if objective, ok := fruntime.ResolveStatePath(state, n.effectiveObjectivePath()); ok {
+func (n *PlannerNode) resolveObjective(state runtime.State, plannerState runtime.State) (string, error) {
+	if objective, ok := runtime.ResolveStatePath(state, n.effectiveObjectivePath()); ok {
 		text := strings.TrimSpace(stringifyPlannerValue(objective))
 		if text != "" {
 			return text, nil
@@ -206,7 +259,7 @@ func (n *PlannerNode) resolveObjective(state fruntime.State, plannerState frunti
 	return "", fmt.Errorf("planner objective not found at %q", n.effectiveObjectivePath())
 }
 
-func (n *PlannerNode) collectContext(state fruntime.State) map[string]any {
+func (n *PlannerNode) collectContext(state runtime.State) map[string]any {
 	if len(n.ContextPaths) == 0 {
 		return nil
 	}
@@ -217,7 +270,7 @@ func (n *PlannerNode) collectContext(state fruntime.State) map[string]any {
 		if path == "" {
 			continue
 		}
-		value, ok := fruntime.ResolveStatePath(state, path)
+		value, ok := runtime.ResolveStatePath(state, path)
 		if !ok {
 			continue
 		}
@@ -319,7 +372,7 @@ func normalizePlannerStepStatus(status string) string {
 	}
 }
 
-func applyPlannerResponse(target fruntime.State, parsed plannerResponse) {
+func applyPlannerResponse(target runtime.State, parsed plannerResponse) {
 	if target == nil {
 		return
 	}
@@ -355,8 +408,8 @@ func serializePlannerPlan(steps []plannerPlanStep) []map[string]any {
 	return items
 }
 
-func ensurePlannerStateAtPath(root fruntime.State, path string) (fruntime.State, error) {
-	segments := fruntime.SplitStatePath(path)
+func ensurePlannerStateAtPath(root runtime.State, path string) (runtime.State, error) {
+	segments := runtime.SplitStatePath(path)
 	if len(segments) == 0 {
 		return nil, errors.New("planner state path is required")
 	}
@@ -365,13 +418,13 @@ func ensurePlannerStateAtPath(root fruntime.State, path string) (fruntime.State,
 	for _, segment := range segments {
 		switch typed := current[segment].(type) {
 		case nil:
-			nested := fruntime.State{}
+			nested := runtime.State{}
 			current[segment] = nested
 			current = nested
-		case fruntime.State:
+		case runtime.State:
 			current = typed
 		case map[string]any:
-			nested := fruntime.State(typed)
+			nested := runtime.State(typed)
 			current[segment] = nested
 			current = nested
 		default:
