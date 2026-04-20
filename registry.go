@@ -64,6 +64,9 @@ func DefaultRegistry() *Registry {
 		r.RegisterStateField(field)
 	}
 
+	RegisterIntentModule(r)
+	RegisterOrchestrationModule(r)
+
 	r.RegisterNodeType(NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "subgraph",
