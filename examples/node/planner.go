@@ -9,19 +9,24 @@ import (
 	"github.com/tmc/langchaingo/llms/openai"
 )
 
-func main() {
-	llm, _ := openai.New()
+func PlannerExample() {
+	llm, err := openai.New()
+	must(err)
+
 	node := nodes.NewPlannerNode(llm)
+	node.MaxSteps = 3
 
 	state := runtime.State{}
 	plannerState := runtime.EnsurePlanner(state)
-	plannerState["objective"] = "什么是 RWKV?"
+	plannerState["objective"] = "什么是快乐星球"
 
-	fmt.Println(state)
+	fmt.Println("input planner state:")
+	printJSON(plannerState)
+
 	result, err := node.Invoke(context.Background(), state)
-	if err != nil {
-		panic(err)
-	}
+	must(err)
 
-	fmt.Println(result.PrettyString())
+	fmt.Println()
+	fmt.Println("planner state:")
+	printJSON(runtime.Planner(result))
 }

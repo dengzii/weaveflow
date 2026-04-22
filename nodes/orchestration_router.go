@@ -93,6 +93,7 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 			llms.TextParts(llms.ChatMessageTypeSystem, orchestrationRouterPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, buildOrchestrationRouterPrompt(payload)),
 		},
+		fruntime.WithLLMStreamingResponseEvent(),
 		llms.WithTemperature(0),
 	)
 	if err != nil {

@@ -203,14 +203,6 @@ func resolvePlannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, err
 				Required:    true,
 				Description: "Planner objective input.",
 			},
-			{
-				Path:          plannerPath,
-				Mode:          dsl.StateAccessWrite,
-				Required:      true,
-				Description:   "Planner output state subtree.",
-				Schema:        plannerStateFieldDefinition().Schema,
-				MergeStrategy: dsl.StateMergeMerge,
-			},
 		},
 	}
 
@@ -225,6 +217,15 @@ func resolvePlannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, err
 			Description: "Planner context input.",
 		})
 	}
+
+	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
+		Path:          plannerPath,
+		Mode:          dsl.StateAccessWrite,
+		Required:      true,
+		Description:   "Planner output state subtree.",
+		Schema:        plannerStateFieldDefinition().Schema,
+		MergeStrategy: dsl.StateMergeMerge,
+	})
 
 	return contract, nil
 }

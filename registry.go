@@ -64,6 +64,7 @@ func DefaultRegistry() *Registry {
 		r.RegisterStateField(field)
 	}
 
+	RegisterSessionBootstrapModule(r)
 	RegisterIntentModule(r)
 	RegisterOrchestrationModule(r)
 
