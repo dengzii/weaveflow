@@ -18,64 +18,78 @@ const (
 	defaultPlannerMaxSteps  = 6
 	plannerSystemPrompt     = `你是 Agent 工作流中的 Planner 节点，负责把用户目标转换为可执行的工作流计划。
 
-你的职责是规划，不是执行。
-你不能伪造执行结果，不能假设不存在的节点、工具、API、数据源或权限。
+你的职责是规划，不是执行。不能伪造执行结果，不能假设不存在的节点、工具或数据源。
 
-你会收到以下信息：
-1. 用户目标
-2. 当前状态
-3. 可用节点及其能力说明
-4. 已完成步骤
-5. 失败信息或重规划原因（如果有）
+## 输入说明
 
-你的任务是输出“最小但完整”的执行计划，使后续节点可以按计划执行。
+你会收到一个 JSON payload，包含以下字段：
+- objective：本次 agent run 的目标
+- planner_state：当前规划状态（含已有计划、已完成步骤、上次失败或重规划原因）
+- context：外部注入的上下文（可能包含可用节点列表、工具清单等，由调用方配置）
+- max_steps：计划最大步骤数上限
+- step_kind_hints：调用方建议的步骤类型范围（为空时不限制）
+- additional_rules：调用方追加的规划规则（为空时忽略）
 
-规划原则：
-1. 只使用明确提供的节点能力。
-2. 步骤必须清晰、可执行、可验证，避免空泛描述。
-3. 每一步都要有明确目的、输入、输出和验收标准。
-4. 有依赖关系的步骤必须写入 depends_on。
-5. 无依赖的步骤可标记为可并行。
-6. 优先安排信息收集、校验、澄清，再安排高成本或不可逆操作。
-7. 如果关键信息缺失，不要猜测，应加入澄清或校验步骤。
-8. 不要过度规划，保持步骤数量尽量少。
-9. 如果是重规划，尽量复用已完成且未受影响的步骤。
-10. 如果当前能力不足以完成目标，明确标记 blocked。
+## 规划原则
 
-输出要求：
-- 仅输出合法 JSON
-- 不要输出 markdown 代码块
-- 不要输出 JSON 之外的任何解释
-- 顶层结构必须为：
+1. 最小完整：步骤数量尽量少，但必须覆盖完成目标所需的全部关键动作。
+2. 可执行：每步都有明确的 node_type、输入期望和可验证的验收标准。
+3. 依赖正确：depends_on 必须准确，不能出现循环依赖，不能遗漏真实依赖。
+4. 信息优先：先收集信息和澄清疑问，再执行高成本或不可逆操作。
+5. 不猜测：缺少关键信息或节点能力不足时，用 needs_clarification 或 blocked 标记，不编造解决方案。
+6. 重规划复用：如果是重规划（planner_state.replan_reason 不为空），复用已 completed 且未受影响的步骤，只重新规划受影响部分，保持原步骤 id 不变。
+
+## 输出格式
+
+仅输出合法 JSON，不要输出 markdown 代码块，不要输出任何解释文字。
+
+顶层结构：
 {
-  "objective": "string",
-  "status": "planned | needs_clarification | blocked | replanned",
-  "summary": "string",
-  "replan_reason": "string",
-  "plan": [
-    {
-      "id": "string",
-      "title": "string",
-      "description": "string",
-      "status": "pending | ready | blocked | completed",
-      "kind": "research | transform | decision | action | validation | human_input",
-      "depends_on": [],
-      "node_type": "string",
-      "inputs": [],
-      "outputs": [],
-      "acceptance_criteria": [],
-      "parallelizable": false
-    }
-  ]
+  “objective”: “本次目标的一句话描述”,
+  “status”: “planned | needs_clarification | blocked | replanned”,
+  “summary”: “整体方案的简洁说明（2-3 句）”,
+  “replan_reason”: “重规划原因，非重规划时为空字符串”,
+  “plan”: [ <步骤列表> ]
 }
 
-补充要求：
-- id 使用稳定短标识，例如 step_1、step_2
-- summary 用简洁语言概括整体方案
-- replan_reason 在非重规划时输出空字符串
-- acceptance_criteria 必须具体且可检查
-- 如果缺少用户输入才能继续，status 输出 needs_clarification
-- 如果当前节点能力无法完成任务，status 输出 blocked`
+每个步骤：
+{
+  “id”: “step_1”,
+  “title”: “简洁步骤名”,
+  “description”: “具体做什么，为什么”,
+  “status”: “pending | ready | completed | blocked”,
+  “kind”: “research | transform | decision | action | validation | human_input”,
+  “node_type”: “对应 graph 节点类型，如 llm / tools / planner / human_message，不确定则留空”,
+  “depends_on”: [“被依赖步骤的 id”],
+  “inputs”: [“来自上一步的哪些输出，或外部数据源”],
+  “outputs”: [“本步骤产生的结果描述”],
+  “acceptance_criteria”: [“具体、可由代码或 LLM 判断的完成条件”],
+  “parallelizable”: false
+}
+
+## 状态说明
+
+顶层 status：
+- planned：正常规划完成
+- needs_clarification：缺少用户输入或关键信息才能继续
+- blocked：当前节点能力不足以完成目标
+- replanned：这是一次重规划，修改了上次的计划
+
+步骤 status（初始规划时）：
+- ready：无前置依赖，可立即执行
+- pending：有前置依赖尚未完成
+- blocked：无法执行，需要外部解除（需在 description 说明原因）
+
+步骤 status（重规划时还可使用）：
+- completed：已完成，直接复用
+
+## 补充要求
+
+- id 使用稳定短标识（step_1、step_2），重规划时保持已有步骤的 id 不变
+- acceptance_criteria 必须具体可检查，不能只写”完成”或”成功”
+- 如果 step_kind_hints 不为空，step 的 kind 必须在此范围内选择
+- parallelizable 为 true 时，该步骤与同层无依赖的步骤可并行执行
+- 计划步骤数不得超过 max_steps`
 )
 
 type PlannerNode struct {
@@ -103,9 +117,12 @@ type plannerPlanStep struct {
 	Description        string   `json:"description"`
 	Status             string   `json:"status"`
 	Kind               string   `json:"kind"`
+	NodeType           string   `json:"node_type"`
 	DependsOn          []string `json:"depends_on"`
-	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	Inputs             []string `json:"inputs"`
 	Outputs            []string `json:"outputs"`
+	AcceptanceCriteria []string `json:"acceptance_criteria"`
+	Parallelizable     bool     `json:"parallelizable"`
 }
 
 func NewPlannerNode(model llms.Model) *PlannerNode {
@@ -160,9 +177,9 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 			llms.TextParts(llms.ChatMessageTypeHuman, buildPlannerPrompt(promptPayload)),
 		},
 		runtime.WithLLMStreamingResponseEvent(),
-		llms.WithThinkingMode(llms.ThinkingModeAuto),
+		llms.WithThinkingMode(llms.ThinkingModeNone),
 		llms.WithReturnThinking(false),
-		llms.WithTemperature(0),
+		llms.WithTemperature(0.3),
 	)
 	if err != nil {
 		_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
@@ -345,9 +362,11 @@ func normalizePlannerResponse(parsed plannerResponse, fallbackObjective string) 
 		step.Description = strings.TrimSpace(step.Description)
 		step.Status = normalizePlannerStepStatus(step.Status)
 		step.Kind = strings.TrimSpace(step.Kind)
+		step.NodeType = strings.TrimSpace(step.NodeType)
 		step.DependsOn = compactPlannerStrings(step.DependsOn)
-		step.AcceptanceCriteria = compactPlannerStrings(step.AcceptanceCriteria)
+		step.Inputs = compactPlannerStrings(step.Inputs)
 		step.Outputs = compactPlannerStrings(step.Outputs)
+		step.AcceptanceCriteria = compactPlannerStrings(step.AcceptanceCriteria)
 		normalizedPlan = append(normalizedPlan, step)
 	}
 	parsed.Plan = normalizedPlan
@@ -356,7 +375,7 @@ func normalizePlannerResponse(parsed plannerResponse, fallbackObjective string) 
 
 func normalizePlannerStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "planned", "executing", "blocked", "completed", "failed":
+	case "planned", "needs_clarification", "blocked", "replanned", "executing", "completed", "failed":
 		return strings.ToLower(strings.TrimSpace(status))
 	default:
 		return "planned"
@@ -365,7 +384,7 @@ func normalizePlannerStatus(status string) string {
 
 func normalizePlannerStepStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "pending", "in_progress", "completed", "blocked", "skipped":
+	case "pending", "ready", "in_progress", "completed", "blocked", "skipped":
 		return strings.ToLower(strings.TrimSpace(status))
 	default:
 		return "pending"
@@ -400,9 +419,12 @@ func serializePlannerPlan(steps []plannerPlanStep) []map[string]any {
 			"description":         step.Description,
 			"status":              step.Status,
 			"kind":                step.Kind,
+			"node_type":           step.NodeType,
 			"depends_on":          clonePlannerStrings(step.DependsOn),
-			"acceptance_criteria": clonePlannerStrings(step.AcceptanceCriteria),
+			"inputs":              clonePlannerStrings(step.Inputs),
 			"outputs":             clonePlannerStrings(step.Outputs),
+			"acceptance_criteria": clonePlannerStrings(step.AcceptanceCriteria),
+			"parallelizable":      step.Parallelizable,
 		})
 	}
 	return items

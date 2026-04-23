@@ -27,6 +27,8 @@ type Entry struct {
 type Query struct {
 	Text  string
 	Roles []string
+	Tags  []string
+	Types []EntryType
 	Since time.Time
 	Until time.Time
 	Limit int
@@ -35,6 +37,8 @@ type Query struct {
 type LoadOptions struct {
 	Limit int
 	Roles []string
+	Tags  []string
+	Types []EntryType
 	Since time.Time
 	Until time.Time
 }

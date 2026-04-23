@@ -4,6 +4,7 @@ import (
 	"strings"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	fruntime "weaveflow/runtime"
 )
 
 func resolveSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
@@ -49,6 +50,47 @@ func resolveContextReducerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 				Path:        scopedConversationPath(scope, "messages"),
 				Mode:        dsl.StateAccessReadWrite,
 				Description: "Conversation messages read and compacted into a reduced message history.",
+			},
+		},
+	}, nil
+}
+
+func resolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+	scope := stringConfig(spec.Config, "state_scope")
+	memoryPath := stringConfig(spec.Config, "memory_state_path")
+	if strings.TrimSpace(memoryPath) == "" {
+		memoryPath = fruntime.StateKeyMemory
+	}
+	orchestrationPath := stringConfig(spec.Config, "orchestration_state_path")
+	if strings.TrimSpace(orchestrationPath) == "" {
+		orchestrationPath = fruntime.StateKeyOrchestration
+	}
+	plannerPath := stringConfig(spec.Config, "planner_state_path")
+	if strings.TrimSpace(plannerPath) == "" {
+		plannerPath = fruntime.StateKeyPlanner
+	}
+
+	return dsl.StateContract{
+		Fields: []dsl.StateFieldRef{
+			{
+				Path:        scopedConversationPath(scope, "messages"),
+				Mode:        dsl.StateAccessReadWrite,
+				Description: "Conversation messages updated with assembled memory context.",
+			},
+			{
+				Path:        memoryPath,
+				Mode:        dsl.StateAccessRead,
+				Description: "Structured memory state consumed for prompt assembly.",
+			},
+			{
+				Path:        orchestrationPath,
+				Mode:        dsl.StateAccessRead,
+				Description: "Structured orchestration state consumed for prompt assembly.",
+			},
+			{
+				Path:        plannerPath,
+				Mode:        dsl.StateAccessRead,
+				Description: "Structured planner state consumed for prompt assembly.",
 			},
 		},
 	}, nil

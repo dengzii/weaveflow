@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"weaveflow/dsl"
+	"weaveflow/memory"
 	"weaveflow/nodes"
 	"weaveflow/tools"
 
@@ -26,6 +27,7 @@ type GraphResolver func(graphRef string) (dsl.GraphDefinition, error)
 
 type BuildContext struct {
 	Model          llms.Model
+	Memory         memory.Manager
 	Tools          map[string]tools.Tool
 	InstanceConfig *dsl.GraphInstanceConfig
 	GraphResolver  GraphResolver
@@ -67,6 +69,8 @@ func DefaultRegistry() *Registry {
 	RegisterSessionBootstrapModule(r)
 	RegisterIntentModule(r)
 	RegisterOrchestrationModule(r)
+	RegisterMemoryModule(r)
+	RegisterContextModule(r)
 
 	r.RegisterNodeType(NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{

@@ -63,6 +63,8 @@ func (m *memoryManager) Recall(query *Query) ([]Entry, error) {
 	return m.Load(&LoadOptions{
 		Limit: query.Limit,
 		Roles: query.Roles,
+		Tags:  query.Tags,
+		Types: query.Types,
 		Since: query.Since,
 		Until: query.Until,
 	})
@@ -97,10 +99,20 @@ func filterEntries(entries []Entry, options *LoadOptions) []Entry {
 	}
 
 	roleSet := normalizeRoleSet(options.Roles)
+	tagSet := normalizeRoleSet(options.Tags)
+	typeSet := normalizeEntryTypeSet(options.Types)
 	filtered := make([]Entry, 0, len(entries))
 	for _, entry := range entries {
 		if len(roleSet) > 0 {
 			if _, ok := roleSet[strings.TrimSpace(entry.Role)]; !ok {
+				continue
+			}
+		}
+		if len(tagSet) > 0 && !memoryEntryHasAnyTag(entry, tagSet) {
+			continue
+		}
+		if len(typeSet) > 0 {
+			if _, ok := typeSet[entry.Type]; !ok {
 				continue
 			}
 		}
@@ -135,6 +147,31 @@ func normalizeRoleSet(roles []string) map[string]struct{} {
 	}
 
 	return roleSet
+}
+
+func normalizeEntryTypeSet(types []EntryType) map[EntryType]struct{} {
+	if len(types) == 0 {
+		return nil
+	}
+
+	typeSet := make(map[EntryType]struct{}, len(types))
+	for _, entryType := range types {
+		entryType = EntryType(strings.TrimSpace(string(entryType)))
+		if entryType == "" {
+			continue
+		}
+		typeSet[entryType] = struct{}{}
+	}
+	return typeSet
+}
+
+func memoryEntryHasAnyTag(entry Entry, tags map[string]struct{}) bool {
+	for _, tag := range entry.Tags {
+		if _, ok := tags[strings.TrimSpace(tag)]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func memoryTime(entry Entry) time.Time {
