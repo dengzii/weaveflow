@@ -71,6 +71,8 @@ func DefaultRegistry() *Registry {
 	RegisterOrchestrationModule(r)
 	RegisterMemoryModule(r)
 	RegisterContextModule(r)
+	RegisterExecutionModule(r)
+	RegisterVerificationModule(r)
 
 	r.RegisterNodeType(NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
