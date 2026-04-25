@@ -3,7 +3,8 @@ package weaveflow
 import (
 	"context"
 	"fmt"
-
+	"strings"
+	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -115,4 +116,48 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 		nodes = append(nodes, nodeID)
 	}
 	return nodes, nil
+}
+
+func ResolveNodeContracts(graph *Graph, registry *Registry) map[string]fruntime.NodeWriteContract {
+	if graph == nil || registry == nil {
+		return nil
+	}
+	contracts := make(map[string]fruntime.NodeWriteContract, len(graph.nodeSpecs))
+	for nodeID, spec := range graph.nodeSpecs {
+		contract, err := registry.ResolveNodeStateContract(spec)
+		if err != nil {
+			continue
+		}
+		converted := convertStateContract(contract)
+		if converted.Wildcard || len(converted.WritePaths) > 0 || len(converted.RequiredPaths) > 0 {
+			contracts[nodeID] = converted
+		}
+	}
+	if len(contracts) == 0 {
+		return nil
+	}
+	return contracts
+}
+
+func convertStateContract(contract dsl.StateContract) fruntime.NodeWriteContract {
+	result := fruntime.NodeWriteContract{}
+	for _, field := range contract.Fields {
+		path := strings.TrimSpace(field.Path)
+		if path == "*" {
+			result.Wildcard = true
+			return result
+		}
+		if path == "" {
+			continue
+		}
+		normalized := fruntime.NormalizeContractPath(path)
+		switch field.Mode {
+		case dsl.StateAccessWrite, dsl.StateAccessReadWrite:
+			result.WritePaths = append(result.WritePaths, normalized)
+			if field.Required {
+				result.RequiredPaths = append(result.RequiredPaths, normalized)
+			}
+		}
+	}
+	return result
 }

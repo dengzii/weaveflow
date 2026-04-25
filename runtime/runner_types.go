@@ -69,6 +69,7 @@ const (
 	EventArtifactCreated    EventType = "artifact.created"
 	EventBreakpointHit      EventType = "breakpoint.hit"
 	EventStateChanged       EventType = "state.changed"
+	EventContractViolation  EventType = "contract.violation"
 )
 
 type RunRecord struct {

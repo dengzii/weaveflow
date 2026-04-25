@@ -14,16 +14,18 @@ import (
 )
 
 type GraphRunner struct {
-	graph           RunnerGraph
-	ExecutionStore  ExecutionStore
-	CheckpointStore CheckpointStore
-	ArtifactStore   ArtifactStore
-	StateCodec      StateCodec
-	EventSink       EventSink
-	GraphID         string
-	GraphVersion    string
-	Breakpoints     []Breakpoint
-	Now             func() time.Time
+	graph              RunnerGraph
+	ExecutionStore     ExecutionStore
+	CheckpointStore    CheckpointStore
+	ArtifactStore      ArtifactStore
+	StateCodec         StateCodec
+	EventSink          EventSink
+	GraphID            string
+	GraphVersion       string
+	Breakpoints        []Breakpoint
+	ContractValidation ContractValidationMode
+	NodeContracts      map[string]NodeWriteContract
+	Now                func() time.Time
 }
 
 func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec StateCodec, eventSink EventSink) *GraphRunner {
@@ -560,20 +562,19 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 	return record.CheckpointID, nil
 }
 
-func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step StepRecord, before, after State) error {
+func (r *GraphRunner) computeStateDiff(before, after State) ([]StateChange, error) {
 	beforeSnapshot, err := SnapshotFromState(before)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	afterSnapshot, err := SnapshotFromState(after)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return r.StateCodec.Diff(beforeSnapshot, afterSnapshot)
+}
 
-	changes, err := r.StateCodec.Diff(beforeSnapshot, afterSnapshot)
-	if err != nil {
-		return err
-	}
+func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord, step StepRecord, changes []StateChange) error {
 	if len(changes) == 0 {
 		return nil
 	}
@@ -583,10 +584,17 @@ func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step 
 		zap.String("node_id", step.NodeID),
 		zap.Int("change_count", len(changes)),
 	)
-
 	return r.publishEvent(ctx, run, step.StepID, step.NodeID, EventStateChanged, map[string]any{
 		"changes": changes,
 	})
+}
+
+func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step StepRecord, before, after State) error {
+	changes, err := r.computeStateDiff(before, after)
+	if err != nil {
+		return err
+	}
+	return r.publishStateDiffChanges(ctx, run, step, changes)
 }
 
 func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, state State, step StepRecord, checkpointID string, hit *BreakpointHit) (RunRecord, State, error) {

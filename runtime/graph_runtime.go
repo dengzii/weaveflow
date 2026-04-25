@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -48,6 +49,8 @@ type graphRunnerExecution struct {
 	active        *runnerActiveStep
 	lastCompleted *runnerCompletedStep
 	pending       *runnerPendingControl
+	contractMode  ContractValidationMode
+	nodeContracts map[string]NodeWriteContract
 	mu            sync.Mutex
 }
 
@@ -57,11 +60,13 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState St
 		state = initialState.CloneState()
 	}
 	return &graphRunnerExecution{
-		runner:    runner,
-		run:       run,
-		skip:      skip,
-		lastState: state,
-		artifacts: cloneArtifactRefs(initialArtifacts),
+		runner:        runner,
+		run:           run,
+		skip:          skip,
+		lastState:     state,
+		artifacts:     cloneArtifactRefs(initialArtifacts),
+		contractMode:  runner.ContractValidation,
+		nodeContracts: runner.NodeContracts,
 	}
 }
 
@@ -229,7 +234,14 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 	if err != nil {
 		return err
 	}
-	if err := e.runner.publishStateDiff(ctx, run, step, beforeState, state); err != nil {
+	changes, err := e.runner.computeStateDiff(beforeState, state)
+	if err != nil {
+		return err
+	}
+	if err := e.runner.publishStateDiffChanges(ctx, run, step, changes); err != nil {
+		return err
+	}
+	if err := e.validateContract(ctx, run, step, nodeID, state, changes); err != nil {
 		return err
 	}
 
@@ -271,6 +283,35 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 	e.active = nil
 	e.pending = nil
 	e.mu.Unlock()
+	return nil
+}
+
+func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunRecord, step StepRecord, nodeID string, state State, changes []StateChange) error {
+	if e.contractMode == ContractValidationOff || e.nodeContracts == nil {
+		return nil
+	}
+	contract, ok := e.nodeContracts[nodeID]
+	if !ok {
+		return nil
+	}
+	violations := ValidateNodeContract(nodeID, contract, state, changes)
+	if len(violations) == 0 {
+		return nil
+	}
+	for _, v := range violations {
+		logger.Warn("state contract violation",
+			zap.String("node_id", v.NodeID),
+			zap.String("path", v.Path),
+			zap.String("kind", v.Kind),
+			zap.String("message", v.Message),
+		)
+	}
+	_ = e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventContractViolation, map[string]any{
+		"violations": violations,
+	})
+	if e.contractMode == ContractValidationStrict {
+		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
+	}
 	return nil
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 	"weaveflow/dsl"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
@@ -233,12 +234,19 @@ func serializeMemoryQuery(query *memory.Query, source string, requested bool) ma
 		"roles":     cloneMemoryStrings(query.Roles),
 		"tags":      cloneMemoryStrings(query.Tags),
 		"types":     serializeMemoryTypes(query.Types),
-		"since":     query.Since,
-		"until":     query.Until,
+		"since":     formatTimeValue(query.Since),
+		"until":     formatTimeValue(query.Until),
 		"limit":     query.Limit,
 		"source":    strings.TrimSpace(source),
 		"requested": requested,
 	}
+}
+
+func formatTimeValue(t time.Time) string {
+	if t.IsZero() {
+		return ""
+	}
+	return t.Format(time.RFC3339)
 }
 
 func cloneMemoryMap(input map[string]any) map[string]any {

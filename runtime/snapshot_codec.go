@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -413,7 +414,25 @@ func flattenSnapshot(snapshot StateSnapshot) (map[string]json.RawMessage, error)
 }
 
 func jsonEqual(left, right json.RawMessage) bool {
-	return strings.TrimSpace(string(left)) == strings.TrimSpace(string(right))
+	left = bytes.TrimSpace(left)
+	right = bytes.TrimSpace(right)
+	if len(left) == 0 && len(right) == 0 {
+		return true
+	}
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+	if bytes.Equal(left, right) {
+		return true
+	}
+	var l, r any
+	if err := json.Unmarshal(left, &l); err != nil {
+		return false
+	}
+	if err := json.Unmarshal(right, &r); err != nil {
+		return false
+	}
+	return reflect.DeepEqual(l, r)
 }
 
 func encodeGraphValue(key string, value any) (json.RawMessage, error) {

@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Graph 调试回放</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-default-cache-dir="{{.DefaultCacheDir}}">
+  <div class="shell">
+    <header class="hero">
+      <div>
+        <p class="eyebrow">Debug Replay</p>
+        <h1>Graph 运行回放工具</h1>
+        <p class="subtitle">读取 graph 缓存目录，查看运行状态、步骤、事件时间线、checkpoint 和 artifact。</p>
+      </div>
+      <form id="cache-form" class="cache-form">
+        <label for="cache-dir">缓存目录</label>
+        <div class="cache-row">
+          <input id="cache-dir" name="cache-dir" type="text" spellcheck="false">
+          <button type="submit">刷新</button>
+        </div>
+        <p class="hint">支持直接指向单个缓存目录，或指向包含多个实例子目录的父目录。</p>
+      </form>
+    </header>
+
+    <section class="status-bar">
+      <div id="status-text">准备加载</div>
+      <div id="summary-text" class="summary-text"></div>
+    </section>
+
+    <main class="layout">
+      <aside class="sidebar card">
+        <div class="sidebar-header">
+          <h2>运行列表</h2>
+          <span id="run-count" class="pill">0</span>
+        </div>
+        <div id="run-list" class="run-list"></div>
+      </aside>
+
+      <section class="content">
+        <div id="empty-state" class="card empty-state">
+          <h2>暂无数据</h2>
+          <p>填写缓存目录后点击“刷新”，左侧会列出可回放的 runs。</p>
+        </div>
+
+        <div id="detail-view" class="detail-view hidden">
+          <section class="card">
+            <div class="section-header">
+              <h2>运行概览</h2>
+              <span id="run-status" class="status-badge">unknown</span>
+            </div>
+            <div id="overview-grid" class="overview-grid"></div>
+            <pre id="run-error" class="error-box hidden"></pre>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <h2>事件回放</h2>
+              <div class="replay-actions">
+                <button id="prev-frame" type="button">上一帧</button>
+                <button id="play-toggle" type="button">播放</button>
+                <button id="next-frame" type="button">下一帧</button>
+              </div>
+            </div>
+            <div class="replay-slider-row">
+              <input id="replay-slider" type="range" min="0" max="0" value="0">
+              <div id="replay-position" class="mono">0 / 0</div>
+            </div>
+            <div id="replay-current" class="replay-current"></div>
+            <div class="replay-columns">
+              <div id="replay-list" class="replay-list"></div>
+              <pre id="replay-payload" class="json-viewer"></pre>
+            </div>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <h2>步骤</h2>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>节点</th>
+                    <th>状态</th>
+                    <th>尝试</th>
+                    <th>开始</th>
+                    <th>耗时</th>
+                    <th>前/后 checkpoint</th>
+                  </tr>
+                </thead>
+                <tbody id="steps-table"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="detail-dual">
+            <section class="card">
+              <div class="section-header">
+                <h2>Checkpoints</h2>
+                <span id="checkpoint-count" class="pill">0</span>
+              </div>
+              <div id="checkpoint-list" class="item-list"></div>
+              <pre id="checkpoint-detail" class="json-viewer"></pre>
+            </section>
+
+            <section class="card">
+              <div class="section-header">
+                <h2>Artifacts</h2>
+                <span id="artifact-count" class="pill">0</span>
+              </div>
+              <div id="artifact-list" class="item-list"></div>
+              <pre id="artifact-detail" class="json-viewer"></pre>
+            </section>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <h2>源配置</h2>
+            </div>
+            <div class="detail-dual">
+              <pre id="instance-detail" class="json-viewer"></pre>
+              <pre id="graph-detail" class="json-viewer"></pre>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
