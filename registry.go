@@ -73,6 +73,8 @@ func DefaultRegistry() *Registry {
 	RegisterContextModule(r)
 	RegisterExecutionModule(r)
 	RegisterVerificationModule(r)
+	RegisterSafetyModule(r)
+	RegisterReplannerModule(r)
 
 	r.RegisterNodeType(NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
@@ -734,6 +736,25 @@ func boolConfig(config map[string]any, key string) (bool, bool) {
 	}
 
 	return false, false
+}
+
+func floatConfig(config map[string]any, key string) (float64, bool) {
+	if len(config) == 0 {
+		return 0, false
+	}
+
+	switch value := config[key].(type) {
+	case float64:
+		return value, true
+	case float32:
+		return float64(value), true
+	case int:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	}
+
+	return 0, false
 }
 
 func cloneBuildContext(ctx *BuildContext) *BuildContext {
