@@ -46,9 +46,9 @@ func (n *ApprovalGateNode) Invoke(ctx context.Context, state fruntime.State) (fr
 		return n.applyApprovalDecision(ctx, state, pending)
 	}
 
-	check := fruntime.ToolPolicyCheck(state)
+	check := state.Get(fruntime.StateKeyToolPolicyCheck)
 	if check == nil || !n.needsApproval(check) {
-		approval := fruntime.EnsureApproval(state)
+		approval := state.Ensure(fruntime.StateKeyApproval)
 		approval["status"] = "approved"
 		approval["decided_at"] = time.Now().Format(time.RFC3339)
 		return state, nil
@@ -133,7 +133,7 @@ func (n *ApprovalGateNode) applyApprovalDecision(ctx context.Context, state frun
 		status = "approved"
 	}
 
-	approval := fruntime.EnsureApproval(state)
+	approval := state.Ensure(fruntime.StateKeyApproval)
 	approval["status"] = status
 	approval["decided_at"] = time.Now().Format(time.RFC3339)
 
@@ -158,7 +158,7 @@ func (n *ApprovalGateNode) applyApprovalDecision(ctx context.Context, state frun
 }
 
 func (n *ApprovalGateNode) promoteApprovedCalls(state fruntime.State) {
-	check := fruntime.ToolPolicyCheck(state)
+	check := state.Get(fruntime.StateKeyToolPolicyCheck)
 	if check == nil {
 		return
 	}

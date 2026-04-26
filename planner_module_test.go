@@ -92,7 +92,7 @@ func TestRegisterPlannerModuleBuildsAndRunsPlannerNode(t *testing.T) {
 	}
 
 	initialState := State{}
-	planner := fruntime.EnsurePlanner(initialState)
+	planner := initialState.Ensure(fruntime.StateKeyPlanner)
 	planner["objective"] = "Investigate browser automation tradeoffs"
 
 	state, err := graph.Run(context.Background(), initialState)
@@ -100,7 +100,7 @@ func TestRegisterPlannerModuleBuildsAndRunsPlannerNode(t *testing.T) {
 		t.Fatalf("run planner graph: %v", err)
 	}
 
-	finalPlanner := fruntime.Planner(state)
+	finalPlanner := state.Get(fruntime.StateKeyPlanner)
 	if finalPlanner == nil {
 		t.Fatal("expected planner state to be present after run")
 	}
@@ -136,7 +136,7 @@ func TestPlannerStatusEqualsConditionMatchesPlannerState(t *testing.T) {
 	}
 
 	state := State{}
-	fruntime.EnsurePlanner(state)["status"] = "planned"
+	state.Ensure(fruntime.StateKeyPlanner)["status"] = "planned"
 
 	if !condition.Match(context.Background(), state) {
 		t.Fatal("expected planner_status_equals condition to match planner state")

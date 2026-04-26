@@ -44,5 +44,5 @@ func MemoryRecallExample() {
 
 	fmt.Println()
 	fmt.Println("memory state:")
-	printJSON(runtime.Memory(result))
+	printJSON(result.Get(runtime.StateKeyMemory))
 }

@@ -50,20 +50,20 @@ func (n *SessionBootstrapNode) Invoke(ctx context.Context, state fruntime.State)
 		return state, err
 	}
 
-	request := fruntime.EnsureRequest(state)
+	request := state.Ensure(fruntime.StateKeyRequest)
 	if request == nil {
 		return state, errors.New("session bootstrap request state is unavailable")
 	}
 	request["input"] = input
 	mergeBootstrapMap(request, "metadata", n.RequestMetadata)
 
-	agent := fruntime.EnsureAgent(state)
+	agent := state.Ensure(fruntime.StateKeyAgent)
 	if agent == nil {
 		return state, errors.New("session bootstrap agent state is unavailable")
 	}
 	mergeBootstrapMap(agent, "profile", n.AgentProfile)
 
-	toolPolicy := fruntime.EnsureToolPolicy(state)
+	toolPolicy := state.Ensure(fruntime.StateKeyToolPolicy)
 	if toolPolicy == nil {
 		return state, errors.New("session bootstrap tool policy state is unavailable")
 	}
@@ -176,9 +176,9 @@ func (n *SessionBootstrapNode) artifactPayload(state fruntime.State, input strin
 		"state_scope":    strings.TrimSpace(n.StateScope),
 		"input":          input,
 		"max_iterations": n.effectiveMaxIterations(),
-		"request":        cloneBootstrapMap(fruntime.Request(state)),
-		"agent":          cloneBootstrapMap(fruntime.Agent(state)),
-		"tool_policy":    cloneBootstrapMap(fruntime.ToolPolicy(state)),
+		"request":        cloneBootstrapMap(state.Get(fruntime.StateKeyRequest)),
+		"agent":          cloneBootstrapMap(state.Get(fruntime.StateKeyAgent)),
+		"tool_policy":    cloneBootstrapMap(state.Get(fruntime.StateKeyToolPolicy)),
 	}
 	if messages, err := fruntime.SerializeMessages(fruntime.Conversation(state, n.StateScope).Messages()); err == nil {
 		payload["messages"] = messages

@@ -56,7 +56,7 @@ func PlannerExample() {
 		"request":   request,
 		"execution": execution,
 	}
-	runtime.EnsurePlanner(state)["status"] = "draft"
+	state.Ensure(runtime.StateKeyPlanner)["status"] = "draft"
 
 	fmt.Println("input objective:")
 	fmt.Println(request["goal"])
@@ -75,5 +75,5 @@ func PlannerExample() {
 
 	fmt.Println()
 	fmt.Println("planner output:")
-	printJSON(runtime.Planner(result))
+	printJSON(result.Get(runtime.StateKeyPlanner))
 }

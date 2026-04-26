@@ -150,7 +150,7 @@ func containsPath(paths []string, target string) bool {
 func (n *ReplannerNode) buildReplanReason(state fruntime.State) string {
 	var parts []string
 
-	verification := fruntime.Verification(state)
+	verification := state.Get(fruntime.StateKeyVerification)
 	if verification != nil {
 		if summary, ok := verification["summary"].(string); ok && summary != "" {
 			parts = append(parts, "Verification: "+summary)

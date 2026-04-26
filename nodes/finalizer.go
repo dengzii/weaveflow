@@ -69,7 +69,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		}
 		outcome := FinalStatusSuccess
 
-		final := fruntime.EnsureFinal(state)
+		final := state.Ensure(fruntime.StateKeyFinal)
 		final["answer"] = answer
 		final["status"] = outcome
 
@@ -88,10 +88,10 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		return state, nil
 	}
 
-	verification := fruntime.Verification(state)
+	verification := state.Get(fruntime.StateKeyVerification)
 	observations := fruntime.Observations(state)
 	evidence := fruntime.Evidence(state)
-	plannerState := fruntime.Planner(state)
+	plannerState := state.Get(fruntime.StateKeyPlanner)
 
 	outcome := n.determineOutcome(verification)
 
@@ -118,7 +118,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		outcome = FinalStatusSuccess
 	}
 
-	final := fruntime.EnsureFinal(state)
+	final := state.Ensure(fruntime.StateKeyFinal)
 	final["answer"] = answer
 	final["status"] = outcome
 	final["evidence"] = collectEvidenceRefs(evidence)
@@ -140,7 +140,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 }
 
 func (n *FinalizerNode) isDirectMode(state fruntime.State) bool {
-	orchestration := fruntime.Orchestration(state)
+	orchestration := state.Get(fruntime.StateKeyOrchestration)
 	if orchestration == nil {
 		return false
 	}
@@ -188,7 +188,7 @@ func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, state fruntim
 		planSummary, _ = plannerState["summary"].(string)
 	}
 	if objective == "" {
-		req := fruntime.Request(state)
+		req := state.Get(fruntime.StateKeyRequest)
 		if req != nil {
 			objective, _ = req["input"].(string)
 		}

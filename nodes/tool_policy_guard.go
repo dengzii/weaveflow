@@ -42,7 +42,7 @@ func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 
 	toolCalls := n.extractToolCalls(state)
 	if len(toolCalls) == 0 {
-		check := fruntime.EnsureToolPolicyCheck(state)
+		check := state.Ensure(fruntime.StateKeyToolPolicyCheck)
 		check["action"] = PolicyActionAllow
 		check["decisions"] = []map[string]any{}
 		check["blocked_calls"] = []map[string]any{}
@@ -50,7 +50,7 @@ func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 		return state, nil
 	}
 
-	policy := fruntime.ToolPolicy(state)
+	policy := state.Get(fruntime.StateKeyToolPolicy)
 	decisions := make([]map[string]any, 0, len(toolCalls))
 	blocked := make([]map[string]any, 0)
 	approved := make([]map[string]any, 0)
@@ -75,7 +75,7 @@ func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 
 	aggregateAction := n.aggregateAction(decisions)
 
-	check := fruntime.EnsureToolPolicyCheck(state)
+	check := state.Ensure(fruntime.StateKeyToolPolicyCheck)
 	check["action"] = aggregateAction
 	check["decisions"] = decisions
 	check["blocked_calls"] = blocked

@@ -129,7 +129,7 @@ func (n *VerifierNode) resolveMode(state fruntime.State) string {
 		return mode
 	}
 
-	exec := fruntime.Execution(state)
+	exec := state.Get(fruntime.StateKeyExecution)
 	if exec != nil {
 		route, _ := exec["route"].(string)
 		if route == ExecutionRouteFinalize {
@@ -140,7 +140,7 @@ func (n *VerifierNode) resolveMode(state fruntime.State) string {
 }
 
 func (n *VerifierNode) verifyStep(ctx context.Context, state fruntime.State) (*verificationResult, error) {
-	plannerState := fruntime.Planner(state)
+	plannerState := state.Get(fruntime.StateKeyPlanner)
 	if plannerState == nil {
 		return &verificationResult{
 			Status:     VerificationPass,
@@ -181,14 +181,14 @@ func (n *VerifierNode) verifyStep(ctx context.Context, state fruntime.State) (*v
 }
 
 func (n *VerifierNode) verifyFinal(ctx context.Context, state fruntime.State) (*verificationResult, error) {
-	plannerState := fruntime.Planner(state)
+	plannerState := state.Get(fruntime.StateKeyPlanner)
 	objective := ""
 	if plannerState != nil {
 		objective, _ = plannerState["objective"].(string)
 	}
 
 	if objective == "" {
-		req := fruntime.Request(state)
+		req := state.Get(fruntime.StateKeyRequest)
 		if req != nil {
 			objective, _ = req["input"].(string)
 		}
@@ -267,7 +267,7 @@ func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, objective s
 }
 
 func (n *VerifierNode) applyResult(state fruntime.State, result *verificationResult, mode string) {
-	v := fruntime.EnsureVerification(state)
+	v := state.Ensure(fruntime.StateKeyVerification)
 	v["status"] = result.Status
 	v["issues"] = result.Issues
 	v["summary"] = result.Summary
@@ -284,7 +284,7 @@ func (n *VerifierNode) applyResult(state fruntime.State, result *verificationRes
 }
 
 func (n *VerifierNode) markCurrentStepCompleted(state fruntime.State) {
-	plannerState := fruntime.Planner(state)
+	plannerState := state.Get(fruntime.StateKeyPlanner)
 	if plannerState == nil {
 		return
 	}
@@ -299,7 +299,7 @@ func (n *VerifierNode) markCurrentStepCompleted(state fruntime.State) {
 }
 
 func (n *VerifierNode) markCurrentStepReady(state fruntime.State) {
-	plannerState := fruntime.Planner(state)
+	plannerState := state.Get(fruntime.StateKeyPlanner)
 	if plannerState == nil {
 		return
 	}

@@ -52,15 +52,15 @@ func SessionBootstrapExample() {
 
 	fmt.Println()
 	fmt.Println("request:")
-	printJSON(fruntime.Request(state))
+	printJSON(state.Get(fruntime.StateKeyRequest))
 
 	fmt.Println()
 	fmt.Println("agent:")
-	printJSON(fruntime.Agent(state))
+	printJSON(state.Get(fruntime.StateKeyAgent))
 
 	fmt.Println()
 	fmt.Println("tool_policy:")
-	printJSON(fruntime.ToolPolicy(state))
+	printJSON(state.Get(fruntime.StateKeyToolPolicy))
 }
 
 func nodeMessageText(message llms.MessageContent) string {

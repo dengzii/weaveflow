@@ -60,7 +60,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 	}
 
 	plannerPath := n.effectivePlannerPath()
-	plannerState := fruntime.Planner(state)
+	plannerState := state.Get(fruntime.StateKeyPlanner)
 	if plannerState == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "plan_step_executor.error", map[string]any{
 			"error": "planner state not found",
@@ -91,7 +91,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 
 	plannerState["current_step_id"] = stepID
 
-	exec := fruntime.EnsureExecution(state)
+	exec := state.Ensure(fruntime.StateKeyExecution)
 	exec["current_step"] = cloneStepMap(selectedStep)
 	exec["route"] = route
 
@@ -113,7 +113,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 }
 
 func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state fruntime.State, plannerState fruntime.State, reason string) (fruntime.State, error) {
-	exec := fruntime.EnsureExecution(state)
+	exec := state.Ensure(fruntime.StateKeyExecution)
 	exec["route"] = ExecutionRouteFinalize
 	exec["current_step"] = nil
 	plannerState["current_step_id"] = ""
@@ -127,7 +127,7 @@ func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state fruntime
 }
 
 func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state fruntime.State, plannerState fruntime.State, reason string) (fruntime.State, error) {
-	exec := fruntime.EnsureExecution(state)
+	exec := state.Ensure(fruntime.StateKeyExecution)
 	exec["route"] = ExecutionRouteBlocked
 	exec["current_step"] = nil
 	plannerState["current_step_id"] = ""

@@ -48,7 +48,7 @@ func (n *CostBudgetGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 	limits := n.collectLimits(state)
 	status, exceeded := n.evaluateBudget(usage, limits)
 
-	budget := fruntime.EnsureBudget(state)
+	budget := state.Ensure(fruntime.StateKeyBudget)
 	budget["usage"] = usage
 	budget["limits"] = limits
 	budget["status"] = status
@@ -134,7 +134,7 @@ func (n *CostBudgetGuardNode) collectLimits(state fruntime.State) map[string]any
 	maxToolCalls := n.MaxToolCalls
 	maxIterations := n.MaxIterations
 
-	budget := fruntime.Budget(state)
+	budget := state.Get(fruntime.StateKeyBudget)
 	if budget != nil {
 		if stateLimits := readNestedMap(budget, "limits"); stateLimits != nil {
 			if v := readIntMetric(stateLimits, "max_tokens"); v > 0 && maxTokens <= 0 {

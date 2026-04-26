@@ -37,5 +37,5 @@ func OrchestrationRouterExample() {
 
 	fmt.Println()
 	fmt.Println("orchestration state:")
-	fmt.Println(runtime.Orchestration(result).PrettyString())
+	fmt.Println(result.Get(runtime.StateKeyOrchestration).PrettyString())
 }

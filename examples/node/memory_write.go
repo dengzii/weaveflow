@@ -49,7 +49,7 @@ func MemoryWriteExample() {
 
 	fmt.Println()
 	fmt.Println("memory write state:")
-	printJSON(runtime.Memory(result))
+	printJSON(result.Get(runtime.StateKeyMemory))
 
 	entries, err := mgr.Load(nil)
 	must(err)

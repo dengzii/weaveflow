@@ -10,13 +10,6 @@ import (
 )
 
 const (
-	StateKeyMessages       = "messages"
-	StateKeyIterationCount = "iteration_count"
-	StateKeyMaxIterations  = "max_iterations"
-	StateKeyFinalAnswer    = "final_answer"
-)
-
-const (
 	stateKeyMessages       = StateKeyMessages
 	stateKeyIterationCount = StateKeyIterationCount
 	stateKeyMaxIterations  = StateKeyMaxIterations

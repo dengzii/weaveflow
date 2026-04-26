@@ -48,7 +48,7 @@ func TestContextAssemblerInjectsRecalledMemoryIntoConversation(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a careful agent."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Use prior context if available."),
 	})
-	fruntime.EnsureMemory(state)["recalled"] = []map[string]any{
+	state.Ensure(fruntime.StateKeyMemory)["recalled"] = []map[string]any{
 		{
 			"id":   "m1",
 			"text": "The user prefers weekday deployments.",
@@ -87,7 +87,7 @@ func TestContextAssemblerReplacesPreviousInjectedMemoryMessage(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeSystem, "Relevant recalled memory:\n- [assistant/fact] old memory"),
 		llms.TextParts(llms.ChatMessageTypeHuman, "new request"),
 	})
-	fruntime.EnsureMemory(state)["recalled"] = []map[string]any{
+	state.Ensure(fruntime.StateKeyMemory)["recalled"] = []map[string]any{
 		{
 			"text": "fresh memory",
 			"role": "assistant",
@@ -127,12 +127,12 @@ func TestContextAssemblerInjectsOrchestrationAndPlannerState(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a careful agent."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Continue with the task."),
 	})
-	fruntime.EnsureOrchestration(state)["mode"] = "direct"
-	fruntime.EnsureOrchestration(state)["use_memory"] = true
-	fruntime.EnsurePlanner(state)["status"] = "planned"
-	fruntime.EnsurePlanner(state)["current_step_id"] = "step_1"
-	fruntime.EnsurePlanner(state)["summary"] = "Validate inputs, then execute the first safe step."
-	fruntime.EnsurePlanner(state)["plan"] = []map[string]any{
+	state.Ensure(fruntime.StateKeyOrchestration)["mode"] = "direct"
+	state.Ensure(fruntime.StateKeyOrchestration)["use_memory"] = true
+	state.Ensure(fruntime.StateKeyPlanner)["status"] = "planned"
+	state.Ensure(fruntime.StateKeyPlanner)["current_step_id"] = "step_1"
+	state.Ensure(fruntime.StateKeyPlanner)["summary"] = "Validate inputs, then execute the first safe step."
+	state.Ensure(fruntime.StateKeyPlanner)["plan"] = []map[string]any{
 		{"id": "step_1", "title": "Validate inputs", "status": "pending", "kind": "validation"},
 		{"id": "step_2", "title": "Run tool", "status": "pending", "kind": "action"},
 	}

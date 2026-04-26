@@ -173,7 +173,7 @@ func verificationNextActionConditionDefinition() ConditionDefinition {
 					"action": expected,
 				},
 			}, func(_ context.Context, state State) bool {
-				v := fruntime.Verification(state)
+				v := state.Get(fruntime.StateKeyVerification)
 				if v == nil {
 					return false
 				}

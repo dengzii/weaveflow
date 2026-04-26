@@ -51,7 +51,7 @@ func TestSessionBootstrapNodeInitializesEmptyScopedState(t *testing.T) {
 		t.Fatalf("expected max iterations 4, got %d", got)
 	}
 
-	request := fruntime.Request(state)
+	request := state.Get(fruntime.StateKeyRequest)
 	if request == nil || request["input"] != "Summarize the repository status." {
 		t.Fatalf("expected normalized request input, got %#v", request)
 	}
@@ -60,13 +60,13 @@ func TestSessionBootstrapNodeInitializesEmptyScopedState(t *testing.T) {
 		t.Fatalf("unexpected request metadata: %#v", request["metadata"])
 	}
 
-	agent := fruntime.Agent(state)
+	agent := state.Get(fruntime.StateKeyAgent)
 	profile, ok := agent["profile"].(map[string]any)
 	if !ok || profile["name"] != "falcon" || profile["mode"] != "general" {
 		t.Fatalf("unexpected agent profile: %#v", agent["profile"])
 	}
 
-	toolPolicy := fruntime.ToolPolicy(state)
+	toolPolicy := state.Get(fruntime.StateKeyToolPolicy)
 	allowed, ok := toolPolicy["allowed_tools"].([]any)
 	if !ok || len(allowed) != 2 || allowed[0] != "calculator" {
 		t.Fatalf("unexpected tool policy: %#v", toolPolicy)
@@ -91,7 +91,7 @@ func TestSessionBootstrapNodeUsesConfiguredInputPath(t *testing.T) {
 		t.Fatalf("invoke session bootstrap: %v", err)
 	}
 
-	if got := fruntime.Request(state)["input"]; got != "Use the local calculator." {
+	if got := state.Get(fruntime.StateKeyRequest)["input"]; got != "Use the local calculator." {
 		t.Fatalf("expected input path value to become request input, got %#v", got)
 	}
 	messages := fruntime.Conversation(state, "agent").Messages()
@@ -123,7 +123,7 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	if len(messages) != 1 || extractText(messages[0]) != "Existing input" {
 		t.Fatalf("expected existing conversation to be preserved, got %#v", messages)
 	}
-	if got := fruntime.Request(state)["input"]; got != "New input" {
+	if got := state.Get(fruntime.StateKeyRequest)["input"]; got != "New input" {
 		t.Fatalf("expected request input to still be normalized, got %#v", got)
 	}
 	if got := fruntime.Conversation(state, "agent").MaxIterations(); got != 2 {

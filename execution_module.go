@@ -178,7 +178,7 @@ func executionRouteEqualsConditionDefinition() ConditionDefinition {
 					"route": route,
 				},
 			}, func(_ context.Context, state State) bool {
-				exec := fruntime.Execution(state)
+				exec := state.Get(fruntime.StateKeyExecution)
 				if exec == nil {
 					return false
 				}

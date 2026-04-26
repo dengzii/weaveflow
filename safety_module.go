@@ -260,7 +260,7 @@ func toolPolicyCheckActionConditionDefinition() ConditionDefinition {
 				Type:   "tool_policy_check_action",
 				Config: map[string]any{"action": expected},
 			}, func(_ context.Context, state State) bool {
-				check := fruntime.ToolPolicyCheck(state)
+				check := state.Get(fruntime.StateKeyToolPolicyCheck)
 				if check == nil {
 					return false
 				}
@@ -298,7 +298,7 @@ func approvalStatusEqualsConditionDefinition() ConditionDefinition {
 				Type:   "approval_status_equals",
 				Config: map[string]any{"status": expected},
 			}, func(_ context.Context, state State) bool {
-				approval := fruntime.Approval(state)
+				approval := state.Get(fruntime.StateKeyApproval)
 				if approval == nil {
 					return false
 				}
@@ -336,7 +336,7 @@ func budgetStatusEqualsConditionDefinition() ConditionDefinition {
 				Type:   "budget_status_equals",
 				Config: map[string]any{"status": expected},
 			}, func(_ context.Context, state State) bool {
-				budget := fruntime.Budget(state)
+				budget := state.Get(fruntime.StateKeyBudget)
 				if budget == nil {
 					return false
 				}

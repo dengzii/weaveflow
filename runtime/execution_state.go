@@ -1,37 +1,5 @@
 package runtime
 
-const (
-	StateKeyExecution    = "execution"
-	StateKeyObservations = "observations"
-	StateKeyEvidence     = "evidence"
-	StateKeyVerification = "verification"
-	StateKeyFinal        = "final"
-)
-
-func Execution(state State) State {
-	return rootObjectState(state, StateKeyExecution, false)
-}
-
-func EnsureExecution(state State) State {
-	return rootObjectState(state, StateKeyExecution, true)
-}
-
-func Verification(state State) State {
-	return rootObjectState(state, StateKeyVerification, false)
-}
-
-func EnsureVerification(state State) State {
-	return rootObjectState(state, StateKeyVerification, true)
-}
-
-func Final(state State) State {
-	return rootObjectState(state, StateKeyFinal, false)
-}
-
-func EnsureFinal(state State) State {
-	return rootObjectState(state, StateKeyFinal, true)
-}
-
 func Observations(state State) []map[string]any {
 	if state == nil {
 		return nil
@@ -97,7 +65,7 @@ func AppendEvidence(state State, ev map[string]any) {
 }
 
 func StepResults(state State) map[string]any {
-	exec := Execution(state)
+	exec := state.Get(StateKeyExecution)
 	if exec == nil {
 		return nil
 	}
@@ -119,7 +87,7 @@ func SetStepResult(state State, stepID string, result map[string]any) {
 	if state == nil || stepID == "" {
 		return
 	}
-	exec := EnsureExecution(state)
+	exec := state.Ensure(StateKeyExecution)
 	results, ok := exec["step_results"].(map[string]any)
 	if !ok {
 		results = map[string]any{}

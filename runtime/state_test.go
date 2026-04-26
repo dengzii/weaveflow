@@ -197,18 +197,18 @@ func TestEnsurePlannerCreatesAndReusesPlannerState(t *testing.T) {
 	t.Parallel()
 
 	state := State{}
-	planner := EnsurePlanner(state)
+	planner := state.Ensure(StateKeyPlanner)
 	if planner == nil {
 		t.Fatal("expected planner state to be created")
 	}
 
 	planner["objective"] = "Decompose a generic task into executable steps."
 
-	if got := Planner(state); got == nil || got["objective"] != planner["objective"] {
+	if got := state.Get(StateKeyPlanner); got == nil || got["objective"] != planner["objective"] {
 		t.Fatalf("expected planner state to be readable from root state, got %#v", got)
 	}
 
-	plannerAgain := EnsurePlanner(state)
+	plannerAgain := state.Ensure(StateKeyPlanner)
 	if plannerAgain == nil || plannerAgain["objective"] != planner["objective"] {
 		t.Fatalf("expected ensure planner to reuse the existing state, got %#v", plannerAgain)
 	}

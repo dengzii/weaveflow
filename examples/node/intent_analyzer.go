@@ -36,5 +36,5 @@ func IntentAnalyzerExample() {
 
 	fmt.Println()
 	fmt.Println("intent state:")
-	fmt.Println(runtime.Intent(result).PrettyString())
+	fmt.Println(result.Get(runtime.StateKeyIntent).PrettyString())
 }
