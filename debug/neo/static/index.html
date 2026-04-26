@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Neo Agent</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body data-neo-addr="{{.NeoAddr}}">
+  <div class="shell">
+    <div class="layout">
+
+      <section class="chat-panel">
+        <header class="chat-header">
+          <div>
+            <h1>Neo</h1>
+            <p class="subtitle">通用任务 Agent</p>
+          </div>
+          <div id="agent-badge" class="status-badge is-info">idle</div>
+        </header>
+
+        <div id="messages" class="messages"></div>
+
+        <div id="progress-bar" class="progress-bar hidden">
+          <span class="progress-dot"></span>
+          <span id="progress-text">运行中</span>
+        </div>
+
+        <form id="chat-form" class="chat-input-row">
+          <textarea id="chat-input" placeholder="输入消息..." rows="1"></textarea>
+          <button id="send-btn" type="submit">发送</button>
+          <button id="stop-btn" type="button" class="btn-danger hidden">停止</button>
+        </form>
+      </section>
+
+      <aside class="sidebar">
+        <section class="card">
+          <div class="section-header">
+            <h2>设置</h2>
+            <button id="save-settings-btn" type="button" class="btn-small">保存</button>
+          </div>
+          <div class="settings-grid">
+            <label>System Prompt
+              <textarea id="cfg-system-prompt" rows="3"></textarea>
+            </label>
+            <label>Max Iterations
+              <input id="cfg-max-iterations" type="number" min="1">
+            </label>
+            <label>Planner Max Steps
+              <input id="cfg-planner-max-steps" type="number" min="1">
+            </label>
+            <label>Memory Recall Limit
+              <input id="cfg-memory-recall-limit" type="number" min="0">
+            </label>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="section-header">
+            <h2>工具</h2>
+          </div>
+          <div id="tool-list" class="tool-list"></div>
+        </section>
+      </aside>
+
+    </div>
+  </div>
+
+  <script src="/static/marked.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>

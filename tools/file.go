@@ -50,7 +50,7 @@ type fileOperationEntry struct {
 	Size  int64  `json:"size,omitempty"`
 }
 
-func NewTextFileOperations() Tool {
+func NewFileOperations() Tool {
 	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name: "file_operations",

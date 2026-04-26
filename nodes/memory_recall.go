@@ -214,7 +214,7 @@ func serializeMemoryEntries(entries []memory.Entry) []map[string]any {
 			"text":       entry.Text,
 			"role":       entry.Role,
 			"payload":    cloneMemoryMap(entry.Payload),
-			"created_at": entry.CreatedAt,
+			"created_at": formatTimeValue(entry.CreatedAt),
 			"type":       string(entry.Type),
 			"tags":       cloneMemoryStrings(entry.Tags),
 		})

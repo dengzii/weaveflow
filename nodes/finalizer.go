@@ -60,6 +60,34 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		state = fruntime.State{}
 	}
 
+	conversation := fruntime.Conversation(state, n.effectiveScope())
+
+	if n.isDirectMode(state) {
+		answer := conversation.FinalAnswer()
+		if answer == "" {
+			answer = n.fallbackAnswer(state, nil)
+		}
+		outcome := FinalStatusSuccess
+
+		final := fruntime.EnsureFinal(state)
+		final["answer"] = answer
+		final["status"] = outcome
+
+		conversation.SetFinalAnswer(answer)
+
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "finalizer.result", map[string]any{
+			"status":        outcome,
+			"answer_length": len(answer),
+			"mode":          "direct",
+		})
+		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
+			"kind":   "finalized",
+			"status": outcome,
+			"mode":   "direct",
+		})
+		return state, nil
+	}
+
 	verification := fruntime.Verification(state)
 	observations := fruntime.Observations(state)
 	evidence := fruntime.Evidence(state)
@@ -95,7 +123,6 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	final["status"] = outcome
 	final["evidence"] = collectEvidenceRefs(evidence)
 
-	conversation := fruntime.Conversation(state, n.effectiveScope())
 	conversation.SetFinalAnswer(answer)
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "finalizer.result", map[string]any{
@@ -110,6 +137,15 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	})
 
 	return state, nil
+}
+
+func (n *FinalizerNode) isDirectMode(state fruntime.State) bool {
+	orchestration := fruntime.Orchestration(state)
+	if orchestration == nil {
+		return false
+	}
+	mode, _ := orchestration["mode"].(string)
+	return mode == "direct"
 }
 
 func (n *FinalizerNode) determineOutcome(verification fruntime.State) string {
@@ -165,6 +201,7 @@ func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, state fruntim
 			llms.TextParts(llms.ChatMessageTypeSystem, finalizerSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),
 		},
+		fruntime.WithLLMStreamingResponseEvent(),
 		llms.WithTemperature(0.3),
 	)
 	if err != nil {
