@@ -13,8 +13,8 @@
   --danger-soft: rgba(185, 28, 28, 0.12);
   --success: #166534;
   --success-soft: rgba(22, 101, 52, 0.12);
-  --shadow: 0 18px 50px rgba(33, 41, 52, 0.08);
-  --radius: 18px;
+  --shadow: 0 8px 24px rgba(33, 41, 52, 0.06);
+  --radius: 12px;
   --mono: "JetBrains Mono", "Cascadia Mono", "SFMono-Regular", monospace;
   --sans: "IBM Plex Sans", "Segoe UI", sans-serif;
 }
@@ -24,6 +24,7 @@
 body {
   min-height: 100vh;
   font-family: var(--sans);
+  font-size: 14px;
   color: var(--text);
   background:
     radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 26%),
@@ -36,14 +37,14 @@ button, input, textarea { font: inherit; }
 .shell {
   max-width: 1400px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 12px;
   height: 100vh;
 }
 
 .layout {
   display: grid;
-  grid-template-columns: 1fr 340px;
-  gap: 20px;
+  grid-template-columns: 1fr 280px;
+  gap: 12px;
   height: 100%;
 }
 
@@ -58,24 +59,24 @@ button, input, textarea { font: inherit; }
   border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 20px;
+  padding: 12px;
 }
 
 .chat-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding-bottom: 16px;
+  padding-bottom: 8px;
   border-bottom: 1px solid var(--line);
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .chat-header h1 {
-  font-size: 28px;
+  font-size: 20px;
   line-height: 1;
 }
 
-.subtitle { color: var(--muted); margin-top: 4px; font-size: 14px; }
+.subtitle { color: var(--muted); margin-top: 2px; font-size: 12px; }
 
 /* ── messages ── */
 
@@ -84,43 +85,56 @@ button, input, textarea { font: inherit; }
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 4px 0;
+  gap: 4px;
+  padding: 2px 0;
   min-height: 0;
+  max-width: 800px;
+  width: 100%;
+  margin: 0 auto;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(0, 0, 0, 0.15) transparent;
 }
 
-.messages > .msg { margin-top: 8px; }
+.messages::-webkit-scrollbar { width: 3px; }
+.messages::-webkit-scrollbar-track { background: transparent; }
+.messages::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.1); border-radius: 2px; }
+.messages::-webkit-scrollbar-thumb:hover { background: rgba(0, 0, 0, 0.2); }
+
+.messages > .msg { margin-top: 4px; }
 
 .msg {
-  max-width: 85%;
-  padding: 12px 16px;
-  border-radius: 16px;
-  line-height: 1.6;
+  width: 85%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  line-height: 1.5;
+  font-size: 13px;
   word-break: break-word;
   white-space: pre-wrap;
 }
 
 .msg-user {
   align-self: flex-end;
+  width: auto;
+  max-width: 75%;
   background: linear-gradient(135deg, #1f8c82, var(--accent));
   color: #fff;
-  border-bottom-right-radius: 4px;
+  border-bottom-right-radius: 3px;
 }
 
 .msg-assistant {
   align-self: flex-start;
   background: var(--panel-strong);
   border: 1px solid var(--line);
-  border-bottom-left-radius: 4px;
+  border-bottom-left-radius: 3px;
   white-space: normal;
 }
 
-.msg-assistant p { margin: 0 0 0.6em; }
+.msg-assistant p { margin: 0 0 0.5em; }
 .msg-assistant p:last-child { margin-bottom: 0; }
-.msg-assistant ul, .msg-assistant ol { margin: 0 0 0.6em; padding-left: 1.4em; }
-.msg-assistant li { margin-bottom: 0.2em; }
+.msg-assistant ul, .msg-assistant ol { margin: 0 0 0.5em; padding-left: 1.4em; }
+.msg-assistant li { margin-bottom: 0.15em; }
 .msg-assistant h1, .msg-assistant h2, .msg-assistant h3 {
-  margin: 0.8em 0 0.4em;
+  margin: 0.6em 0 0.3em;
   font-size: 1em;
   font-weight: 700;
 }
@@ -129,20 +143,20 @@ button, input, textarea { font: inherit; }
 }
 .msg-assistant pre {
   background: rgba(0, 0, 0, 0.05);
-  border-radius: 8px;
-  padding: 10px 12px;
+  border-radius: 6px;
+  padding: 6px 8px;
   overflow-x: auto;
-  margin: 0.6em 0;
+  margin: 0.4em 0;
   font-family: var(--mono);
-  font-size: 13px;
-  line-height: 1.5;
+  font-size: 12px;
+  line-height: 1.4;
 }
 .msg-assistant code {
   font-family: var(--mono);
-  font-size: 0.9em;
+  font-size: 0.88em;
   background: rgba(0, 0, 0, 0.06);
-  padding: 1px 5px;
-  border-radius: 4px;
+  padding: 1px 4px;
+  border-radius: 3px;
 }
 .msg-assistant pre code {
   background: none;
@@ -151,19 +165,19 @@ button, input, textarea { font: inherit; }
 }
 .msg-assistant blockquote {
   border-left: 3px solid var(--line);
-  margin: 0.6em 0;
-  padding: 0.2em 0 0.2em 12px;
+  margin: 0.4em 0;
+  padding: 0.2em 0 0.2em 10px;
   color: var(--muted);
 }
 .msg-assistant strong { font-weight: 700; }
 .msg-assistant table {
   border-collapse: collapse;
-  margin: 0.6em 0;
-  font-size: 13px;
+  margin: 0.4em 0;
+  font-size: 12px;
 }
 .msg-assistant th, .msg-assistant td {
   border: 1px solid var(--line);
-  padding: 4px 10px;
+  padding: 3px 8px;
 }
 .msg-assistant th { background: rgba(0, 0, 0, 0.03); font-weight: 600; }
 
@@ -171,40 +185,47 @@ button, input, textarea { font: inherit; }
   align-self: flex-start;
   background: rgba(0, 0, 0, 0.03);
   color: var(--muted);
-  font-size: 13px;
+  font-size: 12px;
   border: 1px dashed var(--line);
-  border-bottom-left-radius: 4px;
+  border-bottom-left-radius: 3px;
   white-space: normal;
-  max-height: 300px;
+  max-height: 200px;
   overflow-y: auto;
 }
 
-.msg-thinking p { margin: 0 0 0.4em; }
+.msg-thinking p { margin: 0 0 0.3em; }
 .msg-thinking p:last-child { margin-bottom: 0; }
 .msg-thinking pre {
   background: rgba(0, 0, 0, 0.04);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 4px;
+  padding: 4px 8px;
   overflow-x: auto;
-  margin: 0.4em 0;
+  margin: 0.3em 0;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
 }
 .msg-thinking code {
   font-family: var(--mono);
-  font-size: 0.9em;
+  font-size: 0.88em;
 }
+
+.msg-thinking::-webkit-scrollbar { width: 3px; }
+.msg-thinking::-webkit-scrollbar-track { background: transparent; }
+.msg-thinking::-webkit-scrollbar-thumb { background: rgba(0, 0, 0, 0.08); border-radius: 2px; }
 
 .msg-thinking.thinking-done {
-  max-height: 60px;
-  opacity: 0.5;
+  max-height: 40px;
+  overflow: hidden;
+  opacity: 0.45;
   cursor: pointer;
-  transition: max-height 0.3s ease, opacity 0.3s ease;
+  transition: max-height 0.3s ease, opacity 0.3s ease, overflow 0s 0.3s;
 }
 
-.msg-thinking.thinking-done:hover {
-  max-height: 400px;
+.msg-thinking.thinking-expanded {
+  max-height: 300px;
+  overflow-y: auto;
   opacity: 1;
+  transition: max-height 0.3s ease, opacity 0.3s ease, overflow 0s;
 }
 
 .msg-error {
@@ -212,29 +233,23 @@ button, input, textarea { font: inherit; }
   background: var(--danger-soft);
   color: var(--danger);
   border: 1px solid rgba(185, 28, 28, 0.18);
-  border-bottom-left-radius: 4px;
+  border-bottom-left-radius: 3px;
+  font-size: 12px;
 }
 
-/* ── timeline (agent progress) ── */
+/* ── phase / action items ── */
 
-.timeline {
-  align-self: flex-start;
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  max-width: 90%;
-  padding: 4px 0;
-}
-
-.tl-item {
+.phase-item {
   display: inline-flex;
   align-items: center;
-  padding: 3px 10px;
+  padding: 2px 8px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
+  margin: 1px 0;
+  align-self: flex-start;
+  width: auto;
 }
 
 .tl-phase {
@@ -267,19 +282,19 @@ button, input, textarea { font: inherit; }
 .progress-bar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  margin-bottom: 8px;
-  border-radius: 12px;
+  gap: 6px;
+  padding: 5px 10px;
+  margin-bottom: 4px;
+  border-radius: 8px;
   background: var(--accent-soft);
   color: var(--accent);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 600;
 }
 
 .progress-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: var(--accent);
   animation: pulse 1.2s infinite;
@@ -289,36 +304,38 @@ button, input, textarea { font: inherit; }
 
 .chat-input-row {
   display: flex;
-  gap: 10px;
+  gap: 8px;
   align-items: flex-end;
-  margin-top: 12px;
+  margin-top: 8px;
 }
 
 .chat-input-row textarea {
   flex: 1;
   resize: none;
-  padding: 12px 14px;
+  padding: 8px 10px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 10px;
   background: rgba(255, 255, 255, 0.9);
-  min-height: 46px;
-  max-height: 160px;
-  line-height: 1.5;
+  min-height: 38px;
+  max-height: 120px;
+  line-height: 1.4;
+  font-size: 13px;
 }
 
 .chat-input-row textarea:focus {
   outline: none;
   border-color: rgba(15, 118, 110, 0.5);
-  box-shadow: 0 0 0 3px rgba(15, 118, 110, 0.1);
+  box-shadow: 0 0 0 2px rgba(15, 118, 110, 0.1);
 }
 
 button {
   border: 0;
-  border-radius: 12px;
+  border-radius: 10px;
   background: linear-gradient(135deg, #1f8c82, var(--accent));
   color: #fff;
-  padding: 11px 18px;
+  padding: 8px 14px;
   cursor: pointer;
+  font-size: 13px;
   font-weight: 600;
   transition: transform 0.15s ease, opacity 0.15s ease;
   white-space: nowrap;
@@ -333,8 +350,8 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 }
 
 .btn-small {
-  padding: 6px 12px;
-  font-size: 13px;
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 /* ── sidebar ── */
@@ -342,7 +359,7 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 .sidebar {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 10px;
   overflow-y: auto;
   min-height: 0;
 }
@@ -353,27 +370,27 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
   border: 1px solid rgba(255, 255, 255, 0.6);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 18px;
+  padding: 12px;
 }
 
 .section-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 14px;
+  gap: 8px;
+  margin-bottom: 8px;
 }
 
-.section-header h2 { font-size: 16px; }
+.section-header h2 { font-size: 14px; }
 
 /* ── status badge ── */
 
 .status-badge {
   display: inline-flex;
   align-items: center;
-  padding: 4px 12px;
+  padding: 3px 10px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
 }
 
@@ -386,67 +403,68 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 
 .settings-grid {
   display: grid;
-  gap: 12px;
+  gap: 8px;
 }
 
 .settings-grid label {
   display: grid;
-  gap: 4px;
-  font-size: 13px;
+  gap: 2px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--muted);
 }
 
 .settings-grid input,
-.settings-grid textarea {
-  padding: 8px 10px;
+.settings-grid textarea,
+.settings-grid select {
+  padding: 5px 8px;
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: 6px;
   background: rgba(255, 255, 255, 0.9);
-  font-size: 13px;
+  font-size: 12px;
   color: var(--text);
 }
 
 .settings-grid textarea {
   resize: vertical;
-  min-height: 60px;
+  min-height: 48px;
   font-family: var(--mono);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 /* ── tool list ── */
 
 .tool-list {
   display: grid;
-  gap: 8px;
+  gap: 4px;
 }
 
 .tool-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px 12px;
-  border-radius: 12px;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
   background: var(--panel-strong);
   border: 1px solid var(--line);
 }
 
 .tool-name {
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
 }
 
 .tool-desc {
   font-size: 11px;
   color: var(--muted);
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .toggle {
   position: relative;
-  width: 40px;
-  height: 22px;
+  width: 34px;
+  height: 18px;
   flex: none;
 }
 
@@ -460,7 +478,7 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 .toggle-track {
   position: absolute;
   inset: 0;
-  border-radius: 11px;
+  border-radius: 9px;
   background: var(--line);
   cursor: pointer;
   transition: background 0.2s;
@@ -471,11 +489,11 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
   position: absolute;
   top: 2px;
   left: 2px;
-  width: 18px;
-  height: 18px;
+  width: 14px;
+  height: 14px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
   transition: transform 0.2s;
 }
 
@@ -484,7 +502,7 @@ button:disabled { opacity: 0.5; cursor: default; transform: none; }
 }
 
 .toggle input:checked + .toggle-track::after {
-  transform: translateX(18px);
+  transform: translateX(16px);
 }
 
 /* ── utility ── */

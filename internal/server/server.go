@@ -2,9 +2,11 @@ package server
 
 import (
 	"context"
+	"weaveflow/internal/neo"
 	"weaveflow/llama_cpp"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tmc/langchaingo/llms/openai"
 )
 
 type String string
@@ -72,6 +74,15 @@ func (f *Server) Run() {
 	)
 
 	g.setup(f.engine)
+
+	neoModel, err := openai.New()
+	if err != nil {
+		panic(err)
+	}
+	neoCfg := neo.DefaultConfig()
+	neoBuildCtx := neo.NewBuildContext(neoModel, "neo_data")
+	neoServer := neo.NewServer(neoBuildCtx, neoCfg, "neo_data")
+	neoServer.RegisterRoutes(f.engine.Group("/neo"))
 
 	err = f.engine.Run(":8080")
 
