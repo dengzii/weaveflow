@@ -40,9 +40,12 @@ func NewBuildContext(model llms.Model, baseDir string) *weaveflow.BuildContext {
 		Model:  model,
 		Memory: memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}),
 		Tools: map[string]tools.Tool{
-			"current_time":    tools.NewCurrentTime(),
-			"calculator":      tools.NewCalculator(),
-			"file_operations": tools.NewFileOperations(),
+			"current_time": tools.NewCurrentTime(),
+			"calculator":   tools.NewCalculator(),
+			"file_read":    tools.NewFileRead(),
+			"file_write":   tools.NewFileWrite(),
+			"web_fetch":    tools.NewWebFetch(),
+			"web_search":   tools.NewWebSearch(),
 		},
 	}
 }

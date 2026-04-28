@@ -8,11 +8,11 @@ import (
 	"testing"
 )
 
-func TestFileOperationsWriteReadAndList(t *testing.T) {
+func TestFileReadAndWrite(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv(fileToolWorkspaceEnv, workspace)
 
-	writeOutput, err := fileOperationsTool(context.Background(), `{"action":"write","path":"notes/todo.txt","content":"hello world"}`)
+	writeOutput, err := fileWriteTool(context.Background(), `{"action":"write","path":"notes/todo.txt","content":"hello world"}`)
 	if err != nil {
 		t.Fatalf("write failed: %v", err)
 	}
@@ -25,7 +25,7 @@ func TestFileOperationsWriteReadAndList(t *testing.T) {
 		t.Fatalf("unexpected write response: %#v", writeResp)
 	}
 
-	readOutput, err := fileOperationsTool(context.Background(), `{"action":"read","path":"notes/todo.txt"}`)
+	readOutput, err := fileReadTool(context.Background(), `{"action":"read","path":"notes/todo.txt"}`)
 	if err != nil {
 		t.Fatalf("read failed: %v", err)
 	}
@@ -38,7 +38,7 @@ func TestFileOperationsWriteReadAndList(t *testing.T) {
 		t.Fatalf("unexpected read content: %#v", readResp)
 	}
 
-	listOutput, err := fileOperationsTool(context.Background(), `{"action":"list","path":"notes"}`)
+	listOutput, err := fileReadTool(context.Background(), `{"action":"list","path":"notes"}`)
 	if err != nil {
 		t.Fatalf("list failed: %v", err)
 	}
@@ -52,16 +52,25 @@ func TestFileOperationsWriteReadAndList(t *testing.T) {
 	}
 }
 
-func TestFileOperationsRejectPathEscape(t *testing.T) {
+func TestFileReadRejectPathEscape(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv(fileToolWorkspaceEnv, workspace)
 
-	if _, err := fileOperationsTool(context.Background(), `{"action":"read","path":"../outside.txt"}`); err == nil {
+	if _, err := fileReadTool(context.Background(), `{"action":"read","path":"../outside.txt"}`); err == nil {
 		t.Fatal("expected path escape error")
 	}
 }
 
-func TestFileOperationsUsesWorkspaceRoot(t *testing.T) {
+func TestFileWriteRejectPathEscape(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv(fileToolWorkspaceEnv, workspace)
+
+	if _, err := fileWriteTool(context.Background(), `{"action":"write","path":"../outside.txt","content":"bad"}`); err == nil {
+		t.Fatal("expected path escape error")
+	}
+}
+
+func TestFileReadUsesWorkspaceRoot(t *testing.T) {
 	workspace := t.TempDir()
 	t.Setenv(fileToolWorkspaceEnv, workspace)
 
@@ -69,7 +78,7 @@ func TestFileOperationsUsesWorkspaceRoot(t *testing.T) {
 		t.Fatalf("seed file: %v", err)
 	}
 
-	output, err := fileOperationsTool(context.Background(), `{"action":"stat","path":"memo.txt"}`)
+	output, err := fileReadTool(context.Background(), `{"action":"stat","path":"memo.txt"}`)
 	if err != nil {
 		t.Fatalf("stat failed: %v", err)
 	}
@@ -80,5 +89,25 @@ func TestFileOperationsUsesWorkspaceRoot(t *testing.T) {
 	}
 	if resp.Workspace == "" || resp.Path != "memo.txt" || !resp.Exists {
 		t.Fatalf("unexpected stat response: %#v", resp)
+	}
+}
+
+func TestFileReadRejectsWriteAction(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv(fileToolWorkspaceEnv, workspace)
+
+	if _, err := fileReadTool(context.Background(), `{"action":"write","path":"test.txt","content":"x"}`); err == nil {
+		t.Fatal("expected error for write action on file_read tool")
+	}
+}
+
+func TestFileWriteRejectsReadAction(t *testing.T) {
+	workspace := t.TempDir()
+	t.Setenv(fileToolWorkspaceEnv, workspace)
+
+	os.WriteFile(filepath.Join(workspace, "test.txt"), []byte("x"), 0o644)
+
+	if _, err := fileWriteTool(context.Background(), `{"action":"read","path":"test.txt"}`); err == nil {
+		t.Fatal("expected error for read action on file_write tool")
 	}
 }
