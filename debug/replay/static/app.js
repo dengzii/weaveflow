@@ -142,7 +142,7 @@ function stopReplay() {
 function renderRuns() {
   elements.runCount.textContent = String(state.runs.length);
   if (!state.runs.length) {
-    elements.runList.innerHTML = `<div class="list-empty">当前目录没有找到 run 数据。</div>`;
+    elements.runList.innerHTML = `<div class="list-empty">暂无 run 数据</div>`;
     return;
   }
 
@@ -157,9 +157,8 @@ function renderRuns() {
         <div class="run-card-body">
           <div class="meta-line">${escapeHTML(item.source_name)} · ${escapeHTML(item.instance_id || item.source_id)}</div>
           <div class="meta-line mono">${escapeHTML(item.run.run_id)}</div>
-          <div class="meta-line">节点 ${escapeHTML(item.run.current_node_id || item.run.entry_node_id || "-")}</div>
-          <div class="meta-line">步骤 ${item.step_count} · 事件 ${item.event_count} · 快照 ${item.checkpoint_count}</div>
-          <div class="meta-line">开始 ${escapeHTML(formatTime(item.run.started_at))}</div>
+          <div class="meta-line">节点 ${escapeHTML(item.run.current_node_id || item.run.entry_node_id || "-")} · 步骤 ${item.step_count} · 事件 ${item.event_count}</div>
+          <div class="meta-line">${escapeHTML(formatTime(item.run.started_at))}</div>
         </div>
       </button>
     `;
@@ -181,12 +180,9 @@ function renderOverview(detail) {
   const cards = [
     ["Graph", detail.summary.graph_ref || run.graph_id || "-"],
     ["Source", detail.source.name || detail.summary.source_name || "-"],
-    ["Cache Root", detail.source.root || detail.summary.cache_root || "-"],
-    ["Current Node", run.current_node_id || "-"],
-    ["Last Step", run.last_step_id || "-"],
-    ["Last Checkpoint", run.last_checkpoint_id || "-"],
+    ["Node", run.current_node_id || "-"],
+    ["Step", run.last_step_id || "-"],
     ["Started", formatTime(run.started_at)],
-    ["Updated", formatTime(run.updated_at)],
     ["Duration", formatDuration(detail.summary.duration_ms)],
   ];
 
@@ -211,8 +207,8 @@ function setReplayIndex(index) {
   if (!replay.length) {
     elements.replaySlider.max = "0";
     elements.replaySlider.value = "0";
-    elements.replayPosition.textContent = "0 / 0";
-    elements.replayCurrent.innerHTML = `<div class="list-empty">当前 run 没有事件。</div>`;
+    elements.replayPosition.textContent = "0/0";
+    elements.replayCurrent.innerHTML = `<div class="list-empty">暂无事件</div>`;
     elements.replayPayload.textContent = "";
     return;
   }
@@ -220,7 +216,7 @@ function setReplayIndex(index) {
   state.replayIndex = Math.max(0, Math.min(index, replay.length - 1));
   elements.replaySlider.max = String(replay.length - 1);
   elements.replaySlider.value = String(state.replayIndex);
-  elements.replayPosition.textContent = `${state.replayIndex + 1} / ${replay.length}`;
+  elements.replayPosition.textContent = `${state.replayIndex + 1}/${replay.length}`;
 
   const current = replay[state.replayIndex];
   elements.replayCurrent.innerHTML = `
@@ -229,7 +225,6 @@ function setReplayIndex(index) {
       <div>
         <div class="replay-title">${escapeHTML(current.title)}</div>
         <div class="replay-subtitle">${escapeHTML(current.subtitle || current.event.node_id || "")}</div>
-        <div class="meta-line">${escapeHTML(formatTime(current.timestamp))}</div>
       </div>
     </div>
   `;
@@ -243,7 +238,7 @@ function setReplayIndex(index) {
 function renderReplay(detail) {
   const replay = detail.replay || [];
   if (!replay.length) {
-    elements.replayList.innerHTML = `<div class="list-empty">当前 run 没有事件。</div>`;
+    elements.replayList.innerHTML = `<div class="list-empty">暂无事件</div>`;
     setReplayIndex(0);
     return;
   }
@@ -280,7 +275,7 @@ function renderSteps(detail) {
       <td>${item.record.attempt}</td>
       <td>${escapeHTML(formatTime(item.record.started_at))}</td>
       <td>${escapeHTML(formatDuration(item.duration_ms))}</td>
-      <td class="mono small">${escapeHTML(item.record.checkpoint_before_id || "-")} / ${escapeHTML(item.record.checkpoint_after_id || "-")}</td>
+      <td class="mono small">${escapeHTML(item.record.checkpoint_before_id || "-")}/${escapeHTML(item.record.checkpoint_after_id || "-")}</td>
     </tr>
   `).join("");
   elements.stepsTable.innerHTML = rows || `<tr><td colspan="6" class="table-empty">暂无步骤</td></tr>`;
@@ -300,7 +295,7 @@ function renderCheckpoints(detail) {
   const checkpoints = detail.checkpoints || [];
   elements.checkpointCount.textContent = String(checkpoints.length);
   if (!checkpoints.length) {
-    elements.checkpointList.innerHTML = `<div class="list-empty">暂无 checkpoint。</div>`;
+    elements.checkpointList.innerHTML = `<div class="list-empty">暂无 checkpoint</div>`;
     elements.checkpointDetail.textContent = "";
     return;
   }
@@ -341,7 +336,7 @@ function renderArtifacts(detail) {
   const artifacts = detail.artifacts || [];
   elements.artifactCount.textContent = String(artifacts.length);
   if (!artifacts.length) {
-    elements.artifactList.innerHTML = `<div class="list-empty">暂无 artifact。</div>`;
+    elements.artifactList.innerHTML = `<div class="list-empty">暂无 artifact</div>`;
     elements.artifactDetail.textContent = "";
     return;
   }

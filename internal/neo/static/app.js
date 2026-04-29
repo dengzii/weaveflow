@@ -90,6 +90,8 @@ async function sendMessage(message) {
   let lastNodeID = "";
   let thinkBlock = null;   // { div, text }
   let contentBlock = null; // { div, text }
+  let timelineRow = null;  // current timeline row for grouping phases
+  let pendingToolCall = null; // { name, row }
 
   function closeThinking() {
     if (thinkBlock) {
@@ -106,10 +108,16 @@ async function sendMessage(message) {
     contentBlock = null;
   }
 
+  function closeTimeline() {
+    timelineRow = null;
+    pendingToolCall = null;
+  }
+
   function onNodeChange(nodeID) {
     if (!nodeID || nodeID === lastNodeID) return;
     closeThinking();
     closeContent();
+    closeTimeline();
     lastNodeID = nodeID;
   }
 
@@ -133,25 +141,60 @@ async function sendMessage(message) {
     return contentBlock;
   }
 
+  function getTimelineRow() {
+    if (!timelineRow) {
+      const div = document.createElement("div");
+      div.className = "timeline-row";
+      el.messages.appendChild(div);
+      timelineRow = div;
+    }
+    return timelineRow;
+  }
+
   function appendPhase(icon, text, cls) {
     closeThinking();
     closeContent();
-    const item = document.createElement("div");
+    const row = getTimelineRow();
+    const item = document.createElement("span");
     item.className = "phase-item " + (cls || "tl-phase");
-    item.textContent = icon + " " + text;
-    el.messages.appendChild(item);
+    item.innerHTML = icon + " " + escapeHTML(text);
+    row.appendChild(item);
     scrollToBottom();
   }
 
-  function appendToolEvent(icon, text, cls) {
-    const item = document.createElement("div");
-    item.className = "phase-item " + (cls || "tl-tool");
-    item.textContent = icon + " " + text;
-    el.messages.appendChild(item);
+  function appendToolCall(name) {
+    closeThinking();
+    closeContent();
+    const row = getTimelineRow();
+    const item = document.createElement("span");
+    item.className = "tool-call-inline";
+    item.innerHTML = '<span class="tool-icon">⚡</span><span class="tool-name">' + escapeHTML(name) + '</span><span class="tool-result">...</span>';
+    row.appendChild(item);
+    pendingToolCall = { name, item, row };
+    scrollToBottom();
+  }
+
+  function appendToolResult(ok, text) {
+    if (pendingToolCall && pendingToolCall.item) {
+      pendingToolCall.item.classList.add(ok ? "is-ok" : "is-err");
+      const resultSpan = pendingToolCall.item.querySelector(".tool-result");
+      if (resultSpan) {
+        resultSpan.textContent = text || (ok ? "✓" : "✗");
+      }
+      pendingToolCall = null;
+    } else {
+      // fallback: standalone result
+      const row = getTimelineRow();
+      const item = document.createElement("span");
+      item.className = "phase-item " + (ok ? "tl-ok" : "tl-err");
+      item.textContent = (ok ? "✓" : "✗") + " " + (text || "");
+      row.appendChild(item);
+    }
     scrollToBottom();
   }
 
   function appendError(msg) {
+    closeTimeline();
     const div = document.createElement("div");
     div.className = "msg msg-error";
     div.textContent = msg;
@@ -169,8 +212,11 @@ async function sendMessage(message) {
       case "thinking": {
         if (message) {
           showProgress(message);
+          if (nodeID && nodeID !== lastNodeID) {
+            closeTimeline();
+            lastNodeID = nodeID;
+          }
           appendPhase("●", message, "tl-phase");
-          if (nodeID) lastNodeID = nodeID;
         }
         if (content) {
           onNodeChange(nodeID);
@@ -184,8 +230,11 @@ async function sendMessage(message) {
       case "planning": {
         if (message) {
           showProgress(message);
+          if (nodeID && nodeID !== lastNodeID) {
+            closeTimeline();
+            lastNodeID = nodeID;
+          }
           appendPhase("📋", message, "tl-phase");
-          if (nodeID) lastNodeID = nodeID;
         }
         if (content) {
           onNodeChange(nodeID);
@@ -199,8 +248,11 @@ async function sendMessage(message) {
       case "generating": {
         if (message && !content) {
           showProgress(message);
+          if (nodeID && nodeID !== lastNodeID) {
+            closeTimeline();
+            lastNodeID = nodeID;
+          }
           appendPhase("●", message, "tl-phase");
-          if (nodeID) lastNodeID = nodeID;
         }
         if (content) {
           onNodeChange(nodeID);
@@ -216,28 +268,34 @@ async function sendMessage(message) {
           showProgress(message);
           closeThinking();
           closeContent();
-          appendToolEvent("⚡", message, "tl-tool");
+          appendToolCall(message);
         }
         break;
       }
       case "tool_result": {
         const isErr = message.includes("失败");
-        appendToolEvent(isErr ? "✗" : "✓", message || "完成", isErr ? "tl-err" : "tl-ok");
+        appendToolResult(!isErr, message);
         break;
       }
       case "verifying": {
         if (message) {
           showProgress(message);
+          if (nodeID && nodeID !== lastNodeID) {
+            closeTimeline();
+            lastNodeID = nodeID;
+          }
           appendPhase("🔍", message, "tl-phase");
-          if (nodeID) lastNodeID = nodeID;
         }
         break;
       }
       case "finalizing": {
         if (message) {
           showProgress(message);
+          if (nodeID && nodeID !== lastNodeID) {
+            closeTimeline();
+            lastNodeID = nodeID;
+          }
           appendPhase("✨", message, "tl-phase");
-          if (nodeID) lastNodeID = nodeID;
         }
         if (content) {
           onNodeChange(nodeID);
@@ -249,6 +307,7 @@ async function sendMessage(message) {
         break;
       }
       case "complete": {
+        closeTimeline();
         showProgress(message || "完成");
         break;
       }
@@ -303,6 +362,7 @@ async function sendMessage(message) {
   }
 
   closeThinking();
+  closeTimeline();
   setRunning(false);
   state.abortController = null;
 }

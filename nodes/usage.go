@@ -2,7 +2,6 @@ package nodes
 
 import (
 	"context"
-	"reflect"
 	"strings"
 	"weaveflow/runtime"
 
@@ -95,28 +94,12 @@ func RecordState(state runtime.State, record Record) Record {
 	return record
 }
 
-func PublishEvent(ctx context.Context, record Record) error {
+func PublishUsageEvent(ctx context.Context, record Record) error {
 	record = record.normalized()
 	if record.IsZero() {
 		return nil
 	}
 	return runtime.PublishRunnerContextEvent(ctx, runtime.EventLLMUsage, record.EventPayload())
-}
-
-func ModelLabel(model llms.Model) string {
-	if model == nil {
-		return ""
-	}
-	if named, ok := model.(interface{ Name() string }); ok {
-		if name := strings.TrimSpace(named.Name()); name != "" {
-			return name
-		}
-	}
-	typed := reflect.TypeOf(model)
-	if typed == nil {
-		return ""
-	}
-	return typed.String()
 }
 
 func (u Usage) IsZero() bool {
@@ -128,13 +111,13 @@ func (u Usage) IsZero() bool {
 }
 
 func (u Usage) Artifact() map[string]any {
-	u = u.normalized()
+	u1 := u.normalized()
 	return map[string]any{
-		"prompt_tokens":        u.PromptTokens,
-		"completion_tokens":    u.CompletionTokens,
-		"total_tokens":         u.TotalTokens,
-		"reasoning_tokens":     u.ReasoningTokens,
-		"prompt_cached_tokens": u.PromptCachedTokens,
+		"prompt_tokens":        u1.PromptTokens,
+		"completion_tokens":    u1.CompletionTokens,
+		"total_tokens":         u1.TotalTokens,
+		"reasoning_tokens":     u1.ReasoningTokens,
+		"prompt_cached_tokens": u1.PromptCachedTokens,
 	}
 }
 
@@ -147,17 +130,17 @@ func (r Record) IsZero() bool {
 }
 
 func (r Record) StateValue() map[string]any {
-	r = r.normalized()
+	r1 := r.normalized()
 	return map[string]any{
-		"node_id":              r.NodeID,
-		"model":                r.Model,
-		"state_scope":          r.StateScope,
-		"stop_reason":          r.StopReason,
-		"prompt_tokens":        r.PromptTokens,
-		"completion_tokens":    r.CompletionTokens,
-		"total_tokens":         r.TotalTokens,
-		"reasoning_tokens":     r.ReasoningTokens,
-		"prompt_cached_tokens": r.PromptCachedTokens,
+		"node_id":              r1.NodeID,
+		"model":                r1.Model,
+		"state_scope":          r1.StateScope,
+		"stop_reason":          r1.StopReason,
+		"prompt_tokens":        r1.PromptTokens,
+		"completion_tokens":    r1.CompletionTokens,
+		"total_tokens":         r1.TotalTokens,
+		"reasoning_tokens":     r1.ReasoningTokens,
+		"prompt_cached_tokens": r1.PromptCachedTokens,
 	}
 }
 

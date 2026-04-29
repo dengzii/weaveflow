@@ -92,7 +92,6 @@ func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state fruntime.State) (
 			llms.TextParts(llms.ChatMessageTypeSystem, intentAnalyzerPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, buildIntentAnalyzerPrompt(payload)),
 		},
-		fruntime.WithLLMStreamingResponseEvent(),
 		llms.WithTemperature(0),
 	)
 	if err != nil {

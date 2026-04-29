@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sort"
 	"strings"
 	"weaveflow/dsl"
@@ -13,7 +14,6 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai"
 )
 
 type LLMNode struct {
@@ -65,9 +65,6 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 		messages,
 		llms.WithTools(toolSets),
 		llms.WithThinkingMode(llms.ThinkingModeHigh),
-		llms.WithTemperature(0.8),
-		fruntime.WithLLMStreamingResponseEvent(),
-		openai.WithMaxCompletionTokens(10000),
 	)
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
@@ -86,7 +83,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	usage := Extract(choice)
 	record := RecordState(state, Record{
 		NodeID:             L.ID(),
-		Model:              ModelLabel(L.model),
+		Model:              modelLabel(L.model),
 		StateScope:         L.StateScope,
 		StopReason:         choice.StopReason,
 		PromptTokens:       usage.PromptTokens,
@@ -95,10 +92,12 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 		ReasoningTokens:    usage.ReasoningTokens,
 		PromptCachedTokens: usage.PromptCachedTokens,
 	})
-	_ = PublishEvent(ctx, record)
+	_ = PublishUsageEvent(ctx, record)
 
 	aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
 	if strings.TrimSpace(choice.Content) != "" {
+		/// TODO reasoning content is necessary for some models, but not all.
+		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.ReasoningContent))
 		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
 	}
 	for _, toolCall := range choice.ToolCalls {
@@ -244,4 +243,20 @@ func redactToolCalls(toolCalls []llms.ToolCall) []llms.ToolCall {
 		redacted[i].FunctionCall = &copyCall
 	}
 	return redacted
+}
+
+func modelLabel(model llms.Model) string {
+	if model == nil {
+		return ""
+	}
+	if named, ok := model.(interface{ Name() string }); ok {
+		if name := strings.TrimSpace(named.Name()); name != "" {
+			return name
+		}
+	}
+	typed := reflect.TypeOf(model)
+	if typed == nil {
+		return ""
+	}
+	return typed.String()
 }

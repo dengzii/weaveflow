@@ -153,7 +153,7 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 		ReasoningTokens:    usage.ReasoningTokens,
 		PromptCachedTokens: usage.PromptCachedTokens,
 	})
-	_ = PublishEvent(ctx, record)
+	_ = PublishUsageEvent(ctx, record)
 
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "llama_cpp.response", map[string]any{
 		"content":     output,

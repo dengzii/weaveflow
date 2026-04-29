@@ -15,11 +15,11 @@ func main() {
 	//MemoryRecallExample()
 	//MemoryWriteExample()
 	//ContextAssemblerExample()
-	//LLMExample()
+	LLMExample()
 	//ToolsExample()
 	//HumanMessageExample()
 	//ContextReducerExample()
-	SubgraphExample()
+	//SubgraphExample()
 	span := time.Now().Sub(now)
 	fmt.Printf("node invoke took %s\n", span)
 }

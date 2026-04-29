@@ -35,6 +35,7 @@ func DefaultConfig() Config {
 }
 
 func NewBuildContext(model llms.Model, baseDir string) *weaveflow.BuildContext {
+	model = fruntime.WrapLLM(model)
 	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
 	return &weaveflow.BuildContext{
 		Model:  model,

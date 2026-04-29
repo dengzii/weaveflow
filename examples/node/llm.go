@@ -20,7 +20,7 @@ func LLMExample() {
 		"current_time": tools.NewCurrentTime(),
 	}
 
-	node := nodes.NewLLMNode(model, toolSet)
+	node := nodes.NewLLMNode(runtime.WrapLLM(model), toolSet)
 	node.StateScope = "agent"
 
 	state := runtime.State{}

@@ -20,7 +20,7 @@ func main() {
 	runWithRunner()
 
 	time.Sleep(time.Second)
-	fmt.Println("===================")
+	fmt.Println("=================== resume ===================")
 	resumeFromCheckpoint()
 }
 
@@ -60,6 +60,7 @@ func resumeFromCheckpoint() {
 	tryPanic(err)
 
 	conv := runtime.Conversation(state, reactAgentStateScope)
+	fmt.Println("=========Final Answer==========")
 	fmt.Println(conv.FinalAnswer())
 }
 

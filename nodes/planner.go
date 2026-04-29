@@ -176,9 +176,7 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 			llms.TextParts(llms.ChatMessageTypeSystem, plannerSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, buildPlannerPrompt(promptPayload)),
 		},
-		runtime.WithLLMStreamingResponseEvent(),
 		llms.WithThinkingMode(llms.ThinkingModeNone),
-		llms.WithReturnThinking(false),
 		llms.WithTemperature(0.3),
 	)
 	if err != nil {

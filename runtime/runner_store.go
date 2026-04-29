@@ -83,6 +83,9 @@ func NewLoggerEventSink(logger *zap.Logger) EventSink {
 }
 
 func (l *LoggerEventSink) Publish(ctx context.Context, event Event) error {
+	if event.Type == EventLLMReasoningChunk || event.Type == EventLLMContentChunk {
+		return nil
+	}
 	l.logger.Info("Publish",
 		zap.Any("type", event.Type),
 		zap.String("node_id", event.NodeID),
@@ -348,6 +351,9 @@ func (s *FileCheckpointStore) payloadPath(runID, checkpointID string) string {
 }
 
 func (s *FileEventSink) Publish(_ context.Context, event Event) error {
+	if event.Type == EventLLMReasoningChunk || event.Type == EventLLMContentChunk {
+		return nil
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return appendRunnerJSONLine(s.eventsPath(event.RunID), event)

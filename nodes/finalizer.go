@@ -201,7 +201,6 @@ func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, state fruntim
 			llms.TextParts(llms.ChatMessageTypeSystem, finalizerSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),
 		},
-		fruntime.WithLLMStreamingResponseEvent(),
 		llms.WithTemperature(0.3),
 	)
 	if err != nil {

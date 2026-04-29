@@ -132,7 +132,6 @@ func (n *ContextReducerNode) reduceMessages(ctx context.Context, messages []llms
 				"Summarize the following earlier conversation for future turns.\n\n"+transcript,
 			),
 		},
-		fruntime.WithLLMStreamingResponseEvent(),
 		llms.WithTemperature(0),
 	)
 	if err != nil {
