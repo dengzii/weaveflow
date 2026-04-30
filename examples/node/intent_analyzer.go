@@ -6,7 +6,7 @@ import (
 	"weaveflow/nodes"
 	"weaveflow/runtime"
 
-	"github.com/tmc/langchaingo/llms/openai"
+	"weaveflow/llms/openai"
 )
 
 func IntentAnalyzerExample() {

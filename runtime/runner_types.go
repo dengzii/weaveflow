@@ -74,6 +74,7 @@ const (
 	EventBreakpointHit      EventType = "breakpoint.hit"
 	EventStateChanged       EventType = "state.changed"
 	EventContractViolation  EventType = "contract.violation"
+	EventWarning            EventType = "warning"
 )
 
 type RunRecord struct {

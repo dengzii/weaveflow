@@ -12,7 +12,6 @@ import (
 	fruntime "weaveflow/runtime"
 
 	"github.com/google/uuid"
-
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -95,12 +94,22 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	_ = PublishUsageEvent(ctx, record)
 
 	aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
+
+	if strings.TrimSpace(choice.ReasoningContent) != "" {
+		// reasoning content is necessary for some models, but not all.
+		// aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.ReasoningContent))
+	}
+
 	if strings.TrimSpace(choice.Content) != "" {
-		/// TODO reasoning content is necessary for some models, but not all.
-		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.ReasoningContent))
 		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
 	}
 	for _, toolCall := range choice.ToolCalls {
+		if toolCall.Type == "" {
+			_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventWarning, map[string]any{
+				"message": "llm node received a tool call with no type",
+			})
+			continue
+		}
 		aiMessage.Parts = append(aiMessage.Parts, toolCall)
 	}
 

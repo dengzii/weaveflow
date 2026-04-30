@@ -3,13 +3,13 @@ package main
 import (
 	"path/filepath"
 	"weaveflow"
+	"weaveflow/llms/openai"
 	"weaveflow/memory"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai"
 )
 
 const (
@@ -63,72 +63,28 @@ func newReActAgentGraph() *weaveflow.Graph {
 
 	tryPanic(graph.AddNode(humanInLoop))
 
-	sessionBootstrap := nodes.NewSessionBootstrapNode()
-	sessionBootstrap.StateScope = reactAgentStateScope
-	sessionBootstrap.MaxIterations = 10
-	sessionBootstrap.RequestMetadata = map[string]any{
-		"example": "react_agent",
-	}
-
-	tryPanic(graph.AddNode(sessionBootstrap))
-
-	orchestration := nodes.NewOrchestrationRouterNode(buildCtx.Model)
-	orchestration.StateScope = reactAgentStateScope
-	orchestration.InputPath = fruntime.StateKeyRequest + ".input"
-	orchestration.ContextPaths = []string{
-		fruntime.StateKeyMemory,
-	}
-	orchestration.Instructions = "Use memory for follow-up questions, preference recall, and requests that depend on prior session context. Prefer direct mode for straightforward execution."
-
-	tryPanic(graph.AddNode(orchestration))
-
 	llm := nodes.NewLLMNode(buildCtx.Model, buildCtx.Tools)
 	llm.StateScope = reactAgentStateScope
 
 	tryPanic(graph.AddNode(llm))
-
-	memoryRecall := nodes.NewMemoryRecallNode(buildCtx.Memory)
-	memoryRecall.StateScope = reactAgentStateScope
-	memoryRecall.Limit = 3
-	memoryRecall.Tags = []string{"final_answer", "assistant_output", "user_input"}
-
-	tryPanic(graph.AddNode(memoryRecall))
-
-	contextAssembler := nodes.NewContextAssemblerNode()
-	contextAssembler.StateScope = reactAgentStateScope
-
-	tryPanic(graph.AddNode(contextAssembler))
 
 	toolCall := nodes.NewToolCallNode(buildCtx.Tools)
 	toolCall.StateScope = llm.StateScope
 
 	tryPanic(graph.AddNode(toolCall))
 
-	memoryWrite := nodes.NewMemoryWriteNode(buildCtx.Memory)
-	memoryWrite.StateScope = reactAgentStateScope
-	memoryWrite.MinRequestLength = 12
-	memoryWrite.MinAnswerLength = 16
-	memoryWrite.MinSummaryLength = 24
-
-	tryPanic(graph.AddNode(memoryWrite))
-
-	tryPanic(graph.AddEdge(humanInLoop.ID(), sessionBootstrap.ID()))
-	tryPanic(graph.AddEdge(sessionBootstrap.ID(), orchestration.ID()))
-	tryPanic(graph.AddEdge(orchestration.ID(), memoryRecall.ID()))
-	tryPanic(graph.AddEdge(memoryRecall.ID(), contextAssembler.ID()))
-	tryPanic(graph.AddEdge(contextAssembler.ID(), llm.ID()))
+	tryPanic(graph.AddEdge(humanInLoop.ID(), llm.ID()))
 
 	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), weaveflow.LastMessageHasToolCalls(llm.StateScope))
 	tryPanic(err)
 
-	err = graph.AddConditionalEdge(llm.ID(), memoryWrite.ID(), weaveflow.HasFinalAnswer(llm.StateScope))
+	err = graph.AddEdge(toolCall.ID(), llm.ID())
 	tryPanic(err)
 
-	tryPanic(graph.AddEdge(toolCall.ID(), memoryRecall.ID()))
-	tryPanic(graph.AddEdge(memoryWrite.ID(), weaveflow.EndNodeRef))
+	err = graph.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, weaveflow.HasFinalAnswer(llm.StateScope))
+	tryPanic(err)
 
 	tryPanic(graph.SetEntryPoint(humanInLoop.ID()))
-	tryPanic(graph.SetFinishPoint(memoryWrite.ID()))
 
 	return graph
 }

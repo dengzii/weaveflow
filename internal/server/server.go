@@ -5,8 +5,9 @@ import (
 	"weaveflow/internal/neo"
 	"weaveflow/llama_cpp"
 
+	"weaveflow/llms/openai"
+
 	"github.com/gin-gonic/gin"
-	"github.com/tmc/langchaingo/llms/openai"
 )
 
 type String string

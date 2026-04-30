@@ -28,6 +28,10 @@ func (m *llmWrap) SupportsReasoning() bool {
 }
 
 func (m *llmWrap) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+
+	//str := StringifyMessages(messages)
+	//fmt.Println(str)
+
 	options = append(options, withLLMStreamingResponseEvent())
 	res, err := m.m.GenerateContent(ctx, messages, options...)
 	if err == nil {
@@ -97,4 +101,10 @@ func (l *llmResponseEventHandler) emitStreamingResponse(ctx context.Context, rea
 		}
 	}
 	return nil
+}
+
+func StringifyMessages(messages []llms.MessageContent) string {
+	writer := &strings.Builder{}
+	llms.ShowMessageContents(writer, messages)
+	return writer.String()
 }

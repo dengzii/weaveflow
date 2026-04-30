@@ -7,8 +7,9 @@ import (
 	"weaveflow/runtime"
 	"weaveflow/tools"
 
+	"weaveflow/llms/openai"
+
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai"
 )
 
 func LLMExample() {

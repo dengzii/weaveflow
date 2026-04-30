@@ -16,10 +16,11 @@ import (
 	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
+	"weaveflow/llms/openai"
+
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai"
 	"go.uber.org/zap"
 )
 

@@ -6,8 +6,9 @@ import (
 	"weaveflow/nodes"
 	"weaveflow/runtime"
 
+	"weaveflow/llms/openai"
+
 	"github.com/tmc/langchaingo/llms"
-	"github.com/tmc/langchaingo/llms/openai"
 )
 
 func ContextReducerExample() {
