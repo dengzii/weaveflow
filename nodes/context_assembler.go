@@ -57,7 +57,7 @@ func (n *ContextAssemblerNode) Invoke(ctx context.Context, state fruntime.State)
 		state = fruntime.State{}
 	}
 
-	conversation := fruntime.Conversation(state, n.StateScope)
+	conversation := state.Conversation(n.StateScope)
 	messages := conversation.Messages()
 	if len(messages) == 0 {
 		return state, nil
@@ -66,7 +66,7 @@ func (n *ContextAssemblerNode) Invoke(ctx context.Context, state fruntime.State)
 	cleaned := removeContextAssemblerMessages(messages, n.contextAssemblerHeadings())
 	injectedKinds := make([]string, 0, 3)
 	if n.IncludeMemory {
-		recalledValue, ok := fruntime.ResolveStatePath(state, n.effectiveMemoryStatePath()+".recalled")
+		recalledValue, ok := state.ResolvePath(n.effectiveMemoryStatePath() + ".recalled")
 		if ok {
 			entries, err := MemoryEntriesFromState(recalledValue)
 			if err != nil {
@@ -200,7 +200,7 @@ func (n *ContextAssemblerNode) buildMemoryContextMessage(entries []memory.Entry)
 }
 
 func (n *ContextAssemblerNode) buildOrchestrationContextMessage(state fruntime.State) *llms.MessageContent {
-	payload, ok := fruntime.ResolveStatePath(state, n.effectiveOrchestrationStatePath())
+	payload, ok := state.ResolvePath(n.effectiveOrchestrationStatePath())
 	if !ok {
 		return nil
 	}
@@ -224,7 +224,7 @@ func (n *ContextAssemblerNode) buildOrchestrationContextMessage(state fruntime.S
 }
 
 func (n *ContextAssemblerNode) buildPlannerContextMessage(state fruntime.State) *llms.MessageContent {
-	payload, ok := fruntime.ResolveStatePath(state, n.effectivePlannerStatePath())
+	payload, ok := state.ResolvePath(n.effectivePlannerStatePath())
 	if !ok {
 		return nil
 	}

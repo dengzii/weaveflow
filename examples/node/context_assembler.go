@@ -49,7 +49,7 @@ func ContextAssemblerExample() {
 		},
 	}
 
-	conversation := runtime.Conversation(state, "agent")
+	conversation := state.Conversation("agent")
 	conversation.UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are an engineering agent."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Design a message routing module for the IM service."),
@@ -66,7 +66,7 @@ func ContextAssemblerExample() {
 
 	fmt.Println()
 	fmt.Println("messages after assembly:")
-	assembled := runtime.Conversation(result, "agent")
+	assembled := result.Conversation("agent")
 	for i, msg := range assembled.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, nodeMessageText(msg))
 	}

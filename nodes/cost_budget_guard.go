@@ -108,7 +108,7 @@ func (n *CostBudgetGuardNode) collectUsage(state fruntime.State) map[string]any 
 		}
 	}
 
-	observations := fruntime.Observations(state)
+	observations := state.Observations()
 	for _, obs := range observations {
 		source, _ := obs["source"].(string)
 		if strings.HasPrefix(source, "tool:") {
@@ -116,7 +116,7 @@ func (n *CostBudgetGuardNode) collectUsage(state fruntime.State) map[string]any 
 		}
 	}
 
-	conversation := fruntime.Conversation(state, n.StateScope)
+	conversation := state.Conversation(n.StateScope)
 	iterations = conversation.IterationCount()
 
 	return map[string]any{

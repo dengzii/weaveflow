@@ -14,7 +14,7 @@ func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 	state := fruntime.State{}
 	scope := state.EnsureScope("agent")
 	scope[PendingHumanInputStateKey] = "approved"
-	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
@@ -32,7 +32,7 @@ func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 		t.Fatal("expected pending human input to be consumed")
 	}
 
-	messages := fruntime.Conversation(state, "agent").Messages()
+	messages := state.Conversation("agent").Messages()
 	if len(messages) != 2 {
 		t.Fatalf("expected two messages, got %#v", messages)
 	}
@@ -45,7 +45,7 @@ func TestHumanMessageNodeInterruptsWithoutPendingHumanInput(t *testing.T) {
 	t.Parallel()
 
 	state := fruntime.State{}
-	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
@@ -64,7 +64,7 @@ func TestHumanMessageNodeDefaultsToRootConversation(t *testing.T) {
 	state := fruntime.State{
 		PendingHumanInputStateKey: "approved",
 	}
-	fruntime.Conversation(state, "").UpdateMessage([]llms.MessageContent{
+	state.Conversation("").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
@@ -75,7 +75,7 @@ func TestHumanMessageNodeDefaultsToRootConversation(t *testing.T) {
 		t.Fatalf("invoke default-scope human message node: %v", err)
 	}
 
-	messages := fruntime.Conversation(state, "").Messages()
+	messages := state.Conversation("").Messages()
 	if len(messages) != 2 {
 		t.Fatalf("expected two root messages, got %#v", messages)
 	}
@@ -88,7 +88,7 @@ func TestHumanMessageNodeDoesNotCreateMissingScopeWhenPollingInput(t *testing.T)
 	t.Parallel()
 
 	state := fruntime.State{}
-	fruntime.Conversation(state, "").UpdateMessage([]llms.MessageContent{
+	state.Conversation("").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 

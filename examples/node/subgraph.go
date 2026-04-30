@@ -11,7 +11,7 @@ func SubgraphExample() {
 	node := nodes.NewSubgraphNode()
 	node.GraphRef = "summarizer"
 	node.InvokeSubgraph = func(ctx context.Context, state runtime.State) (runtime.State, error) {
-		input, _ := runtime.ResolveStatePath(state, "request.input")
+		input, _ := state.ResolvePath("request.input")
 		fmt.Printf("  [subgraph %q] received input: %v\n", "summarizer", input)
 
 		state["subgraph_result"] = map[string]any{

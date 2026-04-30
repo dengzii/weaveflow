@@ -36,7 +36,7 @@ func NewHumanMessageNode() *HumanMessageNode {
 }
 
 func (n *HumanMessageNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
-	conversation := fruntime.Conversation(state, n.StateScope)
+	conversation := state.Conversation(n.StateScope)
 	pending, ok, err := n.consumePendingInput(state)
 	if err != nil {
 		return state, err

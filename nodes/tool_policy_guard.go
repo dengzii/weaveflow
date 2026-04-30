@@ -113,7 +113,7 @@ func (n *ToolPolicyGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {
 }
 
 func (n *ToolPolicyGuardNode) extractToolCalls(state fruntime.State) []llms.ToolCall {
-	conversation := fruntime.Conversation(state, n.StateScope)
+	conversation := state.Conversation(n.StateScope)
 	messages := conversation.Messages()
 	if len(messages) == 0 {
 		return nil

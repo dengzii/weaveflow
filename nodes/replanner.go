@@ -159,7 +159,7 @@ func (n *ReplannerNode) buildReplanReason(state fruntime.State) string {
 		}
 	}
 
-	observations := fruntime.Observations(state)
+	observations := state.Observations()
 	errorObs := filterErrorObservations(observations)
 	if len(errorObs) > 0 {
 		parts = append(parts, fmt.Sprintf("Failed observations: %d", len(errorObs)))

@@ -133,7 +133,7 @@ func (n *MemoryRecallNode) GraphNodeSpec() dsl.GraphNodeSpec {
 
 func (n *MemoryRecallNode) resolveQuery(state fruntime.State) (string, bool, string) {
 	if queryPath := strings.TrimSpace(n.QueryPath); queryPath != "" {
-		if value, ok := fruntime.ResolveStatePath(state, queryPath); ok {
+		if value, ok := state.ResolvePath(queryPath); ok {
 			text := strings.TrimSpace(stringifyStateValue(value))
 			if text != "" {
 				return text, true, queryPath
@@ -142,7 +142,7 @@ func (n *MemoryRecallNode) resolveQuery(state fruntime.State) (string, bool, str
 	}
 
 	useMemory := false
-	if value, ok := fruntime.ResolveStatePath(state, n.effectiveOrchestrationStatePath()+".use_memory"); ok {
+	if value, ok := state.ResolvePath(n.effectiveOrchestrationStatePath() + ".use_memory"); ok {
 		if parsed, parsedOK := boolStateValue(value); parsedOK {
 			useMemory = parsed
 		}
@@ -151,24 +151,24 @@ func (n *MemoryRecallNode) resolveQuery(state fruntime.State) (string, bool, str
 		}
 	}
 
-	if value, ok := fruntime.ResolveStatePath(state, n.effectiveOrchestrationStatePath()+".memory_query"); ok {
+	if value, ok := state.ResolvePath(n.effectiveOrchestrationStatePath() + ".memory_query"); ok {
 		text := strings.TrimSpace(stringifyStateValue(value))
 		if text != "" {
 			return text, true, n.effectiveOrchestrationStatePath() + ".memory_query"
 		}
 	}
 
-	if value, ok := fruntime.ResolveStatePath(state, n.effectiveRequestInputPath()); ok {
+	if value, ok := state.ResolvePath(n.effectiveRequestInputPath()); ok {
 		text := strings.TrimSpace(stringifyStateValue(value))
 		if text != "" {
 			return text, true, n.effectiveRequestInputPath()
 		}
 	}
 
-	conversation := fruntime.Conversation(state, "")
+	conversation := state.Conversation("")
 	for _, scope := range []string{n.StateScope, ""} {
 		if scope != "" {
-			conversation = fruntime.Conversation(state, scope)
+			conversation = state.Conversation(scope)
 		}
 		messages := conversation.Messages()
 		for i := len(messages) - 1; i >= 0; i-- {

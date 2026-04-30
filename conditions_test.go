@@ -16,7 +16,7 @@ func TestExpressionConditionsMatchAllAgainstScopedStateAndConversation(t *testin
 	scope := state.EnsureScope("agent")
 	scope["status"] = "ready"
 	scope["tags"] = []string{"tool", "final"}
-	fruntime.Conversation(state, "agent").SetFinalAnswer("done")
+	state.Conversation("agent").SetFinalAnswer("done")
 
 	condition, err := ExpressionConditions(ExpressionConditionConfig{
 		StateScope: "agent",
@@ -90,7 +90,7 @@ func TestParseExpressionConditionConfigFromSerializableConfig(t *testing.T) {
 	scope["result"] = map[string]any{
 		"code": 200,
 	}
-	fruntime.Conversation(state, "agent").SetFinalAnswer("success")
+	state.Conversation("agent").SetFinalAnswer("success")
 
 	if !condition.Match(context.Background(), state) {
 		t.Fatal("expected resolved expression condition to match")

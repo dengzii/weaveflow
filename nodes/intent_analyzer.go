@@ -171,7 +171,7 @@ func (n *IntentAnalyzerNode) effectiveIntentStatePath() string {
 
 func (n *IntentAnalyzerNode) resolveInput(state fruntime.State) (string, error) {
 	if inputPath := strings.TrimSpace(n.InputPath); inputPath != "" {
-		value, ok := fruntime.ResolveStatePath(state, inputPath)
+		value, ok := state.ResolvePath(inputPath)
 		if !ok {
 			return "", fmt.Errorf("intent input not found at %q", inputPath)
 		}
@@ -182,7 +182,7 @@ func (n *IntentAnalyzerNode) resolveInput(state fruntime.State) (string, error) 
 		return text, nil
 	}
 
-	messages := fruntime.Conversation(state, n.StateScope).Messages()
+	messages := state.Conversation(n.StateScope).Messages()
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != llms.ChatMessageTypeHuman {
 			continue

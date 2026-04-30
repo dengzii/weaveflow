@@ -1,10 +1,10 @@
 package runtime
 
-func Observations(state State) []map[string]any {
-	if state == nil {
+func (s State) Observations() []map[string]any {
+	if s == nil {
 		return nil
 	}
-	raw, ok := state[StateKeyObservations]
+	raw, ok := s[StateKeyObservations]
 	if !ok {
 		return nil
 	}
@@ -24,19 +24,19 @@ func Observations(state State) []map[string]any {
 	}
 }
 
-func AppendObservation(state State, obs map[string]any) {
-	if state == nil || obs == nil {
+func (s State) AppendObservation(obs map[string]any) {
+	if s == nil || obs == nil {
 		return
 	}
-	existing := Observations(state)
-	state[StateKeyObservations] = append(existing, obs)
+	existing := s.Observations()
+	s[StateKeyObservations] = append(existing, obs)
 }
 
-func Evidence(state State) []map[string]any {
-	if state == nil {
+func (s State) Evidence() []map[string]any {
+	if s == nil {
 		return nil
 	}
-	raw, ok := state[StateKeyEvidence]
+	raw, ok := s[StateKeyEvidence]
 	if !ok {
 		return nil
 	}
@@ -56,16 +56,16 @@ func Evidence(state State) []map[string]any {
 	}
 }
 
-func AppendEvidence(state State, ev map[string]any) {
-	if state == nil || ev == nil {
+func (s State) AppendEvidence(ev map[string]any) {
+	if s == nil || ev == nil {
 		return
 	}
-	existing := Evidence(state)
-	state[StateKeyEvidence] = append(existing, ev)
+	existing := s.Evidence()
+	s[StateKeyEvidence] = append(existing, ev)
 }
 
-func StepResults(state State) map[string]any {
-	exec := state.Get(StateKeyExecution)
+func (s State) StepResults() map[string]any {
+	exec := s.Get(StateKeyExecution)
 	if exec == nil {
 		return nil
 	}
@@ -83,11 +83,11 @@ func StepResults(state State) map[string]any {
 	}
 }
 
-func SetStepResult(state State, stepID string, result map[string]any) {
-	if state == nil || stepID == "" {
+func (s State) SetStepResult(stepID string, result map[string]any) {
+	if s == nil || stepID == "" {
 		return
 	}
-	exec := state.Ensure(StateKeyExecution)
+	exec := s.Ensure(StateKeyExecution)
 	results, ok := exec["step_results"].(map[string]any)
 	if !ok {
 		results = map[string]any{}

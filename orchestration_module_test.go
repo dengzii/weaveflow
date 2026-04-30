@@ -98,7 +98,7 @@ func TestOrchestrationRouterBuildsAndWritesState(t *testing.T) {
 		t.Fatalf("run orchestration graph: %v", err)
 	}
 
-	value, ok := fruntime.ResolveStatePath(state, "analysis.orchestration")
+	value, ok := state.ResolvePath("analysis.orchestration")
 	if !ok {
 		t.Fatal("expected nested orchestration state to be written")
 	}

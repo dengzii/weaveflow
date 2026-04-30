@@ -57,7 +57,7 @@ func (n *ObservationRecorderNode) Invoke(ctx context.Context, state fruntime.Sta
 		state = fruntime.State{}
 	}
 
-	conversation := fruntime.Conversation(state, n.effectiveScope())
+	conversation := state.Conversation(n.effectiveScope())
 	messages := conversation.Messages()
 	if len(messages) == 0 {
 		return state, nil
@@ -74,11 +74,11 @@ func (n *ObservationRecorderNode) Invoke(ctx context.Context, state fruntime.Sta
 		case llms.ChatMessageTypeTool:
 			obs, evs := n.recordToolMessage(ctx, msg, currentStepID, now)
 			for _, ob := range obs {
-				fruntime.AppendObservation(state, ob)
+				state.AppendObservation(ob)
 				recorded = append(recorded, ob)
 			}
 			for _, ev := range evs {
-				fruntime.AppendEvidence(state, ev)
+				state.AppendEvidence(ev)
 			}
 
 		case llms.ChatMessageTypeAI:
@@ -87,7 +87,7 @@ func (n *ObservationRecorderNode) Invoke(ctx context.Context, state fruntime.Sta
 			}
 			obs := n.recordLLMMessage(ctx, msg, currentStepID, now)
 			if obs != nil {
-				fruntime.AppendObservation(state, obs)
+				state.AppendObservation(obs)
 				recorded = append(recorded, obs)
 			}
 		}
@@ -99,7 +99,7 @@ func (n *ObservationRecorderNode) Invoke(ctx context.Context, state fruntime.Sta
 	}
 
 	if currentStepID != "" && len(recorded) > 0 {
-		fruntime.SetStepResult(state, currentStepID, map[string]any{
+		state.SetStepResult(currentStepID, map[string]any{
 			"observations_count": len(recorded),
 			"recorded_at":        now,
 		})

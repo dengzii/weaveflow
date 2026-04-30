@@ -57,7 +57,7 @@ func ValidateNodeContract(
 		if businessPath == "" {
 			continue
 		}
-		if _, found := ResolveStatePath(afterState, businessPath); !found {
+		if _, found := afterState.ResolvePath(businessPath); !found {
 			violations = append(violations, ContractViolation{
 				NodeID:  nodeID,
 				Path:    path,

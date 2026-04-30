@@ -24,7 +24,7 @@ func ToolsExample() {
 	node.Parallel = true
 
 	state := runtime.State{}
-	conversation := runtime.Conversation(state, "agent")
+	conversation := state.Conversation("agent")
 	conversation.UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise assistant."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "What is 42 * 58? And what time is it?"),
@@ -58,7 +58,7 @@ func ToolsExample() {
 	result, err := node.Invoke(ctx, state)
 	must(err)
 
-	conv := runtime.Conversation(result, "agent")
+	conv := result.Conversation("agent")
 	fmt.Println()
 	fmt.Println("messages after tool execution:")
 	for i, msg := range conv.Messages() {

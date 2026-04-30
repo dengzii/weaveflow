@@ -64,7 +64,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		model = svc.Model
 	}
 
-	conversation := fruntime.Conversation(state, n.effectiveScope())
+	conversation := state.Conversation(n.effectiveScope())
 
 	if n.isDirectMode(state) {
 		answer := conversation.FinalAnswer()
@@ -93,8 +93,8 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	}
 
 	verification := state.Get(fruntime.StateKeyVerification)
-	observations := fruntime.Observations(state)
-	evidence := fruntime.Evidence(state)
+	observations := state.Observations()
+	evidence := state.Evidence()
 	plannerState := state.Get(fruntime.StateKeyPlanner)
 
 	outcome := n.determineOutcome(verification)
@@ -311,7 +311,7 @@ func (n *FinalizerNode) generateBlockedAnswer(verification fruntime.State, plann
 }
 
 func (n *FinalizerNode) fallbackAnswer(state fruntime.State, observations []map[string]any) string {
-	conversation := fruntime.Conversation(state, n.effectiveScope())
+	conversation := state.Conversation(n.effectiveScope())
 	if fa := conversation.FinalAnswer(); fa != "" {
 		return fa
 	}

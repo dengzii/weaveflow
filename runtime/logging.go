@@ -111,9 +111,9 @@ func countConversationMessages(state State) int {
 		return 0
 	}
 
-	total := len(Conversation(state, "").Messages())
+	total := len(state.Conversation("").Messages())
 	for _, scopeState := range state.scopes() {
-		total += len(Conversation(scopeState, "").Messages())
+		total += len(scopeState.Conversation("").Messages())
 	}
 	return total
 }

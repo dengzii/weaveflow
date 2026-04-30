@@ -3,8 +3,6 @@ package neo
 import (
 	"net/http"
 
-	fruntime "weaveflow/runtime"
-
 	"github.com/gin-gonic/gin"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -39,7 +37,7 @@ func (ctrl *HistoryController) Get(c *gin.Context) {
 		return
 	}
 
-	conversation := fruntime.Conversation(state, stateScope)
+	conversation := state.Conversation(stateScope)
 	messages := conversation.Messages()
 	history := convertMessages(messages)
 

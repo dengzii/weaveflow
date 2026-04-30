@@ -39,7 +39,7 @@ func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.
 	svc := fruntime.ServicesFrom(ctx)
 	nodeTools := svc.FilterTools(t.ToolIDs)
 
-	conversation := fruntime.Conversation(state, t.StateScope)
+	conversation := state.Conversation(t.StateScope)
 
 	messages := conversation.Messages()
 	if len(messages) == 0 {

@@ -196,7 +196,7 @@ func (n *OrchestrationRouterNode) effectiveModes() []string {
 
 func (n *OrchestrationRouterNode) resolveInput(state fruntime.State) (string, error) {
 	if inputPath := strings.TrimSpace(n.InputPath); inputPath != "" {
-		value, ok := fruntime.ResolveStatePath(state, inputPath)
+		value, ok := state.ResolvePath(inputPath)
 		if !ok {
 			return "", fmt.Errorf("orchestration input not found at %q", inputPath)
 		}
@@ -207,7 +207,7 @@ func (n *OrchestrationRouterNode) resolveInput(state fruntime.State) (string, er
 		return text, nil
 	}
 
-	messages := fruntime.Conversation(state, n.StateScope).Messages()
+	messages := state.Conversation(n.StateScope).Messages()
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != llms.ChatMessageTypeHuman {
 			continue
@@ -231,7 +231,7 @@ func (n *OrchestrationRouterNode) collectContext(state fruntime.State) map[strin
 		if path == "" {
 			continue
 		}
-		value, ok := fruntime.ResolveStatePath(state, path)
+		value, ok := state.ResolvePath(path)
 		if !ok {
 			continue
 		}
@@ -335,7 +335,7 @@ func normalizeOrchestrationMode(mode string) string {
 }
 
 func existingOrchestrationState(state fruntime.State, path string) map[string]any {
-	value, ok := fruntime.ResolveStatePath(state, path)
+	value, ok := state.ResolvePath(path)
 	if !ok {
 		return nil
 	}

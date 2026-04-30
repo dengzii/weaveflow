@@ -38,7 +38,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	model := svc.Model
 	nodeTools := svc.FilterTools(L.ToolIDs)
 
-	conversation := fruntime.Conversation(state, L.StateScope)
+	conversation := state.Conversation(L.StateScope)
 	messages := conversation.Messages()
 
 	if conversation.IterationCount() >= conversation.MaxIterations() {

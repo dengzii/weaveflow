@@ -105,7 +105,7 @@ func TestIntentAnalyzerBuildsAndWritesIntentState(t *testing.T) {
 		t.Fatalf("run intent graph: %v", err)
 	}
 
-	intent, ok := fruntime.ResolveStatePath(state, "analysis.intent")
+	intent, ok := state.ResolvePath("analysis.intent")
 	if !ok {
 		t.Fatal("expected nested intent state to be written")
 	}

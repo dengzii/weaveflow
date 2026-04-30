@@ -166,7 +166,7 @@ func plannerStatusEqualsConditionDefinition() ConditionDefinition {
 					"status":             expected,
 				},
 			}, func(_ context.Context, state State) bool {
-				value, ok := fruntime.ResolveStatePath(state, plannerPath+".status")
+				value, ok := state.ResolvePath(plannerPath + ".status")
 				if !ok {
 					return false
 				}

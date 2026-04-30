@@ -50,7 +50,7 @@ func (n *IteratorNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 		return state, fmt.Errorf("iterator node %q max_iterations must be greater than 0", n.ID())
 	}
 
-	source, ok := fruntime.ResolveStatePath(state, n.StateKey)
+	source, ok := state.ResolvePath(n.StateKey)
 	if !ok {
 		source = nil
 	}

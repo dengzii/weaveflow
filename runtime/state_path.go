@@ -5,10 +5,8 @@ import (
 	"strings"
 )
 
-// ResolveStatePath walks a dot-delimited path from the provided root state.
-// Path segments can address nested maps and slice indexes.
-func ResolveStatePath(state State, path string) (any, bool) {
-	return ResolveStateValue(state, SplitStatePath(path))
+func (s State) ResolvePath(path string) (any, bool) {
+	return ResolveStateValue(s, SplitStatePath(path))
 }
 
 func ResolveStateValue(root any, segments []string) (any, bool) {

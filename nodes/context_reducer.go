@@ -53,7 +53,7 @@ func (n *ContextReducerNode) Invoke(ctx context.Context, state fruntime.State) (
 		return state, errors.New("context reducer: model service not available")
 	}
 
-	conversation := fruntime.Conversation(state, n.StateScope)
+	conversation := state.Conversation(n.StateScope)
 	messages := conversation.Messages()
 	if len(messages) == 0 || len(messages) <= n.effectiveMaxMessages() {
 		return state, nil

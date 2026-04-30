@@ -25,7 +25,7 @@ func ContextReducerExample() {
 	node.PreserveRecent = 2
 
 	state := runtime.State{}
-	conversation := runtime.Conversation(state, "agent")
+	conversation := state.Conversation("agent")
 	conversation.UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise engineering agent."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "How does the session bootstrap node work?"),
@@ -45,7 +45,7 @@ func ContextReducerExample() {
 	result, err := node.Invoke(ctx, state)
 	must(err)
 
-	conv := runtime.Conversation(result, "agent")
+	conv := result.Conversation("agent")
 	fmt.Println()
 	fmt.Printf("messages after reduction: %d\n", len(conv.Messages()))
 	for i, msg := range conv.Messages() {

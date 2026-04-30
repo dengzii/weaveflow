@@ -47,7 +47,7 @@ func TestContextReducerNodeNoOpBelowLimit(t *testing.T) {
 	node.PreserveRecent = 2
 
 	state := fruntime.State{}
-	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
 		llms.TextParts(llms.ChatMessageTypeAI, "hi"),
@@ -74,7 +74,7 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 	node.SummaryPrefix = "Earlier:"
 
 	state := fruntime.State{}
-	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Need a safe deployment plan."),
 		llms.TextParts(llms.ChatMessageTypeAI, "We can evaluate rollout strategies."),
@@ -92,7 +92,7 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 		t.Fatalf("expected reducer model call count 1, got %d", model.callCount)
 	}
 
-	reduced := fruntime.Conversation(state, "agent").Messages()
+	reduced := state.Conversation("agent").Messages()
 	if len(reduced) != 4 {
 		t.Fatalf("expected 4 messages after reduction, got %d", len(reduced))
 	}
@@ -131,7 +131,7 @@ func TestContextReducerNodeKeepsToolSpanTogether(t *testing.T) {
 	node.PreserveRecent = 2
 
 	state := fruntime.State{}
-	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Check the server status."),
 		{
@@ -167,7 +167,7 @@ func TestContextReducerNodeKeepsToolSpanTogether(t *testing.T) {
 		t.Fatalf("invoke context reducer: %v", err)
 	}
 
-	reduced := fruntime.Conversation(state, "agent").Messages()
+	reduced := state.Conversation("agent").Messages()
 	if len(reduced) != 6 {
 		t.Fatalf("expected tool span preservation to keep 6 messages, got %d", len(reduced))
 	}

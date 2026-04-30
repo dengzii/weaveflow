@@ -20,8 +20,8 @@ type conversationState struct {
 	scope string
 }
 
-func Conversation(state State, scope string) ConversationFacet {
-	return &conversationState{root: state, scope: scope}
+func (s State) Conversation(scope string) ConversationFacet {
+	return &conversationState{root: s, scope: scope}
 }
 
 func (c *conversationState) Messages() []llms.MessageContent {
@@ -32,7 +32,7 @@ func (c *conversationState) Messages() []llms.MessageContent {
 		return cloneMessages(messages)
 	}
 	if c.scope != "" {
-		return Conversation(c.root, "").Messages()
+		return c.root.Conversation("").Messages()
 	}
 	return nil
 }
@@ -53,7 +53,7 @@ func (c *conversationState) MaxIterations() int {
 		return value
 	}
 	if c.scope != "" {
-		return Conversation(c.root, "").MaxIterations()
+		return c.root.Conversation("").MaxIterations()
 	}
 	return defaultMaxIterations
 }

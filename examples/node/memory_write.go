@@ -36,7 +36,7 @@ func MemoryWriteExample() {
 		},
 	}
 
-	conversation := runtime.Conversation(state, "")
+	conversation := state.Conversation("")
 	conversation.UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise engineering agent."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Explain how the planner node decomposes objectives into steps."),

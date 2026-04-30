@@ -143,7 +143,7 @@ func (n *MemoryWriteNode) collectEntries(state fruntime.State) []memory.Entry {
 	entries := make([]memory.Entry, 0, 3)
 
 	if n.IncludeRequest {
-		if value, ok := fruntime.ResolveStatePath(state, n.effectiveRequestInputPath()); ok {
+		if value, ok := state.ResolvePath(n.effectiveRequestInputPath()); ok {
 			if text := strings.TrimSpace(stringifyStateValue(value)); text != "" {
 				entries = append(entries, memory.Entry{
 					Text: text,
@@ -279,17 +279,17 @@ func (n *MemoryWriteNode) effectivePlannerStatePath() string {
 
 func (n *MemoryWriteNode) resolveFinalAnswer(state fruntime.State) string {
 	if finalAnswerPath := n.effectiveFinalAnswerPath(); finalAnswerPath != "" {
-		if value, ok := fruntime.ResolveStatePath(state, finalAnswerPath); ok {
+		if value, ok := state.ResolvePath(finalAnswerPath); ok {
 			return strings.TrimSpace(stringifyStateValue(value))
 		}
 	}
-	return strings.TrimSpace(fruntime.Conversation(state, n.StateScope).FinalAnswer())
+	return strings.TrimSpace(state.Conversation(n.StateScope).FinalAnswer())
 }
 
 func (n *MemoryWriteNode) resolveSummary(state fruntime.State) string {
 	plannerSummary := ""
 	currentStepID := ""
-	if plannerValue, ok := fruntime.ResolveStatePath(state, n.effectivePlannerStatePath()); ok {
+	if plannerValue, ok := state.ResolvePath(n.effectivePlannerStatePath()); ok {
 		switch typed := plannerValue.(type) {
 		case fruntime.State:
 			plannerSummary = strings.TrimSpace(stringifyStateValue(typed["summary"]))

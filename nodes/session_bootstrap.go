@@ -69,7 +69,7 @@ func (n *SessionBootstrapNode) Invoke(ctx context.Context, state fruntime.State)
 	}
 	mergeBootstrapValues(toolPolicy, n.ToolPolicy)
 
-	conversation := fruntime.Conversation(state, n.StateScope)
+	conversation := state.Conversation(n.StateScope)
 	messages := conversation.Messages()
 	if len(messages) == 0 {
 		messages = n.initialMessages(input)
@@ -129,18 +129,18 @@ func (n *SessionBootstrapNode) resolveInput(state fruntime.State) (string, error
 	}
 
 	if inputPath := strings.TrimSpace(n.InputPath); inputPath != "" {
-		value, ok := fruntime.ResolveStatePath(state, inputPath)
+		value, ok := state.ResolvePath(inputPath)
 		if !ok {
 			return "", fmt.Errorf("session bootstrap input not found at %q", inputPath)
 		}
 		return strings.TrimSpace(stringifyBootstrapValue(value)), nil
 	}
 
-	if value, ok := fruntime.ResolveStatePath(state, defaultSessionBootstrapInputPath); ok {
+	if value, ok := state.ResolvePath(defaultSessionBootstrapInputPath); ok {
 		return strings.TrimSpace(stringifyBootstrapValue(value)), nil
 	}
 
-	messages := fruntime.Conversation(state, n.StateScope).Messages()
+	messages := state.Conversation(n.StateScope).Messages()
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != llms.ChatMessageTypeHuman {
 			continue
@@ -180,7 +180,7 @@ func (n *SessionBootstrapNode) artifactPayload(state fruntime.State, input strin
 		"agent":          cloneBootstrapMap(state.Get(fruntime.StateKeyAgent)),
 		"tool_policy":    cloneBootstrapMap(state.Get(fruntime.StateKeyToolPolicy)),
 	}
-	if messages, err := fruntime.SerializeMessages(fruntime.Conversation(state, n.StateScope).Messages()); err == nil {
+	if messages, err := fruntime.SerializeMessages(state.Conversation(n.StateScope).Messages()); err == nil {
 		payload["messages"] = messages
 	}
 	return payload

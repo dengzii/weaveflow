@@ -36,7 +36,7 @@ type State map[string]any
 
 func NewBaseState(messages []llms.MessageContent, maxIterations int) State {
 	state := State{}
-	conversation := Conversation(state, "")
+	conversation := state.Conversation("")
 	conversation.UpdateMessage(messages)
 	conversation.SetMaxIterations(maxIterations)
 	return state

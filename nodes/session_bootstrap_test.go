@@ -36,7 +36,7 @@ func TestSessionBootstrapNodeInitializesEmptyScopedState(t *testing.T) {
 		t.Fatal("expected initialized state")
 	}
 
-	conversation := fruntime.Conversation(state, "agent")
+	conversation := state.Conversation("agent")
 	messages := conversation.Messages()
 	if len(messages) != 2 {
 		t.Fatalf("expected system and human messages, got %#v", messages)
@@ -94,7 +94,7 @@ func TestSessionBootstrapNodeUsesConfiguredInputPath(t *testing.T) {
 	if got := state.Get(fruntime.StateKeyRequest)["input"]; got != "Use the local calculator." {
 		t.Fatalf("expected input path value to become request input, got %#v", got)
 	}
-	messages := fruntime.Conversation(state, "agent").Messages()
+	messages := state.Conversation("agent").Messages()
 	if len(messages) != 1 || messages[0].Role != llms.ChatMessageTypeHuman || extractText(messages[0]) != "Use the local calculator." {
 		t.Fatalf("unexpected conversation messages: %#v", messages)
 	}
@@ -104,7 +104,7 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	t.Parallel()
 
 	state := fruntime.State{}
-	fruntime.Conversation(state, "agent").UpdateMessage([]llms.MessageContent{
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, "Existing input"),
 	})
 
@@ -119,14 +119,14 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 		t.Fatalf("invoke session bootstrap: %v", err)
 	}
 
-	messages := fruntime.Conversation(state, "agent").Messages()
+	messages := state.Conversation("agent").Messages()
 	if len(messages) != 1 || extractText(messages[0]) != "Existing input" {
 		t.Fatalf("expected existing conversation to be preserved, got %#v", messages)
 	}
 	if got := state.Get(fruntime.StateKeyRequest)["input"]; got != "New input" {
 		t.Fatalf("expected request input to still be normalized, got %#v", got)
 	}
-	if got := fruntime.Conversation(state, "agent").MaxIterations(); got != 2 {
+	if got := state.Conversation("agent").MaxIterations(); got != 2 {
 		t.Fatalf("expected max iterations 2, got %d", got)
 	}
 }

@@ -74,7 +74,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 		return n.routeFinalize(ctx, state, plannerState, "empty plan")
 	}
 
-	stepResults := fruntime.StepResults(state)
+	stepResults := state.StepResults()
 
 	selectedStep, reason := selectNextStep(plan, stepResults)
 	if selectedStep == nil {

@@ -171,7 +171,7 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 		}(),
 	})
 
-	conversation := runtime.Conversation(state, l.StateScope)
+	conversation := state.Conversation(l.StateScope)
 	existing := conversation.Messages()
 	if len(existing) == 0 {
 		existing = append(existing, messages...)
@@ -252,7 +252,7 @@ func (l *LlamaCppModel) ensureModel() (llamaContentModel, error) {
 }
 
 func (l *LlamaCppModel) resolveMessages(state runtime.State) ([]llms.MessageContent, string, error) {
-	conversation := runtime.Conversation(state, l.StateScope)
+	conversation := state.Conversation(l.StateScope)
 	messages := conversation.Messages()
 	if len(messages) > 0 {
 		return l.withSystemPrompt(messages), "", nil

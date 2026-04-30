@@ -72,7 +72,7 @@ func resumeFromCheckpoint(ctx context.Context) {
 	_, state, err = runner.Resume(ctx, run.RunID, state)
 	tryPanic(err)
 
-	conv := runtime.Conversation(state, reactAgentStateScope)
+	conv := state.Conversation(reactAgentStateScope)
 	fmt.Println("=========Final Answer==========")
 	fmt.Println(conv.FinalAnswer())
 }

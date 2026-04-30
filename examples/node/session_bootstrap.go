@@ -44,7 +44,7 @@ func SessionBootstrapExample() {
 	state, err := graph.Run(context.Background(), fruntime.State{})
 	must(err)
 
-	conversation := fruntime.Conversation(state, "agent")
+	conversation := state.Conversation("agent")
 	fmt.Printf("max_iterations: %d\n", conversation.MaxIterations())
 	for i, message := range conversation.Messages() {
 		fmt.Printf("message[%d] %s: %s\n", i, message.Role, nodeMessageText(message))

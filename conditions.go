@@ -58,7 +58,7 @@ func LastMessageHasToolCalls(scope string) EdgeCondition {
 		}
 	}
 	return NewEdgeCondition(spec, func(_ context.Context, state State) bool {
-		messages := fruntime.Conversation(state, scope).Messages()
+		messages := state.Conversation(scope).Messages()
 		if len(messages) == 0 {
 			return false
 		}
@@ -87,7 +87,7 @@ func HasFinalAnswer(scope string) EdgeCondition {
 		}
 	}
 	return NewEdgeCondition(spec, func(_ context.Context, state State) bool {
-		return fruntime.Conversation(state, scope).FinalAnswer() != ""
+		return state.Conversation(scope).FinalAnswer() != ""
 	})
 }
 
@@ -348,7 +348,7 @@ func isConversationField(field string) bool {
 }
 
 func conversationFieldValue(state State, scope, field string) (any, bool) {
-	conversation := fruntime.Conversation(state, scope)
+	conversation := state.Conversation(scope)
 	switch field {
 	case fruntime.StateKeyMessages:
 		return conversation.Messages(), true

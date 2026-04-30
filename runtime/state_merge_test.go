@@ -15,10 +15,10 @@ func TestMergeResumeInputMergesRootAndScopeState(t *testing.T) {
 			"left": "keep",
 		},
 	}
-	Conversation(base, "").SetMaxIterations(3)
+	base.Conversation("").SetMaxIterations(3)
 	rootScope := base.EnsureScope("agent")
 	rootScope["tool"] = "calculator"
-	Conversation(base, "agent").UpdateMessage([]llms.MessageContent{
+	base.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
 
@@ -58,7 +58,7 @@ func TestMergeResumeInputMergesRootAndScopeState(t *testing.T) {
 	if meta["left"] != "keep" || meta["right"] != "merge" {
 		t.Fatalf("expected merged meta keys, got %#v", meta)
 	}
-	if got := Conversation(merged, "").MaxIterations(); got != 5 {
+	if got := merged.Conversation("").MaxIterations(); got != 5 {
 		t.Fatalf("expected root max iterations 5, got %d", got)
 	}
 
@@ -73,7 +73,7 @@ func TestMergeResumeInputMergesRootAndScopeState(t *testing.T) {
 		t.Fatalf("expected merged scope flag, got %#v", scope["flag"])
 	}
 
-	messages := Conversation(merged, "agent").Messages()
+	messages := merged.Conversation("agent").Messages()
 	if len(messages) != 2 {
 		t.Fatalf("expected two scoped messages, got %#v", messages)
 	}

@@ -112,7 +112,7 @@ func TestNormalizeInputStateHandlesConversationExtensionFields(t *testing.T) {
 		t.Fatalf("normalize input state: %v", err)
 	}
 
-	conversation := Conversation(normalized, "")
+	conversation := normalized.Conversation("")
 	messages := conversation.Messages()
 	if len(messages) != 1 {
 		t.Fatalf("expected one conversation message, got %#v", messages)

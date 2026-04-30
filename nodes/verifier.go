@@ -172,8 +172,8 @@ func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state f
 		}, nil
 	}
 
-	observations := filterObservationsByStep(fruntime.Observations(state), stepID)
-	stepResults := fruntime.StepResults(state)
+	observations := filterObservationsByStep(state.Observations(), stepID)
+	stepResults := state.StepResults()
 	var stepResult map[string]any
 	if stepResults != nil {
 		if r, ok := stepResults[stepID].(map[string]any); ok {
@@ -206,10 +206,10 @@ func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state 
 		}, nil
 	}
 
-	observations := fruntime.Observations(state)
-	evidence := fruntime.Evidence(state)
+	observations := state.Observations()
+	evidence := state.Evidence()
 
-	conversation := fruntime.Conversation(state, n.effectiveScope())
+	conversation := state.Conversation(n.effectiveScope())
 	finalAnswer := conversation.FinalAnswer()
 
 	return n.callLLMFinalVerification(ctx, model, objective, observations, evidence, finalAnswer)

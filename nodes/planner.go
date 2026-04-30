@@ -259,7 +259,7 @@ func (n *PlannerNode) effectiveMaxSteps() int {
 }
 
 func (n *PlannerNode) resolveObjective(state runtime.State, plannerState runtime.State) (string, error) {
-	if objective, ok := runtime.ResolveStatePath(state, n.effectiveObjectivePath()); ok {
+	if objective, ok := state.ResolvePath(n.effectiveObjectivePath()); ok {
 		text := strings.TrimSpace(stringifyPlannerValue(objective))
 		if text != "" {
 			return text, nil
@@ -284,7 +284,7 @@ func (n *PlannerNode) collectContext(state runtime.State) map[string]any {
 		if path == "" {
 			continue
 		}
-		value, ok := runtime.ResolveStatePath(state, path)
+		value, ok := state.ResolvePath(path)
 		if !ok {
 			continue
 		}

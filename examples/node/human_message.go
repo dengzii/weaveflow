@@ -18,7 +18,7 @@ func HumanMessageExample() {
 	fmt.Println("=== Case 1: interrupt when no human message is pending ===")
 	{
 		state := runtime.State{}
-		conversation := runtime.Conversation(state, "agent")
+		conversation := state.Conversation("agent")
 		conversation.UpdateMessage([]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, "You are a helpful assistant."),
 			llms.TextParts(llms.ChatMessageTypeAI, "I need more information. What is the target environment?"),
@@ -42,7 +42,7 @@ func HumanMessageExample() {
 		scope := state.EnsureScope("agent")
 		scope[nodes.PendingHumanInputStateKey] = "The target environment is Kubernetes on AWS."
 
-		conversation := runtime.Conversation(state, "agent")
+		conversation := state.Conversation("agent")
 		conversation.UpdateMessage([]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, "You are a helpful assistant."),
 			llms.TextParts(llms.ChatMessageTypeAI, "I need more information. What is the target environment?"),
@@ -51,7 +51,7 @@ func HumanMessageExample() {
 		result, err := node.Invoke(context.Background(), state)
 		must(err)
 
-		conv := runtime.Conversation(result, "agent")
+		conv := result.Conversation("agent")
 		fmt.Println("  messages after resume:")
 		for i, msg := range conv.Messages() {
 			fmt.Printf("    [%d] %s: %s\n", i, msg.Role, nodeMessageText(msg))

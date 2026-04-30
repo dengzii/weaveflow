@@ -44,7 +44,7 @@ func TestContextAssemblerInjectsRecalledMemoryIntoConversation(t *testing.T) {
 	}
 
 	state := State{}
-	fruntime.Conversation(state, "chat").UpdateMessage([]llms.MessageContent{
+	state.Conversation("chat").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a careful agent."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Use prior context if available."),
 	})
@@ -62,7 +62,7 @@ func TestContextAssemblerInjectsRecalledMemoryIntoConversation(t *testing.T) {
 		t.Fatalf("run context assembler graph: %v", err)
 	}
 
-	messages := fruntime.Conversation(state, "chat").Messages()
+	messages := state.Conversation("chat").Messages()
 	if len(messages) != 3 {
 		t.Fatalf("expected injected memory message, got %#v", messages)
 	}
@@ -82,7 +82,7 @@ func TestContextAssemblerReplacesPreviousInjectedMemoryMessage(t *testing.T) {
 	node.StateScope = "chat"
 
 	state := State{}
-	fruntime.Conversation(state, "chat").UpdateMessage([]llms.MessageContent{
+	state.Conversation("chat").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a careful agent."),
 		llms.TextParts(llms.ChatMessageTypeSystem, "Relevant recalled memory:\n- [assistant/fact] old memory"),
 		llms.TextParts(llms.ChatMessageTypeHuman, "new request"),
@@ -100,7 +100,7 @@ func TestContextAssemblerReplacesPreviousInjectedMemoryMessage(t *testing.T) {
 		t.Fatalf("invoke context assembler: %v", err)
 	}
 
-	messages := fruntime.Conversation(state, "chat").Messages()
+	messages := state.Conversation("chat").Messages()
 	count := 0
 	for _, message := range messages {
 		text := testMessageText(message)
@@ -123,7 +123,7 @@ func TestContextAssemblerInjectsOrchestrationAndPlannerState(t *testing.T) {
 	node.IncludePlanner = true
 
 	state := State{}
-	fruntime.Conversation(state, "chat").UpdateMessage([]llms.MessageContent{
+	state.Conversation("chat").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a careful agent."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Continue with the task."),
 	})
@@ -142,7 +142,7 @@ func TestContextAssemblerInjectsOrchestrationAndPlannerState(t *testing.T) {
 		t.Fatalf("invoke context assembler: %v", err)
 	}
 
-	messages := fruntime.Conversation(state, "chat").Messages()
+	messages := state.Conversation("chat").Messages()
 	if len(messages) != 4 {
 		t.Fatalf("expected orchestration and planner messages to be injected, got %#v", messages)
 	}
