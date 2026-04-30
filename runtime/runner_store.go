@@ -83,7 +83,7 @@ func NewLoggerEventSink(logger *zap.Logger) EventSink {
 }
 
 func (l *LoggerEventSink) Publish(ctx context.Context, event Event) error {
-	if event.Type == EventLLMReasoningChunk || event.Type == EventLLMContentChunk {
+	if IsStreamingEvent(event.Type) {
 		return nil
 	}
 	l.logger.Info("Publish",

@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Graph 调试回放</title>
   <link rel="stylesheet" href="/static/app.css">
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
 </head>
 <body data-default-cache-dir="{{.DefaultCacheDir}}">
   <div class="shell">
@@ -54,6 +55,20 @@
             </div>
             <div id="overview-grid" class="overview-grid"></div>
             <pre id="run-error" class="error-box hidden"></pre>
+          </section>
+
+          <section class="card">
+            <div class="section-header">
+              <h2>Graph 结构图</h2>
+              <div class="graph-actions">
+                <button id="graph-new-window" type="button" class="small-btn">新窗口</button>
+                <button id="graph-zoom-toggle" type="button" class="small-btn">放大</button>
+              </div>
+            </div>
+            <div id="graph-container" class="graph-container">
+              <div id="graph-empty" class="graph-empty">暂无 graph 数据</div>
+              <div id="graph-diagram" class="graph-diagram hidden"></div>
+            </div>
           </section>
 
           <section class="card">

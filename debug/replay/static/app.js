@@ -22,6 +22,11 @@ const elements = {
   overviewGrid: document.getElementById("overview-grid"),
   runStatus: document.getElementById("run-status"),
   runError: document.getElementById("run-error"),
+  graphContainer: document.getElementById("graph-container"),
+  graphEmpty: document.getElementById("graph-empty"),
+  graphDiagram: document.getElementById("graph-diagram"),
+  graphZoomToggle: document.getElementById("graph-zoom-toggle"),
+  graphNewWindow: document.getElementById("graph-new-window"),
   replaySlider: document.getElementById("replay-slider"),
   replayPosition: document.getElementById("replay-position"),
   replayCurrent: document.getElementById("replay-current"),
@@ -40,6 +45,260 @@ const elements = {
   instanceDetail: document.getElementById("instance-detail"),
   graphDetail: document.getElementById("graph-detail"),
 };
+
+let mermaidReady = false;
+let graphZoomed = false;
+let graphRenderCounter = 0;
+let currentMermaidCode = "";
+
+async function initMermaid() {
+  if (typeof mermaid === "undefined") {
+    console.warn("Mermaid library not loaded");
+    return;
+  }
+  try {
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "neutral",
+      flowchart: {
+        useMaxWidth: true,
+        htmlLabels: true,
+        curve: "basis",
+      },
+      securityLevel: "loose",
+    });
+    mermaidReady = true;
+  } catch (error) {
+    console.error("Failed to initialize mermaid:", error);
+  }
+}
+
+function buildMermaidGraph(graph) {
+  if (!graph || !graph.nodes || !graph.nodes.length) {
+    return null;
+  }
+
+  const lines = ["flowchart TD"];
+  const nodeIDs = new Set();
+  const idMap = new Map();
+
+  // Build ID map and collect node IDs
+  for (const node of graph.nodes) {
+    const nodeID = node.id;
+    if (!nodeID) continue;
+    nodeIDs.add(nodeID);
+    idMap.set(nodeID, "n" + idMap.size);
+  }
+
+  // Define nodes
+  lines.push("  %% Node definitions");
+
+  for (const node of graph.nodes) {
+    const nodeID = node.id;
+    const nodeName = node.name || nodeID;
+    const nodeType = (node.type || "").toLowerCase();
+
+    const safeID = idMap.get(nodeID);
+    const label = nodeName.replace(/"/g, "'").replace(/\n/g, " ");
+
+    // Style based on type
+    let shape = `["${label}"]`;
+    if (nodeType.includes("router")) {
+      shape = `{{"${label}"}}`;
+    } else if (nodeType.includes("human")) {
+      shape = `("${label}")`;
+    } else if (nodeType.includes("llm")) {
+      shape = `[["${label}"]]`;
+    } else if (nodeType.includes("tool")) {
+      shape = `[/"${label}"/]`;
+    }
+
+    lines.push(`  ${safeID}${shape}`);
+  }
+
+  // Add END node
+  lines.push("  endNode((END))");
+
+  // Add edges
+  lines.push("  %% Edge definitions");
+  const entryPoint = graph.entry_point;
+  const edges = graph.edges || [];
+
+  // Add entry point indicator
+  if (entryPoint && idMap.has(entryPoint)) {
+    lines.push(`  startNode([START]) --> ${idMap.get(entryPoint)}`);
+  }
+
+  // Add edges
+  for (const edge of edges) {
+    const from = edge.from;
+    const to = edge.to;
+    const condition = edge.condition;
+
+    if (!from || !idMap.has(from)) continue;
+
+    const safeFrom = idMap.get(from);
+    const safeTo = to === "__end__" ? "endNode" : (idMap.get(to) || "endNode");
+
+    if (condition && condition.type) {
+      const condLabel = buildConditionLabel(condition);
+      lines.push(`  ${safeFrom} -->|"${condLabel}"| ${safeTo}`);
+    } else {
+      lines.push(`  ${safeFrom} --> ${safeTo}`);
+    }
+  }
+
+  // Add styles
+  lines.push("  %% Styles");
+  lines.push("  classDef default fill:#f7f4ec,stroke:#0f766e,stroke-width:1px,color:#1e2327");
+  lines.push("  classDef startEnd fill:#0f766e,stroke:#0f766e,color:#fff");
+
+  return lines.join("\n");
+}
+
+function buildConditionLabel(condition) {
+  const type = condition.type || "";
+
+  if (type === "expression_conditions") {
+    const config = condition.config || {};
+    const expressions = config.expressions || [];
+    const match = config.match || "all";
+
+    if (expressions.length === 0) {
+      return "expression";
+    }
+
+    const exprLabels = expressions.map((expr) => {
+      const v1 = (expr.value1 || "").split(".").pop();
+      const op = formatOp(expr.op || "");
+      const v2 = (expr.value2 || "").substring(0, 15);
+      return `${v1} ${op} ${v2}`;
+    });
+
+    const label = exprLabels.join(match === "any" ? " | " : " & ");
+    return label.substring(0, 40);
+  }
+
+  // Default: format type as readable text
+  return type.replace(/_/g, " ").substring(0, 30);
+}
+
+function formatOp(op) {
+  switch (op) {
+    case "equals": return "=";
+    case "not_equals": return "≠";
+    case "contains": return "∋";
+    case "not_contains": return "∌";
+    default: return op;
+  }
+}
+
+async function renderGraph(graph) {
+  if (!mermaidReady) {
+    elements.graphEmpty.textContent = "Mermaid 库未加载";
+    elements.graphEmpty.classList.remove("hidden");
+    elements.graphDiagram.classList.add("hidden");
+    currentMermaidCode = "";
+    return;
+  }
+
+  const mermaidCode = buildMermaidGraph(graph);
+  currentMermaidCode = mermaidCode || "";
+
+  if (!mermaidCode) {
+    elements.graphEmpty.textContent = "暂无 graph 数据";
+    elements.graphEmpty.classList.remove("hidden");
+    elements.graphDiagram.classList.add("hidden");
+    return;
+  }
+
+  // Clear previous diagram
+  elements.graphDiagram.innerHTML = "";
+  graphRenderCounter++;
+  const renderId = `mermaid-graph-${graphRenderCounter}`;
+
+  try {
+    // Create a temporary element for rendering
+    const tempDiv = document.createElement("div");
+    tempDiv.style.display = "none";
+    document.body.appendChild(tempDiv);
+
+    const { svg } = await mermaid.render(renderId, mermaidCode);
+    document.body.removeChild(tempDiv);
+
+    elements.graphDiagram.innerHTML = svg;
+    elements.graphEmpty.classList.add("hidden");
+    elements.graphDiagram.classList.remove("hidden");
+  } catch (error) {
+    console.error("Failed to render mermaid graph:", error);
+    console.error("Mermaid code:", mermaidCode);
+    elements.graphEmpty.textContent = `Graph 渲染失败: ${error.message || error}`;
+    elements.graphEmpty.classList.remove("hidden");
+    elements.graphDiagram.classList.add("hidden");
+  }
+}
+
+function openGraphInNewWindow() {
+  if (!currentMermaidCode) {
+    return;
+  }
+
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Graph 结构图</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"><\/script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      min-height: 100vh;
+      padding: 20px;
+      background: #f7f4ec;
+      font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    }
+    h1 { font-size: 18px; margin-bottom: 16px; color: #1e2327; }
+    .container {
+      background: #fff;
+      border-radius: 10px;
+      box-shadow: 0 8px 24px rgba(33, 41, 52, 0.06);
+      padding: 20px;
+      min-height: calc(100vh - 80px);
+    }
+    #diagram { display: flex; justify-content: center; align-items: flex-start; }
+    #diagram svg { max-width: 100%; height: auto; }
+  </style>
+</head>
+<body>
+  <h1>Graph 结构图</h1>
+  <div class="container">
+    <div id="diagram"></div>
+  </div>
+  <script>
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: "neutral",
+      flowchart: { useMaxWidth: true, htmlLabels: true, curve: "basis" },
+      securityLevel: "loose"
+    });
+    mermaid.render("graph-full", ${JSON.stringify(currentMermaidCode)}).then((result) => {
+      document.getElementById("diagram").innerHTML = result.svg;
+    });
+  <\/script>
+</body>
+</html>`;
+
+  const blob = new Blob([html], { type: "text/html" });
+  const url = URL.createObjectURL(blob);
+  window.open(url, "_blank", "width=1200,height=800");
+}
+
+function toggleGraphZoom() {
+  graphZoomed = !graphZoomed;
+  elements.graphContainer.classList.toggle("zoomed", graphZoomed);
+  elements.graphZoomToggle.textContent = graphZoomed ? "缩小" : "放大";
+}
 
 function setStatus(message, summary = "") {
   elements.statusText.textContent = message;
@@ -379,6 +638,7 @@ function renderDetail() {
   elements.detailView.classList.remove("hidden");
 
   renderOverview(state.detail);
+  renderGraph(state.detail.source?.graph);
   renderReplay(state.detail);
   renderSteps(state.detail);
   renderCheckpoints(state.detail);
@@ -505,7 +765,11 @@ function bindEvents() {
   });
 
   elements.playToggle.addEventListener("click", toggleReplay);
+
+  elements.graphZoomToggle.addEventListener("click", toggleGraphZoom);
+  elements.graphNewWindow.addEventListener("click", openGraphInNewWindow);
 }
 
+initMermaid();
 bindEvents();
 loadRuns();

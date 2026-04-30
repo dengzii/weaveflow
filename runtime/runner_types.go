@@ -77,6 +77,10 @@ const (
 	EventWarning            EventType = "warning"
 )
 
+func IsStreamingEvent(event EventType) bool {
+	return event == EventLLMContentChunk || event == EventLLMReasoningChunk
+}
+
 type RunRecord struct {
 	RunID            string     `json:"run_id"`
 	GraphID          string     `json:"graph_id"`

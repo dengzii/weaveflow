@@ -224,6 +224,52 @@ button:active { transform: translateY(0); }
 .overview-label { font-size: 10px; }
 .overview-value { margin-top: 2px; font-weight: 700; font-size: 11px; word-break: break-word; }
 
+/* ── graph diagram ── */
+
+.graph-container {
+  min-height: 120px;
+  max-height: 320px;
+  overflow: auto;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.6);
+  border: 1px solid var(--line);
+  padding: 8px;
+  transition: max-height 0.2s ease;
+}
+
+.graph-container.zoomed {
+  max-height: 600px;
+}
+
+.graph-empty {
+  display: grid;
+  place-items: center;
+  min-height: 100px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.graph-diagram {
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+}
+
+.graph-diagram svg {
+  max-width: 100%;
+  height: auto;
+}
+
+.small-btn {
+  padding: 2px 6px;
+  font-size: 10px;
+}
+
+.graph-actions {
+  display: flex;
+  gap: 4px;
+}
+
 /* ── status badge ── */
 
 .status-badge, .pill {
