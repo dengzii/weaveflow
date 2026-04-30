@@ -65,7 +65,12 @@ func TestOrchestrationRouterBuildsAndWritesState(t *testing.T) {
 		},
 	}
 
-	graph, err := registry.BuildGraph(def, &BuildContext{
+	graph, err := registry.BuildGraph(def, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build orchestration graph: %v", err)
+	}
+
+	svc := &fruntime.Services{
 		Model: stubOrchestrationModel{
 			response: `{
   "mode": "planner",
@@ -77,10 +82,8 @@ func TestOrchestrationRouterBuildsAndWritesState(t *testing.T) {
   "target_subgraph": "planner_flow"
 }`,
 		},
-	})
-	if err != nil {
-		t.Fatalf("build orchestration graph: %v", err)
 	}
+	ctx := fruntime.WithServices(context.Background(), svc)
 
 	state := State{
 		"request": map[string]any{
@@ -90,7 +93,7 @@ func TestOrchestrationRouterBuildsAndWritesState(t *testing.T) {
 			},
 		},
 	}
-	state, err = graph.Run(context.Background(), state)
+	state, err = graph.Run(ctx, state)
 	if err != nil {
 		t.Fatalf("run orchestration graph: %v", err)
 	}

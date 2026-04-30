@@ -94,7 +94,6 @@ const (
 
 type PlannerNode struct {
 	NodeInfo
-	model            llms.Model
 	PlannerStatePath string
 	ObjectivePath    string
 	ContextPaths     []string
@@ -125,7 +124,7 @@ type plannerPlanStep struct {
 	Parallelizable     bool     `json:"parallelizable"`
 }
 
-func NewPlannerNode(model llms.Model) *PlannerNode {
+func NewPlannerNode() *PlannerNode {
 	id := uuid.New()
 	return &PlannerNode{
 		NodeInfo: NodeInfo{
@@ -133,15 +132,15 @@ func NewPlannerNode(model llms.Model) *PlannerNode {
 			NodeName:        "Planner",
 			NodeDescription: "Generate or refresh a structured execution plan from the current objective and context.",
 		},
-		model:            model,
 		PlannerStatePath: defaultPlannerStatePath,
 		MaxSteps:         defaultPlannerMaxSteps,
 	}
 }
 
 func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.State, error) {
-	if n.model == nil {
-		return state, errors.New("planner model is nil")
+	svc := runtime.ServicesFrom(ctx)
+	if svc == nil || svc.Model == nil {
+		return state, errors.New("planner: model service not available")
 	}
 	if state == nil {
 		state = runtime.State{}
@@ -170,7 +169,7 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 		"additional_rules": strings.TrimSpace(n.Instructions),
 	}
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.prompt", promptPayload)
-	resp, err := n.model.GenerateContent(
+	resp, err := svc.Model.GenerateContent(
 		ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, plannerSystemPrompt),

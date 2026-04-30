@@ -56,7 +56,12 @@ func TestRegisterPlannerModuleBuildsAndRunsPlannerNode(t *testing.T) {
 		},
 	}
 
-	graph, err := registry.BuildGraph(def, &BuildContext{
+	graph, err := registry.BuildGraph(def, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build planner graph: %v", err)
+	}
+
+	svc := &fruntime.Services{
 		Model: stubPlannerModel{
 			response: `{
   "objective": "Investigate browser automation tradeoffs",
@@ -86,16 +91,14 @@ func TestRegisterPlannerModuleBuildsAndRunsPlannerNode(t *testing.T) {
   ]
 }`,
 		},
-	})
-	if err != nil {
-		t.Fatalf("build planner graph: %v", err)
 	}
+	ctx := fruntime.WithServices(context.Background(), svc)
 
 	initialState := State{}
 	planner := initialState.Ensure(fruntime.StateKeyPlanner)
 	planner["objective"] = "Investigate browser automation tradeoffs"
 
-	state, err := graph.Run(context.Background(), initialState)
+	state, err := graph.Run(ctx, initialState)
 	if err != nil {
 		t.Fatalf("run planner graph: %v", err)
 	}

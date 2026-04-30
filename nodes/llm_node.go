@@ -4,10 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
-	"sort"
 	"strings"
 	"weaveflow/dsl"
-	"weaveflow/tools"
 
 	fruntime "weaveflow/runtime"
 
@@ -17,12 +15,11 @@ import (
 
 type LLMNode struct {
 	NodeInfo
-	model      llms.Model
-	tools      map[string]tools.Tool
+	ToolIDs    []string
 	StateScope string
 }
 
-func NewLLMNode(model llms.Model, tools map[string]tools.Tool) *LLMNode {
+func NewLLMNode() *LLMNode {
 	id := uuid.New()
 	return &LLMNode{
 		NodeInfo: NodeInfo{
@@ -30,12 +27,17 @@ func NewLLMNode(model llms.Model, tools map[string]tools.Tool) *LLMNode {
 			NodeName:        "LLM",
 			NodeDescription: "LLM",
 		},
-		model: model,
-		tools: tools,
 	}
 }
 
 func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+	svc := fruntime.ServicesFrom(ctx)
+	if svc == nil || svc.Model == nil {
+		return state, errors.New("llm node: model service not available")
+	}
+	model := svc.Model
+	nodeTools := svc.FilterTools(L.ToolIDs)
+
 	conversation := fruntime.Conversation(state, L.StateScope)
 	messages := conversation.Messages()
 
@@ -52,14 +54,14 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	}
 
 	var toolSets []llms.Tool
-	for _, tool := range L.tools {
+	for _, tool := range nodeTools {
 		toolSets = append(toolSets, tool.NewTool())
 	}
 	if payload, err := buildLLMPromptArtifact(messages, toolSets, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
 	}
 
-	resp, err := L.model.GenerateContent(
+	resp, err := model.GenerateContent(
 		ctx,
 		messages,
 		llms.WithTools(toolSets),
@@ -82,7 +84,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	usage := Extract(choice)
 	record := RecordState(state, Record{
 		NodeID:             L.ID(),
-		Model:              modelLabel(L.model),
+		Model:              modelLabel(model),
 		StateScope:         L.StateScope,
 		StopReason:         choice.StopReason,
 		PromptTokens:       usage.PromptTokens,
@@ -124,19 +126,13 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 }
 
 func (L *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	toolIDs := make([]string, 0, len(L.tools))
-	for id := range L.tools {
-		toolIDs = append(toolIDs, id)
-	}
-	sort.Strings(toolIDs)
-
 	return dsl.GraphNodeSpec{
 		ID:          L.ID(),
 		Name:        L.Name(),
 		Type:        "llm",
 		Description: L.Description(),
 		Config: map[string]any{
-			"tool_ids":    toolIDs,
+			"tool_ids":    append([]string(nil), L.ToolIDs...),
 			"state_scope": L.StateScope,
 		},
 	}

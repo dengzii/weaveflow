@@ -8,7 +8,6 @@ import (
 	fruntime "weaveflow/runtime"
 
 	"github.com/google/uuid"
-	"github.com/tmc/langchaingo/llms"
 )
 
 type ReplannerNode struct {
@@ -21,7 +20,7 @@ type ReplannerNode struct {
 	Instructions     string
 }
 
-func NewReplannerNode(model llms.Model) *ReplannerNode {
+func NewReplannerNode() *ReplannerNode {
 	id := uuid.New()
 	return &ReplannerNode{
 		NodeInfo: NodeInfo{
@@ -29,7 +28,7 @@ func NewReplannerNode(model llms.Model) *ReplannerNode {
 			NodeName:        "Replanner",
 			NodeDescription: "Replan based on verification failures, preserving completed steps.",
 		},
-		inner: NewPlannerNode(model),
+		inner: NewPlannerNode(),
 	}
 }
 

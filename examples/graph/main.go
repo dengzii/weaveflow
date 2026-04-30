@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"time"
 	"weaveflow"
+	"weaveflow/llms/openai"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
 
@@ -17,25 +18,38 @@ func main() {
 	logger, _ := zap.NewDevelopment()
 	weaveflow.SetLogger(logger)
 
-	runWithRunner()
+	ctx := runtime.WithServices(context.Background(), newReActAgentServices())
+
+	runWithRunner(ctx)
 
 	time.Sleep(time.Second)
 	fmt.Println("=================== resume ===================")
-	resumeFromCheckpoint()
+	resumeFromCheckpoint(ctx)
 }
 
-func runWithRunner() {
+func newReActAgentServices() *runtime.Services {
+	model, err := openai.New()
+	tryPanic(err)
+
+	return &runtime.Services{
+		Model:  runtime.WrapLLM(model),
+		Memory: newReActAgentMemory(),
+		Tools:  newReActAgentTools(),
+	}
+}
+
+func runWithRunner(ctx context.Context) {
 	baseDir := ".local/instance"
 	graph := newReActAgentGraph()
 	tryPanic(os.MkdirAll(baseDir, 0o755))
 	tryPanic(graph.WriteToFile(filepath.Join(baseDir, "graph.json")))
 
 	runner := newExampleRunner(baseDir, graph)
-	_, _, err := runner.Start(context.Background(), newReActAgentInitialState())
+	_, _, err := runner.Start(ctx, newReActAgentInitialState())
 	tryPanic(err)
 }
 
-func resumeFromCheckpoint() {
+func resumeFromCheckpoint(ctx context.Context) {
 	state := runtime.State{
 		"scopes": map[string]any{
 			reactAgentStateScope: map[string]any{
@@ -45,18 +59,17 @@ func resumeFromCheckpoint() {
 	}
 
 	baseDir := ".local/instance"
-	buildCtx := newReActAgentBuildContext()
-	graph, err := weaveflow.LoadGraphFromFile(buildCtx, filepath.Join(baseDir, "graph.json"))
+	graph, err := weaveflow.LoadGraphFromFile(&weaveflow.BuildContext{}, filepath.Join(baseDir, "graph.json"))
 	tryPanic(err)
 
 	runner := newExampleRunner(baseDir, graph)
-	run, err := runner.GetContinuableRun(context.Background())
+	run, err := runner.GetContinuableRun(ctx)
 	tryPanic(err)
 	if run == nil {
 		panic("no continuable run")
 	}
 
-	_, state, err = runner.Resume(context.Background(), run.RunID, state)
+	_, state, err = runner.Resume(ctx, run.RunID, state)
 	tryPanic(err)
 
 	conv := runtime.Conversation(state, reactAgentStateScope)

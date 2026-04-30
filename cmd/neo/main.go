@@ -8,8 +8,9 @@ import (
 
 	"weaveflow/internal/neo"
 
-	"github.com/gin-gonic/gin"
 	"weaveflow/llms/openai"
+
+	"github.com/gin-gonic/gin"
 )
 
 func main() {
@@ -22,8 +23,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	buildCtx := neo.NewBuildContext(model, *dataDir)
-	srv := neo.NewServer(buildCtx, neo.DefaultConfig(), *dataDir)
+	services := neo.NewServices(model, *dataDir)
+	srv := neo.NewServer(services, neo.DefaultConfig(), *dataDir)
 
 	engine := gin.Default()
 	srv.RegisterRoutes(engine.Group("/neo"))

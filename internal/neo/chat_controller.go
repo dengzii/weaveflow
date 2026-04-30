@@ -19,7 +19,7 @@ import (
 )
 
 type ChatController struct {
-	buildCtx  *weaveflow.BuildContext
+	services  *fruntime.Services
 	config    *Config
 	allTools  map[string]tools.Tool
 	toolFlags map[string]bool
@@ -33,13 +33,13 @@ type ChatController struct {
 	lastState fruntime.State
 }
 
-func NewChatController(buildCtx *weaveflow.BuildContext, cfg *Config, toolFlags map[string]bool, mode, baseDir string) *ChatController {
-	allTools := make(map[string]tools.Tool, len(buildCtx.Tools))
-	for name, tool := range buildCtx.Tools {
+func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, mode, baseDir string) *ChatController {
+	allTools := make(map[string]tools.Tool, len(services.Tools))
+	for name, tool := range services.Tools {
 		allTools[name] = tool
 	}
 	return &ChatController{
-		buildCtx:  buildCtx,
+		services:  services,
 		config:    cfg,
 		allTools:  allTools,
 		toolFlags: toolFlags,
@@ -70,10 +70,10 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 
 	cfg := *ctrl.config
-	buildCtx := ctrl.effectiveBuildContext()
+	services := ctrl.effectiveServices()
 	ctrl.mu.Unlock()
 
-	graph, err := NewGraph(buildCtx, cfg)
+	graph, err := NewGraph(cfg)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "build graph failed: " + err.Error()})
 		return
@@ -98,7 +98,8 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	runner := weaveflow.NewGraphRunner(graph, executionStore, checkpointStore, stateCodec, combinedSink)
 	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(runDir, "artifacts"))
 
-	ctx, cancel := context.WithCancel(c.Request.Context())
+	baseCtx := fruntime.WithServices(c.Request.Context(), services)
+	ctx, cancel := context.WithCancel(baseCtx)
 
 	ctrl.mu.Lock()
 	ctrl.runner = runner
@@ -164,16 +165,16 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 }
 
-func (ctrl *ChatController) effectiveBuildContext() *weaveflow.BuildContext {
+func (ctrl *ChatController) effectiveServices() *fruntime.Services {
 	enabledTools := make(map[string]tools.Tool, len(ctrl.allTools))
 	for name, tool := range ctrl.allTools {
 		if ctrl.toolFlags[name] {
 			enabledTools[name] = tool
 		}
 	}
-	return &weaveflow.BuildContext{
-		Model:  ctrl.buildCtx.Model,
-		Memory: ctrl.buildCtx.Memory,
+	return &fruntime.Services{
+		Model:  ctrl.services.Model,
+		Memory: ctrl.services.Memory,
 		Tools:  enabledTools,
 	}
 }

@@ -34,13 +34,12 @@ const (
 
 type VerifierNode struct {
 	NodeInfo
-	model            llms.Model
 	StateScope       string
 	Mode             string
 	PlannerStatePath string
 }
 
-func NewVerifierNode(model llms.Model) *VerifierNode {
+func NewVerifierNode() *VerifierNode {
 	id := uuid.New()
 	return &VerifierNode{
 		NodeInfo: NodeInfo{
@@ -48,8 +47,7 @@ func NewVerifierNode(model llms.Model) *VerifierNode {
 			NodeName:        "Verifier",
 			NodeDescription: "Verify step or final results against acceptance criteria.",
 		},
-		model: model,
-		Mode:  VerifierModeAuto,
+		Mode: VerifierModeAuto,
 	}
 }
 
@@ -79,6 +77,12 @@ func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 		state = fruntime.State{}
 	}
 
+	svc := fruntime.ServicesFrom(ctx)
+	var model llms.Model
+	if svc != nil {
+		model = svc.Model
+	}
+
 	mode := n.resolveMode(state)
 
 	var result *verificationResult
@@ -86,9 +90,9 @@ func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 
 	switch mode {
 	case VerifierModeFinal:
-		result, err = n.verifyFinal(ctx, state)
+		result, err = n.verifyFinal(ctx, model, state)
 	default:
-		result, err = n.verifyStep(ctx, state)
+		result, err = n.verifyStep(ctx, model, state)
 	}
 
 	if err != nil {
@@ -139,7 +143,7 @@ func (n *VerifierNode) resolveMode(state fruntime.State) string {
 	return VerifierModeStep
 }
 
-func (n *VerifierNode) verifyStep(ctx context.Context, state fruntime.State) (*verificationResult, error) {
+func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state fruntime.State) (*verificationResult, error) {
 	plannerState := state.Get(fruntime.StateKeyPlanner)
 	if plannerState == nil {
 		return &verificationResult{
@@ -177,10 +181,10 @@ func (n *VerifierNode) verifyStep(ctx context.Context, state fruntime.State) (*v
 		}
 	}
 
-	return n.callLLMVerification(ctx, "step", criteria, observations, stepResult, step)
+	return n.callLLMVerification(ctx, model, "step", criteria, observations, stepResult, step)
 }
 
-func (n *VerifierNode) verifyFinal(ctx context.Context, state fruntime.State) (*verificationResult, error) {
+func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state fruntime.State) (*verificationResult, error) {
 	plannerState := state.Get(fruntime.StateKeyPlanner)
 	objective := ""
 	if plannerState != nil {
@@ -208,18 +212,18 @@ func (n *VerifierNode) verifyFinal(ctx context.Context, state fruntime.State) (*
 	conversation := fruntime.Conversation(state, n.effectiveScope())
 	finalAnswer := conversation.FinalAnswer()
 
-	return n.callLLMFinalVerification(ctx, objective, observations, evidence, finalAnswer)
+	return n.callLLMFinalVerification(ctx, model, objective, observations, evidence, finalAnswer)
 }
 
-func (n *VerifierNode) callLLMVerification(ctx context.Context, mode string, criteria []string, observations []map[string]any, stepResult map[string]any, step map[string]any) (*verificationResult, error) {
-	if n.model == nil {
+func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model, mode string, criteria []string, observations []map[string]any, stepResult map[string]any, step map[string]any) (*verificationResult, error) {
+	if model == nil {
 		return ruleBasedVerification(criteria, observations), nil
 	}
 
 	stepTitle, _ := step["title"].(string)
 	prompt := buildStepVerificationPrompt(stepTitle, criteria, observations, stepResult)
 
-	resp, err := n.model.GenerateContent(ctx,
+	resp, err := model.GenerateContent(ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, verifierSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),
@@ -237,8 +241,8 @@ func (n *VerifierNode) callLLMVerification(ctx context.Context, mode string, cri
 	return parseVerificationResponse(resp.Choices[0].Content)
 }
 
-func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, objective string, observations []map[string]any, evidence []map[string]any, finalAnswer string) (*verificationResult, error) {
-	if n.model == nil {
+func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.Model, objective string, observations []map[string]any, evidence []map[string]any, finalAnswer string) (*verificationResult, error) {
+	if model == nil {
 		return &verificationResult{
 			Status:     VerificationPass,
 			Summary:    "No model available; defaulting to pass.",
@@ -248,7 +252,7 @@ func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, objective s
 
 	prompt := buildFinalVerificationPrompt(objective, observations, evidence, finalAnswer)
 
-	resp, err := n.model.GenerateContent(ctx,
+	resp, err := model.GenerateContent(ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, verifierSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),

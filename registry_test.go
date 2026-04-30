@@ -6,20 +6,7 @@ import (
 	"testing"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
-	"weaveflow/tools"
-
-	"github.com/tmc/langchaingo/llms"
 )
-
-type stubBuildModel struct{}
-
-func (stubBuildModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
-	return nil, nil
-}
-
-func (stubBuildModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", nil
-}
 
 type assignStateNode struct {
 	id    string
@@ -148,33 +135,6 @@ func TestBuildGraphRequiresEntryPoint(t *testing.T) {
 	}
 }
 
-func TestBuildGraphRejectsUnknownToolIDs(t *testing.T) {
-	t.Parallel()
-
-	registry := DefaultRegistry()
-	def := GraphDefinition{
-		EntryPoint:  "llm",
-		FinishPoint: "llm",
-		Nodes: []GraphNodeSpec{
-			{
-				ID:   "llm",
-				Type: "llm",
-				Config: map[string]any{
-					"tool_ids": []any{"missing_tool"},
-				},
-			},
-		},
-	}
-
-	_, err := registry.BuildGraph(def, &BuildContext{
-		Model: stubBuildModel{},
-		Tools: map[string]tools.Tool{},
-	})
-	if err == nil || !strings.Contains(err.Error(), "missing_tool") {
-		t.Fatalf("expected unknown tool_id error, got %v", err)
-	}
-}
-
 func TestBuildGraphRequiresGraphResolverForSubgraph(t *testing.T) {
 	t.Parallel()
 
@@ -196,27 +156,6 @@ func TestBuildGraphRequiresGraphResolverForSubgraph(t *testing.T) {
 	_, err := registry.BuildGraph(def, &BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "graph resolver") {
 		t.Fatalf("expected missing graph resolver error, got %v", err)
-	}
-}
-
-func TestBuildGraphRequiresModelForContextReducer(t *testing.T) {
-	t.Parallel()
-
-	registry := DefaultRegistry()
-	def := GraphDefinition{
-		EntryPoint:  "reduce",
-		FinishPoint: "reduce",
-		Nodes: []GraphNodeSpec{
-			{
-				ID:   "reduce",
-				Type: "context_reducer",
-			},
-		},
-	}
-
-	_, err := registry.BuildGraph(def, &BuildContext{})
-	if err == nil || !strings.Contains(err.Error(), "model is required") {
-		t.Fatalf("expected missing model error, got %v", err)
 	}
 }
 

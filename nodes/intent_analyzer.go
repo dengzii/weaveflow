@@ -26,7 +26,6 @@ const (
 
 type IntentAnalyzerNode struct {
 	NodeInfo
-	model           llms.Model
 	IntentStatePath string
 	InputPath       string
 	StateScope      string
@@ -48,7 +47,7 @@ type intentAnalyzerCandidate struct {
 	Reasoning  string  `json:"reasoning"`
 }
 
-func NewIntentAnalyzerNode(model llms.Model) *IntentAnalyzerNode {
+func NewIntentAnalyzerNode() *IntentAnalyzerNode {
 	id := uuid.New()
 	return &IntentAnalyzerNode{
 		NodeInfo: NodeInfo{
@@ -56,14 +55,14 @@ func NewIntentAnalyzerNode(model llms.Model) *IntentAnalyzerNode {
 			NodeName:        "IntentAnalyzer",
 			NodeDescription: "Analyze the latest request and write a structured intent result into state.",
 		},
-		model:           model,
 		IntentStatePath: defaultIntentStatePath,
 	}
 }
 
 func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
-	if n.model == nil {
-		return state, errors.New("intent analyzer model is nil")
+	svc := fruntime.ServicesFrom(ctx)
+	if svc == nil || svc.Model == nil {
+		return state, errors.New("intent analyzer: model service not available")
 	}
 	if state == nil {
 		state = fruntime.State{}
@@ -86,7 +85,7 @@ func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state fruntime.State) (
 	}
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "intent.prompt", payload)
 
-	resp, err := n.model.GenerateContent(
+	resp, err := svc.Model.GenerateContent(
 		ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, intentAnalyzerPrompt),

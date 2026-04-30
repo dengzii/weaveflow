@@ -41,7 +41,7 @@ func TestContextReducerNodeNoOpBelowLimit(t *testing.T) {
 	t.Parallel()
 
 	model := &stubReducerModel{}
-	node := NewContextReducerNode(model)
+	node := NewContextReducerNode()
 	node.StateScope = "agent"
 	node.MaxMessages = 4
 	node.PreserveRecent = 2
@@ -53,7 +53,8 @@ func TestContextReducerNodeNoOpBelowLimit(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeAI, "hi"),
 	})
 
-	_, err := node.Invoke(context.Background(), state)
+	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	_, err := node.Invoke(ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
 	}
@@ -66,7 +67,7 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 	t.Parallel()
 
 	model := &stubReducerModel{responses: []string{"- User asked about deployment\n- Assistant suggested blue-green rollout"}}
-	node := NewContextReducerNode(model)
+	node := NewContextReducerNode()
 	node.StateScope = "agent"
 	node.MaxMessages = 5
 	node.PreserveRecent = 2
@@ -82,7 +83,8 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeHuman, "Proceed with the final recommendation."),
 	})
 
-	_, err := node.Invoke(context.Background(), state)
+	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	_, err := node.Invoke(ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
 	}
@@ -123,7 +125,7 @@ func TestContextReducerNodeKeepsToolSpanTogether(t *testing.T) {
 	t.Parallel()
 
 	model := &stubReducerModel{responses: []string{"- Earlier request captured"}}
-	node := NewContextReducerNode(model)
+	node := NewContextReducerNode()
 	node.StateScope = "agent"
 	node.MaxMessages = 5
 	node.PreserveRecent = 2
@@ -159,7 +161,8 @@ func TestContextReducerNodeKeepsToolSpanTogether(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeHuman, "Summarize it."),
 	})
 
-	_, err := node.Invoke(context.Background(), state)
+	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	_, err := node.Invoke(ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
 	}

@@ -22,7 +22,10 @@ func MemoryRecallExample() {
 		{Text: "The signaling system uses a publish-subscribe pattern.", Role: "assistant", Type: memory.EntryTypeFact, Tags: []string{"architecture"}},
 	}))
 
-	node := nodes.NewMemoryRecallNode(mgr)
+	svc := &runtime.Services{Memory: mgr}
+	ctx := runtime.WithServices(context.Background(), svc)
+
+	node := nodes.NewMemoryRecallNode()
 	node.Limit = 3
 	node.Tags = []string{"final_answer", "assistant_output", "preference"}
 
@@ -39,7 +42,7 @@ func MemoryRecallExample() {
 	fmt.Println("input:")
 	fmt.Println(state["request"])
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := node.Invoke(ctx, state)
 	must(err)
 
 	fmt.Println()

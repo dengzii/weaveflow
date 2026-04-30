@@ -111,11 +111,7 @@ func plannerNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			if ctx == nil || ctx.Model == nil {
-				return nil, fmt.Errorf("build planner nodes %q: model is required", spec.ID)
-			}
-
-			node := nodes.NewPlannerNode(ctx.Model)
+			node := nodes.NewPlannerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name

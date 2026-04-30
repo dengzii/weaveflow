@@ -25,7 +25,6 @@ const (
 
 type ContextReducerNode struct {
 	NodeInfo
-	model          llms.Model
 	StateScope     string
 	MaxMessages    int
 	PreserveSystem bool
@@ -33,7 +32,7 @@ type ContextReducerNode struct {
 	SummaryPrefix  string
 }
 
-func NewContextReducerNode(model llms.Model) *ContextReducerNode {
+func NewContextReducerNode() *ContextReducerNode {
 	id := uuid.New()
 	return &ContextReducerNode{
 		NodeInfo: NodeInfo{
@@ -41,7 +40,6 @@ func NewContextReducerNode(model llms.Model) *ContextReducerNode {
 			NodeName:        "ContextReducer",
 			NodeDescription: "Compact older conversation context into a concise summary message.",
 		},
-		model:          model,
 		MaxMessages:    defaultContextReducerMaxMessages,
 		PreserveSystem: true,
 		PreserveRecent: defaultContextReducerPreserveTail,
@@ -50,8 +48,9 @@ func NewContextReducerNode(model llms.Model) *ContextReducerNode {
 }
 
 func (n *ContextReducerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
-	if n.model == nil {
-		return state, errors.New("context reducer model is nil")
+	svc := fruntime.ServicesFrom(ctx)
+	if svc == nil || svc.Model == nil {
+		return state, errors.New("context reducer: model service not available")
 	}
 
 	conversation := fruntime.Conversation(state, n.StateScope)
@@ -72,7 +71,7 @@ func (n *ContextReducerNode) Invoke(ctx context.Context, state fruntime.State) (
 
 	reducible := body[:tailStart]
 	recent := body[tailStart:]
-	summary, err := n.reduceMessages(ctx, reducible)
+	summary, err := n.reduceMessages(ctx, svc.Model, reducible)
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "context.reducer.error", map[string]any{
 			"state_scope": n.StateScope,
@@ -117,13 +116,13 @@ func (n *ContextReducerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *ContextReducerNode) reduceMessages(ctx context.Context, messages []llms.MessageContent) (string, error) {
+func (n *ContextReducerNode) reduceMessages(ctx context.Context, model llms.Model, messages []llms.MessageContent) (string, error) {
 	transcript := buildReducerTranscript(messages)
 	if strings.TrimSpace(transcript) == "" {
 		return "", errors.New("context reducer transcript is empty")
 	}
 
-	resp, err := n.model.GenerateContent(
+	resp, err := model.GenerateContent(
 		ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, contextReducerSystemPrompt),

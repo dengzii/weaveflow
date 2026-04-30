@@ -13,7 +13,10 @@ func PlannerExample() {
 	llm, err := openai.New()
 	must(err)
 
-	node := nodes.NewPlannerNode(llm)
+	svc := &runtime.Services{Model: llm}
+	ctx := runtime.WithServices(context.Background(), svc)
+
+	node := nodes.NewPlannerNode()
 	node.ObjectivePath = "request.goal"
 	node.ContextPaths = []string{
 		"request.constraints",
@@ -70,7 +73,7 @@ func PlannerExample() {
 		"last_failure":    execution["last_failure"],
 	})
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := node.Invoke(ctx, state)
 	must(err)
 
 	fmt.Println()

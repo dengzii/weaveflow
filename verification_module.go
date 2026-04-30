@@ -8,8 +8,6 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 func RegisterVerificationModule(registry *Registry) {
@@ -87,11 +85,7 @@ func verifierNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			var model llms.Model
-			if ctx != nil {
-				model = ctx.Model
-			}
-			node := nodes.NewVerifierNode(model)
+			node := nodes.NewVerifierNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -124,11 +118,7 @@ func finalizerNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			var model llms.Model
-			if ctx != nil {
-				model = ctx.Model
-			}
-			node := nodes.NewFinalizerNode(model)
+			node := nodes.NewFinalizerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name

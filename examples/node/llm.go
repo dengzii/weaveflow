@@ -16,12 +16,16 @@ func LLMExample() {
 	model, err := openai.New()
 	must(err)
 
-	toolSet := map[string]tools.Tool{
-		"calculator":   tools.NewCalculator(),
-		"current_time": tools.NewCurrentTime(),
+	svc := &runtime.Services{
+		Model: runtime.WrapLLM(model),
+		Tools: map[string]tools.Tool{
+			"calculator":   tools.NewCalculator(),
+			"current_time": tools.NewCurrentTime(),
+		},
 	}
+	ctx := runtime.WithServices(context.Background(), svc)
 
-	node := nodes.NewLLMNode(runtime.WrapLLM(model), toolSet)
+	node := nodes.NewLLMNode()
 	node.StateScope = "agent"
 
 	state := runtime.State{}
@@ -37,7 +41,7 @@ func LLMExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, nodeMessageText(msg))
 	}
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := node.Invoke(ctx, state)
 	must(err)
 
 	conv := runtime.Conversation(result, "agent")

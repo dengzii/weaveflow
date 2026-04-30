@@ -1,7 +1,6 @@
 package weaveflow
 
 import (
-	"fmt"
 	"strings"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
@@ -85,11 +84,7 @@ func orchestrationRouterNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			if ctx == nil || ctx.Model == nil {
-				return nil, fmt.Errorf("build orchestration_router node %q: model is required", spec.ID)
-			}
-
-			node := nodes.NewOrchestrationRouterNode(ctx.Model)
+			node := nodes.NewOrchestrationRouterNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name

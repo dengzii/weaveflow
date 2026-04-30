@@ -16,7 +16,6 @@ const defaultMemoryStatePath = fruntime.StateKeyMemory
 
 type MemoryRecallNode struct {
 	NodeInfo
-	manager                memory.Manager
 	StateScope             string
 	MemoryStatePath        string
 	QueryPath              string
@@ -28,7 +27,7 @@ type MemoryRecallNode struct {
 	Types                  []memory.EntryType
 }
 
-func NewMemoryRecallNode(manager memory.Manager) *MemoryRecallNode {
+func NewMemoryRecallNode() *MemoryRecallNode {
 	id := uuid.New()
 	return &MemoryRecallNode{
 		NodeInfo: NodeInfo{
@@ -36,7 +35,6 @@ func NewMemoryRecallNode(manager memory.Manager) *MemoryRecallNode {
 			NodeName:        "MemoryRecall",
 			NodeDescription: "Recall long-term memory into structured state for downstream planning and execution.",
 		},
-		manager:                manager,
 		RequestInputPath:       fruntime.StateKeyRequest + ".input",
 		OrchestrationStatePath: fruntime.StateKeyOrchestration,
 	}
@@ -45,6 +43,12 @@ func NewMemoryRecallNode(manager memory.Manager) *MemoryRecallNode {
 func (n *MemoryRecallNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
 	if state == nil {
 		state = fruntime.State{}
+	}
+
+	svc := fruntime.ServicesFrom(ctx)
+	var manager memory.Manager
+	if svc != nil {
+		manager = svc.Memory
 	}
 
 	memoryState, err := ensureObjectStateAtPath(state, n.effectiveMemoryStatePath())
@@ -63,8 +67,8 @@ func (n *MemoryRecallNode) Invoke(ctx context.Context, state fruntime.State) (fr
 	}
 
 	var recalled []memory.Entry
-	if shouldRecall && n.manager != nil {
-		recalled, err = n.manager.Recall(query)
+	if shouldRecall && manager != nil {
+		recalled, err = manager.Recall(query)
 		if err != nil {
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "memory.recall.error", map[string]any{
 				"error": err.Error(),
@@ -77,7 +81,7 @@ func (n *MemoryRecallNode) Invoke(ctx context.Context, state fruntime.State) (fr
 	memoryState["query"] = serializeMemoryQuery(query, querySource, shouldRecall)
 	memoryState["recalled"] = serializeMemoryEntries(recalled)
 	memoryState["stats"] = map[string]any{
-		"backend_enabled": n.manager != nil,
+		"backend_enabled": manager != nil,
 		"requested":       shouldRecall,
 		"count":           len(recalled),
 		"source":          querySource,

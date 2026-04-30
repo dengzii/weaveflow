@@ -28,30 +28,28 @@ const defaultGraphSystemPrompt = "You are a helpful ReAct agent. Use tools when 
 
 type apiGraph struct {
 	graphs   map[string]*fruntime.GraphRunner
-	buildCtx *weaveflow.BuildContext
+	services *fruntime.Services
 	registry *weaveflow.Registry
 	baseDir  string
 }
 
 func newRunnerApi() (*apiGraph, error) {
-	toolSets := map[string]tools.Tool{
-		"current_time": tools.NewCurrentTime(),
-		"calculator":   tools.NewCalculator(),
-	}
-
 	model, err := openai.New()
 	if err != nil {
 		return nil, err
 	}
 
-	buildContext := weaveflow.BuildContext{
+	services := &fruntime.Services{
 		Model: model,
-		Tools: toolSets,
+		Tools: map[string]tools.Tool{
+			"current_time": tools.NewCurrentTime(),
+			"calculator":   tools.NewCalculator(),
+		},
 	}
 
 	return &apiGraph{
 		graphs:   map[string]*fruntime.GraphRunner{},
-		buildCtx: &buildContext,
+		services: services,
 		registry: weaveflow.DefaultRegistry(),
 		baseDir:  "graph_run",
 	}, nil
@@ -132,9 +130,10 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 		return err
 	}
 
-	buildContext := *a.buildCtx
-	buildContext.InstanceConfig = &instance
-	buildContext.GraphResolver = a.resolveGraphDefinitionByRef
+	buildContext := weaveflow.BuildContext{
+		InstanceConfig: &instance,
+		GraphResolver:  a.resolveGraphDefinitionByRef,
+	}
 	graph, err := a.registry.BuildGraphInstance(graphDef, instance, &buildContext)
 	if err != nil {
 		return err
@@ -151,19 +150,21 @@ func (a *apiGraph) NewRun(ctx *gin.Context, request *NewRunRequest) error {
 	runner.Breakpoints = effectiveBreakpoints(runRequest.Debug, appliedDef)
 	a.graphs[instance.ID] = runner
 
+	runCtx := fruntime.WithServices(ctx.Request.Context(), a.services)
+
 	var run fruntime.RunRecord
 	var state fruntime.State
 	switch {
 	case runRequest.ResumeFromCheckpointID != "":
-		run, state, err = runner.ResumeFromCheckpoint(ctx, runRequest.ResumeFromCheckpointID, runRequest.Input)
+		run, state, err = runner.ResumeFromCheckpoint(runCtx, runRequest.ResumeFromCheckpointID, runRequest.Input)
 	case runRequest.ResumeFromRunID != "":
-		run, state, err = runner.Resume(ctx, runRequest.ResumeFromRunID, runRequest.Input)
+		run, state, err = runner.Resume(runCtx, runRequest.ResumeFromRunID, runRequest.Input)
 	default:
 		initialState, stateErr := initialRunState(instance, runRequest)
 		if stateErr != nil {
 			return stateErr
 		}
-		run, state, err = runner.Start(ctx, initialState)
+		run, state, err = runner.Start(runCtx, initialState)
 	}
 	if err != nil {
 		return err

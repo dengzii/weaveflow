@@ -16,7 +16,10 @@ func ToolsExample() {
 		"current_time": tools.NewCurrentTime(),
 	}
 
-	node := nodes.NewToolCallNode(toolSet)
+	svc := &runtime.Services{Tools: toolSet}
+	ctx := runtime.WithServices(context.Background(), svc)
+
+	node := nodes.NewToolCallNode()
 	node.StateScope = "agent"
 	node.Parallel = true
 
@@ -52,7 +55,7 @@ func ToolsExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := node.Invoke(ctx, state)
 	must(err)
 
 	conv := runtime.Conversation(result, "agent")

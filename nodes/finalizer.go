@@ -24,12 +24,11 @@ const (
 
 type FinalizerNode struct {
 	NodeInfo
-	model            llms.Model
 	StateScope       string
 	PlannerStatePath string
 }
 
-func NewFinalizerNode(model llms.Model) *FinalizerNode {
+func NewFinalizerNode() *FinalizerNode {
 	id := uuid.New()
 	return &FinalizerNode{
 		NodeInfo: NodeInfo{
@@ -37,7 +36,6 @@ func NewFinalizerNode(model llms.Model) *FinalizerNode {
 			NodeName:        "Finalizer",
 			NodeDescription: "Generate the final answer from verification results, observations, and evidence.",
 		},
-		model: model,
 	}
 }
 
@@ -58,6 +56,12 @@ func (n *FinalizerNode) effectivePlannerPath() string {
 func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
 	if state == nil {
 		state = fruntime.State{}
+	}
+
+	svc := fruntime.ServicesFrom(ctx)
+	var model llms.Model
+	if svc != nil {
+		model = svc.Model
 	}
 
 	conversation := fruntime.Conversation(state, n.effectiveScope())
@@ -100,7 +104,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 
 	switch outcome {
 	case FinalStatusSuccess:
-		answer, err = n.generateSuccessAnswer(ctx, state, plannerState, observations, evidence)
+		answer, err = n.generateSuccessAnswer(ctx, model, state, plannerState, observations, evidence)
 	case FinalStatusFailed:
 		answer = n.generateFailureAnswer(verification, plannerState, observations)
 	case FinalStatusNeedsClarification:
@@ -176,8 +180,8 @@ func (n *FinalizerNode) determineOutcome(verification fruntime.State) string {
 	return FinalStatusSuccess
 }
 
-func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, state fruntime.State, plannerState fruntime.State, observations []map[string]any, evidence []map[string]any) (string, error) {
-	if n.model == nil {
+func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, model llms.Model, state fruntime.State, plannerState fruntime.State, observations []map[string]any, evidence []map[string]any) (string, error) {
+	if model == nil {
 		return n.fallbackAnswer(state, observations), nil
 	}
 
@@ -196,7 +200,7 @@ func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, state fruntim
 
 	prompt := buildFinalizerPrompt(objective, planSummary, observations, evidence)
 
-	resp, err := n.model.GenerateContent(ctx,
+	resp, err := model.GenerateContent(ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, finalizerSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),

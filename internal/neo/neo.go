@@ -12,6 +12,23 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+func NewServices(model llms.Model, baseDir string) *fruntime.Services {
+	model = fruntime.WrapLLM(model)
+	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
+	return &fruntime.Services{
+		Model:  model,
+		Memory: memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}),
+		Tools: map[string]tools.Tool{
+			"current_time": tools.NewCurrentTime(),
+			"calculator":   tools.NewCalculator(),
+			"file_read":    tools.NewFileRead(),
+			"file_write":   tools.NewFileWrite(),
+			"web_fetch":    tools.NewWebFetch(),
+			"web_search":   tools.NewWebSearch(),
+		},
+	}
+}
+
 const stateScope = "agent"
 
 type Config struct {
@@ -34,24 +51,7 @@ func DefaultConfig() Config {
 	}
 }
 
-func NewBuildContext(model llms.Model, baseDir string) *weaveflow.BuildContext {
-	model = fruntime.WrapLLM(model)
-	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
-	return &weaveflow.BuildContext{
-		Model:  model,
-		Memory: memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}),
-		Tools: map[string]tools.Tool{
-			"current_time": tools.NewCurrentTime(),
-			"calculator":   tools.NewCalculator(),
-			"file_read":    tools.NewFileRead(),
-			"file_write":   tools.NewFileWrite(),
-			"web_fetch":    tools.NewWebFetch(),
-			"web_search":   tools.NewWebSearch(),
-		},
-	}
-}
-
-func NewGraph(buildCtx *weaveflow.BuildContext, cfg Config) (*weaveflow.Graph, error) {
+func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	scope := cfg.StateScope
 	if scope == "" {
 		scope = stateScope
@@ -69,7 +69,7 @@ func NewGraph(buildCtx *weaveflow.BuildContext, cfg Config) (*weaveflow.Graph, e
 		return nil, err
 	}
 
-	memRecall := nodes.NewMemoryRecallNode(buildCtx.Memory)
+	memRecall := nodes.NewMemoryRecallNode()
 	memRecall.StateScope = scope
 	memRecall.Limit = cfg.MemoryRecallLimit
 	memRecall.Tags = cfg.MemoryRecallTags
@@ -77,14 +77,14 @@ func NewGraph(buildCtx *weaveflow.BuildContext, cfg Config) (*weaveflow.Graph, e
 		return nil, err
 	}
 
-	router := nodes.NewOrchestrationRouterNode(buildCtx.Model)
+	router := nodes.NewOrchestrationRouterNode()
 	router.InputPath = fruntime.StateKeyRequest + ".input"
 	router.AvailableModes = []string{"direct", "planner"}
 	if err := graph.AddNode(router); err != nil {
 		return nil, err
 	}
 
-	planner := nodes.NewPlannerNode(buildCtx.Model)
+	planner := nodes.NewPlannerNode()
 	planner.ContextPaths = []string{fruntime.StateKeyMemory, fruntime.StateKeyExecution}
 	planner.MaxSteps = cfg.PlannerMaxSteps
 	if err := graph.AddNode(planner); err != nil {
@@ -103,13 +103,13 @@ func NewGraph(buildCtx *weaveflow.BuildContext, cfg Config) (*weaveflow.Graph, e
 		return nil, err
 	}
 
-	llmNode := nodes.NewLLMNode(buildCtx.Model, buildCtx.Tools)
+	llmNode := nodes.NewLLMNode()
 	llmNode.StateScope = scope
 	if err := graph.AddNode(llmNode); err != nil {
 		return nil, err
 	}
 
-	toolCall := nodes.NewToolCallNode(buildCtx.Tools)
+	toolCall := nodes.NewToolCallNode()
 	toolCall.StateScope = scope
 	if err := graph.AddNode(toolCall); err != nil {
 		return nil, err
@@ -121,19 +121,19 @@ func NewGraph(buildCtx *weaveflow.BuildContext, cfg Config) (*weaveflow.Graph, e
 		return nil, err
 	}
 
-	verifier := nodes.NewVerifierNode(buildCtx.Model)
+	verifier := nodes.NewVerifierNode()
 	verifier.StateScope = scope
 	if err := graph.AddNode(verifier); err != nil {
 		return nil, err
 	}
 
-	finalizer := nodes.NewFinalizerNode(buildCtx.Model)
+	finalizer := nodes.NewFinalizerNode()
 	finalizer.StateScope = scope
 	if err := graph.AddNode(finalizer); err != nil {
 		return nil, err
 	}
 
-	memWrite := nodes.NewMemoryWriteNode(buildCtx.Memory)
+	memWrite := nodes.NewMemoryWriteNode()
 	memWrite.StateScope = scope
 	memWrite.MinRequestLength = 8
 	memWrite.MinAnswerLength = 12

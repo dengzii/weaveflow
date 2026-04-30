@@ -27,7 +27,6 @@ const (
 
 type OrchestrationRouterNode struct {
 	NodeInfo
-	model                  llms.Model
 	OrchestrationStatePath string
 	InputPath              string
 	StateScope             string
@@ -46,7 +45,7 @@ type orchestrationRouterResponse struct {
 	TargetSubgraph        string `json:"target_subgraph"`
 }
 
-func NewOrchestrationRouterNode(model llms.Model) *OrchestrationRouterNode {
+func NewOrchestrationRouterNode() *OrchestrationRouterNode {
 	id := uuid.New()
 	return &OrchestrationRouterNode{
 		NodeInfo: NodeInfo{
@@ -54,15 +53,15 @@ func NewOrchestrationRouterNode(model llms.Model) *OrchestrationRouterNode {
 			NodeName:        "OrchestrationRouter",
 			NodeDescription: "Decide whether to clarify, use memory, or route into planner/supervisor/direct execution.",
 		},
-		model:                  model,
 		OrchestrationStatePath: defaultOrchestrationStatePath,
 		AvailableModes:         []string{"direct", "planner", "supervisor"},
 	}
 }
 
 func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
-	if n.model == nil {
-		return state, errors.New("orchestration router model is nil")
+	svc := fruntime.ServicesFrom(ctx)
+	if svc == nil || svc.Model == nil {
+		return state, errors.New("orchestration router: model service not available")
 	}
 	if state == nil {
 		state = fruntime.State{}
@@ -87,7 +86,7 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 	}
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.prompt", payload)
 
-	resp, err := n.model.GenerateContent(
+	resp, err := svc.Model.GenerateContent(
 		ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, orchestrationRouterPrompt),

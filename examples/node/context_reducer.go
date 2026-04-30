@@ -15,7 +15,10 @@ func ContextReducerExample() {
 	model, err := openai.New()
 	must(err)
 
-	node := nodes.NewContextReducerNode(model)
+	svc := &runtime.Services{Model: model}
+	ctx := runtime.WithServices(context.Background(), svc)
+
+	node := nodes.NewContextReducerNode()
 	node.StateScope = "agent"
 	node.MaxMessages = 6
 	node.PreserveSystem = true
@@ -39,7 +42,7 @@ func ContextReducerExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, nodeMessageText(msg))
 	}
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := node.Invoke(ctx, state)
 	must(err)
 
 	conv := runtime.Conversation(result, "agent")

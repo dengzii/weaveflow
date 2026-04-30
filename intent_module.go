@@ -1,7 +1,6 @@
 package weaveflow
 
 import (
-	"fmt"
 	"strings"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
@@ -90,11 +89,7 @@ func intentAnalyzerNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			if ctx == nil || ctx.Model == nil {
-				return nil, fmt.Errorf("build intent_analyzer nodes %q: model is required", spec.ID)
-			}
-
-			node := nodes.NewIntentAnalyzerNode(ctx.Model)
+			node := nodes.NewIntentAnalyzerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name

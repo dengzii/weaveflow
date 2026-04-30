@@ -13,7 +13,10 @@ import (
 func MemoryWriteExample() {
 	mgr := memory.New(nil)
 
-	node := nodes.NewMemoryWriteNode(mgr)
+	svc := &runtime.Services{Memory: mgr}
+	ctx := runtime.WithServices(context.Background(), svc)
+
+	node := nodes.NewMemoryWriteNode()
 	node.IncludeRequest = true
 	node.IncludeFinalAnswer = true
 	node.IncludeSummary = true
@@ -44,7 +47,7 @@ func MemoryWriteExample() {
 	fmt.Println("input request:")
 	fmt.Println(state["request"])
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := node.Invoke(ctx, state)
 	must(err)
 
 	fmt.Println()

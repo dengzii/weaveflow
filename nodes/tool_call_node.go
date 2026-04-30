@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"sync"
 	"weaveflow/dsl"
@@ -19,12 +18,12 @@ import (
 
 type ToolsNode struct {
 	NodeInfo
-	Tools      map[string]tools.Tool
+	ToolIDs    []string
 	StateScope string
 	Parallel   bool
 }
 
-func NewToolCallNode(tools map[string]tools.Tool) *ToolsNode {
+func NewToolCallNode() *ToolsNode {
 	id := uuid.New()
 	return &ToolsNode{
 		NodeInfo: NodeInfo{
@@ -32,12 +31,14 @@ func NewToolCallNode(tools map[string]tools.Tool) *ToolsNode {
 			NodeName:        "ToolCall",
 			NodeDescription: "Execute tool calls emitted by the model.",
 		},
-		Tools:    tools,
 		Parallel: true,
 	}
 }
 
 func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+	svc := fruntime.ServicesFrom(ctx)
+	nodeTools := svc.FilterTools(t.ToolIDs)
+
 	conversation := fruntime.Conversation(state, t.StateScope)
 
 	messages := conversation.Messages()
@@ -69,14 +70,14 @@ func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.
 
 			go func(index int, toolCall llms.ToolCall) {
 				defer wg.Done()
-				toolMessages[index] = t.executeToolCallMessage(ctx, toolCall)
+				toolMessages[index] = executeToolCallMessage(ctx, nodeTools, toolCall)
 			}(index, toolCall)
 		}
 		wg.Wait()
 	} else {
 		for index, toolCall := range toolCalls {
 			t.publishToolCallStart(ctx, toolCall)
-			toolMessages[index] = t.executeToolCallMessage(ctx, toolCall)
+			toolMessages[index] = executeToolCallMessage(ctx, nodeTools, toolCall)
 		}
 	}
 
@@ -86,30 +87,24 @@ func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.
 }
 
 func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	toolIDs := make([]string, 0, len(t.Tools))
-	for id := range t.Tools {
-		toolIDs = append(toolIDs, id)
-	}
-	sort.Strings(toolIDs)
-
 	return dsl.GraphNodeSpec{
 		ID:          t.ID(),
 		Name:        t.Name(),
 		Type:        "tools",
 		Description: t.Description(),
 		Config: map[string]any{
-			"tool_ids":    toolIDs,
+			"tool_ids":    append([]string(nil), t.ToolIDs...),
 			"state_scope": t.StateScope,
 		},
 	}
 }
 
-func (t *ToolsNode) executeToolCall(ctx context.Context, toolCall llms.ToolCall) (string, error) {
+func executeToolCall(ctx context.Context, available map[string]tools.Tool, toolCall llms.ToolCall) (string, error) {
 	if toolCall.FunctionCall == nil {
 		return "", errors.New("tool call has no function payload")
 	}
 
-	tool, ok := t.Tools[toolCall.FunctionCall.Name]
+	tool, ok := available[toolCall.FunctionCall.Name]
 	if !ok {
 		return "", fmt.Errorf("tool %q not found", toolCall.FunctionCall.Name)
 	}
@@ -140,9 +135,9 @@ func (t *ToolsNode) publishToolCallStart(ctx context.Context, toolCall llms.Tool
 	})
 }
 
-func (t *ToolsNode) executeToolCallMessage(ctx context.Context, toolCall llms.ToolCall) llms.MessageContent {
+func executeToolCallMessage(ctx context.Context, available map[string]tools.Tool, toolCall llms.ToolCall) llms.MessageContent {
 	name := toolCallName(toolCall)
-	result, err := t.executeToolCall(ctx, toolCall)
+	result, err := executeToolCall(ctx, available, toolCall)
 	if err != nil {
 		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolFailed, map[string]any{
 			"tool_call_id": toolCall.ID,

@@ -64,7 +64,12 @@ func TestIntentAnalyzerBuildsAndWritesIntentState(t *testing.T) {
 		},
 	}
 
-	graph, err := registry.BuildGraph(def, &BuildContext{
+	graph, err := registry.BuildGraph(def, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build intent graph: %v", err)
+	}
+
+	svc := &fruntime.Services{
 		Model: stubIntentModel{
 			response: `{
   "label": "search",
@@ -87,17 +92,15 @@ func TestIntentAnalyzerBuildsAndWritesIntentState(t *testing.T) {
   ]
 }`,
 		},
-	})
-	if err != nil {
-		t.Fatalf("build intent graph: %v", err)
 	}
+	ctx := fruntime.WithServices(context.Background(), svc)
 
 	state := State{
 		"request": map[string]any{
 			"text": "Please look up browser automation options.",
 		},
 	}
-	state, err = graph.Run(context.Background(), state)
+	state, err = graph.Run(ctx, state)
 	if err != nil {
 		t.Fatalf("run intent graph: %v", err)
 	}

@@ -13,7 +13,10 @@ func IntentAnalyzerExample() {
 	llm, err := openai.New()
 	must(err)
 
-	node := nodes.NewIntentAnalyzerNode(llm)
+	svc := &runtime.Services{Model: llm}
+	ctx := runtime.WithServices(context.Background(), svc)
+
+	node := nodes.NewIntentAnalyzerNode()
 	node.InputPath = "request"
 	node.IntentOptions = []string{
 		"qa",
@@ -31,7 +34,7 @@ func IntentAnalyzerExample() {
 	fmt.Println("input:")
 	fmt.Println(state["request"])
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := node.Invoke(ctx, state)
 	must(err)
 
 	fmt.Println()

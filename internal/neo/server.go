@@ -5,7 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 
-	"weaveflow"
+	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
@@ -20,15 +20,15 @@ type Server struct {
 	historyCtrl *HistoryController
 }
 
-func NewServer(buildCtx *weaveflow.BuildContext, cfg Config, baseDir string) *Server {
-	allTools := make(map[string]tools.Tool, len(buildCtx.Tools))
-	toolFlags := make(map[string]bool, len(buildCtx.Tools))
-	for name, tool := range buildCtx.Tools {
+func NewServer(services *fruntime.Services, cfg Config, baseDir string) *Server {
+	allTools := make(map[string]tools.Tool, len(services.Tools))
+	toolFlags := make(map[string]bool, len(services.Tools))
+	for name, tool := range services.Tools {
 		allTools[name] = tool
 		toolFlags[name] = true
 	}
 
-	chatCtrl := NewChatController(buildCtx, &cfg, toolFlags, "auto", baseDir)
+	chatCtrl := NewChatController(services, &cfg, toolFlags, "auto", baseDir)
 	configCtrl := NewConfigController(&cfg, allTools, toolFlags, "auto")
 	historyCtrl := NewHistoryController(chatCtrl)
 

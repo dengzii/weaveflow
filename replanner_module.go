@@ -1,7 +1,6 @@
 package weaveflow
 
 import (
-	"fmt"
 	"strings"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
@@ -41,11 +40,7 @@ func replannerNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			if ctx == nil || ctx.Model == nil {
-				return nil, fmt.Errorf("build replanner nodes %q: model is required", spec.ID)
-			}
-
-			node := nodes.NewReplannerNode(ctx.Model)
+			node := nodes.NewReplannerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name

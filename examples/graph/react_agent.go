@@ -3,7 +3,6 @@ package main
 import (
 	"path/filepath"
 	"weaveflow"
-	"weaveflow/llms/openai"
 	"weaveflow/memory"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
@@ -22,17 +21,6 @@ func newReActAgentInitialState() fruntime.State {
 	messages := make([]llms.MessageContent, 0, 2)
 	messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt))
 	return fruntime.NewBaseState(messages, 10)
-}
-
-func newReActAgentBuildContext() *weaveflow.BuildContext {
-	model, err := openai.New()
-	tryPanic(err)
-
-	return &weaveflow.BuildContext{
-		Model:  fruntime.WrapLLM(model),
-		Memory: newReActAgentMemory(),
-		Tools:  newReActAgentTools(),
-	}
 }
 
 func newReActAgentTools() map[string]tools.Tool {
@@ -56,19 +44,18 @@ func newReActAgentMemory() memory.Manager {
 
 func newReActAgentGraph() *weaveflow.Graph {
 	graph := weaveflow.NewGraph()
-	buildCtx := newReActAgentBuildContext()
 
 	humanInLoop := nodes.NewHumanMessageNode()
 	humanInLoop.StateScope = reactAgentStateScope
 
 	tryPanic(graph.AddNode(humanInLoop))
 
-	llm := nodes.NewLLMNode(buildCtx.Model, buildCtx.Tools)
+	llm := nodes.NewLLMNode()
 	llm.StateScope = reactAgentStateScope
 
 	tryPanic(graph.AddNode(llm))
 
-	toolCall := nodes.NewToolCallNode(buildCtx.Tools)
+	toolCall := nodes.NewToolCallNode()
 	toolCall.StateScope = llm.StateScope
 
 	tryPanic(graph.AddNode(toolCall))

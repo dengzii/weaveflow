@@ -6,11 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"weaveflow/dsl"
-	"weaveflow/memory"
 	"weaveflow/nodes"
-	"weaveflow/tools"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 type JSONSchema = dsl.JSONSchema
@@ -26,9 +22,6 @@ type ConditionSchema = dsl.ConditionSchema
 type GraphResolver func(graphRef string) (dsl.GraphDefinition, error)
 
 type BuildContext struct {
-	Model          llms.Model
-	Memory         memory.Manager
-	Tools          map[string]tools.Tool
 	InstanceConfig *dsl.GraphInstanceConfig
 	GraphResolver  GraphResolver
 	graphBuildPath []string
@@ -232,11 +225,7 @@ func DefaultRegistry() *Registry {
 		},
 		ResolveStateContract: resolveContextReducerStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			if ctx == nil || ctx.Model == nil {
-				return nil, fmt.Errorf("build context_reducer nodes %q: model is required", spec.ID)
-			}
-
-			node := nodes.NewContextReducerNode(ctx.Model)
+			node := nodes.NewContextReducerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -280,14 +269,7 @@ func DefaultRegistry() *Registry {
 		},
 		ResolveStateContract: resolveLLMStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			if ctx.Model == nil {
-				return nil, fmt.Errorf("build llm nodes %q: model is required", spec.ID)
-			}
-			ts, err := resolveTools(ctx.Tools, stringSliceConfig(spec.Config, "tool_ids"))
-			if err != nil {
-				return nil, fmt.Errorf("build llm nodes %q: %w", spec.ID, err)
-			}
-			node := nodes.NewLLMNode(ctx.Model, ts)
+			node := nodes.NewLLMNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -295,6 +277,7 @@ func DefaultRegistry() *Registry {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
+			node.ToolIDs = stringSliceConfig(spec.Config, "tool_ids")
 			node.StateScope = stringConfig(spec.Config, "state_scope")
 			return node, nil
 		},
@@ -319,12 +302,7 @@ func DefaultRegistry() *Registry {
 		},
 		ResolveStateContract: resolveToolsStateContract,
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			toolIDs := stringSliceConfig(spec.Config, "tool_ids")
-			ts, err := resolveTools(ctx.Tools, toolIDs)
-			if err != nil {
-				return nil, fmt.Errorf("build tools nodes %q: %w", spec.ID, err)
-			}
-			node := nodes.NewToolCallNode(ts)
+			node := nodes.NewToolCallNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -332,6 +310,7 @@ func DefaultRegistry() *Registry {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
+			node.ToolIDs = stringSliceConfig(spec.Config, "tool_ids")
 			node.StateScope = stringConfig(spec.Config, "state_scope")
 			return node, nil
 		},
@@ -634,26 +613,6 @@ func (r *Registry) JSONSchema() JSONSchema {
 		conditions[key] = def.ConditionSchema
 	}
 	return dsl.BuildGraphDefinitionSchema(dsl.CommonStateSchemaID, r.StateFields, nodeTypes, conditions)
-}
-
-func resolveTools(all map[string]tools.Tool, ids []string) (map[string]tools.Tool, error) {
-	if len(ids) == 0 {
-		return all, nil
-	}
-
-	filtered := make(map[string]tools.Tool, len(ids))
-	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if id == "" {
-			return nil, fmt.Errorf("tool id is empty")
-		}
-		tool, ok := all[id]
-		if !ok {
-			return nil, fmt.Errorf("tool_id %q is not registered", id)
-		}
-		filtered[id] = tool
-	}
-	return filtered, nil
 }
 
 func stringSliceConfig(config map[string]any, key string) []string {

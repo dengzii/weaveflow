@@ -74,7 +74,7 @@ func memoryRecallNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			node := nodes.NewMemoryRecallNode(memoryManagerFromBuildContext(ctx))
+			node := nodes.NewMemoryRecallNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -125,7 +125,7 @@ func memoryWriteNodeTypeDefinition() NodeTypeDefinition {
 			},
 		},
 		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			node := nodes.NewMemoryWriteNode(memoryManagerFromBuildContext(ctx))
+			node := nodes.NewMemoryWriteNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
 				node.NodeName = spec.Name
@@ -253,13 +253,6 @@ func resolveMemoryWriteStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract,
 			},
 		},
 	}, nil
-}
-
-func memoryManagerFromBuildContext(ctx *BuildContext) memory.Manager {
-	if ctx == nil {
-		return nil
-	}
-	return ctx.Memory
 }
 
 func memoryEntryTypesConfig(config map[string]any, key string) []memory.EntryType {

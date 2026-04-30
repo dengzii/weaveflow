@@ -12,7 +12,6 @@ import (
 
 type MemoryWriteNode struct {
 	NodeInfo
-	manager            memory.Manager
 	MemoryStatePath    string
 	StateScope         string
 	RequestInputPath   string
@@ -27,7 +26,7 @@ type MemoryWriteNode struct {
 	MinSummaryLength   int
 }
 
-func NewMemoryWriteNode(manager memory.Manager) *MemoryWriteNode {
+func NewMemoryWriteNode() *MemoryWriteNode {
 	id := uuid.New()
 	return &MemoryWriteNode{
 		NodeInfo: NodeInfo{
@@ -35,7 +34,6 @@ func NewMemoryWriteNode(manager memory.Manager) *MemoryWriteNode {
 			NodeName:        "MemoryWrite",
 			NodeDescription: "Persist durable request and final-answer memory for future runs.",
 		},
-		manager:            manager,
 		RequestInputPath:   fruntime.StateKeyRequest + ".input",
 		PlannerStatePath:   fruntime.StateKeyPlanner,
 		IncludeRequest:     true,
@@ -50,6 +48,12 @@ func (n *MemoryWriteNode) Invoke(ctx context.Context, state fruntime.State) (fru
 		state = fruntime.State{}
 	}
 
+	svc := fruntime.ServicesFrom(ctx)
+	var manager memory.Manager
+	if svc != nil {
+		manager = svc.Memory
+	}
+
 	memoryState, err := ensureObjectStateAtPath(state, n.effectiveMemoryStatePath())
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "memory.write.error", map[string]any{"error": err.Error()})
@@ -58,8 +62,8 @@ func (n *MemoryWriteNode) Invoke(ctx context.Context, state fruntime.State) (fru
 
 	candidates := n.collectEntries(state)
 	existing := []memory.Entry{}
-	if n.manager != nil && n.Deduplicate {
-		existing, err = n.manager.Load(nil)
+	if manager != nil && n.Deduplicate {
+		existing, err = manager.Load(nil)
 		if err != nil {
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "memory.write.error", map[string]any{"error": err.Error()})
 			return state, err
@@ -67,8 +71,8 @@ func (n *MemoryWriteNode) Invoke(ctx context.Context, state fruntime.State) (fru
 	}
 
 	entries, stats := n.filterEntries(candidates, existing)
-	if n.manager != nil && len(entries) > 0 {
-		if err := n.manager.Append(entries...); err != nil {
+	if manager != nil && len(entries) > 0 {
+		if err := manager.Append(entries...); err != nil {
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "memory.write.error", map[string]any{
 				"error":   err.Error(),
 				"entries": serializeMemoryEntries(entries),
@@ -79,7 +83,7 @@ func (n *MemoryWriteNode) Invoke(ctx context.Context, state fruntime.State) (fru
 
 	memoryState["written"] = serializeMemoryEntries(entries)
 	memoryState["write_stats"] = map[string]any{
-		"backend_enabled": n.manager != nil,
+		"backend_enabled": manager != nil,
 		"count":           len(entries),
 		"candidate_count": len(candidates),
 		"deduplicate":     n.Deduplicate,
