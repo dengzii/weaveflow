@@ -21,8 +21,8 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) *Server 
 		toolFlags[name] = true
 	}
 
-	chatCtrl := NewChatController(services, &cfg, toolFlags, "auto", baseDir)
-	configCtrl := NewConfigController(&cfg, allTools, toolFlags, "auto")
+	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir)
+	configCtrl := NewConfigController(&cfg, allTools, toolFlags)
 	historyCtrl := NewHistoryController(chatCtrl)
 
 	return &Server{

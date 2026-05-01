@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"time"
@@ -23,17 +24,18 @@ type ChatController struct {
 	config    *Config
 	allTools  map[string]tools.Tool
 	toolFlags map[string]bool
-	mode      string
 	baseDir   string
 
-	mu        sync.RWMutex
-	runner    *fruntime.GraphRunner
-	runID     string
-	cancelFn  context.CancelFunc
-	lastState fruntime.State
+	mu          sync.RWMutex
+	runner      *fruntime.GraphRunner
+	runID       string
+	cancelFn    context.CancelFunc
+	lastState   fruntime.State
+	graphCache  *weaveflow.Graph
+	graphCfgKey Config
 }
 
-func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, mode, baseDir string) *ChatController {
+func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string) *ChatController {
 	allTools := make(map[string]tools.Tool, len(services.Tools))
 	for name, tool := range services.Tools {
 		allTools[name] = tool
@@ -43,7 +45,6 @@ func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[s
 		config:    cfg,
 		allTools:  allTools,
 		toolFlags: toolFlags,
-		mode:      mode,
 		baseDir:   baseDir,
 	}
 }
@@ -71,14 +72,23 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 	cfg := *ctrl.config
 	services := ctrl.effectiveServices()
-	ctrl.mu.Unlock()
 
-	graph, err := NewGraph(cfg)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "build graph failed: " + err.Error()})
-		return
+	var graph *weaveflow.Graph
+	if ctrl.graphCache != nil && reflect.DeepEqual(ctrl.graphCfgKey, cfg) {
+		graph = ctrl.graphCache
+	} else {
+		var buildErr error
+		graph, buildErr = NewGraph(cfg)
+		if buildErr != nil {
+			ctrl.mu.Unlock()
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "build graph failed: " + buildErr.Error()})
+			return
+		}
+		ctrl.graphCache = graph
+		ctrl.graphCfgKey = cfg
+		_ = graph.WriteToFile(filepath.Join(ctrl.baseDir, "graph.json"))
 	}
-	_ = graph.WriteToFile(filepath.Join(ctrl.baseDir, "graph.json"))
+	ctrl.mu.Unlock()
 
 	log, _ := zap.NewDevelopment()
 	fruntime.SetLogger(log)

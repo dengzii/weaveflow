@@ -87,9 +87,11 @@ func (l *llmResponseEventHandler) emitStreamingResponse(ctx context.Context, rea
 			l.reasoningEmitted = true
 			_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, map[string]any{"text": string(l.bufferReasoning)})
 		}
+		// Detect tool-call payload (JSON array); skip content emission for those.
 		if !l.toolCallDetected {
-			/// FXIME Detect tool call, skip the rest of the content
 			l.toolCallDetected = strings.HasPrefix(content, "[{")
+		}
+		if l.toolCallDetected {
 			return nil
 		}
 		l.bufferContent = append(l.bufferContent, chunk...)

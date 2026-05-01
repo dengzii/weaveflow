@@ -19,12 +19,12 @@ type ConfigController struct {
 	mu sync.RWMutex
 }
 
-func NewConfigController(cfg *Config, allTools map[string]tools.Tool, toolFlags map[string]bool, mode string) *ConfigController {
+func NewConfigController(cfg *Config, allTools map[string]tools.Tool, toolFlags map[string]bool) *ConfigController {
 	return &ConfigController{
 		config:    cfg,
 		allTools:  allTools,
 		toolFlags: toolFlags,
-		mode:      mode,
+		mode:      cfg.Mode,
 	}
 }
 
@@ -90,6 +90,7 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 		mode := strings.TrimSpace(*req.Mode)
 		if mode == "auto" || mode == "direct" || mode == "planner" {
 			ctrl.mode = mode
+			ctrl.config.Mode = mode
 		}
 	}
 	for name, enabled := range req.Tools {

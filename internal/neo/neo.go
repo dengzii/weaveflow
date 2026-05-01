@@ -38,6 +38,9 @@ type Config struct {
 	PlannerMaxSteps   int
 	MemoryRecallLimit int
 	MemoryRecallTags  []string
+	// Mode controls routing: "auto" lets the router decide, "direct" forces
+	// single-step LLM, "planner" forces multi-step plan execution.
+	Mode string
 }
 
 func DefaultConfig() Config {
@@ -48,6 +51,7 @@ func DefaultConfig() Config {
 		PlannerMaxSteps:   6,
 		MemoryRecallLimit: 5,
 		MemoryRecallTags:  []string{"final_answer", "assistant_output", "user_input"},
+		Mode:              "auto",
 	}
 }
 
@@ -79,7 +83,14 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 
 	router := nodes.NewOrchestrationRouterNode()
 	router.InputPath = fruntime.StateKeyRequest + ".input"
-	router.AvailableModes = []string{"direct", "planner"}
+	switch cfg.Mode {
+	case "direct":
+		router.AvailableModes = []string{"direct"}
+	case "planner":
+		router.AvailableModes = []string{"planner"}
+	default:
+		router.AvailableModes = []string{"direct", "planner"}
+	}
 	if err := graph.AddNode(router); err != nil {
 		return nil, err
 	}

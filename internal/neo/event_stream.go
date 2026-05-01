@@ -114,6 +114,26 @@ func TranslateEvent(event fruntime.Event) *ChatEvent {
 			return nil
 		}
 		return translateChunk(event, ActionGenerating)
+	case fruntime.EventLLMContent:
+		// Non-streaming LLM call (e.g. Finalizer synthesizing final answer).
+		// Payload is a plain JSON string, not a {"text":...} map.
+		if !hasPrefix(event.NodeID, streamableContentPrefixes) {
+			return nil
+		}
+		text := extractPayloadText(event.Payload)
+		if text == "" {
+			return nil
+		}
+		action := ActionGenerating
+		if strings.HasPrefix(event.NodeID, "Finalizer_") {
+			action = ActionFinalizing
+		}
+		return &ChatEvent{
+			Type:      action,
+			Content:   text,
+			NodeID:    event.NodeID,
+			Timestamp: event.Timestamp,
+		}
 	case fruntime.EventLLMReasoningChunk:
 		if !hasPrefix(event.NodeID, streamableReasoningPrefixes) {
 			return nil
@@ -227,4 +247,17 @@ func extractPayloadString(payload json.RawMessage, key string) string {
 	}
 	v, _ := m[key].(string)
 	return v
+}
+
+// extractPayloadText handles both plain-string payloads (EventLLMContent)
+// and {"text": ...} map payloads (EventLLMContentChunk).
+func extractPayloadText(payload json.RawMessage) string {
+	if len(payload) == 0 {
+		return ""
+	}
+	var s string
+	if json.Unmarshal(payload, &s) == nil {
+		return s
+	}
+	return extractPayloadString(payload, "text")
 }
