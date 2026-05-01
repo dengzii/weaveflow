@@ -1,18 +1,11 @@
 package neo
 
 import (
-	"embed"
-	"io/fs"
-	"net/http"
-
 	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
 )
-
-//go:embed static/*
-var staticFiles embed.FS
 
 type Server struct {
 	chatCtrl    *ChatController
@@ -40,28 +33,13 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) *Server 
 }
 
 func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
-	// Chat routes
 	group.POST("/chat", s.chatCtrl.Handle)
 
-	// Config routes
 	configGroup := group.Group("/config")
 	{
 		configGroup.GET("", s.configCtrl.Get)
 		configGroup.PUT("", s.configCtrl.Update)
 	}
 
-	// History routes
 	group.GET("/history", s.historyCtrl.Get)
-
-	// Static files
-	staticSub, _ := fs.Sub(staticFiles, "static")
-	group.StaticFS("/static", http.FS(staticSub))
-	group.GET("/", func(c *gin.Context) {
-		data, err := staticFiles.ReadFile("static/index.html")
-		if err != nil {
-			c.Status(http.StatusInternalServerError)
-			return
-		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", data)
-	})
 }

@@ -28,6 +28,7 @@ func main() {
 
 	engine := gin.Default()
 	srv.RegisterRoutes(engine.Group("/neo"))
+	neo.NewReplayServer(*dataDir).RegisterGinRoutes(engine.Group("/api"))
 
 	display := *addr
 	if strings.HasPrefix(display, ":") {

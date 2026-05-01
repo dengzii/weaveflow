@@ -24,7 +24,7 @@ func NewServices(model llms.Model, baseDir string) *fruntime.Services {
 			"file_read":    tools.NewFileRead(),
 			"file_write":   tools.NewFileWrite(),
 			"web_fetch":    tools.NewWebFetch(),
-			"web_search":   tools.NewWebSearch(),
+			//"web_search":   tools.NewWebSearch(),
 		},
 	}
 }

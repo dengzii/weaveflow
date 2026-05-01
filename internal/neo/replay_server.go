@@ -1,0 +1,178 @@
+package neo
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strings"
+	"weaveflow/runtime"
+
+	"github.com/gin-gonic/gin"
+)
+
+// ReplayServer handles graph debug replay API requests.
+type ReplayServer struct {
+	defaultCacheDir string
+}
+
+type replayAPIEnvelope struct {
+	Data  any    `json:"data,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+// NewReplayServer creates a ReplayServer with the given default cache directory.
+func NewReplayServer(defaultCacheDir string) *ReplayServer {
+	return &ReplayServer{
+		defaultCacheDir: strings.TrimSpace(defaultCacheDir),
+	}
+}
+
+// RegisterGinRoutes registers replay API routes on the given Gin group.
+// Typically mounted at /api so that /api/runs and /api/run/* are reachable.
+func (s *ReplayServer) RegisterGinRoutes(group *gin.RouterGroup) {
+	group.GET("/runs", s.handleRuns)
+	group.GET("/run/*path", s.handleRunRoute)
+}
+
+func (s *ReplayServer) handleRuns(c *gin.Context) {
+	explorer, err := newCacheExplorer(s.requestedCacheDir(c))
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	runs, err := explorer.listRuns(c.Request.Context())
+	if err != nil {
+		replayWriteAPIError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	replayWriteAPIData(c, http.StatusOK, RunsResponse{
+		CacheDir: explorer.baseDir,
+		Sources:  explorer.sourceMetas(),
+		Runs:     runs,
+	})
+}
+
+func (s *ReplayServer) handleRunRoute(c *gin.Context) {
+	explorer, err := newCacheExplorer(s.requestedCacheDir(c))
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	// c.Param("path") is like /abc123 or /abc123/checkpoint/xyz
+	runID, routeType, entityID, err := parseRunRoutePath(c.Param("path"))
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	sourceID := strings.TrimSpace(c.Query("source"))
+	switch routeType {
+	case "run":
+		data, err := explorer.loadRunDetail(c.Request.Context(), runID, sourceID)
+		if err != nil {
+			replayWriteLookupError(c, err)
+			return
+		}
+		replayWriteAPIData(c, http.StatusOK, data)
+	case "checkpoint":
+		data, err := explorer.loadCheckpointDetail(c.Request.Context(), runID, sourceID, entityID)
+		if err != nil {
+			replayWriteLookupError(c, err)
+			return
+		}
+		replayWriteAPIData(c, http.StatusOK, data)
+	case "artifact":
+		if c.Query("download") == "1" {
+			artifact, _, err := explorer.loadArtifactRaw(c.Request.Context(), runID, sourceID, entityID)
+			if err != nil {
+				replayWriteLookupError(c, err)
+				return
+			}
+			replayWriteArtifactBinary(c, artifact)
+			return
+		}
+		data, err := explorer.loadArtifactDetail(c.Request.Context(), runID, sourceID, entityID)
+		if err != nil {
+			replayWriteLookupError(c, err)
+			return
+		}
+		replayWriteAPIData(c, http.StatusOK, data)
+	default:
+		replayWriteAPIError(c, http.StatusBadRequest, fmt.Errorf("unsupported route"))
+	}
+}
+
+func (s *ReplayServer) requestedCacheDir(c *gin.Context) string {
+	cacheDir := strings.TrimSpace(c.Query("cache_dir"))
+	if cacheDir != "" {
+		return cacheDir
+	}
+	return s.defaultCacheDir
+}
+
+// parseRunRoutePath parses the Gin wildcard path (e.g. "/abc123" or "/abc123/checkpoint/xyz").
+func parseRunRoutePath(path string) (runID string, routeType string, entityID string, err error) {
+	path = strings.Trim(path, "/")
+	if path == "" {
+		return "", "", "", fmt.Errorf("run id is required")
+	}
+
+	parts := strings.Split(path, "/")
+	for i, part := range parts {
+		decoded, decodeErr := url.PathUnescape(part)
+		if decodeErr != nil {
+			return "", "", "", decodeErr
+		}
+		parts[i] = decoded
+	}
+
+	switch len(parts) {
+	case 1:
+		return parts[0], "run", "", nil
+	case 3:
+		switch parts[1] {
+		case "checkpoint":
+			return parts[0], "checkpoint", parts[2], nil
+		case "artifact":
+			return parts[0], "artifact", parts[2], nil
+		}
+	}
+	return "", "", "", fmt.Errorf("invalid run route")
+}
+
+func replayWriteAPIData(c *gin.Context, status int, data any) {
+	replayWriteJSON(c, status, replayAPIEnvelope{Data: data})
+}
+
+func replayWriteAPIError(c *gin.Context, status int, err error) {
+	replayWriteJSON(c, status, replayAPIEnvelope{Error: err.Error()})
+}
+
+func replayWriteLookupError(c *gin.Context, err error) {
+	status := http.StatusInternalServerError
+	if err != nil && (strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "required")) {
+		status = http.StatusNotFound
+	}
+	replayWriteAPIError(c, status, err)
+}
+
+func replayWriteJSON(c *gin.Context, status int, payload replayAPIEnvelope) {
+	c.Header("Content-Type", "application/json; charset=utf-8")
+	c.Status(status)
+	encoder := json.NewEncoder(c.Writer)
+	encoder.SetIndent("", "  ")
+	_ = encoder.Encode(payload)
+}
+
+func replayWriteArtifactBinary(c *gin.Context, artifact runtime.Artifact) {
+	contentType := strings.TrimSpace(artifact.MIMEType)
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	c.Header("Content-Disposition", fmt.Sprintf("inline; filename=%q", artifact.ID))
+	c.Data(http.StatusOK, contentType, artifact.Data)
+}
