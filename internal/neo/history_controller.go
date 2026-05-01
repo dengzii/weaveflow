@@ -18,8 +18,10 @@ func NewHistoryController(chatCtrl *ChatController) *HistoryController {
 }
 
 type HistoryMessage struct {
-	Role  string        `json:"role"`
-	Parts []MessagePart `json:"parts,omitempty"`
+	Role      string        `json:"role"`
+	Parts     []MessagePart `json:"parts,omitempty"`
+	Status    string        `json:"status,omitempty"`
+	CreatedAt int64         `json:"created_at,omitempty"`
 }
 
 type MessagePart struct {
@@ -27,27 +29,32 @@ type MessagePart struct {
 	Text   string `json:"text,omitempty"`
 	Name   string `json:"name,omitempty"`
 	Result string `json:"result,omitempty"`
+	ID     string `json:"id,omitempty"` // tool call id, ignored by frontend
 }
 
 func (ctrl *HistoryController) Get(c *gin.Context) {
-	state := ctrl.chatCtrl.GetLastState()
-
-	if state == nil {
-		c.JSON(http.StatusOK, gin.H{"code": 200, "msg": "ok", "data": []HistoryMessage{}})
+	history, err := ctrl.chatCtrl.GetHistory()
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": err.Error()})
 		return
 	}
-
-	conversation := state.Conversation(stateScope)
-	messages := conversation.Messages()
-	history := convertMessages(messages)
-
 	c.JSON(http.StatusOK, gin.H{"code": 200, "msg": "ok", "data": history})
 }
 
-func convertMessages(messages []llms.MessageContent) []HistoryMessage {
+// convertMessages converts llms messages to HistoryMessages.
+// reasoningBlocks, if non-nil, are prepended as "thinking" parts to each
+// assistant message in order (one entry per LLM invocation; empty string = no thinking).
+func convertMessages(messages []llms.MessageContent, reasoningBlocks []string) []HistoryMessage {
 	result := make([]HistoryMessage, 0, len(messages))
+	aiIdx := 0
 	for _, msg := range messages {
 		hm := HistoryMessage{Role: string(msg.Role)}
+		if msg.Role == llms.ChatMessageTypeAI && aiIdx < len(reasoningBlocks) {
+			if r := reasoningBlocks[aiIdx]; r != "" {
+				hm.Parts = append(hm.Parts, MessagePart{Type: "thinking", Text: r})
+			}
+			aiIdx++
+		}
 		for _, part := range msg.Parts {
 			hm.Parts = append(hm.Parts, convertPart(part))
 		}
@@ -61,10 +68,40 @@ func convertPart(part llms.ContentPart) MessagePart {
 	case llms.TextContent:
 		return MessagePart{Type: "text", Text: p.Text}
 	case llms.ToolCall:
-		return MessagePart{Type: "tool_call", Name: p.FunctionCall.Name, Text: p.FunctionCall.Arguments}
+		mp := MessagePart{Type: "tool_call", ID: p.ID}
+		if p.FunctionCall != nil {
+			mp.Name = p.FunctionCall.Name
+			mp.Text = p.FunctionCall.Arguments
+		}
+		return mp
 	case llms.ToolCallResponse:
-		return MessagePart{Type: "tool_result", Name: p.Name, Result: p.Content}
+		return MessagePart{Type: "tool_result", ID: p.ToolCallID, Name: p.Name, Result: p.Content}
 	default:
 		return MessagePart{Type: "unknown"}
 	}
+}
+
+func historyToLLM(hm HistoryMessage) llms.MessageContent {
+	msg := llms.MessageContent{Role: llms.ChatMessageType(hm.Role)}
+	for _, p := range hm.Parts {
+		switch p.Type {
+		case "text":
+			msg.Parts = append(msg.Parts, llms.TextContent{Text: p.Text})
+		case "thinking":
+			// reasoning content is display-only; not sent back to the LLM
+		case "tool_call":
+			msg.Parts = append(msg.Parts, llms.ToolCall{
+				ID:           p.ID,
+				Type:         "function",
+				FunctionCall: &llms.FunctionCall{Name: p.Name, Arguments: p.Text},
+			})
+		case "tool_result":
+			msg.Parts = append(msg.Parts, llms.ToolCallResponse{
+				ToolCallID: p.ID,
+				Name:       p.Name,
+				Content:    p.Result,
+			})
+		}
+	}
+	return msg
 }

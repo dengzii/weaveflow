@@ -279,7 +279,7 @@ export function ChatPage({ chat, cfg }: Props) {
       </header>
 
       {/* Messages */}
-      <MessageList messages={chat.messages} renderMd={chat.renderMd} />
+      <MessageList messages={chat.messages} running={chat.running} />
 
       {/* Input */}
       <div className="shrink-0">

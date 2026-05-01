@@ -1,15 +1,14 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, Brain } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "./ui/collapsible";
-import { cn } from "../lib/utils";
+import { cn, renderMd } from "../lib/utils";
 
 interface Props {
   text: string;
   done: boolean;
-  renderMd: (src: string) => string;
 }
 
-export function ThinkingBlock({ text, done, renderMd }: Props) {
+export function ThinkingBlock({ text, done }: Props) {
   const [open, setOpen] = useState(false);
 
   if (!done) {

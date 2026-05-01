@@ -31,6 +31,7 @@ func NewServices(model llms.Model, baseDir string) *fruntime.Services {
 
 const stateScope = "agent"
 
+// Config todo move to run context or initial state
 type Config struct {
 	StateScope        string
 	SystemPrompt      string
@@ -291,8 +292,8 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	return graph, nil
 }
 
-func NewInitialState(input string) fruntime.State {
-	return fruntime.State{
+func NewInitialState(input string, history []llms.MessageContent) fruntime.State {
+	state := fruntime.State{
 		fruntime.StateKeyRequest: fruntime.State{
 			"input": input,
 		},
@@ -300,4 +301,11 @@ func NewInitialState(input string) fruntime.State {
 			"objective": input,
 		},
 	}
+	if len(history) > 0 {
+		msgs := make([]llms.MessageContent, len(history), len(history)+1)
+		copy(msgs, history)
+		msgs = append(msgs, llms.TextParts(llms.ChatMessageTypeHuman, input))
+		state.Conversation(stateScope).UpdateMessage(msgs)
+	}
+	return state
 }

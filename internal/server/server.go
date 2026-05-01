@@ -82,7 +82,10 @@ func (f *Server) Run() {
 	}
 	neoCfg := neo.DefaultConfig()
 	neoServices := neo.NewServices(neoModel, "neo_data")
-	neoServer := neo.NewServer(neoServices, neoCfg, "neo_data")
+	neoServer, err := neo.NewServer(neoServices, neoCfg, "neo_data")
+	if err != nil {
+		panic(err)
+	}
 	neoServer.RegisterRoutes(f.engine.Group("/neo"))
 
 	err = f.engine.Run(":8080")

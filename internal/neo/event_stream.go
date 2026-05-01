@@ -4,30 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
-	"time"
 	fruntime "weaveflow/runtime"
 )
 
-type ActionType string
+type ChatEventType string
 
 const (
-	ActionThinking    ActionType = "thinking"
-	ActionPlanning    ActionType = "planning"
-	ActionCallingTool ActionType = "calling_tool"
-	ActionToolResult  ActionType = "tool_result"
-	ActionGenerating  ActionType = "generating"
-	ActionVerifying   ActionType = "verifying"
-	ActionFinalizing  ActionType = "finalizing"
-	ActionComplete    ActionType = "complete"
-	ActionError       ActionType = "error"
+	ChatEventTypeStep       ChatEventType = "step_event"
+	ChatEventTypeThinking   ChatEventType = "thinking_chunk"
+	ChatEventTypeGenerating ChatEventType = "generating_chunk"
+	ChatEventTypeToolCall   ChatEventType = "tool_call"
+	ChatEventTypeToolResult ChatEventType = "tool_result"
+	ChatEventTypeComplete   ChatEventType = "complete"
+	ChatEventTypeError      ChatEventType = "error"
 )
 
 type ChatEvent struct {
-	Type      ActionType `json:"type"`
-	Message   string     `json:"message,omitempty"`
-	Content   string     `json:"content,omitempty"`
-	NodeID    string     `json:"node_id,omitempty"`
-	Timestamp time.Time  `json:"timestamp"`
+	Type    ChatEventType   `json:"type"`
+	Content string          `json:"content,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
 }
 
 type ChannelEventSink struct {
@@ -64,23 +59,24 @@ func (s *ChannelEventSink) Close() {
 	close(s.ch)
 }
 
+// nodeActionMap maps node ID prefixes to human-readable action names and descriptions.
 var nodeActionMap = []struct {
 	prefix  string
-	action  ActionType
-	message string
+	action  string
+	content string
 }{
-	{"SessionBootstrap_", ActionThinking, "正在初始化会话..."},
-	{"MemoryRecall_", ActionThinking, "正在回忆相关信息..."},
-	{"OrchestrationRouter_", ActionThinking, "正在分析请求..."},
-	{"Planner_", ActionPlanning, "正在制定计划..."},
-	{"PlanStepExecutor_", ActionPlanning, "正在执行计划步骤..."},
-	{"ContextAssembler_", ActionThinking, "正在整理上下文..."},
-	{"LLM_", ActionGenerating, "正在生成回复..."},
-	{"ToolCall_", ActionCallingTool, "正在调用工具..."},
-	{"ObservationRecorder_", ActionGenerating, "正在记录观察结果..."},
-	{"Verifier_", ActionVerifying, "正在验证结果..."},
-	{"Finalizer_", ActionFinalizing, "正在整理最终回复..."},
-	{"MemoryWrite_", ActionFinalizing, "正在保存记忆..."},
+	{"SessionBootstrap_", "initializing", "正在初始化会话..."},
+	{"MemoryRecall_", "recalling", "正在回忆相关信息..."},
+	{"OrchestrationRouter_", "routing", "正在分析请求..."},
+	{"Planner_", "planning", "正在制定计划..."},
+	{"PlanStepExecutor_", "executing", "正在执行计划步骤..."},
+	{"ContextAssembler_", "assembling", "正在整理上下文..."},
+	{"LLM_", "generating", "正在生成回复..."},
+	{"ToolCall_", "calling_tool", "正在调用工具..."},
+	{"ObservationRecorder_", "recording", "正在记录观察结果..."},
+	{"Verifier_", "verifying", "正在验证结果..."},
+	{"Finalizer_", "finalizing", "正在整理最终回复..."},
+	{"MemoryWrite_", "saving", "正在保存记忆..."},
 }
 
 var streamableContentPrefixes = []string{
@@ -105,6 +101,14 @@ func hasPrefix(nodeID string, prefixes []string) bool {
 	return false
 }
 
+func marshalData(v any) json.RawMessage {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	return b
+}
+
 func TranslateEvent(event fruntime.Event) *ChatEvent {
 	switch event.Type {
 	case fruntime.EventNodeStarted:
@@ -113,57 +117,43 @@ func TranslateEvent(event fruntime.Event) *ChatEvent {
 		if !hasPrefix(event.NodeID, streamableContentPrefixes) {
 			return nil
 		}
-		return translateChunk(event, ActionGenerating)
-	case fruntime.EventLLMContent:
-		// Non-streaming LLM call (e.g. Finalizer synthesizing final answer).
-		// Payload is a plain JSON string, not a {"text":...} map.
-		if !hasPrefix(event.NodeID, streamableContentPrefixes) {
-			return nil
-		}
-		text := extractPayloadText(event.Payload)
+		text := extractPayloadString(event.Payload, "text")
 		if text == "" {
 			return nil
 		}
-		action := ActionGenerating
-		if strings.HasPrefix(event.NodeID, "Finalizer_") {
-			action = ActionFinalizing
-		}
-		return &ChatEvent{
-			Type:      action,
-			Content:   text,
-			NodeID:    event.NodeID,
-			Timestamp: event.Timestamp,
-		}
+		return &ChatEvent{Type: ChatEventTypeGenerating, Content: text}
+	case fruntime.EventLLMContent:
+		// Skipped: content already streamed via EventLLMContentChunk; emitting again would duplicate text.
+		return nil
 	case fruntime.EventLLMReasoningChunk:
+		// Use EventLLMReasoning (complete text) instead of streaming chunks.
+		return nil
+	case fruntime.EventLLMReasoning:
 		if !hasPrefix(event.NodeID, streamableReasoningPrefixes) {
 			return nil
 		}
-		return translateChunk(event, ActionThinking)
+		text := extractPayloadString(event.Payload, "text")
+		if text == "" {
+			return nil
+		}
+		return &ChatEvent{Type: ChatEventTypeThinking, Content: text}
 	case fruntime.EventToolCalled:
 		return translateToolCalled(event)
 	case fruntime.EventToolReturned:
-		return &ChatEvent{
-			Type:      ActionToolResult,
-			Message:   "工具调用完成",
-			NodeID:    event.NodeID,
-			Timestamp: event.Timestamp,
-		}
+		return translateToolReturned(event)
 	case fruntime.EventToolFailed:
 		return translateToolFailed(event)
 	case fruntime.EventRunFinished:
-		return &ChatEvent{
-			Type:      ActionComplete,
-			Message:   "完成",
-			Timestamp: event.Timestamp,
-		}
+		return &ChatEvent{Type: ChatEventTypeComplete, Content: "完成"}
 	case fruntime.EventRunFailed:
-		return translateRunFailed(event)
-	case fruntime.EventRunCanceled:
-		return &ChatEvent{
-			Type:      ActionComplete,
-			Message:   "已取消",
-			Timestamp: event.Timestamp,
+		errMsg := extractPayloadString(event.Payload, "error_message")
+		msg := "执行失败"
+		if errMsg != "" {
+			msg = "执行失败: " + errMsg
 		}
+		return &ChatEvent{Type: ChatEventTypeError, Content: msg}
+	case fruntime.EventRunCanceled:
+		return &ChatEvent{Type: ChatEventTypeComplete, Content: "已取消"}
 	default:
 		return nil
 	}
@@ -173,67 +163,51 @@ func translateNodeStarted(event fruntime.Event) *ChatEvent {
 	for _, m := range nodeActionMap {
 		if strings.HasPrefix(event.NodeID, m.prefix) {
 			return &ChatEvent{
-				Type:      m.action,
-				Message:   m.message,
-				NodeID:    event.NodeID,
-				Timestamp: event.Timestamp,
+				Type:    ChatEventTypeStep,
+				Content: m.content,
+				Data:    marshalData(map[string]string{"action": m.action, "node_id": event.NodeID}),
 			}
 		}
 	}
 	return nil
 }
 
-func translateChunk(event fruntime.Event, action ActionType) *ChatEvent {
-	text := extractPayloadString(event.Payload, "text")
-	if text == "" {
-		return nil
+func translateToolCalled(event fruntime.Event) *ChatEvent {
+	name := extractPayloadString(event.Payload, "name")
+	toolCallID := extractPayloadString(event.Payload, "tool_call_id")
+	content := "正在调用工具..."
+	if name != "" {
+		content = "正在调用工具: " + name
 	}
 	return &ChatEvent{
-		Type:      action,
-		Content:   text,
-		NodeID:    event.NodeID,
-		Timestamp: event.Timestamp,
+		Type:    ChatEventTypeToolCall,
+		Content: content,
+		Data:    marshalData(map[string]string{"name": name, "tool_call_id": toolCallID}),
 	}
 }
 
-func translateToolCalled(event fruntime.Event) *ChatEvent {
+func translateToolReturned(event fruntime.Event) *ChatEvent {
 	name := extractPayloadString(event.Payload, "name")
-	msg := "正在调用工具..."
-	if name != "" {
-		msg = "正在调用工具: " + name
-	}
+	result := extractPayloadString(event.Payload, "content")
+	toolCallID := extractPayloadString(event.Payload, "tool_call_id")
 	return &ChatEvent{
-		Type:      ActionCallingTool,
-		Message:   msg,
-		NodeID:    event.NodeID,
-		Timestamp: event.Timestamp,
+		Type:    ChatEventTypeToolResult,
+		Content: "工具调用完成",
+		Data:    marshalData(map[string]string{"name": name, "result": result, "tool_call_id": toolCallID}),
 	}
 }
 
 func translateToolFailed(event fruntime.Event) *ChatEvent {
+	name := extractPayloadString(event.Payload, "name")
 	errMsg := extractPayloadString(event.Payload, "error")
 	msg := "工具调用失败"
 	if errMsg != "" {
 		msg = "工具调用失败: " + errMsg
 	}
 	return &ChatEvent{
-		Type:      ActionToolResult,
-		Message:   msg,
-		NodeID:    event.NodeID,
-		Timestamp: event.Timestamp,
-	}
-}
-
-func translateRunFailed(event fruntime.Event) *ChatEvent {
-	errMsg := extractPayloadString(event.Payload, "error_message")
-	msg := "执行失败"
-	if errMsg != "" {
-		msg = "执行失败: " + errMsg
-	}
-	return &ChatEvent{
-		Type:      ActionError,
-		Message:   msg,
-		Timestamp: event.Timestamp,
+		Type:    ChatEventTypeToolResult,
+		Content: msg,
+		Data:    marshalData(map[string]string{"name": name, "error": errMsg}),
 	}
 }
 
@@ -247,17 +221,4 @@ func extractPayloadString(payload json.RawMessage, key string) string {
 	}
 	v, _ := m[key].(string)
 	return v
-}
-
-// extractPayloadText handles both plain-string payloads (EventLLMContent)
-// and {"text": ...} map payloads (EventLLMContentChunk).
-func extractPayloadText(payload json.RawMessage) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var s string
-	if json.Unmarshal(payload, &s) == nil {
-		return s
-	}
-	return extractPayloadString(payload, "text")
 }

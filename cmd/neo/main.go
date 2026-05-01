@@ -24,7 +24,10 @@ func main() {
 	}
 
 	services := neo.NewServices(model, *dataDir)
-	srv := neo.NewServer(services, neo.DefaultConfig(), *dataDir)
+	srv, err := neo.NewServer(services, neo.DefaultConfig(), *dataDir)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	engine := gin.Default()
 	srv.RegisterRoutes(engine.Group("/neo"))

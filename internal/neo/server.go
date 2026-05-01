@@ -1,6 +1,8 @@
 package neo
 
 import (
+	"path/filepath"
+
 	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
@@ -13,7 +15,12 @@ type Server struct {
 	historyCtrl *HistoryController
 }
 
-func NewServer(services *fruntime.Services, cfg Config, baseDir string) *Server {
+func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server, error) {
+	store, err := NewHistoryStore(filepath.Join(baseDir, "history.db"))
+	if err != nil {
+		return nil, err
+	}
+
 	allTools := make(map[string]tools.Tool, len(services.Tools))
 	toolFlags := make(map[string]bool, len(services.Tools))
 	for name, tool := range services.Tools {
@@ -21,7 +28,7 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) *Server 
 		toolFlags[name] = true
 	}
 
-	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir)
+	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir, store)
 	configCtrl := NewConfigController(&cfg, allTools, toolFlags)
 	historyCtrl := NewHistoryController(chatCtrl)
 
@@ -29,7 +36,7 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) *Server 
 		chatCtrl:    chatCtrl,
 		configCtrl:  configCtrl,
 		historyCtrl: historyCtrl,
-	}
+	}, nil
 }
 
 func (s *Server) RegisterRoutes(group *gin.RouterGroup) {

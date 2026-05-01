@@ -1,113 +1,11 @@
 import { useReducer, useRef, useState, useCallback } from "react";
-import { marked } from "marked";
-import type { MessageItem, TimelineEntry, ChatEvent, HistoryMessage } from "../types";
-
-marked.setOptions({ breaks: true, gfm: true });
-
-function renderMd(src: string): string {
-  try { return marked.parse(src) as string; }
-  catch { return src.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;"); }
-}
-
-// ── reducer ──────────────────────────────────────────────────────────────────
-
-type Action =
-  | { type: "SET"; items: MessageItem[] }
-  | { type: "ADD"; item: MessageItem }
-  | { type: "CLOSE_THINKING"; id: string }
-  | { type: "APPEND_THINKING"; id: string; chunk: string }
-  | { type: "ADD_TIMELINE"; id: string }
-  | { type: "ADD_PHASE"; timelineId: string; entry: Extract<TimelineEntry, { kind: "phase" }> }
-  | { type: "ADD_TOOL"; timelineId: string; toolId: string; name: string }
-  | { type: "RESOLVE_TOOL"; timelineId: string; toolId: string; status: "ok" | "err"; result: string }
-  | { type: "APPEND_CONTENT"; id: string; chunk: string };
-
-function reducer(state: MessageItem[], action: Action): MessageItem[] {
-  switch (action.type) {
-    case "SET":
-      return action.items;
-
-    case "ADD":
-      return [...state, action.item];
-
-    case "CLOSE_THINKING":
-      return state.map((m) =>
-        m.id === action.id && m.kind === "thinking" ? { ...m, done: true } : m
-      );
-
-    case "APPEND_THINKING":
-      return state.map((m) =>
-        m.id === action.id && m.kind === "thinking"
-          ? { ...m, text: m.text + action.chunk }
-          : m
-      );
-
-    case "ADD_TIMELINE":
-      return [...state, { id: action.id, kind: "timeline", entries: [] }];
-
-    case "ADD_PHASE":
-      return state.map((m) =>
-        m.id === action.timelineId && m.kind === "timeline"
-          ? { ...m, entries: [...m.entries, action.entry] }
-          : m
-      );
-
-    case "ADD_TOOL":
-      return state.map((m) =>
-        m.id === action.timelineId && m.kind === "timeline"
-          ? {
-              ...m,
-              entries: [
-                ...m.entries,
-                { id: action.toolId, kind: "tool" as const, name: action.name, status: "pending" as const, result: "..." },
-              ],
-            }
-          : m
-      );
-
-    case "RESOLVE_TOOL":
-      return state.map((m) => {
-        if (m.id !== action.timelineId || m.kind !== "timeline") return m;
-        return {
-          ...m,
-          entries: m.entries.map((e) =>
-            e.kind === "tool" && e.id === action.toolId
-              ? { ...e, status: action.status, result: action.result }
-              : e
-          ),
-        };
-      });
-
-    case "APPEND_CONTENT":
-      return state.map((m) =>
-        m.id === action.id && m.kind === "assistant"
-          ? { ...m, text: m.text + action.chunk }
-          : m
-      );
-
-    default:
-      return state;
-  }
-}
-
-// ── stream context (mutable, no re-render) ────────────────────────────────────
-
-interface StreamCtx {
-  lastNodeId: string;
-  thinkingId: string | null;
-  timelineId: string | null;
-  contentId: string | null;
-  pendingToolId: string | null;
-}
-
-function freshCtx(): StreamCtx {
-  return { lastNodeId: "", thinkingId: null, timelineId: null, contentId: null, pendingToolId: null };
-}
+import type { ChatEvent, HistoryMessage, MessageItem } from "../types";
+import { chatReducer, freshCtx, type StreamCtx } from "./chatReducer";
 
 // ── hook ──────────────────────────────────────────────────────────────────────
 
 export function useChat() {
-  const [messages, dispatch] = useReducer(reducer, []);
+  const [messages, dispatch] = useReducer(chatReducer, []);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -116,7 +14,15 @@ export function useChat() {
 
   const nextId = () => String(++seq.current);
 
-  // ── stream helpers (mutate ctxRef synchronously, dispatch for UI) ──
+  // ── stream helpers ────────────────────────────────────────────────────────
+
+  function completeLastStep() {
+    const id = ctxRef.current.lastStepId;
+    if (id) {
+      dispatch({ type: "SET_STEP_DONE", id });
+      ctxRef.current.lastStepId = null;
+    }
+  }
 
   function ensureThinking() {
     if (!ctxRef.current.thinkingId) {
@@ -124,7 +30,7 @@ export function useChat() {
       ctxRef.current.thinkingId = id;
       dispatch({ type: "ADD", item: { id, kind: "thinking", text: "", done: false } });
     }
-    return ctxRef.current.thinkingId;
+    return ctxRef.current.thinkingId!;
   }
 
   function closeThinking() {
@@ -134,178 +40,97 @@ export function useChat() {
     }
   }
 
-  function ensureTimeline() {
-    if (!ctxRef.current.timelineId) {
-      const id = nextId();
-      ctxRef.current.timelineId = id;
-      ctxRef.current.pendingToolId = null;
-      dispatch({ type: "ADD_TIMELINE", id });
-    }
-    return ctxRef.current.timelineId;
-  }
-
-  function closeTimeline() {
-    ctxRef.current.timelineId = null;
-    ctxRef.current.pendingToolId = null;
-  }
-
-  function closeContent() {
-    ctxRef.current.contentId = null;
-  }
-
   function ensureContent() {
     if (!ctxRef.current.contentId) {
       const id = nextId();
       ctxRef.current.contentId = id;
       dispatch({ type: "ADD", item: { id, kind: "assistant", text: "" } });
     }
-    return ctxRef.current.contentId;
+    return ctxRef.current.contentId!;
   }
 
-  function onNodeChange(nodeId: string) {
-    if (!nodeId || nodeId === ctxRef.current.lastNodeId) return;
-    closeThinking();
-    closeContent();
-    closeTimeline();
-    ctxRef.current.lastNodeId = nodeId;
+  function closeContent() {
+    ctxRef.current.contentId = null;
   }
+
+  // ── event handler ─────────────────────────────────────────────────────────
 
   function handleEvent(event: ChatEvent) {
-    const { type, message = "", content = "", node_id: nodeId = "" } = event;
+    const { type, content = "", data } = event;
 
     switch (type) {
-      case "thinking":
-      case "planning": {
-        const icon = type === "planning" ? "📋" : "●";
-        if (message) {
-          setProgress(message);
-          if (nodeId && nodeId !== ctxRef.current.lastNodeId) {
-            closeTimeline();
-            ctxRef.current.lastNodeId = nodeId;
-          }
-          closeThinking();
-          closeContent();
-          const tid = ensureTimeline();
-          dispatch({ type: "ADD_PHASE", timelineId: tid, entry: { kind: "phase", icon, text: message, cls: "tl-phase" } });
-        }
+      case "step_event": {
+        completeLastStep();
+        closeThinking();
+        closeContent();
         if (content) {
-          onNodeChange(nodeId);
-          const bid = ensureThinking();
-          dispatch({ type: "APPEND_THINKING", id: bid, chunk: content });
+          setProgress(content);
+          const id = nextId();
+          ctxRef.current.lastStepId = id;
+          dispatch({ type: "ADD", item: { id, kind: "step", text: content, status: "pending" } });
         }
         break;
       }
-
-      case "generating": {
-        if (message && !content) {
-          setProgress(message);
-          if (nodeId && nodeId !== ctxRef.current.lastNodeId) {
-            closeTimeline();
-            ctxRef.current.lastNodeId = nodeId;
-          }
-          closeThinking();
-          closeContent();
-          const tid = ensureTimeline();
-          dispatch({ type: "ADD_PHASE", timelineId: tid, entry: { kind: "phase", icon: "●", text: message, cls: "tl-phase" } });
-        }
+      case "thinking_chunk": {
         if (content) {
-          onNodeChange(nodeId);
-          const cid = ensureContent();
-          dispatch({ type: "APPEND_CONTENT", id: cid, chunk: content });
+          dispatch({ type: "APPEND_THINKING", id: ensureThinking(), chunk: content });
         }
         break;
       }
-
-      case "calling_tool": {
-        if (message) {
-          setProgress(message);
+      case "generating_chunk": {
+        if (content) {
           closeThinking();
-          closeContent();
-          const tid = ensureTimeline();
-          const toolId = nextId();
-          ctxRef.current.pendingToolId = toolId;
-          dispatch({ type: "ADD_TOOL", timelineId: tid, toolId, name: message });
+          dispatch({ type: "APPEND_CONTENT", id: ensureContent(), chunk: content });
         }
         break;
       }
-
+      case "tool_call": {
+        completeLastStep();
+        closeThinking();
+        closeContent();
+        if (content) {
+          setProgress(content);
+          const id = nextId();
+          ctxRef.current.pendingToolId = id;
+          dispatch({ type: "ADD", item: { id, kind: "tool", name: data?.name ?? content, status: "calling", result: "", detail: "" } });
+        }
+        break;
+      }
       case "tool_result": {
-        const isErr = message.includes("失败");
         const ctx = ctxRef.current;
-        if (ctx.pendingToolId && ctx.timelineId) {
+        if (ctx.pendingToolId) {
+          const isErr = content.includes("失败");
           dispatch({
-            type: "RESOLVE_TOOL",
-            timelineId: ctx.timelineId,
-            toolId: ctx.pendingToolId,
-            status: isErr ? "err" : "ok",
-            result: message || (isErr ? "✗" : "✓"),
+            type: "SET_TOOL_DONE",
+            id: ctx.pendingToolId,
+            status: isErr ? "error" : "done",
+            result: content,
+            detail: data?.result ?? "",
           });
           ctx.pendingToolId = null;
-        } else if (ctx.timelineId) {
-          dispatch({
-            type: "ADD_PHASE",
-            timelineId: ctx.timelineId,
-            entry: { kind: "phase", icon: isErr ? "✗" : "✓", text: message, cls: isErr ? "tl-err" : "tl-ok" },
-          });
         }
         break;
       }
-
-      case "verifying": {
-        if (message) {
-          setProgress(message);
-          if (nodeId && nodeId !== ctxRef.current.lastNodeId) {
-            closeTimeline();
-            ctxRef.current.lastNodeId = nodeId;
-          }
-          closeThinking();
-          closeContent();
-          const tid = ensureTimeline();
-          dispatch({ type: "ADD_PHASE", timelineId: tid, entry: { kind: "phase", icon: "🔍", text: message, cls: "tl-phase" } });
-        }
-        break;
-      }
-
-      case "finalizing": {
-        if (message) {
-          setProgress(message);
-          if (nodeId && nodeId !== ctxRef.current.lastNodeId) {
-            closeTimeline();
-            ctxRef.current.lastNodeId = nodeId;
-          }
-          closeThinking();
-          closeContent();
-          const tid = ensureTimeline();
-          dispatch({ type: "ADD_PHASE", timelineId: tid, entry: { kind: "phase", icon: "✨", text: message, cls: "tl-phase" } });
-        }
-        if (content) {
-          onNodeChange(nodeId);
-          const cid = ensureContent();
-          dispatch({ type: "APPEND_CONTENT", id: cid, chunk: content });
-        }
-        break;
-      }
-
       case "complete": {
-        closeTimeline();
-        setProgress(message || "完成");
+        completeLastStep();
+        setProgress(content || "完成");
         break;
       }
-
       case "error": {
+        completeLastStep();
         const id = nextId();
-        dispatch({ type: "ADD", item: { id, kind: "error", text: message || "未知错误" } });
+        dispatch({ type: "ADD", item: { id, kind: "error", text: content || "未知错误" } });
         break;
       }
     }
   }
 
+  // ── sendMessage ───────────────────────────────────────────────────────────
+
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || running) return;
 
-    const userId = nextId();
-    dispatch({ type: "ADD", item: { id: userId, kind: "user", text } });
-
+    dispatch({ type: "ADD", item: { id: nextId(), kind: "user", text } });
     setRunning(true);
     setProgress("启动中...");
     ctxRef.current = freshCtx();
@@ -323,8 +148,7 @@ export function useChat() {
 
       if (!resp.ok) {
         const errText = await resp.text();
-        const id = nextId();
-        dispatch({ type: "ADD", item: { id, kind: "error", text: "请求失败: " + (errText || resp.statusText) } });
+        dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "请求失败: " + (errText || resp.statusText) } });
         setRunning(false);
         setProgress(null);
         abortRef.current = null;
@@ -334,7 +158,6 @@ export function useChat() {
       const reader = resp.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
-
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
@@ -348,31 +171,33 @@ export function useChat() {
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
-        const id = nextId();
-        dispatch({ type: "ADD", item: { id, kind: "error", text: "连接错误: " + (err as Error).message } });
+        dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "连接错误: " + (err as Error).message } });
       }
     }
 
+    completeLastStep();
     closeThinking();
-    closeTimeline();
     setRunning(false);
     abortRef.current = null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
+
+  // ── stop ─────────────────────────────────────────────────────────────────
 
   const stop = useCallback(() => {
     if (abortRef.current) {
       abortRef.current.abort();
       abortRef.current = null;
     }
-    const id = nextId();
-    dispatch({ type: "ADD", item: { id, kind: "stopped" } });
+    completeLastStep();
     closeThinking();
-    closeTimeline();
+    dispatch({ type: "ADD", item: { id: nextId(), kind: "stopped" } });
     setRunning(false);
     setProgress(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // ── loadHistory ───────────────────────────────────────────────────────────
 
   const loadHistory = useCallback(async () => {
     try {
@@ -387,17 +212,12 @@ export function useChat() {
           .map((p) => p.text!)
           .join("\n");
         if (!text) continue;
-        const id = nextId();
-        if (msg.role === "human") {
-          items.push({ id, kind: "user", text });
-        } else {
-          items.push({ id, kind: "assistant", text });
-        }
+        items.push({ id: nextId(), kind: msg.role === "human" ? "user" : "assistant", text });
       }
       dispatch({ type: "SET", items });
     } catch { /* ignore */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { messages, running, progress, sendMessage, stop, loadHistory, renderMd };
+  return { messages, running, progress, sendMessage, stop, loadHistory };
 }

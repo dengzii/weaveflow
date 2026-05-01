@@ -16,6 +16,7 @@ import (
 	"weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tmc/langchaingo/llms"
 	"go.uber.org/zap"
 )
 
@@ -25,6 +26,7 @@ type ChatController struct {
 	allTools  map[string]tools.Tool
 	toolFlags map[string]bool
 	baseDir   string
+	store     *HistoryStore
 
 	mu          sync.RWMutex
 	runner      *fruntime.GraphRunner
@@ -35,7 +37,7 @@ type ChatController struct {
 	graphCfgKey Config
 }
 
-func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string) *ChatController {
+func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *HistoryStore) *ChatController {
 	allTools := make(map[string]tools.Tool, len(services.Tools))
 	for name, tool := range services.Tools {
 		allTools[name] = tool
@@ -46,6 +48,7 @@ func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[s
 		allTools:  allTools,
 		toolFlags: toolFlags,
 		baseDir:   baseDir,
+		store:     store,
 	}
 }
 
@@ -123,10 +126,38 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 	done := make(chan runResult, 1)
 
-	initialState := NewInitialState(req.Message)
+	var loadedHistory []HistoryMessage
+	var history []llms.MessageContent
+	if ctrl.store != nil {
+		loadedHistory, _ = ctrl.store.Load()
+		history = make([]llms.MessageContent, len(loadedHistory))
+		for i, hm := range loadedHistory {
+			history[i] = historyToLLM(hm)
+		}
+	}
+	historyLLMLen := len(history)
+	initialState := NewInitialState(req.Message, history)
+	store := ctrl.store
 	go func() {
 		defer channelSink.Close()
 		run, state, runErr := runner.Start(ctx, initialState)
+		if state != nil && store != nil {
+			allMsgs := state.Conversation(stateScope).Messages()
+			newMsgs := allMsgs
+			if historyLLMLen <= len(allMsgs) {
+				newMsgs = allMsgs[historyLLMLen:]
+			}
+			var reasoningBlocks []string
+			if blocks, ok := state[fruntime.StateKeyReasoningBlocks].([]string); ok {
+				reasoningBlocks = blocks
+			}
+			newHistory := convertMessages(newMsgs, reasoningBlocks)
+			fullHistory := make([]HistoryMessage, len(loadedHistory), len(loadedHistory)+len(newHistory))
+			copy(fullHistory, loadedHistory)
+			fullHistory = append(fullHistory, newHistory...)
+			runStatus := runStatusString(ctx, runErr)
+			_ = store.Save(fullHistory, runStatus)
+		}
 		done <- runResult{run: run, state: state, err: runErr}
 	}()
 
@@ -159,9 +190,8 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 				if res.err != nil && res.state == nil {
 					writeSSE(c, &ChatEvent{
-						Type:      ActionError,
-						Message:   res.err.Error(),
-						Timestamp: time.Now(),
+						Type:    ChatEventTypeError,
+						Content: res.err.Error(),
 					})
 				}
 				return
@@ -195,6 +225,17 @@ func (ctrl *ChatController) GetLastState() fruntime.State {
 	return ctrl.lastState
 }
 
+func (ctrl *ChatController) GetHistory() ([]HistoryMessage, error) {
+	if ctrl.store != nil {
+		return ctrl.store.Load()
+	}
+	state := ctrl.GetLastState()
+	if state == nil {
+		return []HistoryMessage{}, nil
+	}
+	return convertMessages(state.Conversation(stateScope).Messages(), nil), nil
+}
+
 func writeSSE(c *gin.Context, event *ChatEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -202,4 +243,15 @@ func writeSSE(c *gin.Context, event *ChatEvent) {
 	}
 	_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", data)
 	c.Writer.Flush()
+}
+
+// runStatusString determines the run outcome label for history persistence.
+func runStatusString(ctx context.Context, runErr error) string {
+	if runErr == nil {
+		return "completed"
+	}
+	if ctx.Err() != nil {
+		return "stopped"
+	}
+	return "failed"
 }
