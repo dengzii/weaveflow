@@ -1,6 +1,6 @@
 package runtime
 
-// Domain state keys — root-level fields in the State map.
+// Domain state keys are root-level fields in the State map.
 // Grouped by module so additions are easy to audit.
 const (
 	// StateKeyRequest session
@@ -35,9 +35,9 @@ const (
 	StateKeyBudget          = "budget"
 )
 
-// Conversation field keys — live inside the conversation namespace,
+// Conversation field keys live inside the conversation namespace,
 // not at the root level. Kept here for a single inventory.
-const
+const (
 	StateKeyMessages       = "messages"
 	StateKeyIterationCount = "iteration_count"
 	StateKeyMaxIterations  = "max_iterations"
@@ -55,7 +55,7 @@ func (s State) Ensure(key string) State {
 }
 
 // rootObjectState is the shared accessor for root-level map fields.
-// It returns the existing sub-map, coercing map[string]any → State,
+// It returns the existing sub-map, coercing map[string]any to State,
 // and optionally creates an empty one if [create] is true.
 func rootObjectState(state State, key string, create bool) State {
 	if state == nil || key == "" {

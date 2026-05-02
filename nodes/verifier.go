@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
+	"go.uber.org/zap"
 )
 
 const (
@@ -84,6 +85,16 @@ func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	}
 
 	mode := n.resolveMode(state)
+	stepID := ""
+	if plannerState := state.Get(fruntime.StateKeyPlanner); plannerState != nil {
+		stepID, _ = plannerState["current_step_id"].(string)
+	}
+	fruntime.NodeLogInfo(ctx, "verifier started",
+		zap.String("mode", mode),
+		zap.String("step_id", stepID),
+		zap.Int("observations", len(state.Observations())),
+		zap.Int("evidence", len(state.Evidence())),
+	)
 
 	var result *verificationResult
 	var err error
@@ -96,6 +107,10 @@ func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	}
 
 	if err != nil {
+		fruntime.NodeLogWarn(ctx, "verifier fell back after verification error",
+			zap.String("mode", mode),
+			zap.String("error", err.Error()),
+		)
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "verifier.error", map[string]any{
 			"mode":  mode,
 			"error": err.Error(),
@@ -123,6 +138,12 @@ func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 		"status":      result.Status,
 		"next_action": result.NextAction,
 	})
+	fruntime.NodeLogInfo(ctx, "verifier completed",
+		zap.String("mode", mode),
+		zap.String("status", result.Status),
+		zap.String("next_action", result.NextAction),
+		zap.Int("issue_count", len(result.Issues)),
+	)
 
 	return state, nil
 }

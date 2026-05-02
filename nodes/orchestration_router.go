@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
+	"go.uber.org/zap"
 )
 
 const (
@@ -84,6 +85,12 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 		"available_modes":          cloneOrchestrationStrings(n.effectiveModes()),
 		"additional_rules":         strings.TrimSpace(n.Instructions),
 	}
+	fruntime.NodeLogInfo(ctx, "orchestration router evaluating request",
+		zap.String("orchestration_path", orchestrationPath),
+		zap.String("input", input),
+		zap.Int("available_modes", len(n.effectiveModes())),
+		zap.Int("context_paths", len(n.collectContext(state))),
+	)
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.prompt", payload)
 
 	resp, err := svc.Model.GenerateContent(
@@ -135,6 +142,13 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 		"target_subgraph":          parsed.TargetSubgraph,
 	})
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.response", parsed)
+	fruntime.NodeLogInfo(ctx, "orchestration router decided route",
+		zap.String("orchestration_path", orchestrationPath),
+		zap.String("mode", parsed.Mode),
+		zap.Bool("use_memory", parsed.UseMemory),
+		zap.Bool("needs_clarification", parsed.NeedsClarification),
+		zap.String("target_subgraph", parsed.TargetSubgraph),
+	)
 
 	return state, nil
 }

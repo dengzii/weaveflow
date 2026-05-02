@@ -1,6 +1,10 @@
 package runtime
 
-import "go.uber.org/zap"
+import (
+	"context"
+
+	"go.uber.org/zap"
+)
 
 func runLogFields(run RunRecord) []zap.Field {
 	fields := []zap.Field{
@@ -89,6 +93,40 @@ func stateSummaryFields(state State) []zap.Field {
 		zap.Int("state_scopes", len(state.scopes())),
 		zap.Int("conversation_messages", countConversationMessages(state)),
 	}
+}
+
+func runnerMetadataLogFields(ctx context.Context) []zap.Field {
+	metadata, ok := RunnerMetadataFromContext(ctx)
+	if !ok {
+		return nil
+	}
+
+	fields := []zap.Field{}
+	if metadata.RunID != "" {
+		fields = append(fields, zap.String("run_id", metadata.RunID))
+	}
+	if metadata.StepID != "" {
+		fields = append(fields, zap.String("step_id", metadata.StepID))
+	}
+	if metadata.NodeID != "" {
+		fields = append(fields, zap.String("node_id", metadata.NodeID))
+	}
+	if metadata.Attempt > 0 {
+		fields = append(fields, zap.Int("attempt", metadata.Attempt))
+	}
+	return fields
+}
+
+func NodeLogInfo(ctx context.Context, message string, fields ...zap.Field) {
+	logger.Info(message, append(runnerMetadataLogFields(ctx), fields...)...)
+}
+
+func NodeLogWarn(ctx context.Context, message string, fields ...zap.Field) {
+	logger.Warn(message, append(runnerMetadataLogFields(ctx), fields...)...)
+}
+
+func NodeLogError(ctx context.Context, message string, fields ...zap.Field) {
+	logger.Error(message, append(runnerMetadataLogFields(ctx), fields...)...)
 }
 
 func countStateKeys(state State) int {
