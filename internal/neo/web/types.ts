@@ -16,12 +16,15 @@ export interface HistoryPart {
   type: string;
   text?: string;
   name?: string;
-  result?: unknown;
+  result?: string;
+  id?: string;
 }
 
 export interface HistoryMessage {
   role: string;
   parts: HistoryPart[];
+  status?: string;
+  created_at?: number;
 }
 
 export interface ChatEvent {
@@ -34,7 +37,16 @@ export type MessageItem =
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "step"; text: string; status: "pending" | "done" }
   | { id: string; kind: "thinking"; text: string; done: boolean }
-  | { id: string; kind: "tool"; name: string; status: "calling" | "done" | "error"; result: string; detail: string }
+  | {
+      id: string;
+      kind: "tool";
+      toolCallId?: string;
+      name: string;
+      status: "calling" | "done" | "error";
+      args: string;
+      output: string;
+      error: string;
+    }
   | { id: string; kind: "assistant"; text: string }
   | { id: string; kind: "error"; text: string }
   | { id: string; kind: "stopped" };

@@ -126,6 +126,7 @@ func (t *ToolsNode) publishToolCallStart(ctx context.Context, toolCall llms.Tool
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolCalled, map[string]any{
 		"tool_call_id": toolCall.ID,
 		"name":         name,
+		"arguments":    arguments,
 	})
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.input", map[string]any{
 		"tool_call_id": toolCall.ID,

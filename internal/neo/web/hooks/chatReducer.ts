@@ -7,7 +7,7 @@ export type Action =
   | { type: "APPEND_THINKING"; id: string; chunk: string }
   | { type: "APPEND_CONTENT"; id: string; chunk: string }
   | { type: "SET_STEP_DONE"; id: string }
-  | { type: "SET_TOOL_DONE"; id: string; status: "done" | "error"; result: string; detail: string };
+  | { type: "SET_TOOL_DONE"; id: string; status: "done" | "error"; output: string; error: string };
 
 export function chatReducer(state: MessageItem[], action: Action): MessageItem[] {
   switch (action.type) {
@@ -44,7 +44,7 @@ export function chatReducer(state: MessageItem[], action: Action): MessageItem[]
     case "SET_TOOL_DONE":
       return state.map((m) =>
         m.id === action.id && m.kind === "tool"
-          ? { ...m, status: action.status, result: action.result, detail: action.detail }
+          ? { ...m, status: action.status, output: action.output, error: action.error }
           : m
       );
 
@@ -55,11 +55,18 @@ export function chatReducer(state: MessageItem[], action: Action): MessageItem[]
 
 export interface StreamCtx {
   lastStepId: string | null;
-  pendingToolId: string | null;
+  pendingToolIds: Record<string, string>;
+  thinkingIdsByKey: Record<string, string>;
   thinkingId: string | null;
   contentId: string | null;
 }
 
 export function freshCtx(): StreamCtx {
-  return { lastStepId: null, pendingToolId: null, thinkingId: null, contentId: null };
+  return {
+    lastStepId: null,
+    pendingToolIds: {},
+    thinkingIdsByKey: {},
+    thinkingId: null,
+    contentId: null,
+  };
 }

@@ -33,15 +33,11 @@ const (
 	StateKeyToolPolicyCheck = "tool_policy_check"
 	StateKeyApproval        = "approval"
 	StateKeyBudget          = "budget"
-
-	// StateKeyReasoningBlocks holds []string of reasoning/thinking texts,
-	// one entry per LLM invocation, for history display purposes.
-	StateKeyReasoningBlocks = "reasoning_blocks"
 )
 
 // Conversation field keys — live inside the conversation namespace,
 // not at the root level. Kept here for a single inventory.
-const (
+const
 	StateKeyMessages       = "messages"
 	StateKeyIterationCount = "iteration_count"
 	StateKeyMaxIterations  = "max_iterations"

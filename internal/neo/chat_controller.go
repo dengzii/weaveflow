@@ -26,7 +26,7 @@ type ChatController struct {
 	allTools  map[string]tools.Tool
 	toolFlags map[string]bool
 	baseDir   string
-	store     *HistoryStore
+	store     *Store
 
 	mu          sync.RWMutex
 	runner      *fruntime.GraphRunner
@@ -37,7 +37,7 @@ type ChatController struct {
 	graphCfgKey Config
 }
 
-func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *HistoryStore) *ChatController {
+func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store) *ChatController {
 	allTools := make(map[string]tools.Tool, len(services.Tools))
 	for name, tool := range services.Tools {
 		allTools[name] = tool
@@ -93,16 +93,39 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 	ctrl.mu.Unlock()
 
+	var history []llms.MessageContent
+	if ctrl.store != nil {
+		var loadErr error
+		history, loadErr = ctrl.store.LoadLLMMessages(defaultSessionID)
+		if loadErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "load history failed: " + loadErr.Error()})
+			return
+		}
+	}
+
 	log, _ := zap.NewDevelopment()
 	fruntime.SetLogger(log)
 
 	runDir := filepath.Join(ctrl.baseDir, fmt.Sprintf("run_%d", time.Now().UnixMilli()))
 	channelSink := NewChannelEventSink()
-	combinedSink := fruntime.NewCombineEventSink(
+	sinks := []fruntime.EventSink{
 		channelSink,
 		fruntime.NewLoggerEventSink(log),
 		fruntime.NewFileEventSink(filepath.Join(runDir, "events")),
-	)
+	}
+
+	var turnWriter *TurnWriter
+	if ctrl.store != nil {
+		var storeErr error
+		turnWriter, storeErr = ctrl.store.BeginTurn(defaultSessionID, req.Message)
+		if storeErr != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "persist turn failed: " + storeErr.Error()})
+			return
+		}
+		sinks = append(sinks, turnWriter)
+	}
+
+	combinedSink := fruntime.NewCombineEventSink(sinks...)
 
 	executionStore := fruntime.NewFileExecutionStore(filepath.Join(runDir, "execution"))
 	checkpointStore := fruntime.NewFileCheckpointStore(filepath.Join(runDir, "checkpoints"))
@@ -126,37 +149,18 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 	done := make(chan runResult, 1)
 
-	var loadedHistory []HistoryMessage
-	var history []llms.MessageContent
-	if ctrl.store != nil {
-		loadedHistory, _ = ctrl.store.Load()
-		history = make([]llms.MessageContent, len(loadedHistory))
-		for i, hm := range loadedHistory {
-			history[i] = historyToLLM(hm)
-		}
-	}
-	historyLLMLen := len(history)
 	initialState := NewInitialState(req.Message, history)
 	store := ctrl.store
 	go func() {
 		defer channelSink.Close()
 		run, state, runErr := runner.Start(ctx, initialState)
+		runStatus := runStatusString(ctx, runErr)
+		if turnWriter != nil {
+			_ = turnWriter.Finalize(runStatus)
+		}
 		if state != nil && store != nil {
-			allMsgs := state.Conversation(stateScope).Messages()
-			newMsgs := allMsgs
-			if historyLLMLen <= len(allMsgs) {
-				newMsgs = allMsgs[historyLLMLen:]
-			}
-			var reasoningBlocks []string
-			if blocks, ok := state[fruntime.StateKeyReasoningBlocks].([]string); ok {
-				reasoningBlocks = blocks
-			}
-			newHistory := convertMessages(newMsgs, reasoningBlocks)
-			fullHistory := make([]HistoryMessage, len(loadedHistory), len(loadedHistory)+len(newHistory))
-			copy(fullHistory, loadedHistory)
-			fullHistory = append(fullHistory, newHistory...)
-			runStatus := runStatusString(ctx, runErr)
-			_ = store.Save(fullHistory, runStatus)
+			fullHistory := convertMessages(state.Conversation(stateScope).Messages())
+			_ = store.SaveRawHistory(defaultSessionID, fullHistory, runStatus)
 		}
 		done <- runResult{run: run, state: state, err: runErr}
 	}()
@@ -169,6 +173,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	c.Writer.Flush()
 
 	clientGone := c.Request.Context().Done()
+	streamedReasoningByStep := make(map[string]string)
 	for {
 		select {
 		case <-clientGone:
@@ -197,12 +202,97 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 				return
 			}
 
-			chatEvent := TranslateEvent(event)
+			chatEvent := attachEventIdentity(event, TranslateEvent(event))
+			rememberStreamedReasoningText(event, chatEvent, streamedReasoningByStep)
+			chatEvent = syncReasoningSummary(event, chatEvent, streamedReasoningByStep)
 			if chatEvent != nil {
 				writeSSE(c, chatEvent)
 			}
 		}
 	}
+}
+
+func attachEventIdentity(event fruntime.Event, chatEvent *ChatEvent) *ChatEvent {
+	if chatEvent == nil {
+		return nil
+	}
+	if chatEvent.Type != ChatEventTypeThinking && chatEvent.Type != ChatEventTypeGenerating && chatEvent.Type != ChatEventTypeStep {
+		return chatEvent
+	}
+
+	data := map[string]string{}
+	if len(chatEvent.Data) > 0 {
+		if err := json.Unmarshal(chatEvent.Data, &data); err != nil {
+			data = map[string]string{}
+		}
+	}
+
+	if nodeID := strings.TrimSpace(event.NodeID); nodeID != "" {
+		data["node_id"] = nodeID
+	}
+	if stepID := strings.TrimSpace(event.StepID); stepID != "" {
+		data["step_id"] = stepID
+	}
+	if len(data) == 0 {
+		return chatEvent
+	}
+
+	cloned := *chatEvent
+	cloned.Data = marshalData(data)
+	return &cloned
+}
+
+func rememberStreamedReasoningText(event fruntime.Event, chatEvent *ChatEvent, streamedReasoningByStep map[string]string) {
+	if event.Type != fruntime.EventLLMReasoningChunk || chatEvent == nil || chatEvent.Type != ChatEventTypeThinking {
+		return
+	}
+	key := streamEventKey(event)
+	if key == "" || chatEvent.Content == "" {
+		return
+	}
+	streamedReasoningByStep[key] += chatEvent.Content
+}
+
+func syncReasoningSummary(event fruntime.Event, chatEvent *ChatEvent, streamedReasoningByStep map[string]string) *ChatEvent {
+	if event.Type != fruntime.EventLLMReasoning || chatEvent == nil || chatEvent.Type != ChatEventTypeThinking {
+		return chatEvent
+	}
+
+	key := streamEventKey(event)
+	if key == "" {
+		return chatEvent
+	}
+
+	streamed := streamedReasoningByStep[key]
+	delete(streamedReasoningByStep, key)
+	if streamed == "" {
+		return chatEvent
+	}
+
+	full := chatEvent.Content
+	if full == streamed {
+		return nil
+	}
+	if strings.HasPrefix(full, streamed) {
+		suffix := full[len(streamed):]
+		if suffix == "" {
+			return nil
+		}
+		cloned := *chatEvent
+		cloned.Content = suffix
+		return &cloned
+	}
+	return chatEvent
+}
+
+func streamEventKey(event fruntime.Event) string {
+	if stepID := strings.TrimSpace(event.StepID); stepID != "" {
+		return "step:" + stepID
+	}
+	if nodeID := strings.TrimSpace(event.NodeID); nodeID != "" {
+		return "node:" + nodeID
+	}
+	return ""
 }
 
 func (ctrl *ChatController) effectiveServices() *fruntime.Services {
@@ -227,13 +317,13 @@ func (ctrl *ChatController) GetLastState() fruntime.State {
 
 func (ctrl *ChatController) GetHistory() ([]HistoryMessage, error) {
 	if ctrl.store != nil {
-		return ctrl.store.Load()
+		return ctrl.store.LoadHistory(defaultSessionID)
 	}
 	state := ctrl.GetLastState()
 	if state == nil {
 		return []HistoryMessage{}, nil
 	}
-	return convertMessages(state.Conversation(stateScope).Messages(), nil), nil
+	return convertMessages(state.Conversation(stateScope).Messages()), nil
 }
 
 func writeSSE(c *gin.Context, event *ChatEvent) {

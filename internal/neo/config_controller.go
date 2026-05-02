@@ -15,16 +15,18 @@ type ConfigController struct {
 	allTools  map[string]tools.Tool
 	toolFlags map[string]bool
 	mode      string
+	store     *Store
 
 	mu sync.RWMutex
 }
 
-func NewConfigController(cfg *Config, allTools map[string]tools.Tool, toolFlags map[string]bool) *ConfigController {
+func NewConfigController(cfg *Config, allTools map[string]tools.Tool, toolFlags map[string]bool, store *Store) *ConfigController {
 	return &ConfigController{
 		config:    cfg,
 		allTools:  allTools,
 		toolFlags: toolFlags,
 		mode:      cfg.Mode,
+		store:     store,
 	}
 }
 
@@ -99,6 +101,20 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 		}
 	}
 
+	if ctrl.store != nil {
+		if err := ctrl.store.SaveConfig(PersistedConfig{
+			SystemPrompt:      ctrl.config.SystemPrompt,
+			MaxIterations:     ctrl.config.MaxIterations,
+			PlannerMaxSteps:   ctrl.config.PlannerMaxSteps,
+			MemoryRecallLimit: ctrl.config.MemoryRecallLimit,
+			ToolFlags:         cloneToolFlags(ctrl.toolFlags),
+			Mode:              ctrl.mode,
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "save config failed: " + err.Error()})
+			return
+		}
+	}
+
 	c.JSON(http.StatusOK, gin.H{
 		"code": 200,
 		"msg":  "ok",
@@ -123,4 +139,12 @@ func (ctrl *ConfigController) GetToolFlags() map[string]bool {
 	ctrl.mu.RLock()
 	defer ctrl.mu.RUnlock()
 	return ctrl.toolFlags
+}
+
+func cloneToolFlags(flags map[string]bool) map[string]bool {
+	cloned := make(map[string]bool, len(flags))
+	for name, enabled := range flags {
+		cloned[name] = enabled
+	}
+	return cloned
 }

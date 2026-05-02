@@ -42,19 +42,10 @@ func (ctrl *HistoryController) Get(c *gin.Context) {
 }
 
 // convertMessages converts llms messages to HistoryMessages.
-// reasoningBlocks, if non-nil, are prepended as "thinking" parts to each
-// assistant message in order (one entry per LLM invocation; empty string = no thinking).
-func convertMessages(messages []llms.MessageContent, reasoningBlocks []string) []HistoryMessage {
+func convertMessages(messages []llms.MessageContent) []HistoryMessage {
 	result := make([]HistoryMessage, 0, len(messages))
-	aiIdx := 0
 	for _, msg := range messages {
 		hm := HistoryMessage{Role: string(msg.Role)}
-		if msg.Role == llms.ChatMessageTypeAI && aiIdx < len(reasoningBlocks) {
-			if r := reasoningBlocks[aiIdx]; r != "" {
-				hm.Parts = append(hm.Parts, MessagePart{Type: "thinking", Text: r})
-			}
-			aiIdx++
-		}
 		for _, part := range msg.Parts {
 			hm.Parts = append(hm.Parts, convertPart(part))
 		}

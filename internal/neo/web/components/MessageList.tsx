@@ -51,7 +51,10 @@ export function MessageList({ messages, running }: Props) {
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const onScroll = () => setShowScrollBtn(!atBottom());
+    const onScroll = () => {
+      if (el.scrollHeight <= el.clientHeight) { setShowScrollBtn(false); return; }
+      setShowScrollBtn(!atBottom());
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => el.removeEventListener("scroll", onScroll);
   }, []);

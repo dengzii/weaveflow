@@ -16,7 +16,7 @@ type Server struct {
 }
 
 func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server, error) {
-	store, err := NewHistoryStore(filepath.Join(baseDir, "history.db"))
+	store, err := NewStore(filepath.Join(baseDir, "history.db"))
 	if err != nil {
 		return nil, err
 	}
@@ -28,8 +28,14 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server
 		toolFlags[name] = true
 	}
 
+	if persisted, ok, err := store.LoadConfig(); err != nil {
+		return nil, err
+	} else if ok {
+		applyPersistedConfig(&cfg, toolFlags, persisted)
+	}
+
 	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir, store)
-	configCtrl := NewConfigController(&cfg, allTools, toolFlags)
+	configCtrl := NewConfigController(&cfg, allTools, toolFlags, store)
 	historyCtrl := NewHistoryController(chatCtrl)
 
 	return &Server{
@@ -37,6 +43,21 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server
 		configCtrl:  configCtrl,
 		historyCtrl: historyCtrl,
 	}, nil
+}
+
+func applyPersistedConfig(cfg *Config, toolFlags map[string]bool, persisted PersistedConfig) {
+	cfg.SystemPrompt = persisted.SystemPrompt
+	cfg.MaxIterations = persisted.MaxIterations
+	cfg.PlannerMaxSteps = persisted.PlannerMaxSteps
+	cfg.MemoryRecallLimit = persisted.MemoryRecallLimit
+	if persisted.Mode != "" {
+		cfg.Mode = persisted.Mode
+	}
+	for name, enabled := range persisted.ToolFlags {
+		if _, ok := toolFlags[name]; ok {
+			toolFlags[name] = enabled
+		}
+	}
 }
 
 func (s *Server) RegisterRoutes(group *gin.RouterGroup) {

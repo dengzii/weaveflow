@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+
 	fruntime "weaveflow/runtime"
 )
 
@@ -59,7 +60,6 @@ func (s *ChannelEventSink) Close() {
 	close(s.ch)
 }
 
-// nodeActionMap maps node ID prefixes to human-readable action names and descriptions.
 var nodeActionMap = []struct {
 	prefix  string
 	action  string
@@ -75,7 +75,7 @@ var nodeActionMap = []struct {
 	{"ToolCall_", "calling_tool", "正在调用工具..."},
 	{"ObservationRecorder_", "recording", "正在记录观察结果..."},
 	{"Verifier_", "verifying", "正在验证结果..."},
-	{"Finalizer_", "finalizing", "正在整理最终回复..."},
+	{"Finalizer_", "finalizing", "正在整理最终回答..."},
 	{"MemoryWrite_", "saving", "正在保存记忆..."},
 }
 
@@ -93,8 +93,8 @@ var streamableReasoningPrefixes = []string{
 }
 
 func hasPrefix(nodeID string, prefixes []string) bool {
-	for _, p := range prefixes {
-		if strings.HasPrefix(nodeID, p) {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(nodeID, prefix) {
 			return true
 		}
 	}
@@ -102,11 +102,11 @@ func hasPrefix(nodeID string, prefixes []string) bool {
 }
 
 func marshalData(v any) json.RawMessage {
-	b, err := json.Marshal(v)
+	data, err := json.Marshal(v)
 	if err != nil {
 		return nil
 	}
-	return b
+	return data
 }
 
 func TranslateEvent(event fruntime.Event) *ChatEvent {
@@ -123,11 +123,16 @@ func TranslateEvent(event fruntime.Event) *ChatEvent {
 		}
 		return &ChatEvent{Type: ChatEventTypeGenerating, Content: text}
 	case fruntime.EventLLMContent:
-		// Skipped: content already streamed via EventLLMContentChunk; emitting again would duplicate text.
 		return nil
 	case fruntime.EventLLMReasoningChunk:
-		// Use EventLLMReasoning (complete text) instead of streaming chunks.
-		return nil
+		if !hasPrefix(event.NodeID, streamableReasoningPrefixes) {
+			return nil
+		}
+		text := extractPayloadString(event.Payload, "text")
+		if text == "" {
+			return nil
+		}
+		return &ChatEvent{Type: ChatEventTypeThinking, Content: text}
 	case fruntime.EventLLMReasoning:
 		if !hasPrefix(event.NodeID, streamableReasoningPrefixes) {
 			return nil
@@ -153,19 +158,19 @@ func TranslateEvent(event fruntime.Event) *ChatEvent {
 		}
 		return &ChatEvent{Type: ChatEventTypeError, Content: msg}
 	case fruntime.EventRunCanceled:
-		return &ChatEvent{Type: ChatEventTypeComplete, Content: "已取消"}
+		return &ChatEvent{Type: ChatEventTypeComplete, Content: "已停止"}
 	default:
 		return nil
 	}
 }
 
 func translateNodeStarted(event fruntime.Event) *ChatEvent {
-	for _, m := range nodeActionMap {
-		if strings.HasPrefix(event.NodeID, m.prefix) {
+	for _, item := range nodeActionMap {
+		if strings.HasPrefix(event.NodeID, item.prefix) {
 			return &ChatEvent{
 				Type:    ChatEventTypeStep,
-				Content: m.content,
-				Data:    marshalData(map[string]string{"action": m.action, "node_id": event.NodeID}),
+				Content: item.content,
+				Data:    marshalData(map[string]string{"action": item.action, "node_id": event.NodeID}),
 			}
 		}
 	}
@@ -175,6 +180,7 @@ func translateNodeStarted(event fruntime.Event) *ChatEvent {
 func translateToolCalled(event fruntime.Event) *ChatEvent {
 	name := extractPayloadString(event.Payload, "name")
 	toolCallID := extractPayloadString(event.Payload, "tool_call_id")
+	arguments := extractPayloadString(event.Payload, "arguments")
 	content := "正在调用工具..."
 	if name != "" {
 		content = "正在调用工具: " + name
@@ -182,7 +188,7 @@ func translateToolCalled(event fruntime.Event) *ChatEvent {
 	return &ChatEvent{
 		Type:    ChatEventTypeToolCall,
 		Content: content,
-		Data:    marshalData(map[string]string{"name": name, "tool_call_id": toolCallID}),
+		Data:    marshalData(map[string]string{"name": name, "tool_call_id": toolCallID, "arguments": arguments}),
 	}
 }
 
@@ -200,6 +206,7 @@ func translateToolReturned(event fruntime.Event) *ChatEvent {
 func translateToolFailed(event fruntime.Event) *ChatEvent {
 	name := extractPayloadString(event.Payload, "name")
 	errMsg := extractPayloadString(event.Payload, "error")
+	toolCallID := extractPayloadString(event.Payload, "tool_call_id")
 	msg := "工具调用失败"
 	if errMsg != "" {
 		msg = "工具调用失败: " + errMsg
@@ -207,18 +214,10 @@ func translateToolFailed(event fruntime.Event) *ChatEvent {
 	return &ChatEvent{
 		Type:    ChatEventTypeToolResult,
 		Content: msg,
-		Data:    marshalData(map[string]string{"name": name, "error": errMsg}),
+		Data:    marshalData(map[string]string{"name": name, "error": errMsg, "result": errMsg, "tool_call_id": toolCallID}),
 	}
 }
 
 func extractPayloadString(payload json.RawMessage, key string) string {
-	if len(payload) == 0 {
-		return ""
-	}
-	var m map[string]any
-	if err := json.Unmarshal(payload, &m); err != nil {
-		return ""
-	}
-	v, _ := m[key].(string)
-	return v
+	return extractEventPayloadString(payload, key)
 }

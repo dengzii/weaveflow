@@ -170,6 +170,12 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 			return l.effectiveReasoningKey()
 		}(),
 	})
+	if reasoning != "" {
+		_ = runtime.PublishRunnerContextEvent(ctx, runtime.EventLLMReasoning, map[string]any{"text": reasoning})
+	}
+	if output != "" {
+		_ = runtime.PublishRunnerContextEvent(ctx, runtime.EventLLMContent, map[string]any{"text": output})
+	}
 
 	conversation := state.Conversation(l.StateScope)
 	existing := conversation.Messages()

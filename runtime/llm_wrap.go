@@ -34,9 +34,14 @@ func (m *llmWrap) GenerateContent(ctx context.Context, messages []llms.MessageCo
 
 	options = append(options, withLLMStreamingResponseEvent())
 	res, err := m.m.GenerateContent(ctx, messages, options...)
-	if err == nil {
+	if err == nil && res != nil && len(res.Choices) > 0 && res.Choices[0] != nil {
 		choice1 := res.Choices[0]
-		_ = PublishRunnerContextEvent(ctx, EventLLMContent, choice1.Content)
+		if strings.TrimSpace(choice1.ReasoningContent) != "" {
+			_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, map[string]any{"text": choice1.ReasoningContent})
+		}
+		if strings.TrimSpace(choice1.Content) != "" {
+			_ = PublishRunnerContextEvent(ctx, EventLLMContent, map[string]any{"text": choice1.Content})
+		}
 		if choice1.FuncCall != nil {
 			_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, choice1.FuncCall)
 		}
@@ -50,8 +55,6 @@ func (m *llmWrap) Call(ctx context.Context, prompt string, options ...llms.CallO
 
 type llmResponseEventHandler struct {
 	bufferReasoning  []byte
-	bufferContent    []byte
-	reasoningEmitted bool
 	toolCallDetected bool
 }
 
@@ -59,7 +62,6 @@ func withLLMStreamingResponseEvent() llms.CallOption {
 
 	handler := llmResponseEventHandler{
 		bufferReasoning: make([]byte, 0),
-		bufferContent:   make([]byte, 0),
 	}
 
 	return func(o *llms.CallOptions) {
@@ -83,10 +85,6 @@ func (l *llmResponseEventHandler) emitStreamingResponse(ctx context.Context, rea
 	}
 	content := string(chunk)
 	if strings.TrimSpace(content) != "" {
-		if !l.reasoningEmitted {
-			l.reasoningEmitted = true
-			_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, map[string]any{"text": string(l.bufferReasoning)})
-		}
 		// Detect tool-call payload (JSON array); skip content emission for those.
 		if !l.toolCallDetected {
 			l.toolCallDetected = strings.HasPrefix(content, "[{")
@@ -94,7 +92,6 @@ func (l *llmResponseEventHandler) emitStreamingResponse(ctx context.Context, rea
 		if l.toolCallDetected {
 			return nil
 		}
-		l.bufferContent = append(l.bufferContent, chunk...)
 		if err := PublishRunnerContextEvent(ctx, EventLLMContentChunk, map[string]any{"text": content}); err != nil {
 			return err
 		}

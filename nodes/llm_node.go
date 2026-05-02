@@ -97,14 +97,6 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 
 	aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
 
-	if r := strings.TrimSpace(choice.ReasoningContent); r != "" {
-		var blocks []string
-		if existing, ok := state[fruntime.StateKeyReasoningBlocks].([]string); ok {
-			blocks = existing
-		}
-		state[fruntime.StateKeyReasoningBlocks] = append(blocks, r)
-	}
-
 	if strings.TrimSpace(choice.Content) != "" {
 		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
 	}

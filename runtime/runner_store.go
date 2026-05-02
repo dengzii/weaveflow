@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -380,20 +381,16 @@ func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
 	defer f.Close()
 
 	items := make([]Event, 0)
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
+	decoder := json.NewDecoder(bufio.NewReader(f))
+	for {
 		var event Event
-		if err := json.Unmarshal([]byte(line), &event); err != nil {
+		if err := decoder.Decode(&event); err != nil {
+			if err == io.EOF {
+				break
+			}
 			return nil, err
 		}
 		items = append(items, event)
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
 	}
 	return items, nil
 }

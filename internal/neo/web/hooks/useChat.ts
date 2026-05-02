@@ -1,8 +1,146 @@
-import { useReducer, useRef, useState, useCallback } from "react";
-import type { ChatEvent, HistoryMessage, MessageItem } from "../types";
+import { useCallback, useReducer, useRef, useState } from "react";
+import type { ChatEvent, HistoryMessage, HistoryPart, MessageItem } from "../types";
 import { chatReducer, freshCtx, type StreamCtx } from "./chatReducer";
 
-// ── hook ──────────────────────────────────────────────────────────────────────
+type ToolItem = Extract<MessageItem, { kind: "tool" }>;
+
+function thinkingEventKey(data?: Record<string, string>): string | null {
+  const stepId = data?.step_id?.trim();
+  if (stepId) {
+    return `step:${stepId}`;
+  }
+
+  const nodeId = data?.node_id?.trim();
+  if (nodeId) {
+    return `node:${nodeId}`;
+  }
+
+  return null;
+}
+
+function isToolError(text: string, explicitError?: string): boolean {
+  return !!explicitError || /失败|failed/i.test(text);
+}
+
+function createToolItem(id: string, name: string, toolCallId?: string, args = ""): ToolItem {
+  return {
+    id,
+    kind: "tool",
+    toolCallId,
+    name,
+    status: "calling",
+    args,
+    output: "",
+    error: "",
+  };
+}
+
+function applyHistoryPart(
+  items: MessageItem[],
+  part: HistoryPart,
+  nextId: () => string,
+  toolItemIds: Map<string, string>,
+) {
+  switch (part.type) {
+    case "step":
+      if (part.text) {
+        items.push({ id: nextId(), kind: "step", text: part.text, status: "done" });
+      }
+      return;
+
+    case "thinking":
+      if (part.text) {
+        items.push({ id: nextId(), kind: "thinking", text: part.text, done: true });
+      }
+      return;
+
+    case "tool_call": {
+      const item = createToolItem(nextId(), part.name ?? "tool", part.id, part.text ?? "");
+      items.push(item);
+      if (part.id) {
+        toolItemIds.set(part.id, item.id);
+      }
+      return;
+    }
+
+    case "tool_result": {
+      const detail = part.result ?? "";
+      const failed = isToolError(detail);
+      const existingId = part.id ? toolItemIds.get(part.id) : undefined;
+      if (!existingId) {
+        items.push({
+          ...createToolItem(nextId(), part.name ?? "tool", part.id),
+          status: failed ? "error" : "done",
+          output: failed ? "" : detail,
+          error: failed ? detail : "",
+        });
+        return;
+      }
+
+      const index = items.findIndex((item) => item.id === existingId && item.kind === "tool");
+      if (index < 0) {
+        return;
+      }
+
+      const current = items[index];
+      if (current.kind !== "tool") {
+        return;
+      }
+
+      items[index] = {
+        ...current,
+        name: part.name ?? current.name,
+        status: failed ? "error" : "done",
+        output: failed ? "" : detail,
+        error: failed ? detail : "",
+      };
+      return;
+    }
+
+    case "text":
+      if (part.text) {
+        items.push({ id: nextId(), kind: "assistant", text: part.text });
+      }
+      return;
+
+    default:
+      return;
+  }
+}
+
+function buildHistoryItems(messages: HistoryMessage[], nextId: () => string): MessageItem[] {
+  const items: MessageItem[] = [];
+
+  for (const message of messages) {
+    if (message.role === "system") {
+      continue;
+    }
+
+    if (message.role === "human") {
+      const text = (message.parts ?? [])
+        .filter((part) => part.type === "text" && part.text)
+        .map((part) => part.text!)
+        .join("\n");
+      if (text) {
+        items.push({ id: nextId(), kind: "user", text });
+      }
+      continue;
+    }
+
+    const toolItemIds = new Map<string, string>();
+    for (const part of message.parts ?? []) {
+      applyHistoryPart(items, part, nextId, toolItemIds);
+    }
+
+    if (message.status === "failed") {
+      items.push({ id: nextId(), kind: "error", text: "执行失败" });
+    } else if (message.status === "stopped") {
+      items.push({ id: nextId(), kind: "stopped" });
+    }
+  }
+
+  return items;
+}
 
 export function useChat() {
   const [messages, dispatch] = useReducer(chatReducer, []);
@@ -14,8 +152,6 @@ export function useChat() {
 
   const nextId = () => String(++seq.current);
 
-  // ── stream helpers ────────────────────────────────────────────────────────
-
   function completeLastStep() {
     const id = ctxRef.current.lastStepId;
     if (id) {
@@ -24,13 +160,25 @@ export function useChat() {
     }
   }
 
-  function ensureThinking() {
+  function ensureThinking(key?: string | null) {
+    if (key) {
+      const existingId = ctxRef.current.thinkingIdsByKey[key];
+      if (existingId) {
+        return existingId;
+      }
+    }
+
     if (!ctxRef.current.thinkingId) {
       const id = nextId();
       ctxRef.current.thinkingId = id;
       dispatch({ type: "ADD", item: { id, kind: "thinking", text: "", done: false } });
     }
-    return ctxRef.current.thinkingId!;
+
+    const id = ctxRef.current.thinkingId!;
+    if (key) {
+      ctxRef.current.thinkingIdsByKey[key] = id;
+    }
+    return id;
   }
 
   function closeThinking() {
@@ -53,8 +201,6 @@ export function useChat() {
     ctxRef.current.contentId = null;
   }
 
-  // ── event handler ─────────────────────────────────────────────────────────
-
   function handleEvent(event: ChatEvent) {
     const { type, content = "", data } = event;
 
@@ -71,19 +217,28 @@ export function useChat() {
         }
         break;
       }
+
       case "thinking_chunk": {
+        completeLastStep();
         if (content) {
-          dispatch({ type: "APPEND_THINKING", id: ensureThinking(), chunk: content });
+          dispatch({
+            type: "APPEND_THINKING",
+            id: ensureThinking(thinkingEventKey(data)),
+            chunk: content,
+          });
         }
         break;
       }
+
       case "generating_chunk": {
+        completeLastStep();
         if (content) {
           closeThinking();
           dispatch({ type: "APPEND_CONTENT", id: ensureContent(), chunk: content });
         }
         break;
       }
+
       case "tool_call": {
         completeLastStep();
         closeThinking();
@@ -91,41 +246,62 @@ export function useChat() {
         if (content) {
           setProgress(content);
           const id = nextId();
-          ctxRef.current.pendingToolId = id;
-          dispatch({ type: "ADD", item: { id, kind: "tool", name: data?.name ?? content, status: "calling", result: "", detail: "" } });
-        }
-        break;
-      }
-      case "tool_result": {
-        const ctx = ctxRef.current;
-        if (ctx.pendingToolId) {
-          const isErr = content.includes("失败");
+          const toolCallId = data?.tool_call_id ?? id;
+          ctxRef.current.pendingToolIds[toolCallId] = id;
           dispatch({
-            type: "SET_TOOL_DONE",
-            id: ctx.pendingToolId,
-            status: isErr ? "error" : "done",
-            result: content,
-            detail: data?.result ?? "",
+            type: "ADD",
+            item: createToolItem(id, data?.name ?? content, toolCallId, data?.arguments ?? ""),
           });
-          ctx.pendingToolId = null;
         }
         break;
       }
+
+      case "tool_result": {
+        const toolCallId = data?.tool_call_id;
+        let itemId = toolCallId ? ctxRef.current.pendingToolIds[toolCallId] : undefined;
+        if (!itemId) {
+          itemId = nextId();
+          dispatch({
+            type: "ADD",
+            item: createToolItem(itemId, data?.name ?? "tool", toolCallId),
+          });
+        }
+
+        const detail = data?.result ?? data?.error ?? content;
+        const failed = isToolError(detail, data?.error);
+        dispatch({
+          type: "SET_TOOL_DONE",
+          id: itemId,
+          status: failed ? "error" : "done",
+          output: failed ? "" : detail,
+          error: failed ? detail : "",
+        });
+
+        if (toolCallId) {
+          delete ctxRef.current.pendingToolIds[toolCallId];
+        }
+        setProgress(content || null);
+        break;
+      }
+
       case "complete": {
         completeLastStep();
+        closeThinking();
+        closeContent();
         setProgress(content || "完成");
         break;
       }
+
       case "error": {
         completeLastStep();
+        closeThinking();
+        closeContent();
         const id = nextId();
         dispatch({ type: "ADD", item: { id, kind: "error", text: content || "未知错误" } });
         break;
       }
     }
   }
-
-  // ── sendMessage ───────────────────────────────────────────────────────────
 
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || running) return;
@@ -169,6 +345,9 @@ export function useChat() {
           try { handleEvent(JSON.parse(line.slice(6)) as ChatEvent); } catch { /* ignore */ }
         }
       }
+      if (buf.startsWith("data: ")) {
+        try { handleEvent(JSON.parse(buf.slice(6)) as ChatEvent); } catch { /* ignore */ }
+      }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "连接错误: " + (err as Error).message } });
@@ -177,12 +356,11 @@ export function useChat() {
 
     completeLastStep();
     closeThinking();
+    closeContent();
     setRunning(false);
     abortRef.current = null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
-
-  // ── stop ─────────────────────────────────────────────────────────────────
 
   const stop = useCallback(() => {
     if (abortRef.current) {
@@ -191,30 +369,19 @@ export function useChat() {
     }
     completeLastStep();
     closeThinking();
+    closeContent();
     dispatch({ type: "ADD", item: { id: nextId(), kind: "stopped" } });
     setRunning(false);
     setProgress(null);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // ── loadHistory ───────────────────────────────────────────────────────────
-
   const loadHistory = useCallback(async () => {
     try {
       const resp = await fetch("/neo/history");
       const json = await resp.json();
-      const msgs: HistoryMessage[] = json.data ?? [];
-      const items: MessageItem[] = [];
-      for (const msg of msgs) {
-        if (msg.role === "system") continue;
-        const text = (msg.parts ?? [])
-          .filter((p) => p.type === "text" && p.text)
-          .map((p) => p.text!)
-          .join("\n");
-        if (!text) continue;
-        items.push({ id: nextId(), kind: msg.role === "human" ? "user" : "assistant", text });
-      }
-      dispatch({ type: "SET", items });
+      const history: HistoryMessage[] = json.data ?? [];
+      dispatch({ type: "SET", items: buildHistoryItems(history, nextId) });
     } catch { /* ignore */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
