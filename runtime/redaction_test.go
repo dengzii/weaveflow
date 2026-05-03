@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"weaveflow/internal/redact"
+	"weaveflow/redact"
 )
 
 func TestRedactMessages(t *testing.T) {

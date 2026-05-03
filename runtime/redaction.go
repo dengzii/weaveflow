@@ -2,7 +2,7 @@ package runtime
 
 import (
 	"strings"
-	"weaveflow/internal/redact"
+	"weaveflow/redact"
 )
 
 func RedactMessages(messages []StateMessage) []StateMessage {
