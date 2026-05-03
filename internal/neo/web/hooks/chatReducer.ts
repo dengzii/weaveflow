@@ -5,7 +5,9 @@ export type Action =
   | { type: "ADD"; item: MessageItem }
   | { type: "CLOSE_THINKING"; id: string }
   | { type: "APPEND_THINKING"; id: string; chunk: string }
+  | { type: "SET_THINKING_TEXT"; id: string; text: string }
   | { type: "APPEND_CONTENT"; id: string; chunk: string }
+  | { type: "SET_CONTENT_TEXT"; id: string; text: string }
   | { type: "SET_STEP_DONE"; id: string }
   | { type: "SET_TOOL_DONE"; id: string; status: "done" | "error"; output: string; error: string };
 
@@ -29,10 +31,24 @@ export function chatReducer(state: MessageItem[], action: Action): MessageItem[]
           : m
       );
 
+    case "SET_THINKING_TEXT":
+      return state.map((m) =>
+        m.id === action.id && m.kind === "thinking"
+          ? { ...m, text: action.text }
+          : m
+      );
+
     case "APPEND_CONTENT":
       return state.map((m) =>
         m.id === action.id && m.kind === "assistant"
           ? { ...m, text: m.text + action.chunk }
+          : m
+      );
+
+    case "SET_CONTENT_TEXT":
+      return state.map((m) =>
+        m.id === action.id && m.kind === "assistant"
+          ? { ...m, text: action.text }
           : m
       );
 
@@ -57,8 +73,13 @@ export interface StreamCtx {
   lastStepId: string | null;
   pendingToolIds: Record<string, string>;
   thinkingIdsByKey: Record<string, string>;
+  thinkingRawById: Record<string, string>;
   thinkingId: string | null;
   contentId: string | null;
+  contentKey: string | null;
+  contentRaw: string;
+  assistantShown: boolean;
+  pendingDirectAnswer: string;
 }
 
 export function freshCtx(): StreamCtx {
@@ -66,7 +87,12 @@ export function freshCtx(): StreamCtx {
     lastStepId: null,
     pendingToolIds: {},
     thinkingIdsByKey: {},
+    thinkingRawById: {},
     thinkingId: null,
     contentId: null,
+    contentKey: null,
+    contentRaw: "",
+    assistantShown: false,
+    pendingDirectAnswer: "",
   };
 }

@@ -67,6 +67,18 @@ func (w *TurnWriter) Finalize(status string) error {
 	return w.store.updateTurnMessage(w.assistantSeq, w.parts, w.status)
 }
 
+func (w *TurnWriter) AppendAssistantText(text string) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	text = strings.TrimSpace(text)
+	if text == "" || turnWriterHasText(w.parts, text) {
+		return nil
+	}
+	w.parts = append(w.parts, MessagePart{Type: "text", Text: text})
+	return w.store.updateTurnMessage(w.assistantSeq, w.parts, w.status)
+}
+
 func partFromEvent(event fruntime.Event) *MessagePart {
 	switch event.Type {
 	case fruntime.EventNodeStarted:
@@ -82,6 +94,9 @@ func partFromEvent(event fruntime.Event) *MessagePart {
 		}
 		return &MessagePart{Type: "thinking", Text: text}
 	case fruntime.EventLLMContent:
+		if !hasPrefix(event.NodeID, streamableContentPrefixes) {
+			return nil
+		}
 		text := extractEventPayloadString(event.Payload, "text")
 		if strings.TrimSpace(text) == "" {
 			return nil
@@ -132,4 +147,13 @@ func extractEventPayloadString(payload json.RawMessage, key string) string {
 		return plain
 	}
 	return ""
+}
+
+func turnWriterHasText(parts []MessagePart, text string) bool {
+	for _, part := range parts {
+		if part.Type == "text" && strings.TrimSpace(part.Text) == text {
+			return true
+		}
+	}
+	return false
 }

@@ -413,7 +413,7 @@ func (s *Store) loadTurnHistory(sessionID string) ([]HistoryMessage, error) {
 		}
 		items = append(items, msg)
 	}
-	return items, rows.Err()
+	return sanitizeHistoryMessages(items), rows.Err()
 }
 
 func (s *Store) loadRawHistory(sessionID string) ([]HistoryMessage, error) {
@@ -437,7 +437,7 @@ func (s *Store) loadRawHistory(sessionID string) ([]HistoryMessage, error) {
 		}
 		items = append(items, msg)
 	}
-	return items, rows.Err()
+	return sanitizeHistoryMessages(items), rows.Err()
 }
 
 func scanHistoryMessage(scanner interface{ Scan(dest ...any) error }) (HistoryMessage, error) {

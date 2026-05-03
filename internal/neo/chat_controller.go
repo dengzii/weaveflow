@@ -156,6 +156,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 		run, state, runErr := runner.Start(ctx, initialState)
 		runStatus := runStatusString(ctx, runErr)
 		if turnWriter != nil {
+			_ = turnWriter.AppendAssistantText(finalAnswerFromState(state))
 			_ = turnWriter.Finalize(runStatus)
 		}
 		if state != nil && store != nil {
@@ -174,6 +175,8 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 	clientGone := c.Request.Context().Done()
 	streamedReasoningByStep := make(map[string]string)
+	streamedContentByStep := make(map[string]string)
+	sentAssistantContent := false
 	for {
 		select {
 		case <-clientGone:
@@ -193,6 +196,13 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 				ctrl.cancelFn = nil
 				ctrl.mu.Unlock()
 
+				if answer := finalAnswerFromState(res.state); !sentAssistantContent && answer != "" {
+					writeSSE(c, &ChatEvent{
+						Type:    ChatEventTypeGenerating,
+						Content: answer,
+					})
+				}
+
 				if res.err != nil && res.state == nil {
 					writeSSE(c, &ChatEvent{
 						Type:    ChatEventTypeError,
@@ -204,8 +214,13 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 			chatEvent := attachEventIdentity(event, TranslateEvent(event))
 			rememberStreamedReasoningText(event, chatEvent, streamedReasoningByStep)
+			rememberStreamedContentText(event, chatEvent, streamedContentByStep)
 			chatEvent = syncReasoningSummary(event, chatEvent, streamedReasoningByStep)
+			chatEvent = syncContentSummary(event, chatEvent, streamedContentByStep)
 			if chatEvent != nil {
+				if chatEvent.Type == ChatEventTypeGenerating && strings.TrimSpace(chatEvent.Content) != "" {
+					sentAssistantContent = true
+				}
 				writeSSE(c, chatEvent)
 			}
 		}
@@ -285,6 +300,49 @@ func syncReasoningSummary(event fruntime.Event, chatEvent *ChatEvent, streamedRe
 	return chatEvent
 }
 
+func rememberStreamedContentText(event fruntime.Event, chatEvent *ChatEvent, streamedContentByStep map[string]string) {
+	if event.Type != fruntime.EventLLMContentChunk || chatEvent == nil || chatEvent.Type != ChatEventTypeGenerating {
+		return
+	}
+	key := streamEventKey(event)
+	if key == "" || chatEvent.Content == "" {
+		return
+	}
+	streamedContentByStep[key] += chatEvent.Content
+}
+
+func syncContentSummary(event fruntime.Event, chatEvent *ChatEvent, streamedContentByStep map[string]string) *ChatEvent {
+	if event.Type != fruntime.EventLLMContent || chatEvent == nil || chatEvent.Type != ChatEventTypeGenerating {
+		return chatEvent
+	}
+
+	key := streamEventKey(event)
+	if key == "" {
+		return chatEvent
+	}
+
+	streamed := streamedContentByStep[key]
+	delete(streamedContentByStep, key)
+	if streamed == "" {
+		return chatEvent
+	}
+
+	full := chatEvent.Content
+	if full == streamed {
+		return nil
+	}
+	if strings.HasPrefix(full, streamed) {
+		suffix := full[len(streamed):]
+		if suffix == "" {
+			return nil
+		}
+		cloned := *chatEvent
+		cloned.Content = suffix
+		return &cloned
+	}
+	return chatEvent
+}
+
 func streamEventKey(event fruntime.Event) string {
 	if stepID := strings.TrimSpace(event.StepID); stepID != "" {
 		return "step:" + stepID
@@ -293,6 +351,21 @@ func streamEventKey(event fruntime.Event) string {
 		return "node:" + nodeID
 	}
 	return ""
+}
+
+func finalAnswerFromState(state fruntime.State) string {
+	if state == nil {
+		return ""
+	}
+	if answer := strings.TrimSpace(state.Conversation(stateScope).FinalAnswer()); answer != "" {
+		return answer
+	}
+	finalState := state.Get(fruntime.StateKeyFinal)
+	if finalState == nil {
+		return ""
+	}
+	answer, _ := finalState["answer"].(string)
+	return strings.TrimSpace(answer)
 }
 
 func (ctrl *ChatController) effectiveServices() *fruntime.Services {
@@ -317,13 +390,17 @@ func (ctrl *ChatController) GetLastState() fruntime.State {
 
 func (ctrl *ChatController) GetHistory() ([]HistoryMessage, error) {
 	if ctrl.store != nil {
-		return ctrl.store.LoadHistory(defaultSessionID)
+		history, err := ctrl.store.LoadHistory(defaultSessionID)
+		if err != nil {
+			return nil, err
+		}
+		return sanitizeHistoryMessages(history), nil
 	}
 	state := ctrl.GetLastState()
 	if state == nil {
 		return []HistoryMessage{}, nil
 	}
-	return convertMessages(state.Conversation(stateScope).Messages()), nil
+	return sanitizeHistoryMessages(convertMessages(state.Conversation(stateScope).Messages())), nil
 }
 
 func writeSSE(c *gin.Context, event *ChatEvent) {

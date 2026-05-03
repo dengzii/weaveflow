@@ -27,6 +27,27 @@ func TestTranslateEventStreamsReasoningChunk(t *testing.T) {
 	}
 }
 
+func TestTranslateEventStreamsContentSummary(t *testing.T) {
+	t.Parallel()
+
+	event := fruntime.Event{
+		Type:    fruntime.EventLLMContent,
+		NodeID:  "Finalizer_test",
+		Payload: rawJSON(map[string]string{"text": "done"}),
+	}
+
+	got := TranslateEvent(event)
+	if got == nil {
+		t.Fatal("TranslateEvent() = nil, want chat event")
+	}
+	if got.Type != ChatEventTypeGenerating {
+		t.Fatalf("TranslateEvent().Type = %q, want %q", got.Type, ChatEventTypeGenerating)
+	}
+	if got.Content != "done" {
+		t.Fatalf("TranslateEvent().Content = %q, want %q", got.Content, "done")
+	}
+}
+
 func TestAttachEventIdentityIncludesStepAndNode(t *testing.T) {
 	t.Parallel()
 
@@ -128,5 +149,29 @@ func TestSyncReasoningSummaryFallsBackWithoutStreamedChunk(t *testing.T) {
 	}
 	if got.Content != "looks good" {
 		t.Fatalf("syncReasoningSummary().Content = %q, want %q", got.Content, "looks good")
+	}
+}
+
+func TestSyncContentSummarySkipsDuplicateFullText(t *testing.T) {
+	t.Parallel()
+
+	streamed := make(map[string]string)
+	chunk := fruntime.Event{
+		Type:    fruntime.EventLLMContentChunk,
+		NodeID:  "Finalizer_test",
+		StepID:  "step_789",
+		Payload: rawJSON(map[string]string{"text": "answer"}),
+	}
+	rememberStreamedContentText(chunk, attachEventIdentity(chunk, TranslateEvent(chunk)), streamed)
+
+	summary := fruntime.Event{
+		Type:    fruntime.EventLLMContent,
+		NodeID:  "Finalizer_test",
+		StepID:  "step_789",
+		Payload: rawJSON(map[string]string{"text": "answer"}),
+	}
+
+	if got := syncContentSummary(summary, attachEventIdentity(summary, TranslateEvent(summary)), streamed); got != nil {
+		t.Fatalf("syncContentSummary() = %#v, want nil", got)
 	}
 }

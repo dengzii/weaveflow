@@ -63,7 +63,7 @@ func TestStoreTurnWriterPersistsAssistantTimeline(t *testing.T) {
 			"name":         "calculator",
 			"content":      "4",
 		})},
-		{Type: fruntime.EventLLMContent, Payload: rawJSONString("answer is 4")},
+		{Type: fruntime.EventLLMContent, NodeID: "Finalizer_test", Payload: rawJSONString("answer is 4")},
 	}
 	for _, event := range events {
 		if err := writer.Publish(context.Background(), event); err != nil {
@@ -117,6 +117,83 @@ func TestStoreTurnWriterPersistsAssistantTimeline(t *testing.T) {
 	}
 	if assistantMsg.Parts[4].Text != "answer is 4" {
 		t.Fatalf("assistant text part = %#v", assistantMsg.Parts[4])
+	}
+}
+
+func TestStoreTurnWriterIgnoresRouterContentAndPersistsFinalizerAnswer(t *testing.T) {
+	store := newTestStore(t)
+
+	writer, err := store.BeginTurn(defaultSessionID, "hi")
+	if err != nil {
+		t.Fatalf("BeginTurn() error = %v", err)
+	}
+
+	events := []fruntime.Event{
+		{
+			Type:    fruntime.EventLLMContent,
+			NodeID:  "OrchestrationRouter_test",
+			Payload: rawJSON(map[string]string{"text": `{"mode":"direct","direct_answer":"Hi there!"}`}),
+		},
+		{
+			Type:    fruntime.EventLLMContent,
+			NodeID:  "Finalizer_test",
+			Payload: rawJSON(map[string]string{"text": "Hi there!"}),
+		},
+	}
+	for _, event := range events {
+		if err := writer.Publish(context.Background(), event); err != nil {
+			t.Fatalf("Publish(%s) error = %v", event.Type, err)
+		}
+	}
+	if err := writer.Finalize("completed"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+
+	history, err := store.LoadHistory(defaultSessionID)
+	if err != nil {
+		t.Fatalf("LoadHistory() error = %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("LoadHistory() len = %d, want 2", len(history))
+	}
+
+	assistantMsg := history[1]
+	if len(assistantMsg.Parts) != 1 {
+		t.Fatalf("assistant parts len = %d, want 1", len(assistantMsg.Parts))
+	}
+	if assistantMsg.Parts[0].Type != "text" || assistantMsg.Parts[0].Text != "Hi there!" {
+		t.Fatalf("assistant part = %#v", assistantMsg.Parts[0])
+	}
+}
+
+func TestStoreTurnWriterAppendAssistantTextPersistsFallbackAnswer(t *testing.T) {
+	store := newTestStore(t)
+
+	writer, err := store.BeginTurn(defaultSessionID, "hi")
+	if err != nil {
+		t.Fatalf("BeginTurn() error = %v", err)
+	}
+	if err := writer.AppendAssistantText("Hi there!"); err != nil {
+		t.Fatalf("AppendAssistantText() error = %v", err)
+	}
+	if err := writer.Finalize("completed"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+
+	history, err := store.LoadHistory(defaultSessionID)
+	if err != nil {
+		t.Fatalf("LoadHistory() error = %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("LoadHistory() len = %d, want 2", len(history))
+	}
+
+	assistantMsg := history[1]
+	if len(assistantMsg.Parts) != 1 {
+		t.Fatalf("assistant parts len = %d, want 1", len(assistantMsg.Parts))
+	}
+	if assistantMsg.Parts[0].Text != "Hi there!" {
+		t.Fatalf("assistant part = %#v", assistantMsg.Parts[0])
 	}
 }
 

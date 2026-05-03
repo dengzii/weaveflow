@@ -4,6 +4,18 @@ import { chatReducer, freshCtx, type StreamCtx } from "./chatReducer";
 
 type ToolItem = Extract<MessageItem, { kind: "tool" }>;
 
+type OrchestrationDecision = {
+  mode?: string;
+  reasoning?: string;
+  direct_answer?: string;
+};
+
+type NormalizedInternalText = {
+  text: string;
+  directAnswer: string;
+  internal: boolean;
+};
+
 function thinkingEventKey(data?: Record<string, string>): string | null {
   const stepId = data?.step_id?.trim();
   if (stepId) {
@@ -33,6 +45,213 @@ function createToolItem(id: string, name: string, toolCallId?: string, args = ""
     output: "",
     error: "",
   };
+}
+
+function contentEventKey(data?: Record<string, string>): string | null {
+  return thinkingEventKey(data);
+}
+
+function stripCodeFence(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("```")) {
+    return trimmed;
+  }
+
+  return trimmed
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/, "")
+    .replace(/\s*```$/, "")
+    .trim();
+}
+
+function extractBalancedJSONObject(text: string, start: number): string | null {
+  if (start < 0 || start >= text.length || text[start] !== "{") {
+    return null;
+  }
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const ch = text[index];
+    if (inString) {
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (ch === "\\") {
+        escaped = true;
+      } else if (ch === "\"") {
+        inString = false;
+      }
+      continue;
+    }
+
+    if (ch === "\"") {
+      inString = true;
+      continue;
+    }
+    if (ch === "{") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(start, index + 1).trim();
+      }
+    }
+  }
+
+  return null;
+}
+
+function extractOrchestrationJSONObject(text: string): string | null {
+  const trimmed = stripCodeFence(text);
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith("{")) {
+    const candidate = extractBalancedJSONObject(trimmed, 0);
+    if (candidate) {
+      return candidate;
+    }
+  }
+
+  const markers = ['{"mode"', '{"direct_answer"', '{"reasoning"'];
+  let best = -1;
+  for (const marker of markers) {
+    const index = trimmed.indexOf(marker);
+    if (index >= 0 && (best < 0 || index < best)) {
+      best = index;
+    }
+  }
+  if (best < 0) {
+    return null;
+  }
+
+  return extractBalancedJSONObject(trimmed, best);
+}
+
+function parseOrchestrationDecision(text: string): OrchestrationDecision | null {
+  const candidate = extractOrchestrationJSONObject(text);
+  if (!candidate) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(candidate) as OrchestrationDecision;
+    const mode = parsed.mode?.trim().toLowerCase();
+    if (mode !== "direct" && mode !== "planner" && mode !== "supervisor") {
+      return null;
+    }
+
+    const reasoning = parsed.reasoning?.trim() ?? "";
+    const directAnswer = parsed.direct_answer?.trim() ?? "";
+    if (!reasoning && !directAnswer) {
+      return null;
+    }
+
+    return {
+      mode,
+      reasoning,
+      direct_answer: directAnswer,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function looksLikeOrchestrationFragment(text: string): boolean {
+  const trimmed = stripCodeFence(text);
+  if (!trimmed || !trimmed.startsWith("{")) {
+    return false;
+  }
+
+  return (
+    trimmed.includes('"mode"') ||
+    trimmed.includes('"direct_answer"') ||
+    trimmed.includes('"reasoning"')
+  );
+}
+
+function normalizeThinkingText(text: string): NormalizedInternalText {
+  const decision = parseOrchestrationDecision(text);
+  if (decision) {
+    return {
+      text: decision.reasoning || (decision.direct_answer ? "Direct answer selected." : ""),
+      directAnswer: decision.direct_answer ?? "",
+      internal: true,
+    };
+  }
+
+  if (looksLikeOrchestrationFragment(text)) {
+    return {
+      text: "Analyzing whether a direct answer is possible...",
+      directAnswer: "",
+      internal: true,
+    };
+  }
+
+  return { text, directAnswer: "", internal: false };
+}
+
+function normalizeAssistantText(text: string): NormalizedInternalText {
+  const decision = parseOrchestrationDecision(text);
+  if (decision) {
+    return {
+      text: decision.direct_answer ?? "",
+      directAnswer: decision.direct_answer ?? "",
+      internal: true,
+    };
+  }
+
+  if (looksLikeOrchestrationFragment(text)) {
+    return { text: "", directAnswer: "", internal: true };
+  }
+
+  return { text, directAnswer: "", internal: false };
+}
+
+function normalizeHistoryMessage(message: HistoryMessage): HistoryMessage {
+  if (message.role === "human" || message.role === "system") {
+    return message;
+  }
+
+  const parts: HistoryPart[] = [];
+  let pendingDirectAnswer = "";
+  for (const part of message.parts ?? []) {
+    if (part.type === "thinking" && part.text) {
+      const normalized = normalizeThinkingText(part.text);
+      if (normalized.directAnswer && !pendingDirectAnswer) {
+        pendingDirectAnswer = normalized.directAnswer;
+      }
+      if (normalized.text) {
+        parts.push({ ...part, text: normalized.text });
+      }
+      continue;
+    }
+
+    if (part.type === "text" && part.text) {
+      const normalized = normalizeAssistantText(part.text);
+      if (normalized.directAnswer && !pendingDirectAnswer) {
+        pendingDirectAnswer = normalized.directAnswer;
+      }
+      if (normalized.text) {
+        parts.push({ ...part, text: normalized.text });
+      }
+      continue;
+    }
+
+    parts.push(part);
+  }
+
+  if (pendingDirectAnswer && !parts.some((part) => part.type === "text" && part.text?.trim() === pendingDirectAnswer)) {
+    parts.push({ type: "text", text: pendingDirectAnswer });
+  }
+
+  return { ...message, parts };
 }
 
 function applyHistoryPart(
@@ -111,7 +330,8 @@ function applyHistoryPart(
 function buildHistoryItems(messages: HistoryMessage[], nextId: () => string): MessageItem[] {
   const items: MessageItem[] = [];
 
-  for (const message of messages) {
+  for (const rawMessage of messages) {
+    const message = normalizeHistoryMessage(rawMessage);
     if (message.role === "system") {
       continue;
     }
@@ -199,6 +419,64 @@ export function useChat() {
 
   function closeContent() {
     ctxRef.current.contentId = null;
+    ctxRef.current.contentKey = null;
+    ctxRef.current.contentRaw = "";
+  }
+
+  function setContentText(text: string) {
+    const normalized = text.trim();
+    if (!normalized) {
+      return;
+    }
+
+    const id = ensureContent();
+    ctxRef.current.contentRaw = normalized;
+    ctxRef.current.assistantShown = true;
+    dispatch({ type: "SET_CONTENT_TEXT", id, text: normalized });
+  }
+
+  function flushPendingDirectAnswer() {
+    const answer = ctxRef.current.pendingDirectAnswer.trim();
+    if (!answer || ctxRef.current.assistantShown) {
+      return;
+    }
+
+    closeThinking();
+    setContentText(answer);
+  }
+
+  function syncThinkingText(chunk: string, data?: Record<string, string>) {
+    const id = ensureThinking(thinkingEventKey(data));
+    const raw = (ctxRef.current.thinkingRawById[id] ?? "") + chunk;
+    ctxRef.current.thinkingRawById[id] = raw;
+
+    const normalized = normalizeThinkingText(raw);
+    if (normalized.directAnswer) {
+      ctxRef.current.pendingDirectAnswer = normalized.directAnswer;
+    }
+    dispatch({ type: "SET_THINKING_TEXT", id, text: normalized.text });
+  }
+
+  function syncContentText(chunk: string, data?: Record<string, string>) {
+    const key = contentEventKey(data);
+    if (key && ctxRef.current.contentKey !== key) {
+      ctxRef.current.contentKey = key;
+      ctxRef.current.contentRaw = "";
+    }
+
+    const raw = ctxRef.current.contentRaw + chunk;
+    ctxRef.current.contentRaw = raw;
+
+    const normalized = normalizeAssistantText(raw);
+    if (normalized.directAnswer) {
+      ctxRef.current.pendingDirectAnswer = normalized.directAnswer;
+    }
+    if (!normalized.text) {
+      return;
+    }
+
+    closeThinking();
+    setContentText(normalized.text);
   }
 
   function handleEvent(event: ChatEvent) {
@@ -221,11 +499,7 @@ export function useChat() {
       case "thinking_chunk": {
         completeLastStep();
         if (content) {
-          dispatch({
-            type: "APPEND_THINKING",
-            id: ensureThinking(thinkingEventKey(data)),
-            chunk: content,
-          });
+          syncThinkingText(content, data);
         }
         break;
       }
@@ -233,8 +507,7 @@ export function useChat() {
       case "generating_chunk": {
         completeLastStep();
         if (content) {
-          closeThinking();
-          dispatch({ type: "APPEND_CONTENT", id: ensureContent(), chunk: content });
+          syncContentText(content, data);
         }
         break;
       }
@@ -286,6 +559,7 @@ export function useChat() {
 
       case "complete": {
         completeLastStep();
+        flushPendingDirectAnswer();
         closeThinking();
         closeContent();
         setProgress(content || "完成");
@@ -354,6 +628,7 @@ export function useChat() {
       }
     }
 
+    flushPendingDirectAnswer();
     completeLastStep();
     closeThinking();
     closeContent();

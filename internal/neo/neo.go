@@ -83,6 +83,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	}
 
 	router := nodes.NewOrchestrationRouterNode()
+	router.StateScope = scope
 	router.InputPath = fruntime.StateKeyRequest + ".input"
 	switch cfg.Mode {
 	case "direct":
@@ -155,12 +156,16 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	}
 
 	// --- edges ---
+	// bootstrap enters routing first so direct answers can short-circuit before memory recall.
 
 	// entry: bootstrap → memory_recall → router
-	if err := graph.AddEdge(bootstrap.ID(), memRecall.ID()); err != nil {
+	if err := graph.AddEdge(bootstrap.ID(), router.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddEdge(memRecall.ID(), router.ID()); err != nil {
+	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), weaveflow.HasFinalAnswer(scope)); err != nil {
+		return nil, err
+	}
+	if err := graph.AddEdge(router.ID(), memRecall.ID()); err != nil {
 		return nil, err
 	}
 
@@ -171,10 +176,10 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(router.ID(), planner.ID(), routeToPlanner); err != nil {
+	if err := graph.AddConditionalEdge(memRecall.ID(), planner.ID(), routeToPlanner); err != nil {
 		return nil, err
 	}
-	if err := graph.AddEdge(router.ID(), ctxAssembler.ID()); err != nil {
+	if err := graph.AddEdge(memRecall.ID(), ctxAssembler.ID()); err != nil {
 		return nil, err
 	}
 

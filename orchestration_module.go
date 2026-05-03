@@ -30,6 +30,7 @@ func orchestrationStateFieldDefinition() StateFieldDefinition {
 				"clarification_question": JSONSchema{"type": "string"},
 				"reasoning":              JSONSchema{"type": "string"},
 				"target_subgraph":        JSONSchema{"type": "string"},
+				"direct_answer":          JSONSchema{"type": "string"},
 			},
 			"additionalProperties": true,
 		},

@@ -15,14 +15,28 @@ import (
 
 const (
 	defaultOrchestrationStatePath = fruntime.StateKeyOrchestration
-	orchestrationRouterPrompt     = "" +
-		"You are an orchestration router inside an agent workflow. " +
-		"Return only valid JSON without markdown fences. " +
-		"Use the shape " +
-		"{\"mode\":string,\"use_memory\":boolean,\"memory_query\":string,\"needs_clarification\":boolean," +
-		"\"clarification_question\":string,\"reasoning\":string,\"target_subgraph\":string}. " +
-		"Valid mode values are direct, planner, supervisor. " +
-		"Use needs_clarification=true only when missing information blocks safe progress."
+	orchestrationRouterPrompt     = `You are an orchestration router inside an agent workflow.
+Return JSON only. Do not use markdown fences.
+
+Required keys and types:
+- mode: string
+- use_memory: boolean
+- memory_query: string
+- needs_clarification: boolean
+- clarification_question: string
+- reasoning: string
+- target_subgraph: string
+- direct_answer: string
+
+Rules:
+- Valid mode values: direct, planner, supervisor.
+- Prefer direct when one assistant turn can safely complete the request.
+- Use planner only for multi-step decomposition, tool-heavy work, or execution that must be checked step by step.
+- Use supervisor only for explicit multi-agent delegation or handoff.
+- Use memory only when prior session context is required.
+- Set needs_clarification=true only when missing information blocks safe progress.
+- If mode is direct and you can answer immediately, put the full user-facing reply in direct_answer.
+- Keep reasoning brief.`
 )
 
 type OrchestrationRouterNode struct {
@@ -43,6 +57,7 @@ type orchestrationRouterResponse struct {
 	ClarificationQuestion string `json:"clarification_question"`
 	Reasoning             string `json:"reasoning"`
 	TargetSubgraph        string `json:"target_subgraph"`
+	DirectAnswer          string `json:"direct_answer"`
 }
 
 func NewOrchestrationRouterNode() *OrchestrationRouterNode {
@@ -92,6 +107,8 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 			llms.TextParts(llms.ChatMessageTypeSystem, orchestrationRouterPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, buildOrchestrationRouterPrompt(payload)),
 		},
+		llms.WithJSONMode(),
+		llms.WithThinkingMode(llms.ThinkingModeNone),
 		llms.WithTemperature(0),
 	)
 	if err != nil {
@@ -125,6 +142,8 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 	target["clarification_question"] = parsed.ClarificationQuestion
 	target["reasoning"] = parsed.Reasoning
 	target["target_subgraph"] = parsed.TargetSubgraph
+	target["direct_answer"] = parsed.DirectAnswer
+	n.applyDirectAnswer(state, parsed.DirectAnswer)
 
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
 		"kind":                     "orchestration",
@@ -133,6 +152,7 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 		"use_memory":               parsed.UseMemory,
 		"needs_clarification":      parsed.NeedsClarification,
 		"target_subgraph":          parsed.TargetSubgraph,
+		"has_direct_answer":        parsed.DirectAnswer != "",
 	})
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.response", parsed)
 
@@ -244,11 +264,79 @@ func (n *OrchestrationRouterNode) collectContext(state fruntime.State) map[strin
 }
 
 func buildOrchestrationRouterPrompt(payload map[string]any) string {
-	data, err := json.MarshalIndent(payload, "", "  ")
+	data, err := json.Marshal(buildOrchestrationPromptPayload(payload))
 	if err != nil {
 		return "Decide the orchestration strategy from the provided request payload."
 	}
-	return "Decide the orchestration strategy from the following JSON payload.\n\n" + string(data)
+	return "Route the request from this JSON payload and answer immediately when direct is enough.\n" + string(data)
+}
+
+func buildOrchestrationPromptPayload(payload map[string]any) map[string]any {
+	compact := compactOrchestrationPromptValue(map[string]any{
+		"request":         payload["input"],
+		"prior_route":     payload["orchestration_state"],
+		"context":         payload["context"],
+		"available_modes": payload["available_modes"],
+		"rules":           payload["additional_rules"],
+	})
+	if object, ok := compact.(map[string]any); ok {
+		return object
+	}
+	return map[string]any{}
+}
+
+func compactOrchestrationPromptValue(value any) any {
+	switch typed := value.(type) {
+	case fruntime.State:
+		return compactOrchestrationPromptValue(map[string]any(typed))
+	case map[string]any:
+		compacted := make(map[string]any, len(typed))
+		for key, item := range typed {
+			compactedItem := compactOrchestrationPromptValue(item)
+			if compactedItem == nil {
+				continue
+			}
+			compacted[key] = compactedItem
+		}
+		if len(compacted) == 0 {
+			return nil
+		}
+		return compacted
+	case []string:
+		compacted := make([]string, 0, len(typed))
+		for _, item := range typed {
+			item = strings.TrimSpace(item)
+			if item == "" {
+				continue
+			}
+			compacted = append(compacted, item)
+		}
+		if len(compacted) == 0 {
+			return nil
+		}
+		return compacted
+	case []any:
+		compacted := make([]any, 0, len(typed))
+		for _, item := range typed {
+			compactedItem := compactOrchestrationPromptValue(item)
+			if compactedItem == nil {
+				continue
+			}
+			compacted = append(compacted, compactedItem)
+		}
+		if len(compacted) == 0 {
+			return nil
+		}
+		return compacted
+	case string:
+		typed = strings.TrimSpace(typed)
+		if typed == "" {
+			return nil
+		}
+		return typed
+	default:
+		return value
+	}
 }
 
 func parseOrchestrationRouterResponse(content string, allowedModes []string) (orchestrationRouterResponse, error) {
@@ -257,17 +345,23 @@ func parseOrchestrationRouterResponse(content string, allowedModes []string) (or
 		return orchestrationRouterResponse{}, errors.New("orchestration router response is empty")
 	}
 
-	candidates := []string{content, stripOrchestrationCodeFence(content)}
+	stripped := stripOrchestrationCodeFence(content)
+	candidates := uniqueOrchestrationCandidates([]string{
+		content,
+		stripped,
+		extractOrchestrationJSONObject(content, strings.Index(content, "{")),
+		extractOrchestrationJSONObject(stripped, strings.Index(stripped, "{")),
+		salvageOrchestrationJSON(content),
+		salvageOrchestrationJSON(stripped),
+	})
 	for _, candidate := range candidates {
 		if parsed, err := decodeOrchestrationRouterResponse(candidate, allowedModes); err == nil {
 			return parsed, nil
 		}
 	}
 
-	start := strings.Index(content, "{")
-	end := strings.LastIndex(content, "}")
-	if start >= 0 && end > start {
-		return decodeOrchestrationRouterResponse(content[start:end+1], allowedModes)
+	if repaired := salvageOrchestrationJSON(content); repaired != "" {
+		return decodeOrchestrationRouterResponse(repaired, allowedModes)
 	}
 	return orchestrationRouterResponse{}, errors.New("orchestration router response is not valid JSON")
 }
@@ -290,14 +384,7 @@ func normalizeOrchestrationRouterResponse(parsed orchestrationRouterResponse, al
 		parsed.Mode = "direct"
 	}
 
-	allowed := map[string]struct{}{}
-	for _, mode := range allowedModes {
-		mode = normalizeOrchestrationMode(mode)
-		if mode == "" {
-			continue
-		}
-		allowed[mode] = struct{}{}
-	}
+	allowed := allowedOrchestrationModes(allowedModes)
 	if len(allowed) > 0 {
 		if _, ok := allowed[parsed.Mode]; !ok {
 			parsed.Mode = firstAllowedOrchestrationMode(allowedModes)
@@ -308,10 +395,41 @@ func normalizeOrchestrationRouterResponse(parsed orchestrationRouterResponse, al
 	parsed.ClarificationQuestion = strings.TrimSpace(parsed.ClarificationQuestion)
 	parsed.Reasoning = strings.TrimSpace(parsed.Reasoning)
 	parsed.TargetSubgraph = strings.TrimSpace(parsed.TargetSubgraph)
+	parsed.DirectAnswer = strings.TrimSpace(parsed.DirectAnswer)
+	if parsed.DirectAnswer != "" {
+		if len(allowed) > 0 {
+			if _, ok := allowed["direct"]; !ok {
+				parsed.DirectAnswer = ""
+			}
+		}
+		if parsed.DirectAnswer != "" {
+			parsed.Mode = "direct"
+			parsed.UseMemory = false
+			parsed.MemoryQuery = ""
+			parsed.NeedsClarification = false
+			parsed.ClarificationQuestion = ""
+			parsed.TargetSubgraph = ""
+		}
+	}
 	if parsed.NeedsClarification && parsed.ClarificationQuestion == "" {
 		parsed.ClarificationQuestion = "Could you clarify the missing information needed to proceed?"
 	}
 	return parsed
+}
+
+func (n *OrchestrationRouterNode) applyDirectAnswer(state fruntime.State, answer string) {
+	answer = strings.TrimSpace(answer)
+	if answer == "" || state == nil {
+		return
+	}
+
+	conversation := state.Conversation(n.StateScope)
+	messages := conversation.Messages()
+	if !lastOrchestrationMessageMatches(messages, answer) {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeAI, answer))
+		conversation.UpdateMessage(messages)
+	}
+	conversation.SetFinalAnswer(answer)
 }
 
 func firstAllowedOrchestrationMode(allowedModes []string) string {
@@ -332,6 +450,18 @@ func normalizeOrchestrationMode(mode string) string {
 	default:
 		return ""
 	}
+}
+
+func allowedOrchestrationModes(allowedModes []string) map[string]struct{} {
+	allowed := map[string]struct{}{}
+	for _, mode := range allowedModes {
+		mode = normalizeOrchestrationMode(mode)
+		if mode == "" {
+			continue
+		}
+		allowed[mode] = struct{}{}
+	}
+	return allowed
 }
 
 func existingOrchestrationState(state fruntime.State, path string) map[string]any {
@@ -407,4 +537,104 @@ func cloneOrchestrationStrings(items []string) []string {
 	cloned := make([]string, len(items))
 	copy(cloned, items)
 	return cloned
+}
+
+func lastOrchestrationMessageMatches(messages []llms.MessageContent, answer string) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	last := messages[len(messages)-1]
+	if last.Role != llms.ChatMessageTypeAI {
+		return false
+	}
+	return strings.TrimSpace(extractText(last)) == answer
+}
+
+func uniqueOrchestrationCandidates(items []string) []string {
+	if len(items) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(items))
+	seen := map[string]struct{}{}
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		result = append(result, item)
+	}
+	return result
+}
+
+func salvageOrchestrationJSON(content string) string {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return ""
+	}
+
+	markers := []string{
+		`{"mode"`,
+		`{"use_memory"`,
+		`{"needs_clarification"`,
+		`{"clarification_question"`,
+		`{"direct_answer"`,
+	}
+	best := -1
+	for _, marker := range markers {
+		index := strings.Index(content, marker)
+		if index < 0 {
+			continue
+		}
+		if best < 0 || index < best {
+			best = index
+		}
+	}
+	if best <= 0 {
+		return ""
+	}
+	return extractOrchestrationJSONObject(content, best)
+}
+
+func extractOrchestrationJSONObject(content string, start int) string {
+	content = strings.TrimSpace(content)
+	if start < 0 || start >= len(content) || content[start] != '{' {
+		return ""
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for index := start; index < len(content); index++ {
+		ch := content[index]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return strings.TrimSpace(content[start : index+1])
+			}
+		}
+	}
+	return ""
 }

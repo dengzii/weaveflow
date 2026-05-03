@@ -2,6 +2,7 @@ package weaveflow
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
@@ -157,4 +158,152 @@ func TestResolveOrchestrationRouterStateContractUsesConfiguredPaths(t *testing.T
 	if contract.Fields[3].Path != "analysis.orchestration" || contract.Fields[3].Mode != dsl.StateAccessWrite {
 		t.Fatalf("unexpected contract field[3]: %#v", contract.Fields[3])
 	}
+}
+
+func TestOrchestrationRouterStoresDirectAnswerInConversation(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+
+	def := GraphDefinition{
+		EntryPoint:  "route",
+		FinishPoint: "route",
+		Nodes: []GraphNodeSpec{
+			{
+				ID:   "route",
+				Type: "orchestration_router",
+				Config: map[string]any{
+					"input_path":               "request.text",
+					"orchestration_state_path": "analysis.orchestration",
+					"state_scope":              "agent",
+					"available_modes":          []string{"direct", "planner"},
+				},
+			},
+		},
+	}
+
+	graph, err := registry.BuildGraph(def, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build orchestration graph: %v", err)
+	}
+
+	svc := &fruntime.Services{
+		Model: stubOrchestrationModel{
+			response: `{
+  "mode": "direct",
+  "use_memory": false,
+  "memory_query": "",
+  "needs_clarification": false,
+  "clarification_question": "",
+  "reasoning": "This is a simple factual request.",
+  "target_subgraph": "",
+  "direct_answer": "2 + 2 = 4."
+}`,
+		},
+	}
+	ctx := fruntime.WithServices(context.Background(), svc)
+
+	state := State{
+		"request": map[string]any{
+			"text": "What is 2 + 2?",
+		},
+	}
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "What is 2 + 2?"),
+	})
+
+	state, err = graph.Run(ctx, state)
+	if err != nil {
+		t.Fatalf("run orchestration graph: %v", err)
+	}
+
+	value, ok := state.ResolvePath("analysis.orchestration.direct_answer")
+	if !ok {
+		t.Fatal("expected direct_answer to be stored in orchestration state")
+	}
+	if got := value; got != "2 + 2 = 4." {
+		t.Fatalf("expected direct_answer to be stored, got %#v", got)
+	}
+
+	conversation := state.Conversation("agent")
+	if got := conversation.FinalAnswer(); got != "2 + 2 = 4." {
+		t.Fatalf("expected final answer to be stored in conversation, got %#v", got)
+	}
+
+	messages := conversation.Messages()
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 conversation messages, got %d", len(messages))
+	}
+	if got := orchestrationTestMessageText(messages[1]); got != "2 + 2 = 4." {
+		t.Fatalf("expected assistant message to be appended, got %#v", got)
+	}
+}
+
+func TestOrchestrationRouterRepairsMalformedDirectAnswerJSON(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+
+	def := GraphDefinition{
+		EntryPoint:  "route",
+		FinishPoint: "route",
+		Nodes: []GraphNodeSpec{
+			{
+				ID:   "route",
+				Type: "orchestration_router",
+				Config: map[string]any{
+					"input_path":               "request.text",
+					"orchestration_state_path": "analysis.orchestration",
+					"state_scope":              "agent",
+					"available_modes":          []string{"direct", "planner"},
+				},
+			},
+		},
+	}
+
+	graph, err := registry.BuildGraph(def, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build orchestration graph: %v", err)
+	}
+
+	svc := &fruntime.Services{
+		Model: stubOrchestrationModel{
+			response: `{"{"mode":"direct","use_memory":false,"memory_query":"","needs_clarification":false,"clarification_question":"","reasoning":"Simple greeting that can be handled in one turn.","target_subgraph":"","direct_answer":"Hello! How can I help you today?"}`,
+		},
+	}
+	ctx := fruntime.WithServices(context.Background(), svc)
+
+	state := State{
+		"request": map[string]any{
+			"text": "hi",
+		},
+	}
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hi"),
+	})
+
+	state, err = graph.Run(ctx, state)
+	if err != nil {
+		t.Fatalf("run orchestration graph with malformed JSON: %v", err)
+	}
+
+	if got := state.Conversation("agent").FinalAnswer(); got != "Hello! How can I help you today?" {
+		t.Fatalf("expected repaired direct answer, got %#v", got)
+	}
+}
+
+func orchestrationTestMessageText(message llms.MessageContent) string {
+	parts := make([]string, 0, len(message.Parts))
+	for _, part := range message.Parts {
+		textPart, ok := part.(llms.TextContent)
+		if !ok {
+			continue
+		}
+		text := strings.TrimSpace(textPart.Text)
+		if text == "" {
+			continue
+		}
+		parts = append(parts, text)
+	}
+	return strings.Join(parts, "\n")
 }

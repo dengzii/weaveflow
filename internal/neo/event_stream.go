@@ -123,7 +123,14 @@ func TranslateEvent(event fruntime.Event) *ChatEvent {
 		}
 		return &ChatEvent{Type: ChatEventTypeGenerating, Content: text}
 	case fruntime.EventLLMContent:
-		return nil
+		if !hasPrefix(event.NodeID, streamableContentPrefixes) {
+			return nil
+		}
+		text := extractPayloadString(event.Payload, "text")
+		if text == "" {
+			return nil
+		}
+		return &ChatEvent{Type: ChatEventTypeGenerating, Content: text}
 	case fruntime.EventLLMReasoningChunk:
 		if !hasPrefix(event.NodeID, streamableReasoningPrefixes) {
 			return nil

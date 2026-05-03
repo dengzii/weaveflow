@@ -69,6 +69,9 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	if n.isDirectMode(state) {
 		answer := conversation.FinalAnswer()
 		if answer == "" {
+			answer = n.directAnswer(state)
+		}
+		if answer == "" {
 			answer = n.fallbackAnswer(state, nil)
 		}
 		outcome := FinalStatusSuccess
@@ -77,7 +80,8 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		final["answer"] = answer
 		final["status"] = outcome
 
-		conversation.SetFinalAnswer(answer)
+		n.storeConversationAnswer(conversation, answer)
+		n.publishAnswerEvent(ctx, answer)
 
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "finalizer.result", map[string]any{
 			"status":        outcome,
@@ -127,7 +131,10 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	final["status"] = outcome
 	final["evidence"] = collectEvidenceRefs(evidence)
 
-	conversation.SetFinalAnswer(answer)
+	n.storeConversationAnswer(conversation, answer)
+	if n.shouldPublishProgrammaticAnswer(outcome, model, err) {
+		n.publishAnswerEvent(ctx, answer)
+	}
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "finalizer.result", map[string]any{
 		"status":         outcome,
@@ -178,6 +185,33 @@ func (n *FinalizerNode) determineOutcome(verification fruntime.State) string {
 	}
 
 	return FinalStatusSuccess
+}
+
+func (n *FinalizerNode) directAnswer(state fruntime.State) string {
+	orchestration := state.Get(fruntime.StateKeyOrchestration)
+	if orchestration == nil {
+		return ""
+	}
+	answer, _ := orchestration["direct_answer"].(string)
+	return strings.TrimSpace(answer)
+}
+
+func (n *FinalizerNode) publishAnswerEvent(ctx context.Context, answer string) {
+	answer = strings.TrimSpace(answer)
+	if answer == "" {
+		return
+	}
+	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventLLMContent, map[string]any{"text": answer})
+}
+
+func (n *FinalizerNode) shouldPublishProgrammaticAnswer(outcome string, model llms.Model, generationErr error) bool {
+	if generationErr != nil {
+		return true
+	}
+	if model == nil {
+		return true
+	}
+	return outcome != FinalStatusSuccess
 }
 
 func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, model llms.Model, state fruntime.State, plannerState fruntime.State, observations []map[string]any, evidence []map[string]any) (string, error) {
@@ -332,6 +366,20 @@ func (n *FinalizerNode) fallbackAnswer(state fruntime.State, observations []map[
 	return "Task completed but no answer was generated."
 }
 
+func (n *FinalizerNode) storeConversationAnswer(conversation fruntime.ConversationFacet, answer string) {
+	answer = strings.TrimSpace(answer)
+	if conversation == nil || answer == "" {
+		return
+	}
+
+	messages := conversation.Messages()
+	if !lastFinalizerMessageMatches(messages, answer) {
+		messages = append(messages, llms.TextParts(llms.ChatMessageTypeAI, answer))
+		conversation.UpdateMessage(messages)
+	}
+	conversation.SetFinalAnswer(answer)
+}
+
 func (n *FinalizerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{}
 	if scope := n.effectiveScope(); scope != defaultFinalizerScope {
@@ -428,6 +476,17 @@ func collectPartialResults(observations []map[string]any) string {
 		return ""
 	}
 	return strings.Join(parts, "\n")
+}
+
+func lastFinalizerMessageMatches(messages []llms.MessageContent, answer string) bool {
+	if len(messages) == 0 {
+		return false
+	}
+	last := messages[len(messages)-1]
+	if last.Role != llms.ChatMessageTypeAI {
+		return false
+	}
+	return strings.TrimSpace(extractText(last)) == answer
 }
 
 // suppress unused import warning for json in non-LLM paths
