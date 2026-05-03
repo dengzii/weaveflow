@@ -4,6 +4,7 @@ import { useChat } from "./hooks/useChat";
 import { useConfig } from "./hooks/useConfig";
 import { ChatPage } from "./pages/ChatPage";
 import { ReplayPage } from "./debug/replay/ReplayPage";
+import { ReplayPageV2 } from "./debug/replay-v2/ReplayPageV2";
 
 declare const INCLUDE_DEBUG: boolean;
 
@@ -24,6 +25,7 @@ export function App() {
           <Routes>
             <Route path="/" element={<ChatPage chat={chat} cfg={cfg} />} />
             {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPage />} />}
+            {INCLUDE_DEBUG && <Route path="/debug/replay/v2" element={<ReplayPageV2 />} />}
           </Routes>
         </main>
       </div>

@@ -10,7 +10,6 @@ import (
 	fruntime "weaveflow/runtime"
 
 	"github.com/google/uuid"
-	"go.uber.org/zap"
 )
 
 const (
@@ -63,9 +62,6 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 	plannerPath := n.effectivePlannerPath()
 	plannerState := state.Get(fruntime.StateKeyPlanner)
 	if plannerState == nil {
-		fruntime.NodeLogWarn(ctx, "plan step executor missing planner state",
-			zap.String("planner_path", plannerPath),
-		)
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "plan_step_executor.error", map[string]any{
 			"error": "planner state not found",
 			"path":  plannerPath,
@@ -74,11 +70,6 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 	}
 
 	plan := extractPlanSteps(plannerState)
-	fruntime.NodeLogInfo(ctx, "plan step executor evaluating plan",
-		zap.String("planner_path", plannerPath),
-		zap.Int("plan_steps", len(plan)),
-		zap.Int("step_results", len(state.StepResults())),
-	)
 	if len(plan) == 0 {
 		return n.routeFinalize(ctx, state, plannerState, "empty plan")
 	}
@@ -117,12 +108,6 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 		"step_id": stepID,
 		"route":   route,
 	})
-	fruntime.NodeLogInfo(ctx, "plan step selected",
-		zap.String("planner_path", plannerPath),
-		zap.String("step_id", stepID),
-		zap.String("step_kind", kind),
-		zap.String("route", route),
-	)
 
 	return state, nil
 }
@@ -137,9 +122,6 @@ func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state fruntime
 		"route":  ExecutionRouteFinalize,
 		"reason": reason,
 	})
-	fruntime.NodeLogInfo(ctx, "plan step executor routed finalize",
-		zap.String("reason", reason),
-	)
 
 	return state, nil
 }
@@ -154,9 +136,6 @@ func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state fruntime.
 		"route":  ExecutionRouteBlocked,
 		"reason": reason,
 	})
-	fruntime.NodeLogWarn(ctx, "plan step executor routed blocked",
-		zap.String("reason", reason),
-	)
 
 	return state, nil
 }

@@ -34,6 +34,8 @@ async function buildJS(): Promise<boolean> {
     naming: { entry: "app.[ext]" },
     define: {
       "process.env.NODE_ENV": JSON.stringify(isDev ? "development" : "production"),
+      "import.meta.env": JSON.stringify({ MODE: isDev ? "development" : "production" }),
+      "import.meta.env.MODE": JSON.stringify(isDev ? "development" : "production"),
       // Injected constant — when false, bundler eliminates debug-only code branches
       INCLUDE_DEBUG: JSON.stringify(includeDebug),
     },

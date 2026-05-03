@@ -11,7 +11,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
-	"go.uber.org/zap"
 )
 
 const (
@@ -169,13 +168,6 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 		"planner_path":     plannerPath,
 		"additional_rules": strings.TrimSpace(n.Instructions),
 	}
-	runtime.NodeLogInfo(ctx, "planner generating plan",
-		zap.String("planner_path", plannerPath),
-		zap.String("objective", objective),
-		zap.Int("max_steps", n.effectiveMaxSteps()),
-		zap.Int("context_paths", len(contextPayload)),
-		zap.Bool("is_replan", strings.TrimSpace(stringifyPlannerValue(plannerState["replan_reason"])) != ""),
-	)
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.prompt", promptPayload)
 	resp, err := svc.Model.GenerateContent(
 		ctx,
@@ -214,12 +206,6 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 		"step_count":   len(parsed.Plan),
 	})
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.response", parsed)
-	runtime.NodeLogInfo(ctx, "planner generated plan",
-		zap.String("planner_path", plannerPath),
-		zap.String("status", parsed.Status),
-		zap.Int("step_count", len(parsed.Plan)),
-		zap.String("replan_reason", parsed.ReplanReason),
-	)
 
 	return state, nil
 }

@@ -11,7 +11,7 @@ import { SourceSection } from "./components/SourceSection";
 import { Link } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { RefreshCw, Database, ArrowLeft } from "lucide-react";
+import { RefreshCw, Database, ArrowLeft, Sparkles } from "lucide-react";
 
 const DEFAULT_CACHE_DIR =
   (document.body.dataset.defaultCacheDir as string | undefined) ?? "";
@@ -152,6 +152,12 @@ export function ReplayPage() {
         <Link to="/">
           <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
             <ArrowLeft className="h-4 w-4" />
+          </Button>
+        </Link>
+        <Link to="/debug/replay/v2">
+          <Button variant="outline" size="sm" className="h-8 gap-1.5 shrink-0">
+            <Sparkles className="h-3.5 w-3.5" />
+            V2
           </Button>
         </Link>
         <div className="flex items-center gap-2 text-sm font-semibold">
