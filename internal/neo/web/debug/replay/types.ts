@@ -121,3 +121,31 @@ export interface RunsResponse {
   sources: SourceMeta[];
   runs: RunSummary[];
 }
+
+export interface CacheFileEntry {
+  path: string;
+  name: string;
+  size: number;
+  modified_at: string;
+  content_type: string;
+  is_text: boolean;
+  is_previewable: boolean;
+}
+
+export interface CacheFilesResponse {
+  cache_dir: string;
+  files: CacheFileEntry[];
+}
+
+export interface CacheFileDetail {
+  cache_dir: string;
+  path: string;
+  name: string;
+  size: number;
+  modified_at: string;
+  content_type: string;
+  encoding: string;
+  is_text: boolean;
+  truncated: boolean;
+  content: string;
+}

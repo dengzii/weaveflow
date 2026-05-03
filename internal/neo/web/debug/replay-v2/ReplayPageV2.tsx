@@ -17,16 +17,28 @@ import { formatDuration, formatTime, prettyJSON } from "../replay/utils";
 import { ReplayGraphCanvas } from "./ReplayGraphCanvas";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { Input } from "../../components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "../../components/ui/select";
 import { cn } from "../../lib/utils";
 
 const DEFAULT_CACHE_DIR =
-  (document.body.dataset.defaultCacheDir as string | undefined) ?? "";
+  (document.body.dataset.defaultCacheDir as string | undefined)?.trim() || "neo_data";
+
+function runOptionValue(item: RunSummary): string {
+  return `${item.source_id}::${item.run.run_id}`;
+}
+
+function runOptionLabel(item: RunSummary): string {
+  return `${item.source_name || item.source_id} | ${item.run.run_id}`;
+}
 
 export function ReplayPageV2() {
-  const [inputDir, setInputDir] = useState(DEFAULT_CACHE_DIR);
-  const [cacheDir, setCacheDir] = useState(DEFAULT_CACHE_DIR);
-  const [status, setStatus] = useState({ message: "准备加载", summary: "" });
+  const [status, setStatus] = useState({ message: "Preparing", summary: "" });
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [selectedSourceId, setSelectedSourceId] = useState("");
@@ -83,39 +95,40 @@ export function ReplayPageV2() {
     }, 900);
   }
 
-  async function selectRun(dir: string, runId: string, sourceId: string) {
+  async function selectRun(baseDir: string, item: RunSummary) {
     stopReplay();
-    setSelectedRunId(runId);
-    setSelectedSourceId(sourceId);
+    setSelectedRunId(item.run.run_id);
+    setSelectedSourceId(item.source_id);
     setReplayIndex(0);
-    setStatus({ message: "加载运行详情中...", summary: "" });
+    setStatus({ message: "Loading run detail...", summary: "" });
 
     try {
-      const url = buildUrl(`/api/run/${encodeURIComponent(runId)}`, dir, { source: sourceId });
+      const url = buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, baseDir, {
+        source: item.source_id,
+      });
       const runDetail = await api<RunDetail>(url);
       setDetail(runDetail);
       setStatus({
-        message: `已加载 run ${runId}`,
-        summary: `${runDetail.summary.source_name} · ${runDetail.summary.graph_ref || "-"}`,
+        message: `Loaded run ${item.run.run_id}`,
+        summary: `${runDetail.summary.source_name} | ${runDetail.summary.graph_ref || "-"}`,
       });
     } catch (error) {
       setDetail(null);
-      setStatus({ message: `加载失败: ${(error as Error).message}`, summary: "" });
+      setStatus({ message: `Load failed: ${(error as Error).message}`, summary: "" });
     }
   }
 
-  async function loadRuns(dir: string) {
+  async function loadRuns(baseDir: string) {
     stopReplay();
-    setCacheDir(dir);
-    setStatus({ message: "扫描缓存目录中...", summary: "" });
+    setStatus({ message: "Scanning Neo runs...", summary: "" });
 
     try {
-      const data = await api<RunsResponse>(buildUrl("/api/runs", dir));
+      const data = await api<RunsResponse>(buildUrl("/api/runs", baseDir));
       const runList = data.runs ?? [];
       setRuns(runList);
       setStatus({
-        message: `已扫描 ${data.cache_dir}`,
-        summary: `${data.sources?.length ?? 0} 个缓存源 · ${runList.length} 个 runs`,
+        message: `Scanned ${data.cache_dir}`,
+        summary: `${data.sources?.length ?? 0} sources | ${runList.length} runs`,
       });
 
       if (!runList.length) {
@@ -127,20 +140,22 @@ export function ReplayPageV2() {
         (item) => item.run.run_id === selectedRunId && item.source_id === selectedSourceId
       );
       const target = preserved ?? runList[0];
-      await selectRun(dir, target.run.run_id, target.source_id);
+      await selectRun(baseDir, target);
     } catch (error) {
       setRuns([]);
       setDetail(null);
-      setStatus({ message: `加载失败: ${(error as Error).message}`, summary: "" });
+      setStatus({ message: `Load failed: ${(error as Error).message}`, summary: "" });
     }
   }
 
   useEffect(() => {
-    if (DEFAULT_CACHE_DIR) loadRuns(DEFAULT_CACHE_DIR);
+    void loadRuns(DEFAULT_CACHE_DIR);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const current = detail?.replay?.[replayIndex] ?? null;
+  const selectedRunValue =
+    selectedRunId && selectedSourceId ? `${selectedSourceId}::${selectedRunId}` : undefined;
 
   return (
     <div className="dark relative h-full overflow-hidden bg-background text-foreground">
@@ -155,7 +170,11 @@ export function ReplayPageV2() {
           <div className="pointer-events-auto w-[390px] rounded-[22px] border border-slate-700/70 bg-slate-950/88 p-3 text-slate-50 shadow-2xl backdrop-blur-xl">
             <div className="flex items-center gap-2">
               <Link to="/">
-                <Button variant="ghost" size="icon" className="h-8 w-8 rounded-full text-slate-200 hover:bg-slate-800">
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-full text-slate-200 hover:bg-slate-800"
+                >
                   <ArrowLeft className="h-4 w-4" />
                 </Button>
               </Link>
@@ -175,7 +194,7 @@ export function ReplayPageV2() {
                   className="h-8 rounded-full border-slate-600 bg-slate-900 text-slate-50 hover:bg-slate-800"
                 >
                   <ArrowRightLeft className="h-3.5 w-3.5" />
-                  旧版
+                  Classic
                 </Button>
               </Link>
               <Button
@@ -186,33 +205,43 @@ export function ReplayPageV2() {
                 onClick={() => setLayoutVersion((value) => value + 1)}
               >
                 <Rows3 className="h-3.5 w-3.5" />
-                自动布局
+                Layout
               </Button>
             </div>
 
-            <form
-              className="mt-3 flex items-center gap-2"
-              onSubmit={(event) => {
-                event.preventDefault();
-                loadRuns(inputDir.trim());
-              }}
-            >
-              <Input
-                value={inputDir}
-                onChange={(event) => setInputDir(event.target.value)}
-                placeholder="缓存目录路径..."
-                spellCheck={false}
-                className="h-9 rounded-full border-slate-700 bg-slate-900/80 font-mono text-xs text-slate-50 placeholder:text-slate-400"
-              />
+            <div className="mt-3 flex items-center gap-2">
+              <Select
+                value={selectedRunValue}
+                onValueChange={(value) => {
+                  const target = runs.find((item) => runOptionValue(item) === value);
+                  if (target) {
+                    void selectRun(DEFAULT_CACHE_DIR, target);
+                  }
+                }}
+              >
+                <SelectTrigger className="h-9 rounded-full border-slate-700 bg-slate-900/80 text-xs text-slate-50">
+                  <SelectValue placeholder="Select a Neo run" />
+                </SelectTrigger>
+                <SelectContent>
+                  {runs.map((item) => (
+                    <SelectItem key={runOptionValue(item)} value={runOptionValue(item)}>
+                      {runOptionLabel(item)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
               <Button
-                type="submit"
+                type="button"
                 size="sm"
                 variant="outline"
                 className="h-9 rounded-full border-slate-600 bg-slate-900 text-slate-50 hover:bg-slate-800"
+                onClick={() => {
+                  void loadRuns(DEFAULT_CACHE_DIR);
+                }}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
               </Button>
-            </form>
+            </div>
 
             <div className="mt-2 rounded-xl border border-slate-700/70 bg-slate-900/80 px-3 py-2">
               <div className="truncate text-xs font-medium text-slate-100">{status.message}</div>
@@ -283,12 +312,17 @@ export function ReplayPageV2() {
                 <div className="rounded-xl border border-slate-700/70 bg-slate-900/78 p-3">
                   <div className="mb-2 flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-white">{current?.title || "暂无事件"}</div>
+                      <div className="truncate text-sm font-semibold text-white">
+                        {current?.title || "No event"}
+                      </div>
                       <div className="truncate pt-1 text-xs text-slate-400">
                         {current?.subtitle || current?.event.node_id || current?.event.type || ""}
                       </div>
                     </div>
-                    <Badge variant="outline" className="shrink-0 rounded-full border-slate-600 bg-slate-800 text-slate-100">
+                    <Badge
+                      variant="outline"
+                      className="shrink-0 rounded-full border-slate-600 bg-slate-800 text-slate-100"
+                    >
                       {current?.event.type || detail.run.status}
                     </Badge>
                   </div>
@@ -316,7 +350,9 @@ export function ReplayPageV2() {
                       <button
                         key={`${item.source_id}:${item.run.run_id}`}
                         type="button"
-                        onClick={() => selectRun(cacheDir, item.run.run_id, item.source_id)}
+                        onClick={() => {
+                          void selectRun(DEFAULT_CACHE_DIR, item);
+                        }}
                         className={cn(
                           "w-full rounded-2xl border px-3 py-2 text-left transition",
                           item.run.run_id === selectedRunId && item.source_id === selectedSourceId
@@ -342,7 +378,7 @@ export function ReplayPageV2() {
               </div>
             ) : (
               <div className="mt-3 rounded-xl border border-dashed border-slate-700 bg-slate-900/60 px-4 py-7 text-center text-sm text-slate-300">
-                填写缓存目录后加载运行数据
+                Select a Neo run to load replay data.
               </div>
             )}
           </div>
@@ -350,7 +386,7 @@ export function ReplayPageV2() {
           <div className="pointer-events-auto hidden w-[340px] rounded-[22px] border border-slate-700/70 bg-slate-950/88 p-3 text-slate-50 shadow-2xl backdrop-blur-xl 2xl:block">
             <div>
               <div className="text-sm font-semibold text-white">Event Payload</div>
-              <div className="text-xs text-slate-300">当前事件的原始数据</div>
+              <div className="text-xs text-slate-300">Raw payload for the current event.</div>
             </div>
             <pre className="mt-3 max-h-[360px] overflow-auto rounded-xl border border-slate-700 bg-slate-900 p-3 font-mono text-[11px] leading-5 text-slate-100">
               {prettyJSON(current?.event.payload)}

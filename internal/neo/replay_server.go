@@ -33,6 +33,8 @@ func NewReplayServer(defaultCacheDir string) *ReplayServer {
 func (s *ReplayServer) RegisterGinRoutes(group *gin.RouterGroup) {
 	group.GET("/runs", s.handleRuns)
 	group.GET("/run/*path", s.handleRunRoute)
+	group.GET("/files", s.handleFiles)
+	group.GET("/file/*path", s.handleFile)
 }
 
 func (s *ReplayServer) handleRuns(c *gin.Context) {
@@ -104,6 +106,42 @@ func (s *ReplayServer) handleRunRoute(c *gin.Context) {
 	default:
 		replayWriteAPIError(c, http.StatusBadRequest, fmt.Errorf("unsupported route"))
 	}
+}
+
+func (s *ReplayServer) handleFiles(c *gin.Context) {
+	cacheDir := s.requestedCacheDir(c)
+	explorer, err := newCacheExplorer(cacheDir)
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	files, err := listCacheFiles(c.Request.Context(), explorer.baseDir)
+	if err != nil {
+		replayWriteAPIError(c, http.StatusInternalServerError, err)
+		return
+	}
+
+	replayWriteAPIData(c, http.StatusOK, CacheFilesResponse{
+		CacheDir: explorer.baseDir,
+		Files:    files,
+	})
+}
+
+func (s *ReplayServer) handleFile(c *gin.Context) {
+	cacheDir := s.requestedCacheDir(c)
+	explorer, err := newCacheExplorer(cacheDir)
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	detail, err := loadCacheFileDetail(explorer.baseDir, strings.TrimPrefix(c.Param("path"), "/"))
+	if err != nil {
+		replayWriteLookupError(c, err)
+		return
+	}
+	replayWriteAPIData(c, http.StatusOK, detail)
 }
 
 func (s *ReplayServer) requestedCacheDir(c *gin.Context) string {
