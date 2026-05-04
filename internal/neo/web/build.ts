@@ -67,10 +67,59 @@ if (isDev) {
 
   await buildJS();
 
-  Bun.serve({
+  const WS_BACKEND = BACKEND.replace(/^http/, "ws");
+
+  interface WsProxyData {
+    path: string;
+    backend: WebSocket | null;
+    queue: Array<string | ArrayBuffer | Uint8Array>;
+  }
+
+  Bun.serve<WsProxyData>({
     port: DEV_PORT,
-    async fetch(req) {
+
+    // WebSocket proxy: relay frames between the browser and the Go backend.
+    websocket: {
+      open(ws) {
+        const backendUrl = WS_BACKEND + ws.data.path;
+        const backend = new WebSocket(backendUrl);
+        backend.binaryType = "arraybuffer";
+        backend.onopen = () => {
+          ws.data.backend = backend;
+          for (const msg of ws.data.queue) backend.send(msg);
+          ws.data.queue = [];
+        };
+        backend.onmessage = (e) => ws.send(e.data as string | ArrayBuffer);
+        backend.onclose = (e) => ws.close(e.code, e.reason || "backend closed");
+        backend.onerror = () => ws.close(1011, "backend error");
+      },
+      message(ws, message) {
+        if (ws.data.backend?.readyState === WebSocket.OPEN) {
+          ws.data.backend.send(message);
+        } else {
+          ws.data.queue.push(message);
+        }
+      },
+      close(ws, code, reason) {
+        ws.data.backend?.close(code, reason);
+      },
+    },
+
+    async fetch(req, server) {
       const url = new URL(req.url);
+
+      // Upgrade WebSocket connections and relay them to the backend.
+      if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        const isProxied =
+          url.pathname.startsWith("/neo/") ||
+          (includeDebug && url.pathname.startsWith("/api/"));
+        if (isProxied) {
+          const ok = server.upgrade(req, {
+            data: { path: url.pathname + url.search, backend: null, queue: [] },
+          });
+          if (ok) return undefined;
+        }
+      }
 
       // Proxy Neo agent API
       if (url.pathname.startsWith("/neo/")) {

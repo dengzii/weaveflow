@@ -13,6 +13,7 @@ type Server struct {
 	chatCtrl    *ChatController
 	configCtrl  *ConfigController
 	historyCtrl *HistoryController
+	hub         *LiveHub
 }
 
 func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server, error) {
@@ -34,7 +35,8 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server
 		applyPersistedConfig(&cfg, toolFlags, persisted)
 	}
 
-	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir, store)
+	hub := NewLiveHub()
+	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir, store, hub)
 	configCtrl := NewConfigController(&cfg, allTools, toolFlags, store)
 	historyCtrl := NewHistoryController(chatCtrl)
 
@@ -42,7 +44,13 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server
 		chatCtrl:    chatCtrl,
 		configCtrl:  configCtrl,
 		historyCtrl: historyCtrl,
+		hub:         hub,
 	}, nil
+}
+
+// Hub returns the live event hub shared with the chat controller.
+func (s *Server) Hub() *LiveHub {
+	return s.hub
 }
 
 func applyPersistedConfig(cfg *Config, toolFlags map[string]bool, persisted PersistedConfig) {

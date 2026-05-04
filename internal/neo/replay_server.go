@@ -9,11 +9,13 @@ import (
 	"weaveflow/runtime"
 
 	"github.com/gin-gonic/gin"
+	"github.com/gorilla/websocket"
 )
 
 // ReplayServer handles graph debug replay API requests.
 type ReplayServer struct {
 	defaultCacheDir string
+	hub             *LiveHub
 }
 
 type replayAPIEnvelope struct {
@@ -22,19 +24,28 @@ type replayAPIEnvelope struct {
 }
 
 // NewReplayServer creates a ReplayServer with the given default cache directory.
-func NewReplayServer(defaultCacheDir string) *ReplayServer {
+func NewReplayServer(defaultCacheDir string, hub *LiveHub) *ReplayServer {
 	return &ReplayServer{
 		defaultCacheDir: strings.TrimSpace(defaultCacheDir),
+		hub:             hub,
 	}
 }
 
 // RegisterGinRoutes registers replay API routes on the given Gin group.
 // Typically mounted at /api so that /api/runs and /api/run/* are reachable.
+var wsUpgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 4096,
+	CheckOrigin:     func(_ *http.Request) bool { return true },
+}
+
 func (s *ReplayServer) RegisterGinRoutes(group *gin.RouterGroup) {
 	group.GET("/runs", s.handleRuns)
 	group.GET("/run/*path", s.handleRunRoute)
+	group.GET("/live", s.handleLive)
 	group.GET("/files", s.handleFiles)
 	group.GET("/file/*path", s.handleFile)
+	group.GET("/ws", s.handleLiveWS)
 }
 
 func (s *ReplayServer) handleRuns(c *gin.Context) {
@@ -144,6 +155,14 @@ func (s *ReplayServer) handleFile(c *gin.Context) {
 	replayWriteAPIData(c, http.StatusOK, detail)
 }
 
+func (s *ReplayServer) handleLive(c *gin.Context) {
+	if s.hub == nil {
+		replayWriteAPIData(c, http.StatusOK, LiveState{})
+		return
+	}
+	replayWriteAPIData(c, http.StatusOK, s.hub.Snapshot())
+}
+
 func (s *ReplayServer) requestedCacheDir(c *gin.Context) string {
 	cacheDir := strings.TrimSpace(c.Query("cache_dir"))
 	if cacheDir != "" {
@@ -204,6 +223,46 @@ func replayWriteJSON(c *gin.Context, status int, payload replayAPIEnvelope) {
 	encoder := json.NewEncoder(c.Writer)
 	encoder.SetIndent("", "  ")
 	_ = encoder.Encode(payload)
+}
+
+func (s *ReplayServer) handleLiveWS(c *gin.Context) {
+	conn, err := wsUpgrader.Upgrade(c.Writer, c.Request, nil)
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	if s.hub == nil {
+		_ = conn.WriteJSON(LiveMsg{Type: "idle"})
+		return
+	}
+
+	ch, unsub := s.hub.Subscribe()
+	defer unsub()
+
+	// Drain any client messages (we ignore them but must read to handle pings/close frames).
+	go func() {
+		for {
+			if _, _, err := conn.NextReader(); err != nil {
+				return
+			}
+		}
+	}()
+
+	clientGone := c.Request.Context().Done()
+	for {
+		select {
+		case <-clientGone:
+			return
+		case msg, ok := <-ch:
+			if !ok {
+				return
+			}
+			if err := conn.WriteJSON(msg); err != nil {
+				return
+			}
+		}
+	}
 }
 
 func replayWriteArtifactBinary(c *gin.Context, artifact runtime.Artifact) {

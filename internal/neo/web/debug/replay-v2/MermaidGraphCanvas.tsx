@@ -2,19 +2,23 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { RunDetail } from "../replay/types";
 import { buildMermaidDiagram, buildProjection, NodeInfoPanel, parseSourceGraph } from "./graph";
 
-let mermaidReady = false;
+let mermaidInitPromise: Promise<(typeof import("mermaid"))["default"]> | null = null;
 let renderCounter = 0;
 
 async function initMermaid() {
-  if (mermaidReady) return;
-  mermaidReady = true;
-  const mermaid = (await import("mermaid")).default;
-  mermaid.initialize({
-    startOnLoad: false,
-    theme: "dark",
-    flowchart: { curve: "basis", useMaxWidth: false },
-    securityLevel: "loose",
-  });
+  if (!mermaidInitPromise) {
+    mermaidInitPromise = import("mermaid").then(({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        theme: "dark",
+        htmlLabels: false,
+        flowchart: { curve: "basis", useMaxWidth: false },
+        securityLevel: "loose",
+      });
+      return mermaid;
+    });
+  }
+  return mermaidInitPromise;
 }
 
 export function MermaidGraphCanvas({
@@ -29,6 +33,8 @@ export function MermaidGraphCanvas({
   const [transform, setTransform] = useState({ x: 0, y: 0, scale: 1 });
   const [isDragging, setIsDragging] = useState(false);
   const dragRef = useRef<{ sx: number; sy: number; tx: number; ty: number } | null>(null);
+  const renderTokenRef = useRef(0);
+  const renderQueueRef = useRef(Promise.resolve());
   const transformRef = useRef(transform);
   transformRef.current = transform;
 
@@ -113,20 +119,28 @@ export function MermaidGraphCanvas({
     const diagram = buildMermaidDiagram(sourceGraph, proj);
     const id = `wf_mermaid_${++renderCounter}`;
     let active = true;
+    const renderToken = ++renderTokenRef.current;
 
-    void initMermaid().then(async () => {
-      if (!active) return;
-      const mermaid = (await import("mermaid")).default;
-      try {
-        const { svg, bindFunctions } = await mermaid.render(id, diagram);
-        if (!active || !containerRef.current) return;
-        containerRef.current.innerHTML = svg;
-        try { bindFunctions?.(containerRef.current); } catch { /* mermaid bindFunctions may fail in some envs */ }
-      } catch (err) {
-        if (!active || !containerRef.current) return;
-        containerRef.current.innerHTML = `<div style="color:#f87171;padding:16px;font-size:13px">${String(err)}</div>`;
-      }
-    });
+    renderQueueRef.current = renderQueueRef.current
+      .catch(() => undefined)
+      .then(async () => {
+        if (!active || renderToken !== renderTokenRef.current) return;
+        try {
+          const mermaid = await initMermaid();
+          if (!active || renderToken !== renderTokenRef.current) return;
+          const { svg, bindFunctions } = await mermaid.render(id, diagram);
+          if (!active || renderToken !== renderTokenRef.current || !containerRef.current) return;
+          containerRef.current.innerHTML = svg;
+          try {
+            bindFunctions?.(containerRef.current);
+          } catch {
+            // Mermaid bindFunctions may fail in some environments.
+          }
+        } catch (err) {
+          if (!active || renderToken !== renderTokenRef.current || !containerRef.current) return;
+          containerRef.current.innerHTML = `<div style="color:#f87171;padding:16px;font-size:13px">${String(err)}</div>`;
+        }
+      });
 
     return () => {
       active = false;
@@ -166,7 +180,12 @@ export function MermaidGraphCanvas({
               LIVE
             </span>
           </div>
-          <NodeInfoPanel node={currentNode} summary={currentSummary} />
+          <NodeInfoPanel
+            node={currentNode}
+            summary={currentSummary}
+            runId={detail?.run.run_id}
+            sourceId={detail?.source.id}
+          />
         </div>
       ) : null}
     </div>

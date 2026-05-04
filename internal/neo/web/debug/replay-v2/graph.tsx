@@ -1,7 +1,14 @@
 import type { CSSProperties, ReactNode } from "react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Position, type Edge, type Node } from "@xyflow/react";
 import type { ReplayItem, RunDetail } from "../replay/types";
+
+interface ArtifactDetail {
+  bytes: number;
+  encoding: "text" | "json" | "base64";
+  payload: unknown;
+  truncated?: boolean;
+}
 
 export interface GraphNodeMeta {
   id: string;
@@ -27,10 +34,12 @@ export interface SourceGraph {
 }
 
 export interface NodeEventSummary {
+  durationMs: number; // -1 = not yet finished
   llmReasoning: string;
   llmContent: string;
   functionCalls: { name: string; args: string }[];
   toolCalls: { name: string; status: "pending" | "done" | "failed" }[];
+  artifacts: { id: string; type: string; mimeType: string }[];
 }
 
 export interface GraphProjection {
@@ -226,7 +235,12 @@ export function buildProjection(
   };
 }
 
-export function buildBaseFlow(sourceGraph: SourceGraph, projection: GraphProjection): {
+export function buildBaseFlow(
+  sourceGraph: SourceGraph,
+  projection: GraphProjection,
+  runId = "",
+  sourceId = ""
+): {
   nodes: Node<FlowNodeData>[];
   edges: Edge[];
 } {
@@ -240,7 +254,7 @@ export function buildBaseFlow(sourceGraph: SourceGraph, projection: GraphProject
         sourcePosition: Position.Right,
         targetPosition: Position.Left,
         data: {
-          label: buildNodeLabel(node, sourceGraph, projection, summary),
+          label: buildNodeLabel(node, sourceGraph, projection, summary, runId, sourceId),
           meta: node,
           elkHeight: nodeElkHeight(node, summary),
           elkWidth: nodeElkWidth(node),
@@ -284,7 +298,9 @@ export function buildBaseFlow(sourceGraph: SourceGraph, projection: GraphProject
 export function applyProjectionToNodes(
   nodes: Node<FlowNodeData>[],
   sourceGraph: SourceGraph,
-  projection: GraphProjection
+  projection: GraphProjection,
+  runId = "",
+  sourceId = ""
 ): Node<FlowNodeData>[] {
   return nodes.map((node) => {
     const summary = projection.nodeEventSummaries.get(node.data.meta.id);
@@ -292,7 +308,7 @@ export function applyProjectionToNodes(
       ...node,
       data: {
         ...node.data,
-        label: buildNodeLabel(node.data.meta, sourceGraph, projection, summary),
+        label: buildNodeLabel(node.data.meta, sourceGraph, projection, summary, runId, sourceId),
       },
       style: nodeStyle(node.data.meta, sourceGraph, projection),
     };
@@ -333,11 +349,12 @@ function buildNodeLabel(
   node: GraphNodeMeta,
   sourceGraph: SourceGraph,
   projection: GraphProjection,
-  summary?: NodeEventSummary
+  summary?: NodeEventSummary,
+  runId = "",
+  sourceId = ""
 ) {
   const isCurrent = projection.currentNodeId === node.id;
   const isEntry = sourceGraph.entry_point === node.id;
-  const isFinish = sourceGraph.finish_point === node.id;
   const isFailed = projection.failedNodeIds.has(node.id);
   const isCompleted = projection.completedNodeIds.has(node.id);
   const isVisited = projection.visitedNodeIds.has(node.id);
@@ -377,8 +394,10 @@ function buildNodeLabel(
     );
   }
 
+  const durationLabel = summary && summary.durationMs >= 0 ? formatNodeDuration(summary.durationMs) : "";
+
   const hasEvents = Boolean(summary && (
-    summary.llmReasoning || summary.llmContent || summary.functionCalls.length > 0 || summary.toolCalls.length > 0
+    summary.llmReasoning || summary.llmContent || summary.functionCalls.length > 0 || summary.toolCalls.length > 0 || summary.artifacts.length > 0
   ));
 
   const configEntries = node.config
@@ -400,9 +419,14 @@ function buildNodeLabel(
             </span>
           ) : null}
         </div>
-        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${statusClass}`}>
-          {statusLabel}
-        </span>
+        <div className="flex shrink-0 flex-col items-end gap-0.5">
+          <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${statusClass}`}>
+            {statusLabel}
+          </span>
+          {durationLabel ? (
+            <span className="text-[9px] tabular-nums text-slate-500">{durationLabel}</span>
+          ) : null}
+        </div>
       </div>
 
       {/* Config key-value pairs */}
@@ -443,6 +467,21 @@ function buildNodeLabel(
                 ))}
               </div>
             ) : null}
+            {summary!.artifacts.length > 0 ? (
+              runId ? (
+                <div className="space-y-0.5">
+                  {summary!.artifacts.slice(0, 3).map((a, i) => (
+                    <ArtifactToggleView key={i} artifact={a} runId={runId} sourceId={sourceId} />
+                  ))}
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                  {summary!.artifacts.slice(0, 3).map((a, i) => (
+                    <span key={i} className="font-mono text-[10px] text-violet-300/80">⬡ {a.type || "artifact"}</span>
+                  ))}
+                </div>
+              )
+            ) : null}
           </div>
         </>
       ) : null}
@@ -456,22 +495,25 @@ function nodeElkWidth(node: GraphNodeMeta): number {
 
 function nodeElkHeight(node: GraphNodeMeta, summary?: NodeEventSummary): number {
   if (node.type === "start" || node.type === "end") return 44;
-  if (!summary) return 80;
+  const hasDuration = summary ? summary.durationMs >= 0 : false;
+  const base = 80 + (hasDuration ? 14 : 0);
+  if (!summary) return base;
   const hasText = summary.llmReasoning || summary.llmContent;
   const hasCalls = summary.functionCalls.length > 0 || summary.toolCalls.length > 0;
-  if (!hasText && !hasCalls) return 80;
-  // collapsed default: each text section = label row + 1 truncated line ≈ 36px
+  const artifactCount = summary.artifacts.length;
+  if (!hasText && !hasCalls && !artifactCount) return base;
   const textSections = (summary.llmReasoning ? 1 : 0) + (summary.llmContent ? 1 : 0);
-  return 80 + textSections * 36 + (hasCalls ? 24 : 0);
+  return base + textSections * 36 + (hasCalls ? 24 : 0) + artifactCount * 20;
 }
 
 function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map<string, NodeEventSummary> {
   const summaries = new Map<string, NodeEventSummary>();
+  const nodeFirstTime = new Map<string, number>();
 
   function ensure(nodeId: string): NodeEventSummary {
     let s = summaries.get(nodeId);
     if (!s) {
-      s = { llmReasoning: "", llmContent: "", functionCalls: [], toolCalls: [] };
+      s = { durationMs: -1, llmReasoning: "", llmContent: "", functionCalls: [], toolCalls: [], artifacts: [] };
       summaries.set(nodeId, s);
     }
     return s;
@@ -483,6 +525,20 @@ function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map
 
     const eventType = String(item.event.type ?? "");
     const payload = (item.event.payload ?? {}) as Record<string, unknown>;
+    const ts = item.event.timestamp || item.timestamp;
+
+    // Track node duration: record first timestamp, detect finish
+    if (ts) {
+      const t = new Date(ts).getTime();
+      if (!isNaN(t)) {
+        if (!nodeFirstTime.has(nodeId)) nodeFirstTime.set(nodeId, t);
+        const typeLower = eventType.toLowerCase();
+        if (typeLower.includes("node") && typeLower.includes("finished")) {
+          const start = nodeFirstTime.get(nodeId)!;
+          ensure(nodeId).durationMs = Math.max(0, t - start);
+        }
+      }
+    }
 
     if (eventType === "llm.reasoning") {
       ensure(nodeId).llmReasoning = String(payload.text ?? "");
@@ -507,6 +563,11 @@ function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map
     } else if (eventType === "tool.failed") {
       const pending = [...ensure(nodeId).toolCalls].reverse().find((t) => t.status === "pending");
       if (pending) pending.status = "failed";
+    } else if (eventType === "artifact.created") {
+      const id = String(payload.artifact_id ?? "");
+      const type = String(payload.type ?? "");
+      const mimeType = String(payload.mime_type ?? "");
+      if (id) ensure(nodeId).artifacts.push({ id, type, mimeType });
     }
   }
 
@@ -516,24 +577,36 @@ function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map
 export function NodeInfoPanel({
   node,
   summary,
+  runId = "",
+  sourceId = "",
 }: {
   node: GraphNodeMeta;
   summary: NodeEventSummary | null | undefined;
+  runId?: string;
+  sourceId?: string;
 }) {
   const configEntries = node.config
     ? Object.entries(node.config).filter(([, v]) => v !== null && v !== undefined && v !== "")
     : [];
   const hasContent =
     configEntries.length > 0 ||
+    (summary?.durationMs !== undefined && summary.durationMs >= 0) ||
     summary?.llmReasoning ||
     summary?.llmContent ||
     (summary?.functionCalls.length ?? 0) > 0 ||
-    (summary?.toolCalls.length ?? 0) > 0;
+    (summary?.toolCalls.length ?? 0) > 0 ||
+    (summary?.artifacts.length ?? 0) > 0;
 
   if (!hasContent) return null;
 
   return (
     <div className="space-y-2">
+      {summary?.durationMs !== undefined && summary.durationMs >= 0 ? (
+        <div className="flex items-center gap-1.5">
+          <span className="text-[9px] uppercase tracking-[0.14em] text-slate-500">Duration</span>
+          <span className="text-[11px] font-medium tabular-nums text-slate-200">{formatNodeDuration(summary.durationMs)}</span>
+        </div>
+      ) : null}
       {configEntries.length > 0 ? <CollapsibleConfig entries={configEntries} /> : null}
       {summary?.llmReasoning ? (
         <CollapsibleSection
@@ -563,6 +636,21 @@ export function NodeInfoPanel({
           ))}
         </div>
       ) : null}
+      {(summary?.artifacts.length ?? 0) > 0 ? (
+        runId ? (
+          <div className="space-y-0.5">
+            {summary!.artifacts.map((a, i) => (
+              <ArtifactToggleView key={i} artifact={a} runId={runId} sourceId={sourceId} />
+            ))}
+          </div>
+        ) : (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+            {summary!.artifacts.map((a, i) => (
+              <span key={i} className="font-mono text-[10px] text-violet-300/80">⬡ {a.type || "artifact"}</span>
+            ))}
+          </div>
+        )
+      ) : null}
     </div>
   );
 }
@@ -585,19 +673,19 @@ function ConfigEntry({ k, v }: { k: string; v: unknown }) {
   const isLong = full.length > CONFIG_VALUE_THRESHOLD;
   return (
     <div className="text-[10px]">
-      <div className="flex items-baseline gap-1.5">
+      <div className="flex items-baseline justify-between gap-1.5">
         <span className="shrink-0 text-slate-500">{k}</span>
         {isLong ? (
           <button
             type="button"
-            className="min-w-0 text-left text-slate-300 hover:text-slate-100"
+            className="min-w-0 text-right text-slate-300 hover:text-slate-100"
             onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
           >
             {open ? full : `${full.slice(0, CONFIG_VALUE_THRESHOLD)}…`}
             <span className="ml-1 text-[9px] text-slate-500">{open ? "▴" : "▸"}</span>
           </button>
         ) : (
-          <span className="truncate text-slate-300">{full}</span>
+          <span className="text-right text-slate-300">{full}</span>
         )}
       </div>
     </div>
@@ -635,6 +723,112 @@ function CollapsibleSection({
       )}
     </div>
   );
+}
+
+function ArtifactToggleView({
+  artifact,
+  runId,
+  sourceId,
+}: {
+  artifact: { id: string; type: string; mimeType: string };
+  runId: string;
+  sourceId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [fetchState, setFetchState] = useState<"idle" | "loading" | "done" | "error">("idle");
+  const [detail, setDetail] = useState<ArtifactDetail | null>(null);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const isImage = artifact.mimeType.startsWith("image/");
+
+  const params = new URLSearchParams();
+  if (sourceId && sourceId !== "live") params.set("source", sourceId);
+  const baseUrl = `/api/run/${encodeURIComponent(runId)}/artifact/${encodeURIComponent(artifact.id)}`;
+  const detailUrl = `${baseUrl}?${params}`;
+  const dlParams = new URLSearchParams(params);
+  dlParams.set("download", "1");
+  const downloadUrl = `${baseUrl}?${dlParams}`;
+
+  useEffect(() => {
+    if (!open || isImage || fetchState !== "idle") return;
+    let cancelled = false;
+    setFetchState("loading");
+    fetch(detailUrl)
+      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
+      .then((json: unknown) => {
+        if (!cancelled) {
+          setDetail((json as { data: ArtifactDetail }).data);
+          setFetchState("done");
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) { setErrorMsg((err as Error).message ?? "Error"); setFetchState("error"); }
+      });
+    return () => { cancelled = true; };
+  }, [open, isImage, fetchState, detailUrl]);
+
+  function renderDetail() {
+    if (!detail) return null;
+    const { encoding, payload, truncated } = detail;
+    if (encoding === "json") {
+      const text = JSON.stringify(payload, null, 2) + (truncated ? "\n…<truncated>" : "");
+      return (
+        <pre className="nodrag nowheel mt-1 max-h-[100px] overflow-auto rounded-lg bg-slate-900/70 p-2 font-mono text-[10px] leading-[1.4] text-slate-100 whitespace-pre-wrap break-words">
+          {text}
+        </pre>
+      );
+    }
+    if (encoding === "text") {
+      return (
+        <pre className="nodrag nowheel mt-1 max-h-[100px] overflow-auto rounded-lg bg-slate-900/70 p-2 font-mono text-[10px] leading-[1.4] text-slate-100 whitespace-pre-wrap break-words">
+          {String(payload ?? "")}
+          {truncated ? "\n…<truncated>" : ""}
+        </pre>
+      );
+    }
+    // base64 binary
+    return (
+      <div className="mt-1 flex items-center gap-2">
+        <span className="text-[10px] text-slate-500">{detail.bytes} bytes</span>
+        <a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-sky-400 hover:text-sky-300">↓ Download</a>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-1 text-left"
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+      >
+        <span className="font-mono text-[10px] text-violet-300/80">⬡ {artifact.type || "artifact"}</span>
+        <span className="text-[9px] text-slate-500">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        isImage ? (
+          <div className="mt-1 overflow-hidden rounded-lg border border-slate-700/50 bg-slate-900">
+            <img src={downloadUrl} alt={artifact.id} className="max-h-[120px] w-full object-contain" />
+          </div>
+        ) : fetchState === "loading" ? (
+          <div className="mt-1 text-[10px] text-slate-500">Loading…</div>
+        ) : fetchState === "error" ? (
+          <div className="mt-1 text-[10px] text-rose-400">{errorMsg}</div>
+        ) : fetchState === "done" ? (
+          renderDetail()
+        ) : null
+      ) : null}
+    </div>
+  );
+}
+
+function formatNodeDuration(ms: number): string {
+  if (ms < 0) return "";
+  if (ms < 1000) return "< 1s";
+  if (ms < 60000) return `${(ms / 1000).toFixed(1)}s`;
+  const m = Math.floor(ms / 60000);
+  const s = Math.floor((ms % 60000) / 1000);
+  return s > 0 ? `${m}m ${s}s` : `${m}m`;
 }
 
 function formatConfigValue(v: unknown): string {

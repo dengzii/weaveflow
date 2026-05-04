@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -27,6 +28,7 @@ type ChatController struct {
 	toolFlags map[string]bool
 	baseDir   string
 	store     *Store
+	hub       *LiveHub
 
 	mu          sync.RWMutex
 	runner      *fruntime.GraphRunner
@@ -37,7 +39,7 @@ type ChatController struct {
 	graphCfgKey Config
 }
 
-func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store) *ChatController {
+func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store, hub *LiveHub) *ChatController {
 	allTools := make(map[string]tools.Tool, len(services.Tools))
 	for name, tool := range services.Tools {
 		allTools[name] = tool
@@ -49,6 +51,7 @@ func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[s
 		toolFlags: toolFlags,
 		baseDir:   baseDir,
 		store:     store,
+		hub:       hub,
 	}
 }
 
@@ -91,6 +94,12 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 		ctrl.graphCfgKey = cfg
 		_ = graph.WriteToFile(filepath.Join(ctrl.baseDir, "graph.json"))
 	}
+	graphJSON, _ := os.ReadFile(filepath.Join(ctrl.baseDir, "graph.json"))
+	var graphMeta struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal(graphJSON, &graphMeta)
+	ctrl.hub.StartRun(graphJSON, "Neo Agent", graphMeta.ID)
 	ctrl.mu.Unlock()
 
 	var history []llms.MessageContent
@@ -110,6 +119,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	channelSink := NewChannelEventSink()
 	sinks := []fruntime.EventSink{
 		channelSink,
+		ctrl.hub,
 		fruntime.NewLoggerEventSink(log),
 		fruntime.NewFileEventSink(filepath.Join(runDir, "events")),
 	}
@@ -153,6 +163,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	store := ctrl.store
 	go func() {
 		defer channelSink.Close()
+		defer ctrl.hub.Done()
 		run, state, runErr := runner.Start(ctx, initialState)
 		runStatus := runStatusString(ctx, runErr)
 		if turnWriter != nil {

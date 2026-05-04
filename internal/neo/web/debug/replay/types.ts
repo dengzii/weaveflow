@@ -58,6 +58,16 @@ export interface ReplayItem {
   event: EventView;
 }
 
+export interface LiveState {
+  running: boolean;
+  run_id: string;
+  source_name: string;
+  graph_ref: string;
+  started_at?: string;
+  graph?: unknown;
+  items: ReplayItem[];
+}
+
 export interface StepRecord {
   step_id: string;
   run_id: string;

@@ -80,9 +80,12 @@ function ReplayGraphCanvasInner({
         return;
       }
 
+      const runId = detail.run.run_id;
+      const sourceId = detail.source.id;
+
       // Use full replay to compute stable node heights (so card sizes don't shift during playback)
       const maxProjection = buildProjection(detail, sourceGraph, detail.replay.length - 1);
-      const baseFlow = buildBaseFlow(sourceGraph, maxProjection);
+      const baseFlow = buildBaseFlow(sourceGraph, maxProjection, runId, sourceId);
       const layout = await computeElkLayout(baseFlow.nodes, baseFlow.edges);
       if (!active) return;
 
@@ -91,7 +94,7 @@ function ReplayGraphCanvasInner({
 
       // Apply current replayIndex projection for initial styling
       const currentProjection = buildProjection(detail, sourceGraph, replayIndex);
-      setNodes(applyProjectionToNodes(layout.nodes, sourceGraph, currentProjection));
+      setNodes(applyProjectionToNodes(layout.nodes, sourceGraph, currentProjection, runId, sourceId));
       setEdges(applyProjectionToEdges(layout.edges, currentProjection));
       requestAnimationFrame(() => {
         flowRef.current?.fitView({ padding: 0.18, duration: 450 });
@@ -115,7 +118,9 @@ function ReplayGraphCanvasInner({
     const sourceGraph = parseSourceGraph(detail.source.graph);
     if (!sourceGraph || sourceGraph.nodes.length === 0) return;
     const projection = buildProjection(detail, sourceGraph, replayIndex);
-    setNodes((current) => applyProjectionToNodes(current, sourceGraph, projection));
+    const runId = detail.run.run_id;
+    const sourceId = detail.source.id;
+    setNodes((current) => applyProjectionToNodes(current, sourceGraph, projection, runId, sourceId));
     setEdges((current) => applyProjectionToEdges(current, projection));
   }, [detail, replayIndex, setEdges, setNodes]);
 
@@ -137,7 +142,7 @@ function ReplayGraphCanvasInner({
         nodesConnectable={false}
         elementsSelectable
         panOnDrag
-        defaultEdgeOptions={{ type: "bezier" }}
+        defaultEdgeOptions={{ type: "default" }}
         proOptions={{ hideAttribution: true }}
         className="replay-v2-flow relative z-10"
       >
@@ -152,7 +157,7 @@ function ReplayGraphCanvasInner({
             return typeof background === "string" ? background : "#e2e8f0";
           }}
         />
-        <Controls position="bottom-left" className="!shadow-xl" />
+        <Controls position="top-right" className="!shadow-xl" />
         <Background gap={20} size={1.1} color="rgba(148, 163, 184, 0.18)" />
       </ReactFlow>
       {graphError ? (
