@@ -1,12 +1,14 @@
 import type { CSSProperties, ReactNode } from "react";
+import { useState } from "react";
 import { Position, type Edge, type Node } from "@xyflow/react";
 import type { ReplayItem, RunDetail } from "../replay/types";
 
-interface GraphNodeMeta {
+export interface GraphNodeMeta {
   id: string;
   name: string;
   type: string;
   description: string;
+  config: Record<string, unknown> | null;
 }
 
 interface GraphEdgeMeta {
@@ -24,6 +26,13 @@ export interface SourceGraph {
   edges: GraphEdgeMeta[];
 }
 
+export interface NodeEventSummary {
+  llmReasoning: string;
+  llmContent: string;
+  functionCalls: { name: string; args: string }[];
+  toolCalls: { name: string; status: "pending" | "done" | "failed" }[];
+}
+
 export interface GraphProjection {
   currentNodeId: string;
   currentEdgeId: string;
@@ -31,11 +40,14 @@ export interface GraphProjection {
   completedNodeIds: Set<string>;
   failedNodeIds: Set<string>;
   traversedEdgeIds: Set<string>;
+  nodeEventSummaries: Map<string, NodeEventSummary>;
 }
 
 export interface FlowNodeData {
   label: ReactNode;
   meta: GraphNodeMeta;
+  elkHeight: number;
+  elkWidth: number;
 }
 
 const SYNTHETIC_START_ID = "__wf_start__";
@@ -60,6 +72,7 @@ export function parseSourceGraph(raw: unknown): SourceGraph | null {
         name: stringValue(item.name) || id,
         type: stringValue(item.type) || "node",
         description: stringValue(item.description),
+        config: objectValue(item.config),
       };
     })
     .filter((item): item is GraphNodeMeta => Boolean(item));
@@ -79,6 +92,7 @@ export function parseSourceGraph(raw: unknown): SourceGraph | null {
       name: "START",
       type: "start",
       description: "Graph entry",
+      config: null,
     });
     nodeIds.add(SYNTHETIC_START_ID);
   }
@@ -89,6 +103,7 @@ export function parseSourceGraph(raw: unknown): SourceGraph | null {
       name: "END",
       type: "end",
       description: "Graph exit",
+      config: null,
     });
     nodeIds.add(SYNTHETIC_END_ID);
   }
@@ -178,6 +193,18 @@ export function buildProjection(
     edgeIndex.set(`${edge.from}-->${edge.to}`, edge.id);
   }
 
+  // Propagate to synthetic END when the last real node is completed and connects to it
+  if (
+    currentNodeId &&
+    completedNodeIds.has(currentNodeId) &&
+    edgeIndex.has(`${currentNodeId}-->${SYNTHETIC_END_ID}`)
+  ) {
+    nodeTrail.push(SYNTHETIC_END_ID);
+    visitedNodeIds.add(SYNTHETIC_END_ID);
+    completedNodeIds.add(SYNTHETIC_END_ID);
+    currentNodeId = SYNTHETIC_END_ID;
+  }
+
   let currentEdgeId = "";
   for (let index = 1; index < nodeTrail.length; index += 1) {
     const edgeId = edgeIndex.get(`${nodeTrail[index - 1]}-->${nodeTrail[index]}`);
@@ -186,6 +213,8 @@ export function buildProjection(
     currentEdgeId = edgeId;
   }
 
+  const nodeEventSummaries = collectNodeEvents(limited, validNodeIds);
+
   return {
     currentNodeId,
     currentEdgeId,
@@ -193,6 +222,7 @@ export function buildProjection(
     completedNodeIds,
     failedNodeIds,
     traversedEdgeIds,
+    nodeEventSummaries,
   };
 }
 
@@ -201,15 +231,23 @@ export function buildBaseFlow(sourceGraph: SourceGraph, projection: GraphProject
   edges: Edge[];
 } {
   return {
-    nodes: sourceGraph.nodes.map((node) => ({
-      id: node.id,
-      position: { x: 0, y: 0 },
-      draggable: true,
-      sourcePosition: Position.Right,
-      targetPosition: Position.Left,
-      data: { label: buildNodeLabel(node, sourceGraph, projection), meta: node },
-      style: nodeStyle(node, sourceGraph, projection),
-    })),
+    nodes: sourceGraph.nodes.map((node) => {
+      const summary = projection.nodeEventSummaries.get(node.id);
+      return {
+        id: node.id,
+        position: { x: 0, y: 0 },
+        draggable: true,
+        sourcePosition: Position.Right,
+        targetPosition: Position.Left,
+        data: {
+          label: buildNodeLabel(node, sourceGraph, projection, summary),
+          meta: node,
+          elkHeight: nodeElkHeight(node, summary),
+          elkWidth: nodeElkWidth(node),
+        },
+        style: nodeStyle(node, sourceGraph, projection),
+      };
+    }),
     edges: sourceGraph.edges.map((edge) => ({
       id: edge.id,
       source: edge.from,
@@ -248,14 +286,17 @@ export function applyProjectionToNodes(
   sourceGraph: SourceGraph,
   projection: GraphProjection
 ): Node<FlowNodeData>[] {
-  return nodes.map((node) => ({
-    ...node,
-    data: {
-      ...node.data,
-      label: buildNodeLabel(node.data.meta, sourceGraph, projection),
-    },
-    style: nodeStyle(node.data.meta, sourceGraph, projection),
-  }));
+  return nodes.map((node) => {
+    const summary = projection.nodeEventSummaries.get(node.data.meta.id);
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        label: buildNodeLabel(node.data.meta, sourceGraph, projection, summary),
+      },
+      style: nodeStyle(node.data.meta, sourceGraph, projection),
+    };
+  });
 }
 
 export function applyProjectionToEdges(edges: Edge[], projection: GraphProjection): Edge[] {
@@ -291,7 +332,8 @@ export function applyProjectionToEdges(edges: Edge[], projection: GraphProjectio
 function buildNodeLabel(
   node: GraphNodeMeta,
   sourceGraph: SourceGraph,
-  projection: GraphProjection
+  projection: GraphProjection,
+  summary?: NodeEventSummary
 ) {
   const isCurrent = projection.currentNodeId === node.id;
   const isEntry = sourceGraph.entry_point === node.id;
@@ -327,54 +369,298 @@ function buildNodeLabel(
         : isVisited
           ? "bg-sky-400/18 text-sky-200 ring-1 ring-sky-300/30"
           : "bg-slate-400/12 text-slate-300 ring-1 ring-slate-400/18";
-  const typeClass =
-    isStart
-      ? "text-cyan-100 bg-cyan-400/14"
-      : isEnd
-        ? "text-fuchsia-100 bg-fuchsia-400/14"
-        : isEntry || isFinish
-      ? "text-fuchsia-200 bg-fuchsia-400/14"
-      : "text-slate-300 bg-slate-400/10";
+  if (isStart || isEnd) {
+    return (
+      <div className="text-center text-[11px] font-semibold uppercase tracking-[0.16em] text-white/90">
+        {node.name}
+      </div>
+    );
+  }
+
+  const hasEvents = Boolean(summary && (
+    summary.llmReasoning || summary.llmContent || summary.functionCalls.length > 0 || summary.toolCalls.length > 0
+  ));
+
+  const configEntries = node.config
+    ? Object.entries(node.config).filter(([, v]) => v !== null && v !== undefined && v !== "")
+    : [];
 
   return (
     <div className="min-w-[180px]">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-semibold tracking-tight text-white">{node.name}</div>
-          <div className="mt-1 flex items-center gap-1.5 text-[10px] uppercase tracking-[0.16em] text-slate-400">
-            {isEntry ? <span>ENTRY</span> : null}
-            {isFinish ? <span>FINISH</span> : null}
-            <span>{node.type}</span>
-          </div>
+      {/* Name + description tooltip + status */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-1">
+          <div className="truncate text-[13px] font-semibold tracking-tight text-white">{node.name}</div>
+          {node.description ? (
+            <span className="group/tip relative shrink-0 cursor-default select-none text-[11px] text-slate-600 hover:text-slate-400">
+              ⓘ
+              <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] leading-snug text-slate-200 opacity-0 shadow-xl ring-1 ring-white/10 transition-opacity group-hover/tip:opacity-100">
+                {node.description}
+              </span>
+            </span>
+          ) : null}
         </div>
-        <span
-          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${statusClass}`}
-        >
+        <span className={`shrink-0 rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${statusClass}`}>
           {statusLabel}
         </span>
       </div>
 
-      <div className="mt-3 flex items-center gap-2">
-        <span
-          className={`rounded-full px-2 py-1 text-[10px] font-medium uppercase tracking-[0.16em] ${typeClass}`}
-        >
-          {node.type}
-        </span>
-        {node.description ? (
-          <span className="truncate text-[11px] text-slate-400">{node.description}</span>
+      {/* Config key-value pairs */}
+      {configEntries.length > 0 ? (
+        <CollapsibleConfig entries={configEntries} />
+      ) : null}
+
+      {/* Content area — only rendered when events exist */}
+      {hasEvents ? (
+        <>
+          <div className="mt-2 h-px w-full bg-white/8" />
+          <div className="mt-2 space-y-2">
+            {summary!.llmReasoning ? (
+              <CollapsibleSection
+                label="Reasoning"
+                text={summary!.llmReasoning}
+                labelClass="text-violet-400/70"
+                textClass="text-slate-300"
+              />
+            ) : null}
+            {summary!.llmContent ? (
+              <CollapsibleSection
+                label="Response"
+                text={summary!.llmContent}
+                labelClass="text-sky-400/70"
+                textClass="text-slate-100"
+              />
+            ) : null}
+            {(summary!.functionCalls.length > 0 || summary!.toolCalls.length > 0) ? (
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                {summary!.functionCalls.slice(0, 3).map((fc, i) => (
+                  <span key={i} className="font-mono text-[10px] text-amber-300/80">⚡ {fc.name}</span>
+                ))}
+                {summary!.toolCalls.slice(0, 4).map((tc, i) => (
+                  <span key={i} className={`font-mono text-[10px] ${tc.status === "done" ? "text-emerald-400/80" : tc.status === "failed" ? "text-rose-400/80" : "text-slate-400"}`}>
+                    {tc.status === "done" ? "✓" : tc.status === "failed" ? "✗" : "·"} {tc.name}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function nodeElkWidth(node: GraphNodeMeta): number {
+  return node.type === "start" || node.type === "end" ? 100 : 260;
+}
+
+function nodeElkHeight(node: GraphNodeMeta, summary?: NodeEventSummary): number {
+  if (node.type === "start" || node.type === "end") return 44;
+  if (!summary) return 80;
+  const hasText = summary.llmReasoning || summary.llmContent;
+  const hasCalls = summary.functionCalls.length > 0 || summary.toolCalls.length > 0;
+  if (!hasText && !hasCalls) return 80;
+  // collapsed default: each text section = label row + 1 truncated line ≈ 36px
+  const textSections = (summary.llmReasoning ? 1 : 0) + (summary.llmContent ? 1 : 0);
+  return 80 + textSections * 36 + (hasCalls ? 24 : 0);
+}
+
+function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map<string, NodeEventSummary> {
+  const summaries = new Map<string, NodeEventSummary>();
+
+  function ensure(nodeId: string): NodeEventSummary {
+    let s = summaries.get(nodeId);
+    if (!s) {
+      s = { llmReasoning: "", llmContent: "", functionCalls: [], toolCalls: [] };
+      summaries.set(nodeId, s);
+    }
+    return s;
+  }
+
+  for (const item of events) {
+    const nodeId = String(item.event.node_id ?? "").trim();
+    if (!nodeId || !validNodeIds.has(nodeId)) continue;
+
+    const eventType = String(item.event.type ?? "");
+    const payload = (item.event.payload ?? {}) as Record<string, unknown>;
+
+    if (eventType === "llm.reasoning") {
+      ensure(nodeId).llmReasoning = String(payload.text ?? "");
+    } else if (eventType === "llm.reasoning_chunk") {
+      ensure(nodeId).llmReasoning += String(payload.text ?? "");
+    } else if (eventType === "llm.content") {
+      ensure(nodeId).llmContent = String(payload.text ?? "");
+    } else if (eventType === "llm.content_chunk") {
+      ensure(nodeId).llmContent += String(payload.text ?? "");
+    } else if (eventType === "llm.function_call") {
+      const name = String(payload.name ?? payload.function_name ?? "");
+      if (!name) continue;
+      const rawArgs = payload.arguments ?? payload.args ?? "";
+      ensure(nodeId).functionCalls.push({ name, args: formatFuncArgs(rawArgs) });
+    } else if (eventType === "tool.called" || eventType === "tool.started") {
+      const name = String(payload.function_name ?? payload.name ?? payload.tool_name ?? payload.tool ?? "");
+      if (!name) continue;
+      ensure(nodeId).toolCalls.push({ name, status: "pending" });
+    } else if (eventType === "tool.returned") {
+      const pending = [...ensure(nodeId).toolCalls].reverse().find((t) => t.status === "pending");
+      if (pending) pending.status = "done";
+    } else if (eventType === "tool.failed") {
+      const pending = [...ensure(nodeId).toolCalls].reverse().find((t) => t.status === "pending");
+      if (pending) pending.status = "failed";
+    }
+  }
+
+  return summaries;
+}
+
+export function NodeInfoPanel({
+  node,
+  summary,
+}: {
+  node: GraphNodeMeta;
+  summary: NodeEventSummary | null | undefined;
+}) {
+  const configEntries = node.config
+    ? Object.entries(node.config).filter(([, v]) => v !== null && v !== undefined && v !== "")
+    : [];
+  const hasContent =
+    configEntries.length > 0 ||
+    summary?.llmReasoning ||
+    summary?.llmContent ||
+    (summary?.functionCalls.length ?? 0) > 0 ||
+    (summary?.toolCalls.length ?? 0) > 0;
+
+  if (!hasContent) return null;
+
+  return (
+    <div className="space-y-2">
+      {configEntries.length > 0 ? <CollapsibleConfig entries={configEntries} /> : null}
+      {summary?.llmReasoning ? (
+        <CollapsibleSection
+          label="Reasoning"
+          text={summary.llmReasoning}
+          labelClass="text-violet-400/70"
+          textClass="text-slate-300"
+        />
+      ) : null}
+      {summary?.llmContent ? (
+        <CollapsibleSection
+          label="Response"
+          text={summary.llmContent}
+          labelClass="text-sky-400/70"
+          textClass="text-slate-100"
+        />
+      ) : null}
+      {(summary?.functionCalls.length ?? 0) > 0 || (summary?.toolCalls.length ?? 0) > 0 ? (
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          {summary!.functionCalls.slice(0, 3).map((fc, i) => (
+            <span key={i} className="font-mono text-[10px] text-amber-300/80">⚡ {fc.name}</span>
+          ))}
+          {summary!.toolCalls.slice(0, 4).map((tc, i) => (
+            <span key={i} className={`font-mono text-[10px] ${tc.status === "done" ? "text-emerald-400/80" : tc.status === "failed" ? "text-rose-400/80" : "text-slate-400"}`}>
+              {tc.status === "done" ? "✓" : tc.status === "failed" ? "✗" : "·"} {tc.name}
+            </span>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+const CONFIG_VALUE_THRESHOLD = 40;
+
+function CollapsibleConfig({ entries }: { entries: [string, unknown][] }) {
+  return (
+    <div className="mt-1.5 space-y-0.5">
+      {entries.map(([k, v]) => (
+        <ConfigEntry key={k} k={k} v={v} />
+      ))}
+    </div>
+  );
+}
+
+function ConfigEntry({ k, v }: { k: string; v: unknown }) {
+  const [open, setOpen] = useState(false);
+  const full = formatConfigValue(v);
+  const isLong = full.length > CONFIG_VALUE_THRESHOLD;
+  return (
+    <div className="text-[10px]">
+      <div className="flex items-baseline gap-1.5">
+        <span className="shrink-0 text-slate-500">{k}</span>
+        {isLong ? (
+          <button
+            type="button"
+            className="min-w-0 text-left text-slate-300 hover:text-slate-100"
+            onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+          >
+            {open ? full : `${full.slice(0, CONFIG_VALUE_THRESHOLD)}…`}
+            <span className="ml-1 text-[9px] text-slate-500">{open ? "▴" : "▸"}</span>
+          </button>
         ) : (
-          <span className="text-[11px] text-slate-500">graph node</span>
+          <span className="truncate text-slate-300">{full}</span>
         )}
-      </div>
-
-      <div className="mt-3 h-px w-full bg-gradient-to-r from-white/12 via-white/6 to-transparent" />
-
-      <div className="mt-3 truncate font-mono text-[10px] text-slate-500">{node.id}</div>
-      <div className="mt-1 text-[10px] uppercase tracking-[0.16em] text-slate-500">
-        {isEntry && isFinish ? "entry · finish" : isEntry ? "entry point" : isFinish ? "finish point" : "runtime node"}
       </div>
     </div>
   );
+}
+
+function CollapsibleSection({
+  label,
+  text,
+  labelClass,
+  textClass,
+}: {
+  label: string;
+  text: string;
+  labelClass: string;
+  textClass: string;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button
+        type="button"
+        className="flex w-full items-center justify-between gap-1"
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+      >
+        <span className={`text-[9px] font-medium uppercase tracking-[0.14em] ${labelClass}`}>{label}</span>
+        <span className="text-[9px] text-slate-500">{open ? "▾" : "▸"}</span>
+      </button>
+      {open ? (
+        <div className={`nodrag nowheel mt-0.5 max-h-[120px] overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-[1.55] ${textClass}`}>
+          {text}
+        </div>
+      ) : (
+        <p className={`mt-0.5 line-clamp-1 text-[11px] leading-[1.55] ${textClass}`}>{text}</p>
+      )}
+    </div>
+  );
+}
+
+function formatConfigValue(v: unknown): string {
+  if (typeof v === "string") return v.length > 60 ? `${v.slice(0, 60)}…` : v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v)) return `[${v.slice(0, 3).map(String).join(", ")}${v.length > 3 ? "…" : ""}]`;
+  if (typeof v === "object" && v !== null) return JSON.stringify(v).slice(0, 60);
+  return String(v ?? "");
+}
+
+function formatFuncArgs(raw: unknown): string {
+  if (!raw) return "";
+  let obj: Record<string, unknown> | null = null;
+  if (typeof raw === "string") {
+    try { obj = JSON.parse(raw) as Record<string, unknown>; } catch { return raw.slice(0, 30); }
+  } else if (typeof raw === "object") {
+    obj = raw as Record<string, unknown>;
+  }
+  if (!obj) return String(raw).slice(0, 30);
+  return Object.entries(obj)
+    .slice(0, 2)
+    .map(([k, v]) => {
+      const val = typeof v === "string" ? `"${v.slice(0, 16)}"` : String(v).slice(0, 16);
+      return `${k}=${val}`;
+    })
+    .join(", ");
 }
 
 function nodeStyle(
@@ -397,14 +683,12 @@ function nodeStyle(
   let shadow = "0 18px 40px rgba(2, 6, 23, 0.42)";
 
   if (isStart) {
-    background =
-      "linear-gradient(180deg, rgba(8,51,68,0.98), rgba(14,116,144,0.90) 58%, rgba(6,95,70,0.82))";
-    border = "rgba(103, 232, 249, 0.82)";
+    background = "rgba(8, 52, 68, 1)";
+    border = "rgba(103, 232, 249, 0.75)";
   }
   if (isEnd) {
-    background =
-      "linear-gradient(180deg, rgba(88,28,135,0.98), rgba(126,34,206,0.90) 58%, rgba(91,33,182,0.82))";
-    border = "rgba(216, 180, 254, 0.82)";
+    background = "rgba(76, 29, 149, 1)";
+    border = "rgba(192, 132, 252, 0.75)";
   }
 
   if (isVisited) {
@@ -432,13 +716,14 @@ function nodeStyle(
     shadow = "0 18px 40px rgba(14, 116, 144, 0.22)";
   }
 
+  const isCompact = isStart || isEnd;
   return {
-    width: 260,
-    borderRadius: 20,
+    width: isCompact ? 100 : 260,
+    borderRadius: isCompact ? 8 : 12,
     border: `1.5px solid ${border}`,
     background,
     color,
-    padding: "2px",
+    padding: isCompact ? "8px 10px" : "10px 12px",
     boxShadow: shadow,
   };
 }
@@ -541,4 +826,77 @@ function operatorLabel(op: string): string {
     default:
       return op;
   }
+}
+
+export function buildMermaidDiagram(
+  sourceGraph: SourceGraph,
+  projection?: GraphProjection
+): string {
+  const lines: string[] = ["flowchart LR"];
+
+  lines.push(
+    "  classDef wfCurrent fill:#92400e,stroke:#fbbf24,stroke-width:2px,color:#fef3c7"
+  );
+  lines.push(
+    "  classDef wfDone fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7"
+  );
+  lines.push(
+    "  classDef wfVisited fill:#082f49,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe"
+  );
+  lines.push(
+    "  classDef wfFailed fill:#7f1d1d,stroke:#f87171,stroke-width:2px,color:#fef2f2"
+  );
+  lines.push(
+    "  classDef wfStart fill:#083444,stroke:#67e8f9,stroke-width:2px,color:#ecfeff"
+  );
+  lines.push(
+    "  classDef wfEnd fill:#581c87,stroke:#d8b4fe,stroke-width:2px,color:#faf5ff"
+  );
+
+  const idMap = new Map<string, string>();
+  sourceGraph.nodes.forEach((node, i) => idMap.set(node.id, `N${i}`));
+
+  for (const node of sourceGraph.nodes) {
+    const mid = idMap.get(node.id)!;
+    const lbl = `"${mermaidEscape(node.name)}"`;
+    if (node.type === "start" || node.type === "end") {
+      lines.push(`  ${mid}([${lbl}])`);
+    } else {
+      lines.push(`  ${mid}[${lbl}]`);
+    }
+  }
+
+  for (const edge of sourceGraph.edges) {
+    const from = idMap.get(edge.from);
+    const to = idMap.get(edge.to);
+    if (!from || !to) continue;
+    if (edge.label) {
+      lines.push(`  ${from} -->|"${mermaidEscape(edge.label)}"| ${to}`);
+    } else {
+      lines.push(`  ${from} --> ${to}`);
+    }
+  }
+
+  if (projection) {
+    for (const node of sourceGraph.nodes) {
+      const mid = idMap.get(node.id)!;
+      let cls = "";
+      if (projection.currentNodeId === node.id) cls = "wfCurrent";
+      else if (projection.failedNodeIds.has(node.id)) cls = "wfFailed";
+      else if (projection.completedNodeIds.has(node.id)) cls = "wfDone";
+      else if (projection.visitedNodeIds.has(node.id)) cls = "wfVisited";
+      else if (node.type === "start") cls = "wfStart";
+      else if (node.type === "end") cls = "wfEnd";
+      if (cls) lines.push(`  class ${mid} ${cls}`);
+    }
+  }
+
+  return lines.join("\n");
+}
+
+function mermaidEscape(text: string): string {
+  return text
+    .replace(/"/g, "#quot;")
+    .replace(/</g, "#lt;")
+    .replace(/>/g, "#gt;");
 }

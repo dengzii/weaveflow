@@ -3,7 +3,10 @@ import { Link } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRightLeft,
+  ChevronLeft,
+  ChevronRight,
   Database,
+  GitGraph,
   Pause,
   Play,
   RefreshCw,
@@ -15,6 +18,7 @@ import { api, buildUrl } from "../replay/api";
 import type { RunDetail, RunSummary, RunsResponse } from "../replay/types";
 import { formatDuration, formatTime, prettyJSON } from "../replay/utils";
 import { ReplayGraphCanvas } from "./ReplayGraphCanvas";
+import { MermaidGraphCanvas } from "./MermaidGraphCanvas";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -46,6 +50,8 @@ export function ReplayPageV2() {
   const [replayIndex, setReplayIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
   const [layoutVersion, setLayoutVersion] = useState(0);
+  const [viewMode, setViewMode] = useState<"flow" | "mermaid">("flow");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const timerRef = useRef<number | null>(null);
   const replayLengthRef = useRef(0);
@@ -159,68 +165,101 @@ export function ReplayPageV2() {
 
   return (
     <div className="dark relative h-full overflow-hidden bg-background text-foreground">
-      <ReplayGraphCanvas
-        detail={detail}
-        replayIndex={replayIndex}
-        layoutVersion={layoutVersion}
-      />
+      {viewMode === "flow" ? (
+        <ReplayGraphCanvas
+          detail={detail}
+          replayIndex={replayIndex}
+          layoutVersion={layoutVersion}
+        />
+      ) : (
+        <MermaidGraphCanvas detail={detail} replayIndex={replayIndex} />
+      )}
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3">
         <div className="flex items-start justify-between gap-3">
-          <div className="pointer-events-auto w-[390px] rounded-[22px] border border-slate-700/70 bg-slate-950/88 p-3 text-slate-50 shadow-2xl backdrop-blur-xl">
-            <div className="flex items-center gap-2">
-              <Link to="/">
+          {sidebarCollapsed ? (
+            <div className="pointer-events-auto flex flex-col gap-2">
+              <div className="flex flex-col gap-1 rounded-[18px] border border-slate-700/70 bg-slate-950/88 p-2 shadow-2xl backdrop-blur-xl">
                 <Button
+                  type="button"
                   variant="ghost"
                   size="icon"
                   className="h-8 w-8 rounded-full text-slate-200 hover:bg-slate-800"
+                  onClick={() => setSidebarCollapsed(false)}
+                  title="展开侧边栏"
                 >
-                  <ArrowLeft className="h-4 w-4" />
+                  <ChevronRight className="h-4 w-4" />
                 </Button>
-              </Link>
-              <div className="flex min-w-0 flex-1 items-center gap-2">
-                <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-50 text-slate-950 shadow-lg">
+                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-slate-50 text-slate-950">
                   <Database className="h-4 w-4" />
                 </div>
-                <div className="min-w-0">
-                  <div className="truncate text-sm font-semibold text-white">Replay Debugger V2</div>
-                  <div className="truncate text-xs text-slate-300">React Flow + ELK.js</div>
+              </div>
+            </div>
+          ) : (
+          <div className="pointer-events-auto w-fit max-w-[520px] min-w-[320px] rounded-[22px] border border-slate-700/70 bg-slate-950/88 p-3 text-slate-50 shadow-2xl backdrop-blur-xl">
+            {/* Header */}
+            <div className="flex items-center gap-1.5">
+              <Link to="/">
+                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-full text-slate-200 hover:bg-slate-800">
+                  <ArrowLeft className="h-3.5 w-3.5" />
+                </Button>
+              </Link>
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-slate-50 text-slate-950">
+                  <Database className="h-3.5 w-3.5" />
                 </div>
+                <span className="truncate text-sm font-semibold text-white">Replay V2</span>
               </div>
               <Link to="/debug/replay">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-8 rounded-full border-slate-600 bg-slate-900 text-slate-50 hover:bg-slate-800"
-                >
+                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-full text-slate-400 hover:bg-slate-800 hover:text-slate-50" title="Classic view">
                   <ArrowRightLeft className="h-3.5 w-3.5" />
-                  Classic
                 </Button>
               </Link>
               <Button
                 type="button"
-                variant="outline"
-                size="sm"
-                className="h-8 rounded-full border-slate-600 bg-slate-900 text-slate-50 hover:bg-slate-800"
-                onClick={() => setLayoutVersion((value) => value + 1)}
+                variant="ghost"
+                size="icon"
+                className={`h-7 w-7 shrink-0 rounded-full hover:bg-slate-800 ${viewMode === "mermaid" ? "text-violet-400" : "text-slate-400 hover:text-slate-50"}`}
+                onClick={() => setViewMode((m) => (m === "flow" ? "mermaid" : "flow"))}
+                title={viewMode === "mermaid" ? "Switch to Flow" : "Switch to Mermaid"}
               >
-                <Rows3 className="h-3.5 w-3.5" />
-                Layout
+                <GitGraph className="h-3.5 w-3.5" />
+              </Button>
+              {viewMode === "flow" ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0 rounded-full text-slate-400 hover:bg-slate-800 hover:text-slate-50"
+                  onClick={() => setLayoutVersion((value) => value + 1)}
+                  title="Re-layout"
+                >
+                  <Rows3 className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7 shrink-0 rounded-full text-slate-400 hover:bg-slate-800 hover:text-slate-50"
+                onClick={() => setSidebarCollapsed(true)}
+                title="收起侧边栏"
+              >
+                <ChevronLeft className="h-3.5 w-3.5" />
               </Button>
             </div>
 
-            <div className="mt-3 flex items-center gap-2">
+            {/* Run selector */}
+            <div className="mt-2 flex items-center gap-1.5">
               <Select
                 value={selectedRunValue}
                 onValueChange={(value) => {
                   const target = runs.find((item) => runOptionValue(item) === value);
-                  if (target) {
-                    void selectRun(DEFAULT_CACHE_DIR, target);
-                  }
+                  if (target) void selectRun(DEFAULT_CACHE_DIR, target);
                 }}
               >
-                <SelectTrigger className="h-9 rounded-full border-slate-700 bg-slate-900/80 text-xs text-slate-50">
-                  <SelectValue placeholder="Select a Neo run" />
+                <SelectTrigger className="h-8 rounded-full border-slate-700 bg-slate-900/80 text-xs text-slate-50">
+                  <SelectValue placeholder="Select a run" />
                 </SelectTrigger>
                 <SelectContent>
                   {runs.map((item) => (
@@ -232,76 +271,45 @@ export function ReplayPageV2() {
               </Select>
               <Button
                 type="button"
-                size="sm"
-                variant="outline"
-                className="h-9 rounded-full border-slate-600 bg-slate-900 text-slate-50 hover:bg-slate-800"
-                onClick={() => {
-                  void loadRuns(DEFAULT_CACHE_DIR);
-                }}
+                size="icon"
+                variant="ghost"
+                className="h-8 w-8 shrink-0 rounded-full text-slate-400 hover:bg-slate-800 hover:text-slate-50"
+                onClick={() => void loadRuns(DEFAULT_CACHE_DIR)}
               >
                 <RefreshCw className="h-3.5 w-3.5" />
               </Button>
             </div>
-
-            <div className="mt-2 rounded-xl border border-slate-700/70 bg-slate-900/80 px-3 py-2">
-              <div className="truncate text-xs font-medium text-slate-100">{status.message}</div>
-              {status.summary ? (
-                <div className="truncate pt-0.5 text-[11px] text-slate-400">{status.summary}</div>
-              ) : null}
-            </div>
+            <div className="mt-1 truncate px-1 text-[11px] text-slate-500">{status.message}</div>
 
             {detail ? (
-              <div className="mt-3 space-y-2.5">
-                <div className="grid grid-cols-3 gap-2">
+              <div className="mt-2 space-y-2">
+                {/* Metrics */}
+                <div className="grid grid-cols-2 gap-1.5">
                   <Metric label="Graph" value={detail.summary.graph_ref || detail.run.graph_id || "-"} />
-                  <Metric label="Source" value={detail.source.name || detail.summary.source_name || "-"} />
                   <Metric label="Duration" value={formatDuration(detail.summary.duration_ms)} />
                 </div>
 
-                <div className="rounded-xl border border-slate-700/70 bg-slate-900/78 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div>
-                      <div className="text-xs font-medium text-slate-400">Playback</div>
-                      <div className="text-sm font-semibold text-white">
-                        {detail.replay.length ? `${replayIndex + 1}/${detail.replay.length}` : "0/0"}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-8 w-8 rounded-full"
-                        onClick={() => handleReplayIndex(replayIndex - 1)}
-                        disabled={replayIndex <= 0}
-                      >
+                {/* Playback */}
+                <div className="rounded-xl border border-slate-700/70 bg-slate-900/78 px-3 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs tabular-nums text-slate-400">
+                      {detail.replay.length ? `${replayIndex + 1}/${detail.replay.length}` : "0/0"}
+                    </span>
+                    <div className="flex flex-1 items-center justify-end gap-1">
+                      <Button type="button" size="icon" variant="ghost" className="h-7 w-7 rounded-full" onClick={() => handleReplayIndex(replayIndex - 1)} disabled={replayIndex <= 0}>
                         <SkipBack className="h-3.5 w-3.5" />
                       </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="outline"
-                        className="h-8 rounded-full px-3"
-                        onClick={toggleReplay}
-                        disabled={detail.replay.length === 0}
-                      >
+                      <Button type="button" size="icon" variant="outline" className="h-7 w-7 rounded-full" onClick={toggleReplay} disabled={detail.replay.length === 0}>
                         {isPlaying ? <Pause className="h-3.5 w-3.5" /> : <Play className="h-3.5 w-3.5" />}
                       </Button>
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant="ghost"
-                        className="h-8 w-8 rounded-full"
-                        onClick={() => handleReplayIndex(replayIndex + 1)}
-                        disabled={replayIndex >= detail.replay.length - 1}
-                      >
+                      <Button type="button" size="icon" variant="ghost" className="h-7 w-7 rounded-full" onClick={() => handleReplayIndex(replayIndex + 1)} disabled={replayIndex >= detail.replay.length - 1}>
                         <SkipForward className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </div>
                   <input
                     type="range"
-                    className="mt-3 w-full accent-amber-400"
+                    className="mt-2 w-full accent-amber-400"
                     min={0}
                     max={Math.max(0, detail.replay.length - 1)}
                     value={replayIndex}
@@ -309,79 +317,64 @@ export function ReplayPageV2() {
                   />
                 </div>
 
-                <div className="rounded-xl border border-slate-700/70 bg-slate-900/78 p-3">
-                  <div className="mb-2 flex items-start justify-between gap-3">
+                {/* Current event */}
+                <div className="rounded-xl border border-slate-700/70 bg-slate-900/78 px-3 py-2">
+                  <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-white">
                         {current?.title || "No event"}
                       </div>
-                      <div className="truncate pt-1 text-xs text-slate-400">
-                        {current?.subtitle || current?.event.node_id || current?.event.type || ""}
-                      </div>
+                      {(current?.subtitle || current?.event.node_id) ? (
+                        <div className="truncate text-[11px] text-slate-400">
+                          {current?.subtitle || current?.event.node_id}
+                        </div>
+                      ) : null}
                     </div>
-                    <Badge
-                      variant="outline"
-                      className="shrink-0 rounded-full border-slate-600 bg-slate-800 text-slate-100"
-                    >
-                      {current?.event.type || detail.run.status}
-                    </Badge>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px] text-slate-400">
-                    <div className="rounded-xl bg-slate-800/90 px-2.5 py-2">
-                      <div className="uppercase tracking-[0.14em]">Time</div>
-                      <div className="mt-1 truncate text-slate-100">{formatTime(current?.timestamp)}</div>
-                    </div>
-                    <div className="rounded-xl bg-slate-800/90 px-2.5 py-2">
-                      <div className="uppercase tracking-[0.14em]">Run Status</div>
-                      <div className="mt-1 truncate text-slate-100">{detail.run.status}</div>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      <Badge variant="outline" className="rounded-full border-slate-600 bg-slate-800 text-[10px] text-slate-100">
+                        {current?.event.type || detail.run.status}
+                      </Badge>
+                      {current?.timestamp ? (
+                        <span className="text-[10px] text-slate-500">{formatTime(current.timestamp)}</span>
+                      ) : null}
                     </div>
                   </div>
                 </div>
 
-                <div className="rounded-xl border border-slate-700/70 bg-slate-900/78 p-2">
-                  <div className="mb-2 flex items-center justify-between px-1">
-                    <div className="text-xs font-medium text-slate-400">Runs</div>
-                    <Badge variant="secondary" className="rounded-full bg-slate-800 text-slate-100">
-                      {runs.length}
-                    </Badge>
-                  </div>
-                  <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                {/* Runs list */}
+                <div className="rounded-xl border border-slate-700/70 bg-slate-900/78 p-1.5">
+                  <div className="max-h-36 space-y-0.5 overflow-y-auto">
                     {runs.map((item) => (
                       <button
                         key={`${item.source_id}:${item.run.run_id}`}
                         type="button"
-                        onClick={() => {
-                          void selectRun(DEFAULT_CACHE_DIR, item);
-                        }}
+                        onClick={() => void selectRun(DEFAULT_CACHE_DIR, item)}
                         className={cn(
-                          "w-full rounded-2xl border px-3 py-2 text-left transition",
+                          "flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left transition",
                           item.run.run_id === selectedRunId && item.source_id === selectedSourceId
-                            ? "border-amber-400/60 bg-amber-500/16 text-white shadow-lg"
-                            : "border-slate-700 bg-slate-950/60 text-slate-100 hover:bg-slate-800/80"
+                            ? "bg-amber-500/16 text-white"
+                            : "text-slate-300 hover:bg-slate-800/80"
                         )}
                       >
-                        <div className="truncate text-sm font-medium">{item.source_name}</div>
-                        <div
-                          className={cn(
-                            "truncate pt-0.5 text-[11px]",
-                            item.run.run_id === selectedRunId && item.source_id === selectedSourceId
-                              ? "text-amber-100/80"
-                              : "text-slate-400"
-                          )}
-                        >
-                          {item.run.run_id}
-                        </div>
+                        <span className="min-w-0 flex-1 truncate text-xs font-medium">{item.source_name || item.source_id}</span>
+                        <span className={cn(
+                          "shrink-0 truncate text-[10px]",
+                          item.run.run_id === selectedRunId && item.source_id === selectedSourceId ? "text-amber-300/80" : "text-slate-500"
+                        )}>
+                          {item.run.run_id.slice(0, 8)}
+                        </span>
                       </button>
                     ))}
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="mt-3 rounded-xl border border-dashed border-slate-700 bg-slate-900/60 px-4 py-7 text-center text-sm text-slate-300">
-                Select a Neo run to load replay data.
+              <div className="mt-3 rounded-xl border border-dashed border-slate-700 bg-slate-900/60 px-4 py-6 text-center text-sm text-slate-400">
+                Select a run to load replay data.
               </div>
             )}
           </div>
+          )}
 
           <div className="pointer-events-auto hidden w-[340px] rounded-[22px] border border-slate-700/70 bg-slate-950/88 p-3 text-slate-50 shadow-2xl backdrop-blur-xl 2xl:block">
             <div>

@@ -243,7 +243,14 @@ func loadSourceMeta(baseDir, root string) SourceMeta {
 	graphPath := filepath.Join(root, "graph.json")
 	if raw, err := readOptionalJSON(graphPath); err == nil {
 		meta.Graph = raw
-	} else if !os.IsNotExist(err) {
+	} else if os.IsNotExist(err) {
+		// graph.json is written once to baseDir (shared across all run dirs)
+		if raw2, err2 := readOptionalJSON(filepath.Join(baseDir, "graph.json")); err2 == nil {
+			meta.Graph = raw2
+		} else if !os.IsNotExist(err2) {
+			meta.Warnings = append(meta.Warnings, fmt.Sprintf("read graph.json: %v", err2))
+		}
+	} else {
 		meta.Warnings = append(meta.Warnings, fmt.Sprintf("read graph.json: %v", err))
 	}
 

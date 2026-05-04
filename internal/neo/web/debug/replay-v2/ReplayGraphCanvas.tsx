@@ -80,15 +80,19 @@ function ReplayGraphCanvasInner({
         return;
       }
 
-      const projection = buildProjection(detail, sourceGraph, replayIndex);
-      const baseFlow = buildBaseFlow(sourceGraph, projection);
+      // Use full replay to compute stable node heights (so card sizes don't shift during playback)
+      const maxProjection = buildProjection(detail, sourceGraph, detail.replay.length - 1);
+      const baseFlow = buildBaseFlow(sourceGraph, maxProjection);
       const layout = await computeElkLayout(baseFlow.nodes, baseFlow.edges);
       if (!active) return;
 
       graphKeyRef.current = detail.run.run_id;
       setGraphError("");
-      setNodes(layout.nodes);
-      setEdges(layout.edges);
+
+      // Apply current replayIndex projection for initial styling
+      const currentProjection = buildProjection(detail, sourceGraph, replayIndex);
+      setNodes(applyProjectionToNodes(layout.nodes, sourceGraph, currentProjection));
+      setEdges(applyProjectionToEdges(layout.edges, currentProjection));
       requestAnimationFrame(() => {
         flowRef.current?.fitView({ padding: 0.18, duration: 450 });
       });
@@ -181,8 +185,8 @@ async function computeElkLayout(nodes: Node<FlowNodeData>[], edges: Edge[]) {
     },
     children: nodes.map((node) => ({
       id: node.id,
-      width: 260,
-      height: 156,
+      width: node.data.elkWidth,
+      height: node.data.elkHeight,
       layoutOptions:
         node.data.meta.type === "start"
           ? { "elk.layered.layering.layerConstraint": "FIRST" }
