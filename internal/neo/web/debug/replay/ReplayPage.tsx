@@ -166,15 +166,15 @@ export function ReplayPage() {
             <ArrowLeft className="h-4 w-4" />
           </Button>
         </Link>
-        <Link to="/debug/replay/v2">
+        <Link to="/debug/replay">
           <Button variant="outline" size="sm" className="h-8 gap-1.5 shrink-0">
             <Sparkles className="h-3.5 w-3.5" />
-            V2
+            Replay
           </Button>
         </Link>
         <div className="flex items-center gap-2 text-sm font-semibold">
           <Database className="h-4 w-4 text-muted-foreground" />
-          Graph Replay
+          Graph Replay Old
         </div>
         <div className="flex items-center gap-2 flex-1 max-w-2xl">
           <Select

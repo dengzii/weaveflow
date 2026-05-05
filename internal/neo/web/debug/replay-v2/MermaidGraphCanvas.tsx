@@ -157,7 +157,7 @@ export function MermaidGraphCanvas({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
     >
-      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.14),transparent_28%),radial-gradient(circle_at_top_right,rgba(251,191,36,0.10),transparent_22%),linear-gradient(180deg,#0b1120,#111a2e_58%,#162235)]" />
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.04),transparent_28%),radial-gradient(circle_at_top_right,rgba(251,191,36,0.03),transparent_22%),linear-gradient(180deg,#0f172a,#0f172a_60%,#0d1424)]" />
       {/* transform origin is viewport center; x/y are offsets from center */}
       <div
         className="pointer-events-none absolute inset-0 flex items-center justify-center"
@@ -173,10 +173,10 @@ export function MermaidGraphCanvas({
       </div>
 
       {currentNode ? (
-        <div className="pointer-events-auto absolute bottom-6 right-6 z-20 w-[280px] rounded-xl border border-slate-700/70 bg-slate-950/90 p-3 text-slate-50 shadow-2xl backdrop-blur-xl">
+        <div className="pointer-events-auto absolute bottom-6 right-6 z-20 w-[280px] rounded-xl border border-slate-700/60 bg-slate-900/95 p-3 text-slate-100 shadow-2xl backdrop-blur-xl">
           <div className="mb-2 flex items-center justify-between gap-2">
-            <div className="truncate text-sm font-semibold text-white">{currentNode.name}</div>
-            <span className="shrink-0 rounded-full bg-amber-400/18 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-amber-200 ring-1 ring-amber-300/35">
+            <div className="truncate text-sm font-semibold text-slate-100">{currentNode.name}</div>
+            <span className="shrink-0 rounded-full bg-amber-500/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-amber-300 ring-1 ring-amber-500/40">
               LIVE
             </span>
           </div>

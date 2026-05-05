@@ -1,6 +1,7 @@
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { Position, type Edge, type Node } from "@xyflow/react";
+import { api, buildUrl } from "../replay/api";
 import type { ReplayItem, RunDetail } from "../replay/types";
 
 interface ArtifactDetail {
@@ -61,6 +62,8 @@ export interface FlowNodeData {
 
 const SYNTHETIC_START_ID = "__wf_start__";
 const SYNTHETIC_END_ID = "__wf_end__";
+const DEFAULT_CACHE_DIR =
+  (document.body.dataset.defaultCacheDir as string | undefined)?.trim() || "neo_data";
 
 export function parseSourceGraph(raw: unknown): SourceGraph | null {
   if (!raw || typeof raw !== "object") return null;
@@ -270,7 +273,7 @@ export function buildBaseFlow(
       label: edge.label || undefined,
       labelStyle: edge.label
         ? {
-            fill: edge.conditional ? "#e9d5ff" : "#cbd5e1",
+            fill: edge.conditional ? "#c084fc" : "#94a3b8",
             fontSize: 10.5,
             fontWeight: 700,
           }
@@ -280,8 +283,8 @@ export function buildBaseFlow(
       labelBgBorderRadius: edge.conditional ? 8 : undefined,
       labelBgStyle: edge.conditional
         ? {
-            fill: "rgba(76, 29, 149, 0.94)",
-            stroke: "rgba(196, 181, 253, 0.38)",
+            fill: "rgba(88, 28, 135, 0.25)",
+            stroke: "rgba(167, 139, 250, 0.35)",
             strokeWidth: 1,
           }
         : undefined,
@@ -374,21 +377,21 @@ function buildNodeLabel(
           ? "SEEN"
           : "IDLE";
   const statusClass = isCurrent
-    ? "bg-amber-400/18 text-amber-200 ring-1 ring-amber-300/35"
+    ? "border border-amber-500/40 bg-amber-500/12 text-amber-300"
     : isStart
-      ? "bg-cyan-400/18 text-cyan-200 ring-1 ring-cyan-300/35"
+      ? "border border-cyan-500/35 bg-cyan-500/10 text-cyan-300"
       : isEnd
-        ? "bg-fuchsia-400/18 text-fuchsia-200 ring-1 ring-fuchsia-300/35"
+        ? "border border-fuchsia-500/40 bg-fuchsia-500/12 text-fuchsia-300"
     : isFailed
-      ? "bg-rose-400/18 text-rose-200 ring-1 ring-rose-300/30"
+      ? "border border-rose-500/35 bg-rose-500/10 text-rose-300"
       : isCompleted
-        ? "bg-emerald-400/18 text-emerald-200 ring-1 ring-emerald-300/30"
+        ? "border border-emerald-500/35 bg-emerald-500/10 text-emerald-300"
         : isVisited
-          ? "bg-sky-400/18 text-sky-200 ring-1 ring-sky-300/30"
-          : "bg-slate-400/12 text-slate-300 ring-1 ring-slate-400/18";
+          ? "border border-sky-500/35 bg-sky-500/10 text-sky-300"
+          : "border border-slate-600/50 bg-slate-700/50 text-slate-400";
   if (isStart || isEnd) {
     return (
-      <div className="text-center text-[11px] font-semibold uppercase tracking-[0.16em] text-white/90">
+      <div className="text-center text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">
         {node.name}
       </div>
     );
@@ -405,27 +408,29 @@ function buildNodeLabel(
     : [];
 
   return (
-    <div className="min-w-[180px]">
+    <div className="min-w-[200px] space-y-1.5">
       {/* Name + description tooltip + status */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="flex min-w-0 items-center gap-1">
-          <div className="truncate text-[13px] font-semibold tracking-tight text-white">{node.name}</div>
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-1.5">
+          <div className="truncate text-[13px] font-semibold tracking-tight text-slate-100">{node.name}</div>
           {node.description ? (
-            <span className="group/tip relative shrink-0 cursor-default select-none text-[11px] text-slate-600 hover:text-slate-400">
-              ⓘ
-              <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] leading-snug text-slate-200 opacity-0 shadow-xl ring-1 ring-white/10 transition-opacity group-hover/tip:opacity-100">
+            <span className="group/tip relative shrink-0 cursor-default select-none">
+              <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-slate-700/80 text-[8px] font-bold leading-none text-slate-400 ring-1 ring-slate-600/60 transition-all group-hover/tip:bg-sky-900/60 group-hover/tip:text-sky-400 group-hover/tip:ring-sky-600/50">
+                i
+              </span>
+              <span className="pointer-events-none absolute bottom-full left-1/2 z-50 mb-1.5 -translate-x-1/2 whitespace-nowrap rounded-md bg-slate-800 px-2.5 py-1.5 text-[11px] leading-snug text-slate-200 opacity-0 shadow-xl ring-1 ring-slate-700 transition-opacity group-hover/tip:opacity-100">
                 {node.description}
               </span>
             </span>
           ) : null}
         </div>
-        <div className="flex shrink-0 flex-col items-end gap-0.5">
-          <span className={`rounded-full px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] ${statusClass}`}>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {durationLabel ? (
+            <span className="text-[9px] tabular-nums text-slate-400">{durationLabel}</span>
+          ) : null}
+          <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] ${statusClass}`}>
             {statusLabel}
           </span>
-          {durationLabel ? (
-            <span className="text-[9px] tabular-nums text-slate-500">{durationLabel}</span>
-          ) : null}
         </div>
       </div>
 
@@ -437,13 +442,13 @@ function buildNodeLabel(
       {/* Content area — only rendered when events exist */}
       {hasEvents ? (
         <>
-          <div className="mt-2 h-px w-full bg-white/8" />
-          <div className="mt-2 space-y-2">
+          <div className="h-px w-full bg-slate-700" />
+          <div className="space-y-1.5">
             {summary!.llmReasoning ? (
               <CollapsibleSection
                 label="Reasoning"
                 text={summary!.llmReasoning}
-                labelClass="text-violet-400/70"
+                labelClass="text-violet-400"
                 textClass="text-slate-300"
               />
             ) : null}
@@ -451,17 +456,17 @@ function buildNodeLabel(
               <CollapsibleSection
                 label="Response"
                 text={summary!.llmContent}
-                labelClass="text-sky-400/70"
-                textClass="text-slate-100"
+                labelClass="text-sky-400"
+                textClass="text-slate-300"
               />
             ) : null}
             {(summary!.functionCalls.length > 0 || summary!.toolCalls.length > 0) ? (
-              <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+              <div className="flex flex-wrap gap-1.5 [&_span]:rounded-full [&_span]:px-2 [&_span]:py-0.5">
                 {summary!.functionCalls.slice(0, 3).map((fc, i) => (
-                  <span key={i} className="font-mono text-[10px] text-amber-300/80">⚡ {fc.name}</span>
+                  <span key={i} className="font-mono text-[10px] text-amber-400">⚡ {fc.name}</span>
                 ))}
                 {summary!.toolCalls.slice(0, 4).map((tc, i) => (
-                  <span key={i} className={`font-mono text-[10px] ${tc.status === "done" ? "text-emerald-400/80" : tc.status === "failed" ? "text-rose-400/80" : "text-slate-400"}`}>
+                  <span key={i} className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${tc.status === "done" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : tc.status === "failed" ? "border-rose-500/30 bg-rose-500/10 text-rose-400" : "border-slate-600/50 bg-slate-700/40 text-slate-400"}`}>
                     {tc.status === "done" ? "✓" : tc.status === "failed" ? "✗" : "·"} {tc.name}
                   </span>
                 ))}
@@ -470,14 +475,14 @@ function buildNodeLabel(
             {summary!.artifacts.length > 0 ? (
               runId ? (
                 <div className="space-y-0.5">
-                  {summary!.artifacts.slice(0, 3).map((a, i) => (
-                    <ArtifactToggleView key={i} artifact={a} runId={runId} sourceId={sourceId} />
+                  {summary!.artifacts.slice(0, 3).map((a) => (
+                    <ArtifactToggleView key={a.id} artifact={a} runId={runId} sourceId={sourceId} />
                   ))}
                 </div>
               ) : (
-                <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+                <div className="flex flex-wrap gap-1.5">
                   {summary!.artifacts.slice(0, 3).map((a, i) => (
-                    <span key={i} className="font-mono text-[10px] text-violet-300/80">⬡ {a.type || "artifact"}</span>
+                    <span key={i} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-400">⬡ {a.type || "artifact"}</span>
                   ))}
                 </div>
               )
@@ -490,20 +495,19 @@ function buildNodeLabel(
 }
 
 function nodeElkWidth(node: GraphNodeMeta): number {
-  return node.type === "start" || node.type === "end" ? 100 : 260;
+  return node.type === "start" || node.type === "end" ? 100 : 280;
 }
 
 function nodeElkHeight(node: GraphNodeMeta, summary?: NodeEventSummary): number {
   if (node.type === "start" || node.type === "end") return 44;
-  const hasDuration = summary ? summary.durationMs >= 0 : false;
-  const base = 80 + (hasDuration ? 14 : 0);
+  const base = 96;
   if (!summary) return base;
   const hasText = summary.llmReasoning || summary.llmContent;
   const hasCalls = summary.functionCalls.length > 0 || summary.toolCalls.length > 0;
   const artifactCount = summary.artifacts.length;
   if (!hasText && !hasCalls && !artifactCount) return base;
   const textSections = (summary.llmReasoning ? 1 : 0) + (summary.llmContent ? 1 : 0);
-  return base + textSections * 36 + (hasCalls ? 24 : 0) + artifactCount * 20;
+  return base + textSections * 46 + (hasCalls ? 44 : 0) + artifactCount * 34;
 }
 
 function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map<string, NodeEventSummary> {
@@ -604,7 +608,7 @@ export function NodeInfoPanel({
       {summary?.durationMs !== undefined && summary.durationMs >= 0 ? (
         <div className="flex items-center gap-1.5">
           <span className="text-[9px] uppercase tracking-[0.14em] text-slate-500">Duration</span>
-          <span className="text-[11px] font-medium tabular-nums text-slate-200">{formatNodeDuration(summary.durationMs)}</span>
+          <span className="text-[11px] font-medium tabular-nums text-slate-300">{formatNodeDuration(summary.durationMs)}</span>
         </div>
       ) : null}
       {configEntries.length > 0 ? <CollapsibleConfig entries={configEntries} /> : null}
@@ -612,7 +616,7 @@ export function NodeInfoPanel({
         <CollapsibleSection
           label="Reasoning"
           text={summary.llmReasoning}
-          labelClass="text-violet-400/70"
+          labelClass="text-violet-400"
           textClass="text-slate-300"
         />
       ) : null}
@@ -620,17 +624,17 @@ export function NodeInfoPanel({
         <CollapsibleSection
           label="Response"
           text={summary.llmContent}
-          labelClass="text-sky-400/70"
-          textClass="text-slate-100"
+          labelClass="text-sky-400"
+          textClass="text-slate-300"
         />
       ) : null}
       {(summary?.functionCalls.length ?? 0) > 0 || (summary?.toolCalls.length ?? 0) > 0 ? (
-        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+        <div className="flex flex-wrap gap-1.5 [&_span]:rounded-full [&_span]:px-2 [&_span]:py-0.5">
           {summary!.functionCalls.slice(0, 3).map((fc, i) => (
-            <span key={i} className="font-mono text-[10px] text-amber-300/80">⚡ {fc.name}</span>
+            <span key={i} className="font-mono text-[10px] text-amber-400">⚡ {fc.name}</span>
           ))}
           {summary!.toolCalls.slice(0, 4).map((tc, i) => (
-            <span key={i} className={`font-mono text-[10px] ${tc.status === "done" ? "text-emerald-400/80" : tc.status === "failed" ? "text-rose-400/80" : "text-slate-400"}`}>
+            <span key={i} className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${tc.status === "done" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : tc.status === "failed" ? "border-rose-500/30 bg-rose-500/10 text-rose-400" : "border-slate-600/50 bg-slate-700/40 text-slate-400"}`}>
               {tc.status === "done" ? "✓" : tc.status === "failed" ? "✗" : "·"} {tc.name}
             </span>
           ))}
@@ -639,14 +643,14 @@ export function NodeInfoPanel({
       {(summary?.artifacts.length ?? 0) > 0 ? (
         runId ? (
           <div className="space-y-0.5">
-            {summary!.artifacts.map((a, i) => (
-              <ArtifactToggleView key={i} artifact={a} runId={runId} sourceId={sourceId} />
+            {summary!.artifacts.map((a) => (
+              <ArtifactToggleView key={a.id} artifact={a} runId={runId} sourceId={sourceId} />
             ))}
           </div>
         ) : (
-          <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          <div className="flex flex-wrap gap-1.5">
             {summary!.artifacts.map((a, i) => (
-              <span key={i} className="font-mono text-[10px] text-violet-300/80">⬡ {a.type || "artifact"}</span>
+              <span key={i} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-400">⬡ {a.type || "artifact"}</span>
             ))}
           </div>
         )
@@ -659,7 +663,7 @@ const CONFIG_VALUE_THRESHOLD = 40;
 
 function CollapsibleConfig({ entries }: { entries: [string, unknown][] }) {
   return (
-    <div className="mt-1.5 space-y-0.5">
+    <div className="space-y-0.5">
       {entries.map(([k, v]) => (
         <ConfigEntry key={k} k={k} v={v} />
       ))}
@@ -669,25 +673,35 @@ function CollapsibleConfig({ entries }: { entries: [string, unknown][] }) {
 
 function ConfigEntry({ k, v }: { k: string; v: unknown }) {
   const [open, setOpen] = useState(false);
-  const full = formatConfigValue(v);
+  const preview = formatConfigValue(v);
+  const full = formatConfigValueFull(v);
   const isLong = full.length > CONFIG_VALUE_THRESHOLD;
+  if (!isLong) {
+    return (
+      <div className="flex items-baseline justify-between gap-1.5 text-[10px]">
+        <span className="shrink-0 font-medium text-slate-400">{k}</span>
+        <span className="min-w-0 truncate text-right text-slate-300">{preview}</span>
+      </div>
+    );
+  }
   return (
     <div className="text-[10px]">
-      <div className="flex items-baseline justify-between gap-1.5">
-        <span className="shrink-0 text-slate-500">{k}</span>
-        {isLong ? (
-          <button
-            type="button"
-            className="min-w-0 text-right text-slate-300 hover:text-slate-100"
-            onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
-          >
-            {open ? full : `${full.slice(0, CONFIG_VALUE_THRESHOLD)}…`}
-            <span className="ml-1 text-[9px] text-slate-500">{open ? "▴" : "▸"}</span>
-          </button>
-        ) : (
-          <span className="text-right text-slate-300">{full}</span>
-        )}
-      </div>
+      <button
+        type="button"
+        className="flex w-full items-baseline justify-between gap-1.5 text-left transition-colors hover:text-slate-100"
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+      >
+        <span className="shrink-0 font-medium text-slate-400">{k}</span>
+        <span className="flex min-w-0 items-baseline gap-1">
+          {!open ? <span className="truncate text-slate-300">{preview}</span> : null}
+          <span className="shrink-0 text-[9px] text-slate-500">{open ? "▴" : "▸"}</span>
+        </span>
+      </button>
+      {open ? (
+        <pre className="nodrag nowheel mt-1 max-h-[80px] overflow-auto whitespace-pre-wrap break-all font-mono leading-[1.5] text-slate-300">
+          {full}
+        </pre>
+      ) : null}
     </div>
   );
 }
@@ -708,18 +722,18 @@ function CollapsibleSection({
     <div>
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-1"
+        className="flex w-full items-center justify-between gap-2 py-0.5 text-left"
         onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
       >
-        <span className={`text-[9px] font-medium uppercase tracking-[0.14em] ${labelClass}`}>{label}</span>
+        <span className={`text-[9px] font-semibold uppercase tracking-[0.12em] ${labelClass}`}>{label}</span>
         <span className="text-[9px] text-slate-500">{open ? "▾" : "▸"}</span>
       </button>
       {open ? (
-        <div className={`nodrag nowheel mt-0.5 max-h-[120px] overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-[1.55] ${textClass}`}>
+        <div className={`nodrag nowheel mt-0.5 max-h-[130px] overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-[1.55] ${textClass}`}>
           {text}
         </div>
       ) : (
-        <p className={`mt-0.5 line-clamp-1 text-[11px] leading-[1.55] ${textClass}`}>{text}</p>
+        <p className={`mt-0.5 line-clamp-2 text-[11px] leading-[1.55] ${textClass}`}>{text}</p>
       )}
     </div>
   );
@@ -740,24 +754,23 @@ function ArtifactToggleView({
   const [errorMsg, setErrorMsg] = useState("");
 
   const isImage = artifact.mimeType.startsWith("image/");
-
-  const params = new URLSearchParams();
-  if (sourceId && sourceId !== "live") params.set("source", sourceId);
-  const baseUrl = `/api/run/${encodeURIComponent(runId)}/artifact/${encodeURIComponent(artifact.id)}`;
-  const detailUrl = `${baseUrl}?${params}`;
-  const dlParams = new URLSearchParams(params);
-  dlParams.set("download", "1");
-  const downloadUrl = `${baseUrl}?${dlParams}`;
+  const artifactPath = `/api/run/${encodeURIComponent(runId)}/artifact/${encodeURIComponent(artifact.id)}`;
+  const query = sourceId && sourceId !== "live" ? { source: sourceId } : {};
+  const detailUrl = buildUrl(artifactPath, DEFAULT_CACHE_DIR, query);
+  const downloadUrl = buildUrl(artifactPath, DEFAULT_CACHE_DIR, {
+    ...query,
+    download: "1",
+  });
 
   useEffect(() => {
-    if (!open || isImage || fetchState !== "idle") return;
+    if (!open || isImage || detail) return;
     let cancelled = false;
     setFetchState("loading");
-    fetch(detailUrl)
-      .then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.json(); })
-      .then((json: unknown) => {
+    setErrorMsg("");
+    api<ArtifactDetail>(detailUrl)
+      .then((data) => {
         if (!cancelled) {
-          setDetail((json as { data: ArtifactDetail }).data);
+          setDetail(data);
           setFetchState("done");
         }
       })
@@ -765,22 +778,21 @@ function ArtifactToggleView({
         if (!cancelled) { setErrorMsg((err as Error).message ?? "Error"); setFetchState("error"); }
       });
     return () => { cancelled = true; };
-  }, [open, isImage, fetchState, detailUrl]);
+  }, [open, isImage, detail, detailUrl]);
 
   function renderDetail() {
     if (!detail) return null;
     const { encoding, payload, truncated } = detail;
     if (encoding === "json") {
-      const text = JSON.stringify(payload, null, 2) + (truncated ? "\n…<truncated>" : "");
       return (
-        <pre className="nodrag nowheel mt-1 max-h-[100px] overflow-auto rounded-lg bg-slate-900/70 p-2 font-mono text-[10px] leading-[1.4] text-slate-100 whitespace-pre-wrap break-words">
-          {text}
-        </pre>
+        <div className="nodrag nowheel max-h-[112px] overflow-auto font-mono text-[10px] leading-[1.6]">
+          <JsonTree data={payload} truncated={truncated} />
+        </div>
       );
     }
     if (encoding === "text") {
       return (
-        <pre className="nodrag nowheel mt-1 max-h-[100px] overflow-auto rounded-lg bg-slate-900/70 p-2 font-mono text-[10px] leading-[1.4] text-slate-100 whitespace-pre-wrap break-words">
+        <pre className="nodrag nowheel max-h-[112px] overflow-auto font-mono text-[10px] leading-[1.5] text-slate-300 whitespace-pre-wrap break-words">
           {String(payload ?? "")}
           {truncated ? "\n…<truncated>" : ""}
         </pre>
@@ -788,7 +800,7 @@ function ArtifactToggleView({
     }
     // base64 binary
     return (
-      <div className="mt-1 flex items-center gap-2">
+      <div className="flex items-center gap-2">
         <span className="text-[10px] text-slate-500">{detail.bytes} bytes</span>
         <a href={downloadUrl} target="_blank" rel="noopener noreferrer" className="text-[10px] text-sky-400 hover:text-sky-300">↓ Download</a>
       </div>
@@ -799,23 +811,34 @@ function ArtifactToggleView({
     <div>
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-1 text-left"
-        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+        className="nodrag nowheel flex w-full items-center justify-between gap-2 py-0.5 text-left"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((current) => {
+            const next = !current;
+            if (next && fetchState === "error") {
+              setFetchState("idle");
+              setDetail(null);
+              setErrorMsg("");
+            }
+            return next;
+          });
+        }}
       >
-        <span className="font-mono text-[10px] text-violet-300/80">⬡ {artifact.type || "artifact"}</span>
-        <span className="text-[9px] text-slate-500">{open ? "▾" : "▸"}</span>
+        <span className="font-mono text-[10px] text-violet-400">⬡ {artifact.type || "artifact"}</span>
+        <span className="text-[10px] text-slate-500">{open ? "▾" : "▸"}</span>
       </button>
       {open ? (
         isImage ? (
-          <div className="mt-1 overflow-hidden rounded-lg border border-slate-700/50 bg-slate-900">
+          <div className="mt-1 overflow-hidden rounded bg-slate-800/50">
             <img src={downloadUrl} alt={artifact.id} className="max-h-[120px] w-full object-contain" />
           </div>
         ) : fetchState === "loading" ? (
-          <div className="mt-1 text-[10px] text-slate-500">Loading…</div>
+          <div className="mt-0.5 text-[10px] text-slate-400">Loading…</div>
         ) : fetchState === "error" ? (
-          <div className="mt-1 text-[10px] text-rose-400">{errorMsg}</div>
+          <div className="mt-0.5 text-[10px] text-rose-400">{errorMsg}</div>
         ) : fetchState === "done" ? (
-          renderDetail()
+          <div className="mt-1">{renderDetail()}</div>
         ) : null
       ) : null}
     </div>
@@ -837,6 +860,109 @@ function formatConfigValue(v: unknown): string {
   if (Array.isArray(v)) return `[${v.slice(0, 3).map(String).join(", ")}${v.length > 3 ? "…" : ""}]`;
   if (typeof v === "object" && v !== null) return JSON.stringify(v).slice(0, 60);
   return String(v ?? "");
+}
+
+function formatConfigValueFull(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (typeof v === "number" || typeof v === "boolean") return String(v);
+  if (Array.isArray(v) || (typeof v === "object" && v !== null)) return JSON.stringify(v, null, 2);
+  return String(v ?? "");
+}
+
+export function JsonTree({ data, truncated }: { data: unknown; truncated?: boolean }) {
+  return (
+    <div className="nodrag nowheel select-text">
+      <JsonTreeNode value={data} depth={0} />
+      {truncated ? <div className="mt-0.5 text-[9px] italic text-slate-500">…truncated</div> : null}
+    </div>
+  );
+}
+
+function JsonTreeNode({ value, label, depth }: { value: unknown; label?: string; depth: number }) {
+  const isArr = Array.isArray(value);
+  const isObj = !isArr && value !== null && typeof value === "object";
+
+  const keyPart = label !== undefined ? (
+    <span className="shrink-0 text-sky-400">
+      "{label}"<span className="text-slate-500">: </span>
+    </span>
+  ) : null;
+
+  // Fixed-width chevron column so all rows in the same container share the same left edge for content.
+  const chevronCol = "inline-block w-3 shrink-0";
+
+  if (!isObj && !isArr) {
+    return (
+      <div className="flex min-w-0 gap-0.5">
+        <span className={chevronCol} />
+        {keyPart}
+        <JsonPrimitive value={value} />
+      </div>
+    );
+  }
+
+  const entries: [string, unknown][] = isArr
+    ? (value as unknown[]).map((v, i) => [String(i), v])
+    : Object.entries(value as Record<string, unknown>);
+  const [ob, cb] = isArr ? ["[", "]"] : ["{", "}"];
+  const [open, setOpen] = useState(depth < 2 && entries.length <= 8);
+
+  if (entries.length === 0) {
+    return (
+      <div className="flex min-w-0 gap-0.5">
+        <span className={chevronCol} />
+        {keyPart}
+        <span className="text-slate-500">{ob}{cb}</span>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div
+        className="flex min-w-0 cursor-pointer items-start gap-0.5 hover:opacity-75 transition-opacity"
+        onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
+      >
+        <span className={`${chevronCol} mt-[3px] select-none text-[7px] text-slate-500`}>{open ? "▾" : "▸"}</span>
+        {keyPart}
+        <span className="text-slate-500">{ob}</span>
+        {!open ? (
+          <span className="text-[9px] text-slate-500">
+            {isArr ? entries.length : `${entries.length} keys`}
+          </span>
+        ) : null}
+        {!open ? <span className="text-slate-500">{cb}</span> : null}
+      </div>
+      {open ? (
+        <>
+          <div className="ml-3 border-l border-slate-700 pl-2">
+            {entries.map(([k, v]) => (
+              <JsonTreeNode key={k} value={v} label={isArr ? undefined : k} depth={depth + 1} />
+            ))}
+          </div>
+          <div className="flex gap-0.5">
+            <span className={chevronCol} />
+            <span className="text-slate-500">{cb}</span>
+          </div>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function JsonPrimitive({ value }: { value: unknown }) {
+  if (value === null) return <span className="text-slate-500">null</span>;
+  if (typeof value === "boolean") return <span className="text-violet-400">{String(value)}</span>;
+  if (typeof value === "number") return <span className="text-emerald-400">{String(value)}</span>;
+  if (typeof value === "string") {
+    const display = value.length > 80 ? `${value.slice(0, 80)}…` : value;
+    return (
+      <span className="text-amber-400" title={value.length > 80 ? value : undefined}>
+        "{display}"
+      </span>
+    );
+  }
+  return <span className="text-slate-400">{String(value)}</span>;
 }
 
 function formatFuncArgs(raw: unknown): string {
@@ -870,44 +996,39 @@ function nodeStyle(
   const isStart = node.id === SYNTHETIC_START_ID || node.type === "start";
   const isEnd = node.id === SYNTHETIC_END_ID || node.type === "end";
 
-  let border = "rgba(51, 65, 85, 0.95)";
-  let background =
-    "linear-gradient(180deg, rgba(15,23,42,0.98), rgba(15,23,42,0.92) 58%, rgba(8,15,30,0.96))";
-  let color = "#f8fafc";
-  let shadow = "0 18px 40px rgba(2, 6, 23, 0.42)";
+  let border = "rgba(148, 163, 184, 0.18)"; // slate-400/18
+  let background = "linear-gradient(180deg, #1e293b, #1a2335 60%, #162032)";
+  let color = "#e2e8f0"; // slate-200
+  let shadow = "0 4px 16px rgba(0, 0, 0, 0.35)";
 
   if (isStart) {
-    background = "rgba(8, 52, 68, 1)";
-    border = "rgba(103, 232, 249, 0.75)";
+    background = "#071e24";
+    border = "rgba(6, 182, 212, 0.45)";
   }
   if (isEnd) {
-    background = "rgba(76, 29, 149, 1)";
-    border = "rgba(192, 132, 252, 0.75)";
+    background = "#130c24";
+    border = "rgba(139, 92, 246, 0.45)";
   }
 
   if (isVisited) {
-    background =
-      "linear-gradient(180deg, rgba(8,47,73,0.98), rgba(12,74,110,0.94) 56%, rgba(15,118,110,0.86))";
-    border = "rgba(56, 189, 248, 0.75)";
+    background = "linear-gradient(180deg, #162034, #1a2a42 60%, #1c3050)";
+    border = "rgba(59, 130, 246, 0.4)";
   }
   if (isCompleted) {
-    background =
-      "linear-gradient(180deg, rgba(20,83,45,0.98), rgba(22,101,52,0.92) 60%, rgba(6,78,59,0.88))";
-    border = "rgba(74, 222, 128, 0.75)";
+    background = "linear-gradient(180deg, #112318, #14291c 60%, #153020)";
+    border = "rgba(34, 197, 94, 0.4)";
   }
   if (isFailed) {
-    background =
-      "linear-gradient(180deg, rgba(127,29,29,0.98), rgba(153,27,27,0.94) 60%, rgba(136,19,55,0.88))";
-    border = "rgba(248, 113, 113, 0.78)";
-    color = "#fef2f2";
+    background = "linear-gradient(180deg, #2a1218, #2c1016 60%, #2e0e12)";
+    border = "rgba(239, 68, 68, 0.45)";
+    color = "#fca5a5"; // red-300
   }
   if (isCurrent) {
-    background =
-      "linear-gradient(180deg, rgba(120,53,15,0.98), rgba(146,64,14,0.94) 58%, rgba(161,98,7,0.86))";
-    border = "rgba(251, 191, 36, 0.95)";
-    shadow = "0 0 0 3px rgba(245, 158, 11, 0.22), 0 24px 48px rgba(120, 53, 15, 0.34)";
+    background = "linear-gradient(180deg, #2b1e08, #2d1906 58%, #2e1503)";
+    border = "rgba(245, 158, 11, 0.7)";
+    shadow = "0 0 0 3px rgba(245, 158, 11, 0.1), 0 6px 18px rgba(0, 0, 0, 0.5)";
   } else if (isEntry) {
-    shadow = "0 18px 40px rgba(14, 116, 144, 0.22)";
+    shadow = "0 4px 16px rgba(0, 0, 0, 0.4)";
   }
 
   const isCompact = isStart || isEnd;
@@ -917,7 +1038,7 @@ function nodeStyle(
     border: `1.5px solid ${border}`,
     background,
     color,
-    padding: isCompact ? "8px 10px" : "10px 12px",
+    padding: isCompact ? "6px 8px" : "8px 10px",
     boxShadow: shadow,
   };
 }
@@ -935,11 +1056,11 @@ function edgeStyle(edge: GraphEdgeMeta, projection: GraphProjection): CSSPropert
 }
 
 function edgeColor(edge: GraphEdgeMeta, projection: GraphProjection): string {
-  if (projection.currentEdgeId === edge.id) return "#f59e0b";
+  if (projection.currentEdgeId === edge.id) return "#fbbf24"; // amber-400
   if (projection.traversedEdgeIds.has(edge.id)) {
-    return edge.conditional ? "#e879f9" : "#38bdf8";
+    return edge.conditional ? "#c084fc" : "#38bdf8"; // purple-400, sky-400
   }
-  return edge.conditional ? "#c084fc" : "#64748b";
+  return edge.conditional ? "#a78bfa" : "#475569"; // violet-400, slate-600
 }
 
 function replayNodeId(item: ReplayItem, validNodeIds: Set<string>): string {
@@ -1029,22 +1150,22 @@ export function buildMermaidDiagram(
   const lines: string[] = ["flowchart LR"];
 
   lines.push(
-    "  classDef wfCurrent fill:#92400e,stroke:#fbbf24,stroke-width:2px,color:#fef3c7"
+    "  classDef wfCurrent fill:#2b1e08,stroke:#f59e0b,stroke-width:1.5px,color:#fde68a"
   );
   lines.push(
-    "  classDef wfDone fill:#14532d,stroke:#4ade80,stroke-width:2px,color:#dcfce7"
+    "  classDef wfDone fill:#112318,stroke:#4ade80,stroke-width:1.5px,color:#86efac"
   );
   lines.push(
-    "  classDef wfVisited fill:#082f49,stroke:#38bdf8,stroke-width:1.5px,color:#e0f2fe"
+    "  classDef wfVisited fill:#162034,stroke:#60a5fa,stroke-width:1px,color:#93c5fd"
   );
   lines.push(
-    "  classDef wfFailed fill:#7f1d1d,stroke:#f87171,stroke-width:2px,color:#fef2f2"
+    "  classDef wfFailed fill:#2a1218,stroke:#f87171,stroke-width:1.5px,color:#fca5a5"
   );
   lines.push(
-    "  classDef wfStart fill:#083444,stroke:#67e8f9,stroke-width:2px,color:#ecfeff"
+    "  classDef wfStart fill:#071e24,stroke:#22d3ee,stroke-width:1.5px,color:#67e8f9"
   );
   lines.push(
-    "  classDef wfEnd fill:#581c87,stroke:#d8b4fe,stroke-width:2px,color:#faf5ff"
+    "  classDef wfEnd fill:#130c24,stroke:#a78bfa,stroke-width:1.5px,color:#c4b5fd"
   );
 
   const idMap = new Map<string, string>();

@@ -126,7 +126,7 @@ function ReplayGraphCanvasInner({
 
   return (
     <div className="absolute inset-0">
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.14),transparent_28%),radial-gradient(circle_at_top_right,rgba(251,191,36,0.10),transparent_22%),linear-gradient(180deg,#0b1120,#111a2e_58%,#162235)]" />
+      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(56,189,248,0.04),transparent_28%),radial-gradient(circle_at_top_right,rgba(251,191,36,0.03),transparent_22%),linear-gradient(180deg,#0f172a,#0f172a_60%,#0d1424)]" />
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -150,15 +150,15 @@ function ReplayGraphCanvasInner({
           pannable
           zoomable
           position="bottom-right"
-          className="!rounded-xl !border !border-slate-500/60 !bg-slate-900/92 !shadow-xl"
-          nodeStrokeColor={(node) => String(node.style?.borderColor ?? "#94a3b8")}
+          className="!rounded-xl !border !border-slate-700/60 !bg-slate-900/90 !shadow-xl"
+          nodeStrokeColor={(node) => String(node.style?.borderColor ?? "#334155")}
           nodeColor={(node) => {
             const background = node.style?.background;
-            return typeof background === "string" ? background : "#e2e8f0";
+            return typeof background === "string" ? background : "#1e293b";
           }}
         />
         <Controls position="top-right" className="!shadow-xl" />
-        <Background gap={20} size={1.1} color="rgba(148, 163, 184, 0.18)" />
+        <Background gap={20} size={1.1} color="rgba(148, 163, 184, 0.08)" />
       </ReactFlow>
       {graphError ? (
         <div className="absolute inset-x-0 bottom-6 flex justify-center px-6">

@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useChat } from "./hooks/useChat";
 import { useConfig } from "./hooks/useConfig";
 import { ChatPage } from "./pages/ChatPage";
@@ -24,8 +24,11 @@ export function App() {
         <main className="flex-1 overflow-hidden">
           <Routes>
             <Route path="/" element={<ChatPage chat={chat} cfg={cfg} />} />
-            {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPage />} />}
-            {INCLUDE_DEBUG && <Route path="/debug/replay/v2" element={<ReplayPageV2 />} />}
+            {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPageV2 />} />}
+            {INCLUDE_DEBUG && <Route path="/debug/replay/old" element={<ReplayPage />} />}
+            {INCLUDE_DEBUG && (
+              <Route path="/debug/replay/v2" element={<Navigate to="/debug/replay" replace />} />
+            )}
           </Routes>
         </main>
       </div>
