@@ -80,7 +80,6 @@ var nodeActionMap = []struct {
 }
 
 var streamableContentPrefixes = []string{
-	"LLM_",
 	"Finalizer_",
 }
 

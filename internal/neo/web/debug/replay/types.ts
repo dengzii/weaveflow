@@ -119,6 +119,7 @@ export interface RunDetail {
   summary: RunSummary;
   source: SourceMeta;
   run: RunRecord;
+  metadata?: unknown;
   steps: StepView[];
   events: EventView[];
   replay: ReplayItem[];

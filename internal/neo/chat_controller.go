@@ -116,6 +116,10 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	fruntime.SetLogger(log)
 
 	runDir := filepath.Join(ctrl.baseDir, fmt.Sprintf("run_%d", time.Now().UnixMilli()))
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "create run dir failed: " + err.Error()})
+		return
+	}
 	channelSink := NewChannelEventSink()
 	sinks := []fruntime.EventSink{
 		channelSink,
@@ -142,6 +146,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	stateCodec := fruntime.NewJSONStateCodec(fruntime.DefaultStateVersion)
 
 	runner := weaveflow.NewGraphRunner(graph, executionStore, checkpointStore, stateCodec, combinedSink)
+	runner.GraphID = graphMeta.ID
 	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(runDir, "artifacts"))
 
 	baseCtx := fruntime.WithServices(c.Request.Context(), services)
@@ -160,12 +165,46 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	done := make(chan runResult, 1)
 
 	initialState := NewInitialState(req.Message, history)
+	if len(graphJSON) > 0 {
+		_ = os.WriteFile(filepath.Join(runDir, "graph.json"), graphJSON, 0o644)
+	}
+	startedAt := time.Now()
+	_ = writeRunMetadata(runDir, RunMetadata{
+		GraphID:       graphMeta.ID,
+		GraphVersion:  fruntime.DefaultGraphVersion,
+		Status:        string(fruntime.RunStatusPending),
+		StartedAt:     startedAt,
+		Request:       req,
+		Config:        cfg,
+		EnabledTools:  enabledToolNames(ctrl.toolFlags),
+		InitialState:  initialState.CloneState(),
+		GraphFile:     "graph.json",
+		ExecutionRoot: "execution",
+	})
 	store := ctrl.store
 	go func() {
 		defer channelSink.Close()
 		defer ctrl.hub.Done()
 		run, state, runErr := runner.Start(ctx, initialState)
 		runStatus := runStatusString(ctx, runErr)
+		finishedAt := time.Now()
+		_ = writeRunMetadata(runDir, RunMetadata{
+			RunID:         run.RunID,
+			GraphID:       nonEmpty(run.GraphID, graphMeta.ID),
+			GraphVersion:  run.GraphVersion,
+			Status:        runStatus,
+			StartedAt:     startedAt,
+			FinishedAt:    &finishedAt,
+			Request:       req,
+			Config:        cfg,
+			EnabledTools:  enabledToolNames(ctrl.toolFlags),
+			InitialState:  initialState.CloneState(),
+			FinalState:    state,
+			FinalAnswer:   finalAnswerFromState(state),
+			Error:         errorString(runErr),
+			GraphFile:     "graph.json",
+			ExecutionRoot: "execution",
+		})
 		if turnWriter != nil {
 			_ = turnWriter.AppendAssistantText(finalAnswerFromState(state))
 			_ = turnWriter.Finalize(runStatus)
@@ -432,4 +471,11 @@ func runStatusString(ctx context.Context, runErr error) string {
 		return "stopped"
 	}
 	return "failed"
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }

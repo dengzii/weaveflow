@@ -25,6 +25,7 @@ import { formatDuration, formatTime, prettyJSON } from "../replay/utils";
 import { ReplayGraphCanvas } from "./ReplayGraphCanvas";
 import { MermaidGraphCanvas } from "./MermaidGraphCanvas";
 import { parseSourceGraph, JsonTree } from "./graph";
+import { RunMetadataSection } from "../replay/components/RunMetadataSection";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import {
@@ -188,7 +189,7 @@ export function ReplayPageV2() {
       const runDetail = await api<RunDetail>(url);
       setDetail(runDetail);
       setStatus({
-        message: "Replay detail loaded.",
+        message: "",
         summary: `${runDetail.summary.source_name} | ${runDetail.summary.graph_ref || "-"}`,
       });
     } catch (error) {
@@ -281,13 +282,13 @@ export function ReplayPageV2() {
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-8 w-8 rounded-full text-foreground hover:bg-muted"
+                  className="h-8 w-8 rounded-lg text-foreground hover:bg-muted"
                   onClick={() => setSidebarCollapsed(false)}
-                  title="展开侧边栏"
+                  title="Exapned sidebar"
                 >
                   <ChevronRight className="h-4 w-4" />
                 </Button>
-                <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-foreground text-background">
+                <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-foreground text-background">
                   <Database className="h-4 w-4" />
                 </div>
               </div>
@@ -308,7 +309,7 @@ export function ReplayPageV2() {
             {/* Header */}
             <div className="flex items-center gap-1.5 border-b border-border px-3 py-3">
               <Link to="/">
-                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-full text-foreground hover:bg-muted">
+                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-lg text-foreground hover:bg-muted">
                   <ArrowLeft className="h-3.5 w-3.5" />
                 </Button>
               </Link>
@@ -329,7 +330,7 @@ export function ReplayPageV2() {
                 ) : null}
               </div>
               <Link to="/debug/replay/old">
-                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground" title="Old view">
+                <Button variant="ghost" size="icon" className="h-7 w-7 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground" title="Old view">
                   <ArrowRightLeft className="h-3.5 w-3.5" />
                 </Button>
               </Link>
@@ -338,7 +339,7 @@ export function ReplayPageV2() {
                 variant="ghost"
                 size="icon"
                 className={cn(
-                  "h-7 w-7 shrink-0 rounded-full hover:bg-muted",
+                  "h-7 w-7 shrink-0 rounded-lg hover:bg-muted",
                   isLiveMode ? "text-rose-400" : "text-muted-foreground hover:text-foreground"
                 )}
                 onClick={() => {
@@ -356,7 +357,7 @@ export function ReplayPageV2() {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className={`h-7 w-7 shrink-0 rounded-full hover:bg-muted ${viewMode === "mermaid" ? "text-violet-400" : "text-muted-foreground hover:text-foreground"}`}
+                className={`h-7 w-7 shrink-0 rounded-lg hover:bg-muted ${viewMode === "mermaid" ? "text-violet-400" : "text-muted-foreground hover:text-foreground"}`}
                 onClick={() => setViewMode((m) => (m === "flow" ? "mermaid" : "flow"))}
                 title={viewMode === "mermaid" ? "Switch to Flow" : "Switch to Mermaid"}
               >
@@ -367,7 +368,7 @@ export function ReplayPageV2() {
                   type="button"
                   variant="ghost"
                   size="icon"
-                  className="h-7 w-7 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                  className="h-7 w-7 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
                   onClick={() => setLayoutVersion((value) => value + 1)}
                   title="Re-layout"
                 >
@@ -378,17 +379,17 @@ export function ReplayPageV2() {
                 type="button"
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                className="h-7 w-7 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
                 onClick={() => setSidebarCollapsed(true)}
-                title="收起侧边栏"
+                title="Collapse"
               >
                 <ChevronLeft className="h-3.5 w-3.5" />
               </Button>
             </div>
 
-            <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
+            <div className="shrink-0 border-b border-border bg-background/95 px-3 py-3 backdrop-blur-xl">
               {isLiveMode ? (
-                <div className="border-b border-border pb-3">
+                <div>
                   <div className="flex items-center justify-between gap-3">
                     <div className="min-w-0">
                       <div className="truncate text-xs font-semibold text-rose-200">
@@ -412,7 +413,7 @@ export function ReplayPageV2() {
                   </div>
                 </div>
               ) : (
-                <div className="flex items-center gap-1.5 border-b border-border pb-3">
+                <div className="flex items-center gap-1.5">
                   <Select
                     value={selectedRunValue}
                     onValueChange={(value) => {
@@ -420,7 +421,7 @@ export function ReplayPageV2() {
                       if (target) void selectRun(DEFAULT_CACHE_DIR, target);
                     }}
                   >
-                    <SelectTrigger className="h-8 rounded-full border-border bg-card/80 text-xs text-foreground">
+                    <SelectTrigger className="h-8 rounded-lg border-border bg-card/80 text-xs text-foreground">
                       <SelectValue placeholder="Select a replay" />
                     </SelectTrigger>
                     <SelectContent>
@@ -435,7 +436,7 @@ export function ReplayPageV2() {
                     type="button"
                     size="icon"
                     variant="ghost"
-                    className="h-8 w-8 shrink-0 rounded-full text-muted-foreground hover:bg-muted hover:text-foreground"
+                    className="h-8 w-8 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
                     onClick={() => void loadRuns(DEFAULT_CACHE_DIR)}
                   >
                     <RefreshCw className="h-3.5 w-3.5" />
@@ -449,7 +450,9 @@ export function ReplayPageV2() {
                   </span>
                 </div>
               ) : null}
+            </div>
 
+            <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3">
               {detail ? (
                 <div className="mt-3 divide-y divide-border">
                   {isLiveMode ? (
@@ -609,38 +612,13 @@ export function ReplayPageV2() {
                   ) : null}
 
                   {!isLiveMode ? (
-                    <div className="py-3">
-                      <div className="max-h-36 space-y-0.5 overflow-y-auto">
-                        {runs.map((item) => (
-                          <button
-                            key={`${item.source_id}:${item.run.run_id}`}
-                            type="button"
-                            onClick={() => void selectRun(DEFAULT_CACHE_DIR, item)}
-                            className={cn(
-                              "flex w-full items-center gap-2 rounded-xl px-2.5 py-1.5 text-left transition",
-                              item.run.run_id === selectedRunId && item.source_id === selectedSourceId
-                                ? "bg-amber-500/16 text-foreground"
-                                : "text-muted-foreground hover:bg-muted/50"
-                            )}
-                          >
-                            <span className="min-w-0 flex-1 truncate text-xs font-medium">
-                              {item.source_name || item.source_id}
-                            </span>
-                            <span
-                              className={cn(
-                                "shrink-0 truncate text-[10px]",
-                                item.run.run_id === selectedRunId && item.source_id === selectedSourceId
-                                  ? "text-amber-300/80"
-                                  : "text-muted-foreground"
-                              )}
-                            >
-                              {item.run.run_id.slice(0, 8)}
-                            </span>
-                          </button>
-                        ))}
+                    detail?.metadata ? (
+                      <div className="py-3">
+                        <RunMetadataSection detail={detail} compact />
                       </div>
-                    </div>
+                    ) : null
                   ) : null}
+
                 </div>
               ) : (
                 <div className="mt-3 rounded-xl border border-dashed border-border bg-card/60 px-4 py-6 text-center text-sm text-muted-foreground">
@@ -654,12 +632,12 @@ export function ReplayPageV2() {
           )}
 
           {!isLiveMode ? (
-            <div className="pointer-events-auto mt-3 mr-3 hidden w-[340px] rounded-[22px] border border-border bg-background/92 p-3 text-foreground shadow-2xl backdrop-blur-xl 2xl:block">
+            <div className="pointer-events-auto mt-3 mr-3 hidden w-[340px] rounded-xl border border-border bg-background/92 p-3 text-foreground shadow-2xl backdrop-blur-xl 2xl:block">
               <div>
                 <div className="text-sm font-semibold text-foreground">Event Payload</div>
                 <div className="text-xs text-muted-foreground">Raw payload for the current event.</div>
               </div>
-              <pre className="mt-3 max-h-[360px] overflow-auto rounded-xl border border-border bg-card p-3 font-mono text-[11px] leading-5 text-foreground">
+              <pre className="mt-3 max-h-[360px] overflow-auto rounded-lg border border-border bg-card p-3 font-mono text-[11px] leading-5 text-foreground">
                 {prettyJSON(current?.event.payload)}
               </pre>
             </div>

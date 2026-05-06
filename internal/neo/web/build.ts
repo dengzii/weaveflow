@@ -168,6 +168,9 @@ if (isDev) {
     await buildJS().catch((err) => console.error("[watch] error:", err));
   });
 } else {
-  const [cssOk, jsOk] = await Promise.all([buildCSS(), buildJS()]);
+  // Bun.build() rewrites the output directory, so running CSS and JS builds
+  // in parallel can drop app.css from dist on Windows.
+  const jsOk = await buildJS();
+  const cssOk = await buildCSS();
   process.exit(cssOk && jsOk ? 0 : 1);
 }

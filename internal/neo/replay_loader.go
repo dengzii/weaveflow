@@ -67,6 +67,7 @@ type RunDetail struct {
 	Summary     RunSummary          `json:"summary"`
 	Source      SourceMeta          `json:"source"`
 	Run         runtime.RunRecord   `json:"run"`
+	Metadata    any                 `json:"metadata,omitempty"`
 	Steps       []StepView          `json:"steps"`
 	Events      []EventView         `json:"events"`
 	Replay      []ReplayItem        `json:"replay"`
@@ -287,6 +288,14 @@ func readOptionalJSON(path string) (any, error) {
 	return value, nil
 }
 
+func readRunMetadata(root string) any {
+	raw, err := readOptionalJSON(filepath.Join(root, "run.json"))
+	if err != nil {
+		return nil
+	}
+	return raw
+}
+
 func stringField(value any, key string) string {
 	mapped, ok := value.(map[string]any)
 	if !ok {
@@ -471,6 +480,7 @@ func (e *cacheExplorer) loadRunDetail(ctx context.Context, runID, sourceID strin
 		Summary:     buildRunSummary(*source, run, len(steps), len(events), len(checkpoints), len(artifacts)),
 		Source:      source.meta,
 		Run:         run,
+		Metadata:    readRunMetadata(source.meta.Root),
 		Steps:       stepViews,
 		Events:      eventViews,
 		Replay:      buildReplay(eventViews),

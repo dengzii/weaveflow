@@ -29,18 +29,13 @@ import (
 	"sync"
 	"time"
 	"unsafe"
-	"weaveflow/internal/redact"
+	"weaveflow/redact"
 
+	"github.com/bytedance/gopkg/util/logger"
 	"go.uber.org/zap"
 )
 
 var backendOnce sync.Once
-
-var logger *zap.Logger = zap.NewNop()
-
-func SetLogger(l *zap.Logger) {
-	logger = l
-}
 
 type LoadOptions struct {
 	ContextSize       int
@@ -141,7 +136,7 @@ func Load(path string, opts LoadOptions) (*Model, error) {
 	mparams.use_mlock = C.bool(opts.UseMLock)
 
 	logger.Debug("loading model",
-		zap.String("path", redact.Path(path)),
+		zap.String("path", path),
 		zap.Bool("use_mmap", opts.UseMMap),
 		zap.Bool("use_mlock", opts.UseMLock),
 		zap.Int("gpu_layers", opts.GPULayers),

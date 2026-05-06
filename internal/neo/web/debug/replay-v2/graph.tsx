@@ -408,11 +408,11 @@ function buildNodeLabel(
     : [];
 
   return (
-    <div className="min-w-[200px] space-y-1.5">
+    <div className="min-w-[200px] space-y-1.5 text-left">
       {/* Name + description tooltip + status */}
       <div className="flex items-center justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
-          <div className="truncate text-[13px] font-semibold tracking-tight text-slate-100">{node.name}</div>
+          <div className="truncate text-[12px] font-semibold tracking-tight text-slate-100">{node.name}</div>
           {node.description ? (
             <span className="group/tip relative shrink-0 cursor-default select-none">
               <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full bg-slate-700/80 text-[8px] font-bold leading-none text-slate-400 ring-1 ring-slate-600/60 transition-all group-hover/tip:bg-sky-900/60 group-hover/tip:text-sky-400 group-hover/tip:ring-sky-600/50">
@@ -426,9 +426,9 @@ function buildNodeLabel(
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {durationLabel ? (
-            <span className="text-[9px] tabular-nums text-slate-400">{durationLabel}</span>
+            <span className="text-[8px] tabular-nums text-slate-400">{durationLabel}</span>
           ) : null}
-          <span className={`rounded-full px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] ${statusClass}`}>
+          <span className={`rounded-full px-2 py-0.5 text-[8px] font-semibold uppercase tracking-[0.14em] ${statusClass}`}>
             {statusLabel}
           </span>
         </div>
@@ -463,10 +463,10 @@ function buildNodeLabel(
             {(summary!.functionCalls.length > 0 || summary!.toolCalls.length > 0) ? (
               <div className="flex flex-wrap gap-1.5 [&_span]:rounded-full [&_span]:px-2 [&_span]:py-0.5">
                 {summary!.functionCalls.slice(0, 3).map((fc, i) => (
-                  <span key={i} className="font-mono text-[10px] text-amber-400">⚡ {fc.name}</span>
+                  <span key={i} className="font-mono text-[9px] text-amber-400">⚡ {fc.name}</span>
                 ))}
                 {summary!.toolCalls.slice(0, 4).map((tc, i) => (
-                  <span key={i} className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${tc.status === "done" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : tc.status === "failed" ? "border-rose-500/30 bg-rose-500/10 text-rose-400" : "border-slate-600/50 bg-slate-700/40 text-slate-400"}`}>
+                  <span key={i} className={`rounded-full border px-2 py-0.5 font-mono text-[9px] ${tc.status === "done" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : tc.status === "failed" ? "border-rose-500/30 bg-rose-500/10 text-rose-400" : "border-slate-600/50 bg-slate-700/40 text-slate-400"}`}>
                     {tc.status === "done" ? "✓" : tc.status === "failed" ? "✗" : "·"} {tc.name}
                   </span>
                 ))}
@@ -482,7 +482,7 @@ function buildNodeLabel(
               ) : (
                 <div className="flex flex-wrap gap-1.5">
                   {summary!.artifacts.slice(0, 3).map((a, i) => (
-                    <span key={i} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-400">⬡ {a.type || "artifact"}</span>
+                    <span key={i} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 font-mono text-[9px] text-violet-400">⬡ {a.type || "artifact"}</span>
                   ))}
                 </div>
               )
@@ -604,11 +604,11 @@ export function NodeInfoPanel({
   if (!hasContent) return null;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 text-left">
       {summary?.durationMs !== undefined && summary.durationMs >= 0 ? (
         <div className="flex items-center gap-1.5">
-          <span className="text-[9px] uppercase tracking-[0.14em] text-slate-500">Duration</span>
-          <span className="text-[11px] font-medium tabular-nums text-slate-300">{formatNodeDuration(summary.durationMs)}</span>
+          <span className="text-[8px] uppercase tracking-[0.14em] text-slate-500">Duration</span>
+          <span className="text-[10px] font-medium tabular-nums text-slate-300">{formatNodeDuration(summary.durationMs)}</span>
         </div>
       ) : null}
       {configEntries.length > 0 ? <CollapsibleConfig entries={configEntries} /> : null}
@@ -631,10 +631,10 @@ export function NodeInfoPanel({
       {(summary?.functionCalls.length ?? 0) > 0 || (summary?.toolCalls.length ?? 0) > 0 ? (
         <div className="flex flex-wrap gap-1.5 [&_span]:rounded-full [&_span]:px-2 [&_span]:py-0.5">
           {summary!.functionCalls.slice(0, 3).map((fc, i) => (
-            <span key={i} className="font-mono text-[10px] text-amber-400">⚡ {fc.name}</span>
+            <span key={i} className="font-mono text-[9px] text-amber-400">⚡ {fc.name}</span>
           ))}
           {summary!.toolCalls.slice(0, 4).map((tc, i) => (
-            <span key={i} className={`rounded-full border px-2 py-0.5 font-mono text-[10px] ${tc.status === "done" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : tc.status === "failed" ? "border-rose-500/30 bg-rose-500/10 text-rose-400" : "border-slate-600/50 bg-slate-700/40 text-slate-400"}`}>
+            <span key={i} className={`rounded-full border px-2 py-0.5 font-mono text-[9px] ${tc.status === "done" ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-400" : tc.status === "failed" ? "border-rose-500/30 bg-rose-500/10 text-rose-400" : "border-slate-600/50 bg-slate-700/40 text-slate-400"}`}>
               {tc.status === "done" ? "✓" : tc.status === "failed" ? "✗" : "·"} {tc.name}
             </span>
           ))}
@@ -650,7 +650,7 @@ export function NodeInfoPanel({
         ) : (
           <div className="flex flex-wrap gap-1.5">
             {summary!.artifacts.map((a, i) => (
-              <span key={i} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 font-mono text-[10px] text-violet-400">⬡ {a.type || "artifact"}</span>
+              <span key={i} className="rounded-full border border-violet-500/30 bg-violet-500/10 px-2 py-0.5 font-mono text-[9px] text-violet-400">⬡ {a.type || "artifact"}</span>
             ))}
           </div>
         )
@@ -678,14 +678,14 @@ function ConfigEntry({ k, v }: { k: string; v: unknown }) {
   const isLong = full.length > CONFIG_VALUE_THRESHOLD;
   if (!isLong) {
     return (
-      <div className="flex items-baseline justify-between gap-1.5 text-[10px]">
+      <div className="flex items-baseline justify-between gap-1.5 text-[9px]">
         <span className="shrink-0 font-medium text-slate-400">{k}</span>
         <span className="min-w-0 truncate text-right text-slate-300">{preview}</span>
       </div>
     );
   }
   return (
-    <div className="text-[10px]">
+    <div className="text-[9px]">
       <button
         type="button"
         className="flex w-full items-baseline justify-between gap-1.5 text-left transition-colors hover:text-slate-100"
@@ -694,7 +694,7 @@ function ConfigEntry({ k, v }: { k: string; v: unknown }) {
         <span className="shrink-0 font-medium text-slate-400">{k}</span>
         <span className="flex min-w-0 items-baseline gap-1">
           {!open ? <span className="truncate text-slate-300">{preview}</span> : null}
-          <span className="shrink-0 text-[9px] text-slate-500">{open ? "▴" : "▸"}</span>
+          <span className="shrink-0 text-[8px] text-slate-500">{open ? "▴" : "▸"}</span>
         </span>
       </button>
       {open ? (
@@ -718,22 +718,23 @@ function CollapsibleSection({
   textClass: string;
 }) {
   const [open, setOpen] = useState(false);
+  const chevron = open ? "▾" : "▸";
   return (
-    <div>
+    <div className="grid grid-cols-[12px_minmax(0,1fr)] gap-x-1.5 text-left">
       <button
         type="button"
-        className="flex w-full items-center justify-between gap-2 py-0.5 text-left"
+        className="col-span-2 grid w-full grid-cols-subgrid items-start py-0.5 text-left"
         onClick={(e) => { e.stopPropagation(); setOpen((o) => !o); }}
       >
-        <span className={`text-[9px] font-semibold uppercase tracking-[0.12em] ${labelClass}`}>{label}</span>
-        <span className="text-[9px] text-slate-500">{open ? "▾" : "▸"}</span>
+        <span className="pt-[1px] text-[8px] text-slate-500">{chevron}</span>
+        <span className={`min-w-0 text-[8px] font-semibold uppercase tracking-[0.12em] ${labelClass}`}>{label}</span>
       </button>
       {open ? (
-        <div className={`nodrag nowheel mt-0.5 max-h-[130px] overflow-y-auto whitespace-pre-wrap break-words text-[11px] leading-[1.55] ${textClass}`}>
+        <div className={`nodrag nowheel col-start-2 mt-0.5 max-h-[130px] overflow-y-auto whitespace-pre-wrap break-words text-left text-[10px] leading-[1.55] ${textClass}`}>
           {text}
         </div>
       ) : (
-        <p className={`mt-0.5 line-clamp-2 text-[11px] leading-[1.55] ${textClass}`}>{text}</p>
+        <p className={`col-start-2 mt-0.5 line-clamp-2 text-left text-[10px] leading-[1.55] ${textClass}`}>{text}</p>
       )}
     </div>
   );
