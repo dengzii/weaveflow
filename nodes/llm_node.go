@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"weaveflow/dsl"
 
@@ -14,8 +15,9 @@ import (
 
 type LLMNode struct {
 	NodeInfo
-	ToolIDs    []string
-	StateScope string
+	ToolIDs        []string
+	StateScope     string
+	PromptMaxChars int
 }
 
 func NewLLMNode() *LLMNode {
@@ -39,6 +41,7 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 
 	conversation := state.Conversation(L.StateScope)
 	messages := conversation.Messages()
+	promptMessages := trimLLMPromptMessages(messages, L.effectivePromptMaxChars())
 
 	if conversation.IterationCount() >= conversation.MaxIterations() {
 		message := "Maximum tool iterations reached. Please simplify the question or reduce tool usage."
@@ -56,13 +59,13 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	for _, tool := range nodeTools {
 		toolSets = append(toolSets, tool.NewTool())
 	}
-	if payload, err := buildLLMPromptArtifact(messages, toolSets, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
+	if payload, err := buildLLMPromptArtifact(promptMessages, toolSets, L.StateScope, conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
 	}
 
 	resp, err := model.GenerateContent(
 		ctx,
-		messages,
+		promptMessages,
 		llms.WithTools(toolSets),
 		llms.WithThinkingMode(llms.ThinkingModeHigh),
 	)
@@ -118,10 +121,18 @@ func (L *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		Type:        "llm",
 		Description: L.Description(),
 		Config: map[string]any{
-			"tool_ids":    append([]string(nil), L.ToolIDs...),
-			"state_scope": L.StateScope,
+			"tool_ids":         append([]string(nil), L.ToolIDs...),
+			"state_scope":      L.StateScope,
+			"prompt_max_chars": L.effectivePromptMaxChars(),
 		},
 	}
+}
+
+func (L *LLMNode) effectivePromptMaxChars() int {
+	if L == nil || L.PromptMaxChars <= 0 {
+		return 20000
+	}
+	return L.PromptMaxChars
 }
 
 func extractText(message llms.MessageContent) string {
@@ -234,4 +245,92 @@ func redactToolCalls(toolCalls []llms.ToolCall) []llms.ToolCall {
 		redacted[i].FunctionCall = &copyCall
 	}
 	return redacted
+}
+
+func trimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.MessageContent {
+	if len(messages) == 0 || maxChars <= 0 {
+		return messages
+	}
+	if promptMessagesCharCount(messages) <= maxChars {
+		return messages
+	}
+
+	leadingSystem, body := splitLeadingSystemMessages(messages)
+	prefix := cloneReducerMessages(leadingSystem)
+	if promptMessagesCharCount(prefix) > maxChars && len(prefix) > 1 {
+		prefix = prefix[:1]
+	}
+
+	prefixCost := promptMessagesCharCount(prefix)
+	if len(body) == 0 {
+		return prefix
+	}
+
+	used := prefixCost
+	start := len(body)
+	for i := len(body) - 1; i >= 0; i-- {
+		candidateCost := promptMessageCharCount(body[i])
+		if used+candidateCost > maxChars && start < len(body) {
+			break
+		}
+		if used+candidateCost > maxChars {
+			start = i
+			break
+		}
+		used += candidateCost
+		start = i
+	}
+
+	if start > 0 && start < len(body) {
+		if adjusted := adjustReducerTailStart(body, start); promptMessagesCharCount(append(cloneReducerMessages(prefix), body[adjusted:]...)) <= maxChars {
+			start = adjusted
+		}
+	}
+	if start >= len(body) {
+		start = adjustReducerTailStart(body, len(body)-1)
+	}
+
+	result := make([]llms.MessageContent, 0, len(prefix)+len(body[start:]))
+	result = append(result, prefix...)
+	result = append(result, cloneReducerMessages(body[start:])...)
+	return result
+}
+
+func splitLeadingSystemMessages(messages []llms.MessageContent) ([]llms.MessageContent, []llms.MessageContent) {
+	index := 0
+	for index < len(messages) && messages[index].Role == llms.ChatMessageTypeSystem {
+		index++
+	}
+	return cloneReducerMessages(messages[:index]), cloneReducerMessages(messages[index:])
+}
+
+func promptMessagesCharCount(messages []llms.MessageContent) int {
+	total := 0
+	for _, message := range messages {
+		total += promptMessageCharCount(message)
+	}
+	return total
+}
+
+func promptMessageCharCount(message llms.MessageContent) int {
+	total := len(string(message.Role)) + 8
+	for _, part := range message.Parts {
+		switch typed := part.(type) {
+		case llms.TextContent:
+			total += len([]rune(strings.TrimSpace(typed.Text)))
+		case llms.ToolCall:
+			total += 16
+			if typed.FunctionCall != nil {
+				total += len([]rune(strings.TrimSpace(typed.FunctionCall.Name)))
+				total += len([]rune(strings.TrimSpace(typed.FunctionCall.Arguments)))
+			}
+		case llms.ToolCallResponse:
+			total += 16
+			total += len([]rune(strings.TrimSpace(typed.Name)))
+			total += len([]rune(strings.TrimSpace(typed.Content)))
+		default:
+			total += len([]rune(strings.TrimSpace(fmt.Sprint(typed))))
+		}
+	}
+	return total
 }

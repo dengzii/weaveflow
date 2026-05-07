@@ -76,6 +76,8 @@ func (n *SessionBootstrapNode) Invoke(ctx context.Context, state fruntime.State)
 		if len(messages) > 0 {
 			conversation.UpdateMessage(messages)
 		}
+	} else if updated, changed := n.ensureSystemPrompt(messages); changed {
+		conversation.UpdateMessage(updated)
 	}
 	conversation.SetMaxIterations(n.effectiveMaxIterations())
 
@@ -162,6 +164,27 @@ func (n *SessionBootstrapNode) initialMessages(input string) []llms.MessageConte
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, input))
 	}
 	return messages
+}
+
+func (n *SessionBootstrapNode) ensureSystemPrompt(messages []llms.MessageContent) ([]llms.MessageContent, bool) {
+	systemPrompt := strings.TrimSpace(n.SystemPrompt)
+	if systemPrompt == "" || len(messages) == 0 {
+		return messages, false
+	}
+
+	for _, message := range messages {
+		if message.Role != llms.ChatMessageTypeSystem {
+			break
+		}
+		if strings.TrimSpace(extractText(message)) == systemPrompt {
+			return messages, false
+		}
+	}
+
+	updated := make([]llms.MessageContent, 0, len(messages)+1)
+	updated = append(updated, llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt))
+	updated = append(updated, messages...)
+	return updated, true
 }
 
 func (n *SessionBootstrapNode) effectiveMaxIterations() int {

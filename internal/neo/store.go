@@ -22,12 +22,15 @@ type Store struct {
 }
 
 type PersistedConfig struct {
-	SystemPrompt      string
-	MaxIterations     int
-	PlannerMaxSteps   int
-	MemoryRecallLimit int
-	ToolFlags         map[string]bool
-	Mode              string
+	SystemPrompt           string
+	MaxIterations          int
+	PlannerMaxSteps        int
+	MemoryRecallLimit      int
+	HistoryRecentTurns     int
+	HistorySummaryMaxChars int
+	PromptMaxChars         int
+	ToolFlags              map[string]bool
+	Mode                   string
 }
 
 type turnMessageRecord struct {
@@ -90,6 +93,9 @@ func (s *Store) initSchema() error {
 			max_iterations      INTEGER NOT NULL,
 			planner_max_steps   INTEGER NOT NULL,
 			memory_recall_limit INTEGER NOT NULL,
+			history_recent_turns INTEGER NOT NULL DEFAULT 0,
+			history_summary_max_chars INTEGER NOT NULL DEFAULT 0,
+			prompt_max_chars    INTEGER NOT NULL DEFAULT 0,
 			tool_flags          TEXT    NOT NULL,
 			mode                TEXT    NOT NULL,
 			created_at          INTEGER NOT NULL DEFAULT 0,
@@ -108,6 +114,9 @@ func (s *Store) initSchema() error {
 		`ALTER TABLE messages ADD COLUMN updated_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN created_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE messages ADD COLUMN status TEXT`,
+		`ALTER TABLE configs ADD COLUMN history_recent_turns INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE configs ADD COLUMN history_summary_max_chars INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE configs ADD COLUMN prompt_max_chars INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, _ = s.db.Exec(stmt)
 	}
@@ -175,21 +184,28 @@ func (s *Store) LoadHistory(sessionID string) ([]HistoryMessage, error) {
 }
 
 func (s *Store) LoadLLMMessages(sessionID string) ([]llms.MessageContent, error) {
-	msgs, err := s.loadRawHistory(normalizeSessionID(sessionID))
+	return s.LoadLLMMessagesWithOptions(sessionID, PromptHistoryOptions{})
+}
+
+func (s *Store) LoadLLMMessagesWithOptions(sessionID string, options PromptHistoryOptions) ([]llms.MessageContent, error) {
+	sessionID = normalizeSessionID(sessionID)
+
+	msgs, err := s.loadTurnHistory(sessionID)
 	if err != nil {
 		return nil, err
 	}
-
-	result := make([]llms.MessageContent, len(msgs))
-	for i, msg := range msgs {
-		result[i] = historyToLLM(msg)
+	if len(msgs) == 0 {
+		msgs, err = s.loadRawHistory(sessionID)
+		if err != nil {
+			return nil, err
+		}
 	}
-	return result, nil
+	return buildLLMHistoryWithOptions(msgs, options), nil
 }
 
 func (s *Store) LoadConfig() (PersistedConfig, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT system_prompt, max_iterations, planner_max_steps, memory_recall_limit, tool_flags, mode
+		`SELECT system_prompt, max_iterations, planner_max_steps, memory_recall_limit, history_recent_turns, history_summary_max_chars, prompt_max_chars, tool_flags, mode
 		 FROM configs WHERE config_key = ?`,
 		defaultConfigKey,
 	)
@@ -201,6 +217,9 @@ func (s *Store) LoadConfig() (PersistedConfig, bool, error) {
 		&cfg.MaxIterations,
 		&cfg.PlannerMaxSteps,
 		&cfg.MemoryRecallLimit,
+		&cfg.HistoryRecentTurns,
+		&cfg.HistorySummaryMaxChars,
+		&cfg.PromptMaxChars,
 		&toolFlagsJSON,
 		&cfg.Mode,
 	); err != nil {
@@ -234,13 +253,17 @@ func (s *Store) SaveConfig(cfg PersistedConfig) error {
 	_, err = s.db.Exec(
 		`INSERT INTO configs(
 			config_key, system_prompt, max_iterations, planner_max_steps, memory_recall_limit,
+			history_recent_turns, history_summary_max_chars, prompt_max_chars,
 			tool_flags, mode, created_at, updated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(config_key) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
 			max_iterations = excluded.max_iterations,
 			planner_max_steps = excluded.planner_max_steps,
 			memory_recall_limit = excluded.memory_recall_limit,
+			history_recent_turns = excluded.history_recent_turns,
+			history_summary_max_chars = excluded.history_summary_max_chars,
+			prompt_max_chars = excluded.prompt_max_chars,
 			tool_flags = excluded.tool_flags,
 			mode = excluded.mode,
 			updated_at = excluded.updated_at`,
@@ -249,6 +272,9 @@ func (s *Store) SaveConfig(cfg PersistedConfig) error {
 		cfg.MaxIterations,
 		cfg.PlannerMaxSteps,
 		cfg.MemoryRecallLimit,
+		cfg.HistoryRecentTurns,
+		cfg.HistorySummaryMaxChars,
+		cfg.PromptMaxChars,
 		string(flagsJSON),
 		mode,
 		now,

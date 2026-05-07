@@ -262,7 +262,8 @@ func DefaultRegistry() *Registry {
 						"type":  "array",
 						"items": JSONSchema{"type": "string"},
 					},
-					"state_scope": JSONSchema{"type": "string"},
+					"state_scope":      JSONSchema{"type": "string"},
+					"prompt_max_chars": JSONSchema{"type": "integer", "minimum": 1},
 				},
 				"additionalProperties": false,
 			},
@@ -279,6 +280,7 @@ func DefaultRegistry() *Registry {
 			}
 			node.ToolIDs = stringSliceConfig(spec.Config, "tool_ids")
 			node.StateScope = stringConfig(spec.Config, "state_scope")
+			node.PromptMaxChars, _ = intConfig(spec.Config, "prompt_max_chars")
 			return node, nil
 		},
 	})

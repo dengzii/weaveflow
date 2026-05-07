@@ -60,7 +60,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 	}
 
 	plannerPath := n.effectivePlannerPath()
-	plannerState := state.Get(fruntime.StateKeyPlanner)
+	plannerState := stateObjectAtPath(state, plannerPath)
 	if plannerState == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "plan_step_executor.error", map[string]any{
 			"error": "planner state not found",
@@ -84,7 +84,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 		return n.routeBlocked(ctx, state, plannerState, reason)
 	}
 
-	selectedStep["status"] = "running"
+	selectedStep["status"] = "in_progress"
 	stepID, _ := selectedStep["id"].(string)
 	kind, _ := selectedStep["kind"].(string)
 	route := routeForKind(kind)
@@ -186,7 +186,7 @@ func selectNextStep(plan []map[string]any, stepResults map[string]any) (selected
 	for _, step := range plan {
 		status, _ := step["status"].(string)
 		switch status {
-		case "completed", "blocked", "running":
+		case "completed", "blocked", "running", "in_progress":
 			continue
 		}
 
@@ -225,6 +225,7 @@ func dependenciesMet(step map[string]any, completedIDs map[string]bool) bool {
 }
 
 func completedStepIDs(plan []map[string]any, stepResults map[string]any) map[string]bool {
+	_ = stepResults
 	ids := make(map[string]bool)
 	for _, step := range plan {
 		status, _ := step["status"].(string)
@@ -233,9 +234,6 @@ func completedStepIDs(plan []map[string]any, stepResults map[string]any) map[str
 				ids[id] = true
 			}
 		}
-	}
-	for id := range stepResults {
-		ids[id] = true
 	}
 	return ids
 }

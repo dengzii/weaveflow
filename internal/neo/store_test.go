@@ -16,10 +16,13 @@ func TestStoreConfigRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 
 	want := PersistedConfig{
-		SystemPrompt:      "system prompt",
-		MaxIterations:     9,
-		PlannerMaxSteps:   4,
-		MemoryRecallLimit: 3,
+		SystemPrompt:           "system prompt",
+		MaxIterations:          9,
+		PlannerMaxSteps:        4,
+		MemoryRecallLimit:      3,
+		HistoryRecentTurns:     7,
+		HistorySummaryMaxChars: 2100,
+		PromptMaxChars:         18000,
 		ToolFlags: map[string]bool{
 			"calculator": false,
 			"web_fetch":  true,

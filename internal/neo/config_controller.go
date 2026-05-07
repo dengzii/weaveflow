@@ -31,21 +31,27 @@ func NewConfigController(cfg *Config, allTools map[string]tools.Tool, toolFlags 
 }
 
 type ConfigResponse struct {
-	SystemPrompt      string          `json:"system_prompt"`
-	MaxIterations     int             `json:"max_iterations"`
-	PlannerMaxSteps   int             `json:"planner_max_steps"`
-	MemoryRecallLimit int             `json:"memory_recall_limit"`
-	Tools             map[string]bool `json:"tools"`
-	Mode              string          `json:"mode"`
+	SystemPrompt           string          `json:"system_prompt"`
+	MaxIterations          int             `json:"max_iterations"`
+	PlannerMaxSteps        int             `json:"planner_max_steps"`
+	MemoryRecallLimit      int             `json:"memory_recall_limit"`
+	HistoryRecentTurns     int             `json:"history_recent_turns"`
+	HistorySummaryMaxChars int             `json:"history_summary_max_chars"`
+	PromptMaxChars         int             `json:"prompt_max_chars"`
+	Tools                  map[string]bool `json:"tools"`
+	Mode                   string          `json:"mode"`
 }
 
 type UpdateConfigRequest struct {
-	SystemPrompt      *string         `json:"system_prompt,omitempty"`
-	MaxIterations     *int            `json:"max_iterations,omitempty"`
-	PlannerMaxSteps   *int            `json:"planner_max_steps,omitempty"`
-	MemoryRecallLimit *int            `json:"memory_recall_limit,omitempty"`
-	Tools             map[string]bool `json:"tools,omitempty"`
-	Mode              *string         `json:"mode,omitempty"`
+	SystemPrompt           *string         `json:"system_prompt,omitempty"`
+	MaxIterations          *int            `json:"max_iterations,omitempty"`
+	PlannerMaxSteps        *int            `json:"planner_max_steps,omitempty"`
+	MemoryRecallLimit      *int            `json:"memory_recall_limit,omitempty"`
+	HistoryRecentTurns     *int            `json:"history_recent_turns,omitempty"`
+	HistorySummaryMaxChars *int            `json:"history_summary_max_chars,omitempty"`
+	PromptMaxChars         *int            `json:"prompt_max_chars,omitempty"`
+	Tools                  map[string]bool `json:"tools,omitempty"`
+	Mode                   *string         `json:"mode,omitempty"`
 }
 
 func (ctrl *ConfigController) Get(c *gin.Context) {
@@ -56,12 +62,15 @@ func (ctrl *ConfigController) Get(c *gin.Context) {
 		"code": 200,
 		"msg":  "ok",
 		"data": ConfigResponse{
-			SystemPrompt:      ctrl.config.SystemPrompt,
-			MaxIterations:     ctrl.config.MaxIterations,
-			PlannerMaxSteps:   ctrl.config.PlannerMaxSteps,
-			MemoryRecallLimit: ctrl.config.MemoryRecallLimit,
-			Tools:             ctrl.toolFlags,
-			Mode:              ctrl.mode,
+			SystemPrompt:           ctrl.config.SystemPrompt,
+			MaxIterations:          ctrl.config.MaxIterations,
+			PlannerMaxSteps:        ctrl.config.PlannerMaxSteps,
+			MemoryRecallLimit:      ctrl.config.MemoryRecallLimit,
+			HistoryRecentTurns:     ctrl.config.HistoryRecentTurns,
+			HistorySummaryMaxChars: ctrl.config.HistorySummaryMaxChars,
+			PromptMaxChars:         ctrl.config.PromptMaxChars,
+			Tools:                  ctrl.toolFlags,
+			Mode:                   ctrl.mode,
 		},
 	})
 }
@@ -88,6 +97,15 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 	if req.MemoryRecallLimit != nil && *req.MemoryRecallLimit >= 0 {
 		ctrl.config.MemoryRecallLimit = *req.MemoryRecallLimit
 	}
+	if req.HistoryRecentTurns != nil && *req.HistoryRecentTurns > 0 {
+		ctrl.config.HistoryRecentTurns = *req.HistoryRecentTurns
+	}
+	if req.HistorySummaryMaxChars != nil && *req.HistorySummaryMaxChars > 0 {
+		ctrl.config.HistorySummaryMaxChars = *req.HistorySummaryMaxChars
+	}
+	if req.PromptMaxChars != nil && *req.PromptMaxChars > 0 {
+		ctrl.config.PromptMaxChars = *req.PromptMaxChars
+	}
 	if req.Mode != nil {
 		mode := strings.TrimSpace(*req.Mode)
 		if mode == "auto" || mode == "direct" || mode == "planner" {
@@ -103,12 +121,15 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 
 	if ctrl.store != nil {
 		if err := ctrl.store.SaveConfig(PersistedConfig{
-			SystemPrompt:      ctrl.config.SystemPrompt,
-			MaxIterations:     ctrl.config.MaxIterations,
-			PlannerMaxSteps:   ctrl.config.PlannerMaxSteps,
-			MemoryRecallLimit: ctrl.config.MemoryRecallLimit,
-			ToolFlags:         cloneToolFlags(ctrl.toolFlags),
-			Mode:              ctrl.mode,
+			SystemPrompt:           ctrl.config.SystemPrompt,
+			MaxIterations:          ctrl.config.MaxIterations,
+			PlannerMaxSteps:        ctrl.config.PlannerMaxSteps,
+			MemoryRecallLimit:      ctrl.config.MemoryRecallLimit,
+			HistoryRecentTurns:     ctrl.config.HistoryRecentTurns,
+			HistorySummaryMaxChars: ctrl.config.HistorySummaryMaxChars,
+			PromptMaxChars:         ctrl.config.PromptMaxChars,
+			ToolFlags:              cloneToolFlags(ctrl.toolFlags),
+			Mode:                   ctrl.mode,
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "save config failed: " + err.Error()})
 			return
@@ -119,12 +140,15 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 		"code": 200,
 		"msg":  "ok",
 		"data": ConfigResponse{
-			SystemPrompt:      ctrl.config.SystemPrompt,
-			MaxIterations:     ctrl.config.MaxIterations,
-			PlannerMaxSteps:   ctrl.config.PlannerMaxSteps,
-			MemoryRecallLimit: ctrl.config.MemoryRecallLimit,
-			Tools:             ctrl.toolFlags,
-			Mode:              ctrl.mode,
+			SystemPrompt:           ctrl.config.SystemPrompt,
+			MaxIterations:          ctrl.config.MaxIterations,
+			PlannerMaxSteps:        ctrl.config.PlannerMaxSteps,
+			MemoryRecallLimit:      ctrl.config.MemoryRecallLimit,
+			HistoryRecentTurns:     ctrl.config.HistoryRecentTurns,
+			HistorySummaryMaxChars: ctrl.config.HistorySummaryMaxChars,
+			PromptMaxChars:         ctrl.config.PromptMaxChars,
+			Tools:                  ctrl.toolFlags,
+			Mode:                   ctrl.mode,
 		},
 	})
 }

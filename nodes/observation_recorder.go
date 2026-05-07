@@ -214,7 +214,7 @@ func (n *ObservationRecorderNode) GraphNodeSpec() dsl.GraphNodeSpec {
 // --- helpers ---
 
 func resolveCurrentStepID(state fruntime.State, plannerPath string) string {
-	planner := state.Get(fruntime.StateKeyPlanner)
+	planner := stateObjectAtPath(state, plannerPath)
 	if planner == nil {
 		return ""
 	}

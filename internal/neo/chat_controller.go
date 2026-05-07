@@ -105,7 +105,10 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	var history []llms.MessageContent
 	if ctrl.store != nil {
 		var loadErr error
-		history, loadErr = ctrl.store.LoadLLMMessages(defaultSessionID)
+		history, loadErr = ctrl.store.LoadLLMMessagesWithOptions(defaultSessionID, PromptHistoryOptions{
+			RecentTurns:     cfg.HistoryRecentTurns,
+			SummaryMaxChars: cfg.HistorySummaryMaxChars,
+		})
 		if loadErr != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "load history failed: " + loadErr.Error()})
 			return
@@ -181,7 +184,6 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 		GraphFile:     "graph.json",
 		ExecutionRoot: "execution",
 	})
-	store := ctrl.store
 	go func() {
 		defer channelSink.Close()
 		defer ctrl.hub.Done()
@@ -208,10 +210,6 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 		if turnWriter != nil {
 			_ = turnWriter.AppendAssistantText(finalAnswerFromState(state))
 			_ = turnWriter.Finalize(runStatus)
-		}
-		if state != nil && store != nil {
-			fullHistory := convertMessages(state.Conversation(stateScope).Messages())
-			_ = store.SaveRawHistory(defaultSessionID, fullHistory, runStatus)
 		}
 		done <- runResult{run: run, state: state, err: runErr}
 	}()
