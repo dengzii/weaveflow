@@ -3,7 +3,6 @@ package nodes
 import (
 	"context"
 	"errors"
-	"reflect"
 	"strings"
 	"weaveflow/dsl"
 
@@ -81,19 +80,11 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	}
 
 	choice := resp.Choices[0]
-	usage := Extract(choice)
-	record := RecordState(state, Record{
-		NodeID:             L.ID(),
-		Model:              modelLabel(model),
-		StateScope:         L.StateScope,
-		StopReason:         choice.StopReason,
-		PromptTokens:       usage.PromptTokens,
-		CompletionTokens:   usage.CompletionTokens,
-		TotalTokens:        usage.TotalTokens,
-		ReasoningTokens:    usage.ReasoningTokens,
-		PromptCachedTokens: usage.PromptCachedTokens,
-	})
-	_ = PublishUsageEvent(ctx, record)
+	_ = RecordChoiceUsage(ctx, state, Record{
+		NodeID:     L.ID(),
+		Model:      modelLabel(model),
+		StateScope: L.StateScope,
+	}, choice)
 
 	aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
 
@@ -213,7 +204,7 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 			StopReason:       choice.StopReason,
 			ReasoningContent: choice.ReasoningContent,
 		}
-		if usage := Extract(choice); !usage.IsZero() {
+		if usage := ExtractUsage(choice); !usage.IsZero() {
 			item.Usage = usage.Artifact()
 		}
 		if choice.FuncCall != nil {
@@ -243,20 +234,4 @@ func redactToolCalls(toolCalls []llms.ToolCall) []llms.ToolCall {
 		redacted[i].FunctionCall = &copyCall
 	}
 	return redacted
-}
-
-func modelLabel(model llms.Model) string {
-	if model == nil {
-		return ""
-	}
-	if named, ok := model.(interface{ Name() string }); ok {
-		if name := strings.TrimSpace(named.Name()); name != "" {
-			return name
-		}
-	}
-	typed := reflect.TypeOf(model)
-	if typed == nil {
-		return ""
-	}
-	return typed.String()
 }

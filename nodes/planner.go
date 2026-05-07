@@ -187,6 +187,10 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 		_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
+	_ = RecordChoiceUsage(ctx, state, Record{
+		NodeID: n.ID(),
+		Model:  modelLabel(svc.Model),
+	}, resp.Choices[0])
 
 	content := strings.TrimSpace(resp.Choices[0].Content)
 	parsed, err := parsePlannerResponse(content, objective)

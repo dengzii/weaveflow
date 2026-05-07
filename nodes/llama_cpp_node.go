@@ -141,19 +141,12 @@ func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtim
 	}
 	reasoning := strings.TrimSpace(choice.ReasoningContent)
 	stopReason, tokenCount := extractGenerationInfo(choice)
-	usage := Extract(choice)
-	record := RecordState(state, Record{
-		NodeID:             l.ID(),
-		Model:              l.modelLabel(),
-		StateScope:         l.StateScope,
-		StopReason:         stopReason,
-		PromptTokens:       usage.PromptTokens,
-		CompletionTokens:   usage.CompletionTokens,
-		TotalTokens:        usage.TotalTokens,
-		ReasoningTokens:    usage.ReasoningTokens,
-		PromptCachedTokens: usage.PromptCachedTokens,
-	})
-	_ = PublishUsageEvent(ctx, record)
+	record := RecordChoiceUsage(ctx, state, Record{
+		NodeID:     l.ID(),
+		Model:      l.modelLabel(),
+		StateScope: l.StateScope,
+		StopReason: stopReason,
+	}, choice)
 
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "llama_cpp.response", map[string]any{
 		"content":     output,

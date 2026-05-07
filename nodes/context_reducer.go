@@ -139,6 +139,11 @@ func (n *ContextReducerNode) reduceMessages(ctx context.Context, model llms.Mode
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
 		return "", errors.New("context reducer returned no choices")
 	}
+	_ = RecordChoiceUsage(ctx, nil, Record{
+		NodeID:     n.ID(),
+		Model:      modelLabel(model),
+		StateScope: n.StateScope,
+	}, resp.Choices[0])
 
 	summary := strings.TrimSpace(resp.Choices[0].Content)
 	if summary == "" {

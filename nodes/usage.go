@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"weaveflow/runtime"
 
@@ -32,7 +33,27 @@ type Record struct {
 	PromptCachedTokens int
 }
 
-func Extract(choice *llms.ContentChoice) Usage {
+func RecordChoiceUsage(ctx context.Context, state runtime.State, record Record, choice *llms.ContentChoice) Record {
+	if choice == nil {
+		return record.normalized()
+	}
+
+	usage := ExtractUsage(choice)
+	if strings.TrimSpace(record.StopReason) == "" {
+		record.StopReason = choice.StopReason
+	}
+	record.PromptTokens = usage.PromptTokens
+	record.CompletionTokens = usage.CompletionTokens
+	record.TotalTokens = usage.TotalTokens
+	record.ReasoningTokens = usage.ReasoningTokens
+	record.PromptCachedTokens = usage.PromptCachedTokens
+
+	record = recordState(state, record)
+	_ = publishUsageEvent(ctx, record)
+	return record
+}
+
+func ExtractUsage(choice *llms.ContentChoice) Usage {
 	if choice == nil {
 		return Usage{}
 	}
@@ -71,7 +92,7 @@ func Extract(choice *llms.ContentChoice) Usage {
 	return usage.normalized()
 }
 
-func RecordState(state runtime.State, record Record) Record {
+func recordState(state runtime.State, record Record) Record {
 	record = record.normalized()
 	if state == nil || record.IsZero() {
 		return record
@@ -94,7 +115,7 @@ func RecordState(state runtime.State, record Record) Record {
 	return record
 }
 
-func PublishUsageEvent(ctx context.Context, record Record) error {
+func publishUsageEvent(ctx context.Context, record Record) error {
 	record = record.normalized()
 	if record.IsZero() {
 		return nil
@@ -238,4 +259,20 @@ func metric(values map[string]any, key string) int {
 	}
 	parsed, _ := intValue(value)
 	return parsed
+}
+
+func modelLabel(model llms.Model) string {
+	if model == nil {
+		return ""
+	}
+	if named, ok := model.(interface{ Name() string }); ok {
+		if name := strings.TrimSpace(named.Name()); name != "" {
+			return name
+		}
+	}
+	typed := reflect.TypeOf(model)
+	if typed == nil {
+		return ""
+	}
+	return typed.String()
 }

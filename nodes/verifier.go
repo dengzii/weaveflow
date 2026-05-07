@@ -181,7 +181,7 @@ func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state f
 		}
 	}
 
-	return n.callLLMVerification(ctx, model, "step", criteria, observations, stepResult, step)
+	return n.callLLMVerification(ctx, model, state, "step", criteria, observations, stepResult, step)
 }
 
 func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state fruntime.State) (*verificationResult, error) {
@@ -212,10 +212,10 @@ func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state 
 	conversation := state.Conversation(n.effectiveScope())
 	finalAnswer := conversation.FinalAnswer()
 
-	return n.callLLMFinalVerification(ctx, model, objective, observations, evidence, finalAnswer)
+	return n.callLLMFinalVerification(ctx, model, state, objective, observations, evidence, finalAnswer)
 }
 
-func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model, mode string, criteria []string, observations []map[string]any, stepResult map[string]any, step map[string]any) (*verificationResult, error) {
+func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model, state fruntime.State, mode string, criteria []string, observations []map[string]any, stepResult map[string]any, step map[string]any) (*verificationResult, error) {
 	if model == nil {
 		return ruleBasedVerification(criteria, observations), nil
 	}
@@ -237,11 +237,16 @@ func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model
 	if len(resp.Choices) == 0 {
 		return nil, fmt.Errorf("verifier LLM returned no choices")
 	}
+	_ = RecordChoiceUsage(ctx, state, Record{
+		NodeID:     n.ID(),
+		Model:      modelLabel(model),
+		StateScope: n.effectiveScope(),
+	}, resp.Choices[0])
 
 	return parseVerificationResponse(resp.Choices[0].Content)
 }
 
-func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.Model, objective string, observations []map[string]any, evidence []map[string]any, finalAnswer string) (*verificationResult, error) {
+func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.Model, state fruntime.State, objective string, observations []map[string]any, evidence []map[string]any, finalAnswer string) (*verificationResult, error) {
 	if model == nil {
 		return &verificationResult{
 			Status:     VerificationPass,
@@ -266,6 +271,11 @@ func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.
 	if len(resp.Choices) == 0 {
 		return nil, fmt.Errorf("verifier final LLM returned no choices")
 	}
+	_ = RecordChoiceUsage(ctx, state, Record{
+		NodeID:     n.ID(),
+		Model:      modelLabel(model),
+		StateScope: n.effectiveScope(),
+	}, resp.Choices[0])
 
 	return parseVerificationResponse(resp.Choices[0].Content)
 }

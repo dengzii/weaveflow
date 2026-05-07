@@ -248,6 +248,11 @@ func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, model llms.Mo
 	if len(resp.Choices) == 0 {
 		return "", fmt.Errorf("finalizer LLM returned no choices")
 	}
+	_ = RecordChoiceUsage(ctx, state, Record{
+		NodeID:     n.ID(),
+		Model:      modelLabel(model),
+		StateScope: n.effectiveScope(),
+	}, resp.Choices[0])
 
 	return strings.TrimSpace(resp.Choices[0].Content), nil
 }

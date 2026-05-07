@@ -102,6 +102,11 @@ func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state fruntime.State) (
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "intent.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
+	_ = RecordChoiceUsage(ctx, state, Record{
+		NodeID:     n.ID(),
+		Model:      modelLabel(svc.Model),
+		StateScope: n.StateScope,
+	}, resp.Choices[0])
 
 	content := strings.TrimSpace(resp.Choices[0].Content)
 	parsed, err := parseIntentAnalyzerResponse(content)

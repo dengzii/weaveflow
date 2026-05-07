@@ -120,6 +120,11 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{"error": err.Error()})
 		return state, err
 	}
+	_ = RecordChoiceUsage(ctx, state, Record{
+		NodeID:     n.ID(),
+		Model:      modelLabel(svc.Model),
+		StateScope: n.StateScope,
+	}, resp.Choices[0])
 
 	content := strings.TrimSpace(resp.Choices[0].Content)
 	parsed, err := parseOrchestrationRouterResponse(content, n.effectiveModes())
