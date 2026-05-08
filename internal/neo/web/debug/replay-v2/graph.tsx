@@ -38,6 +38,13 @@ export interface NodeEventSummary {
   durationMs: number; // -1 = not yet finished
   llmReasoning: string;
   llmContent: string;
+  tokenUsage: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    reasoningTokens: number;
+    promptCachedTokens: number;
+  };
   functionCalls: { name: string; args: string }[];
   toolCalls: { name: string; status: "pending" | "done" | "failed" }[];
   artifacts: { id: string; type: string; mimeType: string }[];
@@ -398,9 +405,15 @@ function buildNodeLabel(
   }
 
   const durationLabel = summary && summary.durationMs >= 0 ? formatNodeDuration(summary.durationMs) : "";
+  const hasTokenUsage = hasTokenUsageMetrics(summary);
 
   const hasEvents = Boolean(summary && (
-    summary.llmReasoning || summary.llmContent || summary.functionCalls.length > 0 || summary.toolCalls.length > 0 || summary.artifacts.length > 0
+    summary.llmReasoning ||
+    summary.llmContent ||
+    hasTokenUsage ||
+    summary.functionCalls.length > 0 ||
+    summary.toolCalls.length > 0 ||
+    summary.artifacts.length > 0
   ));
 
   const configEntries = node.config
@@ -444,6 +457,9 @@ function buildNodeLabel(
         <>
           <div className="h-px w-full bg-slate-700" />
           <div className="space-y-1.5">
+            {hasTokenUsage ? (
+              <TokenUsageSection usage={summary!.tokenUsage} />
+            ) : null}
             {summary!.llmReasoning ? (
               <CollapsibleSection
                 label="Reasoning"
@@ -503,11 +519,12 @@ function nodeElkHeight(node: GraphNodeMeta, summary?: NodeEventSummary): number 
   const base = 96;
   if (!summary) return base;
   const hasText = summary.llmReasoning || summary.llmContent;
+  const hasUsage = hasTokenUsageMetrics(summary);
   const hasCalls = summary.functionCalls.length > 0 || summary.toolCalls.length > 0;
   const artifactCount = summary.artifacts.length;
-  if (!hasText && !hasCalls && !artifactCount) return base;
+  if (!hasText && !hasUsage && !hasCalls && !artifactCount) return base;
   const textSections = (summary.llmReasoning ? 1 : 0) + (summary.llmContent ? 1 : 0);
-  return base + textSections * 46 + (hasCalls ? 44 : 0) + artifactCount * 34;
+  return base + (hasUsage ? 40 : 0) + textSections * 46 + (hasCalls ? 44 : 0) + artifactCount * 34;
 }
 
 function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map<string, NodeEventSummary> {
@@ -517,7 +534,21 @@ function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map
   function ensure(nodeId: string): NodeEventSummary {
     let s = summaries.get(nodeId);
     if (!s) {
-      s = { durationMs: -1, llmReasoning: "", llmContent: "", functionCalls: [], toolCalls: [], artifacts: [] };
+      s = {
+        durationMs: -1,
+        llmReasoning: "",
+        llmContent: "",
+        tokenUsage: {
+          promptTokens: 0,
+          completionTokens: 0,
+          totalTokens: 0,
+          reasoningTokens: 0,
+          promptCachedTokens: 0,
+        },
+        functionCalls: [],
+        toolCalls: [],
+        artifacts: [],
+      };
       summaries.set(nodeId, s);
     }
     return s;
@@ -552,6 +583,13 @@ function collectNodeEvents(events: ReplayItem[], validNodeIds: Set<string>): Map
       ensure(nodeId).llmContent = String(payload.text ?? "");
     } else if (eventType === "llm.content_chunk") {
       ensure(nodeId).llmContent += String(payload.text ?? "");
+    } else if (eventType === "llm.usage") {
+      const summary = ensure(nodeId);
+      summary.tokenUsage.promptTokens += metricValue(payload, "prompt_tokens");
+      summary.tokenUsage.completionTokens += metricValue(payload, "completion_tokens");
+      summary.tokenUsage.totalTokens += metricValue(payload, "total_tokens");
+      summary.tokenUsage.reasoningTokens += metricValue(payload, "reasoning_tokens");
+      summary.tokenUsage.promptCachedTokens += metricValue(payload, "prompt_cached_tokens");
     } else if (eventType === "llm.function_call") {
       const name = String(payload.name ?? payload.function_name ?? "");
       if (!name) continue;
@@ -595,6 +633,7 @@ export function NodeInfoPanel({
   const hasContent =
     configEntries.length > 0 ||
     (summary?.durationMs !== undefined && summary.durationMs >= 0) ||
+    hasTokenUsageMetrics(summary) ||
     summary?.llmReasoning ||
     summary?.llmContent ||
     (summary?.functionCalls.length ?? 0) > 0 ||
@@ -612,6 +651,7 @@ export function NodeInfoPanel({
         </div>
       ) : null}
       {configEntries.length > 0 ? <CollapsibleConfig entries={configEntries} /> : null}
+      {hasTokenUsageMetrics(summary) ? <TokenUsageSection usage={summary!.tokenUsage} /> : null}
       {summary?.llmReasoning ? (
         <CollapsibleSection
           label="Reasoning"
@@ -846,6 +886,51 @@ function ArtifactToggleView({
   );
 }
 
+function TokenUsageSection({
+  usage,
+}: {
+  usage: NodeEventSummary["tokenUsage"];
+}) {
+  const items = [
+    { label: "Total", value: usage.totalTokens, className: "border-cyan-500/30 bg-cyan-500/10 text-cyan-300" },
+    { label: "Prompt", value: usage.promptTokens, className: "border-slate-500/30 bg-slate-800/70 text-slate-300" },
+    { label: "Completion", value: usage.completionTokens, className: "border-sky-500/30 bg-sky-500/10 text-sky-300" },
+    { label: "Reasoning", value: usage.reasoningTokens, className: "border-violet-500/30 bg-violet-500/10 text-violet-300" },
+    { label: "Cached", value: usage.promptCachedTokens, className: "border-emerald-500/30 bg-emerald-500/10 text-emerald-300" },
+  ].filter((item) => item.value > 0);
+
+  if (items.length === 0) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+      <div className="text-[8px] font-semibold uppercase tracking-[0.12em] text-cyan-400">Tokens</div>
+      <div className="flex flex-wrap items-center gap-1">
+        {items.map((item) => (
+          <span
+            key={item.label}
+            className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 font-mono text-[9px] leading-none ${item.className}`}
+          >
+            <span className="opacity-70">{item.label}</span>
+            <span>{formatTokenCount(item.value)}</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function hasTokenUsageMetrics(summary: NodeEventSummary | null | undefined): boolean {
+  if (!summary) return false;
+  const usage = summary.tokenUsage;
+  return Boolean(
+    usage.promptTokens ||
+    usage.completionTokens ||
+    usage.totalTokens ||
+    usage.reasoningTokens ||
+    usage.promptCachedTokens
+  );
+}
+
 function formatNodeDuration(ms: number): string {
   if (ms < 0) return "";
   if (ms < 1000) return "< 1s";
@@ -853,6 +938,27 @@ function formatNodeDuration(ms: number): string {
   const m = Math.floor(ms / 60000);
   const s = Math.floor((ms % 60000) / 1000);
   return s > 0 ? `${m}m ${s}s` : `${m}m`;
+}
+
+function formatTokenCount(value: number): string {
+  if (value >= 1000) {
+    return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}k`;
+  }
+  return `${value}`;
+}
+
+function metricValue(payload: Record<string, unknown>, key: string): number {
+  const value = payload[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return Math.max(0, Math.round(value));
+  }
+  if (typeof value === "string") {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return Math.max(0, Math.round(parsed));
+    }
+  }
+  return 0;
 }
 
 function formatConfigValue(v: unknown): string {

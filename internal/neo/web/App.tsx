@@ -24,11 +24,13 @@ export function App() {
         <main className="flex-1 overflow-hidden">
           <Routes>
             <Route path="/" element={<ChatPage chat={chat} cfg={cfg} />} />
-            {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPageV2 />} />}
+            {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPageV2 routeMode="history" />} />}
+            {INCLUDE_DEBUG && <Route path="/debug/live" element={<ReplayPageV2 routeMode="live" />} />}
             {INCLUDE_DEBUG && <Route path="/debug/replay/old" element={<ReplayPage />} />}
             {INCLUDE_DEBUG && (
               <Route path="/debug/replay/v2" element={<Navigate to="/debug/replay" replace />} />
             )}
+            {INCLUDE_DEBUG && <Route path="/debug" element={<Navigate to="/debug/live" replace />} />}
           </Routes>
         </main>
       </div>

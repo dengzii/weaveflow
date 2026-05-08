@@ -22,6 +22,7 @@ type LiveMsg =
   | { type: "idle" };
 
 export function useLiveMode({
+  requestedMode,
   cacheDir,
   setDetail,
   setReplayIndex,
@@ -29,6 +30,7 @@ export function useLiveMode({
   onEnterLive,
   onExitLive,
 }: {
+  requestedMode: PageMode;
   cacheDir: string;
   setDetail: Dispatch<SetStateAction<RunDetail | null>>;
   setReplayIndex: (i: number) => void;
@@ -55,6 +57,28 @@ export function useLiveMode({
   useEffect(() => { liveSocketStateRef.current = liveSocketState; }, [liveSocketState]);
   useEffect(() => { onEnterLiveRef.current = onEnterLive; }, [onEnterLive]);
   useEffect(() => { onExitLiveRef.current = onExitLive; }, [onExitLive]);
+
+  useEffect(() => {
+    if (requestedMode === modeRef.current) {
+      return;
+    }
+
+    if (requestedMode === "live") {
+      onEnterLiveRef.current();
+      setMode("live");
+      writeLiveState(null);
+      writeLiveSocketState("connecting");
+      liveStartedAtRef.current = 0;
+      setLiveDuration(0);
+      setStatus({ message: "Connecting live stream...", summary: "" });
+      return;
+    }
+
+    setMode("history");
+    writeLiveState(null);
+    writeLiveSocketState("idle");
+    void onExitLiveRef.current();
+  }, [requestedMode, setStatus]);
 
   function writeLiveState(next: LiveState | null) {
     liveStateRef.current = next;
@@ -148,23 +172,6 @@ export function useLiveMode({
       return { ...current, replay };
     });
     setStatus(buildLiveStatus(next, liveSocketStateRef.current));
-  }
-
-  function enterLiveMode() {
-    onEnterLiveRef.current();
-    setMode("live");
-    writeLiveState(null);
-    writeLiveSocketState("connecting");
-    liveStartedAtRef.current = 0;
-    setLiveDuration(0);
-    setStatus({ message: "Connecting live stream...", summary: "" });
-  }
-
-  async function exitLiveMode() {
-    setMode("history");
-    writeLiveState(null);
-    writeLiveSocketState("idle");
-    await onExitLiveRef.current();
   }
 
   useEffect(() => {
@@ -290,8 +297,6 @@ export function useLiveMode({
     liveSocketState,
     liveDuration,
     liveEventsListRef,
-    enterLiveMode,
-    exitLiveMode,
     liveBadge: liveBadgeLabel(liveState, liveSocketState),
   };
 }

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save } from "lucide-react";
+import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay } from "lucide-react";
 import { MessageList } from "../components/MessageList";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -267,11 +267,17 @@ export function ChatPage({ chat, cfg }: Props) {
           <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
         )}
         {INCLUDE_DEBUG && (
-          <div className="ml-auto">
+          <div className="ml-auto flex items-center gap-1.5">
             <Link to="/debug/replay">
               <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground">
                 <PlayCircle className="h-3.5 w-3.5" />
                 Replay
+              </Button>
+            </Link>
+            <Link to="/debug/live">
+              <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+                <BugPlay className="h-3.5 w-3.5" />
+                Debug
               </Button>
             </Link>
           </div>
