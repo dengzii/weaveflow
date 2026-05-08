@@ -24,7 +24,7 @@ func NewServices(model llms.Model, baseDir string) *fruntime.Services {
 			"file_read":    tools.NewFileRead(),
 			"file_write":   tools.NewFileWrite(),
 			"web_fetch":    tools.NewWebFetch(),
-			//"web_search":   tools.NewWebSearch(),
+			// "web_search": tools.NewWebSearch(),
 		},
 	}
 }
@@ -33,26 +33,32 @@ const stateScope = "agent"
 
 // Config todo move to run context or initial state
 type Config struct {
-	StateScope        string
-	SystemPrompt      string
-	MaxIterations     int
-	PlannerMaxSteps   int
-	MemoryRecallLimit int
-	MemoryRecallTags  []string
+	StateScope             string
+	SystemPrompt           string
+	MaxIterations          int
+	PlannerMaxSteps        int
+	MemoryRecallLimit      int
+	HistoryRecentTurns     int
+	HistorySummaryMaxChars int
+	PromptMaxChars         int
+	MemoryRecallTags       []string
 	// Mode controls routing: "auto" lets the router decide, "direct" forces
-	// single-step LLM, "planner" forces multi-step plan execution.
+	// single-turn execution, "planner" forces multi-step plan execution.
 	Mode string
 }
 
 func DefaultConfig() Config {
 	return Config{
-		StateScope:        stateScope,
-		SystemPrompt:      "你是 Neo，一个通用任务 Agent。你会先规划再执行，使用工具收集信息，最后给出经过验证的答案。",
-		MaxIterations:     16,
-		PlannerMaxSteps:   6,
-		MemoryRecallLimit: 5,
-		MemoryRecallTags:  []string{"final_answer", "assistant_output", "user_input"},
-		Mode:              "auto",
+		StateScope:             stateScope,
+		SystemPrompt:           "You are Neo, a pragmatic general-purpose task agent. Use tools when they improve accuracy. Plan only when the task needs decomposition or verification. Ask for clarification when required and avoid guessing.",
+		MaxIterations:          16,
+		PlannerMaxSteps:        6,
+		MemoryRecallLimit:      5,
+		HistoryRecentTurns:     defaultPromptRecentTurns,
+		HistorySummaryMaxChars: defaultPromptSummaryMaxChars,
+		PromptMaxChars:         20000,
+		MemoryRecallTags:       []string{"final_answer", "assistant_output", "user_input"},
+		Mode:                   "auto",
 	}
 }
 
@@ -63,8 +69,6 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	}
 
 	graph := weaveflow.NewGraph()
-
-	// --- nodes ---
 
 	bootstrap := nodes.NewSessionBootstrapNode()
 	bootstrap.StateScope = scope
@@ -104,6 +108,12 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
+	replanner := nodes.NewReplannerNode()
+	replanner.MaxSteps = cfg.PlannerMaxSteps
+	if err := graph.AddNode(replanner); err != nil {
+		return nil, err
+	}
+
 	stepExec := nodes.NewPlanStepExecutorNode()
 	stepExec.StateScope = scope
 	if err := graph.AddNode(stepExec); err != nil {
@@ -118,6 +128,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 
 	llmNode := nodes.NewLLMNode()
 	llmNode.StateScope = scope
+	llmNode.PromptMaxChars = cfg.PromptMaxChars
 	if err := graph.AddNode(llmNode); err != nil {
 		return nil, err
 	}
@@ -155,40 +166,68 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	// --- edges ---
-	// bootstrap enters routing first so direct answers can short-circuit before memory recall.
-
-	// entry: bootstrap → memory_recall → router
 	if err := graph.AddEdge(bootstrap.ID(), router.ID()); err != nil {
 		return nil, err
 	}
 	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), weaveflow.HasFinalAnswer(scope)); err != nil {
 		return nil, err
 	}
-	if err := graph.AddEdge(router.ID(), memRecall.ID()); err != nil {
+	routeClarification, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
+		Expressions: []weaveflow.Expression{{Value1: "orchestration.needs_clarification", Op: "equals", Value2: "true"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), routeClarification); err != nil {
 		return nil, err
 	}
 
-	// router: mode == "planner" → planner, default → context_assembler (direct mode)
-	routeToPlanner, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
+	routePlannerWithMemory, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
+		Expressions: []weaveflow.Expression{
+			{Value1: "orchestration.mode", Op: "equals", Value2: "planner"},
+			{Value1: "orchestration.use_memory", Op: "equals", Value2: "true"},
+		},
+	})
+	if err != nil {
+		return nil, err
+	}
+	routePlanner, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
 		Expressions: []weaveflow.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "planner"}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(memRecall.ID(), planner.ID(), routeToPlanner); err != nil {
+	routeMemory, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
+		Expressions: []weaveflow.Expression{{Value1: "orchestration.use_memory", Op: "equals", Value2: "true"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	if err := graph.AddConditionalEdge(router.ID(), memRecall.ID(), routePlannerWithMemory); err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(router.ID(), planner.ID(), routePlanner); err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(router.ID(), memRecall.ID(), routeMemory); err != nil {
+		return nil, err
+	}
+	if err := graph.AddEdge(router.ID(), ctxAssembler.ID()); err != nil {
+		return nil, err
+	}
+
+	if err := graph.AddConditionalEdge(memRecall.ID(), planner.ID(), routePlanner); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(memRecall.ID(), ctxAssembler.ID()); err != nil {
 		return nil, err
 	}
 
-	// planner path: planner → plan_step_executor
 	if err := graph.AddEdge(planner.ID(), stepExec.ID()); err != nil {
 		return nil, err
 	}
 
-	// plan_step_executor conditional routing
 	routeFinalize, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
 		Expressions: []weaveflow.Expression{{Value1: "execution.route", Op: "equals", Value2: "finalize"}},
 	})
@@ -211,17 +250,13 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	// shared: context_assembler → llm
 	if err := graph.AddEdge(ctxAssembler.ID(), llmNode.ID()); err != nil {
 		return nil, err
 	}
 
-	// llm routing (order matters — conditions evaluated first-to-last):
-	// 1. has tool calls → tool_call (both modes)
 	if err := graph.AddConditionalEdge(llmNode.ID(), toolCall.ID(), weaveflow.LastMessageHasToolCalls(scope)); err != nil {
 		return nil, err
 	}
-	// 2. direct mode + no tools → finalizer (skip verifier)
 	directMode, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
 		Expressions: []weaveflow.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "direct"}},
 	})
@@ -231,28 +266,17 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err := graph.AddConditionalEdge(llmNode.ID(), finalizer.ID(), directMode); err != nil {
 		return nil, err
 	}
-	// 3. default: plan mode + no tools → observation_recorder
 	if err := graph.AddEdge(llmNode.ID(), obsRecorder.ID()); err != nil {
 		return nil, err
 	}
 
-	// tool_call routing:
-	// 1. direct mode → context_assembler (tool loop)
-	directModeToolLoop, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "direct"}},
-	})
-	if err != nil {
+	if err := graph.AddConditionalEdge(toolCall.ID(), ctxAssembler.ID(), directMode); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(toolCall.ID(), ctxAssembler.ID(), directModeToolLoop); err != nil {
-		return nil, err
-	}
-	// 2. default: plan mode → observation_recorder
 	if err := graph.AddEdge(toolCall.ID(), obsRecorder.ID()); err != nil {
 		return nil, err
 	}
 
-	// plan mode verification loop
 	if err := graph.AddEdge(obsRecorder.ID(), verifier.ID()); err != nil {
 		return nil, err
 	}
@@ -268,7 +292,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(verifier.ID(), planner.ID(), verifyReplan); err != nil {
+	if err := graph.AddConditionalEdge(verifier.ID(), replanner.ID(), verifyReplan); err != nil {
 		return nil, err
 	}
 	if err := graph.AddConditionalEdge(verifier.ID(), finalizer.ID(), verifyFinalize); err != nil {
@@ -277,8 +301,10 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err := graph.AddEdge(verifier.ID(), stepExec.ID()); err != nil {
 		return nil, err
 	}
+	if err := graph.AddEdge(replanner.ID(), stepExec.ID()); err != nil {
+		return nil, err
+	}
 
-	// finalization: finalizer → memory_write → END
 	if err := graph.AddEdge(finalizer.ID(), memWrite.ID()); err != nil {
 		return nil, err
 	}
@@ -286,7 +312,6 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	// entry and finish
 	if err := graph.SetEntryPoint(bootstrap.ID()); err != nil {
 		return nil, err
 	}

@@ -144,7 +144,7 @@ func (n *VerifierNode) resolveMode(state fruntime.State) string {
 }
 
 func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state fruntime.State) (*verificationResult, error) {
-	plannerState := state.Get(fruntime.StateKeyPlanner)
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	if plannerState == nil {
 		return &verificationResult{
 			Status:     VerificationPass,
@@ -185,7 +185,7 @@ func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state f
 }
 
 func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state fruntime.State) (*verificationResult, error) {
-	plannerState := state.Get(fruntime.StateKeyPlanner)
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	objective := ""
 	if plannerState != nil {
 		objective, _ = plannerState["objective"].(string)
@@ -298,7 +298,7 @@ func (n *VerifierNode) applyResult(state fruntime.State, result *verificationRes
 }
 
 func (n *VerifierNode) markCurrentStepCompleted(state fruntime.State) {
-	plannerState := state.Get(fruntime.StateKeyPlanner)
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	if plannerState == nil {
 		return
 	}
@@ -313,7 +313,7 @@ func (n *VerifierNode) markCurrentStepCompleted(state fruntime.State) {
 }
 
 func (n *VerifierNode) markCurrentStepReady(state fruntime.State) {
-	plannerState := state.Get(fruntime.StateKeyPlanner)
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	if plannerState == nil {
 		return
 	}

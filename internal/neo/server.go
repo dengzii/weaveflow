@@ -58,6 +58,15 @@ func applyPersistedConfig(cfg *Config, toolFlags map[string]bool, persisted Pers
 	cfg.MaxIterations = persisted.MaxIterations
 	cfg.PlannerMaxSteps = persisted.PlannerMaxSteps
 	cfg.MemoryRecallLimit = persisted.MemoryRecallLimit
+	if persisted.HistoryRecentTurns > 0 {
+		cfg.HistoryRecentTurns = persisted.HistoryRecentTurns
+	}
+	if persisted.HistorySummaryMaxChars > 0 {
+		cfg.HistorySummaryMaxChars = persisted.HistorySummaryMaxChars
+	}
+	if persisted.PromptMaxChars > 0 {
+		cfg.PromptMaxChars = persisted.PromptMaxChars
+	}
 	if persisted.Mode != "" {
 		cfg.Mode = persisted.Mode
 	}

@@ -120,7 +120,13 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	}
 
 	messages := state.Conversation("agent").Messages()
-	if len(messages) != 1 || extractText(messages[0]) != "Existing input" {
+	if len(messages) != 2 {
+		t.Fatalf("expected system prompt to be inserted ahead of preserved conversation, got %#v", messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem || extractText(messages[0]) != "Do not duplicate" {
+		t.Fatalf("unexpected inserted system prompt: %#v", messages[0])
+	}
+	if messages[1].Role != llms.ChatMessageTypeHuman || extractText(messages[1]) != "Existing input" {
 		t.Fatalf("expected existing conversation to be preserved, got %#v", messages)
 	}
 	if got := state.Get(fruntime.StateKeyRequest)["input"]; got != "New input" {
@@ -128,6 +134,34 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	}
 	if got := state.Conversation("agent").MaxIterations(); got != 2 {
 		t.Fatalf("expected max iterations 2, got %d", got)
+	}
+}
+
+func TestSessionBootstrapNodeDoesNotDuplicateExistingSystemPrompt(t *testing.T) {
+	t.Parallel()
+
+	state := fruntime.State{}
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "Stay concise."),
+		llms.TextParts(llms.ChatMessageTypeHuman, "Existing input"),
+	})
+
+	node := NewSessionBootstrapNode()
+	node.StateScope = "agent"
+	node.Input = "New input"
+	node.SystemPrompt = "Stay concise."
+
+	_, err := node.Invoke(context.Background(), state)
+	if err != nil {
+		t.Fatalf("invoke session bootstrap: %v", err)
+	}
+
+	messages := state.Conversation("agent").Messages()
+	if len(messages) != 2 {
+		t.Fatalf("expected existing system prompt to be reused, got %#v", messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeSystem || extractText(messages[0]) != "Stay concise." {
+		t.Fatalf("unexpected system prompt: %#v", messages[0])
 	}
 }
 

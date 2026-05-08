@@ -16,80 +16,52 @@ import (
 const (
 	defaultPlannerStatePath = runtime.StateKeyPlanner
 	defaultPlannerMaxSteps  = 6
-	plannerSystemPrompt     = `你是 Agent 工作流中的 Planner 节点，负责把用户目标转换为可执行的工作流计划。
+	plannerSystemPrompt     = `You are the planner node inside an agent workflow.
+Return JSON only. Do not use markdown fences.
 
-你的职责是规划，不是执行。不能伪造执行结果，不能假设不存在的节点、工具或数据源。
+You plan work; you do not execute it. Never invent completed work, unavailable tools, or nonexistent nodes.
 
-## 输入说明
+You will receive a JSON payload with:
+- objective
+- planner_state
+- context
+- max_steps
+- step_kind_hints
+- additional_rules
 
-你会收到一个 JSON payload，包含以下字段：
-- objective：本次 agent run 的目标
-- planner_state：当前规划状态（含已有计划、已完成步骤、上次失败或重规划原因）
-- context：外部注入的上下文（可能包含可用节点列表、工具清单等，由调用方配置）
-- max_steps：计划最大步骤数上限
-- step_kind_hints：调用方建议的步骤类型范围（为空时不限制）
-- additional_rules：调用方追加的规划规则（为空时忽略）
-
-## 规划原则
-
-1. 最小完整：步骤数量尽量少，但必须覆盖完成目标所需的全部关键动作。
-2. 可执行：每步都有明确的 node_type、输入期望和可验证的验收标准。
-3. 依赖正确：depends_on 必须准确，不能出现循环依赖，不能遗漏真实依赖。
-4. 信息优先：先收集信息和澄清疑问，再执行高成本或不可逆操作。
-5. 不猜测：缺少关键信息或节点能力不足时，用 needs_clarification 或 blocked 标记，不编造解决方案。
-6. 重规划复用：如果是重规划（planner_state.replan_reason 不为空），复用已 completed 且未受影响的步骤，只重新规划受影响部分，保持原步骤 id 不变。
-
-## 输出格式
-
-仅输出合法 JSON，不要输出 markdown 代码块，不要输出任何解释文字。
-
-顶层结构：
+Return this top-level JSON shape:
 {
-  “objective”: “本次目标的一句话描述”,
-  “status”: “planned | needs_clarification | blocked | replanned”,
-  “summary”: “整体方案的简洁说明（2-3 句）”,
-  “replan_reason”: “重规划原因，非重规划时为空字符串”,
-  “plan”: [ <步骤列表> ]
+  "objective": string,
+  "status": "planned" | "needs_clarification" | "blocked" | "replanned",
+  "summary": string,
+  "replan_reason": string,
+  "plan": [ ...steps ]
 }
 
-每个步骤：
+Each step must use this shape:
 {
-  “id”: “step_1”,
-  “title”: “简洁步骤名”,
-  “description”: “具体做什么，为什么”,
-  “status”: “pending | ready | completed | blocked”,
-  “kind”: “research | transform | decision | action | validation | human_input”,
-  “node_type”: “对应 graph 节点类型，如 llm / tools / planner / human_message，不确定则留空”,
-  “depends_on”: [“被依赖步骤的 id”],
-  “inputs”: [“来自上一步的哪些输出，或外部数据源”],
-  “outputs”: [“本步骤产生的结果描述”],
-  “acceptance_criteria”: [“具体、可由代码或 LLM 判断的完成条件”],
-  “parallelizable”: false
+  "id": "step_1",
+  "title": string,
+  "description": string,
+  "status": "ready" | "pending" | "blocked" | "completed",
+  "kind": "research" | "transform" | "decision" | "action" | "validation" | "human_input",
+  "node_type": string,
+  "depends_on": [string],
+  "inputs": [string],
+  "outputs": [string],
+  "acceptance_criteria": [string],
+  "parallelizable": boolean
 }
 
-## 状态说明
-
-顶层 status：
-- planned：正常规划完成
-- needs_clarification：缺少用户输入或关键信息才能继续
-- blocked：当前节点能力不足以完成目标
-- replanned：这是一次重规划，修改了上次的计划
-
-步骤 status（初始规划时）：
-- ready：无前置依赖，可立即执行
-- pending：有前置依赖尚未完成
-- blocked：无法执行，需要外部解除（需在 description 说明原因）
-
-步骤 status（重规划时还可使用）：
-- completed：已完成，直接复用
-
-## 补充要求
-
-- id 使用稳定短标识（step_1、step_2），重规划时保持已有步骤的 id 不变
-- acceptance_criteria 必须具体可检查，不能只写”完成”或”成功”
-- 如果 step_kind_hints 不为空，step 的 kind 必须在此范围内选择
-- parallelizable 为 true 时，该步骤与同层无依赖的步骤可并行执行
-- 计划步骤数不得超过 max_steps`
+Rules:
+- Use the fewest steps that still fully cover the objective.
+- Respect real dependencies. No cycles and no missing prerequisites.
+- Prefer clarification or information gathering before irreversible work.
+- If key information is missing, use status "needs_clarification" or blocked steps instead of guessing.
+- Acceptance criteria must be concrete and checkable.
+- If step_kind_hints is non-empty, every step.kind must be chosen from it.
+- Do not exceed max_steps.
+- During replanning, preserve unaffected completed steps and keep their existing ids when possible.`
 )
 
 type PlannerNode struct {
@@ -169,12 +141,14 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 		"additional_rules": strings.TrimSpace(n.Instructions),
 	}
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.prompt", promptPayload)
+
 	resp, err := svc.Model.GenerateContent(
 		ctx,
 		[]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, plannerSystemPrompt),
 			llms.TextParts(llms.ChatMessageTypeHuman, buildPlannerPrompt(promptPayload)),
 		},
+		llms.WithJSONMode(),
 		llms.WithThinkingMode(llms.ThinkingModeNone),
 		llms.WithTemperature(0.3),
 	)

@@ -99,9 +99,9 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	verification := state.Get(fruntime.StateKeyVerification)
 	observations := state.Observations()
 	evidence := state.Evidence()
-	plannerState := state.Get(fruntime.StateKeyPlanner)
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 
-	outcome := n.determineOutcome(verification)
+	outcome := n.determineOutcome(state, verification)
 
 	var answer string
 	var err error
@@ -112,7 +112,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	case FinalStatusFailed:
 		answer = n.generateFailureAnswer(verification, plannerState, observations)
 	case FinalStatusNeedsClarification:
-		answer = n.generateClarificationAnswer(verification, plannerState)
+		answer = n.generateClarificationAnswer(state, verification, plannerState)
 	case FinalStatusBlocked:
 		answer = n.generateBlockedAnswer(verification, plannerState)
 	}
@@ -159,7 +159,14 @@ func (n *FinalizerNode) isDirectMode(state fruntime.State) bool {
 	return mode == "direct"
 }
 
-func (n *FinalizerNode) determineOutcome(verification fruntime.State) string {
+func (n *FinalizerNode) determineOutcome(state fruntime.State, verification fruntime.State) string {
+	orchestration := state.Get(fruntime.StateKeyOrchestration)
+	if orchestration != nil {
+		if needsClarification, _ := orchestration["needs_clarification"].(bool); needsClarification {
+			return FinalStatusNeedsClarification
+		}
+	}
+
 	if verification == nil {
 		return FinalStatusSuccess
 	}
@@ -179,7 +186,7 @@ func (n *FinalizerNode) determineOutcome(verification fruntime.State) string {
 		return FinalStatusFailed
 	}
 
-	exec := verification
+	exec := state.Get(fruntime.StateKeyExecution)
 	if route, _ := exec["route"].(string); route == ExecutionRouteBlocked {
 		return FinalStatusBlocked
 	}
@@ -307,28 +314,35 @@ func (n *FinalizerNode) generateFailureAnswer(verification fruntime.State, plann
 	return b.String()
 }
 
-func (n *FinalizerNode) generateClarificationAnswer(verification fruntime.State, plannerState fruntime.State) string {
+func (n *FinalizerNode) generateClarificationAnswer(state fruntime.State, verification fruntime.State, plannerState fruntime.State) string {
 	var b strings.Builder
 	b.WriteString("I need more information to continue.\n\n")
 
+	var summary string
 	if verification != nil {
-		if summary, _ := verification["summary"].(string); summary != "" {
-			b.WriteString(summary)
-			b.WriteString("\n\n")
+		summary, _ = verification["summary"].(string)
+	}
+	if summary == "" {
+		orchestration := state.Get(fruntime.StateKeyOrchestration)
+		if orchestration != nil {
+			summary, _ = orchestration["reasoning"].(string)
 		}
-		if issues, ok := verification["issues"]; ok {
-			b.WriteString("**Questions:**\n")
-			switch typed := issues.(type) {
-			case []string:
-				for _, issue := range typed {
-					fmt.Fprintf(&b, "- %s\n", issue)
-				}
-			case []any:
-				for _, issue := range typed {
-					fmt.Fprintf(&b, "- %v\n", issue)
-				}
-			}
+	}
+	summary = strings.TrimSpace(summary)
+	if summary != "" {
+		b.WriteString(summary)
+		b.WriteString("\n\n")
+	}
+
+	questions := clarificationQuestions(state, verification)
+	if len(questions) > 0 {
+		b.WriteString("**Questions:**\n")
+		for _, question := range questions {
+			fmt.Fprintf(&b, "- %s\n", question)
 		}
+	} else {
+		b.WriteString("**Questions:**\n")
+		b.WriteString("- Could you clarify the missing information needed to proceed?\n")
 	}
 
 	return b.String()
@@ -481,6 +495,47 @@ func collectPartialResults(observations []map[string]any) string {
 		return ""
 	}
 	return strings.Join(parts, "\n")
+}
+
+func clarificationQuestions(state fruntime.State, verification fruntime.State) []string {
+	questions := make([]string, 0, 4)
+	seen := map[string]struct{}{}
+
+	addQuestion := func(question string) {
+		question = strings.TrimSpace(question)
+		if question == "" {
+			return
+		}
+		if _, exists := seen[question]; exists {
+			return
+		}
+		seen[question] = struct{}{}
+		questions = append(questions, question)
+	}
+
+	if verification != nil {
+		if issues, ok := verification["issues"]; ok {
+			switch typed := issues.(type) {
+			case []string:
+				for _, issue := range typed {
+					addQuestion(issue)
+				}
+			case []any:
+				for _, issue := range typed {
+					addQuestion(fmt.Sprint(issue))
+				}
+			}
+		}
+	}
+
+	orchestration := state.Get(fruntime.StateKeyOrchestration)
+	if orchestration != nil {
+		if question, _ := orchestration["clarification_question"].(string); question != "" {
+			addQuestion(question)
+		}
+	}
+
+	return questions
 }
 
 func lastFinalizerMessageMatches(messages []llms.MessageContent, answer string) bool {

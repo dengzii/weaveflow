@@ -104,7 +104,7 @@ func executeToolCall(ctx context.Context, available map[string]tools.Tool, toolC
 		return "", errors.New("tool call has no function payload")
 	}
 
-	tool, ok := available[toolCall.FunctionCall.Name]
+	tool, ok := findAvailableTool(available, toolCall.FunctionCall.Name)
 	if !ok {
 		return "", fmt.Errorf("tool %q not found", toolCall.FunctionCall.Name)
 	}
@@ -211,4 +211,26 @@ func toolCallArguments(toolCall llms.ToolCall) string {
 		return ""
 	}
 	return toolCall.FunctionCall.Arguments
+}
+
+func findAvailableTool(available map[string]tools.Tool, name string) (tools.Tool, bool) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return tools.Tool{}, false
+	}
+
+	if tool, ok := available[name]; ok {
+		return tool, true
+	}
+
+	for key, tool := range available {
+		if strings.EqualFold(strings.TrimSpace(key), name) {
+			return tool, true
+		}
+		if strings.EqualFold(strings.TrimSpace(tool.Name()), name) {
+			return tool, true
+		}
+	}
+
+	return tools.Tool{}, false
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
@@ -36,6 +37,7 @@ Rules:
 - Use memory only when prior session context is required.
 - Set needs_clarification=true only when missing information blocks safe progress.
 - If mode is direct and you can answer immediately, put the full user-facing reply in direct_answer.
+- If the request clearly requires one of the available tools, do not guess in direct_answer. Leave direct_answer empty so downstream tool execution can proceed.
 - Keep reasoning brief.`
 )
 
@@ -96,44 +98,48 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 		"input_path":               strings.TrimSpace(n.InputPath),
 		"state_scope":              strings.TrimSpace(n.StateScope),
 		"context":                  n.collectContext(state),
+		"available_tools":          availableToolSummaries(svc),
 		"available_modes":          cloneOrchestrationStrings(n.effectiveModes()),
 		"additional_rules":         strings.TrimSpace(n.Instructions),
 	}
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.prompt", payload)
 
-	resp, err := svc.Model.GenerateContent(
-		ctx,
-		[]llms.MessageContent{
-			llms.TextParts(llms.ChatMessageTypeSystem, orchestrationRouterPrompt),
-			llms.TextParts(llms.ChatMessageTypeHuman, buildOrchestrationRouterPrompt(payload)),
-		},
-		llms.WithJSONMode(),
-		llms.WithThinkingMode(llms.ThinkingModeNone),
-		llms.WithTemperature(0),
-	)
-	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{"error": err.Error()})
-		return state, err
-	}
-	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		err = errors.New("orchestration router returned no choices")
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{"error": err.Error()})
-		return state, err
-	}
-	_ = RecordChoiceUsage(ctx, state, Record{
-		NodeID:     n.ID(),
-		Model:      modelLabel(svc.Model),
-		StateScope: n.StateScope,
-	}, resp.Choices[0])
+	parsed, heuristic := n.heuristicToolDecision(svc, input)
+	if !heuristic {
+		resp, err := svc.Model.GenerateContent(
+			ctx,
+			[]llms.MessageContent{
+				llms.TextParts(llms.ChatMessageTypeSystem, orchestrationRouterPrompt),
+				llms.TextParts(llms.ChatMessageTypeHuman, buildOrchestrationRouterPrompt(payload)),
+			},
+			llms.WithJSONMode(),
+			llms.WithThinkingMode(llms.ThinkingModeNone),
+			llms.WithTemperature(0),
+		)
+		if err != nil {
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{"error": err.Error()})
+			return state, err
+		}
+		if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
+			err = errors.New("orchestration router returned no choices")
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{"error": err.Error()})
+			return state, err
+		}
+		_ = RecordChoiceUsage(ctx, state, Record{
+			NodeID:     n.ID(),
+			Model:      modelLabel(svc.Model),
+			StateScope: n.StateScope,
+		}, resp.Choices[0])
 
-	content := strings.TrimSpace(resp.Choices[0].Content)
-	parsed, err := parseOrchestrationRouterResponse(content, n.effectiveModes())
-	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{
-			"error":    err.Error(),
-			"response": content,
-		})
-		return state, err
+		content := strings.TrimSpace(resp.Choices[0].Content)
+		parsed, err = parseOrchestrationRouterResponse(content, n.effectiveModes())
+		if err != nil {
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{
+				"error":    err.Error(),
+				"response": content,
+			})
+			return state, err
+		}
 	}
 
 	target, err := ensureOrchestrationStateAtPath(state, orchestrationPath)
@@ -158,6 +164,7 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 		"needs_clarification":      parsed.NeedsClarification,
 		"target_subgraph":          parsed.TargetSubgraph,
 		"has_direct_answer":        parsed.DirectAnswer != "",
+		"heuristic":                heuristic,
 	})
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.response", parsed)
 
@@ -281,6 +288,7 @@ func buildOrchestrationPromptPayload(payload map[string]any) map[string]any {
 		"request":         payload["input"],
 		"prior_route":     payload["orchestration_state"],
 		"context":         payload["context"],
+		"available_tools": payload["available_tools"],
 		"available_modes": payload["available_modes"],
 		"rules":           payload["additional_rules"],
 	})
@@ -401,6 +409,9 @@ func normalizeOrchestrationRouterResponse(parsed orchestrationRouterResponse, al
 	parsed.Reasoning = strings.TrimSpace(parsed.Reasoning)
 	parsed.TargetSubgraph = strings.TrimSpace(parsed.TargetSubgraph)
 	parsed.DirectAnswer = strings.TrimSpace(parsed.DirectAnswer)
+	if parsed.NeedsClarification && parsed.ClarificationQuestion == "" {
+		parsed.ClarificationQuestion = "Could you clarify the missing information needed to proceed?"
+	}
 	if parsed.DirectAnswer != "" {
 		if len(allowed) > 0 {
 			if _, ok := allowed["direct"]; !ok {
@@ -415,9 +426,6 @@ func normalizeOrchestrationRouterResponse(parsed orchestrationRouterResponse, al
 			parsed.ClarificationQuestion = ""
 			parsed.TargetSubgraph = ""
 		}
-	}
-	if parsed.NeedsClarification && parsed.ClarificationQuestion == "" {
-		parsed.ClarificationQuestion = "Could you clarify the missing information needed to proceed?"
 	}
 	return parsed
 }
@@ -642,4 +650,127 @@ func extractOrchestrationJSONObject(content string, start int) string {
 		}
 	}
 	return ""
+}
+
+func availableToolSummaries(svc *fruntime.Services) []map[string]string {
+	if svc == nil || len(svc.Tools) == 0 {
+		return nil
+	}
+
+	names := make([]string, 0, len(svc.Tools))
+	for name := range svc.Tools {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	summaries := make([]map[string]string, 0, len(names))
+	for _, name := range names {
+		tool := svc.Tools[name]
+		description := ""
+		if tool.Function != nil {
+			description = strings.TrimSpace(tool.Function.Description)
+		}
+		summaries = append(summaries, map[string]string{
+			"name":        name,
+			"description": description,
+		})
+	}
+	return summaries
+}
+
+func (n *OrchestrationRouterNode) heuristicToolDecision(svc *fruntime.Services, input string) (orchestrationRouterResponse, bool) {
+	input = strings.TrimSpace(input)
+	if input == "" {
+		return orchestrationRouterResponse{}, false
+	}
+
+	if hasAvailableTool(svc, "current_time") && looksLikeCurrentTimeRequest(input) {
+		return normalizeOrchestrationRouterResponse(orchestrationRouterResponse{
+			Mode:      "direct",
+			UseMemory: false,
+			Reasoning: "Current time/date requests should use the current_time tool instead of guessing.",
+		}, n.effectiveModes()), true
+	}
+
+	if hasAvailableTool(svc, "calculator") && looksLikeCalculationRequest(input) {
+		return normalizeOrchestrationRouterResponse(orchestrationRouterResponse{
+			Mode:      "direct",
+			UseMemory: false,
+			Reasoning: "Arithmetic requests should use the calculator tool instead of guessing.",
+		}, n.effectiveModes()), true
+	}
+
+	return orchestrationRouterResponse{}, false
+}
+
+func hasAvailableTool(svc *fruntime.Services, name string) bool {
+	if svc == nil || len(svc.Tools) == 0 {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	if _, ok := svc.Tools[name]; ok {
+		return true
+	}
+	for key, tool := range svc.Tools {
+		if strings.EqualFold(strings.TrimSpace(key), name) {
+			return true
+		}
+		if strings.EqualFold(strings.TrimSpace(tool.Name()), name) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeCurrentTimeRequest(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+
+	keywords := []string{
+		"what time", "current time", "time is it", "today", "current date", "date today",
+		"几点", "现在几点", "当前时间", "现在时间", "今天几号", "今天日期", "日期", "星期几",
+	}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeCalculationRequest(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if lower == "" {
+		return false
+	}
+
+	if hasDigit(lower) && strings.ContainsAny(lower, "+-*/%") {
+		return true
+	}
+
+	keywords := []string{"calculate", "calc", "compute", "math", "算一下", "计算", "求值", "等于多少"}
+	for _, keyword := range keywords {
+		if strings.Contains(lower, keyword) && hasDigit(lower) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasDigit(text string) bool {
+	for _, r := range text {
+		if r >= '0' && r <= '9' {
+			return true
+		}
+	}
+	return false
 }
