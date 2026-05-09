@@ -50,7 +50,7 @@ type graphRunnerExecution struct {
 	lastCompleted *runnerCompletedStep
 	pending       *runnerPendingControl
 	contractMode  ContractValidationMode
-	nodeContracts map[string]NodeWriteContract
+	nodeContracts map[string]NodeIOContract
 	mu            sync.Mutex
 }
 
@@ -76,14 +76,34 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		return state, err
 	}
 
-	result, invokeErr := invoke(nodeCtx, state.CloneState())
+	contract, hasContract := e.nodeContracts[nodeID]
+	inputState := state.CloneState()
+	if hasContract {
+		inputState = ProjectStateByContract(state, contract)
+	}
+
+	executor := LegacyNodeExecutor{Invoke: invoke}
+	result, invokeErr := executor.Execute(nodeCtx, inputState.CloneState())
 	if invokeErr != nil {
 		var interrupt *langgraph.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
 			e.markNodeInterrupt(nodeID)
 		}
+		return result, invokeErr
 	}
-	return result, invokeErr
+	if !hasContract {
+		return result, nil
+	}
+
+	if err := e.validateNodeOutputContract(nodeCtx, nodeID, contract, inputState, result); err != nil {
+		return state, err
+	}
+
+	mergedState, err := MergePatchByContract(state, result, contract)
+	if err != nil {
+		return state, err
+	}
+	return mergedState, nil
 }
 
 func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, state State) (context.Context, error) {
@@ -313,6 +333,29 @@ func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunReco
 		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
 	}
 	return nil
+}
+
+func (e *graphRunnerExecution) validateNodeOutputContract(ctx context.Context, nodeID string, contract NodeIOContract, before State, after State) error {
+	if e.contractMode == ContractValidationOff {
+		return nil
+	}
+	changes, err := e.runner.computeStateDiff(before, after)
+	if err != nil {
+		return err
+	}
+	if len(changes) == 0 {
+		return nil
+	}
+
+	e.mu.Lock()
+	run := e.run
+	var step StepRecord
+	if e.active != nil {
+		step = e.active.step
+	}
+	e.mu.Unlock()
+
+	return e.validateContract(ctx, run, step, nodeID, after, changes)
 }
 
 func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) error {

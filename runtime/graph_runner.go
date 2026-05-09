@@ -24,7 +24,7 @@ type GraphRunner struct {
 	GraphVersion       string
 	Breakpoints        []Breakpoint
 	ContractValidation ContractValidationMode
-	NodeContracts      map[string]NodeWriteContract
+	NodeContracts      map[string]NodeIOContract
 	Now                func() time.Time
 }
 

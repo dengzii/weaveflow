@@ -196,7 +196,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     }
   }
 
-  async function deleteRun(item: RunSummary) {
+  async function deleteRun(baseDir: string, item: RunSummary) {
     if (!window.confirm(`确认删除 run ${item.run.run_id}？`)) {
       return;
     }
@@ -269,7 +269,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
             onRelayout={() => setLayoutVersion((value) => value + 1)}
             onRefreshRuns={() => void loadRuns(DEFAULT_CACHE_DIR)}
             onSelectRun={(item) => void selectRun(DEFAULT_CACHE_DIR, item)}
-            onDeleteRun={(item) => void deleteRun(item)}
+            onDeleteRun={(item) => void deleteRun(DEFAULT_CACHE_DIR, item)}
             onReplayIndexChange={handleReplayIndex}
             onToggleReplay={toggleReplay}
             onSelectLiveEvent={setReplayIndex}

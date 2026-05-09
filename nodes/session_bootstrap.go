@@ -15,6 +15,38 @@ import (
 
 const defaultSessionBootstrapInputPath = fruntime.StateKeyRequest + ".input"
 
+// SessionBootstrapNode prepares the minimum session state required before an
+// agent/executor graph starts doing real work.
+//
+// Its responsibilities are intentionally narrow and deterministic:
+//  1. Resolve the request input text.
+//     Resolution order is:
+//     - n.Input when explicitly configured
+//     - n.InputPath when configured
+//     - request.input in runtime state
+//     - the latest human message already present in the scoped conversation
+//  2. Seed or enrich top-level runtime state buckets that later nodes expect:
+//     - request
+//     - agent
+//     - tool_policy
+//  3. Initialize the scoped conversation if it is still empty.
+//     When no messages exist yet, it can prepend a system prompt and append the
+//     resolved human input as the initial message list.
+//  4. Normalize conversation execution limits by setting max iterations on the
+//     scoped conversation state.
+//
+// Important behavioral details:
+//   - It does not clear or rebuild an existing conversation. If messages are
+//     already present, it only ensures the configured system prompt is present
+//     at the front; user/assistant history is otherwise preserved.
+//   - Metadata/profile/tool-policy values are merged into state rather than
+//     replacing the whole target object.
+//   - It emits a runner context event and a best-effort debug artifact so replay
+//     and troubleshooting can inspect the exact bootstrap result.
+//
+// In short, this node is the boundary between an external request and a graph's
+// internal agent session model: after it runs, downstream nodes can assume the
+// scoped conversation and core request/agent/tool state already exist.
 type SessionBootstrapNode struct {
 	NodeInfo
 	StateScope      string
@@ -27,6 +59,9 @@ type SessionBootstrapNode struct {
 	ToolPolicy      map[string]any
 }
 
+// NewSessionBootstrapNode creates a bootstrap node with a unique runtime node
+// identity and the default max-iteration budget, leaving all request/session
+// specifics to be supplied by graph configuration.
 func NewSessionBootstrapNode() *SessionBootstrapNode {
 	id := uuid.New()
 	return &SessionBootstrapNode{

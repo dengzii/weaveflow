@@ -20,19 +20,21 @@ type ContractViolation struct {
 	Message string `json:"message"`
 }
 
-type NodeWriteContract struct {
-	WritePaths    []string
-	RequiredPaths []string
-	Wildcard      bool
+type NodeIOContract struct {
+	ReadPaths          []string
+	WritePaths         []string
+	RequiredReadPaths  []string
+	RequiredWritePaths []string
+	Wildcard           bool
 }
 
 func ValidateNodeContract(
 	nodeID string,
-	contract NodeWriteContract,
+	contract NodeIOContract,
 	afterState State,
 	changes []StateChange,
 ) []ContractViolation {
-	if contract.Wildcard || (len(contract.WritePaths) == 0 && len(contract.RequiredPaths) == 0) {
+	if contract.Wildcard || (len(contract.WritePaths) == 0 && len(contract.RequiredWritePaths) == 0) {
 		return nil
 	}
 
@@ -52,7 +54,7 @@ func ValidateNodeContract(
 		}
 	}
 
-	for _, path := range contract.RequiredPaths {
+	for _, path := range contract.RequiredWritePaths {
 		businessPath := snapshotPathToBusinessPath(path)
 		if businessPath == "" {
 			continue
@@ -101,16 +103,6 @@ func NormalizeContractPath(path string) string {
 		return "internal." + path
 	}
 	return "shared." + path
-}
-
-func snapshotPathToBusinessPath(snapshotPath string) string {
-	if strings.HasPrefix(snapshotPath, "shared.") {
-		return strings.TrimPrefix(snapshotPath, "shared.")
-	}
-	if strings.HasPrefix(snapshotPath, "scopes.") {
-		return snapshotPath
-	}
-	return ""
 }
 
 func isRuntimeOrConversationPath(path string) bool {

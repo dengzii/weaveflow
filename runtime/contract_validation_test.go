@@ -8,7 +8,7 @@ import (
 func TestValidateNodeContractNoViolations(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{
+	contract := NodeIOContract{
 		WritePaths: []string{"shared.messages", "shared.topic"},
 	}
 	changes := []StateChange{
@@ -25,7 +25,7 @@ func TestValidateNodeContractNoViolations(t *testing.T) {
 func TestValidateNodeContractUndeclaredWrite(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{
+	contract := NodeIOContract{
 		WritePaths: []string{"shared.messages"},
 	}
 	changes := []StateChange{
@@ -48,7 +48,7 @@ func TestValidateNodeContractUndeclaredWrite(t *testing.T) {
 func TestValidateNodeContractWildcardSkips(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{Wildcard: true}
+	contract := NodeIOContract{Wildcard: true}
 	changes := []StateChange{
 		{Path: "shared.anything", After: json.RawMessage(`"value"`)},
 	}
@@ -62,7 +62,7 @@ func TestValidateNodeContractWildcardSkips(t *testing.T) {
 func TestValidateNodeContractEmptyContractSkips(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{}
+	contract := NodeIOContract{}
 	changes := []StateChange{
 		{Path: "shared.anything", After: json.RawMessage(`"value"`)},
 	}
@@ -76,9 +76,9 @@ func TestValidateNodeContractEmptyContractSkips(t *testing.T) {
 func TestValidateNodeContractMissingRequired(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{
-		WritePaths:    []string{"shared.final_answer"},
-		RequiredPaths: []string{"shared.final_answer"},
+	contract := NodeIOContract{
+		WritePaths:         []string{"shared.final_answer"},
+		RequiredWritePaths: []string{"shared.final_answer"},
 	}
 	afterState := State{}
 
@@ -94,7 +94,7 @@ func TestValidateNodeContractMissingRequired(t *testing.T) {
 func TestValidateNodeContractNestedPathMatch(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{
+	contract := NodeIOContract{
 		WritePaths: []string{"shared.planner"},
 	}
 	changes := []StateChange{
@@ -111,7 +111,7 @@ func TestValidateNodeContractNestedPathMatch(t *testing.T) {
 func TestValidateNodeContractParentWriteMatchesChildDeclaration(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{
+	contract := NodeIOContract{
 		WritePaths: []string{"shared.planner.status", "shared.planner.steps"},
 	}
 	changes := []StateChange{
@@ -127,7 +127,7 @@ func TestValidateNodeContractParentWriteMatchesChildDeclaration(t *testing.T) {
 func TestValidateNodeContractReadOnlyViolation(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{
+	contract := NodeIOContract{
 		WritePaths: []string{"shared.output"},
 	}
 	changes := []StateChange{
@@ -147,7 +147,7 @@ func TestValidateNodeContractReadOnlyViolation(t *testing.T) {
 func TestValidateNodeContractIgnoresRuntimeAndConversationPaths(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeWriteContract{
+	contract := NodeIOContract{
 		WritePaths: []string{"shared.topic"},
 	}
 	changes := []StateChange{
