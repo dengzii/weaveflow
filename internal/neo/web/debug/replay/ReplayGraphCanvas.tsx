@@ -12,7 +12,7 @@ import {
   type Node,
   type ReactFlowInstance,
 } from "@xyflow/react";
-import type { RunDetail } from "../replay/types";
+import type { RunDetail } from "./types";
 import {
   applyProjectionToEdges,
   applyProjectionToNodes,
@@ -20,6 +20,7 @@ import {
   buildProjection,
   parseSourceGraph,
   type FlowNodeData,
+  type SourceGraph,
 } from "./graph";
 
 const elk = new ELK();
@@ -58,6 +59,17 @@ function ReplayGraphCanvasInner({
   const [graphError, setGraphError] = useState("");
   const flowRef = useRef<ReactFlowInstance<Node<FlowNodeData>, Edge> | null>(null);
   const graphKeyRef = useRef("");
+  const positionCacheRef = useRef<Map<string, Map<string, { x: number; y: number }>>>(new Map());
+
+  useEffect(() => {
+    const graphKey = graphKeyRef.current;
+    if (!graphKey || nodes.length === 0) return;
+
+    positionCacheRef.current.set(
+      graphKey,
+      new Map(nodes.map((node) => [node.id, { x: node.position.x, y: node.position.y }]))
+    );
+  }, [nodes]);
 
   useEffect(() => {
     let active = true;
@@ -82,6 +94,7 @@ function ReplayGraphCanvasInner({
 
       const runId = detail.run.run_id;
       const sourceId = detail.source.id;
+      const graphKey = replayGraphLayoutKey(sourceGraph);
 
       // Use full replay to compute stable node heights (so card sizes don't shift during playback)
       const maxProjection = buildProjection(detail, sourceGraph, detail.replay.length - 1);
@@ -89,12 +102,20 @@ function ReplayGraphCanvasInner({
       const layout = await computeElkLayout(baseFlow.nodes, baseFlow.edges);
       if (!active) return;
 
-      graphKeyRef.current = detail.run.run_id;
+      graphKeyRef.current = graphKey;
       setGraphError("");
 
       // Apply current replayIndex projection for initial styling
       const currentProjection = buildProjection(detail, sourceGraph, replayIndex);
-      setNodes(applyProjectionToNodes(layout.nodes, sourceGraph, currentProjection, runId, sourceId));
+      setNodes(
+        applyProjectionToNodes(
+          applyCachedPositions(layout.nodes, positionCacheRef.current.get(graphKey)),
+          sourceGraph,
+          currentProjection,
+          runId,
+          sourceId
+        )
+      );
       setEdges(applyProjectionToEdges(layout.edges, currentProjection));
       requestAnimationFrame(() => {
         flowRef.current?.fitView({ padding: 0.18, duration: 450 });
@@ -114,9 +135,10 @@ function ReplayGraphCanvasInner({
   }, [detail, layoutVersion, setEdges, setNodes]);
 
   useEffect(() => {
-    if (!detail || graphKeyRef.current !== detail.run.run_id) return;
+    if (!detail) return;
     const sourceGraph = parseSourceGraph(detail.source.graph);
     if (!sourceGraph || sourceGraph.nodes.length === 0) return;
+    if (graphKeyRef.current !== replayGraphLayoutKey(sourceGraph)) return;
     const projection = buildProjection(detail, sourceGraph, replayIndex);
     const runId = detail.run.run_id;
     const sourceId = detail.source.id;
@@ -144,7 +166,7 @@ function ReplayGraphCanvasInner({
         panOnDrag
         defaultEdgeOptions={{ type: "default" }}
         proOptions={{ hideAttribution: true }}
-        className="replay-v2-flow relative z-10"
+        className="replay-flow relative z-10"
       >
         <MiniMap
           pannable
@@ -169,6 +191,32 @@ function ReplayGraphCanvasInner({
       ) : null}
     </div>
   );
+}
+
+function replayGraphLayoutKey(sourceGraph: SourceGraph): string {
+  const nodeKey = sourceGraph.nodes.map((node) => `${node.id}:${node.type}`).join("|");
+  const edgeKey = sourceGraph.edges.map((edge) => `${edge.from}>${edge.to}:${edge.label}`).join("|");
+  return `${sourceGraph.entry_point ?? ""}::${sourceGraph.finish_point ?? ""}::${nodeKey}::${edgeKey}`;
+}
+
+function applyCachedPositions(
+  nodes: Node<FlowNodeData>[],
+  cache?: Map<string, { x: number; y: number }>
+): Node<FlowNodeData>[] {
+  if (!cache || cache.size === 0) {
+    return nodes;
+  }
+
+  return nodes.map((node) => {
+    const cached = cache.get(node.id);
+    if (!cached) {
+      return node;
+    }
+    return {
+      ...node,
+      position: { x: cached.x, y: cached.y },
+    };
+  });
 }
 
 async function computeElkLayout(nodes: Node<FlowNodeData>[], edges: Edge[]) {

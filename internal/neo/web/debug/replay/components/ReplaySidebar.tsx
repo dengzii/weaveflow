@@ -2,7 +2,6 @@ import type { PointerEventHandler, RefObject } from "react";
 import { Link } from "react-router-dom";
 import {
   ArrowLeft,
-  ArrowRightLeft,
   ChevronLeft,
   ChevronRight,
   Database,
@@ -14,11 +13,12 @@ import {
   Rows3,
   SkipBack,
   SkipForward,
+  Trash2,
 } from "lucide-react";
-import type { LiveState, RunDetail, RunSummary } from "../../replay/types";
-import { formatDuration, formatTime, prettyJSON } from "../../replay/utils";
+import type { LiveState, RunDetail, RunSummary } from "../types";
+import { formatDuration, formatTime, prettyJSON } from "../utils";
 import { parseSourceGraph } from "../graph";
-import { RunMetadataSection } from "../../replay/components/RunMetadataSection";
+import { RunMetadataSection } from "./RunMetadataSection";
 import { visibleLiveStatus } from "../useLiveMode";
 import type { LiveSocketState } from "../useLiveMode";
 import { Badge } from "../../../components/ui/badge";
@@ -66,6 +66,7 @@ export function ReplaySidebar({
   onRelayout,
   onRefreshRuns,
   onSelectRun,
+  onDeleteRun,
   onReplayIndexChange,
   onToggleReplay,
   onSelectLiveEvent,
@@ -97,6 +98,7 @@ export function ReplaySidebar({
   onRelayout: () => void;
   onRefreshRuns: () => void;
   onSelectRun: (item: RunSummary) => void;
+  onDeleteRun: (item: RunSummary) => void;
   onReplayIndexChange: (index: number) => void;
   onToggleReplay: () => void;
   onSelectLiveEvent: (index: number) => void;
@@ -188,16 +190,6 @@ export function ReplaySidebar({
             </Badge>
           ) : null}
         </div>
-        <Link to="/debug/replay/old">
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
-            title="Old view"
-          >
-            <ArrowRightLeft className="h-3.5 w-3.5" />
-          </Button>
-        </Link>
         <Button
           type="button"
           variant="ghost"
@@ -273,24 +265,26 @@ export function ReplaySidebar({
           </div>
         ) : (
           <div className="flex items-center gap-1.5">
-            <Select
-              value={selectedRunValue}
-              onValueChange={(value) => {
-                const target = runs.find((item) => runOptionValue(item) === value);
-                if (target) onSelectRun(target);
-              }}
-            >
-              <SelectTrigger className="h-8 rounded-lg border-border bg-card/80 text-xs text-foreground">
-                <SelectValue placeholder="Select a replay" />
-              </SelectTrigger>
-              <SelectContent>
-                {runs.map((item) => (
-                  <SelectItem key={runOptionValue(item)} value={runOptionValue(item)}>
-                    {runOptionLabel(item)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <div className="min-w-0 flex-1">
+              <Select
+                value={selectedRunValue}
+                onValueChange={(value) => {
+                  const target = runs.find((item) => runOptionValue(item) === value);
+                  if (target) onSelectRun(target);
+                }}
+              >
+                <SelectTrigger className="h-8 w-full rounded-lg border-border bg-card/80 text-xs text-foreground">
+                  <SelectValue placeholder="Select a replay" />
+                </SelectTrigger>
+                <SelectContent>
+                  {runs.map((item) => (
+                    <SelectItem key={runOptionValue(item)} value={runOptionValue(item)}>
+                      {runOptionLabel(item)}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
             <Button
               type="button"
               size="icon"
@@ -299,6 +293,22 @@ export function ReplaySidebar({
               onClick={onRefreshRuns}
             >
               <RefreshCw className="h-3.5 w-3.5" />
+            </Button>
+            <Button
+              type="button"
+              size="icon"
+              variant="ghost"
+              className="h-8 w-8 shrink-0 rounded-lg text-muted-foreground hover:bg-muted hover:text-foreground"
+              onClick={() => {
+                const target = runs.find(
+                  (item) => item.run.run_id === selectedRunId && item.source_id === selectedSourceId
+                );
+                if (target) onDeleteRun(target);
+              }}
+              disabled={!selectedRunId || !selectedSourceId}
+              title="Delete run"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
             </Button>
           </div>
         )}

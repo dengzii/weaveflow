@@ -1,40 +1,23 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { api, apiDelete, buildUrl } from "./api";
 import type {
-  RunSummary,
   RunDetail,
+  RunSummary,
   RunsResponse,
 } from "./types";
-import { api, buildUrl } from "./api";
-import { RunCard } from "./components/RunCard";
-import { OverviewSection } from "./components/OverviewSection";
-import { ReplaySection } from "./components/ReplaySection";
-import { StepsSection } from "./components/StepsSection";
-import { CheckpointsPanel } from "./components/CheckpointsPanel";
-import { ArtifactsPanel } from "./components/ArtifactsPanel";
-import { SourceSection } from "./components/SourceSection";
-import { Link } from "react-router-dom";
-import { Button } from "../../components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "../../components/ui/select";
-import { RefreshCw, Database, ArrowLeft, Sparkles } from "lucide-react";
+import { ReplayGraphCanvas } from "./ReplayGraphCanvas";
+import { MermaidGraphCanvas } from "./MermaidGraphCanvas";
+import { ReplayPayloadPanel } from "./components/ReplayPayloadPanel";
+import { ReplaySidebar } from "./components/ReplaySidebar";
+import { useLiveMode } from "./useLiveMode";
+import type { PageMode } from "./useLiveMode";
 
 const DEFAULT_CACHE_DIR =
   (document.body.dataset.defaultCacheDir as string | undefined)?.trim() || "neo_data";
 
-function runOptionValue(item: RunSummary): string {
-  return `${item.source_id}::${item.run.run_id}`;
-}
-
-function runOptionLabel(item: RunSummary): string {
-  return `${item.source_name || item.source_id} | ${item.run.run_id}`;
-}
-
-export function ReplayPage() {
+export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) {
+  const navigate = useNavigate();
   const [status, setStatus] = useState({ message: "Preparing", summary: "" });
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
@@ -42,6 +25,12 @@ export function ReplayPage() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [replayIndex, setReplayIndex] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [layoutVersion, setLayoutVersion] = useState(0);
+  const [viewMode, setViewMode] = useState<"flow" | "mermaid">("flow");
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(320);
+  const sidebarWidthRef = useRef(320);
+  const resizeDragRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   const timerRef = useRef<number | null>(null);
   const replayLengthRef = useRef(0);
@@ -56,25 +45,84 @@ export function ReplayPage() {
     };
   }, []);
 
-  const stopReplay = useCallback(() => {
+  function stopReplay() {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
     setIsPlaying(false);
-  }, []);
+  }
 
-  const handleReplayIndex = useCallback(
-    (index: number) => {
+  const {
+    mode,
+    modeRef,
+    isLiveMode,
+    liveState,
+    liveSocketState,
+    liveDuration,
+    liveEventsListRef,
+    liveBadge,
+  } = useLiveMode({
+    requestedMode: routeMode,
+    cacheDir: DEFAULT_CACHE_DIR,
+    setDetail,
+    setReplayIndex,
+    setStatus,
+    onEnterLive: () => {
       stopReplay();
-      const len = replayLengthRef.current;
-      if (!len) return;
-      setReplayIndex(Math.max(0, Math.min(index, len - 1)));
+      setDetail(null);
+      setReplayIndex(0);
     },
-    [stopReplay]
-  );
+    onExitLive: async () => {
+      stopReplay();
+      const target =
+        runs.find(
+          (item) => item.run.run_id === selectedRunId && item.source_id === selectedSourceId
+        ) ?? runs[0];
+      if (target) {
+        await selectRun(DEFAULT_CACHE_DIR, target);
+        return;
+      }
+      setDetail(null);
+      setStatus({ message: "No replay runs available.", summary: "" });
+    },
+  });
 
-  const toggleReplay = useCallback(() => {
+  useEffect(() => {
+    if (mode !== "live") return;
+    const container = liveEventsListRef.current;
+    if (!container) return;
+    const target = container.querySelector<HTMLElement>(`[data-live-event-index="${replayIndex}"]`);
+    target?.scrollIntoView({ block: "nearest" });
+  }, [mode, replayIndex, detail?.replay.length, liveEventsListRef]);
+
+  function onResizePointerDown(e: React.PointerEvent<HTMLDivElement>) {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeDragRef.current = { startX: e.clientX, startWidth: sidebarWidthRef.current };
+  }
+
+  function onResizePointerMove(e: React.PointerEvent<HTMLDivElement>) {
+    if (!resizeDragRef.current) return;
+    const { startX, startWidth } = resizeDragRef.current;
+    const next = Math.max(260, Math.min(680, startWidth + (e.clientX - startX)));
+    sidebarWidthRef.current = next;
+    setSidebarWidth(next);
+  }
+
+  function onResizePointerUp() {
+    resizeDragRef.current = null;
+  }
+
+  function handleReplayIndex(index: number) {
+    stopReplay();
+    const length = replayLengthRef.current;
+    if (!length) return;
+    setReplayIndex(Math.max(0, Math.min(index, length - 1)));
+  }
+
+  function toggleReplay() {
     if (timerRef.current) {
       stopReplay();
       return;
@@ -82,206 +130,156 @@ export function ReplayPage() {
     if (!replayLengthRef.current) return;
     setIsPlaying(true);
     timerRef.current = window.setInterval(() => {
-      setReplayIndex((prev) => {
-        if (!replayLengthRef.current || prev >= replayLengthRef.current - 1) {
-          clearInterval(timerRef.current!);
+      setReplayIndex((current) => {
+        if (!replayLengthRef.current || current >= replayLengthRef.current - 1) {
+          if (timerRef.current) clearInterval(timerRef.current);
           timerRef.current = null;
           setIsPlaying(false);
-          return prev;
+          return current;
         }
-        return prev + 1;
+        return current + 1;
       });
     }, 900);
-  }, [stopReplay]);
+  }
 
-  const selectRun = useCallback(
-    async (baseDir: string, item: RunSummary) => {
-      stopReplay();
-      setSelectedRunId(item.run.run_id);
-      setSelectedSourceId(item.source_id);
-      setReplayIndex(0);
-      setStatus({ message: "Loading run detail...", summary: "" });
-      try {
-        const url = buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, baseDir, {
+  async function selectRun(baseDir: string, item: RunSummary) {
+    stopReplay();
+    setSelectedRunId(item.run.run_id);
+    setSelectedSourceId(item.source_id);
+    setReplayIndex(0);
+    setStatus({ message: "Loading replay detail...", summary: "" });
+
+    try {
+      const url = buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, baseDir, {
+        source: item.source_id,
+      });
+      const runDetail = await api<RunDetail>(url);
+      setDetail(runDetail);
+      setStatus({
+        message: "",
+        summary: `${runDetail.summary.source_name} | ${runDetail.summary.graph_ref || "-"}`,
+      });
+    } catch (error) {
+      setDetail(null);
+      setStatus({ message: `Load failed: ${(error as Error).message}`, summary: "" });
+    }
+  }
+
+  async function loadRuns(baseDir: string) {
+    stopReplay();
+    setStatus({ message: "Scanning replay cache...", summary: "" });
+
+    try {
+      const data = await api<RunsResponse>(buildUrl("/api/runs", baseDir));
+      const runList = data.runs ?? [];
+      setRuns(runList);
+      setStatus({
+        message: `Scanned ${data.cache_dir}`,
+        summary: `${data.sources?.length ?? 0} sources | ${runList.length} runs`,
+      });
+
+      if (!runList.length) {
+        if (modeRef.current !== "live") setDetail(null);
+        return;
+      }
+      if (modeRef.current === "live") return;
+
+      const preserved = runList.find(
+        (item) => item.run.run_id === selectedRunId && item.source_id === selectedSourceId
+      );
+      const target = preserved ?? runList[0];
+      await selectRun(baseDir, target);
+    } catch (error) {
+      setRuns([]);
+      if (modeRef.current !== "live") setDetail(null);
+      setStatus({ message: `Load failed: ${(error as Error).message}`, summary: "" });
+    }
+  }
+
+  async function deleteRun(item: RunSummary) {
+    if (!window.confirm(`确认删除 run ${item.run.run_id}？`)) {
+      return;
+    }
+
+    try {
+      setStatus({ message: `Deleting ${item.run.run_id}...`, summary: "" });
+      await apiDelete<{ deleted: boolean }>(
+        buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, DEFAULT_CACHE_DIR, {
           source: item.source_id,
-        });
-        const runDetail = await api<RunDetail>(url);
-        setDetail(runDetail);
-        setStatus({
-          message: `Loaded run ${item.run.run_id}`,
-          summary: `${item.source_name} | ${item.graph_ref || "-"}`,
-        });
-      } catch (err) {
+        })
+      );
+
+      if (selectedRunId === item.run.run_id && selectedSourceId === item.source_id) {
         setDetail(null);
-        setStatus({ message: `Load failed: ${(err as Error).message}`, summary: "" });
+        setSelectedRunId("");
+        setSelectedSourceId("");
+        setReplayIndex(0);
       }
-    },
-    [stopReplay]
-  );
 
-  const loadRuns = useCallback(
-    async (baseDir: string) => {
-      stopReplay();
-      setStatus({ message: "Scanning Neo runs...", summary: "" });
-      try {
-        const data = await api<RunsResponse>(buildUrl("/api/runs", baseDir));
-        const runList = data.runs ?? [];
-        setRuns(runList);
-        setStatus({
-          message: `Scanned ${data.cache_dir}`,
-          summary: `${data.sources?.length ?? 0} sources | ${runList.length} runs`,
-        });
-
-        if (!runList.length) {
-          setDetail(null);
-          return;
-        }
-
-        const preserved = runList.find(
-          (item) => item.run.run_id === selectedRunId && item.source_id === selectedSourceId
-        );
-        await selectRun(baseDir, preserved ?? runList[0]);
-      } catch (err) {
-        setRuns([]);
-        setDetail(null);
-        setStatus({ message: `Load failed: ${(err as Error).message}`, summary: "" });
-      }
-    },
-    [selectedRunId, selectedSourceId, selectRun, stopReplay]
-  );
+      await loadRuns(baseDir);
+      setStatus({ message: `Deleted ${item.run.run_id}`, summary: "" });
+    } catch (error) {
+      setStatus({ message: `Delete failed: ${(error as Error).message}`, summary: "" });
+    }
+  }
 
   useEffect(() => {
     void loadRuns(DEFAULT_CACHE_DIR);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const selectedRunValue =
-    selectedRunId && selectedSourceId ? `${selectedSourceId}::${selectedRunId}` : undefined;
+  const current = detail?.replay?.[replayIndex] ?? null;
 
   return (
-    <div className="flex flex-col h-full">
-      <header className="flex items-center gap-4 px-6 h-14 border-b border-border shrink-0">
-        <Link to="/">
-          <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
-            <ArrowLeft className="h-4 w-4" />
-          </Button>
-        </Link>
-        <Link to="/debug/replay">
-          <Button variant="outline" size="sm" className="h-8 gap-1.5 shrink-0">
-            <Sparkles className="h-3.5 w-3.5" />
-            Replay
-          </Button>
-        </Link>
-        <div className="flex items-center gap-2 text-sm font-semibold">
-          <Database className="h-4 w-4 text-muted-foreground" />
-          Graph Replay Old
-        </div>
-        <div className="flex items-center gap-2 flex-1 max-w-2xl">
-          <Select
-            value={selectedRunValue}
-            onValueChange={(value) => {
-              const target = runs.find((item) => runOptionValue(item) === value);
-              if (target) {
-                void selectRun(DEFAULT_CACHE_DIR, target);
-              }
-            }}
-          >
-            <SelectTrigger className="h-8 text-xs">
-              <SelectValue placeholder="Select a Neo run" />
-            </SelectTrigger>
-            <SelectContent>
-              {runs.map((item) => (
-                <SelectItem key={runOptionValue(item)} value={runOptionValue(item)}>
-                  {runOptionLabel(item)}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 gap-1.5 shrink-0"
-            onClick={() => {
-              void loadRuns(DEFAULT_CACHE_DIR);
-            }}
-          >
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
-          </Button>
-        </div>
-        <div className="text-xs text-muted-foreground ml-auto">
-          {status.message}
-          {status.summary && <span className="ml-2 text-foreground/60">{status.summary}</span>}
-        </div>
-      </header>
+    <div className="relative h-full overflow-hidden bg-background text-foreground">
+      {viewMode === "flow" ? (
+        <ReplayGraphCanvas
+          detail={detail}
+          replayIndex={replayIndex}
+          layoutVersion={layoutVersion}
+        />
+      ) : (
+        <MermaidGraphCanvas detail={detail} replayIndex={replayIndex} />
+      )}
 
-      <div className="flex flex-1 overflow-hidden">
-        <aside className="w-64 shrink-0 border-r border-border flex flex-col bg-sidebar">
-          <div className="flex items-center justify-between px-4 py-2.5 border-b border-sidebar-border">
-            <span className="text-xs font-medium text-sidebar-foreground">Runs</span>
-            <span className="text-xs bg-muted text-muted-foreground px-1.5 py-0.5 rounded-full">
-              {runs.length}
-            </span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-2 space-y-1">
-            {runs.length === 0 ? (
-              <div className="text-xs text-muted-foreground text-center py-6">No run data</div>
-            ) : (
-              runs.map((item) => (
-                <RunCard
-                  key={`${item.source_id}:${item.run.run_id}`}
-                  item={item}
-                  isActive={
-                    item.run.run_id === selectedRunId && item.source_id === selectedSourceId
-                  }
-                  onClick={() => {
-                    void selectRun(DEFAULT_CACHE_DIR, item);
-                  }}
-                />
-              ))
-            )}
-          </div>
-        </aside>
+      <div className="pointer-events-none absolute inset-0 z-20">
+        <div className="flex h-full items-start justify-between gap-3">
+          <ReplaySidebar
+            cacheDir={DEFAULT_CACHE_DIR}
+            detail={detail}
+            runs={runs}
+            selectedRunId={selectedRunId}
+            selectedSourceId={selectedSourceId}
+            replayIndex={replayIndex}
+            isPlaying={isPlaying}
+            statusMessage={status.message}
+            isLiveMode={isLiveMode}
+            liveState={liveState}
+            liveSocketState={liveSocketState}
+            liveBadge={liveBadge}
+            liveDuration={liveDuration}
+            viewMode={viewMode}
+            sidebarCollapsed={sidebarCollapsed}
+            sidebarWidth={sidebarWidth}
+            liveEventsListRef={liveEventsListRef}
+            onExpandSidebar={() => setSidebarCollapsed(false)}
+            onCollapseSidebar={() => setSidebarCollapsed(true)}
+            onToggleLiveMode={() => navigate(isLiveMode ? "/debug/replay" : "/debug/live")}
+            onToggleViewMode={() => setViewMode((mode) => (mode === "flow" ? "mermaid" : "flow"))}
+            onRelayout={() => setLayoutVersion((value) => value + 1)}
+            onRefreshRuns={() => void loadRuns(DEFAULT_CACHE_DIR)}
+            onSelectRun={(item) => void selectRun(DEFAULT_CACHE_DIR, item)}
+            onDeleteRun={(item) => void deleteRun(item)}
+            onReplayIndexChange={handleReplayIndex}
+            onToggleReplay={toggleReplay}
+            onSelectLiveEvent={setReplayIndex}
+            onResizePointerDown={onResizePointerDown}
+            onResizePointerMove={onResizePointerMove}
+            onResizePointerUp={onResizePointerUp}
+          />
 
-        <section className="flex-1 overflow-y-auto p-4 space-y-4">
-          {!detail ? (
-            <div className="flex items-center justify-center h-full min-h-72">
-              <div className="text-center">
-                <Database className="h-8 w-8 text-muted-foreground mx-auto mb-3" />
-                <p className="text-sm font-medium">No run selected</p>
-                <p className="text-xs text-muted-foreground mt-1">
-                  Select a Neo run from the dropdown above.
-                </p>
-              </div>
-            </div>
-          ) : (
-            <>
-              <OverviewSection detail={detail} />
-              <ReplaySection
-                detail={detail}
-                replayIndex={replayIndex}
-                isPlaying={isPlaying}
-                onIndexChange={handleReplayIndex}
-                onTogglePlay={toggleReplay}
-              />
-              <StepsSection detail={detail} />
-              <div className="grid grid-cols-2 gap-4">
-                <CheckpointsPanel
-                  key={`${detail.run.run_id}-cp`}
-                  detail={detail}
-                  cacheDir={DEFAULT_CACHE_DIR}
-                />
-                <ArtifactsPanel
-                  key={`${detail.run.run_id}-art`}
-                  detail={detail}
-                  cacheDir={DEFAULT_CACHE_DIR}
-                />
-              </div>
-              <SourceSection detail={detail} />
-            </>
-          )}
-        </section>
+          {!isLiveMode ? <ReplayPayloadPanel payload={current?.event.payload} /> : null}
+        </div>
       </div>
     </div>
   );

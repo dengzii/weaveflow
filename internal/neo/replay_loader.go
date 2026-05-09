@@ -618,6 +618,40 @@ func (e *cacheExplorer) sourceByID(sourceID string) (*cacheSource, error) {
 	return nil, fmt.Errorf("source %q not found", sourceID)
 }
 
+func (e *cacheExplorer) deleteRun(ctx context.Context, runID, sourceID string) error {
+	source, run, err := e.locateRun(ctx, runID, sourceID)
+	if err != nil {
+		return err
+	}
+
+	runID = run.RunID
+	paths := []string{
+		filepath.Join(source.meta.Root, "execution", "runs", runID+".json"),
+		filepath.Join(source.meta.Root, "execution", "steps", runID),
+		filepath.Join(source.meta.Root, "checkpoints", runID),
+		filepath.Join(source.meta.Root, "artifacts", runID),
+		filepath.Join(source.meta.Root, "events", runID+".jsonl"),
+	}
+
+	for _, path := range paths {
+		if err := os.RemoveAll(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	runs, err := source.execution.ListRuns(ctx, runtime.RunFilter{})
+	if err != nil {
+		return err
+	}
+	if len(runs) == 0 {
+		if err := os.Remove(filepath.Join(source.meta.Root, "run.json")); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+
+	return nil
+}
+
 func decodeEvents(events []runtime.Event) ([]EventView, error) {
 	items := make([]EventView, 0, len(events))
 	for _, event := range events {

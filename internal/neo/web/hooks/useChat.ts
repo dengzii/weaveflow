@@ -1,5 +1,6 @@
 import { useCallback, useReducer, useRef, useState } from "react";
-import type { ChatEvent, HistoryMessage, HistoryPart, MessageItem } from "../types";
+import { apiAction, apiFetch } from "../api";
+import type { ApiResponse, ChatEvent, HistoryMessage, HistoryPart, MemoryEntry, MessageItem } from "../types";
 import { chatReducer, freshCtx, type StreamCtx } from "./chatReducer";
 
 type ToolItem = Extract<MessageItem, { kind: "tool" }>;
@@ -653,13 +654,28 @@ export function useChat() {
 
   const loadHistory = useCallback(async () => {
     try {
-      const resp = await fetch("/neo/history");
-      const json = await resp.json();
+      const json = await apiFetch<ApiResponse<HistoryMessage[]>>("/neo/history");
       const history: HistoryMessage[] = json.data ?? [];
       dispatch({ type: "SET", items: buildHistoryItems(history, nextId) });
     } catch { /* ignore */ }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  return { messages, running, progress, sendMessage, stop, loadHistory };
+  const clearHistory = useCallback(async () => {
+    await apiAction("/neo/history", { method: "DELETE" });
+    ctxRef.current = freshCtx();
+    dispatch({ type: "SET", items: [] });
+    setProgress(null);
+  }, []);
+
+  const loadMemory = useCallback(async () => {
+    const json = await apiFetch<ApiResponse<MemoryEntry[]>>("/neo/memory");
+    return json.data ?? [];
+  }, []);
+
+  const clearMemory = useCallback(async () => {
+    await apiAction("/neo/memory", { method: "DELETE" });
+  }, []);
+
+  return { messages, running, progress, sendMessage, stop, loadHistory, clearHistory, loadMemory, clearMemory };
 }

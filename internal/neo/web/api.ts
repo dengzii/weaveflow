@@ -6,3 +6,7 @@ export async function apiFetch<T>(url: string, init?: RequestInit): Promise<T> {
   }
   return resp.json() as Promise<T>;
 }
+
+export async function apiAction(url: string, init?: RequestInit): Promise<void> {
+  await apiFetch(url, init);
+}

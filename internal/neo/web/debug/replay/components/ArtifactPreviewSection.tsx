@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { api, buildUrl } from "../../replay/api";
+import { api, buildUrl } from "../api";
 import { JsonTree } from "../graph";
 
 type ArtifactDetail = {

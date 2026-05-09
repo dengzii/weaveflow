@@ -4,7 +4,6 @@ import { useChat } from "./hooks/useChat";
 import { useConfig } from "./hooks/useConfig";
 import { ChatPage } from "./pages/ChatPage";
 import { ReplayPage } from "./debug/replay/ReplayPage";
-import { ReplayPageV2 } from "./debug/replay-v2/ReplayPageV2";
 
 declare const INCLUDE_DEBUG: boolean;
 
@@ -24,9 +23,8 @@ export function App() {
         <main className="flex-1 overflow-hidden">
           <Routes>
             <Route path="/" element={<ChatPage chat={chat} cfg={cfg} />} />
-            {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPageV2 routeMode="history" />} />}
-            {INCLUDE_DEBUG && <Route path="/debug/live" element={<ReplayPageV2 routeMode="live" />} />}
-            {INCLUDE_DEBUG && <Route path="/debug/replay/old" element={<ReplayPage />} />}
+            {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPage routeMode="history" />} />}
+            {INCLUDE_DEBUG && <Route path="/debug/live" element={<ReplayPage routeMode="live" />} />}
             {INCLUDE_DEBUG && (
               <Route path="/debug/replay/v2" element={<Navigate to="/debug/replay" replace />} />
             )}

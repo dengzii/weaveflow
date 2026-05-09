@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay } from "lucide-react";
+import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay, Brain, Eye, Trash2 } from "lucide-react";
 import { MessageList } from "../components/MessageList";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -11,7 +11,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { cn } from "../lib/utils";
 import type { useChat } from "../hooks/useChat";
 import type { useConfig } from "../hooks/useConfig";
-import type { Config } from "../types";
+import type { Config, MemoryEntry } from "../types";
 
 declare const INCLUDE_DEBUG: boolean;
 
@@ -231,8 +231,122 @@ interface Props {
   cfg: ConfigState;
 }
 
+function formatMemoryTime(value?: number): string {
+  if (!value) return "-";
+  return new Date(value).toLocaleString();
+}
+
+function MemoryModal({
+  open,
+  loading,
+  items,
+  onClose,
+}: {
+  open: boolean;
+  loading: boolean;
+  items: MemoryEntry[];
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/35 px-4" onClick={onClose}>
+      <div
+        className="w-full max-w-4xl rounded-2xl border border-border bg-background shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-center justify-between border-b border-border px-5 py-4">
+          <div>
+            <div className="text-sm font-semibold">Memory</div>
+            <div className="text-xs text-muted-foreground">{loading ? "加载中..." : `${items.length} entries`}</div>
+          </div>
+          <Button type="button" variant="ghost" size="sm" className="h-8 text-xs" onClick={onClose}>
+            关闭
+          </Button>
+        </div>
+        <div className="max-h-[70vh] overflow-y-auto p-5">
+          {loading ? (
+            <div className="py-16 text-center text-sm text-muted-foreground">Loading memory...</div>
+          ) : items.length === 0 ? (
+            <div className="py-16 text-center text-sm text-muted-foreground">暂无 memory</div>
+          ) : (
+            <div className="space-y-3">
+              {items.map((item) => (
+                <div key={`${item.id}:${item.created_at}`} className="rounded-xl border border-border bg-card/60 p-4">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-foreground">{item.type || "message"}</span>
+                    <span>{item.role || "-"}</span>
+                    <span>{formatMemoryTime(item.created_at)}</span>
+                    {item.tags?.length ? <span>{item.tags.join(", ")}</span> : null}
+                  </div>
+                  <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground">
+                    {item.text || "(empty)"}
+                  </pre>
+                  {item.payload && Object.keys(item.payload).length > 0 ? (
+                    <pre className="mt-3 overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-[11px] leading-5 text-muted-foreground">
+                      {JSON.stringify(item.payload, null, 2)}
+                    </pre>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function ChatPage({ chat, cfg }: Props) {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [memoryLoading, setMemoryLoading] = useState(false);
+  const [memoryItems, setMemoryItems] = useState<MemoryEntry[]>([]);
+
+  async function openMemory() {
+    setMemoryOpen(true);
+    setMemoryLoading(true);
+    try {
+      setMemoryItems(await chat.loadMemory());
+    } catch (error) {
+      alert("加载 memory 失败: " + (error as Error).message);
+      setMemoryOpen(false);
+    } finally {
+      setMemoryLoading(false);
+    }
+  }
+
+  async function handleClearHistory() {
+    if (chat.running) {
+      alert("运行中无法清空历史");
+      return;
+    }
+    if (!window.confirm("确认清空当前对话历史？")) return;
+    try {
+      await chat.clearHistory();
+    } catch (error) {
+      alert("清空历史失败: " + (error as Error).message);
+    }
+  }
+
+  async function handleClearMemory() {
+    if (!window.confirm("确认清空当前 memory？")) return;
+    try {
+      await chat.clearMemory();
+      setMemoryItems([]);
+    } catch (error) {
+      alert("清空 memory 失败: " + (error as Error).message);
+    }
+  }
 
   function autoResize(el: HTMLTextAreaElement) {
     el.style.height = "auto";
@@ -266,8 +380,21 @@ export function ChatPage({ chat, cfg }: Props) {
         {chat.running && (
           <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
         )}
-        {INCLUDE_DEBUG && (
-          <div className="ml-auto flex items-center gap-1.5">
+        <div className="ml-auto flex items-center gap-1.5">
+          <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={() => void openMemory()}>
+            <Eye className="h-3.5 w-3.5" />
+            查看 Memory
+          </Button>
+          <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={() => void handleClearMemory()}>
+            <Brain className="h-3.5 w-3.5" />
+            清空 Memory
+          </Button>
+          <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={() => void handleClearHistory()}>
+            <Trash2 className="h-3.5 w-3.5" />
+            清空对话历史
+          </Button>
+          {INCLUDE_DEBUG && (
+            <>
             <Link to="/debug/replay">
               <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground">
                 <PlayCircle className="h-3.5 w-3.5" />
@@ -280,8 +407,9 @@ export function ChatPage({ chat, cfg }: Props) {
                 Debug
               </Button>
             </Link>
-          </div>
-        )}
+            </>
+          )}
+        </div>
       </header>
 
       {/* Messages */}
@@ -345,6 +473,13 @@ export function ChatPage({ chat, cfg }: Props) {
           </form>
         </div>
       </div>
+
+      <MemoryModal
+        open={memoryOpen}
+        loading={memoryLoading}
+        items={memoryItems}
+        onClose={() => setMemoryOpen(false)}
+      />
     </div>
   );
 }

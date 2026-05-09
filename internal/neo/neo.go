@@ -36,6 +36,7 @@ type Config struct {
 	StateScope             string
 	SystemPrompt           string
 	MaxIterations          int
+	RequestTimeoutSeconds  int
 	PlannerMaxSteps        int
 	MemoryRecallLimit      int
 	HistoryRecentTurns     int
@@ -52,6 +53,7 @@ func DefaultConfig() Config {
 		StateScope:             stateScope,
 		SystemPrompt:           "You are Neo, a pragmatic general-purpose task agent. Use tools when they improve accuracy. Plan only when the task needs decomposition or verification. Ask for clarification when required and avoid guessing.",
 		MaxIterations:          16,
+		RequestTimeoutSeconds:  180,
 		PlannerMaxSteps:        6,
 		MemoryRecallLimit:      5,
 		HistoryRecentTurns:     defaultPromptRecentTurns,
@@ -182,15 +184,6 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	routePlannerWithMemory, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{
-			{Value1: "orchestration.mode", Op: "equals", Value2: "planner"},
-			{Value1: "orchestration.use_memory", Op: "equals", Value2: "true"},
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
 	routePlanner, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
 		Expressions: []weaveflow.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "planner"}},
 	})
@@ -204,9 +197,6 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	if err := graph.AddConditionalEdge(router.ID(), memRecall.ID(), routePlannerWithMemory); err != nil {
-		return nil, err
-	}
 	if err := graph.AddConditionalEdge(router.ID(), planner.ID(), routePlanner); err != nil {
 		return nil, err
 	}

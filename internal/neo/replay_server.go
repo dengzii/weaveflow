@@ -42,6 +42,7 @@ var wsUpgrader = websocket.Upgrader{
 func (s *ReplayServer) RegisterGinRoutes(group *gin.RouterGroup) {
 	group.GET("/runs", s.handleRuns)
 	group.GET("/run/*path", s.handleRunRoute)
+	group.DELETE("/run/*path", s.handleDeleteRun)
 	group.GET("/live", s.handleLive)
 	group.GET("/files", s.handleFiles)
 	group.GET("/file/*path", s.handleFile)
@@ -117,6 +118,31 @@ func (s *ReplayServer) handleRunRoute(c *gin.Context) {
 	default:
 		replayWriteAPIError(c, http.StatusBadRequest, fmt.Errorf("unsupported route"))
 	}
+}
+
+func (s *ReplayServer) handleDeleteRun(c *gin.Context) {
+	explorer, err := newCacheExplorer(s.requestedCacheDir(c))
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	runID, routeType, _, err := parseRunRoutePath(c.Param("path"))
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+	if routeType != "run" {
+		replayWriteAPIError(c, http.StatusBadRequest, fmt.Errorf("delete only supports run root"))
+		return
+	}
+
+	if err := explorer.deleteRun(c.Request.Context(), runID, strings.TrimSpace(c.Query("source"))); err != nil {
+		replayWriteLookupError(c, err)
+		return
+	}
+
+	replayWriteAPIData(c, http.StatusOK, gin.H{"run_id": runID, "deleted": true})
 }
 
 func (s *ReplayServer) handleFiles(c *gin.Context) {

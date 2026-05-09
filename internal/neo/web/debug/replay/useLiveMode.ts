@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, SetStateAction } from "react";
-import type { LiveState, ReplayItem, RunDetail, RunRecord } from "../replay/types";
-import { api, buildUrl } from "../replay/api";
+import type { LiveState, ReplayItem, RunDetail, RunRecord } from "./types";
+import { api, buildUrl } from "./api";
 
 export type PageMode = "history" | "live";
 export type LiveSocketState = "idle" | "connecting" | "connected" | "disconnected";

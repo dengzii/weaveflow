@@ -18,6 +18,7 @@ func TestStoreConfigRoundTrip(t *testing.T) {
 	want := PersistedConfig{
 		SystemPrompt:           "system prompt",
 		MaxIterations:          9,
+		RequestTimeoutSeconds:  240,
 		PlannerMaxSteps:        4,
 		MemoryRecallLimit:      3,
 		HistoryRecentTurns:     7,

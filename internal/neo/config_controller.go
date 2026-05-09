@@ -33,6 +33,7 @@ func NewConfigController(cfg *Config, allTools map[string]tools.Tool, toolFlags 
 type ConfigResponse struct {
 	SystemPrompt           string          `json:"system_prompt"`
 	MaxIterations          int             `json:"max_iterations"`
+	RequestTimeoutSeconds  int             `json:"request_timeout_seconds"`
 	PlannerMaxSteps        int             `json:"planner_max_steps"`
 	MemoryRecallLimit      int             `json:"memory_recall_limit"`
 	HistoryRecentTurns     int             `json:"history_recent_turns"`
@@ -45,6 +46,7 @@ type ConfigResponse struct {
 type UpdateConfigRequest struct {
 	SystemPrompt           *string         `json:"system_prompt,omitempty"`
 	MaxIterations          *int            `json:"max_iterations,omitempty"`
+	RequestTimeoutSeconds  *int            `json:"request_timeout_seconds,omitempty"`
 	PlannerMaxSteps        *int            `json:"planner_max_steps,omitempty"`
 	MemoryRecallLimit      *int            `json:"memory_recall_limit,omitempty"`
 	HistoryRecentTurns     *int            `json:"history_recent_turns,omitempty"`
@@ -64,6 +66,7 @@ func (ctrl *ConfigController) Get(c *gin.Context) {
 		"data": ConfigResponse{
 			SystemPrompt:           ctrl.config.SystemPrompt,
 			MaxIterations:          ctrl.config.MaxIterations,
+			RequestTimeoutSeconds:  ctrl.config.RequestTimeoutSeconds,
 			PlannerMaxSteps:        ctrl.config.PlannerMaxSteps,
 			MemoryRecallLimit:      ctrl.config.MemoryRecallLimit,
 			HistoryRecentTurns:     ctrl.config.HistoryRecentTurns,
@@ -90,6 +93,9 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 	}
 	if req.MaxIterations != nil && *req.MaxIterations > 0 {
 		ctrl.config.MaxIterations = *req.MaxIterations
+	}
+	if req.RequestTimeoutSeconds != nil && *req.RequestTimeoutSeconds > 0 {
+		ctrl.config.RequestTimeoutSeconds = *req.RequestTimeoutSeconds
 	}
 	if req.PlannerMaxSteps != nil && *req.PlannerMaxSteps > 0 {
 		ctrl.config.PlannerMaxSteps = *req.PlannerMaxSteps
@@ -123,6 +129,7 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 		if err := ctrl.store.SaveConfig(PersistedConfig{
 			SystemPrompt:           ctrl.config.SystemPrompt,
 			MaxIterations:          ctrl.config.MaxIterations,
+			RequestTimeoutSeconds:  ctrl.config.RequestTimeoutSeconds,
 			PlannerMaxSteps:        ctrl.config.PlannerMaxSteps,
 			MemoryRecallLimit:      ctrl.config.MemoryRecallLimit,
 			HistoryRecentTurns:     ctrl.config.HistoryRecentTurns,
@@ -142,6 +149,7 @@ func (ctrl *ConfigController) Update(c *gin.Context) {
 		"data": ConfigResponse{
 			SystemPrompt:           ctrl.config.SystemPrompt,
 			MaxIterations:          ctrl.config.MaxIterations,
+			RequestTimeoutSeconds:  ctrl.config.RequestTimeoutSeconds,
 			PlannerMaxSteps:        ctrl.config.PlannerMaxSteps,
 			MemoryRecallLimit:      ctrl.config.MemoryRecallLimit,
 			HistoryRecentTurns:     ctrl.config.HistoryRecentTurns,

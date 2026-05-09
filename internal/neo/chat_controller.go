@@ -3,6 +3,7 @@ package neo
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"weaveflow"
+	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
@@ -154,6 +156,9 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 	baseCtx := fruntime.WithServices(c.Request.Context(), services)
 	ctx, cancel := context.WithCancel(baseCtx)
+	if cfg.RequestTimeoutSeconds > 0 {
+		ctx, cancel = context.WithTimeout(baseCtx, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
+	}
 
 	ctrl.mu.Lock()
 	ctrl.runner = runner
@@ -222,6 +227,8 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	c.Writer.Flush()
 
 	clientGone := c.Request.Context().Done()
+	heartbeatTicker := time.NewTicker(10 * time.Second)
+	defer heartbeatTicker.Stop()
 	streamedReasoningByStep := make(map[string]string)
 	streamedContentByStep := make(map[string]string)
 	sentAssistantContent := false
@@ -233,6 +240,8 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 			ctrl.cancelFn = nil
 			ctrl.mu.Unlock()
 			return
+		case <-heartbeatTicker.C:
+			writeSSEHeartbeat(c)
 		case event, ok := <-channelSink.Events():
 			if !ok {
 				res := <-done
@@ -251,11 +260,19 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 					})
 				}
 
-				if res.err != nil && res.state == nil {
-					writeSSE(c, &ChatEvent{
-						Type:    ChatEventTypeError,
-						Content: res.err.Error(),
-					})
+				if res.err != nil {
+					switch {
+					case errors.Is(res.err, context.DeadlineExceeded):
+						writeSSE(c, &ChatEvent{
+							Type:    ChatEventTypeError,
+							Content: "执行超时: " + res.err.Error(),
+						})
+					case !errors.Is(res.err, context.Canceled):
+						writeSSE(c, &ChatEvent{
+							Type:    ChatEventTypeError,
+							Content: res.err.Error(),
+						})
+					}
 				}
 				return
 			}
@@ -451,6 +468,34 @@ func (ctrl *ChatController) GetHistory() ([]HistoryMessage, error) {
 	return sanitizeHistoryMessages(convertMessages(state.Conversation(stateScope).Messages())), nil
 }
 
+func (ctrl *ChatController) ClearHistory() error {
+	if ctrl.store != nil {
+		if err := ctrl.store.ClearHistory(defaultSessionID); err != nil {
+			return err
+		}
+	}
+
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	ctrl.lastState = nil
+	ctrl.runID = ""
+	return nil
+}
+
+func (ctrl *ChatController) GetMemory() ([]memory.Entry, error) {
+	if ctrl.services == nil || ctrl.services.Memory == nil {
+		return []memory.Entry{}, nil
+	}
+	return ctrl.services.Memory.Load(nil)
+}
+
+func (ctrl *ChatController) ClearMemory() error {
+	if ctrl.services == nil || ctrl.services.Memory == nil {
+		return nil
+	}
+	return ctrl.services.Memory.Delete()
+}
+
 func writeSSE(c *gin.Context, event *ChatEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -460,12 +505,17 @@ func writeSSE(c *gin.Context, event *ChatEvent) {
 	c.Writer.Flush()
 }
 
+func writeSSEHeartbeat(c *gin.Context) {
+	_, _ = fmt.Fprint(c.Writer, ": heartbeat\n\n")
+	c.Writer.Flush()
+}
+
 // runStatusString determines the run outcome label for history persistence.
 func runStatusString(ctx context.Context, runErr error) string {
 	if runErr == nil {
 		return "completed"
 	}
-	if ctx.Err() != nil {
+	if errors.Is(runErr, context.Canceled) || errors.Is(ctx.Err(), context.Canceled) {
 		return "stopped"
 	}
 	return "failed"

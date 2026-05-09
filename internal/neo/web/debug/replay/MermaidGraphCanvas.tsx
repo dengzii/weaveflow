@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { RunDetail } from "../replay/types";
+import type { RunDetail } from "./types";
 import { buildMermaidDiagram, buildProjection, NodeInfoPanel, parseSourceGraph } from "./graph";
 
 let mermaidInitPromise: Promise<(typeof import("mermaid"))["default"]> | null = null;

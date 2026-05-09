@@ -14,6 +14,17 @@ export async function api<T>(url: string): Promise<T> {
   return payload.data as T;
 }
 
+export async function apiDelete<T>(url: string): Promise<T> {
+  const response = await fetch(url, { method: "DELETE" });
+  const payload: ApiEnvelope<T> = await response
+    .json()
+    .catch(() => ({ error: "invalid response" }));
+  if (!response.ok || payload.error) {
+    throw new Error(payload.error ?? `request failed: ${response.status}`);
+  }
+  return payload.data as T;
+}
+
 export function buildUrl(
   path: string,
   cacheDir: string,

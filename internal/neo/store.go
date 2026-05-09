@@ -24,6 +24,7 @@ type Store struct {
 type PersistedConfig struct {
 	SystemPrompt           string
 	MaxIterations          int
+	RequestTimeoutSeconds  int
 	PlannerMaxSteps        int
 	MemoryRecallLimit      int
 	HistoryRecentTurns     int
@@ -91,6 +92,7 @@ func (s *Store) initSchema() error {
 			config_key          TEXT PRIMARY KEY,
 			system_prompt       TEXT    NOT NULL,
 			max_iterations      INTEGER NOT NULL,
+			request_timeout_seconds INTEGER NOT NULL DEFAULT 0,
 			planner_max_steps   INTEGER NOT NULL,
 			memory_recall_limit INTEGER NOT NULL,
 			history_recent_turns INTEGER NOT NULL DEFAULT 0,
@@ -117,6 +119,7 @@ func (s *Store) initSchema() error {
 		`ALTER TABLE configs ADD COLUMN history_recent_turns INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE configs ADD COLUMN history_summary_max_chars INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE configs ADD COLUMN prompt_max_chars INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE configs ADD COLUMN request_timeout_seconds INTEGER NOT NULL DEFAULT 0`,
 	} {
 		_, _ = s.db.Exec(stmt)
 	}
@@ -183,6 +186,25 @@ func (s *Store) LoadHistory(sessionID string) ([]HistoryMessage, error) {
 	return s.loadRawHistory(sessionID)
 }
 
+func (s *Store) ClearHistory(sessionID string) error {
+	sessionID = normalizeSessionID(sessionID)
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	if _, err = tx.Exec(`DELETE FROM turn_messages WHERE session_id = ?`, sessionID); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(`DELETE FROM messages WHERE session_id = ?`, sessionID); err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
 func (s *Store) LoadLLMMessages(sessionID string) ([]llms.MessageContent, error) {
 	return s.LoadLLMMessagesWithOptions(sessionID, PromptHistoryOptions{})
 }
@@ -205,7 +227,7 @@ func (s *Store) LoadLLMMessagesWithOptions(sessionID string, options PromptHisto
 
 func (s *Store) LoadConfig() (PersistedConfig, bool, error) {
 	row := s.db.QueryRow(
-		`SELECT system_prompt, max_iterations, planner_max_steps, memory_recall_limit, history_recent_turns, history_summary_max_chars, prompt_max_chars, tool_flags, mode
+		`SELECT system_prompt, max_iterations, request_timeout_seconds, planner_max_steps, memory_recall_limit, history_recent_turns, history_summary_max_chars, prompt_max_chars, tool_flags, mode
 		 FROM configs WHERE config_key = ?`,
 		defaultConfigKey,
 	)
@@ -215,6 +237,7 @@ func (s *Store) LoadConfig() (PersistedConfig, bool, error) {
 	if err := row.Scan(
 		&cfg.SystemPrompt,
 		&cfg.MaxIterations,
+		&cfg.RequestTimeoutSeconds,
 		&cfg.PlannerMaxSteps,
 		&cfg.MemoryRecallLimit,
 		&cfg.HistoryRecentTurns,
@@ -252,13 +275,14 @@ func (s *Store) SaveConfig(cfg PersistedConfig) error {
 
 	_, err = s.db.Exec(
 		`INSERT INTO configs(
-			config_key, system_prompt, max_iterations, planner_max_steps, memory_recall_limit,
+			config_key, system_prompt, max_iterations, request_timeout_seconds, planner_max_steps, memory_recall_limit,
 			history_recent_turns, history_summary_max_chars, prompt_max_chars,
 			tool_flags, mode, created_at, updated_at
-		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(config_key) DO UPDATE SET
 			system_prompt = excluded.system_prompt,
 			max_iterations = excluded.max_iterations,
+			request_timeout_seconds = excluded.request_timeout_seconds,
 			planner_max_steps = excluded.planner_max_steps,
 			memory_recall_limit = excluded.memory_recall_limit,
 			history_recent_turns = excluded.history_recent_turns,
@@ -270,6 +294,7 @@ func (s *Store) SaveConfig(cfg PersistedConfig) error {
 		defaultConfigKey,
 		cfg.SystemPrompt,
 		cfg.MaxIterations,
+		cfg.RequestTimeoutSeconds,
 		cfg.PlannerMaxSteps,
 		cfg.MemoryRecallLimit,
 		cfg.HistoryRecentTurns,

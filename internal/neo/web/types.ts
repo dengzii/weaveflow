@@ -12,6 +12,16 @@ export interface ApiResponse<T> {
   data: T;
 }
 
+export interface MemoryEntry {
+  id: string;
+  text: string;
+  role: string;
+  payload?: Record<string, unknown>;
+  created_at: number;
+  type: string;
+  tags?: string[];
+}
+
 export interface HistoryPart {
   type: string;
   text?: string;

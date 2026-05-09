@@ -31,8 +31,9 @@ export function statusVariant(
   const v = String(status ?? "").toLowerCase();
   if (v.includes("failed") || v.includes("error")) return "destructive";
   if (v.includes("paused") || v.includes("warning")) return "warning";
-  if (v.includes("completed") || v.includes("succeeded") || v.includes("success"))
+  if (v.includes("completed") || v.includes("succeeded") || v.includes("success")) {
     return "success";
+  }
   return "secondary";
 }
 
@@ -40,9 +41,8 @@ export function statusDotClass(status: string): string {
   const v = String(status ?? "").toLowerCase();
   if (v.includes("failed") || v.includes("error") || v === "is-error") return "bg-destructive";
   if (v.includes("paused") || v.includes("warning") || v === "is-warning") return "bg-yellow-500";
-  if (
-    v.includes("completed") || v.includes("succeeded") || v.includes("success") || v === "is-success"
-  )
+  if (v.includes("completed") || v.includes("succeeded") || v.includes("success") || v === "is-success") {
     return "bg-green-500";
+  }
   return "bg-blue-500";
 }

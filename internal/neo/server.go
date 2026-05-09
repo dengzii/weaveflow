@@ -56,6 +56,9 @@ func (s *Server) Hub() *LiveHub {
 func applyPersistedConfig(cfg *Config, toolFlags map[string]bool, persisted PersistedConfig) {
 	cfg.SystemPrompt = persisted.SystemPrompt
 	cfg.MaxIterations = persisted.MaxIterations
+	if persisted.RequestTimeoutSeconds > 0 {
+		cfg.RequestTimeoutSeconds = persisted.RequestTimeoutSeconds
+	}
 	cfg.PlannerMaxSteps = persisted.PlannerMaxSteps
 	cfg.MemoryRecallLimit = persisted.MemoryRecallLimit
 	if persisted.HistoryRecentTurns > 0 {
@@ -87,4 +90,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	}
 
 	group.GET("/history", s.historyCtrl.Get)
+	group.DELETE("/history", s.historyCtrl.Clear)
+	group.GET("/memory", s.historyCtrl.GetMemory)
+	group.DELETE("/memory", s.historyCtrl.ClearMemory)
 }

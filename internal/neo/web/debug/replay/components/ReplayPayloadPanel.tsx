@@ -1,4 +1,4 @@
-import { prettyJSON } from "../../replay/utils";
+import { prettyJSON } from "../utils";
 
 export function ReplayPayloadPanel({ payload }: { payload: unknown }) {
   return (

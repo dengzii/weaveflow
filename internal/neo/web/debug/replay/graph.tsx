@@ -1,8 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
 import { useEffect, useState } from "react";
 import { Position, type Edge, type Node } from "@xyflow/react";
-import { api, buildUrl } from "../replay/api";
-import type { ReplayItem, RunDetail } from "../replay/types";
+import { api, buildUrl } from "./api";
+import type { ReplayItem, RunDetail } from "./types";
 
 interface ArtifactDetail {
   bytes: number;
