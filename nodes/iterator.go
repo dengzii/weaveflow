@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	IteratorStateNamespace = "iterator"
-	IteratorStateRootKey   = fruntime.StateNamespacePrefix + IteratorStateNamespace
+	IteratorStateNamespace = "runtime"
+	IteratorStateRootKey   = IteratorStateNamespace
 )
 
 type IteratorNode struct {
@@ -91,6 +91,10 @@ func (n *IteratorNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	runtimeState["is_first"] = nextIndex == 0
 	runtimeState["is_last"] = nextIndex == limit-1
 	return state, nil
+}
+
+func (n *IteratorNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *IteratorNode) GraphNodeSpec() dsl.GraphNodeSpec {

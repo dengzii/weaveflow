@@ -97,6 +97,10 @@ func (n *MemoryRecallNode) Invoke(ctx context.Context, state fruntime.State) (fr
 	return state, nil
 }
 
+func (n *MemoryRecallNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *MemoryRecallNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"memory_state_path":        n.effectiveMemoryStatePath(),
@@ -165,11 +169,12 @@ func (n *MemoryRecallNode) resolveQuery(state fruntime.State) (string, bool, str
 		}
 	}
 
-	conversation := state.Conversation("")
-	for _, scope := range []string{n.StateScope, ""} {
-		if scope != "" {
-			conversation = state.Conversation(scope)
-		}
+	scopes := []string{""}
+	if scope := strings.TrimSpace(n.StateScope); scope != "" {
+		scopes = []string{scope}
+	}
+	for _, scope := range scopes {
+		conversation := state.Conversation(scope)
 		messages := conversation.Messages()
 		for i := len(messages) - 1; i >= 0; i-- {
 			if messages[i].Role != "human" {

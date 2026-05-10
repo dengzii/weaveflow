@@ -11,6 +11,8 @@ const (
 	ContractValidationOff    ContractValidationMode = ""
 	ContractValidationWarn   ContractValidationMode = "warn"
 	ContractValidationStrict ContractValidationMode = "strict"
+
+	runnerRuntimeMetadataPath = "internal.__wf_runner"
 )
 
 type ContractViolation struct {
@@ -76,7 +78,7 @@ func ValidateNodeContract(
 
 	if !contract.WildcardWrite {
 		for _, change := range changes {
-			if isRuntimeOrConversationPath(change.Path) {
+			if isImplicitSystemDiffPath(change.Path) {
 				continue
 			}
 			if !isPathCoveredByContract(change.Path, contract.WritePaths) {
@@ -142,9 +144,8 @@ func NormalizeContractPath(path string) string {
 	return "shared." + path
 }
 
-func isRuntimeOrConversationPath(path string) bool {
-	return path == "runtime" ||
-		strings.HasPrefix(path, "runtime.") ||
-		path == "conversation" ||
-		strings.HasPrefix(path, "conversation.")
+func isImplicitSystemDiffPath(path string) bool {
+	return path == "conversation" ||
+		path == runnerRuntimeMetadataPath ||
+		strings.HasPrefix(path, runnerRuntimeMetadataPath+".")
 }

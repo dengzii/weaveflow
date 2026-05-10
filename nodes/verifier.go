@@ -127,6 +127,10 @@ func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	return state, nil
 }
 
+func (n *VerifierNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *VerifierNode) resolveMode(state fruntime.State) string {
 	mode := n.effectiveMode()
 	if mode != VerifierModeAuto {

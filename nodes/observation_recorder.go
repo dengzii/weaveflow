@@ -120,6 +120,10 @@ func (n *ObservationRecorderNode) Invoke(ctx context.Context, state fruntime.Sta
 	return state, nil
 }
 
+func (n *ObservationRecorderNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *ObservationRecorderNode) recordToolMessage(ctx context.Context, msg llms.MessageContent, stepID string, ts string) ([]map[string]any, []map[string]any) {
 	var observations []map[string]any
 	var evidences []map[string]any

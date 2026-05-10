@@ -343,11 +343,12 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	compiled := langgraph.NewStateGraph[State]()
 	if err := g.configureStateGraph(compiled, func(nodeID string, node nodes.Node[State]) {
 		nodeDef := node
+		executable, _ := nodeDef.(fruntime.ExecutableNode)
 		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
 			return execution.InvokeNode(ctx, nodeID,
 				func(ctx context.Context, state State) (State, error) {
 					return nodeDef.Invoke(ctx, state)
-				}, state,
+				}, executable, state,
 			)
 		})
 	}); err != nil {

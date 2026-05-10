@@ -215,6 +215,12 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 		Description: "Orchestration state used to decide whether memory recall should run and which query to use.",
 	})
 
+	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
+		Path:        scopedConversationPath(stringConfig(spec.Config, "state_scope"), "messages"),
+		Mode:        dsl.StateAccessRead,
+		Description: "Conversation messages used as a last-resort recall query source.",
+	})
+
 	return contract, nil
 }
 
@@ -237,6 +243,12 @@ func resolveMemoryWriteStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract,
 	}
 	finalAnswerPath = canonicalContractPath(finalAnswerPath)
 
+	plannerPath := strings.TrimSpace(stringConfig(spec.Config, "planner_state_path"))
+	if plannerPath == "" {
+		plannerPath = fruntime.StateKeyPlanner
+	}
+	plannerPath = canonicalContractPath(plannerPath)
+
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
@@ -248,6 +260,11 @@ func resolveMemoryWriteStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract,
 				Path:        finalAnswerPath,
 				Mode:        dsl.StateAccessRead,
 				Description: "Final answer optionally written to memory.",
+			},
+			{
+				Path:        plannerPath,
+				Mode:        dsl.StateAccessRead,
+				Description: "Planner state used to derive the persisted run summary.",
 			},
 			{
 				Path:          memoryPath,

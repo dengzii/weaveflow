@@ -11,7 +11,7 @@ const DefaultGraphVersion = "1.0"
 type NodeInvoker func(context.Context, State) (State, error)
 
 type RunnerExecution interface {
-	InvokeNode(ctx context.Context, nodeID string, invoke NodeInvoker, state State) (State, error)
+	InvokeNode(ctx context.Context, nodeID string, invoke NodeInvoker, executor ExecutableNode, state State) (State, error)
 	OnGraphStep(ctx context.Context, stepNodeID string, state State) error
 }
 

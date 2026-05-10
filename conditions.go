@@ -314,6 +314,9 @@ func resolveExpressionValue(state State, scope, path string) (any, bool) {
 	if path == "" {
 		return nil, false
 	}
+	if isExplicitContractStatePath(path) {
+		return fruntime.ResolveContractPathValue(state, path)
+	}
 
 	segments := fruntime.SplitStatePath(path)
 	if len(segments) == 0 {
@@ -336,6 +339,23 @@ func resolveExpressionValue(state State, scope, path string) (any, bool) {
 		base = state.Scope(scope)
 	}
 	return fruntime.ResolveStateValue(base, segments)
+}
+
+func isExplicitContractStatePath(path string) bool {
+	switch {
+	case path == "shared" || strings.HasPrefix(path, "shared."):
+		return true
+	case path == "scopes" || strings.HasPrefix(path, "scopes."):
+		return true
+	case path == "runtime" || strings.HasPrefix(path, "runtime."):
+		return true
+	case path == "internal" || strings.HasPrefix(path, "internal."):
+		return true
+	case path == "conversation" || strings.HasPrefix(path, "conversation."):
+		return true
+	default:
+		return false
+	}
 }
 
 func isConversationField(field string) bool {

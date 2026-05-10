@@ -86,6 +86,10 @@ func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.
 	return state, nil
 }
 
+func (t *ToolsNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: t.Invoke}.Execute(ctx, input)
+}
+
 func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return dsl.GraphNodeSpec{
 		ID:          t.ID(),

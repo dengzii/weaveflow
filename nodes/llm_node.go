@@ -114,6 +114,10 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	return state, nil
 }
 
+func (L *LLMNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: L.Invoke}.Execute(ctx, input)
+}
+
 func (L *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return dsl.GraphNodeSpec{
 		ID:          L.ID(),

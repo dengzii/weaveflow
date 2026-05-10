@@ -107,6 +107,12 @@ func plannerNodeTypeDefinition() NodeTypeDefinition {
 						PathConfigKey: "planner_state_path",
 						MergeStrategy: dsl.StateMergeMerge,
 					},
+					{
+						Path:          nodes.TokenUsageStateKey,
+						Mode:          dsl.StateAccessWrite,
+						Description:   "Accumulated token usage emitted by the planner LLM call.",
+						MergeStrategy: dsl.StateMergeMerge,
+					},
 				},
 			},
 		},
@@ -222,6 +228,12 @@ func resolvePlannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, err
 		Required:      true,
 		Description:   "Planner output state subtree.",
 		Schema:        plannerStateFieldDefinition().Schema,
+		MergeStrategy: dsl.StateMergeMerge,
+	})
+	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
+		Path:          canonicalContractPath(nodes.TokenUsageStateKey),
+		Mode:          dsl.StateAccessWrite,
+		Description:   "Accumulated token usage emitted by the planner LLM call.",
 		MergeStrategy: dsl.StateMergeMerge,
 	})
 

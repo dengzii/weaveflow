@@ -7,7 +7,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func TestProjectStateByContractSelectsSharedScopeAndInternalState(t *testing.T) {
+func TestProjectStateByContractSelectsSharedScopeRuntimeAndInternalState(t *testing.T) {
 	t.Parallel()
 
 	full := State{
@@ -20,15 +20,17 @@ func TestProjectStateByContractSelectsSharedScopeAndInternalState(t *testing.T) 
 	full.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
 	})
-	full.EnsureNamespace("__wf_iterator")["loop"] = map[string]any{
+	full.EnsureNamespace("runtime")["loop"] = map[string]any{
 		"done": false,
 	}
+	full.EnsureNamespace("__wf_secret")["flag"] = true
 
 	projected := ProjectStateByContract(full, NodeIOContract{
 		ReadPaths: []string{
 			"shared.planner",
 			"scopes.agent.messages",
-			"internal.__wf_iterator.loop",
+			"runtime.loop",
+			"internal.__wf_secret.flag",
 		},
 	})
 
@@ -42,12 +44,16 @@ func TestProjectStateByContractSelectsSharedScopeAndInternalState(t *testing.T) 
 	if len(messages) != 1 || messages[0].Role != llms.ChatMessageTypeHuman {
 		t.Fatalf("expected scoped conversation messages, got %#v", messages)
 	}
-	internal := projected.Namespace("__wf_iterator")
-	if internal == nil {
-		t.Fatal("expected iterator internal namespace")
+	runtimeState := projected.Namespace("runtime")
+	if runtimeState == nil {
+		t.Fatal("expected runtime namespace")
 	}
-	if loop, ok := internal["loop"].(map[string]any); !ok || loop["done"] != false {
-		t.Fatalf("expected iterator loop state, got %#v", internal["loop"])
+	if loop, ok := runtimeState["loop"].(map[string]any); !ok || loop["done"] != false {
+		t.Fatalf("expected iterator loop state, got %#v", runtimeState["loop"])
+	}
+	internal := projected.Namespace("__wf_secret")
+	if internal == nil || internal["flag"] != true {
+		t.Fatalf("expected internal namespace field, got %#v", internal)
 	}
 }
 

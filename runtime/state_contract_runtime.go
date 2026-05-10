@@ -25,6 +25,10 @@ func ProjectStateByContract(full State, contract NodeIOContract) State {
 	return projected
 }
 
+func ResolveContractPathValue(state State, path string) (any, bool) {
+	return resolveSnapshotPathValue(state, NormalizeContractPath(path))
+}
+
 func MergePatchByContract(full State, patch State, contract NodeIOContract) (State, error) {
 	if full == nil {
 		full = State{}

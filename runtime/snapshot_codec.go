@@ -373,12 +373,13 @@ func deserializeMessagePart(part StateMessagePart) (llms.ContentPart, error) {
 
 func flattenSnapshot(snapshot StateSnapshot) (map[string]json.RawMessage, error) {
 	result := make(map[string]json.RawMessage)
+	runtimeNamespaceKey := NormalizeStateNamespace("runtime")
 
 	rawRuntime, err := json.Marshal(snapshot.Runtime)
 	if err != nil {
 		return nil, err
 	}
-	result["runtime"] = rawRuntime
+	result[runnerRuntimeMetadataPath] = rawRuntime
 
 	for _, extension := range defaultStateExtensions() {
 		if err := extension.AppendSnapshotFields(snapshot, result); err != nil {
@@ -398,6 +399,10 @@ func flattenSnapshot(snapshot StateSnapshot) (map[string]json.RawMessage, error)
 
 	for namespace, values := range snapshot.Internal {
 		for key, raw := range values {
+			if namespace == runtimeNamespaceKey {
+				result["runtime."+key] = raw
+				continue
+			}
 			result["internal."+namespace+"."+key] = raw
 		}
 	}

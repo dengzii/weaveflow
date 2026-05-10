@@ -111,6 +111,10 @@ func (n *ContextAssemblerNode) Invoke(ctx context.Context, state fruntime.State)
 	return state, nil
 }
 
+func (n *ContextAssemblerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *ContextAssemblerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"memory_state_path":        n.effectiveMemoryStatePath(),

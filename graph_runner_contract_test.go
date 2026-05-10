@@ -255,3 +255,75 @@ func TestGraphRunnerRejectsMissingRequiredWrite(t *testing.T) {
 		t.Fatalf("expected failed run, got %q", run.Status)
 	}
 }
+
+func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	registerCollectIteratorItemNodeType(registry)
+
+	graph, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "loop",
+		FinishPoint: "loop",
+		Nodes: []GraphNodeSpec{
+			{
+				ID:   "loop",
+				Type: "iterator",
+				Config: map[string]any{
+					"state_key":      "payload.items",
+					"max_iterations": 2,
+					"continue_to":    "collect",
+					"done_to":        dsl.EndNodeRef,
+				},
+			},
+			{
+				ID:   "collect",
+				Type: "collect_iterator_item",
+				Config: map[string]any{
+					"iterator_node_id": "loop",
+					"target_key":       "results",
+				},
+			},
+		},
+		Edges: []dsl.GraphEdgeSpec{
+			{From: "collect", To: "loop"},
+		},
+	}, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	runner := newContractTestRunner(t, graph)
+	run, finalState, err := runner.Start(context.Background(), State{
+		"payload": map[string]any{
+			"items": []any{"alpha", "beta", "gamma"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("start runner: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("expected completed run, got %q", run.Status)
+	}
+
+	results, ok := finalState["results"].([]string)
+	if !ok || len(results) != 2 || results[0] != "alpha" || results[1] != "beta" {
+		t.Fatalf("expected collected iterator results, got %#v", finalState["results"])
+	}
+
+	runtimeState := finalState.Namespace(nodes.IteratorStateNamespace)
+	if runtimeState == nil {
+		t.Fatalf("expected runtime namespace in final state, got %#v", finalState)
+	}
+	loopState, ok := runtimeState["loop"].(map[string]any)
+	if !ok {
+		if typed, ok := runtimeState["loop"].(State); ok {
+			loopState = typed
+		} else {
+			t.Fatalf("expected runtime loop state map, got %#v", runtimeState["loop"])
+		}
+	}
+	if loopState["done"] != true {
+		t.Fatalf("expected iterator to finish, got %#v", loopState)
+	}
+}

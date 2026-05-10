@@ -203,9 +203,19 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 				Description: "Task objective for final verification.",
 			},
 			{
+				Path:        canonicalContractPath(fruntime.StateKeyExecution + ".route"),
+				Mode:        dsl.StateAccessRead,
+				Description: "Execution route used to auto-select step or final verification mode.",
+			},
+			{
 				Path:        canonicalContractPath(fruntime.StateKeyExecution + ".step_results"),
 				Mode:        dsl.StateAccessRead,
 				Description: "Step execution results.",
+			},
+			{
+				Path:        canonicalContractPath(fruntime.StateKeyRequest + ".input"),
+				Mode:        dsl.StateAccessRead,
+				Description: "Request input fallback used when planner objective is unavailable.",
 			},
 			{
 				Path:        canonicalContractPath(fruntime.StateKeyObservations),
@@ -223,10 +233,21 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 				Description: "Conversation messages.",
 			},
 			{
+				Path:        scopedStatePath(scope, "final_answer"),
+				Mode:        dsl.StateAccessRead,
+				Description: "Current scoped final answer used during final verification.",
+			},
+			{
 				Path:          canonicalContractPath(fruntime.StateKeyVerification),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Verification result output.",
+				MergeStrategy: dsl.StateMergeMerge,
+			},
+			{
+				Path:          canonicalContractPath(nodes.TokenUsageStateKey),
+				Mode:          dsl.StateAccessWrite,
+				Description:   "Accumulated token usage emitted by verifier LLM calls.",
 				MergeStrategy: dsl.StateMergeMerge,
 			},
 		},

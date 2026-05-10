@@ -186,21 +186,24 @@ func TestValidateNodeContractReadOnlyViolation(t *testing.T) {
 	}
 }
 
-func TestValidateNodeContractIgnoresRuntimeAndConversationPaths(t *testing.T) {
+func TestValidateNodeContractDoesNotIgnoreRuntimeNodeStateWrites(t *testing.T) {
 	t.Parallel()
 
 	contract := NodeIOContract{
 		WritePaths: []string{"shared.topic"},
 	}
 	changes := []StateChange{
-		{Path: "runtime", After: json.RawMessage(`{"run_id":"abc"}`)},
 		{Path: "conversation", After: json.RawMessage(`{"messages":[]}`)},
+		{Path: "runtime.loop.done", After: json.RawMessage(`false`)},
 		{Path: "shared.topic", After: json.RawMessage(`"test"`)},
 	}
 
 	violations := ValidateNodeContract("node", contract, State{}, changes)
-	if len(violations) != 0 {
-		t.Fatalf("expected runtime/conversation paths to be ignored, got %+v", violations)
+	if len(violations) != 1 {
+		t.Fatalf("expected runtime node state write to be validated, got %+v", violations)
+	}
+	if violations[0].Path != "runtime.loop.done" {
+		t.Fatalf("expected runtime.loop.done violation, got %+v", violations)
 	}
 }
 

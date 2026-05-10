@@ -165,13 +165,16 @@ func TestResolvePlannerStateContractUsesConfigPaths(t *testing.T) {
 		t.Fatalf("resolve planner state contract: %v", err)
 	}
 
-	if len(contract.Fields) != 4 {
-		t.Fatalf("expected 4 contract fields, got %#v", contract.Fields)
+	if len(contract.Fields) != 5 {
+		t.Fatalf("expected 5 contract fields, got %#v", contract.Fields)
 	}
 	if contract.Fields[0].Path != "shared.request.objective" || contract.Fields[0].Mode != dsl.StateAccessRead {
 		t.Fatalf("unexpected objective contract field: %#v", contract.Fields[0])
 	}
 	if contract.Fields[3].Path != "shared.execution.plan" || contract.Fields[3].Mode != dsl.StateAccessWrite {
 		t.Fatalf("unexpected planner output contract field: %#v", contract.Fields[3])
+	}
+	if contract.Fields[4].Path != "shared.token_usage" || contract.Fields[4].Mode != dsl.StateAccessWrite {
+		t.Fatalf("unexpected planner token usage contract field: %#v", contract.Fields[4])
 	}
 }

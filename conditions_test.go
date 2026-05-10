@@ -116,3 +116,33 @@ func TestParseExpressionConditionConfigRejectsInvalidExpression(t *testing.T) {
 		t.Fatalf("expected invalid op in error, got %v", err)
 	}
 }
+
+func TestExpressionConditionsResolveExplicitCanonicalPaths(t *testing.T) {
+	t.Parallel()
+
+	state := State{
+		"status": "root",
+	}
+	state.EnsureScope("agent")["status"] = "ready"
+	state.EnsureNamespace("runtime")["loop"] = map[string]any{
+		"done": false,
+	}
+	state.Conversation("").SetFinalAnswer("done")
+
+	condition, err := ExpressionConditions(ExpressionConditionConfig{
+		StateScope: "agent",
+		Expressions: []Expression{
+			{Value1: "shared.status", Op: OperationEqual, Value2: "root"},
+			{Value1: "scopes.agent.status", Op: OperationEqual, Value2: "ready"},
+			{Value1: "runtime.loop.done", Op: OperationEqual, Value2: "false"},
+			{Value1: "conversation.final_answer", Op: OperationEqual, Value2: "done"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build expression condition: %v", err)
+	}
+
+	if !condition.Match(context.Background(), state) {
+		t.Fatal("expected explicit canonical paths to resolve")
+	}
+}

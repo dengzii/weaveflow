@@ -188,6 +188,10 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 	return state, nil
 }
 
+func (n *PlannerNode) Execute(ctx context.Context, input runtime.State) (runtime.State, error) {
+	return runtime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *PlannerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"planner_state_path": n.effectivePlannerStatePath(),
@@ -241,11 +245,6 @@ func (n *PlannerNode) resolveObjective(state runtime.State, plannerState runtime
 		text := strings.TrimSpace(stringifyPlannerValue(objective))
 		if text != "" {
 			return text, nil
-		}
-	}
-	if plannerState != nil {
-		if objective, ok := plannerState["objective"].(string); ok && strings.TrimSpace(objective) != "" {
-			return strings.TrimSpace(objective), nil
 		}
 	}
 	return "", fmt.Errorf("planner objective not found at %q", n.effectiveObjectivePath())

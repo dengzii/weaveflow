@@ -198,3 +198,30 @@ func TestDiffDetectsAddedAndRemovedFields(t *testing.T) {
 		t.Fatal("expected change for added shared.new_key")
 	}
 }
+
+func TestFlattenSnapshotSeparatesRunnerMetadataFromRuntimeNodeState(t *testing.T) {
+	t.Parallel()
+
+	snapshot := StateSnapshot{
+		Runtime: RuntimeState{RunID: "run_1"},
+		Internal: map[string]GraphState{
+			NormalizeStateNamespace("runtime"): {
+				"loop": json.RawMessage(`{"done":false}`),
+			},
+		},
+	}
+
+	flat, err := flattenSnapshot(snapshot)
+	if err != nil {
+		t.Fatalf("flatten snapshot: %v", err)
+	}
+	if _, ok := flat[runnerRuntimeMetadataPath]; !ok {
+		t.Fatalf("expected runner runtime metadata at %q, got %#v", runnerRuntimeMetadataPath, flat)
+	}
+	if _, ok := flat["runtime.loop"]; !ok {
+		t.Fatalf("expected runtime node state at runtime.loop, got %#v", flat)
+	}
+	if _, ok := flat["runtime"]; ok {
+		t.Fatalf("did not expect legacy runtime metadata path, got %#v", flat["runtime"])
+	}
+}

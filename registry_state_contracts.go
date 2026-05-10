@@ -170,8 +170,7 @@ func resolveIteratorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 			},
 			{
 				Path:          runtimePath,
-				Mode:          dsl.StateAccessWrite,
-				Required:      true,
+				Mode:          dsl.StateAccessReadWrite,
 				Description:   "Iterator runtime state for the current node, including the current item and loop progress.",
 				MergeStrategy: dsl.StateMergeMerge,
 			},

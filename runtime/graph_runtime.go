@@ -70,7 +70,7 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState St
 	}
 }
 
-func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, invoke NodeInvoker, state State) (State, error) {
+func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, invoke NodeInvoker, executor ExecutableNode, state State) (State, error) {
 	nodeCtx, err := e.beforeNode(ctx, nodeID, state)
 	if err != nil {
 		return state, err
@@ -86,8 +86,11 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		inputState = ProjectStateByContract(state, contract)
 	}
 
-	executor := LegacyNodeExecutor{Invoke: invoke}
-	result, invokeErr := executor.Execute(nodeCtx, inputState.CloneState())
+	patchExecutor := executor
+	if patchExecutor == nil {
+		patchExecutor = LegacyNodeExecutor{Invoke: invoke}
+	}
+	result, invokeErr := patchExecutor.Execute(nodeCtx, inputState.CloneState())
 	if invokeErr != nil {
 		var interrupt *langgraph.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
@@ -96,7 +99,11 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		return result, invokeErr
 	}
 	if !hasContract {
-		return result, nil
+		mergedState, err := MergePatchByContract(state, result, NodeIOContract{WildcardWrite: true})
+		if err != nil {
+			return state, err
+		}
+		return mergedState, nil
 	}
 
 	mergedState, err := MergePatchByContract(state, result, contract)
