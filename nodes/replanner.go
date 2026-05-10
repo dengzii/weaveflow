@@ -75,6 +75,10 @@ func (n *ReplannerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	return result, err
 }
 
+func (n *ReplannerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *ReplannerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"planner_state_path": n.effectivePlannerStatePath(),

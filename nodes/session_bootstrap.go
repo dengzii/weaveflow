@@ -127,6 +127,10 @@ func (n *SessionBootstrapNode) Invoke(ctx context.Context, state fruntime.State)
 	return state, nil
 }
 
+func (n *SessionBootstrapNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *SessionBootstrapNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"state_scope":    n.StateScope,

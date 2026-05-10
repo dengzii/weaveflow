@@ -399,6 +399,10 @@ func (n *FinalizerNode) storeConversationAnswer(conversation fruntime.Conversati
 	conversation.SetFinalAnswer(answer)
 }
 
+func (n *FinalizerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *FinalizerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{}
 	if scope := n.effectiveScope(); scope != defaultFinalizerScope {

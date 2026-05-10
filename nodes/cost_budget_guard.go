@@ -70,6 +70,10 @@ func (n *CostBudgetGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 	return state, nil
 }
 
+func (n *CostBudgetGuardNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *CostBudgetGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"state_scope": n.StateScope,

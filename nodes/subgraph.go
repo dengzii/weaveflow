@@ -50,6 +50,10 @@ func (n *SubgraphNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	return nextState, nil
 }
 
+func (n *SubgraphNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *SubgraphNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return dsl.GraphNodeSpec{
 		ID:          n.ID(),

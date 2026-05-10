@@ -64,6 +64,10 @@ func (n *ApprovalGateNode) Invoke(ctx context.Context, state fruntime.State) (fr
 	return state, &langgraph.NodeInterrupt{Node: n.NodeID, Value: n.effectiveInterruptMessage(details)}
 }
 
+func (n *ApprovalGateNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *ApprovalGateNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return dsl.GraphNodeSpec{
 		ID:          n.ID(),

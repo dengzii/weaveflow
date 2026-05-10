@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -11,6 +12,12 @@ import (
 )
 
 type runnerControlKind string
+
+const (
+	contractInputViewArtifactType   = "contract.input_view"
+	contractOutputPatchArtifactType = "contract.output_patch"
+	contractMergedStateArtifactType = "contract.merged_state"
+)
 
 var logger = zap.NewNop()
 
@@ -84,6 +91,7 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 			return state, fmt.Errorf("%s", violations[0].Message)
 		}
 		inputState = ProjectStateByContract(state, contract)
+		e.recordContractStateArtifact(nodeCtx, nodeID, contractInputViewArtifactType, contract, inputState)
 	}
 
 	patchExecutor := executor
@@ -106,11 +114,73 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		return mergedState, nil
 	}
 
+	e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, result)
 	mergedState, err := MergePatchByContract(state, result, contract)
 	if err != nil {
 		return state, err
 	}
+	e.recordContractStateArtifact(nodeCtx, nodeID, contractMergedStateArtifactType, contract, mergedState)
 	return mergedState, nil
+}
+
+type contractStateArtifact struct {
+	NodeID   string                    `json:"node_id,omitempty"`
+	Stage    string                    `json:"stage,omitempty"`
+	Contract NodeIOContract            `json:"contract"`
+	Summary  contractStateArtifactInfo `json:"summary"`
+	Snapshot StateSnapshot             `json:"snapshot"`
+}
+
+type contractStateArtifactInfo struct {
+	StateKeys            int `json:"state_keys"`
+	StateScopes          int `json:"state_scopes"`
+	ConversationMessages int `json:"conversation_messages"`
+}
+
+func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, nodeID string, artifactType string, contract NodeIOContract, state State) {
+	if ctx == nil || strings.TrimSpace(nodeID) == "" || strings.TrimSpace(artifactType) == "" {
+		return
+	}
+	snapshot, err := SnapshotFromState(state)
+	if err != nil {
+		logger.Warn("contract state artifact snapshot failed",
+			zap.String("node_id", nodeID),
+			zap.String("artifact_type", artifactType),
+			zap.Error(err),
+		)
+		return
+	}
+	payload := contractStateArtifact{
+		NodeID:   nodeID,
+		Stage:    contractArtifactStage(artifactType),
+		Contract: contract,
+		Summary: contractStateArtifactInfo{
+			StateKeys:            countStateKeys(state),
+			StateScopes:          len(state.scopes()),
+			ConversationMessages: countConversationMessages(state),
+		},
+		Snapshot: snapshot,
+	}
+	if _, err := SaveJSONArtifactBestEffort(ctx, artifactType, payload); err != nil {
+		logger.Warn("contract state artifact recording failed",
+			zap.String("node_id", nodeID),
+			zap.String("artifact_type", artifactType),
+			zap.Error(err),
+		)
+	}
+}
+
+func contractArtifactStage(artifactType string) string {
+	switch artifactType {
+	case contractInputViewArtifactType:
+		return "input_view"
+	case contractOutputPatchArtifactType:
+		return "output_patch"
+	case contractMergedStateArtifactType:
+		return "merged_state"
+	default:
+		return artifactType
+	}
 }
 
 func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, state State) (context.Context, error) {

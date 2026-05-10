@@ -29,6 +29,10 @@ func ResolveContractPathValue(state State, path string) (any, bool) {
 	return resolveSnapshotPathValue(state, NormalizeContractPath(path))
 }
 
+func SetContractPathValue(state State, path string, value any) {
+	setSnapshotPathValue(state, NormalizeContractPath(path), value)
+}
+
 func MergePatchByContract(full State, patch State, contract NodeIOContract) (State, error) {
 	if full == nil {
 		full = State{}
@@ -144,6 +148,10 @@ func applyStatePatch(target State, patch State) {
 		applyDecodedGraphValue(target, key, cloneStateValue(value))
 	}
 
+	if conversation := conversationSource(patch); conversation != nil {
+		copyConversationState(target, conversation)
+	}
+
 	for scopeName, scopePatch := range patch.scopes() {
 		applyStatePatch(target.EnsureScope(scopeName), scopePatch)
 	}
@@ -193,6 +201,18 @@ func resolveSnapshotPathValue(state State, path string) (any, bool) {
 			return nil, false
 		}
 		scopeState := state.Scope(segments[1])
+		if len(segments) == 2 {
+			if scopeState == nil {
+				return nil, false
+			}
+			return scopeState.CloneState(), true
+		}
+		if value, ok := resolveScopedSpecialValue(state, scopeState, segments[2]); ok {
+			if len(segments) == 3 {
+				return cloneStateValue(value), true
+			}
+			return ResolveStateValue(value, segments[3:])
+		}
 		if scopeState == nil {
 			return nil, false
 		}
@@ -217,6 +237,34 @@ func resolveSnapshotPathValue(state State, path string) (any, bool) {
 	default:
 		return resolveStateSegments(state, segments)
 	}
+}
+
+func resolveScopedSpecialValue(root State, scopeState State, key string) (any, bool) {
+	switch key {
+	case stateKeyMessages:
+		if messages, ok := conversationMessages(conversationSource(scopeState)); ok {
+			return messages, true
+		}
+		if messages, ok := conversationMessages(conversationSource(root)); ok {
+			return messages, true
+		}
+	case stateKeyMaxIterations:
+		if value, ok := conversationInt(conversationSource(scopeState), key); ok {
+			return value, true
+		}
+		if value, ok := conversationInt(conversationSource(root), key); ok {
+			return value, true
+		}
+	case stateKeyIterationCount:
+		if value, ok := conversationInt(conversationSource(scopeState), key); ok {
+			return value, true
+		}
+	case stateKeyFinalAnswer:
+		if value, ok := conversationString(conversationSource(scopeState), key); ok {
+			return value, true
+		}
+	}
+	return nil, false
 }
 
 func resolveStateSegments(state State, segments []string) (any, bool) {

@@ -22,9 +22,10 @@ type ConditionSchema = dsl.ConditionSchema
 type GraphResolver func(graphRef string) (dsl.GraphDefinition, error)
 
 type BuildContext struct {
-	InstanceConfig *dsl.GraphInstanceConfig
-	GraphResolver  GraphResolver
-	graphBuildPath []string
+	InstanceConfig       *dsl.GraphInstanceConfig
+	GraphResolver        GraphResolver
+	OnContractDiagnostic func(ContractDiagnostic)
+	graphBuildPath       []string
 }
 
 type NodeTypeDefinition struct {
@@ -119,6 +120,75 @@ func DefaultRegistry() *Registry {
 				node.NodeDescription = spec.Description
 			}
 			node.GraphRef = graphRef
+			node.InvokeSubgraph = func(ctx context.Context, state State) (State, error) {
+				return subgraph.Run(ctx, state)
+			}
+			return node, nil
+		},
+	})
+
+	r.RegisterNodeType(NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "mapped_subgraph",
+			Title:       "Mapped Subgraph Node",
+			Description: "Invoke another graph with explicit input/output state path mappings.",
+			ConfigSchema: JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"graph_ref": JSONSchema{"type": "string"},
+					"input_map": JSONSchema{
+						"type":                 "object",
+						"additionalProperties": JSONSchema{"type": "string"},
+						"description":          "Maps parent state paths (keys) to subgraph input paths (values).",
+					},
+					"output_map": JSONSchema{
+						"type":                 "object",
+						"additionalProperties": JSONSchema{"type": "string"},
+						"description":          "Maps subgraph output paths (keys) to parent state paths (values).",
+					},
+				},
+				"required":             []string{"graph_ref"},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: resolveMappedSubgraphStateContract,
+		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+			graphRef := stringConfig(spec.Config, "graph_ref")
+			if graphRef == "" {
+				return nil, fmt.Errorf("build mapped_subgraph node %q: graph_ref is required", spec.ID)
+			}
+			if ctx == nil || ctx.GraphResolver == nil {
+				return nil, fmt.Errorf("build mapped_subgraph node %q: graph resolver is required", spec.ID)
+			}
+			if err := validateGraphBuildPath(ctx.graphBuildPath, graphRef); err != nil {
+				return nil, fmt.Errorf("build mapped_subgraph node %q: %w", spec.ID, err)
+			}
+
+			def, err := ctx.GraphResolver(graphRef)
+			if err != nil {
+				return nil, fmt.Errorf("build mapped_subgraph node %q resolve %q: %w", spec.ID, graphRef, err)
+			}
+
+			subgraphCtx := cloneBuildContext(ctx)
+			subgraphCtx.InstanceConfig = nil
+			subgraphCtx.graphBuildPath = append(subgraphCtx.graphBuildPath, graphRef)
+
+			subgraph, err := r.buildGraph(def, nil, subgraphCtx)
+			if err != nil {
+				return nil, fmt.Errorf("build mapped_subgraph node %q graph %q: %w", spec.ID, graphRef, err)
+			}
+
+			node := nodes.NewMappedSubgraphNode()
+			node.NodeID = spec.ID
+			if spec.Name != "" {
+				node.NodeName = spec.Name
+			}
+			if spec.Description != "" {
+				node.NodeDescription = spec.Description
+			}
+			node.GraphRef = graphRef
+			node.InputMap = mapStringConfig(spec.Config, "input_map")
+			node.OutputMap = mapStringConfig(spec.Config, "output_map")
 			node.InvokeSubgraph = func(ctx context.Context, state State) (State, error) {
 				return subgraph.Run(ctx, state)
 			}
@@ -502,6 +572,7 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 	}
 
 	g := NewGraph()
+	g.initialStatePaths = initialContractPathsFromStateFields(r.StateFields)
 	for _, nodeSpec := range def.Nodes {
 		nodeDef, ok := r.NodeTypes[nodeSpec.Type]
 		if !ok {
@@ -545,10 +616,14 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 		}
 	}
 
-	if err := g.Validate(); err != nil {
+	g.nodeContracts = ResolveNodeContracts(g, r)
+	err := g.Validate()
+	if ctx != nil {
+		ctx.emitContractDiagnostics(g.ContractDiagnostics())
+	}
+	if err != nil {
 		return nil, err
 	}
-	g.nodeContracts = ResolveNodeContracts(g, r)
 
 	return g, nil
 }
@@ -728,6 +803,19 @@ func cloneBuildContext(ctx *BuildContext) *BuildContext {
 		cloned.graphBuildPath = append([]string(nil), ctx.graphBuildPath...)
 	}
 	return &cloned
+}
+
+func (ctx *BuildContext) emitContractDiagnostics(diagnostics []ContractDiagnostic) {
+	if ctx == nil || ctx.OnContractDiagnostic == nil || len(diagnostics) == 0 {
+		return
+	}
+	for _, diagnostic := range diagnostics {
+		cloned := diagnostic
+		if len(diagnostic.Sources) > 0 {
+			cloned.Sources = append([]string(nil), diagnostic.Sources...)
+		}
+		ctx.OnContractDiagnostic(cloned)
+	}
 }
 
 func validateGraphBuildPath(path []string, next string) error {

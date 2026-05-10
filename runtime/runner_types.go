@@ -157,6 +157,15 @@ type Event struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
+type WarningRecord struct {
+	Code        string   `json:"code,omitempty"`
+	NodeID      string   `json:"node_id,omitempty"`
+	OtherNodeID string   `json:"other_node_id,omitempty"`
+	Path        string   `json:"path,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+	Message     string   `json:"message"`
+}
+
 type RunFilter struct {
 	Statuses []RunStatus
 }

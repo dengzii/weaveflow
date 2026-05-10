@@ -24,6 +24,7 @@ type GraphRunner struct {
 	GraphVersion       string
 	Breakpoints        []Breakpoint
 	ContractValidation ContractValidationMode
+	StartupWarnings    []WarningRecord
 	NodeContracts      map[string]NodeIOContract
 	Now                func() time.Time
 }
@@ -75,6 +76,9 @@ func (r *GraphRunner) Start(ctx context.Context, initialState State) (RunRecord,
 		return RunRecord{}, initialState, err
 	}
 	if err := r.publishEvent(ctx, run, "", "", EventRunStarted, nil); err != nil {
+		return RunRecord{}, initialState, err
+	}
+	if err := r.publishStartupWarnings(ctx, run); err != nil {
 		return RunRecord{}, initialState, err
 	}
 	logger.Info("run started", append(runLogFields(run), stateSummaryFields(initialState)...)...)
@@ -751,6 +755,38 @@ func (r *GraphRunner) validate() error {
 	}
 	if r.EventSink == nil {
 		return errors.New("graph runner event sink is nil")
+	}
+	return nil
+}
+
+func (r *GraphRunner) publishStartupWarnings(ctx context.Context, run RunRecord) error {
+	if r == nil || len(r.StartupWarnings) == 0 {
+		return nil
+	}
+	for _, warning := range r.StartupWarnings {
+		if strings.TrimSpace(warning.Message) == "" {
+			continue
+		}
+		fields := append(runLogFields(run),
+			zap.String("warning_code", warning.Code),
+			zap.String("warning_message", warning.Message),
+		)
+		if warning.NodeID != "" {
+			fields = append(fields, zap.String("node_id", warning.NodeID))
+		}
+		if warning.OtherNodeID != "" {
+			fields = append(fields, zap.String("other_node_id", warning.OtherNodeID))
+		}
+		if warning.Path != "" {
+			fields = append(fields, zap.String("path", warning.Path))
+		}
+		if len(warning.Sources) > 0 {
+			fields = append(fields, zap.Strings("sources", warning.Sources))
+		}
+		logger.Warn("runner startup warning", fields...)
+		if err := r.publishEvent(ctx, run, "", warning.NodeID, EventWarning, warning); err != nil {
+			return err
+		}
 	}
 	return nil
 }

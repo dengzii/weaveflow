@@ -140,6 +140,10 @@ func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state fruntime.
 	return state, nil
 }
 
+func (n *PlanStepExecutorNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *PlanStepExecutorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{}
 	if scope := n.effectiveScope(); scope != defaultPlanStepExecutorScope {

@@ -2,11 +2,14 @@ package weaveflow
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 type contractProbeNode struct {
@@ -74,8 +77,31 @@ func newContractTestRunner(t *testing.T, graph *Graph) *fruntime.GraphRunner {
 		fruntime.NewJSONStateCodec(""),
 		fruntime.NewFileEventSink(baseDir),
 	)
+	runner.ArtifactStore = fruntime.NewFileArtifactStore(baseDir)
 	runner.ContractValidation = fruntime.ContractValidationStrict
 	return runner
+}
+
+type contractCaptureLLMModel struct {
+	lastMessages []llms.MessageContent
+}
+
+func (m *contractCaptureLLMModel) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	_ = ctx
+	_ = options
+	m.lastMessages = append([]llms.MessageContent(nil), messages...)
+	return &llms.ContentResponse{
+		Choices: []*llms.ContentChoice{
+			{Content: "runner reply"},
+		},
+	}, nil
+}
+
+func (m *contractCaptureLLMModel) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
+	_ = ctx
+	_ = prompt
+	_ = options
+	return "", nil
 }
 
 func TestGraphRunnerProjectsNodeInputByContract(t *testing.T) {
@@ -325,5 +351,179 @@ func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
 	}
 	if loopState["done"] != true {
 		t.Fatalf("expected iterator to finish, got %#v", loopState)
+	}
+}
+
+func TestGraphRunnerProjectsRootConversationFallbackForScopedLLMNode(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	graph, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "model",
+		FinishPoint: "model",
+		Nodes: []GraphNodeSpec{
+			{
+				ID:   "model",
+				Type: "llm",
+				Config: map[string]any{
+					"state_scope": "agent",
+				},
+			},
+		},
+	}, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	model := &contractCaptureLLMModel{}
+	initial := State{}
+	initial.Conversation("").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello from root"),
+	})
+	initial.Conversation("").SetMaxIterations(16)
+
+	runner := newContractTestRunner(t, graph)
+	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	run, finalState, err := runner.Start(ctx, initial)
+	if err != nil {
+		t.Fatalf("start runner: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("expected completed run, got %q", run.Status)
+	}
+	if len(model.lastMessages) != 1 {
+		t.Fatalf("expected model to receive one message, got %#v", model.lastMessages)
+	}
+	textPart, ok := model.lastMessages[0].Parts[0].(llms.TextContent)
+	if !ok || textPart.Text != "hello from root" {
+		t.Fatalf("expected model to receive root fallback message, got %#v", model.lastMessages)
+	}
+
+	messages := finalState.Conversation("agent").Messages()
+	if len(messages) != 2 {
+		t.Fatalf("expected scoped conversation to contain input plus reply, got %#v", messages)
+	}
+	first, ok := messages[0].Parts[0].(llms.TextContent)
+	if !ok || first.Text != "hello from root" {
+		t.Fatalf("unexpected first scoped message: %#v", messages[0])
+	}
+	last, ok := messages[1].Parts[0].(llms.TextContent)
+	if !ok || last.Text != "runner reply" {
+		t.Fatalf("unexpected llm reply: %#v", messages[1])
+	}
+	if got := finalState.Conversation("agent").MaxIterations(); got != 16 {
+		t.Fatalf("expected scoped max_iterations to inherit root fallback, got %d", got)
+	}
+}
+
+func TestGraphRunnerPublishesContractWarningEventsAndArtifacts(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	registerStaticContractNodeType(registry, "wildcard_runner", dsl.StateContract{
+		Fields: []dsl.StateFieldRef{
+			{Path: "*", Mode: dsl.StateAccessReadWrite},
+		},
+	})
+	registerContractProbeNodeType(
+		registry,
+		dsl.StateContract{
+			Fields: []dsl.StateFieldRef{
+				{Path: "topic", Mode: dsl.StateAccessRead},
+				{Path: "result", Mode: dsl.StateAccessWrite, Required: true},
+			},
+		},
+		nil,
+		func(state State) string {
+			return state["topic"].(string)
+		},
+	)
+
+	graph, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "wild",
+		FinishPoint: "probe",
+		Nodes: []GraphNodeSpec{
+			{ID: "wild", Type: "wildcard_runner"},
+			{ID: "probe", Type: "contract_probe"},
+		},
+		Edges: []dsl.GraphEdgeSpec{
+			{From: "wild", To: "probe"},
+		},
+	}, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	runner := newContractTestRunner(t, graph)
+	run, _, err := runner.Start(context.Background(), State{
+		"topic":  "weather",
+		"secret": "hidden",
+	})
+	if err != nil {
+		t.Fatalf("start runner: %v", err)
+	}
+
+	events, err := runner.ListEvents(run.RunID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	foundWarning := false
+	for _, event := range events {
+		if event.Type != fruntime.EventWarning {
+			continue
+		}
+		var warning fruntime.WarningRecord
+		if err := json.Unmarshal(event.Payload, &warning); err != nil {
+			t.Fatalf("decode warning payload: %v", err)
+		}
+		if warning.Code == "wildcard_contract" {
+			foundWarning = true
+			break
+		}
+	}
+	if !foundWarning {
+		t.Fatalf("expected wildcard_contract warning event, got %#v", events)
+	}
+
+	artifacts, err := runner.ListArtifacts(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list artifacts: %v", err)
+	}
+	foundTypes := map[string]bool{}
+	var inputViewRef fruntime.ArtifactRef
+	for _, ref := range artifacts {
+		foundTypes[ref.Type] = true
+		if ref.Type == "contract.input_view" && ref.NodeID == "probe" {
+			inputViewRef = ref
+		}
+	}
+	for _, want := range []string{"contract.input_view", "contract.output_patch", "contract.merged_state"} {
+		if !foundTypes[want] {
+			t.Fatalf("expected artifact type %q, got %#v", want, artifacts)
+		}
+	}
+	if inputViewRef.ID == "" {
+		t.Fatalf("expected probe input view artifact, got %#v", artifacts)
+	}
+
+	artifact, err := runner.LoadArtifact(context.Background(), inputViewRef)
+	if err != nil {
+		t.Fatalf("load input view artifact: %v", err)
+	}
+	var payload struct {
+		Stage    string                 `json:"stage"`
+		Snapshot fruntime.StateSnapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(artifact.Data, &payload); err != nil {
+		t.Fatalf("decode input view artifact: %v", err)
+	}
+	if payload.Stage != "input_view" {
+		t.Fatalf("expected input_view stage, got %q", payload.Stage)
+	}
+	if _, ok := payload.Snapshot.Shared["topic"]; !ok {
+		t.Fatalf("expected projected snapshot to include topic, got %#v", payload.Snapshot.Shared)
+	}
+	if _, ok := payload.Snapshot.Shared["secret"]; ok {
+		t.Fatalf("projected input view leaked secret: %#v", payload.Snapshot.Shared)
 	}
 }

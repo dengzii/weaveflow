@@ -32,18 +32,20 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	nodes            map[string]nodes.Node[State]
-	nodeSpecs        map[string]dsl.GraphNodeSpec
-	nodeContracts    map[string]fruntime.NodeIOContract
-	edges            map[string]string
-	conditionalEdges map[string][]conditionalEdge
-	edgeSpecs        []dsl.GraphEdgeSpec
-	entryPoint       string
-	finishPoint      string
-	retryPolicy      *langgraph.RetryPolicy
-	nodeListeners    map[string][]langgraph.NodeListener[State]
-	globalListeners  []langgraph.NodeListener[State]
-	tracer           *langgraph.Tracer
+	nodes               map[string]nodes.Node[State]
+	nodeSpecs           map[string]dsl.GraphNodeSpec
+	nodeContracts       map[string]fruntime.NodeIOContract
+	initialStatePaths   []string
+	contractDiagnostics []ContractDiagnostic
+	edges               map[string]string
+	conditionalEdges    map[string][]conditionalEdge
+	edgeSpecs           []dsl.GraphEdgeSpec
+	entryPoint          string
+	finishPoint         string
+	retryPolicy         *langgraph.RetryPolicy
+	nodeListeners       map[string][]langgraph.NodeListener[State]
+	globalListeners     []langgraph.NodeListener[State]
+	tracer              *langgraph.Tracer
 }
 
 func NewGraph() *Graph {
@@ -300,6 +302,15 @@ func (g *Graph) Validate() error {
 				}
 			}
 		}
+	}
+
+	if len(g.nodeContracts) > 0 {
+		g.contractDiagnostics = analyzeContractDiagnostics(g)
+		if err := contractDiagnosticsError(g.contractDiagnostics); err != nil {
+			return err
+		}
+	} else {
+		g.contractDiagnostics = nil
 	}
 
 	return nil

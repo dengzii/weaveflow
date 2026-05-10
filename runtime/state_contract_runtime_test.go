@@ -69,6 +69,35 @@ func TestProjectStateByContractWildcardReadClonesFullState(t *testing.T) {
 	}
 }
 
+func TestProjectStateByContractPreservesRootConversationFallbackForScopedMessages(t *testing.T) {
+	t.Parallel()
+
+	full := State{}
+	full.Conversation("").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello from root"),
+	})
+	full.Conversation("").SetMaxIterations(16)
+
+	projected := ProjectStateByContract(full, NodeIOContract{
+		ReadPaths: []string{
+			"scopes.agent.messages",
+			"scopes.agent.max_iterations",
+		},
+	})
+
+	messages := projected.Conversation("agent").Messages()
+	if len(messages) != 1 {
+		t.Fatalf("expected one projected message, got %#v", messages)
+	}
+	textPart, ok := messages[0].Parts[0].(llms.TextContent)
+	if !ok || textPart.Text != "hello from root" {
+		t.Fatalf("expected scoped projection to preserve root message fallback, got %#v", messages)
+	}
+	if got := projected.Conversation("agent").MaxIterations(); got != 16 {
+		t.Fatalf("expected scoped projection to preserve root max_iterations fallback, got %d", got)
+	}
+}
+
 func TestMergePatchByContractWildcardWriteAllowsAnyWrite(t *testing.T) {
 	t.Parallel()
 
@@ -117,6 +146,50 @@ func TestMergePatchByContractMergesAllowedWrites(t *testing.T) {
 	}
 	if planner["status"] != "done" {
 		t.Fatalf("expected merged planner status, got %#v", merged["planner"])
+	}
+}
+
+func TestMergePatchByContractMergesScopedConversationWrites(t *testing.T) {
+	t.Parallel()
+
+	full := State{}
+	full.Conversation("").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello from root"),
+	})
+	full.Conversation("").SetMaxIterations(16)
+
+	patch := State{}
+	patch.Conversation("agent").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hello from root"),
+		llms.TextParts(llms.ChatMessageTypeAI, "runner reply"),
+	})
+	patch.Conversation("agent").IncrementIteration()
+	patch.Conversation("agent").SetFinalAnswer("runner reply")
+
+	merged, err := MergePatchByContract(full, patch, NodeIOContract{
+		WritePaths: []string{
+			"scopes.agent.messages",
+			"scopes.agent.iteration_count",
+			"scopes.agent.final_answer",
+		},
+	})
+	if err != nil {
+		t.Fatalf("merge scoped conversation patch: %v", err)
+	}
+
+	messages := merged.Conversation("agent").Messages()
+	if len(messages) != 2 {
+		t.Fatalf("expected scoped conversation messages to merge, got %#v", messages)
+	}
+	last, ok := messages[1].Parts[0].(llms.TextContent)
+	if !ok || last.Text != "runner reply" {
+		t.Fatalf("unexpected scoped assistant reply: %#v", messages[1])
+	}
+	if got := merged.Conversation("agent").IterationCount(); got != 1 {
+		t.Fatalf("expected scoped iteration count to merge, got %d", got)
+	}
+	if got := merged.Conversation("agent").FinalAnswer(); got != "runner reply" {
+		t.Fatalf("expected scoped final answer to merge, got %q", got)
 	}
 }
 

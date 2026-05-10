@@ -96,6 +96,10 @@ func (n *HumanMessageNode) pendingInputState(state fruntime.State) fruntime.Stat
 	return state.Scope(n.StateScope)
 }
 
+func (n *HumanMessageNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *HumanMessageNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return dsl.GraphNodeSpec{
 		ID:          n.ID(),

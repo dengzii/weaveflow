@@ -14,6 +14,7 @@ func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkp
 	runner := fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
 	if graph != nil {
 		runner.NodeContracts = graph.nodeContracts
+		runner.StartupWarnings = buildRunnerWarnings(graph.ContractDiagnostics())
 	}
 	return runner
 }
@@ -141,6 +142,33 @@ func ResolveNodeContracts(graph *Graph, registry *Registry) map[string]fruntime.
 		return nil
 	}
 	return contracts
+}
+
+func buildRunnerWarnings(diagnostics []ContractDiagnostic) []fruntime.WarningRecord {
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	warnings := make([]fruntime.WarningRecord, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Severity != ContractDiagnosticSeverityWarning {
+			continue
+		}
+		warning := fruntime.WarningRecord{
+			Code:        diagnostic.Kind,
+			NodeID:      diagnostic.NodeID,
+			OtherNodeID: diagnostic.OtherNodeID,
+			Path:        diagnostic.Path,
+			Message:     diagnostic.Message,
+		}
+		if len(diagnostic.Sources) > 0 {
+			warning.Sources = append([]string(nil), diagnostic.Sources...)
+		}
+		warnings = append(warnings, warning)
+	}
+	if len(warnings) == 0 {
+		return nil
+	}
+	return warnings
 }
 
 func convertStateContract(contract dsl.StateContract) fruntime.NodeIOContract {

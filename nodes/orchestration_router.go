@@ -171,6 +171,10 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 	return state, nil
 }
 
+func (n *OrchestrationRouterNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+}
+
 func (n *OrchestrationRouterNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"orchestration_state_path": n.effectiveOrchestrationStatePath(),

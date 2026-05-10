@@ -205,6 +205,56 @@ func scopedStatePath(scope string, field string) string {
 	return "scopes." + scope + "." + field
 }
 
+func resolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+	inputMap := mapStringConfig(spec.Config, "input_map")
+	outputMap := mapStringConfig(spec.Config, "output_map")
+
+	fields := make([]dsl.StateFieldRef, 0, len(inputMap)+len(outputMap))
+	for parentPath := range inputMap {
+		fields = append(fields, dsl.StateFieldRef{
+			Path:        canonicalContractPath(parentPath),
+			Mode:        dsl.StateAccessRead,
+			Description: "Input path mapped into the subgraph.",
+		})
+	}
+	for _, parentPath := range outputMap {
+		fields = append(fields, dsl.StateFieldRef{
+			Path:          canonicalContractPath(parentPath),
+			Mode:          dsl.StateAccessWrite,
+			Description:   "Output path mapped back from the subgraph.",
+			MergeStrategy: dsl.StateMergeMerge,
+		})
+	}
+	return dsl.StateContract{Fields: fields}, nil
+}
+
+func mapStringConfig(config map[string]any, key string) map[string]string {
+	if len(config) == 0 {
+		return nil
+	}
+	raw, ok := config[key]
+	if !ok {
+		return nil
+	}
+	switch typed := raw.(type) {
+	case map[string]string:
+		result := make(map[string]string, len(typed))
+		for k, v := range typed {
+			result[k] = v
+		}
+		return result
+	case map[string]any:
+		result := make(map[string]string, len(typed))
+		for k, v := range typed {
+			if s, ok := v.(string); ok {
+				result[k] = s
+			}
+		}
+		return result
+	}
+	return nil
+}
+
 func canonicalContractPath(path string) string {
 	path = strings.TrimSpace(path)
 	if path == "" || path == "*" {
