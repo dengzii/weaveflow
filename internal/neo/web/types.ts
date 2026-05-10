@@ -43,6 +43,56 @@ export interface ChatEvent {
   data?: Record<string, string>;
 }
 
+export interface RegistryFieldRef {
+  path: string;
+  mode: string;
+  required?: boolean;
+  description?: string;
+  merge_strategy?: string;
+  dynamic?: boolean;
+  path_config_key?: string;
+  schema?: Record<string, unknown>;
+}
+
+export interface RegistryStateContract {
+  fields: RegistryFieldRef[];
+}
+
+export interface RegistryNodeTypeSchema {
+  type: string;
+  title?: string;
+  description?: string;
+  config_schema: Record<string, unknown>;
+  state_contract?: RegistryStateContract;
+}
+
+export interface RegistryNodeTypeInfo {
+  schema: RegistryNodeTypeSchema;
+  example_config?: Record<string, unknown>;
+  resolved_state_contract?: RegistryStateContract;
+  resolve_error?: string;
+}
+
+export interface RegistryStateFieldInfo {
+  name: string;
+  description?: string;
+  schema: Record<string, unknown>;
+}
+
+export interface RegistryConditionSchema {
+  type: string;
+  title?: string;
+  description?: string;
+  config_schema: Record<string, unknown>;
+}
+
+export interface RegistryData {
+  state_fields: RegistryStateFieldInfo[];
+  node_types: RegistryNodeTypeInfo[];
+  conditions: RegistryConditionSchema[];
+  graph_schema: Record<string, unknown>;
+}
+
 export type MessageItem =
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "step"; text: string; status: "pending" | "done" }

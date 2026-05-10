@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay, Brain, Eye, Trash2 } from "lucide-react";
+import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay, Brain, Eye, Trash2, Blocks } from "lucide-react";
 import { MessageList } from "../components/MessageList";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -381,6 +381,18 @@ export function ChatPage({ chat, cfg }: Props) {
           <span className="h-1.5 w-1.5 rounded-full bg-green-500 animate-pulse" />
         )}
         <div className="ml-auto flex items-center gap-1.5">
+          <Link to="/playground">
+            <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+              <Blocks className="h-3.5 w-3.5" />
+              Registry
+            </Button>
+          </Link>
+          <Link to="/settings">
+            <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground">
+              <Settings className="h-3.5 w-3.5" />
+              Settings
+            </Button>
+          </Link>
           <Button variant="ghost" size="sm" className="h-8 gap-1.5 text-xs text-muted-foreground hover:text-foreground" onClick={() => void openMemory()}>
             <Eye className="h-3.5 w-3.5" />
             查看 Memory

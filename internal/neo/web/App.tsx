@@ -3,6 +3,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useChat } from "./hooks/useChat";
 import { useConfig } from "./hooks/useConfig";
 import { ChatPage } from "./pages/ChatPage";
+import { SettingsPage } from "./pages/SettingsPage";
+import { PlaygroundPage } from "./playground/PlaygroundPage";
 import { ReplayPage } from "./debug/replay/ReplayPage";
 
 declare const INCLUDE_DEBUG: boolean;
@@ -23,12 +25,15 @@ export function App() {
         <main className="flex-1 overflow-hidden">
           <Routes>
             <Route path="/" element={<ChatPage chat={chat} cfg={cfg} />} />
+            <Route path="/settings" element={<SettingsPage cfg={cfg} />} />
+            <Route path="/playground" element={<PlaygroundPage />} />
             {INCLUDE_DEBUG && <Route path="/debug/replay" element={<ReplayPage routeMode="history" />} />}
             {INCLUDE_DEBUG && <Route path="/debug/live" element={<ReplayPage routeMode="live" />} />}
             {INCLUDE_DEBUG && (
               <Route path="/debug/replay/v2" element={<Navigate to="/debug/replay" replace />} />
             )}
             {INCLUDE_DEBUG && <Route path="/debug" element={<Navigate to="/debug/live" replace />} />}
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </main>
       </div>

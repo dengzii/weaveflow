@@ -1,4 +1,5 @@
-import { Save } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Blocks, MessageSquare, Save } from "lucide-react";
 import { Button } from "../components/ui/button";
 import { Input } from "../components/ui/input";
 import { Textarea } from "../components/ui/textarea";
@@ -43,10 +44,24 @@ export function SettingsPage({ cfg }: Props) {
             <h1 className="text-lg font-semibold">设置</h1>
             <p className="text-sm text-muted-foreground mt-0.5">配置 Neo 的运行参数</p>
           </div>
-          <Button onClick={handleSave} size="sm" className="gap-1.5">
-            <Save className="h-4 w-4" />
-            {saveLabel}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Link to="/">
+              <Button variant="outline" size="sm" className="gap-1.5">
+                <MessageSquare className="h-4 w-4" />
+                Chat
+              </Button>
+            </Link>
+            <Link to="/playground">
+              <Button variant="outline" size="sm" className="gap-1.5">
+                <Blocks className="h-4 w-4" />
+                Registry
+              </Button>
+            </Link>
+            <Button onClick={handleSave} size="sm" className="gap-1.5">
+              <Save className="h-4 w-4" />
+              {saveLabel}
+            </Button>
+          </div>
         </div>
 
         <Separator />

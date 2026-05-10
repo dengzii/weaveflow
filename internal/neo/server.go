@@ -3,6 +3,7 @@ package neo
 import (
 	"path/filepath"
 
+	"weaveflow"
 	fruntime "weaveflow/runtime"
 	"weaveflow/tools"
 
@@ -10,10 +11,11 @@ import (
 )
 
 type Server struct {
-	chatCtrl    *ChatController
-	configCtrl  *ConfigController
-	historyCtrl *HistoryController
-	hub         *LiveHub
+	chatCtrl     *ChatController
+	configCtrl   *ConfigController
+	historyCtrl  *HistoryController
+	registryCtrl *RegistryController
+	hub          *LiveHub
 }
 
 func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server, error) {
@@ -39,12 +41,14 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server
 	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir, store, hub)
 	configCtrl := NewConfigController(&cfg, allTools, toolFlags, store)
 	historyCtrl := NewHistoryController(chatCtrl)
+	registryCtrl := NewRegistryController(weaveflow.DefaultRegistry())
 
 	return &Server{
-		chatCtrl:    chatCtrl,
-		configCtrl:  configCtrl,
-		historyCtrl: historyCtrl,
-		hub:         hub,
+		chatCtrl:     chatCtrl,
+		configCtrl:   configCtrl,
+		historyCtrl:  historyCtrl,
+		registryCtrl: registryCtrl,
+		hub:          hub,
 	}, nil
 }
 
@@ -93,4 +97,5 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	group.DELETE("/history", s.historyCtrl.Clear)
 	group.GET("/memory", s.historyCtrl.GetMemory)
 	group.DELETE("/memory", s.historyCtrl.ClearMemory)
+	group.GET("/registry", s.registryCtrl.Get)
 }
