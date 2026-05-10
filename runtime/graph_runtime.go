@@ -79,6 +79,10 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 	contract, hasContract := e.nodeContracts[nodeID]
 	inputState := state.CloneState()
 	if hasContract {
+		if violations := ValidateNodeInputContract(nodeID, contract, state); len(violations) > 0 {
+			e.reportContractViolations(nodeCtx, nodeID, violations)
+			return state, fmt.Errorf("%s", violations[0].Message)
+		}
 		inputState = ProjectStateByContract(state, contract)
 	}
 
@@ -314,6 +318,28 @@ func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunReco
 	if len(violations) == 0 {
 		return nil
 	}
+	e.reportContractViolationsWithRun(ctx, run, step, violations)
+	if e.contractMode == ContractValidationStrict {
+		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
+	}
+	return nil
+}
+
+func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nodeID string, violations []ContractViolation) {
+	e.mu.Lock()
+	run := e.run
+	var step StepRecord
+	if e.active != nil && e.active.step.NodeID == nodeID {
+		step = e.active.step
+	}
+	e.mu.Unlock()
+	e.reportContractViolationsWithRun(ctx, run, step, violations)
+}
+
+func (e *graphRunnerExecution) reportContractViolationsWithRun(ctx context.Context, run RunRecord, step StepRecord, violations []ContractViolation) {
+	if len(violations) == 0 {
+		return
+	}
 	for _, v := range violations {
 		logger.Warn("state contract violation",
 			zap.String("node_id", v.NodeID),
@@ -325,10 +351,6 @@ func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunReco
 	_ = e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventContractViolation, map[string]any{
 		"violations": violations,
 	})
-	if e.contractMode == ContractValidationStrict {
-		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
-	}
-	return nil
 }
 
 func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) error {

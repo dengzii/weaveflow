@@ -48,7 +48,7 @@ func TestValidateNodeContractUndeclaredWrite(t *testing.T) {
 func TestValidateNodeContractWildcardSkips(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{Wildcard: true}
+	contract := NodeIOContract{WildcardWrite: true}
 	changes := []StateChange{
 		{Path: "shared.anything", After: json.RawMessage(`"value"`)},
 	}
@@ -56,6 +56,48 @@ func TestValidateNodeContractWildcardSkips(t *testing.T) {
 	violations := ValidateNodeContract("subgraph", contract, State{}, changes)
 	if len(violations) != 0 {
 		t.Fatalf("expected wildcard to skip validation, got %+v", violations)
+	}
+}
+
+func TestValidateNodeInputContractMissingRequiredRead(t *testing.T) {
+	t.Parallel()
+
+	contract := NodeIOContract{
+		ReadPaths:         []string{"shared.topic"},
+		RequiredReadPaths: []string{"shared.topic", "shared.user.id"},
+	}
+	state := State{
+		"topic": "weather",
+	}
+
+	violations := ValidateNodeInputContract("planner", contract, state)
+	if len(violations) != 1 {
+		t.Fatalf("expected 1 required read violation, got %d: %+v", len(violations), violations)
+	}
+	if violations[0].Kind != "missing_required_read" {
+		t.Fatalf("expected missing_required_read, got %q", violations[0].Kind)
+	}
+	if violations[0].Path != "shared.user.id" {
+		t.Fatalf("expected missing path shared.user.id, got %q", violations[0].Path)
+	}
+}
+
+func TestValidateNodeContractReadOnlyContractRejectsWrites(t *testing.T) {
+	t.Parallel()
+
+	contract := NodeIOContract{
+		ReadPaths: []string{"shared.input"},
+	}
+	changes := []StateChange{
+		{Path: "shared.output", After: json.RawMessage(`"result"`)},
+	}
+
+	violations := ValidateNodeContract("node", contract, State{}, changes)
+	if len(violations) != 1 {
+		t.Fatalf("expected 1 write violation, got %d: %+v", len(violations), violations)
+	}
+	if violations[0].Kind != "undeclared_write" {
+		t.Fatalf("expected undeclared_write, got %q", violations[0].Kind)
 	}
 }
 

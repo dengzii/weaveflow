@@ -51,15 +51,31 @@ func TestProjectStateByContractSelectsSharedScopeAndInternalState(t *testing.T) 
 	}
 }
 
-func TestProjectStateByContractWildcardClonesFullState(t *testing.T) {
+func TestProjectStateByContractWildcardReadClonesFullState(t *testing.T) {
 	t.Parallel()
 
 	full := State{"topic": "weather"}
-	projected := ProjectStateByContract(full, NodeIOContract{Wildcard: true})
+	projected := ProjectStateByContract(full, NodeIOContract{WildcardRead: true})
 	projected["topic"] = "changed"
 
 	if full["topic"] != "weather" {
 		t.Fatalf("wildcard projection must clone state, got %#v", full["topic"])
+	}
+}
+
+func TestMergePatchByContractWildcardWriteAllowsAnyWrite(t *testing.T) {
+	t.Parallel()
+
+	merged, err := MergePatchByContract(State{}, State{
+		"secret": "allowed",
+	}, NodeIOContract{
+		WildcardWrite: true,
+	})
+	if err != nil {
+		t.Fatalf("merge patch with wildcard write: %v", err)
+	}
+	if got := merged["secret"]; got != "allowed" {
+		t.Fatalf("expected wildcard write to merge patch, got %#v", merged)
 	}
 }
 

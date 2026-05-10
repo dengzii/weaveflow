@@ -25,7 +25,41 @@ type NodeIOContract struct {
 	WritePaths         []string
 	RequiredReadPaths  []string
 	RequiredWritePaths []string
-	Wildcard           bool
+	WildcardRead       bool
+	WildcardWrite      bool
+}
+
+func (c NodeIOContract) IsEmpty() bool {
+	return !c.WildcardRead &&
+		!c.WildcardWrite &&
+		len(c.ReadPaths) == 0 &&
+		len(c.WritePaths) == 0 &&
+		len(c.RequiredReadPaths) == 0 &&
+		len(c.RequiredWritePaths) == 0
+}
+
+func ValidateNodeInputContract(
+	nodeID string,
+	contract NodeIOContract,
+	inputState State,
+) []ContractViolation {
+	if contract.WildcardRead || len(contract.RequiredReadPaths) == 0 {
+		return nil
+	}
+
+	violations := make([]ContractViolation, 0, len(contract.RequiredReadPaths))
+	for _, path := range contract.RequiredReadPaths {
+		if _, found := resolveSnapshotPathValue(inputState, path); found {
+			continue
+		}
+		violations = append(violations, ContractViolation{
+			NodeID:  nodeID,
+			Path:    path,
+			Kind:    "missing_required_read",
+			Message: fmt.Sprintf("node %q requires input path %q but it was not found in the state", nodeID, path),
+		})
+	}
+	return violations
 }
 
 func ValidateNodeContract(
@@ -34,23 +68,25 @@ func ValidateNodeContract(
 	afterState State,
 	changes []StateChange,
 ) []ContractViolation {
-	if contract.Wildcard || (len(contract.WritePaths) == 0 && len(contract.RequiredWritePaths) == 0) {
+	if contract.IsEmpty() {
 		return nil
 	}
 
 	var violations []ContractViolation
 
-	for _, change := range changes {
-		if isRuntimeOrConversationPath(change.Path) {
-			continue
-		}
-		if !isPathCoveredByContract(change.Path, contract.WritePaths) {
-			violations = append(violations, ContractViolation{
-				NodeID:  nodeID,
-				Path:    change.Path,
-				Kind:    "undeclared_write",
-				Message: fmt.Sprintf("node %q wrote to path %q not declared as writable in its state contract", nodeID, change.Path),
-			})
+	if !contract.WildcardWrite {
+		for _, change := range changes {
+			if isRuntimeOrConversationPath(change.Path) {
+				continue
+			}
+			if !isPathCoveredByContract(change.Path, contract.WritePaths) {
+				violations = append(violations, ContractViolation{
+					NodeID:  nodeID,
+					Path:    change.Path,
+					Kind:    "undeclared_write",
+					Message: fmt.Sprintf("node %q wrote to path %q not declared as writable in its state contract", nodeID, change.Path),
+				})
+			}
 		}
 	}
 

@@ -175,6 +175,48 @@ func TestGraphRunnerRejectsUndeclaredPatchWrite(t *testing.T) {
 	}
 }
 
+func TestGraphRunnerRejectsMissingRequiredRead(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	registerContractProbeNodeType(
+		registry,
+		dsl.StateContract{
+			Fields: []dsl.StateFieldRef{
+				{Path: "topic", Mode: dsl.StateAccessRead, Required: true},
+				{Path: "result", Mode: dsl.StateAccessWrite},
+			},
+		},
+		nil,
+		func(state State) string {
+			return "ok"
+		},
+	)
+
+	graph, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "probe",
+		FinishPoint: "probe",
+		Nodes: []GraphNodeSpec{
+			{ID: "probe", Type: "contract_probe"},
+		},
+	}, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	runner := newContractTestRunner(t, graph)
+	run, _, err := runner.Start(context.Background(), State{})
+	if err == nil {
+		t.Fatal("expected missing required read to fail")
+	}
+	if !strings.Contains(err.Error(), `requires input path "shared.topic"`) {
+		t.Fatalf("expected required read error, got %v", err)
+	}
+	if run.Status != fruntime.RunStatusFailed {
+		t.Fatalf("expected failed run, got %q", run.Status)
+	}
+}
+
 func TestGraphRunnerRejectsMissingRequiredWrite(t *testing.T) {
 	t.Parallel()
 

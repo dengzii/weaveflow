@@ -10,7 +10,7 @@ func ProjectStateByContract(full State, contract NodeIOContract) State {
 	if full == nil {
 		full = State{}
 	}
-	if contract.Wildcard {
+	if contract.WildcardRead {
 		return full.CloneState()
 	}
 
@@ -49,7 +49,7 @@ func MergePatchByContract(full State, patch State, contract NodeIOContract) (Sta
 		return nil, err
 	}
 
-	if !contract.Wildcard {
+	if !contract.WildcardWrite {
 		violations := ValidateNodeContract("patch", contract, merged, changes)
 		if len(violations) > 0 {
 			return nil, fmt.Errorf("%s", violations[0].Message)

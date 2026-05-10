@@ -133,7 +133,7 @@ func ResolveNodeContracts(graph *Graph, registry *Registry) map[string]fruntime.
 			continue
 		}
 		converted := convertStateContract(contract)
-		if converted.Wildcard || len(converted.ReadPaths) > 0 || len(converted.WritePaths) > 0 || len(converted.RequiredReadPaths) > 0 || len(converted.RequiredWritePaths) > 0 {
+		if !converted.IsEmpty() {
 			contracts[nodeID] = converted
 		}
 	}
@@ -148,8 +148,16 @@ func convertStateContract(contract dsl.StateContract) fruntime.NodeIOContract {
 	for _, field := range contract.Fields {
 		path := strings.TrimSpace(field.Path)
 		if path == "*" {
-			result.Wildcard = true
-			return result
+			switch field.Mode {
+			case dsl.StateAccessRead:
+				result.WildcardRead = true
+			case dsl.StateAccessWrite:
+				result.WildcardWrite = true
+			case dsl.StateAccessReadWrite:
+				result.WildcardRead = true
+				result.WildcardWrite = true
+			}
+			continue
 		}
 		if path == "" {
 			continue
