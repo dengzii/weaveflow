@@ -34,6 +34,7 @@ func SetLogger(l *zap.Logger) {
 type Graph struct {
 	nodes            map[string]nodes.Node[State]
 	nodeSpecs        map[string]dsl.GraphNodeSpec
+	nodeContracts    map[string]fruntime.NodeIOContract
 	edges            map[string]string
 	conditionalEdges map[string][]conditionalEdge
 	edgeSpecs        []dsl.GraphEdgeSpec

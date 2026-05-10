@@ -548,6 +548,7 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
+	g.nodeContracts = ResolveNodeContracts(g, r)
 
 	return g, nil
 }

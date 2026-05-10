@@ -11,7 +11,11 @@ import (
 )
 
 func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec fruntime.StateCodec, eventSink fruntime.EventSink) *fruntime.GraphRunner {
-	return fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
+	runner := fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
+	if graph != nil {
+		runner.NodeContracts = graph.nodeContracts
+	}
+	return runner
 }
 
 type graphRunnerGraph struct {

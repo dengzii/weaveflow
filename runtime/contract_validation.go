@@ -55,11 +55,7 @@ func ValidateNodeContract(
 	}
 
 	for _, path := range contract.RequiredWritePaths {
-		businessPath := snapshotPathToBusinessPath(path)
-		if businessPath == "" {
-			continue
-		}
-		if _, found := afterState.ResolvePath(businessPath); !found {
+		if _, found := resolveSnapshotPathValue(afterState, path); !found {
 			violations = append(violations, ContractViolation{
 				NodeID:  nodeID,
 				Path:    path,
