@@ -170,6 +170,7 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 	if memoryPath == "" {
 		memoryPath = fruntime.StateKeyMemory
 	}
+	memoryPath = canonicalContractPath(memoryPath)
 
 	contract := dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -186,7 +187,7 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 
 	if queryPath := strings.TrimSpace(stringConfig(spec.Config, "query_path")); queryPath != "" {
 		contract.Fields = append(contract.Fields, dsl.StateFieldRef{
-			Path:        queryPath,
+			Path:        canonicalContractPath(queryPath),
 			Mode:        dsl.StateAccessRead,
 			Description: "Optional explicit memory recall query.",
 		})
@@ -196,6 +197,7 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 	if requestInputPath == "" {
 		requestInputPath = fruntime.StateKeyRequest + ".input"
 	}
+	requestInputPath = canonicalContractPath(requestInputPath)
 	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
 		Path:        requestInputPath,
 		Mode:        dsl.StateAccessRead,
@@ -206,6 +208,7 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 	if orchestrationPath == "" {
 		orchestrationPath = fruntime.StateKeyOrchestration
 	}
+	orchestrationPath = canonicalContractPath(orchestrationPath)
 	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
 		Path:        orchestrationPath,
 		Mode:        dsl.StateAccessRead,
@@ -220,16 +223,19 @@ func resolveMemoryWriteStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract,
 	if memoryPath == "" {
 		memoryPath = fruntime.StateKeyMemory
 	}
+	memoryPath = canonicalContractPath(memoryPath)
 
 	requestInputPath := strings.TrimSpace(stringConfig(spec.Config, "request_input_path"))
 	if requestInputPath == "" {
 		requestInputPath = fruntime.StateKeyRequest + ".input"
 	}
+	requestInputPath = canonicalContractPath(requestInputPath)
 
 	finalAnswerPath := strings.TrimSpace(stringConfig(spec.Config, "final_answer_path"))
 	if finalAnswerPath == "" {
 		finalAnswerPath = scopedConversationPath(stringConfig(spec.Config, "state_scope"), "final_answer")
 	}
+	finalAnswerPath = canonicalContractPath(finalAnswerPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{

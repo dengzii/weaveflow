@@ -146,16 +146,16 @@ func TestResolveOrchestrationRouterStateContractUsesConfiguredPaths(t *testing.T
 	if len(contract.Fields) != 4 {
 		t.Fatalf("expected 4 contract fields, got %#v", contract.Fields)
 	}
-	if contract.Fields[0].Path != "memory.summary" || contract.Fields[0].Mode != dsl.StateAccessRead {
+	if contract.Fields[0].Path != "shared.memory.summary" || contract.Fields[0].Mode != dsl.StateAccessRead {
 		t.Fatalf("unexpected contract field[0]: %#v", contract.Fields[0])
 	}
-	if contract.Fields[1].Path != "request.constraints" || contract.Fields[1].Mode != dsl.StateAccessRead {
+	if contract.Fields[1].Path != "shared.request.constraints" || contract.Fields[1].Mode != dsl.StateAccessRead {
 		t.Fatalf("unexpected contract field[1]: %#v", contract.Fields[1])
 	}
-	if contract.Fields[2].Path != "request.input" || contract.Fields[2].Mode != dsl.StateAccessRead {
+	if contract.Fields[2].Path != "shared.request.input" || contract.Fields[2].Mode != dsl.StateAccessRead {
 		t.Fatalf("unexpected contract field[2]: %#v", contract.Fields[2])
 	}
-	if contract.Fields[3].Path != "analysis.orchestration" || contract.Fields[3].Mode != dsl.StateAccessWrite {
+	if contract.Fields[3].Path != "shared.analysis.orchestration" || contract.Fields[3].Mode != dsl.StateAccessWrite {
 		t.Fatalf("unexpected contract field[3]: %#v", contract.Fields[3])
 	}
 }

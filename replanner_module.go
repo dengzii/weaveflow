@@ -66,21 +66,22 @@ func resolveReplannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 	if plannerPath == "" {
 		plannerPath = fruntime.StateKeyPlanner
 	}
+	plannerPath = canonicalContractPath(plannerPath)
 
 	contract := dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:        fruntime.StateKeyVerification,
+				Path:        canonicalContractPath(fruntime.StateKeyVerification),
 				Mode:        dsl.StateAccessRead,
 				Description: "Verification issues triggering replan.",
 			},
 			{
-				Path:        fruntime.StateKeyObservations,
+				Path:        canonicalContractPath(fruntime.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "Observations including errors.",
 			},
 			{
-				Path:        fruntime.StateKeyExecution + ".step_results",
+				Path:        canonicalContractPath(fruntime.StateKeyExecution + ".step_results"),
 				Mode:        dsl.StateAccessRead,
 				Description: "Step execution results.",
 			},
@@ -100,7 +101,7 @@ func resolveReplannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 			continue
 		}
 		contract.Fields = append(contract.Fields, dsl.StateFieldRef{
-			Path:        path,
+			Path:        canonicalContractPath(path),
 			Mode:        dsl.StateAccessRead,
 			Description: "Replanner context input.",
 		})

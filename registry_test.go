@@ -505,7 +505,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 					"max_iterations": 2,
 				},
 			},
-			paths: []string{"payload.items", nodes.IteratorStateRootKey + ".loop"},
+			paths: []string{"shared.payload.items", "internal." + nodes.IteratorStateRootKey + ".loop"},
 			modes: []dsl.StateAccessMode{dsl.StateAccessRead, dsl.StateAccessWrite},
 		},
 		{
@@ -546,7 +546,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 				"scopes.agent.iteration_count",
 				"scopes.agent.max_iterations",
 				"scopes.agent.final_answer",
-				nodes.TokenUsageStateKey,
+				"shared." + nodes.TokenUsageStateKey,
 			},
 			modes: []dsl.StateAccessMode{
 				dsl.StateAccessReadWrite,
@@ -591,5 +591,27 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveHumanMessageDefaultScopeUsesConversationAndSharedPartitions(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	contract, err := registry.ResolveNodeStateContract(GraphNodeSpec{
+		ID:   "ask",
+		Type: "human_message",
+	})
+	if err != nil {
+		t.Fatalf("resolve human_message state contract: %v", err)
+	}
+	if len(contract.Fields) != 2 {
+		t.Fatalf("expected 2 contract fields, got %#v", contract.Fields)
+	}
+	if contract.Fields[0].Path != "conversation.messages" {
+		t.Fatalf("expected default conversation path, got %#v", contract.Fields[0])
+	}
+	if contract.Fields[1].Path != "shared."+nodes.PendingHumanInputStateKey {
+		t.Fatalf("expected shared pending input path, got %#v", contract.Fields[1])
 	}
 }

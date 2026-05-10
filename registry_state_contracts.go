@@ -61,14 +61,17 @@ func resolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 	if strings.TrimSpace(memoryPath) == "" {
 		memoryPath = fruntime.StateKeyMemory
 	}
+	memoryPath = canonicalContractPath(memoryPath)
 	orchestrationPath := stringConfig(spec.Config, "orchestration_state_path")
 	if strings.TrimSpace(orchestrationPath) == "" {
 		orchestrationPath = fruntime.StateKeyOrchestration
 	}
+	orchestrationPath = canonicalContractPath(orchestrationPath)
 	plannerPath := stringConfig(spec.Config, "planner_state_path")
 	if strings.TrimSpace(plannerPath) == "" {
 		plannerPath = fruntime.StateKeyPlanner
 	}
+	plannerPath = canonicalContractPath(plannerPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -122,7 +125,7 @@ func resolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) 
 				Description: "Final answer written when the model finishes without further tool calls.",
 			},
 			{
-				Path:          nodes.TokenUsageStateKey,
+				Path:          canonicalContractPath(nodes.TokenUsageStateKey),
 				Mode:          dsl.StateAccessWrite,
 				Description:   "Accumulated token usage metrics emitted by the model node.",
 				MergeStrategy: dsl.StateMergeMerge,
@@ -147,11 +150,13 @@ func resolveToolsStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error
 
 func resolveIteratorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	stateKey := strings.TrimSpace(stringConfig(spec.Config, "state_key"))
+	stateKey = canonicalContractPath(stateKey)
 	nodeID := strings.TrimSpace(spec.ID)
 	runtimePath := nodes.IteratorStateRootKey
 	if nodeID != "" {
 		runtimePath += "." + nodeID
 	}
+	runtimePath = canonicalContractPath(runtimePath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -175,17 +180,36 @@ func resolveIteratorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 }
 
 func scopedConversationPath(scope string, field string) string {
-	return scopedStatePath(scope, field)
+	scope = strings.TrimSpace(scope)
+	field = strings.TrimSpace(field)
+	if field == "" {
+		if scope == "" {
+			return "conversation"
+		}
+		return "scopes." + scope
+	}
+	if scope == "" {
+		return "conversation." + field
+	}
+	return "scopes." + scope + "." + field
 }
 
 func scopedStatePath(scope string, field string) string {
 	scope = strings.TrimSpace(scope)
 	field = strings.TrimSpace(field)
 	if scope == "" {
-		return field
+		return canonicalContractPath(field)
 	}
 	if field == "" {
 		return "scopes." + scope
 	}
 	return "scopes." + scope + "." + field
+}
+
+func canonicalContractPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "*" {
+		return path
+	}
+	return fruntime.NormalizeContractPath(path)
 }

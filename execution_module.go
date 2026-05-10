@@ -194,6 +194,7 @@ func resolvePlanStepExecutorStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 	if plannerPath == "" {
 		plannerPath = fruntime.StateKeyPlanner
 	}
+	plannerPath = canonicalContractPath(plannerPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -214,7 +215,7 @@ func resolvePlanStepExecutorStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 				Description: "Current planner status.",
 			},
 			{
-				Path:          fruntime.StateKeyExecution,
+				Path:          canonicalContractPath(fruntime.StateKeyExecution),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Execution state: current step, route, step results.",
@@ -234,6 +235,7 @@ func resolveObservationRecorderStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 	if plannerPath == "" {
 		plannerPath = fruntime.StateKeyPlanner
 	}
+	plannerPath = canonicalContractPath(plannerPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -249,19 +251,19 @@ func resolveObservationRecorderStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 				Description: "Current step ID for observation association.",
 			},
 			{
-				Path:          fruntime.StateKeyObservations,
+				Path:          canonicalContractPath(fruntime.StateKeyObservations),
 				Mode:          dsl.StateAccessReadWrite,
 				Description:   "Accumulated observations.",
 				MergeStrategy: dsl.StateMergeAppend,
 			},
 			{
-				Path:          fruntime.StateKeyEvidence,
+				Path:          canonicalContractPath(fruntime.StateKeyEvidence),
 				Mode:          dsl.StateAccessReadWrite,
 				Description:   "Accumulated evidence.",
 				MergeStrategy: dsl.StateMergeAppend,
 			},
 			{
-				Path:          fruntime.StateKeyExecution + ".step_results",
+				Path:          canonicalContractPath(fruntime.StateKeyExecution + ".step_results"),
 				Mode:          dsl.StateAccessReadWrite,
 				Description:   "Per-step result records.",
 				MergeStrategy: dsl.StateMergeMerge,

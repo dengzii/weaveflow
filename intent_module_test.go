@@ -152,10 +152,10 @@ func TestResolveIntentAnalyzerStateContractUsesConfiguredPaths(t *testing.T) {
 	if len(contract.Fields) != 2 {
 		t.Fatalf("expected 2 contract fields, got %#v", contract.Fields)
 	}
-	if contract.Fields[0].Path != "request.input" || contract.Fields[0].Mode != dsl.StateAccessRead {
+	if contract.Fields[0].Path != "shared.request.input" || contract.Fields[0].Mode != dsl.StateAccessRead {
 		t.Fatalf("unexpected input contract field: %#v", contract.Fields[0])
 	}
-	if contract.Fields[1].Path != "analysis.intent" || contract.Fields[1].Mode != dsl.StateAccessWrite {
+	if contract.Fields[1].Path != "shared.analysis.intent" || contract.Fields[1].Mode != dsl.StateAccessWrite {
 		t.Fatalf("unexpected intent output contract field: %#v", contract.Fields[1])
 	}
 }

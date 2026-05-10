@@ -353,7 +353,7 @@ func resolveToolPolicyGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:        fruntime.StateKeyToolPolicy,
+				Path:        canonicalContractPath(fruntime.StateKeyToolPolicy),
 				Mode:        dsl.StateAccessRead,
 				Description: "Tool safety policy rules.",
 			},
@@ -363,7 +363,7 @@ func resolveToolPolicyGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 				Description: "Conversation messages with tool calls to check.",
 			},
 			{
-				Path:          fruntime.StateKeyToolPolicyCheck,
+				Path:          canonicalContractPath(fruntime.StateKeyToolPolicyCheck),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Policy check results.",
@@ -378,12 +378,12 @@ func resolveApprovalGateStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 
 	fields := []dsl.StateFieldRef{
 		{
-			Path:        fruntime.StateKeyToolPolicyCheck,
+			Path:        canonicalContractPath(fruntime.StateKeyToolPolicyCheck),
 			Mode:        dsl.StateAccessReadWrite,
 			Description: "Policy check decisions to review and update after approval.",
 		},
 		{
-			Path:          fruntime.StateKeyApproval,
+			Path:          canonicalContractPath(fruntime.StateKeyApproval),
 			Mode:          dsl.StateAccessWrite,
 			Required:      true,
 			Description:   "Approval result.",
@@ -408,12 +408,12 @@ func resolveCostBudgetGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:        nodes.TokenUsageStateKey,
+				Path:        canonicalContractPath(nodes.TokenUsageStateKey),
 				Mode:        dsl.StateAccessRead,
 				Description: "Token usage metrics.",
 			},
 			{
-				Path:        fruntime.StateKeyObservations,
+				Path:        canonicalContractPath(fruntime.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "Observations for tool call counting.",
 			},
@@ -423,7 +423,7 @@ func resolveCostBudgetGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 				Description: "Conversation iteration count.",
 			},
 			{
-				Path:          fruntime.StateKeyBudget,
+				Path:          canonicalContractPath(fruntime.StateKeyBudget),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Budget status and usage.",

@@ -124,7 +124,8 @@ func NormalizeContractPath(path string) string {
 	if path == "" || path == "*" {
 		return path
 	}
-	if strings.HasPrefix(path, "scopes.") ||
+	if path == "shared" || strings.HasPrefix(path, "shared.") ||
+		strings.HasPrefix(path, "scopes.") ||
 		strings.HasPrefix(path, "internal.") ||
 		path == "runtime" || strings.HasPrefix(path, "runtime.") ||
 		path == "conversation" || strings.HasPrefix(path, "conversation.") ||
@@ -133,6 +134,10 @@ func NormalizeContractPath(path string) string {
 	}
 	if strings.HasPrefix(path, StateNamespacePrefix) {
 		return "internal." + path
+	}
+	switch path {
+	case stateKeyMessages, stateKeyIterationCount, stateKeyMaxIterations, stateKeyFinalAnswer:
+		return "conversation." + path
 	}
 	return "shared." + path
 }

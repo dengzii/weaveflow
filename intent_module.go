@@ -113,6 +113,7 @@ func resolveIntentAnalyzerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 	if intentPath == "" {
 		intentPath = fruntime.StateKeyIntent
 	}
+	intentPath = canonicalContractPath(intentPath)
 
 	contract := dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -130,7 +131,7 @@ func resolveIntentAnalyzerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 	if inputPath := strings.TrimSpace(stringConfig(spec.Config, "input_path")); inputPath != "" {
 		contract.Fields = append([]dsl.StateFieldRef{
 			{
-				Path:        inputPath,
+				Path:        canonicalContractPath(inputPath),
 				Mode:        dsl.StateAccessRead,
 				Required:    true,
 				Description: "Explicit request input for intent analysis.",

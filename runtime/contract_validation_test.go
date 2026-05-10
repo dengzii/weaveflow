@@ -211,9 +211,10 @@ func TestNormalizeContractPath(t *testing.T) {
 		input    string
 		expected string
 	}{
-		{"messages", "shared.messages"},
+		{"messages", "conversation.messages"},
 		{"topic", "shared.topic"},
-		{"final_answer", "shared.final_answer"},
+		{"final_answer", "conversation.final_answer"},
+		{"shared.planner", "shared.planner"},
 		{"scopes.agent.messages", "scopes.agent.messages"},
 		{"scopes.planner.status", "scopes.planner.status"},
 		{"__wf_iterator", "internal.__wf_iterator"},

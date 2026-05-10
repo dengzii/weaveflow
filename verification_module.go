@@ -183,6 +183,7 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 	if plannerPath == "" {
 		plannerPath = fruntime.StateKeyPlanner
 	}
+	plannerPath = canonicalContractPath(plannerPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -202,17 +203,17 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 				Description: "Task objective for final verification.",
 			},
 			{
-				Path:        fruntime.StateKeyExecution + ".step_results",
+				Path:        canonicalContractPath(fruntime.StateKeyExecution + ".step_results"),
 				Mode:        dsl.StateAccessRead,
 				Description: "Step execution results.",
 			},
 			{
-				Path:        fruntime.StateKeyObservations,
+				Path:        canonicalContractPath(fruntime.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "Observations for verification.",
 			},
 			{
-				Path:        fruntime.StateKeyEvidence,
+				Path:        canonicalContractPath(fruntime.StateKeyEvidence),
 				Mode:        dsl.StateAccessRead,
 				Description: "Evidence for verification.",
 			},
@@ -222,7 +223,7 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 				Description: "Conversation messages.",
 			},
 			{
-				Path:          fruntime.StateKeyVerification,
+				Path:          canonicalContractPath(fruntime.StateKeyVerification),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Verification result output.",
@@ -241,21 +242,22 @@ func resolveFinalizerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 	if plannerPath == "" {
 		plannerPath = fruntime.StateKeyPlanner
 	}
+	plannerPath = canonicalContractPath(plannerPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:        fruntime.StateKeyVerification,
+				Path:        canonicalContractPath(fruntime.StateKeyVerification),
 				Mode:        dsl.StateAccessRead,
 				Description: "Verification results.",
 			},
 			{
-				Path:        fruntime.StateKeyObservations,
+				Path:        canonicalContractPath(fruntime.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "All observations.",
 			},
 			{
-				Path:        fruntime.StateKeyEvidence,
+				Path:        canonicalContractPath(fruntime.StateKeyEvidence),
 				Mode:        dsl.StateAccessRead,
 				Description: "All evidence.",
 			},
@@ -281,7 +283,7 @@ func resolveFinalizerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 				MergeStrategy: dsl.StateMergeReplace,
 			},
 			{
-				Path:          fruntime.StateKeyFinal,
+				Path:          canonicalContractPath(fruntime.StateKeyFinal),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Final answer state subtree.",

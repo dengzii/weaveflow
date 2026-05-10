@@ -110,6 +110,7 @@ func resolveOrchestrationRouterStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 	if orchestrationPath == "" {
 		orchestrationPath = fruntime.StateKeyOrchestration
 	}
+	orchestrationPath = canonicalContractPath(orchestrationPath)
 
 	contract := dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -127,7 +128,7 @@ func resolveOrchestrationRouterStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 	if inputPath := strings.TrimSpace(stringConfig(spec.Config, "input_path")); inputPath != "" {
 		contract.Fields = append([]dsl.StateFieldRef{
 			{
-				Path:        inputPath,
+				Path:        canonicalContractPath(inputPath),
 				Mode:        dsl.StateAccessRead,
 				Required:    true,
 				Description: "Explicit request input for orchestration routing.",
@@ -142,7 +143,7 @@ func resolveOrchestrationRouterStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 		}
 		contract.Fields = append([]dsl.StateFieldRef{
 			{
-				Path:        path,
+				Path:        canonicalContractPath(path),
 				Mode:        dsl.StateAccessRead,
 				Description: "Optional orchestration context input.",
 			},

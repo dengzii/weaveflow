@@ -117,7 +117,7 @@ func resolveSessionBootstrapStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 	contract := dsl.StateContract{}
 	if inputPath != "" && inputPath != fruntime.StateKeyRequest+".input" {
 		contract.Fields = append(contract.Fields, dsl.StateFieldRef{
-			Path:        inputPath,
+			Path:        canonicalContractPath(inputPath),
 			Mode:        dsl.StateAccessRead,
 			Required:    true,
 			Description: "Raw user input read by session bootstrap.",
@@ -136,26 +136,26 @@ func resolveSessionBootstrapStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 			Description: "Maximum iteration count initialized for the configured scope.",
 		},
 		dsl.StateFieldRef{
-			Path:          fruntime.StateKeyRequest + ".input",
+			Path:          canonicalContractPath(fruntime.StateKeyRequest + ".input"),
 			Mode:          dsl.StateAccessReadWrite,
 			Required:      true,
 			Description:   "Normalized raw request input.",
 			MergeStrategy: dsl.StateMergeMerge,
 		},
 		dsl.StateFieldRef{
-			Path:          fruntime.StateKeyRequest + ".metadata",
+			Path:          canonicalContractPath(fruntime.StateKeyRequest + ".metadata"),
 			Mode:          dsl.StateAccessWrite,
 			Description:   "Request metadata such as workspace, tenant, or user identifiers.",
 			MergeStrategy: dsl.StateMergeMerge,
 		},
 		dsl.StateFieldRef{
-			Path:          fruntime.StateKeyAgent + ".profile",
+			Path:          canonicalContractPath(fruntime.StateKeyAgent + ".profile"),
 			Mode:          dsl.StateAccessWrite,
 			Description:   "Agent profile made available to downstream nodes.",
 			MergeStrategy: dsl.StateMergeMerge,
 		},
 		dsl.StateFieldRef{
-			Path:          fruntime.StateKeyToolPolicy,
+			Path:          canonicalContractPath(fruntime.StateKeyToolPolicy),
 			Mode:          dsl.StateAccessWrite,
 			Description:   "Tool policy made available to downstream guard and tool nodes.",
 			MergeStrategy: dsl.StateMergeMerge,

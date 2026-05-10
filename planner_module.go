@@ -185,11 +185,13 @@ func resolvePlannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, err
 	if plannerPath == "" {
 		plannerPath = fruntime.StateKeyPlanner
 	}
+	plannerPath = canonicalContractPath(plannerPath)
 
 	objectivePath := strings.TrimSpace(stringConfig(spec.Config, "objective_path"))
 	if objectivePath == "" {
 		objectivePath = plannerPath + ".objective"
 	}
+	objectivePath = canonicalContractPath(objectivePath)
 
 	contract := dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -208,7 +210,7 @@ func resolvePlannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, err
 			continue
 		}
 		contract.Fields = append(contract.Fields, dsl.StateFieldRef{
-			Path:        path,
+			Path:        canonicalContractPath(path),
 			Mode:        dsl.StateAccessRead,
 			Description: "Planner context input.",
 		})
