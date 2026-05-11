@@ -4,25 +4,18 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"weaveflow/core"
 	fruntime "weaveflow/runtime"
 )
 
-type ContractDiagnosticSeverity string
+type ContractDiagnosticSeverity = core.ContractDiagnosticSeverity
 
 const (
-	ContractDiagnosticSeverityError   ContractDiagnosticSeverity = "error"
-	ContractDiagnosticSeverityWarning ContractDiagnosticSeverity = "warning"
+	ContractDiagnosticSeverityError   = core.ContractDiagnosticSeverityError
+	ContractDiagnosticSeverityWarning = core.ContractDiagnosticSeverityWarning
 )
 
-type ContractDiagnostic struct {
-	Severity    ContractDiagnosticSeverity `json:"severity"`
-	Kind        string                     `json:"kind"`
-	NodeID      string                     `json:"node_id,omitempty"`
-	OtherNodeID string                     `json:"other_node_id,omitempty"`
-	Path        string                     `json:"path,omitempty"`
-	Sources     []string                   `json:"sources,omitempty"`
-	Message     string                     `json:"message"`
-}
+type ContractDiagnostic = core.ContractDiagnostic
 
 func (g *Graph) ContractDiagnostics() []ContractDiagnostic {
 	if g == nil || len(g.contractDiagnostics) == 0 {

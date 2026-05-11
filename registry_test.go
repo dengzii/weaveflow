@@ -40,13 +40,13 @@ func registerAssignNodeType(registry *Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			return assignStateNode{
 				id:    spec.ID,
 				key:   stringConfig(spec.Config, "key"),
 				value: spec.Config["value"],
 			}, nil
-		},
+		}),
 	})
 }
 
@@ -107,14 +107,14 @@ func registerCollectIteratorItemNodeType(registry *Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
 				iteratorNodeID: stringConfig(spec.Config, "iterator_node_id"),
 				targetKey:      stringConfig(spec.Config, "target_key"),
 			}, nil
-		},
+		}),
 	})
 }
 

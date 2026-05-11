@@ -293,11 +293,15 @@ func (n *VerifierNode) applyResult(state fruntime.State, result *verificationRes
 	v["needs_replan"] = result.NextAction == VerificationActionReplan
 	v["needs_retry"] = result.NextAction == VerificationActionRetry
 
-	if mode == VerifierModeStep && result.Status == VerificationPass {
-		n.markCurrentStepCompleted(state)
+	if mode != VerifierModeStep {
+		return
 	}
-	if mode == VerifierModeStep && result.NextAction == VerificationActionRetry {
+	if result.NextAction == VerificationActionRetry {
 		n.markCurrentStepReady(state)
+		return
+	}
+	if result.NextAction == VerificationActionContinue || result.Status == VerificationPass {
+		n.markCurrentStepCompleted(state)
 	}
 }
 

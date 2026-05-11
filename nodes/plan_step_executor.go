@@ -81,7 +81,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 		if allStepsCompleted(plan) {
 			return n.routeFinalize(ctx, state, plannerState, "all steps completed")
 		}
-		return n.routeBlocked(ctx, state, plannerState, reason)
+		return n.routeBlocked(ctx, state, plannerState, reason, buildBlockedDiagnostics(plan, stepResults))
 	}
 
 	selectedStep["status"] = "in_progress"
@@ -126,16 +126,25 @@ func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state fruntime
 	return state, nil
 }
 
-func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state fruntime.State, plannerState fruntime.State, reason string) (fruntime.State, error) {
+func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state fruntime.State, plannerState fruntime.State, reason string, diagnostics map[string]any) (fruntime.State, error) {
 	exec := state.Ensure(fruntime.StateKeyExecution)
 	exec["route"] = ExecutionRouteBlocked
 	exec["current_step"] = nil
 	plannerState["current_step_id"] = ""
+	if diagnostics != nil {
+		exec["blocked_diagnostics"] = diagnostics
+	} else {
+		delete(exec, "blocked_diagnostics")
+	}
 
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "plan_step_executor.selection", map[string]any{
+	artifact := map[string]any{
 		"route":  ExecutionRouteBlocked,
 		"reason": reason,
-	})
+	}
+	if diagnostics != nil {
+		artifact["diagnostics"] = diagnostics
+	}
+	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "plan_step_executor.selection", artifact)
 
 	return state, nil
 }
@@ -229,17 +238,130 @@ func dependenciesMet(step map[string]any, completedIDs map[string]bool) bool {
 }
 
 func completedStepIDs(plan []map[string]any, stepResults map[string]any) map[string]bool {
-	_ = stepResults
 	ids := make(map[string]bool)
 	for _, step := range plan {
+		id, _ := step["id"].(string)
+		if id == "" {
+			continue
+		}
 		status, _ := step["status"].(string)
 		if status == "completed" {
-			if id, ok := step["id"].(string); ok {
-				ids[id] = true
-			}
+			ids[id] = true
+			continue
+		}
+		if (status == "in_progress" || status == "running") && stepResultExists(stepResults, id) {
+			ids[id] = true
 		}
 	}
 	return ids
+}
+
+func stepResultExists(stepResults map[string]any, stepID string) bool {
+	if len(stepResults) == 0 || stepID == "" {
+		return false
+	}
+	result, ok := stepResults[stepID]
+	if !ok || result == nil {
+		return false
+	}
+	return true
+}
+
+func buildBlockedDiagnostics(plan []map[string]any, stepResults map[string]any) map[string]any {
+	completedIDs := completedStepIDs(plan, stepResults)
+	stepStatuses := make(map[string]any, len(plan))
+	stepStatusLookup := make(map[string]map[string]any, len(plan))
+	waiting := make([]map[string]any, 0)
+
+	for _, step := range plan {
+		id, _ := step["id"].(string)
+		if id == "" {
+			continue
+		}
+		status, _ := step["status"].(string)
+		statusInfo := map[string]any{
+			"status":               status,
+			"has_step_result":      stepResultExists(stepResults, id),
+			"dependency_satisfied": completedIDs[id],
+		}
+		stepStatuses[id] = statusInfo
+		stepStatusLookup[id] = statusInfo
+
+		switch status {
+		case "completed", "blocked", "running", "in_progress":
+			continue
+		}
+
+		missing := missingDependencies(step, completedIDs, stepStatusLookup)
+		if len(missing) == 0 {
+			continue
+		}
+
+		waiting = append(waiting, map[string]any{
+			"step_id":      id,
+			"title":        stringifyStepField(step["title"]),
+			"status":       status,
+			"depends_on":   extractStepDependencyIDs(step),
+			"missing_deps": missing,
+		})
+	}
+
+	if len(waiting) == 0 && len(stepStatuses) == 0 {
+		return nil
+	}
+
+	return map[string]any{
+		"waiting_steps": waiting,
+		"step_statuses": stepStatuses,
+	}
+}
+
+func missingDependencies(step map[string]any, completedIDs map[string]bool, stepStatusLookup map[string]map[string]any) []map[string]any {
+	deps := extractStepDependencyIDs(step)
+	if len(deps) == 0 {
+		return nil
+	}
+
+	missing := make([]map[string]any, 0)
+	for _, dep := range deps {
+		if completedIDs[dep] {
+			continue
+		}
+		entry := map[string]any{"step_id": dep}
+		if info := stepStatusLookup[dep]; info != nil {
+			for k, v := range info {
+				entry[k] = v
+			}
+		}
+		missing = append(missing, entry)
+	}
+	return missing
+}
+
+func extractStepDependencyIDs(step map[string]any) []string {
+	raw, ok := step["depends_on"]
+	if !ok {
+		return nil
+	}
+	switch typed := raw.(type) {
+	case []string:
+		return append([]string(nil), typed...)
+	case []any:
+		deps := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if dep, ok := item.(string); ok && strings.TrimSpace(dep) != "" {
+				deps = append(deps, dep)
+			}
+		}
+		return deps
+	default:
+		return nil
+	}
+}
+
+func stringifyStepField(value any) string {
+	text, _ := value.(string)
+	return text
 }
 
 func allStepsCompleted(plan []map[string]any) bool {

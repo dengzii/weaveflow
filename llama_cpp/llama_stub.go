@@ -1,4 +1,4 @@
-//go:build !cgo || !windows
+//go:build !llama_cpp || !cgo || !windows
 
 package llama_cpp
 

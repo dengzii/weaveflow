@@ -369,6 +369,7 @@ export function useChat() {
   const [progress, setProgress] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const ctxRef = useRef<StreamCtx>(freshCtx());
+  const terminalEventSeenRef = useRef(false);
   const seq = useRef(0);
 
   const nextId = () => String(++seq.current);
@@ -559,6 +560,7 @@ export function useChat() {
       }
 
       case "complete": {
+        terminalEventSeenRef.current = true;
         completeLastStep();
         flushPendingDirectAnswer();
         closeThinking();
@@ -568,6 +570,7 @@ export function useChat() {
       }
 
       case "error": {
+        terminalEventSeenRef.current = true;
         completeLastStep();
         closeThinking();
         closeContent();
@@ -585,6 +588,7 @@ export function useChat() {
     setRunning(true);
     setProgress("启动中...");
     ctxRef.current = freshCtx();
+    terminalEventSeenRef.current = false;
 
     const controller = new AbortController();
     abortRef.current = controller;
@@ -606,7 +610,15 @@ export function useChat() {
         return;
       }
 
-      const reader = resp.body!.getReader();
+      if (!resp.body) {
+        dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "响应流不可用" } });
+        setRunning(false);
+        setProgress(null);
+        abortRef.current = null;
+        return;
+      }
+
+      const reader = resp.body.getReader();
       const decoder = new TextDecoder();
       let buf = "";
       while (true) {
@@ -622,6 +634,12 @@ export function useChat() {
       }
       if (buf.startsWith("data: ")) {
         try { handleEvent(JSON.parse(buf.slice(6)) as ChatEvent); } catch { /* ignore */ }
+      }
+      if (!controller.signal.aborted && !terminalEventSeenRef.current) {
+        dispatch({
+          type: "ADD",
+          item: { id: nextId(), kind: "error", text: "连接中断：响应流在完成前被关闭" },
+        });
       }
     } catch (err) {
       if ((err as Error).name !== "AbortError") {

@@ -4,6 +4,10 @@ import fruntime "weaveflow/runtime"
 
 type State = fruntime.State
 
+func DefaultStateFields() []StateFieldDefinition {
+	return defaultStateFieldDefinitions()
+}
+
 func defaultStateFieldDefinitions() []StateFieldDefinition {
 	defs := fruntime.DefaultStateFieldDefinitions()
 	result := make([]StateFieldDefinition, 0, len(defs))

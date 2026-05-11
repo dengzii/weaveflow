@@ -141,14 +141,14 @@ func registerCollectIteratorItemNodeType(registry *weaveflow.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[weaveflow.State], error) {
+		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[weaveflow.State], error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
 				iteratorNodeID: stringConfig(spec.Config, "iterator_node_id"),
 				targetKey:      stringConfig(spec.Config, "target_key"),
 			}, nil
-		},
+		}),
 	})
 }
 
@@ -163,10 +163,10 @@ func registerPrintStateNodeType(registry *weaveflow.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[weaveflow.State], error) {
+		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[weaveflow.State], error) {
 			_ = ctx
 			return printStateNode{id: spec.ID}, nil
-		},
+		}),
 	})
 }
 

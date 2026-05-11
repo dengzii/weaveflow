@@ -1,12 +1,15 @@
 package weaveflow
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
+	"weaveflow/builder"
+	"weaveflow/builtin"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	"weaveflow/registry"
+	fruntime "weaveflow/runtime"
 )
 
 type JSONSchema = dsl.JSONSchema
@@ -19,511 +22,58 @@ type GraphDefinition = dsl.GraphDefinition
 type NodeTypeSchema = dsl.NodeTypeSchema
 type ConditionSchema = dsl.ConditionSchema
 
-type GraphResolver func(graphRef string) (dsl.GraphDefinition, error)
+type GraphResolver = registry.GraphResolver
+type NodeBuildContext = registry.NodeBuildContext
+type NodeTypeDefinition = registry.NodeTypeDefinition
+type SubgraphBuilder = registry.SubgraphBuilder
+type SubgraphRunner = registry.SubgraphRunner
+type Registry registry.Registry
 
-type BuildContext struct {
-	InstanceConfig       *dsl.GraphInstanceConfig
-	GraphResolver        GraphResolver
-	OnContractDiagnostic func(ContractDiagnostic)
-	graphBuildPath       []string
-}
+type BuildContext = builder.BuildContext
+type LegacyNodeBuilder = builder.LegacyNodeBuilder
 
-type NodeTypeDefinition struct {
-	dsl.NodeTypeSchema
-	Build                func(*BuildContext, dsl.GraphNodeSpec) (nodes.Node[State], error) `json:"-"`
-	ResolveStateContract func(dsl.GraphNodeSpec) (dsl.StateContract, error)                `json:"-"`
-}
-
-type ConditionDefinition struct {
-	dsl.ConditionSchema
-	Resolve func(GraphConditionSpec) (EdgeCondition, error) `json:"-"`
-}
-
-type Registry struct {
-	StateFields map[string]StateFieldDefinition `json:"state_fields"`
-	NodeTypes   map[string]NodeTypeDefinition   `json:"node_types"`
-	Conditions  map[string]ConditionDefinition  `json:"conditions"`
-}
+type ConditionDefinition = registry.ConditionDefinition
 
 func NewRegistry() *Registry {
-	return &Registry{
-		StateFields: map[string]StateFieldDefinition{},
-		NodeTypes:   map[string]NodeTypeDefinition{},
-		Conditions:  map[string]ConditionDefinition{},
-	}
+	return (*Registry)(registry.NewRegistry())
 }
 
 func DefaultRegistry() *Registry {
-	r := NewRegistry()
+	return (*Registry)(builtin.NewDefaultRegistry())
+}
 
-	for _, field := range defaultStateFieldDefinitions() {
-		r.RegisterStateField(field)
+func RegisterDefaultComponents(r *Registry) {
+	if r == nil {
+		return
 	}
+	builtin.RegisterDefaultComponents((*registry.Registry)(r))
+}
 
-	RegisterSessionBootstrapModule(r)
-	RegisterIntentModule(r)
-	RegisterOrchestrationModule(r)
-	RegisterMemoryModule(r)
-	RegisterContextModule(r)
-	RegisterExecutionModule(r)
-	RegisterVerificationModule(r)
-	RegisterSafetyModule(r)
-	RegisterReplannerModule(r)
-
-	r.RegisterNodeType(NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "subgraph",
-			Title:       "Subgraph Node",
-			Description: "Invoke another graph resolved by graph_ref using the current state.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"graph_ref": JSONSchema{"type": "string"},
-				},
-				"required":             []string{"graph_ref"},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: resolveSubgraphStateContract,
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			graphRef := stringConfig(spec.Config, "graph_ref")
-			if graphRef == "" {
-				return nil, fmt.Errorf("build subgraph nodes %q: graph_ref is required", spec.ID)
-			}
-			if ctx == nil || ctx.GraphResolver == nil {
-				return nil, fmt.Errorf("build subgraph nodes %q: graph resolver is required", spec.ID)
-			}
-			if err := validateGraphBuildPath(ctx.graphBuildPath, graphRef); err != nil {
-				return nil, fmt.Errorf("build subgraph nodes %q: %w", spec.ID, err)
-			}
-
-			def, err := ctx.GraphResolver(graphRef)
-			if err != nil {
-				return nil, fmt.Errorf("build subgraph nodes %q resolve %q: %w", spec.ID, graphRef, err)
-			}
-
-			subgraphCtx := cloneBuildContext(ctx)
-			subgraphCtx.InstanceConfig = nil
-			subgraphCtx.graphBuildPath = append(subgraphCtx.graphBuildPath, graphRef)
-
-			subgraph, err := r.buildGraph(def, nil, subgraphCtx)
-			if err != nil {
-				return nil, fmt.Errorf("build subgraph nodes %q graph %q: %w", spec.ID, graphRef, err)
-			}
-
-			node := nodes.NewSubgraphNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
-			node.GraphRef = graphRef
-			node.InvokeSubgraph = func(ctx context.Context, state State) (State, error) {
-				return subgraph.Run(ctx, state)
-			}
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "mapped_subgraph",
-			Title:       "Mapped Subgraph Node",
-			Description: "Invoke another graph with explicit input/output state path mappings.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"graph_ref": JSONSchema{"type": "string"},
-					"input_map": JSONSchema{
-						"type":                 "object",
-						"additionalProperties": JSONSchema{"type": "string"},
-						"description":          "Maps parent state paths (keys) to subgraph input paths (values).",
-					},
-					"output_map": JSONSchema{
-						"type":                 "object",
-						"additionalProperties": JSONSchema{"type": "string"},
-						"description":          "Maps subgraph output paths (keys) to parent state paths (values).",
-					},
-				},
-				"required":             []string{"graph_ref"},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: resolveMappedSubgraphStateContract,
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			graphRef := stringConfig(spec.Config, "graph_ref")
-			if graphRef == "" {
-				return nil, fmt.Errorf("build mapped_subgraph node %q: graph_ref is required", spec.ID)
-			}
-			if ctx == nil || ctx.GraphResolver == nil {
-				return nil, fmt.Errorf("build mapped_subgraph node %q: graph resolver is required", spec.ID)
-			}
-			if err := validateGraphBuildPath(ctx.graphBuildPath, graphRef); err != nil {
-				return nil, fmt.Errorf("build mapped_subgraph node %q: %w", spec.ID, err)
-			}
-
-			def, err := ctx.GraphResolver(graphRef)
-			if err != nil {
-				return nil, fmt.Errorf("build mapped_subgraph node %q resolve %q: %w", spec.ID, graphRef, err)
-			}
-
-			subgraphCtx := cloneBuildContext(ctx)
-			subgraphCtx.InstanceConfig = nil
-			subgraphCtx.graphBuildPath = append(subgraphCtx.graphBuildPath, graphRef)
-
-			subgraph, err := r.buildGraph(def, nil, subgraphCtx)
-			if err != nil {
-				return nil, fmt.Errorf("build mapped_subgraph node %q graph %q: %w", spec.ID, graphRef, err)
-			}
-
-			node := nodes.NewMappedSubgraphNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
-			node.GraphRef = graphRef
-			node.InputMap = mapStringConfig(spec.Config, "input_map")
-			node.OutputMap = mapStringConfig(spec.Config, "output_map")
-			node.InvokeSubgraph = func(ctx context.Context, state State) (State, error) {
-				return subgraph.Run(ctx, state)
-			}
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "iterator",
-			Title:       "Iterator Node",
-			Description: "Iterate over a state array and inject the current iteration into temporary state.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"state_key":      JSONSchema{"type": "string"},
-					"max_iterations": JSONSchema{"type": "integer", "minimum": 1},
-					"continue_to":    JSONSchema{"type": "string"},
-					"done_to":        JSONSchema{"type": "string"},
-				},
-				"required":             []string{"state_key", "max_iterations"},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: resolveIteratorStateContract,
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			_ = ctx
-
-			stateKey := stringConfig(spec.Config, "state_key")
-			if stateKey == "" {
-				return nil, fmt.Errorf("build iterator nodes %q: state_key is required", spec.ID)
-			}
-			maxIterations, ok := intConfig(spec.Config, "max_iterations")
-			if !ok || maxIterations <= 0 {
-				return nil, fmt.Errorf("build iterator nodes %q: max_iterations must be greater than 0", spec.ID)
-			}
-
-			node := nodes.NewIteratorNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
-			node.StateKey = stateKey
-			node.MaxIterations = maxIterations
-			node.ContinueTo = stringConfig(spec.Config, "continue_to")
-			node.DoneTo = stringConfig(spec.Config, "done_to")
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "human_message",
-			Title:       "Human Message Node",
-			Description: "Pause the graph until the latest message in scope is a human message.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"state_scope":       JSONSchema{"type": "string"},
-					"interrupt_message": JSONSchema{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: resolveHumanMessageStateContract,
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			node := nodes.NewHumanMessageNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
-			if scope := stringConfig(spec.Config, "state_scope"); scope != "" {
-				node.StateScope = scope
-			}
-			if message := stringConfig(spec.Config, "interrupt_message"); message != "" {
-				node.InterruptMessage = message
-			}
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "context_reducer",
-			Title:       "Context Reducer Node",
-			Description: "Compact older conversation context into a summary message before the next model turn.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"state_scope":     JSONSchema{"type": "string"},
-					"max_messages":    JSONSchema{"type": "integer", "minimum": 2},
-					"preserve_system": JSONSchema{"type": "boolean"},
-					"preserve_recent": JSONSchema{"type": "integer", "minimum": 0},
-					"summary_prefix":  JSONSchema{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: resolveContextReducerStateContract,
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			node := nodes.NewContextReducerNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			if value, ok := intConfig(spec.Config, "max_messages"); ok {
-				node.MaxMessages = value
-			}
-			if value, ok := boolConfig(spec.Config, "preserve_system"); ok {
-				node.PreserveSystem = value
-			}
-			if value, ok := intConfig(spec.Config, "preserve_recent"); ok {
-				node.PreserveRecent = value
-			}
-			if value := stringConfig(spec.Config, "summary_prefix"); value != "" {
-				node.SummaryPrefix = value
-			}
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "llm",
-			Title:       "LLM Node",
-			Description: "Built-in model inference nodes.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"tool_ids": JSONSchema{
-						"type":  "array",
-						"items": JSONSchema{"type": "string"},
-					},
-					"state_scope":      JSONSchema{"type": "string"},
-					"prompt_max_chars": JSONSchema{"type": "integer", "minimum": 1},
-				},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: resolveLLMStateContract,
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			node := nodes.NewLLMNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
-			node.ToolIDs = stringSliceConfig(spec.Config, "tool_ids")
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.PromptMaxChars, _ = intConfig(spec.Config, "prompt_max_chars")
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "tools",
-			Title:       "Tools Node",
-			Description: "Built-in tool execution nodes.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"tool_ids": JSONSchema{
-						"type":  "array",
-						"items": JSONSchema{"type": "string"},
-					},
-					"state_scope": JSONSchema{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: resolveToolsStateContract,
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
-			node := nodes.NewToolCallNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
-			node.ToolIDs = stringSliceConfig(spec.Config, "tool_ids")
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			return node, nil
-		},
-	})
-	r.RegisterCondition(ConditionDefinition{
-		ConditionSchema: dsl.ConditionSchema{
-			Type:        "last_message_has_tool_calls",
-			Title:       "Last Message Has Tool Calls",
-			Description: "Routes when the last AI message includes tool calls.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"state_scope": JSONSchema{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-		},
-		Resolve: func(spec GraphConditionSpec) (EdgeCondition, error) {
-			return LastMessageHasToolCalls(stringConfig(spec.Config, "state_scope")), nil
-		},
-	})
-
-	r.RegisterCondition(ConditionDefinition{
-		ConditionSchema: dsl.ConditionSchema{
-			Type:        "has_final_answer",
-			Title:       "Has Final Answer",
-			Description: "Routes when the current state already contains a final answer.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"state_scope": JSONSchema{"type": "string"},
-				},
-				"additionalProperties": false,
-			},
-		},
-		Resolve: func(spec GraphConditionSpec) (EdgeCondition, error) {
-			return HasFinalAnswer(stringConfig(spec.Config, "state_scope")), nil
-		},
-	})
-
-	r.RegisterCondition(ConditionDefinition{
-		ConditionSchema: dsl.ConditionSchema{
-			Type:        "expression_conditions",
-			Title:       "Expression Conditions",
-			Description: "Routes by evaluating serializable expressions against the current state.",
-			ConfigSchema: JSONSchema{
-				"type": "object",
-				"properties": JSONSchema{
-					"state_scope": JSONSchema{"type": "string"},
-					"match": JSONSchema{
-						"type": "string",
-						"enum": []string{ExpressionMatchAll, ExpressionMatchAny},
-					},
-					"expressions": JSONSchema{
-						"type": "array",
-						"items": JSONSchema{
-							"type": "object",
-							"properties": JSONSchema{
-								"value1": JSONSchema{"type": "string"},
-								"op": JSONSchema{
-									"type": "string",
-									"enum": []string{
-										OperationEqual,
-										OperationNotEqual,
-										OperationContains,
-										OperationNotContain,
-									},
-								},
-								"value2": JSONSchema{"type": "string"},
-							},
-							"required":             []string{"value1", "op", "value2"},
-							"additionalProperties": false,
-						},
-					},
-				},
-				"required":             []string{"expressions"},
-				"additionalProperties": false,
-			},
-		},
-		Resolve: func(spec GraphConditionSpec) (EdgeCondition, error) {
-			config, err := ParseExpressionConditionConfig(spec.Config)
-			if err != nil {
-				return EdgeCondition{}, fmt.Errorf("resolve expression condition: %w", err)
-			}
-			return ExpressionConditions(config)
-		},
-	})
-	return r
+func RegisterBuiltinCoreNodeTypes(r *Registry) {
+	if r == nil {
+		return
+	}
+	builtin.RegisterCoreNodeTypes((*registry.Registry)(r))
 }
 
 func (r *Registry) RegisterStateField(def StateFieldDefinition) {
-	r.StateFields[def.Name] = def
+	(*registry.Registry)(r).RegisterStateField(def)
 }
 
 func (r *Registry) RegisterNodeType(def NodeTypeDefinition) {
-	r.NodeTypes[def.Type] = def
+	(*registry.Registry)(r).RegisterNodeType(def)
 }
 
 func (r *Registry) RegisterCondition(def ConditionDefinition) {
-	r.Conditions[def.Type] = def
+	(*registry.Registry)(r).RegisterCondition(def)
 }
 
 func (r *Registry) ResolveCondition(spec GraphConditionSpec) (EdgeCondition, error) {
-	if r == nil {
-		return EdgeCondition{}, fmt.Errorf("registry is nil")
-	}
-	spec = dsl.NormalizeGraphConditionSpec(spec)
-	if spec.Type == "" {
-		return EdgeCondition{}, fmt.Errorf("condition type is required")
-	}
-	conditionDef, ok := r.Conditions[spec.Type]
-	if !ok {
-		return EdgeCondition{}, fmt.Errorf("condition %q is not registered", spec.Type)
-	}
-	condition, err := conditionDef.Resolve(spec)
-	if err != nil {
-		return EdgeCondition{}, err
-	}
-	return condition.withSpec(spec), nil
+	return (*registry.Registry)(r).ResolveCondition(spec)
 }
 
 func (r *Registry) ResolveNodeStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	if r == nil {
-		return dsl.StateContract{}, fmt.Errorf("registry is nil")
-	}
-	spec = dsl.NormalizeGraphDefinition(dsl.GraphDefinition{Nodes: []dsl.GraphNodeSpec{spec}}).Nodes[0]
-	if spec.Type == "" {
-		return dsl.StateContract{}, fmt.Errorf("node type is required")
-	}
-
-	nodeDef, ok := r.NodeTypes[spec.Type]
-	if !ok {
-		return dsl.StateContract{}, fmt.Errorf("node type %q is not registered", spec.Type)
-	}
-	if nodeDef.ResolveStateContract != nil {
-		return nodeDef.ResolveStateContract(spec)
-	}
-	if nodeDef.StateContract == nil {
-		return dsl.StateContract{}, nil
-	}
-	return nodeDef.StateContract.Clone(), nil
+	return (*registry.Registry)(r).ResolveNodeStateContract(spec)
 }
 
 func (r *Registry) AddConditionalEdge(g *Graph, from, to string, spec GraphConditionSpec) error {
@@ -546,139 +96,25 @@ func (r *Registry) BuildGraphInstance(def GraphDefinition, instance dsl.GraphIns
 }
 
 func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceConfig, ctx *BuildContext) (*Graph, error) {
-	def = dsl.NormalizeGraphDefinition(def)
-	if err := def.Validate(); err != nil {
-		return nil, err
-	}
-	if def.StateSchema != "" && def.StateSchema != dsl.CommonStateSchemaID {
-		return nil, fmt.Errorf("unsupported state schema %q", def.StateSchema)
-	}
-	if instance != nil {
-		normalized := *instance
-		if err := normalized.Validate(); err != nil {
-			return nil, err
-		}
-		applied, err := ApplyGraphInstanceConfig(def, normalized)
-		if err != nil {
-			return nil, err
-		}
-		def = applied
-		if ctx != nil {
-			clonedCtx := *ctx
-			clonedInstance := normalized
-			ctx = &clonedCtx
-			ctx.InstanceConfig = &clonedInstance
-		}
-	}
-
-	g := NewGraph()
-	g.initialStatePaths = initialContractPathsFromStateFields(r.StateFields)
-	for _, nodeSpec := range def.Nodes {
-		nodeDef, ok := r.NodeTypes[nodeSpec.Type]
-		if !ok {
-			return nil, fmt.Errorf("nodes type %q is not registered", nodeSpec.Type)
-		}
-		node, err := nodeDef.Build(ctx, nodeSpec)
-		if err != nil {
-			return nil, err
-		}
-		if err := g.AddNode(node); err != nil {
-			return nil, err
-		}
-	}
-	if err := r.applyBuiltInNodeEdges(g, def); err != nil {
-		return nil, err
-	}
-	for _, edge := range def.Edges {
-		if edge.Condition == nil {
-			if err := g.AddEdge(edge.From, edge.To); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		condition, err := r.ResolveCondition(*edge.Condition)
-		if err != nil {
-			return nil, err
-		}
-		if err := g.AddConditionalEdge(edge.From, edge.To, condition); err != nil {
-			return nil, err
-		}
-	}
-
-	if def.EntryPoint != "" {
-		if err := g.SetEntryPoint(def.EntryPoint); err != nil {
-			return nil, err
-		}
-	}
-	if def.FinishPoint != "" {
-		if err := g.SetFinishPoint(def.FinishPoint); err != nil {
-			return nil, err
-		}
-	}
-
-	g.nodeContracts = ResolveNodeContracts(g, r)
-	err := g.Validate()
-	if ctx != nil {
-		ctx.emitContractDiagnostics(g.ContractDiagnostics())
-	}
+	var err error
+	def, ctx, err = builder.PrepareDefinition(def, instance, ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	return g, nil
-}
-
-func (r *Registry) applyBuiltInNodeEdges(g *Graph, def GraphDefinition) error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
-	}
-
-	for _, nodeSpec := range def.Nodes {
-		if nodeSpec.Type != "iterator" {
-			continue
-		}
-		continueTo := stringConfig(nodeSpec.Config, "continue_to")
-		doneTo := stringConfig(nodeSpec.Config, "done_to")
-		if continueTo == "" && doneTo == "" {
-			continue
-		}
-		if continueTo == "" || doneTo == "" {
-			return fmt.Errorf("build iterator nodes %q: continue_to and done_to must be configured together", nodeSpec.ID)
-		}
-		if hasExplicitOutgoingEdge(def.Edges, nodeSpec.ID) {
-			return fmt.Errorf("build iterator nodes %q: built-in iterator edges cannot be combined with explicit outgoing edges", nodeSpec.ID)
-		}
-
-		condition, err := ExpressionConditions(ExpressionConditionConfig{
-			Expressions: []Expression{
-				{
-					Value1: nodes.IteratorStateRootKey + "." + nodeSpec.ID + ".done",
-					Op:     OperationEqual,
-					Value2: "false",
-				},
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("build iterator nodes %q built-in continue edge: %w", nodeSpec.ID, err)
-		}
-		if err := g.addRuntimeConditionalEdge(nodeSpec.ID, continueTo, condition); err != nil {
-			return fmt.Errorf("build iterator nodes %q built-in continue edge: %w", nodeSpec.ID, err)
-		}
-		if err := g.addRuntimeEdge(nodeSpec.ID, doneTo); err != nil {
-			return fmt.Errorf("build iterator nodes %q built-in done edge: %w", nodeSpec.ID, err)
-		}
-	}
-
-	return nil
-}
-
-func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {
-	for _, edge := range edges {
-		if strings.TrimSpace(edge.From) == from {
-			return true
-		}
-	}
-	return false
+	ctx.SubgraphBuilder = r.makeSubgraphBuilder(ctx)
+	return builder.BuildFinalizedGraph(
+		(*registry.Registry)(r),
+		def,
+		ctx,
+		NewGraph,
+		initialContractPathsFromStateFields(r.StateFields),
+		func(g *Graph, def dsl.GraphDefinition) error {
+			return builder.ApplyBuiltInNodeEdges(g, def)
+		},
+		func(g *Graph, _ *registry.Registry) map[string]fruntime.NodeIOContract {
+			return builder.ResolveNodeContracts(g, (*registry.Registry)(r))
+		},
+	)
 }
 
 func (r *Registry) JSONSchema() JSONSchema {
@@ -794,40 +230,33 @@ func floatConfig(config map[string]any, key string) (float64, bool) {
 	return 0, false
 }
 
-func cloneBuildContext(ctx *BuildContext) *BuildContext {
-	if ctx == nil {
-		return &BuildContext{}
-	}
-	cloned := *ctx
-	if len(ctx.graphBuildPath) > 0 {
-		cloned.graphBuildPath = append([]string(nil), ctx.graphBuildPath...)
-	}
-	return &cloned
+func AdaptLegacyNodeBuilder(build LegacyNodeBuilder) func(NodeBuildContext, dsl.GraphNodeSpec) (nodes.Node[State], error) {
+	return builder.AdaptLegacyNodeBuilder(build)
 }
 
-func (ctx *BuildContext) emitContractDiagnostics(diagnostics []ContractDiagnostic) {
-	if ctx == nil || ctx.OnContractDiagnostic == nil || len(diagnostics) == 0 {
-		return
-	}
-	for _, diagnostic := range diagnostics {
-		cloned := diagnostic
-		if len(diagnostic.Sources) > 0 {
-			cloned.Sources = append([]string(nil), diagnostic.Sources...)
+func (r *Registry) makeSubgraphBuilder(parentCtx *BuildContext) SubgraphBuilder {
+	return func(graphRef string) (SubgraphRunner, error) {
+		graphRef = strings.TrimSpace(graphRef)
+		if graphRef == "" {
+			return nil, fmt.Errorf("graph_ref is required")
 		}
-		ctx.OnContractDiagnostic(cloned)
-	}
-}
-
-func validateGraphBuildPath(path []string, next string) error {
-	next = strings.TrimSpace(next)
-	if next == "" {
-		return fmt.Errorf("graph_ref is required")
-	}
-	for _, existing := range path {
-		if existing == next {
-			cycle := append(append([]string(nil), path...), next)
-			return fmt.Errorf("cyclic graph_ref dependency detected: %s", strings.Join(cycle, " -> "))
+		if parentCtx == nil || parentCtx.GraphResolver == nil {
+			return nil, fmt.Errorf("graph resolver is required")
 		}
+		if err := builder.ValidateGraphBuildPath(parentCtx.GraphBuildPath(), graphRef); err != nil {
+			return nil, err
+		}
+		def, err := parentCtx.GraphResolver(graphRef)
+		if err != nil {
+			return nil, fmt.Errorf("resolve %q: %w", graphRef, err)
+		}
+		subgraphCtx := parentCtx.Clone()
+		subgraphCtx.InstanceConfig = nil
+		subgraphCtx.PushGraphRef(graphRef)
+		graph, err := r.buildGraph(def, nil, subgraphCtx)
+		if err != nil {
+			return nil, fmt.Errorf("build graph %q: %w", graphRef, err)
+		}
+		return graph.Run, nil
 	}
-	return nil
 }

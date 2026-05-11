@@ -10,6 +10,66 @@ const distDir = resolve(import.meta.dir, "dist");
 const includeDebug = process.env.INCLUDE_DEBUG !== "false";
 
 const twBin = resolve(import.meta.dir, "node_modules/.bin/tailwindcss");
+const hopByHopHeaderNames = new Set([
+  "connection",
+  "keep-alive",
+  "proxy-authenticate",
+  "proxy-authorization",
+  "te",
+  "trailer",
+  "transfer-encoding",
+  "upgrade",
+]);
+
+function filteredProxyHeaders(headers: Headers, removeContentLength = false): Headers {
+  const next = new Headers();
+  headers.forEach((value, key) => {
+    const normalized = key.toLowerCase();
+    if (hopByHopHeaderNames.has(normalized)) return;
+    if (normalized === "host") return;
+    if (removeContentLength && normalized === "content-length") return;
+    next.set(key, value);
+  });
+  return next;
+}
+
+function requestAllowsBody(method: string): boolean {
+  const upper = method.toUpperCase();
+  return upper !== "GET" && upper !== "HEAD";
+}
+
+async function proxyHttpRequest(req: Request, target: string): Promise<Response> {
+  const requestHeaders = filteredProxyHeaders(req.headers, true);
+  const isChatStream = new URL(req.url).pathname === "/neo/chat";
+  if (isChatStream) {
+    requestHeaders.set("accept-encoding", "identity");
+  }
+
+  try {
+    const upstream = await fetch(target, {
+      method: req.method,
+      headers: requestHeaders,
+      body: requestAllowsBody(req.method) ? req.body : undefined,
+      signal: req.signal,
+      // @ts-ignore
+      duplex: "half",
+    });
+
+    return new Response(upstream.body, {
+      status: upstream.status,
+      statusText: upstream.statusText,
+      headers: filteredProxyHeaders(upstream.headers, true),
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return new Response(`proxy request failed: ${message}`, {
+      status: 502,
+      headers: {
+        "content-type": "text/plain; charset=utf-8",
+      },
+    });
+  }
+}
 
 async function buildCSS(): Promise<boolean> {
   const args = [twBin, "-i", "app.css", "-o", `${distDir}/app.css`];
@@ -124,25 +184,13 @@ if (isDev) {
       // Proxy Neo agent API
       if (url.pathname.startsWith("/neo/")) {
         const target = BACKEND + url.pathname + url.search;
-        return fetch(target, {
-          method: req.method,
-          headers: req.headers,
-          body: req.body,
-          // @ts-ignore
-          duplex: "half",
-        });
+        return proxyHttpRequest(req, target);
       }
 
       // Proxy debug replay API to neo backend (replay routes served by neo)
       if (includeDebug && url.pathname.startsWith("/api/")) {
         const target = BACKEND + url.pathname + url.search;
-        return fetch(target, {
-          method: req.method,
-          headers: req.headers,
-          body: req.body,
-          // @ts-ignore
-          duplex: "half",
-        });
+        return proxyHttpRequest(req, target);
       }
 
       if (url.pathname !== "/" && url.pathname !== "/index.html") {

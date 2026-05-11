@@ -42,10 +42,10 @@ func registerStaticContractNodeType(registry *Registry, typeName string, contrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			_ = ctx
 			return staticContractNode{id: spec.ID, spec: spec}, nil
-		},
+		}),
 	})
 }
 

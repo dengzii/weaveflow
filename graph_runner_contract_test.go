@@ -54,7 +54,7 @@ func registerContractProbeNodeType(registry *Registry, contract dsl.StateContrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
 			_ = ctx
 			return contractProbeNode{
 				id:      spec.ID,
@@ -62,7 +62,7 @@ func registerContractProbeNodeType(registry *Registry, contract dsl.StateContrac
 				mutate:  mutate,
 				inspect: inspect,
 			}, nil
-		},
+		}),
 	})
 }
 

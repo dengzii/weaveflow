@@ -3,7 +3,7 @@ package weaveflow
 import (
 	"context"
 	"fmt"
-	"strings"
+	"weaveflow/builder"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
 
@@ -123,27 +123,6 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 	return nodes, nil
 }
 
-func ResolveNodeContracts(graph *Graph, registry *Registry) map[string]fruntime.NodeIOContract {
-	if graph == nil || registry == nil {
-		return nil
-	}
-	contracts := make(map[string]fruntime.NodeIOContract, len(graph.nodeSpecs))
-	for nodeID, spec := range graph.nodeSpecs {
-		contract, err := registry.ResolveNodeStateContract(spec)
-		if err != nil {
-			continue
-		}
-		converted := convertStateContract(contract)
-		if !converted.IsEmpty() {
-			contracts[nodeID] = converted
-		}
-	}
-	if len(contracts) == 0 {
-		return nil
-	}
-	return contracts
-}
-
 func buildRunnerWarnings(diagnostics []ContractDiagnostic) []fruntime.WarningRecord {
 	if len(diagnostics) == 0 {
 		return nil
@@ -172,43 +151,5 @@ func buildRunnerWarnings(diagnostics []ContractDiagnostic) []fruntime.WarningRec
 }
 
 func convertStateContract(contract dsl.StateContract) fruntime.NodeIOContract {
-	result := fruntime.NodeIOContract{}
-	for _, field := range contract.Fields {
-		path := strings.TrimSpace(field.Path)
-		if path == "*" {
-			switch field.Mode {
-			case dsl.StateAccessRead:
-				result.WildcardRead = true
-			case dsl.StateAccessWrite:
-				result.WildcardWrite = true
-			case dsl.StateAccessReadWrite:
-				result.WildcardRead = true
-				result.WildcardWrite = true
-			}
-			continue
-		}
-		if path == "" {
-			continue
-		}
-		normalized := fruntime.NormalizeContractPath(path)
-		switch field.Mode {
-		case dsl.StateAccessRead:
-			result.ReadPaths = append(result.ReadPaths, normalized)
-			if field.Required {
-				result.RequiredReadPaths = append(result.RequiredReadPaths, normalized)
-			}
-		case dsl.StateAccessWrite, dsl.StateAccessReadWrite:
-			result.WritePaths = append(result.WritePaths, normalized)
-			if field.Mode == dsl.StateAccessReadWrite {
-				result.ReadPaths = append(result.ReadPaths, normalized)
-			}
-			if field.Required {
-				result.RequiredWritePaths = append(result.RequiredWritePaths, normalized)
-				if field.Mode == dsl.StateAccessReadWrite {
-					result.RequiredReadPaths = append(result.RequiredReadPaths, normalized)
-				}
-			}
-		}
-	}
-	return result
+	return builder.ConvertStateContract(contract)
 }

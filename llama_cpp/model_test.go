@@ -1,3 +1,5 @@
+//go:build llama_cpp_test
+
 package llama_cpp
 
 import (

@@ -6,8 +6,9 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"weaveflow/core"
 	"weaveflow/dsl"
-	"weaveflow/nodes"
+	"weaveflow/registry"
 	fruntime "weaveflow/runtime"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -32,7 +33,7 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	nodes               map[string]nodes.Node[State]
+	nodes               map[string]core.Node[State]
 	nodeSpecs           map[string]dsl.GraphNodeSpec
 	nodeContracts       map[string]fruntime.NodeIOContract
 	initialStatePaths   []string
@@ -50,7 +51,7 @@ type Graph struct {
 
 func NewGraph() *Graph {
 	return &Graph{
-		nodes:            map[string]nodes.Node[State]{},
+		nodes:            map[string]core.Node[State]{},
 		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
 		edges:            map[string]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
@@ -97,7 +98,7 @@ func (g *Graph) WriteToFile(path string) error {
 
 func (g *Graph) DrawMermaid() (string, error) {
 	graph := langgraph.NewStateGraph[State]()
-	err := g.buildStateGraph(graph, func(nodeID string, node nodes.Node[State]) {})
+	err := g.buildStateGraph(graph, func(nodeID string, node core.Node[State]) {})
 	if err != nil {
 		return "", err
 	}
@@ -106,7 +107,7 @@ func (g *Graph) DrawMermaid() (string, error) {
 
 }
 
-func (g *Graph) AddNode(node nodes.Node[State]) error {
+func (g *Graph) AddNode(node core.Node[State]) error {
 	if node == nil {
 		return fmt.Errorf("nodes is nil")
 	}
@@ -205,7 +206,7 @@ func (g *Graph) addRuntimeConditionalEdge(from, to string, condition EdgeConditi
 }
 
 func (g *Graph) addConditionalEdgeInternal(from, to string, condition EdgeCondition, trackSpec bool) error {
-	if err := condition.validate(); err != nil {
+	if err := condition.Validate(); err != nil {
 		return err
 	}
 
@@ -223,7 +224,7 @@ func (g *Graph) addConditionalEdgeInternal(from, to string, condition EdgeCondit
 		condition: condition,
 	})
 	if trackSpec {
-		spec := condition.cloneSpec()
+		spec := condition.CloneSpec()
 		g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
 			From:      g.nodeSpecs[fromID].ID,
 			To:        g.serializeNodeRef(toID),
@@ -293,7 +294,7 @@ func (g *Graph) Validate() error {
 			return fmt.Errorf("conditional edge source %q not found", from)
 		}
 		for _, edge := range edges {
-			if err := edge.condition.validate(); err != nil {
+			if err := edge.condition.Validate(); err != nil {
 				return fmt.Errorf("conditional edge from %q to %q: %w", from, edge.to, err)
 			}
 			if edge.to != langgraph.END {
@@ -318,7 +319,7 @@ func (g *Graph) Validate() error {
 
 func (g *Graph) Compile() (*Runnable, error) {
 	compiled := langgraph.NewListenableStateGraph[State]()
-	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node nodes.Node[State]) {
+	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node core.Node[State]) {
 		nodeDef := node
 		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
 			return nodeDef.Invoke(ctx, state.CloneState())
@@ -352,7 +353,7 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	}
 
 	compiled := langgraph.NewStateGraph[State]()
-	if err := g.configureStateGraph(compiled, func(nodeID string, node nodes.Node[State]) {
+	if err := g.configureStateGraph(compiled, func(nodeID string, node core.Node[State]) {
 		nodeDef := node
 		executable, _ := nodeDef.(fruntime.ExecutableNode)
 		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state State) (State, error) {
@@ -374,14 +375,14 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	return runnable, nil
 }
 
-func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node nodes.Node[State])) error {
+func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node core.Node[State])) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
 	return g.configureStateGraph(compiled, addNode)
 }
 
-func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node nodes.Node[State])) error {
+func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[State], addNode func(nodeID string, node core.Node[State])) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled graph is nil")
 	}
@@ -452,6 +453,63 @@ func (g *Graph) Run(ctx context.Context, initialState State) (State, error) {
 		return initialState, err
 	}
 	return runnable.Invoke(ctx, initialState)
+}
+
+func (g *Graph) SetInitialStatePaths(paths []string) {
+	if g == nil {
+		return
+	}
+	if len(paths) == 0 {
+		g.initialStatePaths = nil
+		return
+	}
+	g.initialStatePaths = append([]string(nil), paths...)
+}
+
+func (g *Graph) SetNodeContracts(contracts map[string]fruntime.NodeIOContract) {
+	if g == nil {
+		return
+	}
+	if len(contracts) == 0 {
+		g.nodeContracts = nil
+		return
+	}
+	g.nodeContracts = make(map[string]fruntime.NodeIOContract, len(contracts))
+	for key, value := range contracts {
+		g.nodeContracts[key] = value
+	}
+}
+
+func (g *Graph) ValidateGraph() error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+	return g.Validate()
+}
+
+func (g *Graph) AddRuntimeEdge(from, to string) error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+	return g.addRuntimeEdge(from, to)
+}
+
+func (g *Graph) AddRuntimeConditionalEdge(from, to string, condition registry.EdgeCondition) error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+	return g.addRuntimeConditionalEdge(from, to, condition)
+}
+
+func (g *Graph) NodeSpecs() map[string]dsl.GraphNodeSpec {
+	if g == nil || len(g.nodeSpecs) == 0 {
+		return nil
+	}
+	cloned := make(map[string]dsl.GraphNodeSpec, len(g.nodeSpecs))
+	for key, value := range g.nodeSpecs {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (g *Graph) resolveNodeID(ref string) (string, error) {

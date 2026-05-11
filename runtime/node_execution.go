@@ -1,10 +1,11 @@
 package runtime
 
-import "context"
+import (
+	"context"
+	"weaveflow/core"
+)
 
-type ExecutableNode interface {
-	Execute(ctx context.Context, input State) (State, error)
-}
+type ExecutableNode = core.ExecutableNode[State]
 
 type LegacyNodeExecutor struct {
 	Invoke NodeInvoker
