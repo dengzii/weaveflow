@@ -6,11 +6,12 @@ import (
 	"weaveflow/builder"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
-func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec fruntime.StateCodec, eventSink fruntime.EventSink) *fruntime.GraphRunner {
+func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec wfstate.StateCodec, eventSink fruntime.EventSink) *fruntime.GraphRunner {
 	runner := fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
 	if graph != nil {
 		runner.NodeContracts = graph.nodeContracts
@@ -44,7 +45,7 @@ func (g *graphRunnerGraph) EntryPointID() string {
 	return g.graph.entryPoint
 }
 
-func (g *graphRunnerGraph) CompileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[State], error) {
+func (g *graphRunnerGraph) CompileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[wfstate.State], error) {
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}
@@ -58,7 +59,7 @@ func (g *graphRunnerGraph) ResolveNodeID(nodeID string) (string, error) {
 	return g.graph.resolveNodeID(nodeID)
 }
 
-func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state State) (string, error) {
+func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state wfstate.State) (string, error) {
 	if g == nil || g.graph == nil {
 		return "", fmt.Errorf("graph runner graph is nil")
 	}
@@ -92,7 +93,7 @@ func (g *graphRunnerGraph) NodeName(nodeID string) string {
 	return g.graph.nodeDisplayName(nodeID)
 }
 
-func (g *graphRunnerGraph) NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state State, err error) {
+func (g *graphRunnerGraph) NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state wfstate.State, err error) {
 	if g == nil || g.graph == nil {
 		return
 	}
@@ -150,6 +151,6 @@ func buildRunnerWarnings(diagnostics []ContractDiagnostic) []fruntime.WarningRec
 	return warnings
 }
 
-func convertStateContract(contract dsl.StateContract) fruntime.NodeIOContract {
+func convertStateContract(contract dsl.StateContract) wfstate.NodeIOContract {
 	return builder.ConvertStateContract(contract)
 }

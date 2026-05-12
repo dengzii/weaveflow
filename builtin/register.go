@@ -7,9 +7,8 @@ import (
 	"weaveflow/builtin/modules/planning"
 	"weaveflow/builtin/modules/safety"
 	"weaveflow/builtin/modules/verification"
-	"weaveflow/dsl"
 	"weaveflow/registry"
-	"weaveflow/runtime"
+	"weaveflow/state"
 )
 
 func NewDefaultRegistry() *registry.Registry {
@@ -33,12 +32,8 @@ func RegisterDefaultStateFields(registry *registry.Registry) {
 		return
 	}
 
-	for _, def := range runtime.DefaultStateFieldDefinitions() {
-		registry.RegisterStateField(dsl.StateFieldDefinition{
-			Name:        def.Name,
-			Description: def.Description,
-			Schema:      cloneJSONSchema(def.Schema),
-		})
+	for _, def := range state.DefaultStateFieldDefinitions() {
+		registry.RegisterStateField(def)
 	}
 }
 
@@ -53,30 +48,4 @@ func RegisterModules(registry *registry.Registry) {
 	execution.Register(registry)
 	verification.Register(registry)
 	safety.Register(registry)
-}
-
-func cloneJSONSchema(input map[string]any) dsl.JSONSchema {
-	if len(input) == 0 {
-		return nil
-	}
-	cloned := make(dsl.JSONSchema, len(input))
-	for key, value := range input {
-		cloned[key] = cloneJSONSchemaValue(value)
-	}
-	return cloned
-}
-
-func cloneJSONSchemaValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return map[string]any(cloneJSONSchema(typed))
-	case []any:
-		cloned := make([]any, len(typed))
-		for i, item := range typed {
-			cloned[i] = cloneJSONSchemaValue(item)
-		}
-		return cloned
-	default:
-		return value
-	}
 }

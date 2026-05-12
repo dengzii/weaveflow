@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -33,7 +34,7 @@ type Record struct {
 	PromptCachedTokens int
 }
 
-func RecordChoiceUsage(ctx context.Context, state runtime.State, record Record, choice *llms.ContentChoice) Record {
+func RecordChoiceUsage(ctx context.Context, state wfstate.State, record Record, choice *llms.ContentChoice) Record {
 	if choice == nil {
 		return record.normalized()
 	}
@@ -92,7 +93,7 @@ func ExtractUsage(choice *llms.ContentChoice) Usage {
 	return usage.normalized()
 }
 
-func recordState(state runtime.State, record Record) Record {
+func recordState(state wfstate.State, record Record) Record {
 	record = record.normalized()
 	if state == nil || record.IsZero() {
 		return record
@@ -229,7 +230,7 @@ func ensureMap(values map[string]any, key string) map[string]any {
 	switch typed := values[key].(type) {
 	case map[string]any:
 		return typed
-	case runtime.State:
+	case wfstate.State:
 		return typed
 	}
 	nested := map[string]any{}

@@ -6,6 +6,7 @@ import (
 	"weaveflow/memory"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -24,7 +25,7 @@ func MemoryWriteExample() {
 	node.MinRequestLength = 5
 	node.MinAnswerLength = 10
 
-	state := runtime.State{
+	state := wfstate.State{
 		"request": map[string]any{
 			"input": "Explain how the planner node decomposes objectives into steps.",
 		},
@@ -52,7 +53,7 @@ func MemoryWriteExample() {
 
 	fmt.Println()
 	fmt.Println("memory write state:")
-	printJSON(result.Get(runtime.StateKeyMemory))
+	printJSON(result.Get(wfstate.StateKeyMemory))
 
 	entries, err := mgr.Load(nil)
 	must(err)

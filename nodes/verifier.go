@@ -8,6 +8,7 @@ import (
 
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -67,14 +68,14 @@ func (n *VerifierNode) effectiveMode() string {
 
 func (n *VerifierNode) effectivePlannerPath() string {
 	if n == nil || strings.TrimSpace(n.PlannerStatePath) == "" {
-		return fruntime.StateKeyPlanner
+		return wfstate.StateKeyPlanner
 	}
 	return strings.TrimSpace(n.PlannerStatePath)
 }
 
-func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *VerifierNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	svc := fruntime.ServicesFrom(ctx)
@@ -127,17 +128,17 @@ func (n *VerifierNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	return state, nil
 }
 
-func (n *VerifierNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *VerifierNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
-func (n *VerifierNode) resolveMode(state fruntime.State) string {
+func (n *VerifierNode) resolveMode(state wfstate.State) string {
 	mode := n.effectiveMode()
 	if mode != VerifierModeAuto {
 		return mode
 	}
 
-	exec := state.Get(fruntime.StateKeyExecution)
+	exec := state.Get(wfstate.StateKeyExecution)
 	if exec != nil {
 		route, _ := exec["route"].(string)
 		if route == ExecutionRouteFinalize {
@@ -147,7 +148,7 @@ func (n *VerifierNode) resolveMode(state fruntime.State) string {
 	return VerifierModeStep
 }
 
-func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state fruntime.State) (*verificationResult, error) {
+func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state wfstate.State) (*verificationResult, error) {
 	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	if plannerState == nil {
 		return &verificationResult{
@@ -188,7 +189,7 @@ func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state f
 	return n.callLLMVerification(ctx, model, state, "step", criteria, observations, stepResult, step)
 }
 
-func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state fruntime.State) (*verificationResult, error) {
+func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state wfstate.State) (*verificationResult, error) {
 	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	objective := ""
 	if plannerState != nil {
@@ -196,7 +197,7 @@ func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state 
 	}
 
 	if objective == "" {
-		req := state.Get(fruntime.StateKeyRequest)
+		req := state.Get(wfstate.StateKeyRequest)
 		if req != nil {
 			objective, _ = req["input"].(string)
 		}
@@ -219,7 +220,7 @@ func (n *VerifierNode) verifyFinal(ctx context.Context, model llms.Model, state 
 	return n.callLLMFinalVerification(ctx, model, state, objective, observations, evidence, finalAnswer)
 }
 
-func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model, state fruntime.State, mode string, criteria []string, observations []map[string]any, stepResult map[string]any, step map[string]any) (*verificationResult, error) {
+func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model, state wfstate.State, mode string, criteria []string, observations []map[string]any, stepResult map[string]any, step map[string]any) (*verificationResult, error) {
 	if model == nil {
 		return ruleBasedVerification(criteria, observations), nil
 	}
@@ -250,7 +251,7 @@ func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model
 	return parseVerificationResponse(resp.Choices[0].Content)
 }
 
-func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.Model, state fruntime.State, objective string, observations []map[string]any, evidence []map[string]any, finalAnswer string) (*verificationResult, error) {
+func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.Model, state wfstate.State, objective string, observations []map[string]any, evidence []map[string]any, finalAnswer string) (*verificationResult, error) {
 	if model == nil {
 		return &verificationResult{
 			Status:     VerificationPass,
@@ -284,8 +285,8 @@ func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.
 	return parseVerificationResponse(resp.Choices[0].Content)
 }
 
-func (n *VerifierNode) applyResult(state fruntime.State, result *verificationResult, mode string) {
-	v := state.Ensure(fruntime.StateKeyVerification)
+func (n *VerifierNode) applyResult(state wfstate.State, result *verificationResult, mode string) {
+	v := state.Ensure(wfstate.StateKeyVerification)
 	v["status"] = result.Status
 	v["issues"] = result.Issues
 	v["summary"] = result.Summary
@@ -305,7 +306,7 @@ func (n *VerifierNode) applyResult(state fruntime.State, result *verificationRes
 	}
 }
 
-func (n *VerifierNode) markCurrentStepCompleted(state fruntime.State) {
+func (n *VerifierNode) markCurrentStepCompleted(state wfstate.State) {
 	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	if plannerState == nil {
 		return
@@ -320,7 +321,7 @@ func (n *VerifierNode) markCurrentStepCompleted(state fruntime.State) {
 	}
 }
 
-func (n *VerifierNode) markCurrentStepReady(state fruntime.State) {
+func (n *VerifierNode) markCurrentStepReady(state wfstate.State) {
 	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
 	if plannerState == nil {
 		return
@@ -343,7 +344,7 @@ func (n *VerifierNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if mode := n.effectiveMode(); mode != VerifierModeAuto {
 		config["mode"] = mode
 	}
-	if plannerPath := n.effectivePlannerPath(); plannerPath != fruntime.StateKeyPlanner {
+	if plannerPath := n.effectivePlannerPath(); plannerPath != wfstate.StateKeyPlanner {
 		config["planner_state_path"] = plannerPath
 	}
 	return dsl.GraphNodeSpec{
@@ -529,7 +530,7 @@ func normalizeVerificationAction(action string) string {
 
 // --- state helpers ---
 
-func findStepByID(plannerState fruntime.State, stepID string) map[string]any {
+func findStepByID(plannerState wfstate.State, stepID string) map[string]any {
 	if stepID == "" {
 		return nil
 	}

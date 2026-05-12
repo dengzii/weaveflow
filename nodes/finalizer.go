@@ -8,6 +8,7 @@ import (
 
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -48,14 +49,14 @@ func (n *FinalizerNode) effectiveScope() string {
 
 func (n *FinalizerNode) effectivePlannerPath() string {
 	if n == nil || strings.TrimSpace(n.PlannerStatePath) == "" {
-		return fruntime.StateKeyPlanner
+		return wfstate.StateKeyPlanner
 	}
 	return strings.TrimSpace(n.PlannerStatePath)
 }
 
-func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *FinalizerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	svc := fruntime.ServicesFrom(ctx)
@@ -76,7 +77,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		}
 		outcome := FinalStatusSuccess
 
-		final := state.Ensure(fruntime.StateKeyFinal)
+		final := state.Ensure(wfstate.StateKeyFinal)
 		final["answer"] = answer
 		final["status"] = outcome
 
@@ -96,7 +97,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		return state, nil
 	}
 
-	verification := state.Get(fruntime.StateKeyVerification)
+	verification := state.Get(wfstate.StateKeyVerification)
 	observations := state.Observations()
 	evidence := state.Evidence()
 	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
@@ -126,7 +127,7 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 		outcome = FinalStatusSuccess
 	}
 
-	final := state.Ensure(fruntime.StateKeyFinal)
+	final := state.Ensure(wfstate.StateKeyFinal)
 	final["answer"] = answer
 	final["status"] = outcome
 	final["evidence"] = collectEvidenceRefs(evidence)
@@ -150,8 +151,8 @@ func (n *FinalizerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	return state, nil
 }
 
-func (n *FinalizerNode) isDirectMode(state fruntime.State) bool {
-	orchestration := state.Get(fruntime.StateKeyOrchestration)
+func (n *FinalizerNode) isDirectMode(state wfstate.State) bool {
+	orchestration := state.Get(wfstate.StateKeyOrchestration)
 	if orchestration == nil {
 		return false
 	}
@@ -159,8 +160,8 @@ func (n *FinalizerNode) isDirectMode(state fruntime.State) bool {
 	return mode == "direct"
 }
 
-func (n *FinalizerNode) determineOutcome(state fruntime.State, verification fruntime.State) string {
-	orchestration := state.Get(fruntime.StateKeyOrchestration)
+func (n *FinalizerNode) determineOutcome(state wfstate.State, verification wfstate.State) string {
+	orchestration := state.Get(wfstate.StateKeyOrchestration)
 	if orchestration != nil {
 		if needsClarification, _ := orchestration["needs_clarification"].(bool); needsClarification {
 			return FinalStatusNeedsClarification
@@ -186,7 +187,7 @@ func (n *FinalizerNode) determineOutcome(state fruntime.State, verification frun
 		return FinalStatusFailed
 	}
 
-	exec := state.Get(fruntime.StateKeyExecution)
+	exec := state.Get(wfstate.StateKeyExecution)
 	if route, _ := exec["route"].(string); route == ExecutionRouteBlocked {
 		return FinalStatusBlocked
 	}
@@ -194,8 +195,8 @@ func (n *FinalizerNode) determineOutcome(state fruntime.State, verification frun
 	return FinalStatusSuccess
 }
 
-func (n *FinalizerNode) directAnswer(state fruntime.State) string {
-	orchestration := state.Get(fruntime.StateKeyOrchestration)
+func (n *FinalizerNode) directAnswer(state wfstate.State) string {
+	orchestration := state.Get(wfstate.StateKeyOrchestration)
 	if orchestration == nil {
 		return ""
 	}
@@ -221,7 +222,7 @@ func (n *FinalizerNode) shouldPublishProgrammaticAnswer(outcome string, model ll
 	return outcome != FinalStatusSuccess
 }
 
-func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, model llms.Model, state fruntime.State, plannerState fruntime.State, observations []map[string]any, evidence []map[string]any) (string, error) {
+func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, model llms.Model, state wfstate.State, plannerState wfstate.State, observations []map[string]any, evidence []map[string]any) (string, error) {
 	if model == nil {
 		return n.fallbackAnswer(state, observations), nil
 	}
@@ -233,7 +234,7 @@ func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, model llms.Mo
 		planSummary, _ = plannerState["summary"].(string)
 	}
 	if objective == "" {
-		req := state.Get(fruntime.StateKeyRequest)
+		req := state.Get(wfstate.StateKeyRequest)
 		if req != nil {
 			objective, _ = req["input"].(string)
 		}
@@ -264,7 +265,7 @@ func (n *FinalizerNode) generateSuccessAnswer(ctx context.Context, model llms.Mo
 	return strings.TrimSpace(resp.Choices[0].Content), nil
 }
 
-func (n *FinalizerNode) generateFailureAnswer(verification fruntime.State, plannerState fruntime.State, observations []map[string]any) string {
+func (n *FinalizerNode) generateFailureAnswer(verification wfstate.State, plannerState wfstate.State, observations []map[string]any) string {
 	var b strings.Builder
 
 	b.WriteString("I was unable to fully complete the task.\n\n")
@@ -314,7 +315,7 @@ func (n *FinalizerNode) generateFailureAnswer(verification fruntime.State, plann
 	return b.String()
 }
 
-func (n *FinalizerNode) generateClarificationAnswer(state fruntime.State, verification fruntime.State, plannerState fruntime.State) string {
+func (n *FinalizerNode) generateClarificationAnswer(state wfstate.State, verification wfstate.State, plannerState wfstate.State) string {
 	var b strings.Builder
 	b.WriteString("I need more information to continue.\n\n")
 
@@ -323,7 +324,7 @@ func (n *FinalizerNode) generateClarificationAnswer(state fruntime.State, verifi
 		summary, _ = verification["summary"].(string)
 	}
 	if summary == "" {
-		orchestration := state.Get(fruntime.StateKeyOrchestration)
+		orchestration := state.Get(wfstate.StateKeyOrchestration)
 		if orchestration != nil {
 			summary, _ = orchestration["reasoning"].(string)
 		}
@@ -348,7 +349,7 @@ func (n *FinalizerNode) generateClarificationAnswer(state fruntime.State, verifi
 	return b.String()
 }
 
-func (n *FinalizerNode) generateBlockedAnswer(verification fruntime.State, plannerState fruntime.State) string {
+func (n *FinalizerNode) generateBlockedAnswer(verification wfstate.State, plannerState wfstate.State) string {
 	var b strings.Builder
 	b.WriteString("The task is currently blocked and cannot proceed.\n\n")
 
@@ -363,7 +364,7 @@ func (n *FinalizerNode) generateBlockedAnswer(verification fruntime.State, plann
 	return b.String()
 }
 
-func (n *FinalizerNode) fallbackAnswer(state fruntime.State, observations []map[string]any) string {
+func (n *FinalizerNode) fallbackAnswer(state wfstate.State, observations []map[string]any) string {
 	conversation := state.Conversation(n.effectiveScope())
 	if fa := conversation.FinalAnswer(); fa != "" {
 		return fa
@@ -385,7 +386,7 @@ func (n *FinalizerNode) fallbackAnswer(state fruntime.State, observations []map[
 	return "Task completed but no answer was generated."
 }
 
-func (n *FinalizerNode) storeConversationAnswer(conversation fruntime.ConversationFacet, answer string) {
+func (n *FinalizerNode) storeConversationAnswer(conversation wfstate.ConversationFacet, answer string) {
 	answer = strings.TrimSpace(answer)
 	if conversation == nil || answer == "" {
 		return
@@ -399,8 +400,8 @@ func (n *FinalizerNode) storeConversationAnswer(conversation fruntime.Conversati
 	conversation.SetFinalAnswer(answer)
 }
 
-func (n *FinalizerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *FinalizerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *FinalizerNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -408,7 +409,7 @@ func (n *FinalizerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if scope := n.effectiveScope(); scope != defaultFinalizerScope {
 		config["state_scope"] = scope
 	}
-	if plannerPath := n.effectivePlannerPath(); plannerPath != fruntime.StateKeyPlanner {
+	if plannerPath := n.effectivePlannerPath(); plannerPath != wfstate.StateKeyPlanner {
 		config["planner_state_path"] = plannerPath
 	}
 	return dsl.GraphNodeSpec{
@@ -501,7 +502,7 @@ func collectPartialResults(observations []map[string]any) string {
 	return strings.Join(parts, "\n")
 }
 
-func clarificationQuestions(state fruntime.State, verification fruntime.State) []string {
+func clarificationQuestions(state wfstate.State, verification wfstate.State) []string {
 	questions := make([]string, 0, 4)
 	seen := map[string]struct{}{}
 
@@ -532,7 +533,7 @@ func clarificationQuestions(state fruntime.State, verification fruntime.State) [
 		}
 	}
 
-	orchestration := state.Get(fruntime.StateKeyOrchestration)
+	orchestration := state.Get(wfstate.StateKeyOrchestration)
 	if orchestration != nil {
 		if question, _ := orchestration["clarification_question"].(string); question != "" {
 			addQuestion(question)

@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"weaveflow/nodes"
-	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"github.com/tmc/langchaingo/llms"
@@ -17,7 +17,7 @@ func HumanMessageExample() {
 
 	fmt.Println("=== Case 1: interrupt when no human message is pending ===")
 	{
-		state := runtime.State{}
+		state := wfstate.State{}
 		conversation := state.Conversation("agent")
 		conversation.UpdateMessage([]llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, "You are a helpful assistant."),
@@ -38,7 +38,7 @@ func HumanMessageExample() {
 	fmt.Println()
 	fmt.Println("=== Case 2: resume with pending human input ===")
 	{
-		state := runtime.State{}
+		state := wfstate.State{}
 		scope := state.EnsureScope("agent")
 		scope[nodes.PendingHumanInputStateKey] = "The target environment is Kubernetes on AWS."
 

@@ -7,13 +7,13 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error)
+type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
 
-func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}
@@ -53,7 +53,7 @@ func registerOrchestrationModule(registry *registry.Registry) {
 
 func intentStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyIntent,
+		Name:        wfstate.StateKeyIntent,
 		Description: "Structured intent analysis output for the current request.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -111,7 +111,7 @@ func intentAnalyzerNodeTypeDefinition() registry.NodeTypeDefinition {
 						PathConfigKey: "input_path",
 					},
 					{
-						Path:          fruntime.StateKeyIntent,
+						Path:          wfstate.StateKeyIntent,
 						Mode:          dsl.StateAccessWrite,
 						Required:      true,
 						Description:   "Intent analysis output state subtree.",
@@ -123,7 +123,7 @@ func intentAnalyzerNodeTypeDefinition() registry.NodeTypeDefinition {
 				},
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewIntentAnalyzerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -132,11 +132,11 @@ func intentAnalyzerNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.IntentStatePath = stringConfig(spec.Config, "intent_state_path")
-			node.InputPath = stringConfig(spec.Config, "input_path")
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.IntentOptions = stringSliceConfig(spec.Config, "intent_options")
-			node.Instructions = stringConfig(spec.Config, "instructions")
+			node.IntentStatePath = registry.StringConfigTrim(spec.Config, "intent_state_path")
+			node.InputPath = registry.StringConfigTrim(spec.Config, "input_path")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.IntentOptions = registry.StringSliceConfigTrim(spec.Config, "intent_options")
+			node.Instructions = registry.StringConfigTrim(spec.Config, "instructions")
 			return node, nil
 		}),
 		ResolveStateContract: resolveIntentAnalyzerStateContract,
@@ -144,9 +144,9 @@ func intentAnalyzerNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func resolveIntentAnalyzerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	intentPath := strings.TrimSpace(stringConfig(spec.Config, "intent_state_path"))
+	intentPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "intent_state_path"))
 	if intentPath == "" {
-		intentPath = fruntime.StateKeyIntent
+		intentPath = wfstate.StateKeyIntent
 	}
 	intentPath = canonicalContractPath(intentPath)
 
@@ -163,7 +163,7 @@ func resolveIntentAnalyzerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 		},
 	}
 
-	if inputPath := strings.TrimSpace(stringConfig(spec.Config, "input_path")); inputPath != "" {
+	if inputPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "input_path")); inputPath != "" {
 		contract.Fields = append([]dsl.StateFieldRef{
 			{
 				Path:        canonicalContractPath(inputPath),
@@ -179,7 +179,7 @@ func resolveIntentAnalyzerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 
 func orchestrationStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyOrchestration,
+		Name:        wfstate.StateKeyOrchestration,
 		Description: "Structured orchestration routing decision for the current request.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -233,7 +233,7 @@ func orchestrationRouterNodeTypeDefinition() registry.NodeTypeDefinition {
 						PathConfigKey: "input_path",
 					},
 					{
-						Path:          fruntime.StateKeyOrchestration,
+						Path:          wfstate.StateKeyOrchestration,
 						Mode:          dsl.StateAccessWrite,
 						Required:      true,
 						Description:   "Orchestration routing output state subtree.",
@@ -245,7 +245,7 @@ func orchestrationRouterNodeTypeDefinition() registry.NodeTypeDefinition {
 				},
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewOrchestrationRouterNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -254,12 +254,12 @@ func orchestrationRouterNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.OrchestrationStatePath = stringConfig(spec.Config, "orchestration_state_path")
-			node.InputPath = stringConfig(spec.Config, "input_path")
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.ContextPaths = stringSliceConfig(spec.Config, "context_paths")
-			node.AvailableModes = stringSliceConfig(spec.Config, "available_modes")
-			node.Instructions = stringConfig(spec.Config, "instructions")
+			node.OrchestrationStatePath = registry.StringConfigTrim(spec.Config, "orchestration_state_path")
+			node.InputPath = registry.StringConfigTrim(spec.Config, "input_path")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.ContextPaths = registry.StringSliceConfigTrim(spec.Config, "context_paths")
+			node.AvailableModes = registry.StringSliceConfigTrim(spec.Config, "available_modes")
+			node.Instructions = registry.StringConfigTrim(spec.Config, "instructions")
 			return node, nil
 		}),
 		ResolveStateContract: resolveOrchestrationRouterStateContract,
@@ -267,9 +267,9 @@ func orchestrationRouterNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func resolveOrchestrationRouterStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	orchestrationPath := strings.TrimSpace(stringConfig(spec.Config, "orchestration_state_path"))
+	orchestrationPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "orchestration_state_path"))
 	if orchestrationPath == "" {
-		orchestrationPath = fruntime.StateKeyOrchestration
+		orchestrationPath = wfstate.StateKeyOrchestration
 	}
 	orchestrationPath = canonicalContractPath(orchestrationPath)
 
@@ -286,7 +286,7 @@ func resolveOrchestrationRouterStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 		},
 	}
 
-	if inputPath := strings.TrimSpace(stringConfig(spec.Config, "input_path")); inputPath != "" {
+	if inputPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "input_path")); inputPath != "" {
 		contract.Fields = append([]dsl.StateFieldRef{
 			{
 				Path:        canonicalContractPath(inputPath),
@@ -297,7 +297,7 @@ func resolveOrchestrationRouterStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 		}, contract.Fields...)
 	}
 
-	for _, path := range stringSliceConfig(spec.Config, "context_paths") {
+	for _, path := range registry.StringSliceConfigTrim(spec.Config, "context_paths") {
 		path = strings.TrimSpace(path)
 		if path == "" {
 			continue
@@ -342,7 +342,7 @@ func replannerNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewReplannerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -351,11 +351,11 @@ func replannerNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.PlannerStatePath = stringConfig(spec.Config, "planner_state_path")
-			node.ContextPaths = stringSliceConfig(spec.Config, "context_paths")
-			node.StepKindHints = stringSliceConfig(spec.Config, "step_kind_hints")
-			node.Instructions = stringConfig(spec.Config, "instructions")
-			if value, ok := intConfig(spec.Config, "max_steps"); ok {
+			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
+			node.ContextPaths = registry.StringSliceConfigTrim(spec.Config, "context_paths")
+			node.StepKindHints = registry.StringSliceConfigTrim(spec.Config, "step_kind_hints")
+			node.Instructions = registry.StringConfigTrim(spec.Config, "instructions")
+			if value, ok := registry.IntConfig(spec.Config, "max_steps"); ok {
 				node.MaxSteps = value
 			}
 			return node, nil
@@ -365,26 +365,26 @@ func replannerNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func resolveReplannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	plannerPath := strings.TrimSpace(stringConfig(spec.Config, "planner_state_path"))
+	plannerPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "planner_state_path"))
 	if plannerPath == "" {
-		plannerPath = fruntime.StateKeyPlanner
+		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
 
 	contract := dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyVerification),
+				Path:        canonicalContractPath(wfstate.StateKeyVerification),
 				Mode:        dsl.StateAccessRead,
 				Description: "Verification issues triggering replan.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyObservations),
+				Path:        canonicalContractPath(wfstate.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "Observations including errors.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyExecution + ".step_results"),
+				Path:        canonicalContractPath(wfstate.StateKeyExecution + ".step_results"),
 				Mode:        dsl.StateAccessRead,
 				Description: "Step execution results.",
 			},
@@ -398,7 +398,7 @@ func resolveReplannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 		},
 	}
 
-	for _, path := range stringSliceConfig(spec.Config, "context_paths") {
+	for _, path := range registry.StringSliceConfigTrim(spec.Config, "context_paths") {
 		path = strings.TrimSpace(path)
 		if path == "" {
 			continue
@@ -413,77 +413,6 @@ func resolveReplannerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 	return contract, nil
 }
 
-func stringSliceConfig(config map[string]any, key string) []string {
-	if len(config) == 0 {
-		return nil
-	}
-	raw, ok := config[key]
-	if !ok {
-		return nil
-	}
-	switch typed := raw.(type) {
-	case []string:
-		out := make([]string, 0, len(typed))
-		for _, value := range typed {
-			value = strings.TrimSpace(value)
-			if value != "" {
-				out = append(out, value)
-			}
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, value := range typed {
-			text, _ := value.(string)
-			text = strings.TrimSpace(text)
-			if text != "" {
-				out = append(out, text)
-			}
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return strings.TrimSpace(value)
-}
-
-func intConfig(config map[string]any, key string) (int, bool) {
-	if len(config) == 0 {
-		return 0, false
-	}
-	switch typed := config[key].(type) {
-	case int:
-		return typed, true
-	case int8:
-		return int(typed), true
-	case int16:
-		return int(typed), true
-	case int32:
-		return int(typed), true
-	case int64:
-		return int(typed), true
-	case float32:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	default:
-		return 0, false
-	}
-}
-
 func canonicalContractPath(path string) string {
-	return fruntime.NormalizeContractPath(path)
+	return wfstate.NormalizeContractPath(path)
 }

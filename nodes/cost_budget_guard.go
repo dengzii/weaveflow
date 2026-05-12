@@ -6,6 +6,7 @@ import (
 	"time"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
@@ -39,16 +40,16 @@ func NewCostBudgetGuardNode() *CostBudgetGuardNode {
 	}
 }
 
-func (n *CostBudgetGuardNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *CostBudgetGuardNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	usage := n.collectUsage(state)
 	limits := n.collectLimits(state)
 	status, exceeded := n.evaluateBudget(usage, limits)
 
-	budget := state.Ensure(fruntime.StateKeyBudget)
+	budget := state.Ensure(wfstate.StateKeyBudget)
 	budget["usage"] = usage
 	budget["limits"] = limits
 	budget["status"] = status
@@ -70,8 +71,8 @@ func (n *CostBudgetGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 	return state, nil
 }
 
-func (n *CostBudgetGuardNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *CostBudgetGuardNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *CostBudgetGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -99,7 +100,7 @@ func (n *CostBudgetGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *CostBudgetGuardNode) collectUsage(state fruntime.State) map[string]any {
+func (n *CostBudgetGuardNode) collectUsage(state wfstate.State) map[string]any {
 	totalTokens := 0
 	llmCalls := 0
 	toolCalls := 0
@@ -131,14 +132,14 @@ func (n *CostBudgetGuardNode) collectUsage(state fruntime.State) map[string]any 
 	}
 }
 
-func (n *CostBudgetGuardNode) collectLimits(state fruntime.State) map[string]any {
+func (n *CostBudgetGuardNode) collectLimits(state wfstate.State) map[string]any {
 	limits := map[string]any{}
 
 	maxTokens := n.MaxTokens
 	maxToolCalls := n.MaxToolCalls
 	maxIterations := n.MaxIterations
 
-	budget := state.Get(fruntime.StateKeyBudget)
+	budget := state.Get(wfstate.StateKeyBudget)
 	if budget != nil {
 		if stateLimits := readNestedMap(budget, "limits"); stateLimits != nil {
 			if v := readIntMetric(stateLimits, "max_tokens"); v > 0 && maxTokens <= 0 {
@@ -212,7 +213,7 @@ func readNestedMap(state map[string]any, key string) map[string]any {
 	switch typed := raw.(type) {
 	case map[string]any:
 		return typed
-	case fruntime.State:
+	case wfstate.State:
 		return map[string]any(typed)
 	default:
 		return nil

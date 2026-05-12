@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"weaveflow/dsl"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-type EdgeConditionMatcher func(ctx context.Context, state fruntime.State) bool
+type EdgeConditionMatcher func(ctx context.Context, state wfstate.State) bool
 
 type EdgeCondition struct {
 	Spec  dsl.GraphConditionSpec
@@ -41,30 +41,30 @@ func (c EdgeCondition) WithSpec(spec dsl.GraphConditionSpec) EdgeCondition {
 func (c EdgeCondition) CloneSpec() dsl.GraphConditionSpec {
 	spec := dsl.NormalizeGraphConditionSpec(c.Spec)
 	if len(spec.Config) > 0 {
-		spec.Config = cloneMap(spec.Config)
+		spec.Config = CloneMap(spec.Config)
 	}
 	return spec
 }
 
-func cloneMap(input map[string]any) map[string]any {
+func CloneMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return nil
 	}
 	cloned := make(map[string]any, len(input))
 	for key, value := range input {
-		cloned[key] = cloneValue(value)
+		cloned[key] = cloneConfigValue(value)
 	}
 	return cloned
 }
 
-func cloneValue(value any) any {
+func cloneConfigValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
-		return cloneMap(typed)
+		return CloneMap(typed)
 	case []any:
 		cloned := make([]any, len(typed))
 		for i, item := range typed {
-			cloned[i] = cloneValue(item)
+			cloned[i] = cloneConfigValue(item)
 		}
 		return cloned
 	case []string:

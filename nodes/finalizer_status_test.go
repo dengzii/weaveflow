@@ -4,20 +4,20 @@ import (
 	"context"
 	"strings"
 	"testing"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestFinalizerUsesExecutionRouteForBlockedOutcome(t *testing.T) {
 	t.Parallel()
 
 	node := NewFinalizerNode()
-	state := fruntime.State{
-		fruntime.StateKeyVerification: fruntime.State{
+	state := wfstate.State{
+		wfstate.StateKeyVerification: wfstate.State{
 			"status":      VerificationInconclusive,
 			"next_action": VerificationActionContinue,
 			"summary":     "Waiting on an external dependency.",
 		},
-		fruntime.StateKeyExecution: fruntime.State{
+		wfstate.StateKeyExecution: wfstate.State{
 			"route": ExecutionRouteBlocked,
 		},
 	}
@@ -27,7 +27,7 @@ func TestFinalizerUsesExecutionRouteForBlockedOutcome(t *testing.T) {
 		t.Fatalf("invoke finalizer: %v", err)
 	}
 
-	final := state.Get(fruntime.StateKeyFinal)
+	final := state.Get(wfstate.StateKeyFinal)
 	if final == nil {
 		t.Fatal("expected final state")
 	}
@@ -44,8 +44,8 @@ func TestFinalizerUsesOrchestrationClarificationOutcome(t *testing.T) {
 	t.Parallel()
 
 	node := NewFinalizerNode()
-	state := fruntime.State{
-		fruntime.StateKeyOrchestration: fruntime.State{
+	state := wfstate.State{
+		wfstate.StateKeyOrchestration: wfstate.State{
 			"mode":                   "planner",
 			"needs_clarification":    true,
 			"clarification_question": "Do you want only the orchestration diagnosis, or code changes as well?",
@@ -58,7 +58,7 @@ func TestFinalizerUsesOrchestrationClarificationOutcome(t *testing.T) {
 		t.Fatalf("invoke finalizer: %v", err)
 	}
 
-	final := state.Get(fruntime.StateKeyFinal)
+	final := state.Get(wfstate.StateKeyFinal)
 	if final == nil {
 		t.Fatal("expected final state")
 	}

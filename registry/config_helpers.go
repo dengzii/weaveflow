@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-func stringConfig(config map[string]any, key string) string {
+func StringConfig(config map[string]any, key string) string {
 	if len(config) == 0 {
 		return ""
 	}
@@ -15,7 +15,69 @@ func stringConfig(config map[string]any, key string) string {
 	return ""
 }
 
-func mapStringConfig(config map[string]any, key string) map[string]string {
+func StringConfigTrim(config map[string]any, key string) string {
+	return strings.TrimSpace(StringConfig(config, key))
+}
+
+func StringSliceConfig(config map[string]any, key string) []string {
+	if len(config) == 0 {
+		return nil
+	}
+	raw, ok := config[key]
+	if !ok {
+		return nil
+	}
+	if values, ok := raw.([]any); ok {
+		result := make([]string, 0, len(values))
+		for _, value := range values {
+			if text, ok := value.(string); ok {
+				result = append(result, text)
+			}
+		}
+		return result
+	}
+	if typed, ok := raw.([]string); ok {
+		return append([]string(nil), typed...)
+	}
+	return nil
+}
+
+func StringSliceConfigTrim(config map[string]any, key string) []string {
+	if len(config) == 0 {
+		return nil
+	}
+	raw, ok := config[key]
+	if !ok {
+		return nil
+	}
+	collect := func(values []string) []string {
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			value = strings.TrimSpace(value)
+			if value != "" {
+				out = append(out, value)
+			}
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+	switch typed := raw.(type) {
+	case []string:
+		return collect(typed)
+	case []any:
+		values := make([]string, 0, len(typed))
+		for _, value := range typed {
+			text, _ := value.(string)
+			values = append(values, text)
+		}
+		return collect(values)
+	}
+	return nil
+}
+
+func MapStringConfig(config map[string]any, key string) map[string]string {
 	if len(config) == 0 {
 		return nil
 	}
@@ -42,7 +104,7 @@ func mapStringConfig(config map[string]any, key string) map[string]string {
 	return nil
 }
 
-func intConfig(config map[string]any, key string) (int, bool) {
+func IntConfig(config map[string]any, key string) (int, bool) {
 	if len(config) == 0 {
 		return 0, false
 	}
@@ -72,7 +134,7 @@ func intConfig(config map[string]any, key string) (int, bool) {
 	return 0, false
 }
 
-func boolConfig(config map[string]any, key string) (bool, bool) {
+func BoolConfig(config map[string]any, key string) (bool, bool) {
 	if len(config) == 0 {
 		return false, false
 	}
@@ -88,4 +150,23 @@ func boolConfig(config map[string]any, key string) (bool, bool) {
 	}
 
 	return false, false
+}
+
+func FloatConfig(config map[string]any, key string) (float64, bool) {
+	if len(config) == 0 {
+		return 0, false
+	}
+
+	switch value := config[key].(type) {
+	case float64:
+		return value, true
+	case float32:
+		return float64(value), true
+	case int:
+		return float64(value), true
+	case int64:
+		return float64(value), true
+	}
+
+	return 0, false
 }

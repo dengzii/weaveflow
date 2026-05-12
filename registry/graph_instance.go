@@ -86,7 +86,7 @@ func cloneGraphDefinition(def dsl.GraphDefinition) dsl.GraphDefinition {
 		}
 	}
 	if len(def.Metadata) > 0 {
-		cloned.Metadata = cloneMap(def.Metadata)
+		cloned.Metadata = CloneMap(def.Metadata)
 	}
 	return cloned
 }
@@ -94,7 +94,7 @@ func cloneGraphDefinition(def dsl.GraphDefinition) dsl.GraphDefinition {
 func cloneGraphNodeSpec(node dsl.GraphNodeSpec) dsl.GraphNodeSpec {
 	cloned := node
 	if len(node.Config) > 0 {
-		cloned.Config = cloneMap(node.Config)
+		cloned.Config = CloneMap(node.Config)
 	}
 	return cloned
 }
@@ -104,7 +104,7 @@ func cloneGraphEdgeSpec(edge dsl.GraphEdgeSpec) dsl.GraphEdgeSpec {
 	if edge.Condition != nil {
 		copyCondition := *edge.Condition
 		if len(copyCondition.Config) > 0 {
-			copyCondition.Config = cloneMap(copyCondition.Config)
+			copyCondition.Config = CloneMap(copyCondition.Config)
 		}
 		cloned.Condition = &copyCondition
 	}
@@ -114,7 +114,7 @@ func cloneGraphEdgeSpec(edge dsl.GraphEdgeSpec) dsl.GraphEdgeSpec {
 func cloneNodeInstanceConfig(cfg dsl.GraphNodeInstanceConfig) dsl.GraphNodeInstanceConfig {
 	cloned := cfg
 	if len(cfg.Config) > 0 {
-		cloned.Config = cloneMap(cfg.Config)
+		cloned.Config = CloneMap(cfg.Config)
 	}
 	if len(cfg.Secrets) > 0 {
 		cloned.Secrets = make(map[string]dsl.SecretRef, len(cfg.Secrets))
@@ -123,7 +123,7 @@ func cloneNodeInstanceConfig(cfg dsl.GraphNodeInstanceConfig) dsl.GraphNodeInsta
 		}
 	}
 	if len(cfg.Metadata) > 0 {
-		cloned.Metadata = cloneMap(cfg.Metadata)
+		cloned.Metadata = CloneMap(cfg.Metadata)
 	}
 	return cloned
 }
@@ -133,12 +133,12 @@ func mergeConfigMaps(base map[string]any, override map[string]any) map[string]an
 	case len(base) == 0 && len(override) == 0:
 		return nil
 	case len(base) == 0:
-		return cloneMap(override)
+		return CloneMap(override)
 	case len(override) == 0:
-		return cloneMap(base)
+		return CloneMap(base)
 	}
 
-	merged := cloneMap(base)
+	merged := CloneMap(base)
 	for key, value := range override {
 		merged[key] = value
 	}

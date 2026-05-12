@@ -3,15 +3,15 @@ package neo
 import (
 	"testing"
 
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestFinalAnswerFromStatePrefersConversationAnswer(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation(stateScope).SetFinalAnswer("conversation answer")
-	state.Ensure(fruntime.StateKeyFinal)["answer"] = "final state answer"
+	state.Ensure(wfstate.StateKeyFinal)["answer"] = "final state answer"
 
 	if got := finalAnswerFromState(state); got != "conversation answer" {
 		t.Fatalf("finalAnswerFromState() = %q, want %q", got, "conversation answer")
@@ -21,8 +21,8 @@ func TestFinalAnswerFromStatePrefersConversationAnswer(t *testing.T) {
 func TestFinalAnswerFromStateFallsBackToFinalState(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{}
-	state.Ensure(fruntime.StateKeyFinal)["answer"] = "final state answer"
+	state := wfstate.State{}
+	state.Ensure(wfstate.StateKeyFinal)["answer"] = "final state answer"
 
 	if got := finalAnswerFromState(state); got != "final state answer" {
 		t.Fatalf("finalAnswerFromState() = %q, want %q", got, "final state answer")

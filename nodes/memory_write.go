@@ -6,6 +6,7 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
@@ -34,8 +35,8 @@ func NewMemoryWriteNode() *MemoryWriteNode {
 			NodeName:        "MemoryWrite",
 			NodeDescription: "Persist durable request and final-answer memory for future runs.",
 		},
-		RequestInputPath:   fruntime.StateKeyRequest + ".input",
-		PlannerStatePath:   fruntime.StateKeyPlanner,
+		RequestInputPath:   wfstate.StateKeyRequest + ".input",
+		PlannerStatePath:   wfstate.StateKeyPlanner,
 		IncludeRequest:     true,
 		IncludeFinalAnswer: true,
 		IncludeSummary:     true,
@@ -43,9 +44,9 @@ func NewMemoryWriteNode() *MemoryWriteNode {
 	}
 }
 
-func (n *MemoryWriteNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *MemoryWriteNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	svc := fruntime.ServicesFrom(ctx)
@@ -102,8 +103,8 @@ func (n *MemoryWriteNode) Invoke(ctx context.Context, state fruntime.State) (fru
 	return state, nil
 }
 
-func (n *MemoryWriteNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *MemoryWriteNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *MemoryWriteNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -143,7 +144,7 @@ func (n *MemoryWriteNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *MemoryWriteNode) collectEntries(state fruntime.State) []memory.Entry {
+func (n *MemoryWriteNode) collectEntries(state wfstate.State) []memory.Entry {
 	entries := make([]memory.Entry, 0, 3)
 
 	if n.IncludeRequest {
@@ -262,7 +263,7 @@ func (n *MemoryWriteNode) effectiveMemoryStatePath() string {
 
 func (n *MemoryWriteNode) effectiveRequestInputPath() string {
 	if n == nil || strings.TrimSpace(n.RequestInputPath) == "" {
-		return fruntime.StateKeyRequest + ".input"
+		return wfstate.StateKeyRequest + ".input"
 	}
 	return strings.TrimSpace(n.RequestInputPath)
 }
@@ -276,12 +277,12 @@ func (n *MemoryWriteNode) effectiveFinalAnswerPath() string {
 
 func (n *MemoryWriteNode) effectivePlannerStatePath() string {
 	if n == nil || strings.TrimSpace(n.PlannerStatePath) == "" {
-		return fruntime.StateKeyPlanner
+		return wfstate.StateKeyPlanner
 	}
 	return strings.TrimSpace(n.PlannerStatePath)
 }
 
-func (n *MemoryWriteNode) resolveFinalAnswer(state fruntime.State) string {
+func (n *MemoryWriteNode) resolveFinalAnswer(state wfstate.State) string {
 	if finalAnswerPath := n.effectiveFinalAnswerPath(); finalAnswerPath != "" {
 		if value, ok := state.ResolvePath(finalAnswerPath); ok {
 			return strings.TrimSpace(stringifyStateValue(value))
@@ -290,12 +291,12 @@ func (n *MemoryWriteNode) resolveFinalAnswer(state fruntime.State) string {
 	return strings.TrimSpace(state.Conversation(n.StateScope).FinalAnswer())
 }
 
-func (n *MemoryWriteNode) resolveSummary(state fruntime.State) string {
+func (n *MemoryWriteNode) resolveSummary(state wfstate.State) string {
 	plannerSummary := ""
 	currentStepID := ""
 	if plannerValue, ok := state.ResolvePath(n.effectivePlannerStatePath()); ok {
 		switch typed := plannerValue.(type) {
-		case fruntime.State:
+		case wfstate.State:
 			plannerSummary = strings.TrimSpace(stringifyStateValue(typed["summary"]))
 			currentStepID = strings.TrimSpace(stringifyStateValue(typed["current_step_id"]))
 		case map[string]any:

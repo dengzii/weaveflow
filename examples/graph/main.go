@@ -10,6 +10,7 @@ import (
 	"weaveflow/llms/openai"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"go.uber.org/zap"
 )
@@ -50,7 +51,7 @@ func runWithRunner(ctx context.Context) {
 }
 
 func resumeFromCheckpoint(ctx context.Context) {
-	state := runtime.State{
+	state := wfstate.State{
 		"scopes": map[string]any{
 			reactAgentStateScope: map[string]any{
 				nodes.PendingHumanInputStateKey: "24+5*8-2=? 现在是几点.",
@@ -96,7 +97,7 @@ func newExampleRunner(baseDir string, graph *weaveflow.Graph) *runtime.GraphRunn
 		graph,
 		runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
 		runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),
-		runtime.NewJSONStateCodec(runtime.DefaultStateVersion),
+		wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
 		sink,
 	)
 	runner.ArtifactStore = runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))

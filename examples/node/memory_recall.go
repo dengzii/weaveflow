@@ -7,6 +7,7 @@ import (
 	"weaveflow/memory"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func MemoryRecallExample() {
@@ -29,7 +30,7 @@ func MemoryRecallExample() {
 	node.Limit = 3
 	node.Tags = []string{"final_answer", "assistant_output", "preference"}
 
-	state := runtime.State{
+	state := wfstate.State{
 		"request": map[string]any{
 			"input": "消息路由的设计细节是什么?",
 		},
@@ -47,5 +48,5 @@ func MemoryRecallExample() {
 
 	fmt.Println()
 	fmt.Println("memory state:")
-	printJSON(result.Get(runtime.StateKeyMemory))
+	printJSON(result.Get(wfstate.StateKeyMemory))
 }

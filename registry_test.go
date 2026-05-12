@@ -6,6 +6,7 @@ import (
 	"testing"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	wfstate "weaveflow/state"
 )
 
 type assignStateNode struct {
@@ -17,9 +18,9 @@ type assignStateNode struct {
 func (n assignStateNode) ID() string          { return n.id }
 func (n assignStateNode) Name() string        { return n.id }
 func (n assignStateNode) Description() string { return "assign state value" }
-func (n assignStateNode) Invoke(ctx context.Context, state State) (State, error) {
+func (n assignStateNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = State{}
+		state = wfstate.State{}
 	}
 	state[n.key] = n.value
 	return state, nil
@@ -40,7 +41,7 @@ func registerAssignNodeType(registry *Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			return assignStateNode{
 				id:    spec.ID,
 				key:   stringConfig(spec.Config, "key"),
@@ -59,11 +60,11 @@ type collectIteratorItemNode struct {
 func (n collectIteratorItemNode) ID() string          { return n.id }
 func (n collectIteratorItemNode) Name() string        { return n.id }
 func (n collectIteratorItemNode) Description() string { return "collect iterator item" }
-func (n collectIteratorItemNode) Invoke(ctx context.Context, state State) (State, error) {
+func (n collectIteratorItemNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	_ = ctx
 
 	if state == nil {
-		state = State{}
+		state = wfstate.State{}
 	}
 
 	namespace := state.Namespace(nodes.IteratorStateNamespace)
@@ -77,7 +78,7 @@ func (n collectIteratorItemNode) Invoke(ctx context.Context, state State) (State
 
 	iteratorState, ok := rawIteratorState.(map[string]any)
 	if !ok {
-		if typed, ok := rawIteratorState.(State); ok {
+		if typed, ok := rawIteratorState.(wfstate.State); ok {
 			iteratorState = typed
 		} else {
 			return state, nil
@@ -107,7 +108,7 @@ func registerCollectIteratorItemNodeType(registry *Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
@@ -286,7 +287,7 @@ func TestBuildGraphInvokesSubgraphByGraphRef(t *testing.T) {
 		t.Fatalf("build graph with subgraph: %v", err)
 	}
 
-	state, err := graph.Run(context.Background(), State{})
+	state, err := graph.Run(context.Background(), wfstate.State{})
 	if err != nil {
 		t.Fatalf("run graph with subgraph: %v", err)
 	}
@@ -375,7 +376,7 @@ func TestBuildGraphIteratesWithIteratorNode(t *testing.T) {
 		t.Fatalf("build graph with iterator: %v", err)
 	}
 
-	state, err := graph.Run(context.Background(), State{
+	state, err := graph.Run(context.Background(), wfstate.State{
 		"payload": map[string]any{
 			"items": []any{"alpha", "beta", "gamma"},
 		},
@@ -398,7 +399,7 @@ func TestBuildGraphIteratesWithIteratorNode(t *testing.T) {
 	}
 	iteratorState, ok := namespace["loop"].(map[string]any)
 	if !ok {
-		if typed, ok := namespace["loop"].(State); ok {
+		if typed, ok := namespace["loop"].(wfstate.State); ok {
 			iteratorState = typed
 		} else {
 			t.Fatalf("expected iterator state map, got %#v", namespace["loop"])

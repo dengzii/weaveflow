@@ -3,10 +3,10 @@ package nodes
 import (
 	"strings"
 
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-func stateObjectAtPath(state fruntime.State, path string) fruntime.State {
+func stateObjectAtPath(state wfstate.State, path string) wfstate.State {
 	if state == nil {
 		return nil
 	}
@@ -22,10 +22,10 @@ func stateObjectAtPath(state fruntime.State, path string) fruntime.State {
 	}
 
 	switch typed := value.(type) {
-	case fruntime.State:
+	case wfstate.State:
 		return typed
 	case map[string]any:
-		return fruntime.State(typed)
+		return wfstate.State(typed)
 	default:
 		return nil
 	}

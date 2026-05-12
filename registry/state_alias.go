@@ -1,5 +1,7 @@
 package registry
 
-import fruntime "weaveflow/runtime"
+import (
+	wfstate "weaveflow/state"
+)
 
-type State = fruntime.State
+type State = wfstate.State

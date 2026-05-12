@@ -4,15 +4,16 @@ import (
 	"testing"
 
 	"weaveflow/redact"
+	wfstate "weaveflow/state"
 )
 
 func TestRedactMessages(t *testing.T) {
 	t.Parallel()
 
-	messages := []StateMessage{
+	messages := []wfstate.StateMessage{
 		{
 			Role: "user",
-			Parts: []StateMessagePart{
+			Parts: []wfstate.StateMessagePart{
 				{
 					Kind:      "text",
 					Text:      "Authorization: Bearer abc",

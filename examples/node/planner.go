@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"weaveflow/llms/openai"
 )
@@ -55,11 +56,11 @@ func PlannerExample() {
 		},
 		"last_failure": "Previous rollout attempt lacked a rollback checklist.",
 	}
-	state := runtime.State{
+	state := wfstate.State{
 		"request":   request,
 		"execution": execution,
 	}
-	state.Ensure(runtime.StateKeyPlanner)["status"] = "draft"
+	state.Ensure(wfstate.StateKeyPlanner)["status"] = "draft"
 
 	fmt.Println("input objective:")
 	fmt.Println(request["goal"])
@@ -78,5 +79,5 @@ func PlannerExample() {
 
 	fmt.Println()
 	fmt.Println("planner output:")
-	printJSON(result.Get(runtime.StateKeyPlanner))
+	printJSON(result.Get(wfstate.StateKeyPlanner))
 }

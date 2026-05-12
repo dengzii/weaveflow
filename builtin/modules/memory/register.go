@@ -8,13 +8,13 @@ import (
 	wfmemory "weaveflow/memory"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error)
+type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
 
-func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}
@@ -44,7 +44,7 @@ func Register(registry *registry.Registry) {
 
 func memoryStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyMemory,
+		Name:        wfstate.StateKeyMemory,
 		Description: "Structured memory recall and memory write state for the current run.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -97,7 +97,7 @@ func memoryRecallNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewMemoryRecallNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -106,16 +106,16 @@ func memoryRecallNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.MemoryStatePath = stringConfig(spec.Config, "memory_state_path")
-			node.QueryPath = stringConfig(spec.Config, "query_path")
-			node.RequestInputPath = stringConfig(spec.Config, "request_input_path")
-			node.OrchestrationStatePath = stringConfig(spec.Config, "orchestration_state_path")
-			if value, ok := intConfig(spec.Config, "limit"); ok {
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.MemoryStatePath = registry.StringConfigTrim(spec.Config, "memory_state_path")
+			node.QueryPath = registry.StringConfigTrim(spec.Config, "query_path")
+			node.RequestInputPath = registry.StringConfigTrim(spec.Config, "request_input_path")
+			node.OrchestrationStatePath = registry.StringConfigTrim(spec.Config, "orchestration_state_path")
+			if value, ok := registry.IntConfig(spec.Config, "limit"); ok {
 				node.Limit = value
 			}
-			node.Roles = stringSliceConfig(spec.Config, "roles")
-			node.Tags = stringSliceConfig(spec.Config, "tags")
+			node.Roles = registry.StringSliceConfigTrim(spec.Config, "roles")
+			node.Tags = registry.StringSliceConfigTrim(spec.Config, "tags")
 			node.Types = memoryEntryTypesConfig(spec.Config, "types")
 			return node, nil
 		}),
@@ -148,7 +148,7 @@ func memoryWriteNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewMemoryWriteNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -157,30 +157,30 @@ func memoryWriteNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.MemoryStatePath = stringConfig(spec.Config, "memory_state_path")
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.RequestInputPath = stringConfig(spec.Config, "request_input_path")
-			node.FinalAnswerPath = stringConfig(spec.Config, "final_answer_path")
-			node.PlannerStatePath = stringConfig(spec.Config, "planner_state_path")
-			if value, ok := boolConfig(spec.Config, "include_request"); ok {
+			node.MemoryStatePath = registry.StringConfigTrim(spec.Config, "memory_state_path")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.RequestInputPath = registry.StringConfigTrim(spec.Config, "request_input_path")
+			node.FinalAnswerPath = registry.StringConfigTrim(spec.Config, "final_answer_path")
+			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
+			if value, ok := registry.BoolConfig(spec.Config, "include_request"); ok {
 				node.IncludeRequest = value
 			}
-			if value, ok := boolConfig(spec.Config, "include_final_answer"); ok {
+			if value, ok := registry.BoolConfig(spec.Config, "include_final_answer"); ok {
 				node.IncludeFinalAnswer = value
 			}
-			if value, ok := boolConfig(spec.Config, "include_summary"); ok {
+			if value, ok := registry.BoolConfig(spec.Config, "include_summary"); ok {
 				node.IncludeSummary = value
 			}
-			if value, ok := boolConfig(spec.Config, "deduplicate"); ok {
+			if value, ok := registry.BoolConfig(spec.Config, "deduplicate"); ok {
 				node.Deduplicate = value
 			}
-			if value, ok := intConfig(spec.Config, "min_request_length"); ok {
+			if value, ok := registry.IntConfig(spec.Config, "min_request_length"); ok {
 				node.MinRequestLength = value
 			}
-			if value, ok := intConfig(spec.Config, "min_answer_length"); ok {
+			if value, ok := registry.IntConfig(spec.Config, "min_answer_length"); ok {
 				node.MinAnswerLength = value
 			}
-			if value, ok := intConfig(spec.Config, "min_summary_length"); ok {
+			if value, ok := registry.IntConfig(spec.Config, "min_summary_length"); ok {
 				node.MinSummaryLength = value
 			}
 			return node, nil
@@ -190,9 +190,9 @@ func memoryWriteNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	memoryPath := strings.TrimSpace(stringConfig(spec.Config, "memory_state_path"))
+	memoryPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "memory_state_path"))
 	if memoryPath == "" {
-		memoryPath = fruntime.StateKeyMemory
+		memoryPath = wfstate.StateKeyMemory
 	}
 	memoryPath = canonicalContractPath(memoryPath)
 
@@ -209,7 +209,7 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 		},
 	}
 
-	if queryPath := strings.TrimSpace(stringConfig(spec.Config, "query_path")); queryPath != "" {
+	if queryPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "query_path")); queryPath != "" {
 		contract.Fields = append(contract.Fields, dsl.StateFieldRef{
 			Path:        canonicalContractPath(queryPath),
 			Mode:        dsl.StateAccessRead,
@@ -217,9 +217,9 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 		})
 	}
 
-	requestInputPath := strings.TrimSpace(stringConfig(spec.Config, "request_input_path"))
+	requestInputPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "request_input_path"))
 	if requestInputPath == "" {
-		requestInputPath = fruntime.StateKeyRequest + ".input"
+		requestInputPath = wfstate.StateKeyRequest + ".input"
 	}
 	requestInputPath = canonicalContractPath(requestInputPath)
 	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
@@ -228,9 +228,9 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 		Description: "Fallback request input used for memory recall when no explicit query is available.",
 	})
 
-	orchestrationPath := strings.TrimSpace(stringConfig(spec.Config, "orchestration_state_path"))
+	orchestrationPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "orchestration_state_path"))
 	if orchestrationPath == "" {
-		orchestrationPath = fruntime.StateKeyOrchestration
+		orchestrationPath = wfstate.StateKeyOrchestration
 	}
 	orchestrationPath = canonicalContractPath(orchestrationPath)
 	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
@@ -240,7 +240,7 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 	})
 
 	contract.Fields = append(contract.Fields, dsl.StateFieldRef{
-		Path:        scopedConversationPath(stringConfig(spec.Config, "state_scope"), "messages"),
+		Path:        scopedConversationPath(registry.StringConfigTrim(spec.Config, "state_scope"), "messages"),
 		Mode:        dsl.StateAccessRead,
 		Description: "Conversation messages used as a last-resort recall query source.",
 	})
@@ -249,27 +249,27 @@ func resolveMemoryRecallStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 }
 
 func resolveMemoryWriteStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	memoryPath := strings.TrimSpace(stringConfig(spec.Config, "memory_state_path"))
+	memoryPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "memory_state_path"))
 	if memoryPath == "" {
-		memoryPath = fruntime.StateKeyMemory
+		memoryPath = wfstate.StateKeyMemory
 	}
 	memoryPath = canonicalContractPath(memoryPath)
 
-	requestInputPath := strings.TrimSpace(stringConfig(spec.Config, "request_input_path"))
+	requestInputPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "request_input_path"))
 	if requestInputPath == "" {
-		requestInputPath = fruntime.StateKeyRequest + ".input"
+		requestInputPath = wfstate.StateKeyRequest + ".input"
 	}
 	requestInputPath = canonicalContractPath(requestInputPath)
 
-	finalAnswerPath := strings.TrimSpace(stringConfig(spec.Config, "final_answer_path"))
+	finalAnswerPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "final_answer_path"))
 	if finalAnswerPath == "" {
-		finalAnswerPath = scopedConversationPath(stringConfig(spec.Config, "state_scope"), "final_answer")
+		finalAnswerPath = scopedConversationPath(registry.StringConfigTrim(spec.Config, "state_scope"), "final_answer")
 	}
 	finalAnswerPath = canonicalContractPath(finalAnswerPath)
 
-	plannerPath := strings.TrimSpace(stringConfig(spec.Config, "planner_state_path"))
+	plannerPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "planner_state_path"))
 	if plannerPath == "" {
-		plannerPath = fruntime.StateKeyPlanner
+		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
 
@@ -303,7 +303,7 @@ func resolveMemoryWriteStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract,
 }
 
 func memoryEntryTypesConfig(config map[string]any, key string) []wfmemory.EntryType {
-	values := stringSliceConfig(config, key)
+	values := registry.StringSliceConfigTrim(config, key)
 	if len(values) == 0 {
 		return nil
 	}
@@ -318,87 +318,8 @@ func memoryEntryTypesConfig(config map[string]any, key string) []wfmemory.EntryT
 	return result
 }
 
-func stringSliceConfig(config map[string]any, key string) []string {
-	if len(config) == 0 {
-		return nil
-	}
-	raw, ok := config[key]
-	if !ok {
-		return nil
-	}
-	switch typed := raw.(type) {
-	case []string:
-		out := make([]string, 0, len(typed))
-		for _, value := range typed {
-			value = strings.TrimSpace(value)
-			if value != "" {
-				out = append(out, value)
-			}
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	case []any:
-		out := make([]string, 0, len(typed))
-		for _, value := range typed {
-			text, _ := value.(string)
-			text = strings.TrimSpace(text)
-			if text != "" {
-				out = append(out, text)
-			}
-		}
-		if len(out) == 0 {
-			return nil
-		}
-		return out
-	default:
-		return nil
-	}
-}
-
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return strings.TrimSpace(value)
-}
-
-func intConfig(config map[string]any, key string) (int, bool) {
-	if len(config) == 0 {
-		return 0, false
-	}
-	switch typed := config[key].(type) {
-	case int:
-		return typed, true
-	case int8:
-		return int(typed), true
-	case int16:
-		return int(typed), true
-	case int32:
-		return int(typed), true
-	case int64:
-		return int(typed), true
-	case float32:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	default:
-		return 0, false
-	}
-}
-
-func boolConfig(config map[string]any, key string) (bool, bool) {
-	if len(config) == 0 {
-		return false, false
-	}
-	value, ok := config[key].(bool)
-	return value, ok
-}
-
 func canonicalContractPath(path string) string {
-	return fruntime.NormalizeContractPath(path)
+	return wfstate.NormalizeContractPath(path)
 }
 
 func scopedConversationPath(scope string, field string) string {

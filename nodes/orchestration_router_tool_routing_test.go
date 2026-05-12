@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -38,7 +39,7 @@ func TestOrchestrationRouterUsesToolHeuristicForCurrentTime(t *testing.T) {
 		},
 	})
 
-	state := fruntime.State{
+	state := wfstate.State{
 		"request": map[string]any{
 			"input": "现在几点",
 		},
@@ -52,7 +53,7 @@ func TestOrchestrationRouterUsesToolHeuristicForCurrentTime(t *testing.T) {
 		t.Fatalf("expected heuristic routing to skip model call, got %d calls", model.calls)
 	}
 
-	orchestration := state.Get(fruntime.StateKeyOrchestration)
+	orchestration := state.Get(wfstate.StateKeyOrchestration)
 	if orchestration == nil {
 		t.Fatal("expected orchestration state to be written")
 	}

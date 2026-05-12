@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"weaveflow/llms/openai"
 
@@ -24,7 +25,7 @@ func ContextReducerExample() {
 	node.PreserveSystem = true
 	node.PreserveRecent = 2
 
-	state := runtime.State{}
+	state := wfstate.State{}
 	conversation := state.Conversation("agent")
 	conversation.UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise engineering agent."),

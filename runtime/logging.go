@@ -1,6 +1,11 @@
 package runtime
 
-import "go.uber.org/zap"
+import (
+	"go.uber.org/zap"
+
+	"weaveflow/state"
+	wfstate "weaveflow/state"
+)
 
 func runLogFields(run RunRecord) []zap.Field {
 	fields := []zap.Field{
@@ -64,7 +69,7 @@ func checkpointLogFields(record CheckpointRecord) []zap.Field {
 	}
 }
 
-func artifactLogFields(ref ArtifactRef) []zap.Field {
+func artifactLogFields(ref wfstate.ArtifactRef) []zap.Field {
 	fields := []zap.Field{
 		zap.String("artifact_id", ref.ID),
 		zap.String("run_id", ref.RunID),
@@ -83,37 +88,8 @@ func artifactLogFields(ref ArtifactRef) []zap.Field {
 	return fields
 }
 
-func stateSummaryFields(state State) []zap.Field {
-	return []zap.Field{
-		zap.Int("state_keys", countStateKeys(state)),
-		zap.Int("state_scopes", len(state.scopes())),
-		zap.Int("conversation_messages", countConversationMessages(state)),
-	}
-}
-
-func countStateKeys(state State) int {
-	if state == nil {
-		return 0
-	}
-
-	count := 0
-	for key := range state {
-		if isInfrastructureStateKey(key) || isSpecialStateKey(key) || isInternalSnapshotNamespaceKey(key) {
-			continue
-		}
-		count++
-	}
-	return count
-}
-
-func countConversationMessages(state State) int {
-	if state == nil {
-		return 0
-	}
-
-	total := len(state.Conversation("").Messages())
-	for _, scopeState := range state.scopes() {
-		total += len(scopeState.Conversation("").Messages())
-	}
-	return total
-}
+var (
+	stateSummaryFields        = state.SummaryFields
+	countStateKeys            = state.CountKeys
+	countConversationMessages = state.CountConversationMessages
+)

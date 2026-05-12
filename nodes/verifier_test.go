@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestVerifierContinueMarksCurrentStepCompleted(t *testing.T) {
@@ -12,8 +12,8 @@ func TestVerifierContinueMarksCurrentStepCompleted(t *testing.T) {
 
 	node := NewVerifierNode()
 
-	state := fruntime.State{
-		fruntime.StateKeyPlanner: map[string]any{
+	state := wfstate.State{
+		wfstate.StateKeyPlanner: map[string]any{
 			"current_step_id": "step_1",
 			"plan": []any{
 				map[string]any{
@@ -30,7 +30,7 @@ func TestVerifierContinueMarksCurrentStepCompleted(t *testing.T) {
 		NextAction: VerificationActionContinue,
 	}, VerifierModeStep)
 
-	planner := state.Get(fruntime.StateKeyPlanner)
+	planner := state.Get(wfstate.StateKeyPlanner)
 	plan, _ := planner["plan"].([]any)
 	step, _ := plan[0].(map[string]any)
 	if got := step["status"]; got != "completed" {
@@ -44,8 +44,8 @@ func TestPlanStepExecutorAdvancesAfterVerifierContinue(t *testing.T) {
 	verifier := NewVerifierNode()
 	executor := NewPlanStepExecutorNode()
 
-	state := fruntime.State{
-		fruntime.StateKeyPlanner: map[string]any{
+	state := wfstate.State{
+		wfstate.StateKeyPlanner: map[string]any{
 			"current_step_id": "step_1",
 			"plan": []any{
 				map[string]any{
@@ -71,7 +71,7 @@ func TestPlanStepExecutorAdvancesAfterVerifierContinue(t *testing.T) {
 		NextAction: VerificationActionContinue,
 	}, VerifierModeStep)
 
-	next, reason := selectNextStep(extractPlanSteps(state.Get(fruntime.StateKeyPlanner)), state.StepResults())
+	next, reason := selectNextStep(extractPlanSteps(state.Get(wfstate.StateKeyPlanner)), state.StepResults())
 	if next == nil {
 		t.Fatalf("expected next step to be selectable, got nil with reason %q", reason)
 	}

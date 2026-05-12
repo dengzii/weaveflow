@@ -9,6 +9,7 @@ import (
 
 	"weaveflow/llama_cpp"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -102,12 +103,12 @@ func (l *LlamaCppModel) Description() string {
 	return l.NodeInfo.Description()
 }
 
-func (l *LlamaCppModel) Invoke(ctx context.Context, state runtime.State) (runtime.State, error) {
+func (l *LlamaCppModel) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if l == nil {
 		return state, errors.New("llama_cpp.cpp nodes is nil")
 	}
 	if state == nil {
-		state = runtime.State{}
+		state = wfstate.State{}
 	}
 
 	model, err := l.ensureModel()
@@ -250,7 +251,7 @@ func (l *LlamaCppModel) ensureModel() (llamaContentModel, error) {
 	return model, nil
 }
 
-func (l *LlamaCppModel) resolveMessages(state runtime.State) ([]llms.MessageContent, string, error) {
+func (l *LlamaCppModel) resolveMessages(state wfstate.State) ([]llms.MessageContent, string, error) {
 	conversation := state.Conversation(l.StateScope)
 	messages := conversation.Messages()
 	if len(messages) > 0 {
@@ -276,7 +277,7 @@ func (l *LlamaCppModel) withSystemPrompt(messages []llms.MessageContent) []llms.
 	return append([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt)}, cloned...)
 }
 
-func (l *LlamaCppModel) lookupPrompt(state runtime.State) string {
+func (l *LlamaCppModel) lookupPrompt(state wfstate.State) string {
 	key := l.effectiveInputKey()
 	if key == "" || state == nil {
 		return ""
@@ -296,9 +297,9 @@ func (l *LlamaCppModel) lookupPrompt(state runtime.State) string {
 	return ""
 }
 
-func (l *LlamaCppModel) outputState(state runtime.State) runtime.State {
+func (l *LlamaCppModel) outputState(state wfstate.State) wfstate.State {
 	if state == nil {
-		state = runtime.State{}
+		state = wfstate.State{}
 	}
 	if l.StateScope == "" {
 		return state
@@ -444,7 +445,7 @@ func extractGenerationInfo(choice *llms.ContentChoice) (string, int) {
 }
 
 func buildPromptArtifact(messages []llms.MessageContent, stateScope string, inputKey string, prompt string) (map[string]any, error) {
-	serialized, err := runtime.SerializeMessages(messages)
+	serialized, err := wfstate.SerializeMessages(messages)
 	if err != nil {
 		return nil, err
 	}

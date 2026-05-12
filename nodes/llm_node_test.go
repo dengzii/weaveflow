@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -33,7 +34,7 @@ func TestLLMNodeTrimsPromptToRecentMessages(t *testing.T) {
 	node.StateScope = "agent"
 	node.PromptMaxChars = 120
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are concise."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "older question with a long prefix that should be trimmed away"),

@@ -8,7 +8,7 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 type RuntimeEdgeGraph interface {
@@ -28,8 +28,8 @@ func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) err
 		if nodeSpec.Type != "iterator" {
 			continue
 		}
-		continueTo := stringConfig(nodeSpec.Config, "continue_to")
-		doneTo := stringConfig(nodeSpec.Config, "done_to")
+		continueTo := registry.StringConfig(nodeSpec.Config, "continue_to")
+		doneTo := registry.StringConfig(nodeSpec.Config, "done_to")
 		if continueTo == "" && doneTo == "" {
 			continue
 		}
@@ -60,12 +60,12 @@ func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) err
 	return nil
 }
 
-func ResolveNodeContracts(graph NodeSpecGraph, reg *registry.Registry) map[string]fruntime.NodeIOContract {
+func ResolveNodeContracts(graph NodeSpecGraph, reg *registry.Registry) map[string]wfstate.NodeIOContract {
 	if graph == nil || reg == nil {
 		return nil
 	}
 	nodeSpecs := graph.NodeSpecs()
-	contracts := make(map[string]fruntime.NodeIOContract, len(nodeSpecs))
+	contracts := make(map[string]wfstate.NodeIOContract, len(nodeSpecs))
 	for nodeID, spec := range nodeSpecs {
 		contract, err := reg.ResolveNodeStateContract(spec)
 		if err != nil {
@@ -82,8 +82,8 @@ func ResolveNodeContracts(graph NodeSpecGraph, reg *registry.Registry) map[strin
 	return contracts
 }
 
-func ConvertStateContract(contract dsl.StateContract) fruntime.NodeIOContract {
-	result := fruntime.NodeIOContract{}
+func ConvertStateContract(contract dsl.StateContract) wfstate.NodeIOContract {
+	result := wfstate.NodeIOContract{}
 	for _, field := range contract.Fields {
 		path := strings.TrimSpace(field.Path)
 		if path == "*" {
@@ -101,7 +101,7 @@ func ConvertStateContract(contract dsl.StateContract) fruntime.NodeIOContract {
 		if path == "" {
 			continue
 		}
-		normalized := fruntime.NormalizeContractPath(path)
+		normalized := wfstate.NormalizeContractPath(path)
 		switch field.Mode {
 		case dsl.StateAccessRead:
 			result.ReadPaths = append(result.ReadPaths, normalized)
@@ -131,14 +131,4 @@ func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {
 		}
 	}
 	return false
-}
-
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	if value, ok := config[key].(string); ok {
-		return value
-	}
-	return ""
 }

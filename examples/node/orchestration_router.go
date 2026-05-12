@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"weaveflow/llms/openai"
 )
@@ -22,7 +23,7 @@ func OrchestrationRouterExample() {
 	node.AvailableModes = []string{"direct", "planner", "supervisor"}
 	node.Instructions = "Choose planner for decomposition-heavy requests, supervisor for multi-agent delegation, and direct for straightforward execution. Use clarification only when required facts are missing."
 
-	state := runtime.State{
+	state := wfstate.State{
 		"request": "在 IM 服务中, 消息的路由如何设计",
 		"intent": map[string]any{
 			"label":      "architecture_design",
@@ -40,5 +41,5 @@ func OrchestrationRouterExample() {
 
 	fmt.Println()
 	fmt.Println("orchestration state:")
-	fmt.Println(result.Get(runtime.StateKeyOrchestration).PrettyString())
+	fmt.Println(result.Get(wfstate.StateKeyOrchestration).PrettyString())
 }

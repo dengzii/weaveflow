@@ -6,11 +6,11 @@ import (
 	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 type GraphBuilder interface {
-	AddNode(core.Node[fruntime.State]) error
+	AddNode(core.Node[wfstate.State]) error
 	AddEdge(from, to string) error
 	AddConditionalEdge(from, to string, condition registry.EdgeCondition) error
 	SetEntryPoint(ref string) error
@@ -20,7 +20,7 @@ type GraphBuilder interface {
 type FinalizableGraph interface {
 	GraphBuilder
 	SetInitialStatePaths([]string)
-	SetNodeContracts(map[string]fruntime.NodeIOContract)
+	SetNodeContracts(map[string]wfstate.NodeIOContract)
 	ValidateGraph() error
 	ContractDiagnostics() []core.ContractDiagnostic
 }
@@ -120,7 +120,7 @@ func BuildFinalizedGraph[T FinalizableGraph](
 	newGraph func() T,
 	initialStatePaths []string,
 	applyBuiltInEdges func(T, dsl.GraphDefinition) error,
-	resolveNodeContracts func(T, *registry.Registry) map[string]fruntime.NodeIOContract,
+	resolveNodeContracts func(T, *registry.Registry) map[string]wfstate.NodeIOContract,
 ) (T, error) {
 	var zero T
 	if reg == nil {

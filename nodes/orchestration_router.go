@@ -9,13 +9,14 @@ import (
 	"strings"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
 const (
-	defaultOrchestrationStatePath = fruntime.StateKeyOrchestration
+	defaultOrchestrationStatePath = wfstate.StateKeyOrchestration
 	orchestrationRouterPrompt     = `You are an orchestration router inside an agent workflow.
 Return JSON only. Do not use markdown fences.
 
@@ -75,13 +76,13 @@ func NewOrchestrationRouterNode() *OrchestrationRouterNode {
 	}
 }
 
-func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("orchestration router: model service not available")
 	}
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	input, err := n.resolveInput(state)
@@ -171,8 +172,8 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state fruntime.Sta
 	return state, nil
 }
 
-func (n *OrchestrationRouterNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *OrchestrationRouterNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *OrchestrationRouterNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -230,7 +231,7 @@ func (n *OrchestrationRouterNode) effectiveModes() []string {
 	return result
 }
 
-func (n *OrchestrationRouterNode) resolveInput(state fruntime.State) (string, error) {
+func (n *OrchestrationRouterNode) resolveInput(state wfstate.State) (string, error) {
 	if inputPath := strings.TrimSpace(n.InputPath); inputPath != "" {
 		value, ok := state.ResolvePath(inputPath)
 		if !ok {
@@ -256,7 +257,7 @@ func (n *OrchestrationRouterNode) resolveInput(state fruntime.State) (string, er
 	return "", errors.New("orchestration input is empty: no configured input_path and no human message found")
 }
 
-func (n *OrchestrationRouterNode) collectContext(state fruntime.State) map[string]any {
+func (n *OrchestrationRouterNode) collectContext(state wfstate.State) map[string]any {
 	if len(n.ContextPaths) == 0 {
 		return nil
 	}
@@ -304,7 +305,7 @@ func buildOrchestrationPromptPayload(payload map[string]any) map[string]any {
 
 func compactOrchestrationPromptValue(value any) any {
 	switch typed := value.(type) {
-	case fruntime.State:
+	case wfstate.State:
 		return compactOrchestrationPromptValue(map[string]any(typed))
 	case map[string]any:
 		compacted := make(map[string]any, len(typed))
@@ -434,7 +435,7 @@ func normalizeOrchestrationRouterResponse(parsed orchestrationRouterResponse, al
 	return parsed
 }
 
-func (n *OrchestrationRouterNode) applyDirectAnswer(state fruntime.State, answer string) {
+func (n *OrchestrationRouterNode) applyDirectAnswer(state wfstate.State, answer string) {
 	answer = strings.TrimSpace(answer)
 	if answer == "" || state == nil {
 		return
@@ -481,13 +482,13 @@ func allowedOrchestrationModes(allowedModes []string) map[string]struct{} {
 	return allowed
 }
 
-func existingOrchestrationState(state fruntime.State, path string) map[string]any {
+func existingOrchestrationState(state wfstate.State, path string) map[string]any {
 	value, ok := state.ResolvePath(path)
 	if !ok {
 		return nil
 	}
 	switch typed := value.(type) {
-	case fruntime.State:
+	case wfstate.State:
 		return typed
 	case map[string]any:
 		return typed
@@ -496,8 +497,8 @@ func existingOrchestrationState(state fruntime.State, path string) map[string]an
 	}
 }
 
-func ensureOrchestrationStateAtPath(root fruntime.State, path string) (fruntime.State, error) {
-	segments := fruntime.SplitStatePath(path)
+func ensureOrchestrationStateAtPath(root wfstate.State, path string) (wfstate.State, error) {
+	segments := wfstate.SplitStatePath(path)
 	if len(segments) == 0 {
 		return nil, errors.New("orchestration state path is required")
 	}
@@ -506,13 +507,13 @@ func ensureOrchestrationStateAtPath(root fruntime.State, path string) (fruntime.
 	for _, segment := range segments {
 		switch typed := current[segment].(type) {
 		case nil:
-			nested := fruntime.State{}
+			nested := wfstate.State{}
 			current[segment] = nested
 			current = nested
-		case fruntime.State:
+		case wfstate.State:
 			current = typed
 		case map[string]any:
-			nested := fruntime.State(typed)
+			nested := wfstate.State(typed)
 			current[segment] = nested
 			current = nested
 		default:

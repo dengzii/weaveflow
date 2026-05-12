@@ -8,6 +8,7 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -15,17 +16,17 @@ import (
 type contractProbeNode struct {
 	id      string
 	spec    dsl.GraphNodeSpec
-	mutate  func(State)
-	inspect func(State) string
+	mutate  func(wfstate.State)
+	inspect func(wfstate.State) string
 }
 
 func (n contractProbeNode) ID() string          { return n.id }
 func (n contractProbeNode) Name() string        { return n.id }
 func (n contractProbeNode) Description() string { return "probe state contract runner behavior" }
-func (n contractProbeNode) Invoke(ctx context.Context, state State) (State, error) {
+func (n contractProbeNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	_ = ctx
 	if state == nil {
-		state = State{}
+		state = wfstate.State{}
 	}
 	if n.inspect != nil {
 		state["result"] = n.inspect(state)
@@ -40,7 +41,7 @@ func (n contractProbeNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return n.spec
 }
 
-func registerContractProbeNodeType(registry *Registry, contract dsl.StateContract, mutate func(State), inspect func(State) string) {
+func registerContractProbeNodeType(registry *Registry, contract dsl.StateContract, mutate func(wfstate.State), inspect func(wfstate.State) string) {
 	registry.RegisterNodeType(NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "contract_probe",
@@ -54,7 +55,7 @@ func registerContractProbeNodeType(registry *Registry, contract dsl.StateContrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			_ = ctx
 			return contractProbeNode{
 				id:      spec.ID,
@@ -74,11 +75,11 @@ func newContractTestRunner(t *testing.T, graph *Graph) *fruntime.GraphRunner {
 		graph,
 		fruntime.NewFileExecutionStore(baseDir),
 		fruntime.NewFileCheckpointStore(baseDir),
-		fruntime.NewJSONStateCodec(""),
+		wfstate.NewJSONStateCodec(""),
 		fruntime.NewFileEventSink(baseDir),
 	)
 	runner.ArtifactStore = fruntime.NewFileArtifactStore(baseDir)
-	runner.ContractValidation = fruntime.ContractValidationStrict
+	runner.ContractValidation = wfstate.ContractValidationStrict
 	return runner
 }
 
@@ -117,7 +118,7 @@ func TestGraphRunnerProjectsNodeInputByContract(t *testing.T) {
 			},
 		},
 		nil,
-		func(state State) string {
+		func(state wfstate.State) string {
 			if _, ok := state["secret"]; ok {
 				return "leaked"
 			}
@@ -140,7 +141,7 @@ func TestGraphRunnerProjectsNodeInputByContract(t *testing.T) {
 	}
 
 	runner := newContractTestRunner(t, graph)
-	run, finalState, err := runner.Start(context.Background(), State{
+	run, finalState, err := runner.Start(context.Background(), wfstate.State{
 		"topic":  "weather",
 		"secret": "hidden",
 	})
@@ -169,10 +170,10 @@ func TestGraphRunnerRejectsUndeclaredPatchWrite(t *testing.T) {
 				{Path: "result", Mode: dsl.StateAccessWrite},
 			},
 		},
-		func(state State) {
+		func(state wfstate.State) {
 			state["secret"] = "mutated"
 		},
-		func(state State) string {
+		func(state wfstate.State) string {
 			return "ok"
 		},
 	)
@@ -189,7 +190,7 @@ func TestGraphRunnerRejectsUndeclaredPatchWrite(t *testing.T) {
 	}
 
 	runner := newContractTestRunner(t, graph)
-	run, _, err := runner.Start(context.Background(), State{})
+	run, _, err := runner.Start(context.Background(), wfstate.State{})
 	if err == nil {
 		t.Fatal("expected undeclared patch write to fail")
 	}
@@ -214,7 +215,7 @@ func TestGraphRunnerRejectsMissingRequiredRead(t *testing.T) {
 			},
 		},
 		nil,
-		func(state State) string {
+		func(state wfstate.State) string {
 			return "ok"
 		},
 	)
@@ -231,7 +232,7 @@ func TestGraphRunnerRejectsMissingRequiredRead(t *testing.T) {
 	}
 
 	runner := newContractTestRunner(t, graph)
-	run, _, err := runner.Start(context.Background(), State{})
+	run, _, err := runner.Start(context.Background(), wfstate.State{})
 	if err == nil {
 		t.Fatal("expected missing required read to fail")
 	}
@@ -270,7 +271,7 @@ func TestGraphRunnerRejectsMissingRequiredWrite(t *testing.T) {
 	}
 
 	runner := newContractTestRunner(t, graph)
-	run, _, err := runner.Start(context.Background(), State{})
+	run, _, err := runner.Start(context.Background(), wfstate.State{})
 	if err == nil {
 		t.Fatal("expected missing required write to fail")
 	}
@@ -320,7 +321,7 @@ func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
 	}
 
 	runner := newContractTestRunner(t, graph)
-	run, finalState, err := runner.Start(context.Background(), State{
+	run, finalState, err := runner.Start(context.Background(), wfstate.State{
 		"payload": map[string]any{
 			"items": []any{"alpha", "beta", "gamma"},
 		},
@@ -343,7 +344,7 @@ func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
 	}
 	loopState, ok := runtimeState["loop"].(map[string]any)
 	if !ok {
-		if typed, ok := runtimeState["loop"].(State); ok {
+		if typed, ok := runtimeState["loop"].(wfstate.State); ok {
 			loopState = typed
 		} else {
 			t.Fatalf("expected runtime loop state map, got %#v", runtimeState["loop"])
@@ -376,7 +377,7 @@ func TestGraphRunnerProjectsRootConversationFallbackForScopedLLMNode(t *testing.
 	}
 
 	model := &contractCaptureLLMModel{}
-	initial := State{}
+	initial := wfstate.State{}
 	initial.Conversation("").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, "hello from root"),
 	})
@@ -434,7 +435,7 @@ func TestGraphRunnerPublishesContractWarningEventsAndArtifacts(t *testing.T) {
 			},
 		},
 		nil,
-		func(state State) string {
+		func(state wfstate.State) string {
 			return state["topic"].(string)
 		},
 	)
@@ -455,7 +456,7 @@ func TestGraphRunnerPublishesContractWarningEventsAndArtifacts(t *testing.T) {
 	}
 
 	runner := newContractTestRunner(t, graph)
-	run, _, err := runner.Start(context.Background(), State{
+	run, _, err := runner.Start(context.Background(), wfstate.State{
 		"topic":  "weather",
 		"secret": "hidden",
 	})
@@ -490,7 +491,7 @@ func TestGraphRunnerPublishesContractWarningEventsAndArtifacts(t *testing.T) {
 		t.Fatalf("list artifacts: %v", err)
 	}
 	foundTypes := map[string]bool{}
-	var inputViewRef fruntime.ArtifactRef
+	var inputViewRef wfstate.ArtifactRef
 	for _, ref := range artifacts {
 		foundTypes[ref.Type] = true
 		if ref.Type == "contract.input_view" && ref.NodeID == "probe" {
@@ -511,8 +512,8 @@ func TestGraphRunnerPublishesContractWarningEventsAndArtifacts(t *testing.T) {
 		t.Fatalf("load input view artifact: %v", err)
 	}
 	var payload struct {
-		Stage    string                 `json:"stage"`
-		Snapshot fruntime.StateSnapshot `json:"snapshot"`
+		Stage    string                `json:"stage"`
+		Snapshot wfstate.StateSnapshot `json:"snapshot"`
 	}
 	if err := json.Unmarshal(artifact.Data, &payload); err != nil {
 		t.Fatalf("decode input view artifact: %v", err)

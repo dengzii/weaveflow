@@ -5,12 +5,13 @@ import (
 	"testing"
 
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
 func TestRecordChoiceUsageRecordsStateAndPublishesEvent(t *testing.T) {
-	state := runtime.State{}
+	state := wfstate.State{}
 
 	var publishedType runtime.EventType
 	var publishedPayload map[string]any

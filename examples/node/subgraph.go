@@ -4,13 +4,13 @@ import (
 	"context"
 	"fmt"
 	"weaveflow/nodes"
-	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func SubgraphExample() {
 	node := nodes.NewSubgraphNode()
 	node.GraphRef = "summarizer"
-	node.InvokeSubgraph = func(ctx context.Context, state runtime.State) (runtime.State, error) {
+	node.InvokeSubgraph = func(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 		input, _ := state.ResolvePath("request.input")
 		fmt.Printf("  [subgraph %q] received input: %v\n", "summarizer", input)
 
@@ -21,7 +21,7 @@ func SubgraphExample() {
 		return state, nil
 	}
 
-	state := runtime.State{
+	state := wfstate.State{
 		"request": map[string]any{
 			"input": "Summarize the architecture of the WeaveFlow runtime.",
 		},

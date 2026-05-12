@@ -8,12 +8,13 @@ import (
 	"strings"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
-const defaultSessionBootstrapInputPath = fruntime.StateKeyRequest + ".input"
+const defaultSessionBootstrapInputPath = wfstate.StateKeyRequest + ".input"
 
 // SessionBootstrapNode prepares the minimum session state required before an
 // agent/executor graph starts doing real work.
@@ -70,13 +71,13 @@ func NewSessionBootstrapNode() *SessionBootstrapNode {
 			NodeName:        "SessionBootstrap",
 			NodeDescription: "Initialize request, agent, tool policy, and scoped conversation state for an agent run.",
 		},
-		MaxIterations: fruntime.DefaultMaxIterations,
+		MaxIterations: wfstate.DefaultMaxIterations,
 	}
 }
 
-func (n *SessionBootstrapNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *SessionBootstrapNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	input, err := n.resolveInput(state)
@@ -85,20 +86,20 @@ func (n *SessionBootstrapNode) Invoke(ctx context.Context, state fruntime.State)
 		return state, err
 	}
 
-	request := state.Ensure(fruntime.StateKeyRequest)
+	request := state.Ensure(wfstate.StateKeyRequest)
 	if request == nil {
 		return state, errors.New("session bootstrap request state is unavailable")
 	}
 	request["input"] = input
 	mergeBootstrapMap(request, "metadata", n.RequestMetadata)
 
-	agent := state.Ensure(fruntime.StateKeyAgent)
+	agent := state.Ensure(wfstate.StateKeyAgent)
 	if agent == nil {
 		return state, errors.New("session bootstrap agent state is unavailable")
 	}
 	mergeBootstrapMap(agent, "profile", n.AgentProfile)
 
-	toolPolicy := state.Ensure(fruntime.StateKeyToolPolicy)
+	toolPolicy := state.Ensure(wfstate.StateKeyToolPolicy)
 	if toolPolicy == nil {
 		return state, errors.New("session bootstrap tool policy state is unavailable")
 	}
@@ -127,8 +128,8 @@ func (n *SessionBootstrapNode) Invoke(ctx context.Context, state fruntime.State)
 	return state, nil
 }
 
-func (n *SessionBootstrapNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *SessionBootstrapNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *SessionBootstrapNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -164,7 +165,7 @@ func (n *SessionBootstrapNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *SessionBootstrapNode) resolveInput(state fruntime.State) (string, error) {
+func (n *SessionBootstrapNode) resolveInput(state wfstate.State) (string, error) {
 	if input := strings.TrimSpace(n.Input); input != "" {
 		return input, nil
 	}
@@ -228,34 +229,34 @@ func (n *SessionBootstrapNode) ensureSystemPrompt(messages []llms.MessageContent
 
 func (n *SessionBootstrapNode) effectiveMaxIterations() int {
 	if n == nil || n.MaxIterations <= 0 {
-		return fruntime.DefaultMaxIterations
+		return wfstate.DefaultMaxIterations
 	}
 	return n.MaxIterations
 }
 
-func (n *SessionBootstrapNode) artifactPayload(state fruntime.State, input string) map[string]any {
+func (n *SessionBootstrapNode) artifactPayload(state wfstate.State, input string) map[string]any {
 	payload := map[string]any{
 		"state_scope":    strings.TrimSpace(n.StateScope),
 		"input":          input,
 		"max_iterations": n.effectiveMaxIterations(),
-		"request":        cloneBootstrapMap(state.Get(fruntime.StateKeyRequest)),
-		"agent":          cloneBootstrapMap(state.Get(fruntime.StateKeyAgent)),
-		"tool_policy":    cloneBootstrapMap(state.Get(fruntime.StateKeyToolPolicy)),
+		"request":        cloneBootstrapMap(state.Get(wfstate.StateKeyRequest)),
+		"agent":          cloneBootstrapMap(state.Get(wfstate.StateKeyAgent)),
+		"tool_policy":    cloneBootstrapMap(state.Get(wfstate.StateKeyToolPolicy)),
 	}
-	if messages, err := fruntime.SerializeMessages(state.Conversation(n.StateScope).Messages()); err == nil {
+	if messages, err := wfstate.SerializeMessages(state.Conversation(n.StateScope).Messages()); err == nil {
 		payload["messages"] = messages
 	}
 	return payload
 }
 
-func mergeBootstrapMap(target fruntime.State, key string, values map[string]any) {
+func mergeBootstrapMap(target wfstate.State, key string, values map[string]any) {
 	if target == nil || key == "" {
 		return
 	}
 
 	existing, _ := target[key].(map[string]any)
 	if existing == nil {
-		if typed, ok := target[key].(fruntime.State); ok {
+		if typed, ok := target[key].(wfstate.State); ok {
 			existing = typed
 		}
 	}
@@ -305,8 +306,8 @@ func cloneBootstrapValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		return cloneBootstrapMap(typed)
-	case fruntime.State:
-		return fruntime.State(cloneBootstrapMap(typed))
+	case wfstate.State:
+		return wfstate.State(cloneBootstrapMap(typed))
 	case []any:
 		cloned := make([]any, len(typed))
 		for i, item := range typed {

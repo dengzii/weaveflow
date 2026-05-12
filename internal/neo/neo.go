@@ -7,6 +7,7 @@ import (
 	"weaveflow/memory"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -90,7 +91,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 
 	router := nodes.NewOrchestrationRouterNode()
 	router.StateScope = scope
-	router.InputPath = fruntime.StateKeyRequest + ".input"
+	router.InputPath = wfstate.StateKeyRequest + ".input"
 	switch cfg.Mode {
 	case "direct":
 		router.AvailableModes = []string{"direct"}
@@ -104,7 +105,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	}
 
 	planner := nodes.NewPlannerNode()
-	planner.ContextPaths = []string{fruntime.StateKeyMemory, fruntime.StateKeyExecution}
+	planner.ContextPaths = []string{wfstate.StateKeyMemory, wfstate.StateKeyExecution}
 	planner.MaxSteps = cfg.PlannerMaxSteps
 	if err := graph.AddNode(planner); err != nil {
 		return nil, err
@@ -312,12 +313,12 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	return graph, nil
 }
 
-func NewInitialState(input string, history []llms.MessageContent) fruntime.State {
-	state := fruntime.State{
-		fruntime.StateKeyRequest: fruntime.State{
+func NewInitialState(input string, history []llms.MessageContent) wfstate.State {
+	state := wfstate.State{
+		wfstate.StateKeyRequest: wfstate.State{
 			"input": input,
 		},
-		fruntime.StateKeyPlanner: fruntime.State{
+		wfstate.StateKeyPlanner: wfstate.State{
 			"objective": input,
 		},
 	}

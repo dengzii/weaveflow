@@ -5,7 +5,7 @@ import (
 
 	"weaveflow/dsl"
 	"weaveflow/nodes"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func ResolveSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
@@ -21,7 +21,7 @@ func ResolveSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 }
 
 func ResolveHumanMessageStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := stringConfig(spec.Config, "state_scope")
+	scope := StringConfig(spec.Config, "state_scope")
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected and updated by the human message node."},
@@ -31,17 +31,17 @@ func ResolveHumanMessageStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 }
 
 func ResolveContextReducerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := stringConfig(spec.Config, "state_scope")
+	scope := StringConfig(spec.Config, "state_scope")
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages read and compacted into a reduced message history."}},
 	}, nil
 }
 
 func ResolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := stringConfig(spec.Config, "state_scope")
-	memoryPath := canonicalContractPath(defaultIfBlank(stringConfig(spec.Config, "memory_state_path"), fruntime.StateKeyMemory))
-	orchestrationPath := canonicalContractPath(defaultIfBlank(stringConfig(spec.Config, "orchestration_state_path"), fruntime.StateKeyOrchestration))
-	plannerPath := canonicalContractPath(defaultIfBlank(stringConfig(spec.Config, "planner_state_path"), fruntime.StateKeyPlanner))
+	scope := StringConfig(spec.Config, "state_scope")
+	memoryPath := canonicalContractPath(defaultIfBlank(StringConfig(spec.Config, "memory_state_path"), wfstate.StateKeyMemory))
+	orchestrationPath := canonicalContractPath(defaultIfBlank(StringConfig(spec.Config, "orchestration_state_path"), wfstate.StateKeyOrchestration))
+	plannerPath := canonicalContractPath(defaultIfBlank(StringConfig(spec.Config, "planner_state_path"), wfstate.StateKeyPlanner))
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages updated with assembled memory context."},
@@ -53,7 +53,7 @@ func ResolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 }
 
 func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := stringConfig(spec.Config, "state_scope")
+	scope := StringConfig(spec.Config, "state_scope")
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages sent to the model and extended with the model response."},
@@ -66,14 +66,14 @@ func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) 
 }
 
 func ResolveToolsStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := stringConfig(spec.Config, "state_scope")
+	scope := StringConfig(spec.Config, "state_scope")
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected for tool calls and extended with tool responses."}},
 	}, nil
 }
 
 func ResolveIteratorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	stateKey := canonicalContractPath(strings.TrimSpace(stringConfig(spec.Config, "state_key")))
+	stateKey := canonicalContractPath(strings.TrimSpace(StringConfig(spec.Config, "state_key")))
 	nodeID := strings.TrimSpace(spec.ID)
 	runtimePath := nodes.IteratorStateRootKey
 	if nodeID != "" {
@@ -90,8 +90,8 @@ func ResolveIteratorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 }
 
 func ResolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	inputMap := mapStringConfig(spec.Config, "input_map")
-	outputMap := mapStringConfig(spec.Config, "output_map")
+	inputMap := MapStringConfig(spec.Config, "input_map")
+	outputMap := MapStringConfig(spec.Config, "output_map")
 	fields := make([]dsl.StateFieldRef, 0, len(inputMap)+len(outputMap))
 	for parentPath := range inputMap {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(parentPath), Mode: dsl.StateAccessRead, Description: "Input path mapped into the subgraph."})
@@ -134,7 +134,7 @@ func canonicalContractPath(path string) string {
 	if path == "" || path == "*" {
 		return path
 	}
-	return fruntime.NormalizeContractPath(path)
+	return wfstate.NormalizeContractPath(path)
 }
 
 func defaultIfBlank(value string, fallback string) string {

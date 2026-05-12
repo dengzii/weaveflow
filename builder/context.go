@@ -7,7 +7,7 @@ import (
 	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 type BuildContext struct {
@@ -18,7 +18,7 @@ type BuildContext struct {
 	internal             *buildContextState
 }
 
-type LegacyNodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error)
+type LegacyNodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
 
 type buildContextState struct {
 	graphBuildPath []string
@@ -75,8 +75,8 @@ func FromNodeBuildContext(ctx registry.NodeBuildContext) *BuildContext {
 	}
 }
 
-func AdaptLegacyNodeBuilder(build LegacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+func AdaptLegacyNodeBuilder(build LegacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}

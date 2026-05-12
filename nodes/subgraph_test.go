@@ -3,7 +3,7 @@ package nodes
 import (
 	"context"
 	"testing"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestSubgraphNodeReturnsStateWhenInvokerMissing(t *testing.T) {
@@ -12,7 +12,7 @@ func TestSubgraphNodeReturnsStateWhenInvokerMissing(t *testing.T) {
 	node := NewSubgraphNode()
 	node.GraphRef = "child"
 
-	state := fruntime.State{"topic": "demo"}
+	state := wfstate.State{"topic": "demo"}
 	nextState, err := node.Invoke(context.Background(), state)
 	if err == nil {
 		t.Fatal("expected missing invoker error")

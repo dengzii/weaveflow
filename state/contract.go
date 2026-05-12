@@ -1,4 +1,4 @@
-package runtime
+package state
 
 import (
 	"fmt"
@@ -152,7 +152,7 @@ func applyStatePatch(target State, patch State) {
 		copyConversationState(target, conversation)
 	}
 
-	for scopeName, scopePatch := range patch.scopes() {
+	for scopeName, scopePatch := range patch.Scopes() {
 		applyStatePatch(target.EnsureScope(scopeName), scopePatch)
 	}
 

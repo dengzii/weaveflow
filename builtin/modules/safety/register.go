@@ -9,13 +9,13 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error)
+type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
 
-func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}
@@ -54,7 +54,7 @@ func Register(registry *registry.Registry) {
 
 func toolPolicyCheckStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyToolPolicyCheck,
+		Name:        wfstate.StateKeyToolPolicyCheck,
 		Description: "Tool policy check results: per-call decisions, blocked and approved call lists.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -92,7 +92,7 @@ func toolPolicyCheckStateFieldDefinition() dsl.StateFieldDefinition {
 
 func approvalStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyApproval,
+		Name:        wfstate.StateKeyApproval,
 		Description: "Human approval state for high-risk tool calls.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -111,7 +111,7 @@ func approvalStateFieldDefinition() dsl.StateFieldDefinition {
 
 func budgetStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyBudget,
+		Name:        wfstate.StateKeyBudget,
 		Description: "Resource budget tracking: token usage, tool calls, and iterations against limits.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -162,7 +162,7 @@ func toolPolicyGuardNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewToolPolicyGuardNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -171,7 +171,7 @@ func toolPolicyGuardNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
 			return node, nil
 		}),
 		ResolveStateContract: resolveToolPolicyGuardStateContract,
@@ -193,7 +193,7 @@ func approvalGateNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewApprovalGateNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -202,8 +202,8 @@ func approvalGateNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			if message := stringConfig(spec.Config, "interrupt_message"); message != "" {
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			if message := registry.StringConfigTrim(spec.Config, "interrupt_message"); message != "" {
 				node.InterruptMessage = message
 			}
 			return node, nil
@@ -230,7 +230,7 @@ func costBudgetGuardNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewCostBudgetGuardNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -239,17 +239,17 @@ func costBudgetGuardNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			if value, ok := intConfig(spec.Config, "max_tokens"); ok {
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			if value, ok := registry.IntConfig(spec.Config, "max_tokens"); ok {
 				node.MaxTokens = value
 			}
-			if value, ok := intConfig(spec.Config, "max_tool_calls"); ok {
+			if value, ok := registry.IntConfig(spec.Config, "max_tool_calls"); ok {
 				node.MaxToolCalls = value
 			}
-			if value, ok := intConfig(spec.Config, "max_iterations"); ok {
+			if value, ok := registry.IntConfig(spec.Config, "max_iterations"); ok {
 				node.MaxIterations = value
 			}
-			if value, ok := floatConfig(spec.Config, "warning_threshold"); ok {
+			if value, ok := registry.FloatConfig(spec.Config, "warning_threshold"); ok {
 				node.WarningThreshold = value
 			}
 			return node, nil
@@ -277,15 +277,15 @@ func toolPolicyCheckActionConditionDefinition() registry.ConditionDefinition {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			expected := strings.ToLower(strings.TrimSpace(stringConfig(spec.Config, "action")))
+			expected := strings.ToLower(strings.TrimSpace(registry.StringConfigTrim(spec.Config, "action")))
 			if expected == "" {
 				return registry.EdgeCondition{}, fmt.Errorf("tool_policy_check_action: action config is required")
 			}
 			return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 				Type:   "tool_policy_check_action",
 				Config: map[string]any{"action": expected},
-			}, func(_ context.Context, state fruntime.State) bool {
-				check := state.Get(fruntime.StateKeyToolPolicyCheck)
+			}, func(_ context.Context, state wfstate.State) bool {
+				check := state.Get(wfstate.StateKeyToolPolicyCheck)
 				if check == nil {
 					return false
 				}
@@ -315,15 +315,15 @@ func approvalStatusEqualsConditionDefinition() registry.ConditionDefinition {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			expected := strings.ToLower(strings.TrimSpace(stringConfig(spec.Config, "status")))
+			expected := strings.ToLower(strings.TrimSpace(registry.StringConfigTrim(spec.Config, "status")))
 			if expected == "" {
 				return registry.EdgeCondition{}, fmt.Errorf("approval_status_equals: status config is required")
 			}
 			return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 				Type:   "approval_status_equals",
 				Config: map[string]any{"status": expected},
-			}, func(_ context.Context, state fruntime.State) bool {
-				approval := state.Get(fruntime.StateKeyApproval)
+			}, func(_ context.Context, state wfstate.State) bool {
+				approval := state.Get(wfstate.StateKeyApproval)
 				if approval == nil {
 					return false
 				}
@@ -353,15 +353,15 @@ func budgetStatusEqualsConditionDefinition() registry.ConditionDefinition {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			expected := strings.ToLower(strings.TrimSpace(stringConfig(spec.Config, "status")))
+			expected := strings.ToLower(strings.TrimSpace(registry.StringConfigTrim(spec.Config, "status")))
 			if expected == "" {
 				return registry.EdgeCondition{}, fmt.Errorf("budget_status_equals: status config is required")
 			}
 			return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 				Type:   "budget_status_equals",
 				Config: map[string]any{"status": expected},
-			}, func(_ context.Context, state fruntime.State) bool {
-				budget := state.Get(fruntime.StateKeyBudget)
+			}, func(_ context.Context, state wfstate.State) bool {
+				budget := state.Get(wfstate.StateKeyBudget)
 				if budget == nil {
 					return false
 				}
@@ -373,12 +373,12 @@ func budgetStatusEqualsConditionDefinition() registry.ConditionDefinition {
 }
 
 func resolveToolPolicyGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := strings.TrimSpace(stringConfig(spec.Config, "state_scope"))
+	scope := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "state_scope"))
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyToolPolicy),
+				Path:        canonicalContractPath(wfstate.StateKeyToolPolicy),
 				Mode:        dsl.StateAccessRead,
 				Description: "Tool safety policy rules.",
 			},
@@ -388,7 +388,7 @@ func resolveToolPolicyGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 				Description: "Conversation messages with tool calls to check.",
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyToolPolicyCheck),
+				Path:          canonicalContractPath(wfstate.StateKeyToolPolicyCheck),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Policy check results.",
@@ -399,16 +399,16 @@ func resolveToolPolicyGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 }
 
 func resolveApprovalGateStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := strings.TrimSpace(stringConfig(spec.Config, "state_scope"))
+	scope := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "state_scope"))
 
 	fields := []dsl.StateFieldRef{
 		{
-			Path:        canonicalContractPath(fruntime.StateKeyToolPolicyCheck),
+			Path:        canonicalContractPath(wfstate.StateKeyToolPolicyCheck),
 			Mode:        dsl.StateAccessReadWrite,
 			Description: "Policy check decisions to review and update after approval.",
 		},
 		{
-			Path:          canonicalContractPath(fruntime.StateKeyApproval),
+			Path:          canonicalContractPath(wfstate.StateKeyApproval),
 			Mode:          dsl.StateAccessWrite,
 			Required:      true,
 			Description:   "Approval result.",
@@ -428,7 +428,7 @@ func resolveApprovalGateStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 }
 
 func resolveCostBudgetGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := strings.TrimSpace(stringConfig(spec.Config, "state_scope"))
+	scope := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "state_scope"))
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -438,7 +438,7 @@ func resolveCostBudgetGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 				Description: "Token usage metrics.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyObservations),
+				Path:        canonicalContractPath(wfstate.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "Observations for tool call counting.",
 			},
@@ -448,7 +448,7 @@ func resolveCostBudgetGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 				Description: "Conversation iteration count.",
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyBudget),
+				Path:          canonicalContractPath(wfstate.StateKeyBudget),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Budget status and usage.",
@@ -458,58 +458,8 @@ func resolveCostBudgetGuardStateContract(spec dsl.GraphNodeSpec) (dsl.StateContr
 	}, nil
 }
 
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return strings.TrimSpace(value)
-}
-
-func intConfig(config map[string]any, key string) (int, bool) {
-	if len(config) == 0 {
-		return 0, false
-	}
-	switch typed := config[key].(type) {
-	case int:
-		return typed, true
-	case int8:
-		return int(typed), true
-	case int16:
-		return int(typed), true
-	case int32:
-		return int(typed), true
-	case int64:
-		return int(typed), true
-	case float32:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	default:
-		return 0, false
-	}
-}
-
-func floatConfig(config map[string]any, key string) (float64, bool) {
-	if len(config) == 0 {
-		return 0, false
-	}
-	switch value := config[key].(type) {
-	case float64:
-		return value, true
-	case float32:
-		return float64(value), true
-	case int:
-		return float64(value), true
-	case int64:
-		return float64(value), true
-	default:
-		return 0, false
-	}
-}
-
 func canonicalContractPath(path string) string {
-	return fruntime.NormalizeContractPath(path)
+	return wfstate.NormalizeContractPath(path)
 }
 
 func scopedConversationPath(scope string, field string) string {

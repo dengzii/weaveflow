@@ -8,6 +8,7 @@ import (
 	"time"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -33,9 +34,9 @@ func NewApprovalGateNode() *ApprovalGateNode {
 	}
 }
 
-func (n *ApprovalGateNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *ApprovalGateNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	pending, ok, err := n.consumePendingApproval(state)
@@ -46,9 +47,9 @@ func (n *ApprovalGateNode) Invoke(ctx context.Context, state fruntime.State) (fr
 		return n.applyApprovalDecision(ctx, state, pending)
 	}
 
-	check := state.Get(fruntime.StateKeyToolPolicyCheck)
+	check := state.Get(wfstate.StateKeyToolPolicyCheck)
 	if check == nil || !n.needsApproval(check) {
-		approval := state.Ensure(fruntime.StateKeyApproval)
+		approval := state.Ensure(wfstate.StateKeyApproval)
 		approval["status"] = "approved"
 		approval["decided_at"] = time.Now().Format(time.RFC3339)
 		return state, nil
@@ -64,8 +65,8 @@ func (n *ApprovalGateNode) Invoke(ctx context.Context, state fruntime.State) (fr
 	return state, &langgraph.NodeInterrupt{Node: n.NodeID, Value: n.effectiveInterruptMessage(details)}
 }
 
-func (n *ApprovalGateNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ApprovalGateNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *ApprovalGateNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -81,7 +82,7 @@ func (n *ApprovalGateNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *ApprovalGateNode) consumePendingApproval(state fruntime.State) (map[string]any, bool, error) {
+func (n *ApprovalGateNode) consumePendingApproval(state wfstate.State) (map[string]any, bool, error) {
 	target := n.pendingInputState(state)
 	if target == nil {
 		return nil, false, nil
@@ -98,7 +99,7 @@ func (n *ApprovalGateNode) consumePendingApproval(state fruntime.State) (map[str
 	switch typed := raw.(type) {
 	case map[string]any:
 		return typed, true, nil
-	case fruntime.State:
+	case wfstate.State:
 		return map[string]any(typed), true, nil
 	case string:
 		text := strings.TrimSpace(typed)
@@ -115,7 +116,7 @@ func (n *ApprovalGateNode) consumePendingApproval(state fruntime.State) (map[str
 	}
 }
 
-func (n *ApprovalGateNode) pendingInputState(state fruntime.State) fruntime.State {
+func (n *ApprovalGateNode) pendingInputState(state wfstate.State) wfstate.State {
 	if state == nil {
 		return nil
 	}
@@ -125,19 +126,19 @@ func (n *ApprovalGateNode) pendingInputState(state fruntime.State) fruntime.Stat
 	return state.Scope(n.StateScope)
 }
 
-func (n *ApprovalGateNode) needsApproval(check fruntime.State) bool {
+func (n *ApprovalGateNode) needsApproval(check wfstate.State) bool {
 	action, _ := check["action"].(string)
 	return strings.EqualFold(action, PolicyActionNeedsApproval)
 }
 
-func (n *ApprovalGateNode) applyApprovalDecision(ctx context.Context, state fruntime.State, decision map[string]any) (fruntime.State, error) {
+func (n *ApprovalGateNode) applyApprovalDecision(ctx context.Context, state wfstate.State, decision map[string]any) (wfstate.State, error) {
 	status, _ := decision["status"].(string)
 	status = strings.ToLower(strings.TrimSpace(status))
 	if status == "" {
 		status = "approved"
 	}
 
-	approval := state.Ensure(fruntime.StateKeyApproval)
+	approval := state.Ensure(wfstate.StateKeyApproval)
 	approval["status"] = status
 	approval["decided_at"] = time.Now().Format(time.RFC3339)
 
@@ -161,8 +162,8 @@ func (n *ApprovalGateNode) applyApprovalDecision(ctx context.Context, state frun
 	return state, nil
 }
 
-func (n *ApprovalGateNode) promoteApprovedCalls(state fruntime.State) {
-	check := state.Get(fruntime.StateKeyToolPolicyCheck)
+func (n *ApprovalGateNode) promoteApprovedCalls(state wfstate.State) {
+	check := state.Get(wfstate.StateKeyToolPolicyCheck)
 	if check == nil {
 		return
 	}
@@ -186,7 +187,7 @@ func (n *ApprovalGateNode) promoteApprovedCalls(state fruntime.State) {
 	check["action"] = PolicyActionAllow
 }
 
-func (n *ApprovalGateNode) buildInterruptDetails(check fruntime.State) map[string]any {
+func (n *ApprovalGateNode) buildInterruptDetails(check wfstate.State) map[string]any {
 	decisions, _ := check["decisions"].([]map[string]any)
 	pending := make([]map[string]any, 0)
 	for _, d := range decisions {

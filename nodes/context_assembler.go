@@ -7,6 +7,7 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -41,8 +42,8 @@ func NewContextAssemblerNode() *ContextAssemblerNode {
 			NodeDescription: "Assemble recalled memory into the active conversation context for the next model turn.",
 		},
 		MemoryStatePath:        defaultMemoryStatePath,
-		OrchestrationStatePath: fruntime.StateKeyOrchestration,
-		PlannerStatePath:       fruntime.StateKeyPlanner,
+		OrchestrationStatePath: wfstate.StateKeyOrchestration,
+		PlannerStatePath:       wfstate.StateKeyPlanner,
 		IncludeMemory:          true,
 		IncludeOrchestration:   true,
 		IncludePlanner:         true,
@@ -52,9 +53,9 @@ func NewContextAssemblerNode() *ContextAssemblerNode {
 	}
 }
 
-func (n *ContextAssemblerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *ContextAssemblerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	conversation := state.Conversation(n.StateScope)
@@ -111,8 +112,8 @@ func (n *ContextAssemblerNode) Invoke(ctx context.Context, state fruntime.State)
 	return state, nil
 }
 
-func (n *ContextAssemblerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ContextAssemblerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *ContextAssemblerNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -155,14 +156,14 @@ func (n *ContextAssemblerNode) effectiveMemoryHeading() string {
 
 func (n *ContextAssemblerNode) effectiveOrchestrationStatePath() string {
 	if n == nil || strings.TrimSpace(n.OrchestrationStatePath) == "" {
-		return fruntime.StateKeyOrchestration
+		return wfstate.StateKeyOrchestration
 	}
 	return strings.TrimSpace(n.OrchestrationStatePath)
 }
 
 func (n *ContextAssemblerNode) effectivePlannerStatePath() string {
 	if n == nil || strings.TrimSpace(n.PlannerStatePath) == "" {
-		return fruntime.StateKeyPlanner
+		return wfstate.StateKeyPlanner
 	}
 	return strings.TrimSpace(n.PlannerStatePath)
 }
@@ -203,7 +204,7 @@ func (n *ContextAssemblerNode) buildMemoryContextMessage(entries []memory.Entry)
 	return &message
 }
 
-func (n *ContextAssemblerNode) buildOrchestrationContextMessage(state fruntime.State) *llms.MessageContent {
+func (n *ContextAssemblerNode) buildOrchestrationContextMessage(state wfstate.State) *llms.MessageContent {
 	payload, ok := state.ResolvePath(n.effectiveOrchestrationStatePath())
 	if !ok {
 		return nil
@@ -227,7 +228,7 @@ func (n *ContextAssemblerNode) buildOrchestrationContextMessage(state fruntime.S
 	return &message
 }
 
-func (n *ContextAssemblerNode) buildPlannerContextMessage(state fruntime.State) *llms.MessageContent {
+func (n *ContextAssemblerNode) buildPlannerContextMessage(state wfstate.State) *llms.MessageContent {
 	payload, ok := state.ResolvePath(n.effectivePlannerStatePath())
 	if !ok {
 		return nil
@@ -289,7 +290,7 @@ func hasContextAssemblerHeading(text string, headings []string) bool {
 
 func contextAssemblerObject(value any) map[string]any {
 	switch typed := value.(type) {
-	case fruntime.State:
+	case wfstate.State:
 		return typed
 	case map[string]any:
 		return typed

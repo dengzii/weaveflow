@@ -6,14 +6,15 @@ import (
 	"testing"
 
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestFinalizerPublishesDirectAnswerEvent(t *testing.T) {
 	t.Parallel()
 
 	node := NewFinalizerNode()
-	state := fruntime.State{}
-	orchestration := state.Ensure(fruntime.StateKeyOrchestration)
+	state := wfstate.State{}
+	orchestration := state.Ensure(wfstate.StateKeyOrchestration)
 	orchestration["mode"] = "direct"
 	orchestration["direct_answer"] = "Hi there!"
 

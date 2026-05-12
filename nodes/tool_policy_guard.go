@@ -8,6 +8,7 @@ import (
 	"time"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -35,14 +36,14 @@ func NewToolPolicyGuardNode() *ToolPolicyGuardNode {
 	}
 }
 
-func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	toolCalls := n.extractToolCalls(state)
 	if len(toolCalls) == 0 {
-		check := state.Ensure(fruntime.StateKeyToolPolicyCheck)
+		check := state.Ensure(wfstate.StateKeyToolPolicyCheck)
 		check["action"] = PolicyActionAllow
 		check["decisions"] = []map[string]any{}
 		check["blocked_calls"] = []map[string]any{}
@@ -50,7 +51,7 @@ func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 		return state, nil
 	}
 
-	policy := state.Get(fruntime.StateKeyToolPolicy)
+	policy := state.Get(wfstate.StateKeyToolPolicy)
 	decisions := make([]map[string]any, 0, len(toolCalls))
 	blocked := make([]map[string]any, 0)
 	approved := make([]map[string]any, 0)
@@ -75,7 +76,7 @@ func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 
 	aggregateAction := n.aggregateAction(decisions)
 
-	check := state.Ensure(fruntime.StateKeyToolPolicyCheck)
+	check := state.Ensure(wfstate.StateKeyToolPolicyCheck)
 	check["action"] = aggregateAction
 	check["decisions"] = decisions
 	check["blocked_calls"] = blocked
@@ -100,8 +101,8 @@ func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state fruntime.State) 
 	return state, nil
 }
 
-func (n *ToolPolicyGuardNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ToolPolicyGuardNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *ToolPolicyGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -116,7 +117,7 @@ func (n *ToolPolicyGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *ToolPolicyGuardNode) extractToolCalls(state fruntime.State) []llms.ToolCall {
+func (n *ToolPolicyGuardNode) extractToolCalls(state wfstate.State) []llms.ToolCall {
 	conversation := state.Conversation(n.StateScope)
 	messages := conversation.Messages()
 	if len(messages) == 0 {
@@ -135,7 +136,7 @@ func (n *ToolPolicyGuardNode) extractToolCalls(state fruntime.State) []llms.Tool
 	return calls
 }
 
-func (n *ToolPolicyGuardNode) evaluateToolCall(name, arguments string, policy fruntime.State) map[string]any {
+func (n *ToolPolicyGuardNode) evaluateToolCall(name, arguments string, policy wfstate.State) map[string]any {
 	if policy == nil {
 		return map[string]any{"action": PolicyActionAllow, "reason": "no policy configured"}
 	}
@@ -208,7 +209,7 @@ func (n *ToolPolicyGuardNode) aggregateAction(decisions []map[string]any) string
 	return PolicyActionAllow
 }
 
-func extractPolicyStringSlice(policy fruntime.State, key string) []string {
+func extractPolicyStringSlice(policy wfstate.State, key string) []string {
 	if policy == nil {
 		return nil
 	}

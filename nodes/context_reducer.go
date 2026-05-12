@@ -8,6 +8,7 @@ import (
 	"weaveflow/dsl"
 
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -47,7 +48,7 @@ func NewContextReducerNode() *ContextReducerNode {
 	}
 }
 
-func (n *ContextReducerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *ContextReducerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("context reducer: model service not available")
@@ -100,8 +101,8 @@ func (n *ContextReducerNode) Invoke(ctx context.Context, state fruntime.State) (
 	return state, nil
 }
 
-func (n *ContextReducerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ContextReducerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *ContextReducerNode) GraphNodeSpec() dsl.GraphNodeSpec {

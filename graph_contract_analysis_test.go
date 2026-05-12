@@ -6,6 +6,7 @@ import (
 	"testing"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	wfstate "weaveflow/state"
 )
 
 type staticContractNode struct {
@@ -16,10 +17,10 @@ type staticContractNode struct {
 func (n staticContractNode) ID() string          { return n.id }
 func (n staticContractNode) Name() string        { return n.id }
 func (n staticContractNode) Description() string { return "static contract analysis test node" }
-func (n staticContractNode) Invoke(ctx context.Context, state State) (State, error) {
+func (n staticContractNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	_ = ctx
 	if state == nil {
-		state = State{}
+		state = wfstate.State{}
 	}
 	return state, nil
 }
@@ -42,7 +43,7 @@ func registerStaticContractNodeType(registry *Registry, typeName string, contrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[State], error) {
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			_ = ctx
 			return staticContractNode{id: spec.ID, spec: spec}, nil
 		}),

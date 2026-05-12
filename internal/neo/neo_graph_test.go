@@ -7,6 +7,7 @@ import (
 	"testing"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -83,7 +84,7 @@ func TestNewGraphCurrentTimeUsesToolLoop(t *testing.T) {
 		t.Fatalf("expected two llm calls for tool loop, got %d", model.calls)
 	}
 
-	orchestration := state.Get(fruntime.StateKeyOrchestration)
+	orchestration := state.Get(wfstate.StateKeyOrchestration)
 	if orchestration == nil {
 		t.Fatal("expected orchestration state")
 	}
@@ -137,7 +138,7 @@ func TestNewGraphClarificationShortCircuitsAfterRouter(t *testing.T) {
 		t.Fatalf("expected clarification path to stop after router, got %d model calls", model.calls)
 	}
 
-	final := state.Get(fruntime.StateKeyFinal)
+	final := state.Get(wfstate.StateKeyFinal)
 	if final == nil {
 		t.Fatal("expected final state")
 	}

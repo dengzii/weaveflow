@@ -7,25 +7,25 @@ import (
 	"sort"
 	"time"
 
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 type RunMetadata struct {
-	RunID         string         `json:"run_id,omitempty"`
-	GraphID       string         `json:"graph_id,omitempty"`
-	GraphVersion  string         `json:"graph_version,omitempty"`
-	Status        string         `json:"status,omitempty"`
-	StartedAt     time.Time      `json:"started_at"`
-	FinishedAt    *time.Time     `json:"finished_at,omitempty"`
-	Request       ChatRequest    `json:"request"`
-	Config        Config         `json:"config"`
-	EnabledTools  []string       `json:"enabled_tools,omitempty"`
-	InitialState  fruntime.State `json:"initial_state,omitempty"`
-	FinalState    fruntime.State `json:"final_state,omitempty"`
-	FinalAnswer   string         `json:"final_answer,omitempty"`
-	Error         string         `json:"error,omitempty"`
-	GraphFile     string         `json:"graph_file,omitempty"`
-	ExecutionRoot string         `json:"execution_root,omitempty"`
+	RunID         string        `json:"run_id,omitempty"`
+	GraphID       string        `json:"graph_id,omitempty"`
+	GraphVersion  string        `json:"graph_version,omitempty"`
+	Status        string        `json:"status,omitempty"`
+	StartedAt     time.Time     `json:"started_at"`
+	FinishedAt    *time.Time    `json:"finished_at,omitempty"`
+	Request       ChatRequest   `json:"request"`
+	Config        Config        `json:"config"`
+	EnabledTools  []string      `json:"enabled_tools,omitempty"`
+	InitialState  wfstate.State `json:"initial_state,omitempty"`
+	FinalState    wfstate.State `json:"final_state,omitempty"`
+	FinalAnswer   string        `json:"final_answer,omitempty"`
+	Error         string        `json:"error,omitempty"`
+	GraphFile     string        `json:"graph_file,omitempty"`
+	ExecutionRoot string        `json:"execution_root,omitempty"`
 }
 
 func enabledToolNames(flags map[string]bool) []string {

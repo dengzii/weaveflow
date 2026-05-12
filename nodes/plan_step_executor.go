@@ -8,6 +8,7 @@ import (
 
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
@@ -49,14 +50,14 @@ func (n *PlanStepExecutorNode) effectiveScope() string {
 
 func (n *PlanStepExecutorNode) effectivePlannerPath() string {
 	if n == nil || strings.TrimSpace(n.PlannerStatePath) == "" {
-		return fruntime.StateKeyPlanner
+		return wfstate.StateKeyPlanner
 	}
 	return strings.TrimSpace(n.PlannerStatePath)
 }
 
-func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	plannerPath := n.effectivePlannerPath()
@@ -91,7 +92,7 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 
 	plannerState["current_step_id"] = stepID
 
-	exec := state.Ensure(fruntime.StateKeyExecution)
+	exec := state.Ensure(wfstate.StateKeyExecution)
 	exec["current_step"] = cloneStepMap(selectedStep)
 	exec["route"] = route
 
@@ -112,8 +113,8 @@ func (n *PlanStepExecutorNode) Invoke(ctx context.Context, state fruntime.State)
 	return state, nil
 }
 
-func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state fruntime.State, plannerState fruntime.State, reason string) (fruntime.State, error) {
-	exec := state.Ensure(fruntime.StateKeyExecution)
+func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state wfstate.State, plannerState wfstate.State, reason string) (wfstate.State, error) {
+	exec := state.Ensure(wfstate.StateKeyExecution)
 	exec["route"] = ExecutionRouteFinalize
 	exec["current_step"] = nil
 	plannerState["current_step_id"] = ""
@@ -126,8 +127,8 @@ func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state fruntime
 	return state, nil
 }
 
-func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state fruntime.State, plannerState fruntime.State, reason string, diagnostics map[string]any) (fruntime.State, error) {
-	exec := state.Ensure(fruntime.StateKeyExecution)
+func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state wfstate.State, plannerState wfstate.State, reason string, diagnostics map[string]any) (wfstate.State, error) {
+	exec := state.Ensure(wfstate.StateKeyExecution)
 	exec["route"] = ExecutionRouteBlocked
 	exec["current_step"] = nil
 	plannerState["current_step_id"] = ""
@@ -149,8 +150,8 @@ func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state fruntime.
 	return state, nil
 }
 
-func (n *PlanStepExecutorNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *PlanStepExecutorNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *PlanStepExecutorNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -158,7 +159,7 @@ func (n *PlanStepExecutorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if scope := n.effectiveScope(); scope != defaultPlanStepExecutorScope {
 		config["state_scope"] = scope
 	}
-	if plannerPath := n.effectivePlannerPath(); plannerPath != fruntime.StateKeyPlanner {
+	if plannerPath := n.effectivePlannerPath(); plannerPath != wfstate.StateKeyPlanner {
 		config["planner_state_path"] = plannerPath
 	}
 	return dsl.GraphNodeSpec{
@@ -172,7 +173,7 @@ func (n *PlanStepExecutorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 
 // --- helpers ---
 
-func extractPlanSteps(plannerState fruntime.State) []map[string]any {
+func extractPlanSteps(plannerState wfstate.State) []map[string]any {
 	raw, ok := plannerState["plan"]
 	if !ok {
 		return nil

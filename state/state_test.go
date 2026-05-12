@@ -1,4 +1,4 @@
-package runtime
+package state
 
 import (
 	"strings"
@@ -93,7 +93,7 @@ func TestSnapshotFromStateRejectsUnsupportedValueTypes(t *testing.T) {
 	if !strings.Contains(err.Error(), `unsupported state value at "bad"`) {
 		t.Fatalf("expected path in error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "runtime.unsupported") {
+	if !strings.Contains(err.Error(), "state.unsupported") {
 		t.Fatalf("expected type name in error, got %v", err)
 	}
 }

@@ -8,11 +8,12 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
 
-const defaultMemoryStatePath = fruntime.StateKeyMemory
+const defaultMemoryStatePath = wfstate.StateKeyMemory
 
 type MemoryRecallNode struct {
 	NodeInfo
@@ -35,14 +36,14 @@ func NewMemoryRecallNode() *MemoryRecallNode {
 			NodeName:        "MemoryRecall",
 			NodeDescription: "Recall long-term memory into structured state for downstream planning and execution.",
 		},
-		RequestInputPath:       fruntime.StateKeyRequest + ".input",
-		OrchestrationStatePath: fruntime.StateKeyOrchestration,
+		RequestInputPath:       wfstate.StateKeyRequest + ".input",
+		OrchestrationStatePath: wfstate.StateKeyOrchestration,
 	}
 }
 
-func (n *MemoryRecallNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *MemoryRecallNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	svc := fruntime.ServicesFrom(ctx)
@@ -97,8 +98,8 @@ func (n *MemoryRecallNode) Invoke(ctx context.Context, state fruntime.State) (fr
 	return state, nil
 }
 
-func (n *MemoryRecallNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *MemoryRecallNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *MemoryRecallNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -135,7 +136,7 @@ func (n *MemoryRecallNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *MemoryRecallNode) resolveQuery(state fruntime.State) (string, bool, string) {
+func (n *MemoryRecallNode) resolveQuery(state wfstate.State) (string, bool, string) {
 	if queryPath := strings.TrimSpace(n.QueryPath); queryPath != "" {
 		if value, ok := state.ResolvePath(queryPath); ok {
 			text := strings.TrimSpace(stringifyStateValue(value))
@@ -199,14 +200,14 @@ func (n *MemoryRecallNode) effectiveMemoryStatePath() string {
 
 func (n *MemoryRecallNode) effectiveRequestInputPath() string {
 	if n == nil || strings.TrimSpace(n.RequestInputPath) == "" {
-		return fruntime.StateKeyRequest + ".input"
+		return wfstate.StateKeyRequest + ".input"
 	}
 	return strings.TrimSpace(n.RequestInputPath)
 }
 
 func (n *MemoryRecallNode) effectiveOrchestrationStatePath() string {
 	if n == nil || strings.TrimSpace(n.OrchestrationStatePath) == "" {
-		return fruntime.StateKeyOrchestration
+		return wfstate.StateKeyOrchestration
 	}
 	return strings.TrimSpace(n.OrchestrationStatePath)
 }

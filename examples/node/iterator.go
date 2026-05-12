@@ -8,6 +8,8 @@ import (
 	"weaveflow"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	"weaveflow/registry"
+	wfstate "weaveflow/state"
 )
 
 func IteratorExample() {
@@ -55,7 +57,7 @@ func IteratorExample() {
 	graph, err := registry.BuildGraph(definition, &weaveflow.BuildContext{})
 	must(err)
 
-	state, err := graph.Run(context.Background(), weaveflow.State{
+	state, err := graph.Run(context.Background(), wfstate.State{
 		"payload": map[string]any{
 			"items": []any{"alpha", "beta", "gamma", "delta"},
 		},
@@ -78,11 +80,11 @@ func (n collectIteratorItemNode) Name() string { return n.id }
 func (n collectIteratorItemNode) Description() string {
 	return "append current iterator item into a string slice"
 }
-func (n collectIteratorItemNode) Invoke(ctx context.Context, state weaveflow.State) (weaveflow.State, error) {
+func (n collectIteratorItemNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	_ = ctx
 
 	if state == nil {
-		state = weaveflow.State{}
+		state = wfstate.State{}
 	}
 
 	namespace := state.Namespace(nodes.IteratorStateNamespace)
@@ -114,7 +116,7 @@ type printStateNode struct {
 func (n printStateNode) ID() string          { return n.id }
 func (n printStateNode) Name() string        { return n.id }
 func (n printStateNode) Description() string { return "print a compact summary of the final state" }
-func (n printStateNode) Invoke(ctx context.Context, state weaveflow.State) (weaveflow.State, error) {
+func (n printStateNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	_ = ctx
 
 	results, _ := state["results"].([]string)
@@ -125,8 +127,8 @@ func (n printStateNode) Invoke(ctx context.Context, state weaveflow.State) (weav
 	return state, nil
 }
 
-func registerCollectIteratorItemNodeType(registry *weaveflow.Registry) {
-	registry.RegisterNodeType(weaveflow.NodeTypeDefinition{
+func registerCollectIteratorItemNodeType(r *weaveflow.Registry) {
+	r.RegisterNodeType(weaveflow.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "collect_iterator_item",
 			Title:       "Collect Iterator Item",
@@ -141,19 +143,19 @@ func registerCollectIteratorItemNodeType(registry *weaveflow.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[weaveflow.State], error) {
+		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
-				iteratorNodeID: stringConfig(spec.Config, "iterator_node_id"),
-				targetKey:      stringConfig(spec.Config, "target_key"),
+				iteratorNodeID: registry.StringConfig(spec.Config, "iterator_node_id"),
+				targetKey:      registry.StringConfig(spec.Config, "target_key"),
 			}, nil
 		}),
 	})
 }
 
-func registerPrintStateNodeType(registry *weaveflow.Registry) {
-	registry.RegisterNodeType(weaveflow.NodeTypeDefinition{
+func registerPrintStateNodeType(r *weaveflow.Registry) {
+	r.RegisterNodeType(weaveflow.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "print_state",
 			Title:       "Print State",
@@ -163,30 +165,22 @@ func registerPrintStateNodeType(registry *weaveflow.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[weaveflow.State], error) {
+		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			_ = ctx
 			return printStateNode{id: spec.ID}, nil
 		}),
 	})
 }
 
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return value
-}
-
-func nestedState(values map[string]any, key string) weaveflow.State {
+func nestedState(values map[string]any, key string) wfstate.State {
 	if values == nil {
 		return nil
 	}
 	switch typed := values[key].(type) {
-	case weaveflow.State:
+	case wfstate.State:
 		return typed
 	case map[string]any:
-		return weaveflow.State(typed)
+		return wfstate.State(typed)
 	default:
 		return nil
 	}
@@ -201,7 +195,7 @@ func printJSON(value any) {
 
 func sortStateKeys(value any) any {
 	switch typed := value.(type) {
-	case weaveflow.State:
+	case wfstate.State:
 		return sortStateKeys(map[string]any(typed))
 	case map[string]any:
 		keys := make([]string, 0, len(typed))

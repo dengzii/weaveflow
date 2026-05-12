@@ -16,6 +16,7 @@ import (
 	"weaveflow"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
@@ -36,7 +37,7 @@ type ChatController struct {
 	runner      *fruntime.GraphRunner
 	runID       string
 	cancelFn    context.CancelFunc
-	lastState   fruntime.State
+	lastState   wfstate.State
 	graphCache  *weaveflow.Graph
 	graphCfgKey Config
 }
@@ -148,7 +149,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 	executionStore := fruntime.NewFileExecutionStore(filepath.Join(runDir, "execution"))
 	checkpointStore := fruntime.NewFileCheckpointStore(filepath.Join(runDir, "checkpoints"))
-	stateCodec := fruntime.NewJSONStateCodec(fruntime.DefaultStateVersion)
+	stateCodec := wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion)
 
 	runner := weaveflow.NewGraphRunner(graph, executionStore, checkpointStore, stateCodec, combinedSink)
 	runner.GraphID = graphMeta.ID
@@ -167,7 +168,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 	type runResult struct {
 		run   fruntime.RunRecord
-		state fruntime.State
+		state wfstate.State
 		err   error
 	}
 	done := make(chan runResult, 1)
@@ -418,14 +419,14 @@ func streamEventKey(event fruntime.Event) string {
 	return ""
 }
 
-func finalAnswerFromState(state fruntime.State) string {
+func finalAnswerFromState(state wfstate.State) string {
 	if state == nil {
 		return ""
 	}
 	if answer := strings.TrimSpace(state.Conversation(stateScope).FinalAnswer()); answer != "" {
 		return answer
 	}
-	finalState := state.Get(fruntime.StateKeyFinal)
+	finalState := state.Get(wfstate.StateKeyFinal)
 	if finalState == nil {
 		return ""
 	}
@@ -447,7 +448,7 @@ func (ctrl *ChatController) effectiveServices() *fruntime.Services {
 	}
 }
 
-func (ctrl *ChatController) GetLastState() fruntime.State {
+func (ctrl *ChatController) GetLastState() wfstate.State {
 	ctrl.mu.RLock()
 	defer ctrl.mu.RUnlock()
 	return ctrl.lastState

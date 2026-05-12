@@ -7,13 +7,13 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error)
+type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
 
-func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}
@@ -49,7 +49,7 @@ func registerSessionBootstrapModule(registry *registry.Registry) {
 
 func requestStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyRequest,
+		Name:        wfstate.StateKeyRequest,
 		Description: "Normalized request input and metadata for the current agent run.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -64,7 +64,7 @@ func requestStateFieldDefinition() dsl.StateFieldDefinition {
 
 func agentStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyAgent,
+		Name:        wfstate.StateKeyAgent,
 		Description: "Agent profile and runtime-level agent configuration.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -78,7 +78,7 @@ func agentStateFieldDefinition() dsl.StateFieldDefinition {
 
 func toolPolicyStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyToolPolicy,
+		Name:        wfstate.StateKeyToolPolicy,
 		Description: "Tool availability and safety policy for the current agent run.",
 		Schema: dsl.JSONSchema{
 			"type":                 "object",
@@ -108,7 +108,7 @@ func sessionBootstrapNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			_ = ctx
 
 			node := nodes.NewSessionBootstrapNode()
@@ -119,11 +119,11 @@ func sessionBootstrapNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.Input = stringConfig(spec.Config, "input")
-			node.InputPath = stringConfig(spec.Config, "input_path")
-			node.SystemPrompt = stringConfig(spec.Config, "system_prompt")
-			if value, ok := intConfig(spec.Config, "max_iterations"); ok {
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.Input = registry.StringConfigTrim(spec.Config, "input")
+			node.InputPath = registry.StringConfigTrim(spec.Config, "input_path")
+			node.SystemPrompt = registry.StringConfigTrim(spec.Config, "system_prompt")
+			if value, ok := registry.IntConfig(spec.Config, "max_iterations"); ok {
 				if value <= 0 {
 					return nil, fmt.Errorf("build session_bootstrap node %q: max_iterations must be greater than 0", spec.ID)
 				}
@@ -165,7 +165,7 @@ func contextAssemblerNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			_ = ctx
 			node := nodes.NewContextAssemblerNode()
 			node.NodeID = spec.ID
@@ -175,20 +175,20 @@ func contextAssemblerNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.MemoryStatePath = stringConfig(spec.Config, "memory_state_path")
-			node.OrchestrationStatePath = stringConfig(spec.Config, "orchestration_state_path")
-			node.PlannerStatePath = stringConfig(spec.Config, "planner_state_path")
-			node.MemoryHeading = stringConfig(spec.Config, "memory_heading")
-			node.OrchestrationHeading = stringConfig(spec.Config, "orchestration_heading")
-			node.PlannerHeading = stringConfig(spec.Config, "planner_heading")
-			if value, ok := boolConfig(spec.Config, "include_memory"); ok {
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.MemoryStatePath = registry.StringConfigTrim(spec.Config, "memory_state_path")
+			node.OrchestrationStatePath = registry.StringConfigTrim(spec.Config, "orchestration_state_path")
+			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
+			node.MemoryHeading = registry.StringConfigTrim(spec.Config, "memory_heading")
+			node.OrchestrationHeading = registry.StringConfigTrim(spec.Config, "orchestration_heading")
+			node.PlannerHeading = registry.StringConfigTrim(spec.Config, "planner_heading")
+			if value, ok := registry.BoolConfig(spec.Config, "include_memory"); ok {
 				node.IncludeMemory = value
 			}
-			if value, ok := boolConfig(spec.Config, "include_orchestration"); ok {
+			if value, ok := registry.BoolConfig(spec.Config, "include_orchestration"); ok {
 				node.IncludeOrchestration = value
 			}
-			if value, ok := boolConfig(spec.Config, "include_planner"); ok {
+			if value, ok := registry.BoolConfig(spec.Config, "include_planner"); ok {
 				node.IncludePlanner = value
 			}
 			return node, nil
@@ -198,20 +198,20 @@ func contextAssemblerNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func resolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := stringConfig(spec.Config, "state_scope")
-	memoryPath := stringConfig(spec.Config, "memory_state_path")
+	scope := registry.StringConfigTrim(spec.Config, "state_scope")
+	memoryPath := registry.StringConfigTrim(spec.Config, "memory_state_path")
 	if strings.TrimSpace(memoryPath) == "" {
-		memoryPath = fruntime.StateKeyMemory
+		memoryPath = wfstate.StateKeyMemory
 	}
 	memoryPath = canonicalContractPath(memoryPath)
-	orchestrationPath := stringConfig(spec.Config, "orchestration_state_path")
+	orchestrationPath := registry.StringConfigTrim(spec.Config, "orchestration_state_path")
 	if strings.TrimSpace(orchestrationPath) == "" {
-		orchestrationPath = fruntime.StateKeyOrchestration
+		orchestrationPath = wfstate.StateKeyOrchestration
 	}
 	orchestrationPath = canonicalContractPath(orchestrationPath)
-	plannerPath := stringConfig(spec.Config, "planner_state_path")
+	plannerPath := registry.StringConfigTrim(spec.Config, "planner_state_path")
 	if strings.TrimSpace(plannerPath) == "" {
-		plannerPath = fruntime.StateKeyPlanner
+		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
 
@@ -242,11 +242,11 @@ func resolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 }
 
 func resolveSessionBootstrapStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := stringConfig(spec.Config, "state_scope")
-	inputPath := strings.TrimSpace(stringConfig(spec.Config, "input_path"))
+	scope := registry.StringConfigTrim(spec.Config, "state_scope")
+	inputPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "input_path"))
 
 	contract := dsl.StateContract{}
-	if inputPath != "" && inputPath != fruntime.StateKeyRequest+".input" {
+	if inputPath != "" && inputPath != wfstate.StateKeyRequest+".input" {
 		contract.Fields = append(contract.Fields, dsl.StateFieldRef{
 			Path:        canonicalContractPath(inputPath),
 			Mode:        dsl.StateAccessRead,
@@ -267,72 +267,32 @@ func resolveSessionBootstrapStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 			Description: "Maximum iteration count initialized for the configured scope.",
 		},
 		dsl.StateFieldRef{
-			Path:          canonicalContractPath(fruntime.StateKeyRequest + ".input"),
+			Path:          canonicalContractPath(wfstate.StateKeyRequest + ".input"),
 			Mode:          dsl.StateAccessReadWrite,
 			Required:      true,
 			Description:   "Normalized raw request input.",
 			MergeStrategy: dsl.StateMergeMerge,
 		},
 		dsl.StateFieldRef{
-			Path:          canonicalContractPath(fruntime.StateKeyRequest + ".metadata"),
+			Path:          canonicalContractPath(wfstate.StateKeyRequest + ".metadata"),
 			Mode:          dsl.StateAccessWrite,
 			Description:   "Request metadata such as workspace, tenant, or user identifiers.",
 			MergeStrategy: dsl.StateMergeMerge,
 		},
 		dsl.StateFieldRef{
-			Path:          canonicalContractPath(fruntime.StateKeyAgent + ".profile"),
+			Path:          canonicalContractPath(wfstate.StateKeyAgent + ".profile"),
 			Mode:          dsl.StateAccessWrite,
 			Description:   "Agent profile made available to downstream nodes.",
 			MergeStrategy: dsl.StateMergeMerge,
 		},
 		dsl.StateFieldRef{
-			Path:          canonicalContractPath(fruntime.StateKeyToolPolicy),
+			Path:          canonicalContractPath(wfstate.StateKeyToolPolicy),
 			Mode:          dsl.StateAccessWrite,
 			Description:   "Tool policy made available to downstream guard and tool nodes.",
 			MergeStrategy: dsl.StateMergeMerge,
 		},
 	)
 	return contract, nil
-}
-
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return strings.TrimSpace(value)
-}
-
-func boolConfig(config map[string]any, key string) (bool, bool) {
-	if len(config) == 0 {
-		return false, false
-	}
-	value, ok := config[key].(bool)
-	return value, ok
-}
-
-func intConfig(config map[string]any, key string) (int, bool) {
-	if len(config) == 0 {
-		return 0, false
-	}
-	switch typed := config[key].(type) {
-	case int:
-		return typed, true
-	case int8:
-		return int(typed), true
-	case int16:
-		return int(typed), true
-	case int32:
-		return int(typed), true
-	case int64:
-		return int(typed), true
-	case float32:
-		return int(typed), true
-	case float64:
-		return int(typed), true
-	default:
-		return 0, false
-	}
 }
 
 func objectConfig(config map[string]any, key string) map[string]any {
@@ -346,7 +306,7 @@ func objectConfig(config map[string]any, key string) map[string]any {
 	switch typed := raw.(type) {
 	case map[string]any:
 		return cloneObjectConfigMap(typed)
-	case fruntime.State:
+	case wfstate.State:
 		return cloneObjectConfigMap(typed)
 	default:
 		return nil
@@ -368,8 +328,8 @@ func cloneObjectConfigValue(value any) any {
 	switch typed := value.(type) {
 	case map[string]any:
 		return cloneObjectConfigMap(typed)
-	case fruntime.State:
-		return fruntime.State(cloneObjectConfigMap(typed))
+	case wfstate.State:
+		return wfstate.State(cloneObjectConfigMap(typed))
 	case []any:
 		cloned := make([]any, len(typed))
 		for i, item := range typed {
@@ -386,7 +346,7 @@ func cloneObjectConfigValue(value any) any {
 }
 
 func canonicalContractPath(path string) string {
-	return fruntime.NormalizeContractPath(path)
+	return wfstate.NormalizeContractPath(path)
 }
 
 func scopedConversationPath(scope string, field string) string {

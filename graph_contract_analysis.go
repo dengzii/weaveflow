@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 	"weaveflow/core"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 type ContractDiagnosticSeverity = core.ContractDiagnosticSeverity
@@ -39,7 +39,7 @@ func initialContractPathsFromStateFields(fields map[string]StateFieldDefinition)
 	seen := make(map[string]struct{}, len(fields))
 	paths := make([]string, 0, len(fields))
 	for name := range fields {
-		path := fruntime.NormalizeContractPath(name)
+		path := wfstate.NormalizeContractPath(name)
 		if path == "" {
 			continue
 		}
@@ -271,7 +271,7 @@ func overlappingWriteDiagnostics(g *Graph, reachable []string) []ContractDiagnos
 	return diagnostics
 }
 
-func overlappingWritePath(left, right fruntime.NodeIOContract) (string, bool) {
+func overlappingWritePath(left, right wfstate.NodeIOContract) (string, bool) {
 	if left.WildcardWrite || right.WildcardWrite {
 		return "*", true
 	}
@@ -365,7 +365,7 @@ func requiredReadSources(g *Graph, nodeID string, path string, ancestors map[str
 	return compactStrings(sources)
 }
 
-func selfRuntimePathProvidesRead(nodeID string, contract fruntime.NodeIOContract, path string) bool {
+func selfRuntimePathProvidesRead(nodeID string, contract wfstate.NodeIOContract, path string) bool {
 	runtimePrefix := "runtime." + strings.TrimSpace(nodeID)
 	if path != runtimePrefix && !strings.HasPrefix(path, runtimePrefix+".") {
 		return false
@@ -373,14 +373,14 @@ func selfRuntimePathProvidesRead(nodeID string, contract fruntime.NodeIOContract
 	return contractProvidesReadWriteSource(contract, path)
 }
 
-func contractProvidesRead(contract fruntime.NodeIOContract, path string) bool {
+func contractProvidesRead(contract wfstate.NodeIOContract, path string) bool {
 	if contract.WildcardWrite {
 		return true
 	}
 	return contractProvidesReadWriteSource(contract, path)
 }
 
-func contractProvidesReadWriteSource(contract fruntime.NodeIOContract, path string) bool {
+func contractProvidesReadWriteSource(contract wfstate.NodeIOContract, path string) bool {
 	for _, writePath := range contract.WritePaths {
 		if sourceProvidesRead(writePath, path) {
 			return true

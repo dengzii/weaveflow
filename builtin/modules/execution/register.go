@@ -9,13 +9,13 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error)
+type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
 
-func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}
@@ -48,7 +48,7 @@ func Register(registry *registry.Registry) {
 
 func executionStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyExecution,
+		Name:        wfstate.StateKeyExecution,
 		Description: "Plan step execution state: current step, route decision, and step results.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -67,7 +67,7 @@ func executionStateFieldDefinition() dsl.StateFieldDefinition {
 
 func observationsStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyObservations,
+		Name:        wfstate.StateKeyObservations,
 		Description: "Structured observations recorded from tool and LLM outputs.",
 		Schema: dsl.JSONSchema{
 			"type": "array",
@@ -89,7 +89,7 @@ func observationsStateFieldDefinition() dsl.StateFieldDefinition {
 
 func evidenceStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyEvidence,
+		Name:        wfstate.StateKeyEvidence,
 		Description: "Evidence entries collected from tool outputs and observations.",
 		Schema: dsl.JSONSchema{
 			"type": "array",
@@ -121,7 +121,7 @@ func planStepExecutorNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewPlanStepExecutorNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -130,8 +130,8 @@ func planStepExecutorNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.PlannerStatePath = stringConfig(spec.Config, "planner_state_path")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
 			return node, nil
 		}),
 		ResolveStateContract: resolvePlanStepExecutorStateContract,
@@ -153,7 +153,7 @@ func observationRecorderNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewObservationRecorderNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -162,8 +162,8 @@ func observationRecorderNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.PlannerStatePath = stringConfig(spec.Config, "planner_state_path")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
 			return node, nil
 		}),
 		ResolveStateContract: resolveObservationRecorderStateContract,
@@ -189,7 +189,7 @@ func executionRouteEqualsConditionDefinition() registry.ConditionDefinition {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			route := strings.TrimSpace(stringConfig(spec.Config, "route"))
+			route := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "route"))
 			if route == "" {
 				return registry.EdgeCondition{}, fmt.Errorf("execution_route_equals: route config is required")
 			}
@@ -198,8 +198,8 @@ func executionRouteEqualsConditionDefinition() registry.ConditionDefinition {
 				Config: map[string]any{
 					"route": route,
 				},
-			}, func(_ context.Context, state fruntime.State) bool {
-				exec := state.Get(fruntime.StateKeyExecution)
+			}, func(_ context.Context, state wfstate.State) bool {
+				exec := state.Get(wfstate.StateKeyExecution)
 				if exec == nil {
 					return false
 				}
@@ -211,9 +211,9 @@ func executionRouteEqualsConditionDefinition() registry.ConditionDefinition {
 }
 
 func resolvePlanStepExecutorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	plannerPath := strings.TrimSpace(stringConfig(spec.Config, "planner_state_path"))
+	plannerPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "planner_state_path"))
 	if plannerPath == "" {
-		plannerPath = fruntime.StateKeyPlanner
+		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
 
@@ -236,7 +236,7 @@ func resolvePlanStepExecutorStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 				Description: "Current planner status.",
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyExecution),
+				Path:          canonicalContractPath(wfstate.StateKeyExecution),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Execution state: current step, route, step results.",
@@ -247,14 +247,14 @@ func resolvePlanStepExecutorStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 }
 
 func resolveObservationRecorderStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := strings.TrimSpace(stringConfig(spec.Config, "state_scope"))
+	scope := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "state_scope"))
 	if scope == "" {
 		scope = "default"
 	}
 
-	plannerPath := strings.TrimSpace(stringConfig(spec.Config, "planner_state_path"))
+	plannerPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "planner_state_path"))
 	if plannerPath == "" {
-		plannerPath = fruntime.StateKeyPlanner
+		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
 
@@ -272,19 +272,19 @@ func resolveObservationRecorderStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 				Description: "Current step ID for observation association.",
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyObservations),
+				Path:          canonicalContractPath(wfstate.StateKeyObservations),
 				Mode:          dsl.StateAccessReadWrite,
 				Description:   "Accumulated observations.",
 				MergeStrategy: dsl.StateMergeAppend,
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyEvidence),
+				Path:          canonicalContractPath(wfstate.StateKeyEvidence),
 				Mode:          dsl.StateAccessReadWrite,
 				Description:   "Accumulated evidence.",
 				MergeStrategy: dsl.StateMergeAppend,
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyExecution + ".step_results"),
+				Path:          canonicalContractPath(wfstate.StateKeyExecution + ".step_results"),
 				Mode:          dsl.StateAccessReadWrite,
 				Description:   "Per-step result records.",
 				MergeStrategy: dsl.StateMergeMerge,
@@ -293,16 +293,8 @@ func resolveObservationRecorderStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 	}, nil
 }
 
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return strings.TrimSpace(value)
-}
-
 func canonicalContractPath(path string) string {
-	return fruntime.NormalizeContractPath(path)
+	return wfstate.NormalizeContractPath(path)
 }
 
 func scopedStatePath(scope string, field string) string {

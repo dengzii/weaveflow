@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 const artifactPreviewLimit = 128 * 1024
@@ -27,7 +28,7 @@ type cacheSource struct {
 	checkpoints *runtime.FileCheckpointStore
 	events      *runtime.FileEventSink
 	artifacts   *runtime.FileArtifactStore
-	codec       runtime.StateCodec
+	codec       wfstate.StateCodec
 }
 
 type RunsResponse struct {
@@ -106,20 +107,20 @@ type CheckpointSummary struct {
 type CheckpointDetail struct {
 	Source    SourceMeta               `json:"source"`
 	Record    runtime.CheckpointRecord `json:"record"`
-	Snapshot  runtime.StateSnapshot    `json:"snapshot"`
-	Business  runtime.State            `json:"business"`
-	Runtime   runtime.RuntimeState     `json:"runtime"`
-	Artifacts []runtime.ArtifactRef    `json:"artifacts,omitempty"`
+	Snapshot  wfstate.StateSnapshot    `json:"snapshot"`
+	Business  wfstate.State            `json:"business"`
+	Runtime   wfstate.RuntimeState     `json:"runtime"`
+	Artifacts []wfstate.ArtifactRef    `json:"artifacts,omitempty"`
 }
 
 type ArtifactSummary struct {
-	Ref   runtime.ArtifactRef `json:"ref"`
+	Ref   wfstate.ArtifactRef `json:"ref"`
 	Bytes int64               `json:"bytes"`
 }
 
 type ArtifactDetail struct {
 	Source    SourceMeta          `json:"source"`
-	Ref       runtime.ArtifactRef `json:"ref"`
+	Ref       wfstate.ArtifactRef `json:"ref"`
 	Bytes     int                 `json:"bytes"`
 	Encoding  string              `json:"encoding"`
 	Payload   any                 `json:"payload,omitempty"`
@@ -158,7 +159,7 @@ func newCacheExplorer(baseDir string) (*cacheExplorer, error) {
 			checkpoints: runtime.NewFileCheckpointStore(filepath.Join(root, "checkpoints")),
 			events:      runtime.NewFileEventSink(filepath.Join(root, "events")),
 			artifacts:   runtime.NewFileArtifactStore(filepath.Join(root, "artifacts")),
-			codec:       runtime.NewJSONStateCodec(runtime.DefaultStateVersion),
+			codec:       wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
 		})
 	}
 
@@ -507,7 +508,7 @@ func (e *cacheExplorer) loadCheckpointDetail(ctx context.Context, runID, sourceI
 	if err != nil {
 		return CheckpointDetail{}, err
 	}
-	restored, err := runtime.RestoreStateSnapshot(snapshot)
+	restored, err := wfstate.RestoreStateSnapshot(snapshot)
 	if err != nil {
 		return CheckpointDetail{}, err
 	}
@@ -528,7 +529,7 @@ func (e *cacheExplorer) loadArtifactRaw(ctx context.Context, runID, sourceID, ar
 		return runtime.Artifact{}, SourceMeta{}, err
 	}
 
-	artifact, err := source.artifacts.Load(ctx, runtime.ArtifactRef{
+	artifact, err := source.artifacts.Load(ctx, wfstate.ArtifactRef{
 		RunID: runID,
 		ID:    artifactID,
 	})
@@ -547,7 +548,7 @@ func (e *cacheExplorer) loadArtifactDetail(ctx context.Context, runID, sourceID,
 	payload, encoding, truncated := previewArtifact(artifact, artifactPreviewLimit)
 	return ArtifactDetail{
 		Source: sourceMeta,
-		Ref: runtime.ArtifactRef{
+		Ref: wfstate.ArtifactRef{
 			ID:        artifact.ID,
 			RunID:     artifact.RunID,
 			StepID:    artifact.StepID,

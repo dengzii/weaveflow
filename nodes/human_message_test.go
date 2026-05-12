@@ -3,7 +3,7 @@ package nodes
 import (
 	"context"
 	"testing"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -11,7 +11,7 @@ import (
 func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	scope := state.EnsureScope("agent")
 	scope[PendingHumanInputStateKey] = "approved"
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
@@ -44,7 +44,7 @@ func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 func TestHumanMessageNodeInterruptsWithoutPendingHumanInput(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})
@@ -61,7 +61,7 @@ func TestHumanMessageNodeInterruptsWithoutPendingHumanInput(t *testing.T) {
 func TestHumanMessageNodeDefaultsToRootConversation(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{
+	state := wfstate.State{
 		PendingHumanInputStateKey: "approved",
 	}
 	state.Conversation("").UpdateMessage([]llms.MessageContent{
@@ -87,7 +87,7 @@ func TestHumanMessageNodeDefaultsToRootConversation(t *testing.T) {
 func TestHumanMessageNodeDoesNotCreateMissingScopeWhenPollingInput(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeAI, "need human input"),
 	})

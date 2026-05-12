@@ -2,6 +2,7 @@ package weaveflow
 
 import (
 	"context"
+	wfstate "weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
@@ -12,9 +13,8 @@ type LoggingListener struct {
 
 func NewLoggingListener() *LoggingListener {
 	return &LoggingListener{LoggingListener: langgraph.NewLoggingListener()}
-
 }
 
-func (l LoggingListener) OnNodeEvent(ctx context.Context, event langgraph.NodeEvent, nodeName string, state State, err error) {
+func (l LoggingListener) OnNodeEvent(ctx context.Context, event langgraph.NodeEvent, nodeName string, state wfstate.State, err error) {
 	l.LoggingListener.OnNodeEvent(ctx, event, nodeName, state, err)
 }

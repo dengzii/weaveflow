@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"weaveflow"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -41,7 +41,7 @@ func SessionBootstrapExample() {
 	}, &weaveflow.BuildContext{})
 	must(err)
 
-	state, err := graph.Run(context.Background(), fruntime.State{})
+	state, err := graph.Run(context.Background(), wfstate.State{})
 	must(err)
 
 	conversation := state.Conversation("agent")
@@ -52,15 +52,15 @@ func SessionBootstrapExample() {
 
 	fmt.Println()
 	fmt.Println("request:")
-	printJSON(state.Get(fruntime.StateKeyRequest))
+	printJSON(state.Get(wfstate.StateKeyRequest))
 
 	fmt.Println()
 	fmt.Println("agent:")
-	printJSON(state.Get(fruntime.StateKeyAgent))
+	printJSON(state.Get(wfstate.StateKeyAgent))
 
 	fmt.Println()
 	fmt.Println("tool_policy:")
-	printJSON(state.Get(fruntime.StateKeyToolPolicy))
+	printJSON(state.Get(wfstate.StateKeyToolPolicy))
 }
 
 func nodeMessageText(message llms.MessageContent) string {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	wfstate "weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"
@@ -32,7 +33,7 @@ const (
 
 type runnerPendingControl struct {
 	kind runnerControlKind
-	hit  *BreakpointHit
+	hit  *wfstate.BreakpointHit
 }
 
 type runnerActiveStep struct {
@@ -51,18 +52,18 @@ type graphRunnerExecution struct {
 	runner        *GraphRunner
 	run           RunRecord
 	skip          *breakpointSkip
-	lastState     State
-	artifacts     []ArtifactRef
+	lastState     wfstate.State
+	artifacts     []wfstate.ArtifactRef
 	active        *runnerActiveStep
 	lastCompleted *runnerCompletedStep
 	pending       *runnerPendingControl
-	contractMode  ContractValidationMode
-	nodeContracts map[string]NodeIOContract
+	contractMode  wfstate.ContractValidationMode
+	nodeContracts map[string]wfstate.NodeIOContract
 	mu            sync.Mutex
 }
 
-func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState State, initialArtifacts []ArtifactRef, skip *breakpointSkip) *graphRunnerExecution {
-	state := State{}
+func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState wfstate.State, initialArtifacts []wfstate.ArtifactRef, skip *breakpointSkip) *graphRunnerExecution {
+	state := wfstate.State{}
 	if initialState != nil {
 		state = initialState.CloneState()
 	}
@@ -71,13 +72,13 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState St
 		run:           run,
 		skip:          skip,
 		lastState:     state,
-		artifacts:     cloneArtifactRefs(initialArtifacts),
+		artifacts:     wfstate.CloneArtifactRefs(initialArtifacts),
 		contractMode:  runner.ContractValidation,
 		nodeContracts: runner.NodeContracts,
 	}
 }
 
-func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, invoke NodeInvoker, executor ExecutableNode, state State) (State, error) {
+func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, invoke wfstate.NodeInvoker, executor wfstate.ExecutableNode, state wfstate.State) (wfstate.State, error) {
 	nodeCtx, err := e.beforeNode(ctx, nodeID, state)
 	if err != nil {
 		return state, err
@@ -86,17 +87,17 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 	contract, hasContract := e.nodeContracts[nodeID]
 	inputState := state.CloneState()
 	if hasContract {
-		if violations := ValidateNodeInputContract(nodeID, contract, state); len(violations) > 0 {
+		if violations := wfstate.ValidateNodeInputContract(nodeID, contract, state); len(violations) > 0 {
 			e.reportContractViolations(nodeCtx, nodeID, violations)
 			return state, fmt.Errorf("%s", violations[0].Message)
 		}
-		inputState = ProjectStateByContract(state, contract)
+		inputState = wfstate.ProjectStateByContract(state, contract)
 		e.recordContractStateArtifact(nodeCtx, nodeID, contractInputViewArtifactType, contract, inputState)
 	}
 
 	patchExecutor := executor
 	if patchExecutor == nil {
-		patchExecutor = LegacyNodeExecutor{Invoke: invoke}
+		patchExecutor = wfstate.LegacyNodeExecutor{Invoke: invoke}
 	}
 	result, invokeErr := patchExecutor.Execute(nodeCtx, inputState.CloneState())
 	if invokeErr != nil {
@@ -107,7 +108,7 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		return result, invokeErr
 	}
 	if !hasContract {
-		mergedState, err := MergePatchByContract(state, result, NodeIOContract{WildcardWrite: true})
+		mergedState, err := wfstate.MergePatchByContract(state, result, wfstate.NodeIOContract{WildcardWrite: true})
 		if err != nil {
 			return state, err
 		}
@@ -115,7 +116,7 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 	}
 
 	e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, result)
-	mergedState, err := MergePatchByContract(state, result, contract)
+	mergedState, err := wfstate.MergePatchByContract(state, result, contract)
 	if err != nil {
 		return state, err
 	}
@@ -126,9 +127,9 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 type contractStateArtifact struct {
 	NodeID   string                    `json:"node_id,omitempty"`
 	Stage    string                    `json:"stage,omitempty"`
-	Contract NodeIOContract            `json:"contract"`
+	Contract wfstate.NodeIOContract    `json:"contract"`
 	Summary  contractStateArtifactInfo `json:"summary"`
-	Snapshot StateSnapshot             `json:"snapshot"`
+	Snapshot wfstate.StateSnapshot     `json:"snapshot"`
 }
 
 type contractStateArtifactInfo struct {
@@ -137,11 +138,11 @@ type contractStateArtifactInfo struct {
 	ConversationMessages int `json:"conversation_messages"`
 }
 
-func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, nodeID string, artifactType string, contract NodeIOContract, state State) {
+func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, nodeID string, artifactType string, contract wfstate.NodeIOContract, state wfstate.State) {
 	if ctx == nil || strings.TrimSpace(nodeID) == "" || strings.TrimSpace(artifactType) == "" {
 		return
 	}
-	snapshot, err := SnapshotFromState(state)
+	snapshot, err := wfstate.SnapshotFromState(state)
 	if err != nil {
 		logger.Warn("contract state artifact snapshot failed",
 			zap.String("node_id", nodeID),
@@ -155,9 +156,9 @@ func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, 
 		Stage:    contractArtifactStage(artifactType),
 		Contract: contract,
 		Summary: contractStateArtifactInfo{
-			StateKeys:            countStateKeys(state),
-			StateScopes:          len(state.scopes()),
-			ConversationMessages: countConversationMessages(state),
+			StateKeys:            wfstate.CountKeys(state),
+			StateScopes:          len(state.Scopes()),
+			ConversationMessages: wfstate.CountConversationMessages(state),
 		},
 		Snapshot: snapshot,
 	}
@@ -183,7 +184,7 @@ func contractArtifactStage(artifactType string) string {
 	}
 }
 
-func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, state State) (context.Context, error) {
+func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, state wfstate.State) (context.Context, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -227,7 +228,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, st
 			return ctx, err
 		}
 
-		beforeID, err := e.runner.saveCheckpoint(ctx, e.run, step, nodeID, CheckpointBeforeNode, state, 0, nil, cloneArtifactRefs(e.artifacts))
+		beforeID, err := e.runner.saveCheckpoint(ctx, e.run, step, nodeID, CheckpointBeforeNode, state, 0, nil, wfstate.CloneArtifactRefs(e.artifacts))
 		if err != nil {
 			return ctx, err
 		}
@@ -276,7 +277,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, st
 		}); err != nil {
 			return ctx, err
 		}
-		logger.Info("nodes started", append(stepLogFields(logStep), stateSummaryFields(state)...)...)
+		logger.Info("nodes started", append(stepLogFields(logStep), wfstate.SummaryFields(state)...)...)
 	} else {
 		if err := e.runner.publishEvent(ctx, RunRecord{RunID: e.run.RunID}, step.StepID, step.NodeID, EventNodeRetry, map[string]any{
 			"attempt": active.attempts - 1,
@@ -298,10 +299,10 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, st
 		NodeID:  nodeID,
 		Attempt: active.attempts,
 	})
-	nodeCtx = WithRunnerArtifactRecorder(nodeCtx, func(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
+	nodeCtx = WithRunnerArtifactRecorder(nodeCtx, func(ctx context.Context, artifact Artifact) (wfstate.ArtifactRef, error) {
 		ref, err := e.runner.recordArtifact(ctx, artifact)
 		if err != nil {
-			return ArtifactRef{}, err
+			return wfstate.ArtifactRef{}, err
 		}
 		e.appendArtifact(ref)
 		return ref, nil
@@ -309,7 +310,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, st
 	return nodeCtx, nil
 }
 
-func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, state State) error {
+func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, state wfstate.State) error {
 	e.mu.Lock()
 	active := e.active
 	if active == nil {
@@ -367,7 +368,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 	fields := append(stepLogFields(step),
 		zap.String("checkpoint_after_id", afterID),
 	)
-	fields = append(fields, stateSummaryFields(state)...)
+	fields = append(fields, wfstate.SummaryFields(state)...)
 	logger.Info("nodes completed", fields...)
 
 	e.mu.Lock()
@@ -383,26 +384,26 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 	return nil
 }
 
-func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunRecord, step StepRecord, nodeID string, state State, changes []StateChange) error {
-	if e.contractMode == ContractValidationOff || e.nodeContracts == nil {
+func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunRecord, step StepRecord, nodeID string, state wfstate.State, changes []wfstate.StateChange) error {
+	if e.contractMode == wfstate.ContractValidationOff || e.nodeContracts == nil {
 		return nil
 	}
 	contract, ok := e.nodeContracts[nodeID]
 	if !ok {
 		return nil
 	}
-	violations := ValidateNodeContract(nodeID, contract, state, changes)
+	violations := wfstate.ValidateNodeContract(nodeID, contract, state, changes)
 	if len(violations) == 0 {
 		return nil
 	}
 	e.reportContractViolationsWithRun(ctx, run, step, violations)
-	if e.contractMode == ContractValidationStrict {
+	if e.contractMode == wfstate.ContractValidationStrict {
 		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
 	}
 	return nil
 }
 
-func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nodeID string, violations []ContractViolation) {
+func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nodeID string, violations []wfstate.ContractViolation) {
 	e.mu.Lock()
 	run := e.run
 	var step StepRecord
@@ -413,7 +414,7 @@ func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nod
 	e.reportContractViolationsWithRun(ctx, run, step, violations)
 }
 
-func (e *graphRunnerExecution) reportContractViolationsWithRun(ctx context.Context, run RunRecord, step StepRecord, violations []ContractViolation) {
+func (e *graphRunnerExecution) reportContractViolationsWithRun(ctx context.Context, run RunRecord, step StepRecord, violations []wfstate.ContractViolation) {
 	if len(violations) == 0 {
 		return
 	}
@@ -471,7 +472,7 @@ func (e *graphRunnerExecution) currentRun() RunRecord {
 	return e.run
 }
 
-func (e *graphRunnerExecution) stateOrFallback(state State) State {
+func (e *graphRunnerExecution) stateOrFallback(state wfstate.State) wfstate.State {
 	if state != nil {
 		return state
 	}
@@ -512,7 +513,7 @@ func (e *graphRunnerExecution) consumeLastCompleted(nodeID string) *runnerComple
 	return &completed
 }
 
-func (e *graphRunnerExecution) appendArtifact(ref ArtifactRef) {
+func (e *graphRunnerExecution) appendArtifact(ref wfstate.ArtifactRef) {
 	if ref.ID == "" {
 		return
 	}
@@ -521,10 +522,10 @@ func (e *graphRunnerExecution) appendArtifact(ref ArtifactRef) {
 	e.artifacts = append(e.artifacts, ref)
 }
 
-func (e *graphRunnerExecution) snapshotArtifacts() []ArtifactRef {
+func (e *graphRunnerExecution) snapshotArtifacts() []wfstate.ArtifactRef {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return cloneArtifactRefs(e.artifacts)
+	return wfstate.CloneArtifactRefs(e.artifacts)
 }
 
 func (e *graphRunnerExecution) afterInterruptNodes() ([]string, error) {
@@ -558,7 +559,7 @@ func (c *runnerGraphCallbacks) OnGraphStep(ctx context.Context, stepNodeID strin
 	if c == nil || c.execution == nil {
 		return
 	}
-	typed, ok := state.(State)
+	typed, ok := state.(wfstate.State)
 	if !ok {
 		return
 	}

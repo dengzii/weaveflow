@@ -1,4 +1,4 @@
-package runtime
+package state
 
 import (
 	"encoding/json"
@@ -59,7 +59,7 @@ func (s State) CloneState() State {
 		copyConversationState(cloned, conversation)
 	}
 
-	for scopeName, scopeState := range s.scopes() {
+	for scopeName, scopeState := range s.Scopes() {
 		setScopeState(cloned, scopeName, cloneStateMap(scopeState))
 	}
 
@@ -133,7 +133,7 @@ func (s State) scopesNamespace(create bool) State {
 	return namespaceState(s, stateNamespaceScopes, create)
 }
 
-func (s State) scopes() map[string]State {
+func (s State) Scopes() map[string]State {
 	rawScopes := s.scopesNamespace(false)
 	if rawScopes == nil {
 		return nil

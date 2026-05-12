@@ -3,7 +3,7 @@ package nodes
 import (
 	"context"
 	"testing"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -51,7 +51,7 @@ func TestSessionBootstrapNodeInitializesEmptyScopedState(t *testing.T) {
 		t.Fatalf("expected max iterations 4, got %d", got)
 	}
 
-	request := state.Get(fruntime.StateKeyRequest)
+	request := state.Get(wfstate.StateKeyRequest)
 	if request == nil || request["input"] != "Summarize the repository status." {
 		t.Fatalf("expected normalized request input, got %#v", request)
 	}
@@ -60,13 +60,13 @@ func TestSessionBootstrapNodeInitializesEmptyScopedState(t *testing.T) {
 		t.Fatalf("unexpected request metadata: %#v", request["metadata"])
 	}
 
-	agent := state.Get(fruntime.StateKeyAgent)
+	agent := state.Get(wfstate.StateKeyAgent)
 	profile, ok := agent["profile"].(map[string]any)
 	if !ok || profile["name"] != "falcon" || profile["mode"] != "general" {
 		t.Fatalf("unexpected agent profile: %#v", agent["profile"])
 	}
 
-	toolPolicy := state.Get(fruntime.StateKeyToolPolicy)
+	toolPolicy := state.Get(wfstate.StateKeyToolPolicy)
 	allowed, ok := toolPolicy["allowed_tools"].([]any)
 	if !ok || len(allowed) != 2 || allowed[0] != "calculator" {
 		t.Fatalf("unexpected tool policy: %#v", toolPolicy)
@@ -76,7 +76,7 @@ func TestSessionBootstrapNodeInitializesEmptyScopedState(t *testing.T) {
 func TestSessionBootstrapNodeUsesConfiguredInputPath(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{
+	state := wfstate.State{
 		"incoming": map[string]any{
 			"text": "Use the local calculator.",
 		},
@@ -91,7 +91,7 @@ func TestSessionBootstrapNodeUsesConfiguredInputPath(t *testing.T) {
 		t.Fatalf("invoke session bootstrap: %v", err)
 	}
 
-	if got := state.Get(fruntime.StateKeyRequest)["input"]; got != "Use the local calculator." {
+	if got := state.Get(wfstate.StateKeyRequest)["input"]; got != "Use the local calculator." {
 		t.Fatalf("expected input path value to become request input, got %#v", got)
 	}
 	messages := state.Conversation("agent").Messages()
@@ -103,7 +103,7 @@ func TestSessionBootstrapNodeUsesConfiguredInputPath(t *testing.T) {
 func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, "Existing input"),
 	})
@@ -129,7 +129,7 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	if messages[1].Role != llms.ChatMessageTypeHuman || extractText(messages[1]) != "Existing input" {
 		t.Fatalf("expected existing conversation to be preserved, got %#v", messages)
 	}
-	if got := state.Get(fruntime.StateKeyRequest)["input"]; got != "New input" {
+	if got := state.Get(wfstate.StateKeyRequest)["input"]; got != "New input" {
 		t.Fatalf("expected request input to still be normalized, got %#v", got)
 	}
 	if got := state.Conversation("agent").MaxIterations(); got != 2 {
@@ -140,7 +140,7 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 func TestSessionBootstrapNodeDoesNotDuplicateExistingSystemPrompt(t *testing.T) {
 	t.Parallel()
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "Stay concise."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Existing input"),
@@ -171,7 +171,7 @@ func TestSessionBootstrapNodeReturnsErrorForMissingExplicitInputPath(t *testing.
 	node := NewSessionBootstrapNode()
 	node.InputPath = "missing.input"
 
-	_, err := node.Invoke(context.Background(), fruntime.State{})
+	_, err := node.Invoke(context.Background(), wfstate.State{})
 	if err == nil {
 		t.Fatal("expected missing input path error")
 	}

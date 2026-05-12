@@ -1,9 +1,12 @@
-package runtime
+package state
 
 import (
 	"context"
+
 	"weaveflow/core"
 )
+
+type NodeInvoker func(context.Context, State) (State, error)
 
 type ExecutableNode = core.ExecutableNode[State]
 

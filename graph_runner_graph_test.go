@@ -4,7 +4,7 @@ import (
 	"testing"
 	"weaveflow/dsl"
 
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestNewGraphRunnerCarriesResolvedNodeContracts(t *testing.T) {
@@ -28,7 +28,7 @@ func TestNewGraphRunnerCarriesResolvedNodeContracts(t *testing.T) {
 		t.Fatalf("build graph: %v", err)
 	}
 
-	runner := NewGraphRunner(graph, nil, nil, fruntime.NewJSONStateCodec(""), nil)
+	runner := NewGraphRunner(graph, nil, nil, wfstate.NewJSONStateCodec(""), nil)
 	if runner.NodeContracts == nil {
 		t.Fatal("expected runner node contracts to be initialized")
 	}

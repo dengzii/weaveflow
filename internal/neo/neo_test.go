@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -69,7 +70,7 @@ func TestNewGraphDirectAnswerShortCircuitsAfterRouter(t *testing.T) {
 		t.Fatalf("expected final answer to be preserved, got %#v", got)
 	}
 
-	final := state.Get(fruntime.StateKeyFinal)
+	final := state.Get(wfstate.StateKeyFinal)
 	if got := final["answer"]; got != "2 + 2 = 4." {
 		t.Fatalf("expected final state answer to be written, got %#v", got)
 	}

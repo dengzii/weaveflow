@@ -1,14 +1,14 @@
-package runtime
+package state
 
 import "fmt"
 
 const resumeInputScopesKey = "scopes"
 
 func MergeInputState(base State, input State) (State, error) {
-	return mergeResumeInput(base, input)
+	return MergeResumeInput(base, input)
 }
 
-func mergeResumeInput(base State, input State) (State, error) {
+func MergeResumeInput(base State, input State) (State, error) {
 	if len(input) == 0 {
 		if base == nil {
 			return State{}, nil
@@ -86,7 +86,7 @@ func mergeStateMap(target State, overlay State) {
 		copyConversationState(target, conversation)
 	}
 
-	for scopeName, scopeState := range overlay.scopes() {
+	for scopeName, scopeState := range overlay.Scopes() {
 		mergeStateMap(target.EnsureScope(scopeName), scopeState)
 	}
 
@@ -106,13 +106,13 @@ func mergeStateMap(target State, overlay State) {
 	}
 }
 
-func prepareContinuationState(base State, input State) (State, error) {
+func PrepareContinuationState(base State, input State) (State, error) {
 	state := State{}
 	if base != nil {
 		state = base.CloneState()
 	}
 	resetConversationTurnState(state)
-	return mergeResumeInput(state, input)
+	return MergeResumeInput(state, input)
 }
 
 func resetConversationTurnState(state State) {
@@ -125,7 +125,7 @@ func resetConversationTurnState(state State) {
 		delete(conversation, stateKeyIterationCount)
 	}
 
-	for _, scopeState := range state.scopes() {
+	for _, scopeState := range state.Scopes() {
 		resetConversationTurnState(scopeState)
 	}
 }

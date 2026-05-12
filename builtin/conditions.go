@@ -7,7 +7,7 @@ import (
 
 	"weaveflow/dsl"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -18,7 +18,7 @@ func LastMessageHasToolCalls(scope string) registry.EdgeCondition {
 	if scope != "" {
 		spec.Config = map[string]any{"state_scope": scope}
 	}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, state fruntime.State) bool {
+	return registry.NewEdgeCondition(spec, func(_ context.Context, state wfstate.State) bool {
 		messages := state.Conversation(scope).Messages()
 		if len(messages) == 0 {
 			return false
@@ -42,7 +42,7 @@ func HasFinalAnswer(scope string) registry.EdgeCondition {
 	if scope != "" {
 		spec.Config = map[string]any{"state_scope": scope}
 	}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, state fruntime.State) bool {
+	return registry.NewEdgeCondition(spec, func(_ context.Context, state wfstate.State) bool {
 		return state.Conversation(scope).FinalAnswer() != ""
 	})
 }
@@ -84,7 +84,7 @@ func ExpressionConditions(config ExpressionConditionConfig) (registry.EdgeCondit
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 		Type:   "expression_conditions",
 		Config: config.Map(),
-	}, func(_ context.Context, state fruntime.State) bool {
+	}, func(_ context.Context, state wfstate.State) bool {
 		switch matchMode {
 		case ExpressionMatchAny:
 			for _, expression := range expressions {
@@ -106,8 +106,8 @@ func ExpressionConditions(config ExpressionConditionConfig) (registry.EdgeCondit
 
 func ParseExpressionConditionConfig(config map[string]any) (ExpressionConditionConfig, error) {
 	parsed := ExpressionConditionConfig{
-		StateScope: stringConfig(config, "state_scope"),
-		Match:      stringConfig(config, "match"),
+		StateScope: registry.StringConfig(config, "state_scope"),
+		Match:      registry.StringConfig(config, "match"),
 	}
 
 	expressions, err := parseExpressionsConfig(config["expressions"])
@@ -236,9 +236,9 @@ func parseExpression(raw any) (Expression, error) {
 		return expression, expression.Validate()
 	case map[string]any:
 		expression := normalizeExpression(Expression{
-			Value1: stringConfig(typed, "value1"),
-			Op:     stringConfig(typed, "op"),
-			Value2: stringConfig(typed, "value2"),
+			Value1: registry.StringConfig(typed, "value1"),
+			Op:     registry.StringConfig(typed, "op"),
+			Value2: registry.StringConfig(typed, "value2"),
 		})
 		return expression, expression.Validate()
 	default:
@@ -246,7 +246,7 @@ func parseExpression(raw any) (Expression, error) {
 	}
 }
 
-func matchExpression(state fruntime.State, scope string, expression Expression) bool {
+func matchExpression(state wfstate.State, scope string, expression Expression) bool {
 	expression = normalizeExpression(expression)
 	left, ok := resolveExpressionValue(state, scope, expression.Value1)
 	switch expression.Op {
@@ -263,16 +263,16 @@ func matchExpression(state fruntime.State, scope string, expression Expression) 
 	}
 }
 
-func resolveExpressionValue(state fruntime.State, scope, path string) (any, bool) {
+func resolveExpressionValue(state wfstate.State, scope, path string) (any, bool) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, false
 	}
 	if isExplicitContractStatePath(path) {
-		return fruntime.ResolveContractPathValue(state, path)
+		return wfstate.ResolveContractPathValue(state, path)
 	}
 
-	segments := fruntime.SplitStatePath(path)
+	segments := wfstate.SplitStatePath(path)
 	if len(segments) == 0 {
 		return nil, false
 	}
@@ -285,14 +285,14 @@ func resolveExpressionValue(state fruntime.State, scope, path string) (any, bool
 		if len(segments) == 1 {
 			return value, true
 		}
-		return fruntime.ResolveStateValue(value, segments[1:])
+		return wfstate.ResolveStateValue(value, segments[1:])
 	}
 
 	var base any = state
 	if scope != "" {
 		base = state.Scope(scope)
 	}
-	return fruntime.ResolveStateValue(base, segments)
+	return wfstate.ResolveStateValue(base, segments)
 }
 
 func isExplicitContractStatePath(path string) bool {
@@ -314,23 +314,23 @@ func isExplicitContractStatePath(path string) bool {
 
 func isConversationField(field string) bool {
 	switch field {
-	case fruntime.StateKeyMessages, fruntime.StateKeyIterationCount, fruntime.StateKeyMaxIterations, fruntime.StateKeyFinalAnswer:
+	case wfstate.StateKeyMessages, wfstate.StateKeyIterationCount, wfstate.StateKeyMaxIterations, wfstate.StateKeyFinalAnswer:
 		return true
 	default:
 		return false
 	}
 }
 
-func conversationFieldValue(state fruntime.State, scope, field string) (any, bool) {
+func conversationFieldValue(state wfstate.State, scope, field string) (any, bool) {
 	conversation := state.Conversation(scope)
 	switch field {
-	case fruntime.StateKeyMessages:
+	case wfstate.StateKeyMessages:
 		return conversation.Messages(), true
-	case fruntime.StateKeyIterationCount:
+	case wfstate.StateKeyIterationCount:
 		return conversation.IterationCount(), true
-	case fruntime.StateKeyMaxIterations:
+	case wfstate.StateKeyMaxIterations:
 		return conversation.MaxIterations(), true
-	case fruntime.StateKeyFinalAnswer:
+	case wfstate.StateKeyFinalAnswer:
 		return conversation.FinalAnswer(), true
 	default:
 		return nil, false

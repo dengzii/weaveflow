@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -46,7 +47,7 @@ func TestContextReducerNodeNoOpBelowLimit(t *testing.T) {
 	node.MaxMessages = 4
 	node.PreserveRecent = 2
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
@@ -73,7 +74,7 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 	node.PreserveRecent = 2
 	node.SummaryPrefix = "Earlier:"
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Need a safe deployment plan."),
@@ -130,7 +131,7 @@ func TestContextReducerNodeKeepsToolSpanTogether(t *testing.T) {
 	node.MaxMessages = 5
 	node.PreserveRecent = 2
 
-	state := fruntime.State{}
+	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "Check the server status."),

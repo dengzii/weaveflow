@@ -5,11 +5,12 @@ import (
 	"fmt"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
 
-type SubgraphInvoker func(context.Context, fruntime.State) (fruntime.State, error)
+type SubgraphInvoker func(context.Context, wfstate.State) (wfstate.State, error)
 
 type SubgraphNode struct {
 	NodeInfo
@@ -28,7 +29,7 @@ func NewSubgraphNode() *SubgraphNode {
 	}
 }
 
-func (n *SubgraphNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *SubgraphNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if n.InvokeSubgraph == nil {
 		return state, fmt.Errorf("subgraph node %q has no invoker for graph_ref %q", n.ID(), n.GraphRef)
 	}
@@ -50,8 +51,8 @@ func (n *SubgraphNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	return nextState, nil
 }
 
-func (n *SubgraphNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *SubgraphNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *SubgraphNode) GraphNodeSpec() dsl.GraphNodeSpec {

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"sort"
 	"weaveflow/dsl"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
@@ -37,11 +37,11 @@ func NewIteratorNode() *IteratorNode {
 	}
 }
 
-func (n *IteratorNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *IteratorNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	_ = ctx
 
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 	if n.StateKey == "" {
 		return state, fmt.Errorf("iterator node %q state_key is required", n.ID())
@@ -93,8 +93,8 @@ func (n *IteratorNode) Invoke(ctx context.Context, state fruntime.State) (frunti
 	return state, nil
 }
 
-func (n *IteratorNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *IteratorNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *IteratorNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -118,7 +118,7 @@ func (n *IteratorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func iteratorNodeRuntimeState(state fruntime.State, nodeID string) fruntime.State {
+func iteratorNodeRuntimeState(state wfstate.State, nodeID string) wfstate.State {
 	if state == nil {
 		return nil
 	}
@@ -129,20 +129,20 @@ func iteratorNodeRuntimeState(state fruntime.State, nodeID string) fruntime.Stat
 	}
 
 	switch typed := namespace[nodeID].(type) {
-	case fruntime.State:
+	case wfstate.State:
 		return typed
 	case map[string]any:
-		nested := fruntime.State(typed)
+		nested := wfstate.State(typed)
 		namespace[nodeID] = nested
 		return nested
 	default:
-		nested := fruntime.State{}
+		nested := wfstate.State{}
 		namespace[nodeID] = nested
 		return nested
 	}
 }
 
-func writeIteratorDoneState(target fruntime.State, stateKey string, total int, limit int, nextIndex int) {
+func writeIteratorDoneState(target wfstate.State, stateKey string, total int, limit int, nextIndex int) {
 	if target == nil {
 		return
 	}
@@ -176,7 +176,7 @@ func iteratorValues(raw any) ([]any, error) {
 			values = append(values, item)
 		}
 		return values, nil
-	case []fruntime.State:
+	case []wfstate.State:
 		values := make([]any, 0, len(typed))
 		for _, item := range typed {
 			values = append(values, item)
@@ -227,7 +227,7 @@ func persistableIteratorValue(value any) (any, error) {
 		uint, uint8, uint16, uint32, uint64,
 		float32, float64:
 		return typed, nil
-	case fruntime.State:
+	case wfstate.State:
 		return persistableIteratorStateMap(typed)
 	case map[string]any:
 		mapped, err := persistableIteratorStateMap(typed)
@@ -264,7 +264,7 @@ func persistableIteratorValue(value any) (any, error) {
 	}
 }
 
-func persistableIteratorStateMap(values map[string]any) (fruntime.State, error) {
+func persistableIteratorStateMap(values map[string]any) (wfstate.State, error) {
 	if values == nil {
 		return nil, nil
 	}
@@ -275,7 +275,7 @@ func persistableIteratorStateMap(values map[string]any) (fruntime.State, error) 
 	}
 	sort.Strings(keys)
 
-	cloned := make(fruntime.State, len(values))
+	cloned := make(wfstate.State, len(values))
 	for _, key := range keys {
 		normalized, err := persistableIteratorValue(values[key])
 		if err != nil {
@@ -302,7 +302,7 @@ func persistableIteratorReflectedValue(value any) (any, error) {
 		if reflected.Type().Key().Kind() != reflect.String {
 			return nil, fmt.Errorf("map key type %s is not supported", reflected.Type().Key())
 		}
-		items := make(fruntime.State, reflected.Len())
+		items := make(wfstate.State, reflected.Len())
 		keys := reflected.MapKeys()
 		sort.Slice(keys, func(i, j int) bool {
 			return keys[i].String() < keys[j].String()

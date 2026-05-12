@@ -8,6 +8,7 @@ import (
 
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -47,14 +48,14 @@ func (n *ObservationRecorderNode) effectiveScope() string {
 
 func (n *ObservationRecorderNode) effectivePlannerPath() string {
 	if n == nil || strings.TrimSpace(n.PlannerStatePath) == "" {
-		return fruntime.StateKeyPlanner
+		return wfstate.StateKeyPlanner
 	}
 	return strings.TrimSpace(n.PlannerStatePath)
 }
 
-func (n *ObservationRecorderNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *ObservationRecorderNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	conversation := state.Conversation(n.effectiveScope())
@@ -120,8 +121,8 @@ func (n *ObservationRecorderNode) Invoke(ctx context.Context, state fruntime.Sta
 	return state, nil
 }
 
-func (n *ObservationRecorderNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ObservationRecorderNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *ObservationRecorderNode) recordToolMessage(ctx context.Context, msg llms.MessageContent, stepID string, ts string) ([]map[string]any, []map[string]any) {
@@ -203,7 +204,7 @@ func (n *ObservationRecorderNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if scope := n.effectiveScope(); scope != defaultObservationRecorderScope {
 		config["state_scope"] = scope
 	}
-	if plannerPath := n.effectivePlannerPath(); plannerPath != fruntime.StateKeyPlanner {
+	if plannerPath := n.effectivePlannerPath(); plannerPath != wfstate.StateKeyPlanner {
 		config["planner_state_path"] = plannerPath
 	}
 	return dsl.GraphNodeSpec{
@@ -217,7 +218,7 @@ func (n *ObservationRecorderNode) GraphNodeSpec() dsl.GraphNodeSpec {
 
 // --- helpers ---
 
-func resolveCurrentStepID(state fruntime.State, plannerPath string) string {
+func resolveCurrentStepID(state wfstate.State, plannerPath string) string {
 	planner := stateObjectAtPath(state, plannerPath)
 	if planner == nil {
 		return ""

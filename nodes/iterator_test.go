@@ -3,7 +3,7 @@ package nodes
 import (
 	"context"
 	"testing"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestIteratorNodeInjectsCurrentIterationState(t *testing.T) {
@@ -14,7 +14,7 @@ func TestIteratorNodeInjectsCurrentIterationState(t *testing.T) {
 	node.StateKey = "items"
 	node.MaxIterations = 2
 
-	state := fruntime.State{
+	state := wfstate.State{
 		"items": []any{"first", "second", "third"},
 	}
 
@@ -31,7 +31,7 @@ func TestIteratorNodeInjectsCurrentIterationState(t *testing.T) {
 	rawLoopState := namespace["loop"]
 	loopState, ok := rawLoopState.(map[string]any)
 	if !ok {
-		if typed, ok := rawLoopState.(fruntime.State); ok {
+		if typed, ok := rawLoopState.(wfstate.State); ok {
 			loopState = typed
 		} else {
 			t.Fatalf("expected iterator runtime state map, got %#v", rawLoopState)
@@ -63,7 +63,7 @@ func TestIteratorNodeMarksDoneWhenExhausted(t *testing.T) {
 	node.StateKey = "items"
 	node.MaxIterations = 1
 
-	state := fruntime.State{
+	state := wfstate.State{
 		"items": []string{"first", "second"},
 	}
 
@@ -79,7 +79,7 @@ func TestIteratorNodeMarksDoneWhenExhausted(t *testing.T) {
 	rawLoopState := namespace["loop"]
 	loopState, ok := rawLoopState.(map[string]any)
 	if !ok {
-		if typed, ok := rawLoopState.(fruntime.State); ok {
+		if typed, ok := rawLoopState.(wfstate.State); ok {
 			loopState = typed
 		} else {
 			t.Fatalf("expected iterator runtime state map, got %#v", rawLoopState)
@@ -105,7 +105,7 @@ func TestIteratorNodeReadsNestedStatePath(t *testing.T) {
 	node.StateKey = "payload.items.1.values"
 	node.MaxIterations = 3
 
-	state := fruntime.State{
+	state := wfstate.State{
 		"payload": map[string]any{
 			"items": []any{
 				map[string]any{"values": []any{"skip"}},
@@ -123,7 +123,7 @@ func TestIteratorNodeReadsNestedStatePath(t *testing.T) {
 	rawLoopState := namespace["loop"]
 	loopState, ok := rawLoopState.(map[string]any)
 	if !ok {
-		if typed, ok := rawLoopState.(fruntime.State); ok {
+		if typed, ok := rawLoopState.(wfstate.State); ok {
 			loopState = typed
 		} else {
 			t.Fatalf("expected iterator runtime state map, got %#v", rawLoopState)
@@ -151,7 +151,7 @@ func TestIteratorNodeNormalizesStructuredItems(t *testing.T) {
 	node.StateKey = "items"
 	node.MaxIterations = 1
 
-	state := fruntime.State{
+	state := wfstate.State{
 		"items": []item{{Name: "alpha", Count: 2}},
 	}
 
@@ -164,7 +164,7 @@ func TestIteratorNodeNormalizesStructuredItems(t *testing.T) {
 	rawLoopState := namespace["loop"]
 	loopState, ok := rawLoopState.(map[string]any)
 	if !ok {
-		if typed, ok := rawLoopState.(fruntime.State); ok {
+		if typed, ok := rawLoopState.(wfstate.State); ok {
 			loopState = typed
 		} else {
 			t.Fatalf("expected iterator runtime state map, got %#v", rawLoopState)
@@ -173,7 +173,7 @@ func TestIteratorNodeNormalizesStructuredItems(t *testing.T) {
 
 	itemValue, ok := loopState["item"].(map[string]any)
 	if !ok {
-		if typed, ok := loopState["item"].(fruntime.State); ok {
+		if typed, ok := loopState["item"].(wfstate.State); ok {
 			itemValue = typed
 		} else {
 			t.Fatalf("expected normalized iterator item map, got %#v", loopState["item"])

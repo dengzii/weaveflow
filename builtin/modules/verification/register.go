@@ -8,13 +8,13 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error)
+type legacyNodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
 
-func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+func adaptLegacyNodeBuilder(build legacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}
@@ -46,7 +46,7 @@ func Register(registry *registry.Registry) {
 
 func verificationStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyVerification,
+		Name:        wfstate.StateKeyVerification,
 		Description: "Verification results for step-level and final-level acceptance checks.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -68,7 +68,7 @@ func verificationStateFieldDefinition() dsl.StateFieldDefinition {
 
 func finalStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        fruntime.StateKeyFinal,
+		Name:        wfstate.StateKeyFinal,
 		Description: "Final answer state produced by the finalizer node.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -104,7 +104,7 @@ func verifierNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewVerifierNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -113,9 +113,9 @@ func verifierNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.Mode = stringConfig(spec.Config, "mode")
-			node.PlannerStatePath = stringConfig(spec.Config, "planner_state_path")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.Mode = registry.StringConfigTrim(spec.Config, "mode")
+			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
 			return node, nil
 		}),
 		ResolveStateContract: resolveVerifierStateContract,
@@ -137,7 +137,7 @@ func finalizerNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[fruntime.State], error) {
+		Build: adaptLegacyNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
 			node := nodes.NewFinalizerNode()
 			node.NodeID = spec.ID
 			if spec.Name != "" {
@@ -146,8 +146,8 @@ func finalizerNodeTypeDefinition() registry.NodeTypeDefinition {
 			if spec.Description != "" {
 				node.NodeDescription = spec.Description
 			}
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.PlannerStatePath = stringConfig(spec.Config, "planner_state_path")
+			node.StateScope = registry.StringConfigTrim(spec.Config, "state_scope")
+			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
 			return node, nil
 		}),
 		ResolveStateContract: resolveFinalizerStateContract,
@@ -173,7 +173,7 @@ func verificationNextActionConditionDefinition() registry.ConditionDefinition {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			expected := strings.ToLower(strings.TrimSpace(stringConfig(spec.Config, "action")))
+			expected := strings.ToLower(strings.TrimSpace(registry.StringConfigTrim(spec.Config, "action")))
 			if expected == "" {
 				return registry.EdgeCondition{}, fmt.Errorf("verification_next_action_equals: action config is required")
 			}
@@ -182,8 +182,8 @@ func verificationNextActionConditionDefinition() registry.ConditionDefinition {
 				Config: map[string]any{
 					"action": expected,
 				},
-			}, func(_ context.Context, state fruntime.State) bool {
-				v := state.Get(fruntime.StateKeyVerification)
+			}, func(_ context.Context, state wfstate.State) bool {
+				v := state.Get(wfstate.StateKeyVerification)
 				if v == nil {
 					return false
 				}
@@ -195,13 +195,13 @@ func verificationNextActionConditionDefinition() registry.ConditionDefinition {
 }
 
 func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := strings.TrimSpace(stringConfig(spec.Config, "state_scope"))
+	scope := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "state_scope"))
 	if scope == "" {
 		scope = "default"
 	}
-	plannerPath := strings.TrimSpace(stringConfig(spec.Config, "planner_state_path"))
+	plannerPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "planner_state_path"))
 	if plannerPath == "" {
-		plannerPath = fruntime.StateKeyPlanner
+		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
 
@@ -223,27 +223,27 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 				Description: "Task objective for final verification.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyExecution + ".route"),
+				Path:        canonicalContractPath(wfstate.StateKeyExecution + ".route"),
 				Mode:        dsl.StateAccessRead,
 				Description: "Execution route used to auto-select step or final verification mode.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyExecution + ".step_results"),
+				Path:        canonicalContractPath(wfstate.StateKeyExecution + ".step_results"),
 				Mode:        dsl.StateAccessRead,
 				Description: "Step execution results.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyRequest + ".input"),
+				Path:        canonicalContractPath(wfstate.StateKeyRequest + ".input"),
 				Mode:        dsl.StateAccessRead,
 				Description: "Request input fallback used when planner objective is unavailable.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyObservations),
+				Path:        canonicalContractPath(wfstate.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "Observations for verification.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyEvidence),
+				Path:        canonicalContractPath(wfstate.StateKeyEvidence),
 				Mode:        dsl.StateAccessRead,
 				Description: "Evidence for verification.",
 			},
@@ -258,7 +258,7 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 				Description: "Current scoped final answer used during final verification.",
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyVerification),
+				Path:          canonicalContractPath(wfstate.StateKeyVerification),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Verification result output.",
@@ -275,30 +275,30 @@ func resolveVerifierStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, er
 }
 
 func resolveFinalizerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := strings.TrimSpace(stringConfig(spec.Config, "state_scope"))
+	scope := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "state_scope"))
 	if scope == "" {
 		scope = "default"
 	}
-	plannerPath := strings.TrimSpace(stringConfig(spec.Config, "planner_state_path"))
+	plannerPath := strings.TrimSpace(registry.StringConfigTrim(spec.Config, "planner_state_path"))
 	if plannerPath == "" {
-		plannerPath = fruntime.StateKeyPlanner
+		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyVerification),
+				Path:        canonicalContractPath(wfstate.StateKeyVerification),
 				Mode:        dsl.StateAccessRead,
 				Description: "Verification results.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyObservations),
+				Path:        canonicalContractPath(wfstate.StateKeyObservations),
 				Mode:        dsl.StateAccessRead,
 				Description: "All observations.",
 			},
 			{
-				Path:        canonicalContractPath(fruntime.StateKeyEvidence),
+				Path:        canonicalContractPath(wfstate.StateKeyEvidence),
 				Mode:        dsl.StateAccessRead,
 				Description: "All evidence.",
 			},
@@ -324,7 +324,7 @@ func resolveFinalizerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 				MergeStrategy: dsl.StateMergeReplace,
 			},
 			{
-				Path:          canonicalContractPath(fruntime.StateKeyFinal),
+				Path:          canonicalContractPath(wfstate.StateKeyFinal),
 				Mode:          dsl.StateAccessWrite,
 				Required:      true,
 				Description:   "Final answer state subtree.",
@@ -334,16 +334,8 @@ func resolveFinalizerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, e
 	}, nil
 }
 
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	value, _ := config[key].(string)
-	return strings.TrimSpace(value)
-}
-
 func canonicalContractPath(path string) string {
-	return fruntime.NormalizeContractPath(path)
+	return wfstate.NormalizeContractPath(path)
 }
 
 func scopedStatePath(scope string, field string) string {

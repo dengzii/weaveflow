@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"weaveflow/llms/openai"
 )
@@ -27,7 +28,7 @@ func IntentAnalyzerExample() {
 	}
 	node.Instructions = "Prefer the most actionable label. Use clarification when required information is missing."
 
-	state := runtime.State{
+	state := wfstate.State{
 		"request": "信令系统是?",
 	}
 
@@ -39,5 +40,5 @@ func IntentAnalyzerExample() {
 
 	fmt.Println()
 	fmt.Println("intent state:")
-	fmt.Println(result.Get(runtime.StateKeyIntent).PrettyString())
+	fmt.Println(result.Get(wfstate.StateKeyIntent).PrettyString())
 }

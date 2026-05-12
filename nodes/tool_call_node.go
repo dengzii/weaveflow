@@ -9,6 +9,7 @@ import (
 	"sync"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"github.com/google/uuid"
@@ -35,7 +36,7 @@ func NewToolCallNode() *ToolsNode {
 	}
 }
 
-func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (t *ToolsNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	nodeTools := svc.FilterTools(t.ToolIDs)
 
@@ -86,8 +87,8 @@ func (t *ToolsNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.
 	return state, nil
 }
 
-func (t *ToolsNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: t.Invoke}.Execute(ctx, input)
+func (t *ToolsNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: t.Invoke}.Execute(ctx, input)
 }
 
 func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {

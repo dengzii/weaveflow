@@ -4,13 +4,13 @@ import (
 	"context"
 	"strings"
 	"testing"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestExpressionConditionsMatchAllAgainstScopedStateAndConversation(t *testing.T) {
 	t.Parallel()
 
-	state := State{
+	state := wfstate.State{
 		"status": "root",
 	}
 	scope := state.EnsureScope("agent")
@@ -23,7 +23,7 @@ func TestExpressionConditionsMatchAllAgainstScopedStateAndConversation(t *testin
 		Expressions: []Expression{
 			{Value1: "status", Op: OperationEqual, Value2: "ready"},
 			{Value1: "tags", Op: OperationContains, Value2: "final"},
-			{Value1: fruntime.StateKeyFinalAnswer, Op: OperationEqual, Value2: "done"},
+			{Value1: wfstate.StateKeyFinalAnswer, Op: OperationEqual, Value2: "done"},
 		},
 	})
 	if err != nil {
@@ -38,7 +38,7 @@ func TestExpressionConditionsMatchAllAgainstScopedStateAndConversation(t *testin
 func TestExpressionConditionsMatchAny(t *testing.T) {
 	t.Parallel()
 
-	state := State{
+	state := wfstate.State{
 		"status": "running",
 	}
 
@@ -85,7 +85,7 @@ func TestParseExpressionConditionConfigFromSerializableConfig(t *testing.T) {
 		t.Fatalf("resolve condition: %v", err)
 	}
 
-	state := State{}
+	state := wfstate.State{}
 	scope := state.EnsureScope("agent")
 	scope["result"] = map[string]any{
 		"code": 200,
@@ -120,7 +120,7 @@ func TestParseExpressionConditionConfigRejectsInvalidExpression(t *testing.T) {
 func TestExpressionConditionsResolveExplicitCanonicalPaths(t *testing.T) {
 	t.Parallel()
 
-	state := State{
+	state := wfstate.State{
 		"status": "root",
 	}
 	state.EnsureScope("agent")["status"] = "ready"

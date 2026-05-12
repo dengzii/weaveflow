@@ -1,4 +1,4 @@
-package runtime
+package state
 
 import (
 	"testing"
@@ -39,7 +39,7 @@ func TestMergeResumeInputMergesRootAndScopeState(t *testing.T) {
 		StateKeyMaxIterations: 5,
 	}
 
-	merged, err := mergeResumeInput(base, input)
+	merged, err := MergeResumeInput(base, input)
 	if err != nil {
 		t.Fatalf("merge resume input: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestMergeResumeInputMergesRootAndScopeState(t *testing.T) {
 func TestMergeResumeInputRejectsInvalidScopePayload(t *testing.T) {
 	t.Parallel()
 
-	_, err := mergeResumeInput(State{}, State{
+	_, err := MergeResumeInput(State{}, State{
 		"scopes": "bad",
 	})
 	if err == nil {
@@ -96,7 +96,7 @@ func TestMergeResumeInputRejectsInvalidScopePayload(t *testing.T) {
 func TestMergeResumeInputRejectsReservedRootNamespaceKey(t *testing.T) {
 	t.Parallel()
 
-	_, err := mergeResumeInput(State{}, State{
+	_, err := MergeResumeInput(State{}, State{
 		NormalizeStateNamespace("iterator"): map[string]any{
 			"loop": map[string]any{"done": false},
 		},
@@ -109,7 +109,7 @@ func TestMergeResumeInputRejectsReservedRootNamespaceKey(t *testing.T) {
 func TestMergeResumeInputRejectsReservedScopeNamespaceKey(t *testing.T) {
 	t.Parallel()
 
-	_, err := mergeResumeInput(State{}, State{
+	_, err := MergeResumeInput(State{}, State{
 		"scopes": map[string]any{
 			"agent": map[string]any{
 				NormalizeStateNamespace("iterator"): map[string]any{

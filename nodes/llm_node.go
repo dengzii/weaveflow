@@ -8,6 +8,7 @@ import (
 	"weaveflow/dsl"
 
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
@@ -31,7 +32,7 @@ func NewLLMNode() *LLMNode {
 	}
 }
 
-func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (L *LLMNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("llm node: model service not available")
@@ -114,8 +115,8 @@ func (L *LLMNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.St
 	return state, nil
 }
 
-func (L *LLMNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: L.Invoke}.Execute(ctx, input)
+func (L *LLMNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: L.Invoke}.Execute(ctx, input)
 }
 
 func (L *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -153,11 +154,11 @@ func extractText(message llms.MessageContent) string {
 }
 
 type llmPromptArtifact struct {
-	StateScope     string                  `json:"state_scope,omitempty"`
-	IterationCount int                     `json:"iteration_count,omitempty"`
-	MaxIterations  int                     `json:"max_iterations,omitempty"`
-	Messages       []fruntime.StateMessage `json:"messages,omitempty"`
-	Tools          []llmToolArtifact       `json:"tools,omitempty"`
+	StateScope     string                 `json:"state_scope,omitempty"`
+	IterationCount int                    `json:"iteration_count,omitempty"`
+	MaxIterations  int                    `json:"max_iterations,omitempty"`
+	Messages       []wfstate.StateMessage `json:"messages,omitempty"`
+	Tools          []llmToolArtifact      `json:"tools,omitempty"`
 }
 
 type llmToolArtifact struct {
@@ -179,7 +180,7 @@ type llmResponseArtifactChoice struct {
 }
 
 func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, stateScope string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
-	serializedMessages, err := fruntime.SerializeMessages(messages)
+	serializedMessages, err := wfstate.SerializeMessages(messages)
 	if err != nil {
 		return llmPromptArtifact{}, err
 	}

@@ -1,9 +1,13 @@
-package runtime
+package state
 
 import (
 	"encoding/json"
 	"time"
+
+	"weaveflow/core"
 )
+
+type BreakpointHit = core.BreakpointHit
 
 const (
 	CommonStateSchemaID = "weaveflow.state.v2"

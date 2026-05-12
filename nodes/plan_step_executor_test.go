@@ -3,7 +3,7 @@ package nodes
 import (
 	"context"
 	"testing"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
 func TestPlanStepExecutorHonorsPlannerPathAndDependencyStatus(t *testing.T) {
@@ -12,7 +12,7 @@ func TestPlanStepExecutorHonorsPlannerPathAndDependencyStatus(t *testing.T) {
 	node := NewPlanStepExecutorNode()
 	node.PlannerStatePath = "custom.planner"
 
-	state := fruntime.State{
+	state := wfstate.State{
 		"custom": map[string]any{
 			"planner": map[string]any{
 				"status": "executing",
@@ -55,7 +55,7 @@ func TestPlanStepExecutorHonorsPlannerPathAndDependencyStatus(t *testing.T) {
 		t.Fatalf("expected step_a to be selected, got %#v", got)
 	}
 
-	exec := state.Get(fruntime.StateKeyExecution)
+	exec := state.Get(wfstate.StateKeyExecution)
 	if exec == nil {
 		t.Fatal("expected execution state")
 	}
@@ -79,8 +79,8 @@ func TestPlanStepExecutorTreatsInProgressStepWithResultAsDependencySatisfied(t *
 
 	node := NewPlanStepExecutorNode()
 
-	state := fruntime.State{
-		fruntime.StateKeyPlanner: map[string]any{
+	state := wfstate.State{
+		wfstate.StateKeyPlanner: map[string]any{
 			"status": "executing",
 			"plan": []any{
 				map[string]any{
@@ -98,7 +98,7 @@ func TestPlanStepExecutorTreatsInProgressStepWithResultAsDependencySatisfied(t *
 				},
 			},
 		},
-		fruntime.StateKeyExecution: map[string]any{
+		wfstate.StateKeyExecution: map[string]any{
 			"step_results": map[string]any{
 				"step_a": map[string]any{
 					"observations_count": 1,
@@ -112,12 +112,12 @@ func TestPlanStepExecutorTreatsInProgressStepWithResultAsDependencySatisfied(t *
 		t.Fatalf("invoke plan step executor: %v", err)
 	}
 
-	plannerState := state.Get(fruntime.StateKeyPlanner)
+	plannerState := state.Get(wfstate.StateKeyPlanner)
 	if got := plannerState["current_step_id"]; got != "step_b" {
 		t.Fatalf("expected step_b to be selected, got %#v", got)
 	}
 
-	exec := state.Get(fruntime.StateKeyExecution)
+	exec := state.Get(wfstate.StateKeyExecution)
 	if got := exec["route"]; got != ExecutionRouteLLM {
 		t.Fatalf("expected route llm, got %#v", got)
 	}
@@ -128,8 +128,8 @@ func TestPlanStepExecutorBlockedDiagnosticsIncludeMissingDependencies(t *testing
 
 	node := NewPlanStepExecutorNode()
 
-	state := fruntime.State{
-		fruntime.StateKeyPlanner: map[string]any{
+	state := wfstate.State{
+		wfstate.StateKeyPlanner: map[string]any{
 			"status": "executing",
 			"plan": []any{
 				map[string]any{
@@ -154,7 +154,7 @@ func TestPlanStepExecutorBlockedDiagnosticsIncludeMissingDependencies(t *testing
 		t.Fatalf("invoke plan step executor: %v", err)
 	}
 
-	exec := state.Get(fruntime.StateKeyExecution)
+	exec := state.Get(wfstate.StateKeyExecution)
 	if got := exec["route"]; got != ExecutionRouteBlocked {
 		t.Fatalf("expected route blocked, got %#v", got)
 	}

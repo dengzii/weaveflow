@@ -8,13 +8,14 @@ import (
 	"strings"
 	"weaveflow/dsl"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
 const (
-	defaultPlannerStatePath = runtime.StateKeyPlanner
+	defaultPlannerStatePath = wfstate.StateKeyPlanner
 	defaultPlannerMaxSteps  = 6
 	plannerSystemPrompt     = `You are the planner node inside an agent workflow.
 Return JSON only. Do not use markdown fences.
@@ -109,13 +110,13 @@ func NewPlannerNode() *PlannerNode {
 	}
 }
 
-func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.State, error) {
+func (n *PlannerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := runtime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("planner: model service not available")
 	}
 	if state == nil {
-		state = runtime.State{}
+		state = wfstate.State{}
 	}
 
 	plannerPath := n.effectivePlannerStatePath()
@@ -188,8 +189,8 @@ func (n *PlannerNode) Invoke(ctx context.Context, state runtime.State) (runtime.
 	return state, nil
 }
 
-func (n *PlannerNode) Execute(ctx context.Context, input runtime.State) (runtime.State, error) {
-	return runtime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *PlannerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *PlannerNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -240,7 +241,7 @@ func (n *PlannerNode) effectiveMaxSteps() int {
 	return n.MaxSteps
 }
 
-func (n *PlannerNode) resolveObjective(state runtime.State, plannerState runtime.State) (string, error) {
+func (n *PlannerNode) resolveObjective(state wfstate.State, plannerState wfstate.State) (string, error) {
 	if objective, ok := state.ResolvePath(n.effectiveObjectivePath()); ok {
 		text := strings.TrimSpace(stringifyPlannerValue(objective))
 		if text != "" {
@@ -250,7 +251,7 @@ func (n *PlannerNode) resolveObjective(state runtime.State, plannerState runtime
 	return "", fmt.Errorf("planner objective not found at %q", n.effectiveObjectivePath())
 }
 
-func (n *PlannerNode) collectContext(state runtime.State) map[string]any {
+func (n *PlannerNode) collectContext(state wfstate.State) map[string]any {
 	if len(n.ContextPaths) == 0 {
 		return nil
 	}
@@ -365,7 +366,7 @@ func normalizePlannerStepStatus(status string) string {
 	}
 }
 
-func applyPlannerResponse(target runtime.State, parsed plannerResponse) {
+func applyPlannerResponse(target wfstate.State, parsed plannerResponse) {
 	if target == nil {
 		return
 	}
@@ -404,8 +405,8 @@ func serializePlannerPlan(steps []plannerPlanStep) []map[string]any {
 	return items
 }
 
-func ensurePlannerStateAtPath(root runtime.State, path string) (runtime.State, error) {
-	segments := runtime.SplitStatePath(path)
+func ensurePlannerStateAtPath(root wfstate.State, path string) (wfstate.State, error) {
+	segments := wfstate.SplitStatePath(path)
 	if len(segments) == 0 {
 		return nil, errors.New("planner state path is required")
 	}
@@ -414,13 +415,13 @@ func ensurePlannerStateAtPath(root runtime.State, path string) (runtime.State, e
 	for _, segment := range segments {
 		switch typed := current[segment].(type) {
 		case nil:
-			nested := runtime.State{}
+			nested := wfstate.State{}
 			current[segment] = nested
 			current = nested
-		case runtime.State:
+		case wfstate.State:
 			current = typed
 		case map[string]any:
-			nested := runtime.State(typed)
+			nested := wfstate.State(typed)
 			current[segment] = nested
 			current = nested
 		default:

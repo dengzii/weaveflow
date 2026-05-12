@@ -5,7 +5,7 @@ import (
 	"weaveflow"
 	"weaveflow/memory"
 	"weaveflow/nodes"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -16,11 +16,11 @@ const (
 	humanInputFile       = ".local/instance/human_input.txt"
 )
 
-func newReActAgentInitialState() fruntime.State {
+func newReActAgentInitialState() wfstate.State {
 	systemPrompt := "你是一个有帮助的 ReAct agent. 当工具提高正确性时使用工具，并以纯文本形式返回最终答案."
 	messages := make([]llms.MessageContent, 0, 2)
 	messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt))
-	return fruntime.NewBaseState(messages, 10)
+	return wfstate.NewBaseState(messages, 10)
 }
 
 func newReActAgentTools() map[string]tools.Tool {

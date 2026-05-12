@@ -3,16 +3,17 @@ package runtime
 import (
 	"strings"
 	"weaveflow/redact"
+	wfstate "weaveflow/state"
 )
 
-func RedactMessages(messages []StateMessage) []StateMessage {
+func RedactMessages(messages []wfstate.StateMessage) []wfstate.StateMessage {
 	if len(messages) == 0 {
 		return nil
 	}
 
-	redacted := make([]StateMessage, len(messages))
+	redacted := make([]wfstate.StateMessage, len(messages))
 	for i, message := range messages {
-		redacted[i] = StateMessage{
+		redacted[i] = wfstate.StateMessage{
 			Role:  message.Role,
 			Parts: redactMessageParts(message.Parts),
 		}
@@ -20,12 +21,12 @@ func RedactMessages(messages []StateMessage) []StateMessage {
 	return redacted
 }
 
-func redactMessageParts(parts []StateMessagePart) []StateMessagePart {
+func redactMessageParts(parts []wfstate.StateMessagePart) []wfstate.StateMessagePart {
 	if len(parts) == 0 {
 		return nil
 	}
 
-	redacted := make([]StateMessagePart, len(parts))
+	redacted := make([]wfstate.StateMessagePart, len(parts))
 	for i, part := range parts {
 		copyPart := part
 		copyPart.Text = redact.Text(copyPart.Text)

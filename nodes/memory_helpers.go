@@ -4,11 +4,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 )
 
-func ensureObjectStateAtPath(root fruntime.State, path string) (fruntime.State, error) {
-	segments := fruntime.SplitStatePath(path)
+func ensureObjectStateAtPath(root wfstate.State, path string) (wfstate.State, error) {
+	segments := wfstate.SplitStatePath(path)
 	if len(segments) == 0 {
 		return nil, fmt.Errorf("state path is required")
 	}
@@ -17,13 +17,13 @@ func ensureObjectStateAtPath(root fruntime.State, path string) (fruntime.State, 
 	for _, segment := range segments {
 		switch typed := current[segment].(type) {
 		case nil:
-			nested := fruntime.State{}
+			nested := wfstate.State{}
 			current[segment] = nested
 			current = nested
-		case fruntime.State:
+		case wfstate.State:
 			current = typed
 		case map[string]any:
-			nested := fruntime.State(typed)
+			nested := wfstate.State(typed)
 			current[segment] = nested
 			current = nested
 		default:

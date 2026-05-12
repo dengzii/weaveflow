@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"weaveflow/llms/openai"
@@ -28,7 +29,7 @@ func LLMExample() {
 	node := nodes.NewLLMNode()
 	node.StateScope = "agent"
 
-	state := runtime.State{}
+	state := wfstate.State{}
 	conversation := state.Conversation("agent")
 	conversation.UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise assistant. Use tools when they improve accuracy."),

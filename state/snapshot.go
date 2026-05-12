@@ -1,4 +1,4 @@
-package runtime
+package state
 
 import (
 	"bytes"
@@ -104,7 +104,7 @@ func SnapshotFromState(state State) (StateSnapshot, error) {
 		}
 	}
 
-	for scopeName, scopeState := range state.scopes() {
+	for scopeName, scopeState := range state.Scopes() {
 		scope, err := encodeGraphState(scopeState)
 		if err != nil {
 			return StateSnapshot{}, err
@@ -161,7 +161,7 @@ func SnapshotFromStateWithRuntime(state State, runtime RuntimeState, artifacts [
 	}
 	snapshot.Runtime = runtime
 	if len(artifacts) > 0 {
-		snapshot.Artifacts = cloneArtifactRefs(artifacts)
+		snapshot.Artifacts = CloneArtifactRefs(artifacts)
 	}
 	return snapshot, nil
 }
@@ -210,7 +210,7 @@ func RestoreStateSnapshot(snapshot StateSnapshot) (RestoredStateSnapshot, error)
 		Snapshot:  snapshot,
 		Business:  state,
 		Runtime:   snapshot.Runtime,
-		Artifacts: cloneArtifactRefs(snapshot.Artifacts),
+		Artifacts: CloneArtifactRefs(snapshot.Artifacts),
 	}, nil
 }
 
@@ -574,7 +574,7 @@ func isInternalSnapshotNamespaceKey(key string) bool {
 	return strings.HasPrefix(strings.TrimSpace(key), stateNamespacePrefix) && !isInfrastructureStateKey(key)
 }
 
-func cloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {
+func CloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {
 	if len(artifacts) == 0 {
 		return nil
 	}

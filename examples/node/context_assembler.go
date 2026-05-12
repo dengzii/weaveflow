@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"weaveflow/memory"
 	"weaveflow/nodes"
-	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -17,7 +17,7 @@ func ContextAssemblerExample() {
 	node.IncludeOrchestration = true
 	node.IncludePlanner = true
 
-	state := runtime.State{
+	state := wfstate.State{
 		"memory": map[string]any{
 			"recalled": []map[string]any{
 				{

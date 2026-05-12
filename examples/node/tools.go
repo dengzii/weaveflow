@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
+	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -23,7 +24,7 @@ func ToolsExample() {
 	node.StateScope = "agent"
 	node.Parallel = true
 
-	state := runtime.State{}
+	state := wfstate.State{}
 	conversation := state.Conversation("agent")
 	conversation.UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise assistant."),

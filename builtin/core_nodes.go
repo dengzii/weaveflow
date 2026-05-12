@@ -2,8 +2,6 @@ package builtin
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 
 	"weaveflow/core"
 	"weaveflow/dsl"
@@ -30,7 +28,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 		},
 		ResolveStateContract: registry.ResolveSubgraphStateContract,
 		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
-			graphRef := stringConfig(spec.Config, "graph_ref")
+			graphRef := registry.StringConfig(spec.Config, "graph_ref")
 			if graphRef == "" {
 				return nil, fmt.Errorf("build subgraph nodes %q: graph_ref is required", spec.ID)
 			}
@@ -68,7 +66,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 		},
 		ResolveStateContract: registry.ResolveMappedSubgraphStateContract,
 		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
-			graphRef := stringConfig(spec.Config, "graph_ref")
+			graphRef := registry.StringConfig(spec.Config, "graph_ref")
 			if graphRef == "" {
 				return nil, fmt.Errorf("build mapped_subgraph node %q: graph_ref is required", spec.ID)
 			}
@@ -83,8 +81,8 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			node := nodes.NewMappedSubgraphNode()
 			applyNodeMetadata(node, spec)
 			node.GraphRef = graphRef
-			node.InputMap = mapStringConfig(spec.Config, "input_map")
-			node.OutputMap = mapStringConfig(spec.Config, "output_map")
+			node.InputMap = registry.MapStringConfig(spec.Config, "input_map")
+			node.OutputMap = registry.MapStringConfig(spec.Config, "output_map")
 			node.InvokeSubgraph = runner
 			return node, nil
 		},
@@ -110,11 +108,11 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 		ResolveStateContract: registry.ResolveIteratorStateContract,
 		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
 			_ = ctx
-			stateKey := stringConfig(spec.Config, "state_key")
+			stateKey := registry.StringConfig(spec.Config, "state_key")
 			if stateKey == "" {
 				return nil, fmt.Errorf("build iterator nodes %q: state_key is required", spec.ID)
 			}
-			maxIterations, ok := intConfig(spec.Config, "max_iterations")
+			maxIterations, ok := registry.IntConfig(spec.Config, "max_iterations")
 			if !ok || maxIterations <= 0 {
 				return nil, fmt.Errorf("build iterator nodes %q: max_iterations must be greater than 0", spec.ID)
 			}
@@ -122,8 +120,8 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			applyNodeMetadata(node, spec)
 			node.StateKey = stateKey
 			node.MaxIterations = maxIterations
-			node.ContinueTo = stringConfig(spec.Config, "continue_to")
-			node.DoneTo = stringConfig(spec.Config, "done_to")
+			node.ContinueTo = registry.StringConfig(spec.Config, "continue_to")
+			node.DoneTo = registry.StringConfig(spec.Config, "done_to")
 			return node, nil
 		},
 	})
@@ -147,8 +145,8 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			_ = ctx
 			node := nodes.NewHumanMessageNode()
 			applyNodeMetadata(node, spec)
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.InterruptMessage = stringConfig(spec.Config, "interrupt_message")
+			node.StateScope = registry.StringConfig(spec.Config, "state_scope")
+			node.InterruptMessage = registry.StringConfig(spec.Config, "interrupt_message")
 			return node, nil
 		},
 	})
@@ -175,11 +173,11 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			_ = ctx
 			node := nodes.NewContextReducerNode()
 			applyNodeMetadata(node, spec)
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.MaxMessages, _ = intConfig(spec.Config, "max_messages")
-			node.PreserveSystem, _ = boolConfig(spec.Config, "preserve_system")
-			node.PreserveRecent, _ = intConfig(spec.Config, "preserve_recent")
-			node.SummaryPrefix = stringConfig(spec.Config, "summary_prefix")
+			node.StateScope = registry.StringConfig(spec.Config, "state_scope")
+			node.MaxMessages, _ = registry.IntConfig(spec.Config, "max_messages")
+			node.PreserveSystem, _ = registry.BoolConfig(spec.Config, "preserve_system")
+			node.PreserveRecent, _ = registry.IntConfig(spec.Config, "preserve_recent")
+			node.SummaryPrefix = registry.StringConfig(spec.Config, "summary_prefix")
 			return node, nil
 		},
 	})
@@ -204,9 +202,9 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			_ = ctx
 			node := nodes.NewLLMNode()
 			applyNodeMetadata(node, spec)
-			node.ToolIDs = stringSliceConfig(spec.Config, "tool_ids")
-			node.StateScope = stringConfig(spec.Config, "state_scope")
-			node.PromptMaxChars, _ = intConfig(spec.Config, "prompt_max_chars")
+			node.ToolIDs = registry.StringSliceConfig(spec.Config, "tool_ids")
+			node.StateScope = registry.StringConfig(spec.Config, "state_scope")
+			node.PromptMaxChars, _ = registry.IntConfig(spec.Config, "prompt_max_chars")
 			return node, nil
 		},
 	})
@@ -230,8 +228,8 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			_ = ctx
 			node := nodes.NewToolCallNode()
 			applyNodeMetadata(node, spec)
-			node.ToolIDs = stringSliceConfig(spec.Config, "tool_ids")
-			node.StateScope = stringConfig(spec.Config, "state_scope")
+			node.ToolIDs = registry.StringSliceConfig(spec.Config, "tool_ids")
+			node.StateScope = registry.StringConfig(spec.Config, "state_scope")
 			return node, nil
 		},
 	})
@@ -248,7 +246,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			return LastMessageHasToolCalls(stringConfig(spec.Config, "state_scope")), nil
+			return LastMessageHasToolCalls(registry.StringConfig(spec.Config, "state_scope")), nil
 		},
 	})
 
@@ -264,7 +262,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			return HasFinalAnswer(stringConfig(spec.Config, "state_scope")), nil
+			return HasFinalAnswer(registry.StringConfig(spec.Config, "state_scope")), nil
 		},
 	})
 
@@ -374,109 +372,4 @@ func applyNodeMetadata(node interface {
 			typed.NodeDescription = spec.Description
 		}
 	}
-}
-
-func stringSliceConfig(config map[string]any, key string) []string {
-	if len(config) == 0 {
-		return nil
-	}
-	raw, ok := config[key]
-	if !ok {
-		return nil
-	}
-	values, ok := raw.([]any)
-	if ok {
-		result := make([]string, 0, len(values))
-		for _, value := range values {
-			if text, ok := value.(string); ok {
-				result = append(result, text)
-			}
-		}
-		return result
-	}
-	if typed, ok := raw.([]string); ok {
-		return append([]string(nil), typed...)
-	}
-	return nil
-}
-
-func mapStringConfig(config map[string]any, key string) map[string]string {
-	if len(config) == 0 {
-		return nil
-	}
-	raw, ok := config[key]
-	if !ok {
-		return nil
-	}
-	switch typed := raw.(type) {
-	case map[string]string:
-		result := make(map[string]string, len(typed))
-		for k, v := range typed {
-			result[k] = v
-		}
-		return result
-	case map[string]any:
-		result := make(map[string]string, len(typed))
-		for k, v := range typed {
-			if s, ok := v.(string); ok {
-				result[k] = s
-			}
-		}
-		return result
-	}
-	return nil
-}
-
-func stringConfig(config map[string]any, key string) string {
-	if len(config) == 0 {
-		return ""
-	}
-	if value, ok := config[key].(string); ok {
-		return value
-	}
-	return ""
-}
-
-func intConfig(config map[string]any, key string) (int, bool) {
-	if len(config) == 0 {
-		return 0, false
-	}
-	switch value := config[key].(type) {
-	case int:
-		return value, true
-	case int8:
-		return int(value), true
-	case int16:
-		return int(value), true
-	case int32:
-		return int(value), true
-	case int64:
-		return int(value), true
-	case float32:
-		return int(value), true
-	case float64:
-		return int(value), true
-	case string:
-		parsed, err := strconv.Atoi(strings.TrimSpace(value))
-		if err == nil {
-			return parsed, true
-		}
-	}
-	return 0, false
-}
-
-func boolConfig(config map[string]any, key string) (bool, bool) {
-	if len(config) == 0 {
-		return false, false
-	}
-	switch value := config[key].(type) {
-	case bool:
-		return value, true
-	case string:
-		parsed, err := strconv.ParseBool(strings.TrimSpace(value))
-		if err == nil {
-			return parsed, true
-		}
-	}
-	return false, false
 }

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -18,35 +19,35 @@ type GraphRunner struct {
 	ExecutionStore     ExecutionStore
 	CheckpointStore    CheckpointStore
 	ArtifactStore      ArtifactStore
-	StateCodec         StateCodec
+	Codec              wfstate.StateCodec
 	EventSink          EventSink
 	GraphID            string
 	GraphVersion       string
 	Breakpoints        []Breakpoint
-	ContractValidation ContractValidationMode
+	ContractValidation wfstate.ContractValidationMode
 	StartupWarnings    []WarningRecord
-	NodeContracts      map[string]NodeIOContract
+	NodeContracts      map[string]wfstate.NodeIOContract
 	Now                func() time.Time
 }
 
-func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec StateCodec, eventSink EventSink) *GraphRunner {
+func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec wfstate.StateCodec, eventSink EventSink) *GraphRunner {
 	return &GraphRunner{
 		graph:           graph,
 		ExecutionStore:  executionStore,
 		CheckpointStore: checkpointStore,
-		StateCodec:      codec,
+		Codec:           codec,
 		EventSink:       eventSink,
 		Now:             time.Now,
 	}
 }
 
-func (r *GraphRunner) Start(ctx context.Context, initialState State) (RunRecord, State, error) {
+func (r *GraphRunner) Start(ctx context.Context, initialState wfstate.State) (RunRecord, wfstate.State, error) {
 	if err := r.validate(); err != nil {
 		return RunRecord{}, initialState, err
 	}
 
 	if initialState == nil {
-		initialState = State{}
+		initialState = wfstate.State{}
 	}
 
 	now := r.now()
@@ -81,12 +82,12 @@ func (r *GraphRunner) Start(ctx context.Context, initialState State) (RunRecord,
 	if err := r.publishStartupWarnings(ctx, run); err != nil {
 		return RunRecord{}, initialState, err
 	}
-	logger.Info("run started", append(runLogFields(run), stateSummaryFields(initialState)...)...)
+	logger.Info("run started", append(runLogFields(run), wfstate.SummaryFields(initialState)...)...)
 
 	return r.execute(ctx, run, initialState.CloneState(), entryPoint, nil, nil)
 }
 
-func (r *GraphRunner) Resume(ctx context.Context, runID string, input State) (RunRecord, State, error) {
+func (r *GraphRunner) Resume(ctx context.Context, runID string, input wfstate.State) (RunRecord, wfstate.State, error) {
 	if err := r.validate(); err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -122,7 +123,7 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string, input State) (Ru
 	}
 }
 
-func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID string, input State) (RunRecord, State, error) {
+func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID string, input wfstate.State) (RunRecord, wfstate.State, error) {
 	if err := r.validate(); err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -203,7 +204,7 @@ func isContinuableRunStatus(status RunStatus) bool {
 	}
 }
 
-func (r *GraphRunner) execute(ctx context.Context, run RunRecord, state State, startNode string, skip *breakpointSkip, artifacts []ArtifactRef) (RunRecord, State, error) {
+func (r *GraphRunner) execute(ctx context.Context, run RunRecord, state wfstate.State, startNode string, skip *breakpointSkip, artifacts []wfstate.ArtifactRef) (RunRecord, wfstate.State, error) {
 	execution := newGraphRunnerExecution(r, run, state, artifacts, skip)
 	runnable, err := r.runnerGraph().CompileForRunner(execution)
 	if err != nil {
@@ -232,7 +233,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, state State, s
 		zap.Int("interrupt_after_count", len(afterNodes)),
 		zap.Int("artifact_count", len(artifacts)),
 	)
-	fields = append(fields, stateSummaryFields(state)...)
+	fields = append(fields, wfstate.SummaryFields(state)...)
 	logger.Info("run executing", fields...)
 
 	finalState, invokeErr := runnable.InvokeWithConfig(ctx, state.CloneState(), config)
@@ -252,9 +253,9 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, state State, s
 	return r.failRun(ctx, execution.currentRun(), finalState, "node_failed", invokeErr.Error())
 }
 
-func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input State) (RunRecord, State, error) {
+func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input wfstate.State) (RunRecord, wfstate.State, error) {
 	var err error
-	if checkpoint.Business, err = mergeResumeInput(checkpoint.Business, input); err != nil {
+	if checkpoint.Business, err = wfstate.MergeResumeInput(checkpoint.Business, input); err != nil {
 		return RunRecord{}, nil, err
 	}
 
@@ -280,7 +281,7 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 			return RunRecord{}, nil, err
 		}
-		logger.Info("resume resolved to completed run", append(runLogFields(run), stateSummaryFields(checkpoint.Business)...)...)
+		logger.Info("resume resolved to completed run", append(runLogFields(run), wfstate.SummaryFields(checkpoint.Business)...)...)
 		return run, checkpoint.Business, nil
 	}
 	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
@@ -303,13 +304,13 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		zap.String("resume_checkpoint_id", checkpoint.Record.CheckpointID),
 		zap.Int("artifact_count", len(checkpoint.Artifacts)),
 	)
-	fields = append(fields, stateSummaryFields(checkpoint.Business)...)
+	fields = append(fields, wfstate.SummaryFields(checkpoint.Business)...)
 	logger.Info("resuming run", fields...)
 	return r.execute(ctx, run, checkpoint.Business, startNode, skip, checkpoint.Artifacts)
 }
 
-func (r *GraphRunner) continueRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input State) (RunRecord, State, error) {
-	state, err := prepareContinuationState(checkpoint.Business, input)
+func (r *GraphRunner) continueRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input wfstate.State) (RunRecord, wfstate.State, error) {
+	state, err := wfstate.PrepareContinuationState(checkpoint.Business, input)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -320,7 +321,7 @@ func (r *GraphRunner) continueRun(ctx context.Context, run RunRecord, checkpoint
 		zap.String("checkpoint_id", checkpoint.Record.CheckpointID),
 		zap.Int("artifact_count", len(checkpoint.Artifacts)),
 	}
-	fields = append(fields, stateSummaryFields(state)...)
+	fields = append(fields, wfstate.SummaryFields(state)...)
 	logger.Info("continuing run as new execution", fields...)
 	return r.Start(ctx, state)
 }
@@ -353,14 +354,14 @@ func (r *GraphRunner) ListCheckpoints(ctx context.Context, runID string) ([]Chec
 	return r.CheckpointStore.List(ctx, runID)
 }
 
-func (r *GraphRunner) ListArtifacts(ctx context.Context, runID string) ([]ArtifactRef, error) {
+func (r *GraphRunner) ListArtifacts(ctx context.Context, runID string) ([]wfstate.ArtifactRef, error) {
 	if r == nil || r.ArtifactStore == nil {
 		return nil, errors.New("graph runner artifact store is nil")
 	}
 	return r.ArtifactStore.List(ctx, runID)
 }
 
-func (r *GraphRunner) LoadArtifact(ctx context.Context, ref ArtifactRef) (Artifact, error) {
+func (r *GraphRunner) LoadArtifact(ctx context.Context, ref wfstate.ArtifactRef) (Artifact, error) {
 	if r == nil || r.ArtifactStore == nil {
 		return Artifact{}, errors.New("graph runner artifact store is nil")
 	}
@@ -374,7 +375,7 @@ func (r *GraphRunner) LoadCheckpointState(ctx context.Context, checkpointID stri
 	if r.CheckpointStore == nil {
 		return RestoredCheckpoint{}, errors.New("graph runner checkpoint store is nil")
 	}
-	if r.StateCodec == nil {
+	if r.Codec == nil {
 		return RestoredCheckpoint{}, errors.New("graph runner state codec is nil")
 	}
 
@@ -383,11 +384,11 @@ func (r *GraphRunner) LoadCheckpointState(ctx context.Context, checkpointID stri
 		return RestoredCheckpoint{}, err
 	}
 
-	snapshot, err := r.StateCodec.Decode(payload)
+	snapshot, err := r.Codec.Decode(payload)
 	if err != nil {
 		return RestoredCheckpoint{}, err
 	}
-	restored, err := RestoreStateSnapshot(snapshot)
+	restored, err := wfstate.RestoreStateSnapshot(snapshot)
 	if err != nil {
 		return RestoredCheckpoint{}, err
 	}
@@ -444,13 +445,13 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	return r.publishEvent(ctx, run, "", "", EventRunCancelRequested, nil)
 }
 
-func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, state State, interrupt *langgraph.GraphInterrupt) (RunRecord, State, error) {
+func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, state wfstate.State, interrupt *langgraph.GraphInterrupt) (RunRecord, wfstate.State, error) {
 	run := execution.currentRun()
 	fields := append(runLogFields(run),
 		zap.String("interrupt_node_id", interrupt.Node),
 		zap.String("interrupt_reason", interrupt.Error()),
 	)
-	fields = append(fields, stateSummaryFields(state)...)
+	fields = append(fields, wfstate.SummaryFields(state)...)
 	logger.Info("run interrupt", fields...)
 
 	if control, active := execution.consumePendingControl(); control != nil {
@@ -480,7 +481,7 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 	return r.failRun(ctx, run, state, "interrupt_failed", interrupt.Error())
 }
 
-func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, state State) (RunRecord, State, error) {
+func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, state wfstate.State) (RunRecord, wfstate.State, error) {
 	now := r.now()
 	run.Status = RunStatusCompleted
 	run.CurrentNodeID = ""
@@ -489,14 +490,14 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, state Stat
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, state, err
 	}
-	logger.Info("run completed", append(runLogFields(run), stateSummaryFields(state)...)...)
+	logger.Info("run completed", append(runLogFields(run), wfstate.SummaryFields(state)...)...)
 	if err := r.publishEvent(ctx, run, run.LastStepID, "", EventRunFinished, nil); err != nil {
 		return RunRecord{}, state, err
 	}
 	return run, state, nil
 }
 
-func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, state State) (RunRecord, State, error) {
+func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, state wfstate.State) (RunRecord, wfstate.State, error) {
 	now := r.now()
 	run.Status = RunStatusCanceled
 	run.UpdatedAt = now
@@ -504,15 +505,15 @@ func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, state State)
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, state, err
 	}
-	logger.Info("run canceled", append(runLogFields(run), stateSummaryFields(state)...)...)
+	logger.Info("run canceled", append(runLogFields(run), wfstate.SummaryFields(state)...)...)
 	if err := r.publishEvent(ctx, run, "", run.CurrentNodeID, EventRunCanceled, nil); err != nil {
 		return RunRecord{}, state, err
 	}
 	return run, state, nil
 }
 
-func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step StepRecord, nodeID string, stage CheckpointStage, state State, attempts int, hit *BreakpointHit, artifacts []ArtifactRef) (string, error) {
-	snapshot, err := SnapshotFromStateWithRuntime(state, RuntimeState{
+func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step StepRecord, nodeID string, stage CheckpointStage, state wfstate.State, attempts int, hit *wfstate.BreakpointHit, artifacts []wfstate.ArtifactRef) (string, error) {
+	snapshot, err := wfstate.SnapshotFromStateWithRuntime(state, wfstate.RuntimeState{
 		RunID:           run.RunID,
 		CurrentStepID:   step.StepID,
 		CurrentNodeID:   nodeID,
@@ -525,9 +526,9 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 	if err != nil {
 		return "", err
 	}
-	snapshot.Version = r.StateCodec.Version()
+	snapshot.Version = r.Codec.Version()
 
-	payload, err := r.StateCodec.Encode(snapshot)
+	payload, err := r.Codec.Encode(snapshot)
 	if err != nil {
 		return "", err
 	}
@@ -538,8 +539,8 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 		StepID:       step.StepID,
 		NodeID:       nodeID,
 		Stage:        stage,
-		StateCodec:   r.StateCodec.Name(),
-		StateVersion: r.StateCodec.Version(),
+		StateCodec:   r.Codec.Name(),
+		StateVersion: r.Codec.Version(),
 		CreatedAt:    r.now(),
 	}
 	if err := r.CheckpointStore.Save(ctx, record, payload); err != nil {
@@ -566,19 +567,19 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 	return record.CheckpointID, nil
 }
 
-func (r *GraphRunner) computeStateDiff(before, after State) ([]StateChange, error) {
-	beforeSnapshot, err := SnapshotFromState(before)
+func (r *GraphRunner) computeStateDiff(before, after wfstate.State) ([]wfstate.StateChange, error) {
+	beforeSnapshot, err := wfstate.SnapshotFromState(before)
 	if err != nil {
 		return nil, err
 	}
-	afterSnapshot, err := SnapshotFromState(after)
+	afterSnapshot, err := wfstate.SnapshotFromState(after)
 	if err != nil {
 		return nil, err
 	}
-	return r.StateCodec.Diff(beforeSnapshot, afterSnapshot)
+	return r.Codec.Diff(beforeSnapshot, afterSnapshot)
 }
 
-func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord, step StepRecord, changes []StateChange) error {
+func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord, step StepRecord, changes []wfstate.StateChange) error {
 	if len(changes) == 0 {
 		return nil
 	}
@@ -593,7 +594,7 @@ func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord
 	})
 }
 
-func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step StepRecord, before, after State) error {
+func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step StepRecord, before, after wfstate.State) error {
 	changes, err := r.computeStateDiff(before, after)
 	if err != nil {
 		return err
@@ -601,7 +602,7 @@ func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step 
 	return r.publishStateDiffChanges(ctx, run, step, changes)
 }
 
-func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, state State, step StepRecord, checkpointID string, hit *BreakpointHit) (RunRecord, State, error) {
+func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, state wfstate.State, step StepRecord, checkpointID string, hit *wfstate.BreakpointHit) (RunRecord, wfstate.State, error) {
 	now := r.now()
 	run.Status = RunStatusPaused
 	run.PauseRequested = false
@@ -617,7 +618,7 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, state State, 
 		return RunRecord{}, state, err
 	}
 	fields := append(runLogFields(run), stepLogFields(step)...)
-	fields = append(fields, stateSummaryFields(state)...)
+	fields = append(fields, wfstate.SummaryFields(state)...)
 	if hit != nil {
 		fields = append(fields,
 			zap.String("breakpoint_id", hit.BreakpointID),
@@ -636,7 +637,7 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, state State, 
 	return run, state, nil
 }
 
-func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, state State, code string, message string) (RunRecord, State, error) {
+func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, state wfstate.State, code string, message string) (RunRecord, wfstate.State, error) {
 	now := r.now()
 	run.Status = RunStatusFailed
 	run.ErrorCode = code
@@ -646,7 +647,7 @@ func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, state State, c
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, state, err
 	}
-	logger.Error("run failed", append(runLogFields(run), stateSummaryFields(state)...)...)
+	logger.Error("run failed", append(runLogFields(run), wfstate.SummaryFields(state)...)...)
 	if err := r.publishEvent(ctx, run, "", run.CurrentNodeID, EventRunFailed, map[string]any{
 		"error_code":    code,
 		"error_message": message,
@@ -656,7 +657,7 @@ func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, state State, c
 	return run, state, errors.New(message)
 }
 
-func (r *GraphRunner) resumeTarget(checkpoint CheckpointRecord, state State) (string, *breakpointSkip, error) {
+func (r *GraphRunner) resumeTarget(checkpoint CheckpointRecord, state wfstate.State) (string, *breakpointSkip, error) {
 	nodeID, err := r.runnerGraph().ResolveNodeID(checkpoint.NodeID)
 	if err != nil {
 		return "", nil, err
@@ -672,7 +673,7 @@ func (r *GraphRunner) resumeTarget(checkpoint CheckpointRecord, state State) (st
 	}
 }
 
-func (r *GraphRunner) resolveNextNode(currentName string, state State) (string, error) {
+func (r *GraphRunner) resolveNextNode(currentName string, state wfstate.State) (string, error) {
 	graph := r.runnerGraph()
 	if graph == nil {
 		return "", errors.New("graph runner graph is nil")
@@ -680,7 +681,7 @@ func (r *GraphRunner) resolveNextNode(currentName string, state State) (string, 
 	return graph.ResolveNextNode(currentName, state)
 }
 
-func (r *GraphRunner) notifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state State, err error) {
+func (r *GraphRunner) notifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state wfstate.State, err error) {
 	graph := r.runnerGraph()
 	if graph == nil {
 		return
@@ -688,7 +689,7 @@ func (r *GraphRunner) notifyListeners(ctx context.Context, event langgraph.NodeE
 	graph.NotifyListeners(ctx, event, nodeID, state, err)
 }
 
-func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpointSkip) *BreakpointHit {
+func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpointSkip) *wfstate.BreakpointHit {
 	if skip != nil && !skip.Consumed && skip.NodeID == nodeID && skip.Stage == stage {
 		skip.Consumed = true
 		return nil
@@ -700,7 +701,7 @@ func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpo
 		if breakpoint.NodeID != nodeID || breakpoint.Stage != stage {
 			continue
 		}
-		return &BreakpointHit{
+		return &wfstate.BreakpointHit{
 			BreakpointID: breakpoint.ID,
 			NodeID:       breakpoint.NodeID,
 			Stage:        breakpoint.Stage,
@@ -750,7 +751,7 @@ func (r *GraphRunner) validate() error {
 	if r.CheckpointStore == nil {
 		return errors.New("graph runner checkpoint store is nil")
 	}
-	if r.StateCodec == nil {
+	if r.Codec == nil {
 		return errors.New("graph runner state codec is nil")
 	}
 	if r.EventSink == nil {
@@ -791,9 +792,9 @@ func (r *GraphRunner) publishStartupWarnings(ctx context.Context, run RunRecord)
 	return nil
 }
 
-func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
+func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (wfstate.ArtifactRef, error) {
 	if r == nil || r.ArtifactStore == nil {
-		return ArtifactRef{}, ErrArtifactRecorderUnavailable
+		return wfstate.ArtifactRef{}, ErrArtifactRecorderUnavailable
 	}
 
 	metadata, _ := RunnerMetadataFromContext(ctx)
@@ -815,7 +816,7 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (Ar
 
 	ref, err := r.ArtifactStore.Save(ctx, artifact)
 	if err != nil {
-		return ArtifactRef{}, err
+		return wfstate.ArtifactRef{}, err
 	}
 	fields := append(artifactLogFields(ref), zap.Int("bytes", len(artifact.Data)))
 	logger.Debug("artifact recorded", fields...)
@@ -832,8 +833,8 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (Ar
 
 func (r *GraphRunner) validateRestoredCheckpoint(checkpoint RestoredCheckpoint) error {
 	record := checkpoint.Record
-	if codecName := strings.TrimSpace(record.StateCodec); codecName != "" && codecName != r.StateCodec.Name() {
-		return fmt.Errorf("checkpoint %q uses state codec %q, runner configured for %q", record.CheckpointID, codecName, r.StateCodec.Name())
+	if codecName := strings.TrimSpace(record.StateCodec); codecName != "" && codecName != r.Codec.Name() {
+		return fmt.Errorf("checkpoint %q uses state codec %q, runner configured for %q", record.CheckpointID, codecName, r.Codec.Name())
 	}
 	if version := strings.TrimSpace(record.StateVersion); version != "" && checkpoint.Snapshot.Version != "" && version != checkpoint.Snapshot.Version {
 		return fmt.Errorf("checkpoint %q state version mismatch: record=%q snapshot=%q", record.CheckpointID, version, checkpoint.Snapshot.Version)

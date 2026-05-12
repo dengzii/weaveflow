@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"weaveflow/dsl"
-	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -35,7 +35,7 @@ func NewHumanMessageNode() *HumanMessageNode {
 	}
 }
 
-func (n *HumanMessageNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *HumanMessageNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	conversation := state.Conversation(n.StateScope)
 	pending, ok, err := n.consumePendingInput(state)
 	if err != nil {
@@ -60,7 +60,7 @@ func (n *HumanMessageNode) Invoke(ctx context.Context, state fruntime.State) (fr
 	return state, nil
 }
 
-func (n *HumanMessageNode) consumePendingInput(state fruntime.State) (string, bool, error) {
+func (n *HumanMessageNode) consumePendingInput(state wfstate.State) (string, bool, error) {
 	target := n.pendingInputState(state)
 	if target == nil {
 		return "", false, nil
@@ -86,7 +86,7 @@ func (n *HumanMessageNode) consumePendingInput(state fruntime.State) (string, bo
 	return text, true, nil
 }
 
-func (n *HumanMessageNode) pendingInputState(state fruntime.State) fruntime.State {
+func (n *HumanMessageNode) pendingInputState(state wfstate.State) wfstate.State {
 	if state == nil {
 		return nil
 	}
@@ -96,8 +96,8 @@ func (n *HumanMessageNode) pendingInputState(state fruntime.State) fruntime.Stat
 	return state.Scope(n.StateScope)
 }
 
-func (n *HumanMessageNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *HumanMessageNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *HumanMessageNode) GraphNodeSpec() dsl.GraphNodeSpec {

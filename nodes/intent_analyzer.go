@@ -8,13 +8,14 @@ import (
 	"strings"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
 const (
-	defaultIntentStatePath = fruntime.StateKeyIntent
+	defaultIntentStatePath = wfstate.StateKeyIntent
 	intentAnalyzerPrompt   = "" +
 		"You are an intent analysis node inside an agent workflow. " +
 		"Return only valid JSON without markdown fences. " +
@@ -59,13 +60,13 @@ func NewIntentAnalyzerNode() *IntentAnalyzerNode {
 	}
 }
 
-func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("intent analyzer: model service not available")
 	}
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	input, err := n.resolveInput(state)
@@ -143,8 +144,8 @@ func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state fruntime.State) (
 	return state, nil
 }
 
-func (n *IntentAnalyzerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *IntentAnalyzerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *IntentAnalyzerNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -178,7 +179,7 @@ func (n *IntentAnalyzerNode) effectiveIntentStatePath() string {
 	return strings.TrimSpace(n.IntentStatePath)
 }
 
-func (n *IntentAnalyzerNode) resolveInput(state fruntime.State) (string, error) {
+func (n *IntentAnalyzerNode) resolveInput(state wfstate.State) (string, error) {
 	if inputPath := strings.TrimSpace(n.InputPath); inputPath != "" {
 		value, ok := state.ResolvePath(inputPath)
 		if !ok {
@@ -280,8 +281,8 @@ func normalizeIntentConfidence(value float64) float64 {
 	return value
 }
 
-func ensureIntentStateAtPath(root fruntime.State, path string) (fruntime.State, error) {
-	segments := fruntime.SplitStatePath(path)
+func ensureIntentStateAtPath(root wfstate.State, path string) (wfstate.State, error) {
+	segments := wfstate.SplitStatePath(path)
 	if len(segments) == 0 {
 		return nil, errors.New("intent state path is required")
 	}
@@ -290,13 +291,13 @@ func ensureIntentStateAtPath(root fruntime.State, path string) (fruntime.State, 
 	for _, segment := range segments {
 		switch typed := current[segment].(type) {
 		case nil:
-			nested := fruntime.State{}
+			nested := wfstate.State{}
 			current[segment] = nested
 			current = nested
-		case fruntime.State:
+		case wfstate.State:
 			current = typed
 		case map[string]any:
-			nested := fruntime.State(typed)
+			nested := wfstate.State(typed)
 			current[segment] = nested
 			current = nested
 		default:

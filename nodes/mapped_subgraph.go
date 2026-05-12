@@ -6,6 +6,7 @@ import (
 	"sort"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
@@ -31,7 +32,7 @@ func NewMappedSubgraphNode() *MappedSubgraphNode {
 	}
 }
 
-func (n *MappedSubgraphNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *MappedSubgraphNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if n.InvokeSubgraph == nil {
 		return state, fmt.Errorf("mapped subgraph node %q has no invoker for graph_ref %q", n.ID(), n.GraphRef)
 	}
@@ -53,7 +54,7 @@ func (n *MappedSubgraphNode) Invoke(ctx context.Context, state fruntime.State) (
 	return n.mergeOutputToState(state, subgraphResult)
 }
 
-func (n *MappedSubgraphNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
+func (n *MappedSubgraphNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
 	if n.InvokeSubgraph == nil {
 		return nil, fmt.Errorf("mapped subgraph node %q has no invoker for graph_ref %q", n.ID(), n.GraphRef)
 	}
@@ -76,40 +77,40 @@ func (n *MappedSubgraphNode) Execute(ctx context.Context, input fruntime.State) 
 }
 
 // buildSubgraphInput creates a minimal state for the subgraph by mapping paths from parent state.
-func (n *MappedSubgraphNode) buildSubgraphInput(parentState fruntime.State) fruntime.State {
-	subgraphInput := fruntime.State{}
+func (n *MappedSubgraphNode) buildSubgraphInput(parentState wfstate.State) wfstate.State {
+	subgraphInput := wfstate.State{}
 	for parentPath, subgraphPath := range n.InputMap {
-		value, ok := fruntime.ResolveContractPathValue(parentState, parentPath)
+		value, ok := wfstate.ResolveContractPathValue(parentState, parentPath)
 		if !ok {
 			continue
 		}
-		fruntime.SetContractPathValue(subgraphInput, subgraphPath, value)
+		wfstate.SetContractPathValue(subgraphInput, subgraphPath, value)
 	}
 	return subgraphInput
 }
 
 // buildOutputPatch extracts mapped paths from subgraph result into a parent-side patch.
-func (n *MappedSubgraphNode) buildOutputPatch(subgraphResult fruntime.State) (fruntime.State, error) {
-	patch := fruntime.State{}
+func (n *MappedSubgraphNode) buildOutputPatch(subgraphResult wfstate.State) (wfstate.State, error) {
+	patch := wfstate.State{}
 	for subgraphPath, parentPath := range n.OutputMap {
-		value, ok := fruntime.ResolveContractPathValue(subgraphResult, subgraphPath)
+		value, ok := wfstate.ResolveContractPathValue(subgraphResult, subgraphPath)
 		if !ok {
 			continue
 		}
-		fruntime.SetContractPathValue(patch, parentPath, value)
+		wfstate.SetContractPathValue(patch, parentPath, value)
 	}
 	return patch, nil
 }
 
 // mergeOutputToState applies output mappings onto a clone of the parent state (for Invoke compat).
-func (n *MappedSubgraphNode) mergeOutputToState(parentState fruntime.State, subgraphResult fruntime.State) (fruntime.State, error) {
+func (n *MappedSubgraphNode) mergeOutputToState(parentState wfstate.State, subgraphResult wfstate.State) (wfstate.State, error) {
 	result := parentState.CloneState()
 	for subgraphPath, parentPath := range n.OutputMap {
-		value, ok := fruntime.ResolveContractPathValue(subgraphResult, subgraphPath)
+		value, ok := wfstate.ResolveContractPathValue(subgraphResult, subgraphPath)
 		if !ok {
 			continue
 		}
-		fruntime.SetContractPathValue(result, parentPath, value)
+		wfstate.SetContractPathValue(result, parentPath, value)
 	}
 	return result, nil
 }

@@ -1,9 +1,13 @@
-package runtime
+package state
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"weaveflow/dsl"
+)
 
 type StateExtension interface {
-	FieldDefinitions() []StateFieldDefinition
+	FieldDefinitions() []dsl.StateFieldDefinition
 	IsSpecialKey(key string) bool
 	ExtractRootSnapshot(state State, snapshot *StateSnapshot) error
 	ApplyRootSnapshot(state State, snapshot StateSnapshot) error

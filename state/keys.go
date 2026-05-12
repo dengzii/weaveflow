@@ -1,4 +1,4 @@
-package runtime
+package state
 
 // Domain state keys are root-level fields in the State map.
 // Grouped by module so additions are easy to audit.

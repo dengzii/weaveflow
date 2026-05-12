@@ -1,4 +1,4 @@
-package runtime
+package state
 
 import (
 	"encoding/json"
@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
+
+	"weaveflow/dsl"
 )
 
 const (
@@ -25,12 +27,12 @@ type ConversationState struct {
 
 type conversationExtension struct{}
 
-func (conversationExtension) FieldDefinitions() []StateFieldDefinition {
-	return []StateFieldDefinition{
+func (conversationExtension) FieldDefinitions() []dsl.StateFieldDefinition {
+	return []dsl.StateFieldDefinition{
 		{
 			Name:        StateKeyMessages,
 			Description: "Chat messages accumulated during the graph run.",
-			Schema: map[string]any{
+			Schema: dsl.JSONSchema{
 				"type": "array",
 				"items": map[string]any{
 					"type": "object",
@@ -40,17 +42,17 @@ func (conversationExtension) FieldDefinitions() []StateFieldDefinition {
 		{
 			Name:        StateKeyIterationCount,
 			Description: "Current tool-using iteration count.",
-			Schema:      map[string]any{"type": "integer", "minimum": 0},
+			Schema:      dsl.JSONSchema{"type": "integer", "minimum": 0},
 		},
 		{
 			Name:        StateKeyMaxIterations,
 			Description: "Maximum iteration count allowed for the run.",
-			Schema:      map[string]any{"type": "integer", "minimum": 1},
+			Schema:      dsl.JSONSchema{"type": "integer", "minimum": 1},
 		},
 		{
 			Name:        StateKeyFinalAnswer,
 			Description: "Final answer produced by the graph.",
-			Schema:      map[string]any{"type": "string"},
+			Schema:      dsl.JSONSchema{"type": "string"},
 		},
 	}
 }

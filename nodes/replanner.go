@@ -6,6 +6,7 @@ import (
 	"strings"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
 )
@@ -32,9 +33,9 @@ func NewReplannerNode() *ReplannerNode {
 	}
 }
 
-func (n *ReplannerNode) Invoke(ctx context.Context, state fruntime.State) (fruntime.State, error) {
+func (n *ReplannerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
-		state = fruntime.State{}
+		state = wfstate.State{}
 	}
 
 	replanReason := n.buildReplanReason(state)
@@ -75,8 +76,8 @@ func (n *ReplannerNode) Invoke(ctx context.Context, state fruntime.State) (frunt
 	return result, err
 }
 
-func (n *ReplannerNode) Execute(ctx context.Context, input fruntime.State) (fruntime.State, error) {
-	return fruntime.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ReplannerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
 }
 
 func (n *ReplannerNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -108,7 +109,7 @@ func (n *ReplannerNode) effectivePlannerStatePath() string {
 	if path := strings.TrimSpace(n.PlannerStatePath); path != "" {
 		return path
 	}
-	return fruntime.StateKeyPlanner
+	return wfstate.StateKeyPlanner
 }
 
 func (n *ReplannerNode) configureInner() {
@@ -125,9 +126,9 @@ func (n *ReplannerNode) configureInner() {
 
 func (n *ReplannerNode) effectiveContextPaths() []string {
 	base := []string{
-		fruntime.StateKeyVerification,
-		fruntime.StateKeyObservations,
-		fruntime.StateKeyExecution + ".step_results",
+		wfstate.StateKeyVerification,
+		wfstate.StateKeyObservations,
+		wfstate.StateKeyExecution + ".step_results",
 	}
 	for _, path := range n.ContextPaths {
 		path = strings.TrimSpace(path)
@@ -150,10 +151,10 @@ func containsPath(paths []string, target string) bool {
 	return false
 }
 
-func (n *ReplannerNode) buildReplanReason(state fruntime.State) string {
+func (n *ReplannerNode) buildReplanReason(state wfstate.State) string {
 	var parts []string
 
-	verification := state.Get(fruntime.StateKeyVerification)
+	verification := state.Get(wfstate.StateKeyVerification)
 	if verification != nil {
 		if summary, ok := verification["summary"].(string); ok && summary != "" {
 			parts = append(parts, "Verification: "+summary)
@@ -180,7 +181,7 @@ func (n *ReplannerNode) buildReplanReason(state fruntime.State) string {
 	return strings.Join(parts, "\n")
 }
 
-func extractReplanIssues(verification fruntime.State) []string {
+func extractReplanIssues(verification wfstate.State) []string {
 	raw, ok := verification["issues"]
 	if !ok {
 		return nil
