@@ -3,12 +3,13 @@ package state
 import (
 	"encoding/json"
 	"testing"
+	"weaveflow/core"
 )
 
 func TestValidateNodeContractNoViolations(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		WritePaths: []string{"shared.messages", "shared.topic"},
 	}
 	changes := []StateChange{
@@ -25,7 +26,7 @@ func TestValidateNodeContractNoViolations(t *testing.T) {
 func TestValidateNodeContractUndeclaredWrite(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		WritePaths: []string{"shared.messages"},
 	}
 	changes := []StateChange{
@@ -48,7 +49,7 @@ func TestValidateNodeContractUndeclaredWrite(t *testing.T) {
 func TestValidateNodeContractWildcardSkips(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{WildcardWrite: true}
+	contract := core.NodeIOContract{WildcardWrite: true}
 	changes := []StateChange{
 		{Path: "shared.anything", After: json.RawMessage(`"value"`)},
 	}
@@ -62,7 +63,7 @@ func TestValidateNodeContractWildcardSkips(t *testing.T) {
 func TestValidateNodeInputContractMissingRequiredRead(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		ReadPaths:         []string{"shared.topic"},
 		RequiredReadPaths: []string{"shared.topic", "shared.user.id"},
 	}
@@ -85,7 +86,7 @@ func TestValidateNodeInputContractMissingRequiredRead(t *testing.T) {
 func TestValidateNodeContractReadOnlyContractRejectsWrites(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		ReadPaths: []string{"shared.input"},
 	}
 	changes := []StateChange{
@@ -104,7 +105,7 @@ func TestValidateNodeContractReadOnlyContractRejectsWrites(t *testing.T) {
 func TestValidateNodeContractEmptyContractSkips(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{}
+	contract := core.NodeIOContract{}
 	changes := []StateChange{
 		{Path: "shared.anything", After: json.RawMessage(`"value"`)},
 	}
@@ -118,7 +119,7 @@ func TestValidateNodeContractEmptyContractSkips(t *testing.T) {
 func TestValidateNodeContractMissingRequired(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		WritePaths:         []string{"shared.final_answer"},
 		RequiredWritePaths: []string{"shared.final_answer"},
 	}
@@ -136,7 +137,7 @@ func TestValidateNodeContractMissingRequired(t *testing.T) {
 func TestValidateNodeContractNestedPathMatch(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		WritePaths: []string{"shared.planner"},
 	}
 	changes := []StateChange{
@@ -153,7 +154,7 @@ func TestValidateNodeContractNestedPathMatch(t *testing.T) {
 func TestValidateNodeContractParentWriteMatchesChildDeclaration(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		WritePaths: []string{"shared.planner.status", "shared.planner.steps"},
 	}
 	changes := []StateChange{
@@ -169,7 +170,7 @@ func TestValidateNodeContractParentWriteMatchesChildDeclaration(t *testing.T) {
 func TestValidateNodeContractReadOnlyViolation(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		WritePaths: []string{"shared.output"},
 	}
 	changes := []StateChange{
@@ -189,7 +190,7 @@ func TestValidateNodeContractReadOnlyViolation(t *testing.T) {
 func TestValidateNodeContractDoesNotIgnoreRuntimeNodeStateWrites(t *testing.T) {
 	t.Parallel()
 
-	contract := NodeIOContract{
+	contract := core.NodeIOContract{
 		WritePaths: []string{"shared.topic"},
 	}
 	changes := []StateChange{

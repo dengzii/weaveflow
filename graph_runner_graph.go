@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"weaveflow/builder"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -151,6 +152,6 @@ func buildRunnerWarnings(diagnostics []ContractDiagnostic) []fruntime.WarningRec
 	return warnings
 }
 
-func convertStateContract(contract dsl.StateContract) wfstate.NodeIOContract {
+func convertStateContract(contract dsl.StateContract) core.NodeIOContract {
 	return builder.ConvertStateContract(contract)
 }

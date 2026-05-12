@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"weaveflow/builtin"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
@@ -60,12 +61,12 @@ func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) err
 	return nil
 }
 
-func ResolveNodeContracts(graph NodeSpecGraph, reg *registry.Registry) map[string]wfstate.NodeIOContract {
+func ResolveNodeContracts(graph NodeSpecGraph, reg *registry.Registry) map[string]core.NodeIOContract {
 	if graph == nil || reg == nil {
 		return nil
 	}
 	nodeSpecs := graph.NodeSpecs()
-	contracts := make(map[string]wfstate.NodeIOContract, len(nodeSpecs))
+	contracts := make(map[string]core.NodeIOContract, len(nodeSpecs))
 	for nodeID, spec := range nodeSpecs {
 		contract, err := reg.ResolveNodeStateContract(spec)
 		if err != nil {
@@ -82,8 +83,8 @@ func ResolveNodeContracts(graph NodeSpecGraph, reg *registry.Registry) map[strin
 	return contracts
 }
 
-func ConvertStateContract(contract dsl.StateContract) wfstate.NodeIOContract {
-	result := wfstate.NodeIOContract{}
+func ConvertStateContract(contract dsl.StateContract) core.NodeIOContract {
+	result := core.NodeIOContract{}
 	for _, field := range contract.Fields {
 		path := strings.TrimSpace(field.Path)
 		if path == "*" {

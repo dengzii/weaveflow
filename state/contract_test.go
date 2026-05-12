@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"testing"
+	"weaveflow/core"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -25,7 +26,7 @@ func TestProjectStateByContractSelectsSharedScopeRuntimeAndInternalState(t *test
 	}
 	full.EnsureNamespace("__wf_secret")["flag"] = true
 
-	projected := ProjectStateByContract(full, NodeIOContract{
+	projected := ProjectStateByContract(full, core.NodeIOContract{
 		ReadPaths: []string{
 			"shared.planner",
 			"scopes.agent.messages",
@@ -61,7 +62,7 @@ func TestProjectStateByContractWildcardReadClonesFullState(t *testing.T) {
 	t.Parallel()
 
 	full := State{"topic": "weather"}
-	projected := ProjectStateByContract(full, NodeIOContract{WildcardRead: true})
+	projected := ProjectStateByContract(full, core.NodeIOContract{WildcardRead: true})
 	projected["topic"] = "changed"
 
 	if full["topic"] != "weather" {
@@ -78,7 +79,7 @@ func TestProjectStateByContractPreservesRootConversationFallbackForScopedMessage
 	})
 	full.Conversation("").SetMaxIterations(16)
 
-	projected := ProjectStateByContract(full, NodeIOContract{
+	projected := ProjectStateByContract(full, core.NodeIOContract{
 		ReadPaths: []string{
 			"scopes.agent.messages",
 			"scopes.agent.max_iterations",
@@ -103,7 +104,7 @@ func TestMergePatchByContractWildcardWriteAllowsAnyWrite(t *testing.T) {
 
 	merged, err := MergePatchByContract(State{}, State{
 		"secret": "allowed",
-	}, NodeIOContract{
+	}, core.NodeIOContract{
 		WildcardWrite: true,
 	})
 	if err != nil {
@@ -128,7 +129,7 @@ func TestMergePatchByContractMergesAllowedWrites(t *testing.T) {
 		},
 	}
 
-	merged, err := MergePatchByContract(full, patch, NodeIOContract{
+	merged, err := MergePatchByContract(full, patch, core.NodeIOContract{
 		WritePaths:         []string{"shared.planner"},
 		RequiredWritePaths: []string{"shared.planner.status"},
 	})
@@ -166,7 +167,7 @@ func TestMergePatchByContractMergesScopedConversationWrites(t *testing.T) {
 	patch.Conversation("agent").IncrementIteration()
 	patch.Conversation("agent").SetFinalAnswer("runner reply")
 
-	merged, err := MergePatchByContract(full, patch, NodeIOContract{
+	merged, err := MergePatchByContract(full, patch, core.NodeIOContract{
 		WritePaths: []string{
 			"scopes.agent.messages",
 			"scopes.agent.iteration_count",
@@ -198,7 +199,7 @@ func TestMergePatchByContractRejectsUndeclaredWrite(t *testing.T) {
 
 	_, err := MergePatchByContract(State{}, State{
 		"secret": "leak",
-	}, NodeIOContract{
+	}, core.NodeIOContract{
 		WritePaths: []string{"shared.output"},
 	})
 	if err == nil {
@@ -217,7 +218,7 @@ func TestMergePatchByContractRejectsMissingRequiredWrite(t *testing.T) {
 		"planner": map[string]any{
 			"summary": "updated",
 		},
-	}, NodeIOContract{
+	}, core.NodeIOContract{
 		WritePaths:         []string{"shared.planner"},
 		RequiredWritePaths: []string{"shared.planner.status"},
 	})

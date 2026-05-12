@@ -6,33 +6,23 @@ import (
 	"weaveflow/core"
 )
 
-type ContractValidationMode = core.ContractValidationMode
-type ContractViolation = core.ContractViolation
-type NodeIOContract = core.NodeIOContract
-
-const (
-	ContractValidationOff    = core.ContractValidationOff
-	ContractValidationWarn   = core.ContractValidationWarn
-	ContractValidationStrict = core.ContractValidationStrict
-
-	runnerRuntimeMetadataPath = "internal.__wf_runner"
-)
+const runnerRuntimeMetadataPath = "internal.__wf_runner"
 
 func ValidateNodeInputContract(
 	nodeID string,
-	contract NodeIOContract,
+	contract core.NodeIOContract,
 	inputState State,
-) []ContractViolation {
+) []core.ContractViolation {
 	if contract.WildcardRead || len(contract.RequiredReadPaths) == 0 {
 		return nil
 	}
 
-	violations := make([]ContractViolation, 0, len(contract.RequiredReadPaths))
+	violations := make([]core.ContractViolation, 0, len(contract.RequiredReadPaths))
 	for _, path := range contract.RequiredReadPaths {
 		if _, found := resolveSnapshotPathValue(inputState, path); found {
 			continue
 		}
-		violations = append(violations, ContractViolation{
+		violations = append(violations, core.ContractViolation{
 			NodeID:  nodeID,
 			Path:    path,
 			Kind:    "missing_required_read",
@@ -44,15 +34,15 @@ func ValidateNodeInputContract(
 
 func ValidateNodeContract(
 	nodeID string,
-	contract NodeIOContract,
+	contract core.NodeIOContract,
 	afterState State,
 	changes []StateChange,
-) []ContractViolation {
+) []core.ContractViolation {
 	if contract.IsEmpty() {
 		return nil
 	}
 
-	var violations []ContractViolation
+	var violations []core.ContractViolation
 
 	if !contract.WildcardWrite {
 		for _, change := range changes {
@@ -60,7 +50,7 @@ func ValidateNodeContract(
 				continue
 			}
 			if !isPathCoveredByContract(change.Path, contract.WritePaths) {
-				violations = append(violations, ContractViolation{
+				violations = append(violations, core.ContractViolation{
 					NodeID:  nodeID,
 					Path:    change.Path,
 					Kind:    "undeclared_write",
@@ -72,7 +62,7 @@ func ValidateNodeContract(
 
 	for _, path := range contract.RequiredWritePaths {
 		if _, found := resolveSnapshotPathValue(afterState, path); !found {
-			violations = append(violations, ContractViolation{
+			violations = append(violations, core.ContractViolation{
 				NodeID:  nodeID,
 				Path:    path,
 				Kind:    "missing_required",

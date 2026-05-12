@@ -36,7 +36,7 @@ func SetLogger(l *zap.Logger) {
 type Graph struct {
 	nodes               map[string]core.Node[wfstate.State]
 	nodeSpecs           map[string]dsl.GraphNodeSpec
-	nodeContracts       map[string]wfstate.NodeIOContract
+	nodeContracts       map[string]core.NodeIOContract
 	initialStatePaths   []string
 	contractDiagnostics []ContractDiagnostic
 	edges               map[string]string
@@ -467,7 +467,7 @@ func (g *Graph) SetInitialStatePaths(paths []string) {
 	g.initialStatePaths = append([]string(nil), paths...)
 }
 
-func (g *Graph) SetNodeContracts(contracts map[string]wfstate.NodeIOContract) {
+func (g *Graph) SetNodeContracts(contracts map[string]core.NodeIOContract) {
 	if g == nil {
 		return
 	}
@@ -475,7 +475,7 @@ func (g *Graph) SetNodeContracts(contracts map[string]wfstate.NodeIOContract) {
 		g.nodeContracts = nil
 		return
 	}
-	g.nodeContracts = make(map[string]wfstate.NodeIOContract, len(contracts))
+	g.nodeContracts = make(map[string]core.NodeIOContract, len(contracts))
 	for key, value := range contracts {
 		g.nodeContracts[key] = value
 	}

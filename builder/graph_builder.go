@@ -20,7 +20,7 @@ type GraphBuilder interface {
 type FinalizableGraph interface {
 	GraphBuilder
 	SetInitialStatePaths([]string)
-	SetNodeContracts(map[string]wfstate.NodeIOContract)
+	SetNodeContracts(map[string]core.NodeIOContract)
 	ValidateGraph() error
 	ContractDiagnostics() []core.ContractDiagnostic
 }
@@ -120,7 +120,7 @@ func BuildFinalizedGraph[T FinalizableGraph](
 	newGraph func() T,
 	initialStatePaths []string,
 	applyBuiltInEdges func(T, dsl.GraphDefinition) error,
-	resolveNodeContracts func(T, *registry.Registry) map[string]wfstate.NodeIOContract,
+	resolveNodeContracts func(T, *registry.Registry) map[string]core.NodeIOContract,
 ) (T, error) {
 	var zero T
 	if reg == nil {

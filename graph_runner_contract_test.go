@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
@@ -79,7 +80,7 @@ func newContractTestRunner(t *testing.T, graph *Graph) *fruntime.GraphRunner {
 		fruntime.NewFileEventSink(baseDir),
 	)
 	runner.ArtifactStore = fruntime.NewFileArtifactStore(baseDir)
-	runner.ContractValidation = wfstate.ContractValidationStrict
+	runner.ContractValidation = core.ContractValidationStrict
 	return runner
 }
 

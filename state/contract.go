@@ -4,9 +4,10 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
+	"weaveflow/core"
 )
 
-func ProjectStateByContract(full State, contract NodeIOContract) State {
+func ProjectStateByContract(full State, contract core.NodeIOContract) State {
 	if full == nil {
 		full = State{}
 	}
@@ -33,7 +34,7 @@ func SetContractPathValue(state State, path string, value any) {
 	setSnapshotPathValue(state, NormalizeContractPath(path), value)
 }
 
-func MergePatchByContract(full State, patch State, contract NodeIOContract) (State, error) {
+func MergePatchByContract(full State, patch State, contract core.NodeIOContract) (State, error) {
 	if full == nil {
 		full = State{}
 	}
@@ -112,7 +113,7 @@ func DiffState(before State, after State) (State, error) {
 	return patch, nil
 }
 
-func collectContractReadPaths(contract NodeIOContract) []string {
+func collectContractReadPaths(contract core.NodeIOContract) []string {
 	seen := map[string]struct{}{}
 	paths := make([]string, 0, len(contract.ReadPaths)+len(contract.RequiredReadPaths))
 	for _, list := range [][]string{contract.ReadPaths, contract.RequiredReadPaths} {

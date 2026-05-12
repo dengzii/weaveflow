@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"weaveflow/core"
 	wfstate "weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -57,8 +58,8 @@ type graphRunnerExecution struct {
 	active        *runnerActiveStep
 	lastCompleted *runnerCompletedStep
 	pending       *runnerPendingControl
-	contractMode  wfstate.ContractValidationMode
-	nodeContracts map[string]wfstate.NodeIOContract
+	contractMode  core.ContractValidationMode
+	nodeContracts map[string]core.NodeIOContract
 	mu            sync.Mutex
 }
 
@@ -108,7 +109,7 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		return result, invokeErr
 	}
 	if !hasContract {
-		mergedState, err := wfstate.MergePatchByContract(state, result, wfstate.NodeIOContract{WildcardWrite: true})
+		mergedState, err := wfstate.MergePatchByContract(state, result, core.NodeIOContract{WildcardWrite: true})
 		if err != nil {
 			return state, err
 		}
@@ -127,7 +128,7 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 type contractStateArtifact struct {
 	NodeID   string                    `json:"node_id,omitempty"`
 	Stage    string                    `json:"stage,omitempty"`
-	Contract wfstate.NodeIOContract    `json:"contract"`
+	Contract core.NodeIOContract       `json:"contract"`
 	Summary  contractStateArtifactInfo `json:"summary"`
 	Snapshot wfstate.StateSnapshot     `json:"snapshot"`
 }
@@ -138,7 +139,7 @@ type contractStateArtifactInfo struct {
 	ConversationMessages int `json:"conversation_messages"`
 }
 
-func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, nodeID string, artifactType string, contract wfstate.NodeIOContract, state wfstate.State) {
+func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, nodeID string, artifactType string, contract core.NodeIOContract, state wfstate.State) {
 	if ctx == nil || strings.TrimSpace(nodeID) == "" || strings.TrimSpace(artifactType) == "" {
 		return
 	}
@@ -385,7 +386,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 }
 
 func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunRecord, step StepRecord, nodeID string, state wfstate.State, changes []wfstate.StateChange) error {
-	if e.contractMode == wfstate.ContractValidationOff || e.nodeContracts == nil {
+	if e.contractMode == core.ContractValidationOff || e.nodeContracts == nil {
 		return nil
 	}
 	contract, ok := e.nodeContracts[nodeID]
@@ -397,13 +398,13 @@ func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunReco
 		return nil
 	}
 	e.reportContractViolationsWithRun(ctx, run, step, violations)
-	if e.contractMode == wfstate.ContractValidationStrict {
+	if e.contractMode == core.ContractValidationStrict {
 		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
 	}
 	return nil
 }
 
-func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nodeID string, violations []wfstate.ContractViolation) {
+func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nodeID string, violations []core.ContractViolation) {
 	e.mu.Lock()
 	run := e.run
 	var step StepRecord
@@ -414,7 +415,7 @@ func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nod
 	e.reportContractViolationsWithRun(ctx, run, step, violations)
 }
 
-func (e *graphRunnerExecution) reportContractViolationsWithRun(ctx context.Context, run RunRecord, step StepRecord, violations []wfstate.ContractViolation) {
+func (e *graphRunnerExecution) reportContractViolationsWithRun(ctx context.Context, run RunRecord, step StepRecord, violations []core.ContractViolation) {
 	if len(violations) == 0 {
 		return
 	}

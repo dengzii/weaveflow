@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"weaveflow/core"
 	wfstate "weaveflow/state"
 
 	"github.com/google/uuid"
@@ -24,9 +25,9 @@ type GraphRunner struct {
 	GraphID            string
 	GraphVersion       string
 	Breakpoints        []Breakpoint
-	ContractValidation wfstate.ContractValidationMode
+	ContractValidation core.ContractValidationMode
 	StartupWarnings    []WarningRecord
-	NodeContracts      map[string]wfstate.NodeIOContract
+	NodeContracts      map[string]core.NodeIOContract
 	Now                func() time.Time
 }
 
