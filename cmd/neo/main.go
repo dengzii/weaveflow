@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"os"
 	"strings"
 
 	"weaveflow/internal/neo"
@@ -15,10 +16,15 @@ import (
 
 func main() {
 	addr := flag.String("addr", ":9090", "listen address")
-	dataDir := flag.String("data", "neo_data", "data directory for memory and run artifacts")
+	dataDir := flag.String("data", ".local/neo", "data directory for memory and run artifacts")
 	flag.Parse()
 
 	model, err := openai.New()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	err = os.MkdirAll(*dataDir, 0755)
 	if err != nil {
 		log.Fatal(err)
 	}
