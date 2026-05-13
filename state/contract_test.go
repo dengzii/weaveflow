@@ -150,6 +150,76 @@ func TestMergePatchByContractMergesAllowedWrites(t *testing.T) {
 	}
 }
 
+func TestMergePatchByContractReplaceStrategyReplacesSubtree(t *testing.T) {
+	t.Parallel()
+
+	full := State{
+		"planner": map[string]any{
+			"status": "draft",
+			"keep":   true,
+		},
+	}
+	patch := State{
+		"planner": map[string]any{
+			"status": "done",
+		},
+	}
+
+	merged, err := MergePatchByContract(full, patch, core.NodeIOContract{
+		WritePaths: []string{"shared.planner"},
+		MergeStrategies: map[string]core.StateMergeStrategy{
+			"shared.planner": core.StateMergeReplace,
+		},
+	})
+	if err != nil {
+		t.Fatalf("merge patch: %v", err)
+	}
+
+	planner, ok := merged["planner"].(map[string]any)
+	if !ok {
+		if typed, ok := merged["planner"].(State); ok {
+			planner = typed
+		} else {
+			t.Fatalf("expected planner state, got %#v", merged["planner"])
+		}
+	}
+	if planner["status"] != "done" {
+		t.Fatalf("expected replaced planner status, got %#v", planner)
+	}
+	if _, ok := planner["keep"]; ok {
+		t.Fatalf("expected replace strategy to remove stale subtree fields, got %#v", planner)
+	}
+}
+
+func TestMergePatchByContractAppendStrategyAppendsSlice(t *testing.T) {
+	t.Parallel()
+
+	full := State{
+		"results": []string{"alpha"},
+	}
+	patch := State{
+		"results": []string{"beta"},
+	}
+
+	merged, err := MergePatchByContract(full, patch, core.NodeIOContract{
+		WritePaths: []string{"shared.results"},
+		MergeStrategies: map[string]core.StateMergeStrategy{
+			"shared.results": core.StateMergeAppend,
+		},
+	})
+	if err != nil {
+		t.Fatalf("merge patch: %v", err)
+	}
+
+	results, ok := merged["results"].([]string)
+	if !ok {
+		t.Fatalf("expected []string results, got %#v", merged["results"])
+	}
+	if len(results) != 2 || results[0] != "alpha" || results[1] != "beta" {
+		t.Fatalf("expected append strategy to preserve existing items, got %#v", results)
+	}
+}
+
 func TestMergePatchByContractMergesScopedConversationWrites(t *testing.T) {
 	t.Parallel()
 

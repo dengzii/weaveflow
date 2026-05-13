@@ -15,10 +15,21 @@ import (
 func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec wfstate.StateCodec, eventSink fruntime.EventSink) *fruntime.GraphRunner {
 	runner := fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
 	if graph != nil {
-		runner.NodeContracts = graph.nodeContracts
+		runner.NodeContracts = cloneNodeContracts(graph.nodeContracts)
 		runner.StartupWarnings = buildRunnerWarnings(graph.ContractDiagnostics())
 	}
 	return runner
+}
+
+func cloneNodeContracts(contracts map[string]core.NodeIOContract) map[string]core.NodeIOContract {
+	if len(contracts) == 0 {
+		return nil
+	}
+	cloned := make(map[string]core.NodeIOContract, len(contracts))
+	for key, contract := range contracts {
+		cloned[key] = contract.Clone()
+	}
+	return cloned
 }
 
 type graphRunnerGraph struct {

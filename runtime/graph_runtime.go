@@ -50,17 +50,17 @@ type runnerCompletedStep struct {
 }
 
 type graphRunnerExecution struct {
-	runner        *GraphRunner
-	run           RunRecord
-	skip          *breakpointSkip
-	lastState     wfstate.State
-	artifacts     []wfstate.ArtifactRef
-	active        *runnerActiveStep
-	lastCompleted *runnerCompletedStep
-	pending       *runnerPendingControl
-	contractMode  core.ContractValidationMode
-	nodeContracts map[string]core.NodeIOContract
-	mu            sync.Mutex
+	runner         *GraphRunner
+	run            RunRecord
+	skip           *breakpointSkip
+	lastState      wfstate.State
+	artifacts      []wfstate.ArtifactRef
+	active         *runnerActiveStep
+	lastCompleted  *runnerCompletedStep
+	pending        *runnerPendingControl
+	contractPolicy ContractPolicy
+	nodeContracts  map[string]core.NodeIOContract
+	mu             sync.Mutex
 }
 
 func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState wfstate.State, initialArtifacts []wfstate.ArtifactRef, skip *breakpointSkip) *graphRunnerExecution {
@@ -69,13 +69,13 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState wf
 		state = initialState.CloneState()
 	}
 	return &graphRunnerExecution{
-		runner:        runner,
-		run:           run,
-		skip:          skip,
-		lastState:     state,
-		artifacts:     wfstate.CloneArtifactRefs(initialArtifacts),
-		contractMode:  runner.ContractValidation,
-		nodeContracts: runner.NodeContracts,
+		runner:         runner,
+		run:            run,
+		skip:           skip,
+		lastState:      state,
+		artifacts:      wfstate.CloneArtifactRefs(initialArtifacts),
+		contractPolicy: runner.contractPolicy(),
+		nodeContracts:  runner.NodeContracts,
 	}
 }
 
@@ -86,14 +86,21 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 	}
 
 	contract, hasContract := e.nodeContracts[nodeID]
+	policy := e.contractPolicy
 	inputState := state.CloneState()
-	if hasContract {
+	if hasContract && policy.Enabled() {
 		if violations := wfstate.ValidateNodeInputContract(nodeID, contract, state); len(violations) > 0 {
 			e.reportContractViolations(nodeCtx, nodeID, violations)
-			return state, fmt.Errorf("%s", violations[0].Message)
+			if policy.Mode == core.ContractValidationStrict {
+				return state, fmt.Errorf("%s", violations[0].Message)
+			}
 		}
-		inputState = wfstate.ProjectStateByContract(state, contract)
-		e.recordContractStateArtifact(nodeCtx, nodeID, contractInputViewArtifactType, contract, inputState)
+		if policy.EnforceProjection {
+			inputState = wfstate.ProjectStateByContract(state, contract)
+		}
+		if policy.RecordArtifacts {
+			e.recordContractStateArtifact(nodeCtx, nodeID, contractInputViewArtifactType, contract, inputState)
+		}
 	}
 
 	patchExecutor := executor
@@ -108,21 +115,45 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		}
 		return result, invokeErr
 	}
-	if !hasContract {
-		mergedState, err := wfstate.MergePatchByContract(state, result, core.NodeIOContract{WildcardWrite: true})
-		if err != nil {
-			return state, err
-		}
-		return mergedState, nil
+	if hasContract && policy.RecordArtifacts {
+		e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, result)
 	}
 
-	e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, result)
-	mergedState, err := wfstate.MergePatchByContract(state, result, contract)
+	mergeContract := core.NodeIOContract{WildcardWrite: true}
+	validateWrites := false
+	enforceWrites := false
+	if hasContract && policy.Enabled() {
+		mergeContract = contract
+		validateWrites = policy.Mode != core.ContractValidationOff
+		enforceWrites = policy.EnforceWrites
+	}
+	mergedState, violations, err := wfstate.MergeStatePatch(state, result, wfstate.StatePatchMergeOptions{
+		Contract:       mergeContract,
+		ValidateWrites: validateWrites,
+		EnforceWrites:  enforceWrites,
+	})
+	if len(violations) > 0 {
+		e.reportContractViolations(nodeCtx, nodeID, withContractViolationNodeID(nodeID, violations))
+	}
 	if err != nil {
 		return state, err
 	}
-	e.recordContractStateArtifact(nodeCtx, nodeID, contractMergedStateArtifactType, contract, mergedState)
+	if hasContract && policy.RecordArtifacts {
+		e.recordContractStateArtifact(nodeCtx, nodeID, contractMergedStateArtifactType, contract, mergedState)
+	}
 	return mergedState, nil
+}
+
+func withContractViolationNodeID(nodeID string, violations []core.ContractViolation) []core.ContractViolation {
+	if len(violations) == 0 {
+		return nil
+	}
+	cloned := make([]core.ContractViolation, len(violations))
+	for i, violation := range violations {
+		cloned[i] = violation
+		cloned[i].NodeID = nodeID
+	}
+	return cloned
 }
 
 type contractStateArtifact struct {
@@ -340,9 +371,6 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 	if err := e.runner.publishStateDiffChanges(ctx, run, step, changes); err != nil {
 		return err
 	}
-	if err := e.validateContract(ctx, run, step, nodeID, state, changes); err != nil {
-		return err
-	}
 
 	now := e.runner.now()
 	step.Attempt = attempts
@@ -386,7 +414,8 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, s
 }
 
 func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunRecord, step StepRecord, nodeID string, state wfstate.State, changes []wfstate.StateChange) error {
-	if e.contractMode == core.ContractValidationOff || e.nodeContracts == nil {
+	policy := e.contractPolicy
+	if !policy.Enabled() || policy.Mode == core.ContractValidationOff || e.nodeContracts == nil {
 		return nil
 	}
 	contract, ok := e.nodeContracts[nodeID]
@@ -398,7 +427,7 @@ func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunReco
 		return nil
 	}
 	e.reportContractViolationsWithRun(ctx, run, step, violations)
-	if e.contractMode == core.ContractValidationStrict {
+	if policy.Mode == core.ContractValidationStrict && policy.EnforceWrites {
 		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
 	}
 	return nil

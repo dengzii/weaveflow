@@ -34,44 +34,69 @@ func SetContractPathValue(state State, path string, value any) {
 	setSnapshotPathValue(state, NormalizeContractPath(path), value)
 }
 
-func MergePatchByContract(full State, patch State, contract core.NodeIOContract) (State, error) {
+type StatePatchMergeOptions struct {
+	Contract       core.NodeIOContract
+	ValidateWrites bool
+	EnforceWrites  bool
+}
+
+func MergeStatePatch(full State, patch StatePatch, options StatePatchMergeOptions) (State, []core.ContractViolation, error) {
 	if full == nil {
 		full = State{}
 	}
 	if patch == nil {
-		patch = State{}
+		patch = StatePatch{}
 	}
 
+	contract := normalizeNodeIOContract(options.Contract)
 	merged := full.CloneState()
-	applyStatePatch(merged, patch)
+	applyStatePatchWithContract(merged, State(patch), contract)
+
+	if !options.ValidateWrites || contract.WildcardWrite {
+		return merged, nil, nil
+	}
 
 	before, err := SnapshotFromState(full)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	after, err := SnapshotFromState(merged)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	changes, err := NewJSONStateCodec("").Diff(before, after)
 	if err != nil {
+		return nil, nil, err
+	}
+
+	violations := ValidateNodeContract("patch", contract, merged, changes)
+	for _, required := range contract.RequiredWritePaths {
+		if _, ok := resolveSnapshotPathValue(State(patch), required); ok {
+			continue
+		}
+		violations = append(violations, core.ContractViolation{
+			NodeID:  "patch",
+			Path:    required,
+			Kind:    "missing_required_patch_write",
+			Message: fmt.Sprintf("patch must write required path %q", required),
+		})
+	}
+	if options.EnforceWrites && len(violations) > 0 {
+		return nil, violations, fmt.Errorf("%s", violations[0].Message)
+	}
+
+	return merged, violations, nil
+}
+
+func MergePatchByContract(full State, patch State, contract core.NodeIOContract) (State, error) {
+	merged, _, err := MergeStatePatch(full, StatePatch(patch), StatePatchMergeOptions{
+		Contract:       contract,
+		ValidateWrites: true,
+		EnforceWrites:  true,
+	})
+	if err != nil {
 		return nil, err
 	}
-
-	if !contract.WildcardWrite {
-		violations := ValidateNodeContract("patch", contract, merged, changes)
-		if len(violations) > 0 {
-			return nil, fmt.Errorf("%s", violations[0].Message)
-		}
-
-		for _, required := range contract.RequiredWritePaths {
-			if _, ok := resolveSnapshotPathValue(patch, required); ok {
-				continue
-			}
-			return nil, fmt.Errorf("patch must write required path %q", required)
-		}
-	}
-
 	return merged, nil
 }
 
@@ -118,7 +143,7 @@ func collectContractReadPaths(contract core.NodeIOContract) []string {
 	paths := make([]string, 0, len(contract.ReadPaths)+len(contract.RequiredReadPaths))
 	for _, list := range [][]string{contract.ReadPaths, contract.RequiredReadPaths} {
 		for _, path := range list {
-			path = strings.TrimSpace(path)
+			path = NormalizeContractPath(path)
 			if path == "" {
 				continue
 			}
@@ -133,6 +158,20 @@ func collectContractReadPaths(contract core.NodeIOContract) []string {
 }
 
 func applyStatePatch(target State, patch State) {
+	applyStatePatchWithContract(target, patch, core.NodeIOContract{})
+}
+
+func applyStatePatchWithContract(target State, patch State, contract core.NodeIOContract) {
+	applyStatePatchAt(target, patch, patchApplyOptions{
+		mergeStrategies: normalizeMergeStrategies(contract.MergeStrategies),
+	}, "")
+}
+
+type patchApplyOptions struct {
+	mergeStrategies map[string]core.StateMergeStrategy
+}
+
+func applyStatePatchAt(target State, patch State, options patchApplyOptions, prefix string) {
 	if target == nil || patch == nil {
 		return
 	}
@@ -142,19 +181,21 @@ func applyStatePatch(target State, patch State) {
 		if !ok {
 			continue
 		}
-		if value == nil {
-			deleteConversationField(target, key)
-			continue
-		}
-		applyDecodedGraphValue(target, key, cloneStateValue(value))
+		applyStatePatchValue(target, key, value, statePatchPath(prefix, key, true), options)
 	}
 
 	if conversation := conversationSource(patch); conversation != nil {
-		copyConversationState(target, conversation)
+		for _, key := range []string{stateKeyMessages, stateKeyIterationCount, stateKeyMaxIterations, stateKeyFinalAnswer} {
+			value, ok := conversation[key]
+			if !ok {
+				continue
+			}
+			applyStatePatchValue(target, key, value, statePatchPath(prefix, key, true), options)
+		}
 	}
 
 	for scopeName, scopePatch := range patch.Scopes() {
-		applyStatePatch(target.EnsureScope(scopeName), scopePatch)
+		applyStatePatchAt(target.EnsureScope(scopeName), scopePatch, options, "scopes."+scopeName)
 	}
 
 	for key, value := range patch {
@@ -169,23 +210,184 @@ func applyStatePatch(target State, patch State) {
 				}
 				continue
 			}
-			applyStatePatch(target.EnsureNamespace(key), namespacePatch)
+			applyStatePatchAt(target.EnsureNamespace(key), namespacePatch, options, namespaceContractPath(key))
 			continue
 		}
 
-		if value == nil {
-			delete(target, key)
+		applyStatePatchValue(target, key, value, statePatchPath(prefix, key, false), options)
+	}
+}
+
+func applyStatePatchValue(target State, key string, value any, path string, options patchApplyOptions) {
+	if target == nil {
+		return
+	}
+	strategy := mergeStrategyForPath(options.mergeStrategies, path)
+	if strategy == core.StateMergeAppend {
+		existing := target[key]
+		if isSpecialStateKey(key) {
+			existing, _ = specialStateValue(target, key)
+		}
+		applyReplaceStatePatchValue(target, key, appendStatePatchValue(existing, value))
+		return
+	}
+	if value == nil {
+		if isSpecialStateKey(key) {
+			deleteConversationField(target, key)
+			return
+		}
+		delete(target, key)
+		return
+	}
+	if strategy == core.StateMergeReplace {
+		applyReplaceStatePatchValue(target, key, value)
+		return
+	}
+	if existing, ok := asStateMap(target[key]); ok {
+		if nested, ok := asStateMap(value); ok {
+			applyStatePatchAt(existing, nested, options, path)
+			target[key] = existing
+			return
+		}
+	}
+	applyReplaceStatePatchValue(target, key, value)
+}
+
+func applyReplaceStatePatchValue(target State, key string, value any) {
+	if isSpecialStateKey(key) {
+		applyDecodedGraphValue(target, key, cloneStateValue(value))
+		return
+	}
+	target[key] = cloneStateValue(value)
+}
+
+func statePatchPath(prefix string, key string, special bool) string {
+	prefix = strings.TrimSpace(prefix)
+	key = strings.TrimSpace(key)
+	if prefix == "" {
+		if special {
+			return "conversation." + key
+		}
+		return "shared." + key
+	}
+	return prefix + "." + key
+}
+
+func namespaceContractPath(key string) string {
+	normalized := normalizeStateNamespace(key)
+	if normalized == normalizeStateNamespace("runtime") {
+		return "runtime"
+	}
+	return "internal." + normalized
+}
+
+func normalizeNodeIOContract(contract core.NodeIOContract) core.NodeIOContract {
+	contract = contract.Clone()
+	contract.ReadPaths = normalizeContractPathSlice(contract.ReadPaths)
+	contract.WritePaths = normalizeContractPathSlice(contract.WritePaths)
+	contract.RequiredReadPaths = normalizeContractPathSlice(contract.RequiredReadPaths)
+	contract.RequiredWritePaths = normalizeContractPathSlice(contract.RequiredWritePaths)
+	contract.MergeStrategies = normalizeMergeStrategies(contract.MergeStrategies)
+	return contract
+}
+
+func normalizeContractPathSlice(paths []string) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	normalized := make([]string, 0, len(paths))
+	for _, path := range paths {
+		path = NormalizeContractPath(path)
+		if path == "" {
 			continue
 		}
-		if existing, ok := asStateMap(target[key]); ok {
-			if nested, ok := asStateMap(value); ok {
-				applyStatePatch(existing, nested)
-				target[key] = existing
-				continue
-			}
-		}
-		target[key] = cloneStateValue(value)
+		normalized = append(normalized, path)
 	}
+	return normalized
+}
+
+func normalizeMergeStrategies(strategies map[string]core.StateMergeStrategy) map[string]core.StateMergeStrategy {
+	if len(strategies) == 0 {
+		return nil
+	}
+	normalized := make(map[string]core.StateMergeStrategy, len(strategies))
+	for path, strategy := range strategies {
+		path = NormalizeContractPath(path)
+		if path == "" {
+			continue
+		}
+		switch strategy {
+		case core.StateMergeReplace, core.StateMergeMerge, core.StateMergeAppend:
+			normalized[path] = strategy
+		}
+	}
+	if len(normalized) == 0 {
+		return nil
+	}
+	return normalized
+}
+
+func mergeStrategyForPath(strategies map[string]core.StateMergeStrategy, path string) core.StateMergeStrategy {
+	if len(strategies) == 0 {
+		return core.StateMergeDefault
+	}
+	return strategies[NormalizeContractPath(path)]
+}
+
+func appendStatePatchValue(existing any, value any) any {
+	if existing == nil {
+		return cloneStateValue(value)
+	}
+	if value == nil {
+		return cloneStateValue(existing)
+	}
+
+	left := reflect.ValueOf(existing)
+	if left.Kind() != reflect.Slice {
+		return cloneStateValue(value)
+	}
+	right := reflect.ValueOf(value)
+	if right.IsValid() && right.Kind() == reflect.Slice && right.Type() == left.Type() {
+		combined := reflect.MakeSlice(left.Type(), left.Len(), left.Len()+right.Len())
+		reflect.Copy(combined, left)
+		combined = reflect.AppendSlice(combined, right)
+		return cloneStateValue(combined.Interface())
+	}
+	if right.IsValid() && right.Type().AssignableTo(left.Type().Elem()) {
+		combined := reflect.MakeSlice(left.Type(), left.Len(), left.Len()+1)
+		reflect.Copy(combined, left)
+		combined = reflect.Append(combined, right)
+		return cloneStateValue(combined.Interface())
+	}
+
+	leftItems, ok := anySliceFromValue(existing)
+	if !ok {
+		return cloneStateValue(value)
+	}
+	rightItems, ok := anySliceFromValue(value)
+	if !ok {
+		rightItems = []any{value}
+	}
+	combined := make([]any, 0, len(leftItems)+len(rightItems))
+	for _, item := range leftItems {
+		combined = append(combined, cloneStateValue(item))
+	}
+	for _, item := range rightItems {
+		combined = append(combined, cloneStateValue(item))
+	}
+	return combined
+}
+
+func anySliceFromValue(value any) ([]any, bool) {
+	reflected := reflect.ValueOf(value)
+	if !reflected.IsValid() || reflected.Kind() != reflect.Slice {
+		return nil, false
+	}
+	items := make([]any, 0, reflected.Len())
+	for i := 0; i < reflected.Len(); i++ {
+		items = append(items, reflected.Index(i).Interface())
+	}
+	return items, true
 }
 
 func resolveSnapshotPathValue(state State, path string) (any, bool) {

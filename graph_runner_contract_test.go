@@ -284,6 +284,180 @@ func TestGraphRunnerRejectsMissingRequiredWrite(t *testing.T) {
 	}
 }
 
+func TestGraphRunnerWarnPolicyReportsButAllowsContractViolation(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	registerContractProbeNodeType(
+		registry,
+		dsl.StateContract{
+			Fields: []dsl.StateFieldRef{
+				{Path: "result", Mode: dsl.StateAccessWrite},
+			},
+		},
+		func(state wfstate.State) {
+			state["secret"] = "mutated"
+		},
+		func(state wfstate.State) string {
+			return "ok"
+		},
+	)
+
+	graph, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "probe",
+		FinishPoint: "probe",
+		Nodes: []GraphNodeSpec{
+			{ID: "probe", Type: "contract_probe"},
+		},
+	}, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	baseDir := t.TempDir()
+	runner := NewGraphRunner(
+		graph,
+		fruntime.NewFileExecutionStore(baseDir),
+		fruntime.NewFileCheckpointStore(baseDir),
+		wfstate.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(baseDir),
+	)
+	runner.ContractValidation = core.ContractValidationWarn
+
+	run, finalState, err := runner.Start(context.Background(), wfstate.State{})
+	if err != nil {
+		t.Fatalf("warn policy should allow contract violation: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("expected completed run, got %q", run.Status)
+	}
+	if got := finalState["secret"]; got != "mutated" {
+		t.Fatalf("expected undeclared write to merge in warn mode, got %#v", finalState)
+	}
+
+	events, err := runner.ListEvents(run.RunID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == fruntime.EventContractViolation {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected contract violation event in warn mode, got %#v", events)
+	}
+}
+
+func TestGraphRunnerOffPolicySkipsProjectionAndContractValidation(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	registerContractProbeNodeType(
+		registry,
+		dsl.StateContract{
+			Fields: []dsl.StateFieldRef{
+				{Path: "topic", Mode: dsl.StateAccessRead, Required: true},
+				{Path: "result", Mode: dsl.StateAccessWrite, Required: true},
+			},
+		},
+		nil,
+		func(state wfstate.State) string {
+			if _, ok := state["secret"]; ok {
+				return "leaked"
+			}
+			return "projected"
+		},
+	)
+
+	graph, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "probe",
+		FinishPoint: "probe",
+		Nodes: []GraphNodeSpec{
+			{ID: "probe", Type: "contract_probe"},
+		},
+	}, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	baseDir := t.TempDir()
+	runner := NewGraphRunner(
+		graph,
+		fruntime.NewFileExecutionStore(baseDir),
+		fruntime.NewFileCheckpointStore(baseDir),
+		wfstate.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(baseDir),
+	)
+
+	run, finalState, err := runner.Start(context.Background(), wfstate.State{
+		"secret": "hidden",
+	})
+	if err != nil {
+		t.Fatalf("off policy should skip contract enforcement: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("expected completed run, got %q", run.Status)
+	}
+	if got := finalState["result"]; got != "leaked" {
+		t.Fatalf("expected off policy to pass full state to node, got %#v", finalState)
+	}
+}
+
+func TestGraphRunnerAppliesAppendMergeStrategyFromDSLContract(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	registerContractProbeNodeType(
+		registry,
+		dsl.StateContract{
+			Fields: []dsl.StateFieldRef{
+				{
+					Path:          "results",
+					Mode:          dsl.StateAccessReadWrite,
+					MergeStrategy: dsl.StateMergeAppend,
+				},
+			},
+		},
+		func(state wfstate.State) {
+			state["results"] = []string{"beta"}
+		},
+		nil,
+	)
+
+	graph, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "probe",
+		FinishPoint: "probe",
+		Nodes: []GraphNodeSpec{
+			{ID: "probe", Type: "contract_probe"},
+		},
+	}, &BuildContext{})
+	if err != nil {
+		t.Fatalf("build graph: %v", err)
+	}
+
+	runner := newContractTestRunner(t, graph)
+	run, finalState, err := runner.Start(context.Background(), wfstate.State{
+		"results": []string{"alpha"},
+	})
+	if err != nil {
+		t.Fatalf("start runner: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("expected completed run, got %q", run.Status)
+	}
+
+	results, ok := finalState["results"].([]string)
+	if !ok {
+		t.Fatalf("expected []string results, got %#v", finalState["results"])
+	}
+	if len(results) != 2 || results[0] != "alpha" || results[1] != "beta" {
+		t.Fatalf("expected append strategy from DSL contract, got %#v", results)
+	}
+}
+
 func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
 	t.Parallel()
 

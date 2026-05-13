@@ -120,9 +120,28 @@ func ConvertStateContract(contract dsl.StateContract) core.NodeIOContract {
 					result.RequiredReadPaths = append(result.RequiredReadPaths, normalized)
 				}
 			}
+			if strategy := convertMergeStrategy(field.MergeStrategy); strategy != core.StateMergeDefault {
+				if result.MergeStrategies == nil {
+					result.MergeStrategies = map[string]core.StateMergeStrategy{}
+				}
+				result.MergeStrategies[normalized] = strategy
+			}
 		}
 	}
 	return result
+}
+
+func convertMergeStrategy(strategy dsl.StateMergeStrategy) core.StateMergeStrategy {
+	switch strategy {
+	case dsl.StateMergeReplace:
+		return core.StateMergeReplace
+	case dsl.StateMergeMerge:
+		return core.StateMergeMerge
+	case dsl.StateMergeAppend:
+		return core.StateMergeAppend
+	default:
+		return core.StateMergeDefault
+	}
 }
 
 func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {

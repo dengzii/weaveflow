@@ -477,7 +477,7 @@ func (g *Graph) SetNodeContracts(contracts map[string]core.NodeIOContract) {
 	}
 	g.nodeContracts = make(map[string]core.NodeIOContract, len(contracts))
 	for key, value := range contracts {
-		g.nodeContracts[key] = value
+		g.nodeContracts[key] = value.Clone()
 	}
 }
 

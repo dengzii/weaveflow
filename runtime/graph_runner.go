@@ -26,6 +26,7 @@ type GraphRunner struct {
 	GraphVersion       string
 	Breakpoints        []Breakpoint
 	ContractValidation core.ContractValidationMode
+	ContractPolicy     ContractPolicy
 	StartupWarnings    []WarningRecord
 	NodeContracts      map[string]core.NodeIOContract
 	Now                func() time.Time
@@ -887,6 +888,13 @@ func (r *GraphRunner) runnerGraph() RunnerGraph {
 		return nil
 	}
 	return r.graph
+}
+
+func (r *GraphRunner) contractPolicy() ContractPolicy {
+	if r == nil {
+		return ContractPolicyForMode(core.ContractValidationOff)
+	}
+	return r.ContractPolicy.Effective(r.ContractValidation)
 }
 
 func (r *GraphRunner) now() time.Time {

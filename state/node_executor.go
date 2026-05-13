@@ -2,21 +2,23 @@ package state
 
 import (
 	"context"
-
-	"weaveflow/core"
 )
 
 type NodeInvoker func(context.Context, State) (State, error)
 
-type ExecutableNode = core.ExecutableNode[State]
+type StatePatch = State
+
+type ExecutableNode interface {
+	Execute(ctx context.Context, input State) (StatePatch, error)
+}
 
 type LegacyNodeExecutor struct {
 	Invoke NodeInvoker
 }
 
-func (e LegacyNodeExecutor) Execute(ctx context.Context, input State) (State, error) {
+func (e LegacyNodeExecutor) Execute(ctx context.Context, input State) (StatePatch, error) {
 	if e.Invoke == nil {
-		return State{}, nil
+		return StatePatch{}, nil
 	}
 	next, err := e.Invoke(ctx, input.CloneState())
 	if err != nil {
