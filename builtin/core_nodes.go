@@ -16,40 +16,6 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 
 	r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "subgraph",
-			Title:       "Subgraph Node",
-			Description: "Invoke another graph resolved by graph_ref using the current state.",
-			ConfigSchema: dsl.JSONSchema{
-				"type":                 "object",
-				"properties":           dsl.JSONSchema{"graph_ref": dsl.JSONSchema{"type": "string"}},
-				"required":             []string{"graph_ref"},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: registry.ResolveSubgraphStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
-			graphRef := registry.StringConfig(spec.Config, "graph_ref")
-			if graphRef == "" {
-				return nil, fmt.Errorf("build subgraph nodes %q: graph_ref is required", spec.ID)
-			}
-			options := ctx.BuildOptions()
-			if options.SubgraphBuilder == nil {
-				return nil, fmt.Errorf("build subgraph nodes %q: subgraph builder is required", spec.ID)
-			}
-			runner, err := options.SubgraphBuilder(graphRef)
-			if err != nil {
-				return nil, fmt.Errorf("build subgraph nodes %q: %w", spec.ID, err)
-			}
-			node := nodes.NewSubgraphNode()
-			applyNodeMetadata(node, spec)
-			node.GraphRef = graphRef
-			node.InvokeSubgraph = runner
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(registry.NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "mapped_subgraph",
 			Title:       "Mapped Subgraph Node",
 			Description: "Invoke another graph with explicit input/output state path mappings.",
@@ -315,14 +281,6 @@ func applyNodeMetadata(node interface {
 	Description() string
 }, spec dsl.GraphNodeSpec) {
 	switch typed := node.(type) {
-	case *nodes.SubgraphNode:
-		typed.NodeID = spec.ID
-		if spec.Name != "" {
-			typed.NodeName = spec.Name
-		}
-		if spec.Description != "" {
-			typed.NodeDescription = spec.Description
-		}
 	case *nodes.MappedSubgraphNode:
 		typed.NodeID = spec.ID
 		if spec.Name != "" {

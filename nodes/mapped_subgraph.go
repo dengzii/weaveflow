@@ -11,6 +11,8 @@ import (
 	"github.com/google/uuid"
 )
 
+type SubgraphInvoker func(context.Context, wfstate.State) (wfstate.State, error)
+
 // MappedSubgraphNode invokes a subgraph with explicit input/output path mappings,
 // so the subgraph only sees the state it needs and only writes back what it declares.
 type MappedSubgraphNode struct {

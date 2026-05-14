@@ -17,10 +17,6 @@ type RuntimeEdgeGraph interface {
 	AddRuntimeConditionalEdge(from, to string, condition registry.EdgeCondition) error
 }
 
-type NodeSpecGraph interface {
-	NodeSpecs() map[string]dsl.GraphNodeSpec
-}
-
 func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) error {
 	if target == nil {
 		return fmt.Errorf("graph is nil")
@@ -61,26 +57,32 @@ func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) err
 	return nil
 }
 
-func ResolveNodeContracts(graph NodeSpecGraph, reg *registry.Registry) map[string]core.NodeIOContract {
-	if graph == nil || reg == nil {
-		return nil
+func ResolveNodeContracts(def dsl.GraphDefinition, reg *registry.Registry) (map[string]core.NodeIOContract, error) {
+	if reg == nil {
+		return nil, nil
 	}
-	nodeSpecs := graph.NodeSpecs()
-	contracts := make(map[string]core.NodeIOContract, len(nodeSpecs))
-	for nodeID, spec := range nodeSpecs {
+	contracts := make(map[string]core.NodeIOContract, len(def.Nodes))
+	for _, spec := range def.Nodes {
+		nodeDef, ok := reg.NodeTypes[spec.Type]
+		if !ok {
+			return nil, fmt.Errorf("node type %q is not registered", spec.Type)
+		}
+		if nodeDef.ResolveStateContract == nil && nodeDef.StateContract == nil {
+			return nil, fmt.Errorf("node type %q must declare a state contract", spec.Type)
+		}
 		contract, err := reg.ResolveNodeStateContract(spec)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		converted := ConvertStateContract(contract)
 		if !converted.IsEmpty() {
-			contracts[nodeID] = converted
+			contracts[spec.ID] = converted
 		}
 	}
 	if len(contracts) == 0 {
-		return nil
+		return nil, nil
 	}
-	return contracts
+	return contracts, nil
 }
 
 func ConvertStateContract(contract dsl.StateContract) core.NodeIOContract {

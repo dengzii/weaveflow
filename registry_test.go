@@ -41,6 +41,18 @@ func registerAssignNodeType(registry *Registry) {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			key := stringConfig(spec.Config, "key")
+			if key == "" {
+				return dsl.StateContract{}, nil
+			}
+			return dsl.StateContract{
+				Fields: []dsl.StateFieldRef{{
+					Path: key,
+					Mode: dsl.StateAccessWrite,
+				}},
+			}, nil
+		},
 		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			return assignStateNode{
 				id:    spec.ID,
@@ -93,6 +105,41 @@ func (n collectIteratorItemNode) Invoke(ctx context.Context, state wfstate.State
 	return state, nil
 }
 
+func (n collectIteratorItemNode) Execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+	_ = ctx
+
+	if state == nil {
+		return wfstate.State{}, nil
+	}
+
+	namespace := state.Namespace(nodes.IteratorStateNamespace)
+	if namespace == nil {
+		return wfstate.State{}, nil
+	}
+	rawIteratorState, ok := namespace[n.iteratorNodeID]
+	if !ok {
+		return wfstate.State{}, nil
+	}
+
+	iteratorState, ok := rawIteratorState.(map[string]any)
+	if !ok {
+		if typed, ok := rawIteratorState.(wfstate.State); ok {
+			iteratorState = typed
+		} else {
+			return wfstate.State{}, nil
+		}
+	}
+
+	item, ok := iteratorState["item"].(string)
+	if !ok || item == "" {
+		return wfstate.State{}, nil
+	}
+
+	return wfstate.State{
+		n.targetKey: []string{item},
+	}, nil
+}
+
 func registerCollectIteratorItemNodeType(registry *Registry) {
 	registry.RegisterNodeType(NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
@@ -108,6 +155,25 @@ func registerCollectIteratorItemNodeType(registry *Registry) {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			iteratorNodeID := stringConfig(spec.Config, "iterator_node_id")
+			targetKey := stringConfig(spec.Config, "target_key")
+			fields := make([]dsl.StateFieldRef, 0, 2)
+			if iteratorNodeID != "" {
+				fields = append(fields, dsl.StateFieldRef{
+					Path: nodes.IteratorStateRootKey + "." + iteratorNodeID + ".item",
+					Mode: dsl.StateAccessRead,
+				})
+			}
+			if targetKey != "" {
+				fields = append(fields, dsl.StateFieldRef{
+					Path:          targetKey,
+					Mode:          dsl.StateAccessReadWrite,
+					MergeStrategy: dsl.StateMergeAppend,
+				})
+			}
+			return dsl.StateContract{Fields: fields}, nil
+		},
 		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			_ = ctx
 			return collectIteratorItemNode{
@@ -115,6 +181,23 @@ func registerCollectIteratorItemNodeType(registry *Registry) {
 				iteratorNodeID: stringConfig(spec.Config, "iterator_node_id"),
 				targetKey:      stringConfig(spec.Config, "target_key"),
 			}, nil
+		}),
+	})
+}
+
+func registerNoContractNodeType(registry *Registry) {
+	registry.RegisterNodeType(NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "no_contract",
+			Description: "Test node with no declared state contract.",
+			ConfigSchema: JSONSchema{
+				"type":                 "object",
+				"additionalProperties": false,
+			},
+		},
+		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+			_ = ctx
+			return assignStateNode{id: spec.ID}, nil
 		}),
 	})
 }
@@ -136,7 +219,7 @@ func TestBuildGraphRequiresEntryPoint(t *testing.T) {
 	}
 }
 
-func TestBuildGraphRequiresGraphResolverForSubgraph(t *testing.T) {
+func TestBuildGraphRejectsRemovedSubgraphNode(t *testing.T) {
 	t.Parallel()
 
 	registry := DefaultRegistry()
@@ -155,8 +238,26 @@ func TestBuildGraphRequiresGraphResolverForSubgraph(t *testing.T) {
 	}
 
 	_, err := registry.BuildGraph(def, &BuildContext{})
-	if err == nil || !strings.Contains(err.Error(), "graph resolver") {
-		t.Fatalf("expected missing graph resolver error, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), `node type "subgraph" is not registered`) {
+		t.Fatalf("expected removed subgraph error, got %v", err)
+	}
+}
+
+func TestBuildGraphRejectsNodeTypeWithoutExplicitStateContract(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	registerNoContractNodeType(registry)
+
+	_, err := registry.BuildGraph(GraphDefinition{
+		EntryPoint:  "noop",
+		FinishPoint: "noop",
+		Nodes: []GraphNodeSpec{
+			{ID: "noop", Type: "no_contract"},
+		},
+	}, &BuildContext{})
+	if err == nil || !strings.Contains(err.Error(), "must declare a state contract") {
+		t.Fatalf("expected missing state contract error, got %v", err)
 	}
 }
 
@@ -241,7 +342,31 @@ func TestBuildGraphRejectsIteratorBuiltInEdgesWithExplicitOutgoingEdge(t *testin
 	}
 }
 
-func TestBuildGraphInvokesSubgraphByGraphRef(t *testing.T) {
+func TestBuildGraphRequiresGraphResolverForMappedSubgraph(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	def := GraphDefinition{
+		EntryPoint:  "sub",
+		FinishPoint: "sub",
+		Nodes: []GraphNodeSpec{
+			{
+				ID:   "sub",
+				Type: "mapped_subgraph",
+				Config: map[string]any{
+					"graph_ref": "child",
+				},
+			},
+		},
+	}
+
+	_, err := registry.BuildGraph(def, &BuildContext{})
+	if err == nil || !strings.Contains(err.Error(), "graph resolver") {
+		t.Fatalf("expected missing graph resolver error, got %v", err)
+	}
+}
+
+func TestBuildGraphInvokesMappedSubgraphByGraphRef(t *testing.T) {
 	t.Parallel()
 
 	registry := DefaultRegistry()
@@ -253,9 +378,10 @@ func TestBuildGraphInvokesSubgraphByGraphRef(t *testing.T) {
 		Nodes: []GraphNodeSpec{
 			{
 				ID:   "sub",
-				Type: "subgraph",
+				Type: "mapped_subgraph",
 				Config: map[string]any{
-					"graph_ref": "child",
+					"graph_ref":  "child",
+					"output_map": map[string]any{"answer": "answer"},
 				},
 			},
 		},
@@ -284,19 +410,19 @@ func TestBuildGraphInvokesSubgraphByGraphRef(t *testing.T) {
 		},
 	})
 	if err != nil {
-		t.Fatalf("build graph with subgraph: %v", err)
+		t.Fatalf("build graph with mapped subgraph: %v", err)
 	}
 
 	state, err := graph.Run(context.Background(), wfstate.State{})
 	if err != nil {
-		t.Fatalf("run graph with subgraph: %v", err)
+		t.Fatalf("run graph with mapped subgraph: %v", err)
 	}
 	if got := state["answer"]; got != "ok" {
-		t.Fatalf("expected subgraph to update state, got %#v", state)
+		t.Fatalf("expected mapped subgraph to update state, got %#v", state)
 	}
 }
 
-func TestBuildGraphRejectsCyclicSubgraphRefs(t *testing.T) {
+func TestBuildGraphRejectsCyclicMappedSubgraphRefs(t *testing.T) {
 	t.Parallel()
 
 	registry := DefaultRegistry()
@@ -306,7 +432,7 @@ func TestBuildGraphRejectsCyclicSubgraphRefs(t *testing.T) {
 		Nodes: []GraphNodeSpec{
 			{
 				ID:   "sub",
-				Type: "subgraph",
+				Type: "mapped_subgraph",
 				Config: map[string]any{
 					"graph_ref": "child",
 				},
@@ -319,7 +445,7 @@ func TestBuildGraphRejectsCyclicSubgraphRefs(t *testing.T) {
 		Nodes: []GraphNodeSpec{
 			{
 				ID:   "sub",
-				Type: "subgraph",
+				Type: "mapped_subgraph",
 				Config: map[string]any{
 					"graph_ref": "child",
 				},
@@ -485,16 +611,18 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		modes []dsl.StateAccessMode
 	}{
 		{
-			name: "subgraph",
+			name: "mapped_subgraph",
 			spec: GraphNodeSpec{
 				ID:   "sub",
-				Type: "subgraph",
+				Type: "mapped_subgraph",
 				Config: map[string]any{
-					"graph_ref": "child",
+					"graph_ref":  "child",
+					"input_map":  map[string]any{"request.input": "request.input"},
+					"output_map": map[string]any{"result.answer": "answer"},
 				},
 			},
-			paths: []string{"*"},
-			modes: []dsl.StateAccessMode{dsl.StateAccessReadWrite},
+			paths: []string{"shared.request.input", "shared.answer"},
+			modes: []dsl.StateAccessMode{dsl.StateAccessRead, dsl.StateAccessWrite},
 		},
 		{
 			name: "iterator",
@@ -674,6 +802,22 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestResolveSubgraphStateContractMissingRegistration(t *testing.T) {
+	t.Parallel()
+
+	registry := DefaultRegistry()
+	_, err := registry.ResolveNodeStateContract(GraphNodeSpec{
+		ID:   "sub",
+		Type: "subgraph",
+		Config: map[string]any{
+			"graph_ref": "child",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), `node type "subgraph" is not registered`) {
+		t.Fatalf("expected removed subgraph error, got %v", err)
 	}
 }
 

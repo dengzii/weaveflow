@@ -93,8 +93,8 @@ func (r *Registry) buildGraph(def GraphDefinition, instance *dsl.GraphInstanceCo
 		func(g *Graph, def dsl.GraphDefinition) error {
 			return builder.ApplyBuiltInNodeEdges(g, def)
 		},
-		func(g *Graph, _ *registry.Registry) map[string]core.NodeIOContract {
-			return builder.ResolveNodeContracts(g, r.Registry)
+		func(def dsl.GraphDefinition, _ *registry.Registry) (map[string]core.NodeIOContract, error) {
+			return builder.ResolveNodeContracts(def, r.Registry)
 		},
 	)
 }

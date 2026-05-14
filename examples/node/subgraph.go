@@ -7,16 +7,22 @@ import (
 	wfstate "weaveflow/state"
 )
 
-func SubgraphExample() {
-	node := nodes.NewSubgraphNode()
+func MappedSubgraphExample() {
+	node := nodes.NewMappedSubgraphNode()
 	node.GraphRef = "summarizer"
+	node.InputMap = map[string]string{
+		"request.input": "request.input",
+	}
+	node.OutputMap = map[string]string{
+		"subgraph_result": "subgraph_result",
+	}
 	node.InvokeSubgraph = func(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 		input, _ := state.ResolvePath("request.input")
-		fmt.Printf("  [subgraph %q] received input: %v\n", "summarizer", input)
+		fmt.Printf("  [mapped_subgraph %q] received input: %v\n", "summarizer", input)
 
 		state["subgraph_result"] = map[string]any{
 			"graph_ref": "summarizer",
-			"summary":   "The input was processed by the summarizer subgraph.",
+			"summary":   "The input was processed by the summarizer mapped subgraph.",
 		}
 		return state, nil
 	}
@@ -34,6 +40,6 @@ func SubgraphExample() {
 	must(err)
 
 	fmt.Println()
-	fmt.Println("subgraph result:")
+	fmt.Println("mapped subgraph result:")
 	printJSON(result["subgraph_result"])
 }

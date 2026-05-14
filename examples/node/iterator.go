@@ -109,6 +109,32 @@ func (n collectIteratorItemNode) Invoke(ctx context.Context, state wfstate.State
 	return state, nil
 }
 
+func (n collectIteratorItemNode) Execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+	_ = ctx
+
+	if state == nil {
+		return wfstate.State{}, nil
+	}
+
+	namespace := state.Namespace(nodes.IteratorStateNamespace)
+	if namespace == nil {
+		return wfstate.State{}, nil
+	}
+	iteratorState := nestedState(namespace, n.iteratorNodeID)
+	if iteratorState == nil {
+		return wfstate.State{}, nil
+	}
+
+	item, _ := iteratorState["item"].(string)
+	if item == "" {
+		return wfstate.State{}, nil
+	}
+
+	return wfstate.State{
+		n.targetKey: []string{item},
+	}, nil
+}
+
 type printStateNode struct {
 	id string
 }
@@ -143,6 +169,27 @@ func registerCollectIteratorItemNodeType(r *weaveflow.Registry) {
 				"additionalProperties": false,
 			},
 		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			iteratorNodeID := registry.StringConfig(spec.Config, "iterator_node_id")
+			targetKey := registry.StringConfig(spec.Config, "target_key")
+			fields := make([]dsl.StateFieldRef, 0, 4)
+			if iteratorNodeID != "" {
+				prefix := nodes.IteratorStateRootKey + "." + iteratorNodeID
+				fields = append(fields,
+					dsl.StateFieldRef{Path: prefix + ".item", Mode: dsl.StateAccessRead},
+					dsl.StateFieldRef{Path: prefix + ".index", Mode: dsl.StateAccessRead},
+					dsl.StateFieldRef{Path: prefix + ".iteration", Mode: dsl.StateAccessRead},
+				)
+			}
+			if targetKey != "" {
+				fields = append(fields, dsl.StateFieldRef{
+					Path:          targetKey,
+					Mode:          dsl.StateAccessReadWrite,
+					MergeStrategy: dsl.StateMergeAppend,
+				})
+			}
+			return dsl.StateContract{Fields: fields}, nil
+		},
 		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
 			_ = ctx
 			return collectIteratorItemNode{
@@ -163,6 +210,12 @@ func registerPrintStateNodeType(r *weaveflow.Registry) {
 			ConfigSchema: dsl.JSONSchema{
 				"type":                 "object",
 				"additionalProperties": false,
+			},
+			StateContract: &dsl.StateContract{
+				Fields: []dsl.StateFieldRef{
+					{Path: "results", Mode: dsl.StateAccessRead},
+					{Path: nodes.IteratorStateRootKey + ".loop.done", Mode: dsl.StateAccessRead},
+				},
 			},
 		},
 		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {

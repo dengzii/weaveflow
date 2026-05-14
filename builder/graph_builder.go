@@ -120,7 +120,7 @@ func BuildFinalizedGraph[T FinalizableGraph](
 	newGraph func() T,
 	initialStatePaths []string,
 	applyBuiltInEdges func(T, dsl.GraphDefinition) error,
-	resolveNodeContracts func(T, *registry.Registry) map[string]core.NodeIOContract,
+	resolveNodeContracts func(dsl.GraphDefinition, *registry.Registry) (map[string]core.NodeIOContract, error),
 ) (T, error) {
 	var zero T
 	if reg == nil {
@@ -136,6 +136,12 @@ func BuildFinalizedGraph[T FinalizableGraph](
 	graph := newGraph()
 	graph.SetInitialStatePaths(initialStatePaths)
 
+	contracts, err := resolveNodeContracts(def, reg)
+	if err != nil {
+		return zero, err
+	}
+	graph.SetNodeContracts(contracts)
+
 	var applyBuiltIns func(dsl.GraphDefinition) error
 	if applyBuiltInEdges != nil {
 		applyBuiltIns = func(def dsl.GraphDefinition) error {
@@ -145,8 +151,6 @@ func BuildFinalizedGraph[T FinalizableGraph](
 	if err := PopulateGraph(graph, reg, def, ctx, applyBuiltIns); err != nil {
 		return zero, err
 	}
-
-	graph.SetNodeContracts(resolveNodeContracts(graph, reg))
 	if err := graph.ValidateGraph(); err != nil {
 		if ctx != nil {
 			ctx.EmitContractDiagnostics(graph.ContractDiagnostics())

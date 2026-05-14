@@ -1,24 +1,13 @@
 package registry
 
 import (
+	"sort"
 	"strings"
 
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	wfstate "weaveflow/state"
 )
-
-func ResolveSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	_ = spec
-	return dsl.StateContract{
-		Fields: []dsl.StateFieldRef{{
-			Path:          "*",
-			Mode:          dsl.StateAccessReadWrite,
-			Description:   "The full graph state passed into the subgraph and merged back from the subgraph result.",
-			MergeStrategy: dsl.StateMergeMerge,
-		}},
-	}, nil
-}
 
 func ResolveHumanMessageStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	scope := StringConfig(spec.Config, "state_scope")
@@ -93,10 +82,20 @@ func ResolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 	inputMap := MapStringConfig(spec.Config, "input_map")
 	outputMap := MapStringConfig(spec.Config, "output_map")
 	fields := make([]dsl.StateFieldRef, 0, len(inputMap)+len(outputMap))
+	inputPaths := make([]string, 0, len(inputMap))
 	for parentPath := range inputMap {
+		inputPaths = append(inputPaths, parentPath)
+	}
+	sort.Strings(inputPaths)
+	for _, parentPath := range inputPaths {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(parentPath), Mode: dsl.StateAccessRead, Description: "Input path mapped into the subgraph."})
 	}
+	outputPaths := make([]string, 0, len(outputMap))
 	for _, parentPath := range outputMap {
+		outputPaths = append(outputPaths, parentPath)
+	}
+	sort.Strings(outputPaths)
+	for _, parentPath := range outputPaths {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(parentPath), Mode: dsl.StateAccessWrite, Description: "Output path mapped back from the subgraph.", MergeStrategy: dsl.StateMergeMerge})
 	}
 	return dsl.StateContract{Fields: fields}, nil

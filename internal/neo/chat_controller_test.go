@@ -3,6 +3,7 @@ package neo
 import (
 	"testing"
 
+	"weaveflow/core"
 	wfstate "weaveflow/state"
 )
 
@@ -26,5 +27,20 @@ func TestFinalAnswerFromStateFallsBackToFinalState(t *testing.T) {
 
 	if got := finalAnswerFromState(state); got != "final state answer" {
 		t.Fatalf("finalAnswerFromState() = %q, want %q", got, "final state answer")
+	}
+}
+
+func TestNewChatRunnerDefaultsToStrictContractValidation(t *testing.T) {
+	t.Parallel()
+
+	runner := newChatRunner(nil, "graph-id", t.TempDir(), nil)
+	if runner.ContractValidation != core.ContractValidationStrict {
+		t.Fatalf("ContractValidation = %q, want %q", runner.ContractValidation, core.ContractValidationStrict)
+	}
+	if runner.GraphID != "graph-id" {
+		t.Fatalf("GraphID = %q, want %q", runner.GraphID, "graph-id")
+	}
+	if runner.ArtifactStore == nil {
+		t.Fatal("expected artifact store to be configured")
 	}
 }

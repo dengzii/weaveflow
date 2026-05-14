@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"weaveflow"
+	"weaveflow/core"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -56,6 +57,20 @@ func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[s
 		store:     store,
 		hub:       hub,
 	}
+}
+
+func newChatRunner(graph *weaveflow.Graph, graphID string, runDir string, sink fruntime.EventSink) *fruntime.GraphRunner {
+	runner := weaveflow.NewGraphRunner(
+		graph,
+		fruntime.NewFileExecutionStore(filepath.Join(runDir, "execution")),
+		fruntime.NewFileCheckpointStore(filepath.Join(runDir, "checkpoints")),
+		wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
+		sink,
+	)
+	runner.GraphID = graphID
+	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(runDir, "artifacts"))
+	runner.ContractValidation = core.ContractValidationStrict
+	return runner
 }
 
 type ChatRequest struct {
@@ -147,13 +162,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 	combinedSink := fruntime.NewCombineEventSink(sinks...)
 
-	executionStore := fruntime.NewFileExecutionStore(filepath.Join(runDir, "execution"))
-	checkpointStore := fruntime.NewFileCheckpointStore(filepath.Join(runDir, "checkpoints"))
-	stateCodec := wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion)
-
-	runner := weaveflow.NewGraphRunner(graph, executionStore, checkpointStore, stateCodec, combinedSink)
-	runner.GraphID = graphMeta.ID
-	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(runDir, "artifacts"))
+	runner := newChatRunner(graph, graphMeta.ID, runDir, combinedSink)
 
 	baseCtx := fruntime.WithServices(c.Request.Context(), services)
 	ctx, cancel := context.WithCancel(baseCtx)
