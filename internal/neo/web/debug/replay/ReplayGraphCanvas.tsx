@@ -26,10 +26,12 @@ import {
 const elk = new ELK();
 
 export function ReplayGraphCanvas({
+  cacheDir,
   detail,
   replayIndex,
   layoutVersion,
 }: {
+  cacheDir: string;
   detail: RunDetail | null;
   replayIndex: number;
   layoutVersion: number;
@@ -37,6 +39,7 @@ export function ReplayGraphCanvas({
   return (
     <ReactFlowProvider>
       <ReplayGraphCanvasInner
+        cacheDir={cacheDir}
         detail={detail}
         replayIndex={replayIndex}
         layoutVersion={layoutVersion}
@@ -46,10 +49,12 @@ export function ReplayGraphCanvas({
 }
 
 function ReplayGraphCanvasInner({
+  cacheDir,
   detail,
   replayIndex,
   layoutVersion,
 }: {
+  cacheDir: string;
   detail: RunDetail | null;
   replayIndex: number;
   layoutVersion: number;
@@ -98,7 +103,7 @@ function ReplayGraphCanvasInner({
 
       // Use full replay to compute stable node heights (so card sizes don't shift during playback)
       const maxProjection = buildProjection(detail, sourceGraph, detail.replay.length - 1);
-      const baseFlow = buildBaseFlow(sourceGraph, maxProjection, runId, sourceId);
+      const baseFlow = buildBaseFlow(sourceGraph, maxProjection, runId, sourceId, cacheDir);
       const layout = await computeElkLayout(baseFlow.nodes, baseFlow.edges);
       if (!active) return;
 
@@ -113,7 +118,8 @@ function ReplayGraphCanvasInner({
           sourceGraph,
           currentProjection,
           runId,
-          sourceId
+          sourceId,
+          cacheDir
         )
       );
       setEdges(applyProjectionToEdges(layout.edges, currentProjection));
@@ -132,7 +138,7 @@ function ReplayGraphCanvasInner({
     return () => {
       active = false;
     };
-  }, [detail, layoutVersion, setEdges, setNodes]);
+  }, [cacheDir, detail, layoutVersion, setEdges, setNodes]);
 
   useEffect(() => {
     if (!detail) return;
@@ -142,9 +148,11 @@ function ReplayGraphCanvasInner({
     const projection = buildProjection(detail, sourceGraph, replayIndex);
     const runId = detail.run.run_id;
     const sourceId = detail.source.id;
-    setNodes((current) => applyProjectionToNodes(current, sourceGraph, projection, runId, sourceId));
+    setNodes((current) =>
+      applyProjectionToNodes(current, sourceGraph, projection, runId, sourceId, cacheDir)
+    );
     setEdges((current) => applyProjectionToEdges(current, projection));
-  }, [detail, replayIndex, setEdges, setNodes]);
+  }, [cacheDir, detail, replayIndex, setEdges, setNodes]);
 
   return (
     <div className="absolute inset-0">

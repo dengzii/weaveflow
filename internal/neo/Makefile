@@ -1,4 +1,4 @@
-DATA_DIR  ?= neo_data
+DATA_DIR  ?= neo
 ADDR      ?= :9090
 DEV_PORT  ?= 3000
 

@@ -39,6 +39,20 @@ export interface SourceMeta {
   warnings: string[];
 }
 
+export interface ReplayAgentInfo {
+  name: string;
+  cache_dir: string;
+  source_count: number;
+  instance_id: string;
+  graph_ref: string;
+  graph_version: string;
+  sources: SourceMeta[];
+}
+
+export interface ReplayAgentResponse {
+  agent: ReplayAgentInfo;
+}
+
 export interface EventView {
   id: string;
   run_id: string;

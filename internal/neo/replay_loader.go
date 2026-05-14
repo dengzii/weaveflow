@@ -37,6 +37,20 @@ type RunsResponse struct {
 	Runs     []RunSummary `json:"runs"`
 }
 
+type ReplayAgentInfo struct {
+	Name         string       `json:"name"`
+	CacheDir     string       `json:"cache_dir"`
+	SourceCount  int          `json:"source_count"`
+	InstanceID   string       `json:"instance_id,omitempty"`
+	GraphRef     string       `json:"graph_ref,omitempty"`
+	GraphVersion string       `json:"graph_version,omitempty"`
+	Sources      []SourceMeta `json:"sources,omitempty"`
+}
+
+type ReplayAgentResponse struct {
+	Agent ReplayAgentInfo `json:"agent"`
+}
+
 type SourceMeta struct {
 	ID           string   `json:"id"`
 	Name         string   `json:"name"`
@@ -128,22 +142,9 @@ type ArtifactDetail struct {
 }
 
 func newCacheExplorer(baseDir string) (*cacheExplorer, error) {
-	baseDir = strings.TrimSpace(baseDir)
-	if baseDir == "" {
-		return nil, fmt.Errorf("cache_dir is required")
-	}
-
-	absDir, err := filepath.Abs(filepath.Clean(baseDir))
+	absDir, err := resolveCacheDirPath(baseDir)
 	if err != nil {
 		return nil, err
-	}
-
-	info, err := os.Stat(absDir)
-	if err != nil {
-		return nil, err
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("cache_dir %q is not a directory", absDir)
 	}
 
 	roots, err := discoverCacheRoots(absDir)
@@ -176,6 +177,27 @@ func newCacheExplorer(baseDir string) (*cacheExplorer, error) {
 		baseDir: absDir,
 		sources: sources,
 	}, nil
+}
+
+func resolveCacheDirPath(baseDir string) (string, error) {
+	baseDir = strings.TrimSpace(baseDir)
+	if baseDir == "" {
+		return "", fmt.Errorf("cache_dir is required")
+	}
+
+	absDir, err := filepath.Abs(filepath.Clean(baseDir))
+	if err != nil {
+		return "", err
+	}
+
+	info, err := os.Stat(absDir)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("cache_dir %q is not a directory", absDir)
+	}
+	return absDir, nil
 }
 
 func discoverCacheRoots(baseDir string) ([]string, error) {

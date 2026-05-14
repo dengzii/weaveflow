@@ -22,9 +22,11 @@ async function initMermaid() {
 }
 
 export function MermaidGraphCanvas({
+  cacheDir,
   detail,
   replayIndex,
 }: {
+  cacheDir: string;
   detail: RunDetail | null;
   replayIndex: number;
 }) {
@@ -181,6 +183,7 @@ export function MermaidGraphCanvas({
             </span>
           </div>
           <NodeInfoPanel
+            cacheDir={cacheDir}
             node={currentNode}
             summary={currentSummary}
             runId={detail?.run.run_id}

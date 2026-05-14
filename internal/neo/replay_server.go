@@ -40,6 +40,7 @@ var wsUpgrader = websocket.Upgrader{
 }
 
 func (s *ReplayServer) RegisterGinRoutes(group *gin.RouterGroup) {
+	group.GET("/agent", s.handleAgent)
 	group.GET("/runs", s.handleRuns)
 	group.GET("/run/*path", s.handleRunRoute)
 	group.DELETE("/run/*path", s.handleDeleteRun)
@@ -47,6 +48,27 @@ func (s *ReplayServer) RegisterGinRoutes(group *gin.RouterGroup) {
 	group.GET("/files", s.handleFiles)
 	group.GET("/file/*path", s.handleFile)
 	group.GET("/ws", s.handleLiveWS)
+}
+
+func (s *ReplayServer) handleAgent(c *gin.Context) {
+	cacheDir, err := resolveCacheDirPath(s.requestedCacheDir(c))
+	if err != nil {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	sources := []SourceMeta{}
+	if explorer, err := newCacheExplorer(cacheDir); err == nil {
+		cacheDir = explorer.baseDir
+		sources = explorer.sourceMetas()
+	} else if !strings.Contains(err.Error(), "does not contain a graph cache layout") {
+		replayWriteAPIError(c, http.StatusBadRequest, err)
+		return
+	}
+
+	replayWriteAPIData(c, http.StatusOK, ReplayAgentResponse{
+		Agent: buildReplayAgentInfo(cacheDir, sources),
+	})
 }
 
 func (s *ReplayServer) handleRuns(c *gin.Context) {
@@ -195,6 +217,35 @@ func (s *ReplayServer) requestedCacheDir(c *gin.Context) string {
 		return cacheDir
 	}
 	return s.defaultCacheDir
+}
+
+func buildReplayAgentInfo(cacheDir string, sources []SourceMeta) ReplayAgentInfo {
+	info := ReplayAgentInfo{
+		Name:        "Neo Agent",
+		CacheDir:    cacheDir,
+		SourceCount: len(sources),
+		Sources:     sources,
+	}
+
+	if len(sources) == 0 {
+		return info
+	}
+
+	primary := sources[0]
+	info.Name = firstReplayValue(primary.Name, primary.InstanceID, info.Name)
+	info.InstanceID = primary.InstanceID
+	info.GraphRef = primary.GraphRef
+	info.GraphVersion = primary.GraphVersion
+	return info
+}
+
+func firstReplayValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 // parseRunRoutePath parses the Gin wildcard path (e.g. "/abc123" or "/abc123/checkpoint/xyz").

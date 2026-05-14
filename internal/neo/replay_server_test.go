@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -139,6 +141,75 @@ func TestReplayServerLiveSnapshotReturnsGraphInfo(t *testing.T) {
 	}
 }
 
+func TestReplayServerAgentReturnsCacheDirWithoutLayout(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	cacheDir := t.TempDir()
+	server := NewReplayServer(cacheDir, nil)
+
+	router := gin.New()
+	server.RegisterGinRoutes(router.Group("/api"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agent", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("agent status = %d, want %d", resp.Code, http.StatusOK)
+	}
+
+	agent := decodeReplayAgentResponse(t, resp)
+	if agent.CacheDir != cacheDir {
+		t.Fatalf("agent.CacheDir = %q, want %q", agent.CacheDir, cacheDir)
+	}
+	if agent.SourceCount != 0 {
+		t.Fatalf("agent.SourceCount = %d, want 0", agent.SourceCount)
+	}
+}
+
+func TestReplayServerAgentReturnsSourceMetadata(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+
+	cacheDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(cacheDir, "execution", "runs"), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	instanceJSON := `{"id":"agent-1","name":"Replay Agent","graph_ref":"graph-one","graph_version":"v1"}`
+	if err := os.WriteFile(filepath.Join(cacheDir, "instance.json"), []byte(instanceJSON), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	server := NewReplayServer(cacheDir, nil)
+	router := gin.New()
+	server.RegisterGinRoutes(router.Group("/api"))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/agent", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("agent status = %d, want %d", resp.Code, http.StatusOK)
+	}
+
+	agent := decodeReplayAgentResponse(t, resp)
+	if agent.Name != "Replay Agent" {
+		t.Fatalf("agent.Name = %q, want %q", agent.Name, "Replay Agent")
+	}
+	if agent.InstanceID != "agent-1" {
+		t.Fatalf("agent.InstanceID = %q, want %q", agent.InstanceID, "agent-1")
+	}
+	if agent.GraphRef != "graph-one" {
+		t.Fatalf("agent.GraphRef = %q, want %q", agent.GraphRef, "graph-one")
+	}
+	if agent.SourceCount != 1 {
+		t.Fatalf("agent.SourceCount = %d, want 1", agent.SourceCount)
+	}
+}
+
 func readLiveMsg(t *testing.T, conn *websocket.Conn) LiveMsg {
 	t.Helper()
 
@@ -167,4 +238,20 @@ func decodeLiveStateResponse(t *testing.T, recorder *httptest.ResponseRecorder) 
 		t.Fatalf("payload.Error = %q, want empty", payload.Error)
 	}
 	return payload.Data
+}
+
+func decodeReplayAgentResponse(t *testing.T, recorder *httptest.ResponseRecorder) ReplayAgentInfo {
+	t.Helper()
+
+	var payload struct {
+		Data  ReplayAgentResponse `json:"data"`
+		Error string              `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.Error != "" {
+		t.Fatalf("payload.Error = %q, want empty", payload.Error)
+	}
+	return payload.Data.Agent
 }

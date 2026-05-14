@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, apiDelete, buildUrl } from "./api";
 import type {
+  ReplayAgentResponse,
   RunDetail,
   RunSummary,
   RunsResponse,
@@ -13,12 +14,14 @@ import { ReplaySidebar } from "./components/ReplaySidebar";
 import { useLiveMode } from "./useLiveMode";
 import type { PageMode } from "./useLiveMode";
 
-const DEFAULT_CACHE_DIR =
-  (document.body.dataset.defaultCacheDir as string | undefined)?.trim() || "neo_data";
+const FALLBACK_CACHE_DIR =
+  (document.body.dataset.defaultCacheDir as string | undefined)?.trim() || "neo";
 
 export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) {
   const navigate = useNavigate();
   const [status, setStatus] = useState({ message: "Preparing", summary: "" });
+  const [cacheDir, setCacheDir] = useState(FALLBACK_CACHE_DIR);
+  const [cacheDirReady, setCacheDirReady] = useState(false);
   const [runs, setRuns] = useState<RunSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [selectedSourceId, setSelectedSourceId] = useState("");
@@ -64,7 +67,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     liveBadge,
   } = useLiveMode({
     requestedMode: routeMode,
-    cacheDir: DEFAULT_CACHE_DIR,
+    cacheDir,
     setDetail,
     setReplayIndex,
     setStatus,
@@ -80,7 +83,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
           (item) => item.run.run_id === selectedRunId && item.source_id === selectedSourceId
         ) ?? runs[0];
       if (target) {
-        await selectRun(DEFAULT_CACHE_DIR, target);
+        await selectRun(cacheDir, target);
         return;
       }
       setDetail(null);
@@ -204,7 +207,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     try {
       setStatus({ message: `Deleting ${item.run.run_id}...`, summary: "" });
       await apiDelete<{ deleted: boolean }>(
-        buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, DEFAULT_CACHE_DIR, {
+        buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, baseDir, {
           source: item.source_id,
         })
       );
@@ -224,9 +227,29 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
   }
 
   useEffect(() => {
-    void loadRuns(DEFAULT_CACHE_DIR);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    let cancelled = false;
+    void api<ReplayAgentResponse>("/api/agent")
+      .then((data) => {
+        if (cancelled) return;
+        const nextCacheDir = data.agent?.cache_dir?.trim() || FALLBACK_CACHE_DIR;
+        setCacheDir(nextCacheDir);
+        setCacheDirReady(true);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setCacheDir(FALLBACK_CACHE_DIR);
+        setCacheDirReady(true);
+      });
+    return () => {
+      cancelled = true;
+    };
   }, []);
+
+  useEffect(() => {
+    if (!cacheDirReady) return;
+    void loadRuns(cacheDir);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cacheDirReady, cacheDir]);
 
   const current = detail?.replay?.[replayIndex] ?? null;
 
@@ -234,18 +257,19 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     <div className="relative h-full overflow-hidden bg-background text-foreground">
       {viewMode === "flow" ? (
         <ReplayGraphCanvas
+          cacheDir={cacheDir}
           detail={detail}
           replayIndex={replayIndex}
           layoutVersion={layoutVersion}
         />
       ) : (
-        <MermaidGraphCanvas detail={detail} replayIndex={replayIndex} />
+        <MermaidGraphCanvas cacheDir={cacheDir} detail={detail} replayIndex={replayIndex} />
       )}
 
       <div className="pointer-events-none absolute inset-0 z-20">
         <div className="flex h-full items-start justify-between gap-3">
           <ReplaySidebar
-            cacheDir={DEFAULT_CACHE_DIR}
+            cacheDir={cacheDir}
             detail={detail}
             runs={runs}
             selectedRunId={selectedRunId}
@@ -267,9 +291,9 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
             onToggleLiveMode={() => navigate(isLiveMode ? "/debug/replay" : "/debug/live")}
             onToggleViewMode={() => setViewMode((mode) => (mode === "flow" ? "mermaid" : "flow"))}
             onRelayout={() => setLayoutVersion((value) => value + 1)}
-            onRefreshRuns={() => void loadRuns(DEFAULT_CACHE_DIR)}
-            onSelectRun={(item) => void selectRun(DEFAULT_CACHE_DIR, item)}
-            onDeleteRun={(item) => void deleteRun(DEFAULT_CACHE_DIR, item)}
+            onRefreshRuns={() => void loadRuns(cacheDir)}
+            onSelectRun={(item) => void selectRun(cacheDir, item)}
+            onDeleteRun={(item) => void deleteRun(cacheDir, item)}
             onReplayIndexChange={handleReplayIndex}
             onToggleReplay={toggleReplay}
             onSelectLiveEvent={setReplayIndex}
