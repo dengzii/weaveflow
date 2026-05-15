@@ -1,60 +1,183 @@
 # WeaveFlow
 
-`WeaveFlow` 是一个面向本地 LLM / Agent Graph 的运行与调试工具集，使用 Go 实现。
+[![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev)
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-项目重点不是做一个完整的在线 Agent 平台，而是提供一套便于本地实验、图编排、运行时调试、断点恢复和持久化的基础设施。项目已经具备可运行的
-Graph DSL、内置节点、运行时，但整体仍处于持续演进阶段。
+**WeaveFlow** is a graph-based runtime for building, running, and debugging LLM agents in Go.
 
-## 项目目标
+It provides a declarative graph DSL, a deterministic execution engine with checkpoint and resume, and a curated set of nodes for LLM calls, tool execution, planning, memory, and human-in-the-loop control. The runtime is local-first: every step is persisted, replayable, and inspectable.
 
-- 提供可序列化的 Graph DSL，用于描述节点、边、条件和运行配置
-- 提供本地优先的 Agent Graph 运行时，支持 step、checkpoint、artifact 和 event
-- 支持图执行过程中的暂停、恢复、调试和状态快照
-- 为本地模型、工具调用和人工介入流程提供统一编排方式
-- 为后续更完整的服务化接口保留稳定内核
+---
 
-## 示例
+## Highlights
 
-可以从 `examples/graph` (ReAct 风格图执行示例) 快速了解当前能力：
+- **Graph-based orchestration** — describe an agent as a directed graph of nodes and conditional edges, serializable to JSON.
+- **Deterministic runtime** — every node execution emits events and writes checkpoints; runs can be paused, resumed, and replayed.
+- **State contracts** — nodes declare which state fields they read and write; contracts are validated at build time.
+- **Rich node library** — LLM call, tool call, planner/replanner, plan-step executor, verifier, intent analyzer, orchestration router, memory recall/write, iterator, mapped subgraph, approval gate, cost budget guard, and more.
+- **Built-in agent server** — `cmd/neo` ships a Gin-based HTTP server with a web UI, live event stream, and run replay.
+- **Redaction & safety** — configurable redaction for prompts, tool args, and local paths in logs and event sinks.
 
-```shell
-export OPENAI_API_KEY=your_openai_api_key
-export OPENAI_BASE_URL=open_ai_api_base_url
-export OPENAI_MODEL=model_name
+---
 
-go run examples/graph
+## Installation
+
+Requires Go **1.26** or later.
+
+```bash
+go get weaveflow
 ```
 
-## 项目现状
+Or clone and build from source:
 
-当前项目更适合：
+```bash
+git clone <repo-url> weaveflow
+cd weaveflow
+go build ./...
+```
 
-- 本地 Agent Graph 调试
-- 运行时能力验证
-- 节点 / 条件 / 工具机制扩展
-- 断点恢复和状态持久化实验
+---
 
-当前还不适合直接视为：
+## Quick Start
 
-- 完整的生产级 Agent 平台
-- 稳定完备的 HTTP 工作流服务
-- 已充分抽象好的多模型统一网关
+Set credentials for an OpenAI-compatible endpoint and run the ReAct example:
 
-## TODO
+```bash
+export OPENAI_API_KEY=<your-api-key>
+export OPENAI_BASE_URL=<your-base-url>
+export OPENAI_MODEL=<your-model>
 
-- 完善 `internal/server/` 的 graph API，补齐更稳定的运行、查询和恢复接口
-- 统一 DSL、Registry、Runtime、HTTP 对各字段的消费链路，减少“结构已定义但未接入”的情况
-- 补全默认节点、条件、工具的 schema、示例和文档
-- 明确 `llama_cpp` 相关能力的默认接入策略与环境依赖说明
-- 持续完善 runtime 的测试覆盖，尤其是状态合并、恢复和持久化链路
-- 增强调试输出与脱敏策略，减少 prompt、tool 参数和本地路径泄露风险
-- 逐步梳理 memory 模块与默认 graph 执行链路之间的集成方式
+go run ./examples/graph
+```
 
-## 适合谁使用
+The example builds a ReAct-style agent (human input → LLM → tool calls → final answer), persists the graph to `.local/instance/graph.json`, writes checkpoints to `.local/instance/checkpoints/`, and then demonstrates resuming from a checkpoint with new human input.
 
-如果你正在做下面这些事情，这个仓库会比较合适：
+### Building a graph in code
 
-- 想在本地搭一个可调试的 Agent Graph 原型
-- 想验证节点式编排、工具调用和人工介入流程
-- 想研究 Go 里的图运行时、状态快照和恢复机制
-- 想在现有内核基础上继续补服务层或产品化能力
+```go
+g := weaveflow.NewGraph()
+
+human := nodes.NewHumanMessageNode()
+llm   := nodes.NewLLMNode()
+tool  := nodes.NewToolCallNode()
+
+_ = g.AddNode(human)
+_ = g.AddNode(llm)
+_ = g.AddNode(tool)
+
+_ = g.AddEdge(human.ID(), llm.ID())
+_ = g.AddConditionalEdge(llm.ID(), tool.ID(), builtin.LastMessageHasToolCalls(llm.StateScope))
+_ = g.AddEdge(tool.ID(), llm.ID())
+_ = g.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, builtin.HasFinalAnswer(llm.StateScope))
+
+_ = g.SetEntryPoint(human.ID())
+```
+
+### Loading a graph from JSON
+
+```go
+graph, err := weaveflow.LoadGraphFromFile(&builder.BuildContext{}, "graph.json")
+```
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          DSL  (dsl/)                            │
+│        Graph definitions, node specs, state contracts           │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+┌─────────────────────────────────────────────────────────────────┐
+│                       Builder  (builder/)                       │
+│      Resolves registry refs, validates contracts, builds Graph  │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+┌─────────────────────────────────────────────────────────────────┐
+│                        Graph  (graph/)                          │
+│           Nodes, edges, conditional routing, topology           │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+┌─────────────────────────────────────────────────────────────────┐
+│                      Runtime  (runtime/)                        │
+│   GraphRunner · ExecutionStore · CheckpointStore · EventSink    │
+│   ArtifactStore · LLM wrapping · Redaction · Contract policy    │
+└─────────────────────────────────────────────────────────────────┘
+                                │
+┌──────────────┬──────────────┬──────────────┬───────────────────┐
+│   nodes/     │   builtin/   │    tools/    │  llms/ · memory/  │
+│ LLM, Tool,   │ Conditions,  │ AskQuestion, │ OpenAI client,    │
+│ Planner,     │ Conversation │ file, web,   │ BM25 retriever,   │
+│ Verifier,    │ helpers,     │ bash, ...    │ file/in-memory    │
+│ Iterator,    │ Memory,      │              │ repositories      │
+│ Router, ...  │ Safety, ...  │              │                   │
+└──────────────┴──────────────┴──────────────┴───────────────────┘
+```
+
+### Core packages
+
+| Package | Responsibility |
+| --- | --- |
+| `core/` | Core interfaces — `Node`, `Services`, contracts, state primitives. |
+| `dsl/` | Serializable graph definition, node specs, state contracts. |
+| `builder/` | Builds runnable `Graph` from a DSL definition + registry. |
+| `graph/` | Graph topology, conditional edges, contract analysis. |
+| `runtime/` | Execution engine: checkpoints, events, artifacts, redaction. |
+| `state/` | Scoped state with typed paths, merge strategies, conversation helpers, snapshots. |
+| `registry/` | Node and condition registration, instance configuration. |
+| `nodes/` | Production-ready node implementations (LLM, ToolCall, Planner, Verifier, …). |
+| `builtin/` | Built-in conditions, conversation/memory helpers, safety primitives. |
+| `tools/` | Tool interface and out-of-the-box tools. |
+| `llms/openai/` | OpenAI-compatible client adapter. |
+| `memory/` | Memory manager, repositories, retrievers. |
+| `redact/` | Configurable redaction for sensitive payloads. |
+| `internal/neo/` | Agent server (chat, history, replay, live events). |
+| `cmd/neo/` | Standalone server binary. |
+
+---
+
+## The Neo Agent Server
+
+`cmd/neo` is a reference application: a chat agent with persistent history, a live event stream, and a replay viewer.
+
+```bash
+go run ./cmd/neo --addr :9090 --data .local/neo
+```
+
+Then open `http://127.0.0.1:9090/neo/`.
+
+Endpoints are registered under `/neo` (chat, history, registry, live hub) and `/api` (replay).
+
+---
+
+## Examples
+
+| Path | What it shows |
+| --- | --- |
+| `examples/graph/` | End-to-end ReAct agent with checkpoint + resume. |
+| `examples/dsl/` | Building a graph through the DSL. |
+| `examples/node/` | Focused, runnable demos for each major node type. |
+| `examples/llama_cpp/` | Running graphs against a local `llama.cpp` model. |
+
+---
+
+## Testing
+
+```bash
+go test ./...
+```
+
+Unit tests cover state merging, contract validation, redaction, the runner store, and most node implementations.
+
+---
+
+## Status
+
+WeaveFlow is under active development. The kernel — DSL, builder, graph, runtime, state — is stable enough to build non-trivial agents on top of. The HTTP surface in `internal/neo/` and some advanced node capabilities are still evolving.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).
