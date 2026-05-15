@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"weaveflow/core"
 	"weaveflow/dsl"
 
 	fruntime "weaveflow/runtime"
@@ -49,7 +50,7 @@ func NewContextReducerNode() *ContextReducerNode {
 }
 
 func (n *ContextReducerNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	svc := fruntime.ServicesFrom(ctx)
+	svc := core.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("context reducer: model service not available")
 	}

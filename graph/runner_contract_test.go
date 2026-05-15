@@ -1,13 +1,16 @@
-package weaveflow
+package graph
 
 import (
 	"context"
 	"encoding/json"
 	"strings"
 	"testing"
+	"weaveflow/builder"
+	"weaveflow/builtin"
 	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	wfregistry "weaveflow/registry"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
 
@@ -43,12 +46,12 @@ func (n contractProbeNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return n.spec
 }
 
-func registerContractProbeNodeType(registry *Registry, contract dsl.StateContract, mutate func(wfstate.State), inspect func(wfstate.State) string) {
-	registry.RegisterNodeType(NodeTypeDefinition{
+func registerContractProbeNodeType(registry *wfregistry.Registry, contract dsl.StateContract, mutate func(wfstate.State), inspect func(wfstate.State) string) {
+	registry.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "contract_probe",
 			Description: "Test node for runner state contract execution.",
-			ConfigSchema: JSONSchema{
+			ConfigSchema: dsl.JSONSchema{
 				"type":                 "object",
 				"additionalProperties": false,
 			},
@@ -57,7 +60,7 @@ func registerContractProbeNodeType(registry *Registry, contract dsl.StateContrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
+		Build: builder.AdaptNodeBuilder(func(ctx *builder.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return contractProbeNode{
 				id:      spec.ID,
@@ -110,7 +113,7 @@ func (m *contractCaptureLLMModel) Call(ctx context.Context, prompt string, optio
 func TestGraphRunnerProjectsNodeInputByContract(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerContractProbeNodeType(
 		registry,
 		dsl.StateContract{
@@ -131,13 +134,13 @@ func TestGraphRunnerProjectsNodeInputByContract(t *testing.T) {
 		},
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "probe",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "probe", Type: "contract_probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -164,7 +167,7 @@ func TestGraphRunnerProjectsNodeInputByContract(t *testing.T) {
 func TestGraphRunnerRejectsUndeclaredPatchWrite(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerContractProbeNodeType(
 		registry,
 		dsl.StateContract{
@@ -180,13 +183,13 @@ func TestGraphRunnerRejectsUndeclaredPatchWrite(t *testing.T) {
 		},
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "probe",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "probe", Type: "contract_probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -207,7 +210,7 @@ func TestGraphRunnerRejectsUndeclaredPatchWrite(t *testing.T) {
 func TestGraphRunnerRejectsMissingRequiredRead(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerContractProbeNodeType(
 		registry,
 		dsl.StateContract{
@@ -222,13 +225,13 @@ func TestGraphRunnerRejectsMissingRequiredRead(t *testing.T) {
 		},
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "probe",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "probe", Type: "contract_probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -249,7 +252,7 @@ func TestGraphRunnerRejectsMissingRequiredRead(t *testing.T) {
 func TestGraphRunnerRejectsMissingRequiredWrite(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerContractProbeNodeType(
 		registry,
 		dsl.StateContract{
@@ -261,13 +264,13 @@ func TestGraphRunnerRejectsMissingRequiredWrite(t *testing.T) {
 		nil,
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "probe",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "probe", Type: "contract_probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -288,7 +291,7 @@ func TestGraphRunnerRejectsMissingRequiredWrite(t *testing.T) {
 func TestGraphRunnerWarnPolicyReportsButAllowsContractViolation(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerContractProbeNodeType(
 		registry,
 		dsl.StateContract{
@@ -304,13 +307,13 @@ func TestGraphRunnerWarnPolicyReportsButAllowsContractViolation(t *testing.T) {
 		},
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "probe",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "probe", Type: "contract_probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -355,7 +358,7 @@ func TestGraphRunnerWarnPolicyReportsButAllowsContractViolation(t *testing.T) {
 func TestGraphRunnerOffPolicySkipsProjectionAndContractValidation(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerContractProbeNodeType(
 		registry,
 		dsl.StateContract{
@@ -373,13 +376,13 @@ func TestGraphRunnerOffPolicySkipsProjectionAndContractValidation(t *testing.T) 
 		},
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "probe",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "probe", Type: "contract_probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -410,7 +413,7 @@ func TestGraphRunnerOffPolicySkipsProjectionAndContractValidation(t *testing.T) 
 func TestGraphRunnerAppliesAppendMergeStrategyFromDSLContract(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerContractProbeNodeType(
 		registry,
 		dsl.StateContract{
@@ -428,13 +431,13 @@ func TestGraphRunnerAppliesAppendMergeStrategyFromDSLContract(t *testing.T) {
 		nil,
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "probe",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "probe", Type: "contract_probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -462,13 +465,13 @@ func TestGraphRunnerAppliesAppendMergeStrategyFromDSLContract(t *testing.T) {
 func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerCollectIteratorItemNodeType(registry)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "loop",
 		FinishPoint: "loop",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "loop",
 				Type: "iterator",
@@ -491,7 +494,7 @@ func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
 		Edges: []dsl.GraphEdgeSpec{
 			{From: "collect", To: "loop"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -534,11 +537,11 @@ func TestGraphRunnerIteratesWithRuntimePrivateStateContracts(t *testing.T) {
 func TestGraphRunnerProjectsRootConversationFallbackForScopedLLMNode(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	graph, err := registry.BuildGraph(GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "model",
 		FinishPoint: "model",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "model",
 				Type: "llm",
@@ -547,7 +550,7 @@ func TestGraphRunnerProjectsRootConversationFallbackForScopedLLMNode(t *testing.
 				},
 			},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -560,7 +563,7 @@ func TestGraphRunnerProjectsRootConversationFallbackForScopedLLMNode(t *testing.
 	initial.Conversation("").SetMaxIterations(16)
 
 	runner := newContractTestRunner(t, graph)
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
 	run, finalState, err := runner.Start(ctx, initial)
 	if err != nil {
 		t.Fatalf("start runner: %v", err)
@@ -596,7 +599,7 @@ func TestGraphRunnerProjectsRootConversationFallbackForScopedLLMNode(t *testing.
 func TestGraphRunnerPublishesContractWarningEventsAndArtifacts(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerStaticContractNodeType(registry, "wildcard_runner", dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: "*", Mode: dsl.StateAccessReadWrite},
@@ -616,17 +619,17 @@ func TestGraphRunnerPublishesContractWarningEventsAndArtifacts(t *testing.T) {
 		},
 	)
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "wild",
 		FinishPoint: "probe",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "wild", Type: "wildcard_runner"},
 			{ID: "probe", Type: "contract_probe"},
 		},
 		Edges: []dsl.GraphEdgeSpec{
 			{From: "wild", To: "probe"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}

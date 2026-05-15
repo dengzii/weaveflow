@@ -1,4 +1,4 @@
-package weaveflow
+package graph
 
 import (
 	"context"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"weaveflow/builder"
+	"weaveflow/builtin"
 	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/registry"
@@ -20,7 +22,7 @@ const EndNodeRef = "__end__"
 
 type conditionalEdge struct {
 	to        string
-	condition EdgeCondition
+	condition registry.EdgeCondition
 }
 
 func SetLogger(l *zap.Logger) {
@@ -60,7 +62,7 @@ func NewGraph() *Graph {
 	}
 }
 
-func LoadGraphFromFile(buildContext *BuildContext, path string) (*Graph, error) {
+func LoadGraphFromFile(buildContext *builder.BuildContext, path string) (*Graph, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -69,8 +71,8 @@ func LoadGraphFromFile(buildContext *BuildContext, path string) (*Graph, error) 
 	if err != nil {
 		return nil, fmt.Errorf("load graph definition from %q: %w", path, err)
 	}
-	registry := DefaultRegistry()
-	return registry.BuildGraph(def, buildContext)
+	reg := builtin.NewDefaultRegistry()
+	return BuildGraph(reg, def, buildContext)
 }
 
 func (g *Graph) EnableLogging() {
@@ -198,15 +200,15 @@ func (g *Graph) addEdgeInternal(from, to string, trackSpec bool) error {
 	return nil
 }
 
-func (g *Graph) AddConditionalEdge(from, to string, condition EdgeCondition) error {
+func (g *Graph) AddConditionalEdge(from, to string, condition registry.EdgeCondition) error {
 	return g.addConditionalEdgeInternal(from, to, condition, true)
 }
 
-func (g *Graph) addRuntimeConditionalEdge(from, to string, condition EdgeCondition) error {
+func (g *Graph) addRuntimeConditionalEdge(from, to string, condition registry.EdgeCondition) error {
 	return g.addConditionalEdgeInternal(from, to, condition, false)
 }
 
-func (g *Graph) addConditionalEdgeInternal(from, to string, condition EdgeCondition, trackSpec bool) error {
+func (g *Graph) addConditionalEdgeInternal(from, to string, condition registry.EdgeCondition, trackSpec bool) error {
 	if err := condition.Validate(); err != nil {
 		return err
 	}
@@ -307,8 +309,8 @@ func (g *Graph) Validate() error {
 	}
 
 	if len(g.nodeContracts) > 0 {
-		g.contractDiagnostics = analyzeContractDiagnostics(g)
-		if err := contractDiagnosticsError(g.contractDiagnostics); err != nil {
+		g.contractDiagnostics = builder.AnalyzeContractDiagnostics(g.contractAnalysisGraph())
+		if err := builder.ContractDiagnosticsError(g.contractDiagnostics); err != nil {
 			return err
 		}
 	} else {

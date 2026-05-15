@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -77,7 +78,7 @@ func NewOrchestrationRouterNode() *OrchestrationRouterNode {
 }
 
 func (n *OrchestrationRouterNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	svc := fruntime.ServicesFrom(ctx)
+	svc := core.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("orchestration router: model service not available")
 	}
@@ -659,7 +660,7 @@ func extractOrchestrationJSONObject(content string, start int) string {
 	return ""
 }
 
-func availableToolSummaries(svc *fruntime.Services) []map[string]string {
+func availableToolSummaries(svc *core.Services) []map[string]string {
 	if svc == nil || len(svc.Tools) == 0 {
 		return nil
 	}
@@ -689,7 +690,7 @@ func availableToolSummaries(svc *fruntime.Services) []map[string]string {
 	return summaries
 }
 
-func (n *OrchestrationRouterNode) heuristicToolDecision(svc *fruntime.Services, input string) (orchestrationRouterResponse, bool) {
+func (n *OrchestrationRouterNode) heuristicToolDecision(svc *core.Services, input string) (orchestrationRouterResponse, bool) {
 	input = strings.TrimSpace(input)
 	if input == "" {
 		return orchestrationRouterResponse{}, false
@@ -714,7 +715,7 @@ func (n *OrchestrationRouterNode) heuristicToolDecision(svc *fruntime.Services, 
 	return orchestrationRouterResponse{}, false
 }
 
-func hasAvailableTool(svc *fruntime.Services, name string) bool {
+func hasAvailableTool(svc *core.Services, name string) bool {
 	if svc == nil || len(svc.Tools) == 0 {
 		return false
 	}

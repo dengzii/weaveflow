@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fruntime "weaveflow/runtime"
+	"weaveflow/core"
 	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
@@ -54,7 +54,7 @@ func TestContextReducerNodeNoOpBelowLimit(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeAI, "hi"),
 	})
 
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
 	_, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
@@ -84,7 +84,7 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeHuman, "Proceed with the final recommendation."),
 	})
 
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
 	next, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
@@ -162,7 +162,7 @@ func TestContextReducerNodeKeepsToolSpanTogether(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeHuman, "Summarize it."),
 	})
 
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
 	next, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)

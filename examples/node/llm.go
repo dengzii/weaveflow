@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"weaveflow/core"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -17,14 +18,14 @@ func LLMExample() {
 	model, err := openai.New()
 	must(err)
 
-	svc := &runtime.Services{
+	svc := &core.Services{
 		Model: runtime.WrapLLM(model),
 		Tools: map[string]tools.Tool{
 			"calculator":   tools.NewCalculator(),
 			"current_time": tools.NewCurrentTime(),
 		},
 	}
-	ctx := runtime.WithServices(context.Background(), svc)
+	ctx := core.WithServices(context.Background(), svc)
 
 	node := nodes.NewLLMNode()
 	node.StateScope = "agent"

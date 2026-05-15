@@ -1,37 +1,77 @@
-package weaveflow
+package builder
 
 import (
 	"fmt"
 	"sort"
 	"strings"
+
 	"weaveflow/core"
+	"weaveflow/dsl"
 	wfstate "weaveflow/state"
 )
 
-type ContractDiagnosticSeverity = core.ContractDiagnosticSeverity
-
-const (
-	ContractDiagnosticSeverityError   = core.ContractDiagnosticSeverityError
-	ContractDiagnosticSeverityWarning = core.ContractDiagnosticSeverityWarning
-)
-
-type ContractDiagnostic = core.ContractDiagnostic
-
-func (g *Graph) ContractDiagnostics() []ContractDiagnostic {
-	if g == nil || len(g.contractDiagnostics) == 0 {
-		return nil
-	}
-	cloned := make([]ContractDiagnostic, len(g.contractDiagnostics))
-	for i, diagnostic := range g.contractDiagnostics {
-		cloned[i] = diagnostic
-		if len(diagnostic.Sources) > 0 {
-			cloned[i].Sources = append([]string(nil), diagnostic.Sources...)
-		}
-	}
-	return cloned
+type ContractAnalysisGraph struct {
+	EntryPoint        string
+	EndNode           string
+	InitialStatePaths []string
+	Edges             map[string]string
+	ConditionalEdges  map[string][]string
+	NodeContracts     map[string]core.NodeIOContract
 }
 
-func initialContractPathsFromStateFields(fields map[string]StateFieldDefinition) []string {
+func AnalyzeContractDiagnostics(input ContractAnalysisGraph) []core.ContractDiagnostic {
+	if len(input.NodeContracts) == 0 || input.EntryPoint == "" {
+		return nil
+	}
+
+	reachable := reachableGraphNodes(input)
+	if len(reachable) == 0 {
+		return nil
+	}
+
+	predecessors := graphPredecessors(input, reachable)
+	ancestors := graphAncestors(reachable, predecessors)
+
+	diagnostics := make([]core.ContractDiagnostic, 0)
+	diagnostics = append(diagnostics, wildcardContractDiagnostics(input, reachable)...)
+	diagnostics = append(diagnostics, overlappingWriteDiagnostics(input, reachable)...)
+	diagnostics = append(diagnostics, requiredReadDiagnostics(input, reachable, ancestors)...)
+
+	sort.SliceStable(diagnostics, func(i, j int) bool {
+		left := diagnostics[i]
+		right := diagnostics[j]
+		if left.Severity != right.Severity {
+			return left.Severity == core.ContractDiagnosticSeverityError
+		}
+		if left.NodeID != right.NodeID {
+			return left.NodeID < right.NodeID
+		}
+		if left.OtherNodeID != right.OtherNodeID {
+			return left.OtherNodeID < right.OtherNodeID
+		}
+		if left.Path != right.Path {
+			return left.Path < right.Path
+		}
+		return left.Kind < right.Kind
+	})
+	return diagnostics
+}
+
+func ContractDiagnosticsError(diagnostics []core.ContractDiagnostic) error {
+	errors := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Severity != core.ContractDiagnosticSeverityError {
+			continue
+		}
+		errors = append(errors, diagnostic.Message)
+	}
+	if len(errors) == 0 {
+		return nil
+	}
+	return fmt.Errorf("graph contract validation failed:\n- %s", strings.Join(errors, "\n- "))
+}
+
+func InitialContractPathsFromStateFields(fields map[string]dsl.StateFieldDefinition) []string {
 	if len(fields) == 0 {
 		return nil
 	}
@@ -53,93 +93,38 @@ func initialContractPathsFromStateFields(fields map[string]StateFieldDefinition)
 	return paths
 }
 
-func analyzeContractDiagnostics(g *Graph) []ContractDiagnostic {
-	if g == nil || len(g.nodeContracts) == 0 || g.entryPoint == "" {
-		return nil
-	}
-
-	reachable := reachableGraphNodes(g)
-	if len(reachable) == 0 {
-		return nil
-	}
-
-	predecessors := graphPredecessors(g, reachable)
-	ancestors := graphAncestors(reachable, predecessors)
-
-	diagnostics := make([]ContractDiagnostic, 0)
-	diagnostics = append(diagnostics, wildcardContractDiagnostics(g, reachable)...)
-	diagnostics = append(diagnostics, overlappingWriteDiagnostics(g, reachable)...)
-	diagnostics = append(diagnostics, requiredReadDiagnostics(g, reachable, ancestors)...)
-
-	sort.SliceStable(diagnostics, func(i, j int) bool {
-		left := diagnostics[i]
-		right := diagnostics[j]
-		if left.Severity != right.Severity {
-			return left.Severity == ContractDiagnosticSeverityError
-		}
-		if left.NodeID != right.NodeID {
-			return left.NodeID < right.NodeID
-		}
-		if left.OtherNodeID != right.OtherNodeID {
-			return left.OtherNodeID < right.OtherNodeID
-		}
-		if left.Path != right.Path {
-			return left.Path < right.Path
-		}
-		return left.Kind < right.Kind
-	})
-	return diagnostics
-}
-
-func contractDiagnosticsError(diagnostics []ContractDiagnostic) error {
-	errors := make([]string, 0, len(diagnostics))
-	for _, diagnostic := range diagnostics {
-		if diagnostic.Severity != ContractDiagnosticSeverityError {
-			continue
-		}
-		errors = append(errors, diagnostic.Message)
-	}
-	if len(errors) == 0 {
-		return nil
-	}
-	return fmt.Errorf("graph contract validation failed:\n- %s", strings.Join(errors, "\n- "))
-}
-
-func reachableGraphNodes(g *Graph) []string {
-	if g == nil || g.entryPoint == "" {
+func reachableGraphNodes(input ContractAnalysisGraph) []string {
+	if input.EntryPoint == "" {
 		return nil
 	}
 
 	visited := map[string]struct{}{}
-	queue := []string{g.entryPoint}
-	order := make([]string, 0, len(g.nodes))
+	queue := []string{input.EntryPoint}
+	order := make([]string, 0, len(input.NodeContracts))
 	for len(queue) > 0 {
 		nodeID := queue[0]
 		queue = queue[1:]
 		if _, ok := visited[nodeID]; ok {
 			continue
 		}
-		if _, ok := g.nodes[nodeID]; !ok {
-			continue
-		}
 		visited[nodeID] = struct{}{}
 		order = append(order, nodeID)
 
-		if next, ok := g.edges[nodeID]; ok && next != EndNodeRef && next != "" {
+		if next, ok := input.Edges[nodeID]; ok && !isAnalysisEndTarget(input, next) {
 			queue = append(queue, next)
 		}
-		for _, edge := range g.conditionalEdges[nodeID] {
-			if edge.to == EndNodeRef || edge.to == "" {
+		for _, to := range input.ConditionalEdges[nodeID] {
+			if isAnalysisEndTarget(input, to) {
 				continue
 			}
-			queue = append(queue, edge.to)
+			queue = append(queue, to)
 		}
 	}
 	sort.Strings(order)
 	return order
 }
 
-func graphPredecessors(g *Graph, reachable []string) map[string][]string {
+func graphPredecessors(input ContractAnalysisGraph, reachable []string) map[string][]string {
 	reachableSet := make(map[string]struct{}, len(reachable))
 	for _, nodeID := range reachable {
 		reachableSet[nodeID] = struct{}{}
@@ -160,12 +145,12 @@ func graphPredecessors(g *Graph, reachable []string) map[string][]string {
 		predecessors[to] = append(predecessors[to], from)
 	}
 
-	for from, to := range g.edges {
+	for from, to := range input.Edges {
 		addPredecessor(from, to)
 	}
-	for from, edges := range g.conditionalEdges {
-		for _, edge := range edges {
-			addPredecessor(from, edge.to)
+	for from, edges := range input.ConditionalEdges {
+		for _, to := range edges {
+			addPredecessor(from, to)
 		}
 	}
 
@@ -213,10 +198,10 @@ func graphAncestors(reachable []string, predecessors map[string][]string) map[st
 	return ancestors
 }
 
-func wildcardContractDiagnostics(g *Graph, reachable []string) []ContractDiagnostic {
-	diagnostics := make([]ContractDiagnostic, 0)
+func wildcardContractDiagnostics(input ContractAnalysisGraph, reachable []string) []core.ContractDiagnostic {
+	diagnostics := make([]core.ContractDiagnostic, 0)
 	for _, nodeID := range reachable {
-		contract, ok := g.nodeContracts[nodeID]
+		contract, ok := input.NodeContracts[nodeID]
 		if !ok {
 			continue
 		}
@@ -230,8 +215,8 @@ func wildcardContractDiagnostics(g *Graph, reachable []string) []ContractDiagnos
 		if contract.WildcardWrite {
 			parts = append(parts, "write")
 		}
-		diagnostics = append(diagnostics, ContractDiagnostic{
-			Severity: ContractDiagnosticSeverityWarning,
+		diagnostics = append(diagnostics, core.ContractDiagnostic{
+			Severity: core.ContractDiagnosticSeverityWarning,
 			Kind:     "wildcard_contract",
 			NodeID:   nodeID,
 			Message:  fmt.Sprintf("node %q uses wildcard %s contract access, which weakens static dependency analysis", nodeID, strings.Join(parts, "/")),
@@ -240,17 +225,17 @@ func wildcardContractDiagnostics(g *Graph, reachable []string) []ContractDiagnos
 	return diagnostics
 }
 
-func overlappingWriteDiagnostics(g *Graph, reachable []string) []ContractDiagnostic {
-	diagnostics := make([]ContractDiagnostic, 0)
+func overlappingWriteDiagnostics(input ContractAnalysisGraph, reachable []string) []core.ContractDiagnostic {
+	diagnostics := make([]core.ContractDiagnostic, 0)
 	for i := 0; i < len(reachable); i++ {
 		leftID := reachable[i]
-		left, ok := g.nodeContracts[leftID]
+		left, ok := input.NodeContracts[leftID]
 		if !ok {
 			continue
 		}
 		for j := i + 1; j < len(reachable); j++ {
 			rightID := reachable[j]
-			right, ok := g.nodeContracts[rightID]
+			right, ok := input.NodeContracts[rightID]
 			if !ok {
 				continue
 			}
@@ -258,8 +243,8 @@ func overlappingWriteDiagnostics(g *Graph, reachable []string) []ContractDiagnos
 			if !ok {
 				continue
 			}
-			diagnostics = append(diagnostics, ContractDiagnostic{
-				Severity:    ContractDiagnosticSeverityWarning,
+			diagnostics = append(diagnostics, core.ContractDiagnostic{
+				Severity:    core.ContractDiagnosticSeverityWarning,
 				Kind:        "overlapping_write",
 				NodeID:      leftID,
 				OtherNodeID: rightID,
@@ -291,10 +276,10 @@ func overlappingWritePath(left, right core.NodeIOContract) (string, bool) {
 	return "", false
 }
 
-func requiredReadDiagnostics(g *Graph, reachable []string, ancestors map[string]map[string]struct{}) []ContractDiagnostic {
-	diagnostics := make([]ContractDiagnostic, 0)
+func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, ancestors map[string]map[string]struct{}) []core.ContractDiagnostic {
+	diagnostics := make([]core.ContractDiagnostic, 0)
 	for _, nodeID := range reachable {
-		contract, ok := g.nodeContracts[nodeID]
+		contract, ok := input.NodeContracts[nodeID]
 		if !ok || len(contract.RequiredReadPaths) == 0 || contract.WildcardRead {
 			continue
 		}
@@ -304,10 +289,10 @@ func requiredReadDiagnostics(g *Graph, reachable []string, ancestors map[string]
 		required = compactStrings(required)
 
 		for _, path := range required {
-			sources := requiredReadSources(g, nodeID, path, ancestors[nodeID])
+			sources := requiredReadSources(input, nodeID, path, ancestors[nodeID])
 			if len(sources) == 0 {
-				diagnostics = append(diagnostics, ContractDiagnostic{
-					Severity: ContractDiagnosticSeverityError,
+				diagnostics = append(diagnostics, core.ContractDiagnostic{
+					Severity: core.ContractDiagnosticSeverityError,
 					Kind:     "missing_required_read",
 					NodeID:   nodeID,
 					Path:     path,
@@ -316,8 +301,8 @@ func requiredReadDiagnostics(g *Graph, reachable []string, ancestors map[string]
 				continue
 			}
 			if len(sources) > 1 {
-				diagnostics = append(diagnostics, ContractDiagnostic{
-					Severity: ContractDiagnosticSeverityWarning,
+				diagnostics = append(diagnostics, core.ContractDiagnostic{
+					Severity: core.ContractDiagnosticSeverityWarning,
 					Kind:     "multiple_read_sources",
 					NodeID:   nodeID,
 					Path:     path,
@@ -330,16 +315,16 @@ func requiredReadDiagnostics(g *Graph, reachable []string, ancestors map[string]
 	return diagnostics
 }
 
-func requiredReadSources(g *Graph, nodeID string, path string, ancestors map[string]struct{}) []string {
+func requiredReadSources(input ContractAnalysisGraph, nodeID string, path string, ancestors map[string]struct{}) []string {
 	sources := make([]string, 0)
-	for _, initialPath := range g.initialStatePaths {
+	for _, initialPath := range input.InitialStatePaths {
 		if sourceProvidesRead(initialPath, path) {
 			sources = append(sources, "input")
 			break
 		}
 	}
 
-	if contract, ok := g.nodeContracts[nodeID]; ok && selfRuntimePathProvidesRead(nodeID, contract, path) {
+	if contract, ok := input.NodeContracts[nodeID]; ok && selfRuntimePathProvidesRead(nodeID, contract, path) {
 		sources = append(sources, nodeID)
 	}
 
@@ -349,7 +334,7 @@ func requiredReadSources(g *Graph, nodeID string, path string, ancestors map[str
 	}
 	sort.Strings(ancestorIDs)
 	for _, ancestorID := range ancestorIDs {
-		contract, ok := g.nodeContracts[ancestorID]
+		contract, ok := input.NodeContracts[ancestorID]
 		if !ok {
 			continue
 		}
@@ -438,4 +423,14 @@ func compactStrings(values []string) []string {
 		return nil
 	}
 	return result
+}
+
+func isAnalysisEndTarget(input ContractAnalysisGraph, target string) bool {
+	if target == "" {
+		return true
+	}
+	if input.EndNode != "" {
+		return target == input.EndNode
+	}
+	return target == "__end__"
 }

@@ -1,11 +1,15 @@
-package weaveflow
+package registry_test
 
 import (
 	"context"
 	"strings"
 	"testing"
+	"weaveflow"
+	"weaveflow/builder"
+	"weaveflow/builtin"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	wfregistry "weaveflow/registry"
 	wfstate "weaveflow/state"
 )
 
@@ -27,23 +31,23 @@ func (n assignStateNode) Execute(ctx context.Context, state wfstate.State) (wfst
 	return wfstate.StatePatch{n.key: n.value}, nil
 }
 
-func registerAssignNodeType(registry *Registry) {
-	registry.RegisterNodeType(NodeTypeDefinition{
+func registerAssignNodeType(registry *wfregistry.Registry) {
+	registry.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "assign",
 			Description: "Assign a value into shared state.",
-			ConfigSchema: JSONSchema{
+			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
-				"properties": JSONSchema{
-					"key":   JSONSchema{"type": "string"},
-					"value": JSONSchema{},
+				"properties": dsl.JSONSchema{
+					"key":   dsl.JSONSchema{"type": "string"},
+					"value": dsl.JSONSchema{},
 				},
 				"required":             []string{"key"},
 				"additionalProperties": false,
 			},
 		},
 		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			key := stringConfig(spec.Config, "key")
+			key := wfregistry.StringConfig(spec.Config, "key")
 			if key == "" {
 				return dsl.StateContract{}, nil
 			}
@@ -54,10 +58,10 @@ func registerAssignNodeType(registry *Registry) {
 				}},
 			}, nil
 		},
-		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
+		Build: builder.AdaptNodeBuilder(func(ctx *builder.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			return assignStateNode{
 				id:    spec.ID,
-				key:   stringConfig(spec.Config, "key"),
+				key:   wfregistry.StringConfig(spec.Config, "key"),
 				value: spec.Config["value"],
 			}, nil
 		}),
@@ -108,24 +112,24 @@ func (n collectIteratorItemNode) Execute(ctx context.Context, state wfstate.Stat
 	}, nil
 }
 
-func registerCollectIteratorItemNodeType(registry *Registry) {
-	registry.RegisterNodeType(NodeTypeDefinition{
+func registerCollectIteratorItemNodeType(registry *wfregistry.Registry) {
+	registry.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "collect_iterator_item",
 			Description: "Collect the current iterator item into a string slice.",
-			ConfigSchema: JSONSchema{
+			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
-				"properties": JSONSchema{
-					"iterator_node_id": JSONSchema{"type": "string"},
-					"target_key":       JSONSchema{"type": "string"},
+				"properties": dsl.JSONSchema{
+					"iterator_node_id": dsl.JSONSchema{"type": "string"},
+					"target_key":       dsl.JSONSchema{"type": "string"},
 				},
 				"required":             []string{"iterator_node_id", "target_key"},
 				"additionalProperties": false,
 			},
 		},
 		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			iteratorNodeID := stringConfig(spec.Config, "iterator_node_id")
-			targetKey := stringConfig(spec.Config, "target_key")
+			iteratorNodeID := wfregistry.StringConfig(spec.Config, "iterator_node_id")
+			targetKey := wfregistry.StringConfig(spec.Config, "target_key")
 			fields := make([]dsl.StateFieldRef, 0, 2)
 			if iteratorNodeID != "" {
 				fields = append(fields, dsl.StateFieldRef{
@@ -142,28 +146,28 @@ func registerCollectIteratorItemNodeType(registry *Registry) {
 			}
 			return dsl.StateContract{Fields: fields}, nil
 		},
-		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
+		Build: builder.AdaptNodeBuilder(func(ctx *builder.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
-				iteratorNodeID: stringConfig(spec.Config, "iterator_node_id"),
-				targetKey:      stringConfig(spec.Config, "target_key"),
+				iteratorNodeID: wfregistry.StringConfig(spec.Config, "iterator_node_id"),
+				targetKey:      wfregistry.StringConfig(spec.Config, "target_key"),
 			}, nil
 		}),
 	})
 }
 
-func registerNoContractNodeType(registry *Registry) {
-	registry.RegisterNodeType(NodeTypeDefinition{
+func registerNoContractNodeType(registry *wfregistry.Registry) {
+	registry.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "no_contract",
 			Description: "Test node with no declared state contract.",
-			ConfigSchema: JSONSchema{
+			ConfigSchema: dsl.JSONSchema{
 				"type":                 "object",
 				"additionalProperties": false,
 			},
 		},
-		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
+		Build: builder.AdaptNodeBuilder(func(ctx *builder.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return assignStateNode{id: spec.ID}, nil
 		}),
@@ -173,15 +177,15 @@ func registerNoContractNodeType(registry *Registry) {
 func TestBuildGraphRequiresEntryPoint(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	def := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	def := dsl.GraphDefinition{
 		FinishPoint: "tools",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "tools", Type: "tools"},
 		},
 	}
 
-	_, err := registry.BuildGraph(def, &BuildContext{})
+	_, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "entry point") {
 		t.Fatalf("expected missing entry point error, got %v", err)
 	}
@@ -190,11 +194,11 @@ func TestBuildGraphRequiresEntryPoint(t *testing.T) {
 func TestBuildGraphRejectsRemovedSubgraphNode(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	def := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	def := dsl.GraphDefinition{
 		EntryPoint:  "sub",
 		FinishPoint: "sub",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "sub",
 				Type: "subgraph",
@@ -205,7 +209,7 @@ func TestBuildGraphRejectsRemovedSubgraphNode(t *testing.T) {
 		},
 	}
 
-	_, err := registry.BuildGraph(def, &BuildContext{})
+	_, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), `node type "subgraph" is not registered`) {
 		t.Fatalf("expected removed subgraph error, got %v", err)
 	}
@@ -214,16 +218,16 @@ func TestBuildGraphRejectsRemovedSubgraphNode(t *testing.T) {
 func TestBuildGraphRejectsNodeTypeWithoutExplicitStateContract(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerNoContractNodeType(registry)
 
-	_, err := registry.BuildGraph(GraphDefinition{
+	_, err := weaveflow.BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "noop",
 		FinishPoint: "noop",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "noop", Type: "no_contract"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "must declare a state contract") {
 		t.Fatalf("expected missing state contract error, got %v", err)
 	}
@@ -232,11 +236,11 @@ func TestBuildGraphRejectsNodeTypeWithoutExplicitStateContract(t *testing.T) {
 func TestBuildGraphRequiresIteratorConfig(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	def := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	def := dsl.GraphDefinition{
 		EntryPoint:  "loop",
 		FinishPoint: "loop",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "loop",
 				Type: "iterator",
@@ -247,7 +251,7 @@ func TestBuildGraphRequiresIteratorConfig(t *testing.T) {
 		},
 	}
 
-	_, err := registry.BuildGraph(def, &BuildContext{})
+	_, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "max_iterations") {
 		t.Fatalf("expected missing max_iterations error, got %v", err)
 	}
@@ -256,10 +260,10 @@ func TestBuildGraphRequiresIteratorConfig(t *testing.T) {
 func TestBuildGraphRejectsPartialIteratorBuiltInEdges(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	def := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	def := dsl.GraphDefinition{
 		EntryPoint: "loop",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "loop",
 				Type: "iterator",
@@ -273,7 +277,7 @@ func TestBuildGraphRejectsPartialIteratorBuiltInEdges(t *testing.T) {
 		},
 	}
 
-	_, err := registry.BuildGraph(def, &BuildContext{})
+	_, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "continue_to and done_to") {
 		t.Fatalf("expected partial built-in edge config error, got %v", err)
 	}
@@ -282,10 +286,10 @@ func TestBuildGraphRejectsPartialIteratorBuiltInEdges(t *testing.T) {
 func TestBuildGraphRejectsIteratorBuiltInEdgesWithExplicitOutgoingEdge(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	def := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	def := dsl.GraphDefinition{
 		EntryPoint: "loop",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "loop",
 				Type: "iterator",
@@ -304,7 +308,7 @@ func TestBuildGraphRejectsIteratorBuiltInEdgesWithExplicitOutgoingEdge(t *testin
 		},
 	}
 
-	_, err := registry.BuildGraph(def, &BuildContext{})
+	_, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "cannot be combined with explicit outgoing edges") {
 		t.Fatalf("expected mixed outgoing edge error, got %v", err)
 	}
@@ -313,11 +317,11 @@ func TestBuildGraphRejectsIteratorBuiltInEdgesWithExplicitOutgoingEdge(t *testin
 func TestBuildGraphRequiresGraphResolverForMappedSubgraph(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	def := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	def := dsl.GraphDefinition{
 		EntryPoint:  "sub",
 		FinishPoint: "sub",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "sub",
 				Type: "mapped_subgraph",
@@ -328,7 +332,7 @@ func TestBuildGraphRequiresGraphResolverForMappedSubgraph(t *testing.T) {
 		},
 	}
 
-	_, err := registry.BuildGraph(def, &BuildContext{})
+	_, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err == nil || !strings.Contains(err.Error(), "graph resolver") {
 		t.Fatalf("expected missing graph resolver error, got %v", err)
 	}
@@ -337,13 +341,13 @@ func TestBuildGraphRequiresGraphResolverForMappedSubgraph(t *testing.T) {
 func TestBuildGraphInvokesMappedSubgraphByGraphRef(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerAssignNodeType(registry)
 
-	root := GraphDefinition{
+	root := dsl.GraphDefinition{
 		EntryPoint:  "sub",
 		FinishPoint: "sub",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "sub",
 				Type: "mapped_subgraph",
@@ -354,10 +358,10 @@ func TestBuildGraphInvokesMappedSubgraphByGraphRef(t *testing.T) {
 			},
 		},
 	}
-	child := GraphDefinition{
+	child := dsl.GraphDefinition{
 		EntryPoint:  "set",
 		FinishPoint: "set",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "set",
 				Type: "assign",
@@ -369,7 +373,7 @@ func TestBuildGraphInvokesMappedSubgraphByGraphRef(t *testing.T) {
 		},
 	}
 
-	graph, err := registry.BuildGraph(root, &BuildContext{
+	graph, err := weaveflow.BuildGraph(registry, root, &builder.BuildContext{
 		GraphResolver: func(graphRef string) (dsl.GraphDefinition, error) {
 			if graphRef != "child" {
 				t.Fatalf("unexpected graph_ref %q", graphRef)
@@ -393,11 +397,11 @@ func TestBuildGraphInvokesMappedSubgraphByGraphRef(t *testing.T) {
 func TestBuildGraphRejectsCyclicMappedSubgraphRefs(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	root := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	root := dsl.GraphDefinition{
 		EntryPoint:  "sub",
 		FinishPoint: "sub",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "sub",
 				Type: "mapped_subgraph",
@@ -407,10 +411,10 @@ func TestBuildGraphRejectsCyclicMappedSubgraphRefs(t *testing.T) {
 			},
 		},
 	}
-	child := GraphDefinition{
+	child := dsl.GraphDefinition{
 		EntryPoint:  "sub",
 		FinishPoint: "sub",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "sub",
 				Type: "mapped_subgraph",
@@ -421,7 +425,7 @@ func TestBuildGraphRejectsCyclicMappedSubgraphRefs(t *testing.T) {
 		},
 	}
 
-	_, err := registry.BuildGraph(root, &BuildContext{
+	_, err := weaveflow.BuildGraph(registry, root, &builder.BuildContext{
 		GraphResolver: func(graphRef string) (dsl.GraphDefinition, error) {
 			return child, nil
 		},
@@ -434,13 +438,13 @@ func TestBuildGraphRejectsCyclicMappedSubgraphRefs(t *testing.T) {
 func TestBuildGraphIteratesWithIteratorNode(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerCollectIteratorItemNodeType(registry)
 
-	def := GraphDefinition{
+	def := dsl.GraphDefinition{
 		EntryPoint:  "loop",
 		FinishPoint: "loop",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "loop",
 				Type: "iterator",
@@ -465,7 +469,7 @@ func TestBuildGraphIteratesWithIteratorNode(t *testing.T) {
 		},
 	}
 
-	graph, err := registry.BuildGraph(def, &BuildContext{})
+	graph, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph with iterator: %v", err)
 	}
@@ -510,10 +514,10 @@ func TestBuildGraphIteratesWithIteratorNode(t *testing.T) {
 func TestBuildGraphDefinitionKeepsIteratorBuiltInEdgesInConfig(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	def := GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	def := dsl.GraphDefinition{
 		EntryPoint: "loop",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "loop",
 				Type: "iterator",
@@ -532,7 +536,7 @@ func TestBuildGraphDefinitionKeepsIteratorBuiltInEdgesInConfig(t *testing.T) {
 		},
 	}
 
-	graph, err := registry.BuildGraph(def, &BuildContext{})
+	graph, err := weaveflow.BuildGraph(registry, def, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph with iterator built-in edges: %v", err)
 	}
@@ -549,7 +553,7 @@ func TestBuildGraphDefinitionKeepsIteratorBuiltInEdgesInConfig(t *testing.T) {
 		t.Fatalf("expected 3 serialized nodes, got %d", len(serialized.Nodes))
 	}
 
-	var iteratorNode *GraphNodeSpec
+	var iteratorNode *dsl.GraphNodeSpec
 	for i := range serialized.Nodes {
 		if serialized.Nodes[i].ID == "loop" {
 			iteratorNode = &serialized.Nodes[i]
@@ -570,17 +574,17 @@ func TestBuildGraphDefinitionKeepsIteratorBuiltInEdgesInConfig(t *testing.T) {
 func TestResolveDefaultNodeStateContracts(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 
 	cases := []struct {
 		name  string
-		spec  GraphNodeSpec
+		spec  dsl.GraphNodeSpec
 		paths []string
 		modes []dsl.StateAccessMode
 	}{
 		{
 			name: "mapped_subgraph",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "sub",
 				Type: "mapped_subgraph",
 				Config: map[string]any{
@@ -594,7 +598,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "iterator",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "loop",
 				Type: "iterator",
 				Config: map[string]any{
@@ -607,7 +611,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "memory_recall",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "recall",
 				Type: "memory_recall",
 				Config: map[string]any{
@@ -629,7 +633,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "memory_write",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "write_memory",
 				Type: "memory_write",
 				Config: map[string]any{
@@ -651,7 +655,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "verifier",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "verify",
 				Type: "verifier",
 				Config: map[string]any{
@@ -689,7 +693,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "human_message",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "ask",
 				Type: "human_message",
 				Config: map[string]any{
@@ -701,7 +705,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "context_reducer",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "reduce",
 				Type: "context_reducer",
 				Config: map[string]any{
@@ -713,7 +717,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "llm",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "model",
 				Type: "llm",
 				Config: map[string]any{
@@ -737,7 +741,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 		},
 		{
 			name: "tools",
-			spec: GraphNodeSpec{
+			spec: dsl.GraphNodeSpec{
 				ID:   "call_tools",
 				Type: "tools",
 				Config: map[string]any{
@@ -776,8 +780,8 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 func TestResolveSubgraphStateContractMissingRegistration(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	_, err := registry.ResolveNodeStateContract(GraphNodeSpec{
+	registry := builtin.NewDefaultRegistry()
+	_, err := registry.ResolveNodeStateContract(dsl.GraphNodeSpec{
 		ID:   "sub",
 		Type: "subgraph",
 		Config: map[string]any{
@@ -792,8 +796,8 @@ func TestResolveSubgraphStateContractMissingRegistration(t *testing.T) {
 func TestResolveHumanMessageDefaultScopeUsesConversationAndSharedPartitions(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	contract, err := registry.ResolveNodeStateContract(GraphNodeSpec{
+	registry := builtin.NewDefaultRegistry()
+	contract, err := registry.ResolveNodeStateContract(dsl.GraphNodeSpec{
 		ID:   "ask",
 		Type: "human_message",
 	})

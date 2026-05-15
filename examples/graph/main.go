@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"time"
 	"weaveflow"
+	"weaveflow/builder"
+	"weaveflow/core"
 	"weaveflow/llms/openai"
 	"weaveflow/nodes"
 	"weaveflow/runtime"
@@ -19,7 +21,7 @@ func main() {
 	logger, _ := zap.NewDevelopment()
 	weaveflow.SetLogger(logger)
 
-	ctx := runtime.WithServices(context.Background(), newReActAgentServices())
+	ctx := core.WithServices(context.Background(), newReActAgentServices())
 
 	runWithRunner(ctx)
 
@@ -28,11 +30,11 @@ func main() {
 	resumeFromCheckpoint(ctx)
 }
 
-func newReActAgentServices() *runtime.Services {
+func newReActAgentServices() *core.Services {
 	model, err := openai.New()
 	tryPanic(err)
 
-	return &runtime.Services{
+	return &core.Services{
 		Model:  runtime.WrapLLM(model),
 		Memory: newReActAgentMemory(),
 		Tools:  newReActAgentTools(),
@@ -60,7 +62,7 @@ func resumeFromCheckpoint(ctx context.Context) {
 	}
 
 	baseDir := ".local/instance"
-	graph, err := weaveflow.LoadGraphFromFile(&weaveflow.BuildContext{}, filepath.Join(baseDir, "graph.json"))
+	graph, err := weaveflow.LoadGraphFromFile(&builder.BuildContext{}, filepath.Join(baseDir, "graph.json"))
 	tryPanic(err)
 
 	runner := newExampleRunner(baseDir, graph)

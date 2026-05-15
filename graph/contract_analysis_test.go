@@ -1,11 +1,14 @@
-package weaveflow
+package graph
 
 import (
 	"context"
 	"strings"
 	"testing"
+	"weaveflow/builder"
+	"weaveflow/builtin"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
+	wfregistry "weaveflow/registry"
 	wfstate "weaveflow/state"
 )
 
@@ -27,12 +30,12 @@ func (n staticContractNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return n.spec
 }
 
-func registerStaticContractNodeType(registry *Registry, typeName string, contract dsl.StateContract) {
-	registry.RegisterNodeType(NodeTypeDefinition{
+func registerStaticContractNodeType(registry *wfregistry.Registry, typeName string, contract dsl.StateContract) {
+	registry.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        typeName,
 			Description: "Static contract analysis test node.",
-			ConfigSchema: JSONSchema{
+			ConfigSchema: dsl.JSONSchema{
 				"type":                 "object",
 				"additionalProperties": false,
 			},
@@ -41,7 +44,7 @@ func registerStaticContractNodeType(registry *Registry, typeName string, contrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
+		Build: builder.AdaptNodeBuilder(func(ctx *builder.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return staticContractNode{id: spec.ID, spec: spec}, nil
 		}),
@@ -60,20 +63,20 @@ func findDiagnosticByKind(diagnostics []ContractDiagnostic, kind string) *Contra
 func TestBuildGraphAllowsRequiredReadFromRuntimeInput(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerStaticContractNodeType(registry, "static_reader", dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: "topic", Mode: dsl.StateAccessRead, Required: true},
 		},
 	})
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "reader",
 		FinishPoint: "reader",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "reader", Type: "static_reader"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -85,20 +88,20 @@ func TestBuildGraphAllowsRequiredReadFromRuntimeInput(t *testing.T) {
 func TestBuildGraphRejectsForeignRuntimeRequiredRead(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerStaticContractNodeType(registry, "runtime_reader", dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: "runtime.writer.done", Mode: dsl.StateAccessRead, Required: true},
 		},
 	})
 
-	_, err := registry.BuildGraph(GraphDefinition{
+	_, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "reader",
 		FinishPoint: "reader",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "reader", Type: "runtime_reader"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err == nil {
 		t.Fatal("expected missing foreign runtime dependency to fail")
 	}
@@ -110,7 +113,7 @@ func TestBuildGraphRejectsForeignRuntimeRequiredRead(t *testing.T) {
 func TestBuildGraphAllowsRequiredReadFromUpstreamWriter(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerStaticContractNodeType(registry, "plan_writer", dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: "plan", Mode: dsl.StateAccessWrite},
@@ -122,17 +125,17 @@ func TestBuildGraphAllowsRequiredReadFromUpstreamWriter(t *testing.T) {
 		},
 	})
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "writer",
 		FinishPoint: "reader",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "writer", Type: "plan_writer"},
 			{ID: "reader", Type: "plan_reader"},
 		},
 		Edges: []dsl.GraphEdgeSpec{
 			{From: "writer", To: "reader"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -144,7 +147,7 @@ func TestBuildGraphAllowsRequiredReadFromUpstreamWriter(t *testing.T) {
 func TestBuildGraphRecordsOverlappingWriteDiagnostic(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerStaticContractNodeType(registry, "writer_a", dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: "answer", Mode: dsl.StateAccessWrite},
@@ -156,17 +159,17 @@ func TestBuildGraphRecordsOverlappingWriteDiagnostic(t *testing.T) {
 		},
 	})
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "left",
 		FinishPoint: "right",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "left", Type: "writer_a"},
 			{ID: "right", Type: "writer_b"},
 		},
 		Edges: []dsl.GraphEdgeSpec{
 			{From: "left", To: "right"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -183,7 +186,7 @@ func TestBuildGraphRecordsOverlappingWriteDiagnostic(t *testing.T) {
 func TestBuildGraphRecordsWildcardAndMultipleSourceDiagnostics(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerStaticContractNodeType(registry, "wildcard_writer", dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: "*", Mode: dsl.StateAccessReadWrite},
@@ -200,10 +203,10 @@ func TestBuildGraphRecordsWildcardAndMultipleSourceDiagnostics(t *testing.T) {
 		},
 	})
 
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "wild",
 		FinishPoint: "reader",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "wild", Type: "wildcard_writer"},
 			{ID: "writer", Type: "request_writer"},
 			{ID: "reader", Type: "request_reader"},
@@ -212,7 +215,7 @@ func TestBuildGraphRecordsWildcardAndMultipleSourceDiagnostics(t *testing.T) {
 			{From: "wild", To: "writer"},
 			{From: "writer", To: "reader"},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
@@ -231,7 +234,7 @@ func TestBuildGraphRecordsWildcardAndMultipleSourceDiagnostics(t *testing.T) {
 func TestBuildGraphEmitsContractDiagnosticsToBuildContext(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 	registerStaticContractNodeType(registry, "wildcard_reader", dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: "*", Mode: dsl.StateAccessReadWrite},
@@ -239,13 +242,13 @@ func TestBuildGraphEmitsContractDiagnosticsToBuildContext(t *testing.T) {
 	})
 
 	var diagnostics []ContractDiagnostic
-	graph, err := registry.BuildGraph(GraphDefinition{
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "reader",
 		FinishPoint: "reader",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "reader", Type: "wildcard_reader"},
 		},
-	}, &BuildContext{
+	}, &builder.BuildContext{
 		OnContractDiagnostic: func(diagnostic ContractDiagnostic) {
 			diagnostics = append(diagnostics, diagnostic)
 		},

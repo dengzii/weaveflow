@@ -1,7 +1,9 @@
-package weaveflow
+package graph
 
 import (
 	"testing"
+	"weaveflow/builder"
+	"weaveflow/builtin"
 	"weaveflow/dsl"
 
 	wfstate "weaveflow/state"
@@ -10,11 +12,11 @@ import (
 func TestNewGraphRunnerCarriesResolvedNodeContracts(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	graph, err := registry.BuildGraph(GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	graph, err := BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "ask",
 		FinishPoint: "ask",
-		Nodes: []GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "ask",
 				Type: "human_message",
@@ -23,7 +25,7 @@ func TestNewGraphRunnerCarriesResolvedNodeContracts(t *testing.T) {
 				},
 			},
 		},
-	}, &BuildContext{})
+	}, &builder.BuildContext{})
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}

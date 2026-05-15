@@ -1,12 +1,6 @@
 package builtin
 
 import (
-	"weaveflow/builtin/modules/conversation"
-	"weaveflow/builtin/modules/execution"
-	"weaveflow/builtin/modules/memory"
-	"weaveflow/builtin/modules/planning"
-	"weaveflow/builtin/modules/safety"
-	"weaveflow/builtin/modules/verification"
 	"weaveflow/registry"
 	"weaveflow/state"
 )
@@ -42,10 +36,10 @@ func RegisterModules(registry *registry.Registry) {
 		return
 	}
 
-	conversation.Register(registry)
-	planning.Register(registry)
-	memory.Register(registry)
-	execution.Register(registry)
-	verification.Register(registry)
-	safety.Register(registry)
+	registerConversationModule(registry)
+	registerPlanningModule(registry)
+	registerMemoryModule(registry)
+	registerExecutionModule(registry)
+	registerVerificationModule(registry)
+	registerSafetyModule(registry)
 }

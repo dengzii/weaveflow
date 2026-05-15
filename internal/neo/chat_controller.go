@@ -26,7 +26,7 @@ import (
 )
 
 type ChatController struct {
-	services  *fruntime.Services
+	services  *core.Services
 	config    *Config
 	allTools  map[string]tools.Tool
 	toolFlags map[string]bool
@@ -43,7 +43,7 @@ type ChatController struct {
 	graphCfgKey Config
 }
 
-func NewChatController(services *fruntime.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store, hub *LiveHub) *ChatController {
+func NewChatController(services *core.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store, hub *LiveHub) *ChatController {
 	allTools := make(map[string]tools.Tool, len(services.Tools))
 	for name, tool := range services.Tools {
 		allTools[name] = tool
@@ -164,7 +164,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 
 	runner := newChatRunner(graph, graphMeta.ID, runDir, combinedSink)
 
-	baseCtx := fruntime.WithServices(c.Request.Context(), services)
+	baseCtx := core.WithServices(c.Request.Context(), services)
 	ctx, cancel := context.WithCancel(baseCtx)
 	if cfg.RequestTimeoutSeconds > 0 {
 		ctx, cancel = context.WithTimeout(baseCtx, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
@@ -443,14 +443,14 @@ func finalAnswerFromState(state wfstate.State) string {
 	return strings.TrimSpace(answer)
 }
 
-func (ctrl *ChatController) effectiveServices() *fruntime.Services {
+func (ctrl *ChatController) effectiveServices() *core.Services {
 	enabledTools := make(map[string]tools.Tool, len(ctrl.allTools))
 	for name, tool := range ctrl.allTools {
 		if ctrl.toolFlags[name] {
 			enabledTools[name] = tool
 		}
 	}
-	return &fruntime.Services{
+	return &core.Services{
 		Model:  ctrl.services.Model,
 		Memory: ctrl.services.Memory,
 		Tools:  enabledTools,

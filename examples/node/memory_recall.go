@@ -4,9 +4,9 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"weaveflow/core"
 	"weaveflow/memory"
 	"weaveflow/nodes"
-	"weaveflow/runtime"
 	wfstate "weaveflow/state"
 )
 
@@ -23,8 +23,8 @@ func MemoryRecallExample() {
 		{Text: "The signaling system uses a publish-subscribe pattern.", Role: "assistant", Type: memory.EntryTypeFact, Tags: []string{"architecture"}},
 	}))
 
-	svc := &runtime.Services{Memory: mgr}
-	ctx := runtime.WithServices(context.Background(), svc)
+	svc := &core.Services{Memory: mgr}
+	ctx := core.WithServices(context.Background(), svc)
 
 	node := nodes.NewMemoryRecallNode()
 	node.Limit = 3

@@ -1,4 +1,4 @@
-package execution
+package builtin
 
 import (
 	"context"
@@ -12,29 +12,7 @@ import (
 	wfstate "weaveflow/state"
 )
 
-type NodeBuilder func(*registry.BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error)
-
-func adaptNodeBuilder(build NodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
-		if build == nil {
-			return nil, fmt.Errorf("node builder is nil")
-		}
-		if concrete, ok := ctx.(*registry.BuildContext); ok {
-			return build(concrete, spec)
-		}
-		if ctx == nil {
-			return build(nil, spec)
-		}
-		options := ctx.BuildOptions()
-		return build(&registry.BuildContext{
-			InstanceConfig:       options.InstanceConfig,
-			GraphResolver:        options.GraphResolver,
-			OnContractDiagnostic: options.OnContractDiagnostic,
-		}, spec)
-	}
-}
-
-func Register(registry *registry.Registry) {
+func registerExecutionModule(registry *registry.Registry) {
 	if registry == nil {
 		return
 	}
@@ -291,20 +269,4 @@ func resolveObservationRecorderStateContract(spec dsl.GraphNodeSpec) (dsl.StateC
 			},
 		},
 	}, nil
-}
-
-func canonicalContractPath(path string) string {
-	return wfstate.NormalizeContractPath(path)
-}
-
-func scopedStatePath(scope string, field string) string {
-	scope = strings.TrimSpace(scope)
-	field = strings.TrimSpace(field)
-	if scope == "" {
-		return canonicalContractPath(field)
-	}
-	if field == "" {
-		return "scopes." + scope
-	}
-	return "scopes." + scope + "." + field
 }

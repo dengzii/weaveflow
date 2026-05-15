@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"weaveflow"
+	"weaveflow/builtin"
 	"weaveflow/memory"
 	"weaveflow/nodes"
 	wfstate "weaveflow/state"
@@ -62,13 +63,13 @@ func newReActAgentGraph() *weaveflow.Graph {
 
 	tryPanic(graph.AddEdge(humanInLoop.ID(), llm.ID()))
 
-	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), weaveflow.LastMessageHasToolCalls(llm.StateScope))
+	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), builtin.LastMessageHasToolCalls(llm.StateScope))
 	tryPanic(err)
 
 	err = graph.AddEdge(toolCall.ID(), llm.ID())
 	tryPanic(err)
 
-	err = graph.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, weaveflow.HasFinalAnswer(llm.StateScope))
+	err = graph.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, builtin.HasFinalAnswer(llm.StateScope))
 	tryPanic(err)
 
 	tryPanic(graph.SetEntryPoint(humanInLoop.ID()))

@@ -3,7 +3,7 @@ package nodes
 import (
 	"context"
 	"testing"
-	fruntime "weaveflow/runtime"
+	"weaveflow/core"
 	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
@@ -42,7 +42,7 @@ func TestLLMNodeTrimsPromptToRecentMessages(t *testing.T) {
 		llms.TextParts(llms.ChatMessageTypeHuman, "latest question"),
 	})
 
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
 	next, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke llm node: %v", err)

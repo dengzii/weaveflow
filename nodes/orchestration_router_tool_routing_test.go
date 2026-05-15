@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
-	fruntime "weaveflow/runtime"
+	"weaveflow/core"
 	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
@@ -32,7 +32,7 @@ func TestOrchestrationRouterUsesToolHeuristicForCurrentTime(t *testing.T) {
 	node.InputPath = "request.input"
 	node.AvailableModes = []string{"direct", "planner"}
 
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{
+	ctx := core.WithServices(context.Background(), &core.Services{
 		Model: model,
 		Tools: map[string]tools.Tool{
 			"current_time": tools.NewCurrentTime(),

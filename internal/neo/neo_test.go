@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	fruntime "weaveflow/runtime"
+	"weaveflow/core"
 	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
@@ -52,7 +52,7 @@ func TestNewGraphDirectAnswerShortCircuitsAfterRouter(t *testing.T) {
   "direct_answer": "2 + 2 = 4."
 }`,
 	}
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
 
 	state := NewInitialState("What is 2 + 2?", []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),

@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"weaveflow/core"
 	"weaveflow/nodes"
-	"weaveflow/runtime"
 	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
@@ -17,8 +17,8 @@ func ToolsExample() {
 		"current_time": tools.NewCurrentTime(),
 	}
 
-	svc := &runtime.Services{Tools: toolSet}
-	ctx := runtime.WithServices(context.Background(), svc)
+	svc := &core.Services{Tools: toolSet}
+	ctx := core.WithServices(context.Background(), svc)
 
 	node := nodes.NewToolCallNode()
 	node.StateScope = "agent"

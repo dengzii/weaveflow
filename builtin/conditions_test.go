@@ -1,9 +1,10 @@
-package weaveflow
+package builtin
 
 import (
 	"context"
 	"strings"
 	"testing"
+	"weaveflow/dsl"
 	wfstate "weaveflow/state"
 )
 
@@ -61,8 +62,8 @@ func TestExpressionConditionsMatchAny(t *testing.T) {
 func TestParseExpressionConditionConfigFromSerializableConfig(t *testing.T) {
 	t.Parallel()
 
-	registry := DefaultRegistry()
-	condition, err := registry.ResolveCondition(GraphConditionSpec{
+	registry := NewDefaultRegistry()
+	condition, err := registry.ResolveCondition(dsl.GraphConditionSpec{
 		Type: "expression_conditions",
 		Config: map[string]any{
 			"state_scope": "agent",

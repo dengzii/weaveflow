@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"sort"
 	"weaveflow"
+	"weaveflow/builder"
+	"weaveflow/builtin"
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
@@ -13,16 +15,16 @@ import (
 )
 
 func IteratorExample() {
-	registry := weaveflow.DefaultRegistry()
-	registerCollectIteratorItemNodeType(registry)
-	registerPrintStateNodeType(registry)
+	reg := builtin.NewDefaultRegistry()
+	registerCollectIteratorItemNodeType(reg)
+	registerPrintStateNodeType(reg)
 
-	definition := weaveflow.GraphDefinition{
+	definition := dsl.GraphDefinition{
 		Name:        "iterator-demo",
 		Description: "Demonstrate iterator built-in continue/done edges.",
 		EntryPoint:  "loop",
 		FinishPoint: "done",
-		Nodes: []weaveflow.GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "loop",
 				Name: "Iterate Payload Items",
@@ -54,7 +56,7 @@ func IteratorExample() {
 		},
 	}
 
-	graph, err := registry.BuildGraph(definition, &weaveflow.BuildContext{})
+	graph, err := weaveflow.BuildGraph(reg, definition, &builder.BuildContext{})
 	must(err)
 
 	state, err := graph.Run(context.Background(), wfstate.State{
@@ -125,8 +127,8 @@ func (n printStateNode) Execute(ctx context.Context, state wfstate.State) (wfsta
 	return wfstate.StatePatch{}, nil
 }
 
-func registerCollectIteratorItemNodeType(r *weaveflow.Registry) {
-	r.RegisterNodeType(weaveflow.NodeTypeDefinition{
+func registerCollectIteratorItemNodeType(r *registry.Registry) {
+	r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "collect_iterator_item",
 			Title:       "Collect Iterator Item",
@@ -162,7 +164,7 @@ func registerCollectIteratorItemNodeType(r *weaveflow.Registry) {
 			}
 			return dsl.StateContract{Fields: fields}, nil
 		},
-		Build: weaveflow.AdaptNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
+		Build: builder.AdaptNodeBuilder(func(ctx *builder.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
@@ -173,8 +175,8 @@ func registerCollectIteratorItemNodeType(r *weaveflow.Registry) {
 	})
 }
 
-func registerPrintStateNodeType(r *weaveflow.Registry) {
-	r.RegisterNodeType(weaveflow.NodeTypeDefinition{
+func registerPrintStateNodeType(r *registry.Registry) {
+	r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "print_state",
 			Title:       "Print State",
@@ -190,7 +192,7 @@ func registerPrintStateNodeType(r *weaveflow.Registry) {
 				},
 			},
 		},
-		Build: weaveflow.AdaptNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
+		Build: builder.AdaptNodeBuilder(func(ctx *builder.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return printStateNode{id: spec.ID}, nil
 		}),

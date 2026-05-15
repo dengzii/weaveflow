@@ -1,4 +1,4 @@
-package weaveflow
+package graph
 
 import (
 	"context"

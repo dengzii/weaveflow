@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"weaveflow/core"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -59,7 +60,7 @@ func (n *FinalizerNode) execute(ctx context.Context, state wfstate.State) (wfsta
 		state = wfstate.State{}
 	}
 
-	svc := fruntime.ServicesFrom(ctx)
+	svc := core.ServicesFrom(ctx)
 	var model llms.Model
 	if svc != nil {
 		model = svc.Model

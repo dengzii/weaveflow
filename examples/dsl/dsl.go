@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"weaveflow"
+	"weaveflow/builtin"
 )
 
 func main() {
@@ -19,7 +19,7 @@ func main() {
 		panic(err)
 	}
 
-	registry := weaveflow.DefaultRegistry()
+	registry := builtin.NewDefaultRegistry()
 
 	registryPath := filepath.Join(outputDir, "default_registry.json")
 	schemaPath := filepath.Join(outputDir, "graph_definition.schema.json")

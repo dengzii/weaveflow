@@ -3,8 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"weaveflow/core"
 	"weaveflow/nodes"
-	"weaveflow/runtime"
 	wfstate "weaveflow/state"
 
 	"weaveflow/llms/openai"
@@ -14,8 +14,8 @@ func PlannerExample() {
 	llm, err := openai.New()
 	must(err)
 
-	svc := &runtime.Services{Model: llm}
-	ctx := runtime.WithServices(context.Background(), svc)
+	svc := &core.Services{Model: llm}
+	ctx := core.WithServices(context.Background(), svc)
 
 	node := nodes.NewPlannerNode()
 	node.ObjectivePath = "request.goal"

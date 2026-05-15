@@ -3,6 +3,7 @@ package nodes
 import (
 	"context"
 	"strings"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
@@ -49,7 +50,7 @@ func (n *MemoryWriteNode) execute(ctx context.Context, state wfstate.State) (wfs
 		state = wfstate.State{}
 	}
 
-	svc := fruntime.ServicesFrom(ctx)
+	svc := core.ServicesFrom(ctx)
 	var manager memory.Manager
 	if svc != nil {
 		manager = svc.Memory

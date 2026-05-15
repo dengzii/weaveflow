@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -111,7 +112,7 @@ func NewPlannerNode() *PlannerNode {
 }
 
 func (n *PlannerNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	svc := runtime.ServicesFrom(ctx)
+	svc := core.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("planner: model service not available")
 	}

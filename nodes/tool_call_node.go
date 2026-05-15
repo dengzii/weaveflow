@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -37,7 +38,7 @@ func NewToolCallNode() *ToolsNode {
 }
 
 func (t *ToolsNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	svc := fruntime.ServicesFrom(ctx)
+	svc := core.ServicesFrom(ctx)
 	nodeTools := svc.FilterTools(t.ToolIDs)
 
 	conversation := state.Conversation(t.StateScope)

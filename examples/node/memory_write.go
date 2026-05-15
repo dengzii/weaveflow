@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	"weaveflow/core"
 	"weaveflow/memory"
 	"weaveflow/nodes"
-	"weaveflow/runtime"
 	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
@@ -14,8 +14,8 @@ import (
 func MemoryWriteExample() {
 	mgr := memory.New(nil)
 
-	svc := &runtime.Services{Memory: mgr}
-	ctx := runtime.WithServices(context.Background(), svc)
+	svc := &core.Services{Memory: mgr}
+	ctx := core.WithServices(context.Background(), svc)
 
 	node := nodes.NewMemoryWriteNode()
 	node.IncludeRequest = true

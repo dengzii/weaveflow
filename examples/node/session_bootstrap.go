@@ -4,17 +4,20 @@ import (
 	"context"
 	"fmt"
 	"weaveflow"
+	"weaveflow/builder"
+	"weaveflow/builtin"
+	"weaveflow/dsl"
 	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
 func SessionBootstrapExample() {
-	registry := weaveflow.DefaultRegistry()
-	graph, err := registry.BuildGraph(weaveflow.GraphDefinition{
+	registry := builtin.NewDefaultRegistry()
+	graph, err := weaveflow.BuildGraph(registry, dsl.GraphDefinition{
 		EntryPoint:  "bootstrap",
 		FinishPoint: "bootstrap",
-		Nodes: []weaveflow.GraphNodeSpec{
+		Nodes: []dsl.GraphNodeSpec{
 			{
 				ID:   "bootstrap",
 				Type: "session_bootstrap",
@@ -38,7 +41,7 @@ func SessionBootstrapExample() {
 				},
 			},
 		},
-	}, &weaveflow.BuildContext{})
+	}, &builder.BuildContext{})
 	must(err)
 
 	state, err := graph.Run(context.Background(), wfstate.State{})

@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"weaveflow/core"
 	"weaveflow/nodes"
-	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
@@ -67,7 +67,7 @@ func TestNewGraphCurrentTimeUsesToolLoop(t *testing.T) {
 		},
 	}
 
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{
+	ctx := core.WithServices(context.Background(), &core.Services{
 		Model: model,
 		Tools: map[string]tools.Tool{
 			"current_time": tools.NewCurrentTime(),
@@ -126,7 +126,7 @@ func TestNewGraphClarificationShortCircuitsAfterRouter(t *testing.T) {
 		},
 	}
 
-	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
 
 	state := NewInitialState("neo agent 编排不是很好现在, 检查需要优化的点", nil)
 	state, err = graph.Run(ctx, state)

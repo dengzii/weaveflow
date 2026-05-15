@@ -3,8 +3,8 @@ package neo
 import (
 	"path/filepath"
 
-	"weaveflow"
-	fruntime "weaveflow/runtime"
+	"weaveflow/builtin"
+	"weaveflow/core"
 	"weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
@@ -18,7 +18,7 @@ type Server struct {
 	hub          *LiveHub
 }
 
-func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server, error) {
+func NewServer(services *core.Services, cfg Config, baseDir string) (*Server, error) {
 	store, err := NewStore(filepath.Join(baseDir, "history.db"))
 	if err != nil {
 		return nil, err
@@ -41,7 +41,7 @@ func NewServer(services *fruntime.Services, cfg Config, baseDir string) (*Server
 	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir, store, hub)
 	configCtrl := NewConfigController(&cfg, allTools, toolFlags, store)
 	historyCtrl := NewHistoryController(chatCtrl)
-	registryCtrl := NewRegistryController(weaveflow.DefaultRegistry())
+	registryCtrl := NewRegistryController(builtin.NewDefaultRegistry())
 
 	return &Server{
 		chatCtrl:     chatCtrl,

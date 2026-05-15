@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 
 	"weaveflow"
+	"weaveflow/builtin"
+	"weaveflow/core"
 	"weaveflow/memory"
 	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
@@ -13,10 +15,10 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func NewServices(model llms.Model, baseDir string) *fruntime.Services {
+func NewServices(model llms.Model, baseDir string) *core.Services {
 	model = fruntime.WrapLLM(model)
 	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
-	return &fruntime.Services{
+	return &core.Services{
 		Model:  model,
 		Memory: memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}),
 		Tools: map[string]tools.Tool{
@@ -172,11 +174,11 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err := graph.AddEdge(bootstrap.ID(), router.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), weaveflow.HasFinalAnswer(scope)); err != nil {
+	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), builtin.HasFinalAnswer(scope)); err != nil {
 		return nil, err
 	}
-	routeClarification, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "orchestration.needs_clarification", Op: "equals", Value2: "true"}},
+	routeClarification, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "orchestration.needs_clarification", Op: "equals", Value2: "true"}},
 	})
 	if err != nil {
 		return nil, err
@@ -185,14 +187,14 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	routePlanner, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "planner"}},
+	routePlanner, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "planner"}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	routeMemory, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "orchestration.use_memory", Op: "equals", Value2: "true"}},
+	routeMemory, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "orchestration.use_memory", Op: "equals", Value2: "true"}},
 	})
 	if err != nil {
 		return nil, err
@@ -219,14 +221,14 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	routeFinalize, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "execution.route", Op: "equals", Value2: "finalize"}},
+	routeFinalize, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "execution.route", Op: "equals", Value2: "finalize"}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	routeBlocked, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "execution.route", Op: "equals", Value2: "blocked"}},
+	routeBlocked, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "execution.route", Op: "equals", Value2: "blocked"}},
 	})
 	if err != nil {
 		return nil, err
@@ -245,11 +247,11 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	if err := graph.AddConditionalEdge(llmNode.ID(), toolCall.ID(), weaveflow.LastMessageHasToolCalls(scope)); err != nil {
+	if err := graph.AddConditionalEdge(llmNode.ID(), toolCall.ID(), builtin.LastMessageHasToolCalls(scope)); err != nil {
 		return nil, err
 	}
-	directMode, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "direct"}},
+	directMode, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "direct"}},
 	})
 	if err != nil {
 		return nil, err
@@ -271,14 +273,14 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err := graph.AddEdge(obsRecorder.ID(), verifier.ID()); err != nil {
 		return nil, err
 	}
-	verifyReplan, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "verification.next_action", Op: "equals", Value2: "replan"}},
+	verifyReplan, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "verification.next_action", Op: "equals", Value2: "replan"}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	verifyFinalize, err := weaveflow.ExpressionConditions(weaveflow.ExpressionConditionConfig{
-		Expressions: []weaveflow.Expression{{Value1: "verification.next_action", Op: "equals", Value2: "finalize"}},
+	verifyFinalize, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "verification.next_action", Op: "equals", Value2: "finalize"}},
 	})
 	if err != nil {
 		return nil, err

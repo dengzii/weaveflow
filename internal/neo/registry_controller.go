@@ -5,19 +5,20 @@ import (
 	"sort"
 	"strings"
 
-	"weaveflow"
+	"weaveflow/builtin"
 	"weaveflow/dsl"
+	wfregistry "weaveflow/registry"
 
 	"github.com/gin-gonic/gin"
 )
 
 type RegistryController struct {
-	registry *weaveflow.Registry
+	registry *wfregistry.Registry
 }
 
-func NewRegistryController(registry *weaveflow.Registry) *RegistryController {
+func NewRegistryController(registry *wfregistry.Registry) *RegistryController {
 	if registry == nil {
-		registry = weaveflow.DefaultRegistry()
+		registry = builtin.NewDefaultRegistry()
 	}
 	return &RegistryController{registry: registry}
 }
@@ -26,13 +27,13 @@ type RegistryResponse struct {
 	StateFields []RegistryStateFieldInfo `json:"state_fields"`
 	NodeTypes   []RegistryNodeTypeInfo   `json:"node_types"`
 	Conditions  []dsl.ConditionSchema    `json:"conditions"`
-	GraphSchema weaveflow.JSONSchema     `json:"graph_schema"`
+	GraphSchema dsl.JSONSchema           `json:"graph_schema"`
 }
 
 type RegistryStateFieldInfo struct {
-	Name        string               `json:"name"`
-	Description string               `json:"description,omitempty"`
-	Schema      weaveflow.JSONSchema `json:"schema"`
+	Name        string         `json:"name"`
+	Description string         `json:"description,omitempty"`
+	Schema      dsl.JSONSchema `json:"schema"`
 }
 
 type RegistryNodeTypeInfo struct {
@@ -53,7 +54,7 @@ func (ctrl *RegistryController) Get(c *gin.Context) {
 func (ctrl *RegistryController) buildResponse() RegistryResponse {
 	registry := ctrl.registry
 	if registry == nil {
-		registry = weaveflow.DefaultRegistry()
+		registry = builtin.NewDefaultRegistry()
 	}
 
 	stateFields := make([]RegistryStateFieldInfo, 0, len(registry.StateFields))
@@ -99,7 +100,7 @@ func (ctrl *RegistryController) buildResponse() RegistryResponse {
 	}
 }
 
-func sortedStateFieldKeys(input map[string]weaveflow.StateFieldDefinition) []string {
+func sortedStateFieldKeys(input map[string]dsl.StateFieldDefinition) []string {
 	keys := make([]string, 0, len(input))
 	for key := range input {
 		keys = append(keys, key)
@@ -108,7 +109,7 @@ func sortedStateFieldKeys(input map[string]weaveflow.StateFieldDefinition) []str
 	return keys
 }
 
-func sortedNodeTypeKeys(input map[string]weaveflow.NodeTypeDefinition) []string {
+func sortedNodeTypeKeys(input map[string]wfregistry.NodeTypeDefinition) []string {
 	keys := make([]string, 0, len(input))
 	for key := range input {
 		keys = append(keys, key)
@@ -117,7 +118,7 @@ func sortedNodeTypeKeys(input map[string]weaveflow.NodeTypeDefinition) []string 
 	return keys
 }
 
-func sortedConditionKeys(input map[string]weaveflow.ConditionDefinition) []string {
+func sortedConditionKeys(input map[string]wfregistry.ConditionDefinition) []string {
 	keys := make([]string, 0, len(input))
 	for key := range input {
 		keys = append(keys, key)
@@ -126,7 +127,7 @@ func sortedConditionKeys(input map[string]weaveflow.ConditionDefinition) []strin
 	return keys
 }
 
-func buildExampleConfig(schema weaveflow.JSONSchema) map[string]any {
+func buildExampleConfig(schema dsl.JSONSchema) map[string]any {
 	properties, _ := schema["properties"].(map[string]any)
 	if len(properties) == 0 {
 		return nil

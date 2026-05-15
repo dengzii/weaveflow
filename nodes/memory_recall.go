@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"time"
+	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
@@ -46,7 +47,7 @@ func (n *MemoryRecallNode) execute(ctx context.Context, state wfstate.State) (wf
 		state = wfstate.State{}
 	}
 
-	svc := fruntime.ServicesFrom(ctx)
+	svc := core.ServicesFrom(ctx)
 	var manager memory.Manager
 	if svc != nil {
 		manager = svc.Memory
