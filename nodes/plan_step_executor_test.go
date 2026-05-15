@@ -42,7 +42,7 @@ func TestPlanStepExecutorHonorsPlannerPathAndDependencyStatus(t *testing.T) {
 		},
 	}
 
-	state, err := node.Invoke(context.Background(), state)
+	state, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke plan step executor: %v", err)
 	}
@@ -107,7 +107,7 @@ func TestPlanStepExecutorTreatsInProgressStepWithResultAsDependencySatisfied(t *
 		},
 	}
 
-	state, err := node.Invoke(context.Background(), state)
+	state, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke plan step executor: %v", err)
 	}
@@ -149,7 +149,7 @@ func TestPlanStepExecutorBlockedDiagnosticsIncludeMissingDependencies(t *testing
 		},
 	}
 
-	state, err := node.Invoke(context.Background(), state)
+	state, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke plan step executor: %v", err)
 	}

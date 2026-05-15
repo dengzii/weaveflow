@@ -34,7 +34,7 @@ func NewApprovalGateNode() *ApprovalGateNode {
 	}
 }
 
-func (n *ApprovalGateNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *ApprovalGateNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
 		state = wfstate.State{}
 	}
@@ -65,8 +65,10 @@ func (n *ApprovalGateNode) Invoke(ctx context.Context, state wfstate.State) (wfs
 	return state, &langgraph.NodeInterrupt{Node: n.NodeID, Value: n.effectiveInterruptMessage(details)}
 }
 
-func (n *ApprovalGateNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ApprovalGateNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *ApprovalGateNode) GraphNodeSpec() dsl.GraphNodeSpec {

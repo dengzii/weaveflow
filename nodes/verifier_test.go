@@ -79,7 +79,7 @@ func TestPlanStepExecutorAdvancesAfterVerifierContinue(t *testing.T) {
 		t.Fatalf("expected dependent step_2 to be selected, got %#v", got)
 	}
 
-	if _, err := executor.Invoke(context.Background(), state); err != nil {
+	if _, err := runTestNode(t, executor, context.Background(), state); err != nil {
 		t.Fatalf("executor invoke failed: %v", err)
 	}
 }

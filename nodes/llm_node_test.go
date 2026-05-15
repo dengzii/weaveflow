@@ -43,7 +43,7 @@ func TestLLMNodeTrimsPromptToRecentMessages(t *testing.T) {
 	})
 
 	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
-	_, err := node.Invoke(ctx, state)
+	next, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke llm node: %v", err)
 	}
@@ -58,7 +58,7 @@ func TestLLMNodeTrimsPromptToRecentMessages(t *testing.T) {
 		t.Fatalf("unexpected preserved latest message: %#v", model.lastMessages[1])
 	}
 
-	messages := state.Conversation("agent").Messages()
+	messages := next.Conversation("agent").Messages()
 	if len(messages) != 5 {
 		t.Fatalf("expected full conversation state to append response without destructive trim, got %d messages", len(messages))
 	}

@@ -10,7 +10,7 @@ import (
 )
 
 type GraphBuilder interface {
-	AddNode(core.Node[wfstate.State]) error
+	AddNode(core.Node[wfstate.State, wfstate.StatePatch]) error
 	AddEdge(from, to string) error
 	AddConditionalEdge(from, to string, condition registry.EdgeCondition) error
 	SetEntryPoint(ref string) error

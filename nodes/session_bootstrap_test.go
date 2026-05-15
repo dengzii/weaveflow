@@ -28,7 +28,7 @@ func TestSessionBootstrapNodeInitializesEmptyScopedState(t *testing.T) {
 		"allowed_tools": []any{"calculator", "current_time"},
 	}
 
-	state, err := node.Invoke(context.Background(), nil)
+	state, err := runTestNode(t, node, context.Background(), nil)
 	if err != nil {
 		t.Fatalf("invoke session bootstrap: %v", err)
 	}
@@ -86,15 +86,15 @@ func TestSessionBootstrapNodeUsesConfiguredInputPath(t *testing.T) {
 	node.StateScope = "agent"
 	node.InputPath = "incoming.text"
 
-	_, err := node.Invoke(context.Background(), state)
+	next, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke session bootstrap: %v", err)
 	}
 
-	if got := state.Get(wfstate.StateKeyRequest)["input"]; got != "Use the local calculator." {
+	if got := next.Get(wfstate.StateKeyRequest)["input"]; got != "Use the local calculator." {
 		t.Fatalf("expected input path value to become request input, got %#v", got)
 	}
-	messages := state.Conversation("agent").Messages()
+	messages := next.Conversation("agent").Messages()
 	if len(messages) != 1 || messages[0].Role != llms.ChatMessageTypeHuman || extractText(messages[0]) != "Use the local calculator." {
 		t.Fatalf("unexpected conversation messages: %#v", messages)
 	}
@@ -114,12 +114,12 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	node.SystemPrompt = "Do not duplicate"
 	node.MaxIterations = 2
 
-	_, err := node.Invoke(context.Background(), state)
+	next, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke session bootstrap: %v", err)
 	}
 
-	messages := state.Conversation("agent").Messages()
+	messages := next.Conversation("agent").Messages()
 	if len(messages) != 2 {
 		t.Fatalf("expected system prompt to be inserted ahead of preserved conversation, got %#v", messages)
 	}
@@ -129,10 +129,10 @@ func TestSessionBootstrapNodePreservesExistingScopedConversation(t *testing.T) {
 	if messages[1].Role != llms.ChatMessageTypeHuman || extractText(messages[1]) != "Existing input" {
 		t.Fatalf("expected existing conversation to be preserved, got %#v", messages)
 	}
-	if got := state.Get(wfstate.StateKeyRequest)["input"]; got != "New input" {
+	if got := next.Get(wfstate.StateKeyRequest)["input"]; got != "New input" {
 		t.Fatalf("expected request input to still be normalized, got %#v", got)
 	}
-	if got := state.Conversation("agent").MaxIterations(); got != 2 {
+	if got := next.Conversation("agent").MaxIterations(); got != 2 {
 		t.Fatalf("expected max iterations 2, got %d", got)
 	}
 }
@@ -151,7 +151,7 @@ func TestSessionBootstrapNodeDoesNotDuplicateExistingSystemPrompt(t *testing.T) 
 	node.Input = "New input"
 	node.SystemPrompt = "Stay concise."
 
-	_, err := node.Invoke(context.Background(), state)
+	_, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke session bootstrap: %v", err)
 	}
@@ -171,7 +171,7 @@ func TestSessionBootstrapNodeReturnsErrorForMissingExplicitInputPath(t *testing.
 	node := NewSessionBootstrapNode()
 	node.InputPath = "missing.input"
 
-	_, err := node.Invoke(context.Background(), wfstate.State{})
+	_, err := runTestNode(t, node, context.Background(), wfstate.State{})
 	if err == nil {
 		t.Fatal("expected missing input path error")
 	}

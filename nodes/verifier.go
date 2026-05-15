@@ -73,7 +73,7 @@ func (n *VerifierNode) effectivePlannerPath() string {
 	return strings.TrimSpace(n.PlannerStatePath)
 }
 
-func (n *VerifierNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *VerifierNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
 		state = wfstate.State{}
 	}
@@ -128,8 +128,10 @@ func (n *VerifierNode) Invoke(ctx context.Context, state wfstate.State) (wfstate
 	return state, nil
 }
 
-func (n *VerifierNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *VerifierNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *VerifierNode) resolveMode(state wfstate.State) string {

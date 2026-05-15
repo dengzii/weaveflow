@@ -24,7 +24,7 @@ func HumanMessageExample() {
 			llms.TextParts(llms.ChatMessageTypeAI, "I need more information. What is the target environment?"),
 		})
 
-		_, err := node.Invoke(context.Background(), state)
+		_, err := executeNode(context.Background(), node, state)
 		if err != nil {
 			var interrupt *langgraph.NodeInterrupt
 			if ok := isNodeInterrupt(err, &interrupt); ok {
@@ -48,7 +48,7 @@ func HumanMessageExample() {
 			llms.TextParts(llms.ChatMessageTypeAI, "I need more information. What is the target environment?"),
 		})
 
-		result, err := node.Invoke(context.Background(), state)
+		result, err := executeNode(context.Background(), node, state)
 		must(err)
 
 		conv := result.Conversation("agent")

@@ -61,7 +61,7 @@ func ContextAssemblerExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, nodeMessageText(msg))
 	}
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := executeNode(context.Background(), node, state)
 	must(err)
 
 	fmt.Println()

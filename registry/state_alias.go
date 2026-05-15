@@ -5,3 +5,4 @@ import (
 )
 
 type State = wfstate.State
+type StatePatch = wfstate.StatePatch

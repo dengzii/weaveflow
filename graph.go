@@ -34,7 +34,7 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	nodes               map[string]core.Node[wfstate.State]
+	nodes               map[string]core.Node[wfstate.State, wfstate.StatePatch]
 	nodeSpecs           map[string]dsl.GraphNodeSpec
 	nodeContracts       map[string]core.NodeIOContract
 	initialStatePaths   []string
@@ -52,7 +52,7 @@ type Graph struct {
 
 func NewGraph() *Graph {
 	return &Graph{
-		nodes:            map[string]core.Node[wfstate.State]{},
+		nodes:            map[string]core.Node[wfstate.State, wfstate.StatePatch]{},
 		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
 		edges:            map[string]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
@@ -99,7 +99,7 @@ func (g *Graph) WriteToFile(path string) error {
 
 func (g *Graph) DrawMermaid() (string, error) {
 	graph := langgraph.NewStateGraph[wfstate.State]()
-	err := g.buildStateGraph(graph, func(nodeID string, node core.Node[wfstate.State]) {})
+	err := g.buildStateGraph(graph, func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch]) {})
 	if err != nil {
 		return "", err
 	}
@@ -108,7 +108,7 @@ func (g *Graph) DrawMermaid() (string, error) {
 
 }
 
-func (g *Graph) AddNode(node core.Node[wfstate.State]) error {
+func (g *Graph) AddNode(node core.Node[wfstate.State, wfstate.StatePatch]) error {
 	if node == nil {
 		return fmt.Errorf("nodes is nil")
 	}
@@ -320,10 +320,10 @@ func (g *Graph) Validate() error {
 
 func (g *Graph) Compile() (*Runnable, error) {
 	compiled := langgraph.NewListenableStateGraph[wfstate.State]()
-	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node core.Node[wfstate.State]) {
+	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch]) {
 		nodeDef := node
 		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-			return nodeDef.Invoke(ctx, state.CloneState())
+			return g.executePatchNode(ctx, nodeID, nodeDef, state)
 		})
 		for _, listener := range g.nodeListeners[nodeID] {
 			listenableNode.AddListener(g.displayNameListener(listener))
@@ -345,6 +345,30 @@ func (g *Graph) Compile() (*Runnable, error) {
 	return &Runnable{runnable: runnable}, nil
 }
 
+func (g *Graph) executePatchNode(ctx context.Context, nodeID string, node core.Node[wfstate.State, wfstate.StatePatch], state wfstate.State) (wfstate.State, error) {
+	if node == nil {
+		return state, fmt.Errorf("node %q is nil", nodeID)
+	}
+	patch, err := node.Execute(ctx, state.CloneState())
+	if err != nil {
+		return state, err
+	}
+
+	contract := core.NodeIOContract{WildcardWrite: true}
+	if g != nil && len(g.nodeContracts) > 0 {
+		if nodeContract, ok := g.nodeContracts[nodeID]; ok {
+			contract = nodeContract
+		}
+	}
+	merged, _, err := wfstate.MergeStatePatch(state, patch, wfstate.StatePatchMergeOptions{
+		Contract: contract,
+	})
+	if err != nil {
+		return state, err
+	}
+	return merged, nil
+}
+
 func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[wfstate.State], error) {
 	if err := g.Validate(); err != nil {
 		return nil, err
@@ -354,15 +378,10 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	}
 
 	compiled := langgraph.NewStateGraph[wfstate.State]()
-	if err := g.configureStateGraph(compiled, func(nodeID string, node core.Node[wfstate.State]) {
+	if err := g.configureStateGraph(compiled, func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch]) {
 		nodeDef := node
-		executable, _ := nodeDef.(wfstate.ExecutableNode)
 		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-			return execution.InvokeNode(ctx, nodeID,
-				func(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-					return nodeDef.Invoke(ctx, state)
-				}, executable, state,
-			)
+			return execution.ExecuteNode(ctx, nodeID, nodeDef, state)
 		})
 	}); err != nil {
 		return nil, err
@@ -376,14 +395,14 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	return runnable, nil
 }
 
-func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[wfstate.State], addNode func(nodeID string, node core.Node[wfstate.State])) error {
+func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[wfstate.State], addNode func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch])) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
 	return g.configureStateGraph(compiled, addNode)
 }
 
-func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[wfstate.State], addNode func(nodeID string, node core.Node[wfstate.State])) error {
+func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[wfstate.State], addNode func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch])) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled graph is nil")
 	}

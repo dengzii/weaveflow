@@ -17,12 +17,10 @@ type staticContractNode struct {
 func (n staticContractNode) ID() string          { return n.id }
 func (n staticContractNode) Name() string        { return n.id }
 func (n staticContractNode) Description() string { return "static contract analysis test node" }
-func (n staticContractNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n staticContractNode) Execute(ctx context.Context, state wfstate.State) (wfstate.StatePatch, error) {
 	_ = ctx
-	if state == nil {
-		state = wfstate.State{}
-	}
-	return state, nil
+	_ = state
+	return wfstate.StatePatch{}, nil
 }
 
 func (n staticContractNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -43,7 +41,7 @@ func registerStaticContractNodeType(registry *Registry, typeName string, contrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return staticContractNode{id: spec.ID, spec: spec}, nil
 		}),

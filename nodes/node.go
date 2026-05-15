@@ -1,6 +1,9 @@
 package nodes
 
-import "weaveflow/core"
+import (
+	"weaveflow/core"
+	wfstate "weaveflow/state"
+)
 
-type Node[S any] = core.Node[S]
+type Node = core.Node[wfstate.State, wfstate.StatePatch]
 type NodeInfo = core.NodeInfo

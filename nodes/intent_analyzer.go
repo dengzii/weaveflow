@@ -60,7 +60,7 @@ func NewIntentAnalyzerNode() *IntentAnalyzerNode {
 	}
 }
 
-func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *IntentAnalyzerNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("intent analyzer: model service not available")
@@ -144,8 +144,10 @@ func (n *IntentAnalyzerNode) Invoke(ctx context.Context, state wfstate.State) (w
 	return state, nil
 }
 
-func (n *IntentAnalyzerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *IntentAnalyzerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *IntentAnalyzerNode) GraphNodeSpec() dsl.GraphNodeSpec {

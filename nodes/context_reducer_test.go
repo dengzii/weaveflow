@@ -55,7 +55,7 @@ func TestContextReducerNodeNoOpBelowLimit(t *testing.T) {
 	})
 
 	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
-	_, err := node.Invoke(ctx, state)
+	_, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 	})
 
 	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
-	_, err := node.Invoke(ctx, state)
+	next, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestContextReducerNodeSummarizesOlderMessages(t *testing.T) {
 		t.Fatalf("expected reducer model call count 1, got %d", model.callCount)
 	}
 
-	reduced := state.Conversation("agent").Messages()
+	reduced := next.Conversation("agent").Messages()
 	if len(reduced) != 4 {
 		t.Fatalf("expected 4 messages after reduction, got %d", len(reduced))
 	}
@@ -163,12 +163,12 @@ func TestContextReducerNodeKeepsToolSpanTogether(t *testing.T) {
 	})
 
 	ctx := fruntime.WithServices(context.Background(), &fruntime.Services{Model: model})
-	_, err := node.Invoke(ctx, state)
+	next, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke context reducer: %v", err)
 	}
 
-	reduced := state.Conversation("agent").Messages()
+	reduced := next.Conversation("agent").Messages()
 	if len(reduced) != 6 {
 		t.Fatalf("expected tool span preservation to keep 6 messages, got %d", len(reduced))
 	}

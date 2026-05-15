@@ -36,7 +36,7 @@ func NewToolPolicyGuardNode() *ToolPolicyGuardNode {
 	}
 }
 
-func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *ToolPolicyGuardNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
 		state = wfstate.State{}
 	}
@@ -101,8 +101,10 @@ func (n *ToolPolicyGuardNode) Invoke(ctx context.Context, state wfstate.State) (
 	return state, nil
 }
 
-func (n *ToolPolicyGuardNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ToolPolicyGuardNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *ToolPolicyGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {

@@ -56,7 +56,7 @@ func ToolsExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	result, err := node.Invoke(ctx, state)
+	result, err := executeNode(ctx, node, state)
 	must(err)
 
 	conv := result.Conversation("agent")

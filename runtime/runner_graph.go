@@ -10,7 +10,7 @@ import (
 const DefaultGraphVersion = "1.0"
 
 type RunnerExecution interface {
-	InvokeNode(ctx context.Context, nodeID string, invoke wfstate.NodeInvoker, executor wfstate.ExecutableNode, state wfstate.State) (wfstate.State, error)
+	ExecuteNode(ctx context.Context, nodeID string, executor wfstate.ExecutableNode, state wfstate.State) (wfstate.State, error)
 	OnGraphStep(ctx context.Context, stepNodeID string, state wfstate.State) error
 }
 

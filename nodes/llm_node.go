@@ -32,7 +32,7 @@ func NewLLMNode() *LLMNode {
 	}
 }
 
-func (L *LLMNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (L *LLMNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("llm node: model service not available")
@@ -115,8 +115,10 @@ func (L *LLMNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.Stat
 	return state, nil
 }
 
-func (L *LLMNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: L.Invoke}.Execute(ctx, input)
+func (L *LLMNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return L.execute(ctx, state)
+	})
 }
 
 func (L *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {

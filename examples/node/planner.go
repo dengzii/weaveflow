@@ -74,7 +74,7 @@ func PlannerExample() {
 		"last_failure":    execution["last_failure"],
 	})
 
-	result, err := node.Invoke(ctx, state)
+	result, err := executeNode(ctx, node, state)
 	must(err)
 
 	fmt.Println()

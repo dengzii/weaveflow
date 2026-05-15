@@ -1,12 +1,10 @@
 package core
 
-import "context"
-
-type Node[S any] interface {
+type Node[S any, P any] interface {
 	ID() string
 	Name() string
 	Description() string
-	Invoke(ctx context.Context, state S) (S, error)
+	ExecutableNode[S, P]
 }
 
 type NodeInfo struct {

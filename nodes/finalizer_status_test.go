@@ -22,7 +22,7 @@ func TestFinalizerUsesExecutionRouteForBlockedOutcome(t *testing.T) {
 		},
 	}
 
-	state, err := node.Invoke(context.Background(), state)
+	state, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke finalizer: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestFinalizerUsesOrchestrationClarificationOutcome(t *testing.T) {
 		},
 	}
 
-	state, err := node.Invoke(context.Background(), state)
+	state, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke finalizer: %v", err)
 	}

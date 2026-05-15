@@ -5,8 +5,8 @@ import (
 	"time"
 )
 
-type ExecutableNode[S any] interface {
-	Execute(ctx context.Context, input S) (S, error)
+type ExecutableNode[S any, P any] interface {
+	Execute(ctx context.Context, input S) (P, error)
 }
 
 type CheckpointStage string

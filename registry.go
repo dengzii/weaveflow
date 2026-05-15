@@ -9,7 +9,6 @@ import (
 	"weaveflow/dsl"
 	"weaveflow/nodes"
 	"weaveflow/registry"
-	wfstate "weaveflow/state"
 )
 
 type JSONSchema = dsl.JSONSchema
@@ -32,7 +31,7 @@ type Registry struct {
 }
 
 type BuildContext = builder.BuildContext
-type LegacyNodeBuilder = builder.LegacyNodeBuilder
+type NodeBuilder = builder.NodeBuilder
 
 type ConditionDefinition = registry.ConditionDefinition
 
@@ -115,8 +114,8 @@ func stringConfig(config map[string]any, key string) string {
 	return registry.StringConfig(config, key)
 }
 
-func AdaptLegacyNodeBuilder(build LegacyNodeBuilder) func(NodeBuildContext, dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
-	return builder.AdaptLegacyNodeBuilder(build)
+func AdaptNodeBuilder(build NodeBuilder) func(NodeBuildContext, dsl.GraphNodeSpec) (nodes.Node, error) {
+	return builder.AdaptNodeBuilder(build)
 }
 
 func (r *Registry) makeSubgraphBuilder(parentCtx *BuildContext) SubgraphBuilder {

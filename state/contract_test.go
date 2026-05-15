@@ -1,7 +1,6 @@
 package state
 
 import (
-	"context"
 	"testing"
 	"weaveflow/core"
 
@@ -294,36 +293,5 @@ func TestMergePatchByContractRejectsMissingRequiredWrite(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected missing required write error")
-	}
-}
-
-func TestLegacyNodeExecutorReturnsPatch(t *testing.T) {
-	t.Parallel()
-
-	input := State{
-		"topic": "old",
-		"keep":  "same",
-	}
-	executor := LegacyNodeExecutor{
-		Invoke: func(ctx context.Context, state State) (State, error) {
-			_ = ctx
-			delete(state, "topic")
-			state["answer"] = "new"
-			return state, nil
-		},
-	}
-
-	patch, err := executor.Execute(context.Background(), input)
-	if err != nil {
-		t.Fatalf("execute legacy node: %v", err)
-	}
-	if _, ok := patch["keep"]; ok {
-		t.Fatalf("expected untouched fields to be omitted from patch, got %#v", patch)
-	}
-	if value, ok := patch["topic"]; !ok || value != nil {
-		t.Fatalf("expected deleted topic to be represented in patch, got %#v", patch["topic"])
-	}
-	if patch["answer"] != "new" {
-		t.Fatalf("expected new answer patch, got %#v", patch["answer"])
 	}
 }

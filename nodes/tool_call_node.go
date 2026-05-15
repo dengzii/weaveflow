@@ -36,7 +36,7 @@ func NewToolCallNode() *ToolsNode {
 	}
 }
 
-func (t *ToolsNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (t *ToolsNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	nodeTools := svc.FilterTools(t.ToolIDs)
 
@@ -87,8 +87,10 @@ func (t *ToolsNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.St
 	return state, nil
 }
 
-func (t *ToolsNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: t.Invoke}.Execute(ctx, input)
+func (t *ToolsNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return t.execute(ctx, state)
+	})
 }
 
 func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {

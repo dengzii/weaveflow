@@ -110,7 +110,7 @@ func NewPlannerNode() *PlannerNode {
 	}
 }
 
-func (n *PlannerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *PlannerNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := runtime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("planner: model service not available")
@@ -189,8 +189,10 @@ func (n *PlannerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.
 	return state, nil
 }
 
-func (n *PlannerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *PlannerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *PlannerNode) GraphNodeSpec() dsl.GraphNodeSpec {

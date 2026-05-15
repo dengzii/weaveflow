@@ -41,7 +41,7 @@ func NewMemoryRecallNode() *MemoryRecallNode {
 	}
 }
 
-func (n *MemoryRecallNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *MemoryRecallNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
 		state = wfstate.State{}
 	}
@@ -98,8 +98,10 @@ func (n *MemoryRecallNode) Invoke(ctx context.Context, state wfstate.State) (wfs
 	return state, nil
 }
 
-func (n *MemoryRecallNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *MemoryRecallNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *MemoryRecallNode) GraphNodeSpec() dsl.GraphNodeSpec {

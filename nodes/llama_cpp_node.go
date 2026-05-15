@@ -103,7 +103,13 @@ func (l *LlamaCppModel) Description() string {
 	return l.NodeInfo.Description()
 }
 
-func (l *LlamaCppModel) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (l *LlamaCppModel) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return l.execute(ctx, state)
+	})
+}
+
+func (l *LlamaCppModel) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if l == nil {
 		return state, errors.New("llama_cpp.cpp nodes is nil")
 	}

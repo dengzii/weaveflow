@@ -34,29 +34,7 @@ func NewMappedSubgraphNode() *MappedSubgraphNode {
 	}
 }
 
-func (n *MappedSubgraphNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	if n.InvokeSubgraph == nil {
-		return state, fmt.Errorf("mapped subgraph node %q has no invoker for graph_ref %q", n.ID(), n.GraphRef)
-	}
-	subgraphInput := n.buildSubgraphInput(state)
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphStarted, map[string]any{
-		"graph_ref": n.GraphRef,
-	})
-	subgraphResult, err := n.InvokeSubgraph(ctx, subgraphInput)
-	if err != nil {
-		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphFailed, map[string]any{
-			"graph_ref": n.GraphRef,
-			"error":     err.Error(),
-		})
-		return state, err
-	}
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphFinished, map[string]any{
-		"graph_ref": n.GraphRef,
-	})
-	return n.mergeOutputToState(state, subgraphResult)
-}
-
-func (n *MappedSubgraphNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
+func (n *MappedSubgraphNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
 	if n.InvokeSubgraph == nil {
 		return nil, fmt.Errorf("mapped subgraph node %q has no invoker for graph_ref %q", n.ID(), n.GraphRef)
 	}
@@ -75,7 +53,11 @@ func (n *MappedSubgraphNode) Execute(ctx context.Context, input wfstate.State) (
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphFinished, map[string]any{
 		"graph_ref": n.GraphRef,
 	})
-	return n.buildOutputPatch(subgraphResult)
+	patch, err := n.buildOutputPatch(subgraphResult)
+	if err != nil {
+		return nil, err
+	}
+	return wfstate.StatePatch(patch), nil
 }
 
 // buildSubgraphInput creates a minimal state for the subgraph by mapping paths from parent state.
@@ -102,19 +84,6 @@ func (n *MappedSubgraphNode) buildOutputPatch(subgraphResult wfstate.State) (wfs
 		wfstate.SetContractPathValue(patch, parentPath, value)
 	}
 	return patch, nil
-}
-
-// mergeOutputToState applies output mappings onto a clone of the parent state (for Invoke compat).
-func (n *MappedSubgraphNode) mergeOutputToState(parentState wfstate.State, subgraphResult wfstate.State) (wfstate.State, error) {
-	result := parentState.CloneState()
-	for subgraphPath, parentPath := range n.OutputMap {
-		value, ok := wfstate.ResolveContractPathValue(subgraphResult, subgraphPath)
-		if !ok {
-			continue
-		}
-		wfstate.SetContractPathValue(result, parentPath, value)
-	}
-	return result, nil
 }
 
 func (n *MappedSubgraphNode) GraphNodeSpec() dsl.GraphNodeSpec {

@@ -80,57 +80,29 @@ func (n collectIteratorItemNode) Name() string { return n.id }
 func (n collectIteratorItemNode) Description() string {
 	return "append current iterator item into a string slice"
 }
-func (n collectIteratorItemNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n collectIteratorItemNode) Execute(ctx context.Context, state wfstate.State) (wfstate.StatePatch, error) {
 	_ = ctx
 
 	if state == nil {
-		state = wfstate.State{}
+		return wfstate.StatePatch{}, nil
 	}
 
 	namespace := state.Namespace(nodes.IteratorStateNamespace)
 	if namespace == nil {
-		return state, nil
+		return wfstate.StatePatch{}, nil
 	}
 	iteratorState := nestedState(namespace, n.iteratorNodeID)
 	if iteratorState == nil {
-		return state, nil
+		return wfstate.StatePatch{}, nil
 	}
 
 	item, _ := iteratorState["item"].(string)
 	if item == "" {
-		return state, nil
+		return wfstate.StatePatch{}, nil
 	}
-
-	results, _ := state[n.targetKey].([]string)
-	results = append(results, item)
-	state[n.targetKey] = results
 
 	fmt.Printf("collect: index=%v iteration=%v item=%q\n", iteratorState["index"], iteratorState["iteration"], item)
-	return state, nil
-}
-
-func (n collectIteratorItemNode) Execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	_ = ctx
-
-	if state == nil {
-		return wfstate.State{}, nil
-	}
-
-	namespace := state.Namespace(nodes.IteratorStateNamespace)
-	if namespace == nil {
-		return wfstate.State{}, nil
-	}
-	iteratorState := nestedState(namespace, n.iteratorNodeID)
-	if iteratorState == nil {
-		return wfstate.State{}, nil
-	}
-
-	item, _ := iteratorState["item"].(string)
-	if item == "" {
-		return wfstate.State{}, nil
-	}
-
-	return wfstate.State{
+	return wfstate.StatePatch{
 		n.targetKey: []string{item},
 	}, nil
 }
@@ -142,7 +114,7 @@ type printStateNode struct {
 func (n printStateNode) ID() string          { return n.id }
 func (n printStateNode) Name() string        { return n.id }
 func (n printStateNode) Description() string { return "print a compact summary of the final state" }
-func (n printStateNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n printStateNode) Execute(ctx context.Context, state wfstate.State) (wfstate.StatePatch, error) {
 	_ = ctx
 
 	results, _ := state["results"].([]string)
@@ -150,7 +122,7 @@ func (n printStateNode) Invoke(ctx context.Context, state wfstate.State) (wfstat
 
 	fmt.Println("iterator done:", iteratorState["done"])
 	fmt.Println("results:", results)
-	return state, nil
+	return wfstate.StatePatch{}, nil
 }
 
 func registerCollectIteratorItemNodeType(r *weaveflow.Registry) {
@@ -190,7 +162,7 @@ func registerCollectIteratorItemNodeType(r *weaveflow.Registry) {
 			}
 			return dsl.StateContract{Fields: fields}, nil
 		},
-		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+		Build: weaveflow.AdaptNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
@@ -218,7 +190,7 @@ func registerPrintStateNodeType(r *weaveflow.Registry) {
 				},
 			},
 		},
-		Build: weaveflow.AdaptLegacyNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+		Build: weaveflow.AdaptNodeBuilder(func(ctx *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return printStateNode{id: spec.ID}, nil
 		}),

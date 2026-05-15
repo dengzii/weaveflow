@@ -18,7 +18,7 @@ func TestIteratorNodeInjectsCurrentIterationState(t *testing.T) {
 		"items": []any{"first", "second", "third"},
 	}
 
-	next, err := node.Invoke(context.Background(), state)
+	next, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke iterator node: %v", err)
 	}
@@ -67,10 +67,11 @@ func TestIteratorNodeMarksDoneWhenExhausted(t *testing.T) {
 		"items": []string{"first", "second"},
 	}
 
-	if _, err := node.Invoke(context.Background(), state); err != nil {
+	next, err := runTestNode(t, node, context.Background(), state)
+	if err != nil {
 		t.Fatalf("first invoke iterator node: %v", err)
 	}
-	next, err := node.Invoke(context.Background(), state)
+	next, err = runTestNode(t, node, context.Background(), next)
 	if err != nil {
 		t.Fatalf("second invoke iterator node: %v", err)
 	}
@@ -114,7 +115,7 @@ func TestIteratorNodeReadsNestedStatePath(t *testing.T) {
 		},
 	}
 
-	next, err := node.Invoke(context.Background(), state)
+	next, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke iterator node with nested path: %v", err)
 	}
@@ -155,7 +156,7 @@ func TestIteratorNodeNormalizesStructuredItems(t *testing.T) {
 		"items": []item{{Name: "alpha", Count: 2}},
 	}
 
-	next, err := node.Invoke(context.Background(), state)
+	next, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke iterator node with structured items: %v", err)
 	}

@@ -28,7 +28,8 @@ func TestFinalizerPublishesDirectAnswerEvent(t *testing.T) {
 		return nil
 	})
 
-	if _, err := node.Invoke(ctx, state); err != nil {
+	next, err := runTestNode(t, node, ctx, state)
+	if err != nil {
 		t.Fatalf("Invoke() error = %v", err)
 	}
 
@@ -45,7 +46,7 @@ func TestFinalizerPublishesDirectAnswerEvent(t *testing.T) {
 	if got := finalizerPayloadText(answerEvent.Payload); got != "Hi there!" {
 		t.Fatalf("published answer = %q, want %q", got, "Hi there!")
 	}
-	if got := state.Conversation(defaultFinalizerScope).FinalAnswer(); got != "Hi there!" {
+	if got := next.Conversation(defaultFinalizerScope).FinalAnswer(); got != "Hi there!" {
 		t.Fatalf("conversation final answer = %q, want %q", got, "Hi there!")
 	}
 }

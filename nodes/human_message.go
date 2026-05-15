@@ -35,7 +35,7 @@ func NewHumanMessageNode() *HumanMessageNode {
 	}
 }
 
-func (n *HumanMessageNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *HumanMessageNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	conversation := state.Conversation(n.StateScope)
 	pending, ok, err := n.consumePendingInput(state)
 	if err != nil {
@@ -96,8 +96,10 @@ func (n *HumanMessageNode) pendingInputState(state wfstate.State) wfstate.State 
 	return state.Scope(n.StateScope)
 }
 
-func (n *HumanMessageNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *HumanMessageNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *HumanMessageNode) GraphNodeSpec() dsl.GraphNodeSpec {

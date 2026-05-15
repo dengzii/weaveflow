@@ -31,7 +31,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		ResolveStateContract: registry.ResolveMappedSubgraphStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
 			graphRef := registry.StringConfig(spec.Config, "graph_ref")
 			if graphRef == "" {
 				return nil, fmt.Errorf("build mapped_subgraph node %q: graph_ref is required", spec.ID)
@@ -72,7 +72,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		ResolveStateContract: registry.ResolveIteratorStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
 			_ = ctx
 			stateKey := registry.StringConfig(spec.Config, "state_key")
 			if stateKey == "" {
@@ -107,7 +107,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		ResolveStateContract: registry.ResolveHumanMessageStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
 			_ = ctx
 			node := nodes.NewHumanMessageNode()
 			applyNodeMetadata(node, spec)
@@ -135,7 +135,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		ResolveStateContract: registry.ResolveContextReducerStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
 			_ = ctx
 			node := nodes.NewContextReducerNode()
 			applyNodeMetadata(node, spec)
@@ -164,7 +164,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		ResolveStateContract: registry.ResolveLLMStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
 			_ = ctx
 			node := nodes.NewLLMNode()
 			applyNodeMetadata(node, spec)
@@ -190,7 +190,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			},
 		},
 		ResolveStateContract: registry.ResolveToolsStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State], error) {
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
 			_ = ctx
 			node := nodes.NewToolCallNode()
 			applyNodeMetadata(node, spec)

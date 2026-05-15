@@ -33,7 +33,7 @@ func NewReplannerNode() *ReplannerNode {
 	}
 }
 
-func (n *ReplannerNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *ReplannerNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
 		state = wfstate.State{}
 	}
@@ -58,7 +58,7 @@ func (n *ReplannerNode) Invoke(ctx context.Context, state wfstate.State) (wfstat
 	})
 
 	n.configureInner()
-	result, err := n.inner.Invoke(ctx, state)
+	result, err := n.inner.execute(ctx, state)
 
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
 		"kind":          "replanner",
@@ -76,8 +76,10 @@ func (n *ReplannerNode) Invoke(ctx context.Context, state wfstate.State) (wfstat
 	return result, err
 }
 
-func (n *ReplannerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *ReplannerNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *ReplannerNode) GraphNodeSpec() dsl.GraphNodeSpec {

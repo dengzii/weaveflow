@@ -40,7 +40,7 @@ func NewCostBudgetGuardNode() *CostBudgetGuardNode {
 	}
 }
 
-func (n *CostBudgetGuardNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *CostBudgetGuardNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	if state == nil {
 		state = wfstate.State{}
 	}
@@ -71,8 +71,10 @@ func (n *CostBudgetGuardNode) Invoke(ctx context.Context, state wfstate.State) (
 	return state, nil
 }
 
-func (n *CostBudgetGuardNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *CostBudgetGuardNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *CostBudgetGuardNode) GraphNodeSpec() dsl.GraphNodeSpec {

@@ -21,18 +21,19 @@ func TestHumanMessageNodeConsumesPendingHumanInput(t *testing.T) {
 	node := NewHumanMessageNode()
 	node.StateScope = "agent"
 
-	next, err := node.Invoke(context.Background(), state)
+	next, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke human message nodes: %v", err)
 	}
 	if next == nil {
 		t.Fatal("expected state to be returned")
 	}
-	if _, ok := scope[PendingHumanInputStateKey]; ok {
+	nextScope := next.Scope("agent")
+	if _, ok := nextScope[PendingHumanInputStateKey]; ok {
 		t.Fatal("expected pending human input to be consumed")
 	}
 
-	messages := state.Conversation("agent").Messages()
+	messages := next.Conversation("agent").Messages()
 	if len(messages) != 2 {
 		t.Fatalf("expected two messages, got %#v", messages)
 	}
@@ -52,7 +53,7 @@ func TestHumanMessageNodeInterruptsWithoutPendingHumanInput(t *testing.T) {
 	node := NewHumanMessageNode()
 	node.StateScope = "agent"
 
-	_, err := node.Invoke(context.Background(), state)
+	_, err := runTestNode(t, node, context.Background(), state)
 	if err == nil {
 		t.Fatal("expected interrupt error")
 	}
@@ -70,12 +71,12 @@ func TestHumanMessageNodeDefaultsToRootConversation(t *testing.T) {
 
 	node := NewHumanMessageNode()
 
-	_, err := node.Invoke(context.Background(), state)
+	next, err := runTestNode(t, node, context.Background(), state)
 	if err != nil {
 		t.Fatalf("invoke default-scope human message node: %v", err)
 	}
 
-	messages := state.Conversation("").Messages()
+	messages := next.Conversation("").Messages()
 	if len(messages) != 2 {
 		t.Fatalf("expected two root messages, got %#v", messages)
 	}
@@ -95,7 +96,7 @@ func TestHumanMessageNodeDoesNotCreateMissingScopeWhenPollingInput(t *testing.T)
 	node := NewHumanMessageNode()
 	node.StateScope = "agent"
 
-	_, err := node.Invoke(context.Background(), state)
+	_, err := runTestNode(t, node, context.Background(), state)
 	if err == nil {
 		t.Fatal("expected interrupt error")
 	}

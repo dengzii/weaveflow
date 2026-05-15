@@ -76,7 +76,7 @@ func NewOrchestrationRouterNode() *OrchestrationRouterNode {
 	}
 }
 
-func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *OrchestrationRouterNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	svc := fruntime.ServicesFrom(ctx)
 	if svc == nil || svc.Model == nil {
 		return state, errors.New("orchestration router: model service not available")
@@ -172,8 +172,10 @@ func (n *OrchestrationRouterNode) Invoke(ctx context.Context, state wfstate.Stat
 	return state, nil
 }
 
-func (n *OrchestrationRouterNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *OrchestrationRouterNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	return executeStatePatch(input, func(state wfstate.State) (wfstate.State, error) {
+		return n.execute(ctx, state)
+	})
 }
 
 func (n *OrchestrationRouterNode) GraphNodeSpec() dsl.GraphNodeSpec {

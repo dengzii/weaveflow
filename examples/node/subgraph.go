@@ -36,7 +36,7 @@ func MappedSubgraphExample() {
 	fmt.Println("input:")
 	fmt.Println(state["request"])
 
-	result, err := node.Invoke(context.Background(), state)
+	result, err := executeNode(context.Background(), node, state)
 	must(err)
 
 	fmt.Println()

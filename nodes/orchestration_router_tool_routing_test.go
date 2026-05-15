@@ -45,7 +45,7 @@ func TestOrchestrationRouterUsesToolHeuristicForCurrentTime(t *testing.T) {
 		},
 	}
 
-	state, err := node.Invoke(ctx, state)
+	state, err := runTestNode(t, node, ctx, state)
 	if err != nil {
 		t.Fatalf("invoke orchestration router: %v", err)
 	}

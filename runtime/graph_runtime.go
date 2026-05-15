@@ -79,7 +79,7 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState wf
 	}
 }
 
-func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, invoke wfstate.NodeInvoker, executor wfstate.ExecutableNode, state wfstate.State) (wfstate.State, error) {
+func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, executor wfstate.ExecutableNode, state wfstate.State) (wfstate.State, error) {
 	nodeCtx, err := e.beforeNode(ctx, nodeID, state)
 	if err != nil {
 		return state, err
@@ -89,10 +89,13 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 	policy := e.contractPolicy
 	inputState := state.CloneState()
 	if hasContract && policy.Enabled() {
-		if violations := wfstate.ValidateNodeInputContract(nodeID, contract, state); len(violations) > 0 {
-			e.reportContractViolations(nodeCtx, nodeID, violations)
-			if policy.Mode == core.ContractValidationStrict {
-				return state, fmt.Errorf("%s", violations[0].Message)
+		validateInputs := policy.Mode != core.ContractValidationOff || policy.EnforceProjection
+		if validateInputs {
+			if violations := wfstate.ValidateNodeInputContract(nodeID, contract, state); len(violations) > 0 {
+				e.reportContractViolations(nodeCtx, nodeID, violations)
+				if policy.Mode == core.ContractValidationStrict {
+					return state, fmt.Errorf("%s", violations[0].Message)
+				}
 			}
 		}
 		if policy.EnforceProjection {
@@ -103,20 +106,19 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 		}
 	}
 
-	patchExecutor := executor
-	if patchExecutor == nil {
-		patchExecutor = wfstate.LegacyNodeExecutor{Invoke: invoke}
+	if executor == nil {
+		return state, fmt.Errorf("node %q is not executable", nodeID)
 	}
-	result, invokeErr := patchExecutor.Execute(nodeCtx, inputState.CloneState())
+	result, invokeErr := executor.Execute(nodeCtx, inputState.CloneState())
 	if invokeErr != nil {
 		var interrupt *langgraph.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
 			e.markNodeInterrupt(nodeID)
 		}
-		return result, invokeErr
+		return state, invokeErr
 	}
 	if hasContract && policy.RecordArtifacts {
-		e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, result)
+		e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, result.State())
 	}
 
 	mergeContract := core.NodeIOContract{WildcardWrite: true}
@@ -124,7 +126,7 @@ func (e *graphRunnerExecution) InvokeNode(ctx context.Context, nodeID string, in
 	enforceWrites := false
 	if hasContract && policy.Enabled() {
 		mergeContract = contract
-		validateWrites = policy.Mode != core.ContractValidationOff
+		validateWrites = policy.Mode != core.ContractValidationOff || policy.EnforceWrites
 		enforceWrites = policy.EnforceWrites
 	}
 	mergedState, violations, err := wfstate.MergeStatePatch(state, result, wfstate.StatePatchMergeOptions{

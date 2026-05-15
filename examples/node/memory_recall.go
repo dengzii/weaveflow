@@ -43,7 +43,7 @@ func MemoryRecallExample() {
 	fmt.Println("input:")
 	fmt.Println(state["request"])
 
-	result, err := node.Invoke(ctx, state)
+	result, err := executeNode(ctx, node, state)
 	must(err)
 
 	fmt.Println()

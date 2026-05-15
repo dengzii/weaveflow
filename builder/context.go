@@ -18,7 +18,7 @@ type BuildContext struct {
 	internal             *buildContextState
 }
 
-type LegacyNodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error)
+type NodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error)
 
 type buildContextState struct {
 	graphBuildPath []string
@@ -75,8 +75,8 @@ func FromNodeBuildContext(ctx registry.NodeBuildContext) *BuildContext {
 	}
 }
 
-func AdaptLegacyNodeBuilder(build LegacyNodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State], error) {
+func AdaptNodeBuilder(build NodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}

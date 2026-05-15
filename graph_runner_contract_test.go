@@ -24,18 +24,19 @@ type contractProbeNode struct {
 func (n contractProbeNode) ID() string          { return n.id }
 func (n contractProbeNode) Name() string        { return n.id }
 func (n contractProbeNode) Description() string { return "probe state contract runner behavior" }
-func (n contractProbeNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n contractProbeNode) Execute(ctx context.Context, state wfstate.State) (wfstate.StatePatch, error) {
 	_ = ctx
 	if state == nil {
 		state = wfstate.State{}
 	}
+	patch := wfstate.State{}
 	if n.inspect != nil {
-		state["result"] = n.inspect(state)
+		patch["result"] = n.inspect(state)
 	}
 	if n.mutate != nil {
-		n.mutate(state)
+		n.mutate(patch)
 	}
-	return state, nil
+	return wfstate.StatePatch(patch), nil
 }
 
 func (n contractProbeNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -56,7 +57,7 @@ func registerContractProbeNodeType(registry *Registry, contract dsl.StateContrac
 			_ = spec
 			return contract.Clone(), nil
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return contractProbeNode{
 				id:      spec.ID,

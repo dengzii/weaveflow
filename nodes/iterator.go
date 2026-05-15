@@ -37,7 +37,7 @@ func NewIteratorNode() *IteratorNode {
 	}
 }
 
-func (n *IteratorNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n *IteratorNode) execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
 	_ = ctx
 
 	if state == nil {
@@ -93,8 +93,62 @@ func (n *IteratorNode) Invoke(ctx context.Context, state wfstate.State) (wfstate
 	return state, nil
 }
 
-func (n *IteratorNode) Execute(ctx context.Context, input wfstate.State) (wfstate.State, error) {
-	return wfstate.LegacyNodeExecutor{Invoke: n.Invoke}.Execute(ctx, input)
+func (n *IteratorNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
+	_ = ctx
+
+	if input == nil {
+		input = wfstate.State{}
+	}
+	if n.StateKey == "" {
+		return nil, fmt.Errorf("iterator node %q state_key is required", n.ID())
+	}
+	if n.MaxIterations <= 0 {
+		return nil, fmt.Errorf("iterator node %q max_iterations must be greater than 0", n.ID())
+	}
+
+	source, ok := input.ResolvePath(n.StateKey)
+	if !ok {
+		source = nil
+	}
+	items, err := iteratorValues(source)
+	if err != nil {
+		return nil, fmt.Errorf("iterator node %q state key %q: %w", n.ID(), n.StateKey, err)
+	}
+
+	total := len(items)
+	limit := total
+	if limit > n.MaxIterations {
+		limit = n.MaxIterations
+	}
+
+	runtimeState := iteratorNodeRuntimeState(input, n.ID())
+	nextIndex, _ := iteratorInt(runtimeState["next_index"])
+	if nextIndex < 0 {
+		nextIndex = 0
+	}
+
+	patchState := wfstate.State{}
+	patchRuntimeState := iteratorNodeRuntimeState(patchState, n.ID())
+	if nextIndex >= limit {
+		writeIteratorDoneState(patchRuntimeState, n.StateKey, total, limit, nextIndex)
+		return wfstate.StatePatch(patchState), nil
+	}
+
+	patchRuntimeState["state_key"] = n.StateKey
+	patchRuntimeState["index"] = nextIndex
+	patchRuntimeState["iteration"] = nextIndex + 1
+	item, err := persistableIteratorValue(items[nextIndex])
+	if err != nil {
+		return nil, fmt.Errorf("iterator node %q item at index %d: %w", n.ID(), nextIndex, err)
+	}
+	patchRuntimeState["item"] = item
+	patchRuntimeState["total"] = total
+	patchRuntimeState["limit"] = limit
+	patchRuntimeState["next_index"] = nextIndex + 1
+	patchRuntimeState["done"] = false
+	patchRuntimeState["is_first"] = nextIndex == 0
+	patchRuntimeState["is_last"] = nextIndex == limit-1
+	return wfstate.StatePatch(patchState), nil
 }
 
 func (n *IteratorNode) GraphNodeSpec() dsl.GraphNodeSpec {
@@ -151,11 +205,11 @@ func writeIteratorDoneState(target wfstate.State, stateKey string, total int, li
 	target["limit"] = limit
 	target["next_index"] = nextIndex
 	target["done"] = true
-	delete(target, "item")
-	delete(target, "index")
-	delete(target, "iteration")
-	delete(target, "is_first")
-	delete(target, "is_last")
+	target["item"] = nil
+	target["index"] = nil
+	target["iteration"] = nil
+	target["is_first"] = nil
+	target["is_last"] = nil
 }
 
 func iteratorValues(raw any) ([]any, error) {

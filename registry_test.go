@@ -18,12 +18,13 @@ type assignStateNode struct {
 func (n assignStateNode) ID() string          { return n.id }
 func (n assignStateNode) Name() string        { return n.id }
 func (n assignStateNode) Description() string { return "assign state value" }
-func (n assignStateNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	if state == nil {
-		state = wfstate.State{}
+func (n assignStateNode) Execute(ctx context.Context, state wfstate.State) (wfstate.StatePatch, error) {
+	_ = ctx
+	_ = state
+	if n.key == "" {
+		return wfstate.StatePatch{}, nil
 	}
-	state[n.key] = n.value
-	return state, nil
+	return wfstate.StatePatch{n.key: n.value}, nil
 }
 
 func registerAssignNodeType(registry *Registry) {
@@ -53,7 +54,7 @@ func registerAssignNodeType(registry *Registry) {
 				}},
 			}, nil
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			return assignStateNode{
 				id:    spec.ID,
 				key:   stringConfig(spec.Config, "key"),
@@ -72,20 +73,20 @@ type collectIteratorItemNode struct {
 func (n collectIteratorItemNode) ID() string          { return n.id }
 func (n collectIteratorItemNode) Name() string        { return n.id }
 func (n collectIteratorItemNode) Description() string { return "collect iterator item" }
-func (n collectIteratorItemNode) Invoke(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+func (n collectIteratorItemNode) Execute(ctx context.Context, state wfstate.State) (wfstate.StatePatch, error) {
 	_ = ctx
 
 	if state == nil {
-		state = wfstate.State{}
+		return wfstate.StatePatch{}, nil
 	}
 
 	namespace := state.Namespace(nodes.IteratorStateNamespace)
 	if namespace == nil {
-		return state, nil
+		return wfstate.StatePatch{}, nil
 	}
 	rawIteratorState, ok := namespace[n.iteratorNodeID]
 	if !ok {
-		return state, nil
+		return wfstate.StatePatch{}, nil
 	}
 
 	iteratorState, ok := rawIteratorState.(map[string]any)
@@ -93,49 +94,16 @@ func (n collectIteratorItemNode) Invoke(ctx context.Context, state wfstate.State
 		if typed, ok := rawIteratorState.(wfstate.State); ok {
 			iteratorState = typed
 		} else {
-			return state, nil
-		}
-	}
-
-	results, _ := state[n.targetKey].([]string)
-	if item, ok := iteratorState["item"].(string); ok {
-		results = append(results, item)
-	}
-	state[n.targetKey] = results
-	return state, nil
-}
-
-func (n collectIteratorItemNode) Execute(ctx context.Context, state wfstate.State) (wfstate.State, error) {
-	_ = ctx
-
-	if state == nil {
-		return wfstate.State{}, nil
-	}
-
-	namespace := state.Namespace(nodes.IteratorStateNamespace)
-	if namespace == nil {
-		return wfstate.State{}, nil
-	}
-	rawIteratorState, ok := namespace[n.iteratorNodeID]
-	if !ok {
-		return wfstate.State{}, nil
-	}
-
-	iteratorState, ok := rawIteratorState.(map[string]any)
-	if !ok {
-		if typed, ok := rawIteratorState.(wfstate.State); ok {
-			iteratorState = typed
-		} else {
-			return wfstate.State{}, nil
+			return wfstate.StatePatch{}, nil
 		}
 	}
 
 	item, ok := iteratorState["item"].(string)
 	if !ok || item == "" {
-		return wfstate.State{}, nil
+		return wfstate.StatePatch{}, nil
 	}
 
-	return wfstate.State{
+	return wfstate.StatePatch{
 		n.targetKey: []string{item},
 	}, nil
 }
@@ -174,7 +142,7 @@ func registerCollectIteratorItemNodeType(registry *Registry) {
 			}
 			return dsl.StateContract{Fields: fields}, nil
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return collectIteratorItemNode{
 				id:             spec.ID,
@@ -195,7 +163,7 @@ func registerNoContractNodeType(registry *Registry) {
 				"additionalProperties": false,
 			},
 		},
-		Build: AdaptLegacyNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node[wfstate.State], error) {
+		Build: AdaptNodeBuilder(func(ctx *BuildContext, spec dsl.GraphNodeSpec) (nodes.Node, error) {
 			_ = ctx
 			return assignStateNode{id: spec.ID}, nil
 		}),
