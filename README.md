@@ -3,32 +3,59 @@
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**WeaveFlow** is a graph-based runtime for building, running, and debugging LLM agents in Go.
+WeaveFlow is a graph-based runtime for building, executing, and inspecting LLM agents in Go.
 
-It provides a declarative graph DSL, a deterministic execution engine with checkpoint and resume, and a curated set of nodes for LLM calls, tool execution, planning, memory, and human-in-the-loop control. The runtime is local-first: every step is persisted, replayable, and inspectable.
+It combines a declarative graph DSL, a deterministic execution engine, checkpointed state, and a reusable node library for common agent behaviors such as model calls, tool use, planning, memory, routing, and human approval. The project is designed for local-first development: runs are persisted, resumable, and replayable.
 
----
+## Why WeaveFlow
 
-## Highlights
+Most agent frameworks make it easy to get a demo running and hard to understand what actually happened at runtime. WeaveFlow takes the opposite approach:
 
-- **Graph-based orchestration**: describe an agent as a directed graph of nodes and conditional edges, serializable to JSON.
-- **Deterministic runtime**: every node execution emits events and writes checkpoints; runs can be paused, resumed, and replayed.
-- **State contracts**: nodes declare which state fields they read and write; contracts are validated at build time.
-- **Rich node library**: LLM call, tool call, planner/replanner, plan-step executor, verifier, intent analyzer, orchestration router, memory recall/write, iterator, mapped subgraph, approval gate, cost budget guard, and more.
-- **Built-in agent server**: `cmd/neo` ships a Gin-based HTTP server with a web UI, live event stream, and run replay.
-- **Safety & observability**: checkpointed execution, replay, and structured runtime artifacts for inspection.
+- Graphs are explicit and serializable.
+- Node state access is constrained through contracts.
+- Execution emits structured events and checkpoints.
+- Runs can be paused, resumed, replayed, and inspected after the fact.
+- The framework ships with practical building blocks instead of only low-level primitives.
 
----
+This makes WeaveFlow suitable for agents that need stronger runtime control than prompt-chaining alone can provide.
 
-## Installation
+## Core Capabilities
 
-Requires Go **1.26** or later.
+- Declarative graph DSL with JSON-serializable definitions.
+- Deterministic runtime with execution stores, checkpoint stores, and event sinks.
+- State contracts that validate node read/write behavior at build time.
+- Built-in nodes for LLM calls, tool execution, planning, replanning, verification, routing, memory, iteration, and approval gates.
+- Artifact persistence for debugging and replay.
+- OpenAI-compatible model adapter and local `llama.cpp` integration.
+- Reference server (`cmd/neo`) with chat, history, live event streaming, and replay views.
 
-```bash
-go get weaveflow
-```
+## Repository Layout
 
-Or clone and build from source:
+| Package | Responsibility |
+| --- | --- |
+| `core/` | Core interfaces, execution abstractions, and state primitives. |
+| `dsl/` | Serializable graph definitions, node specs, and contract schemas. |
+| `builder/` | Graph construction, validation, and contract analysis. |
+| `graph/` | Graph topology, edges, routing, and runnable graph assembly. |
+| `runtime/` | Execution engine, checkpoints, artifacts, and event plumbing. |
+| `state/` | Scoped state, snapshots, validation, merge behavior, and conversation helpers. |
+| `registry/` | Node/condition registration and graph instance configuration. |
+| `nodes/` | Production-oriented node implementations. |
+| `builtin/` | Built-in conditions, helpers, and default registry wiring. |
+| `tools/` | Tool interfaces and bundled tool implementations. |
+| `llms/openai/` | OpenAI-compatible LLM adapter. |
+| `memory/` | Memory manager, repositories, and retrieval helpers. |
+| `cmd/neo/` | Reference server entrypoint. |
+| `internal/neo/` | Neo server implementation and replay support. |
+
+## Getting Started
+
+### Requirements
+
+- Go `1.26` or newer
+- An OpenAI-compatible endpoint for the default examples
+
+### Build from source
 
 ```bash
 git clone <repo-url> weaveflow
@@ -36,30 +63,39 @@ cd weaveflow
 go build ./...
 ```
 
----
+The module path is currently `weaveflow`. If you plan to consume it from another repository, use the published module path adopted by your environment or a local replace directive during development.
 
-## Quick Start
+### Run the graph example
 
-Set credentials for an OpenAI-compatible endpoint and run the ReAct example:
+Set the model credentials used by `llms/openai`:
 
 ```bash
 export OPENAI_API_KEY=<your-api-key>
 export OPENAI_BASE_URL=<your-base-url>
 export OPENAI_MODEL=<your-model>
+```
 
+Then run:
+
+```bash
 go run ./examples/graph
 ```
 
-The example builds a ReAct-style agent (human input -> LLM -> tool calls -> final answer), persists the graph to `.local/instance/graph.json`, writes checkpoints to `.local/instance/checkpoints/`, and then demonstrates resuming from a checkpoint with new human input.
+The example:
 
-### Building a graph in code
+- builds a ReAct-style graph,
+- persists the graph definition to `.local/instance/graph.json`,
+- writes execution data, checkpoints, events, and artifacts under `.local/instance/`,
+- demonstrates resuming a paused run with additional human input.
+
+## Minimal Example
 
 ```go
 g := weaveflow.NewGraph()
 
 human := nodes.NewHumanMessageNode()
-llm   := nodes.NewLLMNode()
-tool  := nodes.NewToolCallNode()
+llm := nodes.NewLLMNode()
+tool := nodes.NewToolCallNode()
 
 _ = g.AddNode(human)
 _ = g.AddNode(llm)
@@ -73,72 +109,17 @@ _ = g.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, builtin.HasFinalAnswer(
 _ = g.SetEntryPoint(human.ID())
 ```
 
-### Loading a graph from JSON
+Load a graph definition from disk:
 
 ```go
 graph, err := weaveflow.LoadGraphFromFile(&builder.BuildContext{}, "graph.json")
 ```
 
----
+## Neo Reference Server
 
-## Architecture
+`cmd/neo` is the reference application shipped with the repository. It exposes a chat-oriented agent server with persistent history, live execution events, and replay endpoints for run inspection.
 
-```text
-+------------------------------------------------------------------+
-|                           DSL (dsl/)                             |
-|        Graph definitions, node specs, state contracts            |
-+------------------------------------------------------------------+
-                                |
-+------------------------------------------------------------------+
-|                        Builder (builder/)                         |
-|      Resolves registry refs, validates contracts, builds Graph    |
-+------------------------------------------------------------------+
-                                |
-+------------------------------------------------------------------+
-|                         Graph (graph/)                            |
-|           Nodes, edges, conditional routing, topology            |
-+------------------------------------------------------------------+
-                                |
-+------------------------------------------------------------------+
-|                        Runtime (runtime/)                         |
-|   GraphRunner -> ExecutionStore -> CheckpointStore -> EventSink   |
-|            ArtifactStore -> LLM wrapping -> Contract policy       |
-+------------------------------------------------------------------+
-                                |
-+--------------+---------------+---------------+-------------------+
-|   nodes/     |   builtin/    |    tools/     | llms/ -> memory/  |
-| LLM, Tool,   | Conditions,   | AskQuestion,  | OpenAI client,    |
-| Planner,     | Conversation  | file, web,    | BM25 retriever,   |
-| Verifier,    | helpers,      | bash, ...     | file/in-memory    |
-| Iterator,    | Memory,       |               | repositories      |
-| Router, ...  | Safety, ...   |               |                   |
-+--------------+---------------+---------------+-------------------+
-```
-
-### Core packages
-
-| Package | Responsibility |
-| --- | --- |
-| `core/` | Core interfaces: `Node`, `Services`, contracts, state primitives. |
-| `dsl/` | Serializable graph definition, node specs, state contracts. |
-| `builder/` | Builds runnable `Graph` from a DSL definition plus registry. |
-| `graph/` | Graph topology, conditional edges, contract analysis. |
-| `runtime/` | Execution engine: checkpoints, events, artifacts, contract policy. |
-| `state/` | Scoped state with typed paths, merge strategies, conversation helpers, snapshots. |
-| `registry/` | Node and condition registration, instance configuration. |
-| `nodes/` | Production-ready node implementations. |
-| `builtin/` | Built-in conditions, conversation/memory helpers, safety primitives. |
-| `tools/` | Tool interface and out-of-the-box tools. |
-| `llms/openai/` | OpenAI-compatible client adapter. |
-| `memory/` | Memory manager, repositories, retrievers. |
-| `internal/neo/` | Agent server: chat, history, replay, live events. |
-| `cmd/neo/` | Standalone server binary. |
-
----
-
-## The Neo Agent Server
-
-`cmd/neo` is a reference application: a chat agent with persistent history, a live event stream, and a replay viewer.
+Start it with:
 
 ```bash
 go run ./cmd/neo --addr :9090 --data .local/neo
@@ -146,37 +127,34 @@ go run ./cmd/neo --addr :9090 --data .local/neo
 
 Then open `http://127.0.0.1:9090/neo/`.
 
-Endpoints are registered under `/neo` (chat, history, registry, live hub) and `/api` (replay).
+Route groups:
 
----
+- `/neo` for chat, history, config, memory, and registry endpoints
+- `/api` for replay and live debugging endpoints
 
 ## Examples
 
-| Path | What it shows |
+| Path | Description |
 | --- | --- |
-| `examples/graph/` | End-to-end ReAct agent with checkpoint and resume. |
-| `examples/dsl/` | Building a graph through the DSL. |
-| `examples/node/` | Focused, runnable demos for each major node type. |
-| `examples/llama_cpp/` | Running graphs against a local `llama.cpp` model. |
+| `examples/graph/` | End-to-end ReAct-style agent with checkpoint and resume. |
+| `examples/dsl/` | Exports the default registry and graph JSON schema. |
+| `examples/node/` | Focused runnable examples for individual node types. |
+| `examples/llama_cpp/` | Runs against a local `llama.cpp` model. |
 
----
+## Development
 
-## Testing
+Run the test suite:
 
 ```bash
 go test ./...
 ```
 
-Unit tests cover state merging, contract validation, the runner store, and most node implementations.
+The codebase already includes coverage around state merging, contract validation, runtime stores, Neo server behavior, and major node implementations. Some surfaces, especially the reference server and advanced orchestration features, are still evolving.
 
----
+## Project Status
 
-## Status
-
-WeaveFlow is under active development. The kernel - DSL, builder, graph, runtime, state - is stable enough to build non-trivial agents on top of. The HTTP surface in `internal/neo/` and some advanced node capabilities are still evolving.
-
----
+WeaveFlow is under active development. The execution kernel, state model, graph builder, and node abstractions are far enough along for non-trivial agent workflows. Public APIs and higher-level application surfaces should still be treated as moving parts.
 
 ## License
 
-MIT - see [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE).
