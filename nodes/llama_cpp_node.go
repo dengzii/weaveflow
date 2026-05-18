@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"weaveflow/internal/llama_cpp"
 
-	"weaveflow/llama_cpp"
 	"weaveflow/runtime"
 	wfstate "weaveflow/state"
 

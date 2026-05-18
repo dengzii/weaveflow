@@ -10,9 +10,6 @@ import (
 const (
 	GraphInstanceConfigVersion = "1.0"
 	RunRequestVersion          = "1.0"
-
-	RunRedactionModeSafe = "safe"
-	RunRedactionModeRaw  = "raw"
 )
 
 // SecretRef points to a secret value stored outside GraphDefinition.
@@ -176,7 +173,6 @@ type RunDebugOptions struct {
 	Breakpoints      []DebugBreakpoint `json:"breakpoints,omitempty"`
 	PauseBefore      []string          `json:"pause_before,omitempty"`
 	PauseAfter       []string          `json:"pause_after,omitempty"`
-	RedactionMode    string            `json:"redaction_mode,omitempty"`
 	IncludeState     bool              `json:"include_state,omitempty"`
 	IncludeStateDiff bool              `json:"include_state_diff,omitempty"`
 	IncludeArtifacts bool              `json:"include_artifacts,omitempty"`
@@ -184,11 +180,6 @@ type RunDebugOptions struct {
 }
 
 func (o RunDebugOptions) Validate() error {
-	switch o.EffectiveRedactionMode() {
-	case RunRedactionModeSafe, RunRedactionModeRaw:
-	default:
-		return fmt.Errorf("redaction_mode %q is invalid", strings.TrimSpace(o.RedactionMode))
-	}
 	for _, bp := range o.Breakpoints {
 		if err := bp.Validate(); err != nil {
 			return err
@@ -205,17 +196,6 @@ func (o RunDebugOptions) Validate() error {
 		}
 	}
 	return nil
-}
-
-func (o RunDebugOptions) EffectiveRedactionMode() string {
-	switch strings.ToLower(strings.TrimSpace(o.RedactionMode)) {
-	case "", RunRedactionModeSafe:
-		return RunRedactionModeSafe
-	case RunRedactionModeRaw:
-		return RunRedactionModeRaw
-	default:
-		return strings.ToLower(strings.TrimSpace(o.RedactionMode))
-	}
 }
 
 func (o RunDebugOptions) EffectiveBreakpoints() []core.Breakpoint {

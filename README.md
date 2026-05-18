@@ -11,12 +11,12 @@ It provides a declarative graph DSL, a deterministic execution engine with check
 
 ## Highlights
 
-- **Graph-based orchestration** — describe an agent as a directed graph of nodes and conditional edges, serializable to JSON.
-- **Deterministic runtime** — every node execution emits events and writes checkpoints; runs can be paused, resumed, and replayed.
-- **State contracts** — nodes declare which state fields they read and write; contracts are validated at build time.
-- **Rich node library** — LLM call, tool call, planner/replanner, plan-step executor, verifier, intent analyzer, orchestration router, memory recall/write, iterator, mapped subgraph, approval gate, cost budget guard, and more.
-- **Built-in agent server** — `cmd/neo` ships a Gin-based HTTP server with a web UI, live event stream, and run replay.
-- **Redaction & safety** — configurable redaction for prompts, tool args, and local paths in logs and event sinks.
+- **Graph-based orchestration**: describe an agent as a directed graph of nodes and conditional edges, serializable to JSON.
+- **Deterministic runtime**: every node execution emits events and writes checkpoints; runs can be paused, resumed, and replayed.
+- **State contracts**: nodes declare which state fields they read and write; contracts are validated at build time.
+- **Rich node library**: LLM call, tool call, planner/replanner, plan-step executor, verifier, intent analyzer, orchestration router, memory recall/write, iterator, mapped subgraph, approval gate, cost budget guard, and more.
+- **Built-in agent server**: `cmd/neo` ships a Gin-based HTTP server with a web UI, live event stream, and run replay.
+- **Safety & observability**: checkpointed execution, replay, and structured runtime artifacts for inspection.
 
 ---
 
@@ -50,7 +50,7 @@ export OPENAI_MODEL=<your-model>
 go run ./examples/graph
 ```
 
-The example builds a ReAct-style agent (human input → LLM → tool calls → final answer), persists the graph to `.local/instance/graph.json`, writes checkpoints to `.local/instance/checkpoints/`, and then demonstrates resuming from a checkpoint with new human input.
+The example builds a ReAct-style agent (human input -> LLM -> tool calls -> final answer), persists the graph to `.local/instance/graph.json`, writes checkpoints to `.local/instance/checkpoints/`, and then demonstrates resuming from a checkpoint with new human input.
 
 ### Building a graph in code
 
@@ -83,56 +83,55 @@ graph, err := weaveflow.LoadGraphFromFile(&builder.BuildContext{}, "graph.json")
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          DSL  (dsl/)                            │
-│        Graph definitions, node specs, state contracts           │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌─────────────────────────────────────────────────────────────────┐
-│                       Builder  (builder/)                       │
-│      Resolves registry refs, validates contracts, builds Graph  │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌─────────────────────────────────────────────────────────────────┐
-│                        Graph  (graph/)                          │
-│           Nodes, edges, conditional routing, topology           │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌─────────────────────────────────────────────────────────────────┐
-│                      Runtime  (runtime/)                        │
-│   GraphRunner · ExecutionStore · CheckpointStore · EventSink    │
-│   ArtifactStore · LLM wrapping · Redaction · Contract policy    │
-└─────────────────────────────────────────────────────────────────┘
-                                │
-┌──────────────┬──────────────┬──────────────┬───────────────────┐
-│   nodes/     │   builtin/   │    tools/    │  llms/ · memory/  │
-│ LLM, Tool,   │ Conditions,  │ AskQuestion, │ OpenAI client,    │
-│ Planner,     │ Conversation │ file, web,   │ BM25 retriever,   │
-│ Verifier,    │ helpers,     │ bash, ...    │ file/in-memory    │
-│ Iterator,    │ Memory,      │              │ repositories      │
-│ Router, ...  │ Safety, ...  │              │                   │
-└──────────────┴──────────────┴──────────────┴───────────────────┘
+```text
++------------------------------------------------------------------+
+|                           DSL (dsl/)                             |
+|        Graph definitions, node specs, state contracts            |
++------------------------------------------------------------------+
+                                |
++------------------------------------------------------------------+
+|                        Builder (builder/)                         |
+|      Resolves registry refs, validates contracts, builds Graph    |
++------------------------------------------------------------------+
+                                |
++------------------------------------------------------------------+
+|                         Graph (graph/)                            |
+|           Nodes, edges, conditional routing, topology            |
++------------------------------------------------------------------+
+                                |
++------------------------------------------------------------------+
+|                        Runtime (runtime/)                         |
+|   GraphRunner -> ExecutionStore -> CheckpointStore -> EventSink   |
+|            ArtifactStore -> LLM wrapping -> Contract policy       |
++------------------------------------------------------------------+
+                                |
++--------------+---------------+---------------+-------------------+
+|   nodes/     |   builtin/    |    tools/     | llms/ -> memory/  |
+| LLM, Tool,   | Conditions,   | AskQuestion,  | OpenAI client,    |
+| Planner,     | Conversation  | file, web,    | BM25 retriever,   |
+| Verifier,    | helpers,      | bash, ...     | file/in-memory    |
+| Iterator,    | Memory,       |               | repositories      |
+| Router, ...  | Safety, ...   |               |                   |
++--------------+---------------+---------------+-------------------+
 ```
 
 ### Core packages
 
 | Package | Responsibility |
 | --- | --- |
-| `core/` | Core interfaces — `Node`, `Services`, contracts, state primitives. |
+| `core/` | Core interfaces: `Node`, `Services`, contracts, state primitives. |
 | `dsl/` | Serializable graph definition, node specs, state contracts. |
-| `builder/` | Builds runnable `Graph` from a DSL definition + registry. |
+| `builder/` | Builds runnable `Graph` from a DSL definition plus registry. |
 | `graph/` | Graph topology, conditional edges, contract analysis. |
-| `runtime/` | Execution engine: checkpoints, events, artifacts, redaction. |
+| `runtime/` | Execution engine: checkpoints, events, artifacts, contract policy. |
 | `state/` | Scoped state with typed paths, merge strategies, conversation helpers, snapshots. |
 | `registry/` | Node and condition registration, instance configuration. |
-| `nodes/` | Production-ready node implementations (LLM, ToolCall, Planner, Verifier, …). |
+| `nodes/` | Production-ready node implementations. |
 | `builtin/` | Built-in conditions, conversation/memory helpers, safety primitives. |
 | `tools/` | Tool interface and out-of-the-box tools. |
 | `llms/openai/` | OpenAI-compatible client adapter. |
 | `memory/` | Memory manager, repositories, retrievers. |
-| `redact/` | Configurable redaction for sensitive payloads. |
-| `internal/neo/` | Agent server (chat, history, replay, live events). |
+| `internal/neo/` | Agent server: chat, history, replay, live events. |
 | `cmd/neo/` | Standalone server binary. |
 
 ---
@@ -155,7 +154,7 @@ Endpoints are registered under `/neo` (chat, history, registry, live hub) and `/
 
 | Path | What it shows |
 | --- | --- |
-| `examples/graph/` | End-to-end ReAct agent with checkpoint + resume. |
+| `examples/graph/` | End-to-end ReAct agent with checkpoint and resume. |
 | `examples/dsl/` | Building a graph through the DSL. |
 | `examples/node/` | Focused, runnable demos for each major node type. |
 | `examples/llama_cpp/` | Running graphs against a local `llama.cpp` model. |
@@ -168,16 +167,16 @@ Endpoints are registered under `/neo` (chat, history, registry, live hub) and `/
 go test ./...
 ```
 
-Unit tests cover state merging, contract validation, redaction, the runner store, and most node implementations.
+Unit tests cover state merging, contract validation, the runner store, and most node implementations.
 
 ---
 
 ## Status
 
-WeaveFlow is under active development. The kernel — DSL, builder, graph, runtime, state — is stable enough to build non-trivial agents on top of. The HTTP surface in `internal/neo/` and some advanced node capabilities are still evolving.
+WeaveFlow is under active development. The kernel - DSL, builder, graph, runtime, state - is stable enough to build non-trivial agents on top of. The HTTP surface in `internal/neo/` and some advanced node capabilities are still evolving.
 
 ---
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).

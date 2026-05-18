@@ -5,8 +5,7 @@ import (
 	"fmt"
 	"os"
 	"time"
-
-	llamacpp "weaveflow/llama_cpp"
+	llamacpp "weaveflow/internal/llama_cpp"
 
 	"github.com/tmc/langchaingo/llms"
 )

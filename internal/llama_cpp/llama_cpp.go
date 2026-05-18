@@ -29,7 +29,6 @@ import (
 	"sync"
 	"time"
 	"unsafe"
-	"weaveflow/redact"
 
 	"github.com/bytedance/gopkg/util/logger"
 	"go.uber.org/zap"
@@ -253,7 +252,6 @@ func (m *Model) Generate(ctx context.Context, prompt string, options GenerateOpt
 		zap.Strings("stops", opts.Stop),
 		zap.Uint32("seed", opts.Seed),
 		zap.Bool("add_special", opts.AddSpecial),
-		zap.String("prompt", redact.Text(prompt)),
 	)
 
 	go func() {
