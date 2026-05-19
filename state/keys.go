@@ -29,6 +29,9 @@ const (
 	StateKeyVerification = "verification"
 	StateKeyFinal        = "final"
 
+	// StateKeyExplore explore subgraph (isolated sub-conversation scope)
+	StateKeyExplore = "explore"
+
 	// StateKeyToolPolicyCheck safety
 	StateKeyToolPolicyCheck = "tool_policy_check"
 	StateKeyApproval        = "approval"

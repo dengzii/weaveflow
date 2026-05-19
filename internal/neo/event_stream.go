@@ -11,13 +11,15 @@ import (
 type ChatEventType string
 
 const (
-	ChatEventTypeStep       ChatEventType = "step_event"
-	ChatEventTypeThinking   ChatEventType = "thinking_chunk"
-	ChatEventTypeGenerating ChatEventType = "generating_chunk"
-	ChatEventTypeToolCall   ChatEventType = "tool_call"
-	ChatEventTypeToolResult ChatEventType = "tool_result"
-	ChatEventTypeComplete   ChatEventType = "complete"
-	ChatEventTypeError      ChatEventType = "error"
+	ChatEventTypeStep          ChatEventType = "step_event"
+	ChatEventTypeThinking      ChatEventType = "thinking_chunk"
+	ChatEventTypeGenerating    ChatEventType = "generating_chunk"
+	ChatEventTypeToolCall      ChatEventType = "tool_call"
+	ChatEventTypeToolResult    ChatEventType = "tool_result"
+	ChatEventTypePlan          ChatEventType = "planner_progress"
+	ChatEventTypeClarification ChatEventType = "clarification_question"
+	ChatEventTypeComplete      ChatEventType = "complete"
+	ChatEventTypeError         ChatEventType = "error"
 )
 
 type ChatEvent struct {
@@ -68,6 +70,7 @@ var nodeActionMap = []struct {
 	{"SessionBootstrap_", "initializing", "正在初始化会话..."},
 	{"MemoryRecall_", "recalling", "正在回忆相关信息..."},
 	{"OrchestrationRouter_", "routing", "正在分析请求..."},
+	{"Clarification_", "clarifying", "正在准备澄清问题..."},
 	{"Planner_", "planning", "正在制定计划..."},
 	{"PlanStepExecutor_", "executing", "正在执行计划步骤..."},
 	{"ContextAssembler_", "assembling", "正在整理上下文..."},
@@ -154,6 +157,8 @@ func TranslateEvent(event fruntime.Event) *ChatEvent {
 		return translateToolReturned(event)
 	case fruntime.EventToolFailed:
 		return translateToolFailed(event)
+	case fruntime.EventNodeCustom:
+		return translateNodeCustom(event)
 	case fruntime.EventRunFinished:
 		return &ChatEvent{Type: ChatEventTypeComplete, Content: "完成"}
 	case fruntime.EventRunFailed:
@@ -181,6 +186,38 @@ func translateNodeStarted(event fruntime.Event) *ChatEvent {
 		}
 	}
 	return nil
+}
+
+func translateNodeCustom(event fruntime.Event) *ChatEvent {
+	var payload map[string]any
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return nil
+	}
+	kind, _ := payload["kind"].(string)
+	switch kind {
+	case "planner_progress":
+		content := stringFromAny(payload["message"])
+		if content == "" {
+			content = stringFromAny(payload["summary"])
+		}
+		if content == "" {
+			content = stringFromAny(payload["status"])
+		}
+		return &ChatEvent{
+			Type:    ChatEventTypePlan,
+			Content: content,
+			Data:    event.Payload,
+		}
+	case "clarification_question":
+		content := stringFromAny(payload["question"])
+		return &ChatEvent{
+			Type:    ChatEventTypeClarification,
+			Content: content,
+			Data:    event.Payload,
+		}
+	default:
+		return nil
+	}
 }
 
 func translateToolCalled(event fruntime.Event) *ChatEvent {
@@ -226,4 +263,9 @@ func translateToolFailed(event fruntime.Event) *ChatEvent {
 
 func extractPayloadString(payload json.RawMessage, key string) string {
 	return extractEventPayloadString(payload, key)
+}
+
+func stringFromAny(value any) string {
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
 }

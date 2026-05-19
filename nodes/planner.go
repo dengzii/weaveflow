@@ -185,6 +185,7 @@ func (n *PlannerNode) execute(ctx context.Context, state wfstate.State) (wfstate
 		"status":       parsed.Status,
 		"step_count":   len(parsed.Plan),
 	})
+	publishPlannerProgress(ctx, plannerPath, plannerState, "planned", parsed.Summary)
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.response", parsed)
 
 	return state, nil
@@ -353,7 +354,7 @@ func normalizePlannerResponse(parsed plannerResponse, fallbackObjective string) 
 
 func normalizePlannerStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "planned", "needs_clarification", "blocked", "replanned", "executing", "completed", "failed":
+	case "planned", "needs_clarification", "blocked", "replanning", "replanned", "executing", "completed", "failed":
 		return strings.ToLower(strings.TrimSpace(status))
 	default:
 		return "planned"

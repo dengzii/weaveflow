@@ -86,6 +86,8 @@ func applyPersistedConfig(cfg *Config, toolFlags map[string]bool, persisted Pers
 
 func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	group.POST("/chat", s.chatCtrl.Handle)
+	group.POST("/resume", s.chatCtrl.Resume)
+	group.GET("/status", s.chatCtrl.Status)
 
 	configGroup := group.Group("/config")
 	{

@@ -51,6 +51,8 @@ func (n *ReplannerNode) execute(ctx context.Context, state wfstate.State) (wfsta
 	}
 
 	plannerState["replan_reason"] = replanReason
+	plannerState["status"] = "replanning"
+	publishPlannerProgress(ctx, plannerPath, plannerState, "replanning", replanReason)
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "replanner.context", map[string]any{
 		"replan_reason": replanReason,
@@ -71,6 +73,8 @@ func (n *ReplannerNode) execute(ctx context.Context, state wfstate.State) (wfsta
 			"error":         err.Error(),
 			"replan_reason": replanReason,
 		})
+	} else {
+		publishPlannerProgress(ctx, plannerPath, stateObjectAtPath(result, plannerPath), "replanned", replanReason)
 	}
 
 	return result, err

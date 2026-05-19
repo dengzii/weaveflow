@@ -40,7 +40,47 @@ export interface HistoryMessage {
 export interface ChatEvent {
   type: string;
   content?: string;
-  data?: Record<string, string>;
+  data?: Record<string, unknown>;
+}
+
+export interface PlanProgressStep {
+  id: string;
+  title: string;
+  description?: string;
+  status: "pending" | "ready" | "in_progress" | "completed" | "blocked" | "skipped" | string;
+  kind?: string;
+}
+
+export interface PlanProgressCounts {
+  total: number;
+  pending: number;
+  ready: number;
+  in_progress: number;
+  completed: number;
+  blocked: number;
+  skipped: number;
+}
+
+export interface PlanProgress {
+  phase: string;
+  message: string;
+  planner_path: string;
+  objective: string;
+  status: string;
+  summary: string;
+  replan_reason: string;
+  current_step_id: string;
+  current_step?: PlanProgressStep | null;
+  steps: PlanProgressStep[];
+  counts: PlanProgressCounts;
+  percent: number;
+}
+
+export interface ClarificationQuestion {
+  question: string;
+  options: string[];
+  reasoning?: string;
+  attempts?: number;
 }
 
 export interface RegistryFieldRef {

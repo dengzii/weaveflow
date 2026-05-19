@@ -40,20 +40,30 @@ function requestAllowsBody(method: string): boolean {
 
 async function proxyHttpRequest(req: Request, target: string): Promise<Response> {
   const requestHeaders = filteredProxyHeaders(req.headers, true);
-  const isChatStream = new URL(req.url).pathname === "/neo/chat";
-  if (isChatStream) {
+  const path = new URL(req.url).pathname;
+  const isSSEStream = path === "/neo/chat" || path === "/neo/resume";
+  if (isSSEStream) {
     requestHeaders.set("accept-encoding", "identity");
   }
 
+  // Bun aborts req.signal prematurely on long-lived streaming POSTs (request body
+  // is consumed before the response finishes), which kills the upstream fetch
+  // mid-stream and surfaces as "context canceled" on the Go side. Skip the
+  // signal forwarding for SSE endpoints; the backend has its own heartbeat and
+  // timeout. For normal short requests, keep the signal so client disconnects
+  // still propagate.
+  const upstreamInit: RequestInit & { duplex?: string } = {
+    method: req.method,
+    headers: requestHeaders,
+    body: requestAllowsBody(req.method) ? req.body : undefined,
+    duplex: "half",
+  };
+  if (!isSSEStream) {
+    upstreamInit.signal = req.signal;
+  }
+
   try {
-    const upstream = await fetch(target, {
-      method: req.method,
-      headers: requestHeaders,
-      body: requestAllowsBody(req.method) ? req.body : undefined,
-      signal: req.signal,
-      // @ts-ignore
-      duplex: "half",
-    });
+    const upstream = await fetch(target, upstreamInit);
 
     return new Response(upstream.body, {
       status: upstream.status,

@@ -18,29 +18,27 @@ import (
 
 const (
 	defaultOrchestrationStatePath = wfstate.StateKeyOrchestration
-	orchestrationRouterPrompt     = `You are an orchestration router inside an agent workflow.
-Return JSON only. Do not use markdown fences.
+	orchestrationRouterPrompt     = `You are a fast orchestration router. Triage in one pass and emit JSON only (no markdown, no preamble).
 
-Required keys and types:
-- mode: string
-- use_memory: boolean
-- memory_query: string
-- needs_clarification: boolean
-- clarification_question: string
-- reasoning: string
-- target_subgraph: string
-- direct_answer: string
+Schema (all keys required):
+  mode: "direct" | "planner" | "supervisor" | "explore"
+  use_memory: bool
+  memory_query: string
+  needs_clarification: bool
+  clarification_question: string
+  clarification_options: string[]
+  reasoning: string (<=30 words, single clause)
+  target_subgraph: string
+  direct_answer: string
 
-Rules:
-- Valid mode values: direct, planner, supervisor.
-- Prefer direct when one assistant turn can safely complete the request.
-- Use planner only for multi-step decomposition, tool-heavy work, or execution that must be checked step by step.
-- Use supervisor only for explicit multi-agent delegation or handoff.
-- Use memory only when prior session context is required.
-- Set needs_clarification=true only when missing information blocks safe progress.
-- If mode is direct and you can answer immediately, put the full user-facing reply in direct_answer.
-- If the request clearly requires one of the available tools, do not guess in direct_answer. Leave direct_answer empty so downstream tool execution can proceed.
-- Keep reasoning brief.`
+Decide quickly:
+- Default mode=direct. Pick planner only for explicit multi-step decomposition or tool-heavy execution needing step checks. Pick supervisor only for explicit multi-agent handoff.
+- Pick explore for read-only codebase audits: "where is X done", "find files involved in Y", "what does this project do", scanning unfamiliar code, or any request requiring broad file inspection. Do NOT pick explore for tasks that modify code or files.
+- use_memory=true only if prior session context is clearly required.
+- needs_clarification=true only if missing info blocks safe progress; then provide 3-5 distinct one-sentence options. Else clarification_options=[].
+- If a listed tool clearly fits, leave direct_answer empty so the tool runs.
+- Else if direct can fully answer in one turn, put the final user-facing reply in direct_answer.
+- Do not deliberate in reasoning; one short clause is enough.`
 )
 
 type OrchestrationRouterNode struct {
@@ -54,14 +52,15 @@ type OrchestrationRouterNode struct {
 }
 
 type orchestrationRouterResponse struct {
-	Mode                  string `json:"mode"`
-	UseMemory             bool   `json:"use_memory"`
-	MemoryQuery           string `json:"memory_query"`
-	NeedsClarification    bool   `json:"needs_clarification"`
-	ClarificationQuestion string `json:"clarification_question"`
-	Reasoning             string `json:"reasoning"`
-	TargetSubgraph        string `json:"target_subgraph"`
-	DirectAnswer          string `json:"direct_answer"`
+	Mode                  string   `json:"mode"`
+	UseMemory             bool     `json:"use_memory"`
+	MemoryQuery           string   `json:"memory_query"`
+	NeedsClarification    bool     `json:"needs_clarification"`
+	ClarificationQuestion string   `json:"clarification_question"`
+	ClarificationOptions  []string `json:"clarification_options"`
+	Reasoning             string   `json:"reasoning"`
+	TargetSubgraph        string   `json:"target_subgraph"`
+	DirectAnswer          string   `json:"direct_answer"`
 }
 
 func NewOrchestrationRouterNode() *OrchestrationRouterNode {
@@ -73,7 +72,7 @@ func NewOrchestrationRouterNode() *OrchestrationRouterNode {
 			NodeDescription: "Decide whether to clarify, use memory, or route into planner/supervisor/direct execution.",
 		},
 		OrchestrationStatePath: defaultOrchestrationStatePath,
-		AvailableModes:         []string{"direct", "planner", "supervisor"},
+		AvailableModes:         []string{"direct", "planner", "supervisor", "explore"},
 	}
 }
 
@@ -115,8 +114,8 @@ func (n *OrchestrationRouterNode) execute(ctx context.Context, state wfstate.Sta
 				llms.TextParts(llms.ChatMessageTypeHuman, buildOrchestrationRouterPrompt(payload)),
 			},
 			llms.WithJSONMode(),
-			llms.WithThinkingMode(llms.ThinkingModeNone),
-			llms.WithTemperature(0),
+			llms.WithThinkingMode(llms.ThinkingModeLow),
+			//llms.WithTemperature(0),
 		)
 		if err != nil {
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "orchestration.error", map[string]any{"error": err.Error()})
@@ -153,6 +152,7 @@ func (n *OrchestrationRouterNode) execute(ctx context.Context, state wfstate.Sta
 	target["memory_query"] = parsed.MemoryQuery
 	target["needs_clarification"] = parsed.NeedsClarification
 	target["clarification_question"] = parsed.ClarificationQuestion
+	target["clarification_options"] = parsed.ClarificationOptions
 	target["reasoning"] = parsed.Reasoning
 	target["target_subgraph"] = parsed.TargetSubgraph
 	target["direct_answer"] = parsed.DirectAnswer
@@ -213,7 +213,7 @@ func (n *OrchestrationRouterNode) effectiveOrchestrationStatePath() string {
 
 func (n *OrchestrationRouterNode) effectiveModes() []string {
 	if n == nil || len(n.AvailableModes) == 0 {
-		return []string{"direct", "planner", "supervisor"}
+		return []string{"direct", "planner", "supervisor", "explore"}
 	}
 	result := make([]string, 0, len(n.AvailableModes))
 	seen := map[string]struct{}{}
@@ -229,7 +229,7 @@ func (n *OrchestrationRouterNode) effectiveModes() []string {
 		result = append(result, mode)
 	}
 	if len(result) == 0 {
-		return []string{"direct", "planner", "supervisor"}
+		return []string{"direct", "planner", "supervisor", "explore"}
 	}
 	return result
 }
@@ -414,11 +414,15 @@ func normalizeOrchestrationRouterResponse(parsed orchestrationRouterResponse, al
 
 	parsed.MemoryQuery = strings.TrimSpace(parsed.MemoryQuery)
 	parsed.ClarificationQuestion = strings.TrimSpace(parsed.ClarificationQuestion)
+	parsed.ClarificationOptions = normalizeOrchestrationClarificationOptions(parsed.ClarificationOptions)
 	parsed.Reasoning = strings.TrimSpace(parsed.Reasoning)
 	parsed.TargetSubgraph = strings.TrimSpace(parsed.TargetSubgraph)
 	parsed.DirectAnswer = strings.TrimSpace(parsed.DirectAnswer)
 	if parsed.NeedsClarification && parsed.ClarificationQuestion == "" {
 		parsed.ClarificationQuestion = "Could you clarify the missing information needed to proceed?"
+	}
+	if !parsed.NeedsClarification {
+		parsed.ClarificationOptions = nil
 	}
 	if parsed.DirectAnswer != "" {
 		if len(allowed) > 0 {
@@ -432,10 +436,34 @@ func normalizeOrchestrationRouterResponse(parsed orchestrationRouterResponse, al
 			parsed.MemoryQuery = ""
 			parsed.NeedsClarification = false
 			parsed.ClarificationQuestion = ""
+			parsed.ClarificationOptions = nil
 			parsed.TargetSubgraph = ""
 		}
 	}
 	return parsed
+}
+
+func normalizeOrchestrationClarificationOptions(options []string) []string {
+	if len(options) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	cleaned := make([]string, 0, len(options))
+	for _, option := range options {
+		option = strings.TrimSpace(option)
+		if option == "" {
+			continue
+		}
+		if _, exists := seen[option]; exists {
+			continue
+		}
+		seen[option] = struct{}{}
+		cleaned = append(cleaned, option)
+	}
+	if len(cleaned) == 0 {
+		return nil
+	}
+	return cleaned
 }
 
 func (n *OrchestrationRouterNode) applyDirectAnswer(state wfstate.State, answer string) {
@@ -466,7 +494,7 @@ func firstAllowedOrchestrationMode(allowedModes []string) string {
 func normalizeOrchestrationMode(mode string) string {
 	mode = strings.ToLower(strings.TrimSpace(mode))
 	switch mode {
-	case "direct", "planner", "supervisor":
+	case "direct", "planner", "supervisor", "explore":
 		return mode
 	default:
 		return ""

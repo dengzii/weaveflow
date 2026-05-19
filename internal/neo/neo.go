@@ -26,6 +26,8 @@ func NewServices(model llms.Model, baseDir string) *core.Services {
 			"calculator":   tools.NewCalculator(),
 			"file_read":    tools.NewFileRead(),
 			"file_write":   tools.NewFileWrite(),
+			"glob":         tools.NewGlob(),
+			"grep":         tools.NewGrep(),
 			"web_fetch":    tools.NewWebFetch(),
 			// "web_search": tools.NewWebSearch(),
 		},
@@ -99,10 +101,18 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		router.AvailableModes = []string{"direct"}
 	case "planner":
 		router.AvailableModes = []string{"planner"}
+	case "explore":
+		router.AvailableModes = []string{"explore"}
 	default:
-		router.AvailableModes = []string{"direct", "planner"}
+		router.AvailableModes = []string{"direct", "planner", "explore"}
 	}
 	if err := graph.AddNode(router); err != nil {
+		return nil, err
+	}
+
+	clarification := nodes.NewClarificationQuestionNode()
+	clarification.StateScope = scope
+	if err := graph.AddNode(clarification); err != nil {
 		return nil, err
 	}
 
@@ -110,6 +120,13 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	planner.ContextPaths = []string{wfstate.StateKeyMemory, wfstate.StateKeyExecution}
 	planner.MaxSteps = cfg.PlannerMaxSteps
 	if err := graph.AddNode(planner); err != nil {
+		return nil, err
+	}
+
+	explore := nodes.NewExploreNode()
+	explore.ParentScope = scope
+	explore.ExploreScope = wfstate.StateKeyExplore
+	if err := graph.AddNode(explore); err != nil {
 		return nil, err
 	}
 
@@ -177,13 +194,23 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), builtin.HasFinalAnswer(scope)); err != nil {
 		return nil, err
 	}
+	routeClarificationExhausted, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "orchestration.clarification_exhausted", Op: "equals", Value2: "true"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), routeClarificationExhausted); err != nil {
+		return nil, err
+	}
+
 	routeClarification, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
 		Expressions: []builtin.Expression{{Value1: "orchestration.needs_clarification", Op: "equals", Value2: "true"}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), routeClarification); err != nil {
+	if err := graph.AddConditionalEdge(router.ID(), clarification.ID(), routeClarification); err != nil {
 		return nil, err
 	}
 
@@ -200,13 +227,34 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
+	routeExplore, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "orchestration.mode", Op: "equals", Value2: "explore"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	if err := graph.AddConditionalEdge(router.ID(), planner.ID(), routePlanner); err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(router.ID(), explore.ID(), routeExplore); err != nil {
 		return nil, err
 	}
 	if err := graph.AddConditionalEdge(router.ID(), memRecall.ID(), routeMemory); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(router.ID(), ctxAssembler.ID()); err != nil {
+		return nil, err
+	}
+
+	if err := graph.AddEdge(explore.ID(), finalizer.ID()); err != nil {
+		return nil, err
+	}
+
+	if err := graph.AddConditionalEdge(clarification.ID(), finalizer.ID(), routeClarificationExhausted); err != nil {
+		return nil, err
+	}
+	if err := graph.AddEdge(clarification.ID(), router.ID()); err != nil {
 		return nil, err
 	}
 

@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
 import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay, Brain, Eye, Trash2, Blocks } from "lucide-react";
 import { MessageList } from "../components/MessageList";
+import { PlanProgressPanel } from "../components/PlanProgressPanel";
+import { ClarificationPanel } from "../components/ClarificationPanel";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
 import { Input } from "../components/ui/input";
@@ -429,6 +431,12 @@ export function ChatPage({ chat, cfg }: Props) {
 
       {/* Input */}
       <div className="shrink-0">
+        <PlanProgressPanel progress={chat.planProgress} />
+        <ClarificationPanel
+          clarification={chat.clarification}
+          onSelect={chat.sendMessage}
+          disabled={chat.running}
+        />
         <div className="chat-content px-6 py-4">
           <form onSubmit={handleSubmit}>
             <div className="rounded-2xl border border-border bg-background shadow-sm">
@@ -470,14 +478,28 @@ export function ChatPage({ chat, cfg }: Props) {
                       <Square className="h-3.5 w-3.5" />
                     </Button>
                   ) : (
-                    <Button
-                      type="submit"
-                      size="icon"
-                      className="h-8 w-8 rounded-xl"
-                      title="发送"
-                    >
-                      <Send className="h-3.5 w-3.5" />
-                    </Button>
+                    <>
+                      {chat.resumable && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="h-8 rounded-xl px-3 text-xs"
+                          onClick={chat.resumeRun}
+                          title="继续之前停下的执行"
+                        >
+                          继续
+                        </Button>
+                      )}
+                      <Button
+                        type="submit"
+                        size="icon"
+                        className="h-8 w-8 rounded-xl"
+                        title="发送"
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                      </Button>
+                    </>
                   )}
                 </div>
               </div>

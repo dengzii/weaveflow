@@ -16,6 +16,7 @@ import (
 	"weaveflow"
 	"weaveflow/core"
 	"weaveflow/memory"
+	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
 	"weaveflow/tools"
@@ -34,14 +35,26 @@ type ChatController struct {
 	store     *Store
 	hub       *LiveHub
 
-	mu          sync.RWMutex
-	runner      *fruntime.GraphRunner
-	runID       string
-	cancelFn    context.CancelFunc
-	lastState   wfstate.State
-	graphCache  *weaveflow.Graph
-	graphCfgKey Config
+	mu            sync.RWMutex
+	runner        *fruntime.GraphRunner
+	runID         string
+	runDir        string
+	paused        bool
+	resumable     bool
+	lastRunStatus string
+	cancelFn      context.CancelFunc
+	lastState     wfstate.State
+	graphCache    *weaveflow.Graph
+	graphCfgKey   Config
 }
+
+type turnKind int
+
+const (
+	turnStart turnKind = iota
+	turnResumeClarification
+	turnResumeStopped
+)
 
 func NewChatController(services *core.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store, hub *LiveHub) *ChatController {
 	allTools := make(map[string]tools.Tool, len(services.Tools))
@@ -89,10 +102,39 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 
 	ctrl.mu.Lock()
-	if ctrl.cancelFn != nil {
+	kind := turnStart
+	if ctrl.paused && ctrl.runDir != "" && ctrl.runID != "" {
+		kind = turnResumeClarification
+	}
+	if ctrl.cancelFn != nil && kind == turnStart {
+		fmt.Fprintf(os.Stderr, "[cancel-diag] new turn preempted previous run runID=%q\n", ctrl.runID)
 		ctrl.cancelFn()
 		ctrl.cancelFn = nil
 	}
+
+	ctrl.executeTurnLocked(c, req, kind)
+}
+
+func (ctrl *ChatController) Resume(c *gin.Context) {
+	ctrl.mu.Lock()
+	if !ctrl.resumable || ctrl.runDir == "" || ctrl.runID == "" {
+		ctrl.mu.Unlock()
+		c.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "no resumable run"})
+		return
+	}
+	if ctrl.cancelFn != nil {
+		fmt.Fprintf(os.Stderr, "[cancel-diag] resume cancelled previous run runID=%q\n", ctrl.runID)
+		ctrl.cancelFn()
+		ctrl.cancelFn = nil
+	}
+	req := ChatRequest{Message: ""}
+	ctrl.executeTurnLocked(c, req, turnResumeStopped)
+}
+
+// executeTurnLocked must be called with ctrl.mu held. It releases the lock
+// internally before any blocking IO.
+func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, kind turnKind) {
+	resumeMode := kind != turnStart
 
 	cfg := *ctrl.config
 	services := ctrl.effectiveServices()
@@ -111,6 +153,12 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 		ctrl.graphCache = graph
 		ctrl.graphCfgKey = cfg
 		_ = graph.WriteToFile(filepath.Join(ctrl.baseDir, "graph.json"))
+		// Graph identity changed; any prior checkpointed run referenced old node IDs.
+		if resumeMode {
+			ctrl.mu.Unlock()
+			c.JSON(http.StatusBadRequest, gin.H{"code": 400, "msg": "graph configuration changed; cannot resume previous run"})
+			return
+		}
 	}
 	graphJSON, _ := os.ReadFile(filepath.Join(ctrl.baseDir, "graph.json"))
 	var graphMeta struct {
@@ -118,10 +166,21 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 	_ = json.Unmarshal(graphJSON, &graphMeta)
 	ctrl.hub.StartRun(graphJSON, "Neo Agent", graphMeta.ID)
+
+	var (
+		runDir        string
+		previousRunID string
+	)
+	if resumeMode {
+		runDir = ctrl.runDir
+		previousRunID = ctrl.runID
+	} else {
+		runDir = filepath.Join(ctrl.baseDir, fmt.Sprintf("run_%d", time.Now().UnixMilli()))
+	}
 	ctrl.mu.Unlock()
 
 	var history []llms.MessageContent
-	if ctrl.store != nil {
+	if ctrl.store != nil && !resumeMode {
 		var loadErr error
 		history, loadErr = ctrl.store.LoadLLMMessagesWithOptions(defaultSessionID, PromptHistoryOptions{
 			RecentTurns:     cfg.HistoryRecentTurns,
@@ -136,7 +195,6 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	log, _ := zap.NewDevelopment()
 	fruntime.SetLogger(log)
 
-	runDir := filepath.Join(ctrl.baseDir, fmt.Sprintf("run_%d", time.Now().UnixMilli()))
 	if err := os.MkdirAll(runDir, 0o755); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"code": 500, "msg": "create run dir failed: " + err.Error()})
 		return
@@ -150,7 +208,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 
 	var turnWriter *TurnWriter
-	if ctrl.store != nil {
+	if ctrl.store != nil && kind != turnResumeStopped {
 		var storeErr error
 		turnWriter, storeErr = ctrl.store.BeginTurn(defaultSessionID, req.Message)
 		if storeErr != nil {
@@ -182,28 +240,52 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	}
 	done := make(chan runResult, 1)
 
-	initialState := NewInitialState(req.Message, history)
-	if len(graphJSON) > 0 {
-		_ = os.WriteFile(filepath.Join(runDir, "graph.json"), graphJSON, 0o644)
+	var initialState wfstate.State
+	var resumeInput wfstate.State
+	switch kind {
+	case turnStart:
+		initialState = NewInitialState(req.Message, history)
+		if len(graphJSON) > 0 {
+			_ = os.WriteFile(filepath.Join(runDir, "graph.json"), graphJSON, 0o644)
+		}
+	case turnResumeClarification:
+		resumeInput = wfstate.State{
+			nodes.ClarificationStateKey: wfstate.State{
+				nodes.ClarificationUserChoiceKey: req.Message,
+			},
+		}
+	case turnResumeStopped:
+		resumeInput = nil
 	}
 	startedAt := time.Now()
-	_ = writeRunMetadata(runDir, RunMetadata{
-		GraphID:       graphMeta.ID,
-		GraphVersion:  fruntime.DefaultGraphVersion,
-		Status:        string(fruntime.RunStatusPending),
-		StartedAt:     startedAt,
-		Request:       req,
-		Config:        cfg,
-		EnabledTools:  enabledToolNames(ctrl.toolFlags),
-		InitialState:  initialState.CloneState(),
-		GraphFile:     "graph.json",
-		ExecutionRoot: "execution",
-	})
+	if !resumeMode {
+		_ = writeRunMetadata(runDir, RunMetadata{
+			GraphID:       graphMeta.ID,
+			GraphVersion:  fruntime.DefaultGraphVersion,
+			Status:        string(fruntime.RunStatusPending),
+			StartedAt:     startedAt,
+			Request:       req,
+			Config:        cfg,
+			EnabledTools:  enabledToolNames(ctrl.toolFlags),
+			InitialState:  initialState.CloneState(),
+			GraphFile:     "graph.json",
+			ExecutionRoot: "execution",
+		})
+	}
 	go func() {
 		defer channelSink.Close()
 		defer ctrl.hub.Done()
-		run, state, runErr := runner.Start(ctx, initialState)
-		runStatus := runStatusString(ctx, runErr)
+		var (
+			run    fruntime.RunRecord
+			state  wfstate.State
+			runErr error
+		)
+		if resumeMode {
+			run, state, runErr = runner.Resume(ctx, previousRunID, resumeInput)
+		} else {
+			run, state, runErr = runner.Start(ctx, initialState)
+		}
+		runStatus := overallRunStatus(ctx, run, runErr)
 		finishedAt := time.Now()
 		_ = writeRunMetadata(runDir, RunMetadata{
 			RunID:         run.RunID,
@@ -226,6 +308,7 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 			_ = turnWriter.AppendAssistantText(finalAnswerFromState(state))
 			_ = turnWriter.Finalize(runStatus)
 		}
+		ctrl.recordTurnOutcome(run, state, runDir)
 		done <- runResult{run: run, state: state, err: runErr}
 	}()
 
@@ -245,6 +328,10 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 	for {
 		select {
 		case <-clientGone:
+			log.Warn("[cancel-diag] client gone, cancelling run",
+				zap.String("runID", ctrl.runID),
+				zap.Error(c.Request.Context().Err()),
+			)
 			cancel()
 			ctrl.mu.Lock()
 			ctrl.cancelFn = nil
@@ -255,19 +342,15 @@ func (ctrl *ChatController) Handle(c *gin.Context) {
 		case event, ok := <-channelSink.Events():
 			if !ok {
 				res := <-done
-				ctrl.mu.Lock()
-				ctrl.lastState = res.state
-				if res.run.RunID != "" {
-					ctrl.runID = res.run.RunID
-				}
-				ctrl.cancelFn = nil
-				ctrl.mu.Unlock()
+				paused := res.run.Status == fruntime.RunStatusPaused
 
-				if answer := finalAnswerFromState(res.state); !sentAssistantContent && answer != "" {
-					writeSSE(c, &ChatEvent{
-						Type:    ChatEventTypeGenerating,
-						Content: answer,
-					})
+				if !paused {
+					if answer := finalAnswerFromState(res.state); !sentAssistantContent && answer != "" {
+						writeSSE(c, &ChatEvent{
+							Type:    ChatEventTypeGenerating,
+							Content: answer,
+						})
+					}
 				}
 
 				if res.err != nil {
@@ -489,6 +572,10 @@ func (ctrl *ChatController) ClearHistory() error {
 	defer ctrl.mu.Unlock()
 	ctrl.lastState = nil
 	ctrl.runID = ""
+	ctrl.runDir = ""
+	ctrl.paused = false
+	ctrl.resumable = false
+	ctrl.lastRunStatus = ""
 	return nil
 }
 
@@ -529,6 +616,70 @@ func runStatusString(ctx context.Context, runErr error) string {
 		return "stopped"
 	}
 	return "failed"
+}
+
+// overallRunStatus reports the run outcome including paused state.
+func overallRunStatus(ctx context.Context, run fruntime.RunRecord, runErr error) string {
+	if run.Status == fruntime.RunStatusPaused {
+		return string(fruntime.RunStatusPaused)
+	}
+	return runStatusString(ctx, runErr)
+}
+
+// recordTurnOutcome persists per-turn state on the controller after a run finishes,
+// so subsequent requests can decide whether to resume or start fresh — even when the
+// HTTP handler returned early due to client disconnect.
+func (ctrl *ChatController) recordTurnOutcome(run fruntime.RunRecord, state wfstate.State, runDir string) {
+	ctrl.mu.Lock()
+	defer ctrl.mu.Unlock()
+	ctrl.lastState = state
+	if run.RunID != "" {
+		ctrl.runID = run.RunID
+	}
+	ctrl.cancelFn = nil
+	ctrl.lastRunStatus = string(run.Status)
+	switch run.Status {
+	case fruntime.RunStatusPaused:
+		ctrl.paused = true
+		ctrl.resumable = false
+		ctrl.runDir = runDir
+	case fruntime.RunStatusCompleted:
+		ctrl.paused = false
+		ctrl.resumable = false
+		ctrl.runDir = ""
+	default:
+		// running (interrupted), canceled, failed — resumable if a checkpoint exists.
+		ctrl.paused = false
+		ctrl.resumable = strings.TrimSpace(run.LastCheckpointID) != ""
+		if ctrl.resumable {
+			ctrl.runDir = runDir
+		} else {
+			ctrl.runDir = ""
+		}
+	}
+}
+
+// ResumableStatus describes whether the controller has a run that can be resumed.
+type ResumableStatus struct {
+	Paused    bool   `json:"paused"`
+	Resumable bool   `json:"resumable"`
+	RunID     string `json:"run_id,omitempty"`
+	Status    string `json:"status,omitempty"`
+}
+
+func (ctrl *ChatController) ResumableStatus() ResumableStatus {
+	ctrl.mu.RLock()
+	defer ctrl.mu.RUnlock()
+	return ResumableStatus{
+		Paused:    ctrl.paused,
+		Resumable: ctrl.resumable,
+		RunID:     ctrl.runID,
+		Status:    ctrl.lastRunStatus,
+	}
+}
+
+func (ctrl *ChatController) Status(c *gin.Context) {
+	c.JSON(http.StatusOK, gin.H{"code": 0, "data": ctrl.ResumableStatus()})
 }
 
 func errorString(err error) string {

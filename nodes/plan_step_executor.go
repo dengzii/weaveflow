@@ -91,6 +91,7 @@ func (n *PlanStepExecutorNode) execute(ctx context.Context, state wfstate.State)
 	route := routeForKind(kind)
 
 	plannerState["current_step_id"] = stepID
+	plannerState["status"] = "executing"
 
 	exec := state.Ensure(wfstate.StateKeyExecution)
 	exec["current_step"] = cloneStepMap(selectedStep)
@@ -109,6 +110,8 @@ func (n *PlanStepExecutorNode) execute(ctx context.Context, state wfstate.State)
 		"step_id": stepID,
 		"route":   route,
 	})
+	title, _ := selectedStep["title"].(string)
+	publishPlannerProgress(ctx, plannerPath, plannerState, "step_started", title)
 
 	return state, nil
 }
@@ -118,11 +121,13 @@ func (n *PlanStepExecutorNode) routeFinalize(ctx context.Context, state wfstate.
 	exec["route"] = ExecutionRouteFinalize
 	exec["current_step"] = nil
 	plannerState["current_step_id"] = ""
+	plannerState["status"] = "completed"
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "plan_step_executor.selection", map[string]any{
 		"route":  ExecutionRouteFinalize,
 		"reason": reason,
 	})
+	publishPlannerProgress(ctx, n.effectivePlannerPath(), plannerState, "completed", reason)
 
 	return state, nil
 }
@@ -132,6 +137,7 @@ func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state wfstate.S
 	exec["route"] = ExecutionRouteBlocked
 	exec["current_step"] = nil
 	plannerState["current_step_id"] = ""
+	plannerState["status"] = ExecutionRouteBlocked
 	if diagnostics != nil {
 		exec["blocked_diagnostics"] = diagnostics
 	} else {
@@ -146,6 +152,7 @@ func (n *PlanStepExecutorNode) routeBlocked(ctx context.Context, state wfstate.S
 		artifact["diagnostics"] = diagnostics
 	}
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "plan_step_executor.selection", artifact)
+	publishPlannerProgress(ctx, n.effectivePlannerPath(), plannerState, "blocked", reason)
 
 	return state, nil
 }

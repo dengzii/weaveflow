@@ -158,7 +158,9 @@ func (n *FinalizerNode) isDirectMode(state wfstate.State) bool {
 		return false
 	}
 	mode, _ := orchestration["mode"].(string)
-	return mode == "direct"
+	// Both "direct" and "explore" pre-populate conversation.FinalAnswer; they
+	// share the same finalize path (no synthesis, just publish what's there).
+	return mode == "direct" || mode == "explore"
 }
 
 func (n *FinalizerNode) determineOutcome(state wfstate.State, verification wfstate.State) string {

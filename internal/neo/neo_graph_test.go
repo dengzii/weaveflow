@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 	"weaveflow/core"
-	"weaveflow/nodes"
 	wfstate "weaveflow/state"
 	"weaveflow/tools"
 
@@ -97,7 +96,7 @@ func TestNewGraphCurrentTimeUsesToolLoop(t *testing.T) {
 	}
 }
 
-func TestNewGraphClarificationShortCircuitsAfterRouter(t *testing.T) {
+func TestNewGraphClarificationPausesAtClarificationNode(t *testing.T) {
 	t.Parallel()
 
 	graph, err := NewGraph(DefaultConfig())
@@ -116,6 +115,7 @@ func TestNewGraphClarificationShortCircuitsAfterRouter(t *testing.T) {
   "memory_query": "",
   "needs_clarification": true,
   "clarification_question": "Do you want only a diagnosis of the orchestration issues, or should I modify the graph as well?",
+  "clarification_options": ["Just diagnose.", "Diagnose and modify the graph."],
   "reasoning": "The requested scope is ambiguous.",
   "target_subgraph": "",
   "direct_answer": ""
@@ -130,24 +130,46 @@ func TestNewGraphClarificationShortCircuitsAfterRouter(t *testing.T) {
 
 	state := NewInitialState("neo agent 编排不是很好现在, 检查需要优化的点", nil)
 	state, err = graph.Run(ctx, state)
-	if err != nil {
-		t.Fatalf("run neo graph: %v", err)
+	if err == nil {
+		t.Fatal("expected graph to pause at clarification node, got no error")
+	}
+	if !strings.Contains(err.Error(), "Clarification_") {
+		t.Fatalf("expected interrupt at Clarification_ node, got: %v", err)
 	}
 
 	if model.calls != 1 {
-		t.Fatalf("expected clarification path to stop after router, got %d model calls", model.calls)
+		t.Fatalf("expected only router LLM call before pause, got %d", model.calls)
 	}
 
-	final := state.Get(wfstate.StateKeyFinal)
-	if final == nil {
-		t.Fatal("expected final state")
+	orchestration := state.Get(wfstate.StateKeyOrchestration)
+	if orchestration == nil {
+		t.Fatal("expected orchestration state to be populated")
 	}
-	if got := final["status"]; got != nodes.FinalStatusNeedsClarification {
-		t.Fatalf("expected clarification final status, got %#v", got)
+	if got, _ := orchestration["needs_clarification"].(bool); !got {
+		t.Fatalf("expected orchestration.needs_clarification=true, got %#v", orchestration["needs_clarification"])
 	}
+	question, _ := orchestration["clarification_question"].(string)
+	if question == "" || !strings.Contains(question, "diagnosis") {
+		t.Fatalf("expected clarification_question to carry router question, got %#v", question)
+	}
+	options := optionsFromOrchestration(orchestration)
+	if len(options) < 2 {
+		t.Fatalf("expected clarification_options to be populated, got %#v", orchestration["clarification_options"])
+	}
+}
 
-	answer, _ := final["answer"].(string)
-	if answer == "" || !strings.Contains(answer, "Do you want only a diagnosis of the orchestration issues, or should I modify the graph as well?") {
-		t.Fatalf("unexpected clarification answer: %#v", answer)
+func optionsFromOrchestration(orchestration wfstate.State) []string {
+	switch typed := orchestration["clarification_options"].(type) {
+	case []string:
+		return typed
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, raw := range typed {
+			if s, ok := raw.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
 	}
+	return nil
 }

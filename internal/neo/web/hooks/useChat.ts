@@ -1,6 +1,6 @@
-import { useCallback, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import { apiAction, apiFetch } from "../api";
-import type { ApiResponse, ChatEvent, HistoryMessage, HistoryPart, MemoryEntry, MessageItem } from "../types";
+import type { ApiResponse, ChatEvent, ClarificationQuestion, HistoryMessage, HistoryPart, MemoryEntry, MessageItem, PlanProgress, PlanProgressStep } from "../types";
 import { chatReducer, freshCtx, type StreamCtx } from "./chatReducer";
 
 type ToolItem = Extract<MessageItem, { kind: "tool" }>;
@@ -17,13 +17,18 @@ type NormalizedInternalText = {
   internal: boolean;
 };
 
-function thinkingEventKey(data?: Record<string, string>): string | null {
-  const stepId = data?.step_id?.trim();
+function dataString(data: Record<string, unknown> | undefined, key: string): string {
+  const value = data?.[key];
+  return typeof value === "string" ? value : "";
+}
+
+function thinkingEventKey(data?: Record<string, unknown>): string | null {
+  const stepId = dataString(data, "step_id").trim();
   if (stepId) {
     return `step:${stepId}`;
   }
 
-  const nodeId = data?.node_id?.trim();
+  const nodeId = dataString(data, "node_id").trim();
   if (nodeId) {
     return `node:${nodeId}`;
   }
@@ -48,7 +53,7 @@ function createToolItem(id: string, name: string, toolCallId?: string, args = ""
   };
 }
 
-function contentEventKey(data?: Record<string, string>): string | null {
+function contentEventKey(data?: Record<string, unknown>): string | null {
   return thinkingEventKey(data);
 }
 
@@ -363,10 +368,104 @@ function buildHistoryItems(messages: HistoryMessage[], nextId: () => string): Me
   return items;
 }
 
+function asString(value: unknown): string {
+  return typeof value === "string" ? value : "";
+}
+
+function asNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function parseClarification(data?: Record<string, unknown>, content = ""): ClarificationQuestion | null {
+  if (!data || data.kind !== "clarification_question") {
+    return null;
+  }
+  const phase = asString(data.phase);
+  if (phase && phase !== "pending") {
+    return null;
+  }
+
+  const rawOptions = Array.isArray(data.options) ? data.options : [];
+  const options: string[] = rawOptions
+    .map((item) => asString(item).trim())
+    .filter((item) => item.length > 0);
+
+  const question = asString(data.question) || content;
+  return {
+    question,
+    options,
+    reasoning: asString(data.reasoning) || undefined,
+    attempts: typeof data.attempts === "number" ? data.attempts : undefined,
+  };
+}
+
+function parsePlanProgress(data?: Record<string, unknown>, content = ""): PlanProgress | null {
+  if (!data || data.kind !== "planner_progress") {
+    return null;
+  }
+
+  const rawCounts = typeof data.counts === "object" && data.counts !== null ? data.counts as Record<string, unknown> : {};
+  const rawSteps = Array.isArray(data.steps) ? data.steps : [];
+  const steps: PlanProgressStep[] = rawSteps
+    .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    .map((item) => ({
+      id: asString(item.id),
+      title: asString(item.title) || asString(item.id),
+      description: asString(item.description),
+      status: asString(item.status) || "pending",
+      kind: asString(item.kind),
+    }));
+
+  const currentRaw = typeof data.current_step === "object" && data.current_step !== null
+    ? data.current_step as Record<string, unknown>
+    : null;
+
+  return {
+    phase: asString(data.phase),
+    message: asString(data.message) || content,
+    planner_path: asString(data.planner_path),
+    objective: asString(data.objective),
+    status: asString(data.status),
+    summary: asString(data.summary),
+    replan_reason: asString(data.replan_reason),
+    current_step_id: asString(data.current_step_id),
+    current_step: currentRaw ? {
+      id: asString(currentRaw.id),
+      title: asString(currentRaw.title) || asString(currentRaw.id),
+      description: asString(currentRaw.description),
+      status: asString(currentRaw.status) || "pending",
+      kind: asString(currentRaw.kind),
+    } : null,
+    steps,
+    counts: {
+      total: asNumber(rawCounts.total),
+      pending: asNumber(rawCounts.pending),
+      ready: asNumber(rawCounts.ready),
+      in_progress: asNumber(rawCounts.in_progress),
+      completed: asNumber(rawCounts.completed),
+      blocked: asNumber(rawCounts.blocked),
+      skipped: asNumber(rawCounts.skipped),
+    },
+    percent: Math.max(0, Math.min(100, Math.round(asNumber(data.percent)))),
+  };
+}
+
 export function useChat() {
   const [messages, dispatch] = useReducer(chatReducer, []);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<string | null>(null);
+  const [planProgress, setPlanProgress] = useState<PlanProgress | null>(null);
+  const [clarification, setClarification] = useState<ClarificationQuestion | null>(null);
+  const [resumable, setResumable] = useState(false);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const json = await apiFetch<ApiResponse<{ resumable: boolean; paused: boolean }>>("/neo/status");
+        setResumable(Boolean(json.data?.resumable && !json.data?.paused));
+      } catch { /* ignore */ }
+    })();
+  }, []);
   const abortRef = useRef<AbortController | null>(null);
   const ctxRef = useRef<StreamCtx>(freshCtx());
   const terminalEventSeenRef = useRef(false);
@@ -447,7 +546,7 @@ export function useChat() {
     setContentText(answer);
   }
 
-  function syncThinkingText(chunk: string, data?: Record<string, string>) {
+  function syncThinkingText(chunk: string, data?: Record<string, unknown>) {
     const id = ensureThinking(thinkingEventKey(data));
     const raw = (ctxRef.current.thinkingRawById[id] ?? "") + chunk;
     ctxRef.current.thinkingRawById[id] = raw;
@@ -459,7 +558,7 @@ export function useChat() {
     dispatch({ type: "SET_THINKING_TEXT", id, text: normalized.text });
   }
 
-  function syncContentText(chunk: string, data?: Record<string, string>) {
+  function syncContentText(chunk: string, data?: Record<string, unknown>) {
     const key = contentEventKey(data);
     if (key && ctxRef.current.contentKey !== key) {
       ctxRef.current.contentKey = key;
@@ -521,29 +620,29 @@ export function useChat() {
         if (content) {
           setProgress(content);
           const id = nextId();
-          const toolCallId = data?.tool_call_id ?? id;
+          const toolCallId = dataString(data, "tool_call_id") || id;
           ctxRef.current.pendingToolIds[toolCallId] = id;
           dispatch({
             type: "ADD",
-            item: createToolItem(id, data?.name ?? content, toolCallId, data?.arguments ?? ""),
+            item: createToolItem(id, dataString(data, "name") || content, toolCallId, dataString(data, "arguments")),
           });
         }
         break;
       }
 
       case "tool_result": {
-        const toolCallId = data?.tool_call_id;
+        const toolCallId = dataString(data, "tool_call_id");
         let itemId = toolCallId ? ctxRef.current.pendingToolIds[toolCallId] : undefined;
         if (!itemId) {
           itemId = nextId();
           dispatch({
             type: "ADD",
-            item: createToolItem(itemId, data?.name ?? "tool", toolCallId),
+            item: createToolItem(itemId, dataString(data, "name") || "tool", toolCallId),
           });
         }
 
-        const detail = data?.result ?? data?.error ?? content;
-        const failed = isToolError(detail, data?.error);
+        const detail = dataString(data, "result") || dataString(data, "error") || content;
+        const failed = isToolError(detail, dataString(data, "error"));
         dispatch({
           type: "SET_TOOL_DONE",
           id: itemId,
@@ -556,6 +655,29 @@ export function useChat() {
           delete ctxRef.current.pendingToolIds[toolCallId];
         }
         setProgress(content || null);
+        break;
+      }
+
+      case "planner_progress": {
+        const next = parsePlanProgress(data, content);
+        if (next) {
+          setPlanProgress(next);
+          setProgress(next.message || next.summary || next.status || content || null);
+        }
+        break;
+      }
+
+      case "clarification_question": {
+        const phase = asString(data?.phase);
+        if (phase === "resolved" || phase === "exhausted") {
+          setClarification(null);
+          break;
+        }
+        const next = parseClarification(data, content);
+        if (next) {
+          setClarification(next);
+          setProgress(next.question || content || null);
+        }
         break;
       }
 
@@ -581,12 +703,63 @@ export function useChat() {
     }
   }
 
+  async function streamSSE(resp: Response, controller: AbortController) {
+    if (!resp.ok) {
+      const errText = await resp.text();
+      dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "请求失败: " + (errText || resp.statusText) } });
+      return;
+    }
+    if (!resp.body) {
+      dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "响应流不可用" } });
+      return;
+    }
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split("\n");
+      buf = lines.pop()!;
+      for (const line of lines) {
+        if (!line.startsWith("data: ")) continue;
+        try { handleEvent(JSON.parse(line.slice(6)) as ChatEvent); } catch { /* ignore */ }
+      }
+    }
+    if (buf.startsWith("data: ")) {
+      try { handleEvent(JSON.parse(buf.slice(6)) as ChatEvent); } catch { /* ignore */ }
+    }
+    if (!controller.signal.aborted && !terminalEventSeenRef.current) {
+      dispatch({
+        type: "ADD",
+        item: { id: nextId(), kind: "error", text: "连接中断：响应流在完成前被关闭" },
+      });
+    }
+  }
+
+  async function refreshResumableStatus(retries = 0): Promise<void> {
+    try {
+      const json = await apiFetch<ApiResponse<{ paused: boolean; resumable: boolean; run_id?: string; status?: string }>>("/neo/status");
+      const data = json.data;
+      const resumable = Boolean(data?.resumable && !data?.paused);
+      setResumable(resumable);
+      if (!resumable && retries > 0) {
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        return refreshResumableStatus(retries - 1);
+      }
+    } catch { /* ignore */ }
+  }
+
   const sendMessage = useCallback(async (text: string) => {
     if (!text.trim() || running) return;
 
     dispatch({ type: "ADD", item: { id: nextId(), kind: "user", text } });
     setRunning(true);
     setProgress("启动中...");
+    setPlanProgress(null);
+    setClarification(null);
+    setResumable(false);
     ctxRef.current = freshCtx();
     terminalEventSeenRef.current = false;
 
@@ -600,47 +773,7 @@ export function useChat() {
         body: JSON.stringify({ message: text }),
         signal: controller.signal,
       });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "请求失败: " + (errText || resp.statusText) } });
-        setRunning(false);
-        setProgress(null);
-        abortRef.current = null;
-        return;
-      }
-
-      if (!resp.body) {
-        dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "响应流不可用" } });
-        setRunning(false);
-        setProgress(null);
-        abortRef.current = null;
-        return;
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop()!;
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try { handleEvent(JSON.parse(line.slice(6)) as ChatEvent); } catch { /* ignore */ }
-        }
-      }
-      if (buf.startsWith("data: ")) {
-        try { handleEvent(JSON.parse(buf.slice(6)) as ChatEvent); } catch { /* ignore */ }
-      }
-      if (!controller.signal.aborted && !terminalEventSeenRef.current) {
-        dispatch({
-          type: "ADD",
-          item: { id: nextId(), kind: "error", text: "连接中断：响应流在完成前被关闭" },
-        });
-      }
+      await streamSSE(resp, controller);
     } catch (err) {
       if ((err as Error).name !== "AbortError") {
         dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "连接错误: " + (err as Error).message } });
@@ -653,6 +786,42 @@ export function useChat() {
     closeContent();
     setRunning(false);
     abortRef.current = null;
+    void refreshResumableStatus(3);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [running]);
+
+  const resumeRun = useCallback(async () => {
+    if (running) return;
+    setRunning(true);
+    setProgress("正在恢复...");
+    setPlanProgress(null);
+    setClarification(null);
+    setResumable(false);
+    ctxRef.current = freshCtx();
+    terminalEventSeenRef.current = false;
+
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    try {
+      const resp = await fetch("/neo/resume", {
+        method: "POST",
+        signal: controller.signal,
+      });
+      await streamSSE(resp, controller);
+    } catch (err) {
+      if ((err as Error).name !== "AbortError") {
+        dispatch({ type: "ADD", item: { id: nextId(), kind: "error", text: "恢复失败: " + (err as Error).message } });
+      }
+    }
+
+    flushPendingDirectAnswer();
+    completeLastStep();
+    closeThinking();
+    closeContent();
+    setRunning(false);
+    abortRef.current = null;
+    void refreshResumableStatus(3);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running]);
 
@@ -667,6 +836,7 @@ export function useChat() {
     dispatch({ type: "ADD", item: { id: nextId(), kind: "stopped" } });
     setRunning(false);
     setProgress(null);
+    void refreshResumableStatus(5);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -684,6 +854,9 @@ export function useChat() {
     ctxRef.current = freshCtx();
     dispatch({ type: "SET", items: [] });
     setProgress(null);
+    setPlanProgress(null);
+    setClarification(null);
+    setResumable(false);
   }, []);
 
   const loadMemory = useCallback(async () => {
@@ -695,5 +868,5 @@ export function useChat() {
     await apiAction("/neo/memory", { method: "DELETE" });
   }, []);
 
-  return { messages, running, progress, sendMessage, stop, loadHistory, clearHistory, loadMemory, clearMemory };
+  return { messages, running, progress, planProgress, clarification, resumable, sendMessage, resumeRun, stop, loadHistory, clearHistory, loadMemory, clearMemory };
 }

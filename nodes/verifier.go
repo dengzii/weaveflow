@@ -109,7 +109,7 @@ func (n *VerifierNode) execute(ctx context.Context, state wfstate.State) (wfstat
 		}
 	}
 
-	n.applyResult(state, result, mode)
+	n.applyResultWithContext(ctx, state, result, mode)
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "verifier.result", map[string]any{
 		"mode":        mode,
@@ -289,6 +289,10 @@ func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.
 }
 
 func (n *VerifierNode) applyResult(state wfstate.State, result *verificationResult, mode string) {
+	n.applyResultWithContext(context.Background(), state, result, mode)
+}
+
+func (n *VerifierNode) applyResultWithContext(ctx context.Context, state wfstate.State, result *verificationResult, mode string) {
 	v := state.Ensure(wfstate.StateKeyVerification)
 	v["status"] = result.Status
 	v["issues"] = result.Issues
@@ -302,11 +306,20 @@ func (n *VerifierNode) applyResult(state wfstate.State, result *verificationResu
 	}
 	if result.NextAction == VerificationActionRetry {
 		n.markCurrentStepReady(state)
+		n.publishCurrentPlannerProgress(ctx, state, "step_retry", result.Summary)
 		return
 	}
 	if result.NextAction == VerificationActionContinue || result.Status == VerificationPass {
 		n.markCurrentStepCompleted(state)
+		n.publishCurrentPlannerProgress(ctx, state, "step_completed", result.Summary)
+		return
 	}
+	if result.NextAction == VerificationActionReplan || result.Status == VerificationFail {
+		n.markCurrentStepBlocked(state)
+		n.publishCurrentPlannerProgress(ctx, state, "step_blocked", result.Summary)
+		return
+	}
+	n.publishCurrentPlannerProgress(ctx, state, "step_verified", result.Summary)
 }
 
 func (n *VerifierNode) markCurrentStepCompleted(state wfstate.State) {
@@ -337,6 +350,31 @@ func (n *VerifierNode) markCurrentStepReady(state wfstate.State) {
 	if step != nil {
 		step["status"] = "ready"
 	}
+}
+
+func (n *VerifierNode) markCurrentStepBlocked(state wfstate.State) {
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
+	if plannerState == nil {
+		return
+	}
+	stepID, _ := plannerState["current_step_id"].(string)
+	if stepID == "" {
+		return
+	}
+	step := findStepByID(plannerState, stepID)
+	if step != nil {
+		step["status"] = "blocked"
+	}
+	plannerState["status"] = "blocked"
+}
+
+func (n *VerifierNode) publishCurrentPlannerProgress(ctx context.Context, state wfstate.State, phase string, message string) {
+	plannerPath := n.effectivePlannerPath()
+	plannerState := stateObjectAtPath(state, plannerPath)
+	if plannerState == nil {
+		return
+	}
+	publishPlannerProgress(ctx, plannerPath, plannerState, phase, message)
 }
 
 func (n *VerifierNode) GraphNodeSpec() dsl.GraphNodeSpec {
