@@ -190,6 +190,22 @@ func asStateMap(value any) (State, bool) {
 	}
 }
 
+// CloneValue returns a deep copy of value using the State-aware clone
+// semantics: nested maps, State values, []any, []string, []map[string]any
+// and []llms.MessageContent are all copied recursively. Primitives are
+// returned as-is. Use this when other packages need to detach a piece of
+// state-shaped data from its source without rolling their own walker.
+func CloneValue(value any) any {
+	return cloneStateValue(value)
+}
+
+// CloneMap deep-copies a map[string]any using CloneValue semantics. Returns
+// nil only when input is nil; an empty (non-nil) input becomes an empty
+// (non-nil) clone, matching what callers usually want for state buckets.
+func CloneMap(input map[string]any) map[string]any {
+	return map[string]any(cloneStateMap(input))
+}
+
 func cloneStateMap(input map[string]any) State {
 	if input == nil {
 		return nil

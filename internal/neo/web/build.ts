@@ -4,6 +4,7 @@ import { resolve } from "path";
 const isDev = process.argv.includes("--watch");
 const BACKEND = process.env.NEO_BACKEND ?? "http://127.0.0.1:9090";
 const DEV_PORT = parseInt(process.env.DEV_PORT ?? "3000");
+const DEV_IDLE_TIMEOUT = parseInt(process.env.DEV_IDLE_TIMEOUT ?? "255");
 const distDir = resolve(import.meta.dir, "dist");
 
 // Whether to include debug tools in the bundle (default: true in dev, false in prod)
@@ -147,6 +148,7 @@ if (isDev) {
 
   Bun.serve<WsProxyData>({
     port: DEV_PORT,
+    idleTimeout: DEV_IDLE_TIMEOUT,
 
     // WebSocket proxy: relay frames between the browser and the Go backend.
     websocket: {

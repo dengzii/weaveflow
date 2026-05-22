@@ -2,10 +2,11 @@ package nodes
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
+	"regexp"
+	"sort"
 	"strings"
+	"time"
 	"weaveflow/dsl"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
@@ -15,6 +16,24 @@ import (
 )
 
 const defaultSessionBootstrapInputPath = wfstate.StateKeyRequest + ".input"
+
+// inputSource identifies which resolution rule produced the bootstrap input.
+// Surfaced in observability events so prompt-debugging can tell config inputs
+// apart from values that originated outside this node.
+type inputSource string
+
+const (
+	inputSourceEmpty       inputSource = "empty"
+	inputSourceConfig      inputSource = "config_input"
+	inputSourceInputPath   inputSource = "input_path"
+	inputSourceRequest     inputSource = "request_state"
+	inputSourceLastMessage inputSource = "last_human_message"
+)
+
+// templateVarRE matches {{ path.with.dots }} placeholders. Whitespace inside
+// the braces is allowed. The captured group is a dot-separated state path
+// suitable for state.ResolvePath.
+var templateVarRE = regexp.MustCompile(`\{\{\s*([a-zA-Z_][a-zA-Z0-9_.]*)\s*\}\}`)
 
 // SessionBootstrapNode prepares the minimum session state required before an
 // agent/executor graph starts doing real work.
@@ -58,6 +77,10 @@ type SessionBootstrapNode struct {
 	AgentProfile    map[string]any
 	RequestMetadata map[string]any
 	ToolPolicy      map[string]any
+
+	// NowFunc returns the wall-clock time injected into request.metadata.now.
+	// Tests may override it for deterministic output. Defaults to time.Now.
+	NowFunc func() time.Time
 }
 
 // NewSessionBootstrapNode creates a bootstrap node with a unique runtime node
@@ -80,52 +103,181 @@ func (n *SessionBootstrapNode) execute(ctx context.Context, state wfstate.State)
 		state = wfstate.State{}
 	}
 
-	input, err := n.resolveInput(state)
+	input, source, err := n.resolveInput(state)
 	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "session.bootstrap.error", map[string]any{"error": err.Error()})
+		if fruntime.HasArtifactRecorder(ctx) {
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "session.bootstrap.error", map[string]any{"error": err.Error()})
+		}
 		return state, err
 	}
 
+	// Populate state buckets first so templates below can reference any
+	// metadata, profile, or runtime field via {{ request.metadata.now }} etc.
 	request := state.Ensure(wfstate.StateKeyRequest)
-	if request == nil {
-		return state, errors.New("session bootstrap request state is unavailable")
-	}
-	request["input"] = input
 	mergeBootstrapMap(request, "metadata", n.RequestMetadata)
+	n.injectRuntimeMetadata(ctx, request)
 
 	agent := state.Ensure(wfstate.StateKeyAgent)
-	if agent == nil {
-		return state, errors.New("session bootstrap agent state is unavailable")
-	}
 	mergeBootstrapMap(agent, "profile", n.AgentProfile)
 
 	toolPolicy := state.Ensure(wfstate.StateKeyToolPolicy)
-	if toolPolicy == nil {
-		return state, errors.New("session bootstrap tool policy state is unavailable")
-	}
 	mergeBootstrapValues(toolPolicy, n.ToolPolicy)
+
+	n.injectBudgetDeadline(ctx, state)
+
+	// Only config-driven Input is treated as a template. Values resolved from
+	// state (input_path / request / conversation) are user-authored content
+	// and must not be re-interpolated, otherwise a user typing "{{x}}" would
+	// trigger lookups against state.
+	var unresolved []string
+	if source == inputSourceConfig {
+		rendered, missing := renderTemplate(input, state)
+		input = rendered
+		unresolved = appendUnique(unresolved, missing)
+	}
+
+	// Resume semantics: only overwrite request.input when this turn actually
+	// resolved a non-empty input. Otherwise a no-input resume would clobber a
+	// prior turn's value. The first non-empty input also seeds original_input,
+	// which is then frozen so downstream nodes can always reference the very
+	// first user ask, no matter how many bootstrap cycles run.
+	requestInputPreserved := false
+	originalInputSet := false
+	if input != "" {
+		request["input"] = input
+		if existing, _ := request["original_input"].(string); existing == "" {
+			request["original_input"] = input
+			originalInputSet = true
+		}
+	} else if existing, _ := request["input"].(string); existing != "" {
+		requestInputPreserved = true
+	}
+
+	systemPrompt := strings.TrimSpace(n.SystemPrompt)
+	if systemPrompt != "" {
+		rendered, missing := renderTemplate(systemPrompt, state)
+		systemPrompt = rendered
+		unresolved = appendUnique(unresolved, missing)
+	}
 
 	conversation := state.Conversation(n.StateScope)
 	messages := conversation.Messages()
+	hadExistingMessages := len(messages) > 0
+	systemPromptChanged := false
 	if len(messages) == 0 {
-		messages = n.initialMessages(input)
+		messages = n.initialMessages(systemPrompt, input)
 		if len(messages) > 0 {
 			conversation.UpdateMessage(messages)
 		}
-	} else if updated, changed := n.ensureSystemPrompt(messages); changed {
+	} else if updated, changed := n.ensureSystemPrompt(messages, systemPrompt); changed {
 		conversation.UpdateMessage(updated)
+		systemPromptChanged = true
 	}
 	conversation.SetMaxIterations(n.effectiveMaxIterations())
 
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
-		"kind":           "session_bootstrap",
-		"state_scope":    strings.TrimSpace(n.StateScope),
-		"has_input":      strings.TrimSpace(input) != "",
-		"max_iterations": n.effectiveMaxIterations(),
-	})
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "session.bootstrap", n.artifactPayload(state, input))
+	event := map[string]any{
+		"kind":                    "session_bootstrap",
+		"state_scope":             strings.TrimSpace(n.StateScope),
+		"input_source":            string(source),
+		"input_chars":             len(input),
+		"has_input":               strings.TrimSpace(input) != "",
+		"request_input_preserved": requestInputPreserved,
+		"original_input_set":      originalInputSet,
+		"system_prompt_chars":     len(systemPrompt),
+		"had_system_prompt":       systemPrompt != "",
+		"system_prompt_changed":   systemPromptChanged,
+		"had_existing_messages":   hadExistingMessages,
+		"message_count":           len(conversation.Messages()),
+		"max_iterations":          n.effectiveMaxIterations(),
+	}
+	if md, ok := fruntime.RunnerMetadataFromContext(ctx); ok && md.RunID != "" {
+		event["run_id"] = md.RunID
+	}
+	if len(unresolved) > 0 {
+		event["unresolved_template_keys"] = unresolved
+	}
+	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, event)
+
+	if fruntime.HasArtifactRecorder(ctx) {
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "session.bootstrap", n.artifactPayload(state, input))
+	}
 
 	return state, nil
+}
+
+func appendUnique(dst, src []string) []string {
+	if len(src) == 0 {
+		return dst
+	}
+	seen := make(map[string]struct{}, len(dst))
+	for _, key := range dst {
+		seen[key] = struct{}{}
+	}
+	for _, key := range src {
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		dst = append(dst, key)
+	}
+	return dst
+}
+
+// injectRuntimeMetadata pulls runtime-only fields (run_id, now) into
+// request.metadata. Values already provided by config take precedence so
+// callers can override for replay or deterministic test scenarios.
+func (n *SessionBootstrapNode) injectRuntimeMetadata(ctx context.Context, request wfstate.State) {
+	if request == nil {
+		return
+	}
+	metadata, _ := request["metadata"].(map[string]any)
+	if metadata == nil {
+		if typed, ok := request["metadata"].(wfstate.State); ok {
+			metadata = typed
+		}
+	}
+	if metadata == nil {
+		metadata = map[string]any{}
+		request["metadata"] = metadata
+	}
+
+	if _, set := metadata["run_id"]; !set {
+		if md, ok := fruntime.RunnerMetadataFromContext(ctx); ok && md.RunID != "" {
+			metadata["run_id"] = md.RunID
+		}
+	}
+	if _, set := metadata["now"]; !set {
+		metadata["now"] = n.now().Format(time.RFC3339)
+	}
+}
+
+func (n *SessionBootstrapNode) now() time.Time {
+	if n != nil && n.NowFunc != nil {
+		return n.NowFunc()
+	}
+	return time.Now()
+}
+
+// injectBudgetDeadline snapshots the context deadline into state.budget so
+// downstream planner/tool nodes can shape behavior against a wall-clock cutoff.
+// Other budget fields (usage, limits, status, ...) are untouched. Existing
+// deadline values win so explicit configuration is never overwritten.
+func (n *SessionBootstrapNode) injectBudgetDeadline(ctx context.Context, state wfstate.State) {
+	if ctx == nil {
+		return
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return
+	}
+
+	budget := state.Ensure(wfstate.StateKeyBudget)
+	if _, set := budget["deadline"]; !set {
+		budget["deadline"] = deadline.Format(time.RFC3339)
+	}
+	if _, set := budget["remaining_seconds"]; !set {
+		budget["remaining_seconds"] = max(int(deadline.Sub(n.now()).Seconds()), 0)
+	}
 }
 
 func (n *SessionBootstrapNode) Execute(ctx context.Context, input wfstate.State) (wfstate.StatePatch, error) {
@@ -149,13 +301,13 @@ func (n *SessionBootstrapNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		config["system_prompt"] = systemPrompt
 	}
 	if len(n.AgentProfile) > 0 {
-		config["agent_profile"] = cloneBootstrapMap(n.AgentProfile)
+		config["agent_profile"] = wfstate.CloneMap(n.AgentProfile)
 	}
 	if len(n.RequestMetadata) > 0 {
-		config["request_metadata"] = cloneBootstrapMap(n.RequestMetadata)
+		config["request_metadata"] = wfstate.CloneMap(n.RequestMetadata)
 	}
 	if len(n.ToolPolicy) > 0 {
-		config["tool_policy"] = cloneBootstrapMap(n.ToolPolicy)
+		config["tool_policy"] = wfstate.CloneMap(n.ToolPolicy)
 	}
 
 	return dsl.GraphNodeSpec{
@@ -167,21 +319,23 @@ func (n *SessionBootstrapNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 }
 
-func (n *SessionBootstrapNode) resolveInput(state wfstate.State) (string, error) {
+func (n *SessionBootstrapNode) resolveInput(state wfstate.State) (string, inputSource, error) {
 	if input := strings.TrimSpace(n.Input); input != "" {
-		return input, nil
+		return input, inputSourceConfig, nil
 	}
 
 	if inputPath := strings.TrimSpace(n.InputPath); inputPath != "" {
 		value, ok := state.ResolvePath(inputPath)
 		if !ok {
-			return "", fmt.Errorf("session bootstrap input not found at %q", inputPath)
+			return "", inputSourceEmpty, fmt.Errorf("session bootstrap input not found at %q", inputPath)
 		}
-		return strings.TrimSpace(stringifyBootstrapValue(value)), nil
+		return strings.TrimSpace(stringifyStateValue(value)), inputSourceInputPath, nil
 	}
 
 	if value, ok := state.ResolvePath(defaultSessionBootstrapInputPath); ok {
-		return strings.TrimSpace(stringifyBootstrapValue(value)), nil
+		if text := strings.TrimSpace(stringifyStateValue(value)); text != "" {
+			return text, inputSourceRequest, nil
+		}
 	}
 
 	messages := state.Conversation(n.StateScope).Messages()
@@ -190,16 +344,16 @@ func (n *SessionBootstrapNode) resolveInput(state wfstate.State) (string, error)
 			continue
 		}
 		if text := strings.TrimSpace(extractText(messages[i])); text != "" {
-			return text, nil
+			return text, inputSourceLastMessage, nil
 		}
 	}
 
-	return "", nil
+	return "", inputSourceEmpty, nil
 }
 
-func (n *SessionBootstrapNode) initialMessages(input string) []llms.MessageContent {
+func (n *SessionBootstrapNode) initialMessages(systemPrompt, input string) []llms.MessageContent {
 	messages := make([]llms.MessageContent, 0, 2)
-	if systemPrompt := strings.TrimSpace(n.SystemPrompt); systemPrompt != "" {
+	if systemPrompt = strings.TrimSpace(systemPrompt); systemPrompt != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt))
 	}
 	if input = strings.TrimSpace(input); input != "" {
@@ -208,8 +362,8 @@ func (n *SessionBootstrapNode) initialMessages(input string) []llms.MessageConte
 	return messages
 }
 
-func (n *SessionBootstrapNode) ensureSystemPrompt(messages []llms.MessageContent) ([]llms.MessageContent, bool) {
-	systemPrompt := strings.TrimSpace(n.SystemPrompt)
+func (n *SessionBootstrapNode) ensureSystemPrompt(messages []llms.MessageContent, systemPrompt string) ([]llms.MessageContent, bool) {
+	systemPrompt = strings.TrimSpace(systemPrompt)
 	if systemPrompt == "" || len(messages) == 0 {
 		return messages, false
 	}
@@ -229,6 +383,38 @@ func (n *SessionBootstrapNode) ensureSystemPrompt(messages []llms.MessageContent
 	return updated, true
 }
 
+// renderTemplate substitutes {{ path }} placeholders in text by resolving each
+// path against state. Placeholders whose path does not resolve are left intact
+// and returned in the unresolved slice so observability can surface them.
+func renderTemplate(text string, state wfstate.State) (string, []string) {
+	if text == "" || !strings.Contains(text, "{{") {
+		return text, nil
+	}
+	missing := map[string]struct{}{}
+	rendered := templateVarRE.ReplaceAllStringFunc(text, func(match string) string {
+		sub := templateVarRE.FindStringSubmatch(match)
+		if len(sub) < 2 {
+			return match
+		}
+		path := sub[1]
+		value, ok := state.ResolvePath(path)
+		if !ok {
+			missing[path] = struct{}{}
+			return match
+		}
+		return stringifyStateValue(value)
+	})
+	if len(missing) == 0 {
+		return rendered, nil
+	}
+	keys := make([]string, 0, len(missing))
+	for key := range missing {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return rendered, keys
+}
+
 func (n *SessionBootstrapNode) effectiveMaxIterations() int {
 	if n == nil || n.MaxIterations <= 0 {
 		return wfstate.DefaultMaxIterations
@@ -241,9 +427,9 @@ func (n *SessionBootstrapNode) artifactPayload(state wfstate.State, input string
 		"state_scope":    strings.TrimSpace(n.StateScope),
 		"input":          input,
 		"max_iterations": n.effectiveMaxIterations(),
-		"request":        cloneBootstrapMap(state.Get(wfstate.StateKeyRequest)),
-		"agent":          cloneBootstrapMap(state.Get(wfstate.StateKeyAgent)),
-		"tool_policy":    cloneBootstrapMap(state.Get(wfstate.StateKeyToolPolicy)),
+		"request":        wfstate.CloneMap(state.Get(wfstate.StateKeyRequest)),
+		"agent":          wfstate.CloneMap(state.Get(wfstate.StateKeyAgent)),
+		"tool_policy":    wfstate.CloneMap(state.Get(wfstate.StateKeyToolPolicy)),
 	}
 	if messages, err := wfstate.SerializeMessages(state.Conversation(n.StateScope).Messages()); err == nil {
 		payload["messages"] = messages
@@ -274,53 +460,6 @@ func mergeBootstrapValues(target map[string]any, values map[string]any) {
 		return
 	}
 	for key, value := range values {
-		target[key] = cloneBootstrapValue(value)
-	}
-}
-
-func stringifyBootstrapValue(value any) string {
-	switch typed := value.(type) {
-	case nil:
-		return ""
-	case string:
-		return typed
-	default:
-		data, err := json.Marshal(typed)
-		if err != nil {
-			return fmt.Sprint(value)
-		}
-		return string(data)
-	}
-}
-
-func cloneBootstrapMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return nil
-	}
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = cloneBootstrapValue(value)
-	}
-	return cloned
-}
-
-func cloneBootstrapValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneBootstrapMap(typed)
-	case wfstate.State:
-		return wfstate.State(cloneBootstrapMap(typed))
-	case []any:
-		cloned := make([]any, len(typed))
-		for i, item := range typed {
-			cloned[i] = cloneBootstrapValue(item)
-		}
-		return cloned
-	case []string:
-		cloned := make([]string, len(typed))
-		copy(cloned, typed)
-		return cloned
-	default:
-		return value
+		target[key] = wfstate.CloneValue(value)
 	}
 }

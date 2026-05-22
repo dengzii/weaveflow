@@ -284,42 +284,10 @@ func objectConfig(config map[string]any, key string) map[string]any {
 	}
 	switch typed := raw.(type) {
 	case map[string]any:
-		return cloneObjectConfigMap(typed)
+		return wfstate.CloneMap(typed)
 	case wfstate.State:
-		return cloneObjectConfigMap(typed)
+		return wfstate.CloneMap(typed)
 	default:
 		return nil
-	}
-}
-
-func cloneObjectConfigMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return nil
-	}
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = cloneObjectConfigValue(value)
-	}
-	return cloned
-}
-
-func cloneObjectConfigValue(value any) any {
-	switch typed := value.(type) {
-	case map[string]any:
-		return cloneObjectConfigMap(typed)
-	case wfstate.State:
-		return wfstate.State(cloneObjectConfigMap(typed))
-	case []any:
-		cloned := make([]any, len(typed))
-		for i, item := range typed {
-			cloned[i] = cloneObjectConfigValue(item)
-		}
-		return cloned
-	case []string:
-		cloned := make([]string, len(typed))
-		copy(cloned, typed)
-		return cloned
-	default:
-		return value
 	}
 }

@@ -89,6 +89,16 @@ func SaveArtifact(ctx context.Context, artifact Artifact) (wfstate.ArtifactRef, 
 	return recorder(ctx, artifact)
 }
 
+// HasArtifactRecorder reports whether the context carries an artifact recorder.
+// Use it to skip building expensive payloads when no recorder will consume them.
+func HasArtifactRecorder(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	recorder, _ := ctx.Value(runnerArtifactRecorderKey{}).(runnerArtifactRecorder)
+	return recorder != nil
+}
+
 func SaveJSONArtifact(ctx context.Context, artifactType string, payload any) (wfstate.ArtifactRef, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
