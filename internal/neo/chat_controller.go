@@ -389,7 +389,11 @@ func attachEventIdentity(event fruntime.Event, chatEvent *ChatEvent) *ChatEvent 
 	if chatEvent == nil {
 		return nil
 	}
-	if chatEvent.Type != ChatEventTypeThinking && chatEvent.Type != ChatEventTypeGenerating && chatEvent.Type != ChatEventTypeStep {
+	if chatEvent.Type != ChatEventTypeThinking &&
+		chatEvent.Type != ChatEventTypeGenerating &&
+		chatEvent.Type != ChatEventTypeStep &&
+		chatEvent.Type != ChatEventTypeToolCall &&
+		chatEvent.Type != ChatEventTypeToolResult {
 		return chatEvent
 	}
 

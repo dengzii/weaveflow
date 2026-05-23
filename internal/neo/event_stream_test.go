@@ -48,6 +48,61 @@ func TestTranslateEventStreamsContentSummary(t *testing.T) {
 	}
 }
 
+func TestTranslateEventKeepsBatchedToolPayload(t *testing.T) {
+	t.Parallel()
+
+	event := fruntime.Event{
+		Type: fruntime.EventToolCalled,
+		Payload: rawJSON(map[string]any{
+			"count":    2,
+			"parallel": true,
+			"tools": []map[string]string{
+				{"tool_call_id": "call_1", "name": "alpha", "arguments": `{"input":"one"}`},
+				{"tool_call_id": "call_2", "name": "beta", "arguments": `{"input":"two"}`},
+			},
+		}),
+	}
+
+	got := TranslateEvent(event)
+	if got == nil {
+		t.Fatal("TranslateEvent() = nil, want chat event")
+	}
+	if got.Type != ChatEventTypeToolCall {
+		t.Fatalf("TranslateEvent().Type = %q, want %q", got.Type, ChatEventTypeToolCall)
+	}
+
+	var data struct {
+		Tools []struct {
+			ToolCallID string `json:"tool_call_id"`
+			Name       string `json:"name"`
+		} `json:"tools"`
+	}
+	if err := json.Unmarshal(got.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if len(data.Tools) != 2 || data.Tools[0].ToolCallID != "call_1" || data.Tools[1].Name != "beta" {
+		t.Fatalf("batched tool data = %#v", data.Tools)
+	}
+}
+
+func TestTranslateEventReportsExploreStep(t *testing.T) {
+	t.Parallel()
+
+	got := TranslateEvent(fruntime.Event{
+		Type:   fruntime.EventNodeStarted,
+		NodeID: "Explore_test",
+	})
+	if got == nil {
+		t.Fatal("TranslateEvent() = nil, want chat event")
+	}
+	if got.Type != ChatEventTypeStep {
+		t.Fatalf("TranslateEvent().Type = %q, want %q", got.Type, ChatEventTypeStep)
+	}
+	if got.Content != "正在浏览文件..." {
+		t.Fatalf("TranslateEvent().Content = %q, want 正在浏览文件...", got.Content)
+	}
+}
+
 func TestAttachEventIdentityIncludesStepAndNode(t *testing.T) {
 	t.Parallel()
 
@@ -74,6 +129,41 @@ func TestAttachEventIdentityIncludesStepAndNode(t *testing.T) {
 	}
 	if data["step_id"] != "step_123" {
 		t.Fatalf("data[step_id] = %q, want %q", data["step_id"], "step_123")
+	}
+}
+
+func TestAttachEventIdentityIncludesNodeForToolEvents(t *testing.T) {
+	t.Parallel()
+
+	event := fruntime.Event{
+		Type:   fruntime.EventToolReturned,
+		NodeID: "Explore_test",
+		StepID: "step_456",
+		Payload: rawJSON(map[string]string{
+			"tool_call_id": "call_1",
+			"name":         "file_read",
+			"content":      "ok",
+			"arguments":    `{"path":"nodes/explore.go"}`,
+		}),
+	}
+
+	got := attachEventIdentity(event, TranslateEvent(event))
+	if got == nil {
+		t.Fatal("attachEventIdentity() = nil, want chat event")
+	}
+
+	var data map[string]string
+	if err := json.Unmarshal(got.Data, &data); err != nil {
+		t.Fatalf("unmarshal data: %v", err)
+	}
+	if data["node_id"] != "Explore_test" {
+		t.Fatalf("data[node_id] = %q, want Explore_test", data["node_id"])
+	}
+	if data["step_id"] != "step_456" {
+		t.Fatalf("data[step_id] = %q, want step_456", data["step_id"])
+	}
+	if data["arguments"] != `{"path":"nodes/explore.go"}` {
+		t.Fatalf("data[arguments] = %q", data["arguments"])
 	}
 }
 

@@ -22,6 +22,68 @@ function dataString(data: Record<string, unknown> | undefined, key: string): str
   return typeof value === "string" ? value : "";
 }
 
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function toolPayloads(data: Record<string, unknown> | undefined): Record<string, unknown>[] {
+  const tools = data?.tools;
+  if (!Array.isArray(tools)) {
+    return [];
+  }
+  return tools.flatMap((tool) => {
+    const record = asRecord(tool);
+    return record ? [record] : [];
+  });
+}
+
+function recordString(data: Record<string, unknown>, key: string): string {
+  const value = data[key];
+  return typeof value === "string" ? value : "";
+}
+
+function parseJSONRecord(text: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(text);
+    return asRecord(parsed) ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function firstRecordString(data: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = recordString(data, key).trim();
+    if (value) {
+      return value;
+    }
+  }
+  return "";
+}
+
+function isExploreToolEvent(data: Record<string, unknown> | undefined): boolean {
+  return dataString(data, "node_id").startsWith("Explore_");
+}
+
+function exploreToolDetail(data: Record<string, unknown>): string {
+  const name = recordString(data, "name").trim();
+  const args = parseJSONRecord(recordString(data, "arguments"));
+  const target = firstRecordString(args, ["path", "file", "file_path", "glob", "pattern", "query", "input"]);
+
+  switch (name) {
+    case "file_read":
+      return target || "file_read";
+    case "grep":
+      return target ? `grep ${target}` : "grep";
+    case "glob":
+      return target ? `glob ${target}` : "glob";
+    default:
+      return target ? `${name} ${target}`.trim() : name;
+  }
+}
+
 function thinkingEventKey(data?: Record<string, unknown>): string | null {
   const stepId = dataString(data, "step_id").trim();
   if (stepId) {
@@ -38,6 +100,12 @@ function thinkingEventKey(data?: Record<string, unknown>): string | null {
 
 function isToolError(text: string, explicitError?: string): boolean {
   return !!explicitError || /失败|failed/i.test(text);
+}
+
+function isToolPayloadError(tool: Record<string, unknown>, detail: string): boolean {
+  const status = recordString(tool, "status").trim().toLowerCase();
+  const explicitError = recordString(tool, "error");
+  return status === "failed" || status === "error" || isToolError(detail, explicitError);
 }
 
 function createToolItem(id: string, name: string, toolCallId?: string, args = ""): ToolItem {
@@ -580,6 +648,18 @@ export function useChat() {
     setContentText(normalized.text);
   }
 
+  function appendExploreToolDetail(data: Record<string, unknown> | undefined) {
+    if (!data) {
+      return;
+    }
+    const detail = exploreToolDetail(data);
+    const stepId = ctxRef.current.exploreStepId ?? ctxRef.current.lastStepId;
+    if (!detail || !stepId) {
+      return;
+    }
+    dispatch({ type: "APPEND_STEP_DETAIL", id: stepId, detail });
+  }
+
   function handleEvent(event: ChatEvent) {
     const { type, content = "", data } = event;
 
@@ -592,6 +672,9 @@ export function useChat() {
           setProgress(content);
           const id = nextId();
           ctxRef.current.lastStepId = id;
+          if (dataString(data, "action") === "exploring") {
+            ctxRef.current.exploreStepId = id;
+          }
           dispatch({ type: "ADD", item: { id, kind: "step", text: content, status: "pending" } });
         }
         break;
@@ -614,10 +697,38 @@ export function useChat() {
       }
 
       case "tool_call": {
+        const tools = toolPayloads(data);
+        if (isExploreToolEvent(data)) {
+          closeThinking();
+          closeContent();
+          if (tools.length > 0) {
+            tools.forEach((tool) => appendExploreToolDetail({ ...(data ?? {}), ...tool }));
+          } else {
+            appendExploreToolDetail(data);
+          }
+          setProgress(content || null);
+          break;
+        }
         completeLastStep();
         closeThinking();
         closeContent();
-        if (content) {
+        if (tools.length > 0) {
+          setProgress(content);
+          tools.forEach((tool) => {
+            const id = nextId();
+            const toolCallId = recordString(tool, "tool_call_id") || id;
+            ctxRef.current.pendingToolIds[toolCallId] = id;
+            dispatch({
+              type: "ADD",
+              item: createToolItem(
+                id,
+                recordString(tool, "name") || content || "tool",
+                toolCallId,
+                recordString(tool, "arguments"),
+              ),
+            });
+          });
+        } else if (content) {
           setProgress(content);
           const id = nextId();
           const toolCallId = dataString(data, "tool_call_id") || id;
@@ -631,6 +742,46 @@ export function useChat() {
       }
 
       case "tool_result": {
+        const tools = toolPayloads(data);
+        if (isExploreToolEvent(data)) {
+          if (tools.length > 0) {
+            tools.forEach((tool) => appendExploreToolDetail({ ...(data ?? {}), ...tool }));
+          } else {
+            appendExploreToolDetail(data);
+          }
+          setProgress(content || null);
+          break;
+        }
+        if (tools.length > 0) {
+          tools.forEach((tool) => {
+            const toolCallId = recordString(tool, "tool_call_id");
+            let itemId = toolCallId ? ctxRef.current.pendingToolIds[toolCallId] : undefined;
+            if (!itemId) {
+              itemId = nextId();
+              dispatch({
+                type: "ADD",
+                item: createToolItem(itemId, recordString(tool, "name") || "tool", toolCallId),
+              });
+            }
+
+            const detail = recordString(tool, "result") || recordString(tool, "content") || recordString(tool, "error") || content;
+            const failed = isToolPayloadError(tool, detail);
+            dispatch({
+              type: "SET_TOOL_DONE",
+              id: itemId,
+              status: failed ? "error" : "done",
+              output: failed ? "" : detail,
+              error: failed ? detail : "",
+            });
+
+            if (toolCallId) {
+              delete ctxRef.current.pendingToolIds[toolCallId];
+            }
+          });
+          setProgress(content || null);
+          break;
+        }
+
         const toolCallId = dataString(data, "tool_call_id");
         let itemId = toolCallId ? ctxRef.current.pendingToolIds[toolCallId] : undefined;
         if (!itemId) {

@@ -831,6 +831,10 @@ func replaySubtitle(event EventView) string {
 		if message := valueAsString(payload["error_message"]); message != "" {
 			return message
 		}
+	case runtime.EventToolCalled, runtime.EventToolReturned, runtime.EventToolFailed:
+		if subtitle := replayToolSubtitle(payload); subtitle != "" {
+			return subtitle
+		}
 	case runtime.EventBreakpointHit:
 		stage := valueAsString(payload["stage"])
 		nodeID := valueAsString(payload["node_id"])
@@ -840,6 +844,29 @@ func replaySubtitle(event EventView) string {
 		return event.NodeID
 	}
 	return ""
+}
+
+func replayToolSubtitle(payload map[string]any) string {
+	if payload == nil {
+		return ""
+	}
+	if tools, ok := payload["tools"].([]any); ok && len(tools) > 0 {
+		names := make([]string, 0, len(tools))
+		for _, rawTool := range tools {
+			tool, ok := rawTool.(map[string]any)
+			if !ok {
+				continue
+			}
+			if name := valueAsString(tool["name"]); name != "" {
+				names = append(names, name)
+			}
+		}
+		if len(names) == 0 {
+			return fmt.Sprintf("%d tools", len(tools))
+		}
+		return fmt.Sprintf("%d tools: %s", len(tools), strings.Join(names, ", "))
+	}
+	return valueAsString(payload["name"])
 }
 
 func payloadMap(payload any) map[string]any {

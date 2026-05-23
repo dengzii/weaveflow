@@ -135,7 +135,7 @@ export interface RegistryData {
 
 export type MessageItem =
   | { id: string; kind: "user"; text: string }
-  | { id: string; kind: "step"; text: string; status: "pending" | "done" }
+  | { id: string; kind: "step"; text: string; status: "pending" | "done"; details?: string[] }
   | { id: string; kind: "thinking"; text: string; done: boolean }
   | {
       id: string;

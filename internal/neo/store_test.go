@@ -124,6 +124,66 @@ func TestStoreTurnWriterPersistsAssistantTimeline(t *testing.T) {
 	}
 }
 
+func TestStoreTurnWriterExpandsBatchedToolEvents(t *testing.T) {
+	store := newTestStore(t)
+
+	writer, err := store.BeginTurn(defaultSessionID, "run tools")
+	if err != nil {
+		t.Fatalf("BeginTurn() error = %v", err)
+	}
+
+	events := []fruntime.Event{
+		{Type: fruntime.EventToolCalled, Payload: rawJSON(map[string]any{
+			"count":    2,
+			"parallel": true,
+			"tools": []map[string]string{
+				{"tool_call_id": "call_1", "name": "alpha", "arguments": `{"input":"one"}`},
+				{"tool_call_id": "call_2", "name": "beta", "arguments": `{"input":"two"}`},
+			},
+		})},
+		{Type: fruntime.EventToolReturned, Payload: rawJSON(map[string]any{
+			"count":     2,
+			"succeeded": 2,
+			"tools": []map[string]string{
+				{"tool_call_id": "call_1", "name": "alpha", "content": "one"},
+				{"tool_call_id": "call_2", "name": "beta", "content": "two"},
+			},
+		})},
+	}
+	for _, event := range events {
+		if err := writer.Publish(context.Background(), event); err != nil {
+			t.Fatalf("Publish(%s) error = %v", event.Type, err)
+		}
+	}
+	if err := writer.Finalize("completed"); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+
+	history, err := store.LoadHistory(defaultSessionID)
+	if err != nil {
+		t.Fatalf("LoadHistory() error = %v", err)
+	}
+	if len(history) != 2 {
+		t.Fatalf("LoadHistory() len = %d, want 2", len(history))
+	}
+
+	parts := history[1].Parts
+	wantTypes := []string{"tool_call", "tool_call", "tool_result", "tool_result"}
+	gotTypes := make([]string, 0, len(parts))
+	for _, part := range parts {
+		gotTypes = append(gotTypes, part.Type)
+	}
+	if !reflect.DeepEqual(gotTypes, wantTypes) {
+		t.Fatalf("assistant part types = %#v, want %#v", gotTypes, wantTypes)
+	}
+	if parts[0].ID != "call_1" || parts[1].ID != "call_2" {
+		t.Fatalf("tool call ids = [%q, %q]", parts[0].ID, parts[1].ID)
+	}
+	if parts[2].Result != "one" || parts[3].Result != "two" {
+		t.Fatalf("tool result parts = %#v", parts[2:4])
+	}
+}
+
 func TestStoreTurnWriterIgnoresRouterContentAndPersistsFinalizerAnswer(t *testing.T) {
 	store := newTestStore(t)
 

@@ -3,6 +3,7 @@ package neo
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	fruntime "weaveflow/runtime"
@@ -80,6 +81,7 @@ var nodeActionMap = []struct {
 	{"Verifier_", "verifying", "正在验证结果..."},
 	{"Finalizer_", "finalizing", "正在整理最终回答..."},
 	{"MemoryWrite_", "saving", "正在保存记忆..."},
+	{"Explore_", "exploring", "正在浏览文件..."},
 }
 
 var streamableContentPrefixes = []string{
@@ -221,6 +223,15 @@ func translateNodeCustom(event fruntime.Event) *ChatEvent {
 }
 
 func translateToolCalled(event fruntime.Event) *ChatEvent {
+	items := toolPayloadItems(event.Payload)
+	if len(items) > 1 {
+		return &ChatEvent{
+			Type:    ChatEventTypeToolCall,
+			Content: fmt.Sprintf("正在调用 %d 个工具...", len(items)),
+			Data:    event.Payload,
+		}
+	}
+
 	name := extractPayloadString(event.Payload, "name")
 	toolCallID := extractPayloadString(event.Payload, "tool_call_id")
 	arguments := extractPayloadString(event.Payload, "arguments")
@@ -236,20 +247,55 @@ func translateToolCalled(event fruntime.Event) *ChatEvent {
 }
 
 func translateToolReturned(event fruntime.Event) *ChatEvent {
+	items := toolPayloadItems(event.Payload)
+	if len(items) > 1 {
+		return &ChatEvent{
+			Type:    ChatEventTypeToolResult,
+			Content: fmt.Sprintf("%d 调用完成", len(items)),
+			Data:    event.Payload,
+		}
+	}
+
 	name := extractPayloadString(event.Payload, "name")
 	result := extractPayloadString(event.Payload, "content")
 	toolCallID := extractPayloadString(event.Payload, "tool_call_id")
+	arguments := extractPayloadString(event.Payload, "arguments")
+	data := map[string]string{"name": name, "result": result, "tool_call_id": toolCallID}
+	if arguments != "" {
+		data["arguments"] = arguments
+	}
 	return &ChatEvent{
 		Type:    ChatEventTypeToolResult,
 		Content: "工具调用完成",
-		Data:    marshalData(map[string]string{"name": name, "result": result, "tool_call_id": toolCallID}),
+		Data:    marshalData(data),
 	}
 }
 
 func translateToolFailed(event fruntime.Event) *ChatEvent {
+	items := toolPayloadItems(event.Payload)
+	if len(items) > 1 {
+		failed := 0
+		for _, item := range items {
+			if item.failed() {
+				failed++
+			}
+		}
+		succeeded := len(items) - failed
+		return &ChatEvent{
+			Type:    ChatEventTypeToolResult,
+			Content: fmt.Sprintf("工具调用完成: %d 成功, %d 失败", succeeded, failed),
+			Data:    event.Payload,
+		}
+	}
+
 	name := extractPayloadString(event.Payload, "name")
 	errMsg := extractPayloadString(event.Payload, "error")
 	toolCallID := extractPayloadString(event.Payload, "tool_call_id")
+	arguments := extractPayloadString(event.Payload, "arguments")
+	data := map[string]string{"name": name, "error": errMsg, "result": errMsg, "tool_call_id": toolCallID}
+	if arguments != "" {
+		data["arguments"] = arguments
+	}
 	msg := "工具调用失败"
 	if errMsg != "" {
 		msg = "工具调用失败: " + errMsg
@@ -257,7 +303,68 @@ func translateToolFailed(event fruntime.Event) *ChatEvent {
 	return &ChatEvent{
 		Type:    ChatEventTypeToolResult,
 		Content: msg,
-		Data:    marshalData(map[string]string{"name": name, "error": errMsg, "result": errMsg, "tool_call_id": toolCallID}),
+		Data:    marshalData(data),
+	}
+}
+
+type toolPayloadItem struct {
+	ToolCallID string
+	Name       string
+	Arguments  string
+	Result     string
+	Error      string
+	Status     string
+}
+
+func (i toolPayloadItem) failed() bool {
+	if strings.TrimSpace(i.Error) != "" {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(i.Status)) {
+	case "failed", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func toolPayloadItems(payload json.RawMessage) []toolPayloadItem {
+	if len(payload) == 0 {
+		return nil
+	}
+
+	var mapped map[string]any
+	if err := json.Unmarshal(payload, &mapped); err != nil {
+		return nil
+	}
+
+	if rawTools, ok := mapped["tools"].([]any); ok {
+		items := make([]toolPayloadItem, 0, len(rawTools))
+		for _, rawTool := range rawTools {
+			tool, ok := rawTool.(map[string]any)
+			if !ok {
+				continue
+			}
+			items = append(items, toolPayloadItemFromMap(tool))
+		}
+		return items
+	}
+
+	return []toolPayloadItem{toolPayloadItemFromMap(mapped)}
+}
+
+func toolPayloadItemFromMap(mapped map[string]any) toolPayloadItem {
+	result := stringFromAny(mapped["content"])
+	if result == "" {
+		result = stringFromAny(mapped["result"])
+	}
+	return toolPayloadItem{
+		ToolCallID: stringFromAny(mapped["tool_call_id"]),
+		Name:       stringFromAny(mapped["name"]),
+		Arguments:  stringFromAny(mapped["arguments"]),
+		Result:     result,
+		Error:      stringFromAny(mapped["error"]),
+		Status:     stringFromAny(mapped["status"]),
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 
 func main() {
 	now := time.Now()
-	//SessionBootstrapExample()
+	SessionBootstrapExample()
 	//IntentAnalyzerExample()
 	//OrchestrationRouterExample()
 	//PlannerExample()
@@ -15,7 +15,7 @@ func main() {
 	//MemoryRecallExample()
 	//MemoryWriteExample()
 	//ContextAssemblerExample()
-	LLMExample()
+	//LLMExample()
 	//ToolsExample()
 	//HumanMessageExample()
 	//ContextReducerExample()

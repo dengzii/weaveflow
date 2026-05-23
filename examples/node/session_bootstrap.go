@@ -3,48 +3,32 @@ package main
 import (
 	"context"
 	"fmt"
-	"weaveflow"
-	"weaveflow/builder"
-	"weaveflow/builtin"
-	"weaveflow/dsl"
+	"weaveflow/nodes"
 	wfstate "weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
 func SessionBootstrapExample() {
-	registry := builtin.NewDefaultRegistry()
-	graph, err := weaveflow.BuildGraph(registry, dsl.GraphDefinition{
-		EntryPoint:  "bootstrap",
-		FinishPoint: "bootstrap",
-		Nodes: []dsl.GraphNodeSpec{
-			{
-				ID:   "bootstrap",
-				Type: "session_bootstrap",
-				Config: map[string]any{
-					"state_scope":    "agent",
-					"input":          "Summarize what the session bootstrap node initializes.",
-					"system_prompt":  "You are a concise engineering agent.",
-					"max_iterations": 5,
-					"agent_profile": map[string]any{
-						"name": "demo-agent",
-						"role": "runtime example",
-					},
-					"request_metadata": map[string]any{
-						"workspace_id": "local-demo",
-						"user_id":      "example-user",
-					},
-					"tool_policy": map[string]any{
-						"mode":          "allowlist",
-						"allowed_tools": []any{"calculator", "current_time"},
-					},
-				},
-			},
-		},
-	}, &builder.BuildContext{})
-	must(err)
+	node := nodes.NewSessionBootstrapNode()
+	node.StateScope = "agent"
+	node.Input = "Summarize what the session bootstrap node initializes."
+	node.SystemPrompt = "You are a concise engineering agent."
+	node.MaxIterations = 5
+	node.AgentProfile = map[string]any{
+		"name": "demo-agent",
+		"role": "runtime example",
+	}
+	node.RequestMetadata = map[string]any{
+		"workspace_id": "local-demo",
+		"user_id":      "example-user",
+	}
+	node.ToolPolicy = map[string]any{
+		"mode":          "allowlist",
+		"allowed_tools": []any{"calculator", "current_time"},
+	}
 
-	state, err := graph.Run(context.Background(), wfstate.State{})
+	state, err := executeNode(context.Background(), node, wfstate.State{})
 	must(err)
 
 	conversation := state.Conversation("agent")

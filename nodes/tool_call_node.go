@@ -66,10 +66,9 @@ func (t *ToolsNode) execute(ctx context.Context, state wfstate.State) (wfstate.S
 
 	if t.Parallel {
 		var wg sync.WaitGroup
+		t.publishToolCallsStart(ctx, toolCalls, true)
 		wg.Add(len(toolCalls))
 		for index, toolCall := range toolCalls {
-			t.publishToolCallStart(ctx, toolCall)
-
 			go func(index int, toolCall llms.ToolCall) {
 				defer wg.Done()
 				toolMessages[index] = executeToolCallMessage(ctx, nodeTools, toolCall)
@@ -128,6 +127,50 @@ func executeToolCall(ctx context.Context, available map[string]tools.Tool, toolC
 }
 
 func (t *ToolsNode) publishToolCallStart(ctx context.Context, toolCall llms.ToolCall) {
+	t.publishToolCallsStart(ctx, []llms.ToolCall{toolCall}, false)
+}
+
+func (t *ToolsNode) publishToolCallsStart(ctx context.Context, toolCalls []llms.ToolCall, parallel bool) {
+	if len(toolCalls) == 0 {
+		return
+	}
+	if len(toolCalls) == 1 {
+		publishSingleToolCallStart(ctx, toolCalls[0])
+		return
+	}
+
+	items := make([]toolCallEventItem, 0, len(toolCalls))
+	artifactItems := make([]map[string]any, 0, len(toolCalls))
+	for _, toolCall := range toolCalls {
+		name := toolCallName(toolCall)
+		arguments := toolCallArguments(toolCall)
+		items = append(items, toolCallEventItem{
+			ToolCallID: toolCall.ID,
+			Name:       name,
+			Arguments:  arguments,
+		})
+		artifactItems = append(artifactItems, map[string]any{
+			"tool_call_id": toolCall.ID,
+			"name":         name,
+			"arguments":    arguments,
+			"input":        decodeToolInput(arguments),
+		})
+	}
+
+	payload := toolCallBatchEventPayload{
+		Tools:    items,
+		Count:    len(items),
+		Parallel: parallel,
+	}
+	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolCalled, payload)
+	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.inputs", map[string]any{
+		"tools":    artifactItems,
+		"count":    len(artifactItems),
+		"parallel": parallel,
+	})
+}
+
+func publishSingleToolCallStart(ctx context.Context, toolCall llms.ToolCall) {
 	name := toolCallName(toolCall)
 	arguments := toolCallArguments(toolCall)
 
@@ -144,35 +187,51 @@ func (t *ToolsNode) publishToolCallStart(ctx context.Context, toolCall llms.Tool
 	})
 }
 
+type toolCallEventItem struct {
+	ToolCallID string `json:"tool_call_id"`
+	Name       string `json:"name"`
+	Arguments  string `json:"arguments,omitempty"`
+	Status     string `json:"status,omitempty"`
+	Content    string `json:"content,omitempty"`
+	Error      string `json:"error,omitempty"`
+}
+
+type toolCallBatchEventPayload struct {
+	Tools    []toolCallEventItem `json:"tools"`
+	Count    int                 `json:"count"`
+	Parallel bool                `json:"parallel,omitempty"`
+}
+
+type toolCallExecutionResult struct {
+	Message llms.MessageContent
+	Event   toolCallEventItem
+	Err     error
+}
+
 func executeToolCallMessage(ctx context.Context, available map[string]tools.Tool, toolCall llms.ToolCall) llms.MessageContent {
+	result := executeToolCallResult(ctx, available, toolCall)
+	publishSingleToolCallExecutionResult(ctx, result)
+	return result.Message
+}
+
+func executeToolCallResult(ctx context.Context, available map[string]tools.Tool, toolCall llms.ToolCall) toolCallExecutionResult {
 	name := toolCallName(toolCall)
 	result, err := executeToolCall(ctx, available, toolCall)
+	eventItem := toolCallEventItem{
+		ToolCallID: toolCall.ID,
+		Name:       name,
+		Arguments:  toolCallArguments(toolCall),
+	}
 	if err != nil {
-		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolFailed, map[string]any{
-			"tool_call_id": toolCall.ID,
-			"name":         name,
-			"error":        err.Error(),
-		})
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
-			"tool_call_id": toolCall.ID,
-			"name":         name,
-			"error":        err.Error(),
-		})
+		eventItem.Status = "failed"
+		eventItem.Error = err.Error()
 		result = "tool execution failed: " + err.Error()
 	} else {
-		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolReturned, map[string]any{
-			"tool_call_id": toolCall.ID,
-			"name":         name,
-			"content":      result,
-		})
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
-			"tool_call_id": toolCall.ID,
-			"name":         name,
-			"content":      result,
-		})
+		eventItem.Status = "succeeded"
+		eventItem.Content = result
 	}
 
-	return llms.MessageContent{
+	message := llms.MessageContent{
 		Role: llms.ChatMessageTypeTool,
 		Parts: []llms.ContentPart{
 			llms.ToolCallResponse{
@@ -182,6 +241,32 @@ func executeToolCallMessage(ctx context.Context, available map[string]tools.Tool
 			},
 		},
 	}
+
+	return toolCallExecutionResult{
+		Message: message,
+		Event:   eventItem,
+		Err:     err,
+	}
+}
+
+func publishSingleToolCallExecutionResult(ctx context.Context, result toolCallExecutionResult) {
+	payload := map[string]any{
+		"tool_call_id": result.Event.ToolCallID,
+		"name":         result.Event.Name,
+	}
+	if result.Event.Arguments != "" {
+		payload["arguments"] = result.Event.Arguments
+	}
+	if result.Err != nil {
+		payload["error"] = result.Event.Error
+		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolFailed, payload)
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", payload)
+		return
+	}
+
+	payload["content"] = result.Event.Content
+	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolReturned, payload)
+	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "tool.output", payload)
 }
 
 func decodeToolInput(arguments string) string {

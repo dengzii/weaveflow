@@ -9,6 +9,7 @@ export type Action =
   | { type: "APPEND_CONTENT"; id: string; chunk: string }
   | { type: "SET_CONTENT_TEXT"; id: string; text: string }
   | { type: "SET_STEP_DONE"; id: string }
+  | { type: "APPEND_STEP_DETAIL"; id: string; detail: string }
   | { type: "SET_TOOL_DONE"; id: string; status: "done" | "error"; output: string; error: string };
 
 export function chatReducer(state: MessageItem[], action: Action): MessageItem[] {
@@ -57,6 +58,18 @@ export function chatReducer(state: MessageItem[], action: Action): MessageItem[]
         m.id === action.id && m.kind === "step" ? { ...m, status: "done" as const } : m
       );
 
+    case "APPEND_STEP_DETAIL":
+      return state.map((m) => {
+        if (m.id !== action.id || m.kind !== "step") {
+          return m;
+        }
+        const details = m.details ?? [];
+        if (details.includes(action.detail)) {
+          return m;
+        }
+        return { ...m, details: [...details, action.detail] };
+      });
+
     case "SET_TOOL_DONE":
       return state.map((m) =>
         m.id === action.id && m.kind === "tool"
@@ -80,6 +93,7 @@ export interface StreamCtx {
   contentRaw: string;
   assistantShown: boolean;
   pendingDirectAnswer: string;
+  exploreStepId: string | null;
 }
 
 export function freshCtx(): StreamCtx {
@@ -94,5 +108,6 @@ export function freshCtx(): StreamCtx {
     contentRaw: "",
     assistantShown: false,
     pendingDirectAnswer: "",
+    exploreStepId: null,
   };
 }

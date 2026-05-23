@@ -25,8 +25,8 @@ func (w *TurnWriter) Publish(_ context.Context, event fruntime.Event) error {
 	defer w.mu.Unlock()
 
 	changed := false
-	if part := partFromEvent(event); part != nil {
-		w.parts = append(w.parts, *part)
+	if parts := partsFromEvent(event); len(parts) > 0 {
+		w.parts = append(w.parts, parts...)
 		changed = true
 	}
 
@@ -79,20 +79,20 @@ func (w *TurnWriter) AppendAssistantText(text string) error {
 	return w.store.updateTurnMessage(w.assistantSeq, w.parts, w.status)
 }
 
-func partFromEvent(event fruntime.Event) *MessagePart {
+func partsFromEvent(event fruntime.Event) []MessagePart {
 	switch event.Type {
 	case fruntime.EventNodeStarted:
 		translated := translateNodeStarted(event)
 		if translated == nil || strings.TrimSpace(translated.Content) == "" {
 			return nil
 		}
-		return &MessagePart{Type: "step", Text: translated.Content}
+		return []MessagePart{{Type: "step", Text: translated.Content}}
 	case fruntime.EventLLMReasoning:
 		text := extractEventPayloadString(event.Payload, "text")
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		return &MessagePart{Type: "thinking", Text: text}
+		return []MessagePart{{Type: "thinking", Text: text}}
 	case fruntime.EventLLMContent:
 		if !hasPrefix(event.NodeID, streamableContentPrefixes) {
 			return nil
@@ -101,31 +101,56 @@ func partFromEvent(event fruntime.Event) *MessagePart {
 		if strings.TrimSpace(text) == "" {
 			return nil
 		}
-		return &MessagePart{Type: "text", Text: text}
+		return []MessagePart{{Type: "text", Text: text}}
 	case fruntime.EventToolCalled:
-		return &MessagePart{
-			Type: "tool_call",
-			ID:   extractEventPayloadString(event.Payload, "tool_call_id"),
-			Name: extractEventPayloadString(event.Payload, "name"),
-			Text: extractEventPayloadString(event.Payload, "arguments"),
-		}
+		return toolCallPartsFromEvent(event)
 	case fruntime.EventToolReturned:
-		return &MessagePart{
-			Type:   "tool_result",
-			ID:     extractEventPayloadString(event.Payload, "tool_call_id"),
-			Name:   extractEventPayloadString(event.Payload, "name"),
-			Result: extractEventPayloadString(event.Payload, "content"),
-		}
+		return toolResultPartsFromEvent(event)
 	case fruntime.EventToolFailed:
-		return &MessagePart{
-			Type:   "tool_result",
-			ID:     extractEventPayloadString(event.Payload, "tool_call_id"),
-			Name:   extractEventPayloadString(event.Payload, "name"),
-			Result: extractEventPayloadString(event.Payload, "error"),
-		}
+		return toolResultPartsFromEvent(event)
 	default:
 		return nil
 	}
+}
+
+func toolCallPartsFromEvent(event fruntime.Event) []MessagePart {
+	items := toolPayloadItems(event.Payload)
+	if len(items) == 0 {
+		return nil
+	}
+
+	parts := make([]MessagePart, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, MessagePart{
+			Type: "tool_call",
+			ID:   item.ToolCallID,
+			Name: item.Name,
+			Text: item.Arguments,
+		})
+	}
+	return parts
+}
+
+func toolResultPartsFromEvent(event fruntime.Event) []MessagePart {
+	items := toolPayloadItems(event.Payload)
+	if len(items) == 0 {
+		return nil
+	}
+
+	parts := make([]MessagePart, 0, len(items))
+	for _, item := range items {
+		result := item.Result
+		if item.failed() {
+			result = item.Error
+		}
+		parts = append(parts, MessagePart{
+			Type:   "tool_result",
+			ID:     item.ToolCallID,
+			Name:   item.Name,
+			Result: result,
+		})
+	}
+	return parts
 }
 
 func extractEventPayloadString(payload json.RawMessage, key string) string {
