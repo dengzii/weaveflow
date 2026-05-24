@@ -33,9 +33,9 @@ Field guidance (all keys required; use "" or [] when not applicable, never null)
 - mode: one of the available modes above.
 - use_memory: true only when prior session context is clearly needed.
 - memory_query: short retrieval query string; "" when use_memory=false.
-- needs_clarification: true only when missing info blocks safe progress.
-- clarification_question: one concise question; "" when needs_clarification=false.
-- clarification_options: 3-5 distinct one-sentence options when needs_clarification=true; [] otherwise.
+- needs_clarification: true ONLY when the request has multiple incompatible interpretations AND no reasonable default exists. Default false. Missing style/format/minor details are NOT clarification triggers — pick a sensible default and proceed.
+- clarification_question: must quote or paraphrase the ambiguous wording from the request itself (e.g., "You said 'X' — did you mean A or B?"). One concise sentence grounded in the user's actual text. "" when needs_clarification=false.
+- clarification_options: 3-5 mutually exclusive, concrete interpretations of the user's request — each option is a distinct path the work could take, not generic preferences. [] when needs_clarification=false.
 - reasoning: one short clause, <=30 words, no deliberation.
 - target_subgraph: optional free-text hint naming a subgraph/area to dispatch into; "" if not applicable.
 - direct_answer: see direct sub-paths above; "" unless the FAQ rule applies.`
