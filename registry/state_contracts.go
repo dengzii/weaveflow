@@ -61,6 +61,24 @@ func ResolveToolsStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error
 	}, nil
 }
 
+func ResolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+	scope := StringConfig(spec.Config, "state_scope")
+	fields := []dsl.StateFieldRef{
+		{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages the agent reads and extends across each internal iteration."},
+		{Path: scopedConversationPath(scope, "iteration_count"), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter bumped after every internal model turn."},
+		{Path: scopedConversationPath(scope, "max_iterations"), Mode: dsl.StateAccessReadWrite, Description: "Maximum iteration cap for the agent loop, applied if not already higher."},
+		{Path: scopedConversationPath(scope, "final_answer"), Mode: dsl.StateAccessWrite, Description: "Final answer written when the agent stops without further tool calls."},
+		{Path: canonicalContractPath(nodes.TokenUsageStateKey), Mode: dsl.StateAccessWrite, Description: "Accumulated token usage metrics emitted across the agent's internal model calls.", MergeStrategy: dsl.StateMergeMerge},
+	}
+	if inputPath := strings.TrimSpace(StringConfig(spec.Config, "input_path")); inputPath != "" {
+		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(inputPath), Mode: dsl.StateAccessRead, Description: "State path the agent reads its initial task from.", Dynamic: true, PathConfigKey: "input_path"})
+	}
+	if outputPath := strings.TrimSpace(StringConfig(spec.Config, "output_path")); outputPath != "" {
+		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(outputPath), Mode: dsl.StateAccessWrite, Description: "State path the agent writes its final answer to.", Dynamic: true, PathConfigKey: "output_path"})
+	}
+	return dsl.StateContract{Fields: fields}, nil
+}
+
 func ResolveIteratorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	stateKey := canonicalContractPath(strings.TrimSpace(StringConfig(spec.Config, "state_key")))
 	nodeID := strings.TrimSpace(spec.ID)

@@ -7,7 +7,7 @@ import (
 
 func main() {
 	now := time.Now()
-	SessionBootstrapExample()
+	//SessionBootstrapExample()
 	//IntentAnalyzerExample()
 	//OrchestrationRouterExample()
 	//PlannerExample()
@@ -20,6 +20,8 @@ func main() {
 	//HumanMessageExample()
 	//ContextReducerExample()
 	//SubgraphExample()
+	//AgentExample()
+	AgentAsToolExample()
 	span := time.Now().Sub(now)
 	fmt.Printf("node invoke took %s\n", span)
 }

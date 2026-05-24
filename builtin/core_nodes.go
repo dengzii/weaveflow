@@ -200,6 +200,51 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 		},
 	})
 
+	r.RegisterNodeType(registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "agent",
+			Title:       "Agent Node",
+			Description: "Run a self-contained ReAct loop: LLM inference and tool execution iterate inside the node until a final answer or the iteration cap is reached.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"tool_ids":         dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"state_scope":      dsl.JSONSchema{"type": "string"},
+					"system_prompt":    dsl.JSONSchema{"type": "string"},
+					"input_path":       dsl.JSONSchema{"type": "string"},
+					"output_path":      dsl.JSONSchema{"type": "string"},
+					"max_iterations":   dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"parallel":         dsl.JSONSchema{"type": "boolean"},
+					"tool_name":        dsl.JSONSchema{"type": "string"},
+					"tool_description": dsl.JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: registry.ResolveAgentStateContract,
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
+			_ = ctx
+			node := nodes.NewAgentNode()
+			applyNodeMetadata(node, spec)
+			node.ToolIDs = registry.StringSliceConfig(spec.Config, "tool_ids")
+			node.StateScope = registry.StringConfig(spec.Config, "state_scope")
+			node.SystemPrompt = registry.StringConfig(spec.Config, "system_prompt")
+			node.InputPath = registry.StringConfig(spec.Config, "input_path")
+			node.OutputPath = registry.StringConfig(spec.Config, "output_path")
+			node.MaxIterations, _ = registry.IntConfig(spec.Config, "max_iterations")
+			node.PromptMaxChars, _ = registry.IntConfig(spec.Config, "prompt_max_chars")
+			if parallel, ok := registry.BoolConfig(spec.Config, "parallel"); ok {
+				node.Parallel = parallel
+			} else {
+				node.Parallel = true
+			}
+			node.ToolName = registry.StringConfig(spec.Config, "tool_name")
+			node.ToolDescription = registry.StringConfig(spec.Config, "tool_description")
+			return node, nil
+		},
+	})
+
 	r.RegisterCondition(registry.ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{
 			Type:        "last_message_has_tool_calls",
@@ -322,6 +367,14 @@ func applyNodeMetadata(node interface {
 			typed.NodeDescription = spec.Description
 		}
 	case *nodes.ToolsNode:
+		typed.NodeID = spec.ID
+		if spec.Name != "" {
+			typed.NodeName = spec.Name
+		}
+		if spec.Description != "" {
+			typed.NodeDescription = spec.Description
+		}
+	case *nodes.AgentNode:
 		typed.NodeID = spec.ID
 		if spec.Name != "" {
 			typed.NodeName = spec.Name
