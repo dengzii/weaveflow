@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"weaveflow/core"
 )
 
 type JSONSchema map[string]any
@@ -38,10 +40,7 @@ type GraphNodeSpecProvider interface {
 	GraphNodeSpec() GraphNodeSpec
 }
 
-type GraphConditionSpec struct {
-	Type   string         `json:"type"`
-	Config map[string]any `json:"config,omitempty"`
-}
+type GraphConditionSpec = core.GraphConditionSpec
 
 type GraphEdgeSpec struct {
 	From      string              `json:"from"`
@@ -62,11 +61,7 @@ type GraphDefinition struct {
 }
 
 func NormalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
-	spec.Type = strings.TrimSpace(spec.Type)
-	if len(spec.Config) == 0 {
-		spec.Config = nil
-	}
-	return spec
+	return core.NormalizeGraphConditionSpec(spec)
 }
 
 func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {

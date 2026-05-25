@@ -300,8 +300,16 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 									OperationNotContain,
 								}},
 								"value2": dsl.JSONSchema{"type": "string"},
+								"logic": dsl.JSONSchema{"type": "string", "enum": []string{
+									LogicAnd,
+									LogicOr,
+									LogicNot,
+								}},
+								"children": dsl.JSONSchema{
+									"type":  "array",
+									"items": dsl.JSONSchema{"type": "object"},
+								},
 							},
-							"required":             []string{"value1", "op", "value2"},
 							"additionalProperties": false,
 						},
 					},

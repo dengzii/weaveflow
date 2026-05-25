@@ -25,6 +25,56 @@ import {
 
 const elk = new ELK();
 
+const POSITION_STORAGE_KEY = "neo:replay:node-positions:v1";
+const MAX_STORED_GRAPHS = 30;
+
+type StoredPosition = { x: number; y: number };
+type PositionCache = Map<string, Map<string, StoredPosition>>;
+
+let sharedPositionCache: PositionCache | null = null;
+
+function getPositionCache(): PositionCache {
+  if (sharedPositionCache) return sharedPositionCache;
+  sharedPositionCache = new Map();
+  if (typeof window === "undefined") return sharedPositionCache;
+  try {
+    const raw = window.localStorage.getItem(POSITION_STORAGE_KEY);
+    if (!raw) return sharedPositionCache;
+    const parsed = JSON.parse(raw) as Record<string, Record<string, StoredPosition>>;
+    for (const [graphKey, nodeMap] of Object.entries(parsed)) {
+      if (!nodeMap || typeof nodeMap !== "object") continue;
+      const inner = new Map<string, StoredPosition>();
+      for (const [nodeId, pos] of Object.entries(nodeMap)) {
+        if (pos && typeof pos.x === "number" && typeof pos.y === "number") {
+          inner.set(nodeId, { x: pos.x, y: pos.y });
+        }
+      }
+      if (inner.size > 0) sharedPositionCache.set(graphKey, inner);
+    }
+  } catch {
+    // ignore corrupt storage
+  }
+  return sharedPositionCache;
+}
+
+function persistPositionCache(cache: PositionCache) {
+  if (typeof window === "undefined") return;
+  while (cache.size > MAX_STORED_GRAPHS) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+  try {
+    const obj: Record<string, Record<string, StoredPosition>> = {};
+    for (const [graphKey, nodeMap] of cache) {
+      obj[graphKey] = Object.fromEntries(nodeMap);
+    }
+    window.localStorage.setItem(POSITION_STORAGE_KEY, JSON.stringify(obj));
+  } catch {
+    // ignore quota errors
+  }
+}
+
 export function ReplayGraphCanvas({
   cacheDir,
   detail,
@@ -64,16 +114,21 @@ function ReplayGraphCanvasInner({
   const [graphError, setGraphError] = useState("");
   const flowRef = useRef<ReactFlowInstance<Node<FlowNodeData>, Edge> | null>(null);
   const graphKeyRef = useRef("");
-  const positionCacheRef = useRef<Map<string, Map<string, { x: number; y: number }>>>(new Map());
+  const positionCacheRef = useRef<PositionCache>(getPositionCache());
 
   useEffect(() => {
     const graphKey = graphKeyRef.current;
     if (!graphKey || nodes.length === 0) return;
 
-    positionCacheRef.current.set(
+    const cache = positionCacheRef.current;
+    cache.delete(graphKey);
+    cache.set(
       graphKey,
       new Map(nodes.map((node) => [node.id, { x: node.position.x, y: node.position.y }]))
     );
+
+    const timer = setTimeout(() => persistPositionCache(cache), 300);
+    return () => clearTimeout(timer);
   }, [nodes]);
 
   useEffect(() => {
@@ -209,7 +264,7 @@ function replayGraphLayoutKey(sourceGraph: SourceGraph): string {
 
 function applyCachedPositions(
   nodes: Node<FlowNodeData>[],
-  cache?: Map<string, { x: number; y: number }>
+  cache?: Map<string, StoredPosition>
 ): Node<FlowNodeData>[] {
   if (!cache || cache.size === 0) {
     return nodes;

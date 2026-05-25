@@ -191,16 +191,26 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err := graph.AddEdge(bootstrap.ID(), router.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), builtin.HasFinalAnswer(scope)); err != nil {
-		return nil, err
-	}
 	routeClarificationExhausted, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
-		Expressions: []builtin.Expression{{Value1: "orchestration.clarification_exhausted", Op: "equals", Value2: "true"}},
+		Expressions: []builtin.Expression{{Value1: "orchestration.clarification_exhausted", Op: builtin.OperationEqual, Value2: "true"}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), routeClarificationExhausted); err != nil {
+	routerToFinalize, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		StateScope: scope,
+		Expressions: []builtin.Expression{{
+			Logic: builtin.LogicOr,
+			Children: []builtin.Expression{
+				{Value1: wfstate.StateKeyFinalAnswer, Op: builtin.OperationNotEqual, Value2: ""},
+				{Value1: "shared.orchestration.clarification_exhausted", Op: builtin.OperationEqual, Value2: "true"},
+			},
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(router.ID(), finalizer.ID(), routerToFinalize); err != nil {
 		return nil, err
 	}
 
@@ -269,22 +279,19 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	routeFinalize, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
-		Expressions: []builtin.Expression{{Value1: "execution.route", Op: "equals", Value2: "finalize"}},
+	routeExecutionTerminal, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{
+			Logic: builtin.LogicOr,
+			Children: []builtin.Expression{
+				{Value1: "execution.route", Op: builtin.OperationEqual, Value2: "finalize"},
+				{Value1: "execution.route", Op: builtin.OperationEqual, Value2: "blocked"},
+			},
+		}},
 	})
 	if err != nil {
 		return nil, err
 	}
-	routeBlocked, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
-		Expressions: []builtin.Expression{{Value1: "execution.route", Op: "equals", Value2: "blocked"}},
-	})
-	if err != nil {
-		return nil, err
-	}
-	if err := graph.AddConditionalEdge(stepExec.ID(), finalizer.ID(), routeFinalize); err != nil {
-		return nil, err
-	}
-	if err := graph.AddConditionalEdge(stepExec.ID(), finalizer.ID(), routeBlocked); err != nil {
+	if err := graph.AddConditionalEdge(stepExec.ID(), finalizer.ID(), routeExecutionTerminal); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(stepExec.ID(), ctxAssembler.ID()); err != nil {

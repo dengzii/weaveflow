@@ -137,16 +137,31 @@ function conditionLabel(condition: Record<string, unknown> | null): string {
 
 function renderExpression(expression: Record<string, unknown> | null): string {
   if (!expression) return "";
+  const logic = stringValue(expression.logic).toLowerCase();
+  if (logic) {
+    const rawChildren = Array.isArray(expression.children) ? expression.children : [];
+    const children = rawChildren
+      .map((child) => renderExpression(objectValue(child)))
+      .filter(Boolean);
+    if (children.length === 0) return "";
+    if (logic === "not") {
+      return `NOT(${children[0]})`;
+    }
+    const joiner = logic === "or" ? " OR " : " AND ";
+    return children.length === 1 ? children[0] : `(${children.join(joiner)})`;
+  }
+
   const op = stringValue(expression.op);
   const value1 = stringValue(expression.value1);
-  const value2 = stringValue(expression.value2);
+  const value2 = typeof expression.value2 === "string" ? expression.value2.trim() : "";
   const operator = operatorLabel(op);
+  const value2Display = value2 === "" ? '""' : value2;
 
-  if (value1 && value2 && operator) {
-    return `${value1} ${operator} ${value2}`;
+  if (value1 && operator) {
+    return `${value1} ${operator} ${value2Display}`;
   }
-  if (value1 && value2) {
-    return `${value1} ${op || "?"} ${value2}`;
+  if (value1 && op) {
+    return `${value1} ${op} ${value2Display}`;
   }
   return "";
 }

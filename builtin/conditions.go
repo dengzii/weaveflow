@@ -59,10 +59,23 @@ const (
 	ExpressionMatchAny = "any"
 )
 
+const (
+	LogicAnd = "and"
+	LogicOr  = "or"
+	LogicNot = "not"
+)
+
 type Expression struct {
-	Value1 string `json:"value1"`
-	Op     string `json:"op"`
-	Value2 string `json:"value2"`
+	Value1 string `json:"value1,omitempty"`
+	Op     string `json:"op,omitempty"`
+	Value2 string `json:"value2,omitempty"`
+
+	Logic    string       `json:"logic,omitempty"`
+	Children []Expression `json:"children,omitempty"`
+}
+
+func (e Expression) IsComposite() bool {
+	return strings.TrimSpace(e.Logic) != ""
 }
 
 type ExpressionConditionConfig struct {
@@ -145,12 +158,7 @@ func (c ExpressionConditionConfig) Map() map[string]any {
 	}
 	expressions := make([]any, 0, len(config.Expressions))
 	for _, expression := range config.Expressions {
-		expression = normalizeExpression(expression)
-		expressions = append(expressions, map[string]any{
-			"value1": expression.Value1,
-			"op":     expression.Op,
-			"value2": expression.Value2,
-		})
+		expressions = append(expressions, expression.Map())
 	}
 	out["expressions"] = expressions
 	return out
@@ -158,6 +166,31 @@ func (c ExpressionConditionConfig) Map() map[string]any {
 
 func (e Expression) Validate() error {
 	expression := normalizeExpression(e)
+	if expression.Logic != "" {
+		switch expression.Logic {
+		case LogicAnd, LogicOr, LogicNot:
+		default:
+			return fmt.Errorf("expression logic %q is invalid", expression.Logic)
+		}
+		if expression.Value1 != "" || expression.Op != "" || expression.Value2 != "" {
+			return fmt.Errorf("composite expression must not set value1/op/value2")
+		}
+		if len(expression.Children) == 0 {
+			return fmt.Errorf("composite expression %q requires at least one child", expression.Logic)
+		}
+		if expression.Logic == LogicNot && len(expression.Children) != 1 {
+			return fmt.Errorf("composite expression %q requires exactly one child", expression.Logic)
+		}
+		for i, child := range expression.Children {
+			if err := child.Validate(); err != nil {
+				return fmt.Errorf("child %d: %w", i, err)
+			}
+		}
+		return nil
+	}
+	if len(expression.Children) > 0 {
+		return fmt.Errorf("leaf expression must not set children")
+	}
 	if expression.Value1 == "" {
 		return fmt.Errorf("expression value1 is required")
 	}
@@ -166,6 +199,25 @@ func (e Expression) Validate() error {
 		return nil
 	default:
 		return fmt.Errorf("expression op %q is invalid", expression.Op)
+	}
+}
+
+func (e Expression) Map() map[string]any {
+	expression := normalizeExpression(e)
+	if expression.Logic != "" {
+		children := make([]any, 0, len(expression.Children))
+		for _, child := range expression.Children {
+			children = append(children, child.Map())
+		}
+		return map[string]any{
+			"logic":    expression.Logic,
+			"children": children,
+		}
+	}
+	return map[string]any{
+		"value1": expression.Value1,
+		"op":     expression.Op,
+		"value2": expression.Value2,
 	}
 }
 
@@ -191,6 +243,16 @@ func normalizeExpression(expression Expression) Expression {
 	expression.Value1 = strings.TrimSpace(expression.Value1)
 	expression.Op = strings.ToLower(strings.TrimSpace(expression.Op))
 	expression.Value2 = strings.TrimSpace(expression.Value2)
+	expression.Logic = strings.ToLower(strings.TrimSpace(expression.Logic))
+	if len(expression.Children) > 0 {
+		normalized := make([]Expression, 0, len(expression.Children))
+		for _, child := range expression.Children {
+			normalized = append(normalized, normalizeExpression(child))
+		}
+		expression.Children = normalized
+	} else {
+		expression.Children = nil
+	}
 	return expression
 }
 
@@ -235,11 +297,20 @@ func parseExpression(raw any) (Expression, error) {
 		expression := normalizeExpression(typed)
 		return expression, expression.Validate()
 	case map[string]any:
-		expression := normalizeExpression(Expression{
+		expression := Expression{
 			Value1: registry.StringConfig(typed, "value1"),
 			Op:     registry.StringConfig(typed, "op"),
 			Value2: registry.StringConfig(typed, "value2"),
-		})
+			Logic:  registry.StringConfig(typed, "logic"),
+		}
+		if rawChildren, ok := typed["children"]; ok && rawChildren != nil {
+			children, err := parseExpressionsConfig(rawChildren)
+			if err != nil {
+				return Expression{}, err
+			}
+			expression.Children = children
+		}
+		expression = normalizeExpression(expression)
 		return expression, expression.Validate()
 	default:
 		return Expression{}, fmt.Errorf("expression item must be an object")
@@ -248,6 +319,31 @@ func parseExpression(raw any) (Expression, error) {
 
 func matchExpression(state wfstate.State, scope string, expression Expression) bool {
 	expression = normalizeExpression(expression)
+	if expression.Logic != "" {
+		switch expression.Logic {
+		case LogicAnd:
+			for _, child := range expression.Children {
+				if !matchExpression(state, scope, child) {
+					return false
+				}
+			}
+			return true
+		case LogicOr:
+			for _, child := range expression.Children {
+				if matchExpression(state, scope, child) {
+					return true
+				}
+			}
+			return false
+		case LogicNot:
+			if len(expression.Children) != 1 {
+				return false
+			}
+			return !matchExpression(state, scope, expression.Children[0])
+		default:
+			return false
+		}
+	}
 	left, ok := resolveExpressionValue(state, scope, expression.Value1)
 	switch expression.Op {
 	case OperationEqual:
