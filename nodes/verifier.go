@@ -17,6 +17,7 @@ import (
 
 const (
 	defaultVerifierScope = "default"
+	defaultMaxRetries    = 3
 
 	VerifierModeStep  = "step"
 	VerifierModeFinal = "final"
@@ -39,6 +40,7 @@ type VerifierNode struct {
 	StateScope       string
 	Mode             string
 	PlannerStatePath string
+	MaxRetries       int
 }
 
 func NewVerifierNode() *VerifierNode {
@@ -65,6 +67,13 @@ func (n *VerifierNode) effectiveMode() string {
 		return VerifierModeAuto
 	}
 	return strings.TrimSpace(n.Mode)
+}
+
+func (n *VerifierNode) effectiveMaxRetries() int {
+	if n == nil || n.MaxRetries <= 0 {
+		return defaultMaxRetries
+	}
+	return n.MaxRetries
 }
 
 func (n *VerifierNode) effectivePlannerPath() string {
@@ -172,14 +181,6 @@ func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state w
 	}
 
 	criteria := extractStringSlice(step, "acceptance_criteria")
-	if len(criteria) == 0 {
-		return &verificationResult{
-			Status:     VerificationPass,
-			Summary:    "No acceptance criteria defined; defaulting to pass.",
-			NextAction: VerificationActionContinue,
-		}, nil
-	}
-
 	observations := filterObservationsByStep(state.Observations(), stepID)
 	stepResults := state.StepResults()
 	var stepResult map[string]any
@@ -187,6 +188,32 @@ func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state w
 		if r, ok := stepResults[stepID].(map[string]any); ok {
 			stepResult = r
 		}
+	}
+
+	// Check for tool errors first - always fail if there are errors
+	if hasObservationErrors(observations) {
+		return &verificationResult{
+			Status:     VerificationFail,
+			Issues:     []string{"tool execution error detected"},
+			Summary:    "Step failed due to tool execution errors.",
+			NextAction: VerificationActionRetry,
+		}, nil
+	}
+
+	// No criteria and no errors - pass by default
+	if len(criteria) == 0 {
+		if len(observations) > 0 {
+			return &verificationResult{
+				Status:     VerificationPass,
+				Summary:    "No acceptance criteria defined; observations recorded successfully.",
+				NextAction: VerificationActionContinue,
+			}, nil
+		}
+		return &verificationResult{
+			Status:     VerificationPass,
+			Summary:    "No acceptance criteria defined; defaulting to pass.",
+			NextAction: VerificationActionContinue,
+		}, nil
 	}
 
 	return n.callLLMVerification(ctx, model, state, "step", criteria, observations, stepResult, step)
@@ -305,6 +332,15 @@ func (n *VerifierNode) applyResultWithContext(ctx context.Context, state wfstate
 		return
 	}
 	if result.NextAction == VerificationActionRetry {
+		if n.incrementAndCheckRetryLimit(state) {
+			n.markCurrentStepBlocked(state)
+			n.publishCurrentPlannerProgress(ctx, state, "step_blocked", "max retries exceeded")
+			v["retry_exhausted"] = true
+			v["next_action"] = VerificationActionReplan
+			v["needs_retry"] = false
+			v["needs_replan"] = true
+			return
+		}
 		n.markCurrentStepReady(state)
 		n.publishCurrentPlannerProgress(ctx, state, "step_retry", result.Summary)
 		return
@@ -368,6 +404,32 @@ func (n *VerifierNode) markCurrentStepBlocked(state wfstate.State) {
 	plannerState["status"] = "blocked"
 }
 
+func (n *VerifierNode) incrementAndCheckRetryLimit(state wfstate.State) bool {
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
+	if plannerState == nil {
+		return false
+	}
+	stepID, _ := plannerState["current_step_id"].(string)
+	if stepID == "" {
+		return false
+	}
+	step := findStepByID(plannerState, stepID)
+	if step == nil {
+		return false
+	}
+
+	retryCount := 0
+	if count, ok := step["retry_count"].(int); ok {
+		retryCount = count
+	} else if count, ok := step["retry_count"].(float64); ok {
+		retryCount = int(count)
+	}
+	retryCount++
+	step["retry_count"] = retryCount
+
+	return retryCount >= n.effectiveMaxRetries()
+}
+
 func (n *VerifierNode) publishCurrentPlannerProgress(ctx context.Context, state wfstate.State, phase string, message string) {
 	plannerPath := n.effectivePlannerPath()
 	plannerState := stateObjectAtPath(state, plannerPath)
@@ -387,6 +449,9 @@ func (n *VerifierNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 	if plannerPath := n.effectivePlannerPath(); plannerPath != wfstate.StateKeyPlanner {
 		config["planner_state_path"] = plannerPath
+	}
+	if maxRetries := n.effectiveMaxRetries(); maxRetries != defaultMaxRetries {
+		config["max_retries"] = maxRetries
 	}
 	return dsl.GraphNodeSpec{
 		ID:          n.ID(),
@@ -606,6 +671,15 @@ func extractStringSlice(m map[string]any, key string) []string {
 	}
 }
 
+func hasObservationErrors(observations []map[string]any) bool {
+	for _, obs := range observations {
+		if obs["error"] != nil {
+			return true
+		}
+	}
+	return false
+}
+
 func filterObservationsByStep(observations []map[string]any, stepID string) []map[string]any {
 	if stepID == "" {
 		return observations
@@ -620,15 +694,8 @@ func filterObservationsByStep(observations []map[string]any, stepID string) []ma
 }
 
 func ruleBasedVerification(criteria []string, observations []map[string]any) *verificationResult {
-	hasError := false
-	for _, obs := range observations {
-		if obs["error"] != nil {
-			hasError = true
-			break
-		}
-	}
-
-	if hasError {
+	// Check for errors first
+	if hasObservationErrors(observations) {
 		return &verificationResult{
 			Status:     VerificationFail,
 			Issues:     []string{"tool execution error detected in observations"},
@@ -637,14 +704,34 @@ func ruleBasedVerification(criteria []string, observations []map[string]any) *ve
 		}
 	}
 
+	// No criteria - pass if we have observations
+	if len(criteria) == 0 {
+		if len(observations) > 0 {
+			return &verificationResult{
+				Status:     VerificationPass,
+				Summary:    "No criteria to verify; observations recorded successfully.",
+				NextAction: VerificationActionContinue,
+			}
+		}
+		return &verificationResult{
+			Status:     VerificationPass,
+			Summary:    "No criteria to verify; defaulting to pass.",
+			NextAction: VerificationActionContinue,
+		}
+	}
+
+	// Has criteria but no observations - inconclusive
 	if len(observations) == 0 {
 		return &verificationResult{
 			Status:     VerificationInconclusive,
+			Issues:     []string{"no observations recorded to verify against criteria"},
 			Summary:    "No observations to verify against criteria.",
 			NextAction: VerificationActionContinue,
 		}
 	}
 
+	// Has both criteria and observations - pass optimistically
+	// (Without LLM, we can't do semantic verification)
 	return &verificationResult{
 		Status:     VerificationPass,
 		Summary:    "Rule-based check passed (no model available for semantic verification).",

@@ -158,6 +158,243 @@ func TestNewGraphClarificationPausesAtClarificationNode(t *testing.T) {
 	}
 }
 
+func TestNewGraphPlannerUsesMemoryBeforePlanning(t *testing.T) {
+	t.Parallel()
+
+	graph, err := NewGraph(DefaultConfig())
+	if err != nil {
+		t.Fatalf("build neo graph: %v", err)
+	}
+
+	model := &scriptedNeoModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{
+  "mode": "planner",
+  "use_memory": true,
+  "memory_query": "prior deployment notes",
+  "needs_clarification": false,
+  "clarification_question": "",
+  "clarification_options": [],
+  "reasoning": "Prior context can help planning.",
+  "target_subgraph": "",
+  "direct_answer": ""
+}`),
+			contentResponse(`{
+  "objective": "Use memory before planning",
+  "status": "planned",
+  "summary": "One step.",
+  "replan_reason": "",
+  "plan": [{
+    "id": "step_1",
+    "title": "Answer",
+    "description": "Answer from available context.",
+    "status": "ready",
+    "kind": "decision",
+    "node_type": "llm",
+    "depends_on": [],
+    "inputs": ["memory.recalled"],
+    "outputs": ["answer"],
+    "acceptance_criteria": [],
+    "parallelizable": false
+  }]
+}`),
+			contentResponse("Memory-aware answer."),
+			contentResponse("Final memory-aware answer."),
+		},
+	}
+
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
+	state := NewInitialState("Use prior deployment notes", nil)
+	state, err = graph.Run(ctx, state)
+	if err != nil {
+		t.Fatalf("run neo graph: %v", err)
+	}
+
+	memoryState := state.Get(wfstate.StateKeyMemory)
+	if memoryState == nil {
+		t.Fatal("expected memory recall state")
+	}
+	stats := wfstate.State(nil)
+	switch typed := memoryState["stats"].(type) {
+	case wfstate.State:
+		stats = typed
+	case map[string]any:
+		stats = typed
+	}
+	if stats == nil {
+		t.Fatalf("expected memory stats, got %#v", memoryState["stats"])
+	}
+	if requested, _ := stats["requested"].(bool); !requested {
+		t.Fatalf("expected memory recall to be requested, got %#v", stats)
+	}
+}
+
+func TestNewGraphValidationStepRoutesDirectlyToVerifier(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Mode = "planner"
+	graph, err := NewGraph(cfg)
+	if err != nil {
+		t.Fatalf("build neo graph: %v", err)
+	}
+
+	model := &scriptedNeoModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{
+  "mode": "planner",
+  "use_memory": false,
+  "memory_query": "",
+  "needs_clarification": false,
+  "clarification_question": "",
+  "clarification_options": [],
+  "reasoning": "Validation is required.",
+  "target_subgraph": "",
+  "direct_answer": ""
+}`),
+			contentResponse(`{
+  "objective": "Validate the prepared answer",
+  "status": "planned",
+  "summary": "Validate first.",
+  "replan_reason": "",
+  "plan": [{
+    "id": "step_1",
+    "title": "Validate answer",
+    "description": "Check that existing evidence satisfies the request.",
+    "status": "ready",
+    "kind": "validation",
+    "node_type": "verifier",
+    "depends_on": [],
+    "inputs": ["observations"],
+    "outputs": ["verification"],
+    "acceptance_criteria": ["The answer is validated."],
+    "parallelizable": false
+  }]
+}`),
+			contentResponse(`{"status":"pass","issues":[],"summary":"Validation passed.","suggestion":"continue"}`),
+			contentResponse("Final answer after validation."),
+		},
+	}
+
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
+	state := NewInitialState("Validate the prepared answer", nil)
+	state, err = graph.Run(ctx, state)
+	if err != nil {
+		t.Fatalf("run neo graph: %v", err)
+	}
+
+	if model.calls != 4 {
+		t.Fatalf("expected router, planner, verifier, finalizer calls only; got %d", model.calls)
+	}
+	verification := state.Get(wfstate.StateKeyVerification)
+	if got := verification["summary"]; got != "Validation passed." {
+		t.Fatalf("expected validation verifier result, got %#v", verification)
+	}
+}
+
+func TestNewGraphHumanInputStepPausesAtHumanMessage(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Mode = "planner"
+	graph, err := NewGraph(cfg)
+	if err != nil {
+		t.Fatalf("build neo graph: %v", err)
+	}
+
+	model := &scriptedNeoModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{
+  "mode": "planner",
+  "use_memory": false,
+  "memory_query": "",
+  "needs_clarification": false,
+  "clarification_question": "",
+  "clarification_options": [],
+  "reasoning": "Human input is needed.",
+  "target_subgraph": "",
+  "direct_answer": ""
+}`),
+			contentResponse(`{
+  "objective": "Ask for environment",
+  "status": "planned",
+  "summary": "Need environment input.",
+  "replan_reason": "",
+  "plan": [{
+    "id": "step_1",
+    "title": "Collect environment",
+    "description": "Ask the user for the target environment.",
+    "status": "ready",
+    "kind": "human_input",
+    "node_type": "human_message",
+    "depends_on": [],
+    "inputs": ["request.input"],
+    "outputs": ["environment"],
+    "acceptance_criteria": ["The target environment is known."],
+    "parallelizable": false
+  }]
+}`),
+		},
+	}
+
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
+	_, err = graph.Run(ctx, NewInitialState("Deploy it", nil))
+	if err == nil {
+		t.Fatal("expected graph to pause for human input")
+	}
+	if !strings.Contains(err.Error(), "HumanMessage_") {
+		t.Fatalf("expected interrupt at HumanMessage node, got: %v", err)
+	}
+}
+
+func TestNewGraphPlannerNeedsClarificationPausesAtClarificationNode(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Mode = "planner"
+	graph, err := NewGraph(cfg)
+	if err != nil {
+		t.Fatalf("build neo graph: %v", err)
+	}
+
+	model := &scriptedNeoModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{
+  "mode": "planner",
+  "use_memory": false,
+  "memory_query": "",
+  "needs_clarification": false,
+  "clarification_question": "",
+  "clarification_options": [],
+  "reasoning": "Route to planner.",
+  "target_subgraph": "",
+  "direct_answer": ""
+}`),
+			contentResponse(`{
+  "objective": "Deploy it",
+  "status": "needs_clarification",
+  "summary": "Which environment should be deployed to?",
+  "replan_reason": "",
+  "plan": []
+}`),
+		},
+	}
+
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
+	state := NewInitialState("Deploy it", nil)
+	state, err = graph.Run(ctx, state)
+	if err == nil {
+		t.Fatal("expected graph to pause for clarification")
+	}
+	if !strings.Contains(err.Error(), "Clarification_") {
+		t.Fatalf("expected interrupt at Clarification node, got: %v", err)
+	}
+	planner := state.Get(wfstate.StateKeyPlanner)
+	if got := planner["current_step_id"]; got != "" {
+		t.Fatalf("expected empty current_step_id for empty clarification plan, got %#v", got)
+	}
+}
+
 func optionsFromOrchestration(orchestration wfstate.State) []string {
 	switch typed := orchestration["clarification_options"].(type) {
 	case []string:

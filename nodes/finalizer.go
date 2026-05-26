@@ -171,6 +171,21 @@ func (n *FinalizerNode) determineOutcome(state wfstate.State, verification wfsta
 		}
 	}
 
+	plannerState := stateObjectAtPath(state, n.effectivePlannerPath())
+	if plannerState != nil {
+		switch status, _ := plannerState["status"].(string); strings.ToLower(strings.TrimSpace(status)) {
+		case "needs_clarification":
+			return FinalStatusNeedsClarification
+		case "blocked":
+			return FinalStatusBlocked
+		}
+	}
+
+	exec := state.Get(wfstate.StateKeyExecution)
+	if route, _ := exec["route"].(string); route == ExecutionRouteBlocked {
+		return FinalStatusBlocked
+	}
+
 	if verification == nil {
 		return FinalStatusSuccess
 	}
@@ -188,11 +203,6 @@ func (n *FinalizerNode) determineOutcome(state wfstate.State, verification wfsta
 		return FinalStatusSuccess
 	case VerificationFail:
 		return FinalStatusFailed
-	}
-
-	exec := state.Get(wfstate.StateKeyExecution)
-	if route, _ := exec["route"].(string); route == ExecutionRouteBlocked {
-		return FinalStatusBlocked
 	}
 
 	return FinalStatusSuccess
@@ -331,6 +341,9 @@ func (n *FinalizerNode) generateClarificationAnswer(state wfstate.State, verific
 		if orchestration != nil {
 			summary, _ = orchestration["reasoning"].(string)
 		}
+	}
+	if summary == "" && plannerState != nil {
+		summary, _ = plannerState["summary"].(string)
 	}
 	summary = strings.TrimSpace(summary)
 	if summary != "" {
@@ -542,6 +555,16 @@ func clarificationQuestions(state wfstate.State, verification wfstate.State) []s
 	if orchestration != nil {
 		if question, _ := orchestration["clarification_question"].(string); question != "" {
 			addQuestion(question)
+		}
+	}
+
+	planner := state.Get(wfstate.StateKeyPlanner)
+	if planner != nil {
+		status, _ := planner["status"].(string)
+		if strings.EqualFold(strings.TrimSpace(status), "needs_clarification") {
+			if summary, _ := planner["summary"].(string); summary != "" {
+				addQuestion(summary)
+			}
 		}
 	}
 

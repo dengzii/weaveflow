@@ -21,7 +21,8 @@ func main() {
 	//ContextReducerExample()
 	//SubgraphExample()
 	//AgentExample()
-	AgentAsToolExample()
+	//AgentAsToolExample()
+	ExploreExample()
 	span := time.Now().Sub(now)
 	fmt.Printf("node invoke took %s\n", span)
 }

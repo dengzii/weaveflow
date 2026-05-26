@@ -1,0 +1,112 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"path/filepath"
+	"weaveflow/llms/openai"
+	"weaveflow/tools"
+
+	"weaveflow"
+	"weaveflow/core"
+	"weaveflow/internal/neo"
+	"weaveflow/internal/utilities"
+	fruntime "weaveflow/runtime"
+	wfstate "weaveflow/state"
+)
+
+// Integration example for neo plan mode without booting the HTTP server.
+//
+// What this exercises:
+//   - OrchestrationRouter (locked to "planner" via Config.Mode)
+//   - PlannerNode -> PlanStepExecutorNode -> ContextAssembler -> LLM
+//     -> ObservationRecorder -> Verifier -> Finalizer loop
+//   - planner_progress events emitted along the way
+
+func main() {
+
+	wd, _ := os.Getwd()
+
+	cfg := neo.DefaultConfig()
+	cfg.Mode = "planner"
+	cfg.MemoryRecallLimit = 0
+	cfg.MaxIterations = 20
+	cfg.SystemPrompt = "You are an agent that plans a trip to a city. You are given the following information: " +
+		"current workdir: " + wd
+
+	graph, err := neo.NewGraph(cfg)
+	must(err)
+
+	model, err := openai.New()
+	must(err)
+
+	baseDir := filepath.Join(".local", "neo_plan_example")
+	must(os.MkdirAll(baseDir, 0o755))
+
+	sink := utilities.NewPrettyEventLogging(os.Stdout)
+
+	runner := weaveflow.NewGraphRunner(
+		graph,
+		fruntime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
+		fruntime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),
+		wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
+		sink,
+	)
+	runner.GraphID = "neo-plan-example"
+	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
+
+	ctx := core.WithServices(context.Background(), &core.Services{Model: fruntime.WrapLLM(model), Tools: map[string]tools.Tool{
+		"file_read": tools.NewFileRead(),
+		"glob":      tools.NewGlob(),
+		"bash":      tools.NewBash(),
+	}})
+	_, state, err := runner.Start(ctx, neo.NewInitialState("当前项目存在什么问题", nil))
+	must(err)
+
+	printPlannerState(state)
+	printFinalAnswer(state)
+}
+
+func printPlannerState(state wfstate.State) {
+	planner := state.Get(wfstate.StateKeyPlanner)
+	fmt.Println()
+	fmt.Println("=== planner state ===")
+	if planner == nil {
+		fmt.Println("  (empty)")
+		return
+	}
+	fmt.Printf("  status:          %v\n", planner["status"])
+	fmt.Printf("  current_step_id: %v\n", planner["current_step_id"])
+	for _, step := range extractSteps(planner["plan"]) {
+		fmt.Printf("  step %s [%s] %s\n", step["id"], step["status"], step["title"])
+	}
+}
+
+func extractSteps(raw any) []map[string]any {
+	switch typed := raw.(type) {
+	case []map[string]any:
+		return typed
+	case []any:
+		out := make([]map[string]any, 0, len(typed))
+		for _, item := range typed {
+			if m, ok := item.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+func printFinalAnswer(state wfstate.State) {
+	fmt.Println()
+	fmt.Println("=== final answer ===")
+	fmt.Println(state.Conversation("agent").FinalAnswer())
+}
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}

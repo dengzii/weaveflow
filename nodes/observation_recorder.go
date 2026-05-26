@@ -91,6 +91,15 @@ func (n *ObservationRecorderNode) execute(ctx context.Context, state wfstate.Sta
 				state.AppendObservation(obs)
 				recorded = append(recorded, obs)
 			}
+		case llms.ChatMessageTypeHuman:
+			if !currentStepIsHumanInput(state, n.effectivePlannerPath(), currentStepID) {
+				break
+			}
+			obs := n.recordHumanMessage(msg, currentStepID, now)
+			if obs != nil {
+				state.AppendObservation(obs)
+				recorded = append(recorded, obs)
+			}
 		}
 
 		if msg.Role == llms.ChatMessageTypeTool {
@@ -201,6 +210,21 @@ func (n *ObservationRecorderNode) recordLLMMessage(_ context.Context, msg llms.M
 	}
 }
 
+func (n *ObservationRecorderNode) recordHumanMessage(msg llms.MessageContent, stepID string, ts string) map[string]any {
+	text := extractText(msg)
+	if text == "" {
+		return nil
+	}
+	return map[string]any{
+		"source":     "human",
+		"summary":    truncateSummary(text, observationMaxSummaryLen),
+		"error":      nil,
+		"confidence": 1.0,
+		"step_id":    stepID,
+		"timestamp":  ts,
+	}
+}
+
 func (n *ObservationRecorderNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{}
 	if scope := n.effectiveScope(); scope != defaultObservationRecorderScope {
@@ -227,6 +251,22 @@ func resolveCurrentStepID(state wfstate.State, plannerPath string) string {
 	}
 	id, _ := planner["current_step_id"].(string)
 	return id
+}
+
+func currentStepIsHumanInput(state wfstate.State, plannerPath string, stepID string) bool {
+	if stepID == "" {
+		return false
+	}
+	planner := stateObjectAtPath(state, plannerPath)
+	if planner == nil {
+		return false
+	}
+	step := findStepByID(planner, stepID)
+	if step == nil {
+		return false
+	}
+	kind, _ := step["kind"].(string)
+	return strings.EqualFold(strings.TrimSpace(kind), "human_input")
 }
 
 func hasToolCalls(msg llms.MessageContent) bool {

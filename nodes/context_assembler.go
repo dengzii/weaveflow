@@ -245,6 +245,8 @@ func (n *ContextAssemblerNode) buildPlannerContextMessage(state wfstate.State) *
 	appendContextLine(&lines, "status", object["status"])
 	appendContextLine(&lines, "current_step_id", object["current_step_id"])
 	appendContextLine(&lines, "summary", object["summary"])
+	appendExecutionRoute(&lines, state)
+	appendCurrentPlannerStep(&lines, object, state)
 	appendPlannerSteps(&lines, object["plan"])
 	if len(lines) == 1 {
 		return nil
@@ -337,6 +339,60 @@ func appendPlannerSteps(lines *[]string, value any) {
 		}
 		*lines = append(*lines, "  - "+summary)
 	}
+}
+
+func appendExecutionRoute(lines *[]string, state wfstate.State) {
+	exec := state.Get(wfstate.StateKeyExecution)
+	if exec == nil {
+		return
+	}
+	appendContextLine(lines, "execution_route", exec["route"])
+}
+
+func appendCurrentPlannerStep(lines *[]string, planner map[string]any, state wfstate.State) {
+	if planner == nil {
+		return
+	}
+	step := currentPlannerStep(planner, state)
+	if step == nil {
+		return
+	}
+	*lines = append(*lines, "- current_step:")
+	appendIndentedContextLine(lines, "id", step["id"])
+	appendIndentedContextLine(lines, "title", step["title"])
+	appendIndentedContextLine(lines, "description", step["description"])
+	appendIndentedContextLine(lines, "kind", step["kind"])
+	appendIndentedContextLine(lines, "status", step["status"])
+	appendIndentedContextLine(lines, "inputs", step["inputs"])
+	appendIndentedContextLine(lines, "outputs", step["outputs"])
+	appendIndentedContextLine(lines, "acceptance_criteria", step["acceptance_criteria"])
+}
+
+func appendIndentedContextLine(lines *[]string, key string, value any) {
+	text := strings.TrimSpace(stringifyStateValue(value))
+	if text == "" || text == "{}" || text == "null" || text == "[]" {
+		return
+	}
+	*lines = append(*lines, fmt.Sprintf("  - %s: %s", key, text))
+}
+
+func currentPlannerStep(planner map[string]any, state wfstate.State) map[string]any {
+	if exec := state.Get(wfstate.StateKeyExecution); exec != nil {
+		if step := contextAssemblerObject(exec["current_step"]); step != nil {
+			return step
+		}
+	}
+	currentStepID, _ := planner["current_step_id"].(string)
+	currentStepID = strings.TrimSpace(currentStepID)
+	if currentStepID == "" {
+		return nil
+	}
+	for _, step := range contextAssemblerPlanSteps(planner["plan"]) {
+		if id, _ := step["id"].(string); id == currentStepID {
+			return step
+		}
+	}
+	return nil
 }
 
 func contextAssemblerPlanSteps(value any) []map[string]any {

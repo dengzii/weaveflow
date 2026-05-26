@@ -47,6 +47,10 @@ func (n *HumanMessageNode) execute(ctx context.Context, state wfstate.State) (wf
 		return state, nil
 	}
 
+	if n.waitingForPlanStepHumanInput(state) {
+		return state, &langgraph.NodeInterrupt{Node: n.NodeID, Value: n.InterruptMessage}
+	}
+
 	messages := conversation.Messages()
 	if len(messages) <= 0 {
 		return state, nil
@@ -58,6 +62,15 @@ func (n *HumanMessageNode) execute(ctx context.Context, state wfstate.State) (wf
 	}
 
 	return state, nil
+}
+
+func (n *HumanMessageNode) waitingForPlanStepHumanInput(state wfstate.State) bool {
+	exec := state.Get(wfstate.StateKeyExecution)
+	if exec == nil {
+		return false
+	}
+	route, _ := exec["route"].(string)
+	return strings.EqualFold(strings.TrimSpace(route), ExecutionRouteHuman)
 }
 
 func (n *HumanMessageNode) consumePendingInput(state wfstate.State) (string, bool, error) {

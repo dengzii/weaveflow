@@ -40,6 +40,32 @@ func TestFinalizerUsesExecutionRouteForBlockedOutcome(t *testing.T) {
 	}
 }
 
+func TestFinalizerBlockedRouteWinsOverPassingVerification(t *testing.T) {
+	t.Parallel()
+
+	node := NewFinalizerNode()
+	state := wfstate.State{
+		wfstate.StateKeyVerification: wfstate.State{
+			"status":      VerificationPass,
+			"next_action": VerificationActionContinue,
+			"summary":     "Previous step passed.",
+		},
+		wfstate.StateKeyExecution: wfstate.State{
+			"route": ExecutionRouteBlocked,
+		},
+	}
+
+	state, err := runTestNode(t, node, context.Background(), state)
+	if err != nil {
+		t.Fatalf("invoke finalizer: %v", err)
+	}
+
+	final := state.Get(wfstate.StateKeyFinal)
+	if got := final["status"]; got != FinalStatusBlocked {
+		t.Fatalf("expected blocked final status, got %#v", got)
+	}
+}
+
 func TestFinalizerUsesOrchestrationClarificationOutcome(t *testing.T) {
 	t.Parallel()
 

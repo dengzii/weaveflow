@@ -313,10 +313,19 @@ func decodePlannerResponse(content string, fallbackObjective string) (plannerRes
 		return plannerResponse{}, err
 	}
 	parsed = normalizePlannerResponse(parsed, fallbackObjective)
-	if len(parsed.Plan) == 0 {
+	if len(parsed.Plan) == 0 && !plannerStatusAllowsEmptyPlan(parsed.Status) {
 		return plannerResponse{}, errors.New("planner returned an empty plan")
 	}
 	return parsed, nil
+}
+
+func plannerStatusAllowsEmptyPlan(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "needs_clarification", "blocked":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizePlannerResponse(parsed plannerResponse, fallbackObjective string) plannerResponse {
@@ -382,6 +391,8 @@ func applyPlannerResponse(target wfstate.State, parsed plannerResponse) {
 	target["plan"] = serializePlannerPlan(parsed.Plan)
 	if len(parsed.Plan) > 0 {
 		target["current_step_id"] = parsed.Plan[0].ID
+	} else {
+		target["current_step_id"] = ""
 	}
 }
 

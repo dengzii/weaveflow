@@ -62,6 +62,9 @@ func (n *ClarificationQuestionNode) execute(ctx context.Context, state wfstate.S
 	}
 
 	question := strings.TrimSpace(stringFromMap(orchestration, "clarification_question"))
+	if question == "" {
+		question = plannerClarificationQuestion(state)
+	}
 	options := clarificationOptions(orchestration)
 	reasoning := strings.TrimSpace(stringFromMap(orchestration, "reasoning"))
 
@@ -93,6 +96,7 @@ func (n *ClarificationQuestionNode) applyUserChoice(ctx context.Context, state w
 
 	planner := state.Ensure(wfstate.StateKeyPlanner)
 	planner["objective"] = rewritten
+	planner["status"] = "planned"
 
 	attempts := clarificationAttempts(orchestration) + 1
 	orchestration["needs_clarification"] = false
@@ -243,4 +247,19 @@ func buildClarifiedInput(originalRequest string, originalQuestion string, choice
 		b.WriteString(choice)
 	}
 	return b.String()
+}
+
+func plannerClarificationQuestion(state wfstate.State) string {
+	planner := state.Get(wfstate.StateKeyPlanner)
+	if planner == nil {
+		return ""
+	}
+	status, _ := planner["status"].(string)
+	if !strings.EqualFold(strings.TrimSpace(status), "needs_clarification") {
+		return ""
+	}
+	if summary := strings.TrimSpace(stringFromMap(planner, "summary")); summary != "" {
+		return summary
+	}
+	return "Could you clarify the missing information needed to proceed?"
 }

@@ -51,6 +51,8 @@ type Config struct {
 	// Mode controls routing: "auto" lets the router decide, "direct" forces
 	// single-turn execution, "planner" forces multi-step plan execution.
 	Mode string
+	// MaxRetries is the maximum number of retries per step before marking it blocked
+	MaxRetries int
 }
 
 func DefaultConfig() Config {
@@ -66,6 +68,7 @@ func DefaultConfig() Config {
 		PromptMaxChars:         20000,
 		MemoryRecallTags:       []string{"final_answer", "assistant_output", "user_input"},
 		Mode:                   "auto",
+		MaxRetries:             3,
 	}
 }
 
@@ -142,6 +145,13 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
+	humanInput := nodes.NewHumanMessageNode()
+	humanInput.StateScope = scope
+	humanInput.InterruptMessage = "interrupt due to waiting for plan step human input"
+	if err := graph.AddNode(humanInput); err != nil {
+		return nil, err
+	}
+
 	ctxAssembler := nodes.NewContextAssemblerNode()
 	ctxAssembler.StateScope = scope
 	if err := graph.AddNode(ctxAssembler); err != nil {
@@ -169,6 +179,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 
 	verifier := nodes.NewVerifierNode()
 	verifier.StateScope = scope
+	verifier.MaxRetries = cfg.MaxRetries
 	if err := graph.AddNode(verifier); err != nil {
 		return nil, err
 	}
@@ -244,13 +255,13 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	if err := graph.AddConditionalEdge(router.ID(), planner.ID(), routePlanner); err != nil {
+	if err := graph.AddConditionalEdge(router.ID(), memRecall.ID(), routeMemory); err != nil {
 		return nil, err
 	}
 	if err := graph.AddConditionalEdge(router.ID(), explore.ID(), routeExplore); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(router.ID(), memRecall.ID(), routeMemory); err != nil {
+	if err := graph.AddConditionalEdge(router.ID(), planner.ID(), routePlanner); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(router.ID(), ctxAssembler.ID()); err != nil {
@@ -275,6 +286,24 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
+	plannerNeedsClarification, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "planner.status", Op: builtin.OperationEqual, Value2: "needs_clarification"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	plannerBlocked, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "planner.status", Op: builtin.OperationEqual, Value2: "blocked"}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(planner.ID(), clarification.ID(), plannerNeedsClarification); err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(planner.ID(), finalizer.ID(), plannerBlocked); err != nil {
+		return nil, err
+	}
 	if err := graph.AddEdge(planner.ID(), stepExec.ID()); err != nil {
 		return nil, err
 	}
@@ -294,7 +323,29 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err := graph.AddConditionalEdge(stepExec.ID(), finalizer.ID(), routeExecutionTerminal); err != nil {
 		return nil, err
 	}
+	routeExecutionVerifier, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "execution.route", Op: builtin.OperationEqual, Value2: nodes.ExecutionRouteVerifier}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	routeExecutionHuman, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{Value1: "execution.route", Op: builtin.OperationEqual, Value2: nodes.ExecutionRouteHuman}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(stepExec.ID(), verifier.ID(), routeExecutionVerifier); err != nil {
+		return nil, err
+	}
+	if err := graph.AddConditionalEdge(stepExec.ID(), humanInput.ID(), routeExecutionHuman); err != nil {
+		return nil, err
+	}
 	if err := graph.AddEdge(stepExec.ID(), ctxAssembler.ID()); err != nil {
+		return nil, err
+	}
+
+	if err := graph.AddEdge(humanInput.ID(), obsRecorder.ID()); err != nil {
 		return nil, err
 	}
 
