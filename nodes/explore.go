@@ -24,7 +24,7 @@ const (
 		"\n" +
 		"Strategy:\n" +
 		"1. Prefer `grep` and `glob` to locate relevant files before reading them.\n" +
-		"2. Use `file_read` only on files you've already narrowed down. Read in small chunks; never request large limits.\n" +
+		"2. Use `read` only on files you've already narrowed down. Read in small chunks; never request large limits.\n" +
 		"3. Track which files you've examined; do not re-read the same file.\n" +
 		"4. As soon as you have enough to answer, stop calling tools and reply with plain text.\n" +
 		"\n" +
@@ -36,12 +36,15 @@ const (
 
 type ExploreNode struct {
 	NodeInfo
-	ParentScope   string
-	ExploreScope  string
-	MaxIterations int
-	ToolIDs       []string
-	SystemPrompt  string
-	ToolResultCap int
+	ParentScope          string
+	ExploreScope         string
+	MaxIterations        int
+	ToolIDs              []string
+	SystemPrompt         string
+	ToolResultCap        int
+	EnvironmentStatePath string
+	IncludeEnvironment   bool
+	EnvironmentHeading   string
 }
 
 func NewExploreNode() *ExploreNode {
@@ -52,10 +55,13 @@ func NewExploreNode() *ExploreNode {
 			NodeName:        "Explore",
 			NodeDescription: "Run an isolated file-reading loop and return a structured summary.",
 		},
-		ExploreScope:  wfstate.StateKeyExplore,
-		MaxIterations: defaultExploreMaxIterations,
-		ToolIDs:       []string{"file_read", "grep", "glob"},
-		ToolResultCap: defaultExploreToolResultCap,
+		ExploreScope:         wfstate.StateKeyExplore,
+		MaxIterations:        defaultExploreMaxIterations,
+		ToolIDs:              []string{"read", "grep", "glob"},
+		ToolResultCap:        defaultExploreToolResultCap,
+		EnvironmentStatePath: wfstate.StateKeyEnvironment,
+		IncludeEnvironment:   true,
+		EnvironmentHeading:   defaultContextAssemblerEnvironmentHeader,
 	}
 }
 
@@ -75,6 +81,7 @@ func (n *ExploreNode) execute(ctx context.Context, state wfstate.State) (wfstate
 	}
 
 	exploreScope := n.effectiveExploreScope()
+	request = n.requestWithEnvironmentContext(state, request)
 	convo := state.Conversation(exploreScope)
 	convo.SetMaxIterations(n.effectiveMaxIterations())
 	convo.UpdateMessage([]llms.MessageContent{
@@ -278,9 +285,34 @@ func (n *ExploreNode) effectiveSystemPrompt() string {
 	return n.SystemPrompt
 }
 
+func (n *ExploreNode) effectiveEnvironmentStatePath() string {
+	if n == nil || strings.TrimSpace(n.EnvironmentStatePath) == "" {
+		return wfstate.StateKeyEnvironment
+	}
+	return strings.TrimSpace(n.EnvironmentStatePath)
+}
+
+func (n *ExploreNode) effectiveEnvironmentHeading() string {
+	if n == nil || strings.TrimSpace(n.EnvironmentHeading) == "" {
+		return defaultContextAssemblerEnvironmentHeader
+	}
+	return strings.TrimSpace(n.EnvironmentHeading)
+}
+
+func (n *ExploreNode) requestWithEnvironmentContext(state wfstate.State, request string) string {
+	if n == nil || !n.IncludeEnvironment {
+		return request
+	}
+	environment := buildEnvironmentContextText(state, n.effectiveEnvironmentStatePath(), n.effectiveEnvironmentHeading())
+	if strings.TrimSpace(environment) == "" {
+		return request
+	}
+	return environment + "\n\nUser request:\n" + request
+}
+
 func (n *ExploreNode) effectiveToolIDs() []string {
 	if n == nil || len(n.ToolIDs) == 0 {
-		return []string{"file_read", "grep", "glob"}
+		return []string{"read", "grep", "glob"}
 	}
 	out := make([]string, len(n.ToolIDs))
 	copy(out, n.ToolIDs)
@@ -300,11 +332,14 @@ func (n *ExploreNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		Type:        "explore",
 		Description: n.Description(),
 		Config: map[string]any{
-			"parent_scope":    n.effectiveParentScope(),
-			"explore_scope":   n.effectiveExploreScope(),
-			"max_iterations":  n.effectiveMaxIterations(),
-			"tool_result_cap": n.effectiveToolResultCap(),
-			"tool_ids":        n.effectiveToolIDs(),
+			"parent_scope":           n.effectiveParentScope(),
+			"explore_scope":          n.effectiveExploreScope(),
+			"max_iterations":         n.effectiveMaxIterations(),
+			"tool_result_cap":        n.effectiveToolResultCap(),
+			"tool_ids":               n.effectiveToolIDs(),
+			"environment_state_path": n.effectiveEnvironmentStatePath(),
+			"include_environment":    n.IncludeEnvironment,
+			"environment_heading":    n.effectiveEnvironmentHeading(),
 		},
 	}
 }

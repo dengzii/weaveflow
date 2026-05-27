@@ -200,6 +200,23 @@ func (n *VerifierNode) verifyStep(ctx context.Context, model llms.Model, state w
 		}, nil
 	}
 
+	// Path-mismatch shortcut (research steps only): if step.inputs lists file
+	// paths/queries but NO observation summary references any of them, the
+	// LLM read unrelated files — fail + replan immediately rather than waste
+	// retries. Skips when inputs is empty, observations is empty, or the
+	// inputs are clearly non-path queries.
+	if strings.EqualFold(stringFromMap(step, "kind"), "research") {
+		inputs := extractStringSlice(step, "inputs")
+		if mismatch, hint := researchPathMismatch(inputs, observations); mismatch {
+			return &verificationResult{
+				Status:     VerificationFail,
+				Issues:     []string{hint},
+				Summary:    "Research step did not access any of its declared inputs; replanning to focus on the correct target.",
+				NextAction: VerificationActionReplan,
+			}, nil
+		}
+	}
+
 	// No criteria and no errors - pass by default
 	if len(criteria) == 0 {
 		if len(observations) > 0 {
@@ -255,8 +272,7 @@ func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model
 		return ruleBasedVerification(criteria, observations), nil
 	}
 
-	stepTitle, _ := step["title"].(string)
-	prompt := buildStepVerificationPrompt(stepTitle, criteria, observations, stepResult)
+	prompt := buildStepVerificationPrompt(step, criteria, observations, stepResult)
 
 	resp, err := model.GenerateContent(ctx,
 		[]llms.MessageContent{
@@ -264,6 +280,7 @@ func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),
 		},
 		llms.WithTemperature(0.1),
+		llms.WithJSONMode(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("verifier LLM call failed: %w", err)
@@ -278,7 +295,11 @@ func (n *VerifierNode) callLLMVerification(ctx context.Context, model llms.Model
 		StateScope: n.effectiveScope(),
 	}, resp.Choices[0])
 
-	return parseVerificationResponse(resp.Choices[0].Content)
+	result, err := parseVerificationResponse(resp.Choices[0].Content)
+	if err != nil {
+		return nil, err
+	}
+	return adjustStepVerificationResult(result, step, observations), nil
 }
 
 func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.Model, state wfstate.State, objective string, observations []map[string]any, evidence []map[string]any, finalAnswer string) (*verificationResult, error) {
@@ -298,6 +319,7 @@ func (n *VerifierNode) callLLMFinalVerification(ctx context.Context, model llms.
 			llms.TextParts(llms.ChatMessageTypeHuman, prompt),
 		},
 		llms.WithTemperature(0.1),
+		llms.WithJSONMode(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("verifier final LLM call failed: %w", err)
@@ -484,24 +506,48 @@ Always respond with a JSON object in this exact format:
 }
 
 Rules:
-- "pass" means all criteria are met.
+- "pass" means ALL criteria are met. Only "pass" may be paired with "continue".
 - "fail" means critical criteria are not met.
-- "partial" means some criteria are met but not all.
-- "continue" means proceed to next step (use when status is pass).
-- "retry" means the same step should be retried (minor/transient failure).
-- "replan" means the plan needs fundamental changes.
+- "partial" means some criteria are met but not all; pair it with "retry" (transient/narrow) or "replan" (structural).
+- Never pair "partial" or "fail" with "continue". A step that did not fully meet its criteria must not advance the plan.
+- For step inputs containing file paths or queries, verify that at least one observation actually came from the requested input. If observations read different files than requested, the step has failed even when its prose summary looks plausible — return "fail" + "replan".
+- "continue" means proceed to next step (only when status is pass).
+- "retry" means the same step should be retried (minor/transient failure on a narrow step).
+- "replan" means the plan needs fundamental changes (broad scope, wrong target, iteration limit).
 - "finalize" means the overall task is done and we should produce the final answer.
+- For research steps that hit tool/iteration limits, output "fail" + "replan" instead of retrying the same broad step.
 
 Respond ONLY with valid JSON. No markdown, no explanation.`
 
-func buildStepVerificationPrompt(stepTitle string, criteria []string, observations []map[string]any, stepResult map[string]any) string {
+func buildStepVerificationPrompt(step map[string]any, criteria []string, observations []map[string]any, stepResult map[string]any) string {
 	var b strings.Builder
 
 	b.WriteString("## Step\n")
-	b.WriteString(stepTitle)
+	if title := stringFromMap(step, "title"); title != "" {
+		b.WriteString(title)
+	}
+	if kind := stringFromMap(step, "kind"); kind != "" {
+		fmt.Fprintf(&b, "\nkind: %s", kind)
+	}
+	if description := stringFromMap(step, "description"); description != "" {
+		fmt.Fprintf(&b, "\ndescription: %s", description)
+	}
+	if inputs := extractStringSlice(step, "inputs"); len(inputs) > 0 {
+		fmt.Fprintf(&b, "\ninputs: %s", strings.Join(inputs, ", "))
+	}
 	b.WriteString("\n\n## Acceptance Criteria\n")
 	for i, c := range criteria {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, c)
+	}
+
+	if strings.EqualFold(stringFromMap(step, "kind"), "research") {
+		b.WriteString("\n## Research Verification Guidance\n")
+		b.WriteString("- Check that observations actually came from the paths/queries listed in step.inputs. If a different file was read, return fail + replan even if the content looks substantive.\n")
+		b.WriteString("- If observations are partial but on the right targets, return partial + retry; the system will escalate to replan after the retry budget is exhausted.\n")
+		b.WriteString("- If the step appears too broad or hit tool/iteration limits, return fail + replan.\n")
+		b.WriteString("- Return retry only for transient execution errors or empty results from a narrow step.\n")
+		b.WriteString("- Never return partial + continue: partial means the step is not done.\n")
+		b.WriteString("- TRUNCATION CASE: if the right file was read but the visible content was truncated before the target lines (the read tool defaults to offset=0, limit=2000), return partial + retry and include in `issues` an explicit hint like \"re-call read with offset=N to reach line X\". Do NOT treat this as a wrong-file read.\n")
 	}
 
 	b.WriteString("\n## Observations\n")
@@ -585,6 +631,16 @@ func parseVerificationResponse(content string) (*verificationResult, error) {
 	result.Status = normalizeVerificationStatus(result.Status)
 	result.NextAction = normalizeVerificationAction(result.NextAction)
 
+	// Enforce strict pairing: only "pass" may advance the plan via "continue".
+	// If a model returns "partial" + "continue" (or "fail" + "continue"), coerce
+	// to retry so the step does not silently get marked completed.
+	if result.NextAction == VerificationActionContinue &&
+		result.Status != VerificationPass &&
+		result.Status != VerificationInconclusive {
+		result.NextAction = VerificationActionRetry
+		result.Issues = appendMissingIssue(result.Issues, "verifier coerced continue→retry: status was not pass")
+	}
+
 	return &result, nil
 }
 
@@ -634,6 +690,77 @@ func normalizeVerificationAction(action string) string {
 	}
 }
 
+func adjustStepVerificationResult(result *verificationResult, step map[string]any, _ []map[string]any) *verificationResult {
+	if result == nil || !strings.EqualFold(stringFromMap(step, "kind"), "research") {
+		return result
+	}
+
+	// Strict mode: a partial verification is NOT a pass. Let it ride the retry
+	// path; the verifier's retry counter (incrementAndCheckRetryLimit) will
+	// promote it to replan once the budget is exhausted. This prevents wrong-
+	// file-read failures from being silently promoted to "step_completed".
+
+	if result.NextAction == VerificationActionRetry && verificationResultSuggestsIterationLimit(result) {
+		result.NextAction = VerificationActionReplan
+		result.Issues = appendMissingIssue(result.Issues, "research step exceeded the tool or iteration budget; split it into smaller steps")
+		if result.Summary == "" {
+			result.Summary = "Research step exceeded the available tool budget and should be replanned into smaller steps."
+		}
+		return result
+	}
+
+	return result
+}
+
+func verificationResultSuggestsIterationLimit(result *verificationResult) bool {
+	if result == nil {
+		return false
+	}
+	text := strings.ToLower(strings.Join(append(append([]string{}, result.Issues...), result.Summary), " "))
+	for _, marker := range broadStepMarkers() {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func broadStepMarkers() []string {
+	return []string{
+		"maximum tool iterations",
+		"max tool iterations",
+		"max iterations",
+		"tool iteration",
+		"iteration limit",
+		"only file structure",
+		"only file names",
+		"output truncated",
+		"too broad",
+		"scope too broad",
+		"wrong file",
+		"different file",
+		"not directly read",
+		"not actually read",
+		"was not read",
+		"unrelated content",
+		"tool read state/",
+		"redirected to",
+	}
+}
+
+func appendMissingIssue(issues []string, issue string) []string {
+	issue = strings.TrimSpace(issue)
+	if issue == "" {
+		return issues
+	}
+	for _, existing := range issues {
+		if strings.EqualFold(strings.TrimSpace(existing), issue) {
+			return issues
+		}
+	}
+	return append(issues, issue)
+}
+
 // --- state helpers ---
 
 func findStepByID(plannerState wfstate.State, stepID string) map[string]any {
@@ -669,6 +796,84 @@ func extractStringSlice(m map[string]any, key string) []string {
 	default:
 		return nil
 	}
+}
+
+// researchPathMismatch reports whether a research step's inputs were
+// actually accessed by any observation. It returns true with a hint
+// string when NONE of the inputs appear in any observation summary.
+//
+// The heuristic is intentionally conservative:
+//   - skip when inputs is empty or observations is empty (insufficient signal);
+//   - skip when no input "looks like" a path/file (e.g. inputs are abstract
+//     identifiers like "state_keys_findings" from upstream step outputs);
+//   - for path-shaped inputs, require at least one input substring to appear
+//     in at least one observation summary.
+func researchPathMismatch(inputs []string, observations []map[string]any) (bool, string) {
+	if len(inputs) == 0 || len(observations) == 0 {
+		return false, ""
+	}
+
+	pathInputs := make([]string, 0, len(inputs))
+	for _, in := range inputs {
+		in = strings.TrimSpace(in)
+		if in == "" {
+			continue
+		}
+		if looksLikePathOrPattern(in) {
+			pathInputs = append(pathInputs, in)
+		}
+	}
+	if len(pathInputs) == 0 {
+		return false, ""
+	}
+
+	for _, in := range pathInputs {
+		needle := pathMismatchNeedle(in)
+		if needle == "" {
+			continue
+		}
+		for _, obs := range observations {
+			summary, _ := obs["summary"].(string)
+			if summary == "" {
+				continue
+			}
+			if strings.Contains(summary, needle) {
+				return false, ""
+			}
+		}
+	}
+
+	return true, fmt.Sprintf("research step's declared inputs %v were not referenced by any tool observation; the executor read unrelated files", pathInputs)
+}
+
+func looksLikePathOrPattern(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.ContainsAny(s, "/\\") {
+		return true
+	}
+	if strings.Contains(s, "*") {
+		return true
+	}
+	if strings.HasSuffix(s, ".go") || strings.HasSuffix(s, ".md") || strings.HasSuffix(s, ".json") {
+		return true
+	}
+	return false
+}
+
+func pathMismatchNeedle(in string) string {
+	in = strings.TrimSpace(in)
+	in = strings.TrimRight(in, "/\\")
+	// glob suffix like "state/**/*" — strip wildcards, keep the prefix
+	if idx := strings.IndexAny(in, "*?["); idx >= 0 {
+		in = strings.TrimRight(in[:idx], "/\\")
+	}
+	in = strings.TrimSpace(in)
+	if in == "" {
+		return ""
+	}
+	return in
 }
 
 func hasObservationErrors(observations []map[string]any) bool {

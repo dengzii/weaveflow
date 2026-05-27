@@ -257,6 +257,51 @@ func TestExploreNodeWritesFinalAnswerToParent(t *testing.T) {
 	}
 }
 
+func TestExploreNodeIncludesEnvironmentContextInRequest(t *testing.T) {
+	model := &scriptedExploreModel{
+		responses: []*llms.ContentResponse{
+			{Choices: []*llms.ContentChoice{{Content: "workspace inspected"}}},
+			{Choices: []*llms.ContentChoice{{Content: "summary"}}},
+		},
+	}
+	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
+
+	node := NewExploreNode()
+	node.ParentScope = "agent"
+	node.MaxIterations = 1
+
+	state := wfstate.State{
+		wfstate.StateKeyEnvironment: map[string]any{
+			"workspace_root": "/repo/weaveflow",
+			"project": map[string]any{
+				"name":         "weaveflow",
+				"test_command": "go test ./...",
+			},
+		},
+	}
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "where is routing implemented?"),
+	})
+
+	if _, err := runTestNode(t, node, ctx, state); err != nil {
+		t.Fatalf("explore node returned error: %v", err)
+	}
+	if len(model.prompts) == 0 || len(model.prompts[0]) < 2 {
+		t.Fatalf("expected explore prompt, got %#v", model.prompts)
+	}
+	request := extractText(model.prompts[0][1])
+	for _, want := range []string{
+		defaultContextAssemblerEnvironmentHeader,
+		"workspace_root: /repo/weaveflow",
+		"test_command: go test ./...",
+		"User request:\nwhere is routing implemented?",
+	} {
+		if !strings.Contains(request, want) {
+			t.Fatalf("expected explore request to contain %q, got:\n%s", want, request)
+		}
+	}
+}
+
 // Sanity check: the summarizer is given a non-empty transcript.
 func TestExploreSummarizerSeesTranscript(t *testing.T) {
 	model := &scriptedExploreModel{

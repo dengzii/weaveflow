@@ -386,9 +386,11 @@ func allStepsCompleted(plan []map[string]any) bool {
 
 func routeForKind(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
-	case "research", "decision":
+	case "decision":
 		return ExecutionRouteLLM
-	case "transform", "action":
+	case "research", "transform", "action":
+		// research must keep tools available; the planner uses inputs (file
+		// paths / queries) that only make sense if read/glob/grep are reachable.
 		return ExecutionRouteLLMWithTools
 	case "validation":
 		return ExecutionRouteVerifier

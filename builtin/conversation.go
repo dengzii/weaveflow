@@ -23,7 +23,9 @@ func registerSessionBootstrapModule(registry *registry.Registry) {
 	registry.RegisterStateField(requestStateFieldDefinition())
 	registry.RegisterStateField(agentStateFieldDefinition())
 	registry.RegisterStateField(toolPolicyStateFieldDefinition())
+	registry.RegisterStateField(environmentStateFieldDefinition())
 	registry.RegisterNodeType(sessionBootstrapNodeTypeDefinition())
+	registry.RegisterNodeType(environmentContextNodeTypeDefinition())
 }
 
 func requestStateFieldDefinition() dsl.StateFieldDefinition {
@@ -61,6 +63,25 @@ func toolPolicyStateFieldDefinition() dsl.StateFieldDefinition {
 		Description: "Tool availability and safety policy for the current agent run.",
 		Schema: dsl.JSONSchema{
 			"type":                 "object",
+			"additionalProperties": true,
+		},
+	}
+}
+
+func environmentStateFieldDefinition() dsl.StateFieldDefinition {
+	return dsl.StateFieldDefinition{
+		Name:        wfstate.StateKeyEnvironment,
+		Description: "Workspace, project, and version-control context for the current agent run.",
+		Schema: dsl.JSONSchema{
+			"type": "object",
+			"properties": dsl.JSONSchema{
+				"workspace_root": dsl.JSONSchema{"type": "string"},
+				"cwd":            dsl.JSONSchema{"type": "string"},
+				"source":         dsl.JSONSchema{"type": "string"},
+				"os":             dsl.JSONSchema{"type": "string"},
+				"project":        dsl.JSONSchema{"type": "object"},
+				"git":            dsl.JSONSchema{"type": "object"},
+			},
 			"additionalProperties": true,
 		},
 	}
@@ -117,6 +138,54 @@ func sessionBootstrapNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
+func environmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        "environment_context",
+			Title:       "Environment Context Node",
+			Description: "Collect workspace, project, and git context into shared state.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"environment_state_path": dsl.JSONSchema{"type": "string"},
+					"workspace_root":         dsl.JSONSchema{"type": "string"},
+					"include_git":            dsl.JSONSchema{"type": "boolean"},
+					"include_project":        dsl.JSONSchema{"type": "boolean"},
+					"git_status_limit":       dsl.JSONSchema{"type": "integer", "minimum": 1},
+				},
+				"additionalProperties": false,
+			},
+		},
+		Build: adaptNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
+			_ = ctx
+			node := nodes.NewEnvironmentContextNode()
+			node.NodeID = spec.ID
+			if spec.Name != "" {
+				node.NodeName = spec.Name
+			}
+			if spec.Description != "" {
+				node.NodeDescription = spec.Description
+			}
+			node.EnvironmentStatePath = registry.StringConfigTrim(spec.Config, "environment_state_path")
+			node.WorkspaceRoot = registry.StringConfigTrim(spec.Config, "workspace_root")
+			if value, ok := registry.BoolConfig(spec.Config, "include_git"); ok {
+				node.IncludeGit = value
+			}
+			if value, ok := registry.BoolConfig(spec.Config, "include_project"); ok {
+				node.IncludeProject = value
+			}
+			if value, ok := registry.IntConfig(spec.Config, "git_status_limit"); ok {
+				if value <= 0 {
+					return nil, fmt.Errorf("build environment_context node %q: git_status_limit must be greater than 0", spec.ID)
+				}
+				node.GitStatusLimit = value
+			}
+			return node, nil
+		}),
+		ResolveStateContract: resolveEnvironmentContextStateContract,
+	}
+}
+
 func registerContextModule(registry *registry.Registry) {
 	registry.RegisterNodeType(contextAssemblerNodeTypeDefinition())
 }
@@ -134,12 +203,15 @@ func contextAssemblerNodeTypeDefinition() registry.NodeTypeDefinition {
 					"memory_state_path":        dsl.JSONSchema{"type": "string"},
 					"orchestration_state_path": dsl.JSONSchema{"type": "string"},
 					"planner_state_path":       dsl.JSONSchema{"type": "string"},
+					"environment_state_path":   dsl.JSONSchema{"type": "string"},
 					"include_memory":           dsl.JSONSchema{"type": "boolean"},
 					"include_orchestration":    dsl.JSONSchema{"type": "boolean"},
 					"include_planner":          dsl.JSONSchema{"type": "boolean"},
+					"include_environment":      dsl.JSONSchema{"type": "boolean"},
 					"memory_heading":           dsl.JSONSchema{"type": "string"},
 					"orchestration_heading":    dsl.JSONSchema{"type": "string"},
 					"planner_heading":          dsl.JSONSchema{"type": "string"},
+					"environment_heading":      dsl.JSONSchema{"type": "string"},
 				},
 				"additionalProperties": false,
 			},
@@ -158,9 +230,11 @@ func contextAssemblerNodeTypeDefinition() registry.NodeTypeDefinition {
 			node.MemoryStatePath = registry.StringConfigTrim(spec.Config, "memory_state_path")
 			node.OrchestrationStatePath = registry.StringConfigTrim(spec.Config, "orchestration_state_path")
 			node.PlannerStatePath = registry.StringConfigTrim(spec.Config, "planner_state_path")
+			node.EnvironmentStatePath = registry.StringConfigTrim(spec.Config, "environment_state_path")
 			node.MemoryHeading = registry.StringConfigTrim(spec.Config, "memory_heading")
 			node.OrchestrationHeading = registry.StringConfigTrim(spec.Config, "orchestration_heading")
 			node.PlannerHeading = registry.StringConfigTrim(spec.Config, "planner_heading")
+			node.EnvironmentHeading = registry.StringConfigTrim(spec.Config, "environment_heading")
 			if value, ok := registry.BoolConfig(spec.Config, "include_memory"); ok {
 				node.IncludeMemory = value
 			}
@@ -169,6 +243,9 @@ func contextAssemblerNodeTypeDefinition() registry.NodeTypeDefinition {
 			}
 			if value, ok := registry.BoolConfig(spec.Config, "include_planner"); ok {
 				node.IncludePlanner = value
+			}
+			if value, ok := registry.BoolConfig(spec.Config, "include_environment"); ok {
+				node.IncludeEnvironment = value
 			}
 			return node, nil
 		}),
@@ -193,6 +270,11 @@ func resolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 		plannerPath = wfstate.StateKeyPlanner
 	}
 	plannerPath = canonicalContractPath(plannerPath)
+	environmentPath := registry.StringConfigTrim(spec.Config, "environment_state_path")
+	if strings.TrimSpace(environmentPath) == "" {
+		environmentPath = wfstate.StateKeyEnvironment
+	}
+	environmentPath = canonicalContractPath(environmentPath)
 
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -215,6 +297,28 @@ func resolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateCont
 				Path:        plannerPath,
 				Mode:        dsl.StateAccessRead,
 				Description: "Structured planner state consumed for prompt assembly.",
+			},
+			{
+				Path:        environmentPath,
+				Mode:        dsl.StateAccessRead,
+				Description: "Workspace environment state consumed for prompt assembly.",
+			},
+		},
+	}, nil
+}
+
+func resolveEnvironmentContextStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+	environmentPath := registry.StringConfigTrim(spec.Config, "environment_state_path")
+	if strings.TrimSpace(environmentPath) == "" {
+		environmentPath = wfstate.StateKeyEnvironment
+	}
+	return dsl.StateContract{
+		Fields: []dsl.StateFieldRef{
+			{
+				Path:          canonicalContractPath(environmentPath),
+				Mode:          dsl.StateAccessWrite,
+				Description:   "Collected workspace, project, and git context.",
+				MergeStrategy: dsl.StateMergeReplace,
 			},
 		},
 	}, nil

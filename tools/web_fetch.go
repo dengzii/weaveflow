@@ -21,6 +21,7 @@ const (
 
 type webFetchRequest struct {
 	URL      string `json:"url"`
+	Prompt   string `json:"prompt,omitempty"`
 	MaxBytes int    `json:"max_bytes,omitempty"`
 }
 
@@ -36,21 +37,26 @@ func NewWebFetch() Tool {
 	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name: "web_fetch",
-			Description: "Fetch a web page by URL and return its text content. " +
-				"HTML is converted to plain text. Use this to read articles, documentation, or any public web page.",
+			Description: "Fetches content from a specified URL and returns readable text content. " +
+				"HTML is converted to plain text. Use this tool when you need to retrieve and analyze web content.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"url": map[string]any{
 						"type":        "string",
-						"description": "The URL to fetch.",
+						"format":      "uri",
+						"description": "The URL to fetch content from",
+					},
+					"prompt": map[string]any{
+						"type":        "string",
+						"description": "The prompt to run on the fetched content",
 					},
 					"max_bytes": map[string]any{
 						"type":        "integer",
 						"description": "Optional max bytes of text content to return. Default 64KB, max 256KB.",
 					},
 				},
-				"required":             []string{"url"},
+				"required":             []string{"url", "prompt"},
 				"additionalProperties": false,
 			},
 		},

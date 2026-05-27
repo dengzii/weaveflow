@@ -292,6 +292,94 @@ func TestNewGraphValidationStepRoutesDirectlyToVerifier(t *testing.T) {
 	}
 }
 
+func TestNewGraphPlannerToolCallsLoopBackBeforeVerifier(t *testing.T) {
+	t.Parallel()
+
+	cfg := DefaultConfig()
+	cfg.Mode = "planner"
+	graph, err := NewGraph(cfg)
+	if err != nil {
+		t.Fatalf("build neo graph: %v", err)
+	}
+
+	model := &scriptedNeoModel{
+		responses: []*llms.ContentResponse{
+			contentResponse(`{
+  "mode": "planner",
+  "use_memory": false,
+  "memory_query": "",
+  "needs_clarification": false,
+  "clarification_question": "",
+  "clarification_options": [],
+  "reasoning": "Planner execution is required.",
+  "target_subgraph": "",
+  "direct_answer": ""
+}`),
+			contentResponse(`{
+  "objective": "Use a tool then summarize",
+  "status": "planned",
+  "summary": "One tool-backed step.",
+  "replan_reason": "",
+  "plan": [{
+    "id": "step_1",
+    "title": "Calculate and summarize",
+    "description": "Use the calculator tool, then summarize the result.",
+    "status": "ready",
+    "kind": "action",
+    "node_type": "llm",
+    "depends_on": [],
+    "inputs": ["request.input"],
+    "outputs": ["answer"],
+    "acceptance_criteria": ["The step output mentions the calculated result."],
+    "parallelizable": false
+  }]
+}`),
+			{
+				Choices: []*llms.ContentChoice{{
+					ToolCalls: []llms.ToolCall{{
+						ID:   "call_calc",
+						Type: "function",
+						FunctionCall: &llms.FunctionCall{
+							Name:      "calculator",
+							Arguments: `{"expression":"40+2"}`,
+						},
+					}},
+				}},
+			},
+			contentResponse("The calculated result is 42."),
+			contentResponse(`{"status":"pass","issues":[],"summary":"The step output mentions the calculated result.","suggestion":"continue"}`),
+			contentResponse("Final answer includes the calculated result 42."),
+		},
+	}
+
+	ctx := core.WithServices(context.Background(), &core.Services{
+		Model: model,
+		Tools: map[string]tools.Tool{
+			"calculator": tools.NewCalculator(),
+		},
+	})
+	state := NewInitialState("Use a helper tool and summarize it", nil)
+	state, err = graph.Run(ctx, state)
+	if err != nil {
+		t.Fatalf("run neo graph: %v", err)
+	}
+
+	if model.calls != 6 {
+		t.Fatalf("expected router, planner, tool-request LLM, tool-result LLM, verifier, finalizer calls; got %d", model.calls)
+	}
+	if got := finalAnswerFromState(state); got != "Final answer includes the calculated result 42." {
+		t.Fatalf("unexpected final answer: %q", got)
+	}
+	observations := state.Observations()
+	if len(observations) == 0 {
+		t.Fatal("expected recorded observations")
+	}
+	last := observations[len(observations)-1]
+	if got, _ := last["summary"].(string); !strings.Contains(got, "42") {
+		t.Fatalf("expected LLM synthesis observation after tool result, got %#v", last)
+	}
+}
+
 func TestNewGraphHumanInputStepPausesAtHumanMessage(t *testing.T) {
 	t.Parallel()
 

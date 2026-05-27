@@ -92,6 +92,46 @@ func TestGrepGlobFilter(t *testing.T) {
 	}
 }
 
+func TestGrepFilesWithMatchesOutputMode(t *testing.T) {
+	setupGrepWorkspace(t)
+	resp := runGrep(t, `{"pattern":"HelloWorld","output_mode":"files_with_matches"}`)
+	gotPaths := map[string]bool{}
+	for _, p := range resp.Paths {
+		gotPaths[p] = true
+	}
+	if !gotPaths["cmd/cli/main.go"] || !gotPaths["internal/pkg/util.go"] {
+		t.Fatalf("expected paths with matches, got %#v", resp.Paths)
+	}
+	if len(resp.Matches) != 0 {
+		t.Fatalf("expected no content matches in files_with_matches mode, got %#v", resp.Matches)
+	}
+}
+
+func TestGrepCountOutputMode(t *testing.T) {
+	setupGrepWorkspace(t)
+	resp := runGrep(t, `{"pattern":"HelloWorld","output_mode":"count"}`)
+	got := map[string]int{}
+	for _, c := range resp.Counts {
+		got[c.Path] = c.Count
+	}
+	if got["cmd/cli/main.go"] != 1 || got["internal/pkg/util.go"] != 1 {
+		t.Fatalf("expected counts for matching files, got %#v", resp.Counts)
+	}
+}
+
+func TestGrepTypeFilterAndAliasCaseInsensitive(t *testing.T) {
+	setupGrepWorkspace(t)
+	resp := runGrep(t, `{"pattern":"helloworld","type":"go","-i":true}`)
+	for _, m := range resp.Matches {
+		if !strings.HasSuffix(m.Path, ".go") {
+			t.Fatalf("expected only Go files, got %s", m.Path)
+		}
+	}
+	if len(resp.Matches) == 0 {
+		t.Fatal("expected Go matches")
+	}
+}
+
 func TestGrepSkipsBinaryFiles(t *testing.T) {
 	setupGrepWorkspace(t)
 	resp := runGrep(t, `{"pattern":"HelloWorld"}`)

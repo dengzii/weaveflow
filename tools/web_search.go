@@ -30,14 +30,31 @@ func NewWebSearch() Tool {
 	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name: "web_search",
-			Description: "Search the public web and return the top matching results with title, URL, and snippet. " +
-				"Use this when the user asks for external or recent information.",
+			Description: "- Allows the assistant to search the web and use the results to inform responses\n" +
+				"- Provides up-to-date information for current events and recent data\n" +
+				"- Returns search result information including links and snippets\n" +
+				"- Use this tool for accessing information beyond model knowledge",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "The web search query.",
+						"minLength":   2,
+						"description": "The search query to use",
+					},
+					"allowed_domains": map[string]any{
+						"type":        "array",
+						"description": "Only include search results from these domains",
+						"items": map[string]any{
+							"type": "string",
+						},
+					},
+					"blocked_domains": map[string]any{
+						"type":        "array",
+						"description": "Never include search results from these domains",
+						"items": map[string]any{
+							"type": "string",
+						},
 					},
 				},
 				"required":             []string{"query"},

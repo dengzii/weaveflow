@@ -2,6 +2,7 @@ package nodes
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -16,7 +17,9 @@ import (
 
 const (
 	defaultObservationRecorderScope  = "default"
-	observationMaxSummaryLen         = 500
+	observationMaxToolSummaryLen     = 500
+	observationMaxLLMSummaryLen      = 4000
+	observationMaxHumanSummaryLen    = 500
 	observationDefaultLLMConfidence  = 0.8
 	observationToolSuccessConfidence = 1.0
 	observationToolFailureConfidence = 0.0
@@ -68,6 +71,7 @@ func (n *ObservationRecorderNode) execute(ctx context.Context, state wfstate.Sta
 	now := time.Now().Format(time.RFC3339)
 
 	var recorded []map[string]any
+	latestAIRecorded := false
 
 	for i := len(messages) - 1; i >= 0; i-- {
 		msg := messages[i]
@@ -86,11 +90,16 @@ func (n *ObservationRecorderNode) execute(ctx context.Context, state wfstate.Sta
 			if hasToolCalls(msg) {
 				break
 			}
+			if latestAIRecorded {
+				break
+			}
 			obs := n.recordLLMMessage(ctx, msg, currentStepID, now)
 			if obs != nil {
 				state.AppendObservation(obs)
 				recorded = append(recorded, obs)
 			}
+			latestAIRecorded = true
+			continue
 		case llms.ChatMessageTypeHuman:
 			if !currentStepIsHumanInput(state, n.effectivePlannerPath(), currentStepID) {
 				break
@@ -153,7 +162,7 @@ func (n *ObservationRecorderNode) recordToolMessage(ctx context.Context, msg llm
 			confidence = observationToolFailureConfidence
 		}
 
-		summary := truncateSummary(content, observationMaxSummaryLen)
+		summary := truncateSummary(content, observationMaxToolSummaryLen)
 		source := fmt.Sprintf("tool:%s", resp.Name)
 
 		obs := map[string]any{
@@ -200,9 +209,11 @@ func (n *ObservationRecorderNode) recordLLMMessage(_ context.Context, msg llms.M
 		return nil
 	}
 
+	summary := truncateSummary(text, observationMaxLLMSummaryLen)
 	return map[string]any{
 		"source":     "llm",
-		"summary":    truncateSummary(text, observationMaxSummaryLen),
+		"summary":    summary,
+		"truncated":  len(summary) < len(strings.TrimSpace(text)),
 		"error":      nil,
 		"confidence": observationDefaultLLMConfidence,
 		"step_id":    stepID,
@@ -217,7 +228,7 @@ func (n *ObservationRecorderNode) recordHumanMessage(msg llms.MessageContent, st
 	}
 	return map[string]any{
 		"source":     "human",
-		"summary":    truncateSummary(text, observationMaxSummaryLen),
+		"summary":    truncateSummary(text, observationMaxHumanSummaryLen),
 		"error":      nil,
 		"confidence": 1.0,
 		"step_id":    stepID,
@@ -279,10 +290,45 @@ func hasToolCalls(msg llms.MessageContent) bool {
 }
 
 func isToolErrorContent(content string) bool {
-	lower := strings.ToLower(content)
+	trimmed := strings.TrimSpace(content)
+	lower := strings.ToLower(trimmed)
 	return strings.HasPrefix(lower, "error:") ||
 		strings.HasPrefix(lower, "error ") ||
-		strings.Contains(lower, "\"error\":")
+		strings.HasPrefix(lower, "tool execution failed:") ||
+		jsonPayloadHasError(trimmed)
+}
+
+func jsonPayloadHasError(content string) bool {
+	if content == "" || !strings.HasPrefix(content, "{") {
+		return false
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(content), &payload); err != nil {
+		return false
+	}
+	errorValue, ok := payload["error"]
+	if !ok {
+		return false
+	}
+	return hasNonEmptyErrorValue(errorValue)
+}
+
+func hasNonEmptyErrorValue(value any) bool {
+	switch typed := value.(type) {
+	case nil:
+		return false
+	case string:
+		return strings.TrimSpace(typed) != ""
+	case bool:
+		return typed
+	case []any:
+		return len(typed) > 0
+	case map[string]any:
+		return len(typed) > 0
+	default:
+		return true
+	}
 }
 
 func truncateSummary(text string, maxLen int) string {

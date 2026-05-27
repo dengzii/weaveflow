@@ -17,7 +17,7 @@ import (
 
 const (
 	defaultPlannerStatePath = wfstate.StateKeyPlanner
-	defaultPlannerMaxSteps  = 6
+	defaultPlannerMaxSteps  = 12
 	plannerSystemPrompt     = `You are the planner node inside an agent workflow.
 Return JSON only. Do not use markdown fences.
 
@@ -28,6 +28,7 @@ You will receive a JSON payload with:
 - planner_state
 - context
 - max_steps
+- step_constraints
 - step_kind_hints
 - additional_rules
 
@@ -56,14 +57,22 @@ Each step must use this shape:
 }
 
 Rules:
-- Use the fewest steps that still fully cover the objective.
+- Use enough focused steps to fully cover the objective; do not minimize step count by merging unrelated work.
+- Each step must have one clear deliverable and one primary subject area.
+- For research/code-inspection steps, inspect at most one package/directory or up to three specific files. If more files or subsystems are needed, split them into separate research steps and add a later synthesis step.
+- Keep acceptance_criteria short and independently checkable; avoid "all", "complete", or multi-clause criteria unless the step is explicitly a final synthesis.
+- Use directory inputs only for discovery/listing steps. File-reading steps should name specific files or a narrow glob.
 - Respect real dependencies. No cycles and no missing prerequisites.
 - Prefer clarification or information gathering before irreversible work.
 - If key information is missing, use status "needs_clarification" or blocked steps instead of guessing.
 - Acceptance criteria must be concrete and checkable.
 - If step_kind_hints is non-empty, every step.kind must be chosen from it.
-- Do not exceed max_steps.
-- During replanning, preserve unaffected completed steps and keep their existing ids when possible.`
+- max_steps is the budget for NEW pending/ready steps in this response. Already-completed steps you preserve do NOT count toward max_steps — so during replanning you may keep all completed steps even if the resulting plan length temporarily exceeds max_steps, as long as new pending/ready steps stay within budget.
+- During replanning, preserve unaffected completed steps and keep their existing ids when possible.
+- During replanning after a failed broad step, replace it with smaller focused pending steps instead of retrying the same broad scope.
+- Each step's "inputs" must be paths or queries directly consumable by the registered tools listed in "available_tools" of the input payload. Do not invent tool names, parameter names, or generic verbs.
+- Choose "kind" so that downstream execution can pick the right tool: use "research" for code/file inspection, "action"/"transform" for write/edit/bash, "validation" for checking, "decision" for routing.
+- Synthesis or final-summary steps must be standalone steps with kind "transform" and depend on the prior research steps. Never combine research and synthesis in one step; the synthesis step's only job is to consolidate prior step results into the final deliverable.`
 )
 
 type PlannerNode struct {
@@ -138,9 +147,11 @@ func (n *PlannerNode) execute(ctx context.Context, state wfstate.State) (wfstate
 		"planner_state":    plannerState,
 		"context":          contextPayload,
 		"max_steps":        n.effectiveMaxSteps(),
+		"step_constraints": defaultPlannerStepConstraints(),
 		"step_kind_hints":  clonePlannerStrings(n.StepKindHints),
 		"planner_path":     plannerPath,
 		"additional_rules": strings.TrimSpace(n.Instructions),
+		"available_tools":  describeAvailableTools(svc),
 	}
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "planner.prompt", promptPayload)
 
@@ -284,6 +295,69 @@ func buildPlannerPrompt(payload map[string]any) string {
 		return "Generate a plan from the provided objective and context."
 	}
 	return "Generate a plan from the following JSON payload.\n\n" + string(data)
+}
+
+func describeAvailableTools(svc *core.Services) []map[string]any {
+	if svc == nil || len(svc.Tools) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(svc.Tools))
+	for name := range svc.Tools {
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		names = append(names, name)
+	}
+	sortStrings(names)
+	descriptors := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		tool := svc.Tools[name]
+		if tool.Function == nil {
+			continue
+		}
+		toolName := strings.TrimSpace(tool.Function.Name)
+		if toolName == "" {
+			toolName = name
+		}
+		descriptors = append(descriptors, map[string]any{
+			"name":            toolName,
+			"description":     strings.TrimSpace(firstLine(tool.Function.Description)),
+			"required_params": extractRequiredParamNames(tool.Function.Parameters),
+		})
+	}
+	return descriptors
+}
+
+func sortStrings(items []string) {
+	for i := 1; i < len(items); i++ {
+		for j := i; j > 0 && items[j-1] > items[j]; j-- {
+			items[j-1], items[j] = items[j], items[j-1]
+		}
+	}
+}
+
+func defaultPlannerStepConstraints() map[string]any {
+	return map[string]any{
+		"general": map[string]any{
+			"one_primary_subject_per_step":                               true,
+			"max_acceptance_criteria_per_step":                           3,
+			"prefer_more_small_steps_over_large":                         true,
+			"final_synthesis_step_required_when_multiple_research_steps": true,
+		},
+		"research": map[string]any{
+			"max_inputs_per_step":                              3,
+			"max_packages_or_directories":                      1,
+			"directory_inputs_for_discovery":                   true,
+			"split_by_package_or_concept":                      true,
+			"produce_partial_findings_if_scope_exceeds_budget": true,
+		},
+		"replanning": map[string]any{
+			"split_failed_broad_steps":                      true,
+			"preserve_completed_steps":                      true,
+			"do_not_retry_same_broad_scope":                 true,
+			"prefer_new_narrow_steps_after_iteration_limit": true,
+		},
+	}
 }
 
 func parsePlannerResponse(content string, fallbackObjective string) (plannerResponse, error) {

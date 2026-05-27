@@ -141,7 +141,7 @@ func TestAttachEventIdentityIncludesNodeForToolEvents(t *testing.T) {
 		StepID: "step_456",
 		Payload: rawJSON(map[string]string{
 			"tool_call_id": "call_1",
-			"name":         "file_read",
+			"name":         "read",
 			"content":      "ok",
 			"arguments":    `{"path":"nodes/explore.go"}`,
 		}),

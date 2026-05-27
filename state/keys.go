@@ -4,9 +4,10 @@ package state
 // Grouped by module so additions are easy to audit.
 const (
 	// StateKeyRequest session
-	StateKeyRequest    = "request"
-	StateKeyAgent      = "agent"
-	StateKeyToolPolicy = "tool_policy"
+	StateKeyRequest     = "request"
+	StateKeyAgent       = "agent"
+	StateKeyToolPolicy  = "tool_policy"
+	StateKeyEnvironment = "environment"
 
 	// StateKeyIntent intent
 	StateKeyIntent = "intent"

@@ -15,7 +15,7 @@ import (
 
 // ExploreExample runs an ExploreNode standalone: the node reads the latest
 // human message from the parent scope, drives its own isolated tool loop
-// (file_read / grep / glob) until the model stops calling tools, then writes
+// (read / grep / glob) until the model stops calling tools, then writes
 // a structured summary back into the parent scope's final_answer.
 func ExploreExample() {
 	model, err := openai.New()
@@ -24,9 +24,9 @@ func ExploreExample() {
 	svc := &core.Services{
 		Model: runtime.WrapLLM(model),
 		Tools: map[string]tools.Tool{
-			"file_read": tools.NewFileRead(),
-			"grep":      tools.NewGrep(),
-			"glob":      tools.NewGlob(),
+			"read": tools.NewRead(),
+			"grep": tools.NewGrep(),
+			"glob": tools.NewGlob(),
 		},
 	}
 	ctx := core.WithServices(context.Background(), svc)

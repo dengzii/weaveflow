@@ -22,13 +22,12 @@ func NewServices(model llms.Model, baseDir string) *core.Services {
 		Model:  model,
 		Memory: memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}),
 		Tools: map[string]tools.Tool{
-			"current_time": tools.NewCurrentTime(),
-			"calculator":   tools.NewCalculator(),
-			"file_read":    tools.NewFileRead(),
-			"file_write":   tools.NewFileWrite(),
-			"glob":         tools.NewGlob(),
-			"grep":         tools.NewGrep(),
-			"web_fetch":    tools.NewWebFetch(),
+			"read":  tools.NewRead(),
+			"write": tools.NewWrite(),
+			"edit":  tools.NewEdit(),
+			"glob":  tools.NewGlob(),
+			"grep":  tools.NewGrep(),
+			//"web_fetch": tools.NewWebFetch(),
 			// "web_search": tools.NewWebSearch(),
 		},
 	}
@@ -61,7 +60,7 @@ func DefaultConfig() Config {
 		SystemPrompt:           "You are Neo, a pragmatic general-purpose task agent. Use tools when they improve accuracy. Plan only when the task needs decomposition or verification. Ask for clarification when required and avoid guessing.",
 		MaxIterations:          16,
 		RequestTimeoutSeconds:  180,
-		PlannerMaxSteps:        6,
+		PlannerMaxSteps:        12,
 		MemoryRecallLimit:      5,
 		HistoryRecentTurns:     defaultPromptRecentTurns,
 		HistorySummaryMaxChars: defaultPromptSummaryMaxChars,
@@ -85,6 +84,11 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	bootstrap.MaxIterations = cfg.MaxIterations
 	bootstrap.SystemPrompt = cfg.SystemPrompt
 	if err := graph.AddNode(bootstrap); err != nil {
+		return nil, err
+	}
+
+	environment := nodes.NewEnvironmentContextNode()
+	if err := graph.AddNode(environment); err != nil {
 		return nil, err
 	}
 
@@ -120,7 +124,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	}
 
 	planner := nodes.NewPlannerNode()
-	planner.ContextPaths = []string{wfstate.StateKeyMemory, wfstate.StateKeyExecution}
+	planner.ContextPaths = []string{wfstate.StateKeyEnvironment, wfstate.StateKeyMemory, wfstate.StateKeyExecution}
 	planner.MaxSteps = cfg.PlannerMaxSteps
 	if err := graph.AddNode(planner); err != nil {
 		return nil, err
@@ -134,6 +138,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	}
 
 	replanner := nodes.NewReplannerNode()
+	replanner.ContextPaths = []string{wfstate.StateKeyEnvironment, wfstate.StateKeyMemory, wfstate.StateKeyExecution}
 	replanner.MaxSteps = cfg.PlannerMaxSteps
 	if err := graph.AddNode(replanner); err != nil {
 		return nil, err
@@ -199,7 +204,10 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	if err := graph.AddEdge(bootstrap.ID(), router.ID()); err != nil {
+	if err := graph.AddEdge(bootstrap.ID(), environment.ID()); err != nil {
+		return nil, err
+	}
+	if err := graph.AddEdge(environment.ID(), router.ID()); err != nil {
 		return nil, err
 	}
 	routeClarificationExhausted, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
@@ -362,6 +370,18 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	if err != nil {
 		return nil, err
 	}
+	toolResultLoopMode, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
+		Expressions: []builtin.Expression{{
+			Logic: builtin.LogicOr,
+			Children: []builtin.Expression{
+				{Value1: "orchestration.mode", Op: builtin.OperationEqual, Value2: "direct"},
+				{Value1: "orchestration.mode", Op: builtin.OperationEqual, Value2: "planner"},
+			},
+		}},
+	})
+	if err != nil {
+		return nil, err
+	}
 	if err := graph.AddConditionalEdge(llmNode.ID(), finalizer.ID(), directMode); err != nil {
 		return nil, err
 	}
@@ -369,7 +389,7 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 		return nil, err
 	}
 
-	if err := graph.AddConditionalEdge(toolCall.ID(), ctxAssembler.ID(), directMode); err != nil {
+	if err := graph.AddConditionalEdge(toolCall.ID(), ctxAssembler.ID(), toolResultLoopMode); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(toolCall.ID(), obsRecorder.ID()); err != nil {

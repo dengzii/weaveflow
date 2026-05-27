@@ -69,8 +69,8 @@ func TestPlanStepExecutorHonorsPlannerPathAndDependencyStatus(t *testing.T) {
 	if got := currentStep["status"]; got != "in_progress" {
 		t.Fatalf("expected current step status in_progress, got %#v", got)
 	}
-	if got := exec["route"]; got != ExecutionRouteLLM {
-		t.Fatalf("expected route llm, got %#v", got)
+	if got := exec["route"]; got != ExecutionRouteLLMWithTools {
+		t.Fatalf("expected route llm_with_tools (research keeps tools), got %#v", got)
 	}
 }
 

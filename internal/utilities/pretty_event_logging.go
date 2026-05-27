@@ -17,6 +17,8 @@ type PrettyEventLogging struct {
 	w           io.Writer
 	colors      bool
 	truncateLen int // 0 means no truncation
+	enabled     map[fruntime.EventType]struct{}
+	disabled    map[fruntime.EventType]struct{}
 }
 
 type PrettyEventOption func(*PrettyEventLogging)
@@ -31,6 +33,21 @@ func WithTruncate(maxLen int) PrettyEventOption {
 func WithColors(enabled bool) PrettyEventOption {
 	return func(p *PrettyEventLogging) {
 		p.colors = enabled
+	}
+}
+
+// WithEnabledEventTypes limits logging to the provided event types.
+// An empty list keeps the default behavior of logging all supported event types.
+func WithEnabledEventTypes(types ...fruntime.EventType) PrettyEventOption {
+	return func(p *PrettyEventLogging) {
+		p.enabled = eventTypeSet(types)
+	}
+}
+
+// WithDisabledEventTypes suppresses logging for the provided event types.
+func WithDisabledEventTypes(types ...fruntime.EventType) PrettyEventOption {
+	return func(p *PrettyEventLogging) {
+		p.disabled = eventTypeSet(types)
 	}
 }
 
@@ -50,6 +67,9 @@ func NewPrettyEventLogging(w io.Writer, opts ...PrettyEventOption) *PrettyEventL
 }
 
 func (p *PrettyEventLogging) Publish(ctx context.Context, event fruntime.Event) error {
+	if !p.shouldPrintEvent(event.Type) {
+		return nil
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.printEvent(event)
@@ -60,9 +80,26 @@ func (p *PrettyEventLogging) PublishBatch(ctx context.Context, events []fruntime
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	for _, e := range events {
+		if !p.shouldPrintEvent(e.Type) {
+			continue
+		}
 		p.printEvent(e)
 	}
 	return nil
+}
+
+func (p *PrettyEventLogging) shouldPrintEvent(eventType fruntime.EventType) bool {
+	if len(p.enabled) > 0 {
+		if _, ok := p.enabled[eventType]; !ok {
+			return false
+		}
+	}
+	if len(p.disabled) > 0 {
+		if _, ok := p.disabled[eventType]; ok {
+			return false
+		}
+	}
+	return true
 }
 
 func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
@@ -114,14 +151,12 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 	case fruntime.EventToolCalled:
 		var payload map[string]any
 		_ = json.Unmarshal(e.Payload, &payload)
-		name, _ := payload["name"].(string)
-		p.printf("%s %s %s(%s)\n", p.dim(ts), p.yellow("⚡"), name, p.truncate(jsonArg(payload["arguments"])))
+		p.printf("%s %s %s\n", p.dim(ts), p.yellow("⚡"), p.truncate(formatToolCallPayload(payload)))
 
 	case fruntime.EventToolReturned:
 		var payload map[string]any
 		_ = json.Unmarshal(e.Payload, &payload)
-		name, _ := payload["name"].(string)
-		p.printf("%s %s %s → %s\n", p.dim(ts), p.yellow("↩"), name, p.truncate(jsonArg(payload["result"])))
+		p.printf("%s %s %s\n", p.dim(ts), p.yellow("↩"), p.truncate(formatToolReturnPayload(payload)))
 
 	case fruntime.EventToolFailed:
 		var payload map[string]any
@@ -270,11 +305,87 @@ func jsonArg(v any) string {
 	if v == nil {
 		return ""
 	}
+	if s, ok := v.(string); ok {
+		return s
+	}
 	b, err := json.Marshal(v)
 	if err != nil {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+func formatToolCallPayload(payload map[string]any) string {
+	items := toolEventItemsFromPayload(payload)
+	if len(items) == 0 {
+		name, _ := payload["name"].(string)
+		return fmt.Sprintf("%s(%s)", name, jsonArg(payload["arguments"]))
+	}
+
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		parts = append(parts, fmt.Sprintf("%s(%s)", item.name, jsonArg(item.arguments)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func formatToolReturnPayload(payload map[string]any) string {
+	items := toolEventItemsFromPayload(payload)
+	if len(items) == 0 {
+		name, _ := payload["name"].(string)
+		return fmt.Sprintf("%s → %s", name, jsonArg(firstNonNil(payload["content"], payload["result"])))
+	}
+
+	parts := make([]string, 0, len(items))
+	for _, item := range items {
+		result := firstNonNil(item.content, item.result)
+		if item.err != nil {
+			result = item.err
+		}
+		parts = append(parts, fmt.Sprintf("%s → %s", item.name, jsonArg(result)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+type toolEventItem struct {
+	name      string
+	arguments any
+	content   any
+	result    any
+	err       any
+}
+
+func toolEventItemsFromPayload(payload map[string]any) []toolEventItem {
+	rawTools, ok := payload["tools"].([]any)
+	if !ok {
+		return nil
+	}
+
+	items := make([]toolEventItem, 0, len(rawTools))
+	for _, rawTool := range rawTools {
+		tool, ok := rawTool.(map[string]any)
+		if !ok {
+			continue
+		}
+		name, _ := tool["name"].(string)
+		items = append(items, toolEventItem{
+			name:      name,
+			arguments: tool["arguments"],
+			content:   tool["content"],
+			result:    tool["result"],
+			err:       tool["error"],
+		})
+	}
+	return items
+}
+
+func firstNonNil(values ...any) any {
+	for _, value := range values {
+		if value != nil {
+			return value
+		}
+	}
+	return nil
 }
 
 func intFromAny(v any) int {
@@ -287,6 +398,17 @@ func intFromAny(v any) int {
 		return int(n)
 	}
 	return 0
+}
+
+func eventTypeSet(types []fruntime.EventType) map[fruntime.EventType]struct{} {
+	if len(types) == 0 {
+		return nil
+	}
+	set := make(map[fruntime.EventType]struct{}, len(types))
+	for _, eventType := range types {
+		set[eventType] = struct{}{}
+	}
+	return set
 }
 
 // Color helpers

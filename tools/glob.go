@@ -43,27 +43,29 @@ type globResponse struct {
 	Scanned   int      `json:"scanned_files"`
 }
 
+type globResult struct {
+	Path    string
+	ModTime int64
+}
+
 func NewGlob() Tool {
 	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name: "glob",
-			Description: "Find filenames matching a glob pattern inside the workspace. " +
-				"Supports ** for recursive descent and * for any-name within a path segment. " +
-				"Prefer this over listing directories one by one.",
+			Description: "- Fast file pattern matching tool that works with any codebase size\n" +
+				"- Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\"\n" +
+				"- Returns matching file paths sorted by modification time\n" +
+				"- Use this tool when you need to find files by name patterns",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"pattern": map[string]any{
 						"type":        "string",
-						"description": "Glob pattern such as **/*.go or internal/**/*_test.go",
+						"description": "The glob pattern to match files against",
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Optional root directory inside the workspace; defaults to .",
-					},
-					"max_results": map[string]any{
-						"type":        "integer",
-						"description": "Optional cap on returned paths (default 200, max 500).",
+						"description": "The directory to search in. If not specified, the current working directory will be used.",
 					},
 				},
 				"required":             []string{"pattern"},
@@ -97,7 +99,7 @@ func globTool(_ context.Context, input string) (string, error) {
 	}
 
 	limit := normalizeGlobLimit(req.MaxResults)
-	matched := make([]string, 0, 32)
+	matched := make([]globResult, 0, 32)
 	scanned := 0
 	truncated := false
 
@@ -130,20 +132,36 @@ func globTool(_ context.Context, input string) (string, error) {
 			truncated = true
 			return filepath.SkipAll
 		}
-		matched = append(matched, joinRelativePath(relRoot, rel))
+		var modTime int64
+		if info, err := d.Info(); err == nil {
+			modTime = info.ModTime().UnixNano()
+		}
+		matched = append(matched, globResult{
+			Path:    joinRelativePath(relRoot, rel),
+			ModTime: modTime,
+		})
 		return nil
 	})
 	if walkErr != nil {
 		return "", walkErr
 	}
 
-	sort.Strings(matched)
+	sort.SliceStable(matched, func(i, j int) bool {
+		if matched[i].ModTime != matched[j].ModTime {
+			return matched[i].ModTime > matched[j].ModTime
+		}
+		return matched[i].Path < matched[j].Path
+	})
+	paths := make([]string, len(matched))
+	for i, item := range matched {
+		paths[i] = item.Path
+	}
 
 	data, err := json.Marshal(globResponse{
 		Pattern:   req.Pattern,
 		Root:      relRoot,
 		Workspace: workspace,
-		Paths:     matched,
+		Paths:     paths,
 		Truncated: truncated,
 		Scanned:   scanned,
 	})

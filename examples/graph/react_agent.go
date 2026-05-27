@@ -29,9 +29,11 @@ func newReActAgentTools() map[string]tools.Tool {
 		"current_time": tools.NewCurrentTime(),
 		"calculator":   tools.NewCalculator(),
 		//"web_search":   tools.NewWebSearch(),
-		"file_read":  tools.NewFileRead(),
-		"file_write": tools.NewFileWrite(),
-		"web_fetch":  tools.NewWebFetch(),
+		"read":      tools.NewRead(),
+		"write":     tools.NewWrite(),
+		"edit":      tools.NewEdit(),
+		"grep":      tools.NewGrep(),
+		"web_fetch": tools.NewWebFetch(),
 	}
 }
 

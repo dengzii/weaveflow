@@ -17,6 +17,7 @@ const (
 	defaultContextAssemblerHeading             = "Relevant recalled memory:"
 	defaultContextAssemblerOrchestrationHeader = "Current orchestration state:"
 	defaultContextAssemblerPlannerHeader       = "Current plan state:"
+	defaultContextAssemblerEnvironmentHeader   = "Current workspace context:"
 )
 
 type ContextAssemblerNode struct {
@@ -25,12 +26,15 @@ type ContextAssemblerNode struct {
 	MemoryStatePath        string
 	OrchestrationStatePath string
 	PlannerStatePath       string
+	EnvironmentStatePath   string
 	IncludeMemory          bool
 	IncludeOrchestration   bool
 	IncludePlanner         bool
+	IncludeEnvironment     bool
 	MemoryHeading          string
 	OrchestrationHeading   string
 	PlannerHeading         string
+	EnvironmentHeading     string
 }
 
 func NewContextAssemblerNode() *ContextAssemblerNode {
@@ -44,12 +48,15 @@ func NewContextAssemblerNode() *ContextAssemblerNode {
 		MemoryStatePath:        defaultMemoryStatePath,
 		OrchestrationStatePath: wfstate.StateKeyOrchestration,
 		PlannerStatePath:       wfstate.StateKeyPlanner,
+		EnvironmentStatePath:   wfstate.StateKeyEnvironment,
 		IncludeMemory:          true,
 		IncludeOrchestration:   true,
 		IncludePlanner:         true,
+		IncludeEnvironment:     true,
 		MemoryHeading:          defaultContextAssemblerHeading,
 		OrchestrationHeading:   defaultContextAssemblerOrchestrationHeader,
 		PlannerHeading:         defaultContextAssemblerPlannerHeader,
+		EnvironmentHeading:     defaultContextAssemblerEnvironmentHeader,
 	}
 }
 
@@ -65,7 +72,14 @@ func (n *ContextAssemblerNode) execute(ctx context.Context, state wfstate.State)
 	}
 
 	cleaned := removeContextAssemblerMessages(messages, n.contextAssemblerHeadings())
-	injectedKinds := make([]string, 0, 3)
+	injectedKinds := make([]string, 0, 4)
+	if n.IncludeEnvironment {
+		environmentMessage := n.buildEnvironmentContextMessage(state)
+		if environmentMessage != nil {
+			cleaned = insertAfterLeadingSystem(cleaned, *environmentMessage)
+			injectedKinds = append(injectedKinds, "environment")
+		}
+	}
 	if n.IncludeMemory {
 		recalledValue, ok := state.ResolvePath(n.effectiveMemoryStatePath() + ".recalled")
 		if ok {
@@ -102,9 +116,11 @@ func (n *ContextAssemblerNode) execute(ctx context.Context, state wfstate.State)
 		"memory_state_path":     n.effectiveMemoryStatePath(),
 		"orchestration_path":    n.effectiveOrchestrationStatePath(),
 		"planner_path":          n.effectivePlannerStatePath(),
+		"environment_path":      n.effectiveEnvironmentStatePath(),
 		"include_memory":        n.IncludeMemory,
 		"include_orchestration": n.IncludeOrchestration,
 		"include_planner":       n.IncludePlanner,
+		"include_environment":   n.IncludeEnvironment,
 		"injected_sections":     injectedKinds,
 		"message_count":         len(cleaned),
 	})
@@ -123,12 +139,15 @@ func (n *ContextAssemblerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		"memory_state_path":        n.effectiveMemoryStatePath(),
 		"orchestration_state_path": n.effectiveOrchestrationStatePath(),
 		"planner_state_path":       n.effectivePlannerStatePath(),
+		"environment_state_path":   n.effectiveEnvironmentStatePath(),
 		"include_memory":           n.IncludeMemory,
 		"include_orchestration":    n.IncludeOrchestration,
 		"include_planner":          n.IncludePlanner,
+		"include_environment":      n.IncludeEnvironment,
 		"memory_heading":           n.effectiveMemoryHeading(),
 		"orchestration_heading":    n.effectiveOrchestrationHeading(),
 		"planner_heading":          n.effectivePlannerHeading(),
+		"environment_heading":      n.effectiveEnvironmentHeading(),
 	}
 	if scope := strings.TrimSpace(n.StateScope); scope != "" {
 		config["state_scope"] = scope
@@ -170,6 +189,13 @@ func (n *ContextAssemblerNode) effectivePlannerStatePath() string {
 	return strings.TrimSpace(n.PlannerStatePath)
 }
 
+func (n *ContextAssemblerNode) effectiveEnvironmentStatePath() string {
+	if n == nil || strings.TrimSpace(n.EnvironmentStatePath) == "" {
+		return wfstate.StateKeyEnvironment
+	}
+	return strings.TrimSpace(n.EnvironmentStatePath)
+}
+
 func (n *ContextAssemblerNode) effectiveOrchestrationHeading() string {
 	if n == nil || strings.TrimSpace(n.OrchestrationHeading) == "" {
 		return defaultContextAssemblerOrchestrationHeader
@@ -182,6 +208,13 @@ func (n *ContextAssemblerNode) effectivePlannerHeading() string {
 		return defaultContextAssemblerPlannerHeader
 	}
 	return strings.TrimSpace(n.PlannerHeading)
+}
+
+func (n *ContextAssemblerNode) effectiveEnvironmentHeading() string {
+	if n == nil || strings.TrimSpace(n.EnvironmentHeading) == "" {
+		return defaultContextAssemblerEnvironmentHeader
+	}
+	return strings.TrimSpace(n.EnvironmentHeading)
 }
 
 func (n *ContextAssemblerNode) buildMemoryContextMessage(entries []memory.Entry) *llms.MessageContent {
@@ -255,8 +288,20 @@ func (n *ContextAssemblerNode) buildPlannerContextMessage(state wfstate.State) *
 	return &message
 }
 
+func (n *ContextAssemblerNode) buildEnvironmentContextMessage(state wfstate.State) *llms.MessageContent {
+	text := buildEnvironmentContextText(state, n.effectiveEnvironmentStatePath(), n.effectiveEnvironmentHeading())
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	message := llms.TextParts(llms.ChatMessageTypeSystem, text)
+	return &message
+}
+
 func (n *ContextAssemblerNode) contextAssemblerHeadings() []string {
-	headings := make([]string, 0, 3)
+	headings := make([]string, 0, 4)
+	if n.IncludeEnvironment {
+		headings = append(headings, n.effectiveEnvironmentHeading())
+	}
 	if n.IncludeMemory {
 		headings = append(headings, n.effectiveMemoryHeading())
 	}
@@ -267,6 +312,61 @@ func (n *ContextAssemblerNode) contextAssemblerHeadings() []string {
 		headings = append(headings, n.effectivePlannerHeading())
 	}
 	return headings
+}
+
+func buildEnvironmentContextText(state wfstate.State, path string, heading string) string {
+	payload, ok := state.ResolvePath(path)
+	if !ok {
+		return ""
+	}
+	object := contextAssemblerObject(payload)
+	if len(object) == 0 {
+		return ""
+	}
+
+	lines := []string{strings.TrimSpace(heading)}
+	if lines[0] == "" {
+		lines[0] = defaultContextAssemblerEnvironmentHeader
+	}
+	appendContextLine(&lines, "workspace_root", object["workspace_root"])
+	appendContextLine(&lines, "cwd", object["cwd"])
+	appendContextLine(&lines, "source", object["source"])
+	appendContextLine(&lines, "os", object["os"])
+	appendContextLine(&lines, "shell", object["shell"])
+	appendEnvironmentProjectContext(&lines, object["project"])
+	appendEnvironmentGitContext(&lines, object["git"])
+	if len(lines) == 1 {
+		return ""
+	}
+	return strings.Join(lines, "\n")
+}
+
+func appendEnvironmentProjectContext(lines *[]string, value any) {
+	project := contextAssemblerObject(value)
+	if len(project) == 0 {
+		return
+	}
+	*lines = append(*lines, "- project:")
+	appendIndentedContextLine(lines, "name", project["name"])
+	appendIndentedContextLine(lines, "readme_title", project["readme_title"])
+	appendIndentedContextLine(lines, "type", project["type"])
+	appendIndentedContextLine(lines, "manifest", project["manifest"])
+	appendIndentedContextLine(lines, "summary", project["summary"])
+	appendIndentedContextLine(lines, "test_command", project["test_command"])
+}
+
+func appendEnvironmentGitContext(lines *[]string, value any) {
+	git := contextAssemblerObject(value)
+	if len(git) == 0 {
+		return
+	}
+	*lines = append(*lines, "- git:")
+	appendIndentedContextLine(lines, "root", git["root"])
+	appendIndentedContextLine(lines, "branch", git["branch"])
+	appendIndentedContextLine(lines, "commit", git["commit"])
+	appendIndentedContextLine(lines, "dirty", git["dirty"])
+	appendIndentedContextLine(lines, "changed_file_count", git["changed_file_count"])
+	appendIndentedContextLine(lines, "changed_files", git["changed_files"])
 }
 
 func removeContextAssemblerMessages(messages []llms.MessageContent, headings []string) []llms.MessageContent {
@@ -366,6 +466,17 @@ func appendCurrentPlannerStep(lines *[]string, planner map[string]any, state wfs
 	appendIndentedContextLine(lines, "inputs", step["inputs"])
 	appendIndentedContextLine(lines, "outputs", step["outputs"])
 	appendIndentedContextLine(lines, "acceptance_criteria", step["acceptance_criteria"])
+	appendPlannerStepExecutionGuidance(lines, step)
+}
+
+func appendPlannerStepExecutionGuidance(lines *[]string, step map[string]any) {
+	kind := strings.ToLower(strings.TrimSpace(stringifyStateValue(step["kind"])))
+	switch kind {
+	case "research":
+		*lines = append(*lines, "  - execution_guidance: HARD CONSTRAINT — only call tools on the exact paths/queries listed in `inputs`. Do not read, list, or grep other files even if you think they're related. If `inputs` lists a file that does not exist, report the gap; do not substitute a different file. Summarize useful partial findings and explicit gaps instead of expanding scope.")
+	case "transform":
+		*lines = append(*lines, "  - execution_guidance: synthesize from completed step results; do not gather new evidence unless the step explicitly asks for it")
+	}
 }
 
 func appendIndentedContextLine(lines *[]string, key string, value any) {

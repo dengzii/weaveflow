@@ -729,6 +729,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 				"scopes.agent.iteration_count",
 				"scopes.agent.max_iterations",
 				"scopes.agent.final_answer",
+				"shared.execution",
 				"shared." + nodes.TokenUsageStateKey,
 			},
 			modes: []dsl.StateAccessMode{
@@ -736,6 +737,7 @@ func TestResolveDefaultNodeStateContracts(t *testing.T) {
 				dsl.StateAccessReadWrite,
 				dsl.StateAccessRead,
 				dsl.StateAccessWrite,
+				dsl.StateAccessReadWrite,
 				dsl.StateAccessWrite,
 			},
 		},

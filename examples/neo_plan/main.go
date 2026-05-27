@@ -5,13 +5,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"weaveflow/internal/utilities"
 	"weaveflow/llms/openai"
 	"weaveflow/tools"
 
 	"weaveflow"
 	"weaveflow/core"
 	"weaveflow/internal/neo"
-	"weaveflow/internal/utilities"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
 )
@@ -32,7 +32,7 @@ func main() {
 	cfg.Mode = "planner"
 	cfg.MemoryRecallLimit = 0
 	cfg.MaxIterations = 20
-	cfg.SystemPrompt = "You are an agent that plans a trip to a city. You are given the following information: " +
+	cfg.SystemPrompt = "You are an agent named Neo. You are given the following information: " +
 		"current workdir: " + wd
 
 	graph, err := neo.NewGraph(cfg)
@@ -44,7 +44,11 @@ func main() {
 	baseDir := filepath.Join(".local", "neo_plan_example")
 	must(os.MkdirAll(baseDir, 0o755))
 
-	sink := utilities.NewPrettyEventLogging(os.Stdout)
+	//log, err := zap.NewDevelopment()
+	//sink := fruntime.NewLoggerEventSink(log)
+	sink := utilities.NewPrettyEventLogging(os.Stdout,
+		utilities.WithDisabledEventTypes(fruntime.EventCheckpointCreated, fruntime.EventArtifactCreated),
+	)
 
 	runner := weaveflow.NewGraphRunner(
 		graph,
@@ -57,11 +61,18 @@ func main() {
 	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
 
 	ctx := core.WithServices(context.Background(), &core.Services{Model: fruntime.WrapLLM(model), Tools: map[string]tools.Tool{
-		"file_read": tools.NewFileRead(),
-		"glob":      tools.NewGlob(),
-		"bash":      tools.NewBash(),
+		"read":  tools.NewRead(),
+		"write": tools.NewWrite(),
+		"edit":  tools.NewEdit(),
+		"glob":  tools.NewGlob(),
+		"grep":  tools.NewGrep(),
+		"bash":  tools.NewBash(),
 	}})
-	_, state, err := runner.Start(ctx, neo.NewInitialState("当前项目存在什么问题", nil))
+
+	var state wfstate.State
+
+	_, state, err = runner.Start(ctx, neo.NewInitialState("当前项目的状态设计是什么, 请使用 plan 模式", nil))
+
 	must(err)
 
 	printPlannerState(state)

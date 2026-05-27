@@ -12,6 +12,7 @@ type ConversationFacet interface {
 	SetFinalAnswer(answer string)
 	SetMaxIterations(maxIterations int)
 	IncrementIteration()
+	ResetIteration()
 	UpdateMessage(messages []llms.MessageContent)
 }
 
@@ -90,6 +91,13 @@ func (c *conversationState) IncrementIteration() {
 	target := c.targetState(true)
 	current, _ := conversationInt(conversationSource(target), stateKeyIterationCount)
 	setConversationInt(target, stateKeyIterationCount, current+1)
+}
+
+func (c *conversationState) ResetIteration() {
+	if c == nil {
+		return
+	}
+	setConversationInt(c.targetState(true), stateKeyIterationCount, 0)
 }
 
 func (c *conversationState) UpdateMessage(messages []llms.MessageContent) {

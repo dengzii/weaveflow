@@ -49,6 +49,7 @@ func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) 
 			{Path: scopedConversationPath(scope, "iteration_count"), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter used to stop tool loops and incremented after each model turn."},
 			{Path: scopedConversationPath(scope, "max_iterations"), Mode: dsl.StateAccessRead, Description: "Maximum number of tool-using iterations allowed for the current conversation scope."},
 			{Path: scopedConversationPath(scope, "final_answer"), Mode: dsl.StateAccessWrite, Description: "Final answer written when the model finishes without further tool calls."},
+			{Path: canonicalContractPath(wfstate.StateKeyExecution), Mode: dsl.StateAccessReadWrite, Description: "Plan step execution state: read current_step.id and track last_llm_step_id to scrub prior-step messages at step boundary."},
 			{Path: canonicalContractPath(nodes.TokenUsageStateKey), Mode: dsl.StateAccessWrite, Description: "Accumulated token usage metrics emitted by the model node.", MergeStrategy: dsl.StateMergeMerge},
 		},
 	}, nil

@@ -18,18 +18,29 @@ import (
 )
 
 const (
-	defaultGrepResults  = 80
-	maxGrepResults      = 200
+	defaultGrepResults  = 250
+	maxGrepResults      = 1000
 	maxGrepBytesPerLine = 240
 	binaryProbeBytes    = 4096
 )
 
 type grepRequest struct {
-	Pattern         string `json:"pattern"`
-	Path            string `json:"path,omitempty"`
-	Glob            string `json:"glob,omitempty"`
-	MaxResults      int    `json:"max_results,omitempty"`
-	CaseInsensitive bool   `json:"case_insensitive,omitempty"`
+	Pattern              string `json:"pattern"`
+	Path                 string `json:"path,omitempty"`
+	Glob                 string `json:"glob,omitempty"`
+	Type                 string `json:"type,omitempty"`
+	OutputMode           string `json:"output_mode,omitempty"`
+	HeadLimit            int    `json:"head_limit,omitempty"`
+	Offset               int    `json:"offset,omitempty"`
+	After                int    `json:"-A,omitempty"`
+	Before               int    `json:"-B,omitempty"`
+	Context              int    `json:"context,omitempty"`
+	ContextAlias         int    `json:"-C,omitempty"`
+	LineNumbers          *bool  `json:"-n,omitempty"`
+	Multiline            bool   `json:"multiline,omitempty"`
+	MaxResults           int    `json:"max_results,omitempty"`
+	CaseInsensitive      bool   `json:"case_insensitive,omitempty"`
+	CaseInsensitiveAlias bool   `json:"-i,omitempty"`
 }
 
 type grepMatch struct {
@@ -40,43 +51,90 @@ type grepMatch struct {
 }
 
 type grepResponse struct {
-	Pattern   string      `json:"pattern"`
-	Root      string      `json:"root"`
-	Workspace string      `json:"workspace"`
-	Matches   []grepMatch `json:"matches"`
-	Truncated bool        `json:"truncated,omitempty"`
-	Scanned   int         `json:"scanned_files"`
+	Pattern    string      `json:"pattern"`
+	Root       string      `json:"root"`
+	Workspace  string      `json:"workspace"`
+	OutputMode string      `json:"output_mode,omitempty"`
+	Matches    []grepMatch `json:"matches"`
+	Paths      []string    `json:"paths,omitempty"`
+	Counts     []grepCount `json:"counts,omitempty"`
+	Truncated  bool        `json:"truncated,omitempty"`
+	Scanned    int         `json:"scanned_files"`
+}
+
+type grepCount struct {
+	Path  string `json:"path"`
+	Count int    `json:"count"`
 }
 
 func NewGrep() Tool {
 	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name: "grep",
-			Description: "Search file contents inside the workspace by regular expression. " +
-				"Returns file:line matches with a short snippet. " +
-				"Prefer this over reading whole files when looking for specific symbols, strings, or patterns.",
+			Description: "A powerful search tool built on ripgrep\n\n" +
+				"Usage:\n" +
+				"- ALWAYS use Grep for search tasks. NEVER invoke grep or rg as a Bash command.\n" +
+				"- Supports regex syntax and filtering files with glob or type parameters.\n" +
+				"- Output modes: content shows matching lines, files_with_matches shows only file paths, count shows match counts.",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
+					"-A": map[string]any{
+						"type":        "number",
+						"description": "Number of lines to show after each match. Requires output_mode: content.",
+					},
+					"-B": map[string]any{
+						"type":        "number",
+						"description": "Number of lines to show before each match. Requires output_mode: content.",
+					},
+					"-C": map[string]any{
+						"type":        "number",
+						"description": "Alias for context.",
+					},
+					"-i": map[string]any{
+						"type":        "boolean",
+						"description": "Case insensitive search.",
+					},
+					"-n": map[string]any{
+						"type":        "boolean",
+						"description": "Show line numbers in output. Requires output_mode: content. Defaults to true.",
+					},
 					"pattern": map[string]any{
 						"type":        "string",
-						"description": "Regular expression (Go RE2 syntax).",
+						"description": "The regular expression pattern to search for in file contents",
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Optional root directory inside the workspace; defaults to .",
+						"description": "File or directory to search in. Defaults to current working directory.",
 					},
 					"glob": map[string]any{
 						"type":        "string",
-						"description": "Optional filename glob filter such as **/*.go.",
+						"description": "Glob pattern to filter files (e.g. \"*.js\", \"*.{ts,tsx}\").",
 					},
-					"max_results": map[string]any{
-						"type":        "integer",
-						"description": "Optional cap on returned matches (default 80, max 200).",
+					"type": map[string]any{
+						"type":        "string",
+						"description": "File type to search. Common types: js, py, rust, go, java, etc.",
 					},
-					"case_insensitive": map[string]any{
+					"output_mode": map[string]any{
+						"type":        "string",
+						"enum":        []string{"content", "files_with_matches", "count"},
+						"description": "Output mode: content, files_with_matches, or count.",
+					},
+					"head_limit": map[string]any{
+						"type":        "number",
+						"description": "Limit output to first N lines/entries. Defaults to 250 when unspecified.",
+					},
+					"offset": map[string]any{
+						"type":        "number",
+						"description": "Skip first N lines/entries before applying head_limit. Defaults to 0.",
+					},
+					"multiline": map[string]any{
 						"type":        "boolean",
-						"description": "Match case-insensitively.",
+						"description": "Enable multiline mode.",
+					},
+					"context": map[string]any{
+						"type":        "number",
+						"description": "Number of lines to show before and after each match. Requires output_mode: content.",
 					},
 				},
 				"required":             []string{"pattern"},
@@ -94,7 +152,7 @@ func grepTool(_ context.Context, input string) (string, error) {
 	}
 
 	pattern := req.Pattern
-	if req.CaseInsensitive {
+	if req.CaseInsensitive || req.CaseInsensitiveAlias {
 		pattern = "(?i)" + pattern
 	}
 	re, err := regexp.Compile(pattern)
@@ -118,10 +176,11 @@ func grepTool(_ context.Context, input string) (string, error) {
 		return "", errors.New("grep root must be a directory")
 	}
 
-	limit := normalizeGrepLimit(req.MaxResults)
+	limit := normalizeGrepLimit(firstNonZero(req.MaxResults, req.HeadLimit))
 	matches := make([]grepMatch, 0, 32)
 	scanned := 0
 	truncated := false
+	outputMode := normalizeGrepOutputMode(req.OutputMode)
 
 	walkErr := filepath.WalkDir(target, func(path string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -146,6 +205,9 @@ func grepTool(_ context.Context, input string) (string, error) {
 		if req.Glob != "" && !matchGlob(req.Glob, rel) {
 			return nil
 		}
+		if req.Type != "" && !matchGrepType(req.Type, rel) {
+			return nil
+		}
 
 		scanned++
 		fileMatches, stop := scanFileForGrep(path, re, limit-len(matches))
@@ -167,14 +229,25 @@ func grepTool(_ context.Context, input string) (string, error) {
 		return matches[i].Line < matches[j].Line
 	})
 
-	data, err := json.Marshal(grepResponse{
-		Pattern:   req.Pattern,
-		Root:      relRoot,
-		Workspace: workspace,
-		Matches:   matches,
-		Truncated: truncated,
-		Scanned:   scanned,
-	})
+	matches = offsetGrepMatches(matches, req.Offset)
+	resp := grepResponse{
+		Pattern:    req.Pattern,
+		Root:       relRoot,
+		Workspace:  workspace,
+		OutputMode: outputMode,
+		Truncated:  truncated,
+		Scanned:    scanned,
+	}
+	switch outputMode {
+	case "files_with_matches":
+		resp.Paths = grepPathsWithMatches(matches, limit)
+	case "count":
+		resp.Counts = grepCounts(matches, limit)
+	default:
+		resp.Matches = limitGrepMatches(matches, limit)
+	}
+
+	data, err := json.Marshal(resp)
 	if err != nil {
 		return "", err
 	}
@@ -205,6 +278,103 @@ func normalizeGrepLimit(limit int) int {
 		return maxGrepResults
 	}
 	return limit
+}
+
+func normalizeGrepOutputMode(mode string) string {
+	switch strings.TrimSpace(mode) {
+	case "files_with_matches", "count":
+		return strings.TrimSpace(mode)
+	default:
+		return "content"
+	}
+}
+
+func firstNonZero(values ...int) int {
+	for _, value := range values {
+		if value != 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func offsetGrepMatches(matches []grepMatch, offset int) []grepMatch {
+	if offset <= 0 {
+		return matches
+	}
+	if offset >= len(matches) {
+		return nil
+	}
+	return matches[offset:]
+}
+
+func limitGrepMatches(matches []grepMatch, limit int) []grepMatch {
+	if limit <= 0 || len(matches) <= limit {
+		return matches
+	}
+	return matches[:limit]
+}
+
+func grepPathsWithMatches(matches []grepMatch, limit int) []string {
+	seen := map[string]struct{}{}
+	paths := make([]string, 0)
+	for _, match := range matches {
+		if _, ok := seen[match.Path]; ok {
+			continue
+		}
+		seen[match.Path] = struct{}{}
+		paths = append(paths, match.Path)
+		if limit > 0 && len(paths) >= limit {
+			break
+		}
+	}
+	return paths
+}
+
+func grepCounts(matches []grepMatch, limit int) []grepCount {
+	countsByPath := map[string]int{}
+	for _, match := range matches {
+		countsByPath[match.Path]++
+	}
+	paths := make([]string, 0, len(countsByPath))
+	for path := range countsByPath {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	if limit > 0 && len(paths) > limit {
+		paths = paths[:limit]
+	}
+	counts := make([]grepCount, 0, len(paths))
+	for _, path := range paths {
+		counts = append(counts, grepCount{Path: path, Count: countsByPath[path]})
+	}
+	return counts
+}
+
+func matchGrepType(fileType string, path string) bool {
+	exts, ok := grepTypeExtensions[strings.ToLower(strings.TrimSpace(fileType))]
+	if !ok {
+		return true
+	}
+	ext := strings.TrimPrefix(strings.ToLower(filepath.Ext(path)), ".")
+	for _, candidate := range exts {
+		if ext == candidate {
+			return true
+		}
+	}
+	return false
+}
+
+var grepTypeExtensions = map[string][]string{
+	"go":   {"go"},
+	"js":   {"js", "jsx", "mjs", "cjs"},
+	"ts":   {"ts", "tsx", "mts", "cts"},
+	"py":   {"py"},
+	"rust": {"rs"},
+	"java": {"java"},
+	"json": {"json"},
+	"md":   {"md", "markdown"},
+	"yaml": {"yaml", "yml"},
 }
 
 // scanFileForGrep reads a single file and collects regex matches up to budget.

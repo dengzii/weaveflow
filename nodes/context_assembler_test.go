@@ -82,3 +82,65 @@ func TestContextAssemblerIncludesCurrentStepDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestContextAssemblerInjectsEnvironmentContext(t *testing.T) {
+	t.Parallel()
+
+	node := NewContextAssemblerNode()
+	node.StateScope = "agent"
+
+	state := wfstate.State{
+		wfstate.StateKeyEnvironment: map[string]any{
+			"workspace_root": "/repo/weaveflow",
+			"cwd":            "/repo/weaveflow",
+			"source":         "process_cwd",
+			"os":             "linux",
+			"project": map[string]any{
+				"name":         "weaveflow",
+				"type":         "go",
+				"summary":      "Graph runtime for LLM agents.",
+				"test_command": "go test ./...",
+			},
+			"git": map[string]any{
+				"branch":             "main",
+				"dirty":              true,
+				"changed_file_count": 2,
+				"changed_files":      []string{"M nodes/context_assembler.go", "A nodes/environment_context.go"},
+			},
+		},
+	}
+	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "You are helpful."),
+		llms.TextParts(llms.ChatMessageTypeHuman, "Inspect project"),
+	})
+
+	next, err := runTestNode(t, node, context.Background(), state)
+	if err != nil {
+		t.Fatalf("invoke context assembler: %v", err)
+	}
+
+	messages := next.Conversation("agent").Messages()
+	var environmentContext string
+	for _, message := range messages {
+		text := extractText(message)
+		if strings.HasPrefix(text, defaultContextAssemblerEnvironmentHeader) {
+			environmentContext = text
+			break
+		}
+	}
+	if environmentContext == "" {
+		t.Fatal("expected environment context message")
+	}
+	for _, want := range []string{
+		"workspace_root: /repo/weaveflow",
+		"project:",
+		"test_command: go test ./...",
+		"git:",
+		"changed_file_count: 2",
+		`changed_files: ["M nodes/context_assembler.go","A nodes/environment_context.go"]`,
+	} {
+		if !strings.Contains(environmentContext, want) {
+			t.Fatalf("expected environment context to contain %q, got:\n%s", want, environmentContext)
+		}
+	}
+}
