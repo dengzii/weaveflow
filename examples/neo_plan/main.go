@@ -71,7 +71,7 @@ func main() {
 
 	var state wfstate.State
 
-	_, state, err = runner.Start(ctx, neo.NewInitialState("当前项目的状态设计是什么, 请使用 plan 模式", nil))
+	_, state, err = runner.Start(ctx, neo.NewInitialState("优化项目 readme, 请使用 plan 模式", nil))
 
 	must(err)
 

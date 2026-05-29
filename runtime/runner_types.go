@@ -64,6 +64,7 @@ const (
 	EventLLMContent         EventType = "llm.content"
 	EventLLMFunctionCall    EventType = "llm.function_call"
 	EventLLMUsage           EventType = "llm.usage"
+	EventLLMCall            EventType = "llm.call"
 	EventToolStarted        EventType = "tool.started"
 	EventToolCalled         EventType = "tool.called"
 	EventToolReturned       EventType = "tool.returned"

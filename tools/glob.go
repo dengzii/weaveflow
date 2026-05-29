@@ -35,16 +35,22 @@ type globRequest struct {
 }
 
 type globResponse struct {
-	Pattern   string   `json:"pattern"`
-	Root      string   `json:"root"`
-	Workspace string   `json:"workspace"`
-	Paths     []string `json:"paths"`
-	Truncated bool     `json:"truncated,omitempty"`
-	Scanned   int      `json:"scanned_files"`
+	Pattern   string      `json:"pattern"`
+	Root      string      `json:"root"`
+	Workspace string      `json:"workspace"`
+	Paths     []globMatch `json:"paths"`
+	Truncated bool        `json:"truncated,omitempty"`
+	Scanned   int         `json:"scanned_files"`
+}
+
+type globMatch struct {
+	Path string `json:"path"`
+	Size int64  `json:"size"`
 }
 
 type globResult struct {
 	Path    string
+	Size    int64
 	ModTime int64
 }
 
@@ -132,12 +138,17 @@ func globTool(_ context.Context, input string) (string, error) {
 			truncated = true
 			return filepath.SkipAll
 		}
-		var modTime int64
+		var (
+			modTime int64
+			size    int64
+		)
 		if info, err := d.Info(); err == nil {
 			modTime = info.ModTime().UnixNano()
+			size = info.Size()
 		}
 		matched = append(matched, globResult{
 			Path:    joinRelativePath(relRoot, rel),
+			Size:    size,
 			ModTime: modTime,
 		})
 		return nil
@@ -152,9 +163,9 @@ func globTool(_ context.Context, input string) (string, error) {
 		}
 		return matched[i].Path < matched[j].Path
 	})
-	paths := make([]string, len(matched))
+	paths := make([]globMatch, len(matched))
 	for i, item := range matched {
-		paths[i] = item.Path
+		paths[i] = globMatch{Path: item.Path, Size: item.Size}
 	}
 
 	data, err := json.Marshal(globResponse{

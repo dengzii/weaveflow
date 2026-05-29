@@ -20,6 +20,8 @@ type PrettyEventLogging struct {
 	enabled         map[fruntime.EventType]struct{}
 	disabled        map[fruntime.EventType]struct{}
 	toolCallDetails bool // when false, EventToolCalled/EventToolReturned only show tool names
+	llmTextLen      int  // max length for EventLLMReasoning/EventLLMContent text; 0 means fall back to truncateLen
+	llmTextLenSet   bool
 }
 
 type PrettyEventOption func(*PrettyEventLogging)
@@ -49,6 +51,22 @@ func WithEnabledEventTypes(types ...fruntime.EventType) PrettyEventOption {
 func WithDisabledEventTypes(types ...fruntime.EventType) PrettyEventOption {
 	return func(p *PrettyEventLogging) {
 		p.disabled = eventTypeSet(types)
+	}
+}
+
+// WithLLMTextTruncate sets a dedicated max length for EventLLMReasoning and
+// EventLLMContent text, overriding the global WithTruncate value for those
+// events. 0 means no truncation; pass a negative value to fall back to the
+// global truncation length.
+func WithLLMTextTruncate(maxLen int) PrettyEventOption {
+	return func(p *PrettyEventLogging) {
+		if maxLen < 0 {
+			p.llmTextLenSet = false
+			p.llmTextLen = 0
+			return
+		}
+		p.llmTextLen = maxLen
+		p.llmTextLenSet = true
 	}
 }
 
@@ -125,6 +143,12 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 	case fruntime.EventNodeFailed:
 		p.printf("%s %s %s\n", p.dim(ts), p.red("✗"), p.nodeName(e.NodeID))
 
+	case fruntime.EventNodeRetry:
+		var payload map[string]any
+		_ = json.Unmarshal(e.Payload, &payload)
+		attempt := intFromAny(payload["attempt"])
+		p.printf("%s %s %s (attempt %d)\n", p.dim(ts), p.yellow("↻"), p.nodeName(e.NodeID), attempt)
+
 	case fruntime.EventNodeCustom:
 		p.printCustomEvent(ts, e)
 
@@ -132,7 +156,7 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 		var payload map[string]any
 		if err := json.Unmarshal(e.Payload, &payload); err == nil {
 			if text, ok := payload["text"].(string); ok {
-				p.printf("%s %s %s\n", p.dim(ts), p.cyan("💭"), p.truncate(text))
+				p.printf("%s %s %s\n", p.dim(ts), p.cyan("💭"), p.truncateLLMText(text))
 			}
 		}
 
@@ -140,8 +164,35 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 		var payload map[string]any
 		if err := json.Unmarshal(e.Payload, &payload); err == nil {
 			if text, ok := payload["text"].(string); ok {
-				p.printf("%s %s %s\n", p.dim(ts), p.blue("📝"), p.truncate(text))
+				p.printf("%s %s %s\n", p.dim(ts), p.blue("📝"), p.truncateLLMText(text))
 			}
+		}
+
+	case fruntime.EventLLMCall:
+		var payload map[string]any
+		if err := json.Unmarshal(e.Payload, &payload); err == nil {
+			p.printf("%s %s %s\n", p.dim(ts), p.magenta("📊"), p.dim(formatLLMCallPayload(payload)))
+		}
+
+	case fruntime.EventLLMFunctionCall:
+		var payload map[string]any
+		if err := json.Unmarshal(e.Payload, &payload); err == nil {
+			name, _ := payload["Name"].(string)
+			if name == "" {
+				name, _ = payload["name"].(string)
+			}
+			args := firstNonNil(payload["Arguments"], payload["arguments"])
+			text := fmt.Sprintf("%s(%s)", name, jsonArg(args))
+			if !p.toolCallDetails {
+				text = foldText(text, toolDetailFoldLimit)
+			}
+			p.printf("%s %s %s\n", p.dim(ts), p.yellow("ƒ"), p.truncate(text))
+		}
+
+	case fruntime.EventLLMUsage:
+		var payload map[string]any
+		if err := json.Unmarshal(e.Payload, &payload); err == nil {
+			p.printf("%s %s %s\n", p.dim(ts), p.magenta("📈"), p.dim(formatLLMCallPayload(payload)))
 		}
 
 	case fruntime.EventLLMReasoningChunk:
@@ -183,6 +234,9 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 		errMsg, _ := payload["error"].(string)
 		p.printf("%s %s %s: %s\n", p.dim(ts), p.red("⚠"), name, p.truncate(errMsg))
 
+	case fruntime.EventRunCreated:
+		p.printf("%s %s run created\n", p.dim(ts), p.bold("✨"))
+
 	case fruntime.EventRunStarted:
 		p.printf("%s %s run started\n", p.dim(ts), p.bold("🚀"))
 
@@ -191,6 +245,53 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 
 	case fruntime.EventRunFailed:
 		p.printf("%s %s run failed\n", p.dim(ts), p.bold("💥"))
+
+	case fruntime.EventRunPauseRequested:
+		p.printf("%s %s run pause requested\n", p.dim(ts), p.yellow("⏸"))
+
+	case fruntime.EventRunPaused:
+		p.printf("%s %s run paused\n", p.dim(ts), p.yellow("⏸"))
+
+	case fruntime.EventRunResumed:
+		p.printf("%s %s run resumed\n", p.dim(ts), p.green("▶"))
+
+	case fruntime.EventRunCancelRequested:
+		p.printf("%s %s run cancel requested\n", p.dim(ts), p.yellow("🛑"))
+
+	case fruntime.EventRunCanceled:
+		p.printf("%s %s run canceled\n", p.dim(ts), p.red("🛑"))
+
+	case fruntime.EventSubgraphStarted:
+		var payload map[string]any
+		_ = json.Unmarshal(e.Payload, &payload)
+		ref, _ := payload["graph_ref"].(string)
+		p.printf("%s %s subgraph ▶ %s\n", p.dim(ts), p.cyan("🧩"), p.bold(ref))
+
+	case fruntime.EventSubgraphFinished:
+		var payload map[string]any
+		_ = json.Unmarshal(e.Payload, &payload)
+		ref, _ := payload["graph_ref"].(string)
+		p.printf("%s %s subgraph ✓ %s\n", p.dim(ts), p.cyan("🧩"), p.bold(ref))
+
+	case fruntime.EventSubgraphFailed:
+		var payload map[string]any
+		_ = json.Unmarshal(e.Payload, &payload)
+		ref, _ := payload["graph_ref"].(string)
+		errMsg, _ := payload["error"].(string)
+		p.printf("%s %s subgraph ✗ %s: %s\n", p.dim(ts), p.red("🧩"), p.bold(ref), p.truncate(errMsg))
+
+	case fruntime.EventBreakpointHit:
+		var payload map[string]any
+		_ = json.Unmarshal(e.Payload, &payload)
+		bpID, _ := payload["breakpoint_id"].(string)
+		stage, _ := payload["stage"].(string)
+		p.printf("%s %s breakpoint %s @ %s\n", p.dim(ts), p.magenta("🔴"), p.bold(bpID), stage)
+
+	case fruntime.EventStateChanged:
+		var payload map[string]any
+		_ = json.Unmarshal(e.Payload, &payload)
+		changes, _ := payload["changes"].([]any)
+		p.printf("%s %s state changes: %d\n", p.dim(ts), p.blue("Δ"), len(changes))
 
 	case fruntime.EventCheckpointCreated:
 		p.printf("%s %s checkpoint\n", p.dim(ts), p.magenta("💾"))
@@ -312,11 +413,26 @@ func (p *PrettyEventLogging) nodeName(nodeID string) string {
 }
 
 func (p *PrettyEventLogging) truncate(s string) string {
+	return p.truncateTo(s, p.truncateLen)
+}
+
+func (p *PrettyEventLogging) truncateLLMText(s string) string {
+	limit := p.truncateLen
+	if p.llmTextLenSet {
+		limit = p.llmTextLen
+	}
+	return p.truncateTo(s, limit)
+}
+
+func (p *PrettyEventLogging) truncateTo(s string, limit int) string {
 	s = strings.TrimSpace(s)
-	if p.truncateLen == 0 || len(s) <= p.truncateLen {
+	if limit <= 0 || len(s) <= limit {
 		return s
 	}
-	return s[:p.truncateLen-3] + "..."
+	if limit <= 3 {
+		return s[:limit]
+	}
+	return s[:limit-3] + "..."
 }
 
 func jsonArg(v any) string {
@@ -420,6 +536,34 @@ func firstNonNil(values ...any) any {
 		}
 	}
 	return nil
+}
+
+func formatLLMCallPayload(payload map[string]any) string {
+	model, _ := payload["model"].(string)
+	stopReason, _ := payload["stop_reason"].(string)
+	prompt := intFromAny(payload["prompt_tokens"])
+	completion := intFromAny(payload["completion_tokens"])
+	total := intFromAny(payload["total_tokens"])
+	reasoning := intFromAny(payload["reasoning_tokens"])
+	cached := intFromAny(payload["prompt_cached_tokens"])
+
+	parts := make([]string, 0, 6)
+	if model != "" {
+		parts = append(parts, model)
+	}
+	tokens := fmt.Sprintf("tokens=%d(in:%d/out:%d", total, prompt, completion)
+	if reasoning > 0 {
+		tokens += fmt.Sprintf("/think:%d", reasoning)
+	}
+	if cached > 0 {
+		tokens += fmt.Sprintf("/cached:%d", cached)
+	}
+	tokens += ")"
+	parts = append(parts, tokens)
+	if stopReason != "" {
+		parts = append(parts, "stop="+stopReason)
+	}
+	return strings.Join(parts, " ")
 }
 
 func intFromAny(v any) int {

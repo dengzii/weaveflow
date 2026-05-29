@@ -96,6 +96,10 @@ func New(opts ...Option) (*LLM, error) {
 	}, err
 }
 
+func (o *LLM) Name() string {
+	return o.client.Model
+}
+
 // Call requests a completion for the given prompt.
 func (o *LLM) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
 	return llms.GenerateFromSinglePrompt(ctx, o, prompt, options...)

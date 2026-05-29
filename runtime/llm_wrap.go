@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -45,8 +46,85 @@ func (m *llmWrap) GenerateContent(ctx context.Context, messages []llms.MessageCo
 		if choice1.FuncCall != nil {
 			_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, choice1.FuncCall)
 		}
+		_ = PublishRunnerContextEvent(ctx, EventLLMCall, buildLLMCallStatsPayload(m.m, choice1))
 	}
 	return res, err
+}
+
+func buildLLMCallStatsPayload(model llms.Model, choice *llms.ContentChoice) map[string]any {
+	payload := map[string]any{
+		"model":       llmWrapModelLabel(model),
+		"stop_reason": strings.TrimSpace(choice.StopReason),
+		"calls":       1,
+	}
+	prompt, _ := llmWrapIntFromKeys(choice.GenerationInfo,
+		"PromptTokens", "prompt_tokens", "input_tokens")
+	completion, _ := llmWrapIntFromKeys(choice.GenerationInfo,
+		"CompletionTokens", "completion_tokens", "output_tokens")
+	total, _ := llmWrapIntFromKeys(choice.GenerationInfo,
+		"TotalTokens", "total_tokens")
+	reasoning, _ := llmWrapIntFromKeys(choice.GenerationInfo,
+		"ReasoningTokens", "ThinkingTokens", "CompletionReasoningTokens", "reasoning_tokens")
+	cached, _ := llmWrapIntFromKeys(choice.GenerationInfo,
+		"PromptCachedTokens", "prompt_cached_tokens", "cached_input_tokens")
+
+	if total <= 0 && (prompt > 0 || completion > 0) {
+		total = prompt + completion
+	}
+	if completion <= 0 && total > 0 && total >= prompt {
+		completion = total - prompt
+	}
+	if sum := prompt + completion; sum > total {
+		total = sum
+	}
+
+	payload["prompt_tokens"] = prompt
+	payload["completion_tokens"] = completion
+	payload["total_tokens"] = total
+	payload["reasoning_tokens"] = reasoning
+	payload["prompt_cached_tokens"] = cached
+	return payload
+}
+
+func llmWrapModelLabel(model llms.Model) string {
+	if model == nil {
+		return ""
+	}
+	if named, ok := model.(interface{ Name() string }); ok {
+		if name := strings.TrimSpace(named.Name()); name != "" {
+			return name
+		}
+	}
+	typed := reflect.TypeOf(model)
+	if typed == nil {
+		return ""
+	}
+	return typed.String()
+}
+
+func llmWrapIntFromKeys(values map[string]any, keys ...string) (int, bool) {
+	if len(values) == 0 {
+		return 0, false
+	}
+	for _, key := range keys {
+		raw, ok := values[key]
+		if !ok {
+			continue
+		}
+		switch v := raw.(type) {
+		case int:
+			return v, true
+		case int32:
+			return int(v), true
+		case int64:
+			return int(v), true
+		case float32:
+			return int(v), true
+		case float64:
+			return int(v), true
+		}
+	}
+	return 0, false
 }
 
 func (m *llmWrap) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {

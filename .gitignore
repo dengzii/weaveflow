@@ -10,6 +10,7 @@
 .local
 .idea
 .claude
+.codewhale
 *.log
 
 # Test binary, built with `go test -c`
