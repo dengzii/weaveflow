@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	wfstate "weaveflow/state"
 
 	"go.uber.org/zap"
 )
@@ -460,4 +461,51 @@ func appendRunnerJSONLine(path string, value any) error {
 		return err
 	}
 	return nil
+}
+
+type NoopExecutionStore struct{}
+
+func NewNoopExecutionStore() *NoopExecutionStore { return &NoopExecutionStore{} }
+
+func (*NoopExecutionStore) CreateRun(context.Context, RunRecord) error { return nil }
+func (*NoopExecutionStore) UpdateRun(context.Context, RunRecord) error { return nil }
+func (*NoopExecutionStore) GetRun(context.Context, string) (RunRecord, error) {
+	return RunRecord{}, nil
+}
+func (*NoopExecutionStore) ListRuns(context.Context, RunFilter) ([]RunRecord, error) {
+	return []RunRecord{}, nil
+}
+func (*NoopExecutionStore) AppendStep(context.Context, StepRecord) error { return nil }
+func (*NoopExecutionStore) UpdateStep(context.Context, StepRecord) error { return nil }
+func (*NoopExecutionStore) GetStep(context.Context, string) (StepRecord, error) {
+	return StepRecord{}, nil
+}
+func (*NoopExecutionStore) ListSteps(context.Context, string) ([]StepRecord, error) {
+	return []StepRecord{}, nil
+}
+
+type NoopCheckpointStore struct{}
+
+func NewNoopCheckpointStore() *NoopCheckpointStore { return &NoopCheckpointStore{} }
+
+func (*NoopCheckpointStore) Save(context.Context, CheckpointRecord, []byte) error { return nil }
+func (*NoopCheckpointStore) Load(context.Context, string) (CheckpointRecord, []byte, error) {
+	return CheckpointRecord{}, nil, nil
+}
+func (*NoopCheckpointStore) List(context.Context, string) ([]CheckpointRecord, error) {
+	return []CheckpointRecord{}, nil
+}
+
+type NoopArtifactStore struct{}
+
+func NewNoopArtifactStore() *NoopArtifactStore { return &NoopArtifactStore{} }
+
+func (*NoopArtifactStore) Save(context.Context, Artifact) (wfstate.ArtifactRef, error) {
+	return wfstate.ArtifactRef{}, nil
+}
+func (*NoopArtifactStore) Load(context.Context, wfstate.ArtifactRef) (Artifact, error) {
+	return Artifact{}, nil
+}
+func (*NoopArtifactStore) List(context.Context, string) ([]wfstate.ArtifactRef, error) {
+	return []wfstate.ArtifactRef{}, nil
 }

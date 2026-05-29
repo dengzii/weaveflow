@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import { Link } from "react-router-dom";
-import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay, Brain, Eye, Trash2, Blocks } from "lucide-react";
+import { Send, Square, Bot, PlayCircle, Wrench, Settings, Save, BugPlay, Brain, Eye, Trash2, Blocks, ChevronDown, ChevronRight } from "lucide-react";
 import { MessageList } from "../components/MessageList";
 import { PlanProgressPanel } from "../components/PlanProgressPanel";
 import { ClarificationPanel } from "../components/ClarificationPanel";
@@ -10,6 +10,7 @@ import { Input } from "../components/ui/input";
 import { Label } from "../components/ui/label";
 import { Switch } from "../components/ui/switch";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../components/ui/select";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "../components/ui/collapsible";
 import { cn } from "../lib/utils";
 import type { useChat } from "../hooks/useChat";
 import type { useConfig } from "../hooks/useConfig";
@@ -238,6 +239,47 @@ function formatMemoryTime(value?: number): string {
   return new Date(value).toLocaleString();
 }
 
+function MemoryItem({ item }: { item: MemoryEntry }) {
+  const [open, setOpen] = useState(false);
+  const hasPayload = item.payload && Object.keys(item.payload).length > 0;
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <div className="overflow-hidden rounded-xl border border-border bg-card/60">
+        <CollapsibleTrigger className="flex w-full cursor-pointer items-center gap-2 px-4 py-3 text-left transition-colors hover:bg-muted/50">
+          <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-medium text-foreground">
+            {item.type || "message"}
+          </span>
+          <span className="text-xs text-muted-foreground">{item.role || "-"}</span>
+          <span className="text-xs text-muted-foreground">{formatMemoryTime(item.created_at)}</span>
+          {item.tags?.length ? (
+            <span className="text-xs text-muted-foreground">{item.tags.join(", ")}</span>
+          ) : null}
+          <span className="ml-auto">
+            {open ? (
+              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+            )}
+          </span>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <div className="border-t border-border px-4 py-3">
+            <pre className="whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground">
+              {item.text || "(empty)"}
+            </pre>
+            {hasPayload ? (
+              <pre className="mt-3 overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-[11px] leading-5 text-muted-foreground">
+                {JSON.stringify(item.payload, null, 2)}
+              </pre>
+            ) : null}
+          </div>
+        </CollapsibleContent>
+      </div>
+    </Collapsible>
+  );
+}
+
 function MemoryModal({
   open,
   loading,
@@ -283,22 +325,7 @@ function MemoryModal({
           ) : (
             <div className="space-y-3">
               {items.map((item) => (
-                <div key={`${item.id}:${item.created_at}`} className="rounded-xl border border-border bg-card/60 p-4">
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span className="rounded-full bg-muted px-2 py-0.5 font-medium text-foreground">{item.type || "message"}</span>
-                    <span>{item.role || "-"}</span>
-                    <span>{formatMemoryTime(item.created_at)}</span>
-                    {item.tags?.length ? <span>{item.tags.join(", ")}</span> : null}
-                  </div>
-                  <pre className="mt-3 whitespace-pre-wrap break-words font-mono text-xs leading-5 text-foreground">
-                    {item.text || "(empty)"}
-                  </pre>
-                  {item.payload && Object.keys(item.payload).length > 0 ? (
-                    <pre className="mt-3 overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-[11px] leading-5 text-muted-foreground">
-                      {JSON.stringify(item.payload, null, 2)}
-                    </pre>
-                  ) : null}
-                </div>
+                <MemoryItem key={`${item.id}:${item.created_at}`} item={item} />
               ))}
             </div>
           )}

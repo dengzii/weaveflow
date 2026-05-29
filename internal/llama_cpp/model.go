@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
+
+	"weaveflow/llms/parts"
 )
 
 var (
@@ -317,6 +319,9 @@ func renderPart(part llms.ContentPart) (string, error) {
 	switch typed := part.(type) {
 	case llms.TextContent:
 		return strings.TrimSpace(typed.Text), nil
+	case parts.ReasoningPart:
+		// llama_cpp has no reasoning-content channel; drop from prompt.
+		return "", nil
 	case llms.ToolCall:
 		if typed.FunctionCall == nil {
 			return "", errors.New("tool call has no function payload")

@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
+
+	"weaveflow/llms/parts"
 )
 
 type JSONStateCodec struct {
@@ -311,6 +313,8 @@ func serializeMessagePart(part llms.ContentPart) (StateMessagePart, error) {
 	switch typed := part.(type) {
 	case llms.TextContent:
 		return StateMessagePart{Kind: "text", Text: typed.Text}, nil
+	case parts.ReasoningPart:
+		return StateMessagePart{Kind: "reasoning", Text: typed.Text}, nil
 	case llms.ImageURLContent:
 		return StateMessagePart{Kind: "image_url", URL: typed.URL, Detail: typed.Detail}, nil
 	case llms.BinaryContent:
@@ -346,6 +350,8 @@ func deserializeMessagePart(part StateMessagePart) (llms.ContentPart, error) {
 	switch part.Kind {
 	case "text":
 		return llms.TextPart(part.Text), nil
+	case "reasoning":
+		return parts.NewReasoningPart(part.Text), nil
 	case "image_url":
 		return llms.ImageURLContent{URL: part.URL, Detail: part.Detail}, nil
 	case "binary":

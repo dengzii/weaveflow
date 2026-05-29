@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 	"weaveflow/llms/openai/internal/openaiclient"
+	"weaveflow/llms/parts"
 
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/llms"
@@ -194,6 +195,11 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		default:
 			return nil, fmt.Errorf("role %v not supported", mc.Role)
 		}
+
+		// Pull out reasoning parts before tool-call extraction so they end up
+		// in the provider-specific reasoning_content channel (DeepSeek-reasoner
+		// and similar) rather than bleeding into assistant.content text.
+		msg.MultiContent, msg.ReasoningContent = extractReasoningParts(msg.MultiContent)
 
 		// Here we extract tool calls from the message and populate the ToolCalls field.
 		newParts, toolCalls := ExtractToolParts(msg)
@@ -438,6 +444,37 @@ func (o *LLM) CreateEmbedding(ctx context.Context, inputTexts []string) ([][]flo
 		return embeddings, ErrUnexpectedResponseLength
 	}
 	return embeddings, nil
+}
+
+// extractReasoningParts splits ReasoningPart entries out of the part list and
+// concatenates their text. The returned slice preserves the original order of
+// the remaining parts. If no reasoning parts are present, the original slice
+// is returned unchanged and reasoning is "".
+func extractReasoningParts(in []llms.ContentPart) ([]llms.ContentPart, string) {
+	var reasoning strings.Builder
+	kept := in
+	hasReasoning := false
+	for _, p := range in {
+		if _, ok := p.(parts.ReasoningPart); ok {
+			hasReasoning = true
+			break
+		}
+	}
+	if !hasReasoning {
+		return in, ""
+	}
+	kept = make([]llms.ContentPart, 0, len(in))
+	for _, p := range in {
+		if rp, ok := p.(parts.ReasoningPart); ok {
+			if reasoning.Len() > 0 {
+				reasoning.WriteString("\n")
+			}
+			reasoning.WriteString(rp.Text)
+			continue
+		}
+		kept = append(kept, p)
+	}
+	return kept, reasoning.String()
 }
 
 // ExtractToolParts extracts the tool parts from a message.

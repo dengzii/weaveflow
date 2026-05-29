@@ -8,6 +8,7 @@ import (
 	"strings"
 	"weaveflow/core"
 	"weaveflow/dsl"
+	"weaveflow/llms/parts"
 	"weaveflow/tools"
 
 	fruntime "weaveflow/runtime"
@@ -22,6 +23,7 @@ type LLMNode struct {
 	ToolIDs        []string
 	StateScope     string
 	PromptMaxChars int
+	ToolContract   bool
 }
 
 const plannerToolResultSynthesisPrompt = `Planner step execution rule:
@@ -120,6 +122,14 @@ func (L *LLMNode) execute(ctx context.Context, state wfstate.State) (wfstate.Sta
 	}, choice)
 
 	aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
+
+	// Some LLMs require including the reasoning content in messages on the
+	// next turn. Use parts.ReasoningPart so downstream consumers (openai
+	// wrapper, state serializer, final-answer extractor) can route it
+	// distinctly from regular assistant content.
+	if strings.TrimSpace(choice.ReasoningContent) != "" {
+		aiMessage.Parts = append(aiMessage.Parts, parts.NewReasoningPart(choice.ReasoningContent))
+	}
 
 	if strings.TrimSpace(choice.Content) != "" {
 		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
@@ -458,6 +468,23 @@ func trimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.
 		prefix = prefix[:1]
 	}
 
+	// Pin the first human turn to the prefix so the original task survives
+	// tail-keep trimming. Without this, a ReAct loop whose tool results exceed
+	// maxChars loses the user's question across iterations and starts looping
+	// on the same exploration steps.
+	firstHumanIdx := -1
+	for i, message := range body {
+		if message.Role == llms.ChatMessageTypeHuman {
+			firstHumanIdx = i
+			break
+		}
+	}
+	if firstHumanIdx >= 0 {
+		pinned := body[firstHumanIdx]
+		body = append(body[:firstHumanIdx:firstHumanIdx], body[firstHumanIdx+1:]...)
+		prefix = append(prefix, pinned)
+	}
+
 	prefixCost := promptMessagesCharCount(prefix)
 	if len(body) == 0 {
 		return prefix
@@ -514,6 +541,8 @@ func promptMessageCharCount(message llms.MessageContent) int {
 	for _, part := range message.Parts {
 		switch typed := part.(type) {
 		case llms.TextContent:
+			total += len([]rune(strings.TrimSpace(typed.Text)))
+		case parts.ReasoningPart:
 			total += len([]rune(strings.TrimSpace(typed.Text)))
 		case llms.ToolCall:
 			total += 16

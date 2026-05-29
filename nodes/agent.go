@@ -9,6 +9,7 @@ import (
 	"sync"
 	"weaveflow/core"
 	"weaveflow/dsl"
+	"weaveflow/llms/parts"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
 	"weaveflow/tools"
@@ -17,7 +18,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-const defaultAgentPromptMaxChars = 20000
+const defaultAgentPromptMaxChars = 1000000
 
 // AgentNode runs a self-contained ReAct loop: each Execute call iterates
 // LLM inference and tool execution inside one node, returning only when the
@@ -149,6 +150,9 @@ func (a *AgentNode) runLoop(ctx context.Context, state wfstate.State, conversati
 		}, choice)
 
 		aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
+		if strings.TrimSpace(choice.ReasoningContent) != "" {
+			aiMessage.Parts = append(aiMessage.Parts, parts.NewReasoningPart(choice.ReasoningContent))
+		}
 		if strings.TrimSpace(choice.Content) != "" {
 			aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
 		}

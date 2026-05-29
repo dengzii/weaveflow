@@ -11,12 +11,30 @@ import (
 )
 
 const (
-	fileToolWorkspaceEnv = "WEAVEFLOW_TOOL_WORKDIR"
-	defaultReadLimit     = 64 * 1024
-	maxReadLimit         = 256 * 1024
-	defaultListLimit     = 100
-	maxListLimit         = 500
+	fileToolWorkspaceEnv     = "WEAVEFLOW_TOOL_WORKDIR"
+	fileToolSkipWorkspaceEnv = "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK"
+	defaultReadLimit         = 64 * 1024
+	maxReadLimit             = 256 * 1024
+	defaultListLimit         = 100
+	maxListLimit             = 500
 )
+
+// SkipWorkspaceCheck disables the workspace-escape guard when true. The setting
+// is also enabled when WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK is set to a truthy
+// value (1, true, yes, on). Use with care: file tools will then operate on any
+// absolute or relative path the caller provides.
+var SkipWorkspaceCheck = false
+
+func skipWorkspaceCheckEnabled() bool {
+	if SkipWorkspaceCheck {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(fileToolSkipWorkspaceEnv))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
 
 type fileOperationRequest struct {
 	Action  string `json:"action"`
@@ -78,7 +96,10 @@ func resolveFileOperationPath(path string) (workspace string, target string, rel
 		return "", "", "", err
 	}
 	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		return "", "", "", errors.New("path escapes workspace")
+		if !skipWorkspaceCheckEnabled() {
+			return "", "", "", errors.New("path escapes workspace")
+		}
+		relative = filepath.ToSlash(target)
 	}
 
 	return filepath.ToSlash(workspace), target, filepath.ToSlash(relative), nil

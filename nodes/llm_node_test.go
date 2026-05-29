@@ -51,8 +51,10 @@ func TestLLMNodeTrimsPromptToRecentMessages(t *testing.T) {
 	state := wfstate.State{}
 	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are concise."),
-		llms.TextParts(llms.ChatMessageTypeHuman, "older question with a long prefix that should be trimmed away"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "the original task"),
 		llms.TextParts(llms.ChatMessageTypeAI, "older answer with a long prefix that should be trimmed away"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "follow-up that should also be trimmed away"),
+		llms.TextParts(llms.ChatMessageTypeAI, "another older answer with a long prefix that should be trimmed away"),
 		llms.TextParts(llms.ChatMessageTypeHuman, "latest question"),
 	})
 
@@ -62,22 +64,118 @@ func TestLLMNodeTrimsPromptToRecentMessages(t *testing.T) {
 		t.Fatalf("invoke llm node: %v", err)
 	}
 
-	if len(model.lastMessages) != 2 {
-		t.Fatalf("expected prompt trim to keep system plus latest message, got %#v", model.lastMessages)
+	if len(model.lastMessages) != 3 {
+		t.Fatalf("expected prompt trim to keep system + pinned first human + latest message, got %#v", model.lastMessages)
 	}
 	if model.lastMessages[0].Role != llms.ChatMessageTypeSystem || extractText(model.lastMessages[0]) != "You are concise." {
 		t.Fatalf("unexpected preserved system message: %#v", model.lastMessages[0])
 	}
-	if model.lastMessages[1].Role != llms.ChatMessageTypeHuman || extractText(model.lastMessages[1]) != "latest question" {
-		t.Fatalf("unexpected preserved latest message: %#v", model.lastMessages[1])
+	if model.lastMessages[1].Role != llms.ChatMessageTypeHuman || extractText(model.lastMessages[1]) != "the original task" {
+		t.Fatalf("expected first human to be pinned to prefix, got: %#v", model.lastMessages[1])
+	}
+	if model.lastMessages[2].Role != llms.ChatMessageTypeHuman || extractText(model.lastMessages[2]) != "latest question" {
+		t.Fatalf("unexpected preserved latest message: %#v", model.lastMessages[2])
 	}
 
 	messages := next.Conversation("agent").Messages()
-	if len(messages) != 5 {
+	if len(messages) != 7 {
 		t.Fatalf("expected full conversation state to append response without destructive trim, got %d messages", len(messages))
 	}
 	if got := extractText(messages[len(messages)-1]); got != "trimmed" {
 		t.Fatalf("unexpected assistant reply: %q", got)
+	}
+}
+
+func TestTrimLLMPromptMessagesPinsFirstHumanAcrossLargeToolResults(t *testing.T) {
+	t.Parallel()
+
+	bigToolResult := strings.Repeat("X", 1000)
+	messages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "you are an agent"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "explore /repo and summarize"),
+		{
+			Role: llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{
+				testToolCall("call_1", "read", `{"path":"README.md"}`),
+			},
+		},
+		{
+			Role: llms.ChatMessageTypeTool,
+			Parts: []llms.ContentPart{
+				llms.ToolCallResponse{ToolCallID: "call_1", Name: "read", Content: bigToolResult},
+			},
+		},
+		{
+			Role: llms.ChatMessageTypeAI,
+			Parts: []llms.ContentPart{
+				testToolCall("call_2", "read", `{"path":"main.go"}`),
+			},
+		},
+		{
+			Role: llms.ChatMessageTypeTool,
+			Parts: []llms.ContentPart{
+				llms.ToolCallResponse{ToolCallID: "call_2", Name: "read", Content: bigToolResult},
+			},
+		},
+	}
+
+	trimmed := trimLLMPromptMessages(messages, 1500)
+
+	if len(trimmed) == 0 {
+		t.Fatalf("expected at least one message after trim")
+	}
+	if trimmed[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("expected leading system to survive, got %s", trimmed[0].Role)
+	}
+
+	foundFirstHuman := false
+	for _, msg := range trimmed {
+		if msg.Role == llms.ChatMessageTypeHuman && extractText(msg) == "explore /repo and summarize" {
+			foundFirstHuman = true
+			break
+		}
+	}
+	if !foundFirstHuman {
+		t.Fatalf("expected the original human task to be pinned in trimmed prompt, got %#v", trimmed)
+	}
+
+	humanCount := 0
+	for _, msg := range trimmed {
+		if msg.Role == llms.ChatMessageTypeHuman {
+			humanCount++
+		}
+	}
+	if humanCount != 1 {
+		t.Fatalf("expected pinned human to appear exactly once (no duplication into tail), got %d", humanCount)
+	}
+}
+
+func TestTrimLLMPromptMessagesWithoutHumanLeavesPrefixIntact(t *testing.T) {
+	t.Parallel()
+
+	bigText := strings.Repeat("Y", 1000)
+	messages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "you are an agent"),
+		llms.TextParts(llms.ChatMessageTypeAI, bigText),
+		llms.TextParts(llms.ChatMessageTypeAI, bigText),
+		llms.TextParts(llms.ChatMessageTypeAI, "tail"),
+	}
+
+	trimmed := trimLLMPromptMessages(messages, 1500)
+
+	if len(trimmed) == 0 {
+		t.Fatalf("expected at least one message after trim")
+	}
+	if trimmed[0].Role != llms.ChatMessageTypeSystem || extractText(trimmed[0]) != "you are an agent" {
+		t.Fatalf("expected leading system unchanged, got %#v", trimmed[0])
+	}
+	for _, msg := range trimmed {
+		if msg.Role == llms.ChatMessageTypeHuman {
+			t.Fatalf("did not expect to synthesize a human message: %#v", trimmed)
+		}
+	}
+	if extractText(trimmed[len(trimmed)-1]) != "tail" {
+		t.Fatalf("expected the most recent AI message to be kept, got %q", extractText(trimmed[len(trimmed)-1]))
 	}
 }
 

@@ -13,12 +13,13 @@ import (
 )
 
 type PrettyEventLogging struct {
-	mu          sync.Mutex
-	w           io.Writer
-	colors      bool
-	truncateLen int // 0 means no truncation
-	enabled     map[fruntime.EventType]struct{}
-	disabled    map[fruntime.EventType]struct{}
+	mu              sync.Mutex
+	w               io.Writer
+	colors          bool
+	truncateLen     int // 0 means no truncation
+	enabled         map[fruntime.EventType]struct{}
+	disabled        map[fruntime.EventType]struct{}
+	toolCallDetails bool // when false, EventToolCalled/EventToolReturned only show tool names
 }
 
 type PrettyEventOption func(*PrettyEventLogging)
@@ -48,6 +49,15 @@ func WithEnabledEventTypes(types ...fruntime.EventType) PrettyEventOption {
 func WithDisabledEventTypes(types ...fruntime.EventType) PrettyEventOption {
 	return func(p *PrettyEventLogging) {
 		p.disabled = eventTypeSet(types)
+	}
+}
+
+// WithToolCallDetails controls whether tool call arguments and return content
+// are printed. When false (default), only tool names are shown so noisy payloads
+// like file contents from a read tool stay out of the log.
+func WithToolCallDetails(enabled bool) PrettyEventOption {
+	return func(p *PrettyEventLogging) {
+		p.toolCallDetails = enabled
 	}
 }
 
@@ -151,12 +161,20 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 	case fruntime.EventToolCalled:
 		var payload map[string]any
 		_ = json.Unmarshal(e.Payload, &payload)
-		p.printf("%s %s %s\n", p.dim(ts), p.yellow("⚡"), p.truncate(formatToolCallPayload(payload)))
+		text := formatToolCallPayload(payload)
+		if !p.toolCallDetails {
+			text = foldText(text, toolDetailFoldLimit)
+		}
+		p.printf("%s %s %s\n", p.dim(ts), p.yellow("⚡"), p.truncate(text))
 
 	case fruntime.EventToolReturned:
 		var payload map[string]any
 		_ = json.Unmarshal(e.Payload, &payload)
-		p.printf("%s %s %s\n", p.dim(ts), p.yellow("↩"), p.truncate(formatToolReturnPayload(payload)))
+		text := formatToolReturnPayload(payload)
+		if !p.toolCallDetails {
+			text = foldText(text, toolDetailFoldLimit)
+		}
+		p.printf("%s %s %s\n", p.dim(ts), p.yellow("↩"), p.truncate(text))
 
 	case fruntime.EventToolFailed:
 		var payload map[string]any
@@ -313,6 +331,22 @@ func jsonArg(v any) string {
 		return fmt.Sprintf("%v", v)
 	}
 	return string(b)
+}
+
+const toolDetailFoldLimit = 2000
+
+func foldText(s string, max int) string {
+	s = escapeNewlines(s)
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	omitted := len(s) - max
+	return s[:max] + fmt.Sprintf("... (+%d chars folded)", omitted)
+}
+
+func escapeNewlines(s string) string {
+	replacer := strings.NewReplacer("\r\n", "\\n", "\n", "\\n", "\r", "\\n")
+	return replacer.Replace(s)
 }
 
 func formatToolCallPayload(payload map[string]any) string {
