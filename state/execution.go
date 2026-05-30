@@ -24,14 +24,6 @@ func (s State) Observations() []map[string]any {
 	}
 }
 
-func (s State) AppendObservation(obs map[string]any) {
-	if s == nil || obs == nil {
-		return
-	}
-	existing := s.Observations()
-	s[StateKeyObservations] = append(existing, obs)
-}
-
 func (s State) Evidence() []map[string]any {
 	if s == nil {
 		return nil
@@ -56,14 +48,6 @@ func (s State) Evidence() []map[string]any {
 	}
 }
 
-func (s State) AppendEvidence(ev map[string]any) {
-	if s == nil || ev == nil {
-		return
-	}
-	existing := s.Evidence()
-	s[StateKeyEvidence] = append(existing, ev)
-}
-
 func (s State) StepResults() map[string]any {
 	exec := s.Get(StateKeyExecution)
 	if exec == nil {
@@ -81,17 +65,4 @@ func (s State) StepResults() map[string]any {
 	default:
 		return nil
 	}
-}
-
-func (s State) SetStepResult(stepID string, result map[string]any) {
-	if s == nil || stepID == "" {
-		return
-	}
-	exec := s.Ensure(StateKeyExecution)
-	results, ok := exec["step_results"].(map[string]any)
-	if !ok {
-		results = map[string]any{}
-		exec["step_results"] = results
-	}
-	results[stepID] = result
 }

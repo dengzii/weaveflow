@@ -26,7 +26,7 @@ export function useLiveMode({
   cacheDir,
   setDetail,
   setReplayIndex,
-  setStatus,
+  setStatusMessage,
   onEnterLive,
   onExitLive,
 }: {
@@ -34,7 +34,7 @@ export function useLiveMode({
   cacheDir: string;
   setDetail: Dispatch<SetStateAction<RunDetail | null>>;
   setReplayIndex: (i: number) => void;
-  setStatus: Dispatch<SetStateAction<{ message: string; summary: string }>>;
+  setStatusMessage: Dispatch<SetStateAction<string>>;
   onEnterLive: () => void;
   onExitLive: () => Promise<void>;
 }) {
@@ -70,7 +70,7 @@ export function useLiveMode({
       writeLiveSocketState("connecting");
       liveStartedAtRef.current = 0;
       setLiveDuration(0);
-      setStatus({ message: "Connecting live stream...", summary: "" });
+      setStatusMessage("Connecting live stream...");
       return;
     }
 
@@ -78,7 +78,7 @@ export function useLiveMode({
     writeLiveState(null);
     writeLiveSocketState("idle");
     void onExitLiveRef.current();
-  }, [requestedMode, setStatus]);
+  }, [requestedMode, setStatusMessage]);
 
   function writeLiveState(next: LiveState | null) {
     liveStateRef.current = next;
@@ -109,7 +109,7 @@ export function useLiveMode({
     }
     setDetail(buildLiveDetailFromState(normalized));
     setReplayIndex(normalized.items.length ? normalized.items.length - 1 : 0);
-    setStatus(buildLiveStatus(normalized, liveSocketStateRef.current));
+    setStatusMessage(buildLiveStatus(normalized, liveSocketStateRef.current));
   }
 
   function appendLiveItem(item: ReplayItem) {
@@ -154,7 +154,7 @@ export function useLiveMode({
       };
     });
     setReplayIndex(next.items.length ? next.items.length - 1 : 0);
-    setStatus(buildLiveStatus(next, liveSocketStateRef.current));
+    setStatusMessage(buildLiveStatus(next, liveSocketStateRef.current));
   }
 
   function updateLiveItem(idx: number, item: ReplayItem) {
@@ -171,7 +171,7 @@ export function useLiveMode({
       if (idx >= 0 && idx < replay.length) replay[idx] = item;
       return { ...current, replay };
     });
-    setStatus(buildLiveStatus(next, liveSocketStateRef.current));
+    setStatusMessage(buildLiveStatus(next, liveSocketStateRef.current));
   }
 
   useEffect(() => {
@@ -196,10 +196,7 @@ export function useLiveMode({
       })
       .catch((error) => {
         if (disposed) return;
-        setStatus((current) => ({
-          message: `Live snapshot failed: ${(error as Error).message}`,
-          summary: current.summary,
-        }));
+        setStatusMessage(`Live snapshot failed: ${(error as Error).message}`);
       });
 
     const wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
@@ -209,7 +206,7 @@ export function useLiveMode({
     ws.onopen = () => {
       if (disposed) return;
       writeLiveSocketState("connected");
-      setStatus(buildLiveStatus(liveStateRef.current, "connected"));
+      setStatusMessage(buildLiveStatus(liveStateRef.current, "connected"));
     };
 
     ws.onmessage = (e: MessageEvent<string>) => {
@@ -218,7 +215,7 @@ export function useLiveMode({
       if (msg.type === "idle") {
         liveStartedAtRef.current = 0;
         setLiveDuration(0);
-        setStatus(buildLiveStatus(liveStateRef.current, liveSocketStateRef.current));
+        setStatusMessage(buildLiveStatus(liveStateRef.current, liveSocketStateRef.current));
         return;
       }
       if (msg.type === "snapshot") {
@@ -250,7 +247,7 @@ export function useLiveMode({
         const previous = liveStateRef.current;
         const next = previous ? { ...previous, running: false } : previous;
         writeLiveState(next);
-        setStatus(buildLiveStatus(next, liveSocketStateRef.current));
+        setStatusMessage(buildLiveStatus(next, liveSocketStateRef.current));
       }
     };
 
@@ -259,7 +256,7 @@ export function useLiveMode({
       writeLiveSocketState("disconnected");
       liveStartedAtRef.current = 0;
       setLiveDuration(0);
-      setStatus(buildLiveStatus(liveStateRef.current, "disconnected"));
+      setStatusMessage(buildLiveStatus(liveStateRef.current, "disconnected"));
     };
 
     ws.onclose = () => {
@@ -267,7 +264,7 @@ export function useLiveMode({
       writeLiveSocketState("disconnected");
       liveStartedAtRef.current = 0;
       setLiveDuration(0);
-      setStatus(buildLiveStatus(liveStateRef.current, "disconnected"));
+      setStatusMessage(buildLiveStatus(liveStateRef.current, "disconnected"));
     };
 
     return () => {
@@ -304,21 +301,21 @@ export function useLiveMode({
 export function buildLiveStatus(
   snapshot: LiveState | null,
   socketState: LiveSocketState
-): { message: string; summary: string } {
-  const summary = liveSummaryText(snapshot);
+): string {
+  const hasSummary = liveSummaryText(snapshot) !== "";
   if (socketState === "disconnected") {
-    return { message: "Live stream disconnected.", summary };
+    return "Live stream disconnected.";
   }
   if (socketState === "connecting") {
-    return { message: "Connecting live stream...", summary };
+    return "Connecting live stream...";
   }
   if (snapshot?.running) {
-    return { message: "Streaming live graph events.", summary };
+    return "Streaming live graph events.";
   }
-  if (summary) {
-    return { message: "Live graph ready. Waiting for the next request.", summary };
+  if (hasSummary) {
+    return "Live graph ready. Waiting for the next request.";
   }
-  return { message: "Waiting for the first live graph snapshot.", summary: "" };
+  return "Waiting for the first live graph snapshot.";
 }
 
 export function liveBadgeLabel(snapshot: LiveState | null, socketState: LiveSocketState): string {

@@ -52,13 +52,12 @@ func main() {
 
 	runner := weaveflow.NewGraphRunner(
 		graph,
-		fruntime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
-		fruntime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),
+		fruntime.NewNoopExecutionStore(),
+		fruntime.NewNoopCheckpointStore(),
 		wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
 		sink,
 	)
-	runner.GraphID = "neo-plan-example"
-	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
+	runner.GraphID = "plan-example"
 
 	ctx := core.WithServices(context.Background(), &core.Services{Model: fruntime.WrapLLM(model), Tools: map[string]tools.Tool{
 		"read":  tools.NewRead(),

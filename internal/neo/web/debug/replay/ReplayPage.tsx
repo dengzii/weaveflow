@@ -19,7 +19,7 @@ const FALLBACK_CACHE_DIR =
 
 export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) {
   const navigate = useNavigate();
-  const [status, setStatus] = useState({ message: "Preparing", summary: "" });
+  const [statusMessage, setStatusMessage] = useState("Preparing");
   const [cacheDir, setCacheDir] = useState(FALLBACK_CACHE_DIR);
   const [cacheDirReady, setCacheDirReady] = useState(false);
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -70,7 +70,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     cacheDir,
     setDetail,
     setReplayIndex,
-    setStatus,
+    setStatusMessage,
     onEnterLive: () => {
       stopReplay();
       setDetail(null);
@@ -87,7 +87,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
         return;
       }
       setDetail(null);
-      setStatus({ message: "No replay runs available.", summary: "" });
+      setStatusMessage("No replay runs available.");
     },
   });
 
@@ -150,7 +150,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     setSelectedRunId(item.run.run_id);
     setSelectedSourceId(item.source_id);
     setReplayIndex(0);
-    setStatus({ message: "Loading replay detail...", summary: "" });
+    setStatusMessage("Loading replay detail...");
 
     try {
       const url = buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, baseDir, {
@@ -158,28 +158,22 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
       });
       const runDetail = await api<RunDetail>(url);
       setDetail(runDetail);
-      setStatus({
-        message: "",
-        summary: `${runDetail.summary.source_name} | ${runDetail.summary.graph_ref || "-"}`,
-      });
+      setStatusMessage("");
     } catch (error) {
       setDetail(null);
-      setStatus({ message: `Load failed: ${(error as Error).message}`, summary: "" });
+      setStatusMessage(`Load failed: ${(error as Error).message}`);
     }
   }
 
   async function loadRuns(baseDir: string) {
     stopReplay();
-    setStatus({ message: "Scanning replay cache...", summary: "" });
+    setStatusMessage("Scanning replay cache...");
 
     try {
       const data = await api<RunsResponse>(buildUrl("/api/runs", baseDir));
       const runList = data.runs ?? [];
       setRuns(runList);
-      setStatus({
-        message: `Scanned ${data.cache_dir}`,
-        summary: `${data.sources?.length ?? 0} sources | ${runList.length} runs`,
-      });
+      setStatusMessage(`Scanned ${data.cache_dir}`);
 
       if (!runList.length) {
         if (modeRef.current !== "live") setDetail(null);
@@ -195,7 +189,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     } catch (error) {
       setRuns([]);
       if (modeRef.current !== "live") setDetail(null);
-      setStatus({ message: `Load failed: ${(error as Error).message}`, summary: "" });
+      setStatusMessage(`Load failed: ${(error as Error).message}`);
     }
   }
 
@@ -205,7 +199,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
     }
 
     try {
-      setStatus({ message: `Deleting ${item.run.run_id}...`, summary: "" });
+      setStatusMessage(`Deleting ${item.run.run_id}...`);
       await apiDelete<{ deleted: boolean }>(
         buildUrl(`/api/run/${encodeURIComponent(item.run.run_id)}`, baseDir, {
           source: item.source_id,
@@ -220,9 +214,9 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
       }
 
       await loadRuns(baseDir);
-      setStatus({ message: `Deleted ${item.run.run_id}`, summary: "" });
+      setStatusMessage(`Deleted ${item.run.run_id}`);
     } catch (error) {
-      setStatus({ message: `Delete failed: ${(error as Error).message}`, summary: "" });
+      setStatusMessage(`Delete failed: ${(error as Error).message}`);
     }
   }
 
@@ -276,7 +270,7 @@ export function ReplayPage({ routeMode = "history" }: { routeMode?: PageMode }) 
             selectedSourceId={selectedSourceId}
             replayIndex={replayIndex}
             isPlaying={isPlaying}
-            statusMessage={status.message}
+            statusMessage={statusMessage}
             isLiveMode={isLiveMode}
             liveState={liveState}
             liveSocketState={liveSocketState}
