@@ -4,10 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/builtin"
 	"weaveflow/core"
 	"weaveflow/dsl"
-	"weaveflow/nodes"
 	"weaveflow/registry"
 	wfstate "weaveflow/state"
 )
@@ -37,19 +35,6 @@ func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) err
 			return fmt.Errorf("build iterator nodes %q: built-in iterator edges cannot be combined with explicit outgoing edges", nodeSpec.ID)
 		}
 
-		condition, err := builtin.ExpressionConditions(builtin.ExpressionConditionConfig{
-			Expressions: []builtin.Expression{{
-				Value1: nodes.IteratorStateRootKey + "." + nodeSpec.ID + ".done",
-				Op:     builtin.OperationEqual,
-				Value2: "false",
-			}},
-		})
-		if err != nil {
-			return fmt.Errorf("build iterator nodes %q built-in continue edge: %w", nodeSpec.ID, err)
-		}
-		if err := target.AddRuntimeConditionalEdge(nodeSpec.ID, continueTo, condition); err != nil {
-			return fmt.Errorf("build iterator nodes %q built-in continue edge: %w", nodeSpec.ID, err)
-		}
 		if err := target.AddRuntimeEdge(nodeSpec.ID, doneTo); err != nil {
 			return fmt.Errorf("build iterator nodes %q built-in done edge: %w", nodeSpec.ID, err)
 		}

@@ -26,21 +26,6 @@ func ResolveContextReducerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 	}, nil
 }
 
-func ResolveContextAssemblerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := StringConfig(spec.Config, "state_scope")
-	memoryPath := canonicalContractPath(defaultIfBlank(StringConfig(spec.Config, "memory_state_path"), wfstate.StateKeyMemory))
-	orchestrationPath := canonicalContractPath(defaultIfBlank(StringConfig(spec.Config, "orchestration_state_path"), wfstate.StateKeyOrchestration))
-	plannerPath := canonicalContractPath(defaultIfBlank(StringConfig(spec.Config, "planner_state_path"), wfstate.StateKeyPlanner))
-	return dsl.StateContract{
-		Fields: []dsl.StateFieldRef{
-			{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages updated with assembled memory context."},
-			{Path: memoryPath, Mode: dsl.StateAccessRead, Description: "Structured memory state consumed for prompt assembly."},
-			{Path: orchestrationPath, Mode: dsl.StateAccessRead, Description: "Structured orchestration state consumed for prompt assembly."},
-			{Path: plannerPath, Mode: dsl.StateAccessRead, Description: "Structured planner state consumed for prompt assembly."},
-		},
-	}, nil
-}
-
 func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	scope := StringConfig(spec.Config, "state_scope")
 	return dsl.StateContract{
@@ -49,8 +34,7 @@ func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) 
 			{Path: scopedConversationPath(scope, "iteration_count"), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter used to stop tool loops and incremented after each model turn."},
 			{Path: scopedConversationPath(scope, "max_iterations"), Mode: dsl.StateAccessRead, Description: "Maximum number of tool-using iterations allowed for the current conversation scope."},
 			{Path: scopedConversationPath(scope, "final_answer"), Mode: dsl.StateAccessWrite, Description: "Final answer written when the model finishes without further tool calls."},
-			{Path: canonicalContractPath(wfstate.StateKeyExecution), Mode: dsl.StateAccessReadWrite, Description: "Plan step execution state: read current_step.id and track last_llm_step_id to scrub prior-step messages at step boundary."},
-			{Path: canonicalContractPath(nodes.TokenUsageStateKey), Mode: dsl.StateAccessWrite, Description: "Accumulated token usage metrics emitted by the model node.", MergeStrategy: dsl.StateMergeMerge},
+			{Path: canonicalContractPath(wfstate.KeyExecution), Mode: dsl.StateAccessReadWrite, Description: "Plan step execution state: read current_step.id and track last_llm_step_id to scrub prior-step messages at step boundary."},
 		},
 	}, nil
 }
@@ -69,7 +53,6 @@ func ResolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error
 		{Path: scopedConversationPath(scope, "iteration_count"), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter bumped after every internal model turn."},
 		{Path: scopedConversationPath(scope, "max_iterations"), Mode: dsl.StateAccessReadWrite, Description: "Maximum iteration cap for the agent loop, applied if not already higher."},
 		{Path: scopedConversationPath(scope, "final_answer"), Mode: dsl.StateAccessWrite, Description: "Final answer written when the agent stops without further tool calls."},
-		{Path: canonicalContractPath(nodes.TokenUsageStateKey), Mode: dsl.StateAccessWrite, Description: "Accumulated token usage metrics emitted across the agent's internal model calls.", MergeStrategy: dsl.StateMergeMerge},
 	}
 	if inputPath := strings.TrimSpace(StringConfig(spec.Config, "input_path")); inputPath != "" {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(inputPath), Mode: dsl.StateAccessRead, Description: "State path the agent reads its initial task from.", Dynamic: true, PathConfigKey: "input_path"})
@@ -78,23 +61,6 @@ func ResolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(outputPath), Mode: dsl.StateAccessWrite, Description: "State path the agent writes its final answer to.", Dynamic: true, PathConfigKey: "output_path"})
 	}
 	return dsl.StateContract{Fields: fields}, nil
-}
-
-func ResolveIteratorStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	stateKey := canonicalContractPath(strings.TrimSpace(StringConfig(spec.Config, "state_key")))
-	nodeID := strings.TrimSpace(spec.ID)
-	runtimePath := nodes.IteratorStateRootKey
-	if nodeID != "" {
-		runtimePath += "." + nodeID
-	}
-	runtimePath = canonicalContractPath(runtimePath)
-
-	return dsl.StateContract{
-		Fields: []dsl.StateFieldRef{
-			{Path: stateKey, Mode: dsl.StateAccessRead, Required: true, Description: "Source collection iterated by the iterator node.", Dynamic: true, PathConfigKey: "state_key"},
-			{Path: runtimePath, Mode: dsl.StateAccessReadWrite, Description: "Iterator runtime state for the current node, including the current item and loop progress.", MergeStrategy: dsl.StateMergeMerge},
-		},
-	}, nil
 }
 
 func ResolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
@@ -153,11 +119,4 @@ func canonicalContractPath(path string) string {
 		return path
 	}
 	return wfstate.NormalizeContractPath(path)
-}
-
-func defaultIfBlank(value string, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
 }

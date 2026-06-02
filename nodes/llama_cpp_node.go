@@ -148,12 +148,6 @@ func (l *LlamaCppModel) execute(ctx context.Context, state wfstate.State) (wfsta
 	}
 	reasoning := strings.TrimSpace(choice.ReasoningContent)
 	stopReason, tokenCount := extractGenerationInfo(choice)
-	record := RecordChoiceUsage(ctx, state, Record{
-		NodeID:     l.ID(),
-		Model:      l.modelLabel(),
-		StateScope: l.StateScope,
-		StopReason: stopReason,
-	}, choice)
 
 	_, _ = runtime.SaveJSONArtifactBestEffort(ctx, "llama_cpp.response", map[string]any{
 		"content":     output,
@@ -162,7 +156,6 @@ func (l *LlamaCppModel) execute(ctx context.Context, state wfstate.State) (wfsta
 		"token_count": tokenCount,
 		"state_scope": l.StateScope,
 		"output_key":  l.effectiveOutputKey(),
-		"usage":       record.ArtifactPayload(),
 		"reasoning_key": func() string {
 			if reasoning == "" {
 				return ""

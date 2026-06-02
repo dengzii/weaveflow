@@ -26,3 +26,9 @@ func main() {
 	span := time.Now().Sub(now)
 	fmt.Printf("node invoke took %s\n", span)
 }
+
+func must(err error) {
+	if err != nil {
+		panic(err)
+	}
+}

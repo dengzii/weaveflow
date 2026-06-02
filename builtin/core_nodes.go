@@ -56,44 +56,6 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 
 	r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "iterator",
-			Title:       "Iterator Node",
-			Description: "Iterate over a state array and inject the current iteration into temporary state.",
-			ConfigSchema: dsl.JSONSchema{
-				"type": "object",
-				"properties": dsl.JSONSchema{
-					"state_key":      dsl.JSONSchema{"type": "string"},
-					"max_iterations": dsl.JSONSchema{"type": "integer", "minimum": 1},
-					"continue_to":    dsl.JSONSchema{"type": "string"},
-					"done_to":        dsl.JSONSchema{"type": "string"},
-				},
-				"required":             []string{"state_key", "max_iterations"},
-				"additionalProperties": false,
-			},
-		},
-		ResolveStateContract: registry.ResolveIteratorStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[registry.State, registry.StatePatch], error) {
-			_ = ctx
-			stateKey := registry.StringConfig(spec.Config, "state_key")
-			if stateKey == "" {
-				return nil, fmt.Errorf("build iterator nodes %q: state_key is required", spec.ID)
-			}
-			maxIterations, ok := registry.IntConfig(spec.Config, "max_iterations")
-			if !ok || maxIterations <= 0 {
-				return nil, fmt.Errorf("build iterator nodes %q: max_iterations must be greater than 0", spec.ID)
-			}
-			node := nodes.NewIteratorNode()
-			applyNodeMetadata(node, spec)
-			node.StateKey = stateKey
-			node.MaxIterations = maxIterations
-			node.ContinueTo = registry.StringConfig(spec.Config, "continue_to")
-			node.DoneTo = registry.StringConfig(spec.Config, "done_to")
-			return node, nil
-		},
-	})
-
-	r.RegisterNodeType(registry.NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        "human_message",
 			Title:       "Human Message Node",
 			Description: "Pause the graph until the latest message in scope is a human message.",
@@ -335,14 +297,6 @@ func applyNodeMetadata(node interface {
 }, spec dsl.GraphNodeSpec) {
 	switch typed := node.(type) {
 	case *nodes.MappedSubgraphNode:
-		typed.NodeID = spec.ID
-		if spec.Name != "" {
-			typed.NodeName = spec.Name
-		}
-		if spec.Description != "" {
-			typed.NodeDescription = spec.Description
-		}
-	case *nodes.IteratorNode:
 		typed.NodeID = spec.ID
 		if spec.Name != "" {
 			typed.NodeName = spec.Name

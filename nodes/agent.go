@@ -143,12 +143,6 @@ func (a *AgentNode) runLoop(ctx context.Context, state wfstate.State, conversati
 		}
 
 		choice := resp.Choices[0]
-		_ = RecordChoiceUsage(ctx, state, Record{
-			NodeID:     a.ID(),
-			Model:      modelLabel(model),
-			StateScope: a.StateScope,
-		}, choice)
-
 		aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
 		if strings.TrimSpace(choice.ReasoningContent) != "" {
 			aiMessage.Parts = append(aiMessage.Parts, parts.NewReasoningPart(choice.ReasoningContent))

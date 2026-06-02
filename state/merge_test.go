@@ -29,14 +29,14 @@ func TestMergeResumeInputMergesRootAndScopeState(t *testing.T) {
 		},
 		"scopes": map[string]any{
 			"agent": map[string]any{
-				StateKeyMessages: []map[string]any{
+				KeyMessages: []map[string]any{
 					{"role": "assistant", "content": "need human input"},
 					{"role": "user", "content": "approved"},
 				},
 				"flag": true,
 			},
 		},
-		StateKeyMaxIterations: 5,
+		KeyMaxIterations: 5,
 	}
 
 	merged, err := MergeResumeInput(base, input)

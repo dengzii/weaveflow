@@ -55,13 +55,13 @@ func NewExploreNode() *ExploreNode {
 			NodeName:        "Explore",
 			NodeDescription: "Run an isolated file-reading loop and return a structured summary.",
 		},
-		ExploreScope:         wfstate.StateKeyExplore,
+		ExploreScope:         wfstate.KeyExplore,
 		MaxIterations:        defaultExploreMaxIterations,
 		ToolIDs:              []string{"read", "grep", "glob"},
 		ToolResultCap:        defaultExploreToolResultCap,
-		EnvironmentStatePath: wfstate.StateKeyEnvironment,
+		EnvironmentStatePath: wfstate.KeyEnvironment,
 		IncludeEnvironment:   true,
-		EnvironmentHeading:   defaultContextAssemblerEnvironmentHeader,
+		EnvironmentHeading:   "",
 	}
 }
 
@@ -81,7 +81,7 @@ func (n *ExploreNode) execute(ctx context.Context, state wfstate.State) (wfstate
 	}
 
 	exploreScope := n.effectiveExploreScope()
-	request = n.requestWithEnvironmentContext(state, request)
+
 	convo := state.Conversation(exploreScope)
 	convo.SetMaxIterations(n.effectiveMaxIterations())
 	convo.UpdateMessage([]llms.MessageContent{
@@ -127,12 +127,6 @@ func (n *ExploreNode) execute(ctx context.Context, state wfstate.State) (wfstate
 		}
 
 		choice := resp.Choices[0]
-		_ = RecordChoiceUsage(ctx, state, Record{
-			NodeID:     n.ID(),
-			Model:      modelLabel(svc.Model),
-			StateScope: exploreScope,
-		}, choice)
-
 		aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
 		if strings.TrimSpace(choice.Content) != "" {
 			aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
@@ -242,7 +236,7 @@ func (n *ExploreNode) resolveRequest(state wfstate.State) (string, error) {
 		}
 	}
 
-	if req := state.Get(wfstate.StateKeyRequest); req != nil {
+	if req := state.Get(wfstate.KeyRequest); req != nil {
 		if input, _ := req["input"].(string); strings.TrimSpace(input) != "" {
 			return strings.TrimSpace(input), nil
 		}
@@ -252,7 +246,7 @@ func (n *ExploreNode) resolveRequest(state wfstate.State) (string, error) {
 
 func (n *ExploreNode) effectiveExploreScope() string {
 	if n == nil || strings.TrimSpace(n.ExploreScope) == "" {
-		return wfstate.StateKeyExplore
+		return wfstate.KeyExplore
 	}
 	return strings.TrimSpace(n.ExploreScope)
 }
@@ -287,27 +281,9 @@ func (n *ExploreNode) effectiveSystemPrompt() string {
 
 func (n *ExploreNode) effectiveEnvironmentStatePath() string {
 	if n == nil || strings.TrimSpace(n.EnvironmentStatePath) == "" {
-		return wfstate.StateKeyEnvironment
+		return wfstate.KeyEnvironment
 	}
 	return strings.TrimSpace(n.EnvironmentStatePath)
-}
-
-func (n *ExploreNode) effectiveEnvironmentHeading() string {
-	if n == nil || strings.TrimSpace(n.EnvironmentHeading) == "" {
-		return defaultContextAssemblerEnvironmentHeader
-	}
-	return strings.TrimSpace(n.EnvironmentHeading)
-}
-
-func (n *ExploreNode) requestWithEnvironmentContext(state wfstate.State, request string) string {
-	if n == nil || !n.IncludeEnvironment {
-		return request
-	}
-	environment := buildEnvironmentContextText(state, n.effectiveEnvironmentStatePath(), n.effectiveEnvironmentHeading())
-	if strings.TrimSpace(environment) == "" {
-		return request
-	}
-	return environment + "\n\nUser request:\n" + request
 }
 
 func (n *ExploreNode) effectiveToolIDs() []string {
@@ -339,7 +315,7 @@ func (n *ExploreNode) GraphNodeSpec() dsl.GraphNodeSpec {
 			"tool_ids":               n.effectiveToolIDs(),
 			"environment_state_path": n.effectiveEnvironmentStatePath(),
 			"include_environment":    n.IncludeEnvironment,
-			"environment_heading":    n.effectiveEnvironmentHeading(),
+			"environment_heading":    "",
 		},
 	}
 }

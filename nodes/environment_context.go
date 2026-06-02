@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	defaultEnvironmentStatePath       = wfstate.StateKeyEnvironment
+	defaultEnvironmentStatePath       = wfstate.KeyEnvironment
 	environmentToolWorkdirEnv         = "WEAVEFLOW_TOOL_WORKDIR"
 	defaultEnvironmentGitStatusLimit  = 40
 	environmentCommandTimeout         = 2 * time.Second

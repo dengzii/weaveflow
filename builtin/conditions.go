@@ -410,7 +410,7 @@ func isExplicitContractStatePath(path string) bool {
 
 func isConversationField(field string) bool {
 	switch field {
-	case wfstate.StateKeyMessages, wfstate.StateKeyIterationCount, wfstate.StateKeyMaxIterations, wfstate.StateKeyFinalAnswer:
+	case wfstate.KeyMessages, wfstate.KeyIterationCount, wfstate.KeyMaxIterations, wfstate.KeyFinalAnswer:
 		return true
 	default:
 		return false
@@ -420,13 +420,13 @@ func isConversationField(field string) bool {
 func conversationFieldValue(state wfstate.State, scope, field string) (any, bool) {
 	conversation := state.Conversation(scope)
 	switch field {
-	case wfstate.StateKeyMessages:
+	case wfstate.KeyMessages:
 		return conversation.Messages(), true
-	case wfstate.StateKeyIterationCount:
+	case wfstate.KeyIterationCount:
 		return conversation.IterationCount(), true
-	case wfstate.StateKeyMaxIterations:
+	case wfstate.KeyMaxIterations:
 		return conversation.MaxIterations(), true
-	case wfstate.StateKeyFinalAnswer:
+	case wfstate.KeyFinalAnswer:
 		return conversation.FinalAnswer(), true
 	default:
 		return nil, false

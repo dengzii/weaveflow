@@ -3,49 +3,35 @@ package state
 // Domain state keys are root-level fields in the State map.
 // Grouped by module so additions are easy to audit.
 const (
-	// StateKeyRequest session
-	StateKeyRequest     = "request"
-	StateKeyAgent       = "agent"
-	StateKeyToolPolicy  = "tool_policy"
-	StateKeyEnvironment = "environment"
+	// KeyRequest session
+	KeyRequest     = "request"
+	KeyAgent       = "agent"
+	KeyToolPolicy  = "tool_policy"
+	KeyEnvironment = "environment"
 
-	// StateKeyIntent intent
-	StateKeyIntent = "intent"
+	KeyOrchestration = "orchestration"
 
-	// StateKeyOrchestration orchestration
-	StateKeyOrchestration = "orchestration"
+	KeyMemory = "memory"
 
-	// StateKeyMemory memory
-	StateKeyMemory = "memory"
+	KeyPlanner = "planner"
 
-	// StateKeyPlanner planner
-	StateKeyPlanner = "planner"
+	KeyExecution    = "execution"
+	KeyObservations = "observations"
+	KeyEvidence     = "evidence"
 
-	// StateKeyExecution execution
-	StateKeyExecution    = "execution"
-	StateKeyObservations = "observations"
-	StateKeyEvidence     = "evidence"
+	KeyVerification = "verification"
+	KeyFinal        = "final"
 
-	// StateKeyVerification verification
-	StateKeyVerification = "verification"
-	StateKeyFinal        = "final"
-
-	// StateKeyExplore explore subgraph (isolated sub-conversation scope)
-	StateKeyExplore = "explore"
-
-	// StateKeyToolPolicyCheck safety
-	StateKeyToolPolicyCheck = "tool_policy_check"
-	StateKeyApproval        = "approval"
-	StateKeyBudget          = "budget"
+	KeyExplore = "explore"
 )
 
 // Conversation field keys live inside the conversation namespace,
 // not at the root level. Kept here for a single inventory.
 const (
-	StateKeyMessages       = "messages"
-	StateKeyIterationCount = "iteration_count"
-	StateKeyMaxIterations  = "max_iterations"
-	StateKeyFinalAnswer    = "final_answer"
+	KeyMessages       = "messages"
+	KeyIterationCount = "iteration_count"
+	KeyMaxIterations  = "max_iterations"
+	KeyFinalAnswer    = "final_answer"
 )
 
 // Get returns the sub-map at the given root-level key, or nil if absent.

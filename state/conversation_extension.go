@@ -12,10 +12,10 @@ import (
 )
 
 const (
-	stateKeyMessages       = StateKeyMessages
-	stateKeyIterationCount = StateKeyIterationCount
-	stateKeyMaxIterations  = StateKeyMaxIterations
-	stateKeyFinalAnswer    = StateKeyFinalAnswer
+	stateKeyMessages       = KeyMessages
+	stateKeyIterationCount = KeyIterationCount
+	stateKeyMaxIterations  = KeyMaxIterations
+	stateKeyFinalAnswer    = KeyFinalAnswer
 )
 
 type ConversationState struct {
@@ -30,7 +30,7 @@ type conversationExtension struct{}
 func (conversationExtension) FieldDefinitions() []dsl.StateFieldDefinition {
 	return []dsl.StateFieldDefinition{
 		{
-			Name:        StateKeyMessages,
+			Name:        KeyMessages,
 			Description: "Chat messages accumulated during the graph run.",
 			Schema: dsl.JSONSchema{
 				"type": "array",
@@ -40,17 +40,17 @@ func (conversationExtension) FieldDefinitions() []dsl.StateFieldDefinition {
 			},
 		},
 		{
-			Name:        StateKeyIterationCount,
+			Name:        KeyIterationCount,
 			Description: "Current tool-using iteration count.",
 			Schema:      dsl.JSONSchema{"type": "integer", "minimum": 0},
 		},
 		{
-			Name:        StateKeyMaxIterations,
+			Name:        KeyMaxIterations,
 			Description: "Maximum iteration count allowed for the run.",
 			Schema:      dsl.JSONSchema{"type": "integer", "minimum": 1},
 		},
 		{
-			Name:        StateKeyFinalAnswer,
+			Name:        KeyFinalAnswer,
 			Description: "Final answer produced by the graph.",
 			Schema:      dsl.JSONSchema{"type": "string"},
 		},

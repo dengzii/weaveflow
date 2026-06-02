@@ -83,7 +83,7 @@ func TestNewGraphCurrentTimeUsesToolLoop(t *testing.T) {
 		t.Fatalf("expected two llm calls for tool loop, got %d", model.calls)
 	}
 
-	orchestration := state.Get(wfstate.StateKeyOrchestration)
+	orchestration := state.Get(wfstate.KeyOrchestration)
 	if orchestration == nil {
 		t.Fatal("expected orchestration state")
 	}
@@ -141,7 +141,7 @@ func TestNewGraphClarificationPausesAtClarificationNode(t *testing.T) {
 		t.Fatalf("expected only router LLM call before pause, got %d", model.calls)
 	}
 
-	orchestration := state.Get(wfstate.StateKeyOrchestration)
+	orchestration := state.Get(wfstate.KeyOrchestration)
 	if orchestration == nil {
 		t.Fatal("expected orchestration state to be populated")
 	}
@@ -210,7 +210,7 @@ func TestNewGraphPlannerUsesMemoryBeforePlanning(t *testing.T) {
 		t.Fatalf("run neo graph: %v", err)
 	}
 
-	memoryState := state.Get(wfstate.StateKeyMemory)
+	memoryState := state.Get(wfstate.KeyMemory)
 	if memoryState == nil {
 		t.Fatal("expected memory recall state")
 	}
@@ -286,7 +286,7 @@ func TestNewGraphValidationStepRoutesDirectlyToVerifier(t *testing.T) {
 	if model.calls != 4 {
 		t.Fatalf("expected router, planner, verifier, finalizer calls only; got %d", model.calls)
 	}
-	verification := state.Get(wfstate.StateKeyVerification)
+	verification := state.Get(wfstate.KeyVerification)
 	if got := verification["summary"]; got != "Validation passed." {
 		t.Fatalf("expected validation verifier result, got %#v", verification)
 	}
@@ -477,7 +477,7 @@ func TestNewGraphPlannerNeedsClarificationPausesAtClarificationNode(t *testing.T
 	if !strings.Contains(err.Error(), "Clarification_") {
 		t.Fatalf("expected interrupt at Clarification node, got: %v", err)
 	}
-	planner := state.Get(wfstate.StateKeyPlanner)
+	planner := state.Get(wfstate.KeyPlanner)
 	if got := planner["current_step_id"]; got != "" {
 		t.Fatalf("expected empty current_step_id for empty clarification plan, got %#v", got)
 	}

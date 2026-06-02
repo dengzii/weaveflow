@@ -37,9 +37,4 @@ func RegisterModules(registry *registry.Registry) {
 	}
 
 	registerConversationModule(registry)
-	registerPlanningModule(registry)
-	registerMemoryModule(registry)
-	registerExecutionModule(registry)
-	registerVerificationModule(registry)
-	registerSafetyModule(registry)
 }

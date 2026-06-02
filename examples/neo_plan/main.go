@@ -79,7 +79,7 @@ func main() {
 }
 
 func printPlannerState(state wfstate.State) {
-	planner := state.Get(wfstate.StateKeyPlanner)
+	planner := state.Get(wfstate.KeyPlanner)
 	fmt.Println()
 	fmt.Println("=== planner state ===")
 	if planner == nil {

@@ -70,7 +70,7 @@ func TestNewGraphDirectAnswerShortCircuitsAfterRouter(t *testing.T) {
 		t.Fatalf("expected final answer to be preserved, got %#v", got)
 	}
 
-	final := state.Get(wfstate.StateKeyFinal)
+	final := state.Get(wfstate.KeyFinal)
 	if got := final["answer"]; got != "2 + 2 = 4." {
 		t.Fatalf("expected final state answer to be written, got %#v", got)
 	}

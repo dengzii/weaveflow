@@ -16,7 +16,6 @@ import (
 	"weaveflow"
 	"weaveflow/core"
 	"weaveflow/memory"
-	"weaveflow/nodes"
 	fruntime "weaveflow/runtime"
 	wfstate "weaveflow/state"
 	"weaveflow/tools"
@@ -249,11 +248,7 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 			_ = os.WriteFile(filepath.Join(runDir, "graph.json"), graphJSON, 0o644)
 		}
 	case turnResumeClarification:
-		resumeInput = wfstate.State{
-			nodes.ClarificationStateKey: wfstate.State{
-				nodes.ClarificationUserChoiceKey: req.Message,
-			},
-		}
+		resumeInput = wfstate.State{}
 	case turnResumeStopped:
 		resumeInput = nil
 	}
@@ -522,7 +517,7 @@ func finalAnswerFromState(state wfstate.State) string {
 	if answer := strings.TrimSpace(state.Conversation(stateScope).FinalAnswer()); answer != "" {
 		return answer
 	}
-	finalState := state.Get(wfstate.StateKeyFinal)
+	finalState := state.Get(wfstate.KeyFinal)
 	if finalState == nil {
 		return ""
 	}

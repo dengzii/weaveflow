@@ -64,14 +64,6 @@ func (L *LLMNode) execute(ctx context.Context, state wfstate.State) (wfstate.Sta
 	messages := conversation.Messages()
 	promptMessages := trimLLMPromptMessages(messages, L.effectivePromptMaxChars())
 	synthesizePlannerToolResult := shouldSynthesizePlannerToolResult(state, promptMessages)
-	if synthesizePlannerToolResult {
-		promptMessages = insertAfterLeadingSystem(
-			promptMessages,
-			llms.TextParts(llms.ChatMessageTypeSystem, plannerToolResultSynthesisPrompt),
-		)
-	} else if contract := buildToolContractSystemMessage(nodeTools); contract != nil {
-		promptMessages = insertAfterLeadingSystem(promptMessages, *contract)
-	}
 
 	if conversation.IterationCount() >= conversation.MaxIterations() {
 		message := "Maximum tool iterations reached. Please simplify the question or reduce tool usage."
@@ -115,11 +107,6 @@ func (L *LLMNode) execute(ctx context.Context, state wfstate.State) (wfstate.Sta
 	}
 
 	choice := resp.Choices[0]
-	_ = RecordChoiceUsage(ctx, state, Record{
-		NodeID:     L.ID(),
-		Model:      modelLabel(model),
-		StateScope: L.StateScope,
-	}, choice)
 
 	aiMessage := llms.MessageContent{Role: llms.ChatMessageTypeAI}
 
@@ -185,13 +172,13 @@ func scrubPriorStepIfBoundaryCrossed(state wfstate.State, conversation wfstate.C
 	if state == nil || conversation == nil {
 		return false
 	}
-	exec := state.Ensure(wfstate.StateKeyExecution)
+	exec := state.Ensure(wfstate.KeyExecution)
 	// IMPORTANT: do not type-assert exec["current_step"].(map[string]any)
 	// directly — after a patch diff/apply round-trip the value may be the
 	// named type wfstate.State, which is *not* identical to map[string]any
 	// for the purposes of Go's type assertion. Use stateObjectAtPath, which
 	// accepts both shapes and normalizes them.
-	currentStep := stateObjectAtPath(state, wfstate.StateKeyExecution+".current_step")
+	currentStep := stateObjectAtPath(state, wfstate.KeyExecution+".current_step")
 	currentStepID := ""
 	if currentStep != nil {
 		currentStepID, _ = currentStep["id"].(string)
@@ -329,17 +316,9 @@ func shouldSynthesizePlannerToolResult(state wfstate.State, messages []llms.Mess
 		return false
 	}
 
-	orchestration := state.Get(wfstate.StateKeyOrchestration)
+	orchestration := state.Get(wfstate.KeyOrchestration)
 	mode, _ := orchestration["mode"].(string)
 	if !strings.EqualFold(strings.TrimSpace(mode), "planner") {
-		return false
-	}
-
-	exec := state.Get(wfstate.StateKeyExecution)
-	route, _ := exec["route"].(string)
-	switch strings.ToLower(strings.TrimSpace(route)) {
-	case ExecutionRouteLLM, ExecutionRouteLLMWithTools:
-	default:
 		return false
 	}
 
@@ -421,9 +400,6 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 			Content:          choice.Content,
 			StopReason:       choice.StopReason,
 			ReasoningContent: choice.ReasoningContent,
-		}
-		if usage := ExtractUsage(choice); !usage.IsZero() {
-			item.Usage = usage.Artifact()
 		}
 		if choice.FuncCall != nil {
 			copyCall := *choice.FuncCall

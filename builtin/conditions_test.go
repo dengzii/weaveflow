@@ -24,7 +24,7 @@ func TestExpressionConditionsMatchAllAgainstScopedStateAndConversation(t *testin
 		Expressions: []Expression{
 			{Value1: "status", Op: OperationEqual, Value2: "ready"},
 			{Value1: "tags", Op: OperationContains, Value2: "final"},
-			{Value1: wfstate.StateKeyFinalAnswer, Op: OperationEqual, Value2: "done"},
+			{Value1: wfstate.KeyFinalAnswer, Op: OperationEqual, Value2: "done"},
 		},
 	})
 	if err != nil {

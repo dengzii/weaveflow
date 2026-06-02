@@ -4,7 +4,7 @@ func (s State) Observations() []map[string]any {
 	if s == nil {
 		return nil
 	}
-	raw, ok := s[StateKeyObservations]
+	raw, ok := s[KeyObservations]
 	if !ok {
 		return nil
 	}
@@ -28,7 +28,7 @@ func (s State) Evidence() []map[string]any {
 	if s == nil {
 		return nil
 	}
-	raw, ok := s[StateKeyEvidence]
+	raw, ok := s[KeyEvidence]
 	if !ok {
 		return nil
 	}
@@ -49,7 +49,7 @@ func (s State) Evidence() []map[string]any {
 }
 
 func (s State) StepResults() map[string]any {
-	exec := s.Get(StateKeyExecution)
+	exec := s.Get(KeyExecution)
 	if exec == nil {
 		return nil
 	}

@@ -102,11 +102,11 @@ func TestNormalizeInputStateHandlesConversationExtensionFields(t *testing.T) {
 	t.Parallel()
 
 	normalized, err := NormalizeInputState(State{
-		StateKeyMessages: []map[string]any{
+		KeyMessages: []map[string]any{
 			{"role": "user", "content": "hello"},
 		},
-		StateKeyMaxIterations: 3,
-		"topic":               "demo",
+		KeyMaxIterations: 3,
+		"topic":          "demo",
 	})
 	if err != nil {
 		t.Fatalf("normalize input state: %v", err)
@@ -197,18 +197,18 @@ func TestEnsurePlannerCreatesAndReusesPlannerState(t *testing.T) {
 	t.Parallel()
 
 	state := State{}
-	planner := state.Ensure(StateKeyPlanner)
+	planner := state.Ensure(KeyPlanner)
 	if planner == nil {
 		t.Fatal("expected planner state to be created")
 	}
 
 	planner["objective"] = "Decompose a generic task into executable steps."
 
-	if got := state.Get(StateKeyPlanner); got == nil || got["objective"] != planner["objective"] {
+	if got := state.Get(KeyPlanner); got == nil || got["objective"] != planner["objective"] {
 		t.Fatalf("expected planner state to be readable from root state, got %#v", got)
 	}
 
-	plannerAgain := state.Ensure(StateKeyPlanner)
+	plannerAgain := state.Ensure(KeyPlanner)
 	if plannerAgain == nil || plannerAgain["objective"] != planner["objective"] {
 		t.Fatalf("expected ensure planner to reuse the existing state, got %#v", plannerAgain)
 	}

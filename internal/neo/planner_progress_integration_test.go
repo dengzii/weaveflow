@@ -129,7 +129,7 @@ func TestNeoPlannerProgressIntegration(t *testing.T) {
 		t.Fatalf("final planner progress percent = %d, want 100", got)
 	}
 
-	planner := state.Get(wfstate.StateKeyPlanner)
+	planner := state.Get(wfstate.KeyPlanner)
 	if planner == nil {
 		t.Fatal("expected planner state")
 	}
