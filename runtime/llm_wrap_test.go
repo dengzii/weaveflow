@@ -56,14 +56,17 @@ func TestWrapLLMGenerateContentPublishesFinalReasoningAndContentEvents(t *testin
 		t.Fatalf("GenerateContent() error = %v", err)
 	}
 
-	if len(events) != 2 {
-		t.Fatalf("published events len = %d, want 2", len(events))
+	if len(events) != 3 {
+		t.Fatalf("published events len = %d, want 3", len(events))
 	}
 	if events[0].typ != EventLLMReasoning {
 		t.Fatalf("events[0].typ = %q, want %q", events[0].typ, EventLLMReasoning)
 	}
 	if events[1].typ != EventLLMContent {
 		t.Fatalf("events[1].typ = %q, want %q", events[1].typ, EventLLMContent)
+	}
+	if events[2].typ != EventLLMCall {
+		t.Fatalf("events[2].typ = %q, want %q", events[2].typ, EventLLMCall)
 	}
 
 	var reasoningPayload map[string]string

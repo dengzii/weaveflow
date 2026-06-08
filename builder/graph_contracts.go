@@ -4,10 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/registry"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
 type RuntimeEdgeGraph interface {
@@ -42,11 +41,11 @@ func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) err
 	return nil
 }
 
-func ResolveNodeContracts(def dsl.GraphDefinition, reg *registry.Registry) (map[string]core.NodeIOContract, error) {
+func ResolveNodeContracts(def dsl.GraphDefinition, reg *registry.Registry) (map[string]state.Contract, error) {
 	if reg == nil {
 		return nil, nil
 	}
-	contracts := make(map[string]core.NodeIOContract, len(def.Nodes))
+	contracts := make(map[string]state.Contract, len(def.Nodes))
 	for _, spec := range def.Nodes {
 		nodeDef, ok := reg.NodeTypes[spec.Type]
 		if !ok {
@@ -59,8 +58,11 @@ func ResolveNodeContracts(def dsl.GraphDefinition, reg *registry.Registry) (map[
 		if err != nil {
 			return nil, err
 		}
-		converted := ConvertStateContract(contract)
-		if !converted.IsEmpty() {
+		converted, err := ConvertStateContract(contract)
+		if err != nil {
+			return nil, fmt.Errorf("node %q contract: %w", spec.ID, err)
+		}
+		if len(converted.Fields) > 0 || converted.WildcardRead || converted.WildcardWrite {
 			contracts[spec.ID] = converted
 		}
 	}
@@ -70,8 +72,8 @@ func ResolveNodeContracts(def dsl.GraphDefinition, reg *registry.Registry) (map[
 	return contracts, nil
 }
 
-func ConvertStateContract(contract dsl.StateContract) core.NodeIOContract {
-	result := core.NodeIOContract{}
+func ConvertStateContract(contract dsl.StateContract) (state.Contract, error) {
+	result := state.Contract{}
 	for _, field := range contract.Fields {
 		path := strings.TrimSpace(field.Path)
 		if path == "*" {
@@ -89,46 +91,20 @@ func ConvertStateContract(contract dsl.StateContract) core.NodeIOContract {
 		if path == "" {
 			continue
 		}
-		normalized := wfstate.NormalizeContractPath(path)
-		switch field.Mode {
-		case dsl.StateAccessRead:
-			result.ReadPaths = append(result.ReadPaths, normalized)
-			if field.Required {
-				result.RequiredReadPaths = append(result.RequiredReadPaths, normalized)
-			}
-		case dsl.StateAccessWrite, dsl.StateAccessReadWrite:
-			result.WritePaths = append(result.WritePaths, normalized)
-			if field.Mode == dsl.StateAccessReadWrite {
-				result.ReadPaths = append(result.ReadPaths, normalized)
-			}
-			if field.Required {
-				result.RequiredWritePaths = append(result.RequiredWritePaths, normalized)
-				if field.Mode == dsl.StateAccessReadWrite {
-					result.RequiredReadPaths = append(result.RequiredReadPaths, normalized)
-				}
-			}
-			if strategy := convertMergeStrategy(field.MergeStrategy); strategy != core.StateMergeDefault {
-				if result.MergeStrategies == nil {
-					result.MergeStrategies = map[string]core.StateMergeStrategy{}
-				}
-				result.MergeStrategies[normalized] = strategy
-			}
+		parsed, err := state.ParsePath(path)
+		if err != nil {
+			return state.Contract{}, fmt.Errorf("invalid state path %q: %w", path, err)
 		}
+		result.Fields = append(result.Fields, state.FieldAccess{
+			Path:        parsed,
+			Mode:        field.Mode,
+			Required:    field.Required,
+			Merge:       field.MergeStrategy,
+			Type:        schemaType(field.Schema),
+			Description: field.Description,
+		})
 	}
-	return result
-}
-
-func convertMergeStrategy(strategy dsl.StateMergeStrategy) core.StateMergeStrategy {
-	switch strategy {
-	case dsl.StateMergeReplace:
-		return core.StateMergeReplace
-	case dsl.StateMergeMerge:
-		return core.StateMergeMerge
-	case dsl.StateMergeAppend:
-		return core.StateMergeAppend
-	default:
-		return core.StateMergeDefault
-	}
+	return result, nil
 }
 
 func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {
@@ -138,4 +114,14 @@ func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {
 		}
 	}
 	return false
+}
+
+func schemaType(schema dsl.JSONSchema) string {
+	if len(schema) == 0 {
+		return ""
+	}
+	if text, ok := schema["type"].(string); ok {
+		return strings.TrimSpace(text)
+	}
+	return ""
 }

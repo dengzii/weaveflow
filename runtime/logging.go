@@ -4,7 +4,6 @@ import (
 	"go.uber.org/zap"
 
 	"weaveflow/state"
-	wfstate "weaveflow/state"
 )
 
 func runLogFields(run RunRecord) []zap.Field {
@@ -69,7 +68,7 @@ func checkpointLogFields(record CheckpointRecord) []zap.Field {
 	}
 }
 
-func artifactLogFields(ref wfstate.ArtifactRef) []zap.Field {
+func artifactLogFields(ref state.ArtifactRef) []zap.Field {
 	fields := []zap.Field{
 		zap.String("artifact_id", ref.ID),
 		zap.String("run_id", ref.RunID),
@@ -87,9 +86,3 @@ func artifactLogFields(ref wfstate.ArtifactRef) []zap.Field {
 	}
 	return fields
 }
-
-var (
-	stateSummaryFields        = state.SummaryFields
-	countStateKeys            = state.CountKeys
-	countConversationMessages = state.CountConversationMessages
-)

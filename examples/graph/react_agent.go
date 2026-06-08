@@ -5,8 +5,9 @@ import (
 	"weaveflow"
 	"weaveflow/builtin"
 	"weaveflow/memory"
-	"weaveflow/nodes"
-	wfstate "weaveflow/state"
+	"weaveflow/node"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -17,11 +18,14 @@ const (
 	humanInputFile       = ".local/instance/human_input.txt"
 )
 
-func newReActAgentInitialState() wfstate.State {
+func newReActAgentInitialState() *state.State {
 	systemPrompt := "你是一个有帮助的 ReAct agent. 当工具提高正确性时使用工具，并以纯文本形式返回最终答案."
 	messages := make([]llms.MessageContent, 0, 2)
 	messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, systemPrompt))
-	return wfstate.NewBaseState(messages, 10)
+	currentState := state.NewState()
+	_ = state.SetPath(currentState, state.Scope(reactAgentStateScope, accessors.KeyConversation, accessors.ConversationFieldMessages).String(), messages)
+	_ = state.SetPath(currentState, state.Scope(reactAgentStateScope, accessors.KeyConversation, accessors.ConversationFieldMaxIterations).String(), 10)
+	return currentState
 }
 
 func newReActAgentTools() map[string]tools.Tool {
@@ -48,30 +52,27 @@ func newReActAgentMemory() memory.Manager {
 func newReActAgentGraph() *weaveflow.Graph {
 	graph := weaveflow.NewGraph()
 
-	humanInLoop := nodes.NewHumanMessageNode()
-	humanInLoop.StateScope = reactAgentStateScope
+	humanInLoop := node.NewHumanMessageNode("")
 
 	tryPanic(graph.AddNode(humanInLoop))
 
-	llm := nodes.NewLLMNode()
-	llm.StateScope = reactAgentStateScope
+	llm := node.NewLLMNode()
 
 	tryPanic(graph.AddNode(llm))
 
-	toolCall := nodes.NewToolCallNode()
-	toolCall.StateScope = llm.StateScope
+	toolCall := node.NewToolsNode()
 
 	tryPanic(graph.AddNode(toolCall))
 
 	tryPanic(graph.AddEdge(humanInLoop.ID(), llm.ID()))
 
-	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), builtin.LastMessageHasToolCalls(llm.StateScope))
+	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), builtin.LastMessageHasToolCalls())
 	tryPanic(err)
 
 	err = graph.AddEdge(toolCall.ID(), llm.ID())
 	tryPanic(err)
 
-	err = graph.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, builtin.HasFinalAnswer(llm.StateScope))
+	err = graph.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, builtin.HasFinalAnswer())
 	tryPanic(err)
 
 	tryPanic(graph.SetEntryPoint(humanInLoop.ID()))

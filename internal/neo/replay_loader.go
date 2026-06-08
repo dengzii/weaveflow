@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 	"weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
 const artifactPreviewLimit = 128 * 1024
@@ -28,7 +28,7 @@ type cacheSource struct {
 	checkpoints *runtime.FileCheckpointStore
 	events      *runtime.FileEventSink
 	artifacts   *runtime.FileArtifactStore
-	codec       wfstate.StateCodec
+	codec       state.StateCodec
 }
 
 type RunsResponse struct {
@@ -121,24 +121,24 @@ type CheckpointSummary struct {
 type CheckpointDetail struct {
 	Source    SourceMeta               `json:"source"`
 	Record    runtime.CheckpointRecord `json:"record"`
-	Snapshot  wfstate.StateSnapshot    `json:"snapshot"`
-	Business  wfstate.State            `json:"business"`
-	Runtime   wfstate.RuntimeState     `json:"runtime"`
-	Artifacts []wfstate.ArtifactRef    `json:"artifacts,omitempty"`
+	Snapshot  state.StateSnapshot      `json:"snapshot"`
+	Business  *state.State             `json:"business"`
+	Runtime   state.RuntimeState       `json:"runtime"`
+	Artifacts []state.ArtifactRef      `json:"artifacts,omitempty"`
 }
 
 type ArtifactSummary struct {
-	Ref   wfstate.ArtifactRef `json:"ref"`
-	Bytes int64               `json:"bytes"`
+	Ref   state.ArtifactRef `json:"ref"`
+	Bytes int64             `json:"bytes"`
 }
 
 type ArtifactDetail struct {
-	Source    SourceMeta          `json:"source"`
-	Ref       wfstate.ArtifactRef `json:"ref"`
-	Bytes     int                 `json:"bytes"`
-	Encoding  string              `json:"encoding"`
-	Payload   any                 `json:"payload,omitempty"`
-	Truncated bool                `json:"truncated,omitempty"`
+	Source    SourceMeta        `json:"source"`
+	Ref       state.ArtifactRef `json:"ref"`
+	Bytes     int               `json:"bytes"`
+	Encoding  string            `json:"encoding"`
+	Payload   any               `json:"payload,omitempty"`
+	Truncated bool              `json:"truncated,omitempty"`
 }
 
 func newCacheExplorer(baseDir string) (*cacheExplorer, error) {
@@ -160,7 +160,7 @@ func newCacheExplorer(baseDir string) (*cacheExplorer, error) {
 			checkpoints: runtime.NewFileCheckpointStore(filepath.Join(root, "checkpoints")),
 			events:      runtime.NewFileEventSink(filepath.Join(root, "events")),
 			artifacts:   runtime.NewFileArtifactStore(filepath.Join(root, "artifacts")),
-			codec:       wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
+			codec:       state.NewJSONStateCodec(""),
 		})
 	}
 
@@ -530,7 +530,7 @@ func (e *cacheExplorer) loadCheckpointDetail(ctx context.Context, runID, sourceI
 	if err != nil {
 		return CheckpointDetail{}, err
 	}
-	restored, err := wfstate.RestoreStateSnapshot(snapshot)
+	restored, err := state.RestoreStateSnapshot(snapshot)
 	if err != nil {
 		return CheckpointDetail{}, err
 	}
@@ -551,7 +551,7 @@ func (e *cacheExplorer) loadArtifactRaw(ctx context.Context, runID, sourceID, ar
 		return runtime.Artifact{}, SourceMeta{}, err
 	}
 
-	artifact, err := source.artifacts.Load(ctx, wfstate.ArtifactRef{
+	artifact, err := source.artifacts.Load(ctx, state.ArtifactRef{
 		RunID: runID,
 		ID:    artifactID,
 	})
@@ -570,7 +570,7 @@ func (e *cacheExplorer) loadArtifactDetail(ctx context.Context, runID, sourceID,
 	payload, encoding, truncated := previewArtifact(artifact, artifactPreviewLimit)
 	return ArtifactDetail{
 		Source: sourceMeta,
-		Ref: wfstate.ArtifactRef{
+		Ref: state.ArtifactRef{
 			ID:        artifact.ID,
 			RunID:     artifact.RunID,
 			StepID:    artifact.StepID,

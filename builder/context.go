@@ -6,8 +6,8 @@ import (
 
 	"weaveflow/core"
 	"weaveflow/dsl"
+	"weaveflow/node"
 	"weaveflow/registry"
-	wfstate "weaveflow/state"
 )
 
 type BuildContext struct {
@@ -18,7 +18,7 @@ type BuildContext struct {
 	internal             *buildContextState
 }
 
-type NodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error)
+type NodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (node.Node, error)
 
 type buildContextState struct {
 	graphBuildPath []string
@@ -75,8 +75,8 @@ func FromNodeBuildContext(ctx registry.NodeBuildContext) *BuildContext {
 	}
 }
 
-func AdaptNodeBuilder(build NodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
-	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
+func AdaptNodeBuilder(build NodeBuilder) func(registry.NodeBuildContext, dsl.GraphNodeSpec) (node.Node, error) {
+	return func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 		if build == nil {
 			return nil, fmt.Errorf("node builder is nil")
 		}

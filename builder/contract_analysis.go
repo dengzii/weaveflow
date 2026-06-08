@@ -7,7 +7,7 @@ import (
 
 	"weaveflow/core"
 	"weaveflow/dsl"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
 type ContractAnalysisGraph struct {
@@ -16,7 +16,7 @@ type ContractAnalysisGraph struct {
 	InitialStatePaths []string
 	Edges             map[string]string
 	ConditionalEdges  map[string][]string
-	NodeContracts     map[string]core.NodeIOContract
+	NodeContracts     map[string]state.Contract
 }
 
 func AnalyzeContractDiagnostics(input ContractAnalysisGraph) []core.ContractDiagnostic {
@@ -79,8 +79,8 @@ func InitialContractPathsFromStateFields(fields map[string]dsl.StateFieldDefinit
 	seen := make(map[string]struct{}, len(fields))
 	paths := make([]string, 0, len(fields))
 	for name := range fields {
-		path := wfstate.NormalizeContractPath(name)
-		if path == "" {
+		path := stateFieldInitialPath(name)
+		if strings.TrimSpace(path) == "" {
 			continue
 		}
 		if _, ok := seen[path]; ok {
@@ -91,6 +91,20 @@ func InitialContractPathsFromStateFields(fields map[string]dsl.StateFieldDefinit
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+func stateFieldInitialPath(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	if parsed, err := state.ParsePath(name); err == nil {
+		return parsed.String()
+	}
+	if strings.Contains(name, ".") {
+		return ""
+	}
+	return state.Shared(name).String()
 }
 
 func reachableGraphNodes(input ContractAnalysisGraph) []string {
@@ -256,12 +270,12 @@ func overlappingWriteDiagnostics(input ContractAnalysisGraph, reachable []string
 	return diagnostics
 }
 
-func overlappingWritePath(left, right core.NodeIOContract) (string, bool) {
+func overlappingWritePath(left, right state.Contract) (string, bool) {
 	if left.WildcardWrite || right.WildcardWrite {
 		return "*", true
 	}
-	for _, leftPath := range left.WritePaths {
-		for _, rightPath := range right.WritePaths {
+	for _, leftPath := range pathStrings(left.WritePaths()) {
+		for _, rightPath := range pathStrings(right.WritePaths()) {
 			if leftPath == rightPath {
 				return leftPath, true
 			}
@@ -280,11 +294,12 @@ func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, an
 	diagnostics := make([]core.ContractDiagnostic, 0)
 	for _, nodeID := range reachable {
 		contract, ok := input.NodeContracts[nodeID]
-		if !ok || len(contract.RequiredReadPaths) == 0 || contract.WildcardRead {
+		requiredReads := requiredReadPaths(contract)
+		if !ok || len(requiredReads) == 0 || contract.WildcardRead {
 			continue
 		}
 
-		required := append([]string(nil), contract.RequiredReadPaths...)
+		required := append([]string(nil), requiredReads...)
 		sort.Strings(required)
 		required = compactStrings(required)
 
@@ -350,7 +365,7 @@ func requiredReadSources(input ContractAnalysisGraph, nodeID string, path string
 	return compactStrings(sources)
 }
 
-func selfRuntimePathProvidesRead(nodeID string, contract core.NodeIOContract, path string) bool {
+func selfRuntimePathProvidesRead(nodeID string, contract state.Contract, path string) bool {
 	runtimePrefix := "runtime." + strings.TrimSpace(nodeID)
 	if path != runtimePrefix && !strings.HasPrefix(path, runtimePrefix+".") {
 		return false
@@ -358,15 +373,15 @@ func selfRuntimePathProvidesRead(nodeID string, contract core.NodeIOContract, pa
 	return contractProvidesReadWriteSource(contract, path)
 }
 
-func contractProvidesRead(contract core.NodeIOContract, path string) bool {
+func contractProvidesRead(contract state.Contract, path string) bool {
 	if contract.WildcardWrite {
 		return true
 	}
 	return contractProvidesReadWriteSource(contract, path)
 }
 
-func contractProvidesReadWriteSource(contract core.NodeIOContract, path string) bool {
-	for _, writePath := range contract.WritePaths {
+func contractProvidesReadWriteSource(contract state.Contract, path string) bool {
+	for _, writePath := range pathStrings(contract.WritePaths()) {
 		if sourceProvidesRead(writePath, path) {
 			return true
 		}
@@ -392,8 +407,6 @@ func pathMayBeProvidedByInitialState(path string) bool {
 	case path == "", path == "*":
 		return false
 	case path == "shared" || strings.HasPrefix(path, "shared."):
-		return true
-	case path == "conversation" || strings.HasPrefix(path, "conversation."):
 		return true
 	case strings.HasPrefix(path, "scopes."):
 		return true
@@ -433,4 +446,31 @@ func isAnalysisEndTarget(input ContractAnalysisGraph, target string) bool {
 		return target == input.EndNode
 	}
 	return target == "__end__"
+}
+
+func requiredReadPaths(contract state.Contract) []string {
+	paths := make([]string, 0)
+	for _, field := range contract.Fields {
+		if !field.Required || field.Path.Empty() {
+			continue
+		}
+		if field.Mode != state.AccessRead && field.Mode != state.AccessReadWrite {
+			continue
+		}
+		paths = append(paths, field.Path.String())
+	}
+	return compactStrings(paths)
+}
+
+func pathStrings(paths []state.Path) []string {
+	if len(paths) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if !path.Empty() {
+			out = append(out, path.String())
+		}
+	}
+	return out
 }

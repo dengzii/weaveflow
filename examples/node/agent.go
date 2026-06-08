@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"weaveflow/core"
 	"weaveflow/llms/openai"
-	"weaveflow/nodes"
+	"weaveflow/node"
 	"weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 	"weaveflow/tools"
 )
 
@@ -27,22 +27,19 @@ func AgentExample() {
 	}
 	ctx := core.WithServices(context.Background(), svc)
 
-	agent := nodes.NewAgentNode()
-	agent.StateScope = "subagent"
+	agent := node.NewAgentNode(node.WithScope("subagent"))
 	agent.SystemPrompt = "You are a concise assistant. Use tools when they improve accuracy. Return the final answer as plain text."
 	agent.ToolIDs = []string{"calculator", "current_time"}
-	agent.InputPath = "task"
-	agent.OutputPath = "agent_answer"
+	agent.InputPath = state.Shared("task")
+	agent.OutputPath = state.Shared("agent_answer")
 	agent.MaxIterations = 6
 
-	state := wfstate.State{
-		"task": "What is 42 * 58, and what is the current time?",
-	}
+	currentState := state.FromShared(map[string]any{"task": "What is 42 * 58, and what is the current time?"})
 
-	result, err := executeNode(ctx, agent, state)
+	result, err := executeNode(ctx, agent, currentState)
 	must(err)
 
-	conv := result.Conversation("subagent")
+	conv := conversation(result, "subagent")
 	fmt.Println("internal conversation:")
 	for i, msg := range conv.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
@@ -51,7 +48,7 @@ func AgentExample() {
 	fmt.Println()
 	fmt.Printf("iterations used: %d / %d\n", conv.IterationCount(), conv.MaxIterations())
 	fmt.Println("final answer:", conv.FinalAnswer())
-	if answer, ok := result["agent_answer"].(string); ok {
+	if answer, ok := readState(result, state.Shared("agent_answer")); ok {
 		fmt.Println("output_path agent_answer:", answer)
 	}
 }
@@ -66,8 +63,7 @@ func AgentAsToolExample() {
 	must(err)
 
 	// Sub-agent: handles arithmetic questions in isolation.
-	subAgent := nodes.NewAgentNode()
-	subAgent.StateScope = "math_subagent"
+	subAgent := node.NewAgentNode(node.WithScope("math_subagent"), node.WithID("math_agent_node"))
 	subAgent.SystemPrompt = "You answer arithmetic questions. Use the calculator tool and return only the numeric result."
 	subAgent.ToolIDs = []string{"calculator"}
 	subAgent.MaxIterations = 4
@@ -85,22 +81,19 @@ func AgentAsToolExample() {
 
 	// Coordinator agent: only has access to current_time + the math_agent
 	// tool. When it needs arithmetic, it delegates instead of computing.
-	coordinator := nodes.NewAgentNode()
-	coordinator.StateScope = "coordinator"
+	coordinator := node.NewAgentNode(node.WithScope("coordinator"))
 	coordinator.SystemPrompt = "You coordinate by delegating to specialist tools. For arithmetic, call math_agent. Return a plain-text final answer."
 	coordinator.ToolIDs = []string{"current_time", "math_agent"}
 	coordinator.MaxIterations = 6
-	coordinator.InputPath = "task"
-	coordinator.OutputPath = "final_answer"
+	coordinator.InputPath = state.Shared("task")
+	coordinator.OutputPath = state.Shared("final_answer")
 
-	state := wfstate.State{
-		"task": "Please compute 1234 * 5678 and tell me the current time.",
-	}
+	currentState := state.FromShared(map[string]any{"task": "Please compute 1234 * 5678 and tell me the current time."})
 
-	result, err := executeNode(ctx, coordinator, state)
+	result, err := executeNode(ctx, coordinator, currentState)
 	must(err)
 
-	conv := result.Conversation("coordinator")
+	conv := conversation(result, "coordinator")
 	fmt.Println("\n=> coordinator conversation:")
 	for i, msg := range conv.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
@@ -109,7 +102,7 @@ func AgentAsToolExample() {
 	fmt.Println()
 	fmt.Printf("coordinator iterations used: %d / %d\n", conv.IterationCount(), conv.MaxIterations())
 	fmt.Println("coordinator final answer:", conv.FinalAnswer())
-	if answer, ok := result["final_answer"].(string); ok {
+	if answer, ok := readState(result, state.Shared("final_answer")); ok {
 		fmt.Println("output_path final_answer:", answer)
 	}
 }

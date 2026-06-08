@@ -5,49 +5,50 @@ import (
 	"strings"
 
 	"weaveflow/dsl"
-	"weaveflow/nodes"
-	wfstate "weaveflow/state"
+	"weaveflow/node"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 )
 
 func ResolveHumanMessageStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := StringConfig(spec.Config, "state_scope")
+	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected and updated by the human message node."},
-			{Path: scopedStatePath(scope, nodes.PendingHumanInputStateKey), Mode: dsl.StateAccessReadWrite, Description: "Pending human input consumed from state before resuming execution."},
+			{Path: scopedStatePath(scope, node.PendingHumanInputStateKey), Mode: dsl.StateAccessReadWrite, Description: "Pending human input consumed from state before resuming execution."},
 		},
 	}, nil
 }
 
 func ResolveContextReducerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := StringConfig(spec.Config, "state_scope")
+	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages read and compacted into a reduced message history."}},
 	}, nil
 }
 
 func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := StringConfig(spec.Config, "state_scope")
+	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages sent to the model and extended with the model response."},
 			{Path: scopedConversationPath(scope, "iteration_count"), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter used to stop tool loops and incremented after each model turn."},
 			{Path: scopedConversationPath(scope, "max_iterations"), Mode: dsl.StateAccessRead, Description: "Maximum number of tool-using iterations allowed for the current conversation scope."},
 			{Path: scopedConversationPath(scope, "final_answer"), Mode: dsl.StateAccessWrite, Description: "Final answer written when the model finishes without further tool calls."},
-			{Path: canonicalContractPath(wfstate.KeyExecution), Mode: dsl.StateAccessReadWrite, Description: "Plan step execution state: read current_step.id and track last_llm_step_id to scrub prior-step messages at step boundary."},
+			{Path: state.Shared(accessors.KeyExecution).String(), Mode: dsl.StateAccessReadWrite, Description: "Plan step execution state: read current_step.id and track last_llm_step_id to scrub prior-step messages at step boundary."},
 		},
 	}, nil
 }
 
 func ResolveToolsStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := StringConfig(spec.Config, "state_scope")
+	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected for tool calls and extended with tool responses."}},
 	}, nil
 }
 
 func ResolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	scope := StringConfig(spec.Config, "state_scope")
+	scope := graphNodeStateScope(spec.Config)
 	fields := []dsl.StateFieldRef{
 		{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages the agent reads and extends across each internal iteration."},
 		{Path: scopedConversationPath(scope, "iteration_count"), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter bumped after every internal model turn."},
@@ -86,31 +87,38 @@ func ResolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 	return dsl.StateContract{Fields: fields}, nil
 }
 
+func graphNodeStateScope(config map[string]any) string {
+	if _, ok := config["state_scope"]; ok {
+		return StringConfig(config, "state_scope")
+	}
+	return node.DefaultScope
+}
+
 func scopedConversationPath(scope string, field string) string {
 	scope = strings.TrimSpace(scope)
 	field = strings.TrimSpace(field)
 	if field == "" {
 		if scope == "" {
-			return "conversation"
+			return state.Shared(accessors.KeyConversation).String()
 		}
-		return "scopes." + scope
+		return state.Scope(scope, accessors.KeyConversation).String()
 	}
 	if scope == "" {
-		return "conversation." + field
+		return state.Shared(accessors.KeyConversation, field).String()
 	}
-	return "scopes." + scope + "." + field
+	return state.Scope(scope, accessors.KeyConversation, field).String()
 }
 
 func scopedStatePath(scope string, field string) string {
 	scope = strings.TrimSpace(scope)
 	field = strings.TrimSpace(field)
 	if scope == "" {
-		return canonicalContractPath(field)
+		return state.Shared(field).String()
 	}
 	if field == "" {
-		return "scopes." + scope
+		return state.Scope(scope).String()
 	}
-	return "scopes." + scope + "." + field
+	return state.Scope(scope, field).String()
 }
 
 func canonicalContractPath(path string) string {
@@ -118,5 +126,8 @@ func canonicalContractPath(path string) string {
 	if path == "" || path == "*" {
 		return path
 	}
-	return wfstate.NormalizeContractPath(path)
+	if parsed, err := state.ParsePath(path); err == nil {
+		return parsed.String()
+	}
+	return path
 }

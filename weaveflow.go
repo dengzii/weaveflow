@@ -6,7 +6,7 @@ import (
 	"weaveflow/graph"
 	"weaveflow/registry"
 	fruntime "weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 
 	"go.uber.org/zap"
 )
@@ -32,7 +32,15 @@ func LoadGraphFromFile(buildContext *builder.BuildContext, path string) (*Graph,
 	return graph.LoadGraphFromFile(buildContext, path)
 }
 
-func NewGraphRunner(g *Graph, es fruntime.ExecutionStore, cs fruntime.CheckpointStore, codec wfstate.StateCodec, sink fruntime.EventSink) *fruntime.GraphRunner {
+type State = state.State
+
+func NewState() *State { return state.NewState() }
+
+func NewJSONStateCodec(version string) state.StateCodec {
+	return state.NewJSONStateCodec(version)
+}
+
+func NewGraphRunner(g *Graph, es fruntime.ExecutionStore, cs fruntime.CheckpointStore, codec state.StateCodec, sink fruntime.EventSink) *fruntime.GraphRunner {
 	return graph.NewGraphRunner(g, es, cs, codec, sink)
 }
 

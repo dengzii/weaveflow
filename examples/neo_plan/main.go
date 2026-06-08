@@ -13,7 +13,8 @@ import (
 	"weaveflow/core"
 	"weaveflow/internal/neo"
 	fruntime "weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 )
 
 // Integration example for neo plan mode without booting the HTTP server.
@@ -54,7 +55,7 @@ func main() {
 		graph,
 		fruntime.NewNoopExecutionStore(),
 		fruntime.NewNoopCheckpointStore(),
-		wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
+		state.NewJSONStateCodec(""),
 		sink,
 	)
 	runner.GraphID = "plan-example"
@@ -68,7 +69,7 @@ func main() {
 		"bash":  tools.NewBash(),
 	}})
 
-	var state wfstate.State
+	var state *state.State
 
 	_, state, err = runner.Start(ctx, neo.NewInitialState("优化项目 readme, 请使用 plan 模式", nil))
 
@@ -78,8 +79,9 @@ func main() {
 	printFinalAnswer(state)
 }
 
-func printPlannerState(state wfstate.State) {
-	planner := state.Get(wfstate.KeyPlanner)
+func printPlannerState(currentState *state.State) {
+	rawPlanner, _ := state.NewAccess(nil, currentState).ReadAny(state.Shared(accessors.KeyPlanner))
+	planner, _ := rawPlanner.(map[string]any)
 	fmt.Println()
 	fmt.Println("=== planner state ===")
 	if planner == nil {
@@ -109,10 +111,11 @@ func extractSteps(raw any) []map[string]any {
 	return nil
 }
 
-func printFinalAnswer(state wfstate.State) {
+func printFinalAnswer(currentState *state.State) {
 	fmt.Println()
 	fmt.Println("=== final answer ===")
-	fmt.Println(state.Conversation("agent").FinalAnswer())
+	answer, _ := state.NewAccess(nil, currentState).ReadAny(state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldFinalAnswer))
+	fmt.Println(answer)
 }
 
 func must(err error) {

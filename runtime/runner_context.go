@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
 type runnerEventPublisher func(eventType EventType, payload any) error
-type runnerArtifactRecorder func(ctx context.Context, artifact Artifact) (wfstate.ArtifactRef, error)
+type runnerArtifactRecorder func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
 
 type runnerEventPublisherKey struct{}
 type runnerMetadataKey struct{}
@@ -41,7 +41,7 @@ func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Co
 	return context.WithValue(ctx, runnerMetadataKey{}, metadata)
 }
 
-func WithRunnerArtifactRecorder(ctx context.Context, recorder func(context.Context, Artifact) (wfstate.ArtifactRef, error)) context.Context {
+func WithRunnerArtifactRecorder(ctx context.Context, recorder func(context.Context, Artifact) (state.ArtifactRef, error)) context.Context {
 	if ctx == nil {
 		return nil
 	}
@@ -78,13 +78,13 @@ func RunnerMetadataFromContext(ctx context.Context) (RunnerMetadata, bool) {
 	return metadata, ok
 }
 
-func SaveArtifact(ctx context.Context, artifact Artifact) (wfstate.ArtifactRef, error) {
+func SaveArtifact(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
 	if ctx == nil {
-		return wfstate.ArtifactRef{}, ErrArtifactRecorderUnavailable
+		return state.ArtifactRef{}, ErrArtifactRecorderUnavailable
 	}
 	recorder, _ := ctx.Value(runnerArtifactRecorderKey{}).(runnerArtifactRecorder)
 	if recorder == nil {
-		return wfstate.ArtifactRef{}, ErrArtifactRecorderUnavailable
+		return state.ArtifactRef{}, ErrArtifactRecorderUnavailable
 	}
 	return recorder(ctx, artifact)
 }
@@ -99,10 +99,10 @@ func HasArtifactRecorder(ctx context.Context) bool {
 	return recorder != nil
 }
 
-func SaveJSONArtifact(ctx context.Context, artifactType string, payload any) (wfstate.ArtifactRef, error) {
+func SaveJSONArtifact(ctx context.Context, artifactType string, payload any) (state.ArtifactRef, error) {
 	data, err := json.Marshal(payload)
 	if err != nil {
-		return wfstate.ArtifactRef{}, err
+		return state.ArtifactRef{}, err
 	}
 	return SaveArtifact(ctx, Artifact{
 		Type:     artifactType,
@@ -111,18 +111,18 @@ func SaveJSONArtifact(ctx context.Context, artifactType string, payload any) (wf
 	})
 }
 
-func SaveArtifactBestEffort(ctx context.Context, artifact Artifact) (wfstate.ArtifactRef, error) {
+func SaveArtifactBestEffort(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
 	ref, err := SaveArtifact(ctx, artifact)
 	if errors.Is(err, ErrArtifactRecorderUnavailable) {
-		return wfstate.ArtifactRef{}, nil
+		return state.ArtifactRef{}, nil
 	}
 	return ref, err
 }
 
-func SaveJSONArtifactBestEffort(ctx context.Context, artifactType string, payload any) (wfstate.ArtifactRef, error) {
+func SaveJSONArtifactBestEffort(ctx context.Context, artifactType string, payload any) (state.ArtifactRef, error) {
 	ref, err := SaveJSONArtifact(ctx, artifactType, payload)
 	if errors.Is(err, ErrArtifactRecorderUnavailable) {
-		return wfstate.ArtifactRef{}, nil
+		return state.ArtifactRef{}, nil
 	}
 	return ref, err
 }

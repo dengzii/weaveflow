@@ -10,9 +10,9 @@ import (
 	"weaveflow/builder"
 	"weaveflow/core"
 	"weaveflow/llms/openai"
-	"weaveflow/nodes"
 	"weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 
 	"go.uber.org/zap"
 )
@@ -53,13 +53,8 @@ func runWithRunner(ctx context.Context) {
 }
 
 func resumeFromCheckpoint(ctx context.Context) {
-	state := wfstate.State{
-		"scopes": map[string]any{
-			reactAgentStateScope: map[string]any{
-				nodes.PendingHumanInputStateKey: "24+5*8-2=? 现在是几点.",
-			},
-		},
-	}
+	currentState := state.NewState()
+	tryPanic(state.SetPath(currentState, state.Scope(reactAgentStateScope, "pending_human_input").String(), "24+5*8-2=? 现在是几点."))
 
 	baseDir := ".local/instance"
 	graph, err := weaveflow.LoadGraphFromFile(&builder.BuildContext{}, filepath.Join(baseDir, "graph.json"))
@@ -72,12 +67,12 @@ func resumeFromCheckpoint(ctx context.Context) {
 		panic("no continuable run")
 	}
 
-	_, state, err = runner.Resume(ctx, run.RunID, state)
+	_, currentState, err = runner.Resume(ctx, run.RunID, currentState)
 	tryPanic(err)
 
-	conv := state.Conversation(reactAgentStateScope)
 	fmt.Println("=========Final Answer==========")
-	fmt.Println(conv.FinalAnswer())
+	answer, _ := state.NewAccess(nil, currentState).ReadAny(state.Scope(reactAgentStateScope, accessors.KeyConversation, accessors.ConversationFieldFinalAnswer))
+	fmt.Println(answer)
 }
 
 func tryPanic(error interface{}) {
@@ -99,7 +94,7 @@ func newExampleRunner(baseDir string, graph *weaveflow.Graph) *runtime.GraphRunn
 		graph,
 		runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
 		runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),
-		wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
+		state.NewJSONStateCodec(""),
 		sink,
 	)
 	runner.ArtifactStore = runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))

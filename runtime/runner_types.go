@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 	"weaveflow/core"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
 // Runtime records, stores, and control primitives live in the runtime package.
@@ -131,11 +131,11 @@ type CheckpointRecord struct {
 }
 
 type RestoredCheckpoint struct {
-	Record    CheckpointRecord      `json:"record"`
-	Snapshot  wfstate.StateSnapshot `json:"snapshot"`
-	Business  wfstate.State         `json:"business"`
-	Runtime   wfstate.RuntimeState  `json:"runtime"`
-	Artifacts []wfstate.ArtifactRef `json:"artifacts,omitempty"`
+	Record    CheckpointRecord    `json:"record"`
+	Snapshot  state.StateSnapshot `json:"snapshot"`
+	Business  *state.State        `json:"business"`
+	Runtime   state.RuntimeState  `json:"runtime"`
+	Artifacts []state.ArtifactRef `json:"artifacts,omitempty"`
 }
 
 type Artifact struct {
@@ -192,7 +192,7 @@ type EventSink interface {
 }
 
 type ArtifactStore interface {
-	Save(ctx context.Context, artifact Artifact) (wfstate.ArtifactRef, error)
-	Load(ctx context.Context, ref wfstate.ArtifactRef) (Artifact, error)
-	List(ctx context.Context, runID string) ([]wfstate.ArtifactRef, error)
+	Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
+	Load(ctx context.Context, ref state.ArtifactRef) (Artifact, error)
+	List(ctx context.Context, runID string) ([]state.ArtifactRef, error)
 }

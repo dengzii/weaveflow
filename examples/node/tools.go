@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 	"weaveflow/core"
-	"weaveflow/nodes"
-	wfstate "weaveflow/state"
+	"weaveflow/node"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -20,13 +21,11 @@ func ToolsExample() {
 	svc := &core.Services{Tools: toolSet}
 	ctx := core.WithServices(context.Background(), svc)
 
-	node := nodes.NewToolCallNode()
-	node.StateScope = "agent"
-	node.Parallel = true
+	toolsNode := node.NewToolsNode()
+	toolsNode.Parallel = true
 
-	state := wfstate.State{}
-	conversation := state.Conversation("agent")
-	conversation.UpdateMessage([]llms.MessageContent{
+	currentState := state.NewState()
+	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise assistant."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "What is 42 * 58? And what time is it?"),
 		{
@@ -48,18 +47,20 @@ func ToolsExample() {
 				},
 			},
 		},
-	})
-	conversation.SetMaxIterations(5)
+	}
+	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMessages).String(), messages))
+	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMaxIterations).String(), 5))
+	inputConversation := conversation(currentState, "agent")
 
 	fmt.Println("messages before tool execution:")
-	for i, msg := range conversation.Messages() {
+	for i, msg := range inputConversation.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	result, err := executeNode(ctx, node, state)
+	result, err := executeNode(ctx, toolsNode, currentState)
 	must(err)
 
-	conv := result.Conversation("agent")
+	conv := conversation(result, "agent")
 	fmt.Println()
 	fmt.Println("messages after tool execution:")
 	for i, msg := range conv.Messages() {

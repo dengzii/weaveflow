@@ -1,19 +1,21 @@
 package dsl
 
-type StateAccessMode string
+import state "weaveflow/state"
+
+type StateAccessMode = state.AccessMode
 
 const (
-	StateAccessRead      StateAccessMode = "read"
-	StateAccessWrite     StateAccessMode = "write"
-	StateAccessReadWrite StateAccessMode = "read_write"
+	StateAccessRead      StateAccessMode = state.AccessRead
+	StateAccessWrite     StateAccessMode = state.AccessWrite
+	StateAccessReadWrite StateAccessMode = state.AccessReadWrite
 )
 
-type StateMergeStrategy string
+type StateMergeStrategy = state.MergeStrategy
 
 const (
-	StateMergeReplace StateMergeStrategy = "replace"
-	StateMergeMerge   StateMergeStrategy = "merge"
-	StateMergeAppend  StateMergeStrategy = "append"
+	StateMergeReplace StateMergeStrategy = state.MergeReplace
+	StateMergeMerge   StateMergeStrategy = state.MergeMerge
+	StateMergeAppend  StateMergeStrategy = state.MergeAppend
 )
 
 type StateFieldRef struct {

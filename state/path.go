@@ -1,85 +1,127 @@
 package state
 
 import (
-	"strconv"
+	"fmt"
 	"strings"
 )
 
-func (s State) ResolvePath(path string) (any, bool) {
-	return ResolveStateValue(s, SplitStatePath(path))
+const (
+	SectionShared   = "shared"
+	SectionScopes   = "scopes"
+	SectionInternal = "internal"
+	SectionRuntime  = "runtime"
+)
+
+// Path is the canonical address format used by state.
+// Business code should construct paths through typed refs/accessors instead of
+// parsing strings at call sites.
+type Path struct {
+	section  string
+	segments []string
 }
 
-func ResolveStateValue(root any, segments []string) (any, bool) {
-	if len(segments) == 0 {
-		return nil, false
+func NewPath(section string, segments ...string) (Path, error) {
+	section = normalizeSegment(section)
+	if section == "" {
+		return Path{}, fmt.Errorf("state path section is required")
+	}
+	if !knownSection(section) {
+		return Path{}, fmt.Errorf("unknown state path section %q", section)
 	}
 
-	value := root
+	cleaned := make([]string, 0, len(segments))
 	for _, segment := range segments {
-		segment = strings.TrimSpace(segment)
+		segment = normalizeSegment(segment)
 		if segment == "" {
-			return nil, false
+			return Path{}, fmt.Errorf("state path segment is required")
 		}
-
-		next, ok := resolveStatePathSegment(value, segment)
-		if !ok {
-			return nil, false
+		if strings.Contains(segment, ".") {
+			return Path{}, fmt.Errorf("state path segment %q must not contain '.'", segment)
 		}
-		value = next
+		cleaned = append(cleaned, segment)
 	}
-	return value, true
+	return Path{section: section, segments: cleaned}, nil
 }
 
-func SplitStatePath(path string) []string {
-	path = strings.TrimSpace(path)
-	if path == "" {
+func MustPath(section string, segments ...string) Path {
+	path, err := NewPath(section, segments...)
+	if err != nil {
+		panic(err)
+	}
+	return path
+}
+
+func ParsePath(text string) (Path, error) {
+	parts := strings.Split(strings.TrimSpace(text), ".")
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
+		return Path{}, fmt.Errorf("state path is required")
+	}
+	return NewPath(parts[0], parts[1:]...)
+}
+
+func Shared(segments ...string) Path {
+	return MustPath(SectionShared, segments...)
+}
+
+func Runtime(segments ...string) Path {
+	return MustPath(SectionRuntime, segments...)
+}
+
+func Internal(namespace string, segments ...string) Path {
+	return MustPath(SectionInternal, append([]string{namespace}, segments...)...)
+}
+
+func Scope(scope string, segments ...string) Path {
+	return MustPath(SectionScopes, append([]string{scope}, segments...)...)
+}
+
+func (p Path) Section() string {
+	return p.section
+}
+
+func (p Path) Segments() []string {
+	if len(p.segments) == 0 {
 		return nil
 	}
-
-	segments := strings.Split(path, ".")
-	for i := range segments {
-		segments[i] = strings.TrimSpace(segments[i])
-	}
-	return segments
+	return append([]string(nil), p.segments...)
 }
 
-func resolveStatePathSegment(current any, segment string) (any, bool) {
-	switch typed := current.(type) {
-	case nil:
-		return nil, false
-	case State:
-		next, ok := typed[segment]
-		return next, ok
-	case map[string]any:
-		next, ok := typed[segment]
-		return next, ok
-	case []any:
-		index, ok := resolveStateSliceIndex(segment, len(typed))
-		if !ok {
-			return nil, false
-		}
-		return typed[index], true
-	case []map[string]any:
-		index, ok := resolveStateSliceIndex(segment, len(typed))
-		if !ok {
-			return nil, false
-		}
-		return typed[index], true
-	case []string:
-		index, ok := resolveStateSliceIndex(segment, len(typed))
-		if !ok {
-			return nil, false
-		}
-		return typed[index], true
+func (p Path) Empty() bool {
+	return p.section == ""
+}
+
+func (p Path) String() string {
+	if p.section == "" {
+		return ""
+	}
+	if len(p.segments) == 0 {
+		return p.section
+	}
+	return p.section + "." + strings.Join(p.segments, ".")
+}
+
+func (p Path) Child(segments ...string) (Path, error) {
+	all := append(p.Segments(), segments...)
+	return NewPath(p.section, all...)
+}
+
+func (p Path) MustChild(segments ...string) Path {
+	child, err := p.Child(segments...)
+	if err != nil {
+		panic(err)
+	}
+	return child
+}
+
+func knownSection(section string) bool {
+	switch section {
+	case SectionShared, SectionScopes, SectionInternal, SectionRuntime:
+		return true
 	default:
-		return nil, false
+		return false
 	}
 }
 
-func resolveStateSliceIndex(segment string, size int) (int, bool) {
-	index, err := strconv.Atoi(segment)
-	if err != nil || index < 0 || index >= size {
-		return 0, false
-	}
-	return index, true
+func normalizeSegment(segment string) string {
+	return strings.TrimSpace(segment)
 }

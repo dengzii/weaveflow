@@ -9,7 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 
 	"github.com/google/uuid"
 )
@@ -23,13 +23,13 @@ func NewFileArtifactStore(baseDir string) *FileArtifactStore {
 	return &FileArtifactStore{baseDir: strings.TrimSpace(baseDir)}
 }
 
-func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (wfstate.ArtifactRef, error) {
+func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (state.ArtifactRef, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	runID := strings.TrimSpace(artifact.RunID)
 	if runID == "" {
-		return wfstate.ArtifactRef{}, fmt.Errorf("artifact run id is required")
+		return state.ArtifactRef{}, fmt.Errorf("artifact run id is required")
 	}
 
 	id := strings.TrimSpace(artifact.ID)
@@ -47,7 +47,7 @@ func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (wfstate.
 		mimeType = "application/octet-stream"
 	}
 
-	ref := wfstate.ArtifactRef{
+	ref := state.ArtifactRef{
 		ID:        id,
 		RunID:     runID,
 		StepID:    strings.TrimSpace(artifact.StepID),
@@ -59,16 +59,16 @@ func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (wfstate.
 	}
 
 	if err := writeRunnerJSONFile(s.metadataPath(runID, id), ref); err != nil {
-		return wfstate.ArtifactRef{}, err
+		return state.ArtifactRef{}, err
 	}
 	if err := writeRunnerBinaryFile(ref.Location, artifact.Data); err != nil {
-		return wfstate.ArtifactRef{}, err
+		return state.ArtifactRef{}, err
 	}
 	return ref, nil
 }
 
-func (s *FileArtifactStore) Load(_ context.Context, ref wfstate.ArtifactRef) (Artifact, error) {
-	var stored wfstate.ArtifactRef
+func (s *FileArtifactStore) Load(_ context.Context, ref state.ArtifactRef) (Artifact, error) {
+	var stored state.ArtifactRef
 	if err := readRunnerJSONFile(s.metadataPath(ref.RunID, ref.ID), &stored); err != nil {
 		if os.IsNotExist(err) {
 			return Artifact{}, ErrRunnerRecordNotFound
@@ -94,22 +94,22 @@ func (s *FileArtifactStore) Load(_ context.Context, ref wfstate.ArtifactRef) (Ar
 	}, nil
 }
 
-func (s *FileArtifactStore) List(_ context.Context, runID string) ([]wfstate.ArtifactRef, error) {
+func (s *FileArtifactStore) List(_ context.Context, runID string) ([]state.ArtifactRef, error) {
 	dir := s.artifactsDir(runID)
 	files, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
-		return []wfstate.ArtifactRef{}, nil
+		return []state.ArtifactRef{}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 
-	items := make([]wfstate.ArtifactRef, 0, len(files))
+	items := make([]state.ArtifactRef, 0, len(files))
 	for _, file := range files {
 		if file.IsDir() || !strings.EqualFold(filepath.Ext(file.Name()), ".json") {
 			continue
 		}
-		var ref wfstate.ArtifactRef
+		var ref state.ArtifactRef
 		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &ref); err != nil {
 			return nil, err
 		}

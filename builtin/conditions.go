@@ -6,20 +6,26 @@ import (
 	"strings"
 
 	"weaveflow/dsl"
+	"weaveflow/node"
 	"weaveflow/registry"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
-func LastMessageHasToolCalls(scope string) registry.EdgeCondition {
-	scope = strings.TrimSpace(scope)
+func LastMessageHasToolCalls(scopes ...string) registry.EdgeCondition {
+	scope := defaultConditionScope(scopes...)
 	spec := dsl.GraphConditionSpec{Type: "last_message_has_tool_calls"}
 	if scope != "" {
 		spec.Config = map[string]any{"state_scope": scope}
 	}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, state wfstate.State) bool {
-		messages := state.Conversation(scope).Messages()
+	return registry.NewEdgeCondition(spec, func(_ context.Context, state *state.State) bool {
+		conversation, err := conversationForCondition(state, scope)
+		if err != nil {
+			return false
+		}
+		messages := conversation.Messages()
 		if len(messages) == 0 {
 			return false
 		}
@@ -36,15 +42,26 @@ func LastMessageHasToolCalls(scope string) registry.EdgeCondition {
 	})
 }
 
-func HasFinalAnswer(scope string) registry.EdgeCondition {
-	scope = strings.TrimSpace(scope)
+func HasFinalAnswer(scopes ...string) registry.EdgeCondition {
+	scope := defaultConditionScope(scopes...)
 	spec := dsl.GraphConditionSpec{Type: "has_final_answer"}
 	if scope != "" {
 		spec.Config = map[string]any{"state_scope": scope}
 	}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, state wfstate.State) bool {
-		return state.Conversation(scope).FinalAnswer() != ""
+	return registry.NewEdgeCondition(spec, func(_ context.Context, state *state.State) bool {
+		conversation, err := conversationForCondition(state, scope)
+		if err != nil {
+			return false
+		}
+		return conversation.FinalAnswer() != ""
 	})
+}
+
+func defaultConditionScope(scopes ...string) string {
+	if len(scopes) == 0 {
+		return node.DefaultScope
+	}
+	return strings.TrimSpace(scopes[0])
 }
 
 const (
@@ -97,7 +114,7 @@ func ExpressionConditions(config ExpressionConditionConfig) (registry.EdgeCondit
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 		Type:   "expression_conditions",
 		Config: config.Map(),
-	}, func(_ context.Context, state wfstate.State) bool {
+	}, func(_ context.Context, state *state.State) bool {
 		switch matchMode {
 		case ExpressionMatchAny:
 			for _, expression := range expressions {
@@ -317,7 +334,7 @@ func parseExpression(raw any) (Expression, error) {
 	}
 }
 
-func matchExpression(state wfstate.State, scope string, expression Expression) bool {
+func matchExpression(state *state.State, scope string, expression Expression) bool {
 	expression = normalizeExpression(expression)
 	if expression.Logic != "" {
 		switch expression.Logic {
@@ -359,36 +376,38 @@ func matchExpression(state wfstate.State, scope string, expression Expression) b
 	}
 }
 
-func resolveExpressionValue(state wfstate.State, scope, path string) (any, bool) {
+func resolveExpressionValue(currentState *state.State, scope, path string) (any, bool) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, false
 	}
 	if isExplicitContractStatePath(path) {
-		return wfstate.ResolveContractPathValue(state, path)
+		return state.ReadPath(currentState, path)
 	}
 
-	segments := wfstate.SplitStatePath(path)
+	segments := state.SplitStatePath(path)
 	if len(segments) == 0 {
 		return nil, false
 	}
 
 	if isConversationField(segments[0]) {
-		value, ok := conversationFieldValue(state, scope, segments[0])
+		value, ok := conversationFieldValue(currentState, scope, segments[0])
 		if !ok {
 			return nil, false
 		}
 		if len(segments) == 1 {
 			return value, true
 		}
-		return wfstate.ResolveStateValue(value, segments[1:])
+		return state.ResolveStateValue(value, segments[1:])
 	}
 
-	var base any = state
+	var readPath state.Path
 	if scope != "" {
-		base = state.Scope(scope)
+		readPath = state.Scope(scope, segments...)
+	} else {
+		readPath = state.Shared(segments...)
 	}
-	return wfstate.ResolveStateValue(base, segments)
+	return state.NewAccess(nil, currentState).ReadAny(readPath)
 }
 
 func isExplicitContractStatePath(path string) bool {
@@ -401,8 +420,6 @@ func isExplicitContractStatePath(path string) bool {
 		return true
 	case path == "internal" || strings.HasPrefix(path, "internal."):
 		return true
-	case path == "conversation" || strings.HasPrefix(path, "conversation."):
-		return true
 	default:
 		return false
 	}
@@ -410,27 +427,38 @@ func isExplicitContractStatePath(path string) bool {
 
 func isConversationField(field string) bool {
 	switch field {
-	case wfstate.KeyMessages, wfstate.KeyIterationCount, wfstate.KeyMaxIterations, wfstate.KeyFinalAnswer:
+	case accessors.ConversationFieldMessages, accessors.ConversationFieldIterationCount, accessors.ConversationFieldMaxIterations, accessors.ConversationFieldFinalAnswer:
 		return true
 	default:
 		return false
 	}
 }
 
-func conversationFieldValue(state wfstate.State, scope, field string) (any, bool) {
-	conversation := state.Conversation(scope)
+func conversationFieldValue(currentState *state.State, scope, field string) (any, bool) {
+	conversation, err := conversationForCondition(currentState, scope)
+	if err != nil {
+		return nil, false
+	}
 	switch field {
-	case wfstate.KeyMessages:
+	case accessors.ConversationFieldMessages:
 		return conversation.Messages(), true
-	case wfstate.KeyIterationCount:
+	case accessors.ConversationFieldIterationCount:
 		return conversation.IterationCount(), true
-	case wfstate.KeyMaxIterations:
+	case accessors.ConversationFieldMaxIterations:
 		return conversation.MaxIterations(), true
-	case wfstate.KeyFinalAnswer:
+	case accessors.ConversationFieldFinalAnswer:
 		return conversation.FinalAnswer(), true
 	default:
 		return nil, false
 	}
+}
+
+func conversationForCondition(currentState *state.State, scope string) (accessors.Conversation, error) {
+	registry := state.NewRegistry()
+	if err := accessors.InstallDefaultAccessors(registry); err != nil {
+		return nil, err
+	}
+	return state.UseAccessor(state.NewAccess(registry, currentState).WithScope(scope), accessors.ConversationID)
 }
 
 func expressionValueEquals(left any, right string) bool {

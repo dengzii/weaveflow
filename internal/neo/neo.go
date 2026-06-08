@@ -7,7 +7,8 @@ import (
 	"weaveflow/core"
 	"weaveflow/memory"
 	fruntime "weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -73,20 +74,20 @@ func NewGraph(cfg Config) (*weaveflow.Graph, error) {
 	return nil, nil
 }
 
-func NewInitialState(input string, history []llms.MessageContent) wfstate.State {
-	state := wfstate.State{
-		wfstate.KeyRequest: wfstate.State{
-			"input": input,
+func NewInitialState(input string, history []llms.MessageContent) *state.State {
+	currentState := state.FromShared(map[string]any{
+		accessors.KeyRequest: map[string]any{
+			accessors.RequestFieldInput: input,
 		},
-		wfstate.KeyPlanner: wfstate.State{
+		accessors.KeyPlanner: map[string]any{
 			"objective": input,
 		},
-	}
+	})
 	if len(history) > 0 {
 		msgs := make([]llms.MessageContent, len(history), len(history)+1)
 		copy(msgs, history)
 		msgs = append(msgs, llms.TextParts(llms.ChatMessageTypeHuman, input))
-		state.Conversation(stateScope).UpdateMessage(msgs)
+		_ = state.SetPath(currentState, state.Scope(stateScope, accessors.KeyConversation, accessors.ConversationFieldMessages).String(), msgs)
 	}
-	return state
+	return currentState
 }

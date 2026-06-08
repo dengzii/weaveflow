@@ -4,10 +4,10 @@ import (
 	"context"
 	"weaveflow/core"
 	"weaveflow/dsl"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
-type SubgraphRunner = func(context.Context, wfstate.State) (wfstate.State, error)
+type SubgraphRunner = func(context.Context, *state.State) (*state.State, error)
 
 type SubgraphBuilder func(graphRef string) (SubgraphRunner, error)
 

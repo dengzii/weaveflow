@@ -16,8 +16,10 @@ import (
 	"weaveflow"
 	"weaveflow/core"
 	"weaveflow/memory"
+	"weaveflow/node"
 	fruntime "weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 	"weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
@@ -42,7 +44,7 @@ type ChatController struct {
 	resumable     bool
 	lastRunStatus string
 	cancelFn      context.CancelFunc
-	lastState     wfstate.State
+	lastState     *state.State
 	graphCache    *weaveflow.Graph
 	graphCfgKey   Config
 }
@@ -76,7 +78,7 @@ func newChatRunner(graph *weaveflow.Graph, graphID string, runDir string, sink f
 		graph,
 		fruntime.NewFileExecutionStore(filepath.Join(runDir, "execution")),
 		fruntime.NewFileCheckpointStore(filepath.Join(runDir, "checkpoints")),
-		wfstate.NewJSONStateCodec(wfstate.DefaultStateVersion),
+		state.NewJSONStateCodec(""),
 		sink,
 	)
 	runner.GraphID = graphID
@@ -234,13 +236,13 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 
 	type runResult struct {
 		run   fruntime.RunRecord
-		state wfstate.State
+		state *state.State
 		err   error
 	}
 	done := make(chan runResult, 1)
 
-	var initialState wfstate.State
-	var resumeInput wfstate.State
+	var initialState *state.State
+	var resumeInput *state.State
 	switch kind {
 	case turnStart:
 		initialState = NewInitialState(req.Message, history)
@@ -248,7 +250,10 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 			_ = os.WriteFile(filepath.Join(runDir, "graph.json"), graphJSON, 0o644)
 		}
 	case turnResumeClarification:
-		resumeInput = wfstate.State{}
+		resumeInput = state.NewState()
+		if text := strings.TrimSpace(req.Message); text != "" {
+			_ = state.SetPath(resumeInput, state.Scope(cfg.StateScope, node.PendingHumanInputStateKey).String(), text)
+		}
 	case turnResumeStopped:
 		resumeInput = nil
 	}
@@ -262,7 +267,7 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 			Request:       req,
 			Config:        cfg,
 			EnabledTools:  enabledToolNames(ctrl.toolFlags),
-			InitialState:  initialState.CloneState(),
+			InitialState:  initialState.Clone(),
 			GraphFile:     "graph.json",
 			ExecutionRoot: "execution",
 		})
@@ -272,7 +277,7 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 		defer ctrl.hub.Done()
 		var (
 			run    fruntime.RunRecord
-			state  wfstate.State
+			state  *state.State
 			runErr error
 		)
 		if resumeMode {
@@ -292,7 +297,7 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 			Request:       req,
 			Config:        cfg,
 			EnabledTools:  enabledToolNames(ctrl.toolFlags),
-			InitialState:  initialState.CloneState(),
+			InitialState:  cloneState(initialState),
 			FinalState:    state,
 			FinalAnswer:   finalAnswerFromState(state),
 			Error:         errorString(runErr),
@@ -510,19 +515,44 @@ func streamEventKey(event fruntime.Event) string {
 	return ""
 }
 
-func finalAnswerFromState(state wfstate.State) string {
-	if state == nil {
+func finalAnswerFromState(currentState *state.State) string {
+	if currentState == nil {
 		return ""
 	}
-	if answer := strings.TrimSpace(state.Conversation(stateScope).FinalAnswer()); answer != "" {
+	if answer := stringAtPath(currentState, state.Scope(stateScope, accessors.KeyConversation, accessors.ConversationFieldFinalAnswer)); answer != "" {
 		return answer
 	}
-	finalState := state.Get(wfstate.KeyFinal)
-	if finalState == nil {
+	return stringAtPath(currentState, state.Shared(accessors.KeyFinal, accessors.FinalFieldAnswer))
+}
+
+func cloneState(currentState *state.State) *state.State {
+	if currentState == nil {
+		return nil
+	}
+	return currentState.Clone()
+}
+
+func stringAtPath(currentState *state.State, path state.Path) string {
+	value, ok := state.NewAccess(nil, currentState).ReadAny(path)
+	if !ok {
 		return ""
 	}
-	answer, _ := finalState["answer"].(string)
-	return strings.TrimSpace(answer)
+	text, _ := value.(string)
+	return strings.TrimSpace(text)
+}
+
+func messagesAtPath(currentState *state.State, path state.Path) []llms.MessageContent {
+	value, ok := state.NewAccess(nil, currentState).ReadAny(path)
+	if !ok {
+		return nil
+	}
+	messages, _ := value.([]llms.MessageContent)
+	if len(messages) == 0 {
+		return nil
+	}
+	out := make([]llms.MessageContent, len(messages))
+	copy(out, messages)
+	return out
 }
 
 func (ctrl *ChatController) effectiveServices() *core.Services {
@@ -539,7 +569,7 @@ func (ctrl *ChatController) effectiveServices() *core.Services {
 	}
 }
 
-func (ctrl *ChatController) GetLastState() wfstate.State {
+func (ctrl *ChatController) GetLastState() *state.State {
 	ctrl.mu.RLock()
 	defer ctrl.mu.RUnlock()
 	return ctrl.lastState
@@ -553,11 +583,11 @@ func (ctrl *ChatController) GetHistory() ([]HistoryMessage, error) {
 		}
 		return sanitizeHistoryMessages(history), nil
 	}
-	state := ctrl.GetLastState()
-	if state == nil {
+	currentState := ctrl.GetLastState()
+	if currentState == nil {
 		return []HistoryMessage{}, nil
 	}
-	return sanitizeHistoryMessages(convertMessages(state.Conversation(stateScope).Messages())), nil
+	return sanitizeHistoryMessages(convertMessages(messagesAtPath(currentState, state.Scope(stateScope, accessors.KeyConversation, accessors.ConversationFieldMessages)))), nil
 }
 
 func (ctrl *ChatController) ClearHistory() error {
@@ -628,7 +658,7 @@ func overallRunStatus(ctx context.Context, run fruntime.RunRecord, runErr error)
 // recordTurnOutcome persists per-turn state on the controller after a run finishes,
 // so subsequent requests can decide whether to resume or start fresh — even when the
 // HTTP handler returned early due to client disconnect.
-func (ctrl *ChatController) recordTurnOutcome(run fruntime.RunRecord, state wfstate.State, runDir string) {
+func (ctrl *ChatController) recordTurnOutcome(run fruntime.RunRecord, state *state.State, runDir string) {
 	ctrl.mu.Lock()
 	defer ctrl.mu.Unlock()
 	ctrl.lastState = state

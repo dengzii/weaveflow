@@ -69,3 +69,15 @@ func TestBuildLLMHistoryPreservesLeadingSystemMessages(t *testing.T) {
 		t.Fatalf("expected leading system message to be preserved, got %#v", messages[0])
 	}
 }
+
+func messageText(msg llms.MessageContent) string {
+	var b strings.Builder
+	for _, part := range msg.Parts {
+		text, ok := part.(llms.TextContent)
+		if !ok {
+			continue
+		}
+		b.WriteString(text.Text)
+	}
+	return b.String()
+}

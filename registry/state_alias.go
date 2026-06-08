@@ -1,8 +1,7 @@
 package registry
 
 import (
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
-type State = wfstate.State
-type StatePatch = wfstate.StatePatch
+type State = state.State

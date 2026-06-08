@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 
 	"go.uber.org/zap"
 )
@@ -500,12 +500,12 @@ type NoopArtifactStore struct{}
 
 func NewNoopArtifactStore() *NoopArtifactStore { return &NoopArtifactStore{} }
 
-func (*NoopArtifactStore) Save(context.Context, Artifact) (wfstate.ArtifactRef, error) {
-	return wfstate.ArtifactRef{}, nil
+func (*NoopArtifactStore) Save(context.Context, Artifact) (state.ArtifactRef, error) {
+	return state.ArtifactRef{}, nil
 }
-func (*NoopArtifactStore) Load(context.Context, wfstate.ArtifactRef) (Artifact, error) {
+func (*NoopArtifactStore) Load(context.Context, state.ArtifactRef) (Artifact, error) {
 	return Artifact{}, nil
 }
-func (*NoopArtifactStore) List(context.Context, string) ([]wfstate.ArtifactRef, error) {
-	return []wfstate.ArtifactRef{}, nil
+func (*NoopArtifactStore) List(context.Context, string) ([]state.ArtifactRef, error) {
+	return []state.ArtifactRef{}, nil
 }

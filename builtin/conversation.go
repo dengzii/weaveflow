@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/core"
 	"weaveflow/dsl"
-	"weaveflow/nodes"
+	"weaveflow/node"
 	"weaveflow/registry"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 )
 
 func registerConversationModule(registry *registry.Registry) {
@@ -28,7 +28,7 @@ func registerSessionBootstrapModule(registry *registry.Registry) {
 
 func requestStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        wfstate.KeyRequest,
+		Name:        accessors.KeyRequest,
 		Description: "Normalized request input and metadata for the current agent run.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -43,7 +43,7 @@ func requestStateFieldDefinition() dsl.StateFieldDefinition {
 
 func agentStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        wfstate.KeyAgent,
+		Name:        accessors.KeyAgent,
 		Description: "Agent profile and runtime-level agent configuration.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -57,7 +57,7 @@ func agentStateFieldDefinition() dsl.StateFieldDefinition {
 
 func toolPolicyStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        wfstate.KeyToolPolicy,
+		Name:        accessors.KeyToolPolicy,
 		Description: "Tool availability and safety policy for the current agent run.",
 		Schema: dsl.JSONSchema{
 			"type":                 "object",
@@ -68,7 +68,7 @@ func toolPolicyStateFieldDefinition() dsl.StateFieldDefinition {
 
 func environmentStateFieldDefinition() dsl.StateFieldDefinition {
 	return dsl.StateFieldDefinition{
-		Name:        wfstate.KeyEnvironment,
+		Name:        accessors.KeyEnvironment,
 		Description: "Workspace, project, and version-control context for the current agent run.",
 		Schema: dsl.JSONSchema{
 			"type": "object",
@@ -88,7 +88,7 @@ func environmentStateFieldDefinition() dsl.StateFieldDefinition {
 func environmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        "environment_context",
+			Type:        node.NodeTypeEnvironmentContext,
 			Title:       "Environment Context Node",
 			Description: "Collect workspace, project, and git context into shared state.",
 			ConfigSchema: dsl.JSONSchema{
@@ -103,16 +103,10 @@ func environmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: adaptNodeBuilder(func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (core.Node[wfstate.State, wfstate.StatePatch], error) {
+		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 			_ = ctx
-			node := nodes.NewEnvironmentContextNode()
-			node.NodeID = spec.ID
-			if spec.Name != "" {
-				node.NodeName = spec.Name
-			}
-			if spec.Description != "" {
-				node.NodeDescription = spec.Description
-			}
+			node := node.NewEnvironmentContextNode(node.WithID(spec.ID))
+			applyNodeMetadata(&node.Base, spec)
 			node.EnvironmentStatePath = registry.StringConfigTrim(spec.Config, "environment_state_path")
 			node.WorkspaceRoot = registry.StringConfigTrim(spec.Config, "workspace_root")
 			if value, ok := registry.BoolConfig(spec.Config, "include_git"); ok {
@@ -128,7 +122,7 @@ func environmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 				node.GitStatusLimit = value
 			}
 			return node, nil
-		}),
+		},
 		ResolveStateContract: resolveEnvironmentContextStateContract,
 	}
 }
@@ -136,12 +130,16 @@ func environmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 func resolveEnvironmentContextStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	environmentPath := registry.StringConfigTrim(spec.Config, "environment_state_path")
 	if strings.TrimSpace(environmentPath) == "" {
-		environmentPath = wfstate.KeyEnvironment
+		environmentPath = state.Shared(accessors.KeyEnvironment).String()
+	}
+	parsed, err := state.ParsePath(environmentPath)
+	if err != nil {
+		return dsl.StateContract{}, err
 	}
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
 			{
-				Path:          canonicalContractPath(environmentPath),
+				Path:          parsed.String(),
 				Mode:          dsl.StateAccessWrite,
 				Description:   "Collected workspace, project, and git context.",
 				MergeStrategy: dsl.StateMergeReplace,
@@ -160,9 +158,7 @@ func objectConfig(config map[string]any, key string) map[string]any {
 	}
 	switch typed := raw.(type) {
 	case map[string]any:
-		return wfstate.CloneMap(typed)
-	case wfstate.State:
-		return wfstate.CloneMap(typed)
+		return registry.CloneMap(typed)
 	default:
 		return nil
 	}

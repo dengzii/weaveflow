@@ -5,12 +5,13 @@ import (
 
 	"weaveflow/core"
 	"weaveflow/dsl"
+	"weaveflow/node"
 	"weaveflow/registry"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
 type GraphBuilder interface {
-	AddNode(core.Node[wfstate.State, wfstate.StatePatch]) error
+	AddNode(node.Node) error
 	AddEdge(from, to string) error
 	AddConditionalEdge(from, to string, condition registry.EdgeCondition) error
 	SetEntryPoint(ref string) error
@@ -20,7 +21,7 @@ type GraphBuilder interface {
 type FinalizableGraph interface {
 	GraphBuilder
 	SetInitialStatePaths([]string)
-	SetNodeContracts(map[string]core.NodeIOContract)
+	SetNodeContracts(map[string]state.Contract)
 	ValidateGraph() error
 	ContractDiagnostics() []core.ContractDiagnostic
 }
@@ -79,6 +80,9 @@ func PopulateGraph(
 		if err := target.AddNode(node); err != nil {
 			return err
 		}
+		if specTarget, ok := target.(interface{ SetNodeSpec(dsl.GraphNodeSpec) }); ok {
+			specTarget.SetNodeSpec(nodeSpec)
+		}
 	}
 	if applyBuiltInEdges != nil {
 		if err := applyBuiltInEdges(def); err != nil {
@@ -120,7 +124,7 @@ func BuildFinalizedGraph[T FinalizableGraph](
 	newGraph func() T,
 	initialStatePaths []string,
 	applyBuiltInEdges func(T, dsl.GraphDefinition) error,
-	resolveNodeContracts func(dsl.GraphDefinition, *registry.Registry) (map[string]core.NodeIOContract, error),
+	resolveNodeContracts func(dsl.GraphDefinition, *registry.Registry) (map[string]state.Contract, error),
 ) (T, error) {
 	var zero T
 	if reg == nil {

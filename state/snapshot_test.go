@@ -1,227 +1,98 @@
 package state
 
 import (
-	"encoding/json"
 	"testing"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
-func TestJsonEqualIdenticalBytes(t *testing.T) {
-	t.Parallel()
-	a := json.RawMessage(`{"a":1,"b":2}`)
-	b := json.RawMessage(`{"a":1,"b":2}`)
-	if !jsonEqual(a, b) {
-		t.Fatal("identical bytes should be equal")
-	}
-}
-
-func TestJsonEqualDifferentKeyOrder(t *testing.T) {
-	t.Parallel()
-	a := json.RawMessage(`{"a":1,"b":2}`)
-	b := json.RawMessage(`{"b":2,"a":1}`)
-	if !jsonEqual(a, b) {
-		t.Fatal("different key order should be semantically equal")
-	}
-}
-
-func TestJsonEqualDifferentValues(t *testing.T) {
-	t.Parallel()
-	a := json.RawMessage(`{"a":1}`)
-	b := json.RawMessage(`{"a":2}`)
-	if jsonEqual(a, b) {
-		t.Fatal("different values should not be equal")
-	}
-}
-
-func TestJsonEqualNestedObjectsDifferentKeyOrder(t *testing.T) {
-	t.Parallel()
-	a := json.RawMessage(`{"outer":{"x":1,"y":2},"z":3}`)
-	b := json.RawMessage(`{"z":3,"outer":{"y":2,"x":1}}`)
-	if !jsonEqual(a, b) {
-		t.Fatal("nested objects with reordered keys should be semantically equal")
-	}
-}
-
-func TestJsonEqualNilAndEmpty(t *testing.T) {
+func TestJSONStateCodecRoundTripsEnvelopeAndConversationMessages(t *testing.T) {
 	t.Parallel()
 
-	if !jsonEqual(nil, nil) {
-		t.Fatal("nil vs nil should be equal")
+	registry := NewRegistry()
+	access := NewEditingAccess(registry, NewState()).WithScope("agent")
+	if err := access.SetAny(Shared("request", "input"), "hello"); err != nil {
+		t.Fatalf("set request: %v", err)
 	}
-	if !jsonEqual(json.RawMessage{}, json.RawMessage{}) {
-		t.Fatal("empty vs empty should be equal")
+	if err := access.SetAny(Scope("agent", "conversation", "messages"), []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeHuman, "hi"),
+		llms.TextParts(llms.ChatMessageTypeAI, "done"),
+	}); err != nil {
+		t.Fatalf("set messages: %v", err)
 	}
-	if !jsonEqual(nil, json.RawMessage{}) {
-		t.Fatal("nil vs empty should be equal")
-	}
-	if jsonEqual(nil, json.RawMessage(`"x"`)) {
-		t.Fatal("nil vs non-empty should not be equal")
-	}
-}
-
-func TestJsonEqualWhitespace(t *testing.T) {
-	t.Parallel()
-	a := json.RawMessage(`{ "a" : 1 }`)
-	b := json.RawMessage(`{"a":1}`)
-	if !jsonEqual(a, b) {
-		t.Fatal("whitespace differences should not affect equality")
-	}
-}
-
-func TestJsonEqualArrayOrderMatters(t *testing.T) {
-	t.Parallel()
-	a := json.RawMessage(`[1,2,3]`)
-	b := json.RawMessage(`[3,2,1]`)
-	if jsonEqual(a, b) {
-		t.Fatal("arrays with different order should not be equal")
+	if err := access.SetAny(Scope("agent", "conversation", "iteration_count"), 2); err != nil {
+		t.Fatalf("set iteration: %v", err)
 	}
 
-	c := json.RawMessage(`[1,2,3]`)
-	d := json.RawMessage(`[1,2,3]`)
-	if !jsonEqual(c, d) {
-		t.Fatal("identical arrays should be equal")
+	snapshot, err := SnapshotFromState(access.State())
+	if err != nil {
+		t.Fatalf("snapshot from state: %v", err)
 	}
-}
-
-func TestJsonEqualInvalidJSON(t *testing.T) {
-	t.Parallel()
-	valid := json.RawMessage(`{"a":1}`)
-	invalid := json.RawMessage(`{not json}`)
-
-	if jsonEqual(valid, invalid) {
-		t.Fatal("valid vs invalid JSON should not be equal")
-	}
-	if jsonEqual(invalid, valid) {
-		t.Fatal("invalid vs valid JSON should not be equal")
-	}
-}
-
-func TestDiffOmitsUnchangedPathsWithReorderedKeys(t *testing.T) {
-	t.Parallel()
-
 	codec := NewJSONStateCodec("")
-
-	state := State{
-		"config": map[string]any{
-			"alpha": "one",
-			"beta":  "two",
-		},
-	}
-
-	before, err := SnapshotFromState(state)
+	encoded, err := codec.Encode(snapshot)
 	if err != nil {
-		t.Fatalf("snapshot before: %v", err)
+		t.Fatalf("encode snapshot: %v", err)
 	}
-	after, err := SnapshotFromState(state)
+	decoded, err := codec.Decode(encoded)
 	if err != nil {
-		t.Fatalf("snapshot after: %v", err)
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	restored, err := StateFromSnapshot(decoded)
+	if err != nil {
+		t.Fatalf("state from snapshot: %v", err)
 	}
 
-	changes, err := codec.Diff(before, after)
-	if err != nil {
-		t.Fatalf("diff: %v", err)
+	restoredAccess := NewAccess(registry, restored).WithScope("agent")
+	input, ok := restoredAccess.ReadAny(Shared("request", "input"))
+	if !ok || input != "hello" {
+		t.Fatalf("unexpected request input %#v ok=%v", input, ok)
 	}
-	if len(changes) != 0 {
-		t.Fatalf("expected no changes for identical state, got %d: %+v", len(changes), changes)
+	messagesValue, ok := restoredAccess.ReadAny(Scope("agent", "conversation", "messages"))
+	if !ok {
+		t.Fatal("expected restored messages")
+	}
+	messages, ok := messagesValue.([]llms.MessageContent)
+	if !ok {
+		t.Fatalf("expected []llms.MessageContent, got %T", messagesValue)
+	}
+	if len(messages) != 2 || messages[0].Role != llms.ChatMessageTypeHuman || messages[1].Role != llms.ChatMessageTypeAI {
+		t.Fatalf("unexpected messages %#v", messages)
+	}
+	iteration, ok := restoredAccess.ReadAny(Scope("agent", "conversation", "iteration_count"))
+	if !ok || iteration != 2 {
+		t.Fatalf("expected int iteration 2, got %#v ok=%v", iteration, ok)
 	}
 }
 
-func TestDiffDetectsActualChanges(t *testing.T) {
+func TestDiffSnapshotsUsesCanonicalV2Paths(t *testing.T) {
 	t.Parallel()
 
-	codec := NewJSONStateCodec("")
-
-	stateBefore := State{
-		"topic": "before",
-		"count": 1,
-	}
-	stateAfter := State{
-		"topic": "after",
-		"count": 1,
-	}
-
-	before, err := SnapshotFromState(stateBefore)
+	before, err := SnapshotFromState(FromShared(map[string]any{
+		"request": map[string]any{"input": "old"},
+		"final":   map[string]any{"answer": "draft"},
+	}))
 	if err != nil {
-		t.Fatalf("snapshot before: %v", err)
+		t.Fatalf("before snapshot: %v", err)
 	}
-	after, err := SnapshotFromState(stateAfter)
+	after, err := SnapshotFromState(FromShared(map[string]any{
+		"request": map[string]any{"input": "new"},
+		"final":   map[string]any{"answer": "done"},
+	}))
 	if err != nil {
-		t.Fatalf("snapshot after: %v", err)
+		t.Fatalf("after snapshot: %v", err)
 	}
 
-	changes, err := codec.Diff(before, after)
+	changes, err := DiffSnapshots(before, after)
 	if err != nil {
-		t.Fatalf("diff: %v", err)
+		t.Fatalf("diff snapshots: %v", err)
 	}
-
-	found := false
-	for _, change := range changes {
-		if change.Path == "shared.topic" {
-			found = true
-			break
-		}
+	if len(changes) != 2 {
+		t.Fatalf("expected two changes, got %#v", changes)
 	}
-	if !found {
-		t.Fatalf("expected a change at shared.topic, got %+v", changes)
+	if changes[0].Path != "shared.final.answer" || changes[0].Before != "draft" || changes[0].After != "done" {
+		t.Fatalf("unexpected first change %#v", changes[0])
 	}
-}
-
-func TestDiffDetectsAddedAndRemovedFields(t *testing.T) {
-	t.Parallel()
-
-	codec := NewJSONStateCodec("")
-
-	stateBefore := State{"old_key": "value"}
-	stateAfter := State{"new_key": "value"}
-
-	before, err := SnapshotFromState(stateBefore)
-	if err != nil {
-		t.Fatalf("snapshot before: %v", err)
-	}
-	after, err := SnapshotFromState(stateAfter)
-	if err != nil {
-		t.Fatalf("snapshot after: %v", err)
-	}
-
-	changes, err := codec.Diff(before, after)
-	if err != nil {
-		t.Fatalf("diff: %v", err)
-	}
-
-	paths := make(map[string]bool)
-	for _, change := range changes {
-		paths[change.Path] = true
-	}
-	if !paths["shared.old_key"] {
-		t.Fatal("expected change for removed shared.old_key")
-	}
-	if !paths["shared.new_key"] {
-		t.Fatal("expected change for added shared.new_key")
-	}
-}
-
-func TestFlattenSnapshotSeparatesRunnerMetadataFromRuntimeNodeState(t *testing.T) {
-	t.Parallel()
-
-	snapshot := StateSnapshot{
-		Runtime: RuntimeState{RunID: "run_1"},
-		Internal: map[string]GraphState{
-			NormalizeStateNamespace("runtime"): {
-				"loop": json.RawMessage(`{"done":false}`),
-			},
-		},
-	}
-
-	flat, err := flattenSnapshot(snapshot)
-	if err != nil {
-		t.Fatalf("flatten snapshot: %v", err)
-	}
-	if _, ok := flat[runnerRuntimeMetadataPath]; !ok {
-		t.Fatalf("expected runner runtime metadata at %q, got %#v", runnerRuntimeMetadataPath, flat)
-	}
-	if _, ok := flat["runtime.loop"]; !ok {
-		t.Fatalf("expected runtime node state at runtime.loop, got %#v", flat)
-	}
-	if _, ok := flat["runtime"]; ok {
-		t.Fatalf("did not expect legacy runtime metadata path, got %#v", flat["runtime"])
+	if changes[1].Path != "shared.request.input" || changes[1].Before != "old" || changes[1].After != "new" {
+		t.Fatalf("unexpected second change %#v", changes[1])
 	}
 }

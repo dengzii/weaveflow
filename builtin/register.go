@@ -1,8 +1,9 @@
 package builtin
 
 import (
+	"weaveflow/dsl"
 	"weaveflow/registry"
-	"weaveflow/state"
+	"weaveflow/state/accessors"
 )
 
 func NewDefaultRegistry() *registry.Registry {
@@ -26,9 +27,20 @@ func RegisterDefaultStateFields(registry *registry.Registry) {
 		return
 	}
 
-	for _, def := range state.DefaultStateFieldDefinitions() {
-		registry.RegisterStateField(def)
-	}
+	registry.RegisterStateField(dsl.StateFieldDefinition{
+		Name:        accessors.KeyConversation,
+		Description: "Shared conversation state for the graph run.",
+		Schema: dsl.JSONSchema{
+			"type": "object",
+			"properties": dsl.JSONSchema{
+				accessors.ConversationFieldMessages:       dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "object"}},
+				accessors.ConversationFieldIterationCount: dsl.JSONSchema{"type": "integer", "minimum": 0},
+				accessors.ConversationFieldMaxIterations:  dsl.JSONSchema{"type": "integer", "minimum": 1},
+				accessors.ConversationFieldFinalAnswer:    dsl.JSONSchema{"type": "string"},
+			},
+			"additionalProperties": true,
+		},
+	})
 }
 
 func RegisterModules(registry *registry.Registry) {

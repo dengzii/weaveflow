@@ -5,9 +5,10 @@ import (
 	"fmt"
 	"weaveflow/core"
 	"weaveflow/llms/openai"
-	"weaveflow/nodes"
+	"weaveflow/node"
 	"weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -31,26 +32,26 @@ func ExploreExample() {
 	}
 	ctx := core.WithServices(context.Background(), svc)
 
-	node := nodes.NewExploreNode()
-	node.ParentScope = "agent"
-	node.MaxIterations = 8
-	node.ToolResultCap = 4096
+	exploreNode := node.NewExploreNode()
+	exploreNode.ParentScope = "agent"
+	exploreNode.MaxIterations = 8
+	exploreNode.ToolResultCap = 4096
 
-	state := wfstate.State{}
-	state.Conversation("agent").UpdateMessage([]llms.MessageContent{
+	currentState := state.NewState()
+	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMessages).String(), []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, "Where is the ExploreNode defined and what tools does it use by default?"),
-	})
+	}))
 
-	result, err := executeNode(ctx, node, state)
+	result, err := executeNode(ctx, exploreNode, currentState)
 	must(err)
 
-	parent := result.Conversation("agent")
+	parent := conversation(result, "agent")
 	fmt.Println("parent conversation:")
 	for i, msg := range parent.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	explore := result.Conversation("explore")
+	explore := conversation(result, "explore")
 	fmt.Println()
 	fmt.Printf("explore iterations used: %d / %d\n", explore.IterationCount(), explore.MaxIterations())
 	fmt.Println()

@@ -3,284 +3,196 @@ package state
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
-const (
-	StateNamespacePrefix       = "__wf_"
-	stateNamespaceConversation = "__wf_conversation"
-	stateNamespaceScopes       = "__wf_scopes"
+// State is the private storage envelope for state.
+// External packages should use Access, typed Ref values, or registered
+// accessors instead of mutating this structure directly.
+type State struct {
+	root map[string]any
+}
 
-	DefaultMaxIterations = 8
-)
+func NewState() *State {
+	return &State{root: newRoot()}
+}
 
-const (
-	stateNamespacePrefix = StateNamespacePrefix
-
-	defaultMaxIterations = DefaultMaxIterations
-)
-
-// State stores shared business data at the root level.
-// WeaveFlow-managed scope and conversation state live under reserved namespaces.
-//
-// Persisted state is intentionally constrained to:
-// - primitives
-// - map[string]any / State
-// - []any
-// - []string
-// - []map[string]any
-// - []llms.MessageContent for conversation messages
-type State map[string]any
-
-func NewBaseState(messages []llms.MessageContent, maxIterations int) State {
-	state := State{}
-	conversation := state.Conversation("")
-	conversation.UpdateMessage(messages)
-	conversation.SetMaxIterations(maxIterations)
+func FromMap(input map[string]any) *State {
+	state := NewState()
+	if input != nil {
+		mergeMap(state.root, input)
+	}
+	state.ensureRootSections()
 	return state
 }
 
-func (s State) CloneState() State {
+func FromShared(shared map[string]any) *State {
+	state := NewState()
+	if shared != nil {
+		section, _ := state.root[SectionShared].(map[string]any)
+		mergeMap(section, shared)
+	}
+	return state
+}
+
+func (s *State) Clone() *State {
 	if s == nil {
-		return nil
+		return NewState()
 	}
-
-	cloned := State{}
-	for key, value := range s {
-		if isInfrastructureStateKey(key) || isSpecialStateKey(key) {
-			continue
-		}
-		cloned[key] = cloneStateValue(value)
-	}
-
-	if conversation := conversationSource(s); conversation != nil {
-		copyConversationState(cloned, conversation)
-	}
-
-	for scopeName, scopeState := range s.Scopes() {
-		setScopeState(cloned, scopeName, cloneStateMap(scopeState))
-	}
-
-	return cloned
+	return FromMap(s.root)
 }
 
-func (s State) PrettyString() string {
-	bs, err := json.MarshalIndent(s, "", "  ")
+func (s *State) Export() map[string]any {
+	if s == nil {
+		return newRoot()
+	}
+	return cloneMap(s.root)
+}
+
+func (s *State) MarshalJSON() ([]byte, error) {
+	return json.Marshal(s.Export())
+}
+
+func (s *State) UnmarshalJSON(data []byte) error {
+	var root map[string]any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return err
+	}
+	*s = *FromMap(root)
+	return nil
+}
+
+func (s *State) SetSection(section string, values map[string]any) error {
+	path, err := NewPath(section)
 	if err != nil {
-		return fmt.Sprintf("error: %v", err)
+		return err
 	}
-	return string(bs)
+	return s.set(path, values)
 }
 
-func (s State) Scope(scope string) State {
-	return s.scopeState(scope, false)
-}
-
-func (s State) EnsureScope(scope string) State {
-	return s.scopeState(scope, true)
-}
-
-func (s State) scopeState(scope string, create bool) State {
-	if s == nil || scope == "" {
-		return nil
-	}
-
-	if scopes := s.scopesNamespace(false); scopes != nil {
-		if scopeState, ok := asStateMap(scopes[scope]); ok {
-			return scopeState
-		}
-	}
-	if !create {
-		return nil
-	}
-	scopeState := State{}
-	setScopeState(s, scope, scopeState)
-	return scopeState
-}
-
-func (s State) Namespace(namespace string) State {
-	return namespaceState(s, namespace, false)
-}
-
-func (s State) EnsureNamespace(namespace string) State {
-	return namespaceState(s, namespace, true)
-}
-
-func namespaceState(values map[string]any, namespace string, create bool) State {
-	if values == nil || namespace == "" {
-		return nil
-	}
-	key := normalizeStateNamespace(namespace)
-	switch typed := values[key].(type) {
-	case State:
-		return typed
-	case map[string]any:
-		nested := State(typed)
-		values[key] = nested
-		return nested
-	}
-	if !create {
-		return nil
-	}
-	nested := State{}
-	values[key] = nested
-	return nested
-}
-
-func (s State) scopesNamespace(create bool) State {
-	return namespaceState(s, stateNamespaceScopes, create)
-}
-
-func (s State) Scopes() map[string]State {
-	rawScopes := s.scopesNamespace(false)
-	if rawScopes == nil {
-		return nil
-	}
-
-	scopes := make(map[string]State, len(rawScopes))
-	for scopeName, rawState := range rawScopes {
-		if scopeState, ok := asStateMap(rawState); ok {
-			scopes[scopeName] = scopeState
-		}
-	}
-	if len(scopes) == 0 {
-		return nil
-	}
-	return scopes
-}
-
-func setScopeState(root State, scope string, scopeState State) {
-	if root == nil || scope == "" {
-		return
-	}
-	scopes := root.scopesNamespace(true)
-	scopes[scope] = scopeState
-}
-
-func isInfrastructureStateKey(key string) bool {
-	switch key {
-	case stateNamespaceConversation, stateNamespaceScopes:
-		return true
-	default:
-		return false
-	}
-}
-
-func NormalizeStateNamespace(namespace string) string {
-	if strings.HasPrefix(namespace, stateNamespacePrefix) {
-		return namespace
-	}
-	return stateNamespacePrefix + namespace
-}
-
-func normalizeStateNamespace(namespace string) string {
-	return NormalizeStateNamespace(namespace)
-}
-
-func asStateMap(value any) (State, bool) {
-	switch typed := value.(type) {
-	case State:
-		return typed, true
-	case map[string]any:
-		return typed, true
-	default:
+func (s *State) read(path Path) (any, bool) {
+	if s == nil || path.Empty() {
 		return nil, false
 	}
-}
-
-// CloneValue returns a deep copy of value using the State-aware clone
-// semantics: nested maps, State values, []any, []string, []map[string]any
-// and []llms.MessageContent are all copied recursively. Primitives are
-// returned as-is. Use this when other packages need to detach a piece of
-// state-shaped data from its source without rolling their own walker.
-func CloneValue(value any) any {
-	return cloneStateValue(value)
-}
-
-// CloneMap deep-copies a map[string]any using CloneValue semantics. Returns
-// nil only when input is nil; an empty (non-nil) input becomes an empty
-// (non-nil) clone, matching what callers usually want for state buckets.
-func CloneMap(input map[string]any) map[string]any {
-	return map[string]any(cloneStateMap(input))
-}
-
-func cloneStateMap(input map[string]any) State {
-	if input == nil {
-		return nil
+	current, ok := s.root[path.section]
+	if !ok {
+		return nil, false
 	}
-
-	cloned := make(State, len(input))
-	for key, value := range input {
-		cloned[key] = cloneStateValue(value)
-	}
-	return cloned
-}
-
-func cloneStateValue(value any) any {
-	switch typed := value.(type) {
-	case []llms.MessageContent:
-		return cloneMessages(typed)
-	case []string:
-		return cloneStrings(typed)
-	case []map[string]any:
-		return cloneMapSlice(typed)
-	case []any:
-		return cloneAnySlice(typed)
-	case map[string]any:
-		return map[string]any(cloneStateMap(typed))
-	case State:
-		return cloneStateMap(typed)
-	default:
-		return value
-	}
-}
-
-func cloneStrings(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	cloned := make([]string, len(values))
-	copy(cloned, values)
-	return cloned
-}
-
-func cloneMapSlice(values []map[string]any) []map[string]any {
-	if len(values) == 0 {
-		return nil
-	}
-
-	cloned := make([]map[string]any, len(values))
-	for i, value := range values {
-		cloned[i] = cloneStateMap(value)
-	}
-	return cloned
-}
-
-func cloneAnySlice(values []any) []any {
-	if len(values) == 0 {
-		return nil
-	}
-
-	cloned := make([]any, len(values))
-	for i, value := range values {
-		cloned[i] = cloneStateValue(value)
-	}
-	return cloned
-}
-
-func cloneMessages(messages []llms.MessageContent) []llms.MessageContent {
-	if len(messages) == 0 {
-		return nil
-	}
-
-	cloned := make([]llms.MessageContent, len(messages))
-	for i, message := range messages {
-		cloned[i] = llms.MessageContent{
-			Role:  message.Role,
-			Parts: append([]llms.ContentPart(nil), message.Parts...),
+	for _, segment := range path.segments {
+		mapped, ok := current.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		current, ok = mapped[segment]
+		if !ok {
+			return nil, false
 		}
 	}
-	return cloned
+	return cloneValue(current), true
+}
+
+func (s *State) set(path Path, value any) error {
+	if s == nil {
+		return fmt.Errorf("state is nil")
+	}
+	if len(path.segments) == 0 {
+		mapped, ok := asMap(value)
+		if !ok {
+			return fmt.Errorf("state section %q requires map[string]any value", path.section)
+		}
+		s.root[path.section] = cloneMap(mapped)
+		return nil
+	}
+	parent, key, err := s.parentMap(path, true)
+	if err != nil {
+		return err
+	}
+	parent[key] = cloneValue(value)
+	return nil
+}
+
+func (s *State) delete(path Path) error {
+	if s == nil {
+		return fmt.Errorf("state is nil")
+	}
+	if len(path.segments) == 0 {
+		s.root[path.section] = map[string]any{}
+		return nil
+	}
+	parent, key, err := s.parentMap(path, false)
+	if err != nil || parent == nil || key == "" {
+		return err
+	}
+	delete(parent, key)
+	return nil
+}
+
+func (s *State) merge(path Path, value any) error {
+	if s == nil {
+		return fmt.Errorf("state is nil")
+	}
+	overlay, ok := asMap(value)
+	if !ok {
+		return fmt.Errorf("merge at %q requires map[string]any value, got %T", path.String(), value)
+	}
+	current, ok := s.read(path)
+	if !ok {
+		return s.set(path, overlay)
+	}
+	target, ok := asMap(current)
+	if !ok {
+		return fmt.Errorf("merge at %q found non-object value %T", path.String(), current)
+	}
+	mergeMap(target, overlay)
+	return s.set(path, target)
+}
+
+func (s *State) parentMap(path Path, create bool) (map[string]any, string, error) {
+	if path.Empty() {
+		return nil, "", fmt.Errorf("state path is required")
+	}
+	s.ensureRootSections()
+	current, ok := s.root[path.section].(map[string]any)
+	if !ok {
+		if !create {
+			return nil, "", nil
+		}
+		current = map[string]any{}
+		s.root[path.section] = current
+	}
+	if len(path.segments) == 0 {
+		return s.root, path.section, nil
+	}
+	for _, segment := range path.segments[:len(path.segments)-1] {
+		next, ok := current[segment].(map[string]any)
+		if !ok {
+			if !create {
+				return nil, "", nil
+			}
+			next = map[string]any{}
+			current[segment] = next
+		}
+		current = next
+	}
+	return current, path.segments[len(path.segments)-1], nil
+}
+
+func (s *State) ensureRootSections() {
+	if s.root == nil {
+		s.root = newRoot()
+		return
+	}
+	for _, section := range []string{SectionShared, SectionScopes, SectionInternal, SectionRuntime} {
+		if _, ok := s.root[section].(map[string]any); !ok {
+			s.root[section] = map[string]any{}
+		}
+	}
+}
+
+func newRoot() map[string]any {
+	return map[string]any{
+		SectionShared:   map[string]any{},
+		SectionScopes:   map[string]any{},
+		SectionInternal: map[string]any{},
+		SectionRuntime:  map[string]any{},
+	}
 }

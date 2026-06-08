@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"weaveflow/builder"
-	"weaveflow/core"
 	"weaveflow/dsl"
 	"weaveflow/registry"
+	"weaveflow/state"
 )
 
 func BuildGraph(reg *registry.Registry, def dsl.GraphDefinition, ctx *builder.BuildContext) (*Graph, error) {
@@ -37,7 +37,7 @@ func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.G
 		func(g *Graph, def dsl.GraphDefinition) error {
 			return builder.ApplyBuiltInNodeEdges(g, def)
 		},
-		func(def dsl.GraphDefinition, _ *registry.Registry) (map[string]core.NodeIOContract, error) {
+		func(def dsl.GraphDefinition, _ *registry.Registry) (map[string]state.Contract, error) {
 			return builder.ResolveNodeContracts(def, reg)
 		},
 	)

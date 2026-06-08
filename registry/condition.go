@@ -3,12 +3,12 @@ package registry
 import (
 	"weaveflow/core"
 	"weaveflow/dsl"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 )
 
-type EdgeConditionMatcher = core.EdgeConditionMatcher[wfstate.State]
+type EdgeConditionMatcher = core.EdgeConditionMatcher[*state.State]
 
-type EdgeCondition = core.EdgeCondition[wfstate.State]
+type EdgeCondition = core.EdgeCondition[*state.State]
 
 func NewEdgeCondition(spec dsl.GraphConditionSpec, match EdgeConditionMatcher) EdgeCondition {
 	return core.NewEdgeCondition(spec, match)

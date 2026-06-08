@@ -8,11 +8,11 @@ import (
 	"strings"
 	"weaveflow/builder"
 	"weaveflow/builtin"
-	"weaveflow/core"
 	"weaveflow/dsl"
+	"weaveflow/node"
 	"weaveflow/registry"
 	fruntime "weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"
@@ -36,9 +36,10 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	nodes               map[string]core.Node[wfstate.State, wfstate.StatePatch]
+	nodes               map[string]node.Node
 	nodeSpecs           map[string]dsl.GraphNodeSpec
-	nodeContracts       map[string]core.NodeIOContract
+	nodeContracts       map[string]state.Contract
+	stateRegistry       *state.Registry
 	initialStatePaths   []string
 	contractDiagnostics []ContractDiagnostic
 	edges               map[string]string
@@ -47,18 +48,20 @@ type Graph struct {
 	entryPoint          string
 	finishPoint         string
 	retryPolicy         *langgraph.RetryPolicy
-	nodeListeners       map[string][]langgraph.NodeListener[wfstate.State]
-	globalListeners     []langgraph.NodeListener[wfstate.State]
+	nodeListeners       map[string][]langgraph.NodeListener[*state.State]
+	globalListeners     []langgraph.NodeListener[*state.State]
 	tracer              *langgraph.Tracer
 }
 
 func NewGraph() *Graph {
+	stateRegistry, _ := node.NewDefaultRegistry()
 	return &Graph{
-		nodes:            map[string]core.Node[wfstate.State, wfstate.StatePatch]{},
+		nodes:            map[string]node.Node{},
 		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
 		edges:            map[string]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
-		nodeListeners:    map[string][]langgraph.NodeListener[wfstate.State]{},
+		nodeListeners:    map[string][]langgraph.NodeListener[*state.State]{},
+		stateRegistry:    stateRegistry,
 	}
 }
 
@@ -100,8 +103,8 @@ func (g *Graph) WriteToFile(path string) error {
 }
 
 func (g *Graph) DrawMermaid() (string, error) {
-	graph := langgraph.NewStateGraph[wfstate.State]()
-	err := g.buildStateGraph(graph, func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch]) {})
+	graph := langgraph.NewStateGraph[*state.State]()
+	err := g.buildStateGraph(graph, func(nodeID string, node node.Node) {})
 	if err != nil {
 		return "", err
 	}
@@ -110,28 +113,36 @@ func (g *Graph) DrawMermaid() (string, error) {
 
 }
 
-func (g *Graph) AddNode(node core.Node[wfstate.State, wfstate.StatePatch]) error {
-	if node == nil {
+func (g *Graph) AddNode(targetNode node.Node) error {
+	if targetNode == nil {
 		return fmt.Errorf("nodes is nil")
 	}
 
-	id := strings.TrimSpace(node.ID())
+	id := strings.TrimSpace(targetNode.ID())
 	if id == "" {
-		return fmt.Errorf("nodes id is empty")
+		setter, ok := targetNode.(interface{ SetID(string) })
+		if !ok {
+			return fmt.Errorf("nodes id is empty and node does not support automatic id assignment")
+		}
+		id = node.AllocateNodeID(targetNode, func(candidate string) bool {
+			_, exists := g.nodes[candidate]
+			return exists
+		})
+		setter.SetID(id)
 	}
 	if _, exists := g.nodes[id]; exists {
 		return fmt.Errorf("nodes id %q already exists", id)
 	}
 
-	g.nodes[id] = node
-	if provider, ok := node.(dsl.GraphNodeSpecProvider); ok {
+	g.nodes[id] = targetNode
+	if provider, ok := targetNode.(dsl.GraphNodeSpecProvider); ok {
 		spec := provider.GraphNodeSpec()
 		spec.ID = id
 		if spec.Name == "" {
-			spec.Name = strings.TrimSpace(node.Name())
+			spec.Name = strings.TrimSpace(targetNode.Name())
 		}
 		if spec.Description == "" {
-			spec.Description = node.Description()
+			spec.Description = targetNode.Description()
 		}
 		if spec.Name == "" {
 			spec.Name = id
@@ -139,17 +150,31 @@ func (g *Graph) AddNode(node core.Node[wfstate.State, wfstate.StatePatch]) error
 		g.nodeSpecs[id] = spec
 	} else {
 		// this is a nodes that doesn't provide a spec, should we add a default spec? or throw an error?
-		name := strings.TrimSpace(node.Name())
+		name := strings.TrimSpace(targetNode.Name())
 		if name == "" {
 			name = id
 		}
 		g.nodeSpecs[id] = dsl.GraphNodeSpec{
 			ID:          id,
 			Name:        name,
-			Description: node.Description(),
+			Description: targetNode.Description(),
 		}
 	}
 	return nil
+}
+
+func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) {
+	if g == nil {
+		return
+	}
+	id := strings.TrimSpace(spec.ID)
+	if id == "" {
+		return
+	}
+	if len(spec.Config) > 0 {
+		spec.Config = registry.CloneMap(spec.Config)
+	}
+	g.nodeSpecs[id] = spec
 }
 
 func (g *Graph) SetEntryPoint(ref string) error {
@@ -245,7 +270,7 @@ func (g *Graph) SetTracer(tracer *langgraph.Tracer) {
 	g.tracer = tracer
 }
 
-func (g *Graph) AddNodeListener(nodeRef string, listener langgraph.NodeListener[wfstate.State]) error {
+func (g *Graph) AddNodeListener(nodeRef string, listener langgraph.NodeListener[*state.State]) error {
 	if listener == nil {
 		return fmt.Errorf("listener is nil")
 	}
@@ -257,7 +282,7 @@ func (g *Graph) AddNodeListener(nodeRef string, listener langgraph.NodeListener[
 	return nil
 }
 
-func (g *Graph) AddGlobalListener(listener langgraph.NodeListener[wfstate.State]) error {
+func (g *Graph) AddGlobalListener(listener langgraph.NodeListener[*state.State]) error {
 	if listener == nil {
 		return fmt.Errorf("listener is nil")
 	}
@@ -321,10 +346,10 @@ func (g *Graph) Validate() error {
 }
 
 func (g *Graph) Compile() (*Runnable, error) {
-	compiled := langgraph.NewListenableStateGraph[wfstate.State]()
-	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch]) {
+	compiled := langgraph.NewListenableStateGraph[*state.State]()
+	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node node.Node) {
 		nodeDef := node
-		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
 			return g.executePatchNode(ctx, nodeID, nodeDef, state)
 		})
 		for _, listener := range g.nodeListeners[nodeID] {
@@ -347,31 +372,30 @@ func (g *Graph) Compile() (*Runnable, error) {
 	return &Runnable{runnable: runnable}, nil
 }
 
-func (g *Graph) executePatchNode(ctx context.Context, nodeID string, node core.Node[wfstate.State, wfstate.StatePatch], state wfstate.State) (wfstate.State, error) {
-	if node == nil {
-		return state, fmt.Errorf("node %q is nil", nodeID)
+func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode node.Node, currentState *state.State) (*state.State, error) {
+	if targetNode == nil {
+		return currentState, fmt.Errorf("node %q is nil", nodeID)
 	}
-	patch, err := node.Execute(ctx, state.CloneState())
+	result, err := node.Execute(ctx, g.stateAccessorRegistry(), currentState, targetNode)
 	if err != nil {
-		return state, err
+		return currentState, err
 	}
 
-	contract := core.NodeIOContract{WildcardWrite: true}
+	contract := result.Contract
 	if g != nil && len(g.nodeContracts) > 0 {
 		if nodeContract, ok := g.nodeContracts[nodeID]; ok {
 			contract = nodeContract
 		}
 	}
-	merged, _, err := wfstate.MergeStatePatch(state, patch, wfstate.StatePatchMergeOptions{
-		Contract: contract,
-	})
-	if err != nil {
-		return state, err
+	if len(contract.Fields) > 0 || contract.WildcardWrite {
+		if issues := state.ValidatePatchByContract(result.Patch, contract); len(issues) > 0 {
+			return currentState, fmt.Errorf("node %q state contract violation: %s", nodeID, issues[0].Message)
+		}
 	}
-	return merged, nil
+	return result.State, nil
 }
 
-func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[wfstate.State], error) {
+func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[*state.State], error) {
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
@@ -379,10 +403,10 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 		return nil, fmt.Errorf("runner execution is nil")
 	}
 
-	compiled := langgraph.NewStateGraph[wfstate.State]()
-	if err := g.configureStateGraph(compiled, func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch]) {
+	compiled := langgraph.NewStateGraph[*state.State]()
+	if err := g.configureStateGraph(compiled, func(nodeID string, node node.Node) {
 		nodeDef := node
-		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state wfstate.State) (wfstate.State, error) {
+		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
 			return execution.ExecuteNode(ctx, nodeID, nodeDef, state)
 		})
 	}); err != nil {
@@ -397,14 +421,14 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	return runnable, nil
 }
 
-func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[wfstate.State], addNode func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch])) error {
+func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node node.Node)) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
 	return g.configureStateGraph(compiled, addNode)
 }
 
-func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[wfstate.State], addNode func(nodeID string, node core.Node[wfstate.State, wfstate.StatePatch])) error {
+func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node node.Node)) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled graph is nil")
 	}
@@ -442,12 +466,12 @@ func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[wfstate.State
 	return nil
 }
 
-func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEdge) func(ctx context.Context, state wfstate.State) string {
+func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEdge) func(ctx context.Context, state *state.State) string {
 	edges := append([]conditionalEdge(nil), conditional...)
 	defaultTarget, hasDefaultTarget := g.edges[from]
 	isFinishPoint := from == g.finishPoint
 
-	return func(ctx context.Context, state wfstate.State) string {
+	return func(ctx context.Context, state *state.State) string {
 		for _, edge := range edges {
 			if edge.condition.Match(ctx, state) {
 				return edge.to
@@ -469,7 +493,15 @@ func (g *Graph) applyTracer(target interface{ SetTracer(*langgraph.Tracer) }) {
 	}
 }
 
-func (g *Graph) Run(ctx context.Context, initialState wfstate.State) (wfstate.State, error) {
+func (g *Graph) stateAccessorRegistry() *state.Registry {
+	if g == nil || g.stateRegistry == nil {
+		registry, _ := node.NewDefaultRegistry()
+		return registry
+	}
+	return g.stateRegistry
+}
+
+func (g *Graph) Run(ctx context.Context, initialState *state.State) (*state.State, error) {
 	runnable, err := g.Compile()
 	if err != nil {
 		return initialState, err
@@ -488,7 +520,7 @@ func (g *Graph) SetInitialStatePaths(paths []string) {
 	g.initialStatePaths = append([]string(nil), paths...)
 }
 
-func (g *Graph) SetNodeContracts(contracts map[string]core.NodeIOContract) {
+func (g *Graph) SetNodeContracts(contracts map[string]state.Contract) {
 	if g == nil {
 		return
 	}
@@ -496,7 +528,7 @@ func (g *Graph) SetNodeContracts(contracts map[string]core.NodeIOContract) {
 		g.nodeContracts = nil
 		return
 	}
-	g.nodeContracts = make(map[string]core.NodeIOContract, len(contracts))
+	g.nodeContracts = make(map[string]state.Contract, len(contracts))
 	for key, value := range contracts {
 		g.nodeContracts[key] = value.Clone()
 	}
@@ -631,7 +663,7 @@ func (g *Graph) nodeDisplayName(nodeID string) string {
 	return nodeID
 }
 
-func (g *Graph) displayNameListener(listener langgraph.NodeListener[wfstate.State]) langgraph.NodeListener[wfstate.State] {
+func (g *Graph) displayNameListener(listener langgraph.NodeListener[*state.State]) langgraph.NodeListener[*state.State] {
 	if listener == nil {
 		return nil
 	}
@@ -644,15 +676,15 @@ func (g *Graph) displayNameListener(listener langgraph.NodeListener[wfstate.Stat
 }
 
 type Runnable struct {
-	runnable *langgraph.ListenableRunnable[wfstate.State]
+	runnable *langgraph.ListenableRunnable[*state.State]
 }
 
 type nodeDisplayListener struct {
-	inner   langgraph.NodeListener[wfstate.State]
+	inner   langgraph.NodeListener[*state.State]
 	resolve func(string) string
 }
 
-func (l nodeDisplayListener) OnNodeEvent(ctx context.Context, event langgraph.NodeEvent, nodeID string, state wfstate.State, err error) {
+func (l nodeDisplayListener) OnNodeEvent(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error) {
 	if l.inner == nil {
 		return
 	}
@@ -665,15 +697,15 @@ func (l nodeDisplayListener) OnNodeEvent(ctx context.Context, event langgraph.No
 	l.inner.OnNodeEvent(ctx, event, name, state, err)
 }
 
-func (r *Runnable) Invoke(ctx context.Context, initialState wfstate.State) (wfstate.State, error) {
+func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*state.State, error) {
 	return r.runnable.Invoke(ctx, initialState)
 }
 
-func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState wfstate.State, config *langgraph.Config) (wfstate.State, error) {
+func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error) {
 	return r.runnable.InvokeWithConfig(ctx, initialState, config)
 }
 
-func (r *Runnable) Stream(ctx context.Context, initialState wfstate.State) <-chan langgraph.StreamEvent[wfstate.State] {
+func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan langgraph.StreamEvent[*state.State] {
 	return r.runnable.Stream(ctx, initialState)
 }
 
@@ -689,6 +721,6 @@ func (r *Runnable) GetTracer() *langgraph.Tracer {
 	return r.runnable.GetTracer()
 }
 
-func (r *Runnable) Underlying() *langgraph.ListenableRunnable[wfstate.State] {
+func (r *Runnable) Underlying() *langgraph.ListenableRunnable[*state.State] {
 	return r.runnable
 }

@@ -2,27 +2,38 @@ package state
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
-	"math"
-	"reflect"
 	"sort"
-	"strings"
+	"strconv"
 
 	"github.com/tmc/langchaingo/llms"
-
-	"weaveflow/llms/parts"
 )
+
+const DefaultSnapshotVersion = "state-v2"
+
+type StateSnapshot struct {
+	Version  string         `json:"version"`
+	Shared   map[string]any `json:"shared,omitempty"`
+	Scopes   map[string]any `json:"scopes,omitempty"`
+	Internal map[string]any `json:"internal,omitempty"`
+	Runtime  map[string]any `json:"runtime,omitempty"`
+}
+
+type StateChange struct {
+	Path   string `json:"path"`
+	Before any    `json:"before,omitempty"`
+	After  any    `json:"after,omitempty"`
+}
 
 type JSONStateCodec struct {
 	version string
 }
 
 func NewJSONStateCodec(version string) *JSONStateCodec {
-	version = strings.TrimSpace(version)
+	version = normalizeSegment(version)
 	if version == "" {
-		version = DefaultStateVersion
+		version = DefaultSnapshotVersion
 	}
 	return &JSONStateCodec{version: version}
 }
@@ -32,31 +43,101 @@ func (c *JSONStateCodec) Name() string {
 }
 
 func (c *JSONStateCodec) Version() string {
+	if c == nil || c.version == "" {
+		return DefaultSnapshotVersion
+	}
 	return c.version
 }
 
 func (c *JSONStateCodec) Encode(snapshot StateSnapshot) ([]byte, error) {
 	if snapshot.Version == "" {
-		snapshot.Version = c.version
+		snapshot.Version = c.Version()
 	}
 	return json.Marshal(snapshot)
 }
 
 func (c *JSONStateCodec) Decode(data []byte) (StateSnapshot, error) {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+
 	var snapshot StateSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
+	if err := decoder.Decode(&snapshot); err != nil {
 		return StateSnapshot{}, err
 	}
-	if looksLikeLegacyScopeLayout(snapshot.Version, snapshot.Scopes) {
-		return StateSnapshot{}, fmt.Errorf("legacy state snapshot layout is no longer supported")
-	}
 	if snapshot.Version == "" {
-		snapshot.Version = c.version
+		snapshot.Version = c.Version()
 	}
-	return snapshot, nil
+	snapshot.Shared = normalizeDecodedMap(snapshot.Shared)
+	snapshot.Scopes = normalizeDecodedMap(snapshot.Scopes)
+	snapshot.Internal = normalizeDecodedMap(snapshot.Internal)
+	snapshot.Runtime = normalizeDecodedMap(snapshot.Runtime)
+	return DecodeSnapshotMessages(snapshot)
 }
 
 func (c *JSONStateCodec) Diff(before, after StateSnapshot) ([]StateChange, error) {
+	return DiffSnapshots(before, after)
+}
+
+func SnapshotFromState(state *State) (StateSnapshot, error) {
+	root := NewState().Export()
+	if state != nil {
+		root = state.Export()
+	}
+
+	shared, err := encodeSnapshotSection(root[SectionShared])
+	if err != nil {
+		return StateSnapshot{}, fmt.Errorf("encode shared state: %w", err)
+	}
+	scopes, err := encodeSnapshotSection(root[SectionScopes])
+	if err != nil {
+		return StateSnapshot{}, fmt.Errorf("encode scoped state: %w", err)
+	}
+	internal, err := encodeSnapshotSection(root[SectionInternal])
+	if err != nil {
+		return StateSnapshot{}, fmt.Errorf("encode internal state: %w", err)
+	}
+	runtime, err := encodeSnapshotSection(root[SectionRuntime])
+	if err != nil {
+		return StateSnapshot{}, fmt.Errorf("encode runtime state: %w", err)
+	}
+
+	return StateSnapshot{
+		Version:  DefaultSnapshotVersion,
+		Shared:   emptyMapToNil(shared),
+		Scopes:   emptyMapToNil(scopes),
+		Internal: emptyMapToNil(internal),
+		Runtime:  emptyMapToNil(runtime),
+	}, nil
+}
+
+func StateFromSnapshot(snapshot StateSnapshot) (*State, error) {
+	decoded, err := DecodeSnapshotMessages(snapshot)
+	if err != nil {
+		return nil, err
+	}
+	return FromMap(map[string]any{
+		SectionShared:   emptyMapToEmpty(decoded.Shared),
+		SectionScopes:   emptyMapToEmpty(decoded.Scopes),
+		SectionInternal: emptyMapToEmpty(decoded.Internal),
+		SectionRuntime:  emptyMapToEmpty(decoded.Runtime),
+	}), nil
+}
+
+func DecodeSnapshotMessages(snapshot StateSnapshot) (StateSnapshot, error) {
+	shared, err := decodeSnapshotSectionMessages(SectionShared, snapshot.Shared)
+	if err != nil {
+		return StateSnapshot{}, err
+	}
+	scopes, err := decodeSnapshotSectionMessages(SectionScopes, snapshot.Scopes)
+	if err != nil {
+		return StateSnapshot{}, err
+	}
+	snapshot.Shared = shared
+	snapshot.Scopes = scopes
+	return snapshot, nil
+}
+
+func DiffSnapshots(before, after StateSnapshot) ([]StateChange, error) {
 	beforeFlat, err := flattenSnapshot(before)
 	if err != nil {
 		return nil, err
@@ -67,546 +148,322 @@ func (c *JSONStateCodec) Diff(before, after StateSnapshot) ([]StateChange, error
 	}
 
 	paths := make(map[string]struct{}, len(beforeFlat)+len(afterFlat))
-	for key := range beforeFlat {
-		paths[key] = struct{}{}
+	for path := range beforeFlat {
+		paths[path] = struct{}{}
 	}
-	for key := range afterFlat {
-		paths[key] = struct{}{}
+	for path := range afterFlat {
+		paths[path] = struct{}{}
 	}
 
-	keys := make([]string, 0, len(paths))
-	for key := range paths {
-		keys = append(keys, key)
+	ordered := make([]string, 0, len(paths))
+	for path := range paths {
+		ordered = append(ordered, path)
 	}
-	sort.Strings(keys)
+	sort.Strings(ordered)
 
-	changes := make([]StateChange, 0, len(keys))
-	for _, key := range keys {
-		left := beforeFlat[key]
-		right := afterFlat[key]
-		if jsonEqual(left, right) {
+	changes := make([]StateChange, 0)
+	for _, path := range ordered {
+		beforeValue, beforeOK := beforeFlat[path]
+		afterValue, afterOK := afterFlat[path]
+		if beforeOK && afterOK && jsonEqual(beforeValue, afterValue) {
 			continue
 		}
-		changes = append(changes, StateChange{Path: key, Before: left, After: right})
+		change := StateChange{Path: path}
+		if beforeOK {
+			change.Before = cloneValue(beforeValue)
+		}
+		if afterOK {
+			change.After = cloneValue(afterValue)
+		}
+		changes = append(changes, change)
 	}
 	return changes, nil
 }
 
-func SnapshotFromState(state State) (StateSnapshot, error) {
-	snapshot := StateSnapshot{
-		Version:  NewJSONStateCodec("").Version(),
-		Shared:   GraphState{},
-		Scopes:   map[string]GraphState{},
-		Internal: map[string]GraphState{},
+func encodeSnapshotSection(value any) (map[string]any, error) {
+	mapped, ok := asMap(value)
+	if !ok || mapped == nil {
+		return map[string]any{}, nil
 	}
-
-	for _, extension := range defaultStateExtensions() {
-		if err := extension.ExtractRootSnapshot(state, &snapshot); err != nil {
-			return StateSnapshot{}, err
-		}
-	}
-
-	for scopeName, scopeState := range state.Scopes() {
-		scope, err := encodeGraphState(scopeState)
-		if err != nil {
-			return StateSnapshot{}, err
-		}
-		snapshot.Scopes[scopeName] = scope
-	}
-
-	for key, value := range state {
-		if isSpecialStateKey(key) || isInfrastructureStateKey(key) {
-			continue
-		}
-		if isInternalSnapshotNamespaceKey(key) {
-			namespace, ok := asStateMap(value)
-			if !ok {
-				return StateSnapshot{}, fmt.Errorf("internal state namespace %q must be a map[string]any, got %T", key, value)
-			}
-			encoded, err := encodeGraphState(namespace)
-			if err != nil {
-				return StateSnapshot{}, fmt.Errorf("marshal internal namespace %q: %w", key, err)
-			}
-			if encoded != nil {
-				snapshot.Internal[key] = encoded
-			}
-			continue
-		}
-
-		if err := validatePersistableStateValue(key, value); err != nil {
-			return StateSnapshot{}, err
-		}
-		raw, err := encodeGraphValue(key, value)
-		if err != nil {
-			return StateSnapshot{}, fmt.Errorf("marshal state key %q: %w", key, err)
-		}
-		snapshot.Shared[key] = raw
-	}
-
-	if len(snapshot.Shared) == 0 {
-		snapshot.Shared = nil
-	}
-	if len(snapshot.Scopes) == 0 {
-		snapshot.Scopes = nil
-	}
-	if len(snapshot.Internal) == 0 {
-		snapshot.Internal = nil
-	}
-
-	return snapshot, nil
-}
-
-func SnapshotFromStateWithRuntime(state State, runtime RuntimeState, artifacts []ArtifactRef) (StateSnapshot, error) {
-	snapshot, err := SnapshotFromState(state)
-	if err != nil {
-		return StateSnapshot{}, err
-	}
-	snapshot.Runtime = runtime
-	if len(artifacts) > 0 {
-		snapshot.Artifacts = CloneArtifactRefs(artifacts)
-	}
-	return snapshot, nil
-}
-
-func RestoreStateSnapshot(snapshot StateSnapshot) (RestoredStateSnapshot, error) {
-	state := State{}
-	for _, extension := range defaultStateExtensions() {
-		if err := extension.ApplyRootSnapshot(state, snapshot); err != nil {
-			return RestoredStateSnapshot{}, err
-		}
-	}
-
-	for key, raw := range snapshot.Shared {
-		value, err := decodeGraphValue(key, raw)
-		if err != nil {
-			return RestoredStateSnapshot{}, fmt.Errorf("unmarshal state key %q: %w", key, err)
-		}
-		applyDecodedGraphValue(state, key, value)
-	}
-
-	for key, scope := range snapshot.Scopes {
-		scopeState := State{}
-		for valueKey, raw := range scope {
-			value, err := decodeGraphValue(valueKey, raw)
-			if err != nil {
-				return RestoredStateSnapshot{}, fmt.Errorf("unmarshal scope %q key %q: %w", key, valueKey, err)
-			}
-			applyDecodedGraphValue(scopeState, valueKey, value)
-		}
-		setScopeState(state, key, scopeState)
-	}
-
-	for key, scope := range snapshot.Internal {
-		namespaceState := State{}
-		for valueKey, raw := range scope {
-			value, err := decodeGraphValue(valueKey, raw)
-			if err != nil {
-				return RestoredStateSnapshot{}, fmt.Errorf("unmarshal internal namespace %q key %q: %w", key, valueKey, err)
-			}
-			applyDecodedGraphValue(namespaceState, valueKey, value)
-		}
-		state[key] = namespaceState
-	}
-
-	return RestoredStateSnapshot{
-		Snapshot:  snapshot,
-		Business:  state,
-		Runtime:   snapshot.Runtime,
-		Artifacts: CloneArtifactRefs(snapshot.Artifacts),
-	}, nil
-}
-
-func StateFromSnapshot(snapshot StateSnapshot) (State, error) {
-	restored, err := RestoreStateSnapshot(snapshot)
+	encoded, err := encodeSnapshotValue("", cloneMap(mapped))
 	if err != nil {
 		return nil, err
 	}
-	return restored.Business, nil
+	section, ok := encoded.(map[string]any)
+	if !ok {
+		return map[string]any{}, nil
+	}
+	return section, nil
 }
 
-func SerializeMessages(messages []llms.MessageContent) ([]StateMessage, error) {
-	return serializeMessages(messages)
-}
-
-func encodeGraphState(values map[string]any) (GraphState, error) {
-	scope := GraphState{}
-	for _, extension := range defaultStateExtensions() {
-		if err := extension.EncodeScopedState(values, scope); err != nil {
-			return nil, err
-		}
-	}
-	for key, value := range values {
-		if isInfrastructureStateKey(key) || isSpecialStateKey(key) {
-			continue
-		}
-		if err := validatePersistableStateValue(key, value); err != nil {
-			return nil, err
-		}
-		raw, err := encodeGraphValue(key, value)
-		if err != nil {
-			return nil, fmt.Errorf("marshal scope key %q: %w", key, err)
-		}
-		scope[key] = raw
-	}
-	if len(scope) == 0 {
-		return nil, nil
-	}
-	return scope, nil
-}
-
-func applyDecodedGraphValue(target State, key string, value any) {
-	if target == nil {
-		return
-	}
-	for _, extension := range defaultStateExtensions() {
-		if extension.DecodeStateField(target, key, value) {
-			return
-		}
-	}
-	target[key] = value
-}
-
-func serializeMessages(messages []llms.MessageContent) ([]StateMessage, error) {
-	if len(messages) == 0 {
-		return nil, nil
-	}
-
-	result := make([]StateMessage, 0, len(messages))
-	for _, message := range messages {
-		item := StateMessage{Role: string(message.Role)}
-		for _, part := range message.Parts {
-			encoded, err := serializeMessagePart(part)
-			if err != nil {
-				return nil, err
-			}
-			item.Parts = append(item.Parts, encoded)
-		}
-		result = append(result, item)
-	}
-	return result, nil
-}
-
-func deserializeMessages(messages []StateMessage) ([]llms.MessageContent, error) {
-	if len(messages) == 0 {
-		return nil, nil
-	}
-
-	result := make([]llms.MessageContent, 0, len(messages))
-	for _, message := range messages {
-		item := llms.MessageContent{
-			Role:  llms.ChatMessageType(message.Role),
-			Parts: []llms.ContentPart{},
-		}
-		for _, part := range message.Parts {
-			decoded, err := deserializeMessagePart(part)
-			if err != nil {
-				return nil, err
-			}
-			item.Parts = append(item.Parts, decoded)
-		}
-		result = append(result, item)
-	}
-	return result, nil
-}
-
-func serializeMessagePart(part llms.ContentPart) (StateMessagePart, error) {
-	switch typed := part.(type) {
-	case llms.TextContent:
-		return StateMessagePart{Kind: "text", Text: typed.Text}, nil
-	case parts.ReasoningPart:
-		return StateMessagePart{Kind: "reasoning", Text: typed.Text}, nil
-	case llms.ImageURLContent:
-		return StateMessagePart{Kind: "image_url", URL: typed.URL, Detail: typed.Detail}, nil
-	case llms.BinaryContent:
-		return StateMessagePart{
-			Kind:     "binary",
-			MIMEType: typed.MIMEType,
-			Data:     base64.StdEncoding.EncodeToString(typed.Data),
-		}, nil
-	case llms.ToolCall:
-		part := StateMessagePart{
-			Kind:       "tool_call",
-			ToolCallID: typed.ID,
-			ToolType:   typed.Type,
-		}
-		if typed.FunctionCall != nil {
-			part.FunctionName = typed.FunctionCall.Name
-			part.Arguments = typed.FunctionCall.Arguments
-		}
-		return part, nil
-	case llms.ToolCallResponse:
-		return StateMessagePart{
-			Kind:       "tool_response",
-			ToolCallID: typed.ToolCallID,
-			Name:       typed.Name,
-			Content:    typed.Content,
-		}, nil
-	default:
-		return StateMessagePart{}, fmt.Errorf("unsupported message part type %T", part)
-	}
-}
-
-func deserializeMessagePart(part StateMessagePart) (llms.ContentPart, error) {
-	switch part.Kind {
-	case "text":
-		return llms.TextPart(part.Text), nil
-	case "reasoning":
-		return parts.NewReasoningPart(part.Text), nil
-	case "image_url":
-		return llms.ImageURLContent{URL: part.URL, Detail: part.Detail}, nil
-	case "binary":
-		data, err := base64.StdEncoding.DecodeString(part.Data)
-		if err != nil {
-			return nil, err
-		}
-		return llms.BinaryContent{MIMEType: part.MIMEType, Data: data}, nil
-	case "tool_call":
-		toolCall := llms.ToolCall{ID: part.ToolCallID, Type: part.ToolType}
-		if part.FunctionName != "" {
-			toolCall.FunctionCall = &llms.FunctionCall{Name: part.FunctionName, Arguments: part.Arguments}
-		}
-		return toolCall, nil
-	case "tool_response":
-		return llms.ToolCallResponse{
-			ToolCallID: part.ToolCallID,
-			Name:       part.Name,
-			Content:    part.Content,
-		}, nil
-	default:
-		return nil, fmt.Errorf("unsupported runner message part kind %q", part.Kind)
-	}
-}
-
-func flattenSnapshot(snapshot StateSnapshot) (map[string]json.RawMessage, error) {
-	result := make(map[string]json.RawMessage)
-	runtimeNamespaceKey := NormalizeStateNamespace("runtime")
-
-	rawRuntime, err := json.Marshal(snapshot.Runtime)
-	if err != nil {
-		return nil, err
-	}
-	result[runnerRuntimeMetadataPath] = rawRuntime
-
-	for _, extension := range defaultStateExtensions() {
-		if err := extension.AppendSnapshotFields(snapshot, result); err != nil {
-			return nil, err
+func encodeSnapshotValue(path string, value any) (any, error) {
+	if isConversationMessagesPath(path) {
+		switch typed := value.(type) {
+		case []llms.MessageContent:
+			return SerializeMessages(typed)
+		case []StateMessage:
+			return cloneValue(typed), nil
 		}
 	}
 
-	for key, raw := range snapshot.Shared {
-		result["shared."+key] = raw
-	}
-
-	for scopeName, scope := range snapshot.Scopes {
-		for key, raw := range scope {
-			result["scopes."+scopeName+"."+key] = raw
-		}
-	}
-
-	for namespace, values := range snapshot.Internal {
-		for key, raw := range values {
-			if namespace == runtimeNamespaceKey {
-				result["runtime."+key] = raw
-				continue
-			}
-			result["internal."+namespace+"."+key] = raw
-		}
-	}
-
-	if len(snapshot.Artifacts) > 0 {
-		rawArtifacts, err := json.Marshal(snapshot.Artifacts)
-		if err != nil {
-			return nil, err
-		}
-		result["artifacts"] = rawArtifacts
-	}
-
-	return result, nil
-}
-
-func jsonEqual(left, right json.RawMessage) bool {
-	left = bytes.TrimSpace(left)
-	right = bytes.TrimSpace(right)
-	if len(left) == 0 && len(right) == 0 {
-		return true
-	}
-	if len(left) == 0 || len(right) == 0 {
-		return false
-	}
-	if bytes.Equal(left, right) {
-		return true
-	}
-	var l, r any
-	if err := json.Unmarshal(left, &l); err != nil {
-		return false
-	}
-	if err := json.Unmarshal(right, &r); err != nil {
-		return false
-	}
-	return reflect.DeepEqual(l, r)
-}
-
-func encodeGraphValue(key string, value any) (json.RawMessage, error) {
-	if key == stateKeyMessages {
-		messages, ok := value.([]llms.MessageContent)
-		if !ok {
-			return nil, fmt.Errorf("expected %q to be []llms.MessageContent, got %T", key, value)
-		}
-		serialized, err := serializeMessages(messages)
-		if err != nil {
-			return nil, err
-		}
-		return json.Marshal(serialized)
-	}
-	return json.Marshal(value)
-}
-
-func decodeGraphValue(key string, raw json.RawMessage) (any, error) {
-	switch key {
-	case stateKeyMessages:
-		var messages []StateMessage
-		if err := json.Unmarshal(raw, &messages); err != nil {
-			return nil, err
-		}
-		return deserializeMessages(messages)
-	case stateKeyFinalAnswer:
-		var value string
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return nil, err
-		}
-		return value, nil
-	case stateKeyIterationCount, stateKeyMaxIterations:
-		var value int
-		if err := json.Unmarshal(raw, &value); err != nil {
-			return nil, err
-		}
-		return value, nil
-	default:
-		return decodeGenericGraphValue(raw)
-	}
-}
-
-func decodeGenericGraphValue(raw json.RawMessage) (any, error) {
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.UseNumber()
-
-	var value any
-	if err := decoder.Decode(&value); err != nil {
-		return nil, err
-	}
-	return normalizeJSONValue(value), nil
-}
-
-func normalizeJSONValue(value any) any {
 	switch typed := value.(type) {
-	case json.Number:
-		text := typed.String()
-		if strings.ContainsAny(text, ".eE") {
-			floatValue, err := typed.Float64()
-			if err != nil {
-				return text
-			}
-			return floatValue
-		}
-
-		intValue, err := typed.Int64()
-		if err != nil {
-			floatValue, floatErr := typed.Float64()
-			if floatErr != nil {
-				return text
-			}
-			return floatValue
-		}
-		if intValue >= math.MinInt && intValue <= math.MaxInt {
-			return int(intValue)
-		}
-		return intValue
-	case []any:
-		items := make([]any, len(typed))
-		for index, item := range typed {
-			items[index] = normalizeJSONValue(item)
-		}
-		if str := normalizeStringSlice(items); str != nil {
-			return str
-		}
-		if maps := normalizeMapSlice(items); maps != nil {
-			return maps
-		}
-		return items
 	case map[string]any:
-		items := make(map[string]any, len(typed))
+		result := make(map[string]any, len(typed))
 		for key, item := range typed {
-			items[key] = normalizeJSONValue(item)
+			nextPath := key
+			if path != "" {
+				nextPath = path + "." + key
+			}
+			encoded, err := encodeSnapshotValue(nextPath, item)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = encoded
 		}
-		return items
+		return result, nil
+	default:
+		return cloneValue(value), nil
+	}
+}
+
+func decodeSnapshotSectionMessages(section string, values map[string]any) (map[string]any, error) {
+	if len(values) == 0 {
+		return values, nil
+	}
+	decoded, err := decodeSnapshotMessagesValue(section, cloneMap(values))
+	if err != nil {
+		return nil, err
+	}
+	mapped, ok := decoded.(map[string]any)
+	if !ok {
+		return values, nil
+	}
+	return mapped, nil
+}
+
+func decodeSnapshotMessagesValue(path string, value any) (any, error) {
+	if isConversationMessagesPath(path) {
+		messages, err := decodeStateMessagesValue(value)
+		if err != nil {
+			return nil, fmt.Errorf("decode %s: %w", path, err)
+		}
+		return messages, nil
+	}
+
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			nextPath := key
+			if path != "" {
+				nextPath = path + "." + key
+			}
+			decoded, err := decodeSnapshotMessagesValue(nextPath, item)
+			if err != nil {
+				return nil, err
+			}
+			result[key] = decoded
+		}
+		return result, nil
+	default:
+		return cloneValue(value), nil
+	}
+}
+
+func decodeStateMessagesValue(value any) ([]llms.MessageContent, error) {
+	switch typed := value.(type) {
+	case []llms.MessageContent:
+		return cloneMessagesForSnapshot(typed), nil
+	case []StateMessage:
+		return DeserializeMessages(typed)
+	case []any:
+		messages := make([]StateMessage, 0, len(typed))
+		for _, item := range typed {
+			messageMap, ok := item.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("expected message object, got %T", item)
+			}
+			message, err := stateMessageFromMap(messageMap)
+			if err != nil {
+				return nil, err
+			}
+			messages = append(messages, message)
+		}
+		return DeserializeMessages(messages)
+	case nil:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("expected messages slice, got %T", value)
+	}
+}
+
+func stateMessageFromMap(values map[string]any) (StateMessage, error) {
+	message := StateMessage{}
+	if role, ok := values["role"].(string); ok {
+		message.Role = role
+	}
+	if rawParts, ok := values["parts"].([]any); ok {
+		for _, rawPart := range rawParts {
+			partMap, ok := rawPart.(map[string]any)
+			if !ok {
+				return StateMessage{}, fmt.Errorf("expected message part object, got %T", rawPart)
+			}
+			message.Parts = append(message.Parts, stateMessagePartFromMap(partMap))
+		}
+	}
+	return message, nil
+}
+
+func stateMessagePartFromMap(values map[string]any) StateMessagePart {
+	return StateMessagePart{
+		Kind:         stringField(values, "kind"),
+		Text:         stringField(values, "text"),
+		URL:          stringField(values, "url"),
+		Detail:       stringField(values, "detail"),
+		MIMEType:     stringField(values, "mime_type"),
+		Data:         stringField(values, "data"),
+		ToolCallID:   stringField(values, "tool_call_id"),
+		ToolType:     stringField(values, "tool_type"),
+		FunctionName: stringField(values, "function_name"),
+		Arguments:    stringField(values, "arguments"),
+		Name:         stringField(values, "name"),
+		Content:      stringField(values, "content"),
+	}
+}
+
+func stringField(values map[string]any, key string) string {
+	value, _ := values[key].(string)
+	return value
+}
+
+func isConversationMessagesPath(path string) bool {
+	if path == "conversation.messages" {
+		return true
+	}
+	return len(path) > len(".conversation.messages") &&
+		path[len(path)-len(".conversation.messages"):] == ".conversation.messages"
+}
+
+func flattenSnapshot(snapshot StateSnapshot) (map[string]any, error) {
+	values := map[string]any{}
+	for _, section := range []struct {
+		name  string
+		value map[string]any
+	}{
+		{name: SectionShared, value: snapshot.Shared},
+		{name: SectionScopes, value: snapshot.Scopes},
+		{name: SectionInternal, value: snapshot.Internal},
+		{name: SectionRuntime, value: snapshot.Runtime},
+	} {
+		if len(section.value) == 0 {
+			continue
+		}
+		if err := flattenValue(values, section.name, section.value); err != nil {
+			return nil, err
+		}
+	}
+	return values, nil
+}
+
+func flattenValue(output map[string]any, path string, value any) error {
+	switch typed := value.(type) {
+	case map[string]any:
+		if len(typed) == 0 {
+			output[path] = map[string]any{}
+			return nil
+		}
+		for key, item := range typed {
+			nextPath := key
+			if path != "" {
+				nextPath = path + "." + key
+			}
+			if err := flattenValue(output, nextPath, item); err != nil {
+				return err
+			}
+		}
+	default:
+		output[path] = cloneValue(value)
+	}
+	return nil
+}
+
+func jsonEqual(left, right any) bool {
+	leftBytes, leftErr := json.Marshal(left)
+	rightBytes, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftBytes, rightBytes)
+}
+
+func normalizeDecodedMap(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return values
+	}
+	normalized, _ := normalizeDecodedValue(values).(map[string]any)
+	return normalized
+}
+
+func normalizeDecodedValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		result := make(map[string]any, len(typed))
+		for key, item := range typed {
+			result[key] = normalizeDecodedValue(item)
+		}
+		return result
+	case []any:
+		result := make([]any, len(typed))
+		for i, item := range typed {
+			result[i] = normalizeDecodedValue(item)
+		}
+		return result
+	case json.Number:
+		text := string(typed)
+		if integer, err := strconv.ParseInt(text, 10, 64); err == nil {
+			if integer >= minIntValue() && integer <= maxIntValue() {
+				return int(integer)
+			}
+			return integer
+		}
+		if number, err := strconv.ParseFloat(text, 64); err == nil {
+			return number
+		}
+		return text
 	default:
 		return value
 	}
 }
 
-func normalizeStringSlice(values []any) []string {
+func maxIntValue() int64 {
+	return int64(^uint(0) >> 1)
+}
+
+func minIntValue() int64 {
+	return -maxIntValue() - 1
+}
+
+func emptyMapToNil(values map[string]any) map[string]any {
 	if len(values) == 0 {
 		return nil
 	}
-
-	items := make([]string, len(values))
-	for i, value := range values {
-		text, ok := value.(string)
-		if !ok {
-			return nil
-		}
-		items[i] = text
-	}
-	return items
+	return values
 }
 
-func normalizeMapSlice(values []any) []map[string]any {
-	if len(values) == 0 {
+func emptyMapToEmpty(values map[string]any) map[string]any {
+	if values == nil {
+		return map[string]any{}
+	}
+	return values
+}
+
+func cloneMessagesForSnapshot(messages []llms.MessageContent) []llms.MessageContent {
+	if len(messages) == 0 {
 		return nil
 	}
-
-	items := make([]map[string]any, len(values))
-	for i, value := range values {
-		mapped, ok := value.(map[string]any)
-		if !ok {
-			return nil
+	cloned := make([]llms.MessageContent, len(messages))
+	for i, message := range messages {
+		cloned[i] = llms.MessageContent{
+			Role:  message.Role,
+			Parts: append([]llms.ContentPart(nil), message.Parts...),
 		}
-		items[i] = mapped
 	}
-	return items
-}
-
-func isInternalSnapshotNamespaceKey(key string) bool {
-	return strings.HasPrefix(strings.TrimSpace(key), stateNamespacePrefix) && !isInfrastructureStateKey(key)
-}
-
-func CloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {
-	if len(artifacts) == 0 {
-		return nil
-	}
-	cloned := make([]ArtifactRef, len(artifacts))
-	copy(cloned, artifacts)
 	return cloned
-}
-
-func looksLikeLegacyScopeLayout(version string, scopes map[string]GraphState) bool {
-	if version != "" && version != "v1" {
-		return false
-	}
-	for _, scope := range scopes {
-		if len(scope) == 0 {
-			continue
-		}
-		hasLegacyKey := false
-		for key := range scope {
-			if key != "conversation" && key != "values" {
-				return false
-			}
-			hasLegacyKey = true
-		}
-		if hasLegacyKey {
-			return true
-		}
-	}
-	return false
 }

@@ -4,9 +4,10 @@ import (
 	"context"
 	"fmt"
 	"weaveflow/core"
-	"weaveflow/nodes"
+	"weaveflow/node"
 	"weaveflow/runtime"
-	wfstate "weaveflow/state"
+	"weaveflow/state"
+	"weaveflow/state/accessors"
 	"weaveflow/tools"
 
 	"weaveflow/llms/openai"
@@ -27,30 +28,30 @@ func LLMExample() {
 	}
 	ctx := core.WithServices(context.Background(), svc)
 
-	node := nodes.NewLLMNode()
-	node.StateScope = "agent"
+	llmNode := node.NewLLMNode()
 
-	state := wfstate.State{}
-	conversation := state.Conversation("agent")
-	conversation.UpdateMessage([]llms.MessageContent{
+	currentState := state.NewState()
+	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise assistant. Use tools when they improve accuracy."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "What is 42 * 58?"),
-	})
-	conversation.SetMaxIterations(5)
+	}
+	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMessages).String(), messages))
+	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMaxIterations).String(), 5))
+	inputConversation := conversation(currentState, "agent")
 
 	fmt.Println("input messages:")
-	for i, msg := range conversation.Messages() {
-		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, nodeMessageText(msg))
+	for i, msg := range inputConversation.Messages() {
+		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	result, err := executeNode(ctx, node, state)
+	result, err := executeNode(ctx, llmNode, currentState)
 	must(err)
 
-	conv := result.Conversation("agent")
+	conv := conversation(result, "agent")
 	fmt.Println()
 	fmt.Println("messages after LLM:")
 	for i, msg := range conv.Messages() {
-		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, nodeMessageText(msg))
+		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
 	if answer := conv.FinalAnswer(); answer != "" {
