@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 
@@ -469,14 +470,79 @@ func formatToolCallPayload(payload map[string]any) string {
 	items := toolEventItemsFromPayload(payload)
 	if len(items) == 0 {
 		name, _ := payload["name"].(string)
-		return fmt.Sprintf("%s(%s)", name, jsonArg(payload["arguments"]))
+		return fmt.Sprintf("%s(%s)", name, jsonToolArguments(name, payload["arguments"]))
 	}
 
 	parts := make([]string, 0, len(items))
 	for _, item := range items {
-		parts = append(parts, fmt.Sprintf("%s(%s)", item.name, jsonArg(item.arguments)))
+		parts = append(parts, fmt.Sprintf("%s(%s)", item.name, jsonToolArguments(item.name, item.arguments)))
 	}
 	return strings.Join(parts, ", ")
+}
+
+func jsonToolArguments(toolName string, v any) string {
+	if toolName == "write" {
+		if s, ok := jsonObjectWithFirstKey(v, "file_path"); ok {
+			return s
+		}
+	}
+	return jsonArg(v)
+}
+
+func jsonObjectWithFirstKey(v any, firstKey string) (string, bool) {
+	if v == nil {
+		return "", false
+	}
+	if s, ok := v.(string); ok {
+		return jsonObjectStringWithFirstKey(s, firstKey)
+	}
+	data, err := json.Marshal(v)
+	if err != nil {
+		return "", false
+	}
+	return jsonObjectBytesWithFirstKey(data, firstKey)
+}
+
+func jsonObjectStringWithFirstKey(s string, firstKey string) (string, bool) {
+	return jsonObjectBytesWithFirstKey([]byte(s), firstKey)
+}
+
+func jsonObjectBytesWithFirstKey(data []byte, firstKey string) (string, bool) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return "", false
+	}
+	if _, ok := fields[firstKey]; !ok {
+		return "", false
+	}
+
+	keys := make([]string, 0, len(fields)-1)
+	for key := range fields {
+		if key != firstKey {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+
+	var b strings.Builder
+	b.WriteByte('{')
+	writeJSONField(&b, firstKey, fields[firstKey])
+	for _, key := range keys {
+		b.WriteByte(',')
+		writeJSONField(&b, key, fields[key])
+	}
+	b.WriteByte('}')
+	return b.String(), true
+}
+
+func writeJSONField(b *strings.Builder, key string, value json.RawMessage) {
+	keyData, err := json.Marshal(key)
+	if err != nil {
+		keyData = []byte(`""`)
+	}
+	b.Write(keyData)
+	b.WriteByte(':')
+	b.Write(value)
 }
 
 func formatToolReturnPayload(payload map[string]any) string {

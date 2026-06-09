@@ -509,3 +509,8 @@ func (*NoopArtifactStore) Load(context.Context, state.ArtifactRef) (Artifact, er
 func (*NoopArtifactStore) List(context.Context, string) ([]state.ArtifactRef, error) {
 	return []state.ArtifactRef{}, nil
 }
+
+type NoopEventSink struct{}
+
+func (NoopEventSink) Publish(_ context.Context, _ Event) error        { return nil }
+func (NoopEventSink) PublishBatch(_ context.Context, _ []Event) error { return nil }

@@ -37,6 +37,42 @@ func TestPrettyEventLoggingPrintsBatchedToolCalledPayload(t *testing.T) {
 	}
 }
 
+func TestFormatToolCallPayloadPutsWriteFilePathFirst(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		arguments any
+	}{
+		{
+			name:      "JSON string",
+			arguments: `{"content":"hello","file_path":"notes.txt"}`,
+		},
+		{
+			name: "map",
+			arguments: map[string]any{
+				"content":   "hello",
+				"file_path": "notes.txt",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := formatToolCallPayload(map[string]any{
+				"name":      "write",
+				"arguments": tt.arguments,
+			})
+			want := `write({"file_path":"notes.txt","content":"hello"})`
+			if got != want {
+				t.Fatalf("formatToolCallPayload() = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 func TestPrettyEventLoggingPrintsToolReturnedContent(t *testing.T) {
 	t.Parallel()
 

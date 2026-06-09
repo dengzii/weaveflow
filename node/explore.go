@@ -169,7 +169,7 @@ func (n *ExploreNode) Execute(ctx context.Context, access *state.Access) error {
 
 		toolMessages := make([]llms.MessageContent, 0, len(choice.ToolCalls))
 		for _, toolCall := range choice.ToolCalls {
-			result := executeToolCallMessage(ctx, nodeTools, toolCall)
+			result := executeToolCallMessage(ctx, toolCall)
 			toolMessages = append(toolMessages, n.clampToolMessage(result))
 		}
 		if err := convo.SetMessages(append(convo.Messages(), toolMessages...)); err != nil {

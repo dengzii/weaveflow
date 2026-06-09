@@ -169,18 +169,16 @@ func (a *AgentNode) runLoop(ctx context.Context, conversation accessors.Conversa
 			return nil
 		}
 
-		if err := a.executeToolCalls(ctx, conversation, nodeTools, choice.ToolCalls, iteration); err != nil {
+		if err := a.executeToolCalls(ctx, conversation, choice.ToolCalls); err != nil {
 			return err
 		}
 	}
 }
 
-func (a *AgentNode) executeToolCalls(ctx context.Context, conversation accessors.Conversation, available map[string]tools.Tool, toolCalls []llms.ToolCall, iteration int) error {
+func (a *AgentNode) executeToolCalls(ctx context.Context, conversation accessors.Conversation, toolCalls []llms.ToolCall) error {
 	if len(toolCalls) == 0 {
 		return nil
 	}
-
-	a.publishAgentToolCallsStart(ctx, toolCalls, iteration)
 
 	toolMessages := make([]llms.MessageContent, len(toolCalls))
 	if a.Parallel && len(toolCalls) > 1 {
@@ -189,55 +187,17 @@ func (a *AgentNode) executeToolCalls(ctx context.Context, conversation accessors
 		for index, toolCall := range toolCalls {
 			go func(index int, toolCall llms.ToolCall) {
 				defer wg.Done()
-				toolMessages[index] = executeToolCallMessage(ctx, available, toolCall)
+				toolMessages[index] = executeToolCallMessage(ctx, toolCall)
 			}(index, toolCall)
 		}
 		wg.Wait()
 	} else {
 		for index, toolCall := range toolCalls {
-			toolMessages[index] = executeToolCallMessage(ctx, available, toolCall)
+			toolMessages[index] = executeToolCallMessage(ctx, toolCall)
 		}
 	}
 
 	return conversation.SetMessages(append(conversation.Messages(), toolMessages...))
-}
-
-func (a *AgentNode) publishAgentToolCallsStart(ctx context.Context, toolCalls []llms.ToolCall, iteration int) {
-	if len(toolCalls) == 0 {
-		return
-	}
-	items := make([]toolCallEventItem, 0, len(toolCalls))
-	artifactItems := make([]map[string]any, 0, len(toolCalls))
-	for _, toolCall := range toolCalls {
-		name := toolCallName(toolCall)
-		arguments := toolCallArguments(toolCall)
-		items = append(items, toolCallEventItem{
-			ToolCallID: toolCall.ID,
-			Name:       name,
-			Arguments:  arguments,
-		})
-		artifactItems = append(artifactItems, map[string]any{
-			"tool_call_id": toolCall.ID,
-			"name":         name,
-			"arguments":    arguments,
-			"input":        decodeToolInput(arguments),
-		})
-	}
-
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventToolCalled, map[string]any{
-		"agent_node_id":   a.ID(),
-		"agent_iteration": iteration,
-		"tools":           items,
-		"count":           len(items),
-		"parallel":        a.Parallel && len(toolCalls) > 1,
-	})
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "agent.tool.inputs", map[string]any{
-		"agent_node_id":   a.ID(),
-		"agent_iteration": iteration,
-		"tools":           artifactItems,
-		"count":           len(artifactItems),
-		"parallel":        a.Parallel && len(toolCalls) > 1,
-	})
 }
 
 func (a *AgentNode) publishLoopStopped(ctx context.Context, iteration int, reason string) {

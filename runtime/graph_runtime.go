@@ -344,6 +344,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 		e.appendArtifact(ref)
 		return ref, nil
 	})
+	nodeCtx = withToolCallExecutor(nodeCtx, newToolCallExecutor(e.runner, runID, stepID, nodeID))
 	return nodeCtx, nil
 }
 
