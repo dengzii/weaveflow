@@ -1,10 +1,10 @@
 package node
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
+	"weaveflow/core"
 	"weaveflow/state"
 	"weaveflow/state/accessors"
 
@@ -35,7 +35,7 @@ func NewHumanMessageNode(content string, options ...NodeOption) *HumanMessageNod
 	return node
 }
 
-func (n *HumanMessageNode) Execute(_ context.Context, access *state.Access) error {
+func (n *HumanMessageNode) Execute(_ core.Context, access *state.Access) error {
 	conversation, err := state.UseAccessor(access, accessors.ConversationID)
 	if err != nil {
 		return err
@@ -125,7 +125,7 @@ func NewRequestToFinalAnswerNode(options ...NodeOption) *SetFinalAnswerNode {
 	return node
 }
 
-func (n *SetFinalAnswerNode) Execute(_ context.Context, access *state.Access) error {
+func (n *SetFinalAnswerNode) Execute(_ core.Context, access *state.Access) error {
 	answer := n.Answer
 	if n.FromRequest {
 		request, err := state.UseAccessor(access, accessors.RequestID)

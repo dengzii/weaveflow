@@ -19,7 +19,7 @@ func ToolsExample() {
 	}
 
 	svc := &core.Services{Tools: toolSet}
-	ctx := core.WithServices(context.Background(), svc)
+	ctx := core.NewContext(context.Background(), svc)
 
 	toolsNode := node.NewToolsNode()
 	toolsNode.Parallel = true

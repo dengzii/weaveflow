@@ -1,7 +1,6 @@
 package node
 
 import (
-	"context"
 	"errors"
 	"strings"
 
@@ -37,13 +36,12 @@ func NewLLMNode(options ...NodeOption) *LLMNode {
 	return node
 }
 
-func (n *LLMNode) Execute(ctx context.Context, access *state.Access) error {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil || svc.Model == nil {
+func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
+	model := ctx.Model()
+	if model == nil {
 		return errors.New("llm node: model service not available")
 	}
-	model := svc.Model
-	nodeTools := svc.FilterTools(n.ToolIDs)
+	nodeTools := ctx.FilterTools(n.ToolIDs)
 
 	conversation, err := state.UseAccessor(access, accessors.ConversationID)
 	if err != nil {

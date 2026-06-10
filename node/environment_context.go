@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"weaveflow/core"
 	fruntime "weaveflow/runtime"
 	"weaveflow/state"
 	"weaveflow/state/accessors"
@@ -49,7 +50,7 @@ func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
 	return node
 }
 
-func (n *EnvironmentContextNode) Execute(ctx context.Context, access *state.Access) error {
+func (n *EnvironmentContextNode) Execute(ctx core.Context, access *state.Access) error {
 	path, err := n.environmentPath()
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "environment.context.error", map[string]any{"error": err.Error()})

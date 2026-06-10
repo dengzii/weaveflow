@@ -1,7 +1,6 @@
 package node
 
 import (
-	"context"
 	"errors"
 	"sync"
 
@@ -33,10 +32,9 @@ func NewToolsNode(options ...NodeOption) *ToolsNode {
 	return node
 }
 
-func (t *ToolsNode) Execute(ctx context.Context, access *state.Access) error {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil {
-		return errors.New("tools node: services not available")
+func (t *ToolsNode) Execute(ctx core.Context, access *state.Access) error {
+	if ctx.Tools() == nil {
+		return errors.New("tools node: tools not available")
 	}
 	conversation, err := state.UseAccessor(access, accessors.ConversationID)
 	if err != nil {
@@ -81,7 +79,7 @@ func (t *ToolsNode) Execute(ctx context.Context, access *state.Access) error {
 	return conversation.SetMessages(append(messages, toolMessages...))
 }
 
-func executeToolCall(ctx context.Context, toolCall llms.ToolCall) (string, error) {
+func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (string, error) {
 	if toolCall.FunctionCall == nil {
 		return "", errors.New("tool call has no function payload")
 	}
@@ -92,7 +90,7 @@ func executeToolCall(ctx context.Context, toolCall llms.ToolCall) (string, error
 	})
 }
 
-func executeToolCallMessage(ctx context.Context, toolCall llms.ToolCall) llms.MessageContent {
+func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {
 	name := toolCallName(toolCall)
 	result, err := executeToolCall(ctx, toolCall)
 	if err != nil {

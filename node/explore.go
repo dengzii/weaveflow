@@ -73,9 +73,9 @@ func (n *ExploreNode) AccessorUses() []AccessorUse {
 	}
 }
 
-func (n *ExploreNode) Execute(ctx context.Context, access *state.Access) error {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil || svc.Model == nil {
+func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
+	model := ctx.Model()
+	if model == nil {
 		return errors.New("explore node: model service not available")
 	}
 
@@ -107,7 +107,7 @@ func (n *ExploreNode) Execute(ctx context.Context, access *state.Access) error {
 		return err
 	}
 
-	nodeTools := svc.FilterTools(n.effectiveToolIDs())
+	nodeTools := ctx.FilterTools(n.effectiveToolIDs())
 	toolSets := make([]llms.Tool, 0, len(nodeTools))
 	for _, tool := range nodeTools {
 		toolSets = append(toolSets, tool.NewTool())
@@ -123,7 +123,7 @@ func (n *ExploreNode) Execute(ctx context.Context, access *state.Access) error {
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.prompt", payload)
 		}
 
-		resp, err := svc.Model.GenerateContent(
+		resp, err := model.GenerateContent(
 			ctx,
 			messages,
 			llms.WithTools(toolSets),
@@ -185,7 +185,7 @@ func (n *ExploreNode) Execute(ctx context.Context, access *state.Access) error {
 		})
 	}
 
-	summary, err := summarizeExploration(ctx, svc.Model, convo.Messages())
+	summary, err := summarizeExploration(ctx, model, convo.Messages())
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.summarizer.error", map[string]any{
 			"error": err.Error(),

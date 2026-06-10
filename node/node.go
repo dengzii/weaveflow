@@ -1,10 +1,10 @@
 package node
 
 import (
-	"context"
 	"fmt"
 	"strings"
 
+	"weaveflow/core"
 	"weaveflow/state"
 )
 
@@ -14,7 +14,7 @@ type Node interface {
 	Description() string
 	Scope() string
 	AccessorUses() []AccessorUse
-	Execute(ctx context.Context, access *state.Access) error
+	Execute(ctx core.Context, access *state.Access) error
 }
 
 type AccessorUse struct {

@@ -30,7 +30,7 @@ func TestFuncNodeExecutesWithStateV2Accessors(t *testing.T) {
 			UseRoot(accessors.RequestID.Name()),
 			UseRoot(accessors.FinalID.Name()),
 		},
-	}, func(_ context.Context, access *state.Access) error {
+	}, func(_ core.Context, access *state.Access) error {
 		request, err := state.UseAccessor(access, accessors.RequestID)
 		if err != nil {
 			return err
@@ -100,7 +100,7 @@ func TestExecuteRejectsUnregisteredAccessor(t *testing.T) {
 	node := NewFuncNode(Spec{
 		ID:           "bad",
 		AccessorUses: []AccessorUse{UseRoot("missing")},
-	}, func(context.Context, *state.Access) error {
+	}, func(core.Context, *state.Access) error {
 		return nil
 	})
 
@@ -204,7 +204,7 @@ func TestLLMNodeWritesScopedConversationFinalAnswer(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{{
 		Choices: []*llms.ContentChoice{{Content: "answer"}},
 	}}}
-	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
+	ctx := core.NewContext(context.Background(), &core.Services{Model: model})
 	result, err := Execute(ctx, registry, seed.State(), NewLLMNode(WithID("llm")))
 	if err != nil {
 		t.Fatalf("execute llm node: %v", err)
@@ -238,7 +238,7 @@ func TestAgentNodeReadsRequestAndWritesFinalAccessor(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{{
 		Choices: []*llms.ContentChoice{{Content: "agent answer"}},
 	}}}
-	ctx := core.WithServices(context.Background(), &core.Services{Model: model})
+	ctx := core.NewContext(context.Background(), &core.Services{Model: model})
 
 	result, err := Execute(ctx, registry, initial, NewAgentNode(WithScope("worker"), WithID("agent")))
 	if err != nil {

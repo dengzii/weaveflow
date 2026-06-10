@@ -188,7 +188,7 @@ func runPlan(ctx context.Context, objective string, opts options) (*state.State,
 	}
 
 	svc := &core.Services{Model: opts.Model, Tools: opts.Tools}
-	ctx = core.WithServices(ctx, svc)
+	ctx = core.NewContext(ctx, svc)
 
 	planner := newPlanGeneratorNode(opts.MaxReplans)
 	executor := newStepExecutorNode(opts.StepMaxToolIterations)
@@ -275,9 +275,9 @@ func newPlanGeneratorNode(maxReplans int) *planGeneratorNode {
 	}
 }
 
-func (n *planGeneratorNode) Execute(ctx context.Context, access *state.Access) error {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil || svc.Model == nil {
+func (n *planGeneratorNode) Execute(ctx core.Context, access *state.Access) error {
+	model := ctx.Model()
+	if model == nil {
 		return errors.New("plan generator: model service not available")
 	}
 	plan := getPlanMap(access)
@@ -295,11 +295,11 @@ func (n *planGeneratorNode) Execute(ctx context.Context, access *state.Access) e
 		"is_replan":       isReplan,
 		"previous_steps":  previousSteps,
 		"replan_reason":   plan["replan_reason"],
-		"available_tools": describeTools(svc.Tools),
+		"available_tools": describeTools(ctx.Tools()),
 	}
 	prompt, _ := json.MarshalIndent(payload, "", "  ")
 
-	resp, err := svc.Model.GenerateContent(ctx, []llms.MessageContent{
+	resp, err := model.GenerateContent(ctx, []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, planGeneratorSystemPrompt),
 		llms.TextParts(llms.ChatMessageTypeHuman,
 			"Generate a plan from the following JSON payload.\n\n"+string(prompt)),
@@ -379,9 +379,9 @@ func newStepExecutorNode(maxToolIterations int) *stepExecutorNode {
 	}
 }
 
-func (n *stepExecutorNode) Execute(ctx context.Context, access *state.Access) error {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil || svc.Model == nil {
+func (n *stepExecutorNode) Execute(ctx core.Context, access *state.Access) error {
+	model := ctx.Model()
+	if model == nil {
 		return errors.New("step executor: model service not available")
 	}
 	plan := getPlanMap(access)
@@ -402,7 +402,7 @@ func (n *stepExecutorNode) Execute(ctx context.Context, access *state.Access) er
 	}
 
 	toolHints := stringSlice(step["tool_hints"])
-	nodeTools := filterTools(svc.Tools, toolHints)
+	nodeTools := filterTools(ctx.Tools(), toolHints)
 	toolSpecs := toolSpecsFrom(nodeTools)
 
 	var finalText string
@@ -414,7 +414,7 @@ func (n *stepExecutorNode) Execute(ctx context.Context, access *state.Access) er
 		if len(toolSpecs) > 0 {
 			callOpts = append(callOpts, llms.WithTools(toolSpecs))
 		}
-		resp, err := svc.Model.GenerateContent(ctx, messages, callOpts...)
+		resp, err := model.GenerateContent(ctx, messages, callOpts...)
 		if err != nil {
 			step["status"] = stepStatusFailed
 			step["error"] = err.Error()
@@ -556,7 +556,7 @@ func newStepReviewerNode(maxReplans int) *stepReviewerNode {
 	}
 }
 
-func (n *stepReviewerNode) Execute(ctx context.Context, access *state.Access) error {
+func (n *stepReviewerNode) Execute(ctx core.Context, access *state.Access) error {
 	plan := getPlanMap(access)
 	steps := stepsFromPlan(plan)
 	idx, _ := plan["current_index"].(int)
@@ -583,9 +583,9 @@ func (n *stepReviewerNode) Execute(ctx context.Context, access *state.Access) er
 	return setPlanMap(access, plan)
 }
 
-func (n *stepReviewerNode) synthesize(ctx context.Context, plan map[string]any, steps []map[string]any) (string, error) {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil || svc.Model == nil {
+func (n *stepReviewerNode) synthesize(ctx core.Context, plan map[string]any, steps []map[string]any) (string, error) {
+	model := ctx.Model()
+	if model == nil {
 		return "", errors.New("no model")
 	}
 	objective, _ := plan["objective"].(string)
@@ -603,7 +603,7 @@ func (n *stepReviewerNode) synthesize(ctx context.Context, plan map[string]any, 
 		)
 	}
 
-	resp, err := svc.Model.GenerateContent(ctx, []llms.MessageContent{
+	resp, err := model.GenerateContent(ctx, []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem,
 			"Synthesize a final user-facing answer for the objective using the provided step results. "+
 				"Reply in the same language as the objective. No preamble, no markdown headers."),

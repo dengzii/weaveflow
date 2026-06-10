@@ -223,7 +223,7 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 
 	runner := newChatRunner(graph, graphMeta.ID, runDir, combinedSink)
 
-	baseCtx := core.WithServices(c.Request.Context(), services)
+	baseCtx := core.NewContext(c.Request.Context(), services)
 	ctx, cancel := context.WithCancel(baseCtx)
 	if cfg.RequestTimeoutSeconds > 0 {
 		ctx, cancel = context.WithTimeout(baseCtx, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)

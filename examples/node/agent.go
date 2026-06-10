@@ -25,7 +25,7 @@ func AgentExample() {
 			"current_time": tools.NewCurrentTime(),
 		},
 	}
-	ctx := core.WithServices(context.Background(), svc)
+	ctx := core.NewContext(context.Background(), svc)
 
 	agent := node.NewAgentNode(node.WithScope("subagent"))
 	agent.SystemPrompt = "You are a concise assistant. Use tools when they improve accuracy. Return the final answer as plain text."
@@ -77,7 +77,7 @@ func AgentAsToolExample() {
 			"math_agent":   subAgent.AsTool(),
 		},
 	}
-	ctx := core.WithServices(context.Background(), svc)
+	ctx := core.NewContext(context.Background(), svc)
 
 	// Coordinator agent: only has access to current_time + the math_agent
 	// tool. When it needs arithmetic, it delegates instead of computing.

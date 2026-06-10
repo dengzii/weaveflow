@@ -21,7 +21,7 @@ func main() {
 	logger, _ := zap.NewDevelopment()
 	weaveflow.SetLogger(logger)
 
-	ctx := core.WithServices(context.Background(), newReActAgentServices())
+	ctx := core.NewContext(context.Background(), newReActAgentServices())
 
 	runWithRunner(ctx)
 

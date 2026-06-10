@@ -48,9 +48,9 @@ func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
 	return node
 }
 
-func (n *ContextReducerNode) Execute(ctx context.Context, access *state.Access) error {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil || svc.Model == nil {
+func (n *ContextReducerNode) Execute(ctx core.Context, access *state.Access) error {
+	model := ctx.Model()
+	if model == nil {
 		return errors.New("context reducer: model service not available")
 	}
 
@@ -75,7 +75,7 @@ func (n *ContextReducerNode) Execute(ctx context.Context, access *state.Access) 
 
 	reducible := body[:tailStart]
 	recent := body[tailStart:]
-	summary, err := n.reduceMessages(ctx, svc.Model, reducible)
+	summary, err := n.reduceMessages(ctx, model, reducible)
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "context.reducer.error", map[string]any{
 			"state_scope": access.Scope(),

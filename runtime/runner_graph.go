@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"weaveflow/core"
 	"weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -19,7 +20,7 @@ type RunnerNode interface {
 	Name() string
 	Description() string
 	Scope() string
-	Execute(ctx context.Context, access *state.Access) error
+	Execute(ctx core.Context, access *state.Access) error
 }
 
 type RunnerGraph interface {

@@ -51,9 +51,8 @@ func NewAgentNode(options ...NodeOption) *AgentNode {
 	return node
 }
 
-func (a *AgentNode) Execute(ctx context.Context, access *state.Access) error {
-	svc := core.ServicesFrom(ctx)
-	if svc == nil || svc.Model == nil {
+func (a *AgentNode) Execute(ctx core.Context, access *state.Access) error {
+	if ctx.Model() == nil {
 		return errors.New("agent node: model service not available")
 	}
 
@@ -70,15 +69,15 @@ func (a *AgentNode) Execute(ctx context.Context, access *state.Access) error {
 	if err := a.seedConversation(conversation, a.readTaskFromAccess(access)); err != nil {
 		return err
 	}
-	if err := a.runLoop(ctx, conversation, svc); err != nil {
+	if err := a.runLoop(ctx, conversation); err != nil {
 		return err
 	}
 	return a.writeAnswer(access, conversation.FinalAnswer())
 }
 
-func (a *AgentNode) runLoop(ctx context.Context, conversation accessors.Conversation, svc *core.Services) error {
-	model := svc.Model
-	nodeTools := svc.FilterTools(a.ToolIDs)
+func (a *AgentNode) runLoop(ctx core.Context, conversation accessors.Conversation) error {
+	model := ctx.Model()
+	nodeTools := ctx.FilterTools(a.ToolIDs)
 
 	var toolSets []llms.Tool
 	for _, tool := range nodeTools {
@@ -175,7 +174,7 @@ func (a *AgentNode) runLoop(ctx context.Context, conversation accessors.Conversa
 	}
 }
 
-func (a *AgentNode) executeToolCalls(ctx context.Context, conversation accessors.Conversation, toolCalls []llms.ToolCall) error {
+func (a *AgentNode) executeToolCalls(ctx core.Context, conversation accessors.Conversation, toolCalls []llms.ToolCall) error {
 	if len(toolCalls) == 0 {
 		return nil
 	}
@@ -340,8 +339,8 @@ func (a *AgentNode) AsTool() tools.Tool {
 				return "", errors.New("agent tool: empty task")
 			}
 
-			svc := core.ServicesFrom(ctx)
-			if svc == nil || svc.Model == nil {
+			coreCtx := core.NewContext(ctx, nil)
+			if coreCtx.Model() == nil {
 				return "", errors.New("agent tool: model service not available")
 			}
 
@@ -361,7 +360,7 @@ func (a *AgentNode) AsTool() tools.Tool {
 				return "", err
 			}
 
-			if err := a.runLoop(ctx, conversation, svc); err != nil {
+			if err := a.runLoop(coreCtx, conversation); err != nil {
 				return "", err
 			}
 			return conversation.FinalAnswer(), nil

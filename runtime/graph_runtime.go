@@ -221,12 +221,12 @@ func contractArtifactStage(artifactType string) string {
 	}
 }
 
-func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, currentState *state.State) (context.Context, error) {
+func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, currentState *state.State) (core.Context, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if err := ctx.Err(); err != nil {
-		return ctx, err
+		return core.NewContext(ctx, nil), err
 	}
 
 	if latestRun, err := e.runner.ExecutionStore.GetRun(ctx, e.run.RunID); err == nil {
@@ -239,7 +239,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 			zap.String("node_id", nodeID),
 		)
 		e.pending = &runnerPendingControl{kind: runnerControlCancel}
-		return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlCancel)}
+		return core.NewContext(ctx, nil), &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlCancel)}
 	}
 
 	active := e.active
@@ -255,26 +255,26 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 			Attempt:   1,
 		}
 		if err := e.runner.ExecutionStore.AppendStep(ctx, step); err != nil {
-			return ctx, err
+			return core.NewContext(ctx, nil), err
 		}
 
 		e.run.CurrentNodeID = step.NodeID
 		e.run.LastStepID = step.StepID
 		e.run.UpdatedAt = e.runner.now()
 		if err := e.runner.ExecutionStore.UpdateRun(ctx, e.run); err != nil {
-			return ctx, err
+			return core.NewContext(ctx, nil), err
 		}
 
 		beforeID, err := e.runner.saveCheckpoint(ctx, e.run, step, nodeID, CheckpointBeforeNode, currentState, 0, nil, state.CloneArtifactRefs(e.artifacts))
 		if err != nil {
-			return ctx, err
+			return core.NewContext(ctx, nil), err
 		}
 
 		step.CheckpointBeforeID = beforeID
 		step.Status = StepStatusRunning
 		step.UpdatedAt = e.runner.now()
 		if err := e.runner.ExecutionStore.UpdateStep(ctx, step); err != nil {
-			return ctx, err
+			return core.NewContext(ctx, nil), err
 		}
 
 		active = &runnerActiveStep{
@@ -295,7 +295,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 			active.beforeInterrupted = true
 			e.pending = &runnerPendingControl{kind: runnerControlPause}
 			logger.Info("pause interrupt requested", stepLogFields(logStep)...)
-			return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlPause)}
+			return core.NewContext(ctx, nil), &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlPause)}
 		}
 		if hit := e.runner.matchBreakpoint(step.NodeID, string(CheckpointBeforeNode), e.skip); hit != nil {
 			active.beforeInterrupted = true
@@ -305,21 +305,21 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 				zap.String("breakpoint_stage", hit.Stage),
 			)
 			logger.Info("breakpoint hit before nodes", fields...)
-			return ctx, &langgraph.NodeInterrupt{Node: nodeID, Value: hit}
+			return core.NewContext(ctx, nil), &langgraph.NodeInterrupt{Node: nodeID, Value: hit}
 		}
 
 		e.runner.notifyListeners(ctx, langgraph.NodeEventStart, nodeID, currentState, nil)
 		if err := e.runner.publishEvent(ctx, e.run, step.StepID, step.NodeID, EventNodeStarted, map[string]any{
 			"node_name": step.NodeName,
 		}); err != nil {
-			return ctx, err
+			return core.NewContext(ctx, nil), err
 		}
 		logger.Info("nodes started", append(stepLogFields(logStep), state.SummaryFields(currentState)...)...)
 	} else {
 		if err := e.runner.publishEvent(ctx, RunRecord{RunID: e.run.RunID}, step.StepID, step.NodeID, EventNodeRetry, map[string]any{
 			"attempt": active.attempts - 1,
 		}); err != nil {
-			return ctx, err
+			return core.NewContext(ctx, nil), err
 		}
 		logger.Warn("nodes retrying", stepLogFields(logStep)...)
 	}
@@ -345,7 +345,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 		return ref, nil
 	})
 	nodeCtx = withToolCallExecutor(nodeCtx, newToolCallExecutor(e.runner, runID, stepID, nodeID))
-	return nodeCtx, nil
+	return core.NewContext(nodeCtx, nil), nil
 }
 
 func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, currentState *state.State) error {

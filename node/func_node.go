@@ -1,13 +1,13 @@
 package node
 
 import (
-	"context"
 	"fmt"
 
+	"weaveflow/core"
 	"weaveflow/state"
 )
 
-type ExecuteFunc func(ctx context.Context, access *state.Access) error
+type ExecuteFunc func(ctx core.Context, access *state.Access) error
 
 type FuncNode struct {
 	Base
@@ -21,7 +21,7 @@ func NewFuncNode(spec Spec, fn ExecuteFunc) *FuncNode {
 	}
 }
 
-func (n *FuncNode) Execute(ctx context.Context, access *state.Access) error {
+func (n *FuncNode) Execute(ctx core.Context, access *state.Access) error {
 	if n == nil {
 		return fmt.Errorf("node func node is nil")
 	}

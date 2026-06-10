@@ -30,7 +30,7 @@ func ExploreExample() {
 			"glob": tools.NewGlob(),
 		},
 	}
-	ctx := core.WithServices(context.Background(), svc)
+	ctx := core.NewContext(context.Background(), svc)
 
 	exploreNode := node.NewExploreNode()
 	exploreNode.ParentScope = "agent"

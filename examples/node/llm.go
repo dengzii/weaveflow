@@ -26,7 +26,7 @@ func LLMExample() {
 			"current_time": tools.NewCurrentTime(),
 		},
 	}
-	ctx := core.WithServices(context.Background(), svc)
+	ctx := core.NewContext(context.Background(), svc)
 
 	llmNode := node.NewLLMNode()
 

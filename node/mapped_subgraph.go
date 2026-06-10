@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 
+	"weaveflow/core"
 	fruntime "weaveflow/runtime"
 	"weaveflow/state"
 )
@@ -35,7 +36,7 @@ func NewMappedSubgraphNode(options ...NodeOption) *MappedSubgraphNode {
 	return node
 }
 
-func (n *MappedSubgraphNode) Execute(ctx context.Context, access *state.Access) error {
+func (n *MappedSubgraphNode) Execute(ctx core.Context, access *state.Access) error {
 	if n.InvokeSubgraph == nil {
 		return fmt.Errorf("mapped subgraph node %q has no invoker for graph_ref %q", n.ID(), n.GraphRef)
 	}
