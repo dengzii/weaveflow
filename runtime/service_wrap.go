@@ -6,14 +6,102 @@ import (
 	"reflect"
 	"strings"
 
+	"weaveflow/core"
+	"weaveflow/tools"
+
 	"github.com/tmc/langchaingo/llms"
 )
+
+func withRunnerEventContext(ctx context.Context, runner *GraphRunner, runID, stepID, nodeID string) core.Context {
+	coreCtx := core.NewContext(ctx)
+	if coreCtx.Model() == nil && coreCtx.Tools() == nil {
+		return coreCtx
+	}
+	ctx = core.WithModel(ctx, wrapLlm(coreCtx.Model()))
+	ctx = core.WithTools(ctx, wrapToolCallEventTools(coreCtx.Tools(), runner, runID, stepID, nodeID))
+	ctx = core.WithMemory(ctx, coreCtx.Memory())
+	return core.NewContext(ctx)
+}
+
+func wrapToolCallEventTools(available map[string]tools.Tool, runner *GraphRunner, runID, stepID, nodeID string) map[string]tools.Tool {
+	if available == nil {
+		return nil
+	}
+	wrapped := make(map[string]tools.Tool, len(available))
+	for key, tool := range available {
+		wrapped[key] = wrapToolCallEventTool(key, tool, runner, runID, stepID, nodeID)
+	}
+	return wrapped
+}
+
+func wrapToolCallEventTool(key string, tool tools.Tool, runner *GraphRunner, runID, stepID, nodeID string) tools.Tool {
+	if tool.Handler == nil {
+		return tool
+	}
+	original := tool.Handler
+	toolName := strings.TrimSpace(tool.Name())
+	if toolName == "" {
+		toolName = strings.TrimSpace(key)
+	}
+	tool.Handler = func(ctx context.Context, input string) (string, error) {
+		metadata, _ := tools.CallMetadataFromContext(ctx)
+		name := strings.TrimSpace(metadata.Name)
+		if name == "" {
+			name = toolName
+		}
+		arguments := metadata.Arguments
+		if arguments == "" {
+			arguments = input
+		}
+
+		_ = runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolCalled, map[string]any{
+			"tool_call_id": metadata.ToolCallID,
+			"name":         name,
+			"arguments":    arguments,
+		})
+
+		_, _ = SaveJSONArtifactBestEffort(ctx, "tool.input", map[string]any{
+			"tool_call_id": metadata.ToolCallID,
+			"name":         name,
+			"arguments":    arguments,
+			"input":        input,
+		})
+
+		result, err := original(ctx, input)
+		if err != nil {
+			_ = runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolFailed, map[string]any{
+				"tool_call_id": metadata.ToolCallID,
+				"name":         name,
+				"error":        err.Error(),
+			})
+			_, _ = SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
+				"tool_call_id": metadata.ToolCallID,
+				"name":         name,
+				"error":        err.Error(),
+			})
+			return result, err
+		}
+
+		_ = runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolReturned, map[string]any{
+			"tool_call_id": metadata.ToolCallID,
+			"name":         name,
+			"content":      result,
+		})
+		_, _ = SaveJSONArtifactBestEffort(ctx, "tool.output", map[string]any{
+			"tool_call_id": metadata.ToolCallID,
+			"name":         name,
+			"content":      result,
+		})
+		return result, nil
+	}
+	return tool
+}
 
 type llmWrap struct {
 	m llms.Model
 }
 
-func WrapLLM(m llms.Model) llms.Model {
+func wrapLlm(m llms.Model) llms.Model {
 	if m == nil {
 		return nil
 	}
@@ -29,9 +117,6 @@ func (m *llmWrap) SupportsReasoning() bool {
 }
 
 func (m *llmWrap) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-
-	//str := StringifyMessages(messages)
-	//fmt.Println(str)
 
 	options = append(options, withLLMStreamingResponseEvent())
 	res, err := m.m.GenerateContent(ctx, messages, options...)

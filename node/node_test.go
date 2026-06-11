@@ -204,7 +204,7 @@ func TestLLMNodeWritesScopedConversationFinalAnswer(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{{
 		Choices: []*llms.ContentChoice{{Content: "answer"}},
 	}}}
-	ctx := core.NewContext(context.Background(), &core.Services{Model: model})
+	ctx := core.NewContext(core.WithModel(context.Background(), model))
 	result, err := Execute(ctx, registry, seed.State(), NewLLMNode(WithID("llm")))
 	if err != nil {
 		t.Fatalf("execute llm node: %v", err)
@@ -238,7 +238,7 @@ func TestAgentNodeReadsRequestAndWritesFinalAccessor(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ContentResponse{{
 		Choices: []*llms.ContentChoice{{Content: "agent answer"}},
 	}}}
-	ctx := core.NewContext(context.Background(), &core.Services{Model: model})
+	ctx := core.NewContext(core.WithModel(context.Background(), model))
 
 	result, err := Execute(ctx, registry, initial, NewAgentNode(WithScope("worker"), WithID("agent")))
 	if err != nil {

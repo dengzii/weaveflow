@@ -21,7 +21,7 @@ func main() {
 	logger, _ := zap.NewDevelopment()
 	weaveflow.SetLogger(logger)
 
-	ctx := core.NewContext(context.Background(), newReActAgentServices())
+	ctx := newReActAgentContext()
 
 	runWithRunner(ctx)
 
@@ -30,15 +30,15 @@ func main() {
 	resumeFromCheckpoint(ctx)
 }
 
-func newReActAgentServices() *core.Services {
+func newReActAgentContext() core.Context {
 	model, err := openai.New()
 	tryPanic(err)
 
-	return &core.Services{
-		Model:  runtime.WrapLLM(model),
-		Memory: newReActAgentMemory(),
-		Tools:  newReActAgentTools(),
-	}
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithMemory(ctx, newReActAgentMemory())
+	ctx = core.WithTools(ctx, newReActAgentTools())
+	return core.NewContext(ctx)
 }
 
 func runWithRunner(ctx context.Context) {

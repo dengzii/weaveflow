@@ -29,8 +29,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	services := neo.NewServices(model, *dataDir)
-	srv, err := neo.NewServer(services, neo.DefaultConfig(), *dataDir)
+	ctx := neo.NewContext(model, *dataDir)
+	srv, err := neo.NewServer(ctx, neo.DefaultConfig(), *dataDir)
 	if err != nil {
 		log.Fatal(err)
 	}

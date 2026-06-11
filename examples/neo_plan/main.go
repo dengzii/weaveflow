@@ -60,18 +60,16 @@ func main() {
 	)
 	runner.GraphID = "plan-example"
 
-	svc := &core.Services{
-		Model: fruntime.WrapLLM(model),
-		Tools: map[string]tools.Tool{
-			"read":  tools.NewRead(),
-			"write": tools.NewWrite(),
-			"edit":  tools.NewEdit(),
-			"glob":  tools.NewGlob(),
-			"grep":  tools.NewGrep(),
-			"bash":  tools.NewBash(),
-		},
-	}
-	ctx := core.NewContext(context.Background(), svc)
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithTools(ctx, map[string]tools.Tool{
+		"read":  tools.NewRead(),
+		"write": tools.NewWrite(),
+		"edit":  tools.NewEdit(),
+		"glob":  tools.NewGlob(),
+		"grep":  tools.NewGrep(),
+		"bash":  tools.NewBash(),
+	})
 
 	var state *state.State
 

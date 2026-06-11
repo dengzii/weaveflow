@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"weaveflow/core"
 	"weaveflow/node"
-	"weaveflow/runtime"
 	"weaveflow/state"
 	"weaveflow/state/accessors"
 	"weaveflow/tools"
@@ -19,14 +18,13 @@ func LLMExample() {
 	model, err := openai.New()
 	must(err)
 
-	svc := &core.Services{
-		Model: runtime.WrapLLM(model),
-		Tools: map[string]tools.Tool{
-			"calculator":   tools.NewCalculator(),
-			"current_time": tools.NewCurrentTime(),
-		},
-	}
-	ctx := core.NewContext(context.Background(), svc)
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithTools(ctx, map[string]tools.Tool{
+		"calculator":   tools.NewCalculator(),
+		"current_time": tools.NewCurrentTime(),
+	})
+	coreCtx := core.NewContext(ctx)
 
 	llmNode := node.NewLLMNode()
 
@@ -44,7 +42,7 @@ func LLMExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	result, err := executeNode(ctx, llmNode, currentState)
+	result, err := executeNode(coreCtx, llmNode, currentState)
 	must(err)
 
 	conv := conversation(result, "agent")

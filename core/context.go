@@ -4,95 +4,107 @@ import (
 	"context"
 	"strings"
 	"time"
+
 	"weaveflow/memory"
 	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
-type Services struct {
-	Model  llms.Model
-	Tools  map[string]tools.Tool
-	Memory memory.Manager
-}
-
-type servicesKey struct{}
+type modelKey struct{}
+type toolsKey struct{}
+type memoryKey struct{}
 
 type Context struct {
 	context.Context
-	services *Services
 }
 
-func NewContext(ctx context.Context, svc *Services) Context {
+func NewContext(ctx context.Context) Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if svc == nil {
-		switch c := ctx.(type) {
-		case Context:
-			svc = c.services
-			if c.Context != nil {
-				ctx = c.Context
-			}
-		case *Context:
-			if c != nil {
-				svc = c.services
-				if c.Context != nil {
-					ctx = c.Context
-				}
-			}
+	switch c := ctx.(type) {
+	case Context:
+		return c
+	case *Context:
+		if c != nil {
+			return Context{Context: c.Context}
 		}
 	}
-	if svc == nil {
-		svc, _ = ctx.Value(servicesKey{}).(*Services)
+	return Context{Context: ctx}
+}
+
+func WithModel(ctx context.Context, model llms.Model) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
 	}
-	return Context{Context: ctx, services: svc}
+	return context.WithValue(ctx, modelKey{}, model)
+}
+
+func WithTools(ctx context.Context, available map[string]tools.Tool) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, toolsKey{}, available)
+}
+
+func WithMemory(ctx context.Context, manager memory.Manager) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, memoryKey{}, manager)
+}
+
+func ModelFromContext(ctx context.Context) llms.Model {
+	if ctx == nil {
+		return nil
+	}
+	model, _ := ctx.Value(modelKey{}).(llms.Model)
+	return model
+}
+
+func ToolsFromContext(ctx context.Context) map[string]tools.Tool {
+	if ctx == nil {
+		return nil
+	}
+	available, _ := ctx.Value(toolsKey{}).(map[string]tools.Tool)
+	return available
+}
+
+func MemoryFromContext(ctx context.Context) memory.Manager {
+	if ctx == nil {
+		return nil
+	}
+	manager, _ := ctx.Value(memoryKey{}).(memory.Manager)
+	return manager
 }
 
 func (c Context) Deadline() (time.Time, bool) { return c.Context.Deadline() }
 func (c Context) Done() <-chan struct{}       { return c.Context.Done() }
 func (c Context) Err() error                  { return c.Context.Err() }
-func (c Context) Value(key any) any {
-	if key == (servicesKey{}) && c.services != nil {
-		return c.services
-	}
-	return c.Context.Value(key)
-}
 
 func (c Context) Model() llms.Model {
-	if c.services == nil {
-		return nil
-	}
-	return c.services.Model
+	return ModelFromContext(c)
 }
 
 func (c Context) Tools() map[string]tools.Tool {
-	if c.services == nil {
-		return nil
-	}
-	return c.services.Tools
+	return ToolsFromContext(c)
 }
 
 func (c Context) Memory() memory.Manager {
-	if c.services == nil {
-		return nil
-	}
-	return c.services.Memory
+	return MemoryFromContext(c)
 }
 
 func (c Context) FilterTools(ids []string) map[string]tools.Tool {
-	if c.services == nil {
-		return nil
-	}
-	return c.services.FilterTools(ids)
+	return FilterTools(c.Tools(), ids)
 }
 
-func (s *Services) FilterTools(ids []string) map[string]tools.Tool {
-	if s == nil || s.Tools == nil {
+func FilterTools(available map[string]tools.Tool, ids []string) map[string]tools.Tool {
+	if available == nil {
 		return nil
 	}
 	if len(ids) == 0 {
-		return s.Tools
+		return available
 	}
 	filtered := make(map[string]tools.Tool, len(ids))
 	for _, id := range ids {
@@ -100,7 +112,7 @@ func (s *Services) FilterTools(ids []string) map[string]tools.Tool {
 		if id == "" {
 			continue
 		}
-		if tool, ok := s.Tools[id]; ok {
+		if tool, ok := available[id]; ok {
 			filtered[id] = tool
 		}
 	}

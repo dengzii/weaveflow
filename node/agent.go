@@ -339,7 +339,7 @@ func (a *AgentNode) AsTool() tools.Tool {
 				return "", errors.New("agent tool: empty task")
 			}
 
-			coreCtx := core.NewContext(ctx, nil)
+			coreCtx := core.NewContext(ctx)
 			if coreCtx.Model() == nil {
 				return "", errors.New("agent tool: model service not available")
 			}

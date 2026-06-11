@@ -1,6 +1,7 @@
 package neo
 
 import (
+	"context"
 	"path/filepath"
 
 	"weaveflow/builtin"
@@ -18,15 +19,16 @@ type Server struct {
 	hub          *LiveHub
 }
 
-func NewServer(services *core.Services, cfg Config, baseDir string) (*Server, error) {
+func NewServer(baseCtx context.Context, cfg Config, baseDir string) (*Server, error) {
 	store, err := NewStore(filepath.Join(baseDir, "history.db"))
 	if err != nil {
 		return nil, err
 	}
 
-	allTools := make(map[string]tools.Tool, len(services.Tools))
-	toolFlags := make(map[string]bool, len(services.Tools))
-	for name, tool := range services.Tools {
+	availableTools := core.ToolsFromContext(baseCtx)
+	allTools := make(map[string]tools.Tool, len(availableTools))
+	toolFlags := make(map[string]bool, len(availableTools))
+	for name, tool := range availableTools {
 		allTools[name] = tool
 		toolFlags[name] = true
 	}
@@ -38,7 +40,7 @@ func NewServer(services *core.Services, cfg Config, baseDir string) (*Server, er
 	}
 
 	hub := NewLiveHub()
-	chatCtrl := NewChatController(services, &cfg, toolFlags, baseDir, store, hub)
+	chatCtrl := NewChatController(baseCtx, &cfg, toolFlags, baseDir, store, hub)
 	configCtrl := NewConfigController(&cfg, allTools, toolFlags, store)
 	historyCtrl := NewHistoryController(chatCtrl)
 	registryCtrl := NewRegistryController(builtin.NewDefaultRegistry())

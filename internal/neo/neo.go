@@ -1,12 +1,12 @@
 package neo
 
 import (
+	"context"
 	"path/filepath"
 
 	"weaveflow"
 	"weaveflow/core"
 	"weaveflow/memory"
-	fruntime "weaveflow/runtime"
 	"weaveflow/state"
 	"weaveflow/state/accessors"
 	"weaveflow/tools"
@@ -14,22 +14,21 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func NewServices(model llms.Model, baseDir string) *core.Services {
-	model = fruntime.WrapLLM(model)
+func NewContext(model llms.Model, baseDir string) context.Context {
 	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
-	return &core.Services{
-		Model:  model,
-		Memory: memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}),
-		Tools: map[string]tools.Tool{
-			"read":  tools.NewRead(),
-			"write": tools.NewWrite(),
-			"edit":  tools.NewEdit(),
-			"glob":  tools.NewGlob(),
-			"grep":  tools.NewGrep(),
-			//"web_fetch": tools.NewWebFetch(),
-			// "web_search": tools.NewWebSearch(),
-		},
-	}
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
+	ctx = core.WithTools(ctx, map[string]tools.Tool{
+		"read":  tools.NewRead(),
+		"write": tools.NewWrite(),
+		"edit":  tools.NewEdit(),
+		"glob":  tools.NewGlob(),
+		"grep":  tools.NewGrep(),
+		//"web_fetch": tools.NewWebFetch(),
+		// "web_search": tools.NewWebSearch(),
+	})
+	return ctx
 }
 
 const stateScope = "agent"

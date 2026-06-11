@@ -6,7 +6,6 @@ import (
 	"weaveflow/core"
 	"weaveflow/llms/openai"
 	"weaveflow/node"
-	"weaveflow/runtime"
 	"weaveflow/state"
 	"weaveflow/tools"
 )
@@ -18,14 +17,13 @@ func AgentExample() {
 	model, err := openai.New()
 	must(err)
 
-	svc := &core.Services{
-		Model: runtime.WrapLLM(model),
-		Tools: map[string]tools.Tool{
-			"calculator":   tools.NewCalculator(),
-			"current_time": tools.NewCurrentTime(),
-		},
-	}
-	ctx := core.NewContext(context.Background(), svc)
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithTools(ctx, map[string]tools.Tool{
+		"calculator":   tools.NewCalculator(),
+		"current_time": tools.NewCurrentTime(),
+	})
+	coreCtx := core.NewContext(ctx)
 
 	agent := node.NewAgentNode(node.WithScope("subagent"))
 	agent.SystemPrompt = "You are a concise assistant. Use tools when they improve accuracy. Return the final answer as plain text."
@@ -36,7 +34,7 @@ func AgentExample() {
 
 	currentState := state.FromShared(map[string]any{"task": "What is 42 * 58, and what is the current time?"})
 
-	result, err := executeNode(ctx, agent, currentState)
+	result, err := executeNode(coreCtx, agent, currentState)
 	must(err)
 
 	conv := conversation(result, "subagent")
@@ -70,14 +68,13 @@ func AgentAsToolExample() {
 	subAgent.ToolName = "math_agent"
 	subAgent.ToolDescription = "Delegate an arithmetic question to a specialist sub-agent. Input: {\"task\": \"<question>\"}."
 
-	svc := &core.Services{
-		Model: runtime.WrapLLM(model),
-		Tools: map[string]tools.Tool{
-			"current_time": tools.NewCurrentTime(),
-			"math_agent":   subAgent.AsTool(),
-		},
-	}
-	ctx := core.NewContext(context.Background(), svc)
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithTools(ctx, map[string]tools.Tool{
+		"current_time": tools.NewCurrentTime(),
+		"math_agent":   subAgent.AsTool(),
+	})
+	coreCtx := core.NewContext(ctx)
 
 	// Coordinator agent: only has access to current_time + the math_agent
 	// tool. When it needs arithmetic, it delegates instead of computing.
@@ -90,7 +87,7 @@ func AgentAsToolExample() {
 
 	currentState := state.FromShared(map[string]any{"task": "Please compute 1234 * 5678 and tell me the current time."})
 
-	result, err := executeNode(ctx, coordinator, currentState)
+	result, err := executeNode(coreCtx, coordinator, currentState)
 	must(err)
 
 	conv := conversation(result, "coordinator")

@@ -18,8 +18,7 @@ func ToolsExample() {
 		"current_time": tools.NewCurrentTime(),
 	}
 
-	svc := &core.Services{Tools: toolSet}
-	ctx := core.NewContext(context.Background(), svc)
+	ctx := core.NewContext(core.WithTools(context.Background(), toolSet))
 
 	toolsNode := node.NewToolsNode()
 	toolsNode.Parallel = true

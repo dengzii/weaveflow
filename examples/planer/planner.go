@@ -51,11 +51,13 @@ func main() {
 	must(err)
 
 	available := map[string]tools.Tool{
-		"read":  tools.NewRead(),
-		"glob":  tools.NewGlob(),
-		"grep":  tools.NewGrep(),
-		"write": tools.NewWrite(),
-		"bash":  tools.NewBash(),
+		"read":    tools.NewRead(),
+		"glob":    tools.NewGlob(),
+		"grep":    tools.NewGrep(),
+		"write":   tools.NewWrite(),
+		"bash":    tools.NewBash(),
+		"outline": tools.NewOutline(),
+		"tree":    tools.NewTree(),
 	}
 
 	prettySink := utilities.NewPrettyEventLogging(os.Stdout,
@@ -70,7 +72,7 @@ func main() {
 	sink := fruntime.NewCombineEventSink(prettySink, analyzer)
 
 	finalState, err := runPlan(context.Background(), objective, options{
-		Model:                 fruntime.WrapLLM(model),
+		Model:                 model,
 		Tools:                 available,
 		MaxReplans:            defaultMaxReplans,
 		StepMaxToolIterations: defaultStepMaxToolIter,
@@ -187,8 +189,8 @@ func runPlan(ctx context.Context, objective string, opts options) (*state.State,
 		opts.StepMaxToolIterations = defaultStepMaxToolIter
 	}
 
-	svc := &core.Services{Model: opts.Model, Tools: opts.Tools}
-	ctx = core.NewContext(ctx, svc)
+	ctx = core.WithModel(ctx, opts.Model)
+	ctx = core.WithTools(ctx, opts.Tools)
 
 	planner := newPlanGeneratorNode(opts.MaxReplans)
 	executor := newStepExecutorNode(opts.StepMaxToolIterations)

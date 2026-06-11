@@ -6,7 +6,6 @@ import (
 	"weaveflow/core"
 	"weaveflow/llms/openai"
 	"weaveflow/node"
-	"weaveflow/runtime"
 	"weaveflow/state"
 	"weaveflow/state/accessors"
 	"weaveflow/tools"
@@ -22,15 +21,14 @@ func ExploreExample() {
 	model, err := openai.New()
 	must(err)
 
-	svc := &core.Services{
-		Model: runtime.WrapLLM(model),
-		Tools: map[string]tools.Tool{
-			"read": tools.NewRead(),
-			"grep": tools.NewGrep(),
-			"glob": tools.NewGlob(),
-		},
-	}
-	ctx := core.NewContext(context.Background(), svc)
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithTools(ctx, map[string]tools.Tool{
+		"read": tools.NewRead(),
+		"grep": tools.NewGrep(),
+		"glob": tools.NewGlob(),
+	})
+	coreCtx := core.NewContext(ctx)
 
 	exploreNode := node.NewExploreNode()
 	exploreNode.ParentScope = "agent"
@@ -42,7 +40,7 @@ func ExploreExample() {
 		llms.TextParts(llms.ChatMessageTypeHuman, "Where is the ExploreNode defined and what tools does it use by default?"),
 	}))
 
-	result, err := executeNode(ctx, exploreNode, currentState)
+	result, err := executeNode(coreCtx, exploreNode, currentState)
 	must(err)
 
 	parent := conversation(result, "agent")

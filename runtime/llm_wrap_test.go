@@ -21,10 +21,10 @@ func (t *testLLM) Call(_ context.Context, _ string, _ ...llms.CallOption) (strin
 	return "", t.err
 }
 
-func TestWrapLLMGenerateContentPublishesFinalReasoningAndContentEvents(t *testing.T) {
+func TestWrapLlmGenerateContentPublishesFinalReasoningAndContentEvents(t *testing.T) {
 	t.Parallel()
 
-	model := WrapLLM(&testLLM{
+	model := wrapLlm(&testLLM{
 		response: &llms.ContentResponse{
 			Choices: []*llms.ContentChoice{
 				{

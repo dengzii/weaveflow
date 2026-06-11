@@ -34,7 +34,7 @@ func Execute(ctx context.Context, registry *state.Registry, base *state.State, n
 	}
 
 	access := state.NewEditingAccess(registry, base).WithScope(node.Scope())
-	if err := node.Execute(core.NewContext(ctx, nil), access); err != nil {
+	if err := node.Execute(core.NewContext(ctx), access); err != nil {
 		return ExecutionResult{}, err
 	}
 	return ExecutionResult{

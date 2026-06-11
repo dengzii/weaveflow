@@ -2,12 +2,13 @@ package node
 
 import (
 	"errors"
+	"fmt"
 	"sync"
 
 	"weaveflow/core"
-	fruntime "weaveflow/runtime"
 	"weaveflow/state"
 	"weaveflow/state/accessors"
+	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -83,11 +84,21 @@ func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (string, error) {
 	if toolCall.FunctionCall == nil {
 		return "", errors.New("tool call has no function payload")
 	}
-	return fruntime.ExecuteToolCall(ctx, fruntime.ToolCallRequest{
+	name := toolCall.FunctionCall.Name
+	tool, ok := tools.FindAvailable(ctx.Tools(), name)
+	if !ok {
+		return "", fmt.Errorf("tool %q not found", name)
+	}
+	if tool.Handler == nil {
+		return "", fmt.Errorf("tool handler %q not found", name)
+	}
+	arguments := toolCall.FunctionCall.Arguments
+	callCtx := tools.WithCallMetadata(ctx, tools.CallMetadata{
 		ToolCallID: toolCall.ID,
-		Name:       toolCall.FunctionCall.Name,
-		Arguments:  toolCall.FunctionCall.Arguments,
+		Name:       name,
+		Arguments:  arguments,
 	})
+	return tool.Handler(callCtx, tools.DecodeInput(arguments))
 }
 
 func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {

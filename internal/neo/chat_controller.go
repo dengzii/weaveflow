@@ -28,7 +28,7 @@ import (
 )
 
 type ChatController struct {
-	services  *core.Services
+	baseCtx   context.Context
 	config    *Config
 	allTools  map[string]tools.Tool
 	toolFlags map[string]bool
@@ -57,13 +57,14 @@ const (
 	turnResumeStopped
 )
 
-func NewChatController(services *core.Services, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store, hub *LiveHub) *ChatController {
-	allTools := make(map[string]tools.Tool, len(services.Tools))
-	for name, tool := range services.Tools {
+func NewChatController(baseCtx context.Context, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store, hub *LiveHub) *ChatController {
+	availableTools := core.ToolsFromContext(baseCtx)
+	allTools := make(map[string]tools.Tool, len(availableTools))
+	for name, tool := range availableTools {
 		allTools[name] = tool
 	}
 	return &ChatController{
-		services:  services,
+		baseCtx:   baseCtx,
 		config:    cfg,
 		allTools:  allTools,
 		toolFlags: toolFlags,
@@ -138,7 +139,6 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 	resumeMode := kind != turnStart
 
 	cfg := *ctrl.config
-	services := ctrl.effectiveServices()
 
 	var graph *weaveflow.Graph
 	if ctrl.graphCache != nil && reflect.DeepEqual(ctrl.graphCfgKey, cfg) {
@@ -223,7 +223,7 @@ func (ctrl *ChatController) executeTurnLocked(c *gin.Context, req ChatRequest, k
 
 	runner := newChatRunner(graph, graphMeta.ID, runDir, combinedSink)
 
-	baseCtx := core.NewContext(c.Request.Context(), services)
+	baseCtx := ctrl.effectiveContext(c.Request.Context())
 	ctx, cancel := context.WithCancel(baseCtx)
 	if cfg.RequestTimeoutSeconds > 0 {
 		ctx, cancel = context.WithTimeout(baseCtx, time.Duration(cfg.RequestTimeoutSeconds)*time.Second)
@@ -555,18 +555,17 @@ func messagesAtPath(currentState *state.State, path state.Path) []llms.MessageCo
 	return out
 }
 
-func (ctrl *ChatController) effectiveServices() *core.Services {
+func (ctrl *ChatController) effectiveContext(parent context.Context) context.Context {
 	enabledTools := make(map[string]tools.Tool, len(ctrl.allTools))
 	for name, tool := range ctrl.allTools {
 		if ctrl.toolFlags[name] {
 			enabledTools[name] = tool
 		}
 	}
-	return &core.Services{
-		Model:  ctrl.services.Model,
-		Memory: ctrl.services.Memory,
-		Tools:  enabledTools,
-	}
+	parent = core.WithModel(parent, core.ModelFromContext(ctrl.baseCtx))
+	parent = core.WithMemory(parent, core.MemoryFromContext(ctrl.baseCtx))
+	parent = core.WithTools(parent, enabledTools)
+	return parent
 }
 
 func (ctrl *ChatController) GetLastState() *state.State {
@@ -609,17 +608,19 @@ func (ctrl *ChatController) ClearHistory() error {
 }
 
 func (ctrl *ChatController) GetMemory() ([]memory.Entry, error) {
-	if ctrl.services == nil || ctrl.services.Memory == nil {
+	manager := core.MemoryFromContext(ctrl.baseCtx)
+	if manager == nil {
 		return []memory.Entry{}, nil
 	}
-	return ctrl.services.Memory.Load(nil)
+	return manager.Load(nil)
 }
 
 func (ctrl *ChatController) ClearMemory() error {
-	if ctrl.services == nil || ctrl.services.Memory == nil {
+	manager := core.MemoryFromContext(ctrl.baseCtx)
+	if manager == nil {
 		return nil
 	}
-	return ctrl.services.Memory.Delete()
+	return manager.Delete()
 }
 
 func writeSSE(c *gin.Context, event *ChatEvent) {
