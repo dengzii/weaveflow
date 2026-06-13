@@ -3,10 +3,10 @@ package neo
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/dengzii/weaveflow/runtime"
 	"net/http"
 	"net/url"
 	"strings"
-	"weaveflow/runtime"
 
 	"github.com/gin-gonic/gin"
 	"github.com/gorilla/websocket"

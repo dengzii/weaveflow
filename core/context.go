@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"weaveflow/memory"
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow/memory"
+	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )

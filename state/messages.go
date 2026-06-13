@@ -4,7 +4,7 @@ import (
 	"encoding/base64"
 	"fmt"
 
-	"weaveflow/llms/parts"
+	"github.com/dengzii/weaveflow/llms/parts"
 
 	"github.com/tmc/langchaingo/llms"
 )

@@ -2,8 +2,8 @@ package runtime
 
 import (
 	"context"
-	"weaveflow/core"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )

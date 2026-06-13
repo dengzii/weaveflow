@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/dsl"
-	"weaveflow/node"
-	"weaveflow/registry"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/state"
 )
 
 func RegisterCoreNodeTypes(r *registry.Registry) {

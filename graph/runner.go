@@ -3,10 +3,10 @@ package graph
 import (
 	"context"
 	"fmt"
-	"weaveflow/builder"
-	"weaveflow/dsl"
-	fruntime "weaveflow/runtime"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/builder"
+	"github.com/dengzii/weaveflow/dsl"
+	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )

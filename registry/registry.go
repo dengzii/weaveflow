@@ -1,6 +1,6 @@
 package registry
 
-import "weaveflow/dsl"
+import "github.com/dengzii/weaveflow/dsl"
 
 type Registry struct {
 	StateFields map[string]dsl.StateFieldDefinition `json:"state_fields"`

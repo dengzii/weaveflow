@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"weaveflow/builtin"
-	"weaveflow/dsl"
-	wfregistry "weaveflow/registry"
+	"github.com/dengzii/weaveflow/builtin"
+	"github.com/dengzii/weaveflow/dsl"
+	wfregistry "github.com/dengzii/weaveflow/registry"
 
 	"github.com/gin-gonic/gin"
 )

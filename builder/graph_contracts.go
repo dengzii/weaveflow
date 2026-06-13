@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/dsl"
-	"weaveflow/registry"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type RuntimeEdgeGraph interface {

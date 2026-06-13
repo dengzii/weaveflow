@@ -1,12 +1,12 @@
 package weaveflow
 
 import (
-	"weaveflow/builder"
-	"weaveflow/dsl"
-	"weaveflow/graph"
-	"weaveflow/registry"
-	fruntime "weaveflow/runtime"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/builder"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/registry"
+	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
 
 	"go.uber.org/zap"
 )

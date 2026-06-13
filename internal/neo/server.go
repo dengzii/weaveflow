@@ -4,9 +4,9 @@ import (
 	"context"
 	"path/filepath"
 
-	"weaveflow/builtin"
-	"weaveflow/core"
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow/builtin"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
 )

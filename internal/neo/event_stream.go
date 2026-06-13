@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
 type ChatEventType string

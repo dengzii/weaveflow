@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
 func TestTranslateEventStreamsReasoningChunk(t *testing.T) {

@@ -3,11 +3,11 @@ package builder
 import (
 	"fmt"
 
-	"weaveflow/core"
-	"weaveflow/dsl"
-	"weaveflow/node"
-	"weaveflow/registry"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type GraphBuilder interface {

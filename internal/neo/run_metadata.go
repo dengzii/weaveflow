@@ -7,7 +7,7 @@ import (
 	"sort"
 	"time"
 
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type RunMetadata struct {

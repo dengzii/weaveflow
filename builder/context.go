@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/core"
-	"weaveflow/dsl"
-	"weaveflow/node"
-	"weaveflow/registry"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
 )
 
 type BuildContext struct {

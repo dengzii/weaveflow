@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"testing"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 
 	"github.com/tmc/langchaingo/llms"
 )

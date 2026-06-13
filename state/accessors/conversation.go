@@ -1,7 +1,7 @@
 package accessors
 
 import (
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )

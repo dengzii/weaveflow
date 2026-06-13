@@ -3,8 +3,8 @@ package node
 import (
 	"fmt"
 
-	"weaveflow/core"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type ExecuteFunc func(ctx core.Context, access *state.Access) error

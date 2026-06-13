@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"sync"
 
-	"weaveflow/core"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )

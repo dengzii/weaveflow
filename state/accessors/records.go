@@ -1,6 +1,6 @@
 package accessors
 
-import state "weaveflow/state"
+import state "github.com/dengzii/weaveflow/state"
 
 type Records interface {
 	Path() state.Path

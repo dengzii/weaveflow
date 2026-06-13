@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
-	"weaveflow/core"
-	"weaveflow/llms/openai"
-	"weaveflow/node"
-	"weaveflow/state"
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms/openai"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/tools"
 )
 
 // AgentExample runs an AgentNode standalone: one Execute call drives the

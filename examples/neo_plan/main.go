@@ -3,18 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/dengzii/weaveflow/internal/utilities"
+	"github.com/dengzii/weaveflow/llms/openai"
+	"github.com/dengzii/weaveflow/tools"
 	"os"
 	"path/filepath"
-	"weaveflow/internal/utilities"
-	"weaveflow/llms/openai"
-	"weaveflow/tools"
 
-	"weaveflow"
-	"weaveflow/core"
-	"weaveflow/internal/neo"
-	fruntime "weaveflow/runtime"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/internal/neo"
+	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
 )
 
 // Integration example for neo plan mode without booting the HTTP server.

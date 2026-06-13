@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
-	"weaveflow/node"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
 )
 
 func MappedSubgraphExample() {

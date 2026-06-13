@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/core"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"github.com/tmc/langchaingo/llms"

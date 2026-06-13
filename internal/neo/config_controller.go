@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
 )

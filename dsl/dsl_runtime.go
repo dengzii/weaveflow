@@ -3,8 +3,8 @@ package dsl
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/dengzii/weaveflow/core"
 	"strings"
-	"weaveflow/core"
 )
 
 const (

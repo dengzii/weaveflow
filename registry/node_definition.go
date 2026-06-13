@@ -1,8 +1,8 @@
 package registry
 
 import (
-	"weaveflow/dsl"
-	"weaveflow/node"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/node"
 )
 
 type NodeTypeDefinition struct {

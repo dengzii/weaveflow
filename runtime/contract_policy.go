@@ -1,6 +1,6 @@
 package runtime
 
-import "weaveflow/core"
+import "github.com/dengzii/weaveflow/core"
 
 // ContractPolicy controls which parts of the contract runtime are active.
 // Mode-derived defaults are applied first, then explicit true flags extend them.

@@ -7,9 +7,9 @@ import (
 	"os"
 	"strings"
 
-	"weaveflow/internal/neo"
+	"github.com/dengzii/weaveflow/internal/neo"
 
-	"weaveflow/llms/openai"
+	"github.com/dengzii/weaveflow/llms/openai"
 
 	"github.com/gin-gonic/gin"
 )

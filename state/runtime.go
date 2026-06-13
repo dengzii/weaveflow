@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"weaveflow/core"
+	"github.com/dengzii/weaveflow/core"
 
 	"github.com/tmc/langchaingo/llms"
 	"go.uber.org/zap"

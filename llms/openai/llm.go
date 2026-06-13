@@ -2,8 +2,8 @@ package openai
 
 import (
 	"errors"
+	"github.com/dengzii/weaveflow/llms/openai/internal/openaiclient"
 	"os"
-	"weaveflow/llms/openai/internal/openaiclient"
 
 	"github.com/tmc/langchaingo/httputil"
 )

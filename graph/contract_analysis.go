@@ -1,8 +1,8 @@
 package graph
 
 import (
-	"weaveflow/builder"
-	"weaveflow/core"
+	"github.com/dengzii/weaveflow/builder"
+	"github.com/dengzii/weaveflow/core"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )

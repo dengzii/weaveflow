@@ -6,13 +6,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
-	"weaveflow/runtime"
-	"weaveflow/state"
 )
 
 const artifactPreviewLimit = 128 * 1024

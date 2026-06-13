@@ -3,13 +3,13 @@ package main
 import (
 	"context"
 	"fmt"
-	"weaveflow/core"
-	"weaveflow/node"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/tools"
 
-	"weaveflow/llms/openai"
+	"github.com/dengzii/weaveflow/llms/openai"
 
 	"github.com/tmc/langchaingo/llms"
 )

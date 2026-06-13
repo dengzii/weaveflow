@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/core"
-	fruntime "weaveflow/runtime"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/core"
+	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )

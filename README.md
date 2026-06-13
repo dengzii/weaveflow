@@ -62,13 +62,16 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 ### Build from source
 
 ```bash
-git clone <repo-url> weaveflow
+git clone https://github.com/dengzii/weaveflow.git
 cd weaveflow
 go build ./...
 ```
 
-The module path is currently `weaveflow`. If you plan to consume it from another repository, use the published module
-path adopted by your environment or a local replace directive during development.
+Install it as a Go module dependency:
+
+```bash
+go get github.com/dengzii/weaveflow
+```
 
 ### Run the graph example
 

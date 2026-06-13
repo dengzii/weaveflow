@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/llms/parts"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/llms/parts"
+	"github.com/dengzii/weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )

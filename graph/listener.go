@@ -2,7 +2,7 @@ package graph
 
 import (
 	"context"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )

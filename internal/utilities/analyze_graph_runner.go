@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
 type AnalyzeGraphRunner struct {

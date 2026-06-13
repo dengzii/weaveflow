@@ -4,12 +4,12 @@ import (
 	"context"
 	"path/filepath"
 
-	"weaveflow"
-	"weaveflow/core"
-	"weaveflow/memory"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/memory"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )

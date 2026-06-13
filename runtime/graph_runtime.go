@@ -4,10 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
 	"strings"
 	"sync"
-	"weaveflow/core"
-	"weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"

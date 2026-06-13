@@ -1,6 +1,6 @@
 package accessors
 
-import state "weaveflow/state"
+import state "github.com/dengzii/weaveflow/state"
 
 const FinalFieldAnswer = "answer"
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/dsl"
+	"github.com/dengzii/weaveflow/dsl"
 )
 
 const (

@@ -3,7 +3,7 @@ package neo
 import (
 	"net/http"
 
-	"weaveflow/memory"
+	"github.com/dengzii/weaveflow/memory"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tmc/langchaingo/llms"

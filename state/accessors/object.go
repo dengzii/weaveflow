@@ -3,7 +3,7 @@ package accessors
 import (
 	"fmt"
 
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type Object interface {

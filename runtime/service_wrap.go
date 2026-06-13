@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"strings"
 
-	"weaveflow/core"
-	"weaveflow/tools"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )

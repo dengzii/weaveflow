@@ -3,7 +3,7 @@ package registry
 import (
 	"fmt"
 
-	"weaveflow/dsl"
+	"github.com/dengzii/weaveflow/dsl"
 )
 
 func (r *Registry) RegisterStateField(def dsl.StateFieldDefinition) {

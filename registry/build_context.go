@@ -1,8 +1,8 @@
 package registry
 
 import (
-	"weaveflow/core"
-	"weaveflow/dsl"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 )
 
 type BuildContext struct {

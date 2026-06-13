@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"strings"
 
-	"weaveflow/builder"
-	"weaveflow/dsl"
-	"weaveflow/registry"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/builder"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/state"
 )
 
 func BuildGraph(reg *registry.Registry, def dsl.GraphDefinition, ctx *builder.BuildContext) (*Graph, error) {

@@ -1,9 +1,9 @@
 package builtin
 
 import (
-	"weaveflow/dsl"
-	"weaveflow/registry"
-	"weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/state/accessors"
 )
 
 func NewDefaultRegistry() *registry.Registry {

@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
 // LiveMsg is a discriminated union sent over the WebSocket connection.

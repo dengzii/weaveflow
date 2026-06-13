@@ -3,9 +3,9 @@ package main
 import (
 	"context"
 	"fmt"
+	llamacpp "github.com/dengzii/weaveflow/internal/llama_cpp"
 	"os"
 	"time"
-	llamacpp "weaveflow/internal/llama_cpp"
 
 	"github.com/tmc/langchaingo/llms"
 )

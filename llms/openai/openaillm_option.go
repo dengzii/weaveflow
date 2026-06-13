@@ -1,7 +1,7 @@
 package openai
 
 import (
-	"weaveflow/llms/openai/internal/openaiclient"
+	"github.com/dengzii/weaveflow/llms/openai/internal/openaiclient"
 
 	"github.com/tmc/langchaingo/callbacks"
 )

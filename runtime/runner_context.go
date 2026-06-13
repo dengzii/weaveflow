@@ -4,7 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type runnerEventPublisher func(eventType EventType, payload any) error

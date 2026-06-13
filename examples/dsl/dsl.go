@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"weaveflow/builtin"
+	"github.com/dengzii/weaveflow/builtin"
 )
 
 func main() {

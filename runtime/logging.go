@@ -3,7 +3,7 @@ package runtime
 import (
 	"go.uber.org/zap"
 
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 )
 
 func runLogFields(run RunRecord) []zap.Field {

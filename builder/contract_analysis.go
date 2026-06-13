@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"weaveflow/core"
-	"weaveflow/dsl"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type ContractAnalysisGraph struct {

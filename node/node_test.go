@@ -5,9 +5,9 @@ import (
 	"errors"
 	"testing"
 
-	"weaveflow/core"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )

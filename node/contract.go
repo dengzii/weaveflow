@@ -3,7 +3,7 @@ package node
 import (
 	"fmt"
 
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type ContractProvider interface {

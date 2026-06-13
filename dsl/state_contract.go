@@ -1,6 +1,6 @@
 package dsl
 
-import state "weaveflow/state"
+import state "github.com/dengzii/weaveflow/state"
 
 type StateAccessMode = state.AccessMode
 

@@ -3,7 +3,7 @@ package accessors
 import (
 	"testing"
 
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )

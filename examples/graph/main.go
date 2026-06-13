@@ -3,16 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/dengzii/weaveflow"
+	"github.com/dengzii/weaveflow/builder"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms/openai"
+	"github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
 	"os"
 	"path/filepath"
 	"time"
-	"weaveflow"
-	"weaveflow/builder"
-	"weaveflow/core"
-	"weaveflow/llms/openai"
-	"weaveflow/runtime"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
 
 	"go.uber.org/zap"
 )

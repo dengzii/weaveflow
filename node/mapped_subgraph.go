@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sort"
 
-	"weaveflow/core"
-	fruntime "weaveflow/runtime"
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/core"
+	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type SubgraphInvoker func(context.Context, *state.State) (*state.State, error)

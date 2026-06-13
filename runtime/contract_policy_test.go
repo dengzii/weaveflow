@@ -3,7 +3,7 @@ package runtime
 import (
 	"testing"
 
-	"weaveflow/core"
+	"github.com/dengzii/weaveflow/core"
 )
 
 func TestContractPolicyForModeDefaults(t *testing.T) {

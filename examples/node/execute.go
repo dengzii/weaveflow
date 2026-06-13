@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"weaveflow/node"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
 )
 
 func executeNode(ctx context.Context, targetNode node.Node, currentState *state.State) (*state.State, error) {

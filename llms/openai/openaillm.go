@@ -3,10 +3,10 @@ package openai
 import (
 	"context"
 	"fmt"
+	"github.com/dengzii/weaveflow/llms/openai/internal/openaiclient"
+	"github.com/dengzii/weaveflow/llms/parts"
 	"regexp"
 	"strings"
-	"weaveflow/llms/openai/internal/openaiclient"
-	"weaveflow/llms/parts"
 
 	"github.com/tmc/langchaingo/callbacks"
 	"github.com/tmc/langchaingo/llms"

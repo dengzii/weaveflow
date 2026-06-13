@@ -1,14 +1,14 @@
 package main
 
 import (
+	"github.com/dengzii/weaveflow"
+	"github.com/dengzii/weaveflow/builtin"
+	"github.com/dengzii/weaveflow/memory"
+	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/state/accessors"
+	"github.com/dengzii/weaveflow/tools"
 	"path/filepath"
-	"weaveflow"
-	"weaveflow/builtin"
-	"weaveflow/memory"
-	"weaveflow/node"
-	"weaveflow/state"
-	"weaveflow/state/accessors"
-	"weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )

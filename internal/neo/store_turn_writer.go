@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
 type TurnWriter struct {

@@ -1,7 +1,7 @@
 package registry
 
 import (
-	"weaveflow/state"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type State = state.State

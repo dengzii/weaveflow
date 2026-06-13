@@ -10,7 +10,7 @@ import (
 
 	"github.com/tmc/langchaingo/llms"
 
-	"weaveflow/llms/parts"
+	"github.com/dengzii/weaveflow/llms/parts"
 )
 
 var (

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
 func TestAnalyzeGraphRunnerAggregatesRunStats(t *testing.T) {

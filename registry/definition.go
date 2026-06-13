@@ -1,6 +1,6 @@
 package registry
 
-import "weaveflow/dsl"
+import "github.com/dengzii/weaveflow/dsl"
 
 type GraphResolver func(graphRef string) (dsl.GraphDefinition, error)
 

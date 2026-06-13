@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"weaveflow/core"
+	"github.com/dengzii/weaveflow/core"
 )
 
 type JSONSchema map[string]any

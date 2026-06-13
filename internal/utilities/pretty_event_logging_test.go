@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	fruntime "weaveflow/runtime"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
 func TestPrettyEventLoggingPrintsBatchedToolCalledPayload(t *testing.T) {
