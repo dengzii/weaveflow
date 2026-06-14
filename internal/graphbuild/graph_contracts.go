@@ -1,4 +1,4 @@
-package builder
+package graphbuild
 
 import (
 	"fmt"
@@ -8,38 +8,6 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 )
-
-type RuntimeEdgeGraph interface {
-	AddRuntimeEdge(from, to string) error
-	AddRuntimeConditionalEdge(from, to string, condition registry.EdgeCondition) error
-}
-
-func ApplyBuiltInNodeEdges(target RuntimeEdgeGraph, def dsl.GraphDefinition) error {
-	if target == nil {
-		return fmt.Errorf("graph is nil")
-	}
-	for _, nodeSpec := range def.Nodes {
-		if nodeSpec.Type != "iterator" {
-			continue
-		}
-		continueTo := registry.StringConfig(nodeSpec.Config, "continue_to")
-		doneTo := registry.StringConfig(nodeSpec.Config, "done_to")
-		if continueTo == "" && doneTo == "" {
-			continue
-		}
-		if continueTo == "" || doneTo == "" {
-			return fmt.Errorf("build iterator nodes %q: continue_to and done_to must be configured together", nodeSpec.ID)
-		}
-		if hasExplicitOutgoingEdge(def.Edges, nodeSpec.ID) {
-			return fmt.Errorf("build iterator nodes %q: built-in iterator edges cannot be combined with explicit outgoing edges", nodeSpec.ID)
-		}
-
-		if err := target.AddRuntimeEdge(nodeSpec.ID, doneTo); err != nil {
-			return fmt.Errorf("build iterator nodes %q built-in done edge: %w", nodeSpec.ID, err)
-		}
-	}
-	return nil
-}
 
 func ResolveNodeContracts(def dsl.GraphDefinition, reg *registry.Registry) (map[string]state.Contract, error) {
 	if reg == nil {
@@ -105,15 +73,6 @@ func ConvertStateContract(contract dsl.StateContract) (state.Contract, error) {
 		})
 	}
 	return result, nil
-}
-
-func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {
-	for _, edge := range edges {
-		if strings.TrimSpace(edge.From) == from {
-			return true
-		}
-	}
-	return false
 }
 
 func schemaType(schema dsl.JSONSchema) string {

@@ -3,16 +3,16 @@ package main
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
 	"github.com/dengzii/weaveflow"
-	"github.com/dengzii/weaveflow/builder"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/llms/openai"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
-	"os"
-	"path/filepath"
-	"time"
 
 	"go.uber.org/zap"
 )
@@ -57,7 +57,7 @@ func resumeFromCheckpoint(ctx context.Context) {
 	tryPanic(state.SetPath(currentState, state.Scope(reactAgentStateScope, "pending_human_input").String(), "24+5*8-2=? 现在是几点."))
 
 	baseDir := ".local/instance"
-	graph, err := weaveflow.LoadGraphFromFile(&builder.BuildContext{}, filepath.Join(baseDir, "graph.json"))
+	graph, err := weaveflow.LoadGraphFromFile(&weaveflow.BuildContext{}, filepath.Join(baseDir, "graph.json"))
 	tryPanic(err)
 
 	runner := newExampleRunner(baseDir, graph)

@@ -1,7 +1,6 @@
 package node
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
@@ -79,7 +78,7 @@ func compactGraphNodeConfig(config map[string]any) map[string]any {
 	return out
 }
 
-func EnsureNodeID(node Node) {
+func ensureNodeID(node Node) {
 	if node == nil || strings.TrimSpace(node.ID()) != "" {
 		return
 	}
@@ -88,19 +87,6 @@ func EnsureNodeID(node Node) {
 		return
 	}
 	setter.SetID(defaultNodeID(node))
-}
-
-func AllocateNodeID(node Node, exists func(string) bool) string {
-	base := defaultNodeID(node)
-	if exists == nil || !exists(base) {
-		return base
-	}
-	for suffix := 2; ; suffix++ {
-		candidate := fmt.Sprintf("%s_%d", base, suffix)
-		if !exists(candidate) {
-			return candidate
-		}
-	}
 }
 
 func defaultNodeID(node Node) string {

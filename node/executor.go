@@ -21,7 +21,7 @@ func Execute(ctx context.Context, registry *state.Registry, base *state.State, n
 	if err := ctx.Err(); err != nil {
 		return ExecutionResult{}, err
 	}
-	EnsureNodeID(node)
+	ensureNodeID(node)
 	if specNode, ok := node.(interface{ Validate() error }); ok {
 		if err := specNode.Validate(); err != nil {
 			return ExecutionResult{}, err

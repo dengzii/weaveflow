@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
@@ -31,33 +32,32 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: registry.ResolveMappedSubgraphStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
-			graphRef := registry.StringConfig(spec.Config, "graph_ref")
+		ResolveStateContract: resolveMappedSubgraphStateContract,
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+			graphRef := config.String(spec.Config, "graph_ref")
 			if graphRef == "" {
 				return nil, fmt.Errorf("build mapped_subgraph node %q: graph_ref is required", spec.ID)
 			}
-			options := ctx.BuildOptions()
-			if options.SubgraphBuilder == nil {
+			if ctx == nil || ctx.SubgraphBuilder == nil {
 				return nil, fmt.Errorf("build mapped_subgraph node %q: subgraph builder is required", spec.ID)
 			}
-			runner, err := options.SubgraphBuilder(graphRef)
+			runner, err := ctx.SubgraphBuilder(graphRef)
 			if err != nil {
 				return nil, fmt.Errorf("build mapped_subgraph node %q: %w", spec.ID, err)
 			}
-			node := node.NewMappedSubgraphNode(node.WithID(spec.ID))
-			applyNodeMetadata(&node.Base, spec)
-			node.GraphRef = graphRef
-			node.InputMappings, err = parsePathMappings(registry.MapStringConfig(spec.Config, "input_map"), false)
+			mappedNode := node.NewMappedSubgraphNode(node.WithID(spec.ID))
+			applyNodeMetadata(&mappedNode.Base, spec)
+			mappedNode.GraphRef = graphRef
+			mappedNode.InputMappings, err = parsePathMappings(config.StringMap(spec.Config, "input_map"), false)
 			if err != nil {
 				return nil, fmt.Errorf("build mapped_subgraph node %q input_map: %w", spec.ID, err)
 			}
-			node.OutputMappings, err = parsePathMappings(registry.MapStringConfig(spec.Config, "output_map"), true)
+			mappedNode.OutputMappings, err = parsePathMappings(config.StringMap(spec.Config, "output_map"), true)
 			if err != nil {
 				return nil, fmt.Errorf("build mapped_subgraph node %q output_map: %w", spec.ID, err)
 			}
-			node.InvokeSubgraph = runner
-			return node, nil
+			mappedNode.InvokeSubgraph = runner
+			return mappedNode, nil
 		},
 	})
 
@@ -76,15 +76,15 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: registry.ResolveHumanMessageStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+		ResolveStateContract: resolveHumanMessageStateContract,
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 			_ = ctx
-			node := node.NewHumanMessageNode(registry.StringConfig(spec.Config, "content"), node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
-			applyNodeMetadata(&node.Base, spec)
-			if value := registry.StringConfig(spec.Config, "interrupt_message"); value != "" {
-				node.InterruptMessage = value
+			humanNode := node.NewHumanMessageNode(config.String(spec.Config, "content"), node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
+			applyNodeMetadata(&humanNode.Base, spec)
+			if value := config.String(spec.Config, "interrupt_message"); value != "" {
+				humanNode.InterruptMessage = value
 			}
-			return node, nil
+			return humanNode, nil
 		},
 	})
 
@@ -105,20 +105,20 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: registry.ResolveContextReducerStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+		ResolveStateContract: resolveContextReducerStateContract,
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 			_ = ctx
-			node := node.NewContextReducerNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
-			applyNodeMetadata(&node.Base, spec)
-			node.MaxMessages, _ = registry.IntConfig(spec.Config, "max_messages")
-			if value, ok := registry.BoolConfig(spec.Config, "preserve_system"); ok {
-				node.PreserveSystem = value
+			reducerNode := node.NewContextReducerNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
+			applyNodeMetadata(&reducerNode.Base, spec)
+			reducerNode.MaxMessages, _ = config.Int(spec.Config, "max_messages")
+			if value, ok := config.Bool(spec.Config, "preserve_system"); ok {
+				reducerNode.PreserveSystem = value
 			}
-			node.PreserveRecent, _ = registry.IntConfig(spec.Config, "preserve_recent")
-			if value := registry.StringConfig(spec.Config, "summary_prefix"); value != "" {
-				node.SummaryPrefix = value
+			reducerNode.PreserveRecent, _ = config.Int(spec.Config, "preserve_recent")
+			if value := config.String(spec.Config, "summary_prefix"); value != "" {
+				reducerNode.SummaryPrefix = value
 			}
-			return node, nil
+			return reducerNode, nil
 		},
 	})
 
@@ -137,14 +137,14 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: registry.ResolveLLMStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+		ResolveStateContract: resolveLLMStateContract,
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 			_ = ctx
-			node := node.NewLLMNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
-			applyNodeMetadata(&node.Base, spec)
-			node.ToolIDs = registry.StringSliceConfig(spec.Config, "tool_ids")
-			node.PromptMaxChars, _ = registry.IntConfig(spec.Config, "prompt_max_chars")
-			return node, nil
+			llmNode := node.NewLLMNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
+			applyNodeMetadata(&llmNode.Base, spec)
+			llmNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			llmNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			return llmNode, nil
 		},
 	})
 
@@ -163,16 +163,16 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: registry.ResolveToolsStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+		ResolveStateContract: resolveToolsStateContract,
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 			_ = ctx
-			node := node.NewToolsNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
-			applyNodeMetadata(&node.Base, spec)
-			node.ToolIDs = registry.StringSliceConfig(spec.Config, "tool_ids")
-			if parallel, ok := registry.BoolConfig(spec.Config, "parallel"); ok {
-				node.Parallel = parallel
+			toolsNode := node.NewToolsNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
+			applyNodeMetadata(&toolsNode.Base, spec)
+			toolsNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
+				toolsNode.Parallel = parallel
 			}
-			return node, nil
+			return toolsNode, nil
 		},
 	})
 
@@ -198,30 +198,30 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: registry.ResolveAgentStateContract,
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+		ResolveStateContract: resolveAgentStateContract,
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 			_ = ctx
-			node := node.NewAgentNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
-			applyNodeMetadata(&node.Base, spec)
-			node.ToolIDs = registry.StringSliceConfig(spec.Config, "tool_ids")
-			node.SystemPrompt = registry.StringConfig(spec.Config, "system_prompt")
+			agentNode := node.NewAgentNode(node.WithScope(nodeStateScope(spec.Config)), node.WithID(spec.ID))
+			applyNodeMetadata(&agentNode.Base, spec)
+			agentNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			agentNode.SystemPrompt = config.String(spec.Config, "system_prompt")
 			var err error
-			node.InputPath, err = parseOptionalStatePath(registry.StringConfig(spec.Config, "input_path"))
+			agentNode.InputPath, err = parseOptionalStatePath(config.String(spec.Config, "input_path"))
 			if err != nil {
 				return nil, fmt.Errorf("build agent node %q input_path: %w", spec.ID, err)
 			}
-			node.OutputPath, err = parseOptionalStatePath(registry.StringConfig(spec.Config, "output_path"))
+			agentNode.OutputPath, err = parseOptionalStatePath(config.String(spec.Config, "output_path"))
 			if err != nil {
 				return nil, fmt.Errorf("build agent node %q output_path: %w", spec.ID, err)
 			}
-			node.MaxIterations, _ = registry.IntConfig(spec.Config, "max_iterations")
-			node.PromptMaxChars, _ = registry.IntConfig(spec.Config, "prompt_max_chars")
-			if parallel, ok := registry.BoolConfig(spec.Config, "parallel"); ok {
-				node.Parallel = parallel
+			agentNode.MaxIterations, _ = config.Int(spec.Config, "max_iterations")
+			agentNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
+				agentNode.Parallel = parallel
 			}
-			node.ToolName = registry.StringConfig(spec.Config, "tool_name")
-			node.ToolDescription = registry.StringConfig(spec.Config, "tool_description")
-			return node, nil
+			agentNode.ToolName = config.String(spec.Config, "tool_name")
+			agentNode.ToolDescription = config.String(spec.Config, "tool_description")
+			return agentNode, nil
 		},
 	})
 
@@ -303,25 +303,25 @@ func registerCoreConditions(r *registry.Registry) {
 			},
 		},
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
-			config, err := ParseExpressionConditionConfig(spec.Config)
+			cfg, err := ParseExpressionConditionConfig(spec.Config)
 			if err != nil {
 				return registry.EdgeCondition{}, fmt.Errorf("resolve expression condition: %w", err)
 			}
-			return ExpressionConditions(config)
+			return ExpressionConditions(cfg)
 		},
 	})
 }
 
-func conditionStateScope(config map[string]any) string {
-	if _, ok := config["state_scope"]; ok {
-		return registry.StringConfig(config, "state_scope")
+func conditionStateScope(configMap map[string]any) string {
+	if _, ok := configMap["state_scope"]; ok {
+		return config.String(configMap, "state_scope")
 	}
 	return node.DefaultScope
 }
 
-func nodeStateScope(config map[string]any) string {
-	if _, ok := config["state_scope"]; ok {
-		return registry.StringConfig(config, "state_scope")
+func nodeStateScope(configMap map[string]any) string {
+	if _, ok := configMap["state_scope"]; ok {
+		return config.String(configMap, "state_scope")
 	}
 	return node.DefaultScope
 }

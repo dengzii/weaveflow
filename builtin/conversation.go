@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
@@ -103,32 +104,32 @@ func environmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		Build: func(ctx registry.NodeBuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
 			_ = ctx
-			node := node.NewEnvironmentContextNode(node.WithID(spec.ID))
-			applyNodeMetadata(&node.Base, spec)
-			node.EnvironmentStatePath = registry.StringConfigTrim(spec.Config, "environment_state_path")
-			node.WorkspaceRoot = registry.StringConfigTrim(spec.Config, "workspace_root")
-			if value, ok := registry.BoolConfig(spec.Config, "include_git"); ok {
-				node.IncludeGit = value
+			envNode := node.NewEnvironmentContextNode(node.WithID(spec.ID))
+			applyNodeMetadata(&envNode.Base, spec)
+			envNode.EnvironmentStatePath = config.TrimmedString(spec.Config, "environment_state_path")
+			envNode.WorkspaceRoot = config.TrimmedString(spec.Config, "workspace_root")
+			if value, ok := config.Bool(spec.Config, "include_git"); ok {
+				envNode.IncludeGit = value
 			}
-			if value, ok := registry.BoolConfig(spec.Config, "include_project"); ok {
-				node.IncludeProject = value
+			if value, ok := config.Bool(spec.Config, "include_project"); ok {
+				envNode.IncludeProject = value
 			}
-			if value, ok := registry.IntConfig(spec.Config, "git_status_limit"); ok {
+			if value, ok := config.Int(spec.Config, "git_status_limit"); ok {
 				if value <= 0 {
 					return nil, fmt.Errorf("build environment_context node %q: git_status_limit must be greater than 0", spec.ID)
 				}
-				node.GitStatusLimit = value
+				envNode.GitStatusLimit = value
 			}
-			return node, nil
+			return envNode, nil
 		},
 		ResolveStateContract: resolveEnvironmentContextStateContract,
 	}
 }
 
 func resolveEnvironmentContextStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	environmentPath := registry.StringConfigTrim(spec.Config, "environment_state_path")
+	environmentPath := config.TrimmedString(spec.Config, "environment_state_path")
 	if strings.TrimSpace(environmentPath) == "" {
 		environmentPath = state.Shared(accessors.KeyEnvironment).String()
 	}
@@ -148,17 +149,17 @@ func resolveEnvironmentContextStateContract(spec dsl.GraphNodeSpec) (dsl.StateCo
 	}, nil
 }
 
-func objectConfig(config map[string]any, key string) map[string]any {
-	if len(config) == 0 {
+func objectConfig(configMap map[string]any, key string) map[string]any {
+	if len(configMap) == 0 {
 		return nil
 	}
-	raw, ok := config[key]
+	raw, ok := configMap[key]
 	if !ok || raw == nil {
 		return nil
 	}
 	switch typed := raw.(type) {
 	case map[string]any:
-		return registry.CloneMap(typed)
+		return config.CloneMap(typed)
 	default:
 		return nil
 	}

@@ -7,8 +7,7 @@ import (
 )
 
 func TestOutlineSmoke_Go(t *testing.T) {
-	SkipWorkspaceCheck = true
-	t.Cleanup(func() { SkipWorkspaceCheck = false })
+	t.Setenv(fileToolSkipWorkspaceEnv, "true")
 
 	tool := NewOutline()
 	out, err := tool.Handler(context.Background(), `{"file_path":"outline.go"}`)

@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
@@ -134,13 +135,13 @@ func ExpressionConditions(config ExpressionConditionConfig) (registry.EdgeCondit
 	}), nil
 }
 
-func ParseExpressionConditionConfig(config map[string]any) (ExpressionConditionConfig, error) {
+func ParseExpressionConditionConfig(configMap map[string]any) (ExpressionConditionConfig, error) {
 	parsed := ExpressionConditionConfig{
-		StateScope: registry.StringConfig(config, "state_scope"),
-		Match:      registry.StringConfig(config, "match"),
+		StateScope: config.String(configMap, "state_scope"),
+		Match:      config.String(configMap, "match"),
 	}
 
-	expressions, err := parseExpressionsConfig(config["expressions"])
+	expressions, err := parseExpressionsConfig(configMap["expressions"])
 	if err != nil {
 		return ExpressionConditionConfig{}, err
 	}
@@ -150,16 +151,16 @@ func ParseExpressionConditionConfig(config map[string]any) (ExpressionConditionC
 }
 
 func (c ExpressionConditionConfig) Validate() error {
-	config := normalizeExpressionConditionConfig(c)
-	if len(config.Expressions) == 0 {
+	cfg := normalizeExpressionConditionConfig(c)
+	if len(cfg.Expressions) == 0 {
 		return fmt.Errorf("expression condition requires at least one expression")
 	}
-	switch config.Match {
+	switch cfg.Match {
 	case ExpressionMatchAll, ExpressionMatchAny:
 	default:
-		return fmt.Errorf("expression condition match %q is invalid", config.Match)
+		return fmt.Errorf("expression condition match %q is invalid", cfg.Match)
 	}
-	for i, expression := range config.Expressions {
+	for i, expression := range cfg.Expressions {
 		if err := expression.Validate(); err != nil {
 			return fmt.Errorf("expression %d: %w", i, err)
 		}
@@ -168,13 +169,13 @@ func (c ExpressionConditionConfig) Validate() error {
 }
 
 func (c ExpressionConditionConfig) Map() map[string]any {
-	config := normalizeExpressionConditionConfig(c)
-	out := map[string]any{"match": config.Match}
-	if config.StateScope != "" {
-		out["state_scope"] = config.StateScope
+	cfg := normalizeExpressionConditionConfig(c)
+	out := map[string]any{"match": cfg.Match}
+	if cfg.StateScope != "" {
+		out["state_scope"] = cfg.StateScope
 	}
-	expressions := make([]any, 0, len(config.Expressions))
-	for _, expression := range config.Expressions {
+	expressions := make([]any, 0, len(cfg.Expressions))
+	for _, expression := range cfg.Expressions {
 		expressions = append(expressions, expression.Map())
 	}
 	out["expressions"] = expressions
@@ -315,10 +316,10 @@ func parseExpression(raw any) (Expression, error) {
 		return expression, expression.Validate()
 	case map[string]any:
 		expression := Expression{
-			Value1: registry.StringConfig(typed, "value1"),
-			Op:     registry.StringConfig(typed, "op"),
-			Value2: registry.StringConfig(typed, "value2"),
-			Logic:  registry.StringConfig(typed, "logic"),
+			Value1: config.String(typed, "value1"),
+			Op:     config.String(typed, "op"),
+			Value2: config.String(typed, "value2"),
+			Logic:  config.String(typed, "logic"),
 		}
 		if rawChildren, ok := typed["children"]; ok && rawChildren != nil {
 			children, err := parseExpressionsConfig(rawChildren)
@@ -454,11 +455,11 @@ func conversationFieldValue(currentState *state.State, scope, field string) (any
 }
 
 func conversationForCondition(currentState *state.State, scope string) (accessors.Conversation, error) {
-	registry := state.NewRegistry()
-	if err := accessors.InstallDefaultAccessors(registry); err != nil {
+	reg := state.NewRegistry()
+	if err := accessors.InstallDefaultAccessors(reg); err != nil {
 		return nil, err
 	}
-	return state.UseAccessor(state.NewAccess(registry, currentState).WithScope(scope), accessors.ConversationID)
+	return state.UseAccessor(state.NewAccess(reg, currentState).WithScope(scope), accessors.ConversationID)
 }
 
 func expressionValueEquals(left any, right string) bool {

@@ -264,9 +264,3 @@ func (l *llmResponseEventHandler) emitStreamingResponse(ctx context.Context, rea
 	}
 	return nil
 }
-
-func StringifyMessages(messages []llms.MessageContent) string {
-	writer := &strings.Builder{}
-	llms.ShowMessageContents(writer, messages)
-	return writer.String()
-}

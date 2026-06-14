@@ -1,8 +1,8 @@
 package graph
 
 import (
-	"github.com/dengzii/weaveflow/builder"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/internal/graphbuild"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
@@ -30,9 +30,9 @@ func (g *Graph) ContractDiagnostics() []ContractDiagnostic {
 	return cloned
 }
 
-func (g *Graph) contractAnalysisGraph() builder.ContractAnalysisGraph {
+func (g *Graph) contractAnalysisGraph() graphbuild.ContractAnalysisGraph {
 	if g == nil {
-		return builder.ContractAnalysisGraph{}
+		return graphbuild.ContractAnalysisGraph{}
 	}
 
 	conditionalEdges := make(map[string][]string, len(g.conditionalEdges))
@@ -44,7 +44,7 @@ func (g *Graph) contractAnalysisGraph() builder.ContractAnalysisGraph {
 		conditionalEdges[from] = targets
 	}
 
-	return builder.ContractAnalysisGraph{
+	return graphbuild.ContractAnalysisGraph{
 		EntryPoint:        g.entryPoint,
 		EndNode:           langgraph.END,
 		InitialStatePaths: append([]string(nil), g.initialStatePaths...),

@@ -39,12 +39,11 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 |-----------------|--------------------------------------------------------------------------------|
 | `core/`         | Core interfaces, execution abstractions, and state primitives.                 |
 | `dsl/`          | Serializable graph definitions, node specs, and contract schemas.              |
-| `builder/`      | Graph construction, validation, and contract analysis.                         |
 | `graph/`        | Graph topology, edges, routing, and runnable graph assembly.                   |
 | `runtime/`      | Execution engine, checkpoints, artifacts, and event plumbing.                  |
 | `state/`        | Scoped state, snapshots, validation, merge behavior, and conversation helpers. |
-| `registry/`     | Node/condition registration and graph instance configuration.                  |
-| `nodes/`        | Production-oriented node implementations.                                      |
+| `registry/`     | Node/condition registration, build context, and graph instance configuration.  |
+| `node/`         | Production-oriented node implementations.                                      |
 | `builtin/`      | Built-in conditions, helpers, and default registry wiring.                     |
 | `tools/`        | Tool interfaces and bundled tool implementations.                              |
 | `llms/openai/`  | OpenAI-compatible LLM adapter.                                                 |
@@ -120,7 +119,7 @@ _ = g.SetEntryPoint(human.ID())
 Load a graph definition from disk:
 
 ```go
-graph, err := weaveflow.LoadGraphFromFile(&builder.BuildContext{}, "graph.json")
+graph, err := weaveflow.LoadGraphFromFile(&weaveflow.BuildContext{}, "graph.json")
 ```
 
 ## Neo Reference Server

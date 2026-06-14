@@ -3,9 +3,10 @@ package graph
 import (
 	"context"
 	"fmt"
-	"github.com/dengzii/weaveflow/builder"
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/internal/graphbuild"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
@@ -65,7 +66,7 @@ func NewGraph() *Graph {
 	}
 }
 
-func LoadGraphFromFile(buildContext *builder.BuildContext, path string) (*Graph, error) {
+func LoadGraphFromFile(buildContext *registry.BuildContext, path string) (*Graph, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -124,10 +125,7 @@ func (g *Graph) AddNode(targetNode node.Node) error {
 		if !ok {
 			return fmt.Errorf("nodes id is empty and node does not support automatic id assignment")
 		}
-		id = node.AllocateNodeID(targetNode, func(candidate string) bool {
-			_, exists := g.nodes[candidate]
-			return exists
-		})
+		id = g.allocateNodeID(targetNode)
 		setter.SetID(id)
 	}
 	if _, exists := g.nodes[id]; exists {
@@ -163,6 +161,34 @@ func (g *Graph) AddNode(targetNode node.Node) error {
 	return nil
 }
 
+func (g *Graph) allocateNodeID(targetNode node.Node) string {
+	base := graphDefaultNodeID(targetNode)
+	if _, exists := g.nodes[base]; !exists {
+		return base
+	}
+	for suffix := 2; ; suffix++ {
+		candidate := fmt.Sprintf("%s_%d", base, suffix)
+		if _, exists := g.nodes[candidate]; !exists {
+			return candidate
+		}
+	}
+}
+
+func graphDefaultNodeID(targetNode node.Node) string {
+	if targetNode == nil {
+		return "node"
+	}
+	if provider, ok := targetNode.(dsl.GraphNodeSpecProvider); ok {
+		if nodeType := strings.TrimSpace(provider.GraphNodeSpec().Type); nodeType != "" {
+			return nodeType
+		}
+	}
+	if name := strings.TrimSpace(targetNode.Name()); name != "" {
+		return name
+	}
+	return "node"
+}
+
 func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) {
 	if g == nil {
 		return
@@ -172,7 +198,7 @@ func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) {
 		return
 	}
 	if len(spec.Config) > 0 {
-		spec.Config = registry.CloneMap(spec.Config)
+		spec.Config = config.CloneMap(spec.Config)
 	}
 	g.nodeSpecs[id] = spec
 }
@@ -334,8 +360,8 @@ func (g *Graph) Validate() error {
 	}
 
 	if len(g.nodeContracts) > 0 {
-		g.contractDiagnostics = builder.AnalyzeContractDiagnostics(g.contractAnalysisGraph())
-		if err := builder.ContractDiagnosticsError(g.contractDiagnostics); err != nil {
+		g.contractDiagnostics = graphbuild.AnalyzeContractDiagnostics(g.contractAnalysisGraph())
+		if err := graphbuild.ContractDiagnosticsError(g.contractDiagnostics); err != nil {
 			return err
 		}
 	} else {
@@ -509,7 +535,7 @@ func (g *Graph) Run(ctx context.Context, initialState *state.State) (*state.Stat
 	return runnable.Invoke(ctx, initialState)
 }
 
-func (g *Graph) SetInitialStatePaths(paths []string) {
+func (g *Graph) setInitialStatePaths(paths []string) {
 	if g == nil {
 		return
 	}
@@ -520,7 +546,7 @@ func (g *Graph) SetInitialStatePaths(paths []string) {
 	g.initialStatePaths = append([]string(nil), paths...)
 }
 
-func (g *Graph) SetNodeContracts(contracts map[string]state.Contract) {
+func (g *Graph) setNodeContracts(contracts map[string]state.Contract) {
 	if g == nil {
 		return
 	}
@@ -532,27 +558,6 @@ func (g *Graph) SetNodeContracts(contracts map[string]state.Contract) {
 	for key, value := range contracts {
 		g.nodeContracts[key] = value.Clone()
 	}
-}
-
-func (g *Graph) ValidateGraph() error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
-	}
-	return g.Validate()
-}
-
-func (g *Graph) AddRuntimeEdge(from, to string) error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
-	}
-	return g.addRuntimeEdge(from, to)
-}
-
-func (g *Graph) AddRuntimeConditionalEdge(from, to string, condition registry.EdgeCondition) error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
-	}
-	return g.addRuntimeConditionalEdge(from, to, condition)
 }
 
 func (g *Graph) NodeSpecs() map[string]dsl.GraphNodeSpec {
@@ -613,7 +618,7 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 			return dsl.GraphDefinition{}, fmt.Errorf("nodes %q is not serializable: missing registered type", nodeID)
 		}
 		if len(spec.Config) > 0 {
-			spec.Config = registry.CloneMap(spec.Config)
+			spec.Config = config.CloneMap(spec.Config)
 		}
 		nodeList = append(nodeList, spec)
 	}
@@ -623,7 +628,7 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 		edges[i] = edge
 		if edge.Condition != nil && len(edge.Condition.Config) > 0 {
 			copyCondition := *edge.Condition
-			copyCondition.Config = registry.CloneMap(edge.Condition.Config)
+			copyCondition.Config = config.CloneMap(edge.Condition.Config)
 			edges[i].Condition = &copyCondition
 		}
 	}

@@ -3,7 +3,6 @@ package node
 import (
 	"context"
 	"fmt"
-	"sort"
 
 	"github.com/dengzii/weaveflow/core"
 	fruntime "github.com/dengzii/weaveflow/runtime"
@@ -121,26 +120,4 @@ func (n *MappedSubgraphNode) Contract(*state.Registry) (state.Contract, error) {
 		})
 	}
 	return state.NewContract(fields...), nil
-}
-
-func MappedSubgraphInputPaths(inputMappings []PathMapping) []string {
-	paths := make([]string, 0, len(inputMappings))
-	for _, mapping := range inputMappings {
-		if !mapping.From.Empty() {
-			paths = append(paths, mapping.From.String())
-		}
-	}
-	sort.Strings(paths)
-	return paths
-}
-
-func MappedSubgraphOutputPaths(outputMappings []PathMapping) []string {
-	paths := make([]string, 0, len(outputMappings))
-	for _, mapping := range outputMappings {
-		if !mapping.To.Empty() {
-			paths = append(paths, mapping.To.String())
-		}
-	}
-	sort.Strings(paths)
-	return paths
 }

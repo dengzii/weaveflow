@@ -1,16 +1,17 @@
-package registry
+package builtin
 
 import (
 	"sort"
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
 )
 
-func ResolveHumanMessageStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+func resolveHumanMessageStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -20,14 +21,14 @@ func ResolveHumanMessageStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract
 	}, nil
 }
 
-func ResolveContextReducerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+func resolveContextReducerStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages read and compacted into a reduced message history."}},
 	}, nil
 }
 
-func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+func resolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{
@@ -40,14 +41,14 @@ func ResolveLLMStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) 
 	}, nil
 }
 
-func ResolveToolsStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+func resolveToolsStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	scope := graphNodeStateScope(spec.Config)
 	return dsl.StateContract{
 		Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected for tool calls and extended with tool responses."}},
 	}, nil
 }
 
-func ResolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+func resolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
 	scope := graphNodeStateScope(spec.Config)
 	fields := []dsl.StateFieldRef{
 		{Path: scopedConversationPath(scope, "messages"), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages the agent reads and extends across each internal iteration."},
@@ -55,18 +56,18 @@ func ResolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error
 		{Path: scopedConversationPath(scope, "max_iterations"), Mode: dsl.StateAccessReadWrite, Description: "Maximum iteration cap for the agent loop, applied if not already higher."},
 		{Path: scopedConversationPath(scope, "final_answer"), Mode: dsl.StateAccessWrite, Description: "Final answer written when the agent stops without further tool calls."},
 	}
-	if inputPath := strings.TrimSpace(StringConfig(spec.Config, "input_path")); inputPath != "" {
+	if inputPath := strings.TrimSpace(config.String(spec.Config, "input_path")); inputPath != "" {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(inputPath), Mode: dsl.StateAccessRead, Description: "State path the agent reads its initial task from.", Dynamic: true, PathConfigKey: "input_path"})
 	}
-	if outputPath := strings.TrimSpace(StringConfig(spec.Config, "output_path")); outputPath != "" {
+	if outputPath := strings.TrimSpace(config.String(spec.Config, "output_path")); outputPath != "" {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(outputPath), Mode: dsl.StateAccessWrite, Description: "State path the agent writes its final answer to.", Dynamic: true, PathConfigKey: "output_path"})
 	}
 	return dsl.StateContract{Fields: fields}, nil
 }
 
-func ResolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-	inputMap := MapStringConfig(spec.Config, "input_map")
-	outputMap := MapStringConfig(spec.Config, "output_map")
+func resolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+	inputMap := config.StringMap(spec.Config, "input_map")
+	outputMap := config.StringMap(spec.Config, "output_map")
 	fields := make([]dsl.StateFieldRef, 0, len(inputMap)+len(outputMap))
 	inputPaths := make([]string, 0, len(inputMap))
 	for parentPath := range inputMap {
@@ -87,9 +88,9 @@ func ResolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 	return dsl.StateContract{Fields: fields}, nil
 }
 
-func graphNodeStateScope(config map[string]any) string {
-	if _, ok := config["state_scope"]; ok {
-		return StringConfig(config, "state_scope")
+func graphNodeStateScope(configMap map[string]any) string {
+	if _, ok := configMap["state_scope"]; ok {
+		return config.String(configMap, "state_scope")
 	}
 	return node.DefaultScope
 }

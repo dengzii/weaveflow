@@ -19,16 +19,7 @@ const (
 	maxListLimit             = 500
 )
 
-// SkipWorkspaceCheck disables the workspace-escape guard when true. The setting
-// is also enabled when WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK is set to a truthy
-// value (1, true, yes, on). Use with care: file tools will then operate on any
-// absolute or relative path the caller provides.
-var SkipWorkspaceCheck = false
-
 func skipWorkspaceCheckEnabled() bool {
-	if SkipWorkspaceCheck {
-		return true
-	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(fileToolSkipWorkspaceEnv))) {
 	case "1", "true", "yes", "on":
 		return true

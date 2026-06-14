@@ -1,7 +1,6 @@
 package weaveflow
 
 import (
-	"github.com/dengzii/weaveflow/builder"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/registry"
@@ -14,21 +13,22 @@ import (
 const EndNodeRef = graph.EndNodeRef
 
 type (
-	Graph    = graph.Graph
-	Runnable = graph.Runnable
+	BuildContext = registry.BuildContext
+	Graph        = graph.Graph
+	Runnable     = graph.Runnable
 )
 
 func NewGraph() *Graph { return graph.NewGraph() }
 
-func BuildGraph(reg *registry.Registry, def dsl.GraphDefinition, ctx *builder.BuildContext) (*Graph, error) {
+func BuildGraph(reg *registry.Registry, def dsl.GraphDefinition, ctx *BuildContext) (*Graph, error) {
 	return graph.BuildGraph(reg, def, ctx)
 }
 
-func BuildGraphInstance(reg *registry.Registry, def dsl.GraphDefinition, instance dsl.GraphInstanceConfig, ctx *builder.BuildContext) (*Graph, error) {
+func BuildGraphInstance(reg *registry.Registry, def dsl.GraphDefinition, instance dsl.GraphInstanceConfig, ctx *BuildContext) (*Graph, error) {
 	return graph.BuildGraphInstance(reg, def, instance, ctx)
 }
 
-func LoadGraphFromFile(buildContext *builder.BuildContext, path string) (*Graph, error) {
+func LoadGraphFromFile(buildContext *BuildContext, path string) (*Graph, error) {
 	return graph.LoadGraphFromFile(buildContext, path)
 }
 

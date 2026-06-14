@@ -40,7 +40,7 @@ const (
 )
 
 func main() {
-	tools.SkipWorkspaceCheck = true
+	must(os.Setenv("WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", "true"))
 
 	objective := strings.Join(os.Args[1:], " ")
 	if strings.TrimSpace(objective) == "" {

@@ -1,13 +1,12 @@
-package builder
+package graphbuild
 
 import (
 	"fmt"
+	"strings"
 
-	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
-	"github.com/dengzii/weaveflow/state"
 )
 
 type GraphBuilder interface {
@@ -18,15 +17,21 @@ type GraphBuilder interface {
 	SetFinishPoint(ref string) error
 }
 
-type FinalizableGraph interface {
-	GraphBuilder
-	SetInitialStatePaths([]string)
-	SetNodeContracts(map[string]state.Contract)
-	ValidateGraph() error
-	ContractDiagnostics() []core.ContractDiagnostic
+func ValidateGraphBuildPath(path []string, next string) error {
+	next = strings.TrimSpace(next)
+	if next == "" {
+		return fmt.Errorf("graph_ref is required")
+	}
+	for _, existing := range path {
+		if existing == next {
+			cycle := append(append([]string(nil), path...), next)
+			return fmt.Errorf("cyclic graph_ref dependency detected: %s", strings.Join(cycle, " -> "))
+		}
+	}
+	return nil
 }
 
-func PrepareDefinition(def dsl.GraphDefinition, instance *dsl.GraphInstanceConfig, ctx *BuildContext) (dsl.GraphDefinition, *BuildContext, error) {
+func PrepareDefinition(def dsl.GraphDefinition, instance *dsl.GraphInstanceConfig, ctx *registry.BuildContext) (dsl.GraphDefinition, *registry.BuildContext, error) {
 	def = dsl.NormalizeGraphDefinition(def)
 	if err := def.Validate(); err != nil {
 		return dsl.GraphDefinition{}, ctx, err
@@ -34,23 +39,22 @@ func PrepareDefinition(def dsl.GraphDefinition, instance *dsl.GraphInstanceConfi
 	if def.StateSchema != "" && def.StateSchema != dsl.CommonStateSchemaID {
 		return dsl.GraphDefinition{}, ctx, fmt.Errorf("unsupported state schema %q", def.StateSchema)
 	}
+	if ctx == nil {
+		ctx = &registry.BuildContext{}
+	} else {
+		ctx = ctx.Clone()
+	}
 	if instance != nil {
-		normalized := *instance
+		normalized := CloneGraphInstanceConfig(*instance)
 		if err := normalized.Validate(); err != nil {
 			return dsl.GraphDefinition{}, ctx, err
 		}
-		applied, err := registry.ApplyGraphInstanceConfig(def, normalized)
+		applied, err := ApplyGraphInstanceConfig(def, normalized)
 		if err != nil {
 			return dsl.GraphDefinition{}, ctx, err
 		}
 		def = applied
-		if ctx != nil {
-			ctx = ctx.Clone()
-			ctx.InstanceConfig = &normalized
-		}
-	}
-	if ctx == nil {
-		ctx = &BuildContext{}
+		ctx.InstanceConfig = &normalized
 	}
 	return def, ctx, nil
 }
@@ -59,7 +63,7 @@ func PopulateGraph(
 	target GraphBuilder,
 	reg *registry.Registry,
 	def dsl.GraphDefinition,
-	ctx *BuildContext,
+	ctx *registry.BuildContext,
 	applyBuiltInEdges func(dsl.GraphDefinition) error,
 ) error {
 	if target == nil {
@@ -115,54 +119,4 @@ func PopulateGraph(
 		}
 	}
 	return nil
-}
-
-func BuildFinalizedGraph[T FinalizableGraph](
-	reg *registry.Registry,
-	def dsl.GraphDefinition,
-	ctx *BuildContext,
-	newGraph func() T,
-	initialStatePaths []string,
-	applyBuiltInEdges func(T, dsl.GraphDefinition) error,
-	resolveNodeContracts func(dsl.GraphDefinition, *registry.Registry) (map[string]state.Contract, error),
-) (T, error) {
-	var zero T
-	if reg == nil {
-		return zero, fmt.Errorf("registry is nil")
-	}
-	if newGraph == nil {
-		return zero, fmt.Errorf("new graph factory is nil")
-	}
-	if resolveNodeContracts == nil {
-		return zero, fmt.Errorf("resolve node contracts callback is nil")
-	}
-
-	graph := newGraph()
-	graph.SetInitialStatePaths(initialStatePaths)
-
-	contracts, err := resolveNodeContracts(def, reg)
-	if err != nil {
-		return zero, err
-	}
-	graph.SetNodeContracts(contracts)
-
-	var applyBuiltIns func(dsl.GraphDefinition) error
-	if applyBuiltInEdges != nil {
-		applyBuiltIns = func(def dsl.GraphDefinition) error {
-			return applyBuiltInEdges(graph, def)
-		}
-	}
-	if err := PopulateGraph(graph, reg, def, ctx, applyBuiltIns); err != nil {
-		return zero, err
-	}
-	if err := graph.ValidateGraph(); err != nil {
-		if ctx != nil {
-			ctx.EmitContractDiagnostics(graph.ContractDiagnostics())
-		}
-		return zero, err
-	}
-	if ctx != nil {
-		ctx.EmitContractDiagnostics(graph.ContractDiagnostics())
-	}
-	return graph, nil
 }

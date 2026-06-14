@@ -1,11 +1,11 @@
-package registry
+package config
 
 import (
 	"strconv"
 	"strings"
 )
 
-func StringConfig(config map[string]any, key string) string {
+func String(config map[string]any, key string) string {
 	if len(config) == 0 {
 		return ""
 	}
@@ -15,11 +15,11 @@ func StringConfig(config map[string]any, key string) string {
 	return ""
 }
 
-func StringConfigTrim(config map[string]any, key string) string {
-	return strings.TrimSpace(StringConfig(config, key))
+func TrimmedString(config map[string]any, key string) string {
+	return strings.TrimSpace(String(config, key))
 }
 
-func StringSliceConfig(config map[string]any, key string) []string {
+func StringSlice(config map[string]any, key string) []string {
 	if len(config) == 0 {
 		return nil
 	}
@@ -42,7 +42,7 @@ func StringSliceConfig(config map[string]any, key string) []string {
 	return nil
 }
 
-func StringSliceConfigTrim(config map[string]any, key string) []string {
+func TrimmedStringSlice(config map[string]any, key string) []string {
 	if len(config) == 0 {
 		return nil
 	}
@@ -77,7 +77,7 @@ func StringSliceConfigTrim(config map[string]any, key string) []string {
 	return nil
 }
 
-func MapStringConfig(config map[string]any, key string) map[string]string {
+func StringMap(config map[string]any, key string) map[string]string {
 	if len(config) == 0 {
 		return nil
 	}
@@ -104,7 +104,7 @@ func MapStringConfig(config map[string]any, key string) map[string]string {
 	return nil
 }
 
-func IntConfig(config map[string]any, key string) (int, bool) {
+func Int(config map[string]any, key string) (int, bool) {
 	if len(config) == 0 {
 		return 0, false
 	}
@@ -134,7 +134,7 @@ func IntConfig(config map[string]any, key string) (int, bool) {
 	return 0, false
 }
 
-func BoolConfig(config map[string]any, key string) (bool, bool) {
+func Bool(config map[string]any, key string) (bool, bool) {
 	if len(config) == 0 {
 		return false, false
 	}
@@ -152,7 +152,7 @@ func BoolConfig(config map[string]any, key string) (bool, bool) {
 	return false, false
 }
 
-func FloatConfig(config map[string]any, key string) (float64, bool) {
+func Float(config map[string]any, key string) (float64, bool) {
 	if len(config) == 0 {
 		return 0, false
 	}
@@ -169,4 +169,15 @@ func FloatConfig(config map[string]any, key string) (float64, bool) {
 	}
 
 	return 0, false
+}
+
+func CloneMap(input map[string]any) map[string]any {
+	if input == nil {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
+	}
+	return out
 }
