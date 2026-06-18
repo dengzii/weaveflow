@@ -818,6 +818,9 @@ func replaySubtitle(event EventView) string {
 	case runtime.EventCheckpointCreated:
 		stage := valueAsString(payload["stage"])
 		checkpointID := valueAsString(payload["checkpoint_id"])
+		if stage == string(runtime.CheckpointAfterParallelWave) {
+			return strings.TrimSpace(strings.Join([]string{"parallel wave barrier", checkpointID}, " "))
+		}
 		return strings.TrimSpace(strings.Join([]string{stage, checkpointID}, " "))
 	case runtime.EventArtifactCreated:
 		artifactType := valueAsString(payload["type"])

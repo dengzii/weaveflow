@@ -3,7 +3,8 @@
   "private": true,
   "scripts": {
     "build": "bun run build.ts",
-    "dev": "bun run build.ts --watch"
+    "dev": "bun run build.ts --watch",
+    "test": "bun test"
   },
   "dependencies": {
     "@radix-ui/react-collapsible": "^1.1.12",

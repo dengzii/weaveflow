@@ -72,30 +72,48 @@ func (g *graphRunnerGraph) ResolveNodeID(nodeID string) (string, error) {
 }
 
 func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state *state.State) (string, error) {
+	next, err := g.ResolveNextNodes(currentNodeID, state)
+	if err != nil {
+		return "", err
+	}
+	if len(next) != 1 {
+		return "", fmt.Errorf("nodes %q resolved %d next nodes; use ResolveNextNodes for fan-out", currentNodeID, len(next))
+	}
+	return next[0], nil
+}
+
+func (g *graphRunnerGraph) ResolveNextNodes(currentNodeID string, state *state.State) ([]string, error) {
 	if g == nil || g.graph == nil {
-		return "", fmt.Errorf("graph runner graph is nil")
+		return nil, fmt.Errorf("graph runner graph is nil")
 	}
 	if conditional := g.graph.conditionalEdges[currentNodeID]; len(conditional) > 0 {
 		for _, edge := range conditional {
 			if edge.condition.Match(context.Background(), state) {
-				return edge.to, nil
+				return []string{edge.to}, nil
 			}
 		}
-		if target, ok := g.graph.edges[currentNodeID]; ok {
-			return target, nil
+		if targets := g.graph.defaultEdges[currentNodeID]; len(targets) > 0 {
+			return append([]string(nil), targets...), nil
 		}
 		if currentNodeID == g.graph.finishPoint {
-			return langgraph.END, nil
+			return []string{langgraph.END}, nil
 		}
-		return "", fmt.Errorf("nodes %q produced no matching conditional edge", currentNodeID)
+		return nil, fmt.Errorf("nodes %q produced no matching conditional edge", currentNodeID)
 	}
-	if target, ok := g.graph.edges[currentNodeID]; ok {
-		return target, nil
+	if targets := g.graph.defaultEdges[currentNodeID]; len(targets) > 0 {
+		return append([]string(nil), targets...), nil
 	}
 	if currentNodeID == g.graph.finishPoint {
-		return langgraph.END, nil
+		return []string{langgraph.END}, nil
 	}
-	return "", fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
+	return nil, fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
+}
+
+func (g *graphRunnerGraph) IsParallelBranchTarget(nodeID string) bool {
+	if g == nil || g.graph == nil {
+		return false
+	}
+	return g.graph.isParallelBranchTarget(nodeID)
 }
 
 func (g *graphRunnerGraph) NodeName(nodeID string) string {
@@ -130,6 +148,9 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 		nodeID, err := g.graph.resolveNodeID(breakpoint.NodeID)
 		if err != nil {
 			return nil, fmt.Errorf("resolve after-nodes breakpoint %q: %w", breakpoint.NodeID, err)
+		}
+		if g.graph.isParallelBranchTarget(nodeID) {
+			return nil, fmt.Errorf("after_node breakpoint for parallel branch node %q is not supported; use before_node or resume from after_parallel_wave", nodeID)
 		}
 		nodes = append(nodes, nodeID)
 	}

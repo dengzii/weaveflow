@@ -5,7 +5,7 @@ import type {
   NodeEventSummary,
   SourceGraph,
 } from "./types";
-import { SYNTHETIC_END_ID } from "./types";
+import { SYNTHETIC_END_ID, SYNTHETIC_START_ID } from "./types";
 import { metricValue, uniqueStrings, formatFuncArgs, objectValue, stringValue } from "./utils";
 
 export function buildProjection(
@@ -19,45 +19,55 @@ export function buildProjection(
   const completedNodeIds = new Set<string>();
   const failedNodeIds = new Set<string>();
   const traversedEdgeIds = new Set<string>();
-  const nodeTrail: string[] = [];
   let currentNodeId = "";
+  let runFinished = false;
 
   for (const item of limited) {
     const nodeId = replayNodeId(item, validNodeIds);
     if (nodeId) {
       visitedNodeIds.add(nodeId);
       currentNodeId = nodeId;
-      if (nodeTrail[nodeTrail.length - 1] !== nodeId) nodeTrail.push(nodeId);
     }
 
     const eventType = String(item.event.type ?? "").toLowerCase();
     if (nodeId && eventType.includes("finished")) completedNodeIds.add(nodeId);
     if (nodeId && eventType.includes("failed")) failedNodeIds.add(nodeId);
+    if (eventType === "run.finished") runFinished = true;
   }
 
   const edgeIndex = new Map<string, string>();
+  const incomingEdges = new Map<string, GraphEdgeRef[]>();
+  const outgoingEdges = new Map<string, GraphEdgeRef[]>();
   for (const edge of sourceGraph?.edges ?? []) {
     edgeIndex.set(`${edge.from}-->${edge.to}`, edge.id);
-  }
-
-  // Propagate to synthetic END when the last real node is completed and connects to it
-  if (
-    currentNodeId &&
-    completedNodeIds.has(currentNodeId) &&
-    edgeIndex.has(`${currentNodeId}-->${SYNTHETIC_END_ID}`)
-  ) {
-    nodeTrail.push(SYNTHETIC_END_ID);
-    visitedNodeIds.add(SYNTHETIC_END_ID);
-    completedNodeIds.add(SYNTHETIC_END_ID);
-    currentNodeId = SYNTHETIC_END_ID;
+    const ref = { id: edge.id, from: edge.from, to: edge.to };
+    incomingEdges.set(edge.to, [...(incomingEdges.get(edge.to) ?? []), ref]);
+    outgoingEdges.set(edge.from, [...(outgoingEdges.get(edge.from) ?? []), ref]);
   }
 
   let currentEdgeId = "";
-  for (let index = 1; index < nodeTrail.length; index += 1) {
-    const edgeId = edgeIndex.get(`${nodeTrail[index - 1]}-->${nodeTrail[index]}`);
-    if (!edgeId) continue;
-    traversedEdgeIds.add(edgeId);
-    currentEdgeId = edgeId;
+  for (const nodeId of visitedNodeIds) {
+    for (const edge of incomingEdges.get(nodeId) ?? []) {
+      if (edge.from === SYNTHETIC_START_ID || completedNodeIds.has(edge.from)) {
+        traversedEdgeIds.add(edge.id);
+        if (nodeId === currentNodeId) currentEdgeId = edge.id;
+      }
+    }
+  }
+
+  if (runFinished) {
+    for (const nodeId of completedNodeIds) {
+      for (const edge of outgoingEdges.get(nodeId) ?? []) {
+        if (edge.to !== SYNTHETIC_END_ID) continue;
+        traversedEdgeIds.add(edge.id);
+        currentEdgeId = edge.id;
+      }
+    }
+    if (sourceGraph?.nodes.some((node) => node.id === SYNTHETIC_END_ID)) {
+      visitedNodeIds.add(SYNTHETIC_END_ID);
+      completedNodeIds.add(SYNTHETIC_END_ID);
+      currentNodeId = SYNTHETIC_END_ID;
+    }
   }
 
   const nodeEventSummaries = collectNodeEvents(limited, validNodeIds);
@@ -71,6 +81,12 @@ export function buildProjection(
     traversedEdgeIds,
     nodeEventSummaries,
   };
+}
+
+interface GraphEdgeRef {
+  id: string;
+  from: string;
+  to: string;
 }
 
 function collectNodeEvents(

@@ -14,7 +14,7 @@ type ContractAnalysisGraph struct {
 	EntryPoint        string
 	EndNode           string
 	InitialStatePaths []string
-	Edges             map[string]string
+	Edges             map[string][]string
 	ConditionalEdges  map[string][]string
 	NodeContracts     map[string]state.Contract
 }
@@ -124,8 +124,10 @@ func reachableGraphNodes(input ContractAnalysisGraph) []string {
 		visited[nodeID] = struct{}{}
 		order = append(order, nodeID)
 
-		if next, ok := input.Edges[nodeID]; ok && !isAnalysisEndTarget(input, next) {
-			queue = append(queue, next)
+		for _, next := range input.Edges[nodeID] {
+			if !isAnalysisEndTarget(input, next) {
+				queue = append(queue, next)
+			}
 		}
 		for _, to := range input.ConditionalEdges[nodeID] {
 			if isAnalysisEndTarget(input, to) {
@@ -159,8 +161,10 @@ func graphPredecessors(input ContractAnalysisGraph, reachable []string) map[stri
 		predecessors[to] = append(predecessors[to], from)
 	}
 
-	for from, to := range input.Edges {
-		addPredecessor(from, to)
+	for from, targets := range input.Edges {
+		for _, to := range targets {
+			addPredecessor(from, to)
+		}
 	}
 	for from, edges := range input.ConditionalEdges {
 		for _, to := range edges {
@@ -241,33 +245,77 @@ func wildcardContractDiagnostics(input ContractAnalysisGraph, reachable []string
 
 func overlappingWriteDiagnostics(input ContractAnalysisGraph, reachable []string) []core.ContractDiagnostic {
 	diagnostics := make([]core.ContractDiagnostic, 0)
-	for i := 0; i < len(reachable); i++ {
-		leftID := reachable[i]
-		left, ok := input.NodeContracts[leftID]
-		if !ok {
-			continue
-		}
-		for j := i + 1; j < len(reachable); j++ {
-			rightID := reachable[j]
-			right, ok := input.NodeContracts[rightID]
+	waves := analysisParallelWaves(input, reachable)
+	for _, wave := range waves {
+		for i := 0; i < len(wave); i++ {
+			leftID := wave[i]
+			left, ok := input.NodeContracts[leftID]
 			if !ok {
 				continue
 			}
-			overlapPath, ok := overlappingWritePath(left, right)
-			if !ok {
-				continue
+			for j := i + 1; j < len(wave); j++ {
+				rightID := wave[j]
+				right, ok := input.NodeContracts[rightID]
+				if !ok {
+					continue
+				}
+				overlapPath, ok := overlappingWritePath(left, right)
+				if !ok {
+					continue
+				}
+				diagnostics = append(diagnostics, core.ContractDiagnostic{
+					Severity:    core.ContractDiagnosticSeverityWarning,
+					Kind:        "overlapping_write",
+					NodeID:      leftID,
+					OtherNodeID: rightID,
+					Path:        overlapPath,
+					Message:     fmt.Sprintf("parallel branches %q and %q both write overlapping path %q", leftID, rightID, overlapPath),
+				})
 			}
-			diagnostics = append(diagnostics, core.ContractDiagnostic{
-				Severity:    core.ContractDiagnosticSeverityWarning,
-				Kind:        "overlapping_write",
-				NodeID:      leftID,
-				OtherNodeID: rightID,
-				Path:        overlapPath,
-				Message:     fmt.Sprintf("nodes %q and %q both write overlapping path %q", leftID, rightID, overlapPath),
-			})
 		}
 	}
 	return diagnostics
+}
+
+func analysisParallelWaves(input ContractAnalysisGraph, reachable []string) [][]string {
+	reachableSet := make(map[string]struct{}, len(reachable))
+	for _, nodeID := range reachable {
+		reachableSet[nodeID] = struct{}{}
+	}
+
+	waves := make([][]string, 0)
+	addWave := func(targets []string) {
+		if len(targets) <= 1 {
+			return
+		}
+		seen := map[string]struct{}{}
+		wave := make([]string, 0, len(targets))
+		for _, target := range targets {
+			if isAnalysisEndTarget(input, target) {
+				continue
+			}
+			if _, ok := reachableSet[target]; !ok {
+				continue
+			}
+			if _, ok := seen[target]; ok {
+				continue
+			}
+			seen[target] = struct{}{}
+			wave = append(wave, target)
+		}
+		if len(wave) <= 1 {
+			return
+		}
+		waves = append(waves, wave)
+	}
+
+	for _, from := range reachable {
+		if len(input.ConditionalEdges[from]) > 0 {
+			continue
+		}
+		addWave(input.Edges[from])
+	}
+	return waves
 }
 
 func overlappingWritePath(left, right state.Contract) (string, bool) {

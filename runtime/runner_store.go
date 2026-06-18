@@ -132,6 +132,9 @@ func (s *FileExecutionStore) UpdateRun(_ context.Context, run RunRecord) error {
 }
 
 func (s *FileExecutionStore) GetRun(_ context.Context, runID string) (RunRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var run RunRecord
 	if err := readRunnerJSONFile(s.runPath(runID), &run); err != nil {
 		if os.IsNotExist(err) {
@@ -143,6 +146,9 @@ func (s *FileExecutionStore) GetRun(_ context.Context, runID string) (RunRecord,
 }
 
 func (s *FileExecutionStore) ListRuns(_ context.Context, filter RunFilter) ([]RunRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	dir := s.runsDir()
 	files, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -198,7 +204,10 @@ func (s *FileExecutionStore) UpdateStep(_ context.Context, step StepRecord) erro
 }
 
 func (s *FileExecutionStore) GetStep(_ context.Context, stepID string) (StepRecord, error) {
-	runs, err := s.ListRuns(context.Background(), RunFilter{})
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	runs, err := s.listRunsLocked(RunFilter{})
 	if err != nil {
 		return StepRecord{}, err
 	}
@@ -213,6 +222,9 @@ func (s *FileExecutionStore) GetStep(_ context.Context, stepID string) (StepReco
 }
 
 func (s *FileExecutionStore) ListSteps(_ context.Context, runID string) ([]StepRecord, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	dir := s.stepsDir(runID)
 	files, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -241,6 +253,44 @@ func (s *FileExecutionStore) ListSteps(_ context.Context, runID string) ([]StepR
 			return items[i].StepID < items[j].StepID
 		}
 		return left.Before(right)
+	})
+	return items, nil
+}
+
+func (s *FileExecutionStore) listRunsLocked(filter RunFilter) ([]RunRecord, error) {
+	dir := s.runsDir()
+	files, err := os.ReadDir(dir)
+	if os.IsNotExist(err) {
+		return []RunRecord{}, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	statusFilter := make(map[RunStatus]struct{}, len(filter.Statuses))
+	for _, status := range filter.Statuses {
+		statusFilter[status] = struct{}{}
+	}
+
+	items := make([]RunRecord, 0, len(files))
+	for _, file := range files {
+		if file.IsDir() || !strings.EqualFold(filepath.Ext(file.Name()), ".json") {
+			continue
+		}
+		var run RunRecord
+		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &run); err != nil {
+			return nil, err
+		}
+		if len(statusFilter) > 0 {
+			if _, ok := statusFilter[run.Status]; !ok {
+				continue
+			}
+		}
+		items = append(items, run)
+	}
+
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].StartedAt.Before(items[j].StartedAt)
 	})
 	return items, nil
 }
@@ -438,6 +488,9 @@ func writeRunnerBinaryFile(path string, data []byte) error {
 		return err
 	}
 	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return os.Rename(tempPath, path)

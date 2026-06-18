@@ -44,11 +44,16 @@ func (g *Graph) contractAnalysisGraph() graphbuild.ContractAnalysisGraph {
 		conditionalEdges[from] = targets
 	}
 
+	defaultEdges := make(map[string][]string, len(g.defaultEdges))
+	for from, targets := range g.defaultEdges {
+		defaultEdges[from] = append([]string(nil), targets...)
+	}
+
 	return graphbuild.ContractAnalysisGraph{
 		EntryPoint:        g.entryPoint,
 		EndNode:           langgraph.END,
 		InitialStatePaths: append([]string(nil), g.initialStatePaths...),
-		Edges:             g.edges,
+		Edges:             defaultEdges,
 		ConditionalEdges:  conditionalEdges,
 		NodeContracts:     g.nodeContracts,
 	}

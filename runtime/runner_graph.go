@@ -15,6 +15,18 @@ type RunnerExecution interface {
 	OnGraphStep(ctx context.Context, stepNodeID string, state *state.State) error
 }
 
+type BranchPatchRecorder interface {
+	RecordBranchPatch(base *state.State, nodeID string, patch state.Patch)
+}
+
+type ParallelWaveRecorder interface {
+	RecordParallelWave(base *state.State, nodeIDs []string) string
+}
+
+type BranchPatchRecorderSetter interface {
+	SetBranchPatchRecorder(recorder BranchPatchRecorder)
+}
+
 type RunnerNode interface {
 	ID() string
 	Name() string
@@ -28,7 +40,9 @@ type RunnerGraph interface {
 	EntryPointID() string
 	CompileForRunner(execution RunnerExecution) (*langgraph.StateRunnable[*state.State], error)
 	ResolveNodeID(nodeID string) (string, error)
+	ResolveNextNodes(currentNodeID string, state *state.State) ([]string, error)
 	ResolveNextNode(currentNodeID string, state *state.State) (string, error)
+	IsParallelBranchTarget(nodeID string) bool
 	NodeName(nodeID string) string
 	NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error)
 	AfterInterruptNodes(breakpoints []Breakpoint) ([]string, error)

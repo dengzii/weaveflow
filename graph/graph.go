@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/dsl"
@@ -14,6 +15,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"
@@ -43,7 +45,7 @@ type Graph struct {
 	stateRegistry       *state.Registry
 	initialStatePaths   []string
 	contractDiagnostics []ContractDiagnostic
-	edges               map[string]string
+	defaultEdges        map[string][]string
 	conditionalEdges    map[string][]conditionalEdge
 	edgeSpecs           []dsl.GraphEdgeSpec
 	entryPoint          string
@@ -59,7 +61,7 @@ func NewGraph() *Graph {
 	return &Graph{
 		nodes:            map[string]node.Node{},
 		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
-		edges:            map[string]string{},
+		defaultEdges:     map[string][]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
 		nodeListeners:    map[string][]langgraph.NodeListener[*state.State]{},
 		stateRegistry:    stateRegistry,
@@ -238,10 +240,12 @@ func (g *Graph) addEdgeInternal(from, to string, trackSpec bool) error {
 	if err != nil {
 		return err
 	}
-	if _, exists := g.edges[fromID]; exists {
-		return fmt.Errorf("nodes %q already has a default edge", fromID)
+	for _, target := range g.defaultEdges[fromID] {
+		if target == toID {
+			return fmt.Errorf("default edge %q -> %q already exists", fromID, g.serializeNodeRef(toID))
+		}
 	}
-	g.edges[fromID] = toID
+	g.defaultEdges[fromID] = append(g.defaultEdges[fromID], toID)
 	if trackSpec {
 		g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
 			From: g.nodeSpecs[fromID].ID,
@@ -332,14 +336,27 @@ func (g *Graph) Validate() error {
 		}
 	}
 
-	for from, to := range g.edges {
+	for from, targets := range g.defaultEdges {
 		if _, ok := g.nodes[from]; !ok {
 			return fmt.Errorf("edge source %q not found", from)
 		}
-		if to != langgraph.END {
-			if _, ok := g.nodes[to]; !ok {
-				return fmt.Errorf("edge target %q not found", to)
+		seenTargets := map[string]struct{}{}
+		for _, to := range targets {
+			if _, exists := seenTargets[to]; exists {
+				return fmt.Errorf("default edge %q -> %q is duplicated", from, g.serializeNodeRef(to))
 			}
+			seenTargets[to] = struct{}{}
+			if to != langgraph.END {
+				if _, ok := g.nodes[to]; !ok {
+					return fmt.Errorf("edge target %q not found", to)
+				}
+			}
+		}
+	}
+
+	for from := range g.conditionalEdges {
+		if len(g.defaultEdges[from]) > 1 {
+			return fmt.Errorf("nodes %q cannot combine conditional edges with multiple default fallback edges", from)
 		}
 	}
 
@@ -373,10 +390,11 @@ func (g *Graph) Validate() error {
 
 func (g *Graph) Compile() (*Runnable, error) {
 	compiled := langgraph.NewListenableStateGraph[*state.State]()
+	patches := newCompilePatchCollector(g.compileBranchOrders())
 	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node node.Node) {
 		nodeDef := node
 		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
-			return g.executePatchNode(ctx, nodeID, nodeDef, state)
+			return g.executePatchNode(ctx, nodeID, nodeDef, state, patches)
 		})
 		for _, listener := range g.nodeListeners[nodeID] {
 			listenableNode.AddListener(g.displayNameListener(listener))
@@ -388,6 +406,7 @@ func (g *Graph) Compile() (*Runnable, error) {
 	for _, listener := range g.globalListeners {
 		compiled.AddGlobalListener(g.displayNameListener(listener))
 	}
+	g.configureStateMerger(compiled.StateGraph, patches)
 
 	runnable, err := compiled.CompileListenable()
 	if err != nil {
@@ -398,7 +417,7 @@ func (g *Graph) Compile() (*Runnable, error) {
 	return &Runnable{runnable: runnable}, nil
 }
 
-func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode node.Node, currentState *state.State) (*state.State, error) {
+func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode node.Node, currentState *state.State, patches *compilePatchCollector) (*state.State, error) {
 	if targetNode == nil {
 		return currentState, fmt.Errorf("node %q is nil", nodeID)
 	}
@@ -418,6 +437,9 @@ func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode 
 			return currentState, fmt.Errorf("node %q state contract violation: %s", nodeID, issues[0].Message)
 		}
 	}
+	if patches != nil {
+		patches.record(currentState, nodeID, result.Patch)
+	}
 	return result.State, nil
 }
 
@@ -430,14 +452,26 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	}
 
 	compiled := langgraph.NewStateGraph[*state.State]()
+	patches := newCompilePatchCollector(g.compileBranchOrders())
+	if setter, ok := execution.(fruntime.BranchPatchRecorderSetter); ok {
+		setter.SetBranchPatchRecorder(patches)
+	}
+	if recorder, ok := execution.(fruntime.ParallelWaveRecorder); ok {
+		patches.setWaveRecorder(recorder)
+	}
 	if err := g.configureStateGraph(compiled, func(nodeID string, node node.Node) {
 		nodeDef := node
 		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
-			return execution.ExecuteNode(ctx, nodeID, nodeDef, state)
+			next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, state)
+			if err == nil && !patches.hasPatch(state, nodeID) {
+				patches.record(state, nodeID, stateDiffPatch(state, next))
+			}
+			return next, err
 		})
 	}); err != nil {
 		return nil, err
 	}
+	g.configureStateMerger(compiled, patches)
 
 	runnable, err := compiled.Compile()
 	if err != nil {
@@ -473,16 +507,18 @@ func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State]
 		compiled.AddConditionalEdge(from, g.conditionalEdgeResolver(from, conditional))
 	}
 
-	for from, to := range g.edges {
+	for from, targets := range g.defaultEdges {
 		if _, hasConditional := g.conditionalEdges[from]; hasConditional {
 			continue
 		}
-		compiled.AddEdge(from, to)
+		for _, to := range targets {
+			compiled.AddEdge(from, to)
+		}
 	}
 
 	if g.finishPoint != "" {
 		if _, hasConditional := g.conditionalEdges[g.finishPoint]; !hasConditional {
-			if _, hasDefaultEdge := g.edges[g.finishPoint]; !hasDefaultEdge {
+			if len(g.defaultEdges[g.finishPoint]) == 0 {
 				compiled.AddEdge(g.finishPoint, langgraph.END)
 			}
 		}
@@ -492,9 +528,149 @@ func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State]
 	return nil
 }
 
+func (g *Graph) configureStateMerger(compiled *langgraph.StateGraph[*state.State], patches *compilePatchCollector) {
+	if compiled == nil {
+		return
+	}
+	compiled.SetStateMerger(func(ctx context.Context, current *state.State, newStates []*state.State) (*state.State, error) {
+		if len(newStates) == 0 {
+			if current == nil {
+				return state.NewState(), nil
+			}
+			return current, nil
+		}
+		if len(newStates) == 1 {
+			if patches != nil {
+				_ = patches.consume(current)
+			}
+			return newStates[0], nil
+		}
+		if patches == nil {
+			return nil, fmt.Errorf("parallel state merge requires branch patches")
+		}
+		branches := patches.consume(current)
+		if len(branches) != len(newStates) {
+			return nil, fmt.Errorf("parallel state merge requires branch patches: collected %d for %d branch states", len(branches), len(newStates))
+		}
+		patches.recordWave(current, branches)
+		return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{
+			Contracts: g.nodeContracts,
+		})
+	})
+}
+
+func (g *Graph) compileBranchOrders() map[string]int {
+	if g == nil {
+		return nil
+	}
+	orders := map[string]int{}
+	nextOrder := 0
+	for _, edge := range g.edgeSpecs {
+		if edge.Condition != nil {
+			continue
+		}
+		target := strings.TrimSpace(edge.To)
+		if target == EndNodeRef {
+			target = langgraph.END
+		}
+		if _, exists := orders[target]; exists {
+			continue
+		}
+		orders[target] = nextOrder
+		nextOrder++
+	}
+	return orders
+}
+
+func (g *Graph) isParallelBranchTarget(nodeID string) bool {
+	if g == nil || strings.TrimSpace(nodeID) == "" {
+		return false
+	}
+	for from, targets := range g.defaultEdges {
+		if len(targets) <= 1 {
+			continue
+		}
+		if len(g.conditionalEdges[from]) > 0 {
+			continue
+		}
+		for _, target := range targets {
+			if target == nodeID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stateDiffPatch(before, after *state.State) state.Patch {
+	beforeFlat := flattenStateForPatch(before)
+	afterFlat := flattenStateForPatch(after)
+	paths := make([]string, 0, len(beforeFlat)+len(afterFlat))
+	seen := map[string]struct{}{}
+	for path := range beforeFlat {
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	for path := range afterFlat {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	ops := make([]state.PatchOp, 0, len(paths))
+	for _, path := range paths {
+		beforeValue, beforeOK := beforeFlat[path]
+		afterValue, afterOK := afterFlat[path]
+		if beforeOK && afterOK && jsonValuesEqual(beforeValue, afterValue) {
+			continue
+		}
+		parsed, err := state.ParsePath(path)
+		if err != nil {
+			continue
+		}
+		if !afterOK {
+			ops = append(ops, state.PatchOp{Kind: state.OpDelete, Path: parsed})
+			continue
+		}
+		ops = append(ops, state.PatchOp{Kind: state.OpSet, Path: parsed, Value: afterValue})
+	}
+	return state.NewPatch(ops...)
+}
+
+func flattenStateForPatch(current *state.State) map[string]any {
+	out := map[string]any{}
+	if current == nil {
+		return out
+	}
+	for section, value := range current.Export() {
+		flattenStateValueForPatch(out, section, value)
+	}
+	return out
+}
+
+func flattenStateValueForPatch(out map[string]any, path string, value any) {
+	mapped, ok := value.(map[string]any)
+	if !ok || len(mapped) == 0 {
+		out[path] = value
+		return
+	}
+	for key, item := range mapped {
+		flattenStateValueForPatch(out, path+"."+key, item)
+	}
+}
+
+func jsonValuesEqual(left, right any) bool {
+	leftBytes, leftErr := json.Marshal(left)
+	rightBytes, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && string(leftBytes) == string(rightBytes)
+}
+
 func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEdge) func(ctx context.Context, state *state.State) string {
 	edges := append([]conditionalEdge(nil), conditional...)
-	defaultTarget, hasDefaultTarget := g.edges[from]
+	defaultTargets := append([]string(nil), g.defaultEdges[from]...)
 	isFinishPoint := from == g.finishPoint
 
 	return func(ctx context.Context, state *state.State) string {
@@ -503,8 +679,8 @@ func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEd
 				return edge.to
 			}
 		}
-		if hasDefaultTarget {
-			return defaultTarget
+		if len(defaultTargets) > 0 {
+			return defaultTargets[0]
 		}
 		if isFinishPoint {
 			return langgraph.END
@@ -682,6 +858,96 @@ func (g *Graph) displayNameListener(listener langgraph.NodeListener[*state.State
 
 type Runnable struct {
 	runnable *langgraph.ListenableRunnable[*state.State]
+}
+
+type compilePatchCollector struct {
+	mu      sync.Mutex
+	orders  map[string]int
+	patches map[*state.State][]state.BranchPatch
+	wave    fruntime.ParallelWaveRecorder
+}
+
+func newCompilePatchCollector(orders map[string]int) *compilePatchCollector {
+	if orders == nil {
+		orders = map[string]int{}
+	}
+	return &compilePatchCollector{
+		orders:  orders,
+		patches: map[*state.State][]state.BranchPatch{},
+	}
+}
+
+func (c *compilePatchCollector) record(base *state.State, nodeID string, patch state.Patch) {
+	if c == nil || base == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	order, ok := c.orders[nodeID]
+	if !ok {
+		order = len(c.orders)
+		c.orders[nodeID] = order
+	}
+	c.patches[base] = append(c.patches[base], state.BranchPatch{
+		NodeID: nodeID,
+		Order:  order,
+		Patch:  patch,
+	})
+}
+
+func (c *compilePatchCollector) RecordBranchPatch(base *state.State, nodeID string, patch state.Patch) {
+	c.record(base, nodeID, patch)
+}
+
+func (c *compilePatchCollector) recordWave(base *state.State, branches []state.BranchPatch) string {
+	if c == nil || base == nil || len(branches) <= 1 {
+		return ""
+	}
+	c.mu.Lock()
+	recorder := c.wave
+	c.mu.Unlock()
+	if recorder == nil {
+		return ""
+	}
+	nodeIDs := make([]string, 0, len(branches))
+	for _, branch := range branches {
+		nodeIDs = append(nodeIDs, branch.NodeID)
+	}
+	return recorder.RecordParallelWave(base, nodeIDs)
+}
+
+func (c *compilePatchCollector) setWaveRecorder(recorder fruntime.ParallelWaveRecorder) {
+	if c == nil || recorder == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.wave = recorder
+}
+
+func (c *compilePatchCollector) hasPatch(base *state.State, nodeID string) bool {
+	if c == nil || base == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, branch := range c.patches[base] {
+		if branch.NodeID == nodeID {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *compilePatchCollector) consume(base *state.State) []state.BranchPatch {
+	if c == nil || base == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	branches := append([]state.BranchPatch(nil), c.patches[base]...)
+	delete(c.patches, base)
+	return branches
 }
 
 type nodeDisplayListener struct {

@@ -5,7 +5,12 @@ export interface RunRecord {
   status: string;
   entry_node_id: string;
   current_node_id: string;
+  current_node_ids?: string[];
+  current_step_ids?: string[];
+  next_node_ids?: string[];
+  parallel_wave_id?: string;
   last_step_id: string;
+  last_checkpoint_id?: string;
   error_message: string;
   started_at: string;
   finished_at?: string;
@@ -87,6 +92,7 @@ export interface StepRecord {
   run_id: string;
   node_id: string;
   node_name: string;
+  wave_id?: string;
   status: string;
   attempt: number;
   started_at: string;
@@ -104,9 +110,26 @@ export interface StepView {
 export interface CheckpointRecord {
   checkpoint_id: string;
   run_id: string;
+  step_id?: string;
   node_id: string;
   stage: string;
   created_at: string;
+}
+
+export interface RuntimeState {
+  run_id?: string;
+  current_step_id?: string;
+  current_node_id?: string;
+  current_node_ids?: string[];
+  current_step_ids?: string[];
+  next_node_ids?: string[];
+  parallel_wave_id?: string;
+  wave_id?: string;
+  status?: string;
+  retry_count?: number;
+  pause_requested?: boolean;
+  cancel_requested?: boolean;
+  breakpoint_hit?: unknown;
 }
 
 export interface CheckpointSummary {

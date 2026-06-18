@@ -70,7 +70,8 @@ func BuildGraphDefinitionSchema(stateSchemaID string, stateFields map[string]Sta
 				"items": JSONSchema{"oneOf": nodeVariants},
 			},
 			"edges": JSONSchema{
-				"type": "array",
+				"type":        "array",
+				"description": "Graph edges. Multiple ordinary edges with the same from node express fan-out; repeated from/to pairs are invalid. Conditional edges remain single-target branch selections.",
 				"items": JSONSchema{
 					"type": "object",
 					"properties": JSONSchema{

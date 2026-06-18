@@ -12,8 +12,9 @@ type ExecutableNode[S any, P any] interface {
 type CheckpointStage string
 
 const (
-	CheckpointBeforeNode CheckpointStage = "before_node"
-	CheckpointAfterNode  CheckpointStage = "after_node"
+	CheckpointBeforeNode        CheckpointStage = "before_node"
+	CheckpointAfterNode         CheckpointStage = "after_node"
+	CheckpointAfterParallelWave CheckpointStage = "after_parallel_wave"
 )
 
 type Breakpoint struct {

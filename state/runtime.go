@@ -33,6 +33,11 @@ type RuntimeState struct {
 	RunID           string         `json:"run_id,omitempty"`
 	CurrentStepID   string         `json:"current_step_id,omitempty"`
 	CurrentNodeID   string         `json:"current_node_id,omitempty"`
+	CurrentNodeIDs  []string       `json:"current_node_ids,omitempty"`
+	CurrentStepIDs  []string       `json:"current_step_ids,omitempty"`
+	NextNodeIDs     []string       `json:"next_node_ids,omitempty"`
+	ParallelWaveID  string         `json:"parallel_wave_id,omitempty"`
+	WaveID          string         `json:"wave_id,omitempty"`
 	Status          string         `json:"status,omitempty"`
 	RetryCount      int            `json:"retry_count,omitempty"`
 	PauseRequested  bool           `json:"pause_requested,omitempty"`

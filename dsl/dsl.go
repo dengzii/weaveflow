@@ -121,10 +121,16 @@ func (d GraphDefinition) Validate() error {
 		}
 	}
 
+	edgePairs := map[string]struct{}{}
 	for _, edge := range def.Edges {
 		if edge.From == "" || edge.To == "" {
 			return fmt.Errorf("graph edge requires from and to")
 		}
+		pairKey := edge.From + "\x00" + edge.To
+		if _, exists := edgePairs[pairKey]; exists {
+			return fmt.Errorf("graph edge %q -> %q is duplicated", edge.From, edge.To)
+		}
+		edgePairs[pairKey] = struct{}{}
 		if _, ok := nodeIDs[edge.From]; !ok {
 			return fmt.Errorf("graph edge source %q not found", edge.From)
 		}

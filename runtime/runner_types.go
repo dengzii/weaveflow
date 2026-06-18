@@ -37,8 +37,9 @@ const (
 type CheckpointStage = core.CheckpointStage
 
 const (
-	CheckpointBeforeNode = core.CheckpointBeforeNode
-	CheckpointAfterNode  = core.CheckpointAfterNode
+	CheckpointBeforeNode        = core.CheckpointBeforeNode
+	CheckpointAfterNode         = core.CheckpointAfterNode
+	CheckpointAfterParallelWave = core.CheckpointAfterParallelWave
 )
 
 type EventType string
@@ -91,6 +92,10 @@ type RunRecord struct {
 	Status           RunStatus  `json:"status"`
 	EntryNodeID      string     `json:"entry_node_id"`
 	CurrentNodeID    string     `json:"current_node_id,omitempty"`
+	CurrentNodeIDs   []string   `json:"current_node_ids,omitempty"`
+	CurrentStepIDs   []string   `json:"current_step_ids,omitempty"`
+	NextNodeIDs      []string   `json:"next_node_ids,omitempty"`
+	ParallelWaveID   string     `json:"parallel_wave_id,omitempty"`
 	LastStepID       string     `json:"last_step_id,omitempty"`
 	LastCheckpointID string     `json:"last_checkpoint_id,omitempty"`
 	PauseRequested   bool       `json:"pause_requested,omitempty"`
@@ -107,6 +112,7 @@ type StepRecord struct {
 	RunID              string     `json:"run_id"`
 	NodeID             string     `json:"node_id"`
 	NodeName           string     `json:"node_name"`
+	WaveID             string     `json:"wave_id,omitempty"`
 	Attempt            int        `json:"attempt"`
 	Status             StepStatus `json:"status"`
 	CheckpointBeforeID string     `json:"checkpoint_before_id,omitempty"`
