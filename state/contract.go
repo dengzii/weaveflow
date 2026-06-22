@@ -1,22 +1,32 @@
 package state
 
+// AccessMode describes how a node uses a state field.
 type AccessMode string
 
 const (
-	AccessRead      AccessMode = "read"
-	AccessWrite     AccessMode = "write"
+	// AccessRead declares that a node reads the field.
+	AccessRead AccessMode = "read"
+	// AccessWrite declares that a node writes the field.
+	AccessWrite AccessMode = "write"
+	// AccessReadWrite declares that a node both reads and writes the field.
 	AccessReadWrite AccessMode = "read_write"
 )
 
+// MergeStrategy describes how concurrent branch writes should be reconciled.
 type MergeStrategy string
 
 const (
+	// MergeDefault lets the merge engine infer behavior from patch operations.
 	MergeDefault MergeStrategy = ""
+	// MergeReplace allows only identical concurrent replacements.
 	MergeReplace MergeStrategy = "replace"
-	MergeMerge   MergeStrategy = "merge"
-	MergeAppend  MergeStrategy = "append"
+	// MergeMerge allows object merge operations with disjoint keys.
+	MergeMerge MergeStrategy = "merge"
+	// MergeAppend allows append operations to be ordered deterministically.
+	MergeAppend MergeStrategy = "append"
 )
 
+// FieldAccess declares one path in a node contract.
 type FieldAccess struct {
 	Path        Path
 	Mode        AccessMode
@@ -26,27 +36,33 @@ type FieldAccess struct {
 	Description string
 }
 
+// Contract declares the state paths a node may read or write. It is used for
+// input projection, write validation, and parallel merge conflict handling.
 type Contract struct {
 	Fields        []FieldAccess
 	WildcardRead  bool
 	WildcardWrite bool
 }
 
+// NewContract constructs a contract from cloned field declarations.
 func NewContract(fields ...FieldAccess) Contract {
 	return Contract{Fields: cloneFieldAccess(fields)}
 }
 
+// Clone returns an independent copy of the contract.
 func (c Contract) Clone() Contract {
 	c.Fields = cloneFieldAccess(c.Fields)
 	return c
 }
 
+// ReadPaths returns unique paths declared readable by the contract.
 func (c Contract) ReadPaths() []Path {
 	return contractPaths(c.Fields, func(mode AccessMode) bool {
 		return mode == AccessRead || mode == AccessReadWrite
 	})
 }
 
+// WritePaths returns unique paths declared writable by the contract.
 func (c Contract) WritePaths() []Path {
 	return contractPaths(c.Fields, func(mode AccessMode) bool {
 		return mode == AccessWrite || mode == AccessReadWrite

@@ -5,37 +5,50 @@ import (
 	"reflect"
 )
 
+// PatchOpKind identifies how a patch operation updates its path.
 type PatchOpKind string
 
 const (
-	OpSet    PatchOpKind = "set"
+	// OpSet replaces the value at Path.
+	OpSet PatchOpKind = "set"
+	// OpDelete removes the value at Path.
 	OpDelete PatchOpKind = "delete"
-	OpMerge  PatchOpKind = "merge"
+	// OpMerge deep-merges an object value into Path.
+	OpMerge PatchOpKind = "merge"
+	// OpAppend appends a value or slice of values to Path.
 	OpAppend PatchOpKind = "append"
 )
 
+// PatchOp is one state mutation recorded by an Editor.
 type PatchOp struct {
 	Kind  PatchOpKind
 	Path  Path
 	Value any
 }
 
+// Patch is an ordered list of state mutations. It is immutable from callers'
+// perspective: constructors and accessors clone operation values.
 type Patch struct {
 	ops []PatchOp
 }
 
+// NewPatch constructs a patch from cloned operations.
 func NewPatch(ops ...PatchOp) Patch {
 	return Patch{ops: clonePatchOps(ops)}
 }
 
+// Ops returns a cloned copy of patch operations.
 func (p Patch) Ops() []PatchOp {
 	return clonePatchOps(p.ops)
 }
 
+// Empty reports whether the patch has no operations.
 func (p Patch) Empty() bool {
 	return len(p.ops) == 0
 }
 
+// Apply replays the patch against a clone of base and returns the resulting
+// state.
 func (p Patch) Apply(base *State) (*State, error) {
 	target := NewState()
 	if base != nil {
@@ -52,6 +65,9 @@ func (p Patch) Apply(base *State) (*State, error) {
 func applyPatchOp(target *State, op PatchOp) error {
 	if target == nil {
 		return fmt.Errorf("target state is nil")
+	}
+	if op.Path.Empty() {
+		return fmt.Errorf("patch op path is required")
 	}
 	switch op.Kind {
 	case OpSet:

@@ -1,6 +1,6 @@
 package accessors
 
-import state "github.com/dengzii/weaveflow/state"
+import "github.com/dengzii/weaveflow/state"
 
 const FinalFieldAnswer = "answer"
 
@@ -21,7 +21,7 @@ func (f finalAccessor) Answer() string {
 }
 
 func (f finalAccessor) SetAnswer(answer string) error {
-	return state.Set(f.access, f.answerRef, answer)
+	return state.Replace(f.access, f.answerRef, answer)
 }
 
 func registerFinal(registry *state.Registry) error {

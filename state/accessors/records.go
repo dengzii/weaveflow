@@ -1,6 +1,6 @@
 package accessors
 
-import state "github.com/dengzii/weaveflow/state"
+import "github.com/dengzii/weaveflow/state"
 
 type Records interface {
 	Path() state.Path
@@ -29,16 +29,15 @@ func (r recordsAccessor) Items() []map[string]any {
 }
 
 func (r recordsAccessor) Append(item map[string]any) error {
-	items := append(r.Items(), item)
-	return state.Set(r.access, r.ref, items)
+	return state.Append(r.access, r.ref, item)
 }
 
 func (r recordsAccessor) Replace(items []map[string]any) error {
-	return state.Set(r.access, r.ref, items)
+	return state.Replace(r.access, r.ref, items)
 }
 
 func (r recordsAccessor) Clear() error {
-	return r.access.Delete(r.path)
+	return state.Delete(r.access, r.ref)
 }
 
 func registerRecords(registry *state.Registry, name string, key string) error {

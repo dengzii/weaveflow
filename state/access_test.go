@@ -94,6 +94,71 @@ func TestPatchOperationsAreExplicit(t *testing.T) {
 	}
 }
 
+func TestTypedRefOperationsRecordExplicitPatchKinds(t *testing.T) {
+	t.Parallel()
+
+	tagsRef := NewRef[[]string](Shared("tags")).WithMerge(MergeAppend)
+	metaRef := NewRef[map[string]any](Shared("meta")).WithMerge(MergeMerge)
+	staleRef := NewRef[bool](Shared("stale"))
+	access := NewEditingAccess(nil, FromShared(map[string]any{
+		"tags":  []string{"alpha"},
+		"meta":  map[string]any{"left": "keep"},
+		"stale": true,
+	}))
+
+	if err := Append(access, tagsRef, "beta"); err != nil {
+		t.Fatalf("append tags: %v", err)
+	}
+	if err := Merge(access, metaRef, map[string]any{"right": "add"}); err != nil {
+		t.Fatalf("merge meta: %v", err)
+	}
+	if err := Delete(access, staleRef); err != nil {
+		t.Fatalf("delete stale: %v", err)
+	}
+
+	tags, err := Get(access, tagsRef)
+	if err != nil {
+		t.Fatalf("get tags: %v", err)
+	}
+	if len(tags) != 2 || tags[0] != "alpha" || tags[1] != "beta" {
+		t.Fatalf("unexpected tags %#v", tags)
+	}
+
+	meta, err := Get(access, metaRef)
+	if err != nil {
+		t.Fatalf("get meta: %v", err)
+	}
+	if meta["left"] != "keep" || meta["right"] != "add" {
+		t.Fatalf("unexpected meta %#v", meta)
+	}
+
+	ops := access.Patch().Ops()
+	if len(ops) != 3 {
+		t.Fatalf("expected three patch ops, got %#v", ops)
+	}
+	if ops[0].Kind != OpAppend || ops[1].Kind != OpMerge || ops[2].Kind != OpDelete {
+		t.Fatalf("unexpected op order %#v", ops)
+	}
+}
+
+func TestGetReportsMissingAndTypeMismatchSeparately(t *testing.T) {
+	t.Parallel()
+
+	nameRef := NewRef[string](Shared("name"))
+	countRef := NewRef[int](Shared("count"))
+	access := NewAccess(nil, FromShared(map[string]any{"count": "not-int"}))
+
+	if _, err := Get(access, nameRef); err == nil || err.Error() != `state path "shared.name" is missing` {
+		t.Fatalf("unexpected missing error %v", err)
+	}
+	if _, err := Get(access, countRef); err == nil || err.Error() != `state path "shared.count" type mismatch: got string, want int` {
+		t.Fatalf("unexpected type mismatch error %v", err)
+	}
+	if _, err := ReadRequired(access, countRef); err == nil || err.Error() != `state path "shared.count" type mismatch: got string, want int` {
+		t.Fatalf("unexpected required read error %v", err)
+	}
+}
+
 type testCounter interface {
 	Count() int
 	Add(delta int) error
@@ -110,7 +175,7 @@ func (c testCounterAccessor) Count() int {
 }
 
 func (c testCounterAccessor) Add(delta int) error {
-	return Set(c.access, c.ref, c.Count()+delta)
+	return Replace(c.access, c.ref, c.Count()+delta)
 }
 
 type testCounterExtension struct{}

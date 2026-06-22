@@ -67,11 +67,11 @@ func (o objectAccessor) DeleteField(name string) error {
 }
 
 func (o objectAccessor) Merge(values map[string]any) error {
-	return o.access.MergeAny(o.path, values)
+	return state.Merge(o.access, o.ref, values)
 }
 
 func (o objectAccessor) Replace(values map[string]any) error {
-	return state.Set(o.access, o.ref.WithMerge(state.MergeReplace), values)
+	return state.Replace(o.access, o.ref.WithMerge(state.MergeReplace), values)
 }
 
 func registerObject(registry *state.Registry, name string, key string) error {

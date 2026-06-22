@@ -1,6 +1,6 @@
 package accessors
 
-import state "github.com/dengzii/weaveflow/state"
+import "github.com/dengzii/weaveflow/state"
 
 const (
 	RequestFieldInput    = "input"
@@ -27,7 +27,7 @@ func (r requestAccessor) Input() string {
 }
 
 func (r requestAccessor) SetInput(input string) error {
-	return state.Set(r.access, r.inputRef, input)
+	return state.Replace(r.access, r.inputRef, input)
 }
 
 func (r requestAccessor) Metadata() map[string]any {
@@ -39,7 +39,7 @@ func (r requestAccessor) Metadata() map[string]any {
 }
 
 func (r requestAccessor) SetMetadata(metadata map[string]any) error {
-	return state.Set(r.access, r.metadataRef, metadata)
+	return state.Replace(r.access, r.metadataRef, metadata)
 }
 
 func registerRequest(registry *state.Registry) error {

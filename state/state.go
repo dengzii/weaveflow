@@ -12,10 +12,13 @@ type State struct {
 	root map[string]any
 }
 
+// NewState creates an empty state envelope with all root sections present.
 func NewState() *State {
 	return &State{root: newRoot()}
 }
 
+// FromMap creates state from an exported envelope. Missing root sections are
+// initialized.
 func FromMap(input map[string]any) *State {
 	state := NewState()
 	if input != nil {
@@ -25,6 +28,7 @@ func FromMap(input map[string]any) *State {
 	return state
 }
 
+// FromShared creates state with values placed under the shared section.
 func FromShared(shared map[string]any) *State {
 	state := NewState()
 	if shared != nil {
@@ -34,6 +38,7 @@ func FromShared(shared map[string]any) *State {
 	return state
 }
 
+// Clone returns a deep copy of state.
 func (s *State) Clone() *State {
 	if s == nil {
 		return NewState()
@@ -41,6 +46,7 @@ func (s *State) Clone() *State {
 	return FromMap(s.root)
 }
 
+// Export returns a deep copy of the state envelope.
 func (s *State) Export() map[string]any {
 	if s == nil {
 		return newRoot()
@@ -48,10 +54,13 @@ func (s *State) Export() map[string]any {
 	return cloneMap(s.root)
 }
 
+// MarshalJSON encodes the exported state envelope.
 func (s *State) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.Export())
 }
 
+// UnmarshalJSON decodes an exported state envelope and initializes missing
+// root sections.
 func (s *State) UnmarshalJSON(data []byte) error {
 	var root map[string]any
 	if err := json.Unmarshal(data, &root); err != nil {
@@ -61,6 +70,7 @@ func (s *State) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// SetSection replaces one root section. The value must be an object.
 func (s *State) SetSection(section string, values map[string]any) error {
 	path, err := NewPath(section)
 	if err != nil {
@@ -94,6 +104,9 @@ func (s *State) set(path Path, value any) error {
 	if s == nil {
 		return fmt.Errorf("state is nil")
 	}
+	if path.Empty() {
+		return fmt.Errorf("state path is required")
+	}
 	if len(path.segments) == 0 {
 		mapped, ok := asMap(value)
 		if !ok {
@@ -114,6 +127,9 @@ func (s *State) delete(path Path) error {
 	if s == nil {
 		return fmt.Errorf("state is nil")
 	}
+	if path.Empty() {
+		return fmt.Errorf("state path is required")
+	}
 	if len(path.segments) == 0 {
 		s.root[path.section] = map[string]any{}
 		return nil
@@ -129,6 +145,9 @@ func (s *State) delete(path Path) error {
 func (s *State) merge(path Path, value any) error {
 	if s == nil {
 		return fmt.Errorf("state is nil")
+	}
+	if path.Empty() {
+		return fmt.Errorf("state path is required")
 	}
 	overlay, ok := asMap(value)
 	if !ok {

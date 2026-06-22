@@ -51,7 +51,7 @@ func (c conversationAccessor) Messages() []llms.MessageContent {
 }
 
 func (c conversationAccessor) SetMessages(messages []llms.MessageContent) error {
-	return state.Set(c.access, c.messagesRef, cloneMessages(messages))
+	return state.Replace(c.access, c.messagesRef, cloneMessages(messages))
 }
 
 func (c conversationAccessor) AppendMessage(message llms.MessageContent) error {
@@ -65,7 +65,7 @@ func (c conversationAccessor) FinalAnswer() string {
 }
 
 func (c conversationAccessor) SetFinalAnswer(answer string) error {
-	return state.Set(c.access, c.finalAnswerRef, answer)
+	return state.Replace(c.access, c.finalAnswerRef, answer)
 }
 
 func (c conversationAccessor) IterationCount() int {
@@ -77,7 +77,7 @@ func (c conversationAccessor) SetIterationCount(count int) error {
 	if count < 0 {
 		count = 0
 	}
-	return state.Set(c.access, c.iterationCountRef, count)
+	return state.Replace(c.access, c.iterationCountRef, count)
 }
 
 func (c conversationAccessor) IncrementIteration() error {
@@ -100,7 +100,7 @@ func (c conversationAccessor) SetMaxIterations(maxIterations int) error {
 	if maxIterations <= 0 {
 		maxIterations = DefaultMaxIterations
 	}
-	return state.Set(c.access, c.maxIterationsRef, maxIterations)
+	return state.Replace(c.access, c.maxIterationsRef, maxIterations)
 }
 
 func registerConversation(registry *state.Registry) error {

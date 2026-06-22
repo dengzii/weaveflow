@@ -151,3 +151,62 @@ func TestRecordItemsAreCloned(t *testing.T) {
 		t.Fatalf("expected cloned record item, got %#v", itemsAgain)
 	}
 }
+
+func TestRecordsAppendUsesAppendPatchAndMergesInParallel(t *testing.T) {
+	t.Parallel()
+
+	registry := state.NewRegistry()
+	if err := InstallDefaultAccessors(registry); err != nil {
+		t.Fatalf("install default accessors: %v", err)
+	}
+	contract, ok := registry.AccessorContract(EvidenceID.Name())
+	if !ok {
+		t.Fatal("expected evidence contract")
+	}
+
+	base := state.NewState()
+	leftAccess := state.NewEditingAccess(registry, base)
+	leftEvidence, err := state.UseAccessor(leftAccess, EvidenceID)
+	if err != nil {
+		t.Fatalf("use left evidence: %v", err)
+	}
+	if err := leftEvidence.Append(map[string]any{"id": "left"}); err != nil {
+		t.Fatalf("append left evidence: %v", err)
+	}
+
+	rightAccess := state.NewEditingAccess(registry, base)
+	rightEvidence, err := state.UseAccessor(rightAccess, EvidenceID)
+	if err != nil {
+		t.Fatalf("use right evidence: %v", err)
+	}
+	if err := rightEvidence.Append(map[string]any{"id": "right"}); err != nil {
+		t.Fatalf("append right evidence: %v", err)
+	}
+
+	leftOps := leftAccess.Patch().Ops()
+	if len(leftOps) != 1 || leftOps[0].Kind != state.OpAppend {
+		t.Fatalf("expected left append patch, got %#v", leftOps)
+	}
+
+	merged, err := state.MergeParallelPatches(base, []state.BranchPatch{
+		{NodeID: "left", Order: 1, Patch: leftAccess.Patch()},
+		{NodeID: "right", Order: 2, Patch: rightAccess.Patch()},
+	}, state.ParallelMergeOptions{
+		Contracts: map[string]state.Contract{
+			"left":  contract,
+			"right": contract,
+		},
+	})
+	if err != nil {
+		t.Fatalf("merge evidence patches: %v", err)
+	}
+
+	mergedEvidence, err := state.UseAccessor(state.NewAccess(registry, merged), EvidenceID)
+	if err != nil {
+		t.Fatalf("use merged evidence: %v", err)
+	}
+	items := mergedEvidence.Items()
+	if len(items) != 2 || items[0]["id"] != "left" || items[1]["id"] != "right" {
+		t.Fatalf("unexpected merged evidence %#v", items)
+	}
+}

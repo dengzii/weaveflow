@@ -34,7 +34,7 @@ func (e executionAccessor) CurrentStep() map[string]any {
 }
 
 func (e executionAccessor) SetCurrentStep(step map[string]any) error {
-	return state.Set(e.access, e.currentStepRef, step)
+	return state.Replace(e.access, e.currentStepRef, step)
 }
 
 func (e executionAccessor) StepResults() map[string]any {
@@ -59,7 +59,7 @@ func (e executionAccessor) LastLLMStepID() string {
 }
 
 func (e executionAccessor) SetLastLLMStepID(stepID string) error {
-	return state.Set(e.access, e.lastLLMStepRef, stepID)
+	return state.Replace(e.access, e.lastLLMStepRef, stepID)
 }
 
 func registerExecution(registry *state.Registry) error {
