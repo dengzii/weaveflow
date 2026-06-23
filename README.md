@@ -122,6 +122,14 @@ Load a graph definition from disk:
 graph, err := weaveflow.LoadGraphFromFile(&weaveflow.BuildContext{}, "graph.json")
 ```
 
+## State Persistence
+
+Checkpoint state is persisted as JSON. After decode, the runtime guarantees JSON-compatible value shapes
+(`map[string]any`, `[]any`, strings, numbers, booleans, and null), plus explicit conversions owned by core accessors
+such as conversation messages and record collections. `state.Read[T]` intentionally uses Go type assertions; custom
+typed accessors should convert restored JSON shapes at the accessor boundary instead of relying on the snapshot codec
+to reconstruct arbitrary Go structs or typed slices.
+
 ## Neo Reference Server
 
 `cmd/neo` is the reference application shipped with the repository. It exposes a chat-oriented agent server with

@@ -138,7 +138,10 @@ func (a *Access) State() *State {
 }
 
 // Read returns the value at ref and false when the path is missing or the value
-// has a different Go type.
+// has a different Go type. JSON checkpoint restore preserves JSON-compatible
+// shapes, but does not reconstruct arbitrary Go slice, map, or struct types;
+// accessors that expose typed values should convert restored JSON shapes
+// explicitly.
 func Read[T any](reader Reader, ref Ref[T]) (T, bool) {
 	var zero T
 	if reader == nil {

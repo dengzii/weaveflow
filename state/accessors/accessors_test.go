@@ -152,6 +152,54 @@ func TestRecordItemsAreCloned(t *testing.T) {
 	}
 }
 
+func TestRecordItemsReadJSONRestoredShape(t *testing.T) {
+	t.Parallel()
+
+	registry := state.NewRegistry()
+	if err := InstallDefaultAccessors(registry); err != nil {
+		t.Fatalf("install default accessors: %v", err)
+	}
+
+	access := state.NewEditingAccess(registry, state.NewState())
+	evidence, err := state.UseAccessor(access, EvidenceID)
+	if err != nil {
+		t.Fatalf("use evidence accessor: %v", err)
+	}
+	if err := evidence.Replace([]map[string]any{
+		{"id": "a", "score": 1},
+		{"id": "b", "score": 2},
+	}); err != nil {
+		t.Fatalf("replace evidence: %v", err)
+	}
+
+	snapshot, err := state.SnapshotFromState(access.State())
+	if err != nil {
+		t.Fatalf("snapshot from state: %v", err)
+	}
+	codec := state.NewJSONStateCodec("")
+	encoded, err := codec.Encode(snapshot)
+	if err != nil {
+		t.Fatalf("encode snapshot: %v", err)
+	}
+	decoded, err := codec.Decode(encoded)
+	if err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+	restored, err := state.StateFromSnapshot(decoded)
+	if err != nil {
+		t.Fatalf("state from snapshot: %v", err)
+	}
+
+	restoredEvidence, err := state.UseAccessor(state.NewAccess(registry, restored), EvidenceID)
+	if err != nil {
+		t.Fatalf("use restored evidence accessor: %v", err)
+	}
+	items := restoredEvidence.Items()
+	if len(items) != 2 || items[0]["id"] != "a" || items[0]["score"] != 1 || items[1]["id"] != "b" {
+		t.Fatalf("unexpected restored evidence %#v", items)
+	}
+}
+
 func TestRecordsAppendUsesAppendPatchAndMergesInParallel(t *testing.T) {
 	t.Parallel()
 
