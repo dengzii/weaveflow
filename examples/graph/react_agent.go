@@ -72,7 +72,7 @@ func newReActAgentGraph() *weaveflow.Graph {
 	err = graph.AddEdge(toolCall.ID(), llm.ID())
 	tryPanic(err)
 
-	err = graph.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, builtin.HasFinalAnswer())
+	err = graph.AddEdge(llm.ID(), weaveflow.EndNodeRef)
 	tryPanic(err)
 
 	tryPanic(graph.SetEntryPoint(humanInLoop.ID()))

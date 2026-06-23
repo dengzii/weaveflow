@@ -358,6 +358,9 @@ func (g *Graph) Validate() error {
 		if len(g.defaultEdges[from]) > 1 {
 			return fmt.Errorf("nodes %q cannot combine conditional edges with multiple default fallback edges", from)
 		}
+		if len(g.defaultEdges[from]) == 0 && from != g.finishPoint {
+			return fmt.Errorf("nodes %q has conditional edges but no default fallback edge", from)
+		}
 	}
 
 	for from, edges := range g.conditionalEdges {
@@ -375,6 +378,9 @@ func (g *Graph) Validate() error {
 			}
 		}
 	}
+	if err := g.validateTopology(); err != nil {
+		return err
+	}
 
 	if len(g.nodeContracts) > 0 {
 		g.contractDiagnostics = graphbuild.AnalyzeContractDiagnostics(g.contractAnalysisGraph())
@@ -386,6 +392,147 @@ func (g *Graph) Validate() error {
 	}
 
 	return nil
+}
+
+func (g *Graph) validateTopology() error {
+	reachable := g.reachableNodes()
+	for _, nodeID := range g.sortedNodeIDs() {
+		if _, ok := reachable[nodeID]; !ok {
+			return fmt.Errorf("nodes %q is unreachable from entry point %q", nodeID, g.entryPoint)
+		}
+	}
+
+	if g.finishPoint != "" {
+		if len(g.defaultEdges[g.finishPoint]) > 0 || len(g.conditionalEdges[g.finishPoint]) > 0 {
+			return fmt.Errorf("finish point %q cannot have outgoing edges", g.finishPoint)
+		}
+	}
+
+	for _, nodeID := range g.sortedNodeIDs() {
+		if _, ok := reachable[nodeID]; !ok {
+			continue
+		}
+		defaultTargets := g.defaultEdges[nodeID]
+		conditionalTargets := g.conditionalEdges[nodeID]
+		if nodeID == g.finishPoint {
+			continue
+		}
+		if len(defaultTargets) == 0 && len(conditionalTargets) == 0 {
+			return fmt.Errorf("nodes %q has no outgoing edge", nodeID)
+		}
+	}
+	terminalReachable := g.terminalReachableNodes()
+	for _, nodeID := range g.sortedNodeIDs() {
+		if _, ok := reachable[nodeID]; !ok {
+			continue
+		}
+		if _, ok := terminalReachable[nodeID]; !ok {
+			return fmt.Errorf("nodes %q cannot reach graph end", nodeID)
+		}
+	}
+	return nil
+}
+
+func (g *Graph) sortedNodeIDs() []string {
+	if g == nil || len(g.nodes) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(g.nodes))
+	for nodeID := range g.nodes {
+		ids = append(ids, nodeID)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (g *Graph) reachableNodes() map[string]struct{} {
+	reachable := map[string]struct{}{}
+	if g == nil || g.entryPoint == "" {
+		return reachable
+	}
+
+	queue := []string{g.entryPoint}
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+		if _, seen := reachable[nodeID]; seen {
+			continue
+		}
+		reachable[nodeID] = struct{}{}
+
+		targets := append([]string(nil), g.defaultEdges[nodeID]...)
+		for _, edge := range g.conditionalEdges[nodeID] {
+			targets = append(targets, edge.to)
+		}
+		for _, target := range targets {
+			if target == langgraph.END {
+				continue
+			}
+			if _, exists := g.nodes[target]; !exists {
+				continue
+			}
+			if _, seen := reachable[target]; !seen {
+				queue = append(queue, target)
+			}
+		}
+	}
+	return reachable
+}
+
+func (g *Graph) terminalReachableNodes() map[string]struct{} {
+	reachable := map[string]struct{}{}
+	if g == nil {
+		return reachable
+	}
+
+	reverseEdges := map[string][]string{}
+	queue := []string{}
+	addTerminal := func(nodeID string) {
+		if nodeID == "" || nodeID == langgraph.END {
+			return
+		}
+		if _, exists := g.nodes[nodeID]; !exists {
+			return
+		}
+		if _, seen := reachable[nodeID]; seen {
+			return
+		}
+		reachable[nodeID] = struct{}{}
+		queue = append(queue, nodeID)
+	}
+
+	addTerminal(g.finishPoint)
+	for from, targets := range g.defaultEdges {
+		for _, target := range targets {
+			if target == langgraph.END {
+				addTerminal(from)
+				continue
+			}
+			reverseEdges[target] = append(reverseEdges[target], from)
+		}
+	}
+	for from, edges := range g.conditionalEdges {
+		for _, edge := range edges {
+			if edge.to == langgraph.END {
+				addTerminal(from)
+				continue
+			}
+			reverseEdges[edge.to] = append(reverseEdges[edge.to], from)
+		}
+	}
+
+	for len(queue) > 0 {
+		nodeID := queue[0]
+		queue = queue[1:]
+		for _, predecessor := range reverseEdges[nodeID] {
+			if _, seen := reachable[predecessor]; seen {
+				continue
+			}
+			reachable[predecessor] = struct{}{}
+			queue = append(queue, predecessor)
+		}
+	}
+	return reachable
 }
 
 func (g *Graph) Compile() (*Runnable, error) {

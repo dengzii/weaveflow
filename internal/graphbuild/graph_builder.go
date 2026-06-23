@@ -64,7 +64,6 @@ func PopulateGraph(
 	reg *registry.Registry,
 	def dsl.GraphDefinition,
 	ctx *registry.BuildContext,
-	applyBuiltInEdges func(dsl.GraphDefinition) error,
 ) error {
 	if target == nil {
 		return fmt.Errorf("graph builder is nil")
@@ -86,11 +85,6 @@ func PopulateGraph(
 		}
 		if specTarget, ok := target.(interface{ SetNodeSpec(dsl.GraphNodeSpec) }); ok {
 			specTarget.SetNodeSpec(nodeSpec)
-		}
-	}
-	if applyBuiltInEdges != nil {
-		if err := applyBuiltInEdges(def); err != nil {
-			return err
 		}
 	}
 	for _, edge := range def.Edges {

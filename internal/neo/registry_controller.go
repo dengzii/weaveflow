@@ -183,10 +183,6 @@ func wellKnownExampleValue(key string) (any, bool) {
 		return "payload.items", true
 	case "max_iterations":
 		return 2, true
-	case "continue_to":
-		return "body", true
-	case "done_to":
-		return "__end__", true
 	case "input_path", "request_input_path":
 		return "request.input", true
 	case "intent_state_path":

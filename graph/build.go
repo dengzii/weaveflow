@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
 	"github.com/dengzii/weaveflow/registry"
 )
@@ -38,9 +37,7 @@ func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.G
 	}
 	graph.setNodeContracts(contracts)
 
-	if err := graphbuild.PopulateGraph(graph, reg, def, ctx, func(def dsl.GraphDefinition) error {
-		return applyBuiltInNodeEdges(graph, def)
-	}); err != nil {
+	if err := graphbuild.PopulateGraph(graph, reg, def, ctx); err != nil {
 		return nil, err
 	}
 	if err := graph.Validate(); err != nil {
@@ -76,39 +73,4 @@ func makeSubgraphBuilder(reg *registry.Registry, parentCtx *registry.BuildContex
 		}
 		return graph.Run, nil
 	}
-}
-
-func applyBuiltInNodeEdges(target *Graph, def dsl.GraphDefinition) error {
-	if target == nil {
-		return fmt.Errorf("graph is nil")
-	}
-	for _, nodeSpec := range def.Nodes {
-		if nodeSpec.Type != "iterator" {
-			continue
-		}
-		continueTo := config.String(nodeSpec.Config, "continue_to")
-		doneTo := config.String(nodeSpec.Config, "done_to")
-		if continueTo == "" && doneTo == "" {
-			continue
-		}
-		if continueTo == "" || doneTo == "" {
-			return fmt.Errorf("build iterator nodes %q: continue_to and done_to must be configured together", nodeSpec.ID)
-		}
-		if hasExplicitOutgoingEdge(def.Edges, nodeSpec.ID) {
-			return fmt.Errorf("build iterator nodes %q: built-in iterator edges cannot be combined with explicit outgoing edges", nodeSpec.ID)
-		}
-		if err := target.addRuntimeEdge(nodeSpec.ID, doneTo); err != nil {
-			return fmt.Errorf("build iterator nodes %q built-in done edge: %w", nodeSpec.ID, err)
-		}
-	}
-	return nil
-}
-
-func hasExplicitOutgoingEdge(edges []dsl.GraphEdgeSpec, from string) bool {
-	for _, edge := range edges {
-		if strings.TrimSpace(edge.From) == from {
-			return true
-		}
-	}
-	return false
 }

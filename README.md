@@ -111,7 +111,7 @@ _ = g.AddNode(tool)
 _ = g.AddEdge(human.ID(), llm.ID())
 _ = g.AddConditionalEdge(llm.ID(), tool.ID(), builtin.LastMessageHasToolCalls())
 _ = g.AddEdge(tool.ID(), llm.ID())
-_ = g.AddConditionalEdge(llm.ID(), weaveflow.EndNodeRef, builtin.HasFinalAnswer())
+_ = g.AddEdge(llm.ID(), weaveflow.EndNodeRef)
 
 _ = g.SetEntryPoint(human.ID())
 ```

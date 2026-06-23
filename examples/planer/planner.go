@@ -225,6 +225,9 @@ func runPlan(ctx context.Context, objective string, opts options) (*state.State,
 		newStatusCondition("executing", statusExecuting)); err != nil {
 		return nil, err
 	}
+	if err := g.AddEdge(reviewer.ID(), weaveflow.EndNodeRef); err != nil {
+		return nil, err
+	}
 
 	sink := opts.EventSink
 	if sink == nil {
