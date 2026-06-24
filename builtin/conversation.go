@@ -12,19 +12,29 @@ import (
 	"github.com/dengzii/weaveflow/state/accessors"
 )
 
-func registerConversationModule(registry *registry.Registry) {
+func registerConversationModule(registry *registry.Registry) error {
 	if registry == nil {
-		return
+		return fmt.Errorf("registry is nil")
 	}
-	registerSessionBootstrapModule(registry)
+	return registerSessionBootstrapModule(registry)
 }
 
-func registerSessionBootstrapModule(registry *registry.Registry) {
-	registry.RegisterStateField(requestStateFieldDefinition())
-	registry.RegisterStateField(agentStateFieldDefinition())
-	registry.RegisterStateField(toolPolicyStateFieldDefinition())
-	registry.RegisterStateField(environmentStateFieldDefinition())
-	registry.RegisterNodeType(environmentContextNodeTypeDefinition())
+func registerSessionBootstrapModule(registry *registry.Registry) error {
+	for _, field := range []dsl.StateFieldDefinition{
+		requestStateFieldDefinition(),
+		agentStateFieldDefinition(),
+		toolPolicyStateFieldDefinition(),
+		environmentStateFieldDefinition(),
+	} {
+		if err := registry.RegisterStateField(field); err != nil {
+			return fmt.Errorf("register state field %q: %w", field.Name, err)
+		}
+	}
+	def := environmentContextNodeTypeDefinition()
+	if err := registry.RegisterNodeType(def); err != nil {
+		return fmt.Errorf("register node type %q: %w", def.Type, err)
+	}
+	return nil
 }
 
 func requestStateFieldDefinition() dsl.StateFieldDefinition {

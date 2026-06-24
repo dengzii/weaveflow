@@ -16,6 +16,39 @@ func NewRegistry() *Registry {
 	}
 }
 
+func (r *Registry) StateFieldDefinitions() map[string]dsl.StateFieldDefinition {
+	if r == nil || len(r.StateFields) == 0 {
+		return map[string]dsl.StateFieldDefinition{}
+	}
+	out := make(map[string]dsl.StateFieldDefinition, len(r.StateFields))
+	for key, def := range r.StateFields {
+		out[key] = def
+	}
+	return out
+}
+
+func (r *Registry) NodeTypeDefinitions() map[string]NodeTypeDefinition {
+	if r == nil || len(r.NodeTypes) == 0 {
+		return map[string]NodeTypeDefinition{}
+	}
+	out := make(map[string]NodeTypeDefinition, len(r.NodeTypes))
+	for key, def := range r.NodeTypes {
+		out[key] = def
+	}
+	return out
+}
+
+func (r *Registry) ConditionDefinitions() map[string]ConditionDefinition {
+	if r == nil || len(r.Conditions) == 0 {
+		return map[string]ConditionDefinition{}
+	}
+	out := make(map[string]ConditionDefinition, len(r.Conditions))
+	for key, def := range r.Conditions {
+		out[key] = def
+	}
+	return out
+}
+
 func (r *Registry) JSONSchema() dsl.JSONSchema {
 	nodeTypes := make(map[string]dsl.NodeTypeSchema, len(r.NodeTypes))
 	for key, def := range r.NodeTypes {

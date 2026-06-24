@@ -68,14 +68,22 @@ func NewGraph() *Graph {
 	}
 }
 
-func LoadGraphFromFile(buildContext *registry.BuildContext, path string) (*Graph, error) {
+func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return dsl.GraphDefinition{}, err
 	}
 	def, err := dsl.DeserializeGraphDefinition(data)
 	if err != nil {
-		return nil, fmt.Errorf("load graph definition from %q: %w", path, err)
+		return dsl.GraphDefinition{}, fmt.Errorf("load graph definition from %q: %w", path, err)
+	}
+	return def, nil
+}
+
+func LoadGraphFromFile(buildContext *registry.BuildContext, path string) (*Graph, error) {
+	def, err := LoadGraphDefinitionFile(path)
+	if err != nil {
+		return nil, err
 	}
 	reg := builtin.NewDefaultRegistry()
 	return BuildGraph(reg, def, buildContext)

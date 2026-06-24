@@ -57,7 +57,7 @@ func resumeFromCheckpoint(ctx context.Context) {
 	tryPanic(state.SetPath(currentState, state.Scope(reactAgentStateScope, "pending_human_input").String(), "24+5*8-2=? 现在是几点."))
 
 	baseDir := ".local/instance"
-	graph, err := weaveflow.LoadGraphFromFile(&weaveflow.BuildContext{}, filepath.Join(baseDir, "graph.json"))
+	graph, err := weaveflow.LoadGraphFromFile(filepath.Join(baseDir, "graph.json"), weaveflow.WithBuildContext(&weaveflow.BuildContext{}))
 	tryPanic(err)
 
 	runner := newExampleRunner(baseDir, graph)
@@ -90,15 +90,15 @@ func newExampleRunner(baseDir string, graph *weaveflow.Graph) *runtime.GraphRunn
 		runtime.NewFileEventSink(filepath.Join(baseDir, "events")),
 	)
 
-	runner := weaveflow.NewGraphRunner(
+	runner, err := weaveflow.NewRunner(
 		graph,
-		runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
-		runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),
-		state.NewJSONStateCodec(""),
-		sink,
+		weaveflow.WithExecutionStore(runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution"))),
+		weaveflow.WithCheckpointStore(runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))),
+		weaveflow.WithEventSink(sink),
+		weaveflow.WithArtifactStore(runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))),
+		weaveflow.WithGraphID("graph-runner"),
+		weaveflow.WithGraphVersion("v1.0.0"),
 	)
-	runner.ArtifactStore = runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
-	runner.GraphID = "graph-runner"
-	runner.GraphVersion = "v1.0.0"
+	tryPanic(err)
 	return runner
 }

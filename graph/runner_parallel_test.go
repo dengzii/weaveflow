@@ -1,0 +1,1067 @@
+package graph
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
+	langgraph "github.com/smallnest/langgraphgo/graph"
+)
+
+func TestRunnerParallelFanOutFanInRecordsBranchSteps(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "b")
+	})
+	mustAddNode(t, g, "collector", func(ctx context.Context, access *state.Access) error {
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "a"},
+		{"router", "b"},
+		{"a", "collector"},
+		{"b", "collector"},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	dir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(dir)
+	checkpointStore := fruntime.NewFileCheckpointStore(dir)
+	runner := NewGraphRunner(
+		g,
+		executionStore,
+		checkpointStore,
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, finalState, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	count, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("branch_count"))
+	if !ok || count != 2 {
+		t.Fatalf("expected collector to see two branches, got %#v ok=%v", count, ok)
+	}
+
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	byNode := map[string]fruntime.StepRecord{}
+	for _, step := range steps {
+		byNode[step.NodeID] = step
+	}
+	for _, nodeID := range []string{"router", "a", "b", "collector"} {
+		step, ok := byNode[nodeID]
+		if !ok {
+			t.Fatalf("missing step for node %q; steps=%#v", nodeID, steps)
+		}
+		if step.Status != fruntime.StepStatusSucceeded {
+			t.Fatalf("step %q status = %q", nodeID, step.Status)
+		}
+		if step.CheckpointBeforeID == "" || step.CheckpointAfterID == "" {
+			t.Fatalf("step %q missing before/after checkpoints: %#v", nodeID, step)
+		}
+	}
+	if byNode["a"].WaveID == "" || byNode["a"].WaveID != byNode["b"].WaveID {
+		t.Fatalf("expected branch steps to share wave id, a=%q b=%q", byNode["a"].WaveID, byNode["b"].WaveID)
+	}
+
+	events, err := runner.ListEvents(run.RunID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	for _, nodeID := range []string{"a", "b"} {
+		step := byNode[nodeID]
+		var started, finished bool
+		for _, event := range events {
+			if event.NodeID != nodeID || event.StepID != step.StepID {
+				continue
+			}
+			if event.Type == fruntime.EventNodeStarted {
+				started = true
+			}
+			if event.Type == fruntime.EventNodeFinished {
+				finished = true
+			}
+		}
+		if !started || !finished {
+			t.Fatalf("branch %q missing started/finished events for step %q: started=%v finished=%v events=%#v", nodeID, step.StepID, started, finished, events)
+		}
+	}
+
+	checkpoints, err := runner.ListCheckpoints(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	if len(checkpoints) != len(steps)*2+1 {
+		t.Fatalf("expected before/after checkpoint per step plus barrier, got checkpoints=%d steps=%d", len(checkpoints), len(steps))
+	}
+	var barrier fruntime.CheckpointRecord
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage == fruntime.CheckpointAfterParallelWave {
+			barrier = checkpoint
+			break
+		}
+	}
+	if barrier.CheckpointID == "" {
+		t.Fatalf("missing after_parallel_wave checkpoint: %#v", checkpoints)
+	}
+	restored, err := runner.LoadCheckpointState(context.Background(), barrier.CheckpointID)
+	if err != nil {
+		t.Fatalf("load barrier checkpoint: %v", err)
+	}
+	if len(restored.Runtime.NextNodeIDs) != 1 || restored.Runtime.NextNodeIDs[0] != "collector" {
+		t.Fatalf("barrier next nodes = %#v, want [collector]", restored.Runtime.NextNodeIDs)
+	}
+}
+
+func TestRunnerParallelResumeFromBarrierContinuesToCollector(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "b")
+	})
+	mustAddNode(t, g, "collector", func(ctx context.Context, access *state.Access) error {
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "a"},
+		{"router", "b"},
+		{"a", "collector"},
+		{"b", "collector"},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	checkpoints, err := runner.ListCheckpoints(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	var barrierID string
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage == fruntime.CheckpointAfterParallelWave {
+			barrierID = checkpoint.CheckpointID
+			break
+		}
+	}
+	if barrierID == "" {
+		t.Fatalf("missing barrier checkpoint: %#v", checkpoints)
+	}
+
+	resumedRun, resumedState, err := runner.ResumeFromCheckpoint(context.Background(), barrierID, nil)
+	if err != nil {
+		t.Fatalf("resume from barrier: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
+	}
+	count, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("branch_count"))
+	if !ok || count != 2 {
+		t.Fatalf("expected resumed collector to see two branches, got %#v ok=%v", count, ok)
+	}
+}
+
+func TestRunnerSequentialResumeFromAfterNodeStillWorks(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("a"), true)
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("b"), true)
+	})
+	if err := g.SetEntryPoint("a"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("b"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	if err := g.AddEdge("a", "b"); err != nil {
+		t.Fatalf("add a -> b: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	var afterA string
+	for _, step := range steps {
+		if step.NodeID == "a" {
+			afterA = step.CheckpointAfterID
+			break
+		}
+	}
+	if afterA == "" {
+		t.Fatalf("missing after checkpoint for a: %#v", steps)
+	}
+
+	resumedRun, resumedState, err := runner.ResumeFromCheckpoint(context.Background(), afterA, nil)
+	if err != nil {
+		t.Fatalf("resume from sequential after_node: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
+	}
+	value, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("b"))
+	if !ok || value != true {
+		t.Fatalf("expected resumed run to execute b, got %#v ok=%v", value, ok)
+	}
+}
+
+func TestRunnerParallelFanOutToEndLeavesLastCheckpointAtBarrier(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "b")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("router", "a"); err != nil {
+		t.Fatalf("add router -> a: %v", err)
+	}
+	if err := g.AddEdge("router", "b"); err != nil {
+		t.Fatalf("add router -> b: %v", err)
+	}
+	if err := g.AddEdge("a", EndNodeRef); err != nil {
+		t.Fatalf("add a -> end: %v", err)
+	}
+	if err := g.AddEdge("b", EndNodeRef); err != nil {
+		t.Fatalf("add b -> end: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, finalState, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	branches, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("branches"))
+	items, _ := branches.([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected merged branches, got %#v ok=%v", branches, ok)
+	}
+
+	restored, err := runner.LoadCheckpointState(context.Background(), run.LastCheckpointID)
+	if err != nil {
+		t.Fatalf("load last checkpoint: %v", err)
+	}
+	if restored.Record.Stage != fruntime.CheckpointAfterParallelWave {
+		t.Fatalf("last checkpoint stage = %q, want after_parallel_wave", restored.Record.Stage)
+	}
+	if len(restored.Runtime.NextNodeIDs) != 1 || restored.Runtime.NextNodeIDs[0] != "END" {
+		t.Fatalf("barrier next nodes = %#v, want [END]", restored.Runtime.NextNodeIDs)
+	}
+}
+
+func TestRunnerParallelBarrierNextNodeIDsAreStable(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	for _, nodeID := range []string{"a", "b", "collector_a", "collector_b"} {
+		id := nodeID
+		mustAddNode(t, g, id, func(ctx context.Context, access *state.Access) error {
+			return access.AppendAny(state.Shared("visited"), id)
+		})
+	}
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "a"},
+		{"router", "b"},
+		{"a", "collector_b"},
+		{"a", "collector_a"},
+		{"b", "collector_a"},
+		{"b", "collector_b"},
+		{"collector_a", EndNodeRef},
+		{"collector_b", EndNodeRef},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	checkpoints, err := runner.ListCheckpoints(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage != fruntime.CheckpointAfterParallelWave {
+			continue
+		}
+		restored, err := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
+		if err != nil {
+			t.Fatalf("load barrier checkpoint: %v", err)
+		}
+		if len(restored.Runtime.NextNodeIDs) == 2 {
+			got := restored.Runtime.NextNodeIDs[0] + "," + restored.Runtime.NextNodeIDs[1]
+			if got != "collector_a,collector_b" {
+				t.Fatalf("barrier next nodes = %#v, want [collector_a collector_b]", restored.Runtime.NextNodeIDs)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing branch barrier checkpoint: %#v", checkpoints)
+}
+
+func TestRunnerRejectsParallelMergeConflict(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("answer"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("answer"), "b")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("router", "a"); err != nil {
+		t.Fatalf("add router -> a: %v", err)
+	}
+	if err := g.AddEdge("router", "b"); err != nil {
+		t.Fatalf("add router -> b: %v", err)
+	}
+	if err := g.AddEdge("a", EndNodeRef); err != nil {
+		t.Fatalf("add a -> end: %v", err)
+	}
+	if err := g.AddEdge("b", EndNodeRef); err != nil {
+		t.Fatalf("add b -> end: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil {
+		t.Fatal("expected parallel merge conflict")
+	}
+	if run.Status != fruntime.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+}
+
+func TestRunnerParallelBarrierCheckpointFailureFailsRun(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "b")
+	})
+	mustAddNode(t, g, "collector", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("collected"), true)
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "a"},
+		{"router", "b"},
+		{"a", "collector"},
+		{"b", "collector"},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		failBarrierCheckpointStore{inner: fruntime.NewFileCheckpointStore(dir)},
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil {
+		t.Fatal("expected barrier checkpoint failure")
+	}
+	if run.Status != fruntime.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+	if run.ErrorCode != "callback_failed" {
+		t.Fatalf("run error code = %q, want callback_failed", run.ErrorCode)
+	}
+}
+
+func TestRunnerRejectsAfterNodeBreakpointOnParallelBranch(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("router", "a"); err != nil {
+		t.Fatalf("add router -> a: %v", err)
+	}
+	if err := g.AddEdge("router", "b"); err != nil {
+		t.Fatalf("add router -> b: %v", err)
+	}
+	if err := g.AddEdge("a", EndNodeRef); err != nil {
+		t.Fatalf("add a -> end: %v", err)
+	}
+	if err := g.AddEdge("b", EndNodeRef); err != nil {
+		t.Fatalf("add b -> end: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	runner.Breakpoints = []fruntime.Breakpoint{{
+		ID:      "bp-after-a",
+		NodeID:  "a",
+		Stage:   string(fruntime.CheckpointAfterNode),
+		Enabled: true,
+	}}
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil {
+		t.Fatal("expected after_node breakpoint configuration error")
+	}
+	if run.Status != fruntime.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+	if run.ErrorCode != "config_failed" {
+		t.Fatalf("run error code = %q, want config_failed", run.ErrorCode)
+	}
+}
+
+func TestRunnerParallelBeforeBreakpointPausesWithoutBarrierFailure(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "b")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("router", "a"); err != nil {
+		t.Fatalf("add router -> a: %v", err)
+	}
+	if err := g.AddEdge("router", "b"); err != nil {
+		t.Fatalf("add router -> b: %v", err)
+	}
+	if err := g.AddEdge("a", EndNodeRef); err != nil {
+		t.Fatalf("add a -> end: %v", err)
+	}
+	if err := g.AddEdge("b", EndNodeRef); err != nil {
+		t.Fatalf("add b -> end: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	runner.Breakpoints = []fruntime.Breakpoint{{
+		ID:      "bp-before-a",
+		NodeID:  "a",
+		Stage:   string(fruntime.CheckpointBeforeNode),
+		Enabled: true,
+	}}
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start with before breakpoint: %v", err)
+	}
+	if run.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", run.Status)
+	}
+	if run.ErrorCode == "callback_failed" {
+		t.Fatalf("before breakpoint was reported as callback failure: %#v", run)
+	}
+}
+
+func TestRunnerParallelResumeFromBeforeBreakpointPreservesSiblingOutput(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "b")
+	})
+	mustAddNode(t, g, "collector", func(ctx context.Context, access *state.Access) error {
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "a"},
+		{"router", "b"},
+		{"a", "collector"},
+		{"b", "collector"},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	runner.Breakpoints = []fruntime.Breakpoint{{
+		ID:      "bp-before-a",
+		NodeID:  "a",
+		Stage:   string(fruntime.CheckpointBeforeNode),
+		Enabled: true,
+	}}
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start with before breakpoint: %v", err)
+	}
+	if run.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", run.Status)
+	}
+	restored, err := runner.LoadCheckpointState(context.Background(), run.LastCheckpointID)
+	if err != nil {
+		t.Fatalf("load pause checkpoint: %v", err)
+	}
+	branches, ok := state.NewAccess(nil, restored.Business).ReadAny(state.Shared("branches"))
+	items, _ := branches.([]any)
+	if !ok || len(items) != 1 || items[0] != "b" {
+		t.Fatalf("expected paused checkpoint to preserve sibling b output, got %#v ok=%v", branches, ok)
+	}
+
+	resumedRun, resumedState, err := runner.Resume(context.Background(), run.RunID, nil)
+	if err != nil {
+		t.Fatalf("resume before breakpoint: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed status = %q, want completed", resumedRun.Status)
+	}
+	count, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("branch_count"))
+	if !ok || count != 2 {
+		t.Fatalf("expected collector to see both branches after resume, got %#v ok=%v", count, ok)
+	}
+}
+
+func TestRunnerParallelExternalPauseStopsAtBarrier(t *testing.T) {
+	t.Parallel()
+
+	g, started, release, collectorCalls := newControlledParallelRunnerGraph(t)
+	dir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(dir)
+	runner := NewGraphRunner(
+		g,
+		executionStore,
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, err := runner.Start(context.Background(), state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: err}
+	}()
+
+	waitForBranchStarts(t, started, 2)
+	runID := waitForRunID(t, executionStore)
+	if err := runner.Pause(context.Background(), runID); err != nil {
+		t.Fatalf("pause run: %v", err)
+	}
+	close(release)
+
+	res := waitForRunnerResult(t, done)
+	if res.err != nil {
+		t.Fatalf("runner start returned error: %v", res.err)
+	}
+	if res.run.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", res.run.Status)
+	}
+	if got := atomic.LoadInt32(collectorCalls); got != 0 {
+		t.Fatalf("collector executed before paused barrier resume: %d", got)
+	}
+	restored, err := runner.LoadCheckpointState(context.Background(), res.run.LastCheckpointID)
+	if err != nil {
+		t.Fatalf("load last checkpoint: %v", err)
+	}
+	if restored.Record.Stage != fruntime.CheckpointAfterParallelWave {
+		t.Fatalf("last checkpoint stage = %q, want after_parallel_wave", restored.Record.Stage)
+	}
+	if len(restored.Runtime.NextNodeIDs) != 1 || restored.Runtime.NextNodeIDs[0] != "collector" {
+		t.Fatalf("barrier next nodes = %#v, want [collector]", restored.Runtime.NextNodeIDs)
+	}
+
+	resumedRun, resumedState, err := runner.Resume(context.Background(), res.run.RunID, nil)
+	if err != nil {
+		t.Fatalf("resume paused barrier: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed status = %q, want completed", resumedRun.Status)
+	}
+	if got := atomic.LoadInt32(collectorCalls); got != 1 {
+		t.Fatalf("collector calls after resume = %d, want 1", got)
+	}
+	count, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("branch_count"))
+	if !ok || count != 2 {
+		t.Fatalf("expected resumed collector to see two branches, got %#v ok=%v", count, ok)
+	}
+}
+
+func TestRunnerParallelExternalCancelStopsAtBarrier(t *testing.T) {
+	t.Parallel()
+
+	g, started, release, collectorCalls := newControlledParallelRunnerGraph(t)
+	dir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(dir)
+	runner := NewGraphRunner(
+		g,
+		executionStore,
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, err := runner.Start(context.Background(), state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: err}
+	}()
+
+	waitForBranchStarts(t, started, 2)
+	runID := waitForRunID(t, executionStore)
+	if err := runner.Cancel(context.Background(), runID); err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+	close(release)
+
+	res := waitForRunnerResult(t, done)
+	if res.err != nil {
+		t.Fatalf("runner start returned error: %v", res.err)
+	}
+	if res.run.Status != fruntime.RunStatusCanceled {
+		t.Fatalf("run status = %q, want canceled", res.run.Status)
+	}
+	if got := atomic.LoadInt32(collectorCalls); got != 0 {
+		t.Fatalf("collector executed after canceled barrier: %d", got)
+	}
+	restored, err := runner.LoadCheckpointState(context.Background(), res.run.LastCheckpointID)
+	if err != nil {
+		t.Fatalf("load last checkpoint: %v", err)
+	}
+	if restored.Record.Stage != fruntime.CheckpointAfterParallelWave {
+		t.Fatalf("last checkpoint stage = %q, want after_parallel_wave", restored.Record.Stage)
+	}
+}
+
+func TestRunnerParallelMarksAllFailedActiveBranches(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return errors.New("a failed")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return errors.New("b failed")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("router", "a"); err != nil {
+		t.Fatalf("add router -> a: %v", err)
+	}
+	if err := g.AddEdge("router", "b"); err != nil {
+		t.Fatalf("add router -> b: %v", err)
+	}
+	if err := g.AddEdge("a", EndNodeRef); err != nil {
+		t.Fatalf("add a -> end: %v", err)
+	}
+	if err := g.AddEdge("b", EndNodeRef); err != nil {
+		t.Fatalf("add b -> end: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil {
+		t.Fatal("expected branch failure")
+	}
+	if run.Status != fruntime.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	failed := map[string]bool{}
+	for _, step := range steps {
+		if step.Status == fruntime.StepStatusFailed {
+			failed[step.NodeID] = true
+		}
+	}
+	if !failed["a"] || !failed["b"] {
+		t.Fatalf("expected both branch steps to fail, failed=%#v steps=%#v", failed, steps)
+	}
+}
+
+func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
+	t.Parallel()
+
+	var (
+		mu     sync.Mutex
+		aCalls int
+		bCalls int
+	)
+	g := NewGraph()
+	g.SetRetryPolicy(&langgraph.RetryPolicy{
+		MaxRetries:      1,
+		BackoffStrategy: langgraph.FixedBackoff,
+		RetryableErrors: []string{"temporary"},
+	})
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		mu.Lock()
+		defer mu.Unlock()
+		aCalls++
+		return access.AppendAny(state.Shared("branches"), "a")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		mu.Lock()
+		defer mu.Unlock()
+		bCalls++
+		if bCalls == 1 {
+			return errors.New("temporary b failure")
+		}
+		return access.AppendAny(state.Shared("branches"), "b")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("router", "a"); err != nil {
+		t.Fatalf("add router -> a: %v", err)
+	}
+	if err := g.AddEdge("router", "b"); err != nil {
+		t.Fatalf("add router -> b: %v", err)
+	}
+	if err := g.AddEdge("a", EndNodeRef); err != nil {
+		t.Fatalf("add a -> end: %v", err)
+	}
+	if err := g.AddEdge("b", EndNodeRef); err != nil {
+		t.Fatalf("add b -> end: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, finalState, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	mu.Lock()
+	gotACalls, gotBCalls := aCalls, bCalls
+	mu.Unlock()
+	if gotACalls != 1 || gotBCalls != 2 {
+		t.Fatalf("expected a once and b twice, got a=%d b=%d", gotACalls, gotBCalls)
+	}
+	branches, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("branches"))
+	items, _ := branches.([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected two merged branches after retry, got %#v ok=%v", branches, ok)
+	}
+}
+
+type failBarrierCheckpointStore struct {
+	inner fruntime.CheckpointStore
+}
+
+type runnerResult struct {
+	run   fruntime.RunRecord
+	state *state.State
+	err   error
+}
+
+func (s failBarrierCheckpointStore) Save(ctx context.Context, record fruntime.CheckpointRecord, payload []byte) error {
+	if record.Stage == fruntime.CheckpointAfterParallelWave {
+		return errors.New("barrier checkpoint failed")
+	}
+	return s.inner.Save(ctx, record, payload)
+}
+
+func (s failBarrierCheckpointStore) Load(ctx context.Context, checkpointID string) (fruntime.CheckpointRecord, []byte, error) {
+	return s.inner.Load(ctx, checkpointID)
+}
+
+func (s failBarrierCheckpointStore) List(ctx context.Context, runID string) ([]fruntime.CheckpointRecord, error) {
+	return s.inner.List(ctx, runID)
+}
+
+func newControlledParallelRunnerGraph(t *testing.T) (*Graph, chan string, chan struct{}, *int32) {
+	t.Helper()
+
+	started := make(chan string, 2)
+	release := make(chan struct{})
+	var collectorCalls int32
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	for _, nodeID := range []string{"a", "b"} {
+		id := nodeID
+		mustAddNode(t, g, id, func(ctx context.Context, access *state.Access) error {
+			started <- id
+			<-release
+			return access.AppendAny(state.Shared("branches"), id)
+		})
+	}
+	mustAddNode(t, g, "collector", func(ctx context.Context, access *state.Access) error {
+		atomic.AddInt32(&collectorCalls, 1)
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "a"},
+		{"router", "b"},
+		{"a", "collector"},
+		{"b", "collector"},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+	return g, started, release, &collectorCalls
+}
+
+func waitForBranchStarts(t *testing.T, started <-chan string, want int) {
+	t.Helper()
+	seen := map[string]struct{}{}
+	deadline := time.After(5 * time.Second)
+	for len(seen) < want {
+		select {
+		case nodeID := <-started:
+			seen[nodeID] = struct{}{}
+		case <-deadline:
+			t.Fatalf("timed out waiting for branch starts, seen=%#v", seen)
+		}
+	}
+}
+
+func waitForRunID(t *testing.T, store fruntime.ExecutionStore) string {
+	t.Helper()
+	deadline := time.After(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for run id")
+		case <-ticker.C:
+			runs, err := store.ListRuns(context.Background(), fruntime.RunFilter{})
+			if err != nil {
+				t.Fatalf("list runs: %v", err)
+			}
+			if len(runs) > 0 {
+				return runs[0].RunID
+			}
+		}
+	}
+}
+
+func waitForRunnerResult(t *testing.T, done <-chan runnerResult) runnerResult {
+	t.Helper()
+	select {
+	case res := <-done:
+		return res
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for runner result")
+	}
+	return runnerResult{}
+}

@@ -114,12 +114,41 @@ _ = g.AddEdge(tool.ID(), llm.ID())
 _ = g.AddEdge(llm.ID(), weaveflow.EndNodeRef)
 
 _ = g.SetEntryPoint(human.ID())
+
+runner, err := weaveflow.NewRunner(g)
+if err != nil {
+    return err
+}
+_, finalState, err := runner.Start(context.Background(), weaveflow.NewState())
 ```
 
 Load a graph definition from disk:
 
 ```go
-graph, err := weaveflow.LoadGraphFromFile(&weaveflow.BuildContext{}, "graph.json")
+graph, err := weaveflow.LoadGraphFromFile("graph.json")
+```
+
+Use explicit build settings when the DSL references custom node types,
+conditions, graph resolvers, or instance-bound config:
+
+```go
+registry := weaveflow.NewDefaultRegistry()
+graph, err := weaveflow.LoadGraphFromFile(
+    "graph.json",
+    weaveflow.WithRegistry(registry),
+    weaveflow.WithBuildContext(&weaveflow.BuildContext{}),
+)
+```
+
+For persisted local runs, construct the runner in one call:
+
+```go
+runner, err := weaveflow.NewLocalRunner(
+    graph,
+    ".local/instance",
+    weaveflow.WithGraphID("agent"),
+    weaveflow.WithGraphVersion("v1"),
+)
 ```
 
 ## State Persistence

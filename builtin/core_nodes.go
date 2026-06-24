@@ -11,12 +11,12 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-func RegisterCoreNodeTypes(r *registry.Registry) {
+func RegisterCoreNodeTypes(r *registry.Registry) error {
 	if r == nil {
-		return
+		return fmt.Errorf("registry is nil")
 	}
 
-	r.RegisterNodeType(registry.NodeTypeDefinition{
+	if err := r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        node.NodeTypeMappedSubgraph,
 			Title:       "Mapped Subgraph Node",
@@ -59,9 +59,11 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			mappedNode.InvokeSubgraph = runner
 			return mappedNode, nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register node type %q: %w", node.NodeTypeMappedSubgraph, err)
+	}
 
-	r.RegisterNodeType(registry.NodeTypeDefinition{
+	if err := r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        node.NodeTypeHumanMessage,
 			Title:       "Human Message Node",
@@ -86,9 +88,11 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			}
 			return humanNode, nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register node type %q: %w", node.NodeTypeHumanMessage, err)
+	}
 
-	r.RegisterNodeType(registry.NodeTypeDefinition{
+	if err := r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        node.NodeTypeContextReducer,
 			Title:       "Context Reducer Node",
@@ -120,9 +124,11 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			}
 			return reducerNode, nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register node type %q: %w", node.NodeTypeContextReducer, err)
+	}
 
-	r.RegisterNodeType(registry.NodeTypeDefinition{
+	if err := r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        node.NodeTypeLLM,
 			Title:       "LLM Node",
@@ -146,9 +152,11 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			llmNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
 			return llmNode, nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register node type %q: %w", node.NodeTypeLLM, err)
+	}
 
-	r.RegisterNodeType(registry.NodeTypeDefinition{
+	if err := r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        node.NodeTypeTools,
 			Title:       "Tools Node",
@@ -174,9 +182,11 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			}
 			return toolsNode, nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register node type %q: %w", node.NodeTypeTools, err)
+	}
 
-	r.RegisterNodeType(registry.NodeTypeDefinition{
+	if err := r.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        node.NodeTypeAgent,
 			Title:       "Agent Node",
@@ -223,13 +233,15 @@ func RegisterCoreNodeTypes(r *registry.Registry) {
 			agentNode.ToolDescription = config.String(spec.Config, "tool_description")
 			return agentNode, nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register node type %q: %w", node.NodeTypeAgent, err)
+	}
 
-	registerCoreConditions(r)
+	return registerCoreConditions(r)
 }
 
-func registerCoreConditions(r *registry.Registry) {
-	r.RegisterCondition(registry.ConditionDefinition{
+func registerCoreConditions(r *registry.Registry) error {
+	if err := r.RegisterCondition(registry.ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{
 			Type:        "last_message_has_tool_calls",
 			Title:       "Last Message Has Tool Calls",
@@ -243,9 +255,11 @@ func registerCoreConditions(r *registry.Registry) {
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
 			return LastMessageHasToolCalls(conditionStateScope(spec.Config)), nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register condition %q: %w", "last_message_has_tool_calls", err)
+	}
 
-	r.RegisterCondition(registry.ConditionDefinition{
+	if err := r.RegisterCondition(registry.ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{
 			Type:        "has_final_answer",
 			Title:       "Has Final Answer",
@@ -259,9 +273,11 @@ func registerCoreConditions(r *registry.Registry) {
 		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
 			return HasFinalAnswer(conditionStateScope(spec.Config)), nil
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register condition %q: %w", "has_final_answer", err)
+	}
 
-	r.RegisterCondition(registry.ConditionDefinition{
+	if err := r.RegisterCondition(registry.ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{
 			Type:        "expression_conditions",
 			Title:       "Expression Conditions",
@@ -309,7 +325,10 @@ func registerCoreConditions(r *registry.Registry) {
 			}
 			return ExpressionConditions(cfg)
 		},
-	})
+	}); err != nil {
+		return fmt.Errorf("register condition %q: %w", "expression_conditions", err)
+	}
+	return nil
 }
 
 func conditionStateScope(configMap map[string]any) string {

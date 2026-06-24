@@ -233,16 +233,17 @@ func runPlan(ctx context.Context, objective string, opts options) (*state.State,
 	if sink == nil {
 		sink = fruntime.NoopEventSink{}
 	}
-	runner := weaveflow.NewGraphRunner(
+	runner, err := weaveflow.NewRunner(
 		g,
-		fruntime.NewNoopExecutionStore(),
-		fruntime.NewNoopCheckpointStore(),
-		state.NewJSONStateCodec(""),
-		sink,
+		weaveflow.WithExecutionStore(fruntime.NewNoopExecutionStore()),
+		weaveflow.WithCheckpointStore(fruntime.NewNoopCheckpointStore()),
+		weaveflow.WithEventSink(sink),
+		weaveflow.WithArtifactStore(fruntime.NewNoopArtifactStore()),
+		weaveflow.WithGraphID("plan-mode-proto"),
 	)
-	// analyze graph runner
-	runner.ArtifactStore = fruntime.NewNoopArtifactStore()
-	runner.GraphID = "plan-mode-proto"
+	if err != nil {
+		return nil, err
+	}
 
 	initial := state.FromShared(map[string]any{
 		planStateKey: map[string]any{

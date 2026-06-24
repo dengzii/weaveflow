@@ -35,10 +35,17 @@ type GraphRunner struct {
 }
 
 func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec state.StateCodec, eventSink EventSink) *GraphRunner {
+	if codec == nil {
+		codec = state.NewJSONStateCodec("")
+	}
+	if eventSink == nil {
+		eventSink = NoopEventSink{}
+	}
 	return &GraphRunner{
 		graph:           graph,
 		ExecutionStore:  executionStore,
 		CheckpointStore: checkpointStore,
+		ArtifactStore:   NewNoopArtifactStore(),
 		Codec:           codec,
 		EventSink:       eventSink,
 		Now:             time.Now,

@@ -75,16 +75,18 @@ func NewChatController(baseCtx context.Context, cfg *Config, toolFlags map[strin
 }
 
 func newChatRunner(graph *weaveflow.Graph, graphID string, runDir string, sink fruntime.EventSink) *fruntime.GraphRunner {
-	runner := weaveflow.NewGraphRunner(
+	runner, err := weaveflow.NewRunner(
 		graph,
-		fruntime.NewFileExecutionStore(filepath.Join(runDir, "execution")),
-		fruntime.NewFileCheckpointStore(filepath.Join(runDir, "checkpoints")),
-		state.NewJSONStateCodec(""),
-		sink,
+		weaveflow.WithExecutionStore(fruntime.NewFileExecutionStore(filepath.Join(runDir, "execution"))),
+		weaveflow.WithCheckpointStore(fruntime.NewFileCheckpointStore(filepath.Join(runDir, "checkpoints"))),
+		weaveflow.WithEventSink(sink),
+		weaveflow.WithArtifactStore(fruntime.NewFileArtifactStore(filepath.Join(runDir, "artifacts"))),
+		weaveflow.WithGraphID(graphID),
+		weaveflow.WithContractValidation(core.ContractValidationStrict),
 	)
-	runner.GraphID = graphID
-	runner.ArtifactStore = fruntime.NewFileArtifactStore(filepath.Join(runDir, "artifacts"))
-	runner.ContractValidation = core.ContractValidationStrict
+	if err != nil {
+		panic(err)
+	}
 	return runner
 }
 

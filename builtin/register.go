@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	"fmt"
+
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state/accessors"
@@ -8,26 +10,35 @@ import (
 
 func NewDefaultRegistry() *registry.Registry {
 	r := registry.NewRegistry()
-	RegisterDefaultComponents(r)
+	if err := RegisterDefaultComponents(r); err != nil {
+		panic(err)
+	}
 	return r
 }
 
-func RegisterDefaultComponents(registry *registry.Registry) {
+func RegisterDefaultComponents(registry *registry.Registry) error {
 	if registry == nil {
-		return
+		return fmt.Errorf("registry is nil")
 	}
 
-	RegisterDefaultStateFields(registry)
-	RegisterModules(registry)
-	RegisterCoreNodeTypes(registry)
+	if err := RegisterDefaultStateFields(registry); err != nil {
+		return err
+	}
+	if err := RegisterModules(registry); err != nil {
+		return err
+	}
+	if err := RegisterCoreNodeTypes(registry); err != nil {
+		return err
+	}
+	return nil
 }
 
-func RegisterDefaultStateFields(registry *registry.Registry) {
+func RegisterDefaultStateFields(registry *registry.Registry) error {
 	if registry == nil {
-		return
+		return fmt.Errorf("registry is nil")
 	}
 
-	registry.RegisterStateField(dsl.StateFieldDefinition{
+	return registry.RegisterStateField(dsl.StateFieldDefinition{
 		Name:        accessors.KeyConversation,
 		Description: "Shared conversation state for the graph run.",
 		Schema: dsl.JSONSchema{
@@ -43,10 +54,10 @@ func RegisterDefaultStateFields(registry *registry.Registry) {
 	})
 }
 
-func RegisterModules(registry *registry.Registry) {
+func RegisterModules(registry *registry.Registry) error {
 	if registry == nil {
-		return
+		return fmt.Errorf("registry is nil")
 	}
 
-	registerConversationModule(registry)
+	return registerConversationModule(registry)
 }
