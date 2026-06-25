@@ -6,7 +6,6 @@ import (
 	"testing"
 
 	"github.com/dengzii/weaveflow/core"
-	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -46,7 +45,7 @@ func TestWithRunnerEventServicesWrapsModelAndTools(t *testing.T) {
 			},
 		},
 	})
-	ctx = core.WithTools(ctx, map[string]tools.Tool{
+	ctx = core.WithTools(ctx, map[string]core.Tool{
 		"calc": {
 			Function: &llms.FunctionDefinition{Name: "calculator"},
 			Handler: func(_ context.Context, input string) (string, error) {
@@ -75,16 +74,16 @@ func TestWithRunnerEventServicesWrapsModelAndTools(t *testing.T) {
 		t.Fatalf("llm events = %#v, want [%q %q]", llmEvents, EventLLMContent, EventLLMCall)
 	}
 
-	tool, ok := tools.FindAvailable(wrappedCtx.Tools(), "calculator")
+	tool, ok := core.FindTool(wrappedCtx.Tools(), "calculator")
 	if !ok {
 		t.Fatal("wrapped tool not found")
 	}
-	callCtx := tools.WithCallMetadata(wrappedCtx, tools.CallMetadata{
+	callCtx := core.WithToolCallMetadata(wrappedCtx, core.ToolCallMetadata{
 		ToolCallID: "call-1",
 		Name:       "calculator",
 		Arguments:  `{"expression":"1+2"}`,
 	})
-	result, err := tool.Handler(callCtx, tools.DecodeInput(`{"expression":"1+2"}`))
+	result, err := tool.Handler(callCtx, core.DecodeToolInput(`{"expression":"1+2"}`))
 	if err != nil {
 		t.Fatalf("tool handler error = %v", err)
 	}

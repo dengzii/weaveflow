@@ -4,6 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"sync"
+
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
@@ -12,10 +17,6 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"os"
-	"sort"
-	"strings"
-	"sync"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"

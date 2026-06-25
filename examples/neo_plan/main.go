@@ -62,7 +62,7 @@ func main() {
 
 	ctx := context.Background()
 	ctx = core.WithModel(ctx, model)
-	ctx = core.WithTools(ctx, map[string]tools.Tool{
+	ctx = core.WithTools(ctx, map[string]core.Tool{
 		"read":  tools.NewRead(),
 		"write": tools.NewWrite(),
 		"edit":  tools.NewEdit(),

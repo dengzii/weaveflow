@@ -35,21 +35,21 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 
 ## Repository Layout
 
-| Package         | Responsibility                                                                 |
-|-----------------|--------------------------------------------------------------------------------|
-| `core/`         | Core interfaces, execution abstractions, and state primitives.                 |
-| `dsl/`          | Serializable graph definitions, node specs, and contract schemas.              |
-| `graph/`        | Graph topology, edges, routing, and runnable graph assembly.                   |
-| `runtime/`      | Execution engine, checkpoints, artifacts, and event plumbing.                  |
-| `state/`        | Scoped state, snapshots, validation, merge behavior, and conversation helpers. |
-| `registry/`     | Node/condition registration, build context, and graph instance configuration.  |
-| `node/`         | Production-oriented node implementations.                                      |
-| `builtin/`      | Built-in conditions, helpers, and default registry wiring.                     |
-| `tools/`        | Tool interfaces and bundled tool implementations.                              |
-| `llms/openai/`  | OpenAI-compatible LLM adapter.                                                 |
-| `memory/`       | Memory manager, repositories, and retrieval helpers.                           |
-| `cmd/neo/`      | Reference server entrypoint.                                                   |
-| `internal/neo/` | Neo server implementation and replay support.                                  |
+| Package         | Responsibility                                                                    |
+|-----------------|-----------------------------------------------------------------------------------|
+| `core/`         | Core interfaces, execution abstractions, tool abstractions, and state primitives. |
+| `dsl/`          | Serializable graph definitions, node specs, and contract schemas.                 |
+| `graph/`        | Graph topology, edges, routing, and runnable graph assembly.                      |
+| `runtime/`      | Execution engine, checkpoints, artifacts, and event plumbing.                     |
+| `state/`        | Scoped state, snapshots, validation, merge behavior, and conversation helpers.    |
+| `registry/`     | Node/condition registration, build context, and graph instance configuration.     |
+| `node/`         | Production-oriented node implementations.                                         |
+| `builtin/`      | Built-in conditions, helpers, and default registry wiring for advanced use.       |
+| `tools/`        | Bundled tool implementations.                                                     |
+| `llms/openai/`  | OpenAI-compatible LLM adapter.                                                    |
+| `memory/`       | Memory manager, repositories, and retrieval helpers.                              |
+| `cmd/neo/`      | Reference server entrypoint.                                                      |
+| `internal/neo/` | Neo server implementation and replay support.                                     |
 
 ## Getting Started
 
@@ -109,7 +109,7 @@ _ = g.AddNode(llm)
 _ = g.AddNode(tool)
 
 _ = g.AddEdge(human.ID(), llm.ID())
-_ = g.AddConditionalEdge(llm.ID(), tool.ID(), builtin.LastMessageHasToolCalls())
+_ = g.AddConditionalEdge(llm.ID(), tool.ID(), weaveflow.LastMessageHasToolCalls())
 _ = g.AddEdge(tool.ID(), llm.ID())
 _ = g.AddEdge(llm.ID(), weaveflow.EndNodeRef)
 
@@ -117,7 +117,7 @@ _ = g.SetEntryPoint(human.ID())
 
 runner, err := weaveflow.NewRunner(g)
 if err != nil {
-    return err
+return err
 }
 _, finalState, err := runner.Start(context.Background(), weaveflow.NewState())
 ```
@@ -134,9 +134,9 @@ conditions, graph resolvers, or instance-bound config:
 ```go
 registry := weaveflow.NewDefaultRegistry()
 graph, err := weaveflow.LoadGraphFromFile(
-    "graph.json",
-    weaveflow.WithRegistry(registry),
-    weaveflow.WithBuildContext(&weaveflow.BuildContext{}),
+"graph.json",
+weaveflow.WithRegistry(registry),
+weaveflow.WithBuildContext(&weaveflow.BuildContext{}),
 )
 ```
 
@@ -144,10 +144,10 @@ For persisted local runs, construct the runner in one call:
 
 ```go
 runner, err := weaveflow.NewLocalRunner(
-    graph,
-    ".local/instance",
-    weaveflow.WithGraphID("agent"),
-    weaveflow.WithGraphVersion("v1"),
+graph,
+".local/instance",
+weaveflow.WithGraphID("agent"),
+weaveflow.WithGraphVersion("v1"),
 )
 ```
 

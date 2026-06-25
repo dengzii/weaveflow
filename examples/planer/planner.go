@@ -50,7 +50,7 @@ func main() {
 	model, err := openai.New()
 	must(err)
 
-	available := map[string]tools.Tool{
+	available := map[string]core.Tool{
 		"read":    tools.NewRead(),
 		"glob":    tools.NewGlob(),
 		"grep":    tools.NewGrep(),
@@ -169,7 +169,7 @@ func printRunAnalysis(analyzer *fruntime.EventAnalyzer) {
 
 type options struct {
 	Model                 llms.Model
-	Tools                 map[string]tools.Tool
+	Tools                 map[string]core.Tool
 	MaxReplans            int
 	StepMaxToolIterations int
 	EventSink             fruntime.EventSink
@@ -779,7 +779,7 @@ func serializeSteps(steps []parsedStep) []map[string]any {
 	return out
 }
 
-func describeTools(available map[string]tools.Tool) []map[string]any {
+func describeTools(available map[string]core.Tool) []map[string]any {
 	if len(available) == 0 {
 		return nil
 	}
@@ -796,14 +796,14 @@ func describeTools(available map[string]tools.Tool) []map[string]any {
 	return out
 }
 
-func filterTools(available map[string]tools.Tool, hints []string) map[string]tools.Tool {
+func filterTools(available map[string]core.Tool, hints []string) map[string]core.Tool {
 	if len(available) == 0 {
 		return nil
 	}
 	if len(hints) == 0 {
 		return available
 	}
-	filtered := make(map[string]tools.Tool, len(hints))
+	filtered := make(map[string]core.Tool, len(hints))
 	for _, h := range hints {
 		if t, ok := available[h]; ok {
 			filtered[h] = t
@@ -816,7 +816,7 @@ func filterTools(available map[string]tools.Tool, hints []string) map[string]too
 	return filtered
 }
 
-func toolSpecsFrom(available map[string]tools.Tool) []llms.Tool {
+func toolSpecsFrom(available map[string]core.Tool) []llms.Tool {
 	if len(available) == 0 {
 		return nil
 	}
@@ -830,7 +830,7 @@ func toolSpecsFrom(available map[string]tools.Tool) []llms.Tool {
 	return out
 }
 
-func invokeTool(ctx context.Context, available map[string]tools.Tool, name, args string) (string, error) {
+func invokeTool(ctx context.Context, available map[string]core.Tool, name, args string) (string, error) {
 	t, ok := available[strings.TrimSpace(name)]
 	if !ok || t.Handler == nil {
 		err := fmt.Errorf("tool %q is not available", name)

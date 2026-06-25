@@ -5,14 +5,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/dengzii/weaveflow/tools"
+	"github.com/dengzii/weaveflow/core"
 
 	"github.com/gin-gonic/gin"
 )
 
 type ConfigController struct {
 	config    *Config
-	allTools  map[string]tools.Tool
+	allTools  map[string]core.Tool
 	toolFlags map[string]bool
 	mode      string
 	store     *Store
@@ -20,7 +20,7 @@ type ConfigController struct {
 	mu sync.RWMutex
 }
 
-func NewConfigController(cfg *Config, allTools map[string]tools.Tool, toolFlags map[string]bool, store *Store) *ConfigController {
+func NewConfigController(cfg *Config, allTools map[string]core.Tool, toolFlags map[string]bool, store *Store) *ConfigController {
 	return &ConfigController{
 		config:    cfg,
 		allTools:  allTools,

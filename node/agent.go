@@ -13,7 +13,6 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
-	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -303,7 +302,7 @@ func (a *AgentNode) Contract(registry *state.Registry) (state.Contract, error) {
 	return contract, nil
 }
 
-func (a *AgentNode) AsTool() tools.Tool {
+func (a *AgentNode) AsTool() core.Tool {
 	name := strings.TrimSpace(a.ToolName)
 	if name == "" {
 		name = "agent"
@@ -328,7 +327,7 @@ func (a *AgentNode) AsTool() tools.Tool {
 		},
 	}
 
-	return tools.Tool{
+	return core.Tool{
 		Function: function,
 		Handler: func(ctx context.Context, input string) (string, error) {
 			task, err := decodeAgentToolInput(input)

@@ -8,7 +8,6 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
-	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -85,7 +84,7 @@ func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (string, error) {
 		return "", errors.New("tool call has no function payload")
 	}
 	name := toolCall.FunctionCall.Name
-	tool, ok := tools.FindAvailable(ctx.Tools(), name)
+	tool, ok := core.FindTool(ctx.Tools(), name)
 	if !ok {
 		return "", fmt.Errorf("tool %q not found", name)
 	}
@@ -93,12 +92,12 @@ func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (string, error) {
 		return "", fmt.Errorf("tool handler %q not found", name)
 	}
 	arguments := toolCall.FunctionCall.Arguments
-	callCtx := tools.WithCallMetadata(ctx, tools.CallMetadata{
+	callCtx := core.WithToolCallMetadata(ctx, core.ToolCallMetadata{
 		ToolCallID: toolCall.ID,
 		Name:       name,
 		Arguments:  arguments,
 	})
-	return tool.Handler(callCtx, tools.DecodeInput(arguments))
+	return tool.Handler(callCtx, core.DecodeToolInput(arguments))
 }
 
 func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {

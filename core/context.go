@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/dengzii/weaveflow/memory"
-	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -41,7 +40,7 @@ func WithModel(ctx context.Context, model llms.Model) context.Context {
 	return context.WithValue(ctx, modelKey{}, model)
 }
 
-func WithTools(ctx context.Context, available map[string]tools.Tool) context.Context {
+func WithTools(ctx context.Context, available map[string]Tool) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -63,11 +62,11 @@ func ModelFromContext(ctx context.Context) llms.Model {
 	return model
 }
 
-func ToolsFromContext(ctx context.Context) map[string]tools.Tool {
+func ToolsFromContext(ctx context.Context) map[string]Tool {
 	if ctx == nil {
 		return nil
 	}
-	available, _ := ctx.Value(toolsKey{}).(map[string]tools.Tool)
+	available, _ := ctx.Value(toolsKey{}).(map[string]Tool)
 	return available
 }
 
@@ -87,7 +86,7 @@ func (c Context) Model() llms.Model {
 	return ModelFromContext(c)
 }
 
-func (c Context) Tools() map[string]tools.Tool {
+func (c Context) Tools() map[string]Tool {
 	return ToolsFromContext(c)
 }
 
@@ -95,18 +94,18 @@ func (c Context) Memory() memory.Manager {
 	return MemoryFromContext(c)
 }
 
-func (c Context) FilterTools(ids []string) map[string]tools.Tool {
+func (c Context) FilterTools(ids []string) map[string]Tool {
 	return FilterTools(c.Tools(), ids)
 }
 
-func FilterTools(available map[string]tools.Tool, ids []string) map[string]tools.Tool {
+func FilterTools(available map[string]Tool, ids []string) map[string]Tool {
 	if available == nil {
 		return nil
 	}
 	if len(ids) == 0 {
 		return available
 	}
-	filtered := make(map[string]tools.Tool, len(ids))
+	filtered := make(map[string]Tool, len(ids))
 	for _, id := range ids {
 		id = strings.TrimSpace(id)
 		if id == "" {

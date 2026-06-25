@@ -12,19 +12,25 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/memory"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
+	"github.com/tmc/langchaingo/llms"
 	"go.uber.org/zap"
 )
 
 const EndNodeRef = graph.EndNodeRef
 
 type (
-	BuildContext = registry.BuildContext
-	Graph        = graph.Graph
-	Runnable     = graph.Runnable
+	BuildContext  = registry.BuildContext
+	Graph         = graph.Graph
+	Runnable      = graph.Runnable
+	Context       = core.Context
+	Tool          = core.Tool
+	ToolHandler   = core.ToolHandler
+	MemoryManager = memory.Manager
 
 	GraphDefinition        = dsl.GraphDefinition
 	GraphInstanceConfig    = dsl.GraphInstanceConfig
@@ -70,12 +76,17 @@ type (
 	RunnerMetadata         = runtime.RunnerMetadata
 	ContractPolicy         = runtime.ContractPolicy
 	ContractValidationMode = core.ContractValidationMode
+	ToolCallMetadata       = core.ToolCallMetadata
 	State                  = state.State
 	StateCodec             = state.StateCodec
 	ArtifactRef            = state.ArtifactRef
 	RuntimeState           = state.RuntimeState
+
+	Expression                = builtin.Expression
+	ExpressionConditionConfig = builtin.ExpressionConditionConfig
 )
 
+//goland:noinspection ALL
 const (
 	RunStatusPending   = runtime.RunStatusPending
 	RunStatusRunning   = runtime.RunStatusRunning
@@ -132,6 +143,18 @@ const (
 	ContractValidationOff    = core.ContractValidationOff
 	ContractValidationWarn   = core.ContractValidationWarn
 	ContractValidationStrict = core.ContractValidationStrict
+
+	OperationEqual      = builtin.OperationEqual
+	OperationNotEqual   = builtin.OperationNotEqual
+	OperationContains   = builtin.OperationContains
+	OperationNotContain = builtin.OperationNotContain
+
+	ExpressionMatchAll = builtin.ExpressionMatchAll
+	ExpressionMatchAny = builtin.ExpressionMatchAny
+
+	LogicAnd = builtin.LogicAnd
+	LogicOr  = builtin.LogicOr
+	LogicNot = builtin.LogicNot
 )
 
 var ErrRunnerRecordNotFound = runtime.ErrRunnerRecordNotFound
@@ -139,6 +162,14 @@ var ErrRunnerRecordNotFound = runtime.ErrRunnerRecordNotFound
 func NewGraph() *Graph { return graph.NewGraph() }
 
 func NewState() *State { return state.NewState() }
+
+func NewContext(ctx context.Context) Context {
+	return core.NewContext(ctx)
+}
+
+func NewTool(function *llms.FunctionDefinition, handler ToolHandler) Tool {
+	return core.NewTool(function, handler)
+}
 
 func NewJSONStateCodec(version string) StateCodec {
 	return state.NewJSONStateCodec(version)
@@ -150,6 +181,22 @@ func NewDefaultRegistry() *Registry {
 
 func NewEdgeCondition(spec GraphConditionSpec, match EdgeConditionMatcher) EdgeCondition {
 	return registry.NewEdgeCondition(spec, match)
+}
+
+func LastMessageHasToolCalls(scopes ...string) EdgeCondition {
+	return builtin.LastMessageHasToolCalls(scopes...)
+}
+
+func HasFinalAnswer(scopes ...string) EdgeCondition {
+	return builtin.HasFinalAnswer(scopes...)
+}
+
+func ExpressionConditions(config ExpressionConditionConfig) (EdgeCondition, error) {
+	return builtin.ExpressionConditions(config)
+}
+
+func ParseExpressionConditionConfig(configMap map[string]any) (ExpressionConditionConfig, error) {
+	return builtin.ParseExpressionConditionConfig(configMap)
 }
 
 func LoadGraphDefinitionFile(path string) (GraphDefinition, error) {
@@ -283,6 +330,46 @@ func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Co
 
 func WithRunnerArtifactRecorder(ctx context.Context, recorder func(context.Context, Artifact) (ArtifactRef, error)) context.Context {
 	return runtime.WithRunnerArtifactRecorder(ctx, recorder)
+}
+
+func WithModel(ctx context.Context, model llms.Model) context.Context {
+	return core.WithModel(ctx, model)
+}
+
+func ModelFromContext(ctx context.Context) llms.Model {
+	return core.ModelFromContext(ctx)
+}
+
+func WithTools(ctx context.Context, available map[string]Tool) context.Context {
+	return core.WithTools(ctx, available)
+}
+
+func ToolsFromContext(ctx context.Context) map[string]Tool {
+	return core.ToolsFromContext(ctx)
+}
+
+func WithMemory(ctx context.Context, manager MemoryManager) context.Context {
+	return core.WithMemory(ctx, manager)
+}
+
+func MemoryFromContext(ctx context.Context) MemoryManager {
+	return core.MemoryFromContext(ctx)
+}
+
+func WithToolCallMetadata(ctx context.Context, metadata ToolCallMetadata) context.Context {
+	return core.WithToolCallMetadata(ctx, metadata)
+}
+
+func ToolCallMetadataFromContext(ctx context.Context) (ToolCallMetadata, bool) {
+	return core.ToolCallMetadataFromContext(ctx)
+}
+
+func DecodeToolInput(arguments string) string {
+	return core.DecodeToolInput(arguments)
+}
+
+func FindTool(available map[string]Tool, name string) (Tool, bool) {
+	return core.FindTool(available, name)
 }
 
 func PublishRunnerContextEvent(ctx context.Context, eventType EventType, payload any) error {

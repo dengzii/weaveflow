@@ -23,7 +23,7 @@ func ExploreExample() {
 
 	ctx := context.Background()
 	ctx = core.WithModel(ctx, model)
-	ctx = core.WithTools(ctx, map[string]tools.Tool{
+	ctx = core.WithTools(ctx, map[string]core.Tool{
 		"read": tools.NewRead(),
 		"grep": tools.NewGrep(),
 		"glob": tools.NewGlob(),

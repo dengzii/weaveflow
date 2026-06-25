@@ -19,7 +19,7 @@ func NewContext(model llms.Model, baseDir string) context.Context {
 	ctx := context.Background()
 	ctx = core.WithModel(ctx, model)
 	ctx = core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
-	ctx = core.WithTools(ctx, map[string]tools.Tool{
+	ctx = core.WithTools(ctx, map[string]core.Tool{
 		"read":  tools.NewRead(),
 		"write": tools.NewWrite(),
 		"edit":  tools.NewEdit(),

@@ -6,7 +6,6 @@ import (
 
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
-	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
 )
@@ -26,7 +25,7 @@ func NewServer(baseCtx context.Context, cfg Config, baseDir string) (*Server, er
 	}
 
 	availableTools := core.ToolsFromContext(baseCtx)
-	allTools := make(map[string]tools.Tool, len(availableTools))
+	allTools := make(map[string]core.Tool, len(availableTools))
 	toolFlags := make(map[string]bool, len(availableTools))
 	for name, tool := range availableTools {
 		allTools[name] = tool

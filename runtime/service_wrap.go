@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
-	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -23,18 +22,18 @@ func withRunnerEventContext(ctx context.Context, runner *GraphRunner, runID, ste
 	return core.NewContext(ctx)
 }
 
-func wrapToolCallEventTools(available map[string]tools.Tool, runner *GraphRunner, runID, stepID, nodeID string) map[string]tools.Tool {
+func wrapToolCallEventTools(available map[string]core.Tool, runner *GraphRunner, runID, stepID, nodeID string) map[string]core.Tool {
 	if available == nil {
 		return nil
 	}
-	wrapped := make(map[string]tools.Tool, len(available))
+	wrapped := make(map[string]core.Tool, len(available))
 	for key, tool := range available {
 		wrapped[key] = wrapToolCallEventTool(key, tool, runner, runID, stepID, nodeID)
 	}
 	return wrapped
 }
 
-func wrapToolCallEventTool(key string, tool tools.Tool, runner *GraphRunner, runID, stepID, nodeID string) tools.Tool {
+func wrapToolCallEventTool(key string, tool core.Tool, runner *GraphRunner, runID, stepID, nodeID string) core.Tool {
 	if tool.Handler == nil {
 		return tool
 	}
@@ -44,7 +43,7 @@ func wrapToolCallEventTool(key string, tool tools.Tool, runner *GraphRunner, run
 		toolName = strings.TrimSpace(key)
 	}
 	tool.Handler = func(ctx context.Context, input string) (string, error) {
-		metadata, _ := tools.CallMetadataFromContext(ctx)
+		metadata, _ := core.ToolCallMetadataFromContext(ctx)
 		name := strings.TrimSpace(metadata.Name)
 		if name == "" {
 			name = toolName

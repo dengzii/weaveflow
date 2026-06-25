@@ -13,7 +13,7 @@ import (
 )
 
 func ToolsExample() {
-	toolSet := map[string]tools.Tool{
+	toolSet := map[string]core.Tool{
 		"calculator":   tools.NewCalculator(),
 		"current_time": tools.NewCurrentTime(),
 	}

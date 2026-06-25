@@ -19,7 +19,7 @@ func AgentExample() {
 
 	ctx := context.Background()
 	ctx = core.WithModel(ctx, model)
-	ctx = core.WithTools(ctx, map[string]tools.Tool{
+	ctx = core.WithTools(ctx, map[string]core.Tool{
 		"calculator":   tools.NewCalculator(),
 		"current_time": tools.NewCurrentTime(),
 	})
@@ -70,7 +70,7 @@ func AgentAsToolExample() {
 
 	ctx := context.Background()
 	ctx = core.WithModel(ctx, model)
-	ctx = core.WithTools(ctx, map[string]tools.Tool{
+	ctx = core.WithTools(ctx, map[string]core.Tool{
 		"current_time": tools.NewCurrentTime(),
 		"math_agent":   subAgent.AsTool(),
 	})

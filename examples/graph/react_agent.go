@@ -1,14 +1,14 @@
 package main
 
 import (
+	"path/filepath"
+
 	"github.com/dengzii/weaveflow"
-	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/memory"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
 	"github.com/dengzii/weaveflow/tools"
-	"path/filepath"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -28,8 +28,8 @@ func newReActAgentInitialState() *state.State {
 	return currentState
 }
 
-func newReActAgentTools() map[string]tools.Tool {
-	return map[string]tools.Tool{
+func newReActAgentTools() map[string]weaveflow.Tool {
+	return map[string]weaveflow.Tool{
 		"current_time": tools.NewCurrentTime(),
 		"calculator":   tools.NewCalculator(),
 		//"web_search":   tools.NewWebSearch(),
@@ -66,7 +66,7 @@ func newReActAgentGraph() *weaveflow.Graph {
 
 	tryPanic(graph.AddEdge(humanInLoop.ID(), llm.ID()))
 
-	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), builtin.LastMessageHasToolCalls())
+	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), weaveflow.LastMessageHasToolCalls())
 	tryPanic(err)
 
 	err = graph.AddEdge(toolCall.ID(), llm.ID())

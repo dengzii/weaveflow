@@ -20,7 +20,6 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
-	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
 	"github.com/tmc/langchaingo/llms"
@@ -30,7 +29,7 @@ import (
 type ChatController struct {
 	baseCtx   context.Context
 	config    *Config
-	allTools  map[string]tools.Tool
+	allTools  map[string]core.Tool
 	toolFlags map[string]bool
 	baseDir   string
 	store     *Store
@@ -59,7 +58,7 @@ const (
 
 func NewChatController(baseCtx context.Context, cfg *Config, toolFlags map[string]bool, baseDir string, store *Store, hub *LiveHub) *ChatController {
 	availableTools := core.ToolsFromContext(baseCtx)
-	allTools := make(map[string]tools.Tool, len(availableTools))
+	allTools := make(map[string]core.Tool, len(availableTools))
 	for name, tool := range availableTools {
 		allTools[name] = tool
 	}
@@ -558,7 +557,7 @@ func messagesAtPath(currentState *state.State, path state.Path) []llms.MessageCo
 }
 
 func (ctrl *ChatController) effectiveContext(parent context.Context) context.Context {
-	enabledTools := make(map[string]tools.Tool, len(ctrl.allTools))
+	enabledTools := make(map[string]core.Tool, len(ctrl.allTools))
 	for name, tool := range ctrl.allTools {
 		if ctrl.toolFlags[name] {
 			enabledTools[name] = tool
