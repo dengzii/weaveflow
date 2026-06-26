@@ -173,7 +173,7 @@ type RunFilter struct {
 }
 
 type Breakpoint = core.Breakpoint
-type BreakpointHit = core.BreakpointHit
+type BreakpointHit = state.BreakpointHit
 
 type ExecutionStore interface {
 	CreateRun(ctx context.Context, run RunRecord) error

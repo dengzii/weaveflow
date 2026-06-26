@@ -4,13 +4,13 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 )
 
 type GraphBuilder interface {
-	AddNode(node.Node) error
+	AddNode(core.Node) error
 	AddEdge(from, to string) error
 	AddConditionalEdge(from, to string, condition registry.EdgeCondition) error
 	SetEntryPoint(ref string) error

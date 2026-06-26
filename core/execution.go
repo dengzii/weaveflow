@@ -1,13 +1,6 @@
 package core
 
-import (
-	"context"
-	"time"
-)
-
-type ExecutableNode[S any, P any] interface {
-	Execute(ctx context.Context, input S) (P, error)
-}
+import "github.com/dengzii/weaveflow/state"
 
 type CheckpointStage string
 
@@ -24,12 +17,7 @@ type Breakpoint struct {
 	Enabled bool   `json:"enabled"`
 }
 
-type BreakpointHit struct {
-	BreakpointID string    `json:"breakpoint_id"`
-	NodeID       string    `json:"node_id"`
-	Stage        string    `json:"stage"`
-	HitAt        time.Time `json:"hit_at"`
-}
+type BreakpointHit = state.BreakpointHit
 
 type WarningRecord struct {
 	Code        string   `json:"code,omitempty"`

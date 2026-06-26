@@ -5,7 +5,6 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
 )
 
@@ -20,7 +19,7 @@ type BuildContext struct {
 	OnContractDiagnostic func(core.ContractDiagnostic)
 }
 
-type NodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (node.Node, error)
+type NodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (core.Node, error)
 
 func (ctx *BuildContext) Clone() *BuildContext {
 	if ctx == nil {

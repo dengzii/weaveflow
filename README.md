@@ -35,21 +35,21 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 
 ## Repository Layout
 
-| Package         | Responsibility                                                                    |
-|-----------------|-----------------------------------------------------------------------------------|
-| `core/`         | Core interfaces, execution abstractions, tool abstractions, and state primitives. |
-| `dsl/`          | Serializable graph definitions, node specs, and contract schemas.                 |
-| `graph/`        | Graph topology, edges, routing, and runnable graph assembly.                      |
-| `runtime/`      | Execution engine, checkpoints, artifacts, and event plumbing.                     |
-| `state/`        | Scoped state, snapshots, validation, merge behavior, and conversation helpers.    |
-| `registry/`     | Node/condition registration, build context, and graph instance configuration.     |
-| `node/`         | Production-oriented node implementations.                                         |
-| `builtin/`      | Built-in conditions, helpers, and default registry wiring for advanced use.       |
-| `tools/`        | Bundled tool implementations.                                                     |
-| `llms/openai/`  | OpenAI-compatible LLM adapter.                                                    |
-| `memory/`       | Memory manager, repositories, and retrieval helpers.                              |
-| `cmd/neo/`      | Reference server entrypoint.                                                      |
-| `internal/neo/` | Neo server implementation and replay support.                                     |
+| Package         | Responsibility                                                                            |
+|-----------------|-------------------------------------------------------------------------------------------|
+| `core/`         | Shared node contracts, execution primitives, tool abstractions, and state-adjacent types. |
+| `dsl/`          | Serializable graph definitions, node specs, and contract schemas.                         |
+| `graph/`        | Topology, edge resolution, langgraph compilation, and lightweight `Graph.Run`.            |
+| `runtime/`      | Run lifecycle, checkpoints, resume, events, artifacts, and runtime contract policy.       |
+| `state/`        | Scoped state, snapshots, validation, merge behavior, and conversation helpers.            |
+| `registry/`     | Node/condition registration, build context, and graph instance configuration.             |
+| `node/`         | Production-oriented node implementations.                                                 |
+| `builtin/`      | Built-in conditions, helpers, and default registry wiring for advanced use.               |
+| `tools/`        | Bundled tool implementations.                                                             |
+| `llms/openai/`  | OpenAI-compatible LLM adapter.                                                            |
+| `memory/`       | Memory manager, repositories, and retrieval helpers.                                      |
+| `cmd/neo/`      | Reference server entrypoint.                                                              |
+| `internal/neo/` | Neo server implementation and replay support.                                             |
 
 ## Getting Started
 
@@ -197,6 +197,16 @@ go test ./...
 The codebase already includes coverage around state merging, contract validation, runtime stores, Neo server behavior,
 and major node implementations. Some surfaces, especially the reference server and advanced orchestration features, are
 still evolving.
+
+Package boundary notes:
+
+- `graph.SetLogger` is a compatibility facade for `runtime.SetLogger`; runtime owns runner logging.
+- DSL-built mapped subgraphs invoke a graph function, typically `Graph.Run`, through
+  `MappedSubgraphNode.InvokeSubgraph`.
+  They do not create an independent `GraphRunner` run, checkpoint, or artifact lifecycle unless an application supplies
+  that behavior explicitly.
+- Nested `GraphRunner` lifecycle support is not part of the current graph/runtime boundary. If it is needed later,
+  parent/child run linkage should be designed as a separate feature.
 
 ## Project Status
 

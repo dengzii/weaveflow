@@ -20,28 +20,22 @@ type BranchPatchRecorder interface {
 }
 
 type ParallelWaveRecorder interface {
-	RecordParallelWave(base *state.State, nodeIDs []string) string
+	OnParallelWave(base *state.State, nodeIDs []string)
 }
 
 type BranchPatchRecorderSetter interface {
 	SetBranchPatchRecorder(recorder BranchPatchRecorder)
 }
 
-type RunnerNode interface {
-	ID() string
-	Name() string
-	Description() string
-	Scope() string
-	Execute(ctx core.Context, access *state.Access) error
-}
+type RunnerNode = core.Node
 
 type RunnerGraph interface {
 	Validate() error
 	EntryPointID() string
 	CompileForRunner(execution RunnerExecution) (*langgraph.StateRunnable[*state.State], error)
 	ResolveNodeID(nodeID string) (string, error)
-	ResolveNextNodes(currentNodeID string, state *state.State) ([]string, error)
-	ResolveNextNode(currentNodeID string, state *state.State) (string, error)
+	ResolveNextNodes(ctx context.Context, currentNodeID string, state *state.State) ([]string, error)
+	ResolveNextNode(ctx context.Context, currentNodeID string, state *state.State) (string, error)
 	IsParallelBranchTarget(nodeID string) bool
 	NodeName(nodeID string) string
 	NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error)

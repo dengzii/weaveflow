@@ -124,8 +124,13 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 	if executor == nil {
 		return currentState, fmt.Errorf("node %q is not executable", nodeID)
 	}
-	access := state.NewEditingAccess(e.runner.stateRegistry(), inputState).WithScope(executor.Scope())
-	if invokeErr := executor.Execute(nodeCtx, access); invokeErr != nil {
+	result, invokeErr := core.ExecuteNodeWithOptions(nodeCtx, currentState, executor, core.NodeExecutionOptions{
+		Registry:          e.runner.stateRegistry(),
+		Contract:          contractOption(contract, hasContract),
+		InputState:        inputState,
+		ApplyPatchToInput: hasContract && policy.EnforceProjection,
+	})
+	if invokeErr != nil {
 		var interrupt *langgraph.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
 			e.markNodeInterrupt(nodeID)
@@ -133,10 +138,14 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 		return currentState, invokeErr
 	}
 	if hasContract && policy.RecordArtifacts {
-		e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, access.State())
+		patchView, err := result.Patch.Apply(inputState)
+		if err != nil {
+			return currentState, err
+		}
+		e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, patchView)
 	}
 
-	patch := access.Patch()
+	patch := result.Patch
 	e.recordBranchPatch(currentState, nodeID, patch)
 	if hasContract && policy.Enabled() {
 		validateWrites := policy.Mode != core.ContractValidationOff || policy.EnforceWrites
@@ -150,10 +159,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 			}
 		}
 	}
-	mergedState, err := patch.Apply(currentState)
-	if err != nil {
-		return currentState, err
-	}
+	mergedState := result.State
 	if hasContract && policy.RecordArtifacts {
 		e.recordContractStateArtifact(nodeCtx, nodeID, contractMergedStateArtifactType, contract, mergedState)
 	}
@@ -161,6 +167,14 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 		return currentState, err
 	}
 	return mergedState, nil
+}
+
+func contractOption(contract state.Contract, ok bool) *state.Contract {
+	if !ok {
+		return nil
+	}
+	cloned := contract.Clone()
+	return &cloned
 }
 
 func issuesToContractViolations(nodeID string, issues []state.ValidationIssue) []core.ContractViolation {
@@ -385,7 +399,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, c
 	}
 	e.mu.Unlock()
 
-	nextNodeIDs, err := e.resolveNextNodesForWave(currentState, branchNodeIDs)
+	nextNodeIDs, err := e.resolveNextNodesForWave(ctx, currentState, branchNodeIDs)
 	if err != nil {
 		return err
 	}
@@ -460,9 +474,9 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, c
 	return nil
 }
 
-func (e *graphRunnerExecution) RecordParallelWave(base *state.State, nodeIDs []string) string {
+func (e *graphRunnerExecution) OnParallelWave(base *state.State, nodeIDs []string) {
 	if e == nil || base == nil || len(nodeIDs) <= 1 {
-		return ""
+		return
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -484,7 +498,6 @@ func (e *graphRunnerExecution) RecordParallelWave(base *state.State, nodeIDs []s
 	e.run.CurrentNodeIDs = append([]string(nil), nodeIDs...)
 	e.run.UpdatedAt = e.runner.now()
 	_ = e.runner.ExecutionStore.UpdateRun(context.Background(), e.run)
-	return waveID
 }
 
 func parseParallelStepNodeIDs(stepNodeID string) []string {
@@ -502,7 +515,7 @@ func parseParallelStepNodeIDs(stepNodeID string) []string {
 	return out
 }
 
-func (e *graphRunnerExecution) resolveNextNodesForWave(currentState *state.State, branchNodeIDs []string) ([]string, error) {
+func (e *graphRunnerExecution) resolveNextNodesForWave(ctx context.Context, currentState *state.State, branchNodeIDs []string) ([]string, error) {
 	graph := e.runner.runnerGraph()
 	if graph == nil {
 		return nil, errors.New("graph runner graph is nil")
@@ -510,7 +523,7 @@ func (e *graphRunnerExecution) resolveNextNodesForWave(currentState *state.State
 	seen := map[string]struct{}{}
 	nextNodeIDs := make([]string, 0)
 	for _, branchNodeID := range branchNodeIDs {
-		targets, err := graph.ResolveNextNodes(branchNodeID, currentState)
+		targets, err := graph.ResolveNextNodes(ctx, branchNodeID, currentState)
 		if err != nil {
 			return nil, err
 		}

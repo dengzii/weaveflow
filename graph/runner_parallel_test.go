@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -281,6 +283,80 @@ func TestRunnerSequentialResumeFromAfterNodeStillWorks(t *testing.T) {
 	}
 }
 
+func TestRunnerResumeFromAfterNodeUsesActualConditionalRouting(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("route"), "right")
+	})
+	mustAddNode(t, g, "left", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("visited"), "left")
+	})
+	mustAddNode(t, g, "right", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("visited"), "right")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
+		value, ok := state.NewAccess(nil, current).ReadAny(state.Shared("route"))
+		return ok && value == "right"
+	})
+	if err := g.AddConditionalEdge("router", "right", condition); err != nil {
+		t.Fatalf("add conditional edge: %v", err)
+	}
+	if err := g.AddEdge("router", "left"); err != nil {
+		t.Fatalf("add fallback edge: %v", err)
+	}
+	if err := g.AddEdge("left", EndNodeRef); err != nil {
+		t.Fatalf("add left -> end: %v", err)
+	}
+	if err := g.AddEdge("right", EndNodeRef); err != nil {
+		t.Fatalf("add right -> end: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	var afterRouter string
+	for _, step := range steps {
+		if step.NodeID == "router" {
+			afterRouter = step.CheckpointAfterID
+			break
+		}
+	}
+	if afterRouter == "" {
+		t.Fatalf("missing after checkpoint for router: %#v", steps)
+	}
+
+	resumedRun, resumedState, err := runner.ResumeFromCheckpoint(context.Background(), afterRouter, nil)
+	if err != nil {
+		t.Fatalf("resume from router after_node: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
+	}
+	visited, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("visited"))
+	if !ok || visited != "right" {
+		t.Fatalf("expected resumed run to route to right, got %#v ok=%v", visited, ok)
+	}
+}
+
 func TestRunnerParallelFanOutToEndLeavesLastCheckpointAtBarrier(t *testing.T) {
 	t.Parallel()
 
@@ -341,6 +417,111 @@ func TestRunnerParallelFanOutToEndLeavesLastCheckpointAtBarrier(t *testing.T) {
 	}
 	if len(restored.Runtime.NextNodeIDs) != 1 || restored.Runtime.NextNodeIDs[0] != "END" {
 		t.Fatalf("barrier next nodes = %#v, want [END]", restored.Runtime.NextNodeIDs)
+	}
+}
+
+func TestRunnerParallelBarrierNextNodeIDsUseActualConditionalRouting(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Scope("a", "route"), "right")
+	})
+	mustAddNode(t, g, "b", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Scope("b", "route"), "left")
+	})
+	for _, nodeID := range []string{"left", "right"} {
+		id := nodeID
+		mustAddNode(t, g, id, func(ctx context.Context, access *state.Access) error {
+			return access.AppendAny(state.Shared("visited"), id)
+		})
+	}
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	conditionFor := func(branchID string) registry.EdgeCondition {
+		return registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
+			value, ok := state.NewAccess(nil, current).ReadAny(state.Scope(branchID, "route"))
+			return ok && value == "right"
+		})
+	}
+	for _, edge := range [][2]string{
+		{"router", "a"},
+		{"router", "b"},
+		{"left", EndNodeRef},
+		{"right", EndNodeRef},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+	if err := g.AddConditionalEdge("a", "right", conditionFor("a")); err != nil {
+		t.Fatalf("add a conditional edge: %v", err)
+	}
+	if err := g.AddEdge("a", "left"); err != nil {
+		t.Fatalf("add a fallback edge: %v", err)
+	}
+	if err := g.AddConditionalEdge("b", "right", conditionFor("b")); err != nil {
+		t.Fatalf("add b conditional edge: %v", err)
+	}
+	if err := g.AddEdge("b", "left"); err != nil {
+		t.Fatalf("add b fallback edge: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	checkpoints, err := runner.ListCheckpoints(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	var barrierID string
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage != fruntime.CheckpointAfterParallelWave {
+			continue
+		}
+		restored, err := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
+		if err != nil {
+			t.Fatalf("load barrier checkpoint: %v", err)
+		}
+		if len(restored.Runtime.CurrentNodeIDs) == 2 {
+			barrierID = checkpoint.CheckpointID
+			if len(restored.Runtime.NextNodeIDs) != 2 ||
+				restored.Runtime.NextNodeIDs[0] != "left" ||
+				restored.Runtime.NextNodeIDs[1] != "right" {
+				t.Fatalf("barrier next nodes = %#v, want [left right]", restored.Runtime.NextNodeIDs)
+			}
+			break
+		}
+	}
+	if barrierID == "" {
+		t.Fatalf("missing branch barrier checkpoint: %#v", checkpoints)
+	}
+
+	resumedRun, resumedState, err := runner.ResumeFromCheckpoint(context.Background(), barrierID, nil)
+	if err != nil {
+		t.Fatalf("resume from branch barrier: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
+	}
+	visited, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("visited"))
+	items, _ := visited.([]any)
+	if !ok || len(items) != 2 {
+		t.Fatalf("expected resumed run to visit both routed collectors, got %#v ok=%v", visited, ok)
 	}
 }
 

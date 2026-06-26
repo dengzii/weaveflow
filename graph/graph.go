@@ -10,6 +10,7 @@ import (
 	"sync"
 
 	"github.com/dengzii/weaveflow/builtin"
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
@@ -40,7 +41,7 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	nodes               map[string]node.Node
+	nodes               map[string]core.Node
 	nodeSpecs           map[string]dsl.GraphNodeSpec
 	nodeContracts       map[string]state.Contract
 	stateRegistry       *state.Registry
@@ -60,7 +61,7 @@ type Graph struct {
 func NewGraph() *Graph {
 	stateRegistry, _ := node.NewDefaultRegistry()
 	return &Graph{
-		nodes:            map[string]node.Node{},
+		nodes:            map[string]core.Node{},
 		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
 		defaultEdges:     map[string][]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
@@ -116,7 +117,7 @@ func (g *Graph) WriteToFile(path string) error {
 
 func (g *Graph) DrawMermaid() (string, error) {
 	graph := langgraph.NewStateGraph[*state.State]()
-	err := g.buildStateGraph(graph, func(nodeID string, node node.Node) {})
+	err := g.buildStateGraph(graph, func(nodeID string, node core.Node) {})
 	if err != nil {
 		return "", err
 	}
@@ -125,7 +126,7 @@ func (g *Graph) DrawMermaid() (string, error) {
 
 }
 
-func (g *Graph) AddNode(targetNode node.Node) error {
+func (g *Graph) AddNode(targetNode core.Node) error {
 	if targetNode == nil {
 		return fmt.Errorf("nodes is nil")
 	}
@@ -172,7 +173,7 @@ func (g *Graph) AddNode(targetNode node.Node) error {
 	return nil
 }
 
-func (g *Graph) allocateNodeID(targetNode node.Node) string {
+func (g *Graph) allocateNodeID(targetNode core.Node) string {
 	base := graphDefaultNodeID(targetNode)
 	if _, exists := g.nodes[base]; !exists {
 		return base
@@ -185,7 +186,7 @@ func (g *Graph) allocateNodeID(targetNode node.Node) string {
 	}
 }
 
-func graphDefaultNodeID(targetNode node.Node) string {
+func graphDefaultNodeID(targetNode core.Node) string {
 	if targetNode == nil {
 		return "node"
 	}
@@ -546,23 +547,25 @@ func (g *Graph) terminalReachableNodes() map[string]struct{} {
 
 func (g *Graph) Compile() (*Runnable, error) {
 	compiled := langgraph.NewListenableStateGraph[*state.State]()
-	patches := newCompilePatchCollector(g.compileBranchOrders())
-	if err := g.buildStateGraph(compiled.StateGraph, func(nodeID string, node node.Node) {
-		nodeDef := node
-		listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
-			return g.executePatchNode(ctx, nodeID, nodeDef, state, patches)
-		})
-		for _, listener := range g.nodeListeners[nodeID] {
-			listenableNode.AddListener(g.displayNameListener(listener))
-		}
-	}); err != nil {
+	_, err := g.compileStateGraph(graphCompileTemplate{
+		stateGraph: compiled.StateGraph,
+		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
+			nodeDef := node
+			listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
+				return g.executePatchNode(ctx, nodeID, nodeDef, state, patches)
+			})
+			for _, listener := range g.nodeListeners[nodeID] {
+				listenableNode.AddListener(g.displayNameListener(listener))
+			}
+		},
+	})
+	if err != nil {
 		return nil, err
 	}
 
 	for _, listener := range g.globalListeners {
 		compiled.AddGlobalListener(g.displayNameListener(listener))
 	}
-	g.configureStateMerger(compiled.StateGraph, patches)
 
 	runnable, err := compiled.CompileListenable()
 	if err != nil {
@@ -573,26 +576,37 @@ func (g *Graph) Compile() (*Runnable, error) {
 	return &Runnable{runnable: runnable}, nil
 }
 
-func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode node.Node, currentState *state.State, patches *compilePatchCollector) (*state.State, error) {
+func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (*state.State, error) {
 	if targetNode == nil {
 		return currentState, fmt.Errorf("node %q is nil", nodeID)
 	}
-	result, err := node.Execute(ctx, g.stateAccessorRegistry(), currentState, targetNode)
+	registry := g.stateAccessorRegistry()
+	resolvedContract, err := core.ContractFor(registry, targetNode)
 	if err != nil {
 		return currentState, err
 	}
-
-	contract := result.Contract
 	if g != nil && len(g.nodeContracts) > 0 {
 		if nodeContract, ok := g.nodeContracts[nodeID]; ok {
-			contract = nodeContract
+			resolvedContract = nodeContract.Clone()
 		}
 	}
-	if len(contract.Fields) > 0 || contract.WildcardWrite {
-		if issues := state.ValidatePatchByContract(result.Patch, contract); len(issues) > 0 {
-			return currentState, fmt.Errorf("node %q state contract violation: %s", nodeID, issues[0].Message)
+	contract := &resolvedContract
+	var writeIssues []state.ValidationIssue
+	result, err := core.ExecuteNodeWithOptions(ctx, currentState, targetNode, core.NodeExecutionOptions{
+		Registry:       registry,
+		Contract:       contract,
+		ValidateWrites: len(contract.Fields) > 0 || contract.WildcardWrite,
+		OnWriteIssues: func(issues []state.ValidationIssue) {
+			writeIssues = append([]state.ValidationIssue(nil), issues...)
+		},
+	})
+	if err != nil {
+		if len(writeIssues) > 0 {
+			return currentState, fmt.Errorf("node %q state contract violation: %w", nodeID, err)
 		}
+		return currentState, err
 	}
+
 	if patches != nil {
 		patches.record(currentState, nodeID, result.Patch)
 	}
@@ -607,7 +621,6 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 		return nil, fmt.Errorf("runner execution is nil")
 	}
 
-	compiled := langgraph.NewStateGraph[*state.State]()
 	patches := newCompilePatchCollector(g.compileBranchOrders())
 	if setter, ok := execution.(fruntime.BranchPatchRecorderSetter); ok {
 		setter.SetBranchPatchRecorder(patches)
@@ -615,19 +628,24 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	if recorder, ok := execution.(fruntime.ParallelWaveRecorder); ok {
 		patches.setWaveRecorder(recorder)
 	}
-	if err := g.configureStateGraph(compiled, func(nodeID string, node node.Node) {
-		nodeDef := node
-		compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
-			next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, state)
-			if err == nil && !patches.hasPatch(state, nodeID) {
-				patches.record(state, nodeID, stateDiffPatch(state, next))
-			}
-			return next, err
-		})
+
+	compiled := langgraph.NewStateGraph[*state.State]()
+	if _, err := g.compileStateGraph(graphCompileTemplate{
+		stateGraph: compiled,
+		patches:    patches,
+		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
+			nodeDef := node
+			compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
+				next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, state)
+				if err == nil && !patches.hasPatch(state, nodeID) {
+					patches.record(state, nodeID, stateDiffPatch(state, next))
+				}
+				return next, err
+			})
+		},
 	}); err != nil {
 		return nil, err
 	}
-	g.configureStateMerger(compiled, patches)
 
 	runnable, err := compiled.Compile()
 	if err != nil {
@@ -637,14 +655,40 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	return runnable, nil
 }
 
-func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node node.Node)) error {
+type graphCompileTemplate struct {
+	stateGraph *langgraph.StateGraph[*state.State]
+	patches    *compilePatchCollector
+	addNode    func(nodeID string, node core.Node, patches *compilePatchCollector)
+}
+
+func (g *Graph) compileStateGraph(template graphCompileTemplate) (*compilePatchCollector, error) {
+	if template.stateGraph == nil {
+		return nil, fmt.Errorf("compiled graph is nil")
+	}
+	if template.addNode == nil {
+		return nil, fmt.Errorf("add nodes callback is nil")
+	}
+	patches := template.patches
+	if patches == nil {
+		patches = newCompilePatchCollector(g.compileBranchOrders())
+	}
+	if err := g.buildStateGraph(template.stateGraph, func(nodeID string, node core.Node) {
+		template.addNode(nodeID, node, patches)
+	}); err != nil {
+		return nil, err
+	}
+	g.configureStateMerger(template.stateGraph, patches)
+	return patches, nil
+}
+
+func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node core.Node)) error {
 	if err := g.Validate(); err != nil {
 		return err
 	}
 	return g.configureStateGraph(compiled, addNode)
 }
 
-func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node node.Node)) error {
+func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node core.Node)) error {
 	if compiled == nil {
 		return fmt.Errorf("compiled graph is nil")
 	}
@@ -708,7 +752,7 @@ func (g *Graph) configureStateMerger(compiled *langgraph.StateGraph[*state.State
 		if len(branches) != len(newStates) {
 			return nil, fmt.Errorf("parallel state merge requires branch patches: collected %d for %d branch states", len(branches), len(newStates))
 		}
-		patches.recordWave(current, branches)
+		patches.notifyParallelWave(current, branches)
 		return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{
 			Contracts: g.nodeContracts,
 		})
@@ -825,24 +869,54 @@ func jsonValuesEqual(left, right any) bool {
 }
 
 func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEdge) func(ctx context.Context, state *state.State) string {
-	edges := append([]conditionalEdge(nil), conditional...)
-	defaultTargets := append([]string(nil), g.defaultEdges[from]...)
-	isFinishPoint := from == g.finishPoint
-
 	return func(ctx context.Context, state *state.State) string {
-		for _, edge := range edges {
-			if edge.condition.Match(ctx, state) {
-				return edge.to
-			}
-		}
-		if len(defaultTargets) > 0 {
-			return defaultTargets[0]
-		}
-		if isFinishPoint {
-			return langgraph.END
+		next, err := g.resolveNextNodes(ctx, from, state)
+		if err == nil && len(next) == 1 {
+			return next[0]
 		}
 		return ""
 	}
+}
+
+func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, currentState *state.State) ([]string, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	currentNodeID = strings.TrimSpace(currentNodeID)
+	if currentNodeID == "" {
+		return nil, fmt.Errorf("nodes id is empty")
+	}
+	if currentNodeID != langgraph.END {
+		if _, ok := g.nodes[currentNodeID]; !ok {
+			return nil, fmt.Errorf("nodes id %q not found", currentNodeID)
+		}
+	}
+
+	if conditional := g.conditionalEdges[currentNodeID]; len(conditional) > 0 {
+		for _, edge := range conditional {
+			if edge.condition.Match(ctx, currentState) {
+				return []string{edge.to}, nil
+			}
+		}
+		if targets := g.defaultEdges[currentNodeID]; len(targets) > 0 {
+			return []string{targets[0]}, nil
+		}
+		if currentNodeID == g.finishPoint {
+			return []string{langgraph.END}, nil
+		}
+		return nil, fmt.Errorf("nodes %q produced no matching conditional edge", currentNodeID)
+	}
+
+	if targets := g.defaultEdges[currentNodeID]; len(targets) > 0 {
+		return append([]string(nil), targets...), nil
+	}
+	if currentNodeID == g.finishPoint {
+		return []string{langgraph.END}, nil
+	}
+	return nil, fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
 }
 
 func (g *Graph) applyTracer(target interface{ SetTracer(*langgraph.Tracer) }) {
@@ -1055,21 +1129,21 @@ func (c *compilePatchCollector) RecordBranchPatch(base *state.State, nodeID stri
 	c.record(base, nodeID, patch)
 }
 
-func (c *compilePatchCollector) recordWave(base *state.State, branches []state.BranchPatch) string {
+func (c *compilePatchCollector) notifyParallelWave(base *state.State, branches []state.BranchPatch) {
 	if c == nil || base == nil || len(branches) <= 1 {
-		return ""
+		return
 	}
 	c.mu.Lock()
 	recorder := c.wave
 	c.mu.Unlock()
 	if recorder == nil {
-		return ""
+		return
 	}
 	nodeIDs := make([]string, 0, len(branches))
 	for _, branch := range branches {
 		nodeIDs = append(nodeIDs, branch.NodeID)
 	}
-	return recorder.RecordParallelWave(base, nodeIDs)
+	recorder.OnParallelWave(base, nodeIDs)
 }
 
 func (c *compilePatchCollector) setWaveRecorder(recorder fruntime.ParallelWaveRecorder) {

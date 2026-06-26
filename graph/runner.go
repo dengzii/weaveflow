@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/internal/graphbuild"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
@@ -72,8 +70,8 @@ func (g *graphRunnerGraph) ResolveNodeID(nodeID string) (string, error) {
 	return g.graph.resolveNodeID(nodeID)
 }
 
-func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state *state.State) (string, error) {
-	next, err := g.ResolveNextNodes(currentNodeID, state)
+func (g *graphRunnerGraph) ResolveNextNode(ctx context.Context, currentNodeID string, state *state.State) (string, error) {
+	next, err := g.ResolveNextNodes(ctx, currentNodeID, state)
 	if err != nil {
 		return "", err
 	}
@@ -83,31 +81,11 @@ func (g *graphRunnerGraph) ResolveNextNode(currentNodeID string, state *state.St
 	return next[0], nil
 }
 
-func (g *graphRunnerGraph) ResolveNextNodes(currentNodeID string, state *state.State) ([]string, error) {
+func (g *graphRunnerGraph) ResolveNextNodes(ctx context.Context, currentNodeID string, state *state.State) ([]string, error) {
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}
-	if conditional := g.graph.conditionalEdges[currentNodeID]; len(conditional) > 0 {
-		for _, edge := range conditional {
-			if edge.condition.Match(context.Background(), state) {
-				return []string{edge.to}, nil
-			}
-		}
-		if targets := g.graph.defaultEdges[currentNodeID]; len(targets) > 0 {
-			return append([]string(nil), targets...), nil
-		}
-		if currentNodeID == g.graph.finishPoint {
-			return []string{langgraph.END}, nil
-		}
-		return nil, fmt.Errorf("nodes %q produced no matching conditional edge", currentNodeID)
-	}
-	if targets := g.graph.defaultEdges[currentNodeID]; len(targets) > 0 {
-		return append([]string(nil), targets...), nil
-	}
-	if currentNodeID == g.graph.finishPoint {
-		return []string{langgraph.END}, nil
-	}
-	return nil, fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
+	return g.graph.resolveNextNodes(ctx, currentNodeID, state)
 }
 
 func (g *graphRunnerGraph) IsParallelBranchTarget(nodeID string) bool {
@@ -183,8 +161,4 @@ func buildRunnerWarnings(diagnostics []ContractDiagnostic) []fruntime.WarningRec
 		return nil
 	}
 	return warnings
-}
-
-func convertStateContract(contract dsl.StateContract) (state.Contract, error) {
-	return graphbuild.ConvertStateContract(contract)
 }

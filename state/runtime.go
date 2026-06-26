@@ -6,13 +6,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dengzii/weaveflow/core"
-
 	"github.com/tmc/langchaingo/llms"
 	"go.uber.org/zap"
 )
 
-type BreakpointHit = core.BreakpointHit
+type BreakpointHit struct {
+	BreakpointID string    `json:"breakpoint_id"`
+	NodeID       string    `json:"node_id"`
+	Stage        string    `json:"stage"`
+	HitAt        time.Time `json:"hit_at"`
+}
 
 type StateCodec interface {
 	Name() string

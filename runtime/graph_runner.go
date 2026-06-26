@@ -290,7 +290,7 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		return RunRecord{}, nil, err
 	}
 
-	startNodes, skip, err := r.resumeTarget(checkpoint.Record, checkpoint.Runtime, checkpoint.Business)
+	startNodes, skip, err := r.resumeTarget(ctx, checkpoint.Record, checkpoint.Runtime, checkpoint.Business)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -738,7 +738,7 @@ func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, currentState *
 	return run, currentState, errors.New(message)
 }
 
-func (r *GraphRunner) resumeTarget(checkpoint CheckpointRecord, runtime state.RuntimeState, currentState *state.State) ([]string, *breakpointSkip, error) {
+func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRecord, runtime state.RuntimeState, currentState *state.State) ([]string, *breakpointSkip, error) {
 	switch checkpoint.Stage {
 	case CheckpointBeforeNode:
 		nodeID, err := r.runnerGraph().ResolveNodeID(checkpoint.NodeID)
@@ -754,7 +754,7 @@ func (r *GraphRunner) resumeTarget(checkpoint CheckpointRecord, runtime state.Ru
 		if r.runnerGraph().IsParallelBranchTarget(nodeID) || runtime.ParallelWaveID != "" || runtime.WaveID != "" {
 			return nil, nil, fmt.Errorf("resume from parallel branch %q checkpoint %q is not supported without parallel wave context; resume from after_parallel_wave instead", checkpoint.Stage, checkpoint.CheckpointID)
 		}
-		nextNodeID, err := r.runnerGraph().ResolveNextNode(nodeID, currentState)
+		nextNodeID, err := r.runnerGraph().ResolveNextNode(ctx, nodeID, currentState)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -769,12 +769,12 @@ func (r *GraphRunner) resumeTarget(checkpoint CheckpointRecord, runtime state.Ru
 	}
 }
 
-func (r *GraphRunner) resolveNextNode(currentName string, state *state.State) (string, error) {
+func (r *GraphRunner) resolveNextNode(ctx context.Context, currentName string, state *state.State) (string, error) {
 	graph := r.runnerGraph()
 	if graph == nil {
 		return "", errors.New("graph runner graph is nil")
 	}
-	return graph.ResolveNextNode(currentName, state)
+	return graph.ResolveNextNode(ctx, currentName, state)
 }
 
 func (r *GraphRunner) notifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error) {

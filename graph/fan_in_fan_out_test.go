@@ -10,6 +10,7 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
 
@@ -24,7 +25,7 @@ func TestGraphAllowsMultipleDefaultEdges(t *testing.T) {
 		t.Fatalf("add router -> b: %v", err)
 	}
 
-	next, err := newRunnerGraph(g).ResolveNextNodes("router", state.NewState())
+	next, err := newRunnerGraph(g).ResolveNextNodes(context.Background(), "router", state.NewState())
 	if err != nil {
 		t.Fatalf("resolve next nodes: %v", err)
 	}
@@ -88,7 +89,7 @@ func TestResolveNextNodeRejectsFanOut(t *testing.T) {
 		t.Fatalf("add router -> b: %v", err)
 	}
 
-	_, err := newRunnerGraph(g).ResolveNextNode("router", state.NewState())
+	_, err := newRunnerGraph(g).ResolveNextNode(context.Background(), "router", state.NewState())
 	if err == nil || !strings.Contains(err.Error(), "ResolveNextNodes") {
 		t.Fatalf("expected fan-out compatibility error, got %v", err)
 	}
@@ -112,6 +113,191 @@ func TestGraphRejectsConditionalEdgeWithMultipleDefaultFallbacks(t *testing.T) {
 	}
 	if err := g.Validate(); err == nil || !strings.Contains(err.Error(), "multiple default fallback edges") {
 		t.Fatalf("expected conditional multi-fallback validation error, got %v", err)
+	}
+}
+
+func TestResolveNextNodesConditionalMatchingFallbackAndErrors(t *testing.T) {
+	t.Parallel()
+
+	g := newTestGraph(t, "router", "matched", "fallback")
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
+		value, ok := state.NewAccess(nil, current).ReadAny(state.Shared("route"))
+		return ok && value == "matched"
+	})
+	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
+		t.Fatalf("add conditional edge: %v", err)
+	}
+	if err := g.AddEdge("router", "fallback"); err != nil {
+		t.Fatalf("add fallback edge: %v", err)
+	}
+	if err := g.AddEdge("matched", EndNodeRef); err != nil {
+		t.Fatalf("add matched -> end: %v", err)
+	}
+
+	input := state.NewState()
+	if err := state.SetPath(input, "shared.route", "matched"); err != nil {
+		t.Fatalf("set route: %v", err)
+	}
+	next, err := newRunnerGraph(g).ResolveNextNodes(context.Background(), "router", input)
+	if err != nil {
+		t.Fatalf("resolve matched conditional edge: %v", err)
+	}
+	if strings.Join(next, ",") != "matched" {
+		t.Fatalf("next nodes = %#v, want [matched]", next)
+	}
+
+	input = state.NewState()
+	next, err = newRunnerGraph(g).ResolveNextNodes(context.Background(), "router", input)
+	if err != nil {
+		t.Fatalf("resolve fallback edge: %v", err)
+	}
+	if strings.Join(next, ",") != "fallback" {
+		t.Fatalf("next nodes = %#v, want [fallback]", next)
+	}
+
+	g.defaultEdges["router"] = nil
+	_, err = newRunnerGraph(g).ResolveNextNodes(context.Background(), "router", input)
+	if err == nil || !strings.Contains(err.Error(), "no matching conditional edge") {
+		t.Fatalf("expected no-match error, got %v", err)
+	}
+}
+
+func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "matched", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("result"), "matched")
+	})
+	mustAddNode(t, g, "fallback", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("result"), "fallback")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
+		value, ok := state.NewAccess(nil, current).ReadAny(state.Shared("route"))
+		return ok && value == "matched"
+	})
+	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
+		t.Fatalf("add conditional edge: %v", err)
+	}
+	if err := g.AddEdge("router", "fallback"); err != nil {
+		t.Fatalf("add fallback edge: %v", err)
+	}
+	if err := g.AddEdge("matched", EndNodeRef); err != nil {
+		t.Fatalf("add matched -> end: %v", err)
+	}
+	if err := g.AddEdge("fallback", EndNodeRef); err != nil {
+		t.Fatalf("add fallback -> end: %v", err)
+	}
+
+	initial := state.NewState()
+	if err := state.SetPath(initial, "shared.route", "matched"); err != nil {
+		t.Fatalf("set route: %v", err)
+	}
+
+	graphState, err := g.Run(context.Background(), initial)
+	if err != nil {
+		t.Fatalf("graph run: %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	run, runnerState, err := runner.Start(context.Background(), initial)
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+
+	graphResult, graphOK := state.NewAccess(nil, graphState).ReadAny(state.Shared("result"))
+	runnerResult, runnerOK := state.NewAccess(nil, runnerState).ReadAny(state.Shared("result"))
+	if !graphOK || !runnerOK || graphResult != runnerResult || graphResult != "matched" {
+		t.Fatalf("graph result=%#v ok=%v runner result=%#v ok=%v", graphResult, graphOK, runnerResult, runnerOK)
+	}
+}
+
+func TestGraphRunAndRunnerStartContractWriteBehaviorAgree(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "writer", func(ctx context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("forbidden"), true)
+	})
+	if err := g.SetEntryPoint("writer"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("writer", EndNodeRef); err != nil {
+		t.Fatalf("add writer -> end: %v", err)
+	}
+	g.setNodeContracts(map[string]state.Contract{
+		"writer": state.NewContract(state.FieldAccess{
+			Path: state.Shared("allowed"),
+			Mode: state.AccessWrite,
+		}),
+	})
+
+	if _, err := g.Run(context.Background(), state.NewState()); err == nil || !strings.Contains(err.Error(), "undeclared path") {
+		t.Fatalf("expected Graph.Run contract violation, got %v", err)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	runner.ContractPolicy = fruntime.ContractPolicy{
+		EnforceWrites: true,
+	}
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil || !strings.Contains(err.Error(), "undeclared path") {
+		t.Fatalf("expected GraphRunner.Start contract violation, got %v", err)
+	}
+	if run.Status != fruntime.RunStatusFailed {
+		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+}
+
+func TestResolveNextNodesUsesProvidedContext(t *testing.T) {
+	t.Parallel()
+
+	type routeKey struct{}
+	g := newTestGraph(t, "router", "matched", "fallback")
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
+		value, _ := ctx.Value(routeKey{}).(string)
+		return value == "matched"
+	})
+	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
+		t.Fatalf("add conditional edge: %v", err)
+	}
+	if err := g.AddEdge("router", "fallback"); err != nil {
+		t.Fatalf("add fallback edge: %v", err)
+	}
+	if err := g.AddEdge("matched", EndNodeRef); err != nil {
+		t.Fatalf("add matched -> end: %v", err)
+	}
+
+	ctx := context.WithValue(context.Background(), routeKey{}, "matched")
+	next, err := newRunnerGraph(g).ResolveNextNodes(ctx, "router", state.NewState())
+	if err != nil {
+		t.Fatalf("resolve next nodes: %v", err)
+	}
+	if strings.Join(next, ",") != "matched" {
+		t.Fatalf("next nodes = %#v, want [matched]", next)
 	}
 }
 
