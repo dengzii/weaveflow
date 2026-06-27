@@ -16,6 +16,9 @@ const (
 
 type ContractDiagnostic = core.ContractDiagnostic
 
+type InitialStateRequirements = core.InitialStateRequirements
+type InitialStateRequirement = core.InitialStateRequirement
+
 func (g *Graph) ContractDiagnostics() []ContractDiagnostic {
 	if g == nil || len(g.contractDiagnostics) == 0 {
 		return nil
@@ -28,6 +31,13 @@ func (g *Graph) ContractDiagnostics() []ContractDiagnostic {
 		}
 	}
 	return cloned
+}
+
+func (g *Graph) InitialStateRequirements() InitialStateRequirements {
+	if g == nil {
+		return graphbuild.AnalyzeInitialStateRequirements(graphbuild.ContractAnalysisGraph{})
+	}
+	return graphbuild.AnalyzeInitialStateRequirements(g.contractAnalysisGraph())
 }
 
 func (g *Graph) contractAnalysisGraph() graphbuild.ContractAnalysisGraph {

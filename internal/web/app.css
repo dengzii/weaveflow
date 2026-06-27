@@ -1,0 +1,251 @@
+@import "tailwindcss";
+@import "@xyflow/react/dist/style.css";
+
+@theme inline {
+  --font-sans: Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, monospace;
+
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-panel: var(--panel);
+  --color-sidebar: var(--sidebar);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-canvas: var(--canvas);
+}
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+  --background: #f8fafc;
+  --foreground: #0f172a;
+  --panel: #ffffff;
+  --sidebar: #f1f5f9;
+  --muted: #eef2f7;
+  --muted-foreground: #64748b;
+  --primary: #111827;
+  --primary-foreground: #ffffff;
+  --secondary: #e2e8f0;
+  --secondary-foreground: #0f172a;
+  --accent: #e9f0f8;
+  --destructive: #dc2626;
+  --destructive-foreground: #ffffff;
+  --border: #d7dee8;
+  --input: #cbd5e1;
+  --ring: #2563eb;
+  --canvas: #f3f6fa;
+  --scrollbar-thumb: #cbd5e1;
+  --control-shadow: 0 10px 24px rgba(15, 23, 42, 0.12);
+  --node-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
+  --node-selected-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14), 0 12px 28px rgba(15, 23, 42, 0.08);
+  --node-running-shadow: 0 0 0 3px rgba(8, 145, 178, 0.12), 0 12px 28px rgba(15, 23, 42, 0.08);
+  --flow-minimap-mask: rgba(241, 245, 249, 0.76);
+  --flow-background-dot: rgba(100, 116, 139, 0.18);
+  --flow-edge-selected: #2563eb;
+  --flow-edge-entry: #059669;
+  --flow-edge-finish: #dc2626;
+  --status-neutral-bg: #eef2f7;
+  --status-neutral-text: #64748b;
+  --status-neutral-border: transparent;
+  --status-ok-bg: #ecfdf5;
+  --status-ok-text: #047857;
+  --status-ok-border: #a7f3d0;
+  --status-warn-bg: #fffbeb;
+  --status-warn-text: #b45309;
+  --status-warn-border: #fde68a;
+  --status-danger-bg: #fef2f2;
+  --status-danger-text: #b91c1c;
+  --status-danger-border: #fecaca;
+  --status-live-bg: #ecfeff;
+  --status-live-text: #0e7490;
+  --status-live-border: #a5f3fc;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --background: #101113;
+  --foreground: #e6edf3;
+  --panel: #17191d;
+  --sidebar: #131519;
+  --muted: #23262d;
+  --muted-foreground: #9aa4b2;
+  --primary: #e6edf3;
+  --primary-foreground: #111318;
+  --secondary: #242831;
+  --secondary-foreground: #e6edf3;
+  --accent: #272c35;
+  --destructive: #f87171;
+  --destructive-foreground: #111318;
+  --border: #303541;
+  --input: #3a4050;
+  --ring: #60a5fa;
+  --canvas: #0f1115;
+  --scrollbar-thumb: #3a4050;
+  --control-shadow: 0 14px 28px rgba(0, 0, 0, 0.36);
+  --node-shadow: 0 14px 30px rgba(0, 0, 0, 0.28);
+  --node-selected-shadow: 0 0 0 3px rgba(96, 165, 250, 0.22), 0 14px 30px rgba(0, 0, 0, 0.28);
+  --node-running-shadow: 0 0 0 3px rgba(34, 211, 238, 0.18), 0 14px 30px rgba(0, 0, 0, 0.28);
+  --flow-minimap-mask: rgba(15, 17, 21, 0.76);
+  --flow-background-dot: rgba(148, 163, 184, 0.16);
+  --flow-edge-selected: #60a5fa;
+  --flow-edge-entry: #34d399;
+  --flow-edge-finish: #f87171;
+  --status-neutral-bg: #23262d;
+  --status-neutral-text: #aeb8c6;
+  --status-neutral-border: #303541;
+  --status-ok-bg: rgba(16, 185, 129, 0.12);
+  --status-ok-text: #6ee7b7;
+  --status-ok-border: rgba(52, 211, 153, 0.34);
+  --status-warn-bg: rgba(245, 158, 11, 0.13);
+  --status-warn-text: #fbbf24;
+  --status-warn-border: rgba(251, 191, 36, 0.32);
+  --status-danger-bg: rgba(248, 113, 113, 0.13);
+  --status-danger-text: #fca5a5;
+  --status-danger-border: rgba(248, 113, 113, 0.34);
+  --status-live-bg: rgba(34, 211, 238, 0.12);
+  --status-live-text: #67e8f9;
+  --status-live-border: rgba(103, 232, 249, 0.34);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+    box-sizing: border-box;
+  }
+  body {
+    margin: 0;
+    min-width: 1024px;
+    background: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+  }
+  button,
+  input,
+  textarea {
+    font: inherit;
+  }
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 4px;
+}
+
+.badge {
+  border: 1px solid var(--status-neutral-border);
+  background: var(--status-neutral-bg);
+  color: var(--status-neutral-text);
+}
+
+.badge-ok {
+  border-color: var(--status-ok-border);
+  background: var(--status-ok-bg);
+  color: var(--status-ok-text);
+}
+
+.badge-warn {
+  border-color: var(--status-warn-border);
+  background: var(--status-warn-bg);
+  color: var(--status-warn-text);
+}
+
+.badge-danger {
+  border-color: var(--status-danger-border);
+  background: var(--status-danger-bg);
+  color: var(--status-danger-text);
+}
+
+.badge-live {
+  border-color: var(--status-live-border);
+  background: var(--status-live-bg);
+  color: var(--status-live-text);
+}
+
+.debug-flow .react-flow__controls {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: var(--control-shadow);
+}
+
+.debug-flow .react-flow__controls-button {
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  color: var(--foreground);
+}
+
+.debug-flow .react-flow__controls-button:hover {
+  background: var(--accent);
+}
+
+.debug-flow .react-flow__minimap-mask {
+  fill: var(--flow-minimap-mask);
+}
+
+.debug-node {
+  width: 190px;
+  min-height: 76px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+  box-shadow: var(--node-shadow);
+}
+
+.debug-node .react-flow__handle {
+  width: 10px;
+  height: 10px;
+  border: 2px solid var(--ring);
+  background: var(--panel);
+}
+
+.debug-node .react-flow__handle-left {
+  left: -5px;
+}
+
+.debug-node .react-flow__handle-right {
+  right: -5px;
+}
+
+.debug-node-virtual {
+  border-style: dashed;
+  background: var(--muted);
+  box-shadow: none;
+}
+
+.debug-node-selected {
+  border-color: var(--flow-edge-selected);
+  box-shadow: var(--node-selected-shadow);
+}
+
+.debug-node-running {
+  border-color: var(--flow-edge-selected);
+  box-shadow: var(--node-running-shadow);
+}
+
+.debug-node-succeeded {
+  border-color: var(--flow-edge-entry);
+}
+
+.debug-node-failed {
+  border-color: var(--flow-edge-finish);
+}

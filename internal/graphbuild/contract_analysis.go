@@ -57,6 +57,165 @@ func AnalyzeContractDiagnostics(input ContractAnalysisGraph) []core.ContractDiag
 	return diagnostics
 }
 
+func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialStateRequirements {
+	result := emptyInitialStateRequirements()
+	if len(input.NodeContracts) == 0 || input.EntryPoint == "" {
+		return result
+	}
+
+	reachable := reachableGraphNodes(input)
+	if len(reachable) == 0 {
+		return result
+	}
+
+	predecessors := graphPredecessors(input, reachable)
+	ancestors := graphAncestors(reachable, predecessors)
+	required := map[string]*initialStateRequirementAccumulator{}
+	provided := map[string]*initialStateRequirementAccumulator{}
+	unresolved := map[string]*initialStateRequirementAccumulator{}
+
+	for _, nodeID := range reachable {
+		contract, ok := input.NodeContracts[nodeID]
+		if !ok || contract.WildcardRead {
+			continue
+		}
+		for _, field := range requiredReadFields(contract) {
+			path := field.Path.String()
+			sources := requiredReadSources(input, nodeID, path, ancestors[nodeID])
+			graphSources := nonInputSources(sources)
+			switch {
+			case len(sources) == 0:
+				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("node %q requires input path %q but no initial input or upstream writer can provide it", nodeID, path))
+			case len(graphSources) > 0:
+				addInitialStateRequirement(provided, path, nodeID, graphSources, field, "")
+			default:
+				addInitialStateRequirement(required, path, nodeID, nil, field, "")
+			}
+		}
+	}
+
+	result.Required = initialStateRequirementList(required)
+	result.ProvidedByUpstream = initialStateRequirementList(provided)
+	result.Unresolved = initialStateRequirementList(unresolved)
+	result.Warnings = contractAnalysisWarnings(input)
+	return result
+}
+
+func emptyInitialStateRequirements() core.InitialStateRequirements {
+	return core.InitialStateRequirements{
+		Required:           []core.InitialStateRequirement{},
+		ProvidedByUpstream: []core.InitialStateRequirement{},
+		Unresolved:         []core.InitialStateRequirement{},
+	}
+}
+
+type initialStateRequirementAccumulator struct {
+	path        string
+	nodes       map[string]struct{}
+	sources     map[string]struct{}
+	fieldType   string
+	description string
+	message     string
+}
+
+func addInitialStateRequirement(target map[string]*initialStateRequirementAccumulator, path, nodeID string, sources []string, field state.FieldAccess, message string) {
+	if strings.TrimSpace(path) == "" {
+		return
+	}
+	item := target[path]
+	if item == nil {
+		item = &initialStateRequirementAccumulator{
+			path:    path,
+			nodes:   map[string]struct{}{},
+			sources: map[string]struct{}{},
+		}
+		target[path] = item
+	}
+	if nodeID != "" {
+		item.nodes[nodeID] = struct{}{}
+	}
+	for _, source := range sources {
+		source = strings.TrimSpace(source)
+		if source != "" {
+			item.sources[source] = struct{}{}
+		}
+	}
+	if item.fieldType == "" {
+		item.fieldType = strings.TrimSpace(field.Type)
+	}
+	if item.description == "" {
+		item.description = strings.TrimSpace(field.Description)
+	}
+	if item.message == "" {
+		item.message = strings.TrimSpace(message)
+	}
+}
+
+func initialStateRequirementList(input map[string]*initialStateRequirementAccumulator) []core.InitialStateRequirement {
+	if len(input) == 0 {
+		return []core.InitialStateRequirement{}
+	}
+	paths := make([]string, 0, len(input))
+	for path := range input {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+
+	out := make([]core.InitialStateRequirement, 0, len(paths))
+	for _, path := range paths {
+		item := input[path]
+		out = append(out, core.InitialStateRequirement{
+			Path:        item.path,
+			Nodes:       sortedStringSet(item.nodes),
+			Sources:     sortedStringSet(item.sources),
+			Type:        item.fieldType,
+			Description: item.description,
+			Message:     item.message,
+		})
+	}
+	return out
+}
+
+func sortedStringSet(input map[string]struct{}) []string {
+	if len(input) == 0 {
+		return nil
+	}
+	values := make([]string, 0, len(input))
+	for value := range input {
+		values = append(values, value)
+	}
+	sort.Strings(values)
+	return values
+}
+
+func nonInputSources(sources []string) []string {
+	out := make([]string, 0, len(sources))
+	for _, source := range sources {
+		if strings.TrimSpace(source) == "input" {
+			continue
+		}
+		out = append(out, source)
+	}
+	return compactStrings(out)
+}
+
+func contractAnalysisWarnings(input ContractAnalysisGraph) []core.ContractDiagnostic {
+	diagnostics := AnalyzeContractDiagnostics(input)
+	if len(diagnostics) == 0 {
+		return nil
+	}
+	warnings := make([]core.ContractDiagnostic, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Severity == core.ContractDiagnosticSeverityWarning {
+			warnings = append(warnings, diagnostic)
+		}
+	}
+	if len(warnings) == 0 {
+		return nil
+	}
+	return warnings
+}
+
 func ContractDiagnosticsError(diagnostics []core.ContractDiagnostic) error {
 	errors := make([]string, 0, len(diagnostics))
 	for _, diagnostic := range diagnostics {
@@ -498,6 +657,14 @@ func isAnalysisEndTarget(input ContractAnalysisGraph, target string) bool {
 
 func requiredReadPaths(contract state.Contract) []string {
 	paths := make([]string, 0)
+	for _, field := range requiredReadFields(contract) {
+		paths = append(paths, field.Path.String())
+	}
+	return compactStrings(paths)
+}
+
+func requiredReadFields(contract state.Contract) []state.FieldAccess {
+	fields := make([]state.FieldAccess, 0)
 	for _, field := range contract.Fields {
 		if !field.Required || field.Path.Empty() {
 			continue
@@ -505,9 +672,9 @@ func requiredReadPaths(contract state.Contract) []string {
 		if field.Mode != state.AccessRead && field.Mode != state.AccessReadWrite {
 			continue
 		}
-		paths = append(paths, field.Path.String())
+		fields = append(fields, field)
 	}
-	return compactStrings(paths)
+	return fields
 }
 
 func pathStrings(paths []state.Path) []string {
