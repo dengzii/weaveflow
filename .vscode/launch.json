@@ -1,0 +1,67 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "cmd/neo",
+      "type": "node-terminal",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "command": "if (Test-Path .env) { gc .env | ?{ $_ -match '^[^#].*=' } | %{ $kv = $_ -split '=', 2; [Environment]::SetEnvironmentVariable($kv[0].Trim(), $kv[1].Trim()) } }; $env:GOOS='windows'; go run ./cmd/neo -addr :9090 -data .local/neo"
+    },
+    {
+      "name": "cmd/server",
+      "type": "node-terminal",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "command": "if (Test-Path .env) { gc .env | ?{ $_ -match '^[^#].*=' } | %{ $kv = $_ -split '=', 2; [Environment]::SetEnvironmentVariable($kv[0].Trim(), $kv[1].Trim()) } }; $env:GOOS='windows'; go run ./cmd/server -addr :8080 -data .local/server"
+    },
+    {
+      "name": "cmd/neo (debug)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/neo",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "GOOS": "windows",
+        "GOARCH": "amd64"
+      },
+      "args": [
+        "-addr", ":9090",
+        "-data", ".local/neo"
+      ]
+    },
+    {
+      "name": "cmd/server (debug)",
+      "type": "go",
+      "request": "launch",
+      "mode": "auto",
+      "program": "${workspaceFolder}/cmd/server",
+      "cwd": "${workspaceFolder}",
+      "envFile": "${workspaceFolder}/.env",
+      "env": {
+        "GOOS": "windows",
+        "GOARCH": "amd64"
+      },
+      "args": [
+        "-addr", ":8080",
+        "-data", ".local/server"
+      ]
+    },
+    {
+      "name": "internal/web (bun dev)",
+      "type": "node-terminal",
+      "request": "launch",
+      "command": "bun run dev",
+      "cwd": "${workspaceFolder}/internal/web"
+    }
+  ],
+  "compounds": [
+    {
+      "name": "web workbench",
+      "configurations": ["cmd/server", "internal/web (bun dev)"],
+      "stopAll": true
+    }
+  ]
+}
