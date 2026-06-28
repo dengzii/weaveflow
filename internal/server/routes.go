@@ -13,6 +13,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/graph/definition", s.handleGraphDefinition)
 	group.GET("/graph/nodes", s.handleGraphNodes)
 	group.GET("/graph/initial-state-requirements", s.handleGraphInitialStateRequirements)
+	group.POST("/graph/initial-state-requirements", s.handleAnalyzeGraphInitialStateRequirements)
 	group.GET("/graph/mermaid", s.handleGraphMermaid)
 
 	group.GET("/registry", s.handleRegistry)

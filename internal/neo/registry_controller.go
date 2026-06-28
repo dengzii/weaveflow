@@ -184,7 +184,7 @@ func wellKnownExampleValue(key string) (any, bool) {
 	case "max_iterations":
 		return 2, true
 	case "input_path", "request_input_path":
-		return "request.input", true
+		return "shared.request.input", true
 	case "intent_state_path":
 		return "intent", true
 	case "orchestration_state_path":
@@ -200,7 +200,7 @@ func wellKnownExampleValue(key string) (any, bool) {
 	case "final_answer_path":
 		return "scopes.agent.final_answer", true
 	case "context_paths":
-		return []string{"request.metadata"}, true
+		return []string{"shared.request.metadata"}, true
 	case "tool_ids":
 		return []string{"web_fetch"}, true
 	case "limit":

@@ -57,7 +57,7 @@ func resolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error
 		{Path: scopedConversationPath(scope, "final_answer"), Mode: dsl.StateAccessWrite, Description: "Final answer written when the agent stops without further tool calls."},
 	}
 	if inputPath := strings.TrimSpace(config.String(spec.Config, "input_path")); inputPath != "" {
-		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(inputPath), Mode: dsl.StateAccessRead, Description: "State path the agent reads its initial task from.", Dynamic: true, PathConfigKey: "input_path"})
+		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(inputPath), Mode: dsl.StateAccessRead, Required: true, Description: "State path the agent reads its initial task from.", Dynamic: true, PathConfigKey: "input_path"})
 	}
 	if outputPath := strings.TrimSpace(config.String(spec.Config, "output_path")); outputPath != "" {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(outputPath), Mode: dsl.StateAccessWrite, Description: "State path the agent writes its final answer to.", Dynamic: true, PathConfigKey: "output_path"})
@@ -75,7 +75,7 @@ func resolveMappedSubgraphStateContract(spec dsl.GraphNodeSpec) (dsl.StateContra
 	}
 	sort.Strings(inputPaths)
 	for _, parentPath := range inputPaths {
-		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(parentPath), Mode: dsl.StateAccessRead, Description: "Input path mapped into the subgraph."})
+		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(parentPath), Mode: dsl.StateAccessRead, Required: true, Description: "Input path mapped into the subgraph."})
 	}
 	outputPaths := make([]string, 0, len(outputMap))
 	for _, parentPath := range outputMap {

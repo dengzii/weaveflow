@@ -29,6 +29,7 @@ func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.G
 	ctx.SubgraphBuilder = makeSubgraphBuilder(reg, ctx, buildPath)
 
 	graph := NewGraph()
+	graph.setDefinitionMetadata(def)
 	graph.setInitialStatePaths(graphbuild.InitialContractPathsFromStateFields(reg.StateFields))
 
 	contracts, err := graphbuild.ResolveNodeContracts(def, reg)

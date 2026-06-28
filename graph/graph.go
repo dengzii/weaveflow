@@ -50,6 +50,11 @@ type Graph struct {
 	defaultEdges        map[string][]string
 	conditionalEdges    map[string][]conditionalEdge
 	edgeSpecs           []dsl.GraphEdgeSpec
+	version             string
+	name                string
+	description         string
+	stateSchema         string
+	metadata            map[string]any
 	entryPoint          string
 	finishPoint         string
 	retryPolicy         *langgraph.RetryPolicy
@@ -67,6 +72,21 @@ func NewGraph() *Graph {
 		conditionalEdges: map[string][]conditionalEdge{},
 		nodeListeners:    map[string][]langgraph.NodeListener[*state.State]{},
 		stateRegistry:    stateRegistry,
+	}
+}
+
+func (g *Graph) setDefinitionMetadata(def dsl.GraphDefinition) {
+	if g == nil {
+		return
+	}
+	g.version = strings.TrimSpace(def.Version)
+	g.name = strings.TrimSpace(def.Name)
+	g.description = strings.TrimSpace(def.Description)
+	g.stateSchema = strings.TrimSpace(def.StateSchema)
+	if len(def.Metadata) > 0 {
+		g.metadata = config.CloneMap(def.Metadata)
+	} else {
+		g.metadata = nil
 	}
 }
 
@@ -1039,13 +1059,29 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 		}
 	}
 
+	version := g.version
+	if version == "" {
+		version = dsl.GraphDefinitionVersion
+	}
+	stateSchema := g.stateSchema
+	if stateSchema == "" {
+		stateSchema = dsl.CommonStateSchemaID
+	}
+	var metadata map[string]any
+	if len(g.metadata) > 0 {
+		metadata = config.CloneMap(g.metadata)
+	}
+
 	return dsl.GraphDefinition{
-		Version:     dsl.GraphDefinitionVersion,
-		StateSchema: dsl.CommonStateSchemaID,
+		Version:     version,
+		Name:        g.name,
+		Description: g.description,
+		StateSchema: stateSchema,
 		EntryPoint:  g.serializeNodeRef(g.entryPoint),
 		FinishPoint: g.serializeNodeRef(g.finishPoint),
 		Nodes:       nodeList,
 		Edges:       edges,
+		Metadata:    metadata,
 	}, nil
 }
 

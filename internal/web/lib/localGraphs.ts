@@ -1,6 +1,7 @@
 import type { GraphDefinition } from "../types";
 
 const storageKey = "weaveflow:web:local-graphs:v1";
+const lastDraftStorageKey = "weaveflow:web:last-local-graph:v1";
 
 export interface LocalGraphDraft {
   id: string;
@@ -27,7 +28,14 @@ export function readLocalGraphDrafts(): LocalGraphDraft[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isLocalGraphDraft).sort(sortDrafts);
+    let migrated = false;
+    const drafts = parsed.filter(isLocalGraphDraft).map((draft) => {
+      const next = migrateLocalGraphDraft(draft);
+      if (next !== draft) migrated = true;
+      return next;
+    });
+    if (migrated) writeLocalGraphDrafts(drafts);
+    return drafts.sort(sortDrafts);
   } catch {
     return [];
   }
@@ -47,13 +55,44 @@ export function saveLocalGraphDraft(input: SaveLocalGraphInput): LocalGraphDraft
     updatedAt: now,
   };
   writeLocalGraphDrafts([draft, ...drafts.filter((item) => item.id !== draft.id)].sort(sortDrafts));
+  writeLastLocalGraphDraftId(draft.id);
   return draft;
 }
 
 export function deleteLocalGraphDraft(id: string): LocalGraphDraft[] {
   const drafts = readLocalGraphDrafts().filter((draft) => draft.id !== id);
   writeLocalGraphDrafts(drafts);
+  if (readLastLocalGraphDraftId() === id) {
+    clearLastLocalGraphDraftId();
+  }
   return drafts;
+}
+
+export function pickInitialLocalGraphDraft(drafts: LocalGraphDraft[]): LocalGraphDraft | null {
+  const lastDraftId = readLastLocalGraphDraftId();
+  if (lastDraftId) {
+    const lastDraft = drafts.find((draft) => draft.id === lastDraftId);
+    if (lastDraft) return lastDraft;
+  }
+  return drafts[0] ?? null;
+}
+
+export function readLastLocalGraphDraftId(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(lastDraftStorageKey) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function writeLastLocalGraphDraftId(id: string) {
+  if (typeof window === "undefined" || !id) return;
+  try {
+    window.localStorage.setItem(lastDraftStorageKey, id);
+  } catch {
+    // best effort only
+  }
 }
 
 export function duplicateLocalGraphDraft(id: string): LocalGraphDraft | null {
@@ -75,12 +114,62 @@ function writeLocalGraphDrafts(drafts: LocalGraphDraft[]) {
   window.localStorage.setItem(storageKey, JSON.stringify(drafts.slice(0, 80)));
 }
 
+function clearLastLocalGraphDraftId() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(lastDraftStorageKey);
+  } catch {
+    // best effort only
+  }
+}
+
 function createDraftID() {
   return `draft_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
 function sortDrafts(a: LocalGraphDraft, b: LocalGraphDraft) {
   return b.updatedAt.localeCompare(a.updatedAt);
+}
+
+function migrateLocalGraphDraft(draft: LocalGraphDraft): LocalGraphDraft {
+  let changed = false;
+  const nodes = draft.definition.nodes.map((node) => {
+    const config = node.config;
+    if (!config) return node;
+    let nodeChanged = false;
+    const nextConfig = { ...config };
+
+    for (const key of ["input_path", "request_input_path"]) {
+      if (nextConfig[key] === "request.input") {
+        nextConfig[key] = "shared.request.input";
+        nodeChanged = true;
+      }
+    }
+
+    const contextPaths = nextConfig.context_paths;
+    if (Array.isArray(contextPaths)) {
+      const nextContextPaths = contextPaths.map((value) =>
+        value === "request.metadata" ? "shared.request.metadata" : value
+      );
+      if (nextContextPaths.some((value, index) => value !== contextPaths[index])) {
+        nextConfig.context_paths = nextContextPaths;
+        nodeChanged = true;
+      }
+    }
+
+    if (!nodeChanged) return node;
+    changed = true;
+    return { ...node, config: nextConfig };
+  });
+
+  if (!changed) return draft;
+  return {
+    ...draft,
+    definition: {
+      ...draft.definition,
+      nodes,
+    },
+  };
 }
 
 function isLocalGraphDraft(value: unknown): value is LocalGraphDraft {

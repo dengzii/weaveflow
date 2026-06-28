@@ -1,19 +1,22 @@
-import { useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
-  Controls,
   Handle,
   MiniMap,
+  Panel,
   Position,
   ReactFlow,
   ReactFlowProvider,
-  useReactFlow,
   useEdgesState,
   useNodesState,
+  useReactFlow,
+  useStoreApi,
   type Connection,
   type Edge,
   type Node,
+  type Viewport,
 } from "@xyflow/react";
+import { Lock, Maximize2, Unlock, ZoomIn, ZoomOut } from "lucide-react";
 import type { GraphDefinition, GraphNodeSpec, RuntimeEvent, StepRecord } from "../types";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, type NodePosition } from "../lib/graphEditor";
 
@@ -34,6 +37,8 @@ export interface VirtualGraphEdge {
 
 const nodeWidth = 190;
 const nodeHeight = 76;
+const minZoom = 0.2;
+const maxZoom = 2;
 
 export function GraphCanvas({
   definition,
@@ -42,6 +47,7 @@ export function GraphCanvas({
   editable = false,
   selectedNodeId,
   selectedEdgeId,
+  fitViewSignal = 0,
   virtualNodeIds = [START_NODE_REF, END_NODE_REF],
   virtualEdges = [],
   onSelectNode,
@@ -58,6 +64,7 @@ export function GraphCanvas({
   editable?: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
+  fitViewSignal?: number;
   virtualNodeIds?: string[];
   virtualEdges?: VirtualGraphEdge[];
   onSelectNode?: (nodeId: string | null) => void;
@@ -77,6 +84,7 @@ export function GraphCanvas({
         editable={editable}
         selectedNodeId={selectedNodeId}
         selectedEdgeId={selectedEdgeId}
+        fitViewSignal={fitViewSignal}
         virtualNodeIds={virtualNodeIds}
         virtualEdges={virtualEdges}
         onSelectNode={onSelectNode}
@@ -98,6 +106,7 @@ function GraphCanvasInner({
   editable,
   selectedNodeId,
   selectedEdgeId,
+  fitViewSignal,
   virtualNodeIds,
   virtualEdges,
   onSelectNode,
@@ -114,6 +123,7 @@ function GraphCanvasInner({
   editable: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
+  fitViewSignal: number;
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
   onSelectNode?: (nodeId: string | null) => void;
@@ -124,9 +134,19 @@ function GraphCanvasInner({
   onNodeContextMenu?: (nodeId: string, screenPosition: NodePosition) => void;
   onEdgeContextMenu?: (edgeId: string, screenPosition: NodePosition) => void;
 }) {
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, viewportInitialized } = useReactFlow();
+  const store = useStoreApi();
   const [nodes, setNodes, onNodesChange] = useNodesState<Node<FlowNodeData>>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  const [interactive, setInteractive] = useState(editable);
+  const handledFitViewSignal = useRef(0);
+  const flowWrapperRef = useRef<HTMLDivElement | null>(null);
+  const nodesRef = useRef<Node<FlowNodeData>[]>([]);
+  const isInteractive = editable && interactive;
+
+  useEffect(() => {
+    setInteractive(editable);
+  }, [editable]);
 
   const nodeStatus = useMemo(() => {
     const status = new Map<string, string>();
@@ -172,7 +192,7 @@ function GraphCanvasInner({
             label: node.name || node.id,
             type: node.type || "node",
             status: virtualKind ? "idle" : nodeStatus.get(node.id) || "idle",
-            editable,
+            editable: isInteractive,
             virtualKind,
           },
         };
@@ -211,10 +231,50 @@ function GraphCanvasInner({
         },
       })),
     ]);
-  }, [definition, editable, nodeStatus, selectedEdgeId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualNodeIds]);
+  }, [definition, editable, isInteractive, nodeStatus, selectedEdgeId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualNodeIds]);
+
+  useEffect(() => {
+    nodesRef.current = nodes;
+  }, [nodes]);
+
+  const applyViewport = useCallback(
+    (nextViewport: Viewport) => {
+      const state = store.getState();
+      if (state.panZoom) {
+        void state.panZoom.setViewport(nextViewport);
+        store.setState({ transform: [nextViewport.x, nextViewport.y, nextViewport.zoom] });
+        syncRendererZoomState(flowWrapperRef.current, nextViewport);
+        return;
+      }
+      const currentTransform = state.transform;
+      const current = { x: currentTransform[0], y: currentTransform[1], zoom: currentTransform[2] };
+      if (sameViewport(current, nextViewport)) return;
+      store.setState({ transform: [nextViewport.x, nextViewport.y, nextViewport.zoom] });
+    },
+    [store]
+  );
+
+  useEffect(() => {
+    if (!fitViewSignal || fitViewSignal === handledFitViewSignal.current || nodes.length === 0 || !viewportInitialized) {
+      return;
+    }
+    const signal = fitViewSignal;
+    window.setTimeout(() => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          const applied = fitNodesToViewport(nodesRef.current, flowWrapperRef.current, (viewport) => {
+            applyViewport(viewport);
+          });
+          if (applied) {
+            handledFitViewSignal.current = signal;
+          }
+        });
+      });
+    }, 120);
+  }, [applyViewport, fitViewSignal, nodes.length, viewportInitialized]);
 
   function handleConnect(connection: Connection) {
-    if (!editable || !connection.source || !connection.target) return;
+    if (!isInteractive || !connection.source || !connection.target) return;
     const sourceKind = virtualNodeKind(connection.source);
     const targetKind = virtualNodeKind(connection.target);
     if (sourceKind === "end") return;
@@ -228,64 +288,194 @@ function GraphCanvasInner({
   }
 
   return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      nodeTypes={{ debugNode: DebugNode }}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      onConnect={handleConnect}
-      onNodeClick={(_, node) => {
-        onSelectNode?.(node.id);
-        onSelectEdge?.(null);
-      }}
-      onNodeContextMenu={(event, node) => {
-        if (!editable) return;
-        event.preventDefault();
-        event.stopPropagation();
-        onSelectNode?.(node.id);
-        onSelectEdge?.(null);
-        onNodeContextMenu?.(node.id, screenPoint(event));
-      }}
-      onEdgeClick={(_, edge) => {
-        onSelectEdge?.(edge.id);
-        onSelectNode?.(null);
-      }}
-      onEdgeContextMenu={(event, edge) => {
-        if (!editable) return;
-        event.preventDefault();
-        event.stopPropagation();
-        onSelectEdge?.(edge.id);
-        onSelectNode?.(null);
-        onEdgeContextMenu?.(edge.id, screenPoint(event));
-      }}
-      onPaneClick={() => {
-        onSelectNode?.(null);
-        onSelectEdge?.(null);
-      }}
-      onPaneContextMenu={(event) => {
-        if (!editable) return;
-        event.preventDefault();
-        const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
-        onCreateNodeAt?.(position, screenPoint(event));
-      }}
-      onNodeDragStop={(_, node) => {
-        onNodePositionChange?.(node.id, node.position);
-      }}
-      fitView
-      minZoom={0.2}
-      maxZoom={2}
-      nodesDraggable={editable}
-      nodesConnectable={editable}
-      edgesReconnectable={false}
-      proOptions={{ hideAttribution: true }}
-      className="debug-flow"
-    >
-      <MiniMap pannable zoomable position="bottom-right" className="!rounded-md !border !border-border !bg-panel" />
-      <Controls position="top-right" />
-      <Background gap={22} size={1.1} color="var(--flow-background-dot)" />
-    </ReactFlow>
+    <div ref={flowWrapperRef} className="h-full w-full">
+      <ReactFlow
+        nodes={nodes}
+        edges={edges}
+        nodeTypes={{ debugNode: DebugNode }}
+        onNodesChange={onNodesChange}
+        onEdgesChange={onEdgesChange}
+        onConnect={handleConnect}
+        onNodeClick={(_, node) => {
+          onSelectNode?.(node.id);
+          onSelectEdge?.(null);
+        }}
+        onNodeContextMenu={(event, node) => {
+          if (!isInteractive) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onSelectNode?.(node.id);
+          onSelectEdge?.(null);
+          onNodeContextMenu?.(node.id, screenPoint(event));
+        }}
+        onEdgeClick={(_, edge) => {
+          onSelectEdge?.(edge.id);
+          onSelectNode?.(null);
+        }}
+        onEdgeContextMenu={(event, edge) => {
+          if (!isInteractive) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onSelectEdge?.(edge.id);
+          onSelectNode?.(null);
+          onEdgeContextMenu?.(edge.id, screenPoint(event));
+        }}
+        onPaneClick={() => {
+          onSelectNode?.(null);
+          onSelectEdge?.(null);
+        }}
+        onPaneContextMenu={(event) => {
+          if (!isInteractive) return;
+          event.preventDefault();
+          const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+          onCreateNodeAt?.(position, screenPoint(event));
+        }}
+        onNodeDragStop={(_, node) => {
+          onNodePositionChange?.(node.id, node.position);
+        }}
+        minZoom={minZoom}
+        maxZoom={maxZoom}
+        nodesDraggable={isInteractive}
+        nodesConnectable={isInteractive}
+        elementsSelectable={interactive}
+        edgesReconnectable={false}
+        proOptions={{ hideAttribution: true }}
+        className="debug-flow"
+      >
+        <MiniMap pannable zoomable position="bottom-right" className="!rounded-md !border !border-border !bg-panel" />
+        <CanvasControls
+          interactive={interactive}
+          onFitView={() => fitNodesToViewport(nodesRef.current, flowWrapperRef.current, applyViewport)}
+          onToggleInteractive={() => setInteractive((value) => !value)}
+          onZoomIn={() => zoomViewport(1.2)}
+          onZoomOut={() => zoomViewport(1 / 1.2)}
+        />
+        <Background gap={22} size={1.1} color="var(--flow-background-dot)" />
+      </ReactFlow>
+    </div>
   );
+
+  function zoomViewport(factor: number) {
+    const rect = flowWrapperRef.current?.getBoundingClientRect();
+    if (!rect || rect.width <= 0 || rect.height <= 0) return;
+    const [x, y, zoom] = store.getState().transform;
+    const nextZoom = Math.max(minZoom, Math.min(maxZoom, zoom * factor));
+    if (Math.abs(nextZoom - zoom) < 0.0001) return;
+    const centerX = (rect.width / 2 - x) / zoom;
+    const centerY = (rect.height / 2 - y) / zoom;
+    applyViewport({
+      x: rect.width / 2 - centerX * nextZoom,
+      y: rect.height / 2 - centerY * nextZoom,
+      zoom: nextZoom,
+    });
+  }
+}
+
+function CanvasControls({
+  interactive,
+  onFitView,
+  onToggleInteractive,
+  onZoomIn,
+  onZoomOut,
+}: {
+  interactive: boolean;
+  onFitView: () => void;
+  onToggleInteractive: () => void;
+  onZoomIn: () => void;
+  onZoomOut: () => void;
+}) {
+  return (
+    <Panel position="top-right" className="react-flow__controls vertical" aria-label="Canvas controls">
+      <button type="button" className="react-flow__controls-button" title="Zoom in" aria-label="Zoom in" onClick={onZoomIn}>
+        <ZoomIn className="h-3.5 w-3.5" />
+      </button>
+      <button type="button" className="react-flow__controls-button" title="Zoom out" aria-label="Zoom out" onClick={onZoomOut}>
+        <ZoomOut className="h-3.5 w-3.5" />
+      </button>
+      <button type="button" className="react-flow__controls-button" title="Fit view" aria-label="Fit view" onClick={onFitView}>
+        <Maximize2 className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        className="react-flow__controls-button"
+        title={interactive ? "Lock canvas" : "Unlock canvas"}
+        aria-label={interactive ? "Lock canvas" : "Unlock canvas"}
+        onClick={onToggleInteractive}
+      >
+        {interactive ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+      </button>
+    </Panel>
+  );
+}
+
+function fitNodesToViewport(
+  nodes: Node<FlowNodeData>[],
+  viewportElement: HTMLDivElement | null,
+  applyViewport: (viewport: Viewport) => void
+): boolean {
+  const rect = viewportElement?.getBoundingClientRect();
+  if (!rect || rect.width <= 0 || rect.height <= 0 || nodes.length === 0) return false;
+
+  const bounds = nodes.reduce(
+    (current, node) => ({
+      minX: Math.min(current.minX, node.position.x),
+      minY: Math.min(current.minY, node.position.y),
+      maxX: Math.max(current.maxX, node.position.x + nodeWidth),
+      maxY: Math.max(current.maxY, node.position.y + nodeHeight),
+    }),
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+  );
+  if (!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.minY)) return false;
+
+  const width = Math.max(bounds.maxX - bounds.minX, nodeWidth);
+  const height = Math.max(bounds.maxY - bounds.minY, nodeHeight);
+  const padding = 0.2;
+  const zoom = Math.max(
+    0.2,
+    Math.min(2, Math.min(rect.width / (width * (1 + padding * 2)), rect.height / (height * (1 + padding * 2))))
+  );
+  const centerX = bounds.minX + width / 2;
+  const centerY = bounds.minY + height / 2;
+  const viewport = {
+    x: rect.width / 2 - centerX * zoom,
+    y: rect.height / 2 - centerY * zoom,
+    zoom,
+  };
+  applyViewport(viewport);
+  return true;
+}
+
+function sameViewport(a: Viewport, b: Viewport): boolean {
+  return Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01 && Math.abs(a.zoom - b.zoom) < 0.0001;
+}
+
+interface D3ZoomTransform {
+  x: number;
+  y: number;
+  k: number;
+}
+
+interface D3ZoomElement extends Element {
+  __zoom?: D3ZoomTransform;
+}
+
+function syncRendererZoomState(viewportElement: HTMLElement | null, viewport: Viewport) {
+  const root = viewportElement ?? document.body;
+  const renderers = [
+    ...root.querySelectorAll<D3ZoomElement>(".react-flow__renderer"),
+    ...root.ownerDocument.querySelectorAll<D3ZoomElement>(".react-flow__renderer"),
+  ];
+
+  for (const renderer of new Set(renderers)) {
+    const current = renderer.__zoom;
+    if (!current) continue;
+
+    // React Flow renders from store.transform, while d3-zoom keeps its own
+    // __zoom state for the next drag gesture. Keep both aligned after custom
+    // viewport changes so panning starts from the visible viewport.
+    const ZoomTransform = current.constructor as new (k: number, x: number, y: number) => D3ZoomTransform;
+    renderer.__zoom = new ZoomTransform(viewport.zoom, viewport.x, viewport.y);
+  }
 }
 
 function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean }) {

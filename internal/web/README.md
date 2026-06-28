@@ -12,6 +12,9 @@ Set `WEAVEFLOW_BACKEND` to point the dev proxy at a running `cmd/server` instanc
 Common local setup:
 
 ```bash
+export OPENAI_API_KEY=<your-api-key>
+export OPENAI_BASE_URL=<your-base-url>
+export OPENAI_MODEL=<your-model>
 go run ./cmd/server -addr :8081 -data .local/server
 ```
 

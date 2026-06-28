@@ -78,6 +78,41 @@ func TestGraphDefinitionFanOutRoundTrip(t *testing.T) {
 	}
 }
 
+func TestGraphDefinitionPreservesMetadata(t *testing.T) {
+	t.Parallel()
+
+	g := newTestGraph(t, "input")
+	g.setDefinitionMetadata(dsl.GraphDefinition{
+		Version:     "1.0",
+		Name:        "debug_graph",
+		Description: "debug description",
+		StateSchema: dsl.CommonStateSchemaID,
+		Metadata: map[string]any{
+			"web": map[string]any{
+				"positions": map[string]any{
+					"input": map[string]any{"x": 120, "y": 80},
+				},
+				"virtual_node_ids": []any{"__start__", "__end__"},
+			},
+		},
+	})
+
+	def, err := g.Definition()
+	if err != nil {
+		t.Fatalf("definition: %v", err)
+	}
+	if def.Name != "debug_graph" || def.Description != "debug description" {
+		t.Fatalf("metadata fields not preserved: %#v", def)
+	}
+	web, ok := def.Metadata["web"].(map[string]any)
+	if !ok {
+		t.Fatalf("web metadata missing: %#v", def.Metadata)
+	}
+	if _, ok := web["positions"].(map[string]any); !ok {
+		t.Fatalf("positions metadata missing: %#v", web)
+	}
+}
+
 func TestResolveNextNodeRejectsFanOut(t *testing.T) {
 	t.Parallel()
 

@@ -58,7 +58,7 @@ function wellKnownExampleValue(key: string): unknown {
       return 2;
     case "input_path":
     case "request_input_path":
-      return "request.input";
+      return "shared.request.input";
     case "intent_state_path":
       return "intent";
     case "orchestration_state_path":
@@ -74,7 +74,7 @@ function wellKnownExampleValue(key: string): unknown {
     case "final_answer_path":
       return "scopes.agent.final_answer";
     case "context_paths":
-      return ["request.metadata"];
+      return ["shared.request.metadata"];
     case "tool_ids":
       return ["web_fetch"];
     case "limit":

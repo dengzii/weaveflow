@@ -191,6 +191,7 @@ func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
 			]
 		}
 	}`
+
 	w := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
 	req.Header.Set("Content-Type", "application/json")
@@ -360,8 +361,18 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 			]
 		}
 	}`
+
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req := httptest.NewRequest(http.MethodPost, "/graph/initial-state-requirements", strings.NewReader(graphBody))
+	req.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /graph/initial-state-requirements status = %d, body = %s", w.Code, w.Body.String())
+	}
+	assertInitialStateRequirementResponse(t, w.Body.Bytes())
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -374,12 +385,16 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("GET /graph/initial-state-requirements status = %d, body = %s", w.Code, w.Body.String())
 	}
+	assertInitialStateRequirementResponse(t, w.Body.Bytes())
+}
 
+func assertInitialStateRequirementResponse(t *testing.T, body []byte) {
+	t.Helper()
 	var response struct {
 		Data  core.InitialStateRequirements `json:"data"`
 		Error string                        `json:"error"`
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+	if err := json.Unmarshal(body, &response); err != nil {
 		t.Fatalf("decode requirements response: %v", err)
 	}
 	if response.Error != "" {

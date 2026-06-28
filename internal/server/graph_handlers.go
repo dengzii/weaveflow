@@ -86,6 +86,24 @@ func (s *Server) handleGraphInitialStateRequirements(c *gin.Context) {
 	writeData(c, http.StatusOK, graph.InitialStateRequirements())
 }
 
+func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
+	req, err := bindGraphUpload(c)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	if s == nil || s.registry == nil {
+		writeError(c, http.StatusServiceUnavailable, errRegistryNotConfigured)
+		return
+	}
+	graph, err := wfgraph.BuildGraph(s.registry, req.Definition, &wfregistry.BuildContext{})
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	writeData(c, http.StatusOK, graph.InitialStateRequirements())
+}
+
 func (s *Server) handleGraphMermaid(c *gin.Context) {
 	graph := s.currentGraph()
 	if graph == nil {

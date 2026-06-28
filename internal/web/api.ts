@@ -49,6 +49,22 @@ export async function getInitialStateRequirements(): Promise<InitialStateRequire
   return apiFetch<InitialStateRequirements>("/graph/initial-state-requirements");
 }
 
+export async function analyzeInitialStateRequirements(
+  definition: GraphDefinition,
+  graphId?: string,
+  graphVersion?: string
+): Promise<InitialStateRequirements> {
+  return apiFetch<InitialStateRequirements>("/graph/initial-state-requirements", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      graph_id: graphId || undefined,
+      graph_version: graphVersion || undefined,
+      definition,
+    }),
+  });
+}
+
 export async function setGraphDefinition(
   definition: GraphDefinition,
   graphId?: string,
