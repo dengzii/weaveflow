@@ -26,7 +26,6 @@ export function WorkbenchShell({
   busy,
   definition,
   runsCount,
-  error,
   children,
   runStatusPanel,
   runStatusVisible,
@@ -44,7 +43,6 @@ export function WorkbenchShell({
   busy: boolean;
   definition: GraphDefinition | null;
   runsCount: number;
-  error: string;
   children: ReactNode;
   runStatusPanel?: ReactNode;
   runStatusVisible: boolean;
@@ -102,9 +100,10 @@ export function WorkbenchShell({
           <span>{definition ? `${definition.nodes.length} nodes` : "invalid graph"}</span>
           <span>{definition?.edges?.length ?? 0} edges</span>
           <span>{runsCount} runs</span>
+          <span className="truncate">server API proxied at root</span>
           {hasRunStatus ? (
             <button
-              className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={onToggleRunStatus}
               title={runStatusVisible ? "Hide run status" : "Show run status"}
             >
@@ -112,12 +111,12 @@ export function WorkbenchShell({
               Run status
             </button>
           ) : null}
-          {error ? <span className="truncate text-destructive">{error}</span> : <span className="truncate">server API proxied at root</span>}
         </footer>
       </main>
     </div>
   );
 }
+
 
 function NavButton({
   icon: Icon,

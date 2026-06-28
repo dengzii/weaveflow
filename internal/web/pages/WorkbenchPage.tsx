@@ -127,6 +127,8 @@ export function WorkbenchPage({
     setSelectedRunId((current) => current || nextRuns.at(-1)?.run_id || "");
   }, []);
 
+  const dismissError = useCallback(() => setError(""), []);
+
   const refreshInitialRequirements = useCallback(async () => {
     const requirements = await getInitialStateRequirements();
     setInitialRequirements(requirements);
@@ -414,7 +416,6 @@ export function WorkbenchPage({
       busy={busy}
       definition={definition}
       runsCount={runs.length}
-      error={error}
       onRefresh={loadServerState}
       onUpload={uploadGraph}
       onRun={runGraph}
@@ -442,6 +443,8 @@ export function WorkbenchPage({
           registry={registry}
           graphId={graphId}
           graphVersion={graphVersion}
+          runError={error}
+          onDismissRunError={dismissError}
           onGraphId={setGraphId}
           onGraphVersion={setGraphVersion}
           onDefinitionText={setDefinitionText}

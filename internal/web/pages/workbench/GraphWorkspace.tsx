@@ -37,6 +37,7 @@ import type {
 } from "../../types";
 import { CanvasContextMenu } from "./graph-workspace/CanvasContextMenu";
 import { defaultVirtualNodeIds, fallbackNodeTypes, virtualNodeTypes } from "./graph-workspace/constants";
+import { ErrorToast } from "./graph-workspace/ErrorToast";
 import { GraphBrowserPanel } from "./graph-workspace/GraphBrowserPanel";
 import { GraphInspectorPanel } from "./graph-workspace/GraphInspectorPanel";
 import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } from "./graph-workspace/types";
@@ -64,6 +65,8 @@ interface GraphWorkspaceProps {
   registry: RegistryInfo | null;
   graphId: string;
   graphVersion: string;
+  runError: string;
+  onDismissRunError: () => void;
   onGraphId: (value: string) => void;
   onGraphVersion: (value: string) => void;
   onDefinitionText: (value: string) => void;
@@ -81,6 +84,8 @@ export function GraphWorkspace({
   registry,
   graphId,
   graphVersion,
+  runError,
+  onDismissRunError,
   onGraphId,
   onGraphVersion,
   onDefinitionText,
@@ -563,6 +568,7 @@ export function GraphWorkspace({
           virtualNodeIds={virtualNodeIds}
           virtualEdges={displayVirtualEdges}
         />
+        <ErrorToast message={runError} onDismiss={onDismissRunError} />
       </section>
 
       <GraphInspectorPanel
