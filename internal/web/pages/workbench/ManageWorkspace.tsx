@@ -21,6 +21,8 @@ export function ManageWorkspace({
   selectedRunId,
   onSelectCheckpoint,
   onSelectArtifact,
+  onResumeCheckpoint,
+  busy,
 }: {
   checkpoints: CheckpointRecord[];
   artifacts: ArtifactRef[];
@@ -33,6 +35,8 @@ export function ManageWorkspace({
   selectedRunId: string;
   onSelectCheckpoint: (checkpoint: CheckpointRecord) => void;
   onSelectArtifact: (artifact: ArtifactRef) => void;
+  onResumeCheckpoint: (checkpoint: CheckpointDetail) => void;
+  busy: boolean;
 }) {
   return (
     <div className="grid h-full min-h-0 grid-cols-[300px_300px_minmax(0,1fr)] bg-background">
@@ -63,7 +67,12 @@ export function ManageWorkspace({
       <ResourceColumn title="Detail" icon={Braces}>
         <div className="grid gap-3">
           {resourceStatus ? <div className="text-xs text-muted-foreground">{resourceStatus}</div> : null}
-          <ResourceDetail checkpoint={checkpointDetail} artifact={artifactDetail} />
+          <ResourceDetail
+            checkpoint={checkpointDetail}
+            artifact={artifactDetail}
+            onResumeCheckpoint={onResumeCheckpoint}
+            resumeBusy={busy}
+          />
           <div className="rounded-md border border-border bg-panel p-3">
             <div className="mb-2 text-sm font-medium">Registry Snapshot</div>
             <ResourceList

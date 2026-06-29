@@ -17,6 +17,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 
 	"github.com/gin-gonic/gin"
+	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 type contractTestNode struct {
@@ -38,6 +39,30 @@ func newContractTestNode(spec dsl.GraphNodeSpec) *contractTestNode {
 
 func (n *contractTestNode) Execute(core.Context, *state.Access) error {
 	return nil
+}
+
+type interruptTestNode struct {
+	core.NodeBase
+}
+
+func newInterruptTestNode(spec dsl.GraphNodeSpec) *interruptTestNode {
+	name := spec.Name
+	if name == "" {
+		name = spec.ID
+	}
+	return &interruptTestNode{
+		NodeBase: core.NewNodeBase(core.NodeSpec{
+			ID:   spec.ID,
+			Name: name,
+		}),
+	}
+}
+
+func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) error {
+	if value, ok := access.ReadAny(state.Shared("resume")); ok && value == "ok" {
+		return nil
+	}
+	return &langgraph.NodeInterrupt{Node: n.ID(), Value: "waiting for resume input"}
 }
 
 type recordingEventSink struct {
@@ -306,6 +331,157 @@ func TestGetRunDetailAggregatesDebugRecords(t *testing.T) {
 	}
 	if detailResponse.Data.Artifacts == nil {
 		t.Fatal("detail artifacts is nil")
+	}
+}
+
+func TestRunInterruptResponseAndResume(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reg := wfregistry.NewRegistry()
+	if err := reg.RegisterNodeType(wfregistry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:          "interrupt_once",
+			Title:         "Interrupt Once",
+			StateContract: &dsl.StateContract{},
+		},
+		Build: func(_ *wfregistry.BuildContext, spec dsl.GraphNodeSpec) (core.Node, error) {
+			return newInterruptTestNode(spec), nil
+		},
+	}); err != nil {
+		t.Fatalf("register node type: %v", err)
+	}
+
+	srv, err := New(context.Background(), Config{
+		BaseDir:  t.TempDir(),
+		Registry: reg,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	graphBody := `{
+		"graph_id": "interrupt-graph",
+		"definition": {
+			"version": "1.0",
+			"name": "interrupt-graph",
+			"entry_point": "wait",
+			"finish_point": "wait",
+			"nodes": [
+				{"id": "wait", "type": "interrupt_once"}
+			]
+		}
+	}`
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /runs status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var startResponse struct {
+		Data  runResult `json:"data"`
+		Error string    `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &startResponse); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	if startResponse.Error != "" {
+		t.Fatalf("start response error = %q", startResponse.Error)
+	}
+	if startResponse.Data.Run.Status != runtime.RunStatusPaused {
+		t.Fatalf("start status = %q, want %q", startResponse.Data.Run.Status, runtime.RunStatusPaused)
+	}
+	if startResponse.Data.Run.LastCheckpointID == "" {
+		t.Fatal("paused run last checkpoint id is empty")
+	}
+	if startResponse.Data.Interrupt == nil {
+		t.Fatal("paused run interrupt is nil")
+	}
+	if startResponse.Data.Interrupt.RunID != startResponse.Data.Run.RunID {
+		t.Fatalf("interrupt run id = %q, want %q", startResponse.Data.Interrupt.RunID, startResponse.Data.Run.RunID)
+	}
+	if startResponse.Data.Interrupt.CheckpointID != startResponse.Data.Run.LastCheckpointID {
+		t.Fatalf("interrupt checkpoint id = %q, want %q", startResponse.Data.Interrupt.CheckpointID, startResponse.Data.Run.LastCheckpointID)
+	}
+	if startResponse.Data.Interrupt.NodeID != "wait" {
+		t.Fatalf("interrupt node id = %q, want wait", startResponse.Data.Interrupt.NodeID)
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/runs/"+startResponse.Data.Run.RunID+"/detail", nil)
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /runs/:run_id/detail status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var detailResponse struct {
+		Data runDetail `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &detailResponse); err != nil {
+		t.Fatalf("decode detail response: %v", err)
+	}
+	if detailResponse.Data.Interrupt == nil {
+		t.Fatal("detail interrupt is nil")
+	}
+	var pausedPayload map[string]any
+	for _, event := range detailResponse.Data.Events {
+		if event.Type != runtime.EventRunPaused {
+			continue
+		}
+		if err := json.Unmarshal(event.Payload, &pausedPayload); err != nil {
+			t.Fatalf("decode run.paused payload: %v", err)
+		}
+		break
+	}
+	if pausedPayload == nil {
+		t.Fatal("run.paused event not found")
+	}
+	if pausedPayload["checkpoint_id"] != startResponse.Data.Run.LastCheckpointID {
+		t.Fatalf("paused checkpoint payload = %#v, want %q", pausedPayload["checkpoint_id"], startResponse.Data.Run.LastCheckpointID)
+	}
+	if pausedPayload["node_id"] != "wait" {
+		t.Fatalf("paused node payload = %#v, want wait", pausedPayload["node_id"])
+	}
+	if pausedPayload["message"] != "waiting for resume input" {
+		t.Fatalf("paused message payload = %#v, want waiting for resume input", pausedPayload["message"])
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/runs/"+startResponse.Data.Run.RunID+"/resume", strings.NewReader(`{
+		"input": {"shared": {"resume": "ok"}}
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /runs/:run_id/resume status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var resumeResponse struct {
+		Data  runResult `json:"data"`
+		Error string    `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resumeResponse); err != nil {
+		t.Fatalf("decode resume response: %v", err)
+	}
+	if resumeResponse.Error != "" {
+		t.Fatalf("resume response error = %q", resumeResponse.Error)
+	}
+	if resumeResponse.Data.Run.Status != runtime.RunStatusCompleted {
+		t.Fatalf("resume status = %q, want %q", resumeResponse.Data.Run.Status, runtime.RunStatusCompleted)
+	}
+	if resumeResponse.Data.Interrupt != nil {
+		t.Fatalf("completed run interrupt = %#v, want nil", resumeResponse.Data.Interrupt)
 	}
 }
 

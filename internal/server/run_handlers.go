@@ -15,8 +15,9 @@ import (
 )
 
 type runResult struct {
-	Run   runtime.RunRecord `json:"run"`
-	State *state.State      `json:"state,omitempty"`
+	Run       runtime.RunRecord `json:"run"`
+	State     *state.State      `json:"state,omitempty"`
+	Interrupt *runInterrupt     `json:"interrupt,omitempty"`
 }
 
 type runDetail struct {
@@ -25,6 +26,20 @@ type runDetail struct {
 	Checkpoints []runtime.CheckpointRecord `json:"checkpoints"`
 	Events      []runtime.Event            `json:"events"`
 	Artifacts   []state.ArtifactRef        `json:"artifacts"`
+	Interrupt   *runInterrupt              `json:"interrupt,omitempty"`
+}
+
+type runInterrupt struct {
+	RunID                  string               `json:"run_id"`
+	CheckpointID           string               `json:"checkpoint_id"`
+	StepID                 string               `json:"step_id,omitempty"`
+	NodeID                 string               `json:"node_id,omitempty"`
+	Stage                  string               `json:"stage,omitempty"`
+	Message                string               `json:"message,omitempty"`
+	ResumeFromRunID        string               `json:"resume_from_run_id,omitempty"`
+	ResumeFromCheckpointID string               `json:"resume_from_checkpoint_id,omitempty"`
+	BreakpointHit          *state.BreakpointHit `json:"breakpoint_hit,omitempty"`
+	Runtime                *state.RuntimeState  `json:"runtime,omitempty"`
 }
 
 func (s *Server) handleStartRun(c *gin.Context) {
@@ -41,11 +56,12 @@ func (s *Server) handleStartRun(c *gin.Context) {
 	defer cancel()
 
 	run, finalState, err := runner.Start(ctx, initialState)
+	result := s.makeRunResult(ctx, runner, run, finalState)
 	if err != nil {
-		writeErrorData(c, statusForError(err), err, runResult{Run: run, State: finalState})
+		writeErrorData(c, statusForError(err), err, result)
 		return
 	}
-	writeData(c, http.StatusOK, runResult{Run: run, State: finalState})
+	writeData(c, http.StatusOK, result)
 }
 
 func (s *Server) handleResumeRun(c *gin.Context) {
@@ -67,11 +83,12 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 	defer cancel()
 
 	run, finalState, err := runner.Resume(ctx, runID, input)
+	result := s.makeRunResult(ctx, runner, run, finalState)
 	if err != nil {
-		writeErrorData(c, statusForError(err), err, runResult{Run: run, State: finalState})
+		writeErrorData(c, statusForError(err), err, result)
 		return
 	}
-	writeData(c, http.StatusOK, runResult{Run: run, State: finalState})
+	writeData(c, http.StatusOK, result)
 }
 
 func (s *Server) handleResumeCheckpoint(c *gin.Context) {
@@ -93,11 +110,12 @@ func (s *Server) handleResumeCheckpoint(c *gin.Context) {
 	defer cancel()
 
 	run, finalState, err := runner.ResumeFromCheckpoint(ctx, checkpointID, input)
+	result := s.makeRunResult(ctx, runner, run, finalState)
 	if err != nil {
-		writeErrorData(c, statusForError(err), err, runResult{Run: run, State: finalState})
+		writeErrorData(c, statusForError(err), err, result)
 		return
 	}
-	writeData(c, http.StatusOK, runResult{Run: run, State: finalState})
+	writeData(c, http.StatusOK, result)
 }
 
 func (s *Server) handlePauseRun(c *gin.Context) {
@@ -218,6 +236,7 @@ func (s *Server) handleGetRunDetail(c *gin.Context) {
 		Checkpoints: checkpoints,
 		Events:      events,
 		Artifacts:   artifacts,
+		Interrupt:   s.buildRunInterrupt(c.Request.Context(), runner, run),
 	})
 }
 
@@ -300,6 +319,60 @@ func (s *Server) requireRunner(c *gin.Context) *runtime.GraphRunner {
 		return nil
 	}
 	return runner
+}
+
+func (s *Server) makeRunResult(ctx context.Context, runner *runtime.GraphRunner, run runtime.RunRecord, finalState *state.State) runResult {
+	return runResult{
+		Run:       run,
+		State:     finalState,
+		Interrupt: s.buildRunInterrupt(ctx, runner, run),
+	}
+}
+
+func (s *Server) buildRunInterrupt(ctx context.Context, runner *runtime.GraphRunner, run runtime.RunRecord) *runInterrupt {
+	if runner == nil || run.Status != runtime.RunStatusPaused || strings.TrimSpace(run.LastCheckpointID) == "" {
+		return nil
+	}
+	interrupt := &runInterrupt{
+		RunID:                  run.RunID,
+		CheckpointID:           run.LastCheckpointID,
+		NodeID:                 run.CurrentNodeID,
+		ResumeFromRunID:        run.RunID,
+		ResumeFromCheckpointID: run.LastCheckpointID,
+		Message:                "run paused",
+	}
+	checkpoint, err := runner.LoadCheckpointState(ctx, run.LastCheckpointID)
+	if err != nil {
+		interrupt.Message = fmt.Sprintf("run paused; checkpoint details unavailable: %v", err)
+		return interrupt
+	}
+
+	interrupt.StepID = checkpoint.Record.StepID
+	interrupt.NodeID = firstNonEmpty(checkpoint.Record.NodeID, checkpoint.Runtime.CurrentNodeID, run.CurrentNodeID)
+	interrupt.Stage = string(checkpoint.Record.Stage)
+	interrupt.BreakpointHit = checkpoint.Runtime.BreakpointHit
+	runtimeState := checkpoint.Runtime
+	interrupt.Runtime = &runtimeState
+	interrupt.Message = interruptMessage(checkpoint)
+	return interrupt
+}
+
+func interruptMessage(checkpoint runtime.RestoredCheckpoint) string {
+	if checkpoint.Runtime.BreakpointHit != nil {
+		hit := checkpoint.Runtime.BreakpointHit
+		return fmt.Sprintf("breakpoint %q paused before resume at %s %q", hit.BreakpointID, hit.Stage, hit.NodeID)
+	}
+	nodeID := firstNonEmpty(checkpoint.Record.NodeID, checkpoint.Runtime.CurrentNodeID)
+	switch checkpoint.Record.Stage {
+	case runtime.CheckpointBeforeNode:
+		return fmt.Sprintf("run paused before node %q", nodeID)
+	case runtime.CheckpointAfterNode:
+		return fmt.Sprintf("run paused after node %q", nodeID)
+	case runtime.CheckpointAfterParallelWave:
+		return "run paused after parallel wave"
+	default:
+		return "run paused"
+	}
 }
 
 func (s *Server) deriveRunContext(c *gin.Context) (context.Context, context.CancelFunc) {

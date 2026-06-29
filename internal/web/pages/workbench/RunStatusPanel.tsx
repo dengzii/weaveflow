@@ -1,19 +1,18 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
 import { ChevronDown, ListTree } from "lucide-react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
-import { cn, formatTime, stringifyJSON } from "../../lib/utils";
-import type { RunRecord, RuntimeEvent, StepRecord } from "../../types";
+import { cn, formatTime, formatTimeMs, stringifyJSON } from "../../lib/utils";
+import type { RunInterrupt, RunRecord, RuntimeEvent, StepRecord } from "../../types";
+import { StatusText, type StatusTone } from "./shared";
 import { statusTone } from "./utils";
 
 type ViewMode = "events" | "node" | "state";
-type BadgeTone = "neutral" | "ok" | "warn" | "danger" | "live";
 
 interface ListItem {
   key: string;
-  badge?: string;
-  badgeTone?: BadgeTone;
+  statusLabel?: string;
+  statusTone?: StatusTone;
   primary: string;
   secondary?: string;
   trailing?: string;
@@ -26,28 +25,34 @@ const viewOptions: Array<{ id: ViewMode; label: string }> = [
 ];
 
 const MIN_LEFT_WIDTH = 200;
-const MAX_LEFT_WIDTH = 640;
-const DEFAULT_LEFT_WIDTH = 300;
+const MIN_DETAIL_WIDTH = 240;
+const DEFAULT_LEFT_WIDTH_RATIO = `${100 / 3}%`;
 const MIN_PANEL_HEIGHT = 180;
 const DEFAULT_PANEL_HEIGHT = 320;
 
 export function RunStatusPanel({
   run,
+  interrupt,
   events,
   steps,
   onHide,
 }: {
   run: RunRecord | null;
+  interrupt?: RunInterrupt | null;
   events: RuntimeEvent[];
   steps: StepRecord[];
   onHide: () => void;
 }) {
   const [view, setView] = useState<ViewMode>("events");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [leftWidth, setLeftWidth] = useState(DEFAULT_LEFT_WIDTH);
+  const [leftWidth, setLeftWidth] = useState<number | null>(null);
   const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
   const containerRef = useRef<HTMLDivElement | null>(null);
 
+  const sortedEvents = useMemo(
+    () => [...events].sort((a, b) => timeRank(b.timestamp) - timeRank(a.timestamp)),
+    [events]
+  );
   const nodeBuckets = useMemo(() => groupByNode(steps, events), [steps, events]);
   const stateBuckets = useMemo(() => groupByState(steps, events), [steps, events]);
 
@@ -61,15 +66,15 @@ export function RunStatusPanel({
   }>(() => {
     if (view === "events") {
       return {
-        items: events.map((event, index) => ({
+        items: sortedEvents.map((event, index) => ({
           key: `${event.id}-${index}`,
-          badge: event.type,
-          badgeTone: eventTone(event.type),
+          statusLabel: event.type,
+          statusTone: eventTone(event.type),
           primary: event.node_id || event.run_id || "—",
-          trailing: formatTime(event.timestamp),
+          trailing: formatTimeMs(event.timestamp),
         })),
         renderDetail: (key) => {
-          const target = events.find((event, index) => `${event.id}-${index}` === key);
+          const target = sortedEvents.find((event, index) => `${event.id}-${index}` === key);
           if (!target) return null;
           return <EventDetail event={target} />;
         },
@@ -79,8 +84,8 @@ export function RunStatusPanel({
       return {
         items: nodeBuckets.map((bucket) => ({
           key: bucket.nodeId,
-          badge: bucket.latestStatus || "—",
-          badgeTone: statusTone(bucket.latestStatus),
+          statusLabel: bucket.latestStatus || "—",
+          statusTone: statusTone(bucket.latestStatus),
           primary: bucket.nodeId,
           secondary: `${bucket.steps.length} steps · ${bucket.events.length} events`,
           trailing: formatTime(bucket.latestAt),
@@ -95,8 +100,8 @@ export function RunStatusPanel({
     return {
       items: stateBuckets.map((bucket) => ({
         key: bucket.status,
-        badge: bucket.status,
-        badgeTone: statusTone(bucket.status),
+        statusLabel: bucket.status,
+        statusTone: statusTone(bucket.status),
         primary: `${bucket.steps.length} steps`,
         secondary: `${bucket.events.length} events`,
       })),
@@ -106,7 +111,7 @@ export function RunStatusPanel({
         return <StateDetail bucket={target} />;
       },
     };
-  }, [events, nodeBuckets, stateBuckets, view]);
+  }, [nodeBuckets, sortedEvents, stateBuckets, view]);
 
   const effectiveKey =
     selectedKey && items.some((item) => item.key === selectedKey) ? selectedKey : items[0]?.key ?? null;
@@ -114,10 +119,11 @@ export function RunStatusPanel({
   function startResize(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
     const container = containerRef.current;
+    const listPane = event.currentTarget.previousElementSibling as HTMLElement | null;
     const startX = event.clientX;
-    const startWidth = leftWidth;
+    const startWidth = leftWidth ?? listPane?.getBoundingClientRect().width ?? MIN_LEFT_WIDTH;
     const containerWidth = container?.clientWidth ?? Infinity;
-    const maxWidth = Math.min(MAX_LEFT_WIDTH, Math.max(MIN_LEFT_WIDTH, containerWidth - 200));
+    const maxWidth = Math.max(MIN_LEFT_WIDTH, containerWidth - MIN_DETAIL_WIDTH);
     const onMove = (moveEvent: PointerEvent) => {
       const delta = moveEvent.clientX - startX;
       setLeftWidth(Math.max(MIN_LEFT_WIDTH, Math.min(maxWidth, startWidth + delta)));
@@ -151,7 +157,7 @@ export function RunStatusPanel({
     window.addEventListener("pointerup", onUp);
   }
 
-  const latestEvent = events[0] ?? null;
+  const latestEvent = sortedEvents[0] ?? null;
 
   return (
     <section
@@ -172,7 +178,7 @@ export function RunStatusPanel({
         <div className="min-w-0 flex-1">
           <div className="flex min-w-0 items-center gap-2">
             <span className="truncate text-sm font-semibold">Run Status</span>
-            <Badge tone={run ? statusTone(run.status) : "neutral"}>{run?.status ?? "idle"}</Badge>
+            <StatusText tone={run ? statusTone(run.status) : "neutral"}>{run?.status ?? "idle"}</StatusText>
             <span className="truncate font-mono text-xs text-muted-foreground">{run?.run_id ?? "no run selected"}</span>
           </div>
         </div>
@@ -199,7 +205,7 @@ export function RunStatusPanel({
           {latestEvent ? (
             <>
               <span className="truncate">{latestEvent.type}</span>
-              <span>{formatTime(latestEvent.timestamp)}</span>
+              <span>{formatTimeMs(latestEvent.timestamp)}</span>
             </>
           ) : null}
         </div>
@@ -207,11 +213,12 @@ export function RunStatusPanel({
           <ChevronDown className="h-4 w-4" />
         </Button>
       </div>
+      {interrupt ? <InterruptBanner interrupt={interrupt} /> : null}
 
       <div ref={containerRef} className="flex min-h-0 flex-1">
         <div
           className="min-h-0 shrink-0 overflow-auto border-r border-border"
-          style={{ width: leftWidth }}
+          style={{ width: leftWidth ?? DEFAULT_LEFT_WIDTH_RATIO }}
         >
           {items.length === 0 ? (
             <div className="p-3 text-sm text-muted-foreground">No items</div>
@@ -227,10 +234,10 @@ export function RunStatusPanel({
                       effectiveKey === item.key && "bg-accent text-accent-foreground"
                     )}
                   >
-                    {item.badge ? (
-                      <Badge tone={item.badgeTone ?? "neutral"} className="shrink-0">
-                        {item.badge}
-                      </Badge>
+                    {item.statusLabel ? (
+                      <StatusText tone={item.statusTone ?? "neutral"} className="shrink-0">
+                        {item.statusLabel}
+                      </StatusText>
                     ) : null}
                     <span className="truncate font-mono">{item.primary}</span>
                     {item.secondary ? (
@@ -268,13 +275,27 @@ export function RunStatusPanel({
   );
 }
 
+function InterruptBanner({ interrupt }: { interrupt: RunInterrupt }) {
+  return (
+    <div className="flex min-h-9 shrink-0 flex-wrap items-center gap-2 border-b border-border bg-[var(--status-warn-bg)] px-4 py-2 text-xs">
+      <StatusText tone="warn">interrupted</StatusText>
+      <span className="truncate text-sm">{interrupt.message || "run paused"}</span>
+      {interrupt.stage ? <span className="text-muted-foreground">{interrupt.stage}</span> : null}
+      {interrupt.node_id ? <span className="font-mono text-muted-foreground">{interrupt.node_id}</span> : null}
+      {interrupt.checkpoint_id ? (
+        <span className="ml-auto truncate font-mono text-muted-foreground">{interrupt.checkpoint_id}</span>
+      ) : null}
+    </div>
+  );
+}
+
 function EventDetail({ event }: { event: RuntimeEvent }) {
   return (
     <div className="grid gap-2 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={eventTone(event.type)}>{event.type}</Badge>
+        <StatusText tone={eventTone(event.type)}>{event.type}</StatusText>
         <span className="font-mono text-muted-foreground">{event.node_id || event.run_id}</span>
-        <span className="ml-auto text-muted-foreground">{formatTime(event.timestamp)}</span>
+        <span className="ml-auto text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
       </div>
       <DetailRow label="Run" value={event.run_id} />
       {event.step_id ? <DetailRow label="Step" value={event.step_id} /> : null}
@@ -292,7 +313,7 @@ function NodeDetail({ bucket }: { bucket: NodeBucket }) {
   return (
     <div className="grid gap-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={statusTone(bucket.latestStatus)}>{bucket.latestStatus || "—"}</Badge>
+        <StatusText tone={statusTone(bucket.latestStatus)}>{bucket.latestStatus || "—"}</StatusText>
         <span className="font-mono">{bucket.nodeId}</span>
         <span className="ml-auto text-muted-foreground">
           {bucket.steps.length} steps · {bucket.events.length} events
@@ -316,7 +337,7 @@ function StateDetail({ bucket }: { bucket: StateBucket }) {
   return (
     <div className="grid gap-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <Badge tone={statusTone(bucket.status)}>{bucket.status}</Badge>
+        <StatusText tone={statusTone(bucket.status)}>{bucket.status}</StatusText>
         <span className="ml-auto text-muted-foreground">
           {bucket.steps.length} steps · {bucket.events.length} events
         </span>
@@ -361,7 +382,7 @@ function StepRows({ steps, showNode }: { steps: StepRecord[]; showNode?: boolean
           key={step.step_id}
           className="flex items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs"
         >
-          <Badge tone={statusTone(step.status)}>{step.status}</Badge>
+          <StatusText tone={statusTone(step.status)}>{step.status}</StatusText>
           {showNode ? <span className="truncate font-mono">{step.node_id}</span> : null}
           <span className="font-mono text-[10px] text-muted-foreground">{step.step_id}</span>
           <span className="text-muted-foreground">attempt {step.attempt}</span>
@@ -388,9 +409,9 @@ function EventRows({ events }: { events: RuntimeEvent[] }) {
           className="rounded border border-border bg-muted/30 p-2 text-xs"
         >
           <div className="flex min-w-0 items-center gap-2">
-            <Badge tone={eventTone(event.type)}>{event.type}</Badge>
+            <StatusText tone={eventTone(event.type)}>{event.type}</StatusText>
             <span className="truncate font-mono text-muted-foreground">{event.node_id || event.run_id}</span>
-            <span className="ml-auto text-muted-foreground">{formatTime(event.timestamp)}</span>
+            <span className="ml-auto text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
           </div>
           {event.payload ? (
             <pre className="mt-1 max-h-32 overflow-auto rounded bg-background p-2 text-[11px]">
@@ -403,7 +424,7 @@ function EventRows({ events }: { events: RuntimeEvent[] }) {
   );
 }
 
-function eventTone(type: string): BadgeTone {
+function eventTone(type: string): StatusTone {
   if (type.includes("failed") || type.includes("error")) return "danger";
   if (type.includes("finished") || type.includes("succeeded") || type.includes("completed")) return "ok";
   if (type.includes("paused")) return "warn";

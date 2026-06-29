@@ -150,36 +150,6 @@
   border-radius: 4px;
 }
 
-.badge {
-  border: 1px solid var(--status-neutral-border);
-  background: var(--status-neutral-bg);
-  color: var(--status-neutral-text);
-}
-
-.badge-ok {
-  border-color: var(--status-ok-border);
-  background: var(--status-ok-bg);
-  color: var(--status-ok-text);
-}
-
-.badge-warn {
-  border-color: var(--status-warn-border);
-  background: var(--status-warn-bg);
-  color: var(--status-warn-text);
-}
-
-.badge-danger {
-  border-color: var(--status-danger-border);
-  background: var(--status-danger-bg);
-  color: var(--status-danger-text);
-}
-
-.badge-live {
-  border-color: var(--status-live-border);
-  background: var(--status-live-bg);
-  color: var(--status-live-text);
-}
-
 .debug-flow .react-flow__controls {
   overflow: hidden;
   border: 1px solid var(--border);
@@ -195,6 +165,11 @@
 
 .debug-flow .react-flow__controls-button:hover {
   background: var(--accent);
+}
+
+.debug-flow .react-flow__controls-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .debug-flow .react-flow__minimap-mask {
@@ -237,6 +212,11 @@
   box-shadow: var(--node-selected-shadow);
 }
 
+.debug-node-highlighted {
+  outline: 3px solid rgba(245, 158, 11, 0.42);
+  outline-offset: 2px;
+}
+
 .debug-node-running {
   border-color: var(--flow-edge-selected);
   box-shadow: var(--node-running-shadow);
@@ -248,4 +228,28 @@
 
 .debug-node-failed {
   border-color: var(--flow-edge-finish);
+}
+
+.debug-node-paused {
+  border-color: var(--status-warn-text);
+}
+
+.debug-node-canceled {
+  border-color: var(--status-neutral-text);
+  opacity: 0.78;
+}
+
+.debug-node-attempt {
+  display: inline-flex;
+  min-width: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--muted);
+  padding: 0 0.35rem;
+  color: var(--foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.25rem;
 }

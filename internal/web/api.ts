@@ -97,6 +97,22 @@ export async function startRun(initialState: unknown): Promise<RunResult> {
   });
 }
 
+export async function resumeRun(runId: string, input: unknown): Promise<RunResult> {
+  return apiFetch<RunResult>(`/runs/${encodeURIComponent(runId)}/resume`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ input }),
+  });
+}
+
+export async function resumeCheckpoint(checkpointId: string, input: unknown): Promise<RunResult> {
+  return apiFetch<RunResult>(`/checkpoints/${encodeURIComponent(checkpointId)}/resume`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ input }),
+  });
+}
+
 export async function getRunDetail(runId: string): Promise<RunDetail> {
   return apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId)}/detail`);
 }

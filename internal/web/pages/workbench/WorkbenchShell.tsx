@@ -6,52 +6,55 @@ import {
   GitBranch,
   LayoutDashboard,
   Loader2,
+  Pause,
   Play,
-  RefreshCcw,
   Settings,
-  Upload,
+  Square,
 } from "lucide-react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
-import type { GraphDefinition, GraphInfo, RunRecord } from "../../types";
+import type { GraphDefinition } from "../../types";
 import type { WorkspaceTab } from "./constants";
-import { statusTone } from "./utils";
+
+type StreamStatus = "connecting" | "connected" | "reconnecting" | "closed";
+type RunControlMode = "run" | "active" | "resume";
 
 export function WorkbenchShell({
   tab,
-  graphInfo,
-  selectedRun,
-  status,
+  streamStatus,
   busy,
   definition,
+  runControlMode,
+  canResume,
   runsCount,
   children,
   runStatusPanel,
   runStatusVisible,
   hasRunStatus,
-  onRefresh,
   onRun,
+  onPause,
+  onStop,
+  onResume,
   onToggleRunStatus,
   onTabChange,
-  onUpload,
 }: {
   tab: WorkspaceTab;
-  graphInfo: GraphInfo | null;
-  selectedRun: RunRecord | null;
-  status: string;
+  streamStatus: StreamStatus;
   busy: boolean;
   definition: GraphDefinition | null;
+  runControlMode: RunControlMode;
+  canResume: boolean;
   runsCount: number;
   children: ReactNode;
   runStatusPanel?: ReactNode;
   runStatusVisible: boolean;
   hasRunStatus: boolean;
-  onRefresh: () => void;
   onRun: () => void;
+  onPause: () => void;
+  onStop: () => void;
+  onResume: () => void;
   onToggleRunStatus: () => void;
   onTabChange: (tab: WorkspaceTab) => void;
-  onUpload: () => void;
 }) {
   return (
     <div className="flex h-screen min-h-0 bg-background text-foreground">
@@ -70,27 +73,44 @@ export function WorkbenchShell({
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
           <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <span className="truncate text-sm font-semibold">WeaveFlow Debug</span>
-              <Badge tone={graphInfo ? "ok" : "warn"}>{graphInfo ? graphInfo.id : "no graph"}</Badge>
-              {selectedRun ? <Badge tone={statusTone(selectedRun.status)}>{selectedRun.status}</Badge> : null}
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="truncate text-sm font-semibold">WeaveFlow</span>
             </div>
-            <div className="truncate text-xs text-muted-foreground">{status}</div>
           </div>
           <div className="flex-1" />
-          <Button variant="outline" size="sm" onClick={onRefresh} disabled={busy} title="Refresh">
-            <RefreshCcw className="h-4 w-4" />
-            Refresh
-          </Button>
-          <Button variant="outline" size="sm" onClick={onUpload} disabled={busy || !definition} title="Upload graph">
-            <Upload className="h-4 w-4" />
-            Upload
-          </Button>
-          <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
-            {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-            Run
-          </Button>
+          <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground" title={streamStatusLabel(streamStatus)}>
+            <span className={cn("h-2 w-2 rounded-full", streamStatusDotClass(streamStatus))} />
+            <span className="whitespace-nowrap">{streamStatusLabel(streamStatus)}</span>
+          </div>
+          {runControlMode === "active" ? (
+            <>
+              <Button variant="outline" size="sm" onClick={onPause} disabled={!hasRunStatus} title="Pause run">
+                <Pause className="h-4 w-4" />
+                Pause
+              </Button>
+              <Button variant="danger" size="sm" onClick={onStop} disabled={!hasRunStatus} title="Stop run">
+                <Square className="h-4 w-4" />
+                Stop
+              </Button>
+            </>
+          ) : runControlMode === "resume" ? (
+            <Button size="sm" onClick={onResume} disabled={busy || !canResume} title="Resume paused run">
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Resume
+            </Button>
+          ) : (
+            <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
+              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Run
+            </Button>
+          )}
         </header>
+
+        {streamStatus === "reconnecting" || streamStatus === "closed" ? (
+          <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200">
+            Runtime event stream disconnected. Reconnecting automatically.
+          </div>
+        ) : null}
 
         <section className="min-h-0 flex-1">{children}</section>
 
@@ -117,6 +137,30 @@ export function WorkbenchShell({
   );
 }
 
+function streamStatusLabel(status: StreamStatus): string {
+  switch (status) {
+    case "connected":
+      return "Server connected";
+    case "connecting":
+      return "Server connecting";
+    case "reconnecting":
+      return "Server reconnecting";
+    case "closed":
+      return "Server disconnected";
+  }
+}
+
+function streamStatusDotClass(status: StreamStatus): string {
+  switch (status) {
+    case "connected":
+      return "bg-cyan-600 dark:bg-cyan-300";
+    case "connecting":
+    case "reconnecting":
+      return "bg-amber-600 dark:bg-amber-300";
+    case "closed":
+      return "bg-destructive";
+  }
+}
 
 function NavButton({
   icon: Icon,

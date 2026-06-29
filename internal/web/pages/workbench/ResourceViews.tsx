@@ -1,4 +1,5 @@
-import { Badge } from "../../components/ui/badge";
+import { Play } from "lucide-react";
+import { Button } from "../../components/ui/button";
 import { cn, formatTime, stringifyJSON } from "../../lib/utils";
 import type { ArtifactDetail, CheckpointDetail } from "../../types";
 import { InfoRows } from "./shared";
@@ -6,16 +7,20 @@ import { InfoRows } from "./shared";
 export function ResourceDetail({
   checkpoint,
   artifact,
+  onResumeCheckpoint,
+  resumeBusy = false,
 }: {
   checkpoint: CheckpointDetail | null;
   artifact: ArtifactDetail | null;
+  onResumeCheckpoint?: (checkpoint: CheckpointDetail) => void;
+  resumeBusy?: boolean;
 }) {
   if (artifact) {
     const preview = artifact.text ?? artifact.data_base64 ?? "";
     return (
       <div className="rounded-md border border-border bg-panel p-3">
         <div className="mb-3 flex items-center gap-2">
-          <Badge>{artifact.artifact.type || "artifact"}</Badge>
+          <span className="shrink-0 text-xs font-medium text-muted-foreground">{artifact.artifact.type || "artifact"}</span>
           <span className="truncate text-sm font-medium">{artifact.artifact.id}</span>
         </div>
         <InfoRows
@@ -37,8 +42,21 @@ export function ResourceDetail({
     return (
       <div className="rounded-md border border-border bg-panel p-3">
         <div className="mb-3 flex items-center gap-2">
-          <Badge>{checkpoint.record.stage}</Badge>
+          <span className="shrink-0 text-xs font-medium text-muted-foreground">{checkpoint.record.stage}</span>
           <span className="truncate text-sm font-medium">{checkpoint.record.checkpoint_id}</span>
+          {onResumeCheckpoint ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onResumeCheckpoint(checkpoint)}
+              disabled={resumeBusy}
+              title="Resume from checkpoint"
+              className="ml-auto"
+            >
+              <Play className="h-4 w-4" />
+              Resume
+            </Button>
+          ) : null}
         </div>
         <InfoRows
           rows={[

@@ -9,6 +9,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
 
+	langgraph "github.com/smallnest/langgraphgo/graph"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -91,6 +92,63 @@ func TestHumanMessageNodeUsesScopedConversation(t *testing.T) {
 	}
 	if result.Contract.Fields[0].Path.String() != "scopes.agent.conversation.messages" {
 		t.Fatalf("expected scoped conversation contract, got %#v", result.Contract.Fields[0])
+	}
+}
+
+func TestHumanMessageNodeInterruptsWhenConversationIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	registry, err := NewDefaultRegistry()
+	if err != nil {
+		t.Fatalf("new default registry: %v", err)
+	}
+	node := NewHumanMessageNode("", WithID("human"))
+
+	_, err = Execute(context.Background(), registry, state.NewState(), node)
+	if err == nil {
+		t.Fatal("expected human message node interrupt")
+	}
+	var interrupt *langgraph.NodeInterrupt
+	if !errors.As(err, &interrupt) {
+		t.Fatalf("expected NodeInterrupt, got %T: %v", err, err)
+	}
+	if interrupt.Node != "human" {
+		t.Fatalf("interrupt node = %q, want human", interrupt.Node)
+	}
+}
+
+func TestHumanMessageNodeConsumesPendingInput(t *testing.T) {
+	t.Parallel()
+
+	registry, err := NewDefaultRegistry()
+	if err != nil {
+		t.Fatalf("new default registry: %v", err)
+	}
+	initial := state.NewState()
+	if err := state.SetPath(initial, state.Scope(DefaultScope, PendingHumanInputStateKey).String(), "hello from resume"); err != nil {
+		t.Fatalf("set pending input: %v", err)
+	}
+	node := NewHumanMessageNode("", WithID("human"))
+
+	result, err := Execute(context.Background(), registry, initial, node)
+	if err != nil {
+		t.Fatalf("execute human message node: %v", err)
+	}
+
+	access := state.NewAccess(registry, result.State).WithScope(DefaultScope)
+	if _, exists := access.ReadAny(state.Scope(DefaultScope, PendingHumanInputStateKey)); exists {
+		t.Fatal("pending human input was not consumed")
+	}
+	conversation, err := state.UseAccessor(access, accessors.ConversationID)
+	if err != nil {
+		t.Fatalf("use conversation accessor: %v", err)
+	}
+	messages := conversation.Messages()
+	if len(messages) != 1 {
+		t.Fatalf("expected one message, got %#v", messages)
+	}
+	if messages[0].Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("message role = %q, want human", messages[0].Role)
 	}
 }
 

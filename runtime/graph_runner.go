@@ -255,15 +255,10 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 
 	finalState, invokeErr := runnable.InvokeWithConfig(invokeCtx, currentState.Clone(), config)
 	finalState = execution.stateOrFallback(finalState)
+	if run, pausedState, handled, err := r.resolvePendingControl(ctx, execution, finalState); handled || err != nil {
+		return run, pausedState, err
+	}
 	if callbackErr := execution.callbackError(); callbackErr != nil {
-		if control, _ := execution.consumePendingControl(); control != nil {
-			switch control.kind {
-			case runnerControlCancel:
-				return r.cancelRun(ctx, execution.currentRun(), finalState)
-			case runnerControlPause:
-				return r.pauseRunAtCheckpoint(ctx, execution.currentRun(), finalState, control.checkpointID, control.hit)
-			}
-		}
 		if err := execution.finalizeFailure(ctx, callbackErr); err != nil {
 			return RunRecord{}, finalState, err
 		}
@@ -282,6 +277,24 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 		return RunRecord{}, finalState, err
 	}
 	return r.failRun(ctx, execution.currentRun(), finalState, "node_failed", invokeErr.Error())
+}
+
+func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *graphRunnerExecution, currentState *state.State) (RunRecord, *state.State, bool, error) {
+	if control, _ := execution.consumePendingControl(); control != nil {
+		if control.checkpointID == "" {
+			execution.restorePendingControl(control)
+			return RunRecord{}, currentState, false, nil
+		}
+		switch control.kind {
+		case runnerControlCancel:
+			run, finalState, err := r.cancelRun(ctx, execution.currentRun(), currentState)
+			return run, finalState, true, err
+		case runnerControlPause:
+			run, finalState, err := r.pauseRunAtCheckpoint(ctx, execution.currentRun(), currentState, control.checkpointID, control.hit, control.message)
+			return run, finalState, true, err
+		}
+	}
+	return RunRecord{}, currentState, false, nil
 }
 
 func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input *state.State) (RunRecord, *state.State, error) {
@@ -494,7 +507,7 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 			return r.cancelRun(ctx, run, currentState)
 		case runnerControlPause:
 			if control.checkpointID != "" {
-				return r.pauseRunAtCheckpoint(ctx, run, currentState, control.checkpointID, control.hit)
+				return r.pauseRunAtCheckpoint(ctx, run, currentState, control.checkpointID, control.hit, control.message)
 			}
 			if active == nil {
 				return r.failRun(ctx, run, currentState, "interrupt_failed", "pause interrupt missing active step")
@@ -509,7 +522,7 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 				checkpointID = savedID
 				step.CheckpointBeforeID = savedID
 			}
-			return r.pauseRun(ctx, run, currentState, step, checkpointID, control.hit)
+			return r.pauseRun(ctx, run, currentState, step, checkpointID, control.hit, control.message)
 		}
 	}
 
@@ -518,11 +531,11 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 		if completed == nil {
 			return r.failRun(ctx, run, currentState, "interrupt_failed", fmt.Sprintf("after-nodes interrupt missing completed step for %q", interrupt.Node))
 		}
-		return r.pauseRun(ctx, run, currentState, completed.step, completed.afterCheckpointID, hit)
+		return r.pauseRun(ctx, run, currentState, completed.step, completed.afterCheckpointID, hit, "")
 	}
 
 	if completed := execution.consumeLastCompleted(interrupt.Node); completed != nil {
-		return r.pauseRun(ctx, run, currentState, completed.step, completed.afterCheckpointID, nil)
+		return r.pauseRun(ctx, run, currentState, completed.step, completed.afterCheckpointID, nil, interrupt.Error())
 	}
 
 	return r.failRun(ctx, run, currentState, "interrupt_failed", interrupt.Error())
@@ -654,7 +667,7 @@ func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step 
 	return r.publishStateDiffChanges(ctx, run, step, changes)
 }
 
-func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState *state.State, step StepRecord, checkpointID string, hit *state.BreakpointHit) (RunRecord, *state.State, error) {
+func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState *state.State, step StepRecord, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
 	now := r.now()
 	run.Status = RunStatusPaused
 	run.PauseRequested = false
@@ -683,13 +696,13 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState 
 			return RunRecord{}, currentState, err
 		}
 	}
-	if err := r.publishEvent(ctx, run, step.StepID, step.NodeID, EventRunPaused, nil); err != nil {
+	if err := r.publishEvent(ctx, run, step.StepID, step.NodeID, EventRunPaused, pauseEventPayload(checkpointID, pauseCheckpointStage(step, checkpointID), step.NodeID, message, hit)); err != nil {
 		return RunRecord{}, currentState, err
 	}
 	return run, currentState, nil
 }
 
-func (r *GraphRunner) pauseRunAtCheckpoint(ctx context.Context, run RunRecord, currentState *state.State, checkpointID string, hit *state.BreakpointHit) (RunRecord, *state.State, error) {
+func (r *GraphRunner) pauseRunAtCheckpoint(ctx context.Context, run RunRecord, currentState *state.State, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
 	now := r.now()
 	run.Status = RunStatusPaused
 	run.PauseRequested = false
@@ -712,10 +725,32 @@ func (r *GraphRunner) pauseRunAtCheckpoint(ctx context.Context, run RunRecord, c
 			return RunRecord{}, currentState, err
 		}
 	}
-	if err := r.publishEvent(ctx, run, "", parallelBarrierNodeID, EventRunPaused, nil); err != nil {
+	if err := r.publishEvent(ctx, run, "", parallelBarrierNodeID, EventRunPaused, pauseEventPayload(checkpointID, CheckpointAfterParallelWave, parallelBarrierNodeID, message, hit)); err != nil {
 		return RunRecord{}, currentState, err
 	}
 	return run, currentState, nil
+}
+
+func pauseCheckpointStage(step StepRecord, checkpointID string) CheckpointStage {
+	if checkpointID != "" && checkpointID == step.CheckpointAfterID {
+		return CheckpointAfterNode
+	}
+	return CheckpointBeforeNode
+}
+
+func pauseEventPayload(checkpointID string, stage CheckpointStage, nodeID string, message string, hit *state.BreakpointHit) map[string]any {
+	payload := map[string]any{
+		"checkpoint_id": checkpointID,
+		"stage":         stage,
+		"node_id":       nodeID,
+	}
+	if strings.TrimSpace(message) != "" {
+		payload["message"] = strings.TrimSpace(message)
+	}
+	if hit != nil {
+		payload["breakpoint_hit"] = hit
+	}
+	return payload
 }
 
 func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, currentState *state.State, code string, message string) (RunRecord, *state.State, error) {

@@ -7,15 +7,17 @@ export function NodeSelect({
   value,
   nodes,
   disabled = false,
+  className,
   onChange,
 }: {
   value: string;
   nodes: GraphNodeSpec[];
   disabled?: boolean;
+  className?: string;
   onChange: (value: string) => void;
 }) {
   return (
-    <Select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
+    <Select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} className={className}>
       <option value="">-</option>
       {nodes.map((node) => (
         <option key={node.id} value={node.id}>

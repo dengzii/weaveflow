@@ -170,9 +170,23 @@ export interface RuntimeEvent {
   payload?: unknown;
 }
 
+export interface RunInterrupt {
+  run_id: string;
+  checkpoint_id: string;
+  step_id?: string;
+  node_id?: string;
+  stage?: string;
+  message?: string;
+  resume_from_run_id?: string;
+  resume_from_checkpoint_id?: string;
+  breakpoint_hit?: unknown;
+  runtime?: unknown;
+}
+
 export interface RunResult {
   run: RunRecord;
   state?: unknown;
+  interrupt?: RunInterrupt;
 }
 
 export interface RunDetail {
@@ -181,6 +195,7 @@ export interface RunDetail {
   checkpoints: CheckpointRecord[];
   events: RuntimeEvent[];
   artifacts: ArtifactRef[];
+  interrupt?: RunInterrupt;
 }
 
 export interface CheckpointDetail {

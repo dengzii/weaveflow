@@ -1,3 +1,4 @@
+import { useState } from "react";
 import {
   ChevronDown,
   ChevronRight,
@@ -5,6 +6,7 @@ import {
   Copy,
   FilePlus2,
   ListTree,
+  Network,
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
@@ -12,7 +14,6 @@ import {
   Search,
   Trash2,
 } from "lucide-react";
-import { Badge } from "../../../components/ui/badge";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { formatTime, cn } from "../../../lib/utils";
@@ -26,6 +27,7 @@ interface GraphBrowserPanelProps {
   drafts: LocalGraphDraft[];
   filteredNodes: GraphNodeSpec[];
   filteredNodeTypes: NodeTypeSchema[];
+  graphSwitchDisabled: boolean;
   leftCollapsed: boolean;
   nodeQuery: string;
   nodeTypeQuery: string;
@@ -33,6 +35,7 @@ interface GraphBrowserPanelProps {
   selectedNodeId: string | null;
   virtualNodeIds: string[];
   onAddNode: (nodeType: NodeTypeSchema) => void;
+  onAutoLayout: () => void;
   onCollapseChange: (collapsed: boolean) => void;
   onCreateGraph: () => void;
   onDeleteDraft: () => void;
@@ -53,6 +56,7 @@ export function GraphBrowserPanel({
   drafts,
   filteredNodes,
   filteredNodeTypes,
+  graphSwitchDisabled,
   leftCollapsed,
   nodeQuery,
   nodeTypeQuery,
@@ -60,6 +64,7 @@ export function GraphBrowserPanel({
   selectedNodeId,
   virtualNodeIds,
   onAddNode,
+  onAutoLayout,
   onCollapseChange,
   onCreateGraph,
   onDeleteDraft,
@@ -72,6 +77,8 @@ export function GraphBrowserPanel({
   onSaveLocal,
   onSelectNode,
 }: GraphBrowserPanelProps) {
+  const [nodesOpen, setNodesOpen] = useState(false);
+
   return (
     <section className="flex min-h-0 flex-col border-r border-border bg-panel">
       {leftCollapsed ? (
@@ -111,7 +118,7 @@ export function GraphBrowserPanel({
           </div>
 
           <div className="flex items-center gap-2 border-b border-border p-3">
-            <Button variant="outline" size="sm" onClick={onCreateGraph} title="New graph">
+            <Button variant="outline" size="sm" onClick={onCreateGraph} disabled={graphSwitchDisabled} title="New graph">
               <FilePlus2 className="h-4 w-4" />
               New
             </Button>
@@ -119,8 +126,11 @@ export function GraphBrowserPanel({
               <Save className="h-4 w-4" />
               Save
             </Button>
-            <Button variant="ghost" size="icon" onClick={onDuplicateDraft} disabled={!activeDraftId} title="Duplicate">
+            <Button variant="ghost" size="icon" onClick={onDuplicateDraft} disabled={!activeDraftId || graphSwitchDisabled} title="Duplicate">
               <Copy className="h-4 w-4" />
+            </Button>
+            <Button variant="ghost" size="icon" onClick={onAutoLayout} disabled={!definition} title="Auto layout">
+              <Network className="h-4 w-4" />
             </Button>
             <Button variant="ghost" size="icon" onClick={onDeleteDraft} disabled={!activeDraftId} title="Delete local">
               <Trash2 className="h-4 w-4" />
@@ -136,9 +146,11 @@ export function GraphBrowserPanel({
                   key={draft.id}
                   className={cn(
                     "grid w-full gap-1 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent",
-                    draft.id === activeDraftId && "bg-accent"
+                    draft.id === activeDraftId && "bg-accent",
+                    graphSwitchDisabled && "cursor-not-allowed opacity-50 hover:bg-transparent"
                   )}
                   onClick={() => onLoadDraft(draft)}
+                  disabled={graphSwitchDisabled}
                 >
                   <div className="truncate text-sm font-medium">{draft.title}</div>
                   <div className="truncate text-xs text-muted-foreground">
@@ -149,42 +161,52 @@ export function GraphBrowserPanel({
             )}
           </div>
 
-          <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
+          <button
+            type="button"
+            className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3 text-left hover:bg-accent"
+            onClick={() => setNodesOpen(!nodesOpen)}
+            aria-expanded={nodesOpen}
+          >
+            {nodesOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             <CircleDot className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-semibold">Nodes</span>
-            <Badge className="ml-auto">{(definition?.nodes.length ?? 0) + virtualNodeIds.length}</Badge>
-          </div>
-          <div className="border-b border-border p-3">
-            <Input value={nodeQuery} onChange={(event) => onNodeQuery(event.target.value)} placeholder="Search nodes" />
-          </div>
-          <div className="min-h-0 flex-1 overflow-auto">
-            {filteredNodes.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-muted-foreground">No nodes</div>
-            ) : (
-              filteredNodes.map((node) => (
-                <div
-                  key={node.id}
-                  className={cn(
-                    "flex w-full min-w-0 items-center gap-2 border-b border-border px-3 py-2 text-left hover:bg-accent",
-                    node.id === selectedNodeId && "bg-accent"
-                  )}
-                >
-                  <button className="min-w-0 flex-1 text-left" onClick={() => onSelectNode(node.id)}>
-                    <span className="block truncate text-sm font-medium">{node.name || node.id}</span>
-                    <span className="block truncate font-mono text-[11px] text-muted-foreground">{node.id}</span>
-                  </button>
-                  <Badge className="max-w-28 truncate">{node.type}</Badge>
-                  <button
-                    className="text-muted-foreground hover:text-destructive"
-                    onClick={() => onDeleteNode(node.id)}
-                    title="Delete node"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
+            <span className="ml-auto text-xs text-muted-foreground">{(definition?.nodes.length ?? 0) + virtualNodeIds.length}</span>
+          </button>
+          {nodesOpen ? (
+            <>
+              <div className="border-b border-border p-3">
+                <Input value={nodeQuery} onChange={(event) => onNodeQuery(event.target.value)} placeholder="Search nodes" />
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto">
+                {filteredNodes.length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-muted-foreground">No nodes</div>
+                ) : (
+                  filteredNodes.map((node) => (
+                    <div
+                      key={node.id}
+                      className={cn(
+                        "flex w-full min-w-0 items-center gap-2 border-b border-border px-3 py-2 text-left hover:bg-accent",
+                        node.id === selectedNodeId && "bg-accent"
+                      )}
+                    >
+                      <button className="min-w-0 flex-1 text-left" onClick={() => onSelectNode(node.id)}>
+                        <span className="block truncate text-sm font-medium">{node.name || node.id}</span>
+                        <span className="block truncate font-mono text-[11px] text-muted-foreground">{node.id}</span>
+                      </button>
+                      <span className="max-w-28 truncate font-mono text-[11px] text-muted-foreground">{node.type}</span>
+                      <button
+                        className="text-muted-foreground hover:text-destructive"
+                        onClick={() => onDeleteNode(node.id)}
+                        title="Delete node"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </>
+          ) : null}
 
           <button
             className="flex h-11 shrink-0 items-center gap-2 border-t border-border px-3 text-left hover:bg-accent"
@@ -193,7 +215,7 @@ export function GraphBrowserPanel({
             {nodeTypesOpen ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
             <Plus className="h-4 w-4 text-muted-foreground" />
             <span className="text-sm font-semibold">Node Types</span>
-            <Badge className="ml-auto">{creatableNodeTypes.length}</Badge>
+            <span className="ml-auto text-xs text-muted-foreground">{creatableNodeTypes.length}</span>
           </button>
           {nodeTypesOpen ? (
             <div className="max-h-80 shrink-0 overflow-auto border-t border-border">

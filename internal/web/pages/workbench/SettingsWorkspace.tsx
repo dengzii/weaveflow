@@ -12,12 +12,14 @@ export function SettingsWorkspace({
   graphId,
   graphVersion,
   registry,
+  graphSwitchDisabled,
   onGraphId,
   onGraphVersion,
 }: {
   graphId: string;
   graphVersion: string;
   registry: RegistryInfo | null;
+  graphSwitchDisabled: boolean;
   onGraphId: (value: string) => void;
   onGraphVersion: (value: string) => void;
 }) {
@@ -30,11 +32,11 @@ export function SettingsWorkspace({
         <div className="mt-4 grid gap-4">
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Graph ID</span>
-            <Input value={graphId} onChange={(event) => onGraphId(event.target.value)} />
+            <Input value={graphId} onChange={(event) => onGraphId(event.target.value)} disabled={graphSwitchDisabled} />
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Graph Version</span>
-            <Input value={graphVersion} onChange={(event) => onGraphVersion(event.target.value)} />
+            <Input value={graphVersion} onChange={(event) => onGraphVersion(event.target.value)} disabled={graphSwitchDisabled} />
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Theme</span>

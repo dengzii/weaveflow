@@ -1,12 +1,12 @@
-import { useMemo, useState } from "react";
-import { Braces, FileJson, Trash2 } from "lucide-react";
+import { useMemo, useState, type ReactNode } from "react";
+import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Trash2 } from "lucide-react";
 import type { VirtualGraphEdge } from "../../../components/GraphCanvas";
-import { Badge } from "../../../components/ui/badge";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Textarea } from "../../../components/ui/textarea";
-import { stringifyJSON } from "../../../lib/utils";
+import { exampleConfigForSchema } from "../../../lib/jsonSchemaDefaults";
+import { cn, stringifyJSON } from "../../../lib/utils";
 import type {
   ConditionSchema,
   GraphDefinition,
@@ -16,6 +16,9 @@ import type {
   InitialStateRequirement,
   NodeTypeSchema,
 } from "../../../types";
+import type { GraphLintIssue } from "./lint";
+import { JsonSchemaForm } from "./schemaForm";
+import { StatusText, type StatusTone } from "../shared";
 import { Field, InfoRows, InspectorBlock, NodeSelect, PanelHeader } from "./shared";
 import type { InspectorMode } from "./types";
 import { displayNodeRef } from "./utils";
@@ -29,6 +32,7 @@ interface GraphInspectorPanelProps {
   initialStateText: string;
   inspectorMode: InspectorMode;
   inspectorTitle: string;
+  lintIssues: GraphLintIssue[];
   nodeConfigText: string;
   paletteNodeTypes: NodeTypeSchema[];
   selectedEdge: GraphEdgeSpec | null;
@@ -46,6 +50,7 @@ interface GraphInspectorPanelProps {
   onChangeNodeId: (value: string) => void;
   onDeleteEdge: () => void;
   onDeleteNode: (nodeId: string) => void;
+  onSelectLintIssue?: (issue: GraphLintIssue) => void;
 }
 
 export function GraphInspectorPanel({
@@ -57,6 +62,7 @@ export function GraphInspectorPanel({
   initialStateText,
   inspectorMode,
   inspectorTitle,
+  lintIssues,
   nodeConfigText,
   paletteNodeTypes,
   selectedEdge,
@@ -74,10 +80,12 @@ export function GraphInspectorPanel({
   onChangeNodeId,
   onDeleteEdge,
   onDeleteNode,
+  onSelectLintIssue,
 }: GraphInspectorPanelProps) {
   return (
     <section className="min-h-0 overflow-auto border-l border-border bg-panel">
       <PanelHeader icon={FileJson} title={inspectorTitle} />
+      <LintPanel issues={lintIssues} onSelectIssue={onSelectLintIssue} />
       {inspectorMode === "graph" ? (
         <GraphInspector
           definition={definition}
@@ -115,6 +123,42 @@ export function GraphInspectorPanel({
           onChangeEdgeConfigText={onChangeEdgeConfigText}
           onDeleteEdge={onDeleteEdge}
         />
+      ) : null}
+    </section>
+  );
+}
+
+function LintPanel({
+  issues,
+  onSelectIssue,
+}: {
+  issues: GraphLintIssue[];
+  onSelectIssue?: (issue: GraphLintIssue) => void;
+}) {
+  return (
+    <section className="grid gap-1 border-b border-border p-3">
+      <div className="flex min-h-7 items-center gap-2">
+        {issues.length > 0 ? <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-300" /> : null}
+        <div className="text-xs font-semibold uppercase text-muted-foreground">Lint</div>
+      </div>
+      {issues.length > 0 ? (
+        <div className="grid gap-1">
+          {issues.map((issue) => (
+            <button
+              key={issue.id}
+              type="button"
+              onClick={() => onSelectIssue?.(issue)}
+              className="grid gap-1 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
+            >
+              <div className="flex min-w-0 items-center gap-2">
+                <StatusText tone={issue.severity === "error" ? "danger" : "warn"}>{issue.severity}</StatusText>
+                {issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.nodeId}</span> : null}
+                {issue.path && !issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.path}</span> : null}
+              </div>
+              <div className="line-clamp-2 text-foreground">{issue.message}</div>
+            </button>
+          ))}
+        </div>
       ) : null}
     </section>
   );
@@ -163,6 +207,27 @@ function GraphInspector({
           disabled={!definition}
           className="h-20 text-xs"
         />
+      </InspectorBlock>
+
+      <InspectorBlock title="Routing">
+        <Field label="Entry point">
+          <NodeSelect
+            value={definition?.entry_point ?? ""}
+            nodes={definition?.nodes ?? []}
+            disabled={!definition}
+            className={!definition?.entry_point ? "border-destructive focus:border-destructive" : undefined}
+            onChange={(value) => onChangeGraphField("entry_point", value)}
+          />
+        </Field>
+        <Field label="Finish point">
+          <NodeSelect
+            value={definition?.finish_point ?? ""}
+            nodes={definition?.nodes ?? []}
+            disabled={!definition}
+            className={!definition?.finish_point ? "border-destructive focus:border-destructive" : undefined}
+            onChange={(value) => onChangeGraphField("finish_point", value)}
+          />
+        </Field>
       </InspectorBlock>
 
       <InspectorBlock title="Run Input">
@@ -229,6 +294,7 @@ function RunInputEditor({
             key={requirement.path}
             requirement={requirement}
             value={getPathValue(parsed.root, requirement.path)}
+            invalid={!hasFilledRequirementValue(getPathValue(parsed.root, requirement.path), requirement.type)}
             onChange={(value) =>
               onChangeInitialStateText(stringifyJSON(updateInitialStatePath(initialStateText, requirement.path, value)))
             }
@@ -281,10 +347,12 @@ function JsonRunInputEditor({
 function RunInputField({
   requirement,
   value,
+  invalid,
   onChange,
 }: {
   requirement: InitialStateRequirement;
   value: unknown;
+  invalid: boolean;
   onChange: (value: unknown) => void;
 }) {
   const type = (requirement.type ?? "").toLowerCase();
@@ -294,17 +362,19 @@ function RunInputField({
   return (
     <div className="grid gap-1" title={sourceTitle}>
       <span className="truncate font-mono text-xs font-medium">{requirement.path}</span>
-      {renderRunInputControl(type, value, onChange)}
+      {renderRunInputControl(type, value, onChange, invalid)}
+      {invalid ? <div className="text-xs text-destructive">Required value is missing.</div> : null}
       {requirement.type ? <div className="text-[11px] text-muted-foreground">{requirement.type}</div> : null}
       {description ? <div className="line-clamp-2 text-xs text-muted-foreground">{description}</div> : null}
     </div>
   );
 }
 
-function renderRunInputControl(type: string, value: unknown, onChange: (value: unknown) => void) {
+function renderRunInputControl(type: string, value: unknown, onChange: (value: unknown) => void, invalid: boolean) {
+  const invalidClass = invalid ? "border-destructive focus:border-destructive" : undefined;
   if (type === "boolean" || type === "bool") {
     return (
-      <label className="flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm">
+      <label className={cn("flex h-9 items-center gap-2 rounded-md border border-input bg-background px-3 text-sm", invalid && "border-destructive")}>
         <input
           type="checkbox"
           checked={Boolean(value)}
@@ -321,6 +391,7 @@ function renderRunInputControl(type: string, value: unknown, onChange: (value: u
       <Input
         type="number"
         value={typeof value === "number" && Number.isFinite(value) ? String(value) : ""}
+        className={invalidClass}
         onChange={(event) => {
           const next = event.target.value;
           onChange(next.trim() === "" ? null : Number(next));
@@ -341,7 +412,7 @@ function renderRunInputControl(type: string, value: unknown, onChange: (value: u
           }
         }}
         spellCheck={false}
-        className="h-24 text-xs"
+        className={cn("h-24 text-xs", invalidClass)}
       />
     );
   }
@@ -350,6 +421,7 @@ function renderRunInputControl(type: string, value: unknown, onChange: (value: u
     <Input
       value={typeof value === "string" ? value : value == null ? "" : String(value)}
       onChange={(event) => onChange(event.target.value)}
+      className={invalidClass}
     />
   );
 }
@@ -374,14 +446,38 @@ function NodeInspector({
   | "onChangeNodeId"
   | "onDeleteNode"
 >) {
+  const [jsonOpen, setJsonOpen] = useState(false);
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
   if (!selectedNode) return null;
+  const configSchema = schemaForNodeType(paletteNodeTypes, selectedNode.type);
+  const nodeConfig = isPlainRecord(selectedNode.config) ? selectedNode.config : {};
 
   return (
     <>
-      <InspectorBlock title="Node Properties">
+      <InspectorBlock title="Config">
+        <JsonSchemaForm
+          schema={configSchema}
+          value={nodeConfig}
+          onChange={(config) => onChangeNode((node) => ({ ...node, config }))}
+        />
+        <JsonConfigEditor
+          open={jsonOpen}
+          value={nodeConfigText}
+          applyLabel="Apply Config"
+          onOpenChange={setJsonOpen}
+          onChange={onChangeNodeConfigText}
+          onApply={onApplyNodeConfig}
+        />
+      </InspectorBlock>
+
+      <CollapsibleInspectorBlock title="Node Properties" open={propertiesOpen} onOpenChange={setPropertiesOpen}>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
           <Field label="ID">
-            <Input value={selectedNode.id} onChange={(event) => onChangeNodeId(event.target.value)} />
+            <Input
+              value={selectedNode.id}
+              onChange={(event) => onChangeNodeId(event.target.value)}
+              className={!selectedNode.id.trim() ? "border-destructive focus:border-destructive" : undefined}
+            />
           </Field>
           <Button
             variant="ghost"
@@ -409,9 +505,11 @@ function NodeInspector({
                   ...node,
                   type: event.target.value,
                   name: node.name || schema?.title || node.name,
+                  config: exampleConfigForSchema(schema?.config_schema),
                 };
               })
             }
+            className={!selectedNode.type?.trim() ? "border-destructive focus:border-destructive" : undefined}
           >
             {selectedNode.type && !paletteNodeTypes.some((item) => item.type === selectedNode.type) ? (
               <option value={selectedNode.type}>{selectedNode.type}</option>
@@ -430,21 +528,36 @@ function NodeInspector({
             className="h-20 text-xs"
           />
         </Field>
-      </InspectorBlock>
-
-      <InspectorBlock title="Config">
-        <Textarea
-          value={nodeConfigText}
-          onChange={(event) => onChangeNodeConfigText(event.target.value)}
-          spellCheck={false}
-          className="h-56 text-xs"
-        />
-        <Button variant="outline" size="sm" onClick={onApplyNodeConfig}>
-          <Braces className="h-4 w-4" />
-          Apply Config
-        </Button>
-      </InspectorBlock>
+      </CollapsibleInspectorBlock>
     </>
+  );
+}
+
+function CollapsibleInspectorBlock({
+  title,
+  open,
+  onOpenChange,
+  children,
+}: {
+  title: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  children: ReactNode;
+}) {
+  const Icon = open ? ChevronDown : ChevronRight;
+  return (
+    <section className="border-b border-border last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => onOpenChange(!open)}
+        className="flex min-h-11 w-full items-center gap-2 px-3 text-left hover:bg-accent"
+      >
+        <Icon className="h-4 w-4 text-muted-foreground" />
+        <span className="text-xs font-semibold uppercase text-muted-foreground">{title}</span>
+      </button>
+      {open ? <div className="grid gap-3 p-3 pt-0">{children}</div> : null}
+    </section>
   );
 }
 
@@ -472,11 +585,15 @@ function EdgeInspector({
   | "onChangeEdgeConfigText"
   | "onDeleteEdge"
 >) {
+  const [jsonOpen, setJsonOpen] = useState(false);
+  const conditionSchema = schemaForCondition(conditions, selectedEdge?.condition?.type);
+  const rawConditionConfig = selectedEdge?.condition?.config;
+  const conditionConfig = isPlainRecord(rawConditionConfig) ? rawConditionConfig : {};
   return (
     <>
       <InspectorBlock title="Edge Properties">
         <div className="mb-2 flex items-center gap-2">
-          <Badge>{selectedVirtualEdge ? selectedVirtualEdge.kind : selectedEdge?.condition?.type || "direct"}</Badge>
+          <span className="text-xs font-medium text-muted-foreground">{selectedVirtualEdge ? selectedVirtualEdge.kind : selectedEdge?.condition?.type || "direct"}</span>
           <Button variant="ghost" size="icon" onClick={onDeleteEdge} title="Delete edge" className="ml-auto">
             <Trash2 className="h-4 w-4" />
           </Button>
@@ -511,9 +628,10 @@ function EdgeInspector({
                 value={selectedEdge.condition?.type ?? ""}
                 onChange={(event) => {
                   const value = event.target.value;
+                  const schema = conditions.find((condition) => condition.type === value);
                   onChangeEdge((edge) => ({
                     ...edge,
-                    condition: value ? { type: value, config: edge.condition?.config ?? {} } : undefined,
+                    condition: value ? { type: value, config: exampleConfigForSchema(schema?.config_schema) } : undefined,
                   }));
                 }}
               >
@@ -535,20 +653,79 @@ function EdgeInspector({
 
       {selectedEdge?.condition && !selectedVirtualEdge ? (
         <InspectorBlock title="Condition Config">
-          <Textarea
-            value={edgeConfigText}
-            onChange={(event) => onChangeEdgeConfigText(event.target.value)}
-            spellCheck={false}
-            className="h-44 text-xs"
+          <JsonSchemaForm
+            schema={conditionSchema}
+            value={conditionConfig}
+            onChange={(config) =>
+              onChangeEdge((edge) => ({
+                ...edge,
+                condition: edge.condition ? { ...edge.condition, config } : edge.condition,
+              }))
+            }
           />
-          <Button variant="outline" size="sm" onClick={onApplyEdgeConfig}>
-            <Braces className="h-4 w-4" />
-            Apply Condition
-          </Button>
+          <JsonConfigEditor
+            open={jsonOpen}
+            value={edgeConfigText}
+            applyLabel="Apply Condition"
+            onOpenChange={setJsonOpen}
+            onChange={onChangeEdgeConfigText}
+            onApply={onApplyEdgeConfig}
+          />
         </InspectorBlock>
       ) : null}
     </>
   );
+}
+
+function JsonConfigEditor({
+  open,
+  value,
+  applyLabel,
+  onOpenChange,
+  onChange,
+  onApply,
+}: {
+  open: boolean;
+  value: string;
+  applyLabel: string;
+  onOpenChange: (open: boolean) => void;
+  onChange: (value: string) => void;
+  onApply: () => void;
+}) {
+  return (
+    <div className="grid gap-2">
+      <div>
+        <Button variant="ghost" size="sm" onClick={() => onOpenChange(!open)}>
+          <Braces className="h-4 w-4" />
+          {open ? "Hide JSON" : "Edit JSON"}
+        </Button>
+      </div>
+      {open ? (
+        <>
+          <Textarea
+            value={value}
+            onChange={(event) => onChange(event.target.value)}
+            spellCheck={false}
+            className="h-44 text-xs"
+          />
+          <Button variant="outline" size="sm" onClick={onApply}>
+            <Braces className="h-4 w-4" />
+            {applyLabel}
+          </Button>
+        </>
+      ) : null}
+    </div>
+  );
+}
+
+function schemaForNodeType(nodeTypes: NodeTypeSchema[], type?: string): Record<string, unknown> | undefined {
+  const schema = nodeTypes.find((nodeType) => nodeType.type === type)?.config_schema;
+  return isPlainRecord(schema) ? schema : undefined;
+}
+
+function schemaForCondition(conditions: ConditionSchema[], type?: string): Record<string, unknown> | undefined {
+  const schema = conditions.find((condition) => condition.type === type)?.config_schema;
+  return isPlainRecord(schema) ? schema : undefined;
 }
 
 function InitialStateRequirementList({
@@ -576,7 +753,7 @@ function InitialStateRequirementList({
       {warnings.length > 0 ? (
         <div className="rounded-md border border-border bg-muted p-2">
           <div className="mb-2 flex items-center gap-2">
-            <Badge tone="warn">Warnings</Badge>
+            <StatusText tone="warn">Warnings</StatusText>
             <span className="text-xs text-muted-foreground">{warnings.length}</span>
           </div>
           <div className="grid gap-1">
@@ -598,13 +775,13 @@ function RequirementGroup({
   items,
 }: {
   title: string;
-  tone: "ok" | "warn" | "danger";
+  tone: StatusTone;
   items: InitialStateRequirement[];
 }) {
   return (
     <div className="rounded-md border border-border bg-muted p-2">
       <div className="mb-2 flex items-center gap-2">
-        <Badge tone={tone}>{title}</Badge>
+        <StatusText tone={tone}>{title}</StatusText>
         <span className="text-xs text-muted-foreground">{items.length}</span>
       </div>
       <div className="grid gap-1">
@@ -664,6 +841,13 @@ function getPathValue(root: Record<string, unknown>, path: string): unknown {
     cursor = cursor[part];
   }
   return cursor;
+}
+
+function hasFilledRequirementValue(value: unknown, type?: string): boolean {
+  if (value === null || value === undefined) return false;
+  if ((type ?? "").toLowerCase() === "string") return typeof value === "string" && value.trim().length > 0;
+  if (typeof value === "string") return value.trim().length > 0;
+  return true;
 }
 
 function setPathValue(root: Record<string, unknown>, path: string, value: unknown) {

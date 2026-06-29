@@ -50,11 +50,7 @@ func (n *HumanMessageNode) Execute(_ core.Context, access *state.Access) error {
 	}
 
 	messages := conversation.Messages()
-	if len(messages) == 0 {
-		return nil
-	}
-	lastMessage := messages[len(messages)-1]
-	if lastMessage.Role != llms.ChatMessageTypeHuman {
+	if len(messages) == 0 || messages[len(messages)-1].Role != llms.ChatMessageTypeHuman {
 		return &langgraph.NodeInterrupt{Node: n.ID(), Value: n.InterruptMessage}
 	}
 	return nil

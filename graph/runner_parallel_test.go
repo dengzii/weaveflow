@@ -995,6 +995,81 @@ func TestRunnerParallelExternalCancelStopsAtBarrier(t *testing.T) {
 	}
 }
 
+func TestRunnerExternalPauseAfterSingleNodeDoesNotComplete(t *testing.T) {
+	t.Parallel()
+
+	g, started, release := newControlledSingleNodeRunnerGraph(t)
+	dir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(dir)
+	runner := NewGraphRunner(
+		g,
+		executionStore,
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, err := runner.Start(context.Background(), state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: err}
+	}()
+
+	waitForBranchStarts(t, started, 1)
+	runID := waitForRunID(t, executionStore)
+	if err := runner.Pause(context.Background(), runID); err != nil {
+		t.Fatalf("pause run: %v", err)
+	}
+	close(release)
+
+	res := waitForRunnerResult(t, done)
+	if res.err != nil {
+		t.Fatalf("runner start returned error: %v", res.err)
+	}
+	if res.run.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", res.run.Status)
+	}
+	if res.run.LastCheckpointID == "" {
+		t.Fatal("paused run last checkpoint id is empty")
+	}
+}
+
+func TestRunnerExternalCancelAfterSingleNodeDoesNotComplete(t *testing.T) {
+	t.Parallel()
+
+	g, started, release := newControlledSingleNodeRunnerGraph(t)
+	dir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(dir)
+	runner := NewGraphRunner(
+		g,
+		executionStore,
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, err := runner.Start(context.Background(), state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: err}
+	}()
+
+	waitForBranchStarts(t, started, 1)
+	runID := waitForRunID(t, executionStore)
+	if err := runner.Cancel(context.Background(), runID); err != nil {
+		t.Fatalf("cancel run: %v", err)
+	}
+	close(release)
+
+	res := waitForRunnerResult(t, done)
+	if res.err != nil {
+		t.Fatalf("runner start returned error: %v", res.err)
+	}
+	if res.run.Status != fruntime.RunStatusCanceled {
+		t.Fatalf("run status = %q, want canceled", res.run.Status)
+	}
+}
+
 func TestRunnerParallelMarksAllFailedActiveBranches(t *testing.T) {
 	t.Parallel()
 
@@ -1199,6 +1274,29 @@ func newControlledParallelRunnerGraph(t *testing.T) (*Graph, chan string, chan s
 		}
 	}
 	return g, started, release, &collectorCalls
+}
+
+func newControlledSingleNodeRunnerGraph(t *testing.T) (*Graph, chan string, chan struct{}) {
+	t.Helper()
+	g := NewGraph()
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	mustAddNode(t, g, "work", func(ctx context.Context, access *state.Access) error {
+		started <- "work"
+		select {
+		case <-release:
+			return access.SetAny(state.Shared("done"), true)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	if err := g.SetEntryPoint("work"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("work"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	return g, started, release
 }
 
 func waitForBranchStarts(t *testing.T, started <-chan string, want int) {

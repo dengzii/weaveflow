@@ -1,5 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Search, X } from "lucide-react";
 import { GraphCanvas, type VirtualGraphEdge } from "../../components/GraphCanvas";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
 import {
   END_NODE_REF,
   START_NODE_REF,
@@ -7,6 +10,7 @@ import {
   addNodeToGraph,
   createGraphDefinition,
   graphEdgeId,
+  graphNodePositions,
   removeGraphEdge,
   removeGraphNode,
   renameGraphNode,
@@ -32,12 +36,13 @@ import type {
   InitialStateRequirements,
   NodeTypeSchema,
   RegistryInfo,
-  RuntimeEvent,
   StepRecord,
 } from "../../types";
 import { CanvasContextMenu } from "./graph-workspace/CanvasContextMenu";
 import { defaultVirtualNodeIds, fallbackNodeTypes, virtualNodeTypes } from "./graph-workspace/constants";
-import { ErrorToast } from "./graph-workspace/ErrorToast";
+import { autoLayoutGraph } from "./graph-workspace/layout";
+import { buildGraphLintIssues, type GraphLintIssue } from "./graph-workspace/lint";
+import { ToastStack, type ToastRecord } from "./graph-workspace/ToastStack";
 import { GraphBrowserPanel } from "./graph-workspace/GraphBrowserPanel";
 import { GraphInspectorPanel } from "./graph-workspace/GraphInspectorPanel";
 import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } from "./graph-workspace/types";
@@ -55,41 +60,47 @@ import {
   virtualNodeSpec,
 } from "./graph-workspace/utils";
 
+const autoSaveWindowMs = 3000;
+
 interface GraphWorkspaceProps {
   definition: GraphDefinition | null;
   initialStateText: string;
   initialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
   steps: StepRecord[];
-  events: RuntimeEvent[];
+  selectedRunId: string;
   registry: RegistryInfo | null;
   graphId: string;
   graphVersion: string;
-  runError: string;
-  onDismissRunError: () => void;
+  graphSwitchDisabled: boolean;
+  toasts: ToastRecord[];
   onGraphId: (value: string) => void;
   onGraphVersion: (value: string) => void;
   onDefinitionText: (value: string) => void;
   onInitialStateText: (value: string) => void;
+  onDismissToast: (id: string) => void;
+  onGraphSwitch: () => boolean;
   onLocalGraphLoaded?: () => void;
 }
 
-export function GraphWorkspace({
+export const GraphWorkspace = memo(function GraphWorkspace({
   definition,
   initialStateText,
   initialRequirements,
   initialRequirementsError,
   steps,
-  events,
+  selectedRunId,
   registry,
   graphId,
   graphVersion,
-  runError,
-  onDismissRunError,
+  graphSwitchDisabled,
+  toasts,
   onGraphId,
   onGraphVersion,
   onDefinitionText,
   onInitialStateText,
+  onDismissToast,
+  onGraphSwitch,
   onLocalGraphLoaded,
 }: GraphWorkspaceProps) {
   const [drafts, setDrafts] = useState<LocalGraphDraft[]>([]);
@@ -107,7 +118,17 @@ export function GraphWorkspace({
   const [virtualNodeIds, setVirtualNodeIds] = useState<string[]>(defaultVirtualNodeIds);
   const [virtualEdges, setVirtualEdges] = useState<VirtualGraphEdge[]>([]);
   const [fitViewSignal, setFitViewSignal] = useState(0);
+  const [focusNodeId, setFocusNodeId] = useState<string | undefined>();
+  const [focusNodeSignal, setFocusNodeSignal] = useState(0);
+  const [canvasSearchOpen, setCanvasSearchOpen] = useState(false);
+  const [canvasSearchQuery, setCanvasSearchQuery] = useState("");
+  const [canvasSearchIndex, setCanvasSearchIndex] = useState(0);
   const autoLoadedDraftRef = useRef(false);
+  const autoSaveHydratedRef = useRef(false);
+  const autoSaveTimerRef = useRef<number | null>(null);
+  const activeDraftIdRef = useRef("");
+  const lastSavedSignatureRef = useRef("");
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setDrafts(readLocalGraphDrafts());
@@ -135,6 +156,84 @@ export function GraphWorkspace({
       window.removeEventListener("keydown", handleKey);
     };
   }, [contextMenu]);
+
+  useEffect(() => {
+    if (!canvasSearchOpen) return;
+    window.setTimeout(() => searchInputRef.current?.focus(), 0);
+  }, [canvasSearchOpen]);
+
+  useEffect(() => {
+    const handleKey = (event: KeyboardEvent) => {
+      const key = event.key.toLowerCase();
+      if ((event.ctrlKey || event.metaKey) && key === "f") {
+        event.preventDefault();
+        setCanvasSearchOpen(true);
+        return;
+      }
+      if (isEditableKeyboardTarget(event.target)) return;
+      if ((event.ctrlKey || event.metaKey) && key === "s") {
+        event.preventDefault();
+        saveLocal();
+        return;
+      }
+      if ((event.ctrlKey || event.metaKey) && key === "d") {
+        event.preventDefault();
+        duplicateSelectedNode();
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        if (selectedEdgeId) {
+          event.preventDefault();
+          deleteSelectedEdge(selectedEdgeId);
+          return;
+        }
+        if (selectedNodeId) {
+          event.preventDefault();
+          deleteSelectedNode(selectedNodeId);
+        }
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => window.removeEventListener("keydown", handleKey);
+  });
+
+  useEffect(() => {
+    if (!definition) return;
+    const signature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges);
+    if (!autoSaveHydratedRef.current) {
+      autoSaveHydratedRef.current = true;
+      lastSavedSignatureRef.current = signature;
+      return;
+    }
+    if (signature === lastSavedSignatureRef.current) {
+      return;
+    }
+    setLocalStatus("autosave queued");
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+    }
+    autoSaveTimerRef.current = window.setTimeout(() => {
+      autoSaveTimerRef.current = null;
+      saveLocal({ mode: "auto" });
+    }, autoSaveWindowMs);
+    return () => {
+      if (autoSaveTimerRef.current !== null) {
+        window.clearTimeout(autoSaveTimerRef.current);
+        autoSaveTimerRef.current = null;
+      }
+    };
+  }, [definition, graphId, graphVersion, virtualEdges, virtualNodeIds]);
+
+  useEffect(() => {
+    activeDraftIdRef.current = activeDraftId;
+  }, [activeDraftId]);
+
+  useEffect(() => () => {
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+  }, []);
 
   const nodeTypes = registry?.node_types;
   const paletteNodeTypes = useMemo(
@@ -169,11 +268,37 @@ export function GraphWorkspace({
     () => mergeVirtualEdges(semanticVirtualEdges, virtualEdges),
     [semanticVirtualEdges, virtualEdges]
   );
+  const lintIssues = useMemo(
+    () => buildGraphLintIssues({ definition, initialStateText, initialRequirements }),
+    [definition, initialRequirements, initialStateText]
+  );
   const selectedVirtualEdge = useMemo(
     () => displayVirtualEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
     [displayVirtualEdges, selectedEdgeId]
   );
   const inspectorMode = selectedEdge || selectedVirtualEdge ? "edge" : selectedVirtualNode ? "virtual" : selectedNode ? "node" : "graph";
+  const searchableNodes = useMemo(
+    () => [...visibleVirtualNodes, ...(definition?.nodes ?? [])],
+    [definition, visibleVirtualNodes]
+  );
+  const canvasSearchMatches = useMemo(() => {
+    const query = canvasSearchQuery.trim().toLowerCase();
+    if (!query) return [];
+    return searchableNodes.filter((node) =>
+      `${node.id} ${node.name ?? ""} ${node.type ?? ""} ${node.description ?? ""}`.toLowerCase().includes(query)
+    );
+  }, [canvasSearchQuery, searchableNodes]);
+  const highlightedNodeIds = useMemo(
+    () => canvasSearchMatches.map((node) => node.id),
+    [canvasSearchMatches]
+  );
+
+  useEffect(() => {
+    if (!canvasSearchOpen || !canvasSearchQuery.trim()) return;
+    const first = canvasSearchMatches[0];
+    setCanvasSearchIndex(0);
+    if (first) focusCanvasNode(first.id);
+  }, [canvasSearchMatches, canvasSearchOpen, canvasSearchQuery]);
 
   const filteredNodeTypes = useMemo(() => {
     const query = nodeTypeQuery.trim().toLowerCase();
@@ -218,12 +343,19 @@ export function GraphWorkspace({
   }
 
   function createGraph() {
+    if (!onGraphSwitch()) {
+      setLocalStatus("run active");
+      return;
+    }
     const nextName = `debug_graph_${Date.now().toString(36)}`;
     const next = createGraphDefinition(nextName, defaultGraphNodeType);
     onGraphId(next.name || nextName);
     onGraphVersion(next.version || "1.0");
     onDefinitionText(stringifyJSON(next));
     setActiveDraftId("");
+    activeDraftIdRef.current = "";
+    lastSavedSignatureRef.current = "";
+    autoSaveHydratedRef.current = true;
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setVirtualNodeIds(defaultVirtualNodeIds);
@@ -231,13 +363,17 @@ export function GraphWorkspace({
     setLocalStatus("new graph");
   }
 
-  function saveLocal() {
+  function saveLocal(options: { mode?: "manual" | "auto" } = {}) {
     if (!definition) {
       setLocalStatus("invalid graph json");
       return;
     }
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
     const draft = saveLocalGraphDraft({
-      id: activeDraftId || undefined,
+      id: activeDraftIdRef.current || undefined,
       title: definition.name || graphId,
       graphId,
       graphVersion,
@@ -245,10 +381,24 @@ export function GraphWorkspace({
     });
     setActiveDraftId(draft.id);
     setDrafts(readLocalGraphDrafts());
-    setLocalStatus(`saved ${formatTime(draft.updatedAt)}`);
+    lastSavedSignatureRef.current = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges);
+    setLocalStatus(`${options.mode === "auto" ? "autosaved" : "saved"} ${formatTime(draft.updatedAt)}`);
   }
 
   function loadDraft(draft: LocalGraphDraft) {
+    if (!onGraphSwitch()) {
+      setLocalStatus("run active");
+      return;
+    }
+    loadDraftWithoutGuard(draft);
+  }
+
+  function loadDraftWithoutGuard(draft: LocalGraphDraft) {
+    if (autoSaveTimerRef.current !== null) {
+      window.clearTimeout(autoSaveTimerRef.current);
+      autoSaveTimerRef.current = null;
+    }
+    autoSaveHydratedRef.current = false;
     writeLastLocalGraphDraftId(draft.id);
     onLocalGraphLoaded?.();
     setActiveDraftId(draft.id);
@@ -256,6 +406,7 @@ export function GraphWorkspace({
     onGraphVersion(draft.graphVersion);
     onDefinitionText(stringifyJSON(draft.definition));
     const savedState = savedGraphWorkspaceState(draft.definition);
+    lastSavedSignatureRef.current = autoSaveSignature(draft.definition, draft.graphId, draft.graphVersion, savedState.virtualNodeIds, savedState.virtualEdges);
     setVirtualNodeIds(savedState.virtualNodeIds);
     setVirtualEdges(savedState.virtualEdges);
     setSelectedNodeId(null);
@@ -266,10 +417,14 @@ export function GraphWorkspace({
 
   function duplicateDraft() {
     if (!activeDraftId) return;
+    if (!onGraphSwitch()) {
+      setLocalStatus("run active");
+      return;
+    }
     const draft = duplicateLocalGraphDraft(activeDraftId);
     if (!draft) return;
     setDrafts(readLocalGraphDrafts());
-    loadDraft(draft);
+    loadDraftWithoutGuard(draft);
   }
 
   function deleteDraft() {
@@ -504,6 +659,70 @@ export function GraphWorkspace({
     updateDefinition((current) => withNodePosition(current, nodeID, position));
   }
 
+  function focusCanvasNode(nodeID: string) {
+    setSelectedNodeId(nodeID);
+    setSelectedEdgeId(null);
+    setFocusNodeId(nodeID);
+    setFocusNodeSignal((value) => value + 1);
+  }
+
+  function focusSearchMatch(direction: 1 | -1) {
+    if (canvasSearchMatches.length === 0) return;
+    const nextIndex =
+      (canvasSearchIndex + direction + canvasSearchMatches.length) % canvasSearchMatches.length;
+    setCanvasSearchIndex(nextIndex);
+    focusCanvasNode(canvasSearchMatches[nextIndex].id);
+  }
+
+  function duplicateSelectedNode() {
+    if (!definition || !selectedNode || isVirtualNodeId(selectedNode.id)) return;
+    const nextId = uniqueNodeId(`${selectedNode.id}_copy`, definition.nodes);
+    const positions = graphNodePositions(definition);
+    const sourcePosition = positions.get(selectedNode.id) ?? { x: 0, y: 0 };
+    const nodeCopy: GraphNodeSpec = {
+      ...selectedNode,
+      id: nextId,
+      name: selectedNode.name ? `${selectedNode.name} copy` : nextId,
+      config: cloneJSONRecord(selectedNode.config ?? {}),
+    };
+    const next = withNodePosition(
+      {
+        ...definition,
+        nodes: [...definition.nodes, nodeCopy],
+      },
+      nextId,
+      { x: sourcePosition.x + 40, y: sourcePosition.y + 40 }
+    );
+    setDefinition(next);
+    setSelectedNodeId(nextId);
+    setSelectedEdgeId(null);
+    setLocalStatus("node duplicated");
+  }
+
+  function applyAutoLayout() {
+    if (!definition) {
+      setLocalStatus("invalid graph json");
+      return;
+    }
+    setDefinition(autoLayoutGraph(definition, virtualNodeIds, displayVirtualEdges));
+    setFitViewSignal((value) => value + 1);
+    setLocalStatus("auto layout applied");
+  }
+
+  function selectLintIssue(issue: GraphLintIssue) {
+    if (issue.nodeId) {
+      focusCanvasNode(issue.nodeId);
+      return;
+    }
+    if (issue.edgeId) {
+      setSelectedEdgeId(issue.edgeId);
+      setSelectedNodeId(null);
+      return;
+    }
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+  }
+
   const leftWidth = leftCollapsed ? "48px" : "320px";
   const inspectorTitle =
     inspectorMode === "edge"
@@ -526,6 +745,7 @@ export function GraphWorkspace({
         drafts={drafts}
         filteredNodes={filteredNodes}
         filteredNodeTypes={filteredNodeTypes}
+        graphSwitchDisabled={graphSwitchDisabled}
         leftCollapsed={leftCollapsed}
         nodeQuery={nodeQuery}
         nodeTypeQuery={nodeTypeQuery}
@@ -533,6 +753,7 @@ export function GraphWorkspace({
         selectedNodeId={selectedNodeId}
         virtualNodeIds={virtualNodeIds}
         onAddNode={addNode}
+        onAutoLayout={applyAutoLayout}
         onCollapseChange={setLeftCollapsed}
         onCreateGraph={createGraph}
         onDeleteDraft={deleteDraft}
@@ -553,11 +774,14 @@ export function GraphWorkspace({
         <GraphCanvas
           definition={definition}
           steps={steps}
-          events={events}
+          selectedRunId={selectedRunId}
           editable
           selectedNodeId={selectedNodeId ?? undefined}
           selectedEdgeId={selectedEdgeId ?? undefined}
           fitViewSignal={fitViewSignal}
+          focusNodeId={focusNodeId}
+          focusNodeSignal={focusNodeSignal}
+          highlightedNodeIds={highlightedNodeIds}
           onSelectNode={setSelectedNodeId}
           onSelectEdge={setSelectedEdgeId}
           onNodePositionChange={moveNode}
@@ -568,7 +792,38 @@ export function GraphWorkspace({
           virtualNodeIds={virtualNodeIds}
           virtualEdges={displayVirtualEdges}
         />
-        <ErrorToast message={runError} onDismiss={onDismissRunError} />
+        {canvasSearchOpen ? (
+          <div className="absolute left-1/2 top-4 z-40 flex w-[min(420px,calc(100%-2rem))] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-panel p-2 shadow-lg">
+            <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
+            <Input
+              ref={searchInputRef}
+              value={canvasSearchQuery}
+              onChange={(event) => setCanvasSearchQuery(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setCanvasSearchOpen(false);
+                  return;
+                }
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  focusSearchMatch(event.shiftKey ? -1 : 1);
+                }
+              }}
+              placeholder="Search nodes"
+              className="h-8"
+            />
+            <span className="w-16 shrink-0 text-right text-xs text-muted-foreground">
+              {canvasSearchQuery.trim()
+                ? `${canvasSearchMatches.length ? canvasSearchIndex + 1 : 0}/${canvasSearchMatches.length}`
+                : "0/0"}
+            </span>
+            <Button variant="ghost" size="icon" onClick={() => setCanvasSearchOpen(false)} title="Close search">
+              <X className="h-4 w-4" />
+            </Button>
+          </div>
+        ) : null}
+        <ToastStack toasts={toasts} onDismiss={onDismissToast} />
       </section>
 
       <GraphInspectorPanel
@@ -580,6 +835,7 @@ export function GraphWorkspace({
         initialStateText={initialStateText}
         inspectorMode={inspectorMode}
         inspectorTitle={inspectorTitle}
+        lintIssues={lintIssues}
         nodeConfigText={nodeConfigText}
         paletteNodeTypes={paletteNodeTypes}
         selectedEdge={selectedEdge}
@@ -597,6 +853,7 @@ export function GraphWorkspace({
         onChangeNodeId={changeSelectedNodeId}
         onDeleteEdge={deleteSelectedEdge}
         onDeleteNode={deleteSelectedNode}
+        onSelectLintIssue={selectLintIssue}
       />
 
       {contextMenu ? (
@@ -612,7 +869,7 @@ export function GraphWorkspace({
       ) : null}
     </div>
   );
-}
+});
 
 function virtualEdgesFromDefinition(
   definition: GraphDefinition | null,
@@ -696,5 +953,45 @@ function isVirtualGraphEdge(value: unknown): value is VirtualGraphEdge {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function uniqueNodeId(baseID: string, nodes: GraphNodeSpec[]): string {
+  const used = new Set(nodes.map((node) => node.id));
+  if (!used.has(baseID)) return baseID;
+  for (let index = 2; index < 1000; index += 1) {
+    const id = `${baseID}_${index}`;
+    if (!used.has(id)) return id;
+  }
+  return `${baseID}_${Date.now().toString(36)}`;
+}
+
+function cloneJSONRecord(value: unknown): Record<string, unknown> {
+  if (!isRecord(value)) return {};
+  try {
+    return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+  } catch {
+    return { ...value };
+  }
+}
+
+function autoSaveSignature(
+  definition: GraphDefinition,
+  graphId: string,
+  graphVersion: string,
+  virtualNodeIds: string[],
+  virtualEdges: VirtualGraphEdge[]
+): string {
+  return JSON.stringify({
+    graphId,
+    graphVersion,
+    definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges),
+  });
+}
+
+function isEditableKeyboardTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.isContentEditable) return true;
+  const tagName = target.tagName.toLowerCase();
+  return tagName === "input" || tagName === "textarea" || tagName === "select";
 }
 

@@ -1,4 +1,3 @@
-import { Badge } from "../../components/ui/badge";
 import { Input } from "../../components/ui/input";
 import type { RuntimeEvent } from "../../types";
 import { EventList } from "./EventList";
@@ -17,7 +16,7 @@ export function ObserveWorkspace({
   return (
     <div className="grid h-full min-h-0 grid-rows-[auto_1fr] bg-background">
       <div className="flex items-center gap-3 border-b border-border p-3">
-        <Badge tone={selectedRunId ? "live" : "neutral"}>{selectedRunId || "all runs"}</Badge>
+        <span className="max-w-xs truncate font-mono text-xs text-muted-foreground">{selectedRunId || "all runs"}</span>
         <Input
           value={streamTypes}
           onChange={(event) => onStreamTypes(event.target.value)}

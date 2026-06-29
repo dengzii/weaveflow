@@ -1,9 +1,8 @@
 import { Activity, Pause, Play, RefreshCcw, Square } from "lucide-react";
-import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { cn, formatTime } from "../../lib/utils";
 import type { RunRecord, StepRecord } from "../../types";
-import { PanelHeader } from "./shared";
+import { PanelHeader, StatusText } from "./shared";
 import { statusTone } from "./utils";
 
 export function RunsWorkspace({
@@ -14,6 +13,9 @@ export function RunsWorkspace({
   onRefresh,
   onPause,
   onCancel,
+  onResume,
+  onRerun,
+  canResume,
   busy,
 }: {
   runs: RunRecord[];
@@ -23,27 +25,38 @@ export function RunsWorkspace({
   onRefresh: () => void;
   onPause: () => void;
   onCancel: () => void;
+  onResume: () => void;
+  onRerun: () => void;
+  canResume: boolean;
   busy: boolean;
 }) {
   return (
     <div className="grid h-full min-h-0 grid-cols-[380px_minmax(0,1fr)]">
-      <section className="min-h-0 border-r border-border bg-panel">
+      <section className="flex min-h-0 flex-col border-r border-border bg-panel">
         <PanelHeader icon={Play} title="Runs" />
-        <div className="flex items-center gap-2 border-b border-border p-3">
+        <div className="flex flex-wrap items-center gap-2 border-b border-border p-3">
           <Button variant="outline" size="sm" onClick={() => void onRefresh()} title="Refresh runs">
             <RefreshCcw className="h-4 w-4" />
             Refresh
           </Button>
-          <Button variant="outline" size="sm" onClick={onPause} disabled={busy || !selectedRunId} title="Pause run">
+          <Button variant="outline" size="sm" onClick={onPause} disabled={!selectedRunId} title="Pause run">
             <Pause className="h-4 w-4" />
             Pause
           </Button>
-          <Button variant="danger" size="sm" onClick={onCancel} disabled={busy || !selectedRunId} title="Cancel run">
+          <Button variant="outline" size="sm" onClick={onResume} disabled={busy || !canResume} title="Resume paused run">
+            <Play className="h-4 w-4" />
+            Resume
+          </Button>
+          <Button variant="outline" size="sm" onClick={onRerun} disabled={busy || !selectedRunId} title="Rerun with current initial state">
+            <Play className="h-4 w-4" />
+            Rerun
+          </Button>
+          <Button variant="danger" size="sm" onClick={onCancel} disabled={!selectedRunId} title="Cancel run">
             <Square className="h-4 w-4" />
             Cancel
           </Button>
         </div>
-        <div className="h-[calc(100%-104px)] overflow-auto">
+        <div className="min-h-0 flex-1 overflow-auto">
           {runs.map((run) => (
             <button
               key={run.run_id}
@@ -54,7 +67,7 @@ export function RunsWorkspace({
               onClick={() => onSelectRun(run.run_id)}
             >
               <div className="flex items-center gap-2">
-                <Badge tone={statusTone(run.status)}>{run.status}</Badge>
+                <StatusText tone={statusTone(run.status)} className="shrink-0">{run.status}</StatusText>
                 <span className="truncate text-sm font-medium">{run.run_id}</span>
               </div>
               <div className="text-xs text-muted-foreground">{formatTime(run.started_at)} / {run.graph_id}</div>
@@ -77,7 +90,7 @@ export function RunsWorkspace({
             <tbody>
               {steps.map((step) => (
                 <tr key={step.step_id} className="border-t border-border">
-                  <td className="px-3 py-2"><Badge tone={statusTone(step.status)}>{step.status}</Badge></td>
+                  <td className="px-3 py-2"><StatusText tone={statusTone(step.status)}>{step.status}</StatusText></td>
                   <td className="truncate px-3 py-2">{step.node_name || step.node_id}</td>
                   <td className="px-3 py-2 text-muted-foreground">{step.attempt}</td>
                   <td className="px-3 py-2 text-muted-foreground">{formatTime(step.updated_at)}</td>

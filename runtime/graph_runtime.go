@@ -37,6 +37,7 @@ type runnerPendingControl struct {
 	kind         runnerControlKind
 	nodeID       string
 	checkpointID string
+	message      string
 	hit          *state.BreakpointHit
 }
 
@@ -133,7 +134,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 	if invokeErr != nil {
 		var interrupt *langgraph.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
-			e.markNodeInterrupt(nodeID)
+			e.markNodeInterrupt(nodeID, fmt.Sprint(interrupt.Value))
 		}
 		return currentState, invokeErr
 	}
@@ -638,6 +639,20 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 	if e.pending != nil && e.pending.nodeID == nodeID {
 		e.pending = nil
 	}
+	if !e.runner.runnerGraph().IsParallelBranchTarget(nodeID) {
+		switch {
+		case run.CancelRequested:
+			e.pending = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID, checkpointID: afterID}
+			if e.cancelInvoke != nil {
+				e.cancelInvoke()
+			}
+		case run.PauseRequested:
+			e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, checkpointID: afterID}
+			if e.cancelInvoke != nil {
+				e.cancelInvoke()
+			}
+		}
+	}
 	e.mu.Unlock()
 	return nil
 }
@@ -783,6 +798,18 @@ func (e *graphRunnerExecution) consumePendingControl() (*runnerPendingControl, *
 	return &control, activeCopy
 }
 
+func (e *graphRunnerExecution) restorePendingControl(control *runnerPendingControl) {
+	if e == nil || control == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pending == nil {
+		copyControl := *control
+		e.pending = &copyControl
+	}
+}
+
 func (e *graphRunnerExecution) consumeLastCompleted(nodeID string) *runnerCompletedStep {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -820,7 +847,7 @@ func (e *graphRunnerExecution) afterInterruptNodes() ([]string, error) {
 	return graph.AfterInterruptNodes(e.runner.Breakpoints)
 }
 
-func (e *graphRunnerExecution) markNodeInterrupt(nodeID string) {
+func (e *graphRunnerExecution) markNodeInterrupt(nodeID string, message string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	active := e.active[nodeID]
@@ -829,7 +856,7 @@ func (e *graphRunnerExecution) markNodeInterrupt(nodeID string) {
 	}
 	/// make sure the nodes resume at the same nodes after restart
 	active.beforeInterrupted = true
-	e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID}
+	e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, message: message}
 	logStep := active.step
 	logStep.Attempt = active.attempts
 	logger.Info("nodes interrupt captured", stepLogFields(logStep)...)

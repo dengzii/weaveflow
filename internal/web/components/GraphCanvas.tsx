@@ -16,15 +16,18 @@ import {
   type Node,
   type Viewport,
 } from "@xyflow/react";
-import { Lock, Maximize2, Unlock, ZoomIn, ZoomOut } from "lucide-react";
+import { Focus, Lock, Maximize2, Unlock, ZoomIn, ZoomOut } from "lucide-react";
 import type { GraphDefinition, GraphNodeSpec, RuntimeEvent, StepRecord } from "../types";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, type NodePosition } from "../lib/graphEditor";
+import { subscribeRuntimeEvents } from "../lib/runtimeEvents";
 
 interface FlowNodeData extends Record<string, unknown> {
   label: string;
   type: string;
   status: string;
   editable: boolean;
+  attempt?: number;
+  highlighted?: boolean;
   virtualKind?: "start" | "end";
 }
 
@@ -43,11 +46,14 @@ const maxZoom = 2;
 export function GraphCanvas({
   definition,
   steps,
-  events,
+  selectedRunId,
   editable = false,
   selectedNodeId,
   selectedEdgeId,
   fitViewSignal = 0,
+  focusNodeId,
+  focusNodeSignal = 0,
+  highlightedNodeIds = [],
   virtualNodeIds = [START_NODE_REF, END_NODE_REF],
   virtualEdges = [],
   onSelectNode,
@@ -60,11 +66,14 @@ export function GraphCanvas({
 }: {
   definition: GraphDefinition | null;
   steps: StepRecord[];
-  events: RuntimeEvent[];
+  selectedRunId?: string;
   editable?: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
   fitViewSignal?: number;
+  focusNodeId?: string;
+  focusNodeSignal?: number;
+  highlightedNodeIds?: string[];
   virtualNodeIds?: string[];
   virtualEdges?: VirtualGraphEdge[];
   onSelectNode?: (nodeId: string | null) => void;
@@ -80,11 +89,14 @@ export function GraphCanvas({
       <GraphCanvasInner
         definition={definition}
         steps={steps}
-        events={events}
+        selectedRunId={selectedRunId}
         editable={editable}
         selectedNodeId={selectedNodeId}
         selectedEdgeId={selectedEdgeId}
         fitViewSignal={fitViewSignal}
+        focusNodeId={focusNodeId}
+        focusNodeSignal={focusNodeSignal}
+        highlightedNodeIds={highlightedNodeIds}
         virtualNodeIds={virtualNodeIds}
         virtualEdges={virtualEdges}
         onSelectNode={onSelectNode}
@@ -102,11 +114,14 @@ export function GraphCanvas({
 function GraphCanvasInner({
   definition,
   steps,
-  events,
+  selectedRunId,
   editable,
   selectedNodeId,
   selectedEdgeId,
   fitViewSignal,
+  focusNodeId,
+  focusNodeSignal,
+  highlightedNodeIds,
   virtualNodeIds,
   virtualEdges,
   onSelectNode,
@@ -119,11 +134,14 @@ function GraphCanvasInner({
 }: {
   definition: GraphDefinition | null;
   steps: StepRecord[];
-  events: RuntimeEvent[];
+  selectedRunId?: string;
   editable: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
   fitViewSignal: number;
+  focusNodeId?: string;
+  focusNodeSignal: number;
+  highlightedNodeIds: string[];
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
   onSelectNode?: (nodeId: string | null) => void;
@@ -142,25 +160,61 @@ function GraphCanvasInner({
   const handledFitViewSignal = useRef(0);
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
   const nodesRef = useRef<Node<FlowNodeData>[]>([]);
+  const edgesRef = useRef<Edge[]>([]);
+  const runtimeRef = useRef<Map<string, RuntimeNodeState>>(new Map());
+  const runtimeRunIdRef = useRef("");
   const isInteractive = editable && interactive;
 
   useEffect(() => {
     setInteractive(editable);
   }, [editable]);
 
-  const nodeStatus = useMemo(() => {
-    const status = new Map<string, string>();
-    for (const step of steps) {
-      status.set(step.node_id, step.status);
+  const stepRuntime = useMemo(() => runtimeFromSteps(steps, selectedRunId), [selectedRunId, steps]);
+  const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
+
+  useEffect(() => {
+    const nextRunId = selectedRunId ?? "";
+    if (runtimeRunIdRef.current === nextRunId) return;
+    runtimeRunIdRef.current = nextRunId;
+    runtimeRef.current = new Map();
+    setNodes((current) => resetRuntimeNodes(current));
+  }, [selectedRunId, setNodes]);
+
+  useEffect(() => {
+    if (stepRuntime.size === 0) return;
+    const next = new Map(runtimeRef.current);
+    for (const [nodeId, runtime] of stepRuntime) {
+      applyRuntime(next, nodeId, runtime.status, runtime.attempt, runtime.at);
     }
-    for (const event of events) {
-      if (!event.node_id) continue;
-      if (event.type === "nodes.started") status.set(event.node_id, "running");
-      if (event.type === "nodes.finished") status.set(event.node_id, "succeeded");
-      if (event.type === "nodes.failed") status.set(event.node_id, "failed");
+    runtimeRef.current = next;
+    setNodes((current) => applyRuntimeSnapshot(current, next));
+  }, [setNodes, stepRuntime]);
+
+  useEffect(() => subscribeRuntimeEvents((event) => {
+    if (selectedRunId && event.run_id && event.run_id !== selectedRunId) return;
+    let switchedRun = false;
+    if (event.run_id && runtimeRunIdRef.current !== event.run_id) {
+      runtimeRunIdRef.current = event.run_id;
+      runtimeRef.current = new Map();
+      switchedRun = true;
     }
-    return status;
-  }, [events, steps]);
+    if (!event.node_id) {
+      if (switchedRun) setNodes((current) => resetRuntimeNodes(current));
+      return;
+    }
+    const status = runtimeStatusFromEvent(event.type);
+    if (!status) return;
+
+    const next = new Map(runtimeRef.current);
+    const changed = applyRuntime(next, event.node_id, status, eventAttempt(event.payload), timeRank(event.timestamp));
+    if (!changed && !switchedRun) return;
+    runtimeRef.current = next;
+    const runtime = next.get(event.node_id);
+    setNodes((current) => {
+      const base = switchedRun ? resetRuntimeNodes(current) : current;
+      return updateRuntimeNode(base, event.node_id, runtime);
+    });
+  }), [selectedRunId, setNodes]);
 
   useEffect(() => {
     if (!definition) {
@@ -191,8 +245,10 @@ function GraphCanvasInner({
           data: {
             label: node.name || node.id,
             type: node.type || "node",
-            status: virtualKind ? "idle" : nodeStatus.get(node.id) || "idle",
+            status: virtualKind ? "idle" : runtimeRef.current.get(node.id)?.status || "idle",
+            attempt: virtualKind ? 0 : runtimeRef.current.get(node.id)?.attempt || 0,
             editable: isInteractive,
+            highlighted: highlightedNodeSet.has(node.id),
             virtualKind,
           },
         };
@@ -231,11 +287,15 @@ function GraphCanvasInner({
         },
       })),
     ]);
-  }, [definition, editable, isInteractive, nodeStatus, selectedEdgeId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualNodeIds]);
+  }, [definition, editable, highlightedNodeSet, isInteractive, selectedEdgeId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualNodeIds]);
 
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
+
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
 
   const applyViewport = useCallback(
     (nextViewport: Viewport) => {
@@ -272,6 +332,15 @@ function GraphCanvasInner({
       });
     }, 120);
   }, [applyViewport, fitViewSignal, nodes.length, viewportInitialized]);
+
+  useEffect(() => {
+    if (!focusNodeId || !focusNodeSignal || !viewportInitialized) return;
+    window.requestAnimationFrame(() => {
+      const target = nodesRef.current.find((node) => node.id === focusNodeId);
+      if (!target) return;
+      fitNodesToViewport([target], flowWrapperRef.current, applyViewport, 0.65);
+    });
+  }, [applyViewport, focusNodeId, focusNodeSignal, viewportInitialized]);
 
   function handleConnect(connection: Connection) {
     if (!isInteractive || !connection.source || !connection.target) return;
@@ -345,7 +414,9 @@ function GraphCanvasInner({
         <MiniMap pannable zoomable position="bottom-right" className="!rounded-md !border !border-border !bg-panel" />
         <CanvasControls
           interactive={interactive}
+          hasSelection={Boolean(selectedNodeId || selectedEdgeId)}
           onFitView={() => fitNodesToViewport(nodesRef.current, flowWrapperRef.current, applyViewport)}
+          onFitSelection={() => fitNodesToViewport(selectedNodesForFit(), flowWrapperRef.current, applyViewport, 0.65)}
           onToggleInteractive={() => setInteractive((value) => !value)}
           onZoomIn={() => zoomViewport(1.2)}
           onZoomOut={() => zoomViewport(1 / 1.2)}
@@ -369,17 +440,34 @@ function GraphCanvasInner({
       zoom: nextZoom,
     });
   }
+
+  function selectedNodesForFit(): Node<FlowNodeData>[] {
+    if (selectedNodeId) {
+      return nodesRef.current.filter((node) => node.id === selectedNodeId);
+    }
+    if (selectedEdgeId) {
+      const edge = edgesRef.current.find((item) => item.id === selectedEdgeId);
+      if (!edge) return [];
+      const ids = new Set([edge.source, edge.target]);
+      return nodesRef.current.filter((node) => ids.has(node.id));
+    }
+    return [];
+  }
 }
 
 function CanvasControls({
   interactive,
+  hasSelection,
   onFitView,
+  onFitSelection,
   onToggleInteractive,
   onZoomIn,
   onZoomOut,
 }: {
   interactive: boolean;
+  hasSelection: boolean;
   onFitView: () => void;
+  onFitSelection: () => void;
   onToggleInteractive: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
@@ -398,6 +486,16 @@ function CanvasControls({
       <button
         type="button"
         className="react-flow__controls-button"
+        title="Fit selection"
+        aria-label="Fit selection"
+        onClick={onFitSelection}
+        disabled={!hasSelection}
+      >
+        <Focus className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        className="react-flow__controls-button"
         title={interactive ? "Lock canvas" : "Unlock canvas"}
         aria-label={interactive ? "Lock canvas" : "Unlock canvas"}
         onClick={onToggleInteractive}
@@ -411,7 +509,8 @@ function CanvasControls({
 function fitNodesToViewport(
   nodes: Node<FlowNodeData>[],
   viewportElement: HTMLDivElement | null,
-  applyViewport: (viewport: Viewport) => void
+  applyViewport: (viewport: Viewport) => void,
+  padding = 0.2
 ): boolean {
   const rect = viewportElement?.getBoundingClientRect();
   if (!rect || rect.width <= 0 || rect.height <= 0 || nodes.length === 0) return false;
@@ -429,7 +528,6 @@ function fitNodesToViewport(
 
   const width = Math.max(bounds.maxX - bounds.minX, nodeWidth);
   const height = Math.max(bounds.maxY - bounds.minY, nodeHeight);
-  const padding = 0.2;
   const zoom = Math.max(
     0.2,
     Math.min(2, Math.min(rect.width / (width * (1 + padding * 2)), rect.height / (height * (1 + padding * 2))))
@@ -459,6 +557,114 @@ interface D3ZoomElement extends Element {
   __zoom?: D3ZoomTransform;
 }
 
+interface RuntimeNodeState {
+  status: string;
+  attempt: number;
+  at: number;
+}
+
+function runtimeFromSteps(steps: StepRecord[], runId?: string): Map<string, RuntimeNodeState> {
+  const runtime = new Map<string, RuntimeNodeState>();
+  for (const step of steps) {
+    if (!step.node_id) continue;
+    if (runId && step.run_id && step.run_id !== runId) continue;
+    applyRuntime(
+      runtime,
+      step.node_id,
+      normalizeRuntimeStatus(step.status),
+      Number.isFinite(step.attempt) ? step.attempt : 0,
+      timeRank(step.updated_at || step.finished_at || step.started_at)
+    );
+  }
+  return runtime;
+}
+
+function applyRuntime(
+  runtime: Map<string, RuntimeNodeState>,
+  nodeId: string,
+  status: string,
+  attempt: number,
+  at: number
+): boolean {
+  const current = runtime.get(nodeId);
+  const nextAttempt = Math.max(current?.attempt ?? 0, attempt);
+  if (current && current.at > at) {
+    if (nextAttempt === current.attempt) return false;
+    runtime.set(nodeId, { ...current, attempt: nextAttempt });
+    return true;
+  }
+
+  const next = { status, attempt: nextAttempt, at };
+  if (current && current.status === next.status && current.attempt === next.attempt && current.at === next.at) {
+    return false;
+  }
+  runtime.set(nodeId, next);
+  return true;
+}
+
+function applyRuntimeSnapshot(
+  nodes: Node<FlowNodeData>[],
+  runtime: Map<string, RuntimeNodeState>
+): Node<FlowNodeData>[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.data.virtualKind) return node;
+    const update = runtime.get(node.id);
+    if (!update) return node;
+    const updated = updateRuntimeNodeData(node, update);
+    if (updated !== node) changed = true;
+    return updated;
+  });
+  return changed ? next : nodes;
+}
+
+function updateRuntimeNode(
+  nodes: Node<FlowNodeData>[],
+  nodeId: string,
+  runtime?: RuntimeNodeState
+): Node<FlowNodeData>[] {
+  if (!runtime) return nodes;
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.id !== nodeId || node.data.virtualKind) return node;
+    const updated = updateRuntimeNodeData(node, runtime);
+    if (updated !== node) changed = true;
+    return updated;
+  });
+  return changed ? next : nodes;
+}
+
+function updateRuntimeNodeData(node: Node<FlowNodeData>, runtime: RuntimeNodeState): Node<FlowNodeData> {
+  const attempt = runtime.attempt || 0;
+  if (node.data.status === runtime.status && node.data.attempt === attempt) return node;
+  return {
+    ...node,
+    data: {
+      ...node.data,
+      status: runtime.status,
+      attempt,
+    },
+  };
+}
+
+function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeData>[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    if (node.data.virtualKind) return node;
+    if ((node.data.status || "idle") === "idle" && !node.data.attempt) return node;
+    changed = true;
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        status: "idle",
+        attempt: 0,
+      },
+    };
+  });
+  return changed ? next : nodes;
+}
+
 function syncRendererZoomState(viewportElement: HTMLElement | null, viewport: Viewport) {
   const root = viewportElement ?? document.body;
   const renderers = [
@@ -478,17 +684,61 @@ function syncRendererZoomState(viewportElement: HTMLElement | null, viewport: Vi
   }
 }
 
+function normalizeRuntimeStatus(status: string): string {
+  const lower = status.toLowerCase();
+  if (!lower) return "idle";
+  if (lower.includes("fail") || lower.includes("error")) return "failed";
+  if (lower.includes("cancel")) return "canceled";
+  if (lower.includes("pause")) return "paused";
+  if (lower.includes("finish") || lower.includes("complete") || lower.includes("success")) return "succeeded";
+  if (lower.includes("run") || lower.includes("start") || lower.includes("pend") || lower.includes("retry")) return "running";
+  return lower;
+}
+
+function runtimeStatusFromEvent(type: string): string {
+  switch (type) {
+    case "nodes.started":
+    case "nodes.retry":
+      return "running";
+    case "nodes.finished":
+      return "succeeded";
+    case "nodes.failed":
+      return "failed";
+    default:
+      return "";
+  }
+}
+
+function eventAttempt(payload: unknown): number {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
+  const value = (payload as Record<string, unknown>).attempt;
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function timeRank(value?: string): number {
+  if (!value) return 0;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? 0 : parsed;
+}
+
 function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean }) {
   const status = String(data.status || "idle");
   const editable = Boolean(data.editable);
   const virtualKind = data.virtualKind;
+  const attempt = typeof data.attempt === "number" && data.attempt > 0 ? data.attempt : 0;
+  const highlighted = Boolean(data.highlighted);
   return (
-    <div className={`debug-node debug-node-${status}${virtualKind ? " debug-node-virtual" : ""}${selected ? " debug-node-selected" : ""}`}>
+    <div
+      className={`debug-node debug-node-${status}${virtualKind ? " debug-node-virtual" : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}`}
+    >
       {editable && virtualKind !== "start" ? <Handle type="target" position={Position.Left} /> : null}
       <div className="truncate text-sm font-semibold">{data.label}</div>
       <div className="mt-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
         <span className="truncate">{data.type}</span>
-        <span>{status}</span>
+        <span className="flex shrink-0 items-center gap-1">
+          {attempt ? <span className="debug-node-attempt">#{attempt}</span> : null}
+          <span>{status}</span>
+        </span>
       </div>
       {editable && virtualKind !== "end" ? <Handle type="source" position={Position.Right} /> : null}
     </div>
