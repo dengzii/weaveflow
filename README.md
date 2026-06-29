@@ -31,25 +31,26 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
   approval gates.
 - Artifact persistence for debugging and replay.
 - OpenAI-compatible model adapter and local `llama.cpp` integration.
-- Reference server (`cmd/neo`) with chat, history, live event streaming, and replay views.
+- Debug server (`cmd/server`) and web UI for graph upload, runs, live events, checkpoints, and artifacts.
 
 ## Repository Layout
 
-| Package         | Responsibility                                                                            |
-|-----------------|-------------------------------------------------------------------------------------------|
-| `core/`         | Shared node contracts, execution primitives, tool abstractions, and state-adjacent types. |
-| `dsl/`          | Serializable graph definitions, node specs, and contract schemas.                         |
-| `graph/`        | Topology, edge resolution, langgraph compilation, and lightweight `Graph.Run`.            |
-| `runtime/`      | Run lifecycle, checkpoints, resume, events, artifacts, and runtime contract policy.       |
-| `state/`        | Scoped state, snapshots, validation, merge behavior, and conversation helpers.            |
-| `registry/`     | Node/condition registration, build context, and graph instance configuration.             |
-| `node/`         | Production-oriented node implementations.                                                 |
-| `builtin/`      | Built-in conditions, helpers, and default registry wiring for advanced use.               |
-| `tools/`        | Bundled tool implementations.                                                             |
-| `llms/openai/`  | OpenAI-compatible LLM adapter.                                                            |
-| `memory/`       | Memory manager, repositories, and retrieval helpers.                                      |
-| `cmd/neo/`      | Reference server entrypoint.                                                              |
-| `internal/neo/` | Neo server implementation and replay support.                                             |
+| Package            | Responsibility                                                                            |
+|--------------------|-------------------------------------------------------------------------------------------|
+| `core/`            | Shared node contracts, execution primitives, tool abstractions, and state-adjacent types. |
+| `dsl/`             | Serializable graph definitions, node specs, and contract schemas.                         |
+| `graph/`           | Topology, edge resolution, langgraph compilation, and lightweight `Graph.Run`.            |
+| `runtime/`         | Run lifecycle, checkpoints, resume, events, artifacts, and runtime contract policy.       |
+| `state/`           | Scoped state, snapshots, validation, merge behavior, and conversation helpers.            |
+| `registry/`        | Node/condition registration, build context, and graph instance configuration.             |
+| `node/`            | Production-oriented node implementations.                                                 |
+| `builtin/`         | Built-in conditions, helpers, and default registry wiring for advanced use.               |
+| `tools/`           | Bundled tool implementations.                                                             |
+| `llms/openai/`     | OpenAI-compatible LLM adapter.                                                            |
+| `memory/`          | Memory manager, repositories, and retrieval helpers.                                      |
+| `cmd/server/`      | Graph debugging server entrypoint.                                                        |
+| `internal/server/` | Server API implementation for graph upload, runs, events, checkpoints, and artifacts.     |
+| `internal/web/`    | Debug web UI for editing graphs and inspecting runs.                                      |
 
 ## Getting Started
 
@@ -159,23 +160,37 @@ such as conversation messages and record collections. `state.Read[T]` intentiona
 typed accessors should convert restored JSON shapes at the accessor boundary instead of relying on the snapshot codec
 to reconstruct arbitrary Go structs or typed slices.
 
-## Neo Reference Server
+## Debug Server
 
-`cmd/neo` is the reference application shipped with the repository. It exposes a chat-oriented agent server with
-persistent history, live execution events, and replay endpoints for run inspection.
+`cmd/server` exposes the graph debugging API used by the local web UI. It can preload a graph definition, start and
+resume runs, stream live events, and inspect persisted checkpoints, events, and artifacts.
 
-Start it with:
+Start the API server with:
 
 ```bash
-go run ./cmd/neo --addr :9090 --data .local/neo
+go run ./cmd/server -addr :8080 -data .local/server
 ```
 
-Then open `http://127.0.0.1:9090/neo/`.
+To preload a graph definition:
 
-Route groups:
+```bash
+go run ./cmd/server -addr :8080 -data .local/server -graph path/to/graph.json
+```
 
-- `/neo` for chat, history, config, memory, and registry endpoints
-- `/api` for replay and live debugging endpoints
+If `OPENAI_API_KEY` is set, model-backed nodes are enabled. The server also wires local memory and the bundled `read`,
+`write`, `edit`, `glob`, and `grep` tools into the runtime context.
+
+The API routes are mounted at the root by default. Use `-prefix /debug` to mount them under a path prefix.
+
+Run the web UI during development:
+
+```bash
+cd internal/web
+bun install
+WEAVEFLOW_BACKEND=http://127.0.0.1:8080 bun run dev
+```
+
+Open the printed dev-server URL; the app redirects to `/app/graph`.
 
 ## Examples
 
@@ -194,8 +209,8 @@ Run the test suite:
 go test ./...
 ```
 
-The codebase already includes coverage around state merging, contract validation, runtime stores, Neo server behavior,
-and major node implementations. Some surfaces, especially the reference server and advanced orchestration features, are
+The codebase already includes coverage around state merging, contract validation, runtime stores, debug server behavior,
+and major node implementations. Some surfaces, especially the debug server and advanced orchestration features, are
 still evolving.
 
 Package boundary notes:

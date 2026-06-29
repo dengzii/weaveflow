@@ -6,15 +6,19 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
-	"github.com/dengzii/weaveflow/internal/neo"
 	"github.com/dengzii/weaveflow/internal/server"
 	"github.com/dengzii/weaveflow/llms/openai"
+	"github.com/dengzii/weaveflow/memory"
 	wfregistry "github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tmc/langchaingo/llms"
 )
 
 func main() {
@@ -39,7 +43,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		baseCtx = neo.NewContext(model, *dataDir)
+		baseCtx = newRuntimeContext(model, *dataDir)
 		fmt.Printf("model service: openai")
 		if name := strings.TrimSpace(os.Getenv("OPENAI_MODEL")); name != "" {
 			fmt.Printf(" (%s)", name)
@@ -82,4 +86,19 @@ func normalizePrefix(prefix string) string {
 		prefix = "/" + prefix
 	}
 	return strings.TrimRight(prefix, "/")
+}
+
+func newRuntimeContext(model llms.Model, baseDir string) context.Context {
+	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
+	ctx := context.Background()
+	ctx = core.WithModel(ctx, model)
+	ctx = core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
+	ctx = core.WithTools(ctx, map[string]core.Tool{
+		"read":  tools.NewRead(),
+		"write": tools.NewWrite(),
+		"edit":  tools.NewEdit(),
+		"glob":  tools.NewGlob(),
+		"grep":  tools.NewGrep(),
+	})
+	return ctx
 }
