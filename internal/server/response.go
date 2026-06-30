@@ -45,6 +45,8 @@ func statusForError(err error) int {
 		return http.StatusOK
 	case errors.Is(err, runtime.ErrRunnerRecordNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, runtime.ErrRunControlNotAllowed):
+		return http.StatusConflict
 	case errors.Is(err, errGraphNotConfigured),
 		errors.Is(err, errRunnerNotConfigured),
 		errors.Is(err, errRegistryNotConfigured),

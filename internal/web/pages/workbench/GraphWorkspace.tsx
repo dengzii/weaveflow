@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
-import { Search, X } from "lucide-react";
-import { GraphCanvas, type VirtualGraphEdge } from "../../components/GraphCanvas";
+import { createPortal } from "react-dom";
+import { ChevronDown, FilePlus2, Search, Trash2, X } from "lucide-react";
+import { GraphCanvas, type VirtualGraphEdge, type VirtualGraphLoop } from "../../components/GraphCanvas";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import {
@@ -9,6 +10,7 @@ import {
   addGraphEdge,
   addNodeToGraph,
   createGraphDefinition,
+  findGraphEdgeIndex,
   graphEdgeId,
   graphNodePositions,
   removeGraphEdge,
@@ -21,7 +23,6 @@ import {
 } from "../../lib/graphEditor";
 import {
   deleteLocalGraphDraft,
-  duplicateLocalGraphDraft,
   pickInitialLocalGraphDraft,
   readLocalGraphDrafts,
   saveLocalGraphDraft,
@@ -39,11 +40,10 @@ import type {
   StepRecord,
 } from "../../types";
 import { CanvasContextMenu } from "./graph-workspace/CanvasContextMenu";
-import { defaultVirtualNodeIds, fallbackNodeTypes, virtualNodeTypes } from "./graph-workspace/constants";
+import { defaultVirtualNodeIds, fallbackNodeTypes } from "./graph-workspace/constants";
 import { autoLayoutGraph } from "./graph-workspace/layout";
 import { buildGraphLintIssues, type GraphLintIssue } from "./graph-workspace/lint";
 import { ToastStack, type ToastRecord } from "./graph-workspace/ToastStack";
-import { GraphBrowserPanel } from "./graph-workspace/GraphBrowserPanel";
 import { GraphInspectorPanel } from "./graph-workspace/GraphInspectorPanel";
 import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } from "./graph-workspace/types";
 import {
@@ -107,16 +107,16 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   const [activeDraftId, setActiveDraftId] = useState("");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [nodeTypeQuery, setNodeTypeQuery] = useState("");
-  const [nodeQuery, setNodeQuery] = useState("");
+  const [selectedLoopId, setSelectedLoopId] = useState<string | null>(null);
   const [nodeConfigText, setNodeConfigText] = useState("{}");
   const [edgeConfigText, setEdgeConfigText] = useState("{}");
   const [localStatus, setLocalStatus] = useState("local ready");
-  const [leftCollapsed, setLeftCollapsed] = useState(false);
-  const [nodeTypesOpen, setNodeTypesOpen] = useState(false);
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null);
+  const [graphMenuOpen, setGraphMenuOpen] = useState(false);
+  const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null);
   const [virtualNodeIds, setVirtualNodeIds] = useState<string[]>(defaultVirtualNodeIds);
   const [virtualEdges, setVirtualEdges] = useState<VirtualGraphEdge[]>([]);
+  const [virtualLoops, setVirtualLoops] = useState<VirtualGraphLoop[]>([]);
   const [fitViewSignal, setFitViewSignal] = useState(0);
   const [focusNodeId, setFocusNodeId] = useState<string | undefined>();
   const [focusNodeSignal, setFocusNodeSignal] = useState(0);
@@ -133,6 +133,28 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   useEffect(() => {
     setDrafts(readLocalGraphDrafts());
   }, []);
+
+  useEffect(() => {
+    setTitleSlot(document.getElementById("graph-title-slot"));
+  }, []);
+
+  useEffect(() => {
+    if (!graphMenuOpen) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Element && target.closest("[data-graph-title-menu]")) return;
+      setGraphMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setGraphMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [graphMenuOpen]);
 
   useEffect(() => {
     if (autoLoadedDraftRef.current) return;
@@ -182,6 +204,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         return;
       }
       if (event.key === "Delete" || event.key === "Backspace") {
+        if (selectedLoopId) {
+          event.preventDefault();
+          deleteVirtualLoop(selectedLoopId);
+          return;
+        }
         if (selectedEdgeId) {
           event.preventDefault();
           deleteSelectedEdge(selectedEdgeId);
@@ -199,7 +226,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
 
   useEffect(() => {
     if (!definition) return;
-    const signature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges);
+    const signature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops);
     if (!autoSaveHydratedRef.current) {
       autoSaveHydratedRef.current = true;
       lastSavedSignatureRef.current = signature;
@@ -222,7 +249,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         autoSaveTimerRef.current = null;
       }
     };
-  }, [definition, graphId, graphVersion, virtualEdges, virtualNodeIds]);
+  }, [definition, graphId, graphVersion, virtualEdges, virtualLoops, virtualNodeIds]);
 
   useEffect(() => {
     activeDraftIdRef.current = activeDraftId;
@@ -240,7 +267,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     () => realNodeTypes(nodeTypes?.length ? nodeTypes : fallbackNodeTypes),
     [nodeTypes]
   );
-  const creatableNodeTypes = useMemo(() => [...virtualNodeTypes, ...paletteNodeTypes], [paletteNodeTypes]);
   const defaultGraphNodeType = paletteNodeTypes[0];
   const conditions = registry?.conditions ?? [];
   const selectedNode = useMemo(
@@ -276,7 +302,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     () => displayVirtualEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
     [displayVirtualEdges, selectedEdgeId]
   );
-  const inspectorMode = selectedEdge || selectedVirtualEdge ? "edge" : selectedVirtualNode ? "virtual" : selectedNode ? "node" : "graph";
+  const selectedVirtualLoop = useMemo(
+    () => virtualLoops.find((loop) => loop.id === selectedLoopId) ?? null,
+    [selectedLoopId, virtualLoops]
+  );
+  const inspectorMode = selectedEdge || selectedVirtualEdge ? "edge" : selectedVirtualLoop ? "loop" : selectedVirtualNode ? "virtual" : selectedNode ? "node" : "graph";
   const searchableNodes = useMemo(
     () => [...visibleVirtualNodes, ...(definition?.nodes ?? [])],
     [definition, visibleVirtualNodes]
@@ -292,6 +322,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     () => canvasSearchMatches.map((node) => node.id),
     [canvasSearchMatches]
   );
+  const isUnsaved = useMemo(() => {
+    if (!definition) return false;
+    const currentSignature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops);
+    return currentSignature !== lastSavedSignatureRef.current;
+  }, [definition, graphId, graphVersion, virtualEdges, virtualLoops, virtualNodeIds]);
 
   useEffect(() => {
     if (!canvasSearchOpen || !canvasSearchQuery.trim()) return;
@@ -299,20 +334,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setCanvasSearchIndex(0);
     if (first) focusCanvasNode(first.id);
   }, [canvasSearchMatches, canvasSearchOpen, canvasSearchQuery]);
-
-  const filteredNodeTypes = useMemo(() => {
-    const query = nodeTypeQuery.trim().toLowerCase();
-    if (!query) return creatableNodeTypes;
-    return creatableNodeTypes.filter((nodeType) =>
-      `${nodeType.title ?? ""} ${nodeType.type} ${nodeType.description ?? ""}`.toLowerCase().includes(query)
-    );
-  }, [creatableNodeTypes, nodeTypeQuery]);
-  const filteredNodes = useMemo(() => {
-    const query = nodeQuery.trim().toLowerCase();
-    const nodes = [...visibleVirtualNodes, ...(definition?.nodes ?? [])];
-    if (!query) return nodes;
-    return nodes.filter((node) => `${node.id} ${node.name ?? ""} ${node.type ?? ""}`.toLowerCase().includes(query));
-  }, [definition, nodeQuery, visibleVirtualNodes]);
 
   useEffect(() => {
     if (!selectedNode) {
@@ -323,12 +344,13 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   }, [selectedNode]);
 
   useEffect(() => {
-    if (!selectedEdge?.condition) {
+    const condition = selectedEdge?.condition ?? selectedVirtualEdge?.condition;
+    if (!condition) {
       setEdgeConfigText("{}");
       return;
     }
-    setEdgeConfigText(stringifyJSON(selectedEdge.condition.config ?? {}));
-  }, [selectedEdge]);
+    setEdgeConfigText(stringifyJSON(condition.config ?? {}));
+  }, [selectedEdge, selectedVirtualEdge]);
 
   function setDefinition(next: GraphDefinition) {
     onDefinitionText(stringifyJSON(next));
@@ -358,9 +380,12 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     autoSaveHydratedRef.current = true;
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setVirtualNodeIds(defaultVirtualNodeIds);
     setVirtualEdges([]);
+    setVirtualLoops([]);
     setLocalStatus("new graph");
+    setGraphMenuOpen(false);
   }
 
   function saveLocal(options: { mode?: "manual" | "auto" } = {}) {
@@ -377,11 +402,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       title: definition.name || graphId,
       graphId,
       graphVersion,
-      definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges),
+      definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges, virtualLoops),
     });
     setActiveDraftId(draft.id);
     setDrafts(readLocalGraphDrafts());
-    lastSavedSignatureRef.current = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges);
+    lastSavedSignatureRef.current = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops);
     setLocalStatus(`${options.mode === "auto" ? "autosaved" : "saved"} ${formatTime(draft.updatedAt)}`);
   }
 
@@ -406,25 +431,16 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     onGraphVersion(draft.graphVersion);
     onDefinitionText(stringifyJSON(draft.definition));
     const savedState = savedGraphWorkspaceState(draft.definition);
-    lastSavedSignatureRef.current = autoSaveSignature(draft.definition, draft.graphId, draft.graphVersion, savedState.virtualNodeIds, savedState.virtualEdges);
+    lastSavedSignatureRef.current = autoSaveSignature(draft.definition, draft.graphId, draft.graphVersion, savedState.virtualNodeIds, savedState.virtualEdges, savedState.virtualLoops);
     setVirtualNodeIds(savedState.virtualNodeIds);
     setVirtualEdges(savedState.virtualEdges);
+    setVirtualLoops(savedState.virtualLoops);
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setLocalStatus(`loaded ${draft.title}`);
+    setGraphMenuOpen(false);
     window.setTimeout(() => setFitViewSignal((value) => value + 1), 80);
-  }
-
-  function duplicateDraft() {
-    if (!activeDraftId) return;
-    if (!onGraphSwitch()) {
-      setLocalStatus("run active");
-      return;
-    }
-    const draft = duplicateLocalGraphDraft(activeDraftId);
-    if (!draft) return;
-    setDrafts(readLocalGraphDrafts());
-    loadDraftWithoutGuard(draft);
   }
 
   function deleteDraft() {
@@ -433,6 +449,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setDrafts(nextDrafts);
     setActiveDraftId("");
     setLocalStatus("draft deleted");
+  }
+
+  function deleteCurrentGraph() {
+    deleteDraft();
+    setGraphMenuOpen(false);
   }
 
   function addNode(nodeType: NodeTypeSchema, position?: NodePosition) {
@@ -447,6 +468,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       onDefinitionText(stringifyJSON(next));
       setSelectedNodeId(next.nodes[0]?.id ?? null);
       setSelectedEdgeId(null);
+      setSelectedLoopId(null);
       setContextMenu(null);
       return;
     }
@@ -455,6 +477,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setDefinition(next);
     setSelectedNodeId(node?.id ?? null);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setContextMenu(null);
     setLocalStatus(position ? "node created" : "node added");
   }
@@ -467,8 +490,46 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     }
     setSelectedNodeId(nodeID);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setContextMenu(null);
     setLocalStatus(`${virtualNodeLabel(nodeID)} ready`);
+  }
+
+  function addVirtualLoop(position?: NodePosition) {
+    if (!definition) {
+      setLocalStatus("invalid graph json");
+      return;
+    }
+    const loopID = nextVirtualLoopId(virtualLoops);
+    const loop: VirtualGraphLoop = {
+      id: loopID,
+      name: "Loop",
+      nodeIds: [],
+    };
+    setVirtualLoops((current) => [...current, loop]);
+    if (position) {
+      setDefinition(withNodePosition(definition, loopID, position));
+    }
+    setSelectedLoopId(loopID);
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setContextMenu(null);
+    setLocalStatus("loop created");
+  }
+
+  function changeSelectedVirtualLoop(update: (loop: VirtualGraphLoop) => VirtualGraphLoop) {
+    if (!selectedVirtualLoop) return;
+    setVirtualLoops((current) =>
+      current.map((loop) => (loop.id === selectedVirtualLoop.id ? normalizeVirtualLoop(update({ ...loop })) : loop))
+    );
+  }
+
+  function deleteVirtualLoop(loopID = selectedLoopId) {
+    if (!loopID) return;
+    setVirtualLoops((current) => current.filter((loop) => loop.id !== loopID));
+    if (selectedLoopId === loopID) setSelectedLoopId(null);
+    setContextMenu(null);
+    setLocalStatus("loop deleted");
   }
 
   function changeGraphField<Key extends keyof GraphDefinition>(key: Key, value: GraphDefinition[Key]) {
@@ -491,7 +552,14 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setLocalStatus("node id already exists");
       return;
     }
+    const oldID = selectedNode.id;
     setDefinition(renameGraphNode(definition, selectedNode.id, nextID));
+    setVirtualLoops((current) =>
+      current.map((loop) => ({
+        ...loop,
+        nodeIds: loop.nodeIds.map((nodeID) => (nodeID === oldID ? nextID : nodeID)),
+      }))
+    );
     setSelectedNodeId(nextID);
   }
 
@@ -513,14 +581,19 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setVirtualNodeIds((current) => current.filter((id) => id !== nodeID));
       setSelectedNodeId(null);
       setSelectedEdgeId(null);
+      setSelectedLoopId(null);
       setContextMenu(null);
       setLocalStatus(`${virtualNodeLabel(nodeID)} hidden`);
       return;
     }
     removeVirtualEdgesForNode(nodeID);
+    setVirtualLoops((current) =>
+      current.map((loop) => ({ ...loop, nodeIds: loop.nodeIds.filter((memberID) => memberID !== nodeID) }))
+    );
     updateDefinition((current) => removeGraphNode(current, nodeID));
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setContextMenu(null);
     setLocalStatus("node deleted");
   }
@@ -528,20 +601,90 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   function changeSelectedEdge(update: (edge: GraphEdgeSpec) => GraphEdgeSpec) {
     if (!definition || !selectedEdgeId) return;
     const previousIndex = (definition.edges ?? []).findIndex((edge, index) => graphEdgeId(edge, index) === selectedEdgeId);
-    const next = updateGraphEdge(definition, selectedEdgeId, update);
+    let next = updateGraphEdge(definition, selectedEdgeId, update);
+    if (next === definition) {
+      setLocalStatus("edge already exists");
+      return;
+    }
     const nextEdge = previousIndex >= 0 ? next.edges?.[previousIndex] : undefined;
+    if (nextEdge?.to === END_NODE_REF && next.finish_point === nextEdge.from) {
+      next = { ...next, finish_point: undefined };
+    }
     setDefinition(next);
     setSelectedEdgeId(nextEdge ? graphEdgeId(nextEdge, previousIndex) : null);
   }
 
+  function changeSelectedVirtualEdge(update: (edge: VirtualGraphEdge) => VirtualGraphEdge) {
+    if (!definition || !selectedVirtualEdge) return;
+    const updated = update({ ...selectedVirtualEdge });
+    const sourceKind = virtualNodeKind(updated.from);
+    const targetKind = virtualNodeKind(updated.to);
+    if (updated.kind === "entry" && (sourceKind !== "start" || targetKind)) {
+      setLocalStatus("invalid entry edge");
+      return;
+    }
+    if (updated.kind === "finish" && (sourceKind || targetKind !== "end")) {
+      setLocalStatus("invalid finish edge");
+      return;
+    }
+
+    if (updated.kind === "finish") {
+      const graphEdge: GraphEdgeSpec = {
+        from: updated.from,
+        to: END_NODE_REF,
+        condition: updated.condition,
+      };
+      const existingIndex = (definition.edges ?? []).findIndex((edge) => edge.from === graphEdge.from && edge.to === graphEdge.to);
+      const nextEdges = [...(definition.edges ?? [])];
+      const nextIndex = existingIndex >= 0 ? existingIndex : nextEdges.length;
+      nextEdges[nextIndex] = graphEdge;
+      setVirtualEdges((current) => current.filter((edge) => edge.id !== selectedVirtualEdge.id));
+      setDefinition({
+        ...definition,
+        finish_point: definition.finish_point === selectedVirtualEdge.from ? undefined : definition.finish_point,
+        edges: nextEdges,
+      });
+      setSelectedEdgeId(graphEdgeId(graphEdge, nextIndex));
+      setLocalStatus("edge updated");
+      return;
+    }
+
+    const nextEdge = {
+      ...updated,
+      id: virtualEdgeId(updated.from, updated.to, updated.kind),
+    };
+    if (updated.kind === "entry" && definition.entry_point === updated.to && selectedVirtualEdge.to !== updated.to) {
+      setLocalStatus("edge already exists");
+      return;
+    }
+    setVirtualEdges((current) => upsertVirtualEdge(current, selectedVirtualEdge, nextEdge));
+    setDefinition(
+      nextEdge.kind === "entry"
+        ? { ...definition, entry_point: nextEdge.to }
+        : {
+            ...definition,
+            finish_point: nextEdge.kind === "finish" ? nextEdge.from : definition.finish_point,
+          }
+    );
+    setSelectedEdgeId(nextEdge.id);
+    setLocalStatus("edge updated");
+  }
+
   function applyEdgeConfig() {
-    if (!selectedEdge?.condition) return;
+    if (!selectedEdge?.condition && !selectedVirtualEdge?.condition) return;
     try {
       const config = parseJSONObject(edgeConfigText);
-      changeSelectedEdge((edge) => ({
-        ...edge,
-        condition: edge.condition ? { ...edge.condition, config } : edge.condition,
-      }));
+      if (selectedVirtualEdge) {
+        changeSelectedVirtualEdge((edge) => ({
+          ...edge,
+          condition: edge.condition ? { ...edge.condition, config } : edge.condition,
+        }));
+      } else {
+        changeSelectedEdge((edge) => ({
+          ...edge,
+          condition: edge.condition ? { ...edge.condition, config } : edge.condition,
+        }));
+      }
       setLocalStatus("edge config applied");
     } catch (err) {
       setLocalStatus(err instanceof Error ? err.message : String(err));
@@ -556,6 +699,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     }
     updateDefinition((current) => removeGraphEdge(current, edgeId));
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setContextMenu(null);
     setLocalStatus("edge deleted");
   }
@@ -563,12 +707,15 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   function addVirtualEdge(edge: Omit<VirtualGraphEdge, "id">): string {
     const nextEdge = { ...edge, id: virtualEdgeId(edge.from, edge.to, edge.kind) };
     setVirtualEdges((current) => {
-      const next = current.filter((item) =>
-        edge.kind === "entry" ? item.from !== edge.from : item.to !== edge.to
-      );
+      const next = current.filter((item) => {
+        if (item.id === nextEdge.id) return false;
+        if (nextEdge.kind === "entry" && item.kind === "entry" && item.from === nextEdge.from) return false;
+        return true;
+      });
       return [...next, nextEdge];
     });
     setSelectedEdgeId(nextEdge.id);
+    setSelectedLoopId(null);
     return nextEdge.id;
   }
 
@@ -577,7 +724,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     const remainingEdges = virtualEdges.filter((item) => item.id !== edgeId);
     setVirtualEdges(remainingEdges);
     if (edge && definition) {
-      if (edge.kind === "entry" && definition.entry_point === edge.to) {
+      if (edge.kind === "entry") {
         setDefinition({ ...definition, entry_point: lastVirtualEdge(remainingEdges, "entry")?.to });
       }
       if (edge.kind === "finish" && definition.finish_point === edge.from) {
@@ -585,6 +732,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       }
     }
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setContextMenu(null);
     setLocalStatus("edge deleted");
   }
@@ -618,19 +766,51 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       return;
     }
     if (sourceKind === "start") {
+      if (definition.entry_point === target) {
+        const existingEdge = displayVirtualEdges.find((edge) => edge.kind === "entry" && edge.from === source && edge.to === target);
+        setSelectedNodeId(null);
+        setSelectedEdgeId(existingEdge?.id ?? null);
+        setSelectedLoopId(null);
+        setLocalStatus("edge already exists");
+        return;
+      }
       const edgeId = addVirtualEdge({ from: source, to: target, kind: "entry" });
-      changeGraphField("entry_point", target);
+      setDefinition({ ...definition, entry_point: target });
       setSelectedNodeId(null);
       setSelectedEdgeId(edgeId);
-      setLocalStatus("entry updated");
+      setSelectedLoopId(null);
+      setLocalStatus("entry connected");
       return;
     }
     if (targetKind === "end") {
-      const edgeId = addVirtualEdge({ from: source, to: target, kind: "finish" });
-      changeGraphField("finish_point", source);
+      const existingEdgeIndex = findGraphEdgeIndex(definition, source, END_NODE_REF);
+      if (existingEdgeIndex >= 0) {
+        const existingEdge = definition.edges?.[existingEdgeIndex];
+        setSelectedNodeId(null);
+        setSelectedEdgeId(existingEdge ? graphEdgeId(existingEdge, existingEdgeIndex) : null);
+        setSelectedLoopId(null);
+        setLocalStatus("edge already exists");
+        return;
+      }
+      const next = addGraphEdge(definition, source, END_NODE_REF);
+      const edgeId = findLastEdgeId(next, source, END_NODE_REF);
+      setDefinition({
+        ...next,
+        finish_point: next.finish_point === source ? undefined : next.finish_point,
+      });
       setSelectedNodeId(null);
       setSelectedEdgeId(edgeId);
-      setLocalStatus("finish updated");
+      setSelectedLoopId(null);
+      setLocalStatus("edge connected");
+      return;
+    }
+    const existingEdgeIndex = findGraphEdgeIndex(definition, source, target);
+    if (existingEdgeIndex >= 0) {
+      const existingEdge = definition.edges?.[existingEdgeIndex];
+      setSelectedNodeId(null);
+      setSelectedEdgeId(existingEdge ? graphEdgeId(existingEdge, existingEdgeIndex) : null);
+      setSelectedLoopId(null);
+      setLocalStatus("edge already exists");
       return;
     }
     const next = addGraphEdge(definition, source, target);
@@ -638,12 +818,14 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setDefinition(next);
     setSelectedNodeId(null);
     setSelectedEdgeId(edgeId);
+    setSelectedLoopId(null);
     setLocalStatus("edge connected");
   }
 
   function openCreateMenu(position: NodePosition, screen: NodePosition) {
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setContextMenu({ kind: "pane", position, screen });
   }
 
@@ -655,13 +837,32 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setContextMenu({ kind: "edge", edgeId, screen });
   }
 
+  function openLoopMenu(loopId: string, screen: NodePosition) {
+    setContextMenu({ kind: "loop", loopId, screen });
+  }
+
   function moveNode(nodeID: string, position: NodePosition) {
     updateDefinition((current) => withNodePosition(current, nodeID, position));
+  }
+
+  function handleLoopDrag(loopId: string, delta: NodePosition) {
+    const loop = virtualLoops.find((g) => g.id === loopId);
+    if (!loop || !definition) return;
+    const positions = graphNodePositions(definition);
+    let next = definition;
+    for (const nodeId of loop.nodeIds) {
+      const pos = positions.get(nodeId);
+      if (pos) {
+        next = withNodePosition(next, nodeId, { x: pos.x + delta.x, y: pos.y + delta.y });
+      }
+    }
+    setDefinition(next);
   }
 
   function focusCanvasNode(nodeID: string) {
     setSelectedNodeId(nodeID);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setFocusNodeId(nodeID);
     setFocusNodeSignal((value) => value + 1);
   }
@@ -696,6 +897,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setDefinition(next);
     setSelectedNodeId(nextId);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
     setLocalStatus("node duplicated");
   }
 
@@ -704,7 +906,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setLocalStatus("invalid graph json");
       return;
     }
-    setDefinition(autoLayoutGraph(definition, virtualNodeIds, displayVirtualEdges));
+    setDefinition(autoLayoutGraph(definition, virtualNodeIds, displayVirtualEdges, virtualLoops));
     setFitViewSignal((value) => value + 1);
     setLocalStatus("auto layout applied");
   }
@@ -717,16 +919,19 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     if (issue.edgeId) {
       setSelectedEdgeId(issue.edgeId);
       setSelectedNodeId(null);
+      setSelectedLoopId(null);
       return;
     }
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
+    setSelectedLoopId(null);
   }
 
-  const leftWidth = leftCollapsed ? "48px" : "320px";
   const inspectorTitle =
     inspectorMode === "edge"
       ? "Edge Properties"
+      : inspectorMode === "loop"
+        ? selectedVirtualLoop?.name || "Loop Properties"
       : inspectorMode === "virtual"
         ? selectedVirtualNode?.name ?? "Virtual Node"
         : inspectorMode === "node"
@@ -736,39 +941,26 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   return (
     <div
       className="relative grid h-full min-h-0"
-      style={{ gridTemplateColumns: `${leftWidth} minmax(0,1fr) 380px` }}
+      style={{ gridTemplateColumns: "minmax(0,1fr) 380px" }}
     >
-      <GraphBrowserPanel
-        activeDraftId={activeDraftId}
-        creatableNodeTypes={creatableNodeTypes}
-        definition={definition}
-        drafts={drafts}
-        filteredNodes={filteredNodes}
-        filteredNodeTypes={filteredNodeTypes}
-        graphSwitchDisabled={graphSwitchDisabled}
-        leftCollapsed={leftCollapsed}
-        nodeQuery={nodeQuery}
-        nodeTypeQuery={nodeTypeQuery}
-        nodeTypesOpen={nodeTypesOpen}
-        selectedNodeId={selectedNodeId}
-        virtualNodeIds={virtualNodeIds}
-        onAddNode={addNode}
-        onAutoLayout={applyAutoLayout}
-        onCollapseChange={setLeftCollapsed}
-        onCreateGraph={createGraph}
-        onDeleteDraft={deleteDraft}
-        onDeleteNode={deleteSelectedNode}
-        onDuplicateDraft={duplicateDraft}
-        onLoadDraft={loadDraft}
-        onNodeQuery={setNodeQuery}
-        onNodeTypeQuery={setNodeTypeQuery}
-        onNodeTypesOpen={setNodeTypesOpen}
-        onSaveLocal={saveLocal}
-        onSelectNode={(nodeId) => {
-          setSelectedNodeId(nodeId);
-          setSelectedEdgeId(null);
-        }}
-      />
+      {titleSlot
+        ? createPortal(
+            <GraphTitleMenu
+              activeDraftId={activeDraftId}
+              definition={definition}
+              drafts={drafts}
+              graphId={graphId}
+              graphMenuOpen={graphMenuOpen}
+              graphSwitchDisabled={graphSwitchDisabled}
+              unsaved={isUnsaved}
+              onCreateGraph={createGraph}
+              onDeleteGraph={deleteCurrentGraph}
+              onLoadDraft={loadDraft}
+              onOpenChange={setGraphMenuOpen}
+            />,
+            titleSlot
+          )
+        : null}
 
       <section className="relative min-h-0 bg-canvas">
         <GraphCanvas
@@ -778,19 +970,25 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           editable
           selectedNodeId={selectedNodeId ?? undefined}
           selectedEdgeId={selectedEdgeId ?? undefined}
+          selectedLoopId={selectedLoopId ?? undefined}
           fitViewSignal={fitViewSignal}
           focusNodeId={focusNodeId}
           focusNodeSignal={focusNodeSignal}
           highlightedNodeIds={highlightedNodeIds}
           onSelectNode={setSelectedNodeId}
           onSelectEdge={setSelectedEdgeId}
+          onSelectLoop={setSelectedLoopId}
           onNodePositionChange={moveNode}
+          onAutoLayout={applyAutoLayout}
           onConnectNodes={connectNodes}
           onCreateNodeAt={openCreateMenu}
           onNodeContextMenu={openNodeMenu}
           onEdgeContextMenu={openEdgeMenu}
+          onLoopContextMenu={openLoopMenu}
+          onLoopDrag={handleLoopDrag}
           virtualNodeIds={virtualNodeIds}
           virtualEdges={displayVirtualEdges}
+          virtualLoops={virtualLoops}
         />
         {canvasSearchOpen ? (
           <div className="absolute left-1/2 top-4 z-40 flex w-[min(420px,calc(100%-2rem))] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-panel p-2 shadow-lg">
@@ -840,18 +1038,22 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         paletteNodeTypes={paletteNodeTypes}
         selectedEdge={selectedEdge}
         selectedNode={selectedNode}
+        selectedVirtualLoop={selectedVirtualLoop}
         selectedVirtualEdge={selectedVirtualEdge}
         visibleVirtualNodes={visibleVirtualNodes}
         onApplyEdgeConfig={applyEdgeConfig}
         onApplyNodeConfig={applyNodeConfig}
         onChangeEdge={changeSelectedEdge}
         onChangeEdgeConfigText={setEdgeConfigText}
+        onChangeVirtualLoop={changeSelectedVirtualLoop}
+        onChangeVirtualEdge={changeSelectedVirtualEdge}
         onChangeGraphField={changeGraphField}
         onChangeInitialStateText={onInitialStateText}
         onChangeNode={changeSelectedNode}
         onChangeNodeConfigText={setNodeConfigText}
         onChangeNodeId={changeSelectedNodeId}
         onDeleteEdge={deleteSelectedEdge}
+        onDeleteLoop={deleteVirtualLoop}
         onDeleteNode={deleteSelectedNode}
         onSelectLintIssue={selectLintIssue}
       />
@@ -860,16 +1062,107 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         <CanvasContextMenu
           contextMenu={contextMenu}
           paletteNodeTypes={paletteNodeTypes}
+          onAddLoop={addVirtualLoop}
           onAddNode={addNode}
           onAddVirtualNode={addVirtualNode}
           onClose={() => setContextMenu(null)}
           onDeleteEdge={deleteSelectedEdge}
+          onDeleteLoop={deleteVirtualLoop}
           onDeleteNode={deleteSelectedNode}
         />
       ) : null}
     </div>
   );
 });
+
+function GraphTitleMenu({
+  activeDraftId,
+  definition,
+  drafts,
+  graphId,
+  graphMenuOpen,
+  graphSwitchDisabled,
+  unsaved,
+  onCreateGraph,
+  onDeleteGraph,
+  onLoadDraft,
+  onOpenChange,
+}: {
+  activeDraftId: string;
+  definition: GraphDefinition | null;
+  drafts: LocalGraphDraft[];
+  graphId: string;
+  graphMenuOpen: boolean;
+  graphSwitchDisabled: boolean;
+  unsaved: boolean;
+  onCreateGraph: () => void;
+  onDeleteGraph: () => void;
+  onLoadDraft: (draft: LocalGraphDraft) => void;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const title = definition?.name || graphId || "Untitled graph";
+  const displayTitle = unsaved ? `*${title}` : title;
+
+  return (
+    <div data-graph-title-menu className="relative min-w-0">
+      <button
+        type="button"
+        className="flex max-w-[360px] min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-accent"
+        onClick={() => onOpenChange(!graphMenuOpen)}
+        aria-expanded={graphMenuOpen}
+        title={displayTitle}
+      >
+        <span className="truncate text-sm font-semibold">{displayTitle}</span>
+        <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${graphMenuOpen ? "rotate-180" : ""}`} />
+      </button>
+
+      {graphMenuOpen ? (
+        <div className="absolute left-0 top-12 z-50 w-80 overflow-hidden rounded-md border border-border bg-panel shadow-lg">
+          <div className="flex items-center gap-2 border-b border-border p-2">
+            <Button variant="outline" size="sm" onClick={onCreateGraph} disabled={graphSwitchDisabled} title="New graph">
+              <FilePlus2 className="h-4 w-4" />
+              New
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onDeleteGraph}
+              disabled={!activeDraftId}
+              title="Delete graph"
+              aria-label="Delete graph"
+              className="ml-auto"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+
+          <div className="max-h-80 overflow-auto">
+            {drafts.length === 0 ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">No local graphs</div>
+            ) : (
+              drafts.map((draft) => (
+                <button
+                  key={draft.id}
+                  type="button"
+                  className={`grid w-full gap-1 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent ${
+                    draft.id === activeDraftId ? "bg-accent" : ""
+                  } ${graphSwitchDisabled ? "cursor-not-allowed opacity-50 hover:bg-transparent" : ""}`}
+                  onClick={() => onLoadDraft(draft)}
+                  disabled={graphSwitchDisabled}
+                >
+                  <div className="truncate text-sm font-medium">{draft.title}</div>
+                  <div className="truncate text-xs text-muted-foreground">
+                    {draft.definition.nodes.length} nodes / {formatTime(draft.updatedAt)}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 function virtualEdgesFromDefinition(
   definition: GraphDefinition | null,
@@ -900,18 +1193,43 @@ function virtualEdgesFromDefinition(
 function mergeVirtualEdges(primary: VirtualGraphEdge[], secondary: VirtualGraphEdge[]): VirtualGraphEdge[] {
   const seen = new Set<string>();
   const result: VirtualGraphEdge[] = [];
-  for (const edge of [...primary, ...secondary]) {
-    if (seen.has(edge.id)) continue;
-    seen.add(edge.id);
-    result.push(edge);
+  const addOrReplace = (edge: VirtualGraphEdge) => {
+    if (!seen.has(edge.id)) {
+      seen.add(edge.id);
+      result.push(edge);
+      return;
+    }
+    const index = result.findIndex((item) => item.id === edge.id);
+    if (index >= 0) result[index] = { ...result[index], ...edge };
+  };
+  for (const edge of primary) {
+    addOrReplace(edge);
+  }
+  for (const edge of secondary) {
+    addOrReplace(edge);
   }
   return result;
+}
+
+function upsertVirtualEdge(
+  edges: VirtualGraphEdge[],
+  previousEdge: VirtualGraphEdge,
+  nextEdge: VirtualGraphEdge
+): VirtualGraphEdge[] {
+  const next = edges.filter((edge) => {
+    if (edge.id === previousEdge.id) return false;
+    if (edge.id === nextEdge.id) return false;
+    if (nextEdge.kind === "entry" && edge.kind === "entry" && edge.from === nextEdge.from) return false;
+    return true;
+  });
+  return [...next, nextEdge];
 }
 
 function withSavedGraphWorkspaceState(
   definition: GraphDefinition,
   virtualNodeIds: string[],
-  virtualEdges: VirtualGraphEdge[]
+  virtualEdges: VirtualGraphEdge[],
+  virtualLoops: VirtualGraphLoop[]
 ): GraphDefinition {
   const metadata = { ...(definition.metadata ?? {}) };
   const web = isRecord(metadata.web) ? { ...metadata.web } : {};
@@ -921,6 +1239,12 @@ function withSavedGraphWorkspaceState(
     from: edge.from,
     to: edge.to,
     kind: edge.kind,
+    condition: edge.condition,
+  }));
+  web.virtual_loops = virtualLoops.map((loop) => ({
+    id: loop.id,
+    name: loop.name,
+    node_ids: loop.nodeIds,
   }));
   metadata.web = web;
   return { ...definition, metadata };
@@ -929,26 +1253,63 @@ function withSavedGraphWorkspaceState(
 function savedGraphWorkspaceState(definition: GraphDefinition): {
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
+  virtualLoops: VirtualGraphLoop[];
 } {
   const web = isRecord(definition.metadata?.web) ? definition.metadata.web : undefined;
   const rawNodeIds = Array.isArray(web?.virtual_node_ids) ? web.virtual_node_ids : [];
   const virtualNodeIds = rawNodeIds.filter((item): item is string => typeof item === "string" && item.trim() !== "");
   const rawEdges = Array.isArray(web?.virtual_edges) ? web.virtual_edges : [];
   const virtualEdges = rawEdges.filter(isVirtualGraphEdge);
+  const rawLoops = Array.isArray(web?.virtual_loops) ? web.virtual_loops : Array.isArray(web?.virtual_groups) ? web.virtual_groups : [];
+  const virtualLoops = rawLoops.map(parseVirtualGraphLoop).filter((loop): loop is VirtualGraphLoop => Boolean(loop));
   return {
     virtualNodeIds: virtualNodeIds.length ? virtualNodeIds : defaultVirtualNodeIds,
     virtualEdges,
+    virtualLoops,
   };
 }
 
 function isVirtualGraphEdge(value: unknown): value is VirtualGraphEdge {
   if (!isRecord(value)) return false;
+  const condition = value.condition;
   return (
     typeof value.id === "string" &&
     typeof value.from === "string" &&
     typeof value.to === "string" &&
-    (value.kind === "entry" || value.kind === "finish")
+    (value.kind === "entry" || value.kind === "finish") &&
+    (condition === undefined || isGraphConditionSpec(condition))
   );
+}
+
+function parseVirtualGraphLoop(value: unknown): VirtualGraphLoop | null {
+  if (!isRecord(value)) return null;
+  const nodeIds = value.nodeIds ?? value.node_ids;
+  if (
+    typeof value.id !== "string" ||
+    (value.name !== undefined && typeof value.name !== "string") ||
+    !Array.isArray(nodeIds) ||
+    !nodeIds.every((item) => typeof item === "string")
+  ) {
+    return null;
+  }
+  return normalizeVirtualLoop({
+    id: value.id,
+    name: value.name,
+    nodeIds,
+  });
+}
+
+function normalizeVirtualLoop(loop: VirtualGraphLoop): VirtualGraphLoop {
+  return {
+    id: loop.id.trim(),
+    name: loop.name?.trim(),
+    nodeIds: uniqueStrings(loop.nodeIds),
+  };
+}
+
+function isGraphConditionSpec(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return typeof value.type === "string" && (value.config === undefined || isRecord(value.config));
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -965,6 +1326,27 @@ function uniqueNodeId(baseID: string, nodes: GraphNodeSpec[]): string {
   return `${baseID}_${Date.now().toString(36)}`;
 }
 
+function nextVirtualLoopId(loops: VirtualGraphLoop[]): string {
+  const used = new Set(loops.map((loop) => loop.id));
+  for (let index = 1; index < 1000; index += 1) {
+    const id = index === 1 ? "loop" : `loop:${index}`;
+    if (!used.has(id)) return id;
+  }
+  return `loop:${Date.now().toString(36)}`;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const item = value.trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
+}
+
 function cloneJSONRecord(value: unknown): Record<string, unknown> {
   if (!isRecord(value)) return {};
   try {
@@ -979,12 +1361,13 @@ function autoSaveSignature(
   graphId: string,
   graphVersion: string,
   virtualNodeIds: string[],
-  virtualEdges: VirtualGraphEdge[]
+  virtualEdges: VirtualGraphEdge[],
+  virtualLoops: VirtualGraphLoop[]
 ): string {
   return JSON.stringify({
     graphId,
     graphVersion,
-    definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges),
+    definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges, virtualLoops),
   });
 }
 
@@ -994,4 +1377,3 @@ function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   const tagName = target.tagName.toLowerCase();
   return tagName === "input" || tagName === "textarea" || tagName === "select";
 }
-

@@ -13,9 +13,14 @@ export function validateGraph(definition: GraphDefinition | null): string {
   if (nodeIds.size !== definition.nodes.length) return "duplicate nodes";
   if (definition.entry_point && !nodeIds.has(definition.entry_point)) return "missing entry";
   if (definition.finish_point && !nodeIds.has(definition.finish_point)) return "missing finish";
+  if (!definition.finish_point && !(definition.edges ?? []).some((edge) => edge.to === END_NODE_REF)) return "missing finish";
+  const edgePairs = new Set<string>();
   for (const edge of definition.edges ?? []) {
+    const edgeKey = `${edge.from}\u0000${edge.to}`;
+    if (edgePairs.has(edgeKey)) return "duplicate edges";
+    edgePairs.add(edgeKey);
     if (!nodeIds.has(edge.from)) return "missing source";
-    if (!nodeIds.has(edge.to)) return "missing target";
+    if (edge.to !== END_NODE_REF && !nodeIds.has(edge.to)) return "missing target";
   }
   return "";
 }

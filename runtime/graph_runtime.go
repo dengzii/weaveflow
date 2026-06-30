@@ -639,21 +639,31 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 	if e.pending != nil && e.pending.nodeID == nodeID {
 		e.pending = nil
 	}
+	var control *runnerPendingControl
 	if !e.runner.runnerGraph().IsParallelBranchTarget(nodeID) {
 		switch {
 		case run.CancelRequested:
-			e.pending = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID, checkpointID: afterID}
+			control = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID, checkpointID: afterID}
+			e.pending = control
 			if e.cancelInvoke != nil {
 				e.cancelInvoke()
 			}
 		case run.PauseRequested:
-			e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, checkpointID: afterID}
+			control = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, checkpointID: afterID}
+			e.pending = control
 			if e.cancelInvoke != nil {
 				e.cancelInvoke()
 			}
 		}
 	}
 	e.mu.Unlock()
+	if control != nil {
+		return &langgraph.GraphInterrupt{
+			Node:           control.nodeID,
+			State:          currentState,
+			InterruptValue: string(control.kind),
+		}
+	}
 	return nil
 }
 
@@ -807,6 +817,55 @@ func (e *graphRunnerExecution) restorePendingControl(control *runnerPendingContr
 	if e.pending == nil {
 		copyControl := *control
 		e.pending = &copyControl
+	}
+}
+
+func (e *graphRunnerExecution) requestCancel() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.run.PauseRequested = false
+	e.run.CancelRequested = true
+	nodeID := e.run.CurrentNodeID
+	if e.pending == nil || e.pending.kind != runnerControlCancel {
+		e.pending = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID}
+	}
+	cancel := e.cancelInvoke
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+}
+
+func (e *graphRunnerExecution) requestPause() {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.run.PauseRequested = true
+	if e.run.CancelRequested {
+		e.mu.Unlock()
+		return
+	}
+	var (
+		nodeID string
+		cancel context.CancelFunc
+	)
+	if len(e.active) == 1 {
+		for id := range e.active {
+			nodeID = id
+		}
+		if nodeID != "" && !e.runner.runnerGraph().IsParallelBranchTarget(nodeID) {
+			if e.pending == nil {
+				e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, message: "pause requested"}
+			}
+			cancel = e.cancelInvoke
+		}
+	}
+	e.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 

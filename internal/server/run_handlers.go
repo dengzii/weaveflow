@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -132,7 +133,7 @@ func (s *Server) handlePauseRun(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	run, err := runner.GetRun(c.Request.Context(), runID)
+	run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusPaused)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -154,12 +155,48 @@ func (s *Server) handleCancelRun(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	run, err := runner.GetRun(c.Request.Context(), runID)
+	run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusCanceled)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
 	writeData(c, http.StatusOK, run)
+}
+
+func waitForRunStatus(ctx context.Context, runner *runtime.GraphRunner, runID string, target runtime.RunStatus) (runtime.RunRecord, error) {
+	if runner == nil {
+		return runtime.RunRecord{}, errRunnerNotConfigured
+	}
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		run, err := runner.GetRun(ctx, runID)
+		if err != nil {
+			return runtime.RunRecord{}, err
+		}
+		if run.Status == target {
+			return run, nil
+		}
+		if isTerminalRunStatus(run.Status) {
+			return run, fmt.Errorf("%w: run %q reached status %q before %q", runtime.ErrRunControlNotAllowed, runID, run.Status, target)
+		}
+
+		select {
+		case <-ctx.Done():
+			return run, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func isTerminalRunStatus(status runtime.RunStatus) bool {
+	switch status {
+	case runtime.RunStatusCompleted, runtime.RunStatusFailed, runtime.RunStatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) handleListRuns(c *gin.Context) {

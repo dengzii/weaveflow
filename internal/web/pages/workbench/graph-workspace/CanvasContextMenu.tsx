@@ -1,5 +1,3 @@
-import { FileJson, Plus, Trash2 } from "lucide-react";
-import type { ReactNode } from "react";
 import type { NodePosition } from "../../../lib/graphEditor";
 import type { GraphNodeSpec, NodeTypeSchema } from "../../../types";
 import { virtualNodeTypes } from "./constants";
@@ -8,20 +6,24 @@ import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } fro
 interface CanvasContextMenuProps {
   contextMenu: CanvasContextMenuState;
   paletteNodeTypes: NodeTypeSchema[];
+  onAddLoop: (position?: NodePosition) => void;
   onAddNode: (nodeType: NodeTypeSchema, position?: NodePosition) => void;
   onAddVirtualNode: (kind: VirtualNodeKind, position?: NodePosition) => void;
   onClose: () => void;
   onDeleteEdge: (edgeId: string) => void;
+  onDeleteLoop: (loopId: string) => void;
   onDeleteNode: (nodeId: string) => void;
 }
 
 export function CanvasContextMenu({
   contextMenu,
   paletteNodeTypes,
+  onAddLoop,
   onAddNode,
   onAddVirtualNode,
   onClose,
   onDeleteEdge,
+  onDeleteLoop,
   onDeleteNode,
 }: CanvasContextMenuProps) {
   return (
@@ -34,11 +36,14 @@ export function CanvasContextMenu({
       {contextMenu.kind === "pane" ? (
         <div>
           <ContextMenuTitle>Create Node</ContextMenuTitle>
+          <ContextMenuAction
+            label="Create loop"
+            onClick={() => onAddLoop(contextMenu.position)}
+          />
           {virtualNodeTypes.map((nodeType) => (
             <CreateNodeItem
               key={nodeType.type}
               nodeType={nodeType}
-              subtitle={`virtual:${nodeType.type}`}
               onClick={() => onAddVirtualNode(nodeType.type as VirtualNodeKind, contextMenu.position)}
             />
           ))}
@@ -46,7 +51,6 @@ export function CanvasContextMenu({
             <CreateNodeItem
               key={nodeType.type}
               nodeType={nodeType}
-              subtitle={nodeType.type}
               onClick={() => onAddNode(nodeType, contextMenu.position)}
             />
           ))}
@@ -56,9 +60,8 @@ export function CanvasContextMenu({
       {contextMenu.kind === "node" ? (
         <div>
           <ContextMenuTitle>Node</ContextMenuTitle>
-          <ContextMenuAction icon={<FileJson className="h-4 w-4 text-muted-foreground" />} label="Edit" onClick={onClose} />
+          <ContextMenuAction label="Edit" onClick={onClose} />
           <ContextMenuAction
-            icon={<Trash2 className="h-4 w-4" />}
             label="Delete"
             tone="destructive"
             onClick={() => onDeleteNode(contextMenu.nodeId)}
@@ -69,12 +72,23 @@ export function CanvasContextMenu({
       {contextMenu.kind === "edge" ? (
         <div>
           <ContextMenuTitle>Edge</ContextMenuTitle>
-          <ContextMenuAction icon={<FileJson className="h-4 w-4 text-muted-foreground" />} label="Edit" onClick={onClose} />
+          <ContextMenuAction label="Edit" onClick={onClose} />
           <ContextMenuAction
-            icon={<Trash2 className="h-4 w-4" />}
             label="Delete"
             tone="destructive"
             onClick={() => onDeleteEdge(contextMenu.edgeId)}
+          />
+        </div>
+      ) : null}
+
+      {contextMenu.kind === "loop" ? (
+        <div>
+          <ContextMenuTitle>Loop</ContextMenuTitle>
+          <ContextMenuAction label="Edit" onClick={onClose} />
+          <ContextMenuAction
+            label="Delete"
+            tone="destructive"
+            onClick={() => onDeleteLoop(contextMenu.loopId)}
           />
         </div>
       ) : null}
@@ -88,43 +102,34 @@ function ContextMenuTitle({ children }: { children: string }) {
 
 function CreateNodeItem({
   nodeType,
-  subtitle,
   onClick,
 }: {
   nodeType: Pick<GraphNodeSpec, "type" | "name"> & Pick<NodeTypeSchema, "title">;
-  subtitle: string;
   onClick: () => void;
 }) {
   return (
-    <button className="flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left hover:bg-accent" onClick={onClick}>
-      <Plus className="h-4 w-4 text-muted-foreground" />
-      <span className="min-w-0 flex-1">
-        <span className="block truncate text-sm font-medium">{nodeType.title || nodeType.type}</span>
-        <span className="block truncate font-mono text-[11px] text-muted-foreground">{subtitle}</span>
-      </span>
+    <button className="block w-full min-w-0 px-3 py-2 text-left text-sm font-medium hover:bg-accent" onClick={onClick}>
+      <span className="block truncate">{nodeType.title || nodeType.type}</span>
     </button>
   );
 }
 
 function ContextMenuAction({
-  icon,
   label,
   tone,
   onClick,
 }: {
-  icon: ReactNode;
   label: string;
   tone?: "destructive";
   onClick: () => void;
 }) {
   return (
     <button
-      className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-accent ${
+      className={`block w-full px-3 py-2 text-left text-sm hover:bg-accent ${
         tone === "destructive" ? "text-destructive" : ""
       }`}
       onClick={onClick}
     >
-      {icon}
       {label}
     </button>
   );

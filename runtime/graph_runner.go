@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
-	"strings"
-	"time"
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -32,6 +34,8 @@ type GraphRunner struct {
 	StartupWarnings    []WarningRecord
 	NodeContracts      map[string]state.Contract
 	Now                func() time.Time
+	activeMu           sync.Mutex
+	activeExecutions   map[string]*graphRunnerExecution
 }
 
 func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec state.StateCodec, eventSink EventSink) *GraphRunner {
@@ -223,6 +227,8 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	invokeCtx, cancelInvoke := context.WithCancel(ctx)
 	defer cancelInvoke()
 	execution := newGraphRunnerExecution(r, run, currentState, artifacts, skip, cancelInvoke)
+	r.registerActiveExecution(run.RunID, execution)
+	defer r.unregisterActiveExecution(run.RunID, execution)
 	runnable, err := r.runnerGraph().CompileForRunner(execution)
 	if err != nil {
 		return r.failRun(ctx, run, currentState, "compile_failed", err.Error())
@@ -255,7 +261,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 
 	finalState, invokeErr := runnable.InvokeWithConfig(invokeCtx, currentState.Clone(), config)
 	finalState = execution.stateOrFallback(finalState)
-	if run, pausedState, handled, err := r.resolvePendingControl(ctx, execution, finalState); handled || err != nil {
+	if run, pausedState, handled, err := r.resolvePendingControl(ctx, execution, finalState, invokeErr); handled || err != nil {
 		return run, pausedState, err
 	}
 	if callbackErr := execution.callbackError(); callbackErr != nil {
@@ -279,17 +285,35 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	return r.failRun(ctx, execution.currentRun(), finalState, "node_failed", invokeErr.Error())
 }
 
-func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *graphRunnerExecution, currentState *state.State) (RunRecord, *state.State, bool, error) {
-	if control, _ := execution.consumePendingControl(); control != nil {
+func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, invokeErr error) (RunRecord, *state.State, bool, error) {
+	if control, active := execution.consumePendingControl(); control != nil {
+		if control.kind == runnerControlCancel {
+			run, finalState, err := r.cancelRun(ctx, execution.currentRun(), currentState)
+			return run, finalState, true, err
+		}
 		if control.checkpointID == "" {
+			if control.kind == runnerControlPause && active != nil && errors.Is(invokeErr, context.Canceled) {
+				if active.beforeCheckpointID == "" {
+					run, finalState, err := r.failRun(ctx, execution.currentRun(), currentState, "interrupt_failed", fmt.Sprintf("pause interrupt missing before checkpoint for %q", active.step.NodeID))
+					return run, finalState, true, err
+				}
+				run, finalState, err := r.pauseRun(ctx, execution.currentRun(), currentState, active.step, active.beforeCheckpointID, control.hit, control.message)
+				return run, finalState, true, err
+			}
 			execution.restorePendingControl(control)
 			return RunRecord{}, currentState, false, nil
 		}
 		switch control.kind {
-		case runnerControlCancel:
-			run, finalState, err := r.cancelRun(ctx, execution.currentRun(), currentState)
-			return run, finalState, true, err
 		case runnerControlPause:
+			if control.nodeID != parallelBarrierNodeID {
+				completed := execution.consumeLastCompleted(control.nodeID)
+				if completed == nil {
+					run, finalState, err := r.failRun(ctx, execution.currentRun(), currentState, "interrupt_failed", fmt.Sprintf("pause interrupt missing completed step for %q", control.nodeID))
+					return run, finalState, true, err
+				}
+				run, finalState, err := r.pauseRun(ctx, execution.currentRun(), currentState, completed.step, control.checkpointID, control.hit, control.message)
+				return run, finalState, true, err
+			}
 			run, finalState, err := r.pauseRunAtCheckpoint(ctx, execution.currentRun(), currentState, control.checkpointID, control.hit, control.message)
 			return run, finalState, true, err
 		}
@@ -469,13 +493,27 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
+	switch run.Status {
+	case RunStatusPaused:
+		return nil
+	case RunStatusPending, RunStatusRunning:
+	default:
+		return fmt.Errorf("%w: run %q status %q cannot be paused", ErrRunControlNotAllowed, runID, run.Status)
+	}
+	if run.PauseRequested {
+		return nil
+	}
 	run.PauseRequested = true
 	run.UpdatedAt = r.now()
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return err
 	}
 	logger.Info("pause requested", runLogFields(run)...)
-	return r.publishEvent(ctx, run, "", "", EventRunPauseRequested, nil)
+	if err := r.publishEvent(ctx, run, "", "", EventRunPauseRequested, nil); err != nil {
+		return err
+	}
+	r.pauseActiveExecution(runID)
+	return nil
 }
 
 func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
@@ -483,13 +521,95 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
+	switch run.Status {
+	case RunStatusCanceled:
+		return nil
+	case RunStatusPaused:
+		run.PauseRequested = false
+		run.CancelRequested = true
+		run.UpdatedAt = r.now()
+		if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+			return err
+		}
+		logger.Info("cancel requested", runLogFields(run)...)
+		if err := r.publishEvent(ctx, run, "", "", EventRunCancelRequested, nil); err != nil {
+			return err
+		}
+		_, _, err := r.cancelRun(ctx, run, nil)
+		return err
+	case RunStatusPending, RunStatusRunning:
+	default:
+		return fmt.Errorf("%w: run %q status %q cannot be canceled", ErrRunControlNotAllowed, runID, run.Status)
+	}
+	if run.CancelRequested {
+		r.cancelActiveExecution(runID)
+		return nil
+	}
+	run.PauseRequested = false
 	run.CancelRequested = true
 	run.UpdatedAt = r.now()
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
 		return err
 	}
 	logger.Info("cancel requested", runLogFields(run)...)
-	return r.publishEvent(ctx, run, "", "", EventRunCancelRequested, nil)
+	if err := r.publishEvent(ctx, run, "", "", EventRunCancelRequested, nil); err != nil {
+		return err
+	}
+	r.cancelActiveExecution(runID)
+	return nil
+}
+
+func (r *GraphRunner) registerActiveExecution(runID string, execution *graphRunnerExecution) {
+	if r == nil || execution == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	if r.activeExecutions == nil {
+		r.activeExecutions = map[string]*graphRunnerExecution{}
+	}
+	r.activeExecutions[runID] = execution
+}
+
+func (r *GraphRunner) unregisterActiveExecution(runID string, execution *graphRunnerExecution) {
+	if r == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	if r.activeExecutions == nil {
+		return
+	}
+	if execution != nil && r.activeExecutions[runID] != execution {
+		return
+	}
+	delete(r.activeExecutions, runID)
+}
+
+func (r *GraphRunner) cancelActiveExecution(runID string) {
+	if r == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	r.activeMu.Lock()
+	execution := r.activeExecutions[runID]
+	r.activeMu.Unlock()
+	if execution == nil {
+		return
+	}
+	execution.requestCancel()
+}
+
+func (r *GraphRunner) pauseActiveExecution(runID string) {
+	if r == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	r.activeMu.Lock()
+	execution := r.activeExecutions[runID]
+	r.activeMu.Unlock()
+	if execution == nil {
+		return
+	}
+	execution.requestPause()
 }
 
 func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, interrupt *langgraph.GraphInterrupt) (RunRecord, *state.State, error) {
@@ -560,6 +680,8 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState
 func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, currentState *state.State) (RunRecord, *state.State, error) {
 	now := r.now()
 	run.Status = RunStatusCanceled
+	run.PauseRequested = false
+	run.CancelRequested = false
 	run.UpdatedAt = now
 	run.FinishedAt = &now
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {

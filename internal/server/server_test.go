@@ -12,6 +12,8 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	wfgraph "github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/node"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -63,6 +65,37 @@ func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) error 
 		return nil
 	}
 	return &langgraph.NodeInterrupt{Node: n.ID(), Value: "waiting for resume input"}
+}
+
+func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-chan struct{}, respectContext bool) *wfgraph.Graph {
+	t.Helper()
+	graph := wfgraph.NewGraph()
+	var startOnce sync.Once
+	err := graph.AddNode(node.NewFuncNode(node.Spec{ID: "work", Name: "work"}, func(ctx core.Context, access *state.Access) error {
+		startOnce.Do(func() {
+			close(started)
+		})
+		if respectContext {
+			select {
+			case <-release:
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		} else {
+			<-release
+		}
+		return access.SetAny(state.Shared("done"), true)
+	}))
+	if err != nil {
+		t.Fatalf("add work node: %v", err)
+	}
+	if err := graph.SetEntryPoint("work"); err != nil {
+		t.Fatalf("set entry point: %v", err)
+	}
+	if err := graph.SetFinishPoint("work"); err != nil {
+		t.Fatalf("set finish point: %v", err)
+	}
+	return graph
 }
 
 type recordingEventSink struct {
@@ -485,6 +518,192 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	}
 }
 
+func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	graph := newRunControlTestGraph(t, started, release, false)
+	srv, err := New(context.Background(), Config{
+		Graph:   graph,
+		BaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	startDone := serveHTTPAsync(engine, http.MethodPost, "/runs", `{}`)
+	waitForSignal(t, started, "run node start")
+	runID := waitForServerRunID(t, srv.Runner())
+
+	pauseDone := serveHTTPAsync(engine, http.MethodPost, "/runs/"+runID+"/pause", "")
+	assertNoHTTPResponse(t, pauseDone, "pause")
+	close(release)
+
+	pauseResponse := waitForHTTPResponse(t, pauseDone, "pause")
+	pausedRun := decodeRunRecordResponse(t, pauseResponse, http.StatusOK)
+	if pausedRun.Status != runtime.RunStatusPaused {
+		t.Fatalf("pause response status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
+	}
+
+	startResponse := waitForHTTPResponse(t, startDone, "start")
+	startResult := decodeRunResultResponse(t, startResponse, http.StatusOK)
+	if startResult.Run.Status != runtime.RunStatusPaused {
+		t.Fatalf("start response status = %q, want %q", startResult.Run.Status, runtime.RunStatusPaused)
+	}
+
+	cancelResponse := serveHTTP(engine, http.MethodPost, "/runs/"+runID+"/cancel", "")
+	canceledRun := decodeRunRecordResponse(t, cancelResponse, http.StatusOK)
+	if canceledRun.Status != runtime.RunStatusCanceled {
+		t.Fatalf("cancel paused response status = %q, want %q", canceledRun.Status, runtime.RunStatusCanceled)
+	}
+}
+
+func TestPauseRunCancelsActiveContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	graph := newRunControlTestGraph(t, started, release, true)
+	srv, err := New(context.Background(), Config{
+		Graph:   graph,
+		BaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	startDone := serveHTTPAsync(engine, http.MethodPost, "/runs", `{}`)
+	waitForSignal(t, started, "run node start")
+	runID := waitForServerRunID(t, srv.Runner())
+
+	pauseResponse := serveHTTP(engine, http.MethodPost, "/runs/"+runID+"/pause", "")
+	pausedRun := decodeRunRecordResponse(t, pauseResponse, http.StatusOK)
+	if pausedRun.Status != runtime.RunStatusPaused {
+		t.Fatalf("pause response status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
+	}
+
+	startResponse := waitForHTTPResponse(t, startDone, "start")
+	startResult := decodeRunResultResponse(t, startResponse, http.StatusOK)
+	if startResult.Run.Status != runtime.RunStatusPaused {
+		t.Fatalf("start response status = %q, want %q", startResult.Run.Status, runtime.RunStatusPaused)
+	}
+}
+
+func TestResumeRunAfterActivePauseCompletes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	graph := newRunControlTestGraph(t, started, release, true)
+	srv, err := New(context.Background(), Config{
+		Graph:   graph,
+		BaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	startDone := serveHTTPAsync(engine, http.MethodPost, "/runs", `{}`)
+	waitForSignal(t, started, "run node start")
+	runID := waitForServerRunID(t, srv.Runner())
+
+	pauseResponse := serveHTTP(engine, http.MethodPost, "/runs/"+runID+"/pause", "")
+	pausedRun := decodeRunRecordResponse(t, pauseResponse, http.StatusOK)
+	if pausedRun.Status != runtime.RunStatusPaused {
+		t.Fatalf("pause response status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
+	}
+	waitForHTTPResponse(t, startDone, "start")
+
+	resumeDone := serveHTTPAsync(engine, http.MethodPost, "/runs/"+runID+"/resume", `{}`)
+	assertNoHTTPResponse(t, resumeDone, "resume")
+	close(release)
+
+	resumeResponse := waitForHTTPResponse(t, resumeDone, "resume")
+	resumeResult := decodeRunResultResponse(t, resumeResponse, http.StatusOK)
+	if resumeResult.Run.Status != runtime.RunStatusCompleted {
+		t.Fatalf("resume response status = %q, want %q", resumeResult.Run.Status, runtime.RunStatusCompleted)
+	}
+}
+
+func TestCancelRunBlocksUntilCanceledStatus(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	graph := newRunControlTestGraph(t, started, release, false)
+	srv, err := New(context.Background(), Config{
+		Graph:   graph,
+		BaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	startDone := serveHTTPAsync(engine, http.MethodPost, "/runs", `{}`)
+	waitForSignal(t, started, "run node start")
+	runID := waitForServerRunID(t, srv.Runner())
+
+	cancelDone := serveHTTPAsync(engine, http.MethodPost, "/runs/"+runID+"/cancel", "")
+	assertNoHTTPResponse(t, cancelDone, "cancel")
+	close(release)
+
+	cancelResponse := waitForHTTPResponse(t, cancelDone, "cancel")
+	canceledRun := decodeRunRecordResponse(t, cancelResponse, http.StatusOK)
+	if canceledRun.Status != runtime.RunStatusCanceled {
+		t.Fatalf("cancel response status = %q, want %q", canceledRun.Status, runtime.RunStatusCanceled)
+	}
+
+	startResponse := waitForHTTPResponse(t, startDone, "start")
+	startResult := decodeRunResultResponse(t, startResponse, http.StatusOK)
+	if startResult.Run.Status != runtime.RunStatusCanceled {
+		t.Fatalf("start response status = %q, want %q", startResult.Run.Status, runtime.RunStatusCanceled)
+	}
+}
+
+func TestCancelRunCancelsActiveContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	graph := newRunControlTestGraph(t, started, release, true)
+	srv, err := New(context.Background(), Config{
+		Graph:   graph,
+		BaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	startDone := serveHTTPAsync(engine, http.MethodPost, "/runs", `{}`)
+	waitForSignal(t, started, "run node start")
+	runID := waitForServerRunID(t, srv.Runner())
+
+	cancelResponse := serveHTTP(engine, http.MethodPost, "/runs/"+runID+"/cancel", "")
+	canceledRun := decodeRunRecordResponse(t, cancelResponse, http.StatusOK)
+	if canceledRun.Status != runtime.RunStatusCanceled {
+		t.Fatalf("cancel response status = %q, want %q", canceledRun.Status, runtime.RunStatusCanceled)
+	}
+
+	startResponse := waitForHTTPResponse(t, startDone, "start")
+	startResult := decodeRunResultResponse(t, startResponse, http.StatusOK)
+	if startResult.Run.Status != runtime.RunStatusCanceled {
+		t.Fatalf("start response status = %q, want %q", startResult.Run.Status, runtime.RunStatusCanceled)
+	}
+}
+
 func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -595,4 +814,116 @@ func assertInitialStateRequirementResponse(t *testing.T, body []byte) {
 	if len(response.Data.Unresolved) != 0 {
 		t.Fatalf("unresolved = %#v, want empty", response.Data.Unresolved)
 	}
+}
+
+func serveHTTPAsync(engine *gin.Engine, method string, path string, body string) <-chan *httptest.ResponseRecorder {
+	done := make(chan *httptest.ResponseRecorder, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	go func() {
+		defer cancel()
+		done <- serveHTTPWithContext(ctx, engine, method, path, body)
+	}()
+	return done
+}
+
+func serveHTTP(engine *gin.Engine, method string, path string, body string) *httptest.ResponseRecorder {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return serveHTTPWithContext(ctx, engine, method, path, body)
+}
+
+func serveHTTPWithContext(ctx context.Context, engine *gin.Engine, method string, path string, body string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body)).WithContext(ctx)
+	if body != "" {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, req)
+	return w
+}
+
+func waitForSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func assertNoHTTPResponse(t *testing.T, done <-chan *httptest.ResponseRecorder, name string) {
+	t.Helper()
+	select {
+	case response := <-done:
+		t.Fatalf("%s returned before run reached target status: status=%d body=%s", name, response.Code, response.Body.String())
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func waitForHTTPResponse(t *testing.T, done <-chan *httptest.ResponseRecorder, name string) *httptest.ResponseRecorder {
+	t.Helper()
+	select {
+	case response := <-done:
+		return response
+	case <-time.After(4 * time.Second):
+		t.Fatalf("timed out waiting for %s response", name)
+		return nil
+	}
+}
+
+func waitForServerRunID(t *testing.T, runner *runtime.GraphRunner) string {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		runs, err := runner.ListRuns(context.Background(), runtime.RunFilter{})
+		if err != nil {
+			t.Fatalf("list runs: %v", err)
+		}
+		if len(runs) > 0 && runs[0].RunID != "" {
+			return runs[0].RunID
+		}
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for run id")
+		case <-ticker.C:
+		}
+	}
+}
+
+func decodeRunRecordResponse(t *testing.T, response *httptest.ResponseRecorder, wantStatus int) runtime.RunRecord {
+	t.Helper()
+	if response.Code != wantStatus {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Data  runtime.RunRecord `json:"data"`
+		Error string            `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode run record response: %v", err)
+	}
+	if decoded.Error != "" {
+		t.Fatalf("response error = %q", decoded.Error)
+	}
+	return decoded.Data
+}
+
+func decodeRunResultResponse(t *testing.T, response *httptest.ResponseRecorder, wantStatus int) runResult {
+	t.Helper()
+	if response.Code != wantStatus {
+		t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Data  runResult `json:"data"`
+		Error string    `json:"error"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode run result response: %v", err)
+	}
+	if decoded.Error != "" {
+		t.Fatalf("response error = %q", decoded.Error)
+	}
+	return decoded.Data
 }

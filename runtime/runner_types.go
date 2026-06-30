@@ -11,7 +11,10 @@ import (
 
 // Runtime records, stores, and control primitives live in the runtime package.
 // The root weaveflow package re-exports this surface as a compatibility facade.
-var ErrRunnerRecordNotFound = errors.New("runner record not found")
+var (
+	ErrRunnerRecordNotFound = errors.New("runner record not found")
+	ErrRunControlNotAllowed = errors.New("run control not allowed")
+)
 
 type RunStatus string
 

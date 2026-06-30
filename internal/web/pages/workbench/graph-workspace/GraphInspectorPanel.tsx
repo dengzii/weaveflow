@@ -1,6 +1,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Trash2 } from "lucide-react";
-import type { VirtualGraphEdge } from "../../../components/GraphCanvas";
+import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
+import { END_NODE_REF } from "../../../lib/graphEditor";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
@@ -19,9 +20,8 @@ import type {
 import type { GraphLintIssue } from "./lint";
 import { JsonSchemaForm } from "./schemaForm";
 import { StatusText, type StatusTone } from "../shared";
-import { Field, InfoRows, InspectorBlock, NodeSelect, PanelHeader } from "./shared";
+import { Field, InspectorBlock, NodeSelect, PanelHeader } from "./shared";
 import type { InspectorMode } from "./types";
-import { displayNodeRef } from "./utils";
 
 interface GraphInspectorPanelProps {
   conditions: ConditionSchema[];
@@ -37,18 +37,22 @@ interface GraphInspectorPanelProps {
   paletteNodeTypes: NodeTypeSchema[];
   selectedEdge: GraphEdgeSpec | null;
   selectedNode: GraphNodeSpec | null;
+  selectedVirtualLoop: VirtualGraphLoop | null;
   selectedVirtualEdge: VirtualGraphEdge | null;
   visibleVirtualNodes: GraphNodeSpec[];
   onApplyEdgeConfig: () => void;
   onApplyNodeConfig: () => void;
   onChangeEdge: (update: (edge: GraphEdgeSpec) => GraphEdgeSpec) => void;
   onChangeEdgeConfigText: (value: string) => void;
+  onChangeVirtualLoop: (update: (loop: VirtualGraphLoop) => VirtualGraphLoop) => void;
+  onChangeVirtualEdge: (update: (edge: VirtualGraphEdge) => VirtualGraphEdge) => void;
   onChangeGraphField: <Key extends keyof GraphDefinition>(key: Key, value: GraphDefinition[Key]) => void;
   onChangeInitialStateText: (value: string) => void;
   onChangeNode: (update: (node: GraphNodeSpec) => GraphNodeSpec) => void;
   onChangeNodeConfigText: (value: string) => void;
   onChangeNodeId: (value: string) => void;
   onDeleteEdge: () => void;
+  onDeleteLoop: (loopId: string) => void;
   onDeleteNode: (nodeId: string) => void;
   onSelectLintIssue?: (issue: GraphLintIssue) => void;
 }
@@ -67,18 +71,22 @@ export function GraphInspectorPanel({
   paletteNodeTypes,
   selectedEdge,
   selectedNode,
+  selectedVirtualLoop,
   selectedVirtualEdge,
   visibleVirtualNodes,
   onApplyEdgeConfig,
   onApplyNodeConfig,
   onChangeEdge,
   onChangeEdgeConfigText,
+  onChangeVirtualLoop,
+  onChangeVirtualEdge,
   onChangeGraphField,
   onChangeInitialStateText,
   onChangeNode,
   onChangeNodeConfigText,
   onChangeNodeId,
   onDeleteEdge,
+  onDeleteLoop,
   onDeleteNode,
   onSelectLintIssue,
 }: GraphInspectorPanelProps) {
@@ -121,7 +129,17 @@ export function GraphInspectorPanel({
           onApplyEdgeConfig={onApplyEdgeConfig}
           onChangeEdge={onChangeEdge}
           onChangeEdgeConfigText={onChangeEdgeConfigText}
+          onChangeVirtualEdge={onChangeVirtualEdge}
           onDeleteEdge={onDeleteEdge}
+        />
+      ) : null}
+
+      {inspectorMode === "loop" && selectedVirtualLoop ? (
+        <LoopInspector
+          definition={definition}
+          selectedVirtualLoop={selectedVirtualLoop}
+          onChangeVirtualLoop={onChangeVirtualLoop}
+          onDeleteLoop={onDeleteLoop}
         />
       ) : null}
     </section>
@@ -160,6 +178,7 @@ function LintPanel({
           ))}
         </div>
       ) : null}
+
     </section>
   );
 }
@@ -181,6 +200,7 @@ function GraphInspector({
   | "onChangeInitialStateText"
 >) {
   const requiredInitialState = initialRequirements?.required ?? [];
+  const hasEndEdge = (definition?.edges ?? []).some((edge) => edge.to === END_NODE_REF);
   const hasInitialStateHints = Boolean(
     initialRequirements &&
       (initialRequirements.unresolved.length > 0 ||
@@ -224,7 +244,7 @@ function GraphInspector({
             value={definition?.finish_point ?? ""}
             nodes={definition?.nodes ?? []}
             disabled={!definition}
-            className={!definition?.finish_point ? "border-destructive focus:border-destructive" : undefined}
+            className={!definition?.finish_point && !hasEndEdge ? "border-destructive focus:border-destructive" : undefined}
             onChange={(value) => onChangeGraphField("finish_point", value)}
           />
         </Field>
@@ -561,6 +581,90 @@ function CollapsibleInspectorBlock({
   );
 }
 
+function LoopInspector({
+  definition,
+  selectedVirtualLoop,
+  onChangeVirtualLoop,
+  onDeleteLoop,
+}: Pick<
+  GraphInspectorPanelProps,
+  "definition" | "selectedVirtualLoop" | "onChangeVirtualLoop" | "onDeleteLoop"
+>) {
+  if (!selectedVirtualLoop) return null;
+  const analysis = analyzeVirtualLoop(definition, selectedVirtualLoop);
+  const selectedIds = new Set(selectedVirtualLoop.nodeIds);
+
+  return (
+    <>
+      <InspectorBlock title="Loop Properties">
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <Field label="Name">
+            <Input
+              value={selectedVirtualLoop.name ?? ""}
+              placeholder="Loop group"
+              onChange={(event) => onChangeVirtualLoop((loop) => ({ ...loop, name: event.target.value }))}
+            />
+          </Field>
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => onDeleteLoop(selectedVirtualLoop.id)}
+            title="Delete loop"
+            className="mt-5"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+        <div className="grid gap-1 text-xs">
+          <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
+            <span className="text-muted-foreground">id</span>
+            <span className="truncate font-mono">{selectedVirtualLoop.id}</span>
+          </div>
+          <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
+            <span className="text-muted-foreground">loop start</span>
+            <span className="truncate font-mono">{analysis.loopStartId || "-"}</span>
+          </div>
+          <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
+            <span className="text-muted-foreground">next</span>
+            <span className="truncate font-mono">{analysis.nextNodeId || "-"}</span>
+          </div>
+          <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
+            <span className="text-muted-foreground">condition</span>
+            <span className="truncate font-mono">{analysis.conditionTypes.join(", ") || "-"}</span>
+          </div>
+        </div>
+      </InspectorBlock>
+
+      <InspectorBlock title="Loop Nodes">
+        <div className="grid max-h-80 gap-1 overflow-auto">
+          {(definition?.nodes ?? []).map((node) => (
+            <label
+              key={node.id}
+              className="flex min-h-8 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
+            >
+              <input
+                type="checkbox"
+                checked={selectedIds.has(node.id)}
+                onChange={(event) =>
+                  onChangeVirtualLoop((loop) => ({
+                    ...loop,
+                    nodeIds: event.target.checked
+                      ? uniqueStrings([...loop.nodeIds, node.id])
+                      : loop.nodeIds.filter((nodeID) => nodeID !== node.id),
+                  }))
+                }
+                className="h-4 w-4"
+              />
+              <span className="min-w-0 flex-1 truncate">{node.name || node.id}</span>
+              <span className="max-w-24 truncate font-mono text-[11px] text-muted-foreground">{node.id}</span>
+            </label>
+          ))}
+        </div>
+      </InspectorBlock>
+    </>
+  );
+}
+
 function EdgeInspector({
   conditions,
   definition,
@@ -571,6 +675,7 @@ function EdgeInspector({
   onApplyEdgeConfig,
   onChangeEdge,
   onChangeEdgeConfigText,
+  onChangeVirtualEdge,
   onDeleteEdge,
 }: Pick<
   GraphInspectorPanelProps,
@@ -583,62 +688,108 @@ function EdgeInspector({
   | "onApplyEdgeConfig"
   | "onChangeEdge"
   | "onChangeEdgeConfigText"
+  | "onChangeVirtualEdge"
   | "onDeleteEdge"
 >) {
   const [jsonOpen, setJsonOpen] = useState(false);
-  const conditionSchema = schemaForCondition(conditions, selectedEdge?.condition?.type);
-  const rawConditionConfig = selectedEdge?.condition?.config;
+  const activeEdge = selectedEdge ?? selectedVirtualEdge;
+  const selectedCondition = selectedEdge?.condition ?? selectedVirtualEdge?.condition;
+  const selectedConditionType = selectedCondition?.type;
+  const conditionSchema = schemaForCondition(conditions, selectedConditionType);
+  const rawConditionConfig = selectedCondition?.config;
   const conditionConfig = isPlainRecord(rawConditionConfig) ? rawConditionConfig : {};
+  const realNodes = definition?.nodes ?? [];
+  const endNodes = visibleVirtualNodes.filter((node) => node.id === END_NODE_REF);
+  const sourceNodes = selectedVirtualEdge
+    ? selectedVirtualEdge.kind === "entry"
+      ? visibleVirtualNodes.filter((node) => node.type === "start")
+      : realNodes
+    : realNodes;
+  const targetNodes = selectedVirtualEdge
+    ? selectedVirtualEdge.kind === "finish"
+      ? visibleVirtualNodes.filter((node) => node.type === "end")
+      : realNodes
+    : [...realNodes, ...endNodes];
+
+  function changeEdgeFrom(value: string) {
+    if (selectedVirtualEdge) {
+      onChangeVirtualEdge((edge) => ({ ...edge, from: value }));
+      return;
+    }
+    onChangeEdge((edge) => ({ ...edge, from: value }));
+  }
+
+  function changeEdgeTo(value: string) {
+    if (selectedVirtualEdge) {
+      onChangeVirtualEdge((edge) => ({ ...edge, to: value }));
+      return;
+    }
+    onChangeEdge((edge) => ({ ...edge, to: value }));
+  }
+
+  function changeCondition(type: string) {
+    const schema = conditions.find((condition) => condition.type === type);
+    const condition = type ? { type, config: exampleConfigForSchema(schema?.config_schema) } : undefined;
+    if (selectedVirtualEdge) {
+      onChangeVirtualEdge((edge) => ({ ...edge, condition }));
+      return;
+    }
+    onChangeEdge((edge) => ({ ...edge, condition }));
+  }
+
+  function changeConditionConfig(config: Record<string, unknown>) {
+    if (selectedVirtualEdge) {
+      onChangeVirtualEdge((edge) => ({
+        ...edge,
+        condition: edge.condition ? { ...edge.condition, config } : edge.condition,
+      }));
+      return;
+    }
+    onChangeEdge((edge) => ({
+      ...edge,
+      condition: edge.condition ? { ...edge.condition, config } : edge.condition,
+    }));
+  }
+
   return (
     <>
       <InspectorBlock title="Edge Properties">
         <div className="mb-2 flex items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground">{selectedVirtualEdge ? selectedVirtualEdge.kind : selectedEdge?.condition?.type || "direct"}</span>
+          <span className="text-xs font-medium text-muted-foreground">{selectedConditionType || "direct"}</span>
           <Button variant="ghost" size="icon" onClick={onDeleteEdge} title="Delete edge" className="ml-auto">
             <Trash2 className="h-4 w-4" />
           </Button>
         </div>
-        {selectedVirtualEdge ? (
-          <InfoRows
-            rows={[
-              ["from", displayNodeRef(selectedVirtualEdge.from, definition, visibleVirtualNodes)],
-              ["to", displayNodeRef(selectedVirtualEdge.to, definition, visibleVirtualNodes)],
-            ]}
-          />
-        ) : selectedEdge ? (
+        {activeEdge ? (
           <>
             <div className="grid grid-cols-2 gap-2">
               <Field label="From">
                 <NodeSelect
-                  value={selectedEdge.from}
-                  nodes={definition?.nodes ?? []}
-                  onChange={(value) => onChangeEdge((edge) => ({ ...edge, from: value }))}
+                  value={activeEdge.from}
+                  nodes={sourceNodes}
+                  disabled={selectedVirtualEdge?.kind === "entry"}
+                  onChange={changeEdgeFrom}
                 />
               </Field>
               <Field label="To">
                 <NodeSelect
-                  value={selectedEdge.to}
-                  nodes={definition?.nodes ?? []}
-                  onChange={(value) => onChangeEdge((edge) => ({ ...edge, to: value }))}
+                  value={activeEdge.to}
+                  nodes={targetNodes}
+                  disabled={selectedVirtualEdge?.kind === "finish"}
+                  onChange={changeEdgeTo}
                 />
               </Field>
             </div>
             <Field label="Condition">
               <Select
-                value={selectedEdge.condition?.type ?? ""}
+                value={selectedConditionType ?? ""}
                 onChange={(event) => {
-                  const value = event.target.value;
-                  const schema = conditions.find((condition) => condition.type === value);
-                  onChangeEdge((edge) => ({
-                    ...edge,
-                    condition: value ? { type: value, config: exampleConfigForSchema(schema?.config_schema) } : undefined,
-                  }));
+                  changeCondition(event.target.value);
                 }}
               >
                 <option value="">direct</option>
-                {selectedEdge.condition?.type &&
-                !conditions.some((condition) => condition.type === selectedEdge.condition?.type) ? (
-                  <option value={selectedEdge.condition.type}>{selectedEdge.condition.type}</option>
+                {selectedConditionType && !conditions.some((condition) => condition.type === selectedConditionType) ? (
+                  <option value={selectedConditionType}>{selectedConditionType}</option>
                 ) : null}
                 {conditions.map((condition) => (
                   <option key={condition.type} value={condition.type}>
@@ -651,17 +802,12 @@ function EdgeInspector({
         ) : null}
       </InspectorBlock>
 
-      {selectedEdge?.condition && !selectedVirtualEdge ? (
+      {selectedCondition ? (
         <InspectorBlock title="Condition Config">
           <JsonSchemaForm
             schema={conditionSchema}
             value={conditionConfig}
-            onChange={(config) =>
-              onChangeEdge((edge) => ({
-                ...edge,
-                condition: edge.condition ? { ...edge.condition, config } : edge.condition,
-              }))
-            }
+            onChange={changeConditionConfig}
           />
           <JsonConfigEditor
             open={jsonOpen}
@@ -726,6 +872,37 @@ function schemaForNodeType(nodeTypes: NodeTypeSchema[], type?: string): Record<s
 function schemaForCondition(conditions: ConditionSchema[], type?: string): Record<string, unknown> | undefined {
   const schema = conditions.find((condition) => condition.type === type)?.config_schema;
   return isPlainRecord(schema) ? schema : undefined;
+}
+
+function analyzeVirtualLoop(definition: GraphDefinition | null, loop: VirtualGraphLoop) {
+  const nodeIds = uniqueStrings(loop.nodeIds).filter((nodeID) => definition?.nodes.some((node) => node.id === nodeID));
+  const nodeIdSet = new Set(nodeIds);
+  const incoming = new Map(nodeIds.map((nodeID) => [nodeID, 0]));
+  for (const edge of definition?.edges ?? []) {
+    if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to) || edge.from === edge.to) continue;
+    if (edge.condition) continue;
+    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+  }
+
+  const loopStartId = nodeIds.find((nodeID) => (incoming.get(nodeID) ?? 0) === 0) ?? nodeIds[0] ?? "";
+  const conditionTypes: string[] = [];
+  const conditionSources = new Set<string>();
+  for (const edge of definition?.edges ?? []) {
+    if (loopStartId && nodeIdSet.has(edge.from) && edge.to === loopStartId && edge.condition?.type) {
+      conditionTypes.push(edge.condition.type);
+      conditionSources.add(edge.from);
+    }
+  }
+
+  const edges = definition?.edges ?? [];
+  const preferredExit = edges.find((edge) => conditionSources.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
+  const fallbackExit = edges.find((edge) => nodeIdSet.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
+
+  return {
+    loopStartId,
+    nextNodeId: (preferredExit ?? fallbackExit)?.to ?? "",
+    conditionTypes: uniqueStrings(conditionTypes),
+  };
 }
 
 function InitialStateRequirementList({
@@ -878,4 +1055,16 @@ function formatJSONFieldValue(value: unknown): string {
   if (value === undefined || value === null) return "";
   if (typeof value === "string") return value;
   return stringifyJSON(value);
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const item = value.trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
 }

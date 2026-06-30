@@ -1,6 +1,6 @@
-import { BrowserRouter, Navigate, Route, Routes, useNavigate, useParams } from "react-router";
+import { BrowserRouter, Navigate, Route, Routes, useNavigate } from "react-router";
 import { ThemeProvider } from "./lib/theme";
-import { WorkbenchPage, workspaceTabs, type WorkspaceTab } from "./pages/WorkbenchPage";
+import { WorkbenchPage, type WorkspaceTab } from "./pages/WorkbenchPage";
 
 export function App() {
   return (
@@ -9,7 +9,9 @@ export function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/app/graph" replace />} />
           <Route path="/app" element={<Navigate to="/app/graph" replace />} />
-          <Route path="/app/:tab" element={<WorkbenchRoute />} />
+          <Route path="/app/graph" element={<WorkbenchRoute tab="graph" />} />
+          <Route path="/app/settings" element={<WorkbenchRoute tab="settings" />} />
+          <Route path="/app/*" element={<Navigate to="/app/graph" replace />} />
           <Route path="*" element={<Navigate to="/app/graph" replace />} />
         </Routes>
       </BrowserRouter>
@@ -17,16 +19,8 @@ export function App() {
   );
 }
 
-function WorkbenchRoute() {
-  const params = useParams();
+function WorkbenchRoute({ tab }: { tab: WorkspaceTab }) {
   const navigate = useNavigate();
-  if (!isWorkspaceTab(params.tab)) {
-    return <Navigate to="/app/graph" replace />;
-  }
 
-  return <WorkbenchPage tab={params.tab} onTabChange={(nextTab) => navigate(`/app/${nextTab}`)} />;
-}
-
-function isWorkspaceTab(value: unknown): value is WorkspaceTab {
-  return typeof value === "string" && workspaceTabs.includes(value as WorkspaceTab);
+  return <WorkbenchPage tab={tab} onTabChange={(nextTab) => navigate(`/app/${nextTab}`)} />;
 }

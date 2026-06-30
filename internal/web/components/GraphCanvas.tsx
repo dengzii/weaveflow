@@ -16,8 +16,8 @@ import {
   type Node,
   type Viewport,
 } from "@xyflow/react";
-import { Focus, Lock, Maximize2, Unlock, ZoomIn, ZoomOut } from "lucide-react";
-import type { GraphDefinition, GraphNodeSpec, RuntimeEvent, StepRecord } from "../types";
+import { Focus, Lock, Maximize2, Network, Unlock, ZoomIn, ZoomOut } from "lucide-react";
+import type { GraphConditionSpec, GraphDefinition, GraphEdgeSpec, GraphNodeSpec, RuntimeEvent, StepRecord } from "../types";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, type NodePosition } from "../lib/graphEditor";
 import { subscribeRuntimeEvents } from "../lib/runtimeEvents";
 
@@ -28,7 +28,13 @@ interface FlowNodeData extends Record<string, unknown> {
   editable: boolean;
   attempt?: number;
   highlighted?: boolean;
-  virtualKind?: "start" | "end";
+  virtualKind?: "start" | "end" | "loop";
+  memberCount?: number;
+  loopStartId?: string;
+  nextNodeId?: string;
+  width?: number;
+  height?: number;
+  conditionLabel?: string;
 }
 
 export interface VirtualGraphEdge {
@@ -36,10 +42,22 @@ export interface VirtualGraphEdge {
   from: string;
   to: string;
   kind: "entry" | "finish";
+  condition?: GraphConditionSpec;
+}
+
+export interface VirtualGraphLoop {
+  id: string;
+  name?: string;
+  nodeIds: string[];
 }
 
 const nodeWidth = 190;
 const nodeHeight = 76;
+const loopPaddingX = 34;
+const loopPaddingTop = 68;
+const loopPaddingBottom = 14;
+const minLoopWidth = 250;
+const minLoopHeight = 150;
 const minZoom = 0.2;
 const maxZoom = 2;
 
@@ -50,19 +68,25 @@ export function GraphCanvas({
   editable = false,
   selectedNodeId,
   selectedEdgeId,
+  selectedLoopId,
   fitViewSignal = 0,
   focusNodeId,
   focusNodeSignal = 0,
   highlightedNodeIds = [],
   virtualNodeIds = [START_NODE_REF, END_NODE_REF],
   virtualEdges = [],
+  virtualLoops = [],
+  onAutoLayout,
   onSelectNode,
   onSelectEdge,
+  onSelectLoop,
   onNodePositionChange,
   onConnectNodes,
   onCreateNodeAt,
   onNodeContextMenu,
   onEdgeContextMenu,
+  onLoopContextMenu,
+  onLoopDrag,
 }: {
   definition: GraphDefinition | null;
   steps: StepRecord[];
@@ -70,19 +94,25 @@ export function GraphCanvas({
   editable?: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
+  selectedLoopId?: string;
   fitViewSignal?: number;
   focusNodeId?: string;
   focusNodeSignal?: number;
   highlightedNodeIds?: string[];
   virtualNodeIds?: string[];
   virtualEdges?: VirtualGraphEdge[];
+  virtualLoops?: VirtualGraphLoop[];
+  onAutoLayout?: () => void;
   onSelectNode?: (nodeId: string | null) => void;
   onSelectEdge?: (edgeId: string | null) => void;
+  onSelectLoop?: (groupId: string | null) => void;
   onNodePositionChange?: (nodeId: string, position: NodePosition) => void;
   onConnectNodes?: (source: string, target: string) => void;
   onCreateNodeAt?: (position: NodePosition, screenPosition: NodePosition) => void;
   onNodeContextMenu?: (nodeId: string, screenPosition: NodePosition) => void;
   onEdgeContextMenu?: (edgeId: string, screenPosition: NodePosition) => void;
+  onLoopContextMenu?: (groupId: string, screenPosition: NodePosition) => void;
+  onLoopDrag?: (groupId: string, delta: NodePosition) => void;
 }) {
   return (
     <ReactFlowProvider>
@@ -93,19 +123,25 @@ export function GraphCanvas({
         editable={editable}
         selectedNodeId={selectedNodeId}
         selectedEdgeId={selectedEdgeId}
+        selectedLoopId={selectedLoopId}
         fitViewSignal={fitViewSignal}
         focusNodeId={focusNodeId}
         focusNodeSignal={focusNodeSignal}
         highlightedNodeIds={highlightedNodeIds}
         virtualNodeIds={virtualNodeIds}
         virtualEdges={virtualEdges}
+        virtualLoops={virtualLoops}
+        onAutoLayout={onAutoLayout}
         onSelectNode={onSelectNode}
         onSelectEdge={onSelectEdge}
+        onSelectLoop={onSelectLoop}
         onNodePositionChange={onNodePositionChange}
         onConnectNodes={onConnectNodes}
         onCreateNodeAt={onCreateNodeAt}
         onNodeContextMenu={onNodeContextMenu}
         onEdgeContextMenu={onEdgeContextMenu}
+        onLoopContextMenu={onLoopContextMenu}
+        onLoopDrag={onLoopDrag}
       />
     </ReactFlowProvider>
   );
@@ -118,19 +154,25 @@ function GraphCanvasInner({
   editable,
   selectedNodeId,
   selectedEdgeId,
+  selectedLoopId,
   fitViewSignal,
   focusNodeId,
   focusNodeSignal,
   highlightedNodeIds,
   virtualNodeIds,
   virtualEdges,
+  virtualLoops,
+  onAutoLayout,
   onSelectNode,
   onSelectEdge,
+  onSelectLoop,
   onNodePositionChange,
   onConnectNodes,
   onCreateNodeAt,
   onNodeContextMenu,
   onEdgeContextMenu,
+  onLoopContextMenu,
+  onLoopDrag,
 }: {
   definition: GraphDefinition | null;
   steps: StepRecord[];
@@ -138,19 +180,25 @@ function GraphCanvasInner({
   editable: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
+  selectedLoopId?: string;
   fitViewSignal: number;
   focusNodeId?: string;
   focusNodeSignal: number;
   highlightedNodeIds: string[];
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
+  virtualLoops: VirtualGraphLoop[];
+  onAutoLayout?: () => void;
   onSelectNode?: (nodeId: string | null) => void;
   onSelectEdge?: (edgeId: string | null) => void;
+  onSelectLoop?: (groupId: string | null) => void;
   onNodePositionChange?: (nodeId: string, position: NodePosition) => void;
   onConnectNodes?: (source: string, target: string) => void;
   onCreateNodeAt?: (position: NodePosition, screenPosition: NodePosition) => void;
   onNodeContextMenu?: (nodeId: string, screenPosition: NodePosition) => void;
   onEdgeContextMenu?: (edgeId: string, screenPosition: NodePosition) => void;
+  onLoopContextMenu?: (groupId: string, screenPosition: NodePosition) => void;
+  onLoopDrag?: (groupId: string, delta: NodePosition) => void;
 }) {
   const { screenToFlowPosition, viewportInitialized } = useReactFlow();
   const store = useStoreApi();
@@ -163,6 +211,11 @@ function GraphCanvasInner({
   const edgesRef = useRef<Edge[]>([]);
   const runtimeRef = useRef<Map<string, RuntimeNodeState>>(new Map());
   const runtimeRunIdRef = useRef("");
+  const loopDragRef = useRef<{
+    groupId: string;
+    startPosition: NodePosition;
+    memberPositions: Map<string, NodePosition>;
+  } | null>(null);
   const isInteractive = editable && interactive;
 
   useEffect(() => {
@@ -202,17 +255,18 @@ function GraphCanvasInner({
       if (switchedRun) setNodes((current) => resetRuntimeNodes(current));
       return;
     }
+    const nodeId = event.node_id;
     const status = runtimeStatusFromEvent(event.type);
     if (!status) return;
 
     const next = new Map(runtimeRef.current);
-    const changed = applyRuntime(next, event.node_id, status, eventAttempt(event.payload), timeRank(event.timestamp));
+    const changed = applyRuntime(next, nodeId, status, eventAttempt(event.payload), timeRank(event.timestamp));
     if (!changed && !switchedRun) return;
     runtimeRef.current = next;
-    const runtime = next.get(event.node_id);
+    const runtime = next.get(nodeId);
     setNodes((current) => {
       const base = switchedRun ? resetRuntimeNodes(current) : current;
-      return updateRuntimeNode(base, event.node_id, runtime);
+      return updateRuntimeNode(base, nodeId, runtime);
     });
   }), [selectedRunId, setNodes]);
 
@@ -232,29 +286,60 @@ function GraphCanvasInner({
       ...endVirtualNodeIds.map(virtualNodeSpec),
     ];
     const positions = layoutNodes(definition, visibleVirtualNodeIds);
+    const loopLayouts = virtualLoopLayouts(definition, virtualLoops, positions);
     setNodes(
-      displayNodes.map((node) => {
-        const virtualKind = virtualNodeKind(node.id);
-        return {
-          id: node.id,
-          type: "debugNode",
-          position: positions.get(node.id) ?? { x: 0, y: 0 },
+      [
+        ...loopLayouts.map((layout) => ({
+          id: layout.loop.id,
+          type: "debugLoop",
+          position: layout.position,
           draggable: editable,
           selectable: true,
-          selected: node.id === selectedNodeId,
+          selected: layout.loop.id === selectedLoopId,
+          zIndex: 0,
           data: {
-            label: node.name || node.id,
-            type: node.type || "node",
-            status: virtualKind ? "idle" : runtimeRef.current.get(node.id)?.status || "idle",
-            attempt: virtualKind ? 0 : runtimeRef.current.get(node.id)?.attempt || 0,
+            label: layout.loop.name || "Loop",
+            type: "loop",
+            status: "idle",
             editable: isInteractive,
-            highlighted: highlightedNodeSet.has(node.id),
-            virtualKind,
+            virtualKind: "loop" as const,
+            memberCount: layout.nodeIds.length,
+            loopStartId: layout.loopStartId,
+            nextNodeId: layout.nextNodeId,
+            width: layout.width,
+            height: layout.height,
+            conditionLabel: layout.conditionLabel,
           },
-        };
-      })
+          style: {
+            width: layout.width,
+            height: layout.height,
+          },
+        })),
+        ...displayNodes.map((node) => {
+          const virtualKind = virtualNodeKind(node.id);
+          return {
+            id: node.id,
+            type: "debugNode",
+            position: positions.get(node.id) ?? { x: 0, y: 0 },
+            draggable: editable,
+            selectable: true,
+            selected: node.id === selectedNodeId,
+            zIndex: 2,
+            data: {
+              label: node.name || node.id,
+              type: node.type || "node",
+              status: virtualKind ? "idle" : runtimeRef.current.get(node.id)?.status || "idle",
+              attempt: virtualKind ? 0 : runtimeRef.current.get(node.id)?.attempt || 0,
+              editable: isInteractive,
+              highlighted: highlightedNodeSet.has(node.id),
+              virtualKind,
+            },
+          };
+        }),
+      ]
     );
 
+    const displayGraphEdges = graphEdgesForDisplay(definition, loopLayouts);
     setEdges([
       ...virtualEdges.map((edge) => {
         const selected = edge.id === selectedEdgeId;
@@ -262,32 +347,28 @@ function GraphCanvasInner({
           id: edge.id,
           source: edge.from,
           target: edge.to,
-          label: edge.kind,
-          animated: true,
+          label: edge.condition?.type,
+          animated: Boolean(edge.condition),
           selected,
           reconnectable: false,
-          style: {
-            stroke: edge.kind === "entry" ? "var(--flow-edge-entry)" : "var(--flow-edge-finish)",
-            strokeDasharray: "5 4",
-            strokeWidth: selected ? 2.6 : 1.6,
-          },
+          style: edgeStyle(selected),
         };
       }),
-      ...(definition.edges ?? []).map((edge, index) => ({
-        id: graphEdgeId(edge, index),
-        source: edge.from,
-        target: edge.to,
-        label: edge.condition?.type,
-        animated: Boolean(edge.condition),
-        selected: graphEdgeId(edge, index) === selectedEdgeId,
-        reconnectable: false,
-        style: {
-          strokeWidth: graphEdgeId(edge, index) === selectedEdgeId ? 2.6 : 1.4,
-          stroke: graphEdgeId(edge, index) === selectedEdgeId ? "var(--flow-edge-selected)" : undefined,
-        },
-      })),
+      ...displayGraphEdges.map(({ edge, id, source, target }) => {
+        const selected = id === selectedEdgeId;
+        return {
+          id,
+          source,
+          target,
+          label: edge.condition?.type,
+          animated: Boolean(edge.condition),
+          selected,
+          reconnectable: false,
+          style: edgeStyle(selected),
+        };
+      }),
     ]);
-  }, [definition, editable, highlightedNodeSet, isInteractive, selectedEdgeId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualNodeIds]);
+  }, [definition, editable, highlightedNodeSet, isInteractive, selectedEdgeId, selectedLoopId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualLoops, virtualNodeIds]);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -361,25 +442,49 @@ function GraphCanvasInner({
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={{ debugNode: DebugNode }}
+        nodeTypes={{ debugNode: DebugNode, debugLoop: DebugLoop }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
-        onNodeClick={(_, node) => {
+        onNodeClick={(event, node) => {
+          if (node.data.virtualKind === "loop") {
+            if ((event.target as Element).closest?.("[data-loop-title]")) {
+              onSelectLoop?.(node.id);
+              onSelectNode?.(null);
+              onSelectEdge?.(null);
+            }
+            return;
+          }
           onSelectNode?.(node.id);
           onSelectEdge?.(null);
+          onSelectLoop?.(null);
         }}
         onNodeContextMenu={(event, node) => {
           if (!isInteractive) return;
           event.preventDefault();
           event.stopPropagation();
+          if (node.data.virtualKind === "loop") {
+            const target = event.target as Element;
+            if (target.closest("[data-loop-title]")) {
+              onSelectLoop?.(node.id);
+              onSelectNode?.(null);
+              onSelectEdge?.(null);
+              onLoopContextMenu?.(node.id, screenPoint(event));
+            } else {
+              const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
+              onCreateNodeAt?.(position, screenPoint(event));
+            }
+            return;
+          }
           onSelectNode?.(node.id);
           onSelectEdge?.(null);
+          onSelectLoop?.(null);
           onNodeContextMenu?.(node.id, screenPoint(event));
         }}
         onEdgeClick={(_, edge) => {
           onSelectEdge?.(edge.id);
           onSelectNode?.(null);
+          onSelectLoop?.(null);
         }}
         onEdgeContextMenu={(event, edge) => {
           if (!isInteractive) return;
@@ -387,11 +492,13 @@ function GraphCanvasInner({
           event.stopPropagation();
           onSelectEdge?.(edge.id);
           onSelectNode?.(null);
+          onSelectLoop?.(null);
           onEdgeContextMenu?.(edge.id, screenPoint(event));
         }}
         onPaneClick={() => {
           onSelectNode?.(null);
           onSelectEdge?.(null);
+          onSelectLoop?.(null);
         }}
         onPaneContextMenu={(event) => {
           if (!isInteractive) return;
@@ -399,7 +506,48 @@ function GraphCanvasInner({
           const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
           onCreateNodeAt?.(position, screenPoint(event));
         }}
+        onNodeDragStart={(_, node) => {
+          if (node.data.virtualKind === "loop") {
+            const group = virtualLoops.find((g) => g.id === node.id);
+            const memberPositions = new Map<string, NodePosition>();
+            if (group) {
+              for (const n of nodesRef.current) {
+                if (group.nodeIds.includes(n.id)) {
+                  memberPositions.set(n.id, { ...n.position });
+                }
+              }
+            }
+            loopDragRef.current = {
+              groupId: node.id,
+              startPosition: { ...node.position },
+              memberPositions,
+            };
+          }
+        }}
+        onNodeDrag={(_, node) => {
+          const drag = loopDragRef.current;
+          if (!drag || node.data.virtualKind !== "loop" || drag.groupId !== node.id) return;
+          const dx = node.position.x - drag.startPosition.x;
+          const dy = node.position.y - drag.startPosition.y;
+          setNodes((current) =>
+            current.map((n) => {
+              const orig = drag.memberPositions.get(n.id);
+              if (!orig) return n;
+              return { ...n, position: { x: orig.x + dx, y: orig.y + dy } };
+            })
+          );
+        }}
         onNodeDragStop={(_, node) => {
+          const drag = loopDragRef.current;
+          if (drag && node.data.virtualKind === "loop" && drag.groupId === node.id) {
+            const dx = node.position.x - drag.startPosition.x;
+            const dy = node.position.y - drag.startPosition.y;
+            loopDragRef.current = null;
+            if (Math.abs(dx) > 0.5 || Math.abs(dy) > 0.5) {
+              onLoopDrag?.(node.id, { x: dx, y: dy });
+            }
+            return;
+          }
           onNodePositionChange?.(node.id, node.position);
         }}
         minZoom={minZoom}
@@ -414,7 +562,9 @@ function GraphCanvasInner({
         <MiniMap pannable zoomable position="bottom-right" className="!rounded-md !border !border-border !bg-panel" />
         <CanvasControls
           interactive={interactive}
-          hasSelection={Boolean(selectedNodeId || selectedEdgeId)}
+          canAutoLayout={Boolean(definition)}
+          hasSelection={Boolean(selectedNodeId || selectedEdgeId || selectedLoopId)}
+          onAutoLayout={onAutoLayout}
           onFitView={() => fitNodesToViewport(nodesRef.current, flowWrapperRef.current, applyViewport)}
           onFitSelection={() => fitNodesToViewport(selectedNodesForFit(), flowWrapperRef.current, applyViewport, 0.65)}
           onToggleInteractive={() => setInteractive((value) => !value)}
@@ -442,6 +592,13 @@ function GraphCanvasInner({
   }
 
   function selectedNodesForFit(): Node<FlowNodeData>[] {
+    if (selectedLoopId) {
+      const groupNode = nodesRef.current.find((node) => node.id === selectedLoopId);
+      if (!groupNode) return [];
+      const memberIds = new Set(virtualLoops.find((group) => group.id === selectedLoopId)?.nodeIds ?? []);
+      const members = nodesRef.current.filter((node) => memberIds.has(node.id));
+      return [groupNode, ...members];
+    }
     if (selectedNodeId) {
       return nodesRef.current.filter((node) => node.id === selectedNodeId);
     }
@@ -457,7 +614,9 @@ function GraphCanvasInner({
 
 function CanvasControls({
   interactive,
+  canAutoLayout,
   hasSelection,
+  onAutoLayout,
   onFitView,
   onFitSelection,
   onToggleInteractive,
@@ -465,7 +624,9 @@ function CanvasControls({
   onZoomOut,
 }: {
   interactive: boolean;
+  canAutoLayout: boolean;
   hasSelection: boolean;
+  onAutoLayout?: () => void;
   onFitView: () => void;
   onFitSelection: () => void;
   onToggleInteractive: () => void;
@@ -482,6 +643,16 @@ function CanvasControls({
       </button>
       <button type="button" className="react-flow__controls-button" title="Fit view" aria-label="Fit view" onClick={onFitView}>
         <Maximize2 className="h-3.5 w-3.5" />
+      </button>
+      <button
+        type="button"
+        className="react-flow__controls-button"
+        title="Auto layout"
+        aria-label="Auto layout"
+        onClick={onAutoLayout}
+        disabled={!canAutoLayout || !onAutoLayout}
+      >
+        <Network className="h-3.5 w-3.5" />
       </button>
       <button
         type="button"
@@ -504,6 +675,13 @@ function CanvasControls({
       </button>
     </Panel>
   );
+}
+
+function edgeStyle(selected: boolean) {
+  return {
+    strokeWidth: selected ? 2.6 : 1.4,
+    stroke: selected ? "var(--flow-edge-selected)" : undefined,
+  };
 }
 
 function fitNodesToViewport(
@@ -743,6 +921,180 @@ function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean 
       {editable && virtualKind !== "end" ? <Handle type="source" position={Position.Right} /> : null}
     </div>
   );
+}
+
+function DebugLoop({ data, selected }: { data: FlowNodeData; selected?: boolean }) {
+  const width = typeof data.width === "number" ? data.width : minLoopWidth;
+  const height = typeof data.height === "number" ? data.height : minLoopHeight;
+  const conditionLabel = typeof data.conditionLabel === "string" ? data.conditionLabel : "";
+  return (
+    <div className={`debug-loop${selected ? " debug-loop-selected" : ""}`} style={{ width, height }}>
+      <Handle type="target" position={Position.Left} className="debug-loop-handle" />
+      <Handle type="source" position={Position.Right} className="debug-loop-handle" />
+      <div className="debug-loop-title" data-loop-title>
+        <span className="truncate">{data.label}</span>
+      </div>
+      {conditionLabel ? (
+        <div className="debug-loop-condition">
+          <span className="truncate">Loop condition: {conditionLabel}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+interface VirtualLoopLayout {
+  loop: VirtualGraphLoop;
+  nodeIds: string[];
+  nodeIdSet: Set<string>;
+  position: NodePosition;
+  width: number;
+  height: number;
+  loopStartId?: string;
+  nextNodeId?: string;
+  loopConditionEdgeIds: Set<string>;
+  conditionLabel: string;
+}
+
+interface DisplayGraphEdge {
+  edge: GraphEdgeSpec;
+  id: string;
+  source: string;
+  target: string;
+}
+
+function virtualLoopLayouts(
+  definition: GraphDefinition,
+  loops: VirtualGraphLoop[],
+  positions: Map<string, NodePosition>
+): VirtualLoopLayout[] {
+  const nodeIds = new Set(definition.nodes.map((node) => node.id));
+  const savedPositions = graphNodePositions(definition);
+  return loops.map((loop) => {
+    const validNodeIds = uniqueStrings(loop.nodeIds).filter((nodeID) => nodeIds.has(nodeID));
+    const loopAnalysis = analyzeLoop(definition, validNodeIds);
+    const bounds = loopBounds(loop.id, validNodeIds, positions, savedPositions);
+    return {
+      loop: loop,
+      nodeIds: validNodeIds,
+      nodeIdSet: new Set(validNodeIds),
+      ...bounds,
+      ...loopAnalysis,
+    };
+  });
+}
+
+function analyzeLoop(definition: GraphDefinition, nodeIds: string[]) {
+  const nodeIdSet = new Set(nodeIds);
+  const incoming = new Map(nodeIds.map((nodeID) => [nodeID, 0]));
+  for (const edge of definition.edges ?? []) {
+    if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to) || edge.from === edge.to) continue;
+    if (edge.condition) continue;
+    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
+  }
+
+  const loopStartId = nodeIds.find((nodeID) => (incoming.get(nodeID) ?? 0) === 0) ?? nodeIds[0];
+  const loopConditionEdgeIds = new Set<string>();
+  const conditionSources = new Set<string>();
+  const conditionTypes: string[] = [];
+  let nextNodeId = "";
+
+  (definition.edges ?? []).forEach((edge, index) => {
+    if (loopStartId && nodeIdSet.has(edge.from) && edge.to === loopStartId && edge.condition) {
+      loopConditionEdgeIds.add(graphEdgeId(edge, index));
+      conditionSources.add(edge.from);
+      if (edge.condition.type) conditionTypes.push(edge.condition.type);
+    }
+  });
+
+  const edges = definition.edges ?? [];
+  const preferredExit = edges.find((edge) => conditionSources.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
+  const fallbackExit = edges.find((edge) => nodeIdSet.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
+  const exitEdge = preferredExit ?? fallbackExit;
+  if (exitEdge) nextNodeId = exitEdge.to;
+
+  return {
+    loopStartId,
+    nextNodeId,
+    loopConditionEdgeIds,
+    conditionLabel: [...new Set(conditionTypes)].join(", "),
+  };
+}
+
+function loopBounds(
+  groupId: string,
+  nodeIds: string[],
+  positions: Map<string, NodePosition>,
+  savedPositions: Map<string, NodePosition>
+) {
+  if (nodeIds.length === 0) {
+    return {
+      position: savedPositions.get(groupId) ?? { x: 0, y: 0 },
+      width: minLoopWidth,
+      height: minLoopHeight,
+    };
+  }
+
+  const bounds = nodeIds.reduce(
+    (current, nodeID) => {
+      const position = positions.get(nodeID) ?? { x: 0, y: 0 };
+      return {
+        minX: Math.min(current.minX, position.x),
+        minY: Math.min(current.minY, position.y),
+        maxX: Math.max(current.maxX, position.x + nodeWidth),
+        maxY: Math.max(current.maxY, position.y + nodeHeight),
+      };
+    },
+    { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
+  );
+
+  if (!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.minY)) {
+    return {
+      position: savedPositions.get(groupId) ?? { x: 0, y: 0 },
+      width: minLoopWidth,
+      height: minLoopHeight,
+    };
+  }
+
+  return {
+    position: {
+      x: bounds.minX - loopPaddingX,
+      y: bounds.minY - loopPaddingTop,
+    },
+    width: Math.max(minLoopWidth, bounds.maxX - bounds.minX + loopPaddingX * 2),
+    height: Math.max(minLoopHeight, bounds.maxY - bounds.minY + loopPaddingTop + loopPaddingBottom),
+  };
+}
+
+function graphEdgesForDisplay(definition: GraphDefinition, loops: VirtualLoopLayout[]): DisplayGraphEdge[] {
+  return (definition.edges ?? []).flatMap((edge, index) => {
+    const id = graphEdgeId(edge, index);
+    if (loops.some((loop) => loop.loopConditionEdgeIds.has(id))) return [];
+
+    const sourceLoop = loops.find((loop) => loop.nodeIdSet.has(edge.from) && !loop.nodeIdSet.has(edge.to));
+    if (sourceLoop) {
+      return [{ edge, id, source: sourceLoop.loop.id, target: edge.to }];
+    }
+
+    const targetLoop = loops.find((loop) => !loop.nodeIdSet.has(edge.from) && loop.nodeIdSet.has(edge.to));
+    if (targetLoop) {
+      return [{ edge, id, source: edge.from, target: targetLoop.loop.id }];
+    }
+
+    return [{ edge, id, source: edge.from, target: edge.to }];
+  });
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const item = value.trim();
+    if (!item || seen.has(item)) continue;
+    seen.add(item);
+    result.push(item);
+  }
+  return result;
 }
 
 function layoutNodes(definition: GraphDefinition, virtualNodeIds: Set<string>) {

@@ -2,8 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeInitialStateRequirements,
   cancelRun,
-  getArtifact,
-  getCheckpoint,
   getGraphDefinition,
   getGraphInfo,
   getInitialStateRequirements,
@@ -11,7 +9,6 @@ import {
   listRuns,
   getRunDetail,
   pauseRun,
-  resumeCheckpoint,
   resumeRun,
   setGraphDefinition,
   startRun,
@@ -29,18 +26,12 @@ import {
   type WorkspaceTab,
 } from "./workbench/constants";
 import { GraphWorkspace } from "./workbench/GraphWorkspace";
-import { ManageWorkspace } from "./workbench/ManageWorkspace";
-import { ObserveWorkspace } from "./workbench/ObserveWorkspace";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
-import { RunsWorkspace } from "./workbench/RunsWorkspace";
 import { SettingsWorkspace } from "./workbench/SettingsWorkspace";
 import { WorkbenchShell } from "./workbench/WorkbenchShell";
 import type { ToastRecord, ToastTone } from "./workbench/graph-workspace/ToastStack";
+import { validateGraph } from "./workbench/graph-workspace/utils";
 import type {
-  ArtifactDetail,
-  ArtifactRef,
-  CheckpointDetail,
-  CheckpointRecord,
   GraphDefinition,
   GraphInfo,
   InitialStateRequirement,
@@ -90,20 +81,12 @@ export function WorkbenchPage({
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [steps, setSteps] = useState<StepRecord[]>([]);
-  const [checkpoints, setCheckpoints] = useState<CheckpointRecord[]>([]);
-  const [artifacts, setArtifacts] = useState<ArtifactRef[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runInterrupt, setRunInterrupt] = useState<RunInterrupt | null>(null);
   const [humanPrompt, setHumanPrompt] = useState<HumanMessagePrompt | null>(null);
   const [humanPromptText, setHumanPromptText] = useState("");
-  const [selectedCheckpointId, setSelectedCheckpointId] = useState("");
-  const [selectedArtifactId, setSelectedArtifactId] = useState("");
-  const [checkpointDetail, setCheckpointDetail] = useState<CheckpointDetail | null>(null);
-  const [artifactDetail, setArtifactDetail] = useState<ArtifactDetail | null>(null);
-  const [resourceStatus, setResourceStatus] = useState("");
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
   const [runStatusVisible, setRunStatusVisible] = useState(false);
-  const [streamTypes, setStreamTypes] = useState("");
   const [graphId, setGraphId] = useState("debug_graph");
   const [graphVersion, setGraphVersion] = useState("1.0");
   const [initialRequirementsError, setInitialRequirementsError] = useState("");
@@ -204,18 +187,11 @@ export function WorkbenchPage({
     setRuns([]);
     setSelectedRunId("");
     setSteps([]);
-    setCheckpoints([]);
-    setArtifacts([]);
     setEvents([]);
     setLiveEvents([]);
     setRunInterrupt(null);
     setHumanPrompt(null);
     setHumanPromptText("");
-    setSelectedCheckpointId("");
-    setSelectedArtifactId("");
-    setCheckpointDetail(null);
-    setArtifactDetail(null);
-    setResourceStatus("");
     setRunStatusVisible(false);
   }, []);
 
@@ -254,37 +230,19 @@ export function WorkbenchPage({
       const contextVersion = runContextVersionRef.current;
       if (!runId) {
         setSteps([]);
-        setCheckpoints([]);
-        setArtifacts([]);
         setEvents([]);
         setRunInterrupt(null);
         setHumanPrompt(null);
         setHumanPromptText("");
         humanPromptCheckpointRef.current = "";
-        setSelectedCheckpointId("");
-        setSelectedArtifactId("");
-        setCheckpointDetail(null);
-        setArtifactDetail(null);
-        setResourceStatus("");
         return;
       }
-      setCheckpointDetail(null);
-      setArtifactDetail(null);
-      setResourceStatus("");
       const detail = await getRunDetail(runId);
       if (runContextVersionRef.current !== contextVersion) return;
       setSteps(detail.steps);
-      setCheckpoints(detail.checkpoints);
-      setArtifacts(detail.artifacts);
       setEvents(detail.events);
       setRunInterrupt(detail.interrupt ?? null);
       setRuns((current) => current.map((run) => (run.run_id === detail.run.run_id ? detail.run : run)));
-      setSelectedCheckpointId((current) =>
-        current && detail.checkpoints.some((checkpoint) => checkpoint.checkpoint_id === current) ? current : ""
-      );
-      setSelectedArtifactId((current) =>
-        current && detail.artifacts.some((artifact) => artifact.id === current) ? current : ""
-      );
     },
     []
   );
@@ -311,8 +269,6 @@ export function WorkbenchPage({
         setSelectedRunId(runId);
         setRunStatusVisible(true);
         setSteps(detail.steps);
-        setCheckpoints(detail.checkpoints);
-        setArtifacts(detail.artifacts);
         setEvents(detail.events);
         setRunInterrupt(detail.interrupt ?? null);
         if (options.openHumanPrompt) maybeOpenHumanPrompt(detail.interrupt ?? null);
@@ -389,7 +345,7 @@ export function WorkbenchPage({
   );
 
   useEffect(() => {
-    if (!definition) {
+    if (!definition || validateGraph(definition)) {
       setInitialRequirements(null);
       setInitialRequirementsError("");
       return;
@@ -423,9 +379,7 @@ export function WorkbenchPage({
   }, [notifyError, refreshSelectedRun, selectedRunId]);
 
   useEffect(() => {
-    const params = new URLSearchParams();
-    if (streamTypes.trim()) params.set("type", streamTypes.trim());
-    const streamPath = `/events/stream${params.toString() ? `?${params}` : ""}`;
+    const streamPath = "/events/stream";
     let source: EventSource | null = null;
     let reconnectTimer = 0;
     let closed = false;
@@ -506,13 +460,19 @@ export function WorkbenchPage({
       }
       setStreamStatus("closed");
     };
-  }, [refreshPausedRun, streamTypes]);
+  }, [refreshPausedRun]);
 
   async function runGraph() {
     setBusy(true);
     try {
       if (!definition) {
         pushToast("error", "Graph JSON is invalid");
+        return;
+      }
+      const graphValidationError = validateGraph(definition);
+      if (graphValidationError) {
+        pushToast("error", `Graph validation failed: ${graphValidationError}`);
+        setTab("graph");
         return;
       }
       const requirements = await analyzeInitialStateRequirements(definition, graphId, graphVersion);
@@ -554,13 +514,6 @@ export function WorkbenchPage({
       humanPromptCheckpointRef.current = "";
       ignoredHumanInterruptsRef.current.clear();
       setSteps([]);
-      setCheckpoints([]);
-      setArtifacts([]);
-      setSelectedCheckpointId("");
-      setSelectedArtifactId("");
-      setCheckpointDetail(null);
-      setArtifactDetail(null);
-      setResourceStatus("");
       setRunStatusVisible(true);
       const result = await startRun(initialState);
       launchPendingRef.current = false;
@@ -585,10 +538,12 @@ export function WorkbenchPage({
     if (!selectedRunId) return;
     setBusy(true);
     try {
-      await (kind === "pause" ? pauseRun(selectedRunId) : cancelRun(selectedRunId));
+      const run = await (kind === "pause" ? pauseRun(selectedRunId) : cancelRun(selectedRunId));
+      setRuns((current) => current.map((item) => (item.run_id === run.run_id ? run : item)));
+      setSelectedRunId(run.run_id);
       await refreshRuns(graphIdentityRef.current, runContextVersionRef.current);
-      await refreshSelectedRun(selectedRunId);
-      pushToast(kind === "pause" ? "warn" : "info", `${kind === "pause" ? "Pause" : "Cancel"} requested`);
+      await refreshSelectedRun(run.run_id);
+      pushToast(kind === "pause" ? "warn" : "info", `${kind === "pause" ? "Run paused" : "Run stopped"}: ${run.run_id}`);
     } catch (err) {
       notifyError(err);
     } finally {
@@ -598,11 +553,29 @@ export function WorkbenchPage({
 
   async function resumeSelectedRun() {
     if (!selectedRunId) return;
+    const runId = selectedRunId;
+    const humanPromptTarget = humanMessagePromptFromInterrupt(runInterrupt, definition);
+    if (humanPromptTarget) {
+      humanPromptCheckpointRef.current = humanPromptTarget.checkpointId;
+      setHumanPrompt(humanPromptTarget);
+      setHumanPromptText("");
+      setRunStatusVisible(true);
+      pushToast("warn", "Human message required to resume");
+      return;
+    }
     setBusy(true);
     try {
       const input = parseJSON<unknown>(initialStateText);
-      const runContextVersion = ++runContextVersionRef.current;
-      const result = await resumeRun(selectedRunId, input);
+      const runContextVersion = runContextVersionRef.current;
+      setRuns((current) =>
+        current.map((run) =>
+          run.run_id === runId
+            ? { ...run, status: "running", pause_requested: false, updated_at: new Date().toISOString() }
+            : run
+        )
+      );
+      setRunInterrupt(null);
+      const result = await resumeRun(runId, input);
       setSelectedRunId(result.run.run_id);
       setRunInterrupt(result.interrupt ?? null);
       setRunStatusVisible(true);
@@ -628,7 +601,14 @@ export function WorkbenchPage({
     pushToast("info", "Human message submitted");
     void (async () => {
       try {
-        const runContextVersion = ++runContextVersionRef.current;
+        const runContextVersion = runContextVersionRef.current;
+        setRuns((current) =>
+          current.map((run) =>
+            run.run_id === prompt.runId
+              ? { ...run, status: "running", pause_requested: false, updated_at: new Date().toISOString() }
+              : run
+          )
+        );
         const result = await resumeRun(prompt.runId, pendingHumanInputState(prompt.scope, text));
         setSelectedRunId(result.run.run_id);
         setRunInterrupt(result.interrupt ?? null);
@@ -653,58 +633,6 @@ export function WorkbenchPage({
     humanPromptCheckpointRef.current = "";
   }
 
-  async function resumeFromCheckpoint(checkpointId: string) {
-    if (!checkpointId) return;
-    setBusy(true);
-    try {
-      const input = parseJSON<unknown>(initialStateText);
-      const runContextVersion = ++runContextVersionRef.current;
-      const result = await resumeCheckpoint(checkpointId, input);
-      setSelectedRunId(result.run.run_id);
-      setRunInterrupt(result.interrupt ?? null);
-      setRunStatusVisible(true);
-      await refreshRuns(graphIdentityRef.current, runContextVersion);
-      await refreshSelectedRun(result.run.run_id);
-      pushToast("info", `Resumed from checkpoint: ${checkpointId}`);
-    } catch (err) {
-      notifyError(err);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function selectCheckpoint(checkpointId: string) {
-    setSelectedCheckpointId(checkpointId);
-    setSelectedArtifactId("");
-    setArtifactDetail(null);
-    setResourceStatus("loading checkpoint");
-    try {
-      const detail = await getCheckpoint(checkpointId);
-      setCheckpointDetail(detail);
-      setResourceStatus("checkpoint loaded");
-    } catch (err) {
-      setCheckpointDetail(null);
-      setResourceStatus(err instanceof Error ? err.message : String(err));
-    }
-  }
-
-  async function selectArtifact(artifact: ArtifactRef) {
-    const runId = artifact.run_id || selectedRunId;
-    if (!runId || !artifact.id) return;
-    setSelectedArtifactId(artifact.id);
-    setSelectedCheckpointId("");
-    setCheckpointDetail(null);
-    setResourceStatus("loading artifact");
-    try {
-      const detail = await getArtifact(runId, artifact.id);
-      setArtifactDetail(detail);
-      setResourceStatus("artifact loaded");
-    } catch (err) {
-      setArtifactDetail(null);
-      setResourceStatus(err instanceof Error ? err.message : String(err));
-    }
-  }
-
   return (
     <WorkbenchShell
       tab={tab}
@@ -713,7 +641,6 @@ export function WorkbenchPage({
       definition={definition}
       runControlMode={headerRunControlMode}
       canResume={canResumeSelectedRun}
-      runsCount={runs.length}
       onRun={runGraph}
       onPause={() => controlRun("pause")}
       onStop={() => controlRun("cancel")}
@@ -752,46 +679,6 @@ export function WorkbenchPage({
           onDismissToast={dismissToast}
           onGraphSwitch={prepareGraphSwitch}
           onLocalGraphLoaded={handleLocalGraphLoaded}
-        />
-      ) : null}
-      {tab === "runs" ? (
-        <RunsWorkspace
-          runs={runs}
-          selectedRunId={selectedRunId}
-          steps={steps}
-          onSelectRun={setSelectedRunId}
-          onRefresh={refreshRuns}
-          onPause={() => controlRun("pause")}
-          onCancel={() => controlRun("cancel")}
-          onResume={() => void resumeSelectedRun()}
-          onRerun={() => void runGraph()}
-          canResume={canResumeSelectedRun}
-          busy={busy}
-        />
-      ) : null}
-      {tab === "observe" ? (
-        <ObserveWorkspace
-          selectedRunId={selectedRunId}
-          streamTypes={streamTypes}
-          events={displayEvents}
-          onStreamTypes={setStreamTypes}
-        />
-      ) : null}
-      {tab === "manage" ? (
-        <ManageWorkspace
-          checkpoints={checkpoints}
-          artifacts={artifacts}
-          selectedCheckpointId={selectedCheckpointId}
-          selectedArtifactId={selectedArtifactId}
-          checkpointDetail={checkpointDetail}
-          artifactDetail={artifactDetail}
-          resourceStatus={resourceStatus}
-          registry={registry}
-          selectedRunId={selectedRunId}
-          onSelectCheckpoint={(checkpoint) => void selectCheckpoint(checkpoint.checkpoint_id)}
-          onSelectArtifact={(artifact) => void selectArtifact(artifact)}
-          onResumeCheckpoint={(checkpoint) => void resumeFromCheckpoint(checkpoint.record.checkpoint_id)}
-          busy={busy}
         />
       ) : null}
       {tab === "settings" ? (
@@ -879,6 +766,8 @@ function humanMessagePromptFromInterrupt(
   const node = definition.nodes.find((item) => item.id === interrupt.node_id);
   if (node?.type !== "human_message") return null;
   const config = isRecord(node.config) ? node.config : {};
+  const configuredContent = typeof config.content === "string" ? config.content.trim() : "";
+  if (configuredContent) return null;
   const hasExplicitScope = Object.prototype.hasOwnProperty.call(config, "state_scope");
   const scope = hasExplicitScope && typeof config.state_scope === "string" ? config.state_scope.trim() : "agent";
   return {

@@ -85,6 +85,8 @@ export function renameGraphNode(definition: GraphDefinition, oldID: string, next
 
 export function removeGraphNode(definition: GraphDefinition, nodeID: string): GraphDefinition {
   const nodes = definition.nodes.filter((node) => node.id !== nodeID);
+  const validIds = new Set(nodes.map((node) => node.id));
+  validIds.add(END_NODE_REF);
   const positions = graphNodePositions(definition);
   positions.delete(nodeID);
   return withNodePositions({
@@ -92,7 +94,7 @@ export function removeGraphNode(definition: GraphDefinition, nodeID: string): Gr
     entry_point: definition.entry_point === nodeID ? nodes[0]?.id : definition.entry_point,
     finish_point: definition.finish_point === nodeID ? nodes.at(-1)?.id : definition.finish_point,
     nodes,
-    edges: (definition.edges ?? []).filter((edge) => edge.from !== nodeID && edge.to !== nodeID),
+    edges: (definition.edges ?? []).filter((edge) => validIds.has(edge.from) && validIds.has(edge.to)),
   }, positions);
 }
 
@@ -100,6 +102,7 @@ export function addGraphEdge(definition: GraphDefinition, from: string, to: stri
   const source = from.trim();
   const target = to.trim();
   if (!source || !target) return definition;
+  if (findGraphEdgeIndex(definition, source, target) >= 0) return definition;
   const condition = conditionType?.trim()
     ? { type: conditionType.trim(), config: {} }
     : undefined;
@@ -115,11 +118,17 @@ export function updateGraphEdge(
   edgeID: string,
   update: (edge: GraphEdgeSpec) => GraphEdgeSpec
 ): GraphDefinition {
+  const edges = definition.edges ?? [];
+  const targetIndex = edges.findIndex((edge, index) => graphEdgeId(edge, index) === edgeID);
+  if (targetIndex < 0) return definition;
+  const nextEdge = update(cloneEdge(edges[targetIndex]));
+  const source = nextEdge.from.trim();
+  const target = nextEdge.to.trim();
+  if (!source || !target) return definition;
+  if (findGraphEdgeIndex(definition, source, target, targetIndex) >= 0) return definition;
   return {
     ...definition,
-    edges: (definition.edges ?? []).map((edge, index) =>
-      graphEdgeId(edge, index) === edgeID ? update(cloneEdge(edge)) : edge
-    ),
+    edges: edges.map((edge, index) => (index === targetIndex ? { ...nextEdge, from: source, to: target } : edge)),
   };
 }
 
@@ -132,6 +141,20 @@ export function removeGraphEdge(definition: GraphDefinition, edgeID: string): Gr
 
 export function graphEdgeId(edge: GraphEdgeSpec, index: number): string {
   return `${edge.from}->${edge.to}:${edge.condition?.type ?? "direct"}:${index}`;
+}
+
+export function findGraphEdgeIndex(
+  definition: GraphDefinition,
+  from: string,
+  to: string,
+  excludeIndex = -1
+): number {
+  const source = from.trim();
+  const target = to.trim();
+  if (!source || !target) return -1;
+  return (definition.edges ?? []).findIndex(
+    (edge, index) => index !== excludeIndex && edge.from === source && edge.to === target
+  );
 }
 
 export function graphNodePositions(definition: GraphDefinition): Map<string, NodePosition> {

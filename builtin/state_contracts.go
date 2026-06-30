@@ -61,6 +61,8 @@ func resolveAgentStateContract(spec dsl.GraphNodeSpec) (dsl.StateContract, error
 	}
 	if outputPath := strings.TrimSpace(config.String(spec.Config, "output_path")); outputPath != "" {
 		fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(outputPath), Mode: dsl.StateAccessWrite, Description: "State path the agent writes its final answer to.", Dynamic: true, PathConfigKey: "output_path"})
+	} else {
+		fields = append(fields, dsl.StateFieldRef{Path: state.Shared(accessors.KeyFinal, accessors.FinalFieldAnswer).String(), Mode: dsl.StateAccessWrite, Description: "Default final answer written when output_path is not configured."})
 	}
 	return dsl.StateContract{Fields: fields}, nil
 }

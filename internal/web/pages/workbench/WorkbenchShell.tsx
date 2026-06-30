@@ -1,8 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import {
-  Activity,
   ChevronUp,
-  Database,
   GitBranch,
   LayoutDashboard,
   Loader2,
@@ -26,7 +24,6 @@ export function WorkbenchShell({
   definition,
   runControlMode,
   canResume,
-  runsCount,
   children,
   runStatusPanel,
   runStatusVisible,
@@ -44,7 +41,6 @@ export function WorkbenchShell({
   definition: GraphDefinition | null;
   runControlMode: RunControlMode;
   canResume: boolean;
-  runsCount: number;
   children: ReactNode;
   runStatusPanel?: ReactNode;
   runStatusVisible: boolean;
@@ -63,20 +59,21 @@ export function WorkbenchShell({
           <GitBranch className="h-4 w-4" />
         </div>
         <NavButton icon={LayoutDashboard} active={tab === "graph"} onClick={() => onTabChange("graph")} label="Graph" />
-        <NavButton icon={Play} active={tab === "runs"} onClick={() => onTabChange("runs")} label="Runs" />
-        <NavButton icon={Activity} active={tab === "observe"} onClick={() => onTabChange("observe")} label="Observe" />
-        <NavButton icon={Database} active={tab === "manage"} onClick={() => onTabChange("manage")} label="Manage" />
         <div className="flex-1" />
         <NavButton icon={Settings} active={tab === "settings"} onClick={() => onTabChange("settings")} label="Settings" />
       </aside>
 
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
-          <div className="min-w-0">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="truncate text-sm font-semibold">WeaveFlow</span>
+          {tab === "graph" ? (
+            <div id="graph-title-slot" className="min-w-0" />
+          ) : (
+            <div className="min-w-0">
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-sm font-semibold">WeaveFlow</span>
+              </div>
             </div>
-          </div>
+          )}
           <div className="flex-1" />
           <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground" title={streamStatusLabel(streamStatus)}>
             <span className={cn("h-2 w-2 rounded-full", streamStatusDotClass(streamStatus))} />
@@ -119,7 +116,6 @@ export function WorkbenchShell({
         <footer className="flex h-9 items-center gap-3 border-t border-border bg-muted/40 px-4 text-xs text-muted-foreground">
           <span>{definition ? `${definition.nodes.length} nodes` : "invalid graph"}</span>
           <span>{definition?.edges?.length ?? 0} edges</span>
-          <span>{runsCount} runs</span>
           <span className="truncate">server API proxied at root</span>
           {hasRunStatus ? (
             <button

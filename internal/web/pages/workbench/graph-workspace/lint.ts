@@ -1,4 +1,4 @@
-import { graphEdgeId } from "../../../lib/graphEditor";
+import { END_NODE_REF, graphEdgeId } from "../../../lib/graphEditor";
 import type { GraphDefinition, InitialStateRequirements, InitialStateRequirement, WarningRecord } from "../../../types";
 
 export type GraphLintSeverity = "error" | "warn";
@@ -92,14 +92,15 @@ export function buildGraphLintIssues({
     });
   }
 
-  if (!definition.finish_point?.trim()) {
+  const hasEndEdge = (definition.edges ?? []).some((edge) => edge.to === END_NODE_REF);
+  if (!definition.finish_point?.trim() && !hasEndEdge) {
     issues.push({
       id: "graph-finish-missing",
       severity: "error",
       message: "Finish point is missing.",
       path: "finish_point",
     });
-  } else if (!nodeIds.has(definition.finish_point)) {
+  } else if (definition.finish_point && !nodeIds.has(definition.finish_point)) {
     issues.push({
       id: "graph-finish-invalid",
       severity: "error",
@@ -110,8 +111,21 @@ export function buildGraphLintIssues({
 
   const degree = new Map<string, number>();
   for (const nodeId of nodeIds) degree.set(nodeId, 0);
+  const edgePairs = new Map<string, number>();
   for (const [index, edge] of (definition.edges ?? []).entries()) {
     const edgeId = graphEdgeId(edge, index);
+    const pairKey = `${edge.from}\u0000${edge.to}`;
+    const duplicateOf = edgePairs.get(pairKey);
+    if (duplicateOf !== undefined) {
+      issues.push({
+        id: `edge-duplicate-${edge.from}-${edge.to}-${index}`,
+        severity: "error",
+        message: `Duplicate edge "${edge.from}" -> "${edge.to}".`,
+        edgeId,
+      });
+    } else {
+      edgePairs.set(pairKey, index);
+    }
     if (!nodeIds.has(edge.from)) {
       issues.push({
         id: `edge-source-missing-${edgeId}`,
@@ -122,7 +136,9 @@ export function buildGraphLintIssues({
     } else {
       degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
     }
-    if (!nodeIds.has(edge.to)) {
+    if (edge.to === END_NODE_REF) {
+      // The backend DSL accepts "__end__" as the explicit graph terminal target.
+    } else if (!nodeIds.has(edge.to)) {
       issues.push({
         id: `edge-target-missing-${edgeId}`,
         severity: "error",

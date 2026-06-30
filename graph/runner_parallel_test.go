@@ -1034,6 +1034,107 @@ func TestRunnerExternalPauseAfterSingleNodeDoesNotComplete(t *testing.T) {
 	}
 }
 
+func TestRunnerExternalPauseCancelsActiveNodeAtBeforeCheckpoint(t *testing.T) {
+	t.Parallel()
+
+	g, started, release := newControlledSingleNodeRunnerGraph(t)
+	dir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(dir)
+	runner := NewGraphRunner(
+		g,
+		executionStore,
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, err := runner.Start(context.Background(), state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: err}
+	}()
+
+	waitForBranchStarts(t, started, 1)
+	runID := waitForRunID(t, executionStore)
+	if err := runner.Pause(context.Background(), runID); err != nil {
+		t.Fatalf("pause run: %v", err)
+	}
+
+	res := waitForRunnerResult(t, done)
+	if res.err != nil {
+		t.Fatalf("runner start returned error: %v", res.err)
+	}
+	if res.run.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", res.run.Status)
+	}
+	restored, err := runner.LoadCheckpointState(context.Background(), res.run.LastCheckpointID)
+	if err != nil {
+		t.Fatalf("load last checkpoint: %v", err)
+	}
+	if restored.Record.Stage != fruntime.CheckpointBeforeNode {
+		t.Fatalf("pause checkpoint stage = %q, want before_node", restored.Record.Stage)
+	}
+
+	close(release)
+	resumedRun, _, err := runner.Resume(context.Background(), res.run.RunID, nil)
+	if err != nil {
+		t.Fatalf("resume paused run: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
+	}
+}
+
+func TestRunnerExternalPauseAfterNodeStopsBeforeNextSequentialNode(t *testing.T) {
+	t.Parallel()
+
+	g, started, release, nextCalls := newControlledSequentialRunnerGraph(t)
+	dir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(dir)
+	runner := NewGraphRunner(
+		g,
+		executionStore,
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, err := runner.Start(context.Background(), state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: err}
+	}()
+
+	waitForBranchStarts(t, started, 1)
+	runID := waitForRunID(t, executionStore)
+	if err := runner.Pause(context.Background(), runID); err != nil {
+		t.Fatalf("pause run: %v", err)
+	}
+	close(release)
+
+	res := waitForRunnerResult(t, done)
+	if res.err != nil {
+		t.Fatalf("runner start returned error: %v", res.err)
+	}
+	if res.run.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", res.run.Status)
+	}
+	if got := atomic.LoadInt32(nextCalls); got != 0 {
+		t.Fatalf("next node executed after pause: %d", got)
+	}
+
+	resumedRun, _, err := runner.Resume(context.Background(), res.run.RunID, nil)
+	if err != nil {
+		t.Fatalf("resume paused run: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
+	}
+	if got := atomic.LoadInt32(nextCalls); got != 1 {
+		t.Fatalf("next node calls after resume = %d, want 1", got)
+	}
+}
+
 func TestRunnerExternalCancelAfterSingleNodeDoesNotComplete(t *testing.T) {
 	t.Parallel()
 
@@ -1297,6 +1398,37 @@ func newControlledSingleNodeRunnerGraph(t *testing.T) (*Graph, chan string, chan
 		t.Fatalf("set finish: %v", err)
 	}
 	return g, started, release
+}
+
+func newControlledSequentialRunnerGraph(t *testing.T) (*Graph, chan string, chan struct{}, *int32) {
+	t.Helper()
+	g := NewGraph()
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	var nextCalls int32
+	mustAddNode(t, g, "first", func(ctx context.Context, access *state.Access) error {
+		started <- "first"
+		select {
+		case <-release:
+			return access.SetAny(state.Shared("first_done"), true)
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	})
+	mustAddNode(t, g, "second", func(ctx context.Context, access *state.Access) error {
+		atomic.AddInt32(&nextCalls, 1)
+		return access.SetAny(state.Shared("second_done"), true)
+	})
+	if err := g.SetEntryPoint("first"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("second"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	if err := g.AddEdge("first", "second"); err != nil {
+		t.Fatalf("add first -> second: %v", err)
+	}
+	return g, started, release, &nextCalls
 }
 
 func waitForBranchStarts(t *testing.T, started <-chan string, want int) {
