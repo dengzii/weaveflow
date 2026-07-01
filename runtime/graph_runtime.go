@@ -348,7 +348,6 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 			return core.NewContext(ctx), &langgraph.NodeInterrupt{Node: nodeID, Value: hit}
 		}
 
-		e.runner.notifyListeners(ctx, langgraph.NodeEventStart, nodeID, currentState, nil)
 		if err := e.runner.publishEvent(ctx, e.run, step.StepID, step.NodeID, EventNodeStarted, map[string]any{
 			"node_name": step.NodeName,
 		}); err != nil {
@@ -602,7 +601,6 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 		return err
 	}
 
-	e.runner.notifyListeners(ctx, langgraph.NodeEventComplete, nodeID, currentState, nil)
 	if err := e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeFinished, map[string]any{
 		"attempt": attempts,
 	}); err != nil {
@@ -738,7 +736,6 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 		items = append(items, *active)
 		delete(e.active, nodeID)
 	}
-	state := e.lastState.Clone()
 	run := e.run
 	e.pending = nil
 	e.mu.Unlock()
@@ -758,7 +755,6 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 		}
 		logger.Error("nodes failed", append(stepLogFields(step), zap.Error(err))...)
 
-		e.runner.notifyListeners(ctx, langgraph.NodeEventError, step.NodeID, state, err)
 		if publishErr := e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeFailed, map[string]any{
 			"error":   err.Error(),
 			"attempt": attempts,

@@ -934,14 +934,6 @@ func (r *GraphRunner) resolveNextNode(ctx context.Context, currentName string, s
 	return graph.ResolveNextNode(ctx, currentName, state)
 }
 
-func (r *GraphRunner) notifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error) {
-	graph := r.runnerGraph()
-	if graph == nil {
-		return
-	}
-	graph.NotifyListeners(ctx, event, nodeID, state, err)
-}
-
 func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpointSkip) *state.BreakpointHit {
 	if skip != nil && !skip.Consumed && skip.NodeID == nodeID && skip.Stage == stage {
 		skip.Consumed = true

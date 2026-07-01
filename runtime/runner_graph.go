@@ -38,6 +38,5 @@ type RunnerGraph interface {
 	ResolveNextNode(ctx context.Context, currentNodeID string, state *state.State) (string, error)
 	IsParallelBranchTarget(nodeID string) bool
 	NodeName(nodeID string) string
-	NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error)
 	AfterInterruptNodes(breakpoints []Breakpoint) ([]string, error)
 }

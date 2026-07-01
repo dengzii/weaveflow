@@ -58,9 +58,6 @@ type Graph struct {
 	entryPoint          string
 	finishPoint         string
 	retryPolicy         *langgraph.RetryPolicy
-	nodeListeners       map[string][]langgraph.NodeListener[*state.State]
-	globalListeners     []langgraph.NodeListener[*state.State]
-	tracer              *langgraph.Tracer
 }
 
 func NewGraph() *Graph {
@@ -70,7 +67,6 @@ func NewGraph() *Graph {
 		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
 		defaultEdges:     map[string][]string{},
 		conditionalEdges: map[string][]conditionalEdge{},
-		nodeListeners:    map[string][]langgraph.NodeListener[*state.State]{},
 		stateRegistry:    stateRegistry,
 	}
 }
@@ -109,10 +105,6 @@ func LoadGraphFromFile(buildContext *registry.BuildContext, path string) (*Graph
 	}
 	reg := builtin.NewDefaultRegistry()
 	return BuildGraph(reg, def, buildContext)
-}
-
-func (g *Graph) EnableLogging() {
-	_ = g.AddGlobalListener(NewLoggingListener())
 }
 
 func (g *Graph) WriteToFile(path string) error {
@@ -324,30 +316,6 @@ func (g *Graph) addConditionalEdgeInternal(from, to string, condition registry.E
 
 func (g *Graph) SetRetryPolicy(policy *langgraph.RetryPolicy) {
 	g.retryPolicy = policy
-}
-
-func (g *Graph) SetTracer(tracer *langgraph.Tracer) {
-	g.tracer = tracer
-}
-
-func (g *Graph) AddNodeListener(nodeRef string, listener langgraph.NodeListener[*state.State]) error {
-	if listener == nil {
-		return fmt.Errorf("listener is nil")
-	}
-	nodeID, err := g.resolveNodeID(nodeRef)
-	if err != nil {
-		return err
-	}
-	g.nodeListeners[nodeID] = append(g.nodeListeners[nodeID], listener)
-	return nil
-}
-
-func (g *Graph) AddGlobalListener(listener langgraph.NodeListener[*state.State]) error {
-	if listener == nil {
-		return fmt.Errorf("listener is nil")
-	}
-	g.globalListeners = append(g.globalListeners, listener)
-	return nil
 }
 
 func (g *Graph) Validate() error {
@@ -571,27 +539,19 @@ func (g *Graph) Compile() (*Runnable, error) {
 		stateGraph: compiled.StateGraph,
 		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
 			nodeDef := node
-			listenableNode := compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
+			compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
 				return g.executePatchNode(ctx, nodeID, nodeDef, state, patches)
 			})
-			for _, listener := range g.nodeListeners[nodeID] {
-				listenableNode.AddListener(g.displayNameListener(listener))
-			}
 		},
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	for _, listener := range g.globalListeners {
-		compiled.AddGlobalListener(g.displayNameListener(listener))
-	}
-
 	runnable, err := compiled.CompileListenable()
 	if err != nil {
 		return nil, err
 	}
-	g.applyTracer(runnable)
 
 	return &Runnable{runnable: runnable}, nil
 }
@@ -671,7 +631,6 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	if err != nil {
 		return nil, err
 	}
-	g.applyTracer(runnable)
 	return runnable, nil
 }
 
@@ -939,12 +898,6 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 	return nil, fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
 }
 
-func (g *Graph) applyTracer(target interface{ SetTracer(*langgraph.Tracer) }) {
-	if g.tracer != nil {
-		target.SetTracer(g.tracer)
-	}
-}
-
 func (g *Graph) stateAccessorRegistry() *state.Registry {
 	if g == nil || g.stateRegistry == nil {
 		registry, _ := node.NewDefaultRegistry()
@@ -1110,18 +1063,6 @@ func (g *Graph) nodeDisplayName(nodeID string) string {
 	return nodeID
 }
 
-func (g *Graph) displayNameListener(listener langgraph.NodeListener[*state.State]) langgraph.NodeListener[*state.State] {
-	if listener == nil {
-		return nil
-	}
-	return nodeDisplayListener{
-		inner: listener,
-		resolve: func(nodeID string) string {
-			return g.nodeDisplayName(nodeID)
-		},
-	}
-}
-
 type Runnable struct {
 	runnable *langgraph.ListenableRunnable[*state.State]
 }
@@ -1214,24 +1155,6 @@ func (c *compilePatchCollector) consume(base *state.State) []state.BranchPatch {
 	branches := append([]state.BranchPatch(nil), c.patches[base]...)
 	delete(c.patches, base)
 	return branches
-}
-
-type nodeDisplayListener struct {
-	inner   langgraph.NodeListener[*state.State]
-	resolve func(string) string
-}
-
-func (l nodeDisplayListener) OnNodeEvent(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error) {
-	if l.inner == nil {
-		return
-	}
-	name := nodeID
-	if l.resolve != nil {
-		if resolved := strings.TrimSpace(l.resolve(nodeID)); resolved != "" {
-			name = resolved
-		}
-	}
-	l.inner.OnNodeEvent(ctx, event, name, state, err)
 }
 
 func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*state.State, error) {

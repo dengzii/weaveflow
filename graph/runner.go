@@ -102,19 +102,6 @@ func (g *graphRunnerGraph) NodeName(nodeID string) string {
 	return g.graph.nodeDisplayName(nodeID)
 }
 
-func (g *graphRunnerGraph) NotifyListeners(ctx context.Context, event langgraph.NodeEvent, nodeID string, state *state.State, err error) {
-	if g == nil || g.graph == nil {
-		return
-	}
-	displayName := g.graph.nodeDisplayName(nodeID)
-	for _, listener := range g.graph.globalListeners {
-		listener.OnNodeEvent(ctx, event, displayName, state, err)
-	}
-	for _, listener := range g.graph.nodeListeners[nodeID] {
-		listener.OnNodeEvent(ctx, event, displayName, state, err)
-	}
-}
-
 func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint) ([]string, error) {
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
