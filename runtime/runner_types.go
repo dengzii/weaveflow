@@ -89,25 +89,28 @@ func IsStreamingEvent(event EventType) bool {
 }
 
 type RunRecord struct {
-	RunID            string     `json:"run_id"`
-	GraphID          string     `json:"graph_id"`
-	GraphVersion     string     `json:"graph_version"`
-	Status           RunStatus  `json:"status"`
-	EntryNodeID      string     `json:"entry_node_id"`
-	CurrentNodeID    string     `json:"current_node_id,omitempty"`
-	CurrentNodeIDs   []string   `json:"current_node_ids,omitempty"`
-	CurrentStepIDs   []string   `json:"current_step_ids,omitempty"`
-	NextNodeIDs      []string   `json:"next_node_ids,omitempty"`
-	ParallelWaveID   string     `json:"parallel_wave_id,omitempty"`
-	LastStepID       string     `json:"last_step_id,omitempty"`
-	LastCheckpointID string     `json:"last_checkpoint_id,omitempty"`
-	PauseRequested   bool       `json:"pause_requested,omitempty"`
-	CancelRequested  bool       `json:"cancel_requested,omitempty"`
-	ErrorCode        string     `json:"error_code,omitempty"`
-	ErrorMessage     string     `json:"error_message,omitempty"`
-	StartedAt        time.Time  `json:"started_at"`
-	UpdatedAt        time.Time  `json:"updated_at"`
-	FinishedAt       *time.Time `json:"finished_at,omitempty"`
+	RunID             string     `json:"run_id"`
+	GraphID           string     `json:"graph_id"`
+	GraphVersion      string     `json:"graph_version"`
+	GraphHash         string     `json:"graph_hash,omitempty"`
+	GraphSnapshotHash string     `json:"graph_snapshot_hash,omitempty"`
+	GraphSessionID    string     `json:"graph_session_id,omitempty"`
+	Status            RunStatus  `json:"status"`
+	EntryNodeID       string     `json:"entry_node_id"`
+	CurrentNodeID     string     `json:"current_node_id,omitempty"`
+	CurrentNodeIDs    []string   `json:"current_node_ids,omitempty"`
+	CurrentStepIDs    []string   `json:"current_step_ids,omitempty"`
+	NextNodeIDs       []string   `json:"next_node_ids,omitempty"`
+	ParallelWaveID    string     `json:"parallel_wave_id,omitempty"`
+	LastStepID        string     `json:"last_step_id,omitempty"`
+	LastCheckpointID  string     `json:"last_checkpoint_id,omitempty"`
+	PauseRequested    bool       `json:"pause_requested,omitempty"`
+	CancelRequested   bool       `json:"cancel_requested,omitempty"`
+	ErrorCode         string     `json:"error_code,omitempty"`
+	ErrorMessage      string     `json:"error_message,omitempty"`
+	StartedAt         time.Time  `json:"started_at"`
+	UpdatedAt         time.Time  `json:"updated_at"`
+	FinishedAt        *time.Time `json:"finished_at,omitempty"`
 }
 
 type StepRecord struct {

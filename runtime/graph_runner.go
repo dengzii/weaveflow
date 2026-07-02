@@ -28,6 +28,9 @@ type GraphRunner struct {
 	EventSink          EventSink
 	GraphID            string
 	GraphVersion       string
+	GraphHash          string
+	GraphSnapshotHash  string
+	GraphSessionID     string
 	Breakpoints        []Breakpoint
 	ContractValidation core.ContractValidationMode
 	ContractPolicy     ContractPolicy
@@ -68,20 +71,33 @@ func (r *GraphRunner) Start(ctx context.Context, initialState *state.State) (Run
 	now := r.now()
 	entryPoint := r.entryPointID()
 	run := RunRecord{
-		RunID:        newRunnerID(),
-		GraphID:      r.graphID(),
-		GraphVersion: r.graphVersion(),
-		Status:       RunStatusPending,
-		EntryNodeID:  entryPoint,
-		StartedAt:    now,
-		UpdatedAt:    now,
+		RunID:             newRunnerID(),
+		GraphID:           r.graphID(),
+		GraphVersion:      r.graphVersion(),
+		GraphHash:         r.graphHash(),
+		GraphSnapshotHash: r.graphSnapshotHash(),
+		GraphSessionID:    r.graphSessionID(),
+		Status:            RunStatusPending,
+		EntryNodeID:       entryPoint,
+		StartedAt:         now,
+		UpdatedAt:         now,
 	}
 	if err := r.ExecutionStore.CreateRun(ctx, run); err != nil {
 		return RunRecord{}, initialState, err
 	}
-	if err := r.publishEvent(ctx, run, "", "", EventRunCreated, map[string]any{
+	payload := map[string]any{
 		"entry_node_id": run.EntryNodeID,
-	}); err != nil {
+	}
+	if run.GraphHash != "" {
+		payload["graph_hash"] = run.GraphHash
+	}
+	if run.GraphSnapshotHash != "" {
+		payload["graph_snapshot_hash"] = run.GraphSnapshotHash
+	}
+	if run.GraphSessionID != "" {
+		payload["graph_session_id"] = run.GraphSessionID
+	}
+	if err := r.publishEvent(ctx, run, "", "", EventRunCreated, payload); err != nil {
 		return RunRecord{}, initialState, err
 	}
 
@@ -559,6 +575,27 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	return nil
 }
 
+func (r *GraphRunner) DeleteRun(ctx context.Context, runID string) (RunRecord, error) {
+	if err := r.validate(); err != nil {
+		return RunRecord{}, err
+	}
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return RunRecord{}, ErrRunnerRecordNotFound
+	}
+	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if isActiveDeleteRunStatus(run.Status) || r.hasActiveExecution(runID) {
+		return RunRecord{}, fmt.Errorf("%w: run %q status %q must be stopped before deletion", ErrRunControlNotAllowed, runID, run.Status)
+	}
+	if err := deleteRunnerStoredRun(ctx, runID, r.ExecutionStore, r.CheckpointStore, r.EventSink, r.ArtifactStore); err != nil {
+		return RunRecord{}, err
+	}
+	return run, nil
+}
+
 func (r *GraphRunner) registerActiveExecution(runID string, execution *graphRunnerExecution) {
 	if r == nil || execution == nil || strings.TrimSpace(runID) == "" {
 		return
@@ -599,6 +636,16 @@ func (r *GraphRunner) cancelActiveExecution(runID string) {
 	execution.requestCancel()
 }
 
+func (r *GraphRunner) hasActiveExecution(runID string) bool {
+	if r == nil || strings.TrimSpace(runID) == "" {
+		return false
+	}
+	r.activeMu.Lock()
+	defer r.activeMu.Unlock()
+	_, ok := r.activeExecutions[runID]
+	return ok
+}
+
 func (r *GraphRunner) pauseActiveExecution(runID string) {
 	if r == nil || strings.TrimSpace(runID) == "" {
 		return
@@ -610,6 +657,42 @@ func (r *GraphRunner) pauseActiveExecution(runID string) {
 		return
 	}
 	execution.requestPause()
+}
+
+func isActiveDeleteRunStatus(status RunStatus) bool {
+	switch status {
+	case RunStatusPending, RunStatusRunning:
+		return true
+	default:
+		return false
+	}
+}
+
+type runDeletionStore interface {
+	DeleteRun(ctx context.Context, runID string) error
+}
+
+func deleteRunnerStoredRun(ctx context.Context, runID string, executionStore ExecutionStore, checkpointStore CheckpointStore, eventSink EventSink, artifactStore ArtifactStore) error {
+	executionDeleter, ok := executionStore.(runDeletionStore)
+	if !ok {
+		return fmt.Errorf("execution store does not support deleting runs")
+	}
+	if checkpointDeleter, ok := checkpointStore.(runDeletionStore); ok {
+		if err := checkpointDeleter.DeleteRun(ctx, runID); err != nil {
+			return err
+		}
+	}
+	if artifactDeleter, ok := artifactStore.(runDeletionStore); ok {
+		if err := artifactDeleter.DeleteRun(ctx, runID); err != nil {
+			return err
+		}
+	}
+	if eventDeleter, ok := eventSink.(runDeletionStore); ok {
+		if err := eventDeleter.DeleteRun(ctx, runID); err != nil {
+			return err
+		}
+	}
+	return executionDeleter.DeleteRun(ctx, runID)
 }
 
 func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, interrupt *langgraph.GraphInterrupt) (RunRecord, *state.State, error) {
@@ -1108,6 +1191,18 @@ func (r *GraphRunner) graphVersion() string {
 		return text
 	}
 	return DefaultGraphVersion
+}
+
+func (r *GraphRunner) graphHash() string {
+	return strings.TrimSpace(r.GraphHash)
+}
+
+func (r *GraphRunner) graphSnapshotHash() string {
+	return strings.TrimSpace(r.GraphSnapshotHash)
+}
+
+func (r *GraphRunner) graphSessionID() string {
+	return strings.TrimSpace(r.GraphSessionID)
 }
 
 func (r *GraphRunner) nodeName(nodeID string) string {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/dengzii/weaveflow/dsl"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
@@ -16,6 +17,10 @@ func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkp
 		runner.NodeContracts = cloneNodeContracts(graph.nodeContracts)
 		runner.StateRegistry = graph.stateAccessorRegistry()
 		runner.StartupWarnings = buildRunnerWarnings(graph.ContractDiagnostics())
+		if def, err := graph.Definition(); err == nil {
+			runner.GraphHash, _ = dsl.SemanticGraphHash(def)
+			runner.GraphSnapshotHash, _ = dsl.SnapshotGraphHash(def)
+		}
 	}
 	return runner
 }

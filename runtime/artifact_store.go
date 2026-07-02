@@ -125,6 +125,16 @@ func (s *FileArtifactStore) List(_ context.Context, runID string) ([]state.Artif
 	return items, nil
 }
 
+func (s *FileArtifactStore) DeleteRun(_ context.Context, runID string) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ErrRunnerRecordNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return os.RemoveAll(s.artifactsDir(runID))
+}
+
 func (s *FileArtifactStore) artifactsDir(runID string) string {
 	return filepath.Join(s.baseDir, runID)
 }

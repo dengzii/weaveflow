@@ -257,6 +257,32 @@ func (s *FileExecutionStore) ListSteps(_ context.Context, runID string) ([]StepR
 	return items, nil
 }
 
+func (s *FileExecutionStore) DeleteRun(_ context.Context, runID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ErrRunnerRecordNotFound
+	}
+	if _, err := os.Stat(s.runPath(runID)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrRunnerRecordNotFound
+		}
+		return err
+	}
+	if err := os.RemoveAll(s.stepsDir(runID)); err != nil {
+		return err
+	}
+	if err := os.Remove(s.runPath(runID)); err != nil {
+		if os.IsNotExist(err) {
+			return ErrRunnerRecordNotFound
+		}
+		return err
+	}
+	return nil
+}
+
 func (s *FileExecutionStore) listRunsLocked(filter RunFilter) ([]RunRecord, error) {
 	dir := s.runsDir()
 	files, err := os.ReadDir(dir)
@@ -386,6 +412,16 @@ func (s *FileCheckpointStore) List(_ context.Context, runID string) ([]Checkpoin
 	return items, nil
 }
 
+func (s *FileCheckpointStore) DeleteRun(_ context.Context, runID string) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ErrRunnerRecordNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return os.RemoveAll(s.checkpointsDir(runID))
+}
+
 func (s *FileCheckpointStore) checkpointsDir(runID string) string {
 	return filepath.Join(s.baseDir, runID)
 }
@@ -444,6 +480,19 @@ func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
 		items = append(items, event)
 	}
 	return items, nil
+}
+
+func (s *FileEventSink) DeleteRun(_ context.Context, runID string) error {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		return ErrRunnerRecordNotFound
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.Remove(s.eventsPath(runID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (s *FileEventSink) eventsPath(runID string) string {
