@@ -22,8 +22,8 @@ type artifactResponse struct {
 }
 
 func (s *Server) handleListArtifacts(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	runID := strings.TrimSpace(c.Param("run_id"))
@@ -31,7 +31,7 @@ func (s *Server) handleListArtifacts(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
 		return
 	}
-	artifacts, err := runner.ListArtifacts(c.Request.Context(), runID)
+	artifacts, err := reader.ListArtifacts(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -40,8 +40,8 @@ func (s *Server) handleListArtifacts(c *gin.Context) {
 }
 
 func (s *Server) handleGetArtifact(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	runID := strings.TrimSpace(c.Param("run_id"))
@@ -50,7 +50,7 @@ func (s *Server) handleGetArtifact(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id and artifact_id are required"))
 		return
 	}
-	artifact, err := runner.LoadArtifact(c.Request.Context(), state.ArtifactRef{RunID: runID, ID: artifactID})
+	artifact, err := reader.LoadArtifact(c.Request.Context(), state.ArtifactRef{RunID: runID, ID: artifactID})
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return

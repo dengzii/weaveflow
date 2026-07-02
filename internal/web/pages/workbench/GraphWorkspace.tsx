@@ -1,7 +1,12 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, FilePlus2, Search, Trash2, X } from "lucide-react";
-import { GraphCanvas, type VirtualGraphEdge, type VirtualGraphLoop } from "../../components/GraphCanvas";
+import {
+  GraphCanvas,
+  hasStoredGraphCanvasViewport,
+  type VirtualGraphEdge,
+  type VirtualGraphLoop,
+} from "../../components/GraphCanvas";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import {
@@ -440,7 +445,10 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setSelectedLoopId(null);
     setLocalStatus(`loaded ${draft.title}`);
     setGraphMenuOpen(false);
-    window.setTimeout(() => setFitViewSignal((value) => value + 1), 80);
+    const viewportKey = graphCanvasViewportStorageKey(draft.graphId, draft.graphVersion, draft.id, draft.definition);
+    if (!hasStoredGraphCanvasViewport(viewportKey)) {
+      window.setTimeout(() => setFitViewSignal((value) => value + 1), 80);
+    }
   }
 
   function deleteDraft() {
@@ -974,6 +982,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           fitViewSignal={fitViewSignal}
           focusNodeId={focusNodeId}
           focusNodeSignal={focusNodeSignal}
+          viewportStorageKey={graphCanvasViewportStorageKey(graphId, graphVersion, activeDraftId, definition)}
           highlightedNodeIds={highlightedNodeIds}
           onSelectNode={setSelectedNodeId}
           onSelectEdge={setSelectedEdgeId}
@@ -1074,6 +1083,21 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     </div>
   );
 });
+
+function graphCanvasViewportStorageKey(
+  graphId: string,
+  graphVersion: string,
+  activeDraftId: string,
+  definition: GraphDefinition | null
+): string {
+  return [
+    activeDraftId || "server",
+    graphId || definition?.name || "graph",
+    graphVersion || definition?.version || "1.0",
+  ]
+    .map((part) => encodeURIComponent(part.trim() || "-"))
+    .join(":");
+}
 
 function GraphTitleMenu({
   activeDraftId,

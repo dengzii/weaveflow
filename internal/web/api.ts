@@ -2,6 +2,7 @@ import type {
   ApiResponse,
   ArtifactDetail,
   ArtifactRef,
+  CachedGraphSummary,
   CheckpointDetail,
   CheckpointRecord,
   GraphDefinition,
@@ -35,6 +36,17 @@ async function readResponse<T>(resp: Response): Promise<T> {
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const resp = await fetch(path, init);
   return readResponse<T>(resp);
+}
+
+function graphQuery(graphId?: string): string {
+  if (!graphId) return "";
+  return `?graph_id=${encodeURIComponent(graphId)}`;
+}
+
+function appendGraphQuery(path: string, graphId?: string): string {
+  if (!graphId) return path;
+  const sep = path.includes("?") ? "&" : "?";
+  return `${path}${sep}graph_id=${encodeURIComponent(graphId)}`;
 }
 
 export async function getGraphInfo(): Promise<GraphInfo> {
@@ -85,8 +97,12 @@ export async function getRegistry(): Promise<RegistryInfo> {
   return apiFetch<RegistryInfo>("/registry");
 }
 
-export async function listRuns(): Promise<RunRecord[]> {
-  return apiFetch<RunRecord[]>("/runs");
+export async function listGraphs(): Promise<CachedGraphSummary[]> {
+  return apiFetch<CachedGraphSummary[]>("/graphs");
+}
+
+export async function listRuns(graphId?: string): Promise<RunRecord[]> {
+  return apiFetch<RunRecord[]>(`/runs${graphQuery(graphId)}`);
 }
 
 export async function startRun(initialState: unknown): Promise<RunResult> {
@@ -113,40 +129,44 @@ export async function resumeCheckpoint(checkpointId: string, input: unknown): Pr
   });
 }
 
-export async function getRunDetail(runId: string): Promise<RunDetail> {
-  return apiFetch<RunDetail>(`/runs/${encodeURIComponent(runId)}/detail`);
+export async function getRunDetail(runId: string, graphId?: string): Promise<RunDetail> {
+  return apiFetch<RunDetail>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/detail`, graphId));
 }
 
 export async function pauseRun(runId: string): Promise<RunRecord> {
   return apiFetch<RunRecord>(`/runs/${encodeURIComponent(runId)}/pause`, { method: "POST" });
 }
 
-export async function cancelRun(runId: string): Promise<RunRecord> {
-  return apiFetch<RunRecord>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" });
+export async function cancelRun(runId: string, graphId?: string): Promise<RunRecord> {
+  return apiFetch<RunRecord>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/cancel`, graphId), { method: "POST" });
 }
 
-export async function listSteps(runId: string): Promise<StepRecord[]> {
-  return apiFetch<StepRecord[]>(`/runs/${encodeURIComponent(runId)}/steps`);
+export async function deleteRun(runId: string, graphId?: string): Promise<RunRecord> {
+  return apiFetch<RunRecord>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}`, graphId), { method: "DELETE" });
 }
 
-export async function listCheckpoints(runId: string): Promise<CheckpointRecord[]> {
-  return apiFetch<CheckpointRecord[]>(`/runs/${encodeURIComponent(runId)}/checkpoints`);
+export async function listSteps(runId: string, graphId?: string): Promise<StepRecord[]> {
+  return apiFetch<StepRecord[]>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/steps`, graphId));
 }
 
-export async function getCheckpoint(checkpointId: string): Promise<CheckpointDetail> {
-  return apiFetch<CheckpointDetail>(`/checkpoints/${encodeURIComponent(checkpointId)}`);
+export async function listCheckpoints(runId: string, graphId?: string): Promise<CheckpointRecord[]> {
+  return apiFetch<CheckpointRecord[]>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/checkpoints`, graphId));
 }
 
-export async function listArtifacts(runId: string): Promise<ArtifactRef[]> {
-  return apiFetch<ArtifactRef[]>(`/runs/${encodeURIComponent(runId)}/artifacts`);
+export async function getCheckpoint(checkpointId: string, graphId?: string): Promise<CheckpointDetail> {
+  return apiFetch<CheckpointDetail>(appendGraphQuery(`/checkpoints/${encodeURIComponent(checkpointId)}`, graphId));
 }
 
-export async function getArtifact(runId: string, artifactId: string): Promise<ArtifactDetail> {
+export async function listArtifacts(runId: string, graphId?: string): Promise<ArtifactRef[]> {
+  return apiFetch<ArtifactRef[]>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/artifacts`, graphId));
+}
+
+export async function getArtifact(runId: string, artifactId: string, graphId?: string): Promise<ArtifactDetail> {
   return apiFetch<ArtifactDetail>(
-    `/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`
+    appendGraphQuery(`/runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`, graphId)
   );
 }
 
-export async function listEvents(runId: string): Promise<RuntimeEvent[]> {
-  return apiFetch<RuntimeEvent[]>(`/runs/${encodeURIComponent(runId)}/events`);
+export async function listEvents(runId: string, graphId?: string): Promise<RuntimeEvent[]> {
+  return apiFetch<RuntimeEvent[]>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/events`, graphId));
 }

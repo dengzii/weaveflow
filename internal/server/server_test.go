@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -258,6 +260,78 @@ func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
 		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 
+	var graphResponse struct {
+		Data graphLoadResponse `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &graphResponse); err != nil {
+		t.Fatalf("decode graph response: %v", err)
+	}
+	if graphResponse.Data.Graph.GraphHash == "" {
+		t.Fatal("graph response graph_hash is empty")
+	}
+	if graphResponse.Data.Graph.GraphSnapshotHash == "" {
+		t.Fatal("graph response graph_snapshot_hash is empty")
+	}
+	if graphResponse.Data.Graph.GraphSessionID == "" {
+		t.Fatal("graph response graph_session_id is empty")
+	}
+	if graphResponse.Data.RunnerBaseDir == "" {
+		t.Fatal("graph response runner_base_dir is empty")
+	}
+	if graphResponse.Data.Graph.GraphSessionID != filepath.Base(graphResponse.Data.RunnerBaseDir) {
+		t.Fatalf("graph session id = %q, want base dir %q", graphResponse.Data.Graph.GraphSessionID, filepath.Base(graphResponse.Data.RunnerBaseDir))
+	}
+
+	definitionPath := filepath.Join(graphResponse.Data.RunnerBaseDir, "definition.json")
+	if _, err := os.Stat(definitionPath); err != nil {
+		t.Fatalf("stat graph definition snapshot: %v", err)
+	}
+	manifestData, err := os.ReadFile(filepath.Join(graphResponse.Data.RunnerBaseDir, "graph.json"))
+	if err != nil {
+		t.Fatalf("read graph session manifest: %v", err)
+	}
+	var manifest graphSessionManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatalf("decode graph session manifest: %v", err)
+	}
+	if manifest.GraphID != "debug-graph" {
+		t.Fatalf("manifest graph id = %q, want debug-graph", manifest.GraphID)
+	}
+	if manifest.GraphHash != graphResponse.Data.Graph.GraphHash {
+		t.Fatalf("manifest graph hash = %q, want %q", manifest.GraphHash, graphResponse.Data.Graph.GraphHash)
+	}
+	if manifest.GraphSnapshotHash != graphResponse.Data.Graph.GraphSnapshotHash {
+		t.Fatalf("manifest graph snapshot hash = %q, want %q", manifest.GraphSnapshotHash, graphResponse.Data.Graph.GraphSnapshotHash)
+	}
+	if manifest.GraphSessionID != graphResponse.Data.Graph.GraphSessionID {
+		t.Fatalf("manifest graph session id = %q, want %q", manifest.GraphSessionID, graphResponse.Data.Graph.GraphSessionID)
+	}
+	if manifest.DefinitionPath != "definition.json" {
+		t.Fatalf("manifest definition path = %q, want definition.json", manifest.DefinitionPath)
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/graph", nil)
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /graph status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var currentGraphResponse struct {
+		Data graphInfo `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &currentGraphResponse); err != nil {
+		t.Fatalf("decode current graph response: %v", err)
+	}
+	if currentGraphResponse.Data.GraphHash != graphResponse.Data.Graph.GraphHash {
+		t.Fatalf("current graph hash = %q, want %q", currentGraphResponse.Data.GraphHash, graphResponse.Data.Graph.GraphHash)
+	}
+	if currentGraphResponse.Data.GraphSnapshotHash != graphResponse.Data.Graph.GraphSnapshotHash {
+		t.Fatalf("current graph snapshot hash = %q, want %q", currentGraphResponse.Data.GraphSnapshotHash, graphResponse.Data.Graph.GraphSnapshotHash)
+	}
+	if currentGraphResponse.Data.GraphSessionID != graphResponse.Data.Graph.GraphSessionID {
+		t.Fatalf("current graph session id = %q, want %q", currentGraphResponse.Data.GraphSessionID, graphResponse.Data.Graph.GraphSessionID)
+	}
+
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(`{}`))
 	req.Header.Set("Content-Type", "application/json")
@@ -275,8 +349,308 @@ func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
 	if response.Data.Run.GraphID != "debug-graph" {
 		t.Fatalf("run graph id = %q, want debug-graph", response.Data.Run.GraphID)
 	}
+	if response.Data.Run.GraphHash != graphResponse.Data.Graph.GraphHash {
+		t.Fatalf("run graph hash = %q, want %q", response.Data.Run.GraphHash, graphResponse.Data.Graph.GraphHash)
+	}
+	if response.Data.Run.GraphSnapshotHash != graphResponse.Data.Graph.GraphSnapshotHash {
+		t.Fatalf("run graph snapshot hash = %q, want %q", response.Data.Run.GraphSnapshotHash, graphResponse.Data.Graph.GraphSnapshotHash)
+	}
+	if response.Data.Run.GraphSessionID != graphResponse.Data.Graph.GraphSessionID {
+		t.Fatalf("run graph session id = %q, want %q", response.Data.Run.GraphSessionID, graphResponse.Data.Graph.GraphSessionID)
+	}
 	if response.Data.Run.Status != runtime.RunStatusCompleted {
 		t.Fatalf("run status = %q, want %q", response.Data.Run.Status, runtime.RunStatusCompleted)
+	}
+}
+
+func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	first := postGraphForHashTest(t, engine, `{
+		"graph_id": "debug-graph",
+		"definition": {
+			"version": "1.0",
+			"name": "debug-graph",
+			"entry_point": "input",
+			"finish_point": "input",
+			"nodes": [
+				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+			],
+			"metadata": {"web": {"positions": {"input": {"x": 10, "y": 20}}}}
+		}
+	}`)
+	time.Sleep(time.Millisecond)
+	second := postGraphForHashTest(t, engine, `{
+		"graph_id": "debug-graph",
+		"definition": {
+			"version": "1.0",
+			"name": "debug-graph",
+			"entry_point": "input",
+			"finish_point": "input",
+			"nodes": [
+				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+			],
+			"metadata": {"web": {"positions": {"input": {"x": 30, "y": 40}}}}
+		}
+	}`)
+
+	if first.Graph.GraphHash != second.Graph.GraphHash {
+		t.Fatalf("semantic graph hash changed after metadata-only change: %q != %q", first.Graph.GraphHash, second.Graph.GraphHash)
+	}
+	if first.Graph.GraphSnapshotHash == second.Graph.GraphSnapshotHash {
+		t.Fatalf("snapshot graph hash did not change after metadata-only change: %q", first.Graph.GraphSnapshotHash)
+	}
+	if first.Graph.GraphSessionID == second.Graph.GraphSessionID {
+		t.Fatalf("graph session id did not change between uploads: %q", first.Graph.GraphSessionID)
+	}
+}
+
+func TestConfiguredGraphExposesComputedHashes(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	g := wfgraph.NewGraph()
+	if err := g.AddNode(node.NewFuncNode(node.Spec{ID: "input", Name: "input"}, func(core.Context, *state.Access) error {
+		return nil
+	})); err != nil {
+		t.Fatalf("add node: %v", err)
+	}
+	g.SetNodeSpec(dsl.GraphNodeSpec{ID: "input", Type: "test", Name: "input"})
+	if err := g.SetEntryPoint("input"); err != nil {
+		t.Fatalf("set entry point: %v", err)
+	}
+	if err := g.SetFinishPoint("input"); err != nil {
+		t.Fatalf("set finish point: %v", err)
+	}
+
+	srv, err := New(context.Background(), Config{
+		BaseDir: t.TempDir(),
+		Graph:   g,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/graph", nil)
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /graph status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Data graphInfo `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode graph response: %v", err)
+	}
+	if response.Data.GraphHash == "" {
+		t.Fatal("configured graph hash is empty")
+	}
+	if response.Data.GraphSnapshotHash == "" {
+		t.Fatal("configured graph snapshot hash is empty")
+	}
+}
+
+func TestDeleteRunRemovesDebugRecords(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	graphBody := `{
+		"graph_id": "debug-graph",
+		"definition": {
+			"version": "1.0",
+			"name": "debug-graph",
+			"entry_point": "input",
+			"finish_point": "input",
+			"nodes": [
+				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+			]
+		}
+	}`
+
+	w := serveHTTP(engine, http.MethodPost, "/graph", graphBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+	}
+	start := serveHTTP(engine, http.MethodPost, "/runs", `{}`)
+	result := decodeRunResultResponse(t, start, http.StatusOK)
+
+	deleted := decodeRunRecordResponse(t, serveHTTP(engine, http.MethodDelete, "/runs/"+result.Run.RunID+"?graph_id=debug-graph", ""), http.StatusOK)
+	if deleted.RunID != result.Run.RunID {
+		t.Fatalf("deleted run id = %q, want %q", deleted.RunID, result.Run.RunID)
+	}
+
+	w = serveHTTP(engine, http.MethodGet, "/runs/"+result.Run.RunID+"/detail?graph_id=debug-graph", "")
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GET deleted run detail status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	w = serveHTTP(engine, http.MethodGet, "/runs?graph_id=debug-graph", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /runs status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var listResponse struct {
+		Data []runtime.RunRecord `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResponse); err != nil {
+		t.Fatalf("decode runs response: %v", err)
+	}
+	if len(listResponse.Data) != 0 {
+		t.Fatalf("runs length = %d, want 0; runs = %#v", len(listResponse.Data), listResponse.Data)
+	}
+}
+
+func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	baseDir := t.TempDir()
+	srv, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	graphBody := `{
+		"graph_id": "debug-graph",
+		"definition": {
+			"version": "1.0",
+			"name": "debug-graph",
+			"entry_point": "input",
+			"finish_point": "input",
+			"nodes": [
+				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+			]
+		}
+	}`
+
+	w := serveHTTP(engine, http.MethodPost, "/graph", graphBody)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+	}
+	start := serveHTTP(engine, http.MethodPost, "/runs", `{}`)
+	result := decodeRunResultResponse(t, start, http.StatusOK)
+
+	cacheOnlyServer, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatalf("New cache-only server error = %v", err)
+	}
+	cacheOnlyEngine := gin.New()
+	cacheOnlyServer.RegisterRoutes(cacheOnlyEngine.Group(""))
+
+	deleted := decodeRunRecordResponse(t, serveHTTP(cacheOnlyEngine, http.MethodDelete, "/runs/"+result.Run.RunID+"?graph_id=debug-graph", ""), http.StatusOK)
+	if deleted.RunID != result.Run.RunID {
+		t.Fatalf("deleted run id = %q, want %q", deleted.RunID, result.Run.RunID)
+	}
+
+	w = serveHTTP(cacheOnlyEngine, http.MethodGet, "/runs?graph_id=debug-graph", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /runs status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var listResponse struct {
+		Data []runtime.RunRecord `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &listResponse); err != nil {
+		t.Fatalf("decode runs response: %v", err)
+	}
+	if len(listResponse.Data) != 0 {
+		t.Fatalf("runs length = %d, want 0; runs = %#v", len(listResponse.Data), listResponse.Data)
+	}
+}
+
+func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	graphBody := `{
+		"graph_id": "debug-graph",
+		"definition": {
+			"version": "1.0",
+			"name": "debug-graph",
+			"entry_point": "input",
+			"finish_point": "input",
+			"nodes": [
+				{
+					"id": "input",
+					"type": "human_message",
+					"config": {"content": "hello"}
+				}
+			]
+		}
+	}`
+
+	runIDs := make(map[string]struct{})
+	for i := 0; i < 2; i++ {
+		if i > 0 {
+			time.Sleep(time.Millisecond)
+		}
+
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+		req.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		}
+
+		w = httptest.NewRecorder()
+		req = httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(`{}`))
+		req.Header.Set("Content-Type", "application/json")
+		engine.ServeHTTP(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("POST /runs status = %d, body = %s", w.Code, w.Body.String())
+		}
+
+		var response struct {
+			Data runResult `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode run response: %v", err)
+		}
+		runIDs[response.Data.Run.RunID] = struct{}{}
+	}
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/runs?graph_id=debug-graph", nil)
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /runs status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var response struct {
+		Data []runtime.RunRecord `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode runs response: %v", err)
+	}
+	if len(response.Data) != 2 {
+		t.Fatalf("runs length = %d, want 2; runs = %#v", len(response.Data), response.Data)
+	}
+	for _, run := range response.Data {
+		delete(runIDs, run.RunID)
+	}
+	if len(runIDs) != 0 {
+		t.Fatalf("missing graph runs: %#v", runIDs)
 	}
 }
 
@@ -451,6 +825,9 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	if startResponse.Data.Interrupt.NodeID != "wait" {
 		t.Fatalf("interrupt node id = %q, want wait", startResponse.Data.Interrupt.NodeID)
 	}
+	if startResponse.Data.Interrupt.Message != "waiting for resume input" {
+		t.Fatalf("interrupt message = %q, want waiting for resume input", startResponse.Data.Interrupt.Message)
+	}
 
 	w = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/runs/"+startResponse.Data.Run.RunID+"/detail", nil)
@@ -466,6 +843,9 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	}
 	if detailResponse.Data.Interrupt == nil {
 		t.Fatal("detail interrupt is nil")
+	}
+	if detailResponse.Data.Interrupt.Message != "waiting for resume input" {
+		t.Fatalf("detail interrupt message = %q, want waiting for resume input", detailResponse.Data.Interrupt.Message)
 	}
 	var pausedPayload map[string]any
 	for _, event := range detailResponse.Data.Events {
@@ -515,6 +895,120 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	}
 	if resumeResponse.Data.Interrupt != nil {
 		t.Fatalf("completed run interrupt = %#v, want nil", resumeResponse.Data.Interrupt)
+	}
+}
+
+func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reg := wfregistry.NewRegistry()
+	if err := reg.RegisterNodeType(wfregistry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:          "interrupt_once",
+			Title:         "Interrupt Once",
+			StateContract: &dsl.StateContract{},
+		},
+		Build: func(_ *wfregistry.BuildContext, spec dsl.GraphNodeSpec) (core.Node, error) {
+			return newInterruptTestNode(spec), nil
+		},
+	}); err != nil {
+		t.Fatalf("register node type: %v", err)
+	}
+
+	baseDir := t.TempDir()
+	srv, err := New(context.Background(), Config{
+		BaseDir:  baseDir,
+		Registry: reg,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	graphBody := `{
+		"graph_id": "interrupt-graph",
+		"definition": {
+			"version": "1.0",
+			"name": "interrupt-graph",
+			"entry_point": "wait",
+			"finish_point": "wait",
+			"nodes": [
+				{"id": "wait", "type": "interrupt_once"}
+			]
+		}
+	}`
+
+	w := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(`{}`))
+	req.Header.Set("Content-Type", "application/json")
+	engine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /runs status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var startResponse struct {
+		Data runResult `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &startResponse); err != nil {
+		t.Fatalf("decode start response: %v", err)
+	}
+	if startResponse.Data.Run.Status != runtime.RunStatusPaused {
+		t.Fatalf("start status = %q, want %q", startResponse.Data.Run.Status, runtime.RunStatusPaused)
+	}
+
+	cacheOnlyServer, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatalf("New cache-only server error = %v", err)
+	}
+	cacheOnlyEngine := gin.New()
+	cacheOnlyServer.RegisterRoutes(cacheOnlyEngine.Group(""))
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/runs/"+startResponse.Data.Run.RunID+"/cancel?graph_id=interrupt-graph", nil)
+	cacheOnlyEngine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /runs/:run_id/cancel status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var cancelResponse struct {
+		Data runtime.RunRecord `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &cancelResponse); err != nil {
+		t.Fatalf("decode cancel response: %v", err)
+	}
+	if cancelResponse.Data.Status != runtime.RunStatusCanceled {
+		t.Fatalf("cancel response status = %q, want %q", cancelResponse.Data.Status, runtime.RunStatusCanceled)
+	}
+	if cancelResponse.Data.FinishedAt == nil {
+		t.Fatal("canceled cached run finished_at is nil")
+	}
+
+	w = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/runs/"+startResponse.Data.Run.RunID+"/detail?graph_id=interrupt-graph", nil)
+	cacheOnlyEngine.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /runs/:run_id/detail status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var detailResponse struct {
+		Data runDetail `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &detailResponse); err != nil {
+		t.Fatalf("decode detail response: %v", err)
+	}
+	if detailResponse.Data.Run.Status != runtime.RunStatusCanceled {
+		t.Fatalf("detail run status = %q, want %q", detailResponse.Data.Run.Status, runtime.RunStatusCanceled)
+	}
+	if !hasRuntimeEvent(detailResponse.Data.Events, runtime.EventRunCanceled) {
+		t.Fatal("detail events missing run.canceled")
 	}
 }
 
@@ -842,6 +1336,25 @@ func serveHTTPWithContext(ctx context.Context, engine *gin.Engine, method string
 	return w
 }
 
+func postGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
+	t.Helper()
+	w := serveHTTP(engine, http.MethodPost, "/graph", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var decoded struct {
+		Data  graphLoadResponse `json:"data"`
+		Error string            `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode graph response: %v", err)
+	}
+	if decoded.Error != "" {
+		t.Fatalf("response error = %q", decoded.Error)
+	}
+	return decoded.Data
+}
+
 func waitForSignal(t *testing.T, signal <-chan struct{}, name string) {
 	t.Helper()
 	select {
@@ -890,6 +1403,15 @@ func waitForServerRunID(t *testing.T, runner *runtime.GraphRunner) string {
 		case <-ticker.C:
 		}
 	}
+}
+
+func hasRuntimeEvent(events []runtime.Event, eventType runtime.EventType) bool {
+	for _, event := range events {
+		if event.Type == eventType {
+			return true
+		}
+	}
+	return false
 }
 
 func decodeRunRecordResponse(t *testing.T, response *httptest.ResponseRecorder, wantStatus int) runtime.RunRecord {

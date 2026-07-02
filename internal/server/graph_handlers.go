@@ -14,10 +14,13 @@ import (
 )
 
 type graphInfo struct {
-	ID          string `json:"id"`
-	Version     string `json:"version"`
-	EntryPoint  string `json:"entry_point,omitempty"`
-	FinishPoint string `json:"finish_point,omitempty"`
+	ID                string `json:"id"`
+	Version           string `json:"version"`
+	GraphHash         string `json:"graph_hash,omitempty"`
+	GraphSnapshotHash string `json:"graph_snapshot_hash,omitempty"`
+	GraphSessionID    string `json:"graph_session_id,omitempty"`
+	EntryPoint        string `json:"entry_point,omitempty"`
+	FinishPoint       string `json:"finish_point,omitempty"`
 }
 
 type graphNodeView struct {
@@ -44,10 +47,13 @@ func (s *Server) handleGraph(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, graphInfo{
-		ID:          s.graphID(),
-		Version:     s.graphVersion(),
-		EntryPoint:  def.EntryPoint,
-		FinishPoint: def.FinishPoint,
+		ID:                s.graphID(),
+		Version:           s.graphVersion(),
+		GraphHash:         s.graphHash(),
+		GraphSnapshotHash: s.graphSnapshotHash(),
+		GraphSessionID:    s.graphSessionID(),
+		EntryPoint:        def.EntryPoint,
+		FinishPoint:       def.FinishPoint,
 	})
 }
 
@@ -173,6 +179,30 @@ func (s *Server) graphVersion() string {
 		}
 	}
 	return runtime.DefaultGraphVersion
+}
+
+func (s *Server) graphHash() string {
+	runner := s.currentRunner()
+	if runner != nil {
+		return strings.TrimSpace(runner.GraphHash)
+	}
+	return ""
+}
+
+func (s *Server) graphSnapshotHash() string {
+	runner := s.currentRunner()
+	if runner != nil {
+		return strings.TrimSpace(runner.GraphSnapshotHash)
+	}
+	return ""
+}
+
+func (s *Server) graphSessionID() string {
+	runner := s.currentRunner()
+	if runner != nil {
+		return strings.TrimSpace(runner.GraphSessionID)
+	}
+	return ""
 }
 
 func (s *Server) currentGraph() *wfgraph.Graph {

@@ -10,6 +10,7 @@ export function statusTone(status?: string): "neutral" | "ok" | "warn" | "danger
     case "pending":
       return "live";
     case "paused":
+    case "interrupted":
       return "warn";
     case "failed":
     case "canceled":

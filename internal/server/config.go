@@ -27,8 +27,11 @@ type Config struct {
 	EventSink       runtime.EventSink
 	Codec           state.StateCodec
 
-	GraphID      string
-	GraphVersion string
+	GraphID           string
+	GraphVersion      string
+	GraphHash         string
+	GraphSnapshotHash string
+	GraphSessionID    string
 
 	EventBuffer int
 }
@@ -119,6 +122,15 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string) *runtime
 	}
 	runner.GraphID = strings.TrimSpace(cfg.GraphID)
 	runner.GraphVersion = strings.TrimSpace(cfg.GraphVersion)
+	if graphHash := strings.TrimSpace(cfg.GraphHash); graphHash != "" {
+		runner.GraphHash = graphHash
+	}
+	if graphSnapshotHash := strings.TrimSpace(cfg.GraphSnapshotHash); graphSnapshotHash != "" {
+		runner.GraphSnapshotHash = graphSnapshotHash
+	}
+	if graphSessionID := strings.TrimSpace(cfg.GraphSessionID); graphSessionID != "" {
+		runner.GraphSessionID = graphSessionID
+	}
 	return runner
 }
 

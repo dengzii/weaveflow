@@ -1,15 +1,16 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent, ReactNode } from "react";
-import { ChevronDown, Filter, ListTree, Search, X } from "lucide-react";
+import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown, Filter, ListTree, Search, Trash2, X } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { Select } from "../../components/ui/select";
 import { cn, formatTime, formatTimeMs, stringifyJSON } from "../../lib/utils";
-import type { RunInterrupt, RunRecord, RuntimeEvent, StepRecord } from "../../types";
+import type { RunRecord, RuntimeEvent, StepRecord } from "../../types";
 import { StatusText, type StatusTone } from "./shared";
 import { statusTone } from "./utils";
 
 type ViewMode = "events" | "node" | "state";
+type EventFilterMode = "include" | "exclude";
 
 interface ListItem {
   key: string;
@@ -18,6 +19,16 @@ interface ListItem {
   primary: string;
   secondary?: string;
   trailing?: string;
+}
+
+interface EventFilterPopoverPosition {
+  anchor: "above" | "below";
+  left: number;
+  width: number;
+  maxHeight: number;
+  bodyMaxHeight: number;
+  top?: number;
+  bottom?: number;
 }
 
 const viewOptions: Array<{ id: ViewMode; label: string }> = [
@@ -31,15 +42,39 @@ const MIN_DETAIL_WIDTH = 240;
 const DEFAULT_LEFT_WIDTH_RATIO = `${100 / 3}%`;
 const MIN_PANEL_HEIGHT = 180;
 const DEFAULT_PANEL_HEIGHT = 320;
+const FILTER_POPOVER_GAP = 4;
+const FILTER_POPOVER_MARGIN = 8;
+const FILTER_POPOVER_MIN_WIDTH = 320;
+const FILTER_POPOVER_MAX_WIDTH = 520;
+const FILTER_POPOVER_MAX_HEIGHT = 384;
+const FILTER_POPOVER_HEADER_HEIGHT = 45;
+const FILTER_POPOVER_MIN_AVAILABLE_HEIGHT = 220;
+const EVENT_FILTER_STORAGE_KEY = "weaveflow.workbench.runStatus.eventFilters";
+const PANEL_HEIGHT_STORAGE_KEY = "weaveflow.workbench.runStatus.height";
+
+interface StoredEventFilters {
+  open?: boolean;
+  mode?: EventFilterMode;
+  types?: string[];
+  nodes?: string[];
+  keyword?: string;
+}
 
 export function RunStatusPanel({
-  interrupt,
+  run,
+  runs,
+  selectedRunId,
+  onSelectRun,
+  onDeleteRun,
   events,
   steps,
   onHide,
 }: {
   run: RunRecord | null;
-  interrupt?: RunInterrupt | null;
+  runs?: RunRecord[];
+  selectedRunId?: string;
+  onSelectRun?: (runId: string) => void;
+  onDeleteRun?: (runId: string) => void;
   events: RuntimeEvent[];
   steps: StepRecord[];
   onHide: () => void;
@@ -47,16 +82,27 @@ export function RunStatusPanel({
   const [view, setView] = useState<ViewMode>("events");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [leftWidth, setLeftWidth] = useState<number | null>(null);
-  const [panelHeight, setPanelHeight] = useState(DEFAULT_PANEL_HEIGHT);
-  const [eventFiltersOpen, setEventFiltersOpen] = useState(false);
-  const [eventTypeFilter, setEventTypeFilter] = useState("");
-  const [eventNodeFilter, setEventNodeFilter] = useState("");
-  const [eventKeywordFilter, setEventKeywordFilter] = useState("");
+  const [panelHeight, setPanelHeight] = useState(readStoredPanelHeight);
+  const [eventFiltersOpen, setEventFiltersOpen] = useState(() => readStoredEventFilters().open ?? false);
+  const [eventFilterMode, setEventFilterMode] = useState<EventFilterMode>(() => readStoredEventFilters().mode ?? "include");
+  const [eventTypeFilters, setEventTypeFilters] = useState<string[]>(() => readStoredEventFilters().types ?? []);
+  const [eventNodeFilters, setEventNodeFilters] = useState<string[]>(() => readStoredEventFilters().nodes ?? []);
+  const [eventKeywordFilter, setEventKeywordFilter] = useState(() => readStoredEventFilters().keyword ?? "");
+  const [runMenuOpen, setRunMenuOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const runMenuRef = useRef<HTMLDivElement | null>(null);
 
   const sortedEvents = useMemo(
     () => [...events].sort((a, b) => timeRank(b.timestamp) - timeRank(a.timestamp)),
     [events]
+  );
+  const runOptions = useMemo(
+    () => [...(runs ?? [])].sort((a, b) => timeRank(b.started_at) - timeRank(a.started_at)),
+    [runs]
+  );
+  const selectedRun = useMemo(
+    () => runOptions.find((item) => item.run_id === selectedRunId) ?? run ?? null,
+    [run, runOptions, selectedRunId]
   );
   const eventListItems = useMemo(
     () => sortedEvents.map((event, index) => ({ event, key: eventListKey(event, index) })),
@@ -68,20 +114,62 @@ export function RunStatusPanel({
     () =>
       eventListItems.filter(({ event }) =>
         eventMatchesFilters(event, {
-          type: eventTypeFilter,
-          node: eventNodeFilter,
+          mode: eventFilterMode,
+          types: eventTypeFilters,
+          nodes: eventNodeFilters,
           keyword: eventKeywordFilter,
         })
       ),
-    [eventKeywordFilter, eventListItems, eventNodeFilter, eventTypeFilter]
+    [eventFilterMode, eventKeywordFilter, eventListItems, eventNodeFilters, eventTypeFilters]
   );
-  const activeEventFilterCount = Number(Boolean(eventTypeFilter)) + Number(Boolean(eventNodeFilter)) + Number(Boolean(eventKeywordFilter.trim()));
+  const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
   const nodeBuckets = useMemo(() => groupByNode(steps, events), [steps, events]);
   const stateBuckets = useMemo(() => groupByState(steps, events), [steps, events]);
 
   useEffect(() => {
     setSelectedKey(null);
   }, [view]);
+
+  useEffect(() => {
+    writeStoredEventFilters({
+      open: eventFiltersOpen,
+      mode: eventFilterMode,
+      types: eventTypeFilters,
+      nodes: eventNodeFilters,
+      keyword: eventKeywordFilter,
+    });
+  }, [eventFilterMode, eventFiltersOpen, eventKeywordFilter, eventNodeFilters, eventTypeFilters]);
+
+  useEffect(() => {
+    const clampPanelHeight = () => {
+      setPanelHeight((current) => {
+        const maxHeight = Math.max(MIN_PANEL_HEIGHT, window.innerHeight - 160);
+        const next = Math.max(MIN_PANEL_HEIGHT, Math.min(maxHeight, current));
+        if (next !== current) writeStoredPanelHeight(next);
+        return next;
+      });
+    };
+    window.addEventListener("resize", clampPanelHeight);
+    return () => window.removeEventListener("resize", clampPanelHeight);
+  }, []);
+
+  useEffect(() => {
+    if (!runMenuOpen) return;
+    const closeOnPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (runMenuRef.current?.contains(target)) return;
+      setRunMenuOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setRunMenuOpen(false);
+    };
+    window.addEventListener("pointerdown", closeOnPointerDown);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => {
+      window.removeEventListener("pointerdown", closeOnPointerDown);
+      window.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [runMenuOpen]);
 
   const { items, renderDetail } = useMemo<{
     items: ListItem[];
@@ -168,7 +256,9 @@ export function RunStatusPanel({
     const maxHeight = Math.max(MIN_PANEL_HEIGHT, window.innerHeight - 160);
     const onMove = (moveEvent: PointerEvent) => {
       const delta = startY - moveEvent.clientY;
-      setPanelHeight(Math.max(MIN_PANEL_HEIGHT, Math.min(maxHeight, startHeight + delta)));
+      const nextHeight = Math.max(MIN_PANEL_HEIGHT, Math.min(maxHeight, startHeight + delta));
+      setPanelHeight(nextHeight);
+      writeStoredPanelHeight(nextHeight);
     };
     const onUp = () => {
       window.removeEventListener("pointermove", onMove);
@@ -201,6 +291,86 @@ export function RunStatusPanel({
             <span className="truncate text-sm font-semibold">Run Status</span>
           </div>
         </div>
+        {runOptions.length > 0 && onSelectRun ? (
+          <div ref={runMenuRef} className="relative min-w-0 max-w-[420px] flex-1 md:min-w-[220px]">
+            <button
+              type="button"
+              onClick={() => setRunMenuOpen((open) => !open)}
+              className="flex h-8 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-background px-2 text-left text-xs hover:bg-accent/40"
+              title={selectedRun ? `Select run ${selectedRun.run_id}` : "Select run"}
+              aria-expanded={runMenuOpen}
+            >
+              {selectedRun ? (
+                <>
+                  <StatusText tone={statusTone(selectedRun.status)} className="shrink-0">
+                    {selectedRun.status}
+                  </StatusText>
+                  <span className="min-w-0 truncate font-mono">{shortRunId(selectedRun.run_id)}</span>
+                  <span className="hidden shrink-0 text-muted-foreground sm:inline">{formatTime(selectedRun.started_at)}</span>
+                </>
+              ) : (
+                <span className="text-muted-foreground">Select run</span>
+              )}
+              <ChevronDown className={cn("ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", runMenuOpen && "rotate-180")} />
+            </button>
+            {runMenuOpen ? (
+              <div className="absolute left-0 top-[calc(100%+4px)] z-50 w-[min(520px,calc(100vw-2rem))] overflow-hidden rounded-md border border-border bg-panel shadow-lg">
+                <div className="max-h-72 overflow-auto p-1">
+                  {runOptions.map((option) => {
+                    const active = option.run_id === selectedRunId;
+                    const canDelete = Boolean(onDeleteRun) && !isRunActive(option.status);
+                    return (
+                      <div
+                        key={option.run_id}
+                        className={cn(
+                          "grid grid-cols-[minmax(0,1fr)_2rem] items-center rounded hover:bg-accent/50",
+                          active && "bg-accent text-accent-foreground"
+                        )}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onSelectRun(option.run_id);
+                            setRunMenuOpen(false);
+                          }}
+                          className="grid min-w-0 grid-cols-[1rem_5.5rem_minmax(0,1fr)_5.25rem] items-center gap-2 px-2 py-1.5 text-left text-xs"
+                        >
+                          <span className="flex h-4 w-4 items-center justify-center">
+                            {active ? <Check className="h-3.5 w-3.5" /> : null}
+                          </span>
+                          <StatusText tone={statusTone(option.status)} className="truncate">
+                            {option.status}
+                          </StatusText>
+                          <span className="min-w-0 truncate font-mono">{option.run_id}</span>
+                          <span className="shrink-0 text-right text-muted-foreground">{formatTime(option.started_at)}</span>
+                        </button>
+                        {onDeleteRun ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              if (!canDelete) return;
+                              setRunMenuOpen(false);
+                              onDeleteRun(option.run_id);
+                            }}
+                            disabled={!canDelete}
+                            title={canDelete ? "Delete run" : "Stop run before deleting"}
+                            aria-label={`Delete run ${option.run_id}`}
+                            className="mx-1 flex h-7 w-7 items-center justify-center rounded text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-35"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        ) : (
+                          <span className="h-7 w-7" />
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+          </div>
+        ) : null}
         <div className="hidden items-center gap-1 rounded-md border border-border bg-background p-0.5 md:inline-flex">
           {viewOptions.map((option) => (
             <button
@@ -229,7 +399,6 @@ export function RunStatusPanel({
           <ChevronDown className="h-4 w-4" />
         </Button>
       </div>
-      {interrupt ? <InterruptBanner interrupt={interrupt} /> : null}
 
       <div ref={containerRef} className="flex min-h-0 flex-1">
         <div
@@ -239,8 +408,9 @@ export function RunStatusPanel({
           {view === "events" ? (
             <EventFilterControls
               open={eventFiltersOpen}
-              type={eventTypeFilter}
-              node={eventNodeFilter}
+              mode={eventFilterMode}
+              types={eventTypeFilters}
+              selectedNodes={eventNodeFilters}
               keyword={eventKeywordFilter}
               eventTypes={eventTypes}
               nodes={eventNodes}
@@ -248,12 +418,14 @@ export function RunStatusPanel({
               filteredCount={filteredEventItems.length}
               totalCount={sortedEvents.length}
               onOpenChange={setEventFiltersOpen}
-              onTypeChange={setEventTypeFilter}
-              onNodeChange={setEventNodeFilter}
+              onModeChange={setEventFilterMode}
+              onTypesChange={setEventTypeFilters}
+              onNodesChange={setEventNodeFilters}
               onKeywordChange={setEventKeywordFilter}
               onClear={() => {
-                setEventTypeFilter("");
-                setEventNodeFilter("");
+                setEventFilterMode("include");
+                setEventTypeFilters([]);
+                setEventNodeFilters([]);
                 setEventKeywordFilter("");
               }}
             />
@@ -270,7 +442,7 @@ export function RunStatusPanel({
                     type="button"
                     onClick={() => setSelectedKey(item.key)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-3 py-1.5 text-left text-xs hover:bg-accent/40",
+                      "flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
                       effectiveKey === item.key && "bg-accent text-accent-foreground"
                     )}
                   >
@@ -315,24 +487,11 @@ export function RunStatusPanel({
   );
 }
 
-function InterruptBanner({ interrupt }: { interrupt: RunInterrupt }) {
-  return (
-    <div className="flex min-h-9 shrink-0 flex-wrap items-center gap-2 border-b border-border bg-[var(--status-warn-bg)] px-4 py-2 text-xs">
-      <StatusText tone="warn">interrupted</StatusText>
-      <span className="truncate text-sm">{interrupt.message || "run paused"}</span>
-      {interrupt.stage ? <span className="text-muted-foreground">{interrupt.stage}</span> : null}
-      {interrupt.node_id ? <span className="font-mono text-muted-foreground">{interrupt.node_id}</span> : null}
-      {interrupt.checkpoint_id ? (
-        <span className="ml-auto truncate font-mono text-muted-foreground">{interrupt.checkpoint_id}</span>
-      ) : null}
-    </div>
-  );
-}
-
 function EventFilterControls({
   open,
-  type,
-  node,
+  mode,
+  types,
+  selectedNodes,
   keyword,
   eventTypes,
   nodes,
@@ -340,14 +499,16 @@ function EventFilterControls({
   filteredCount,
   totalCount,
   onOpenChange,
-  onTypeChange,
-  onNodeChange,
+  onModeChange,
+  onTypesChange,
+  onNodesChange,
   onKeywordChange,
   onClear,
 }: {
   open: boolean;
-  type: string;
-  node: string;
+  mode: EventFilterMode;
+  types: string[];
+  selectedNodes: string[];
   keyword: string;
   eventTypes: string[];
   nodes: string[];
@@ -355,17 +516,43 @@ function EventFilterControls({
   filteredCount: number;
   totalCount: number;
   onOpenChange: (value: boolean) => void;
-  onTypeChange: (value: string) => void;
-  onNodeChange: (value: string) => void;
+  onModeChange: (value: EventFilterMode) => void;
+  onTypesChange: (value: string[]) => void;
+  onNodesChange: (value: string[]) => void;
   onKeywordChange: (value: string) => void;
   onClear: () => void;
 }) {
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+  const [popoverPosition, setPopoverPosition] = useState<EventFilterPopoverPosition | null>(null);
+  const hasActiveFilters = activeCount > 0;
+
+  useEffect(() => {
+    if (!open) {
+      setPopoverPosition(null);
+      return;
+    }
+
+    const updatePosition = () => {
+      const anchor = menuRef.current;
+      if (!anchor) return;
+      setPopoverPosition(eventFilterPopoverPosition(anchor));
+    };
+
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open]);
 
   useEffect(() => {
     if (!open) return;
     const closeOnPointerDown = (event: PointerEvent) => {
-      if (menuRef.current?.contains(event.target as Node)) return;
+      const target = event.target as Node;
+      if (menuRef.current?.contains(target) || popoverRef.current?.contains(target)) return;
       onOpenChange(false);
     };
     const closeOnEscape = (event: KeyboardEvent) => {
@@ -379,62 +566,294 @@ function EventFilterControls({
     };
   }, [onOpenChange, open]);
 
+  const popover =
+    open && popoverPosition
+      ? createPortal(
+          <EventFilterPopover
+            ref={popoverRef}
+            mode={mode}
+            types={types}
+            selectedNodes={selectedNodes}
+            keyword={keyword}
+            eventTypes={eventTypes}
+            nodes={nodes}
+            filteredCount={filteredCount}
+            totalCount={totalCount}
+            position={popoverPosition}
+            onModeChange={onModeChange}
+            onTypesChange={onTypesChange}
+            onNodesChange={onNodesChange}
+            onKeywordChange={onKeywordChange}
+            onClose={() => onOpenChange(false)}
+          />,
+          document.body
+        )
+      : null;
+
   return (
-    <div ref={menuRef} className="sticky top-0 z-20 border-b border-border bg-panel p-2">
-      <div className="flex items-center gap-2">
-        <Button
-          variant={activeCount > 0 ? "outline" : "ghost"}
-          size="sm"
-          onClick={() => onOpenChange(!open)}
-          title="Filter events"
-          aria-expanded={open}
-          className="shrink-0"
-        >
-          <Filter className="h-3.5 w-3.5" />
-          Filter
-          {activeCount > 0 ? <span className="font-mono text-[10px]">{activeCount}</span> : null}
-        </Button>
-        <span className="min-w-0 truncate text-xs text-muted-foreground">
+    <>
+      <div ref={menuRef} className="sticky top-0 z-20 border-b border-border bg-panel px-1.5 py-0.5">
+        <div className="flex h-6 items-center gap-1">
+          <Button
+            variant={hasActiveFilters ? "outline" : "ghost"}
+            size="icon"
+            onClick={() => onOpenChange(!open)}
+            title="Filter events"
+            aria-label="Filter events"
+            aria-expanded={open}
+            className="relative h-6 w-6 shrink-0"
+          >
+            <Filter className="h-3.5 w-3.5" />
+            {hasActiveFilters ? (
+              <span className="absolute -right-1 -top-1 min-w-3 rounded-full bg-primary px-0.5 text-center font-mono text-[9px] leading-3 text-primary-foreground">
+                {activeCount}
+              </span>
+            ) : null}
+          </Button>
+          <span className="min-w-0 truncate text-[10px] text-muted-foreground">
+            {hasActiveFilters ? `${mode === "exclude" ? "Excl" : "Match"} ` : ""}
+            {filteredCount}/{totalCount}
+          </span>
+          {hasActiveFilters ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onClear}
+              title="Clear event filters"
+              aria-label="Clear event filters"
+              className="ml-auto h-6 w-6"
+            >
+              <X className="h-3 w-3" />
+            </Button>
+          ) : null}
+        </div>
+      </div>
+      {popover}
+    </>
+  );
+}
+
+const EventFilterPopover = forwardRef<HTMLDivElement, {
+  mode: EventFilterMode;
+  types: string[];
+  selectedNodes: string[];
+  keyword: string;
+  eventTypes: string[];
+  nodes: string[];
+  filteredCount: number;
+  totalCount: number;
+  position: EventFilterPopoverPosition;
+  onModeChange: (value: EventFilterMode) => void;
+  onTypesChange: (value: string[]) => void;
+  onNodesChange: (value: string[]) => void;
+  onKeywordChange: (value: string) => void;
+  onClose: () => void;
+}>(function EventFilterPopover(
+  {
+    mode,
+    types,
+    selectedNodes,
+    keyword,
+    eventTypes,
+    nodes,
+    filteredCount,
+    totalCount,
+    position,
+    onModeChange,
+    onTypesChange,
+    onNodesChange,
+    onKeywordChange,
+    onClose,
+  },
+  ref
+) {
+  const style: CSSProperties = {
+    left: position.left,
+    width: position.width,
+    maxHeight: position.maxHeight,
+    top: position.top,
+    bottom: position.bottom,
+  };
+
+  return (
+    <div
+      ref={ref}
+      className={cn(
+        "fixed z-[100] overflow-hidden rounded-md border border-border bg-panel shadow-lg",
+        position.anchor === "above" ? "origin-bottom" : "origin-top"
+      )}
+      style={style}
+    >
+      <div className="flex items-center justify-between gap-2 border-b border-border p-2">
+        <div className="inline-flex rounded-md border border-border bg-background p-0.5">
+          {(["include", "exclude"] as const).map((option) => (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={mode === option}
+              onClick={() => onModeChange(option)}
+              className={cn(
+                "h-7 rounded px-2 text-xs transition-colors",
+                mode === option
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent"
+              )}
+            >
+              {option === "include" ? "Include" : "Exclude"}
+            </button>
+          ))}
+        </div>
+        <span className="shrink-0 text-[11px] text-muted-foreground">
           {filteredCount}/{totalCount} events
         </span>
-        {activeCount > 0 ? (
-          <Button variant="ghost" size="icon" onClick={onClear} title="Clear event filters" aria-label="Clear event filters" className="ml-auto h-8 w-8">
-            <X className="h-3.5 w-3.5" />
-          </Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          onClick={onClose}
+          title="Close filters"
+          aria-label="Close filters"
+          className="h-7 w-7"
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+      <div className="grid gap-2 overflow-auto p-2" style={{ maxHeight: position.bodyMaxHeight }}>
+        <label className="relative block min-w-0">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            value={keyword}
+            onChange={(event) => onKeywordChange(event.target.value)}
+            placeholder="Keyword"
+            className="h-8 pl-7 text-xs"
+          />
+        </label>
+        <EventFilterFacet
+          title="Event type"
+          options={eventTypes}
+          selectedValues={types}
+          emptyLabel="No event types"
+          onChange={onTypesChange}
+        />
+        <EventFilterFacet
+          title="Node"
+          options={nodes}
+          selectedValues={selectedNodes}
+          emptyLabel="No nodes"
+          onChange={onNodesChange}
+        />
+      </div>
+    </div>
+  );
+});
+
+function eventFilterPopoverPosition(anchor: HTMLElement): EventFilterPopoverPosition {
+  const rect = anchor.getBoundingClientRect();
+  const viewportWidth = window.innerWidth;
+  const viewportHeight = window.innerHeight;
+  const viewportMaxWidth = Math.max(0, viewportWidth - FILTER_POPOVER_MARGIN * 2);
+  const viewportMaxHeight = Math.max(0, viewportHeight - FILTER_POPOVER_MARGIN * 2);
+  const width = Math.min(
+    Math.max(rect.width, FILTER_POPOVER_MIN_WIDTH),
+    FILTER_POPOVER_MAX_WIDTH,
+    viewportMaxWidth
+  );
+  const left = clampNumber(
+    rect.left,
+    FILTER_POPOVER_MARGIN,
+    Math.max(FILTER_POPOVER_MARGIN, viewportWidth - width - FILTER_POPOVER_MARGIN)
+  );
+  const belowSpace = viewportHeight - rect.bottom - FILTER_POPOVER_GAP - FILTER_POPOVER_MARGIN;
+  const aboveSpace = rect.top - FILTER_POPOVER_GAP - FILTER_POPOVER_MARGIN;
+  const anchorPosition =
+    belowSpace < FILTER_POPOVER_MIN_AVAILABLE_HEIGHT && aboveSpace > belowSpace ? "above" : "below";
+  const availableHeight = Math.max(0, anchorPosition === "above" ? aboveSpace : belowSpace);
+  const maxHeight = Math.min(FILTER_POPOVER_MAX_HEIGHT, viewportMaxHeight, availableHeight);
+  const bodyMaxHeight = Math.max(0, maxHeight - FILTER_POPOVER_HEADER_HEIGHT);
+
+  if (anchorPosition === "above") {
+    return {
+      anchor: "above",
+      left,
+      width,
+      maxHeight,
+      bodyMaxHeight,
+      bottom: viewportHeight - rect.top + FILTER_POPOVER_GAP,
+    };
+  }
+
+  return {
+    anchor: "below",
+    left,
+    width,
+    maxHeight,
+    bodyMaxHeight,
+    top: rect.bottom + FILTER_POPOVER_GAP,
+  };
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(Math.max(value, min), max);
+}
+
+function EventFilterFacet({
+  title,
+  options,
+  selectedValues,
+  emptyLabel,
+  onChange,
+}: {
+  title: string;
+  options: string[];
+  selectedValues: string[];
+  emptyLabel: string;
+  onChange: (values: string[]) => void;
+}) {
+  const selectedSet = new Set(selectedValues);
+
+  return (
+    <section className="overflow-hidden rounded-md border border-border bg-background">
+      <div className="flex h-8 items-center gap-2 border-b border-border px-2">
+        <span className="truncate text-xs font-medium">{title}</span>
+        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">
+          {selectedValues.length > 0 ? selectedValues.length : "all"}
+        </span>
+        {selectedValues.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => onChange([])}
+            className="shrink-0 text-[11px] text-muted-foreground hover:text-foreground"
+          >
+            Clear
+          </button>
         ) : null}
       </div>
-      {open ? (
-        <div className="absolute left-2 right-2 top-11 z-30 rounded-md border border-border bg-panel p-2 shadow-lg">
-          <div className="flex min-w-0 items-center gap-2">
-            <Select value={type} onChange={(event) => onTypeChange(event.target.value)} className="h-8 min-w-0 flex-1 text-xs">
-              <option value="">All event types</option>
-              {eventTypes.map((eventType) => (
-                <option key={eventType} value={eventType}>
-                  {eventType}
-                </option>
-              ))}
-            </Select>
-            <Select value={node} onChange={(event) => onNodeChange(event.target.value)} className="h-8 min-w-0 flex-1 text-xs">
-              <option value="">All nodes</option>
-              {nodes.map((nodeId) => (
-                <option key={nodeId} value={nodeId}>
-                  {nodeId}
-                </option>
-              ))}
-            </Select>
-            <label className="relative block min-w-0 flex-[1.2]">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={keyword}
-                onChange={(event) => onKeywordChange(event.target.value)}
-                placeholder="Keyword"
-                className="h-8 pl-7 text-xs"
-              />
-            </label>
-          </div>
+      {options.length === 0 ? (
+        <div className="px-2 py-2 text-xs text-muted-foreground">{emptyLabel}</div>
+      ) : (
+        <div className="max-h-32 overflow-auto p-1">
+          {options.map((option) => {
+            const checked = selectedSet.has(option);
+            return (
+              <label
+                key={option}
+                className={cn(
+                  "flex min-w-0 cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs hover:bg-accent/60",
+                  checked && "bg-accent text-accent-foreground"
+                )}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  onChange={() => onChange(toggleFilterValue(selectedValues, option))}
+                  className="h-3.5 w-3.5 accent-primary"
+                />
+                <span className="truncate font-mono">{option}</span>
+              </label>
+            );
+          })}
         </div>
-      ) : null}
-    </div>
+      )}
+    </section>
   );
 }
 
@@ -916,15 +1335,94 @@ function eventListKey(event: RuntimeEvent, index: number): string {
   return `${event.id || event.run_id || "event"}-${index}`;
 }
 
+function readStoredPanelHeight(): number {
+  if (typeof window === "undefined") return DEFAULT_PANEL_HEIGHT;
+  try {
+    const raw = window.localStorage.getItem(PANEL_HEIGHT_STORAGE_KEY);
+    const parsed = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(parsed)) return DEFAULT_PANEL_HEIGHT;
+    const maxHeight = Math.max(MIN_PANEL_HEIGHT, window.innerHeight - 160);
+    return Math.max(MIN_PANEL_HEIGHT, Math.min(maxHeight, parsed));
+  } catch {
+    return DEFAULT_PANEL_HEIGHT;
+  }
+}
+
+function writeStoredPanelHeight(height: number): void {
+  if (typeof window === "undefined" || !Number.isFinite(height)) return;
+  try {
+    window.localStorage.setItem(PANEL_HEIGHT_STORAGE_KEY, String(Math.round(height)));
+  } catch {
+    // Ignore storage errors; height persistence is best effort.
+  }
+}
+
+function readStoredEventFilters(): StoredEventFilters {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(EVENT_FILTER_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as StoredEventFilters;
+    return {
+      open: typeof parsed.open === "boolean" ? parsed.open : false,
+      mode: parsed.mode === "exclude" ? "exclude" : "include",
+      types: Array.isArray(parsed.types) ? parsed.types.filter(isStringValue) : [],
+      nodes: Array.isArray(parsed.nodes) ? parsed.nodes.filter(isStringValue) : [],
+      keyword: typeof parsed.keyword === "string" ? parsed.keyword : "",
+    };
+  } catch {
+    return {};
+  }
+}
+
+function writeStoredEventFilters(filters: StoredEventFilters): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(EVENT_FILTER_STORAGE_KEY, JSON.stringify(filters));
+  } catch {
+    // Ignore storage errors; filters still work for the current session.
+  }
+}
+
+function isStringValue(value: unknown): value is string {
+  return typeof value === "string";
+}
+
+function shortRunId(runId: string): string {
+  return runId.length > 18 ? `${runId.slice(0, 8)}…${runId.slice(-6)}` : runId;
+}
+
+function isRunActive(status: string): boolean {
+  return status === "pending" || status === "running";
+}
+
 function eventMatchesFilters(
   event: RuntimeEvent,
-  filters: { type: string; node: string; keyword: string }
+  filters: { mode: EventFilterMode; types: string[]; nodes: string[]; keyword: string }
 ): boolean {
-  if (filters.type && event.type !== filters.type) return false;
-  if (filters.node && event.node_id !== filters.node) return false;
+  if (!hasEventFilterCriteria(filters)) return true;
+  const matches = eventMatchesPositiveFilters(event, filters);
+  return filters.mode === "exclude" ? !matches : matches;
+}
+
+function eventMatchesPositiveFilters(
+  event: RuntimeEvent,
+  filters: { types: string[]; nodes: string[]; keyword: string }
+): boolean {
+  if (filters.types.length > 0 && !filters.types.includes(event.type)) return false;
+  const nodeId = event.node_id ?? "";
+  if (filters.nodes.length > 0 && !filters.nodes.includes(nodeId)) return false;
   const keyword = filters.keyword.trim().toLowerCase();
   if (!keyword) return true;
   return eventSearchText(event).includes(keyword);
+}
+
+function hasEventFilterCriteria(filters: { types: string[]; nodes: string[]; keyword: string }): boolean {
+  return filters.types.length > 0 || filters.nodes.length > 0 || filters.keyword.trim() !== "";
+}
+
+function toggleFilterValue(values: string[], value: string): string[] {
+  return values.includes(value) ? values.filter((item) => item !== value) : [...values, value];
 }
 
 function eventSearchText(event: RuntimeEvent): string {

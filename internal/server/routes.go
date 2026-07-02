@@ -26,6 +26,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 
 	group.GET("/runs", s.handleListRuns)
 	group.GET("/runs/:run_id", s.handleGetRun)
+	group.DELETE("/runs/:run_id", s.handleDeleteRun)
 	group.GET("/runs/:run_id/detail", s.handleGetRunDetail)
 	group.GET("/runs/:run_id/steps", s.handleListSteps)
 	group.GET("/runs/:run_id/checkpoints", s.handleListCheckpoints)
@@ -35,4 +36,5 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/runs/:run_id/artifacts/:artifact_id", s.handleGetArtifact)
 
 	group.GET("/events/stream", s.handleEventStream)
+	group.GET("/graphs", s.handleListGraphs)
 }

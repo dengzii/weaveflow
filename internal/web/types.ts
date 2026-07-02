@@ -37,6 +37,9 @@ export interface GraphConditionSpec {
 export interface GraphInfo {
   id: string;
   version: string;
+  graph_hash?: string;
+  graph_snapshot_hash?: string;
+  graph_session_id?: string;
   entry_point?: string;
   finish_point?: string;
 }
@@ -96,6 +99,9 @@ export interface RunRecord {
   run_id: string;
   graph_id: string;
   graph_version: string;
+  graph_hash?: string;
+  graph_snapshot_hash?: string;
+  graph_session_id?: string;
   status: string;
   entry_node_id: string;
   current_node_id?: string;
@@ -213,4 +219,10 @@ export interface WarningRecord {
   other_node_id?: string;
   path?: string;
   sources?: string[];
+}
+
+export interface CachedGraphSummary {
+  id: string;
+  session_count: number;
+  latest_session?: string;
 }

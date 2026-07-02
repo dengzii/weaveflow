@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeInitialStateRequirements,
   cancelRun,
+  deleteRun,
   getGraphDefinition,
   getGraphInfo,
   getInitialStateRequirements,
@@ -48,6 +49,7 @@ export type { WorkspaceTab };
 
 type StreamStatus = "connecting" | "connected" | "reconnecting" | "closed";
 type GraphIdentity = { id: string; version: string };
+const RUN_STATUS_VISIBLE_STORAGE_KEY = "weaveflow.workbench.runStatus.visible";
 
 interface HumanMessagePrompt {
   runId: string;
@@ -86,7 +88,7 @@ export function WorkbenchPage({
   const [humanPrompt, setHumanPrompt] = useState<HumanMessagePrompt | null>(null);
   const [humanPromptText, setHumanPromptText] = useState("");
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
-  const [runStatusVisible, setRunStatusVisible] = useState(false);
+  const [runStatusVisible, setRunStatusVisible] = useState(readStoredRunStatusVisible);
   const [graphId, setGraphId] = useState("debug_graph");
   const [graphVersion, setGraphVersion] = useState("1.0");
   const [initialRequirementsError, setInitialRequirementsError] = useState("");
@@ -101,6 +103,7 @@ export function WorkbenchPage({
   const launchPendingRef = useRef(false);
   const launchRunIdRef = useRef("");
   const graphIdentityRef = useRef({ id: graphId, version: graphVersion });
+  const graphRunsRefreshStartedRef = useRef(false);
   const runContextVersionRef = useRef(0);
   const ignoredHumanInterruptsRef = useRef<Set<string>>(new Set());
   const humanPromptCheckpointRef = useRef("");
@@ -129,8 +132,8 @@ export function WorkbenchPage({
     }),
     [graphId, graphInfo?.id, graphInfo?.version, graphVersion]
   );
-  const canResumeSelectedRun = Boolean(selectedRun?.last_checkpoint_id && selectedRun.status === "paused");
-  const headerRunControlMode = runControlModeFromRun(selectedRun);
+  const canResumeSelectedRun = canResumeRun(selectedRun, runInterrupt);
+  const headerRunControlMode = runControlModeFromRun(selectedRun, runInterrupt);
   const graphSwitchLocked =
     runLaunchPending ||
     Boolean(selectedRun && isActiveRunStatus(selectedRun.status)) ||
@@ -151,6 +154,10 @@ export function WorkbenchPage({
   useEffect(() => {
     selectedRunIdRef.current = selectedRunId;
   }, [selectedRunId]);
+
+  useEffect(() => {
+    writeStoredRunStatusVisible(runStatusVisible);
+  }, [runStatusVisible]);
 
   useEffect(() => {
     graphIdentityRef.current = currentGraphIdentity;
@@ -192,7 +199,6 @@ export function WorkbenchPage({
     setRunInterrupt(null);
     setHumanPrompt(null);
     setHumanPromptText("");
-    setRunStatusVisible(false);
   }, []);
 
   const maybeOpenHumanPrompt = useCallback(
@@ -210,13 +216,30 @@ export function WorkbenchPage({
 
   const refreshRuns = useCallback(async (
     identity: GraphIdentity = graphIdentityRef.current,
-    contextVersion = runContextVersionRef.current
+    contextVersion = runContextVersionRef.current,
+    autoSelect = true
   ) => {
-    const nextRuns = (await listRuns()).filter((run) => matchesGraphIdentity(run, identity));
+    const nextRuns = (await listRuns(identity.id)) ?? [];
     if (runContextVersionRef.current !== contextVersion) return;
     setRuns(nextRuns);
-    setSelectedRunId((current) => current || nextRuns.at(-1)?.run_id || "");
+    if (autoSelect) {
+      setSelectedRunId((current) => {
+        if (current && nextRuns.some((run) => run.run_id === current)) return current;
+        return nextRuns.at(-1)?.run_id || "";
+      });
+    }
   }, []);
+
+  useEffect(() => {
+    if (!graphRunsRefreshStartedRef.current) {
+      graphRunsRefreshStartedRef.current = true;
+      return;
+    }
+    const contextVersion = runContextVersionRef.current;
+    void refreshRuns(currentGraphIdentity, contextVersion).catch((err) => {
+      notifyError(err);
+    });
+  }, [currentGraphIdentity.id, notifyError, refreshRuns]);
 
   const refreshInitialRequirements = useCallback(async () => {
     const requirements = await getInitialStateRequirements();
@@ -237,7 +260,7 @@ export function WorkbenchPage({
         humanPromptCheckpointRef.current = "";
         return;
       }
-      const detail = await getRunDetail(runId);
+      const detail = await getRunDetail(runId, graphIdentityRef.current.id);
       if (runContextVersionRef.current !== contextVersion) return;
       setSteps(detail.steps);
       setEvents(detail.events);
@@ -252,7 +275,7 @@ export function WorkbenchPage({
       if (!runId) return;
       const contextVersion = runContextVersionRef.current;
       try {
-        const detail = await getRunDetail(runId);
+        const detail = await getRunDetail(runId, graphIdentityRef.current.id);
         if (runContextVersionRef.current !== contextVersion) return;
         setRuns((current) => {
           const exists = current.some((run) => run.run_id === detail.run.run_id);
@@ -300,9 +323,10 @@ export function WorkbenchPage({
           });
         }
       }
-      if (!preferLocalGraphRef.current) {
-        await refreshRuns(info ? { id: info.id || "graph", version: info.version || "1.0" } : undefined).catch(() => undefined);
-      }
+      const loadIdentity = info
+        ? { id: info.id || "graph", version: info.version || "1.0" }
+        : graphIdentityRef.current;
+      await refreshRuns(loadIdentity, undefined, !preferLocalGraphRef.current).catch(() => undefined);
     } catch (err) {
       notifyError(err);
     }
@@ -538,12 +562,51 @@ export function WorkbenchPage({
     if (!selectedRunId) return;
     setBusy(true);
     try {
-      const run = await (kind === "pause" ? pauseRun(selectedRunId) : cancelRun(selectedRunId));
+      const run = await (kind === "pause"
+        ? pauseRun(selectedRunId)
+        : cancelRun(selectedRunId, selectedRun?.graph_id || graphIdentityRef.current.id));
       setRuns((current) => current.map((item) => (item.run_id === run.run_id ? run : item)));
       setSelectedRunId(run.run_id);
       await refreshRuns(graphIdentityRef.current, runContextVersionRef.current);
       await refreshSelectedRun(run.run_id);
       pushToast(kind === "pause" ? "warn" : "info", `${kind === "pause" ? "Run paused" : "Run stopped"}: ${run.run_id}`);
+    } catch (err) {
+      notifyError(err);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSelectedRun(runId: string) {
+    const target = runs.find((item) => item.run_id === runId) ?? selectedRun;
+    if (!target || isActiveRunStatus(target.status)) return;
+    if (!window.confirm(`Delete run ${runId}?`)) return;
+
+    setBusy(true);
+    try {
+      const graphID = target.graph_id || graphIdentityRef.current.id;
+      await deleteRun(runId, graphID);
+      const remainingRuns = runs.filter((item) => item.run_id !== runId);
+      const nextRunId = remainingRuns.at(-1)?.run_id || "";
+      setRuns(remainingRuns);
+      setSelectedRunId(nextRunId);
+      if (selectedRunIdRef.current === runId) {
+        setLiveEvents([]);
+        setEvents([]);
+        setSteps([]);
+        setRunInterrupt(null);
+        setHumanPrompt(null);
+        setHumanPromptText("");
+        humanPromptCheckpointRef.current = "";
+      }
+      if (launchRunIdRef.current === runId) {
+        launchRunIdRef.current = "";
+      }
+      await refreshRuns(graphIdentityRef.current, runContextVersionRef.current, false);
+      if (nextRunId) {
+        await refreshSelectedRun(nextRunId);
+      }
+      pushToast("info", `Run deleted: ${runId}`);
     } catch (err) {
       notifyError(err);
     } finally {
@@ -560,7 +623,7 @@ export function WorkbenchPage({
       setHumanPrompt(humanPromptTarget);
       setHumanPromptText("");
       setRunStatusVisible(true);
-      pushToast("warn", "Human message required to resume");
+      pushToast("warn", "Human input required to resume");
       return;
     }
     setBusy(true);
@@ -598,7 +661,7 @@ export function WorkbenchPage({
     setHumanPrompt(null);
     setHumanPromptText("");
     setRunInterrupt(null);
-    pushToast("info", "Human message submitted");
+    pushToast("info", "Human input submitted");
     void (async () => {
       try {
         const runContextVersion = runContextVersionRef.current;
@@ -646,13 +709,19 @@ export function WorkbenchPage({
       onStop={() => controlRun("cancel")}
       onResume={() => void resumeSelectedRun()}
       onTabChange={setTab}
-      hasRunStatus={Boolean(selectedRunId)}
+      hasRunStatus={runs.length > 0 || Boolean(selectedRunId)}
       runStatusVisible={runStatusVisible}
       onToggleRunStatus={() => setRunStatusVisible((visible) => !visible)}
       runStatusPanel={
         <RunStatusPanel
           run={selectedRun}
-          interrupt={runInterrupt}
+          runs={runs}
+          selectedRunId={selectedRunId}
+          onSelectRun={(runId) => {
+            setSelectedRunId(runId);
+            setRunStatusVisible(true);
+          }}
+          onDeleteRun={(runId) => void deleteSelectedRun(runId)}
           events={displayEvents}
           steps={steps}
           onHide={() => setRunStatusVisible(false)}
@@ -724,13 +793,9 @@ function HumanMessagePromptDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
       <div className="w-[min(520px,100%)] rounded-md border border-border bg-panel shadow-xl">
         <div className="border-b border-border px-4 py-3">
-          <div className="text-sm font-semibold">Human message</div>
-          <div className="mt-1 truncate text-xs text-muted-foreground">
-            {prompt.nodeId} / {prompt.checkpointId}
-          </div>
+          <div className="text-sm font-semibold">Human input required</div>
         </div>
-        <div className="grid gap-3 p-4">
-          <div className="text-sm text-muted-foreground">{prompt.message || "Run paused for human input."}</div>
+        <div className="p-4">
           <Textarea
             value={value}
             onChange={(event) => onChange(event.target.value)}
@@ -741,16 +806,17 @@ function HumanMessagePromptDialog({
               }
             }}
             autoFocus
-            placeholder="Message"
+            aria-label="Human response"
+            placeholder={prompt.message || "The run is waiting for human input."}
             className="min-h-28"
           />
         </div>
         <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
+            Dismiss
           </Button>
           <Button onClick={onSubmit} disabled={!canSubmit}>
-            Resume
+            Resume run
           </Button>
         </div>
       </div>
@@ -775,7 +841,7 @@ function humanMessagePromptFromInterrupt(
     checkpointId: interrupt.checkpoint_id,
     nodeId: interrupt.node_id,
     scope,
-    message: interrupt.message || "Run paused for human input.",
+    message: interrupt.message || "The run is waiting for human input.",
   };
 }
 
@@ -825,14 +891,44 @@ function isTerminalRunStatus(status: string): boolean {
   return status === "finished" || status === "completed" || status === "failed" || status === "canceled";
 }
 
-function runControlModeFromRun(run: RunRecord | null): "run" | "active" | "resume" {
+function runControlModeFromRun(run: RunRecord | null, interrupt?: RunInterrupt | null): "run" | "active" | "resume" {
   if (!run) return "run";
-  if (run.status === "paused") return run.last_checkpoint_id ? "resume" : "run";
+  if (isResumableRunStatus(run.status)) return hasResumeCheckpoint(run, interrupt) ? "resume" : "run";
   return isActiveRunStatus(run.status) ? "active" : "run";
+}
+
+function canResumeRun(run: RunRecord | null, interrupt?: RunInterrupt | null): boolean {
+  return Boolean(run && isResumableRunStatus(run.status) && hasResumeCheckpoint(run, interrupt));
+}
+
+function hasResumeCheckpoint(run: RunRecord, interrupt?: RunInterrupt | null): boolean {
+  return Boolean(run.last_checkpoint_id || (interrupt?.run_id === run.run_id && interrupt.checkpoint_id));
+}
+
+function isResumableRunStatus(status: string): boolean {
+  return status === "paused" || status === "interrupted";
 }
 
 function isActiveRunStatus(status: string): boolean {
   return status === "pending" || status === "running";
+}
+
+function readStoredRunStatusVisible(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(RUN_STATUS_VISIBLE_STORAGE_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+function writeStoredRunStatusVisible(visible: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(RUN_STATUS_VISIBLE_STORAGE_KEY, visible ? "true" : "false");
+  } catch {
+    // Ignore storage errors; the panel state still works for the current session.
+  }
 }
 
 function matchesGraphIdentity(run: RunRecord, identity: GraphIdentity): boolean {

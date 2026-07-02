@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -142,20 +143,59 @@ func (s *Server) handlePauseRun(c *gin.Context) {
 }
 
 func (s *Server) handleCancelRun(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
-		return
-	}
 	runID := strings.TrimSpace(c.Param("run_id"))
 	if runID == "" {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
 		return
 	}
-	if err := runner.Cancel(c.Request.Context(), runID); err != nil {
+	graphID := strings.TrimSpace(c.Query("graph_id"))
+	runner := s.currentRunner()
+	if runner != nil && (graphID == "" || graphID == effectiveRunnerGraphID(runner)) {
+		err := runner.Cancel(c.Request.Context(), runID)
+		if err == nil {
+			run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusCanceled)
+			if err != nil {
+				writeError(c, statusForError(err), err)
+				return
+			}
+			writeData(c, http.StatusOK, run)
+			return
+		}
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			writeError(c, statusForError(err), err)
+			return
+		}
+	}
+
+	run, err := s.cancelCachedPausedRun(c.Request.Context(), graphID, runID)
+	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusCanceled)
+	writeData(c, http.StatusOK, run)
+}
+
+func (s *Server) handleDeleteRun(c *gin.Context) {
+	runID := strings.TrimSpace(c.Param("run_id"))
+	if runID == "" {
+		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+		return
+	}
+	graphID := strings.TrimSpace(c.Query("graph_id"))
+	runner := s.currentRunner()
+	if runner != nil && (graphID == "" || graphID == effectiveRunnerGraphID(runner)) {
+		run, err := runner.DeleteRun(c.Request.Context(), runID)
+		if err == nil {
+			writeData(c, http.StatusOK, run)
+			return
+		}
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			writeError(c, statusForError(err), err)
+			return
+		}
+	}
+
+	run, err := s.deleteCachedRun(c.Request.Context(), graphID, runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -200,11 +240,11 @@ func isTerminalRunStatus(status runtime.RunStatus) bool {
 }
 
 func (s *Server) handleListRuns(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
-	runs, err := runner.ListRuns(c.Request.Context(), runtime.RunFilter{Statuses: parseRunStatuses(c)})
+	runs, err := reader.ListRuns(c.Request.Context(), runtime.RunFilter{Statuses: parseRunStatuses(c)})
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -213,8 +253,8 @@ func (s *Server) handleListRuns(c *gin.Context) {
 }
 
 func (s *Server) handleGetRun(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	runID := strings.TrimSpace(c.Param("run_id"))
@@ -222,7 +262,7 @@ func (s *Server) handleGetRun(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
 		return
 	}
-	run, err := runner.GetRun(c.Request.Context(), runID)
+	run, err := reader.GetRun(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -231,8 +271,8 @@ func (s *Server) handleGetRun(c *gin.Context) {
 }
 
 func (s *Server) handleGetRunDetail(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	runID := strings.TrimSpace(c.Param("run_id"))
@@ -241,27 +281,27 @@ func (s *Server) handleGetRunDetail(c *gin.Context) {
 		return
 	}
 
-	run, err := runner.GetRun(c.Request.Context(), runID)
+	run, err := reader.GetRun(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	steps, err := runner.ListSteps(c.Request.Context(), runID)
+	steps, err := reader.ListSteps(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	checkpoints, err := runner.ListCheckpoints(c.Request.Context(), runID)
+	checkpoints, err := reader.ListCheckpoints(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	events, err := runner.ListEvents(runID)
+	events, err := reader.ListEvents(runID)
 	if err != nil {
 		writeError(c, statusForListEventsError(err), err)
 		return
 	}
-	artifacts, err := runner.ListArtifacts(c.Request.Context(), runID)
+	artifacts, err := reader.ListArtifacts(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -273,13 +313,13 @@ func (s *Server) handleGetRunDetail(c *gin.Context) {
 		Checkpoints: checkpoints,
 		Events:      events,
 		Artifacts:   artifacts,
-		Interrupt:   s.buildRunInterrupt(c.Request.Context(), runner, run),
+		Interrupt:   s.buildRunInterrupt(c.Request.Context(), reader, run),
 	})
 }
 
 func (s *Server) handleListSteps(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	runID := strings.TrimSpace(c.Param("run_id"))
@@ -287,7 +327,7 @@ func (s *Server) handleListSteps(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
 		return
 	}
-	steps, err := runner.ListSteps(c.Request.Context(), runID)
+	steps, err := reader.ListSteps(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -296,8 +336,8 @@ func (s *Server) handleListSteps(c *gin.Context) {
 }
 
 func (s *Server) handleListCheckpoints(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	runID := strings.TrimSpace(c.Param("run_id"))
@@ -305,7 +345,7 @@ func (s *Server) handleListCheckpoints(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
 		return
 	}
-	checkpoints, err := runner.ListCheckpoints(c.Request.Context(), runID)
+	checkpoints, err := reader.ListCheckpoints(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -314,8 +354,8 @@ func (s *Server) handleListCheckpoints(c *gin.Context) {
 }
 
 func (s *Server) handleGetCheckpoint(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	checkpointID := strings.TrimSpace(c.Param("checkpoint_id"))
@@ -323,7 +363,7 @@ func (s *Server) handleGetCheckpoint(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("checkpoint_id is required"))
 		return
 	}
-	checkpoint, err := runner.LoadCheckpointState(c.Request.Context(), checkpointID)
+	checkpoint, err := reader.LoadCheckpointState(c.Request.Context(), checkpointID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -332,8 +372,8 @@ func (s *Server) handleGetCheckpoint(c *gin.Context) {
 }
 
 func (s *Server) handleListEvents(c *gin.Context) {
-	runner := s.requireRunner(c)
-	if runner == nil {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	runID := strings.TrimSpace(c.Param("run_id"))
@@ -341,7 +381,7 @@ func (s *Server) handleListEvents(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
 		return
 	}
-	events, err := runner.ListEvents(runID)
+	events, err := reader.ListEvents(runID)
 	if err != nil {
 		writeError(c, statusForListEventsError(err), err)
 		return
@@ -362,25 +402,28 @@ func (s *Server) makeRunResult(ctx context.Context, runner *runtime.GraphRunner,
 	return runResult{
 		Run:       run,
 		State:     finalState,
-		Interrupt: s.buildRunInterrupt(ctx, runner, run),
+		Interrupt: s.buildRunInterrupt(ctx, runReader(runner), run),
 	}
 }
 
-func (s *Server) buildRunInterrupt(ctx context.Context, runner *runtime.GraphRunner, run runtime.RunRecord) *runInterrupt {
-	if runner == nil || run.Status != runtime.RunStatusPaused || strings.TrimSpace(run.LastCheckpointID) == "" {
+func (s *Server) buildRunInterrupt(ctx context.Context, reader runReader, run runtime.RunRecord) *runInterrupt {
+	if reader == nil || run.Status != runtime.RunStatusPaused || strings.TrimSpace(run.LastCheckpointID) == "" {
 		return nil
 	}
+	eventMessage := pausedRunEventMessage(reader, run)
 	interrupt := &runInterrupt{
 		RunID:                  run.RunID,
 		CheckpointID:           run.LastCheckpointID,
 		NodeID:                 run.CurrentNodeID,
 		ResumeFromRunID:        run.RunID,
 		ResumeFromCheckpointID: run.LastCheckpointID,
-		Message:                "run paused",
+		Message:                firstNonEmpty(eventMessage, "run paused"),
 	}
-	checkpoint, err := runner.LoadCheckpointState(ctx, run.LastCheckpointID)
+	checkpoint, err := reader.LoadCheckpointState(ctx, run.LastCheckpointID)
 	if err != nil {
-		interrupt.Message = fmt.Sprintf("run paused; checkpoint details unavailable: %v", err)
+		if eventMessage == "" {
+			interrupt.Message = fmt.Sprintf("run paused; checkpoint details unavailable: %v", err)
+		}
 		return interrupt
 	}
 
@@ -390,8 +433,44 @@ func (s *Server) buildRunInterrupt(ctx context.Context, runner *runtime.GraphRun
 	interrupt.BreakpointHit = checkpoint.Runtime.BreakpointHit
 	runtimeState := checkpoint.Runtime
 	interrupt.Runtime = &runtimeState
-	interrupt.Message = interruptMessage(checkpoint)
+	interrupt.Message = firstNonEmpty(eventMessage, interruptMessage(checkpoint))
 	return interrupt
+}
+
+func pausedRunEventMessage(reader runReader, run runtime.RunRecord) string {
+	if reader == nil || strings.TrimSpace(run.RunID) == "" {
+		return ""
+	}
+	events, err := reader.ListEvents(run.RunID)
+	if err != nil {
+		return ""
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		event := events[i]
+		if event.Type != runtime.EventRunPaused {
+			continue
+		}
+		checkpointID := eventPayloadString(event.Payload, "checkpoint_id")
+		if checkpointID != "" && checkpointID != run.LastCheckpointID {
+			continue
+		}
+		if message := eventPayloadString(event.Payload, "message"); message != "" {
+			return message
+		}
+	}
+	return ""
+}
+
+func eventPayloadString(payload json.RawMessage, key string) string {
+	if len(payload) == 0 || strings.TrimSpace(key) == "" {
+		return ""
+	}
+	var values map[string]any
+	if err := json.Unmarshal(payload, &values); err != nil {
+		return ""
+	}
+	value, _ := values[key].(string)
+	return strings.TrimSpace(value)
 }
 
 func interruptMessage(checkpoint runtime.RestoredCheckpoint) string {

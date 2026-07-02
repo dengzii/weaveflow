@@ -60,6 +60,13 @@ const minLoopWidth = 250;
 const minLoopHeight = 150;
 const minZoom = 0.2;
 const maxZoom = 2;
+const viewportStoragePrefix = "weaveflow.workbench.graphCanvas.viewport.";
+
+interface StoredCanvasViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
 
 export function GraphCanvas({
   definition,
@@ -72,6 +79,7 @@ export function GraphCanvas({
   fitViewSignal = 0,
   focusNodeId,
   focusNodeSignal = 0,
+  viewportStorageKey,
   highlightedNodeIds = [],
   virtualNodeIds = [START_NODE_REF, END_NODE_REF],
   virtualEdges = [],
@@ -98,6 +106,7 @@ export function GraphCanvas({
   fitViewSignal?: number;
   focusNodeId?: string;
   focusNodeSignal?: number;
+  viewportStorageKey?: string;
   highlightedNodeIds?: string[];
   virtualNodeIds?: string[];
   virtualEdges?: VirtualGraphEdge[];
@@ -127,6 +136,7 @@ export function GraphCanvas({
         fitViewSignal={fitViewSignal}
         focusNodeId={focusNodeId}
         focusNodeSignal={focusNodeSignal}
+        viewportStorageKey={viewportStorageKey}
         highlightedNodeIds={highlightedNodeIds}
         virtualNodeIds={virtualNodeIds}
         virtualEdges={virtualEdges}
@@ -158,6 +168,7 @@ function GraphCanvasInner({
   fitViewSignal,
   focusNodeId,
   focusNodeSignal,
+  viewportStorageKey,
   highlightedNodeIds,
   virtualNodeIds,
   virtualEdges,
@@ -184,6 +195,7 @@ function GraphCanvasInner({
   fitViewSignal: number;
   focusNodeId?: string;
   focusNodeSignal: number;
+  viewportStorageKey?: string;
   highlightedNodeIds: string[];
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
@@ -207,6 +219,8 @@ function GraphCanvasInner({
   const [interactive, setInteractive] = useState(editable);
   const handledFitViewSignal = useRef(0);
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
+  const restoredViewportKeyRef = useRef("");
+  const suppressViewportPersistUntilRef = useRef(0);
   const nodesRef = useRef<Node<FlowNodeData>[]>([]);
   const edgesRef = useRef<Edge[]>([]);
   const runtimeRef = useRef<Map<string, RuntimeNodeState>>(new Map());
@@ -378,22 +392,48 @@ function GraphCanvasInner({
     edgesRef.current = edges;
   }, [edges]);
 
+  const persistViewport = useCallback(
+    (viewport: Viewport) => {
+      const key = normalizeViewportStorageKey(viewportStorageKey);
+      if (key && restoredViewportKeyRef.current !== key) return;
+      if (Date.now() < suppressViewportPersistUntilRef.current) return;
+      writeStoredCanvasViewport(viewportStorageKey, viewport);
+    },
+    [viewportStorageKey]
+  );
+
   const applyViewport = useCallback(
-    (nextViewport: Viewport) => {
+    (nextViewport: Viewport, options: { persist?: boolean } = {}) => {
       const state = store.getState();
       if (state.panZoom) {
         void state.panZoom.setViewport(nextViewport);
         store.setState({ transform: [nextViewport.x, nextViewport.y, nextViewport.zoom] });
         syncRendererZoomState(flowWrapperRef.current, nextViewport);
+        if (options.persist !== false) persistViewport(nextViewport);
         return;
       }
       const currentTransform = state.transform;
       const current = { x: currentTransform[0], y: currentTransform[1], zoom: currentTransform[2] };
       if (sameViewport(current, nextViewport)) return;
       store.setState({ transform: [nextViewport.x, nextViewport.y, nextViewport.zoom] });
+      if (options.persist !== false) persistViewport(nextViewport);
     },
-    [store]
+    [persistViewport, store]
   );
+
+  useEffect(() => {
+    const key = normalizeViewportStorageKey(viewportStorageKey);
+    if (!viewportInitialized || !key || restoredViewportKeyRef.current === key) {
+      return;
+    }
+    restoredViewportKeyRef.current = key;
+    const stored = readStoredCanvasViewport(key);
+    if (!stored) return;
+    suppressViewportPersistUntilRef.current = Date.now() + 600;
+    window.requestAnimationFrame(() => {
+      applyViewport(stored, { persist: false });
+    });
+  }, [applyViewport, viewportInitialized, viewportStorageKey]);
 
   useEffect(() => {
     if (!fitViewSignal || fitViewSignal === handledFitViewSignal.current || nodes.length === 0 || !viewportInitialized) {
@@ -505,6 +545,9 @@ function GraphCanvasInner({
           event.preventDefault();
           const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
           onCreateNodeAt?.(position, screenPoint(event));
+        }}
+        onMoveEnd={(_, viewport) => {
+          persistViewport(viewport);
         }}
         onNodeDragStart={(_, node) => {
           if (node.data.virtualKind === "loop") {
@@ -723,6 +766,56 @@ function fitNodesToViewport(
 
 function sameViewport(a: Viewport, b: Viewport): boolean {
   return Math.abs(a.x - b.x) < 0.01 && Math.abs(a.y - b.y) < 0.01 && Math.abs(a.zoom - b.zoom) < 0.0001;
+}
+
+function normalizeViewportStorageKey(key?: string): string {
+  const trimmed = key?.trim();
+  return trimmed ? `${viewportStoragePrefix}${trimmed}` : "";
+}
+
+export function hasStoredGraphCanvasViewport(key?: string): boolean {
+  return Boolean(readStoredCanvasViewport(normalizeViewportStorageKey(key)));
+}
+
+function readStoredCanvasViewport(key: string): Viewport | null {
+  if (typeof window === "undefined" || !key) return null;
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredCanvasViewport;
+    if (!isFiniteNumber(parsed.x) || !isFiniteNumber(parsed.y) || !isFiniteNumber(parsed.zoom)) {
+      return null;
+    }
+    return {
+      x: parsed.x,
+      y: parsed.y,
+      zoom: Math.max(minZoom, Math.min(maxZoom, parsed.zoom)),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredCanvasViewport(key: string | undefined, viewport: Viewport): void {
+  const storageKey = normalizeViewportStorageKey(key);
+  if (typeof window === "undefined" || !storageKey) return;
+  if (!isFiniteNumber(viewport.x) || !isFiniteNumber(viewport.y) || !isFiniteNumber(viewport.zoom)) return;
+  try {
+    window.localStorage.setItem(
+      storageKey,
+      JSON.stringify({
+        x: viewport.x,
+        y: viewport.y,
+        zoom: Math.max(minZoom, Math.min(maxZoom, viewport.zoom)),
+      })
+    );
+  } catch {
+    // Ignore storage errors; viewport persistence is best effort.
+  }
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
 }
 
 interface D3ZoomTransform {

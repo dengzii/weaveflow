@@ -91,10 +91,16 @@ export function WorkbenchShell({
               </Button>
             </>
           ) : runControlMode === "resume" ? (
-            <Button size="sm" onClick={onResume} disabled={busy || !canResume} title="Resume paused run">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Resume
-            </Button>
+            <>
+              <Button size="sm" onClick={onResume} disabled={busy || !canResume} title="Resume paused run">
+                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                Resume
+              </Button>
+              <Button variant="danger" size="sm" onClick={onStop} disabled={!hasRunStatus} title="Stop run">
+                <Square className="h-4 w-4" />
+                Stop
+              </Button>
+            </>
           ) : (
             <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
