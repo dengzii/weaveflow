@@ -4,6 +4,24 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>WeaveFlow</title>
+    <script>
+      (function () {
+        var storageKey = "weaveflow:web:theme:v1";
+        var themeQuery = "(prefers-color-scheme: dark)";
+        var root = document.documentElement;
+        var preference = "system";
+        try {
+          var storedPreference = window.localStorage.getItem(storageKey);
+          if (storedPreference === "light" || storedPreference === "dark" || storedPreference === "system") {
+            preference = storedPreference;
+          }
+        } catch (_error) {}
+
+        var systemTheme = window.matchMedia && window.matchMedia(themeQuery).matches ? "dark" : "light";
+        root.dataset.theme = preference === "system" ? systemTheme : preference;
+        root.dataset.themePreference = preference;
+      })();
+    </script>
     <link rel="stylesheet" href="/app.css" />
   </head>
   <body>

@@ -1,5 +1,4 @@
 import { Braces, Settings } from "lucide-react";
-import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import { themePreferences, useTheme, type ThemePreference } from "../../lib/theme";
 import { stringifyJSON } from "../../lib/utils";
@@ -8,21 +7,7 @@ import { extensionPoints } from "./constants";
 import { PanelHeader } from "./shared";
 import { themePreferenceLabel } from "./utils";
 
-export function SettingsWorkspace({
-  graphId,
-  graphVersion,
-  registry,
-  graphSwitchDisabled,
-  onGraphId,
-  onGraphVersion,
-}: {
-  graphId: string;
-  graphVersion: string;
-  registry: RegistryInfo | null;
-  graphSwitchDisabled: boolean;
-  onGraphId: (value: string) => void;
-  onGraphVersion: (value: string) => void;
-}) {
+export function SettingsWorkspace({ registry }: { registry: RegistryInfo | null }) {
   const { preference, resolvedTheme, setPreference } = useTheme();
 
   return (
@@ -30,14 +15,6 @@ export function SettingsWorkspace({
       <section className="border-r border-border bg-panel p-4">
         <PanelHeader icon={Settings} title="Settings" inline />
         <div className="mt-4 grid gap-4">
-          <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Graph ID</span>
-            <Input value={graphId} onChange={(event) => onGraphId(event.target.value)} disabled={graphSwitchDisabled} />
-          </label>
-          <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Graph Version</span>
-            <Input value={graphVersion} onChange={(event) => onGraphVersion(event.target.value)} disabled={graphSwitchDisabled} />
-          </label>
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Theme</span>
             <Select

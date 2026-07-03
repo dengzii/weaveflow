@@ -16,7 +16,6 @@ export function createGraphDefinition(name: string, nodeType?: NodeTypeSchema): 
     version: "1.0",
     name: graphName,
     entry_point: nodes[0]?.id,
-    finish_point: nodes[0]?.id,
     nodes,
     edges: [],
   };
@@ -43,7 +42,6 @@ export function addNodeToGraph(
     ...definition,
     nodes: [...definition.nodes, node],
     entry_point: definition.entry_point || node.id,
-    finish_point: definition.finish_point || node.id,
   };
   return withNodePosition(next, node.id, position ?? nextDefaultPosition(definition));
 }
@@ -91,8 +89,8 @@ export function removeGraphNode(definition: GraphDefinition, nodeID: string): Gr
   positions.delete(nodeID);
   return withNodePositions({
     ...definition,
-    entry_point: definition.entry_point === nodeID ? nodes[0]?.id : definition.entry_point,
-    finish_point: definition.finish_point === nodeID ? nodes.at(-1)?.id : definition.finish_point,
+    entry_point: definition.entry_point === nodeID ? undefined : definition.entry_point,
+    finish_point: definition.finish_point === nodeID ? undefined : definition.finish_point,
     nodes,
     edges: (definition.edges ?? []).filter((edge) => validIds.has(edge.from) && validIds.has(edge.to)),
   }, positions);

@@ -350,24 +350,6 @@ export function WorkbenchPage({
     return true;
   }, [graphSwitchLocked, pushToast, resetRunState]);
 
-  const changeGraphId = useCallback(
-    (value: string) => {
-      if (value === graphId) return;
-      if (!prepareGraphSwitch()) return;
-      setGraphId(value);
-    },
-    [graphId, prepareGraphSwitch]
-  );
-
-  const changeGraphVersion = useCallback(
-    (value: string) => {
-      if (value === graphVersion) return;
-      if (!prepareGraphSwitch()) return;
-      setGraphVersion(value);
-    },
-    [graphVersion, prepareGraphSwitch]
-  );
-
   useEffect(() => {
     if (!definition || validateGraph(definition)) {
       setInitialRequirements(null);
@@ -751,14 +733,7 @@ export function WorkbenchPage({
         />
       ) : null}
       {tab === "settings" ? (
-        <SettingsWorkspace
-          graphId={graphId}
-          graphVersion={graphVersion}
-          registry={registry}
-          graphSwitchDisabled={graphSwitchLocked}
-          onGraphId={changeGraphId}
-          onGraphVersion={changeGraphVersion}
-        />
+        <SettingsWorkspace registry={registry} />
       ) : null}
       <HumanMessagePromptDialog
         prompt={humanPrompt}
