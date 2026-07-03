@@ -15,9 +15,138 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+const (
+	ConditionTypeLastMessageHasToolCalls = "last_message_has_tool_calls"
+	ConditionTypeHasFinalAnswer          = "has_final_answer"
+	ConditionTypeExpressionConditions    = "expression_conditions"
+)
+
+const (
+	OperationEqual      = "equals"
+	OperationNotEqual   = "not_equals"
+	OperationContains   = "contains"
+	OperationNotContain = "not_contains"
+)
+
+const (
+	ExpressionMatchAll = "all"
+	ExpressionMatchAny = "any"
+)
+
+const (
+	LogicAnd = "and"
+	LogicOr  = "or"
+	LogicNot = "not"
+)
+
+func registerCoreConditions(r *registry.Registry) error {
+	if r == nil {
+		return fmt.Errorf("registry is nil")
+	}
+
+	for _, def := range []registry.ConditionDefinition{
+		lastMessageHasToolCallsConditionDefinition(),
+		hasFinalAnswerConditionDefinition(),
+		expressionConditionsConditionDefinition(),
+	} {
+		if err := r.RegisterCondition(def); err != nil {
+			return fmt.Errorf("register condition %q: %w", def.Type, err)
+		}
+	}
+	return nil
+}
+
+func lastMessageHasToolCallsConditionDefinition() registry.ConditionDefinition {
+	return registry.ConditionDefinition{
+		ConditionSchema: dsl.ConditionSchema{
+			Type:        ConditionTypeLastMessageHasToolCalls,
+			Title:       "Last Message Has Tool Calls",
+			Description: "Routes when the last AI message includes tool calls.",
+			ConfigSchema: dsl.JSONSchema{
+				"type":                 "object",
+				"properties":           dsl.JSONSchema{"state_scope": dsl.JSONSchema{"type": "string"}},
+				"additionalProperties": false,
+			},
+		},
+		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
+			return LastMessageHasToolCalls(conditionStateScope(spec.Config)), nil
+		},
+	}
+}
+
+func hasFinalAnswerConditionDefinition() registry.ConditionDefinition {
+	return registry.ConditionDefinition{
+		ConditionSchema: dsl.ConditionSchema{
+			Type:        ConditionTypeHasFinalAnswer,
+			Title:       "Has Final Answer",
+			Description: "Routes when the current state already contains a final answer.",
+			ConfigSchema: dsl.JSONSchema{
+				"type":                 "object",
+				"properties":           dsl.JSONSchema{"state_scope": dsl.JSONSchema{"type": "string"}},
+				"additionalProperties": false,
+			},
+		},
+		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
+			return HasFinalAnswer(conditionStateScope(spec.Config)), nil
+		},
+	}
+}
+
+func expressionConditionsConditionDefinition() registry.ConditionDefinition {
+	return registry.ConditionDefinition{
+		ConditionSchema: dsl.ConditionSchema{
+			Type:        ConditionTypeExpressionConditions,
+			Title:       "Expression Conditions",
+			Description: "Routes by evaluating serializable expressions against the current state.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"state_scope": dsl.JSONSchema{"type": "string"},
+					"match":       dsl.JSONSchema{"type": "string", "enum": []string{ExpressionMatchAll, ExpressionMatchAny}},
+					"expressions": dsl.JSONSchema{
+						"type": "array",
+						"items": dsl.JSONSchema{
+							"type": "object",
+							"properties": dsl.JSONSchema{
+								"value1": dsl.JSONSchema{"type": "string"},
+								"op": dsl.JSONSchema{"type": "string", "enum": []string{
+									OperationEqual,
+									OperationNotEqual,
+									OperationContains,
+									OperationNotContain,
+								}},
+								"value2": dsl.JSONSchema{"type": "string"},
+								"logic": dsl.JSONSchema{"type": "string", "enum": []string{
+									LogicAnd,
+									LogicOr,
+									LogicNot,
+								}},
+								"children": dsl.JSONSchema{
+									"type":  "array",
+									"items": dsl.JSONSchema{"type": "object"},
+								},
+							},
+							"additionalProperties": false,
+						},
+					},
+				},
+				"required":             []string{"expressions"},
+				"additionalProperties": false,
+			},
+		},
+		Resolve: func(spec dsl.GraphConditionSpec) (registry.EdgeCondition, error) {
+			cfg, err := ParseExpressionConditionConfig(spec.Config)
+			if err != nil {
+				return registry.EdgeCondition{}, fmt.Errorf("resolve expression condition: %w", err)
+			}
+			return ExpressionConditions(cfg)
+		},
+	}
+}
+
 func LastMessageHasToolCalls(scopes ...string) registry.EdgeCondition {
 	scope := defaultConditionScope(scopes...)
-	spec := dsl.GraphConditionSpec{Type: "last_message_has_tool_calls"}
+	spec := dsl.GraphConditionSpec{Type: ConditionTypeLastMessageHasToolCalls}
 	if scope != "" {
 		spec.Config = map[string]any{"state_scope": scope}
 	}
@@ -45,7 +174,7 @@ func LastMessageHasToolCalls(scopes ...string) registry.EdgeCondition {
 
 func HasFinalAnswer(scopes ...string) registry.EdgeCondition {
 	scope := defaultConditionScope(scopes...)
-	spec := dsl.GraphConditionSpec{Type: "has_final_answer"}
+	spec := dsl.GraphConditionSpec{Type: ConditionTypeHasFinalAnswer}
 	if scope != "" {
 		spec.Config = map[string]any{"state_scope": scope}
 	}
@@ -58,30 +187,19 @@ func HasFinalAnswer(scopes ...string) registry.EdgeCondition {
 	})
 }
 
+func conditionStateScope(configMap map[string]any) string {
+	if _, ok := configMap["state_scope"]; ok {
+		return config.String(configMap, "state_scope")
+	}
+	return node.DefaultScope
+}
+
 func defaultConditionScope(scopes ...string) string {
 	if len(scopes) == 0 {
 		return node.DefaultScope
 	}
 	return strings.TrimSpace(scopes[0])
 }
-
-const (
-	OperationEqual      = "equals"
-	OperationNotEqual   = "not_equals"
-	OperationContains   = "contains"
-	OperationNotContain = "not_contains"
-)
-
-const (
-	ExpressionMatchAll = "all"
-	ExpressionMatchAny = "any"
-)
-
-const (
-	LogicAnd = "and"
-	LogicOr  = "or"
-	LogicNot = "not"
-)
 
 type Expression struct {
 	Value1 string `json:"value1,omitempty"`
@@ -113,7 +231,7 @@ func ExpressionConditions(config ExpressionConditionConfig) (registry.EdgeCondit
 	scope := config.StateScope
 
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
-		Type:   "expression_conditions",
+		Type:   ConditionTypeExpressionConditions,
 		Config: config.Map(),
 	}, func(_ context.Context, state *state.State) bool {
 		switch matchMode {
