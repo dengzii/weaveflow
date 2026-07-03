@@ -5,7 +5,10 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/llms/parts"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
@@ -34,6 +37,45 @@ func NewLLMNode(options ...NodeOption) *LLMNode {
 	}
 	applyNodeOptions(&node.Base, options)
 	return node
+}
+
+func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        NodeTypeLLM,
+			Title:       "LLM Node",
+			Description: "Built-in model inference nodes.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"tool_ids":         dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"state_scope":      dsl.JSONSchema{"type": "string"},
+					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
+				},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			scope := nodeStateScope(spec.Config)
+			return dsl.StateContract{
+				Fields: []dsl.StateFieldRef{
+					{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages sent to the model and extended with the model response."},
+					{Path: scopedConversationPath(scope, accessors.ConversationFieldIterationCount), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter used to stop tool loops and incremented after each model turn."},
+					{Path: scopedConversationPath(scope, accessors.ConversationFieldMaxIterations), Mode: dsl.StateAccessRead, Description: "Maximum number of tool-using iterations allowed for the current conversation scope."},
+					{Path: scopedConversationPath(scope, accessors.ConversationFieldFinalAnswer), Mode: dsl.StateAccessWrite, Description: "Final answer written when the model finishes without further tool calls."},
+					{Path: state.Shared(accessors.KeyExecution).String(), Mode: dsl.StateAccessReadWrite, Description: "Plan step execution state: read current_step.id and track last_llm_step_id to scrub prior-step messages at step boundary."},
+				},
+			}, nil
+		},
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+			_ = ctx
+			llmNode := NewLLMNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			applyNodeMetadata(&llmNode.Base, spec)
+			llmNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			llmNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			return llmNode, nil
+		},
+	}
 }
 
 func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {

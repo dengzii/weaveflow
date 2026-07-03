@@ -472,7 +472,7 @@ func (cfg *loadGraphConfig) apply(options []LoadGraphOption) error {
 	return nil
 }
 
-func (cfg loadGraphConfig) build() (*Graph, error) {
+func (cfg *loadGraphConfig) build() (*Graph, error) {
 	if cfg.registry == nil {
 		return nil, fmt.Errorf("registry is nil")
 	}
@@ -629,7 +629,7 @@ func (cfg *runnerConfig) apply(options []RunnerOption) error {
 	return nil
 }
 
-func (cfg runnerConfig) build(g *Graph) (*GraphRunner, error) {
+func (cfg *runnerConfig) build(g *Graph) (*GraphRunner, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/node"
 )
 
 func TestRegisterStateFieldValidatesNameAndDuplicates(t *testing.T) {
@@ -39,7 +39,7 @@ func TestRegisterNodeTypeValidatesTypeBuilderAndDuplicates(t *testing.T) {
 
 	def := NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{Type: " custom "},
-		Build: func(*BuildContext, dsl.GraphNodeSpec) (node.Node, error) {
+		Build: func(*BuildContext, dsl.GraphNodeSpec) (core.Node, error) {
 			return nil, nil
 		},
 	}

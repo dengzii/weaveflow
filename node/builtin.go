@@ -5,6 +5,9 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
 
@@ -33,6 +36,43 @@ func NewHumanMessageNode(content string, options ...NodeOption) *HumanMessageNod
 	}
 	applyNodeOptions(&node.Base, options)
 	return node
+}
+
+func HumanMessageNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        NodeTypeHumanMessage,
+			Title:       "Human Message Node",
+			Description: "Pause the graph until the latest message in scope is a human message.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"state_scope":       dsl.JSONSchema{"type": "string"},
+					"interrupt_message": dsl.JSONSchema{"type": "string"},
+					"content":           dsl.JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			scope := nodeStateScope(spec.Config)
+			return dsl.StateContract{
+				Fields: []dsl.StateFieldRef{
+					{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected and updated by the human message node."},
+					{Path: scopedStatePath(scope, PendingHumanInputStateKey), Mode: dsl.StateAccessReadWrite, Description: "Pending human input consumed from state before resuming execution."},
+				},
+			}, nil
+		},
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+			_ = ctx
+			humanNode := NewHumanMessageNode(config.String(spec.Config, "content"), WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			applyNodeMetadata(&humanNode.Base, spec)
+			if value := config.String(spec.Config, "interrupt_message"); value != "" {
+				humanNode.InterruptMessage = value
+			}
+			return humanNode, nil
+		},
+	}
 }
 
 func (n *HumanMessageNode) Execute(_ core.Context, access *state.Access) error {

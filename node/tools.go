@@ -6,6 +6,9 @@ import (
 	"sync"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
 
@@ -30,6 +33,41 @@ func NewToolsNode(options ...NodeOption) *ToolsNode {
 	}
 	applyNodeOptions(&node.Base, options)
 	return node
+}
+
+func ToolsNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        NodeTypeTools,
+			Title:       "Tools Node",
+			Description: "Built-in tool execution nodes.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"tool_ids":    dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"state_scope": dsl.JSONSchema{"type": "string"},
+					"parallel":    dsl.JSONSchema{"type": "boolean"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			scope := nodeStateScope(spec.Config)
+			return dsl.StateContract{
+				Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected for tool calls and extended with tool responses."}},
+			}, nil
+		},
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+			_ = ctx
+			toolsNode := NewToolsNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			applyNodeMetadata(&toolsNode.Base, spec)
+			toolsNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
+				toolsNode.Parallel = parallel
+			}
+			return toolsNode, nil
+		},
+	}
 }
 
 func (t *ToolsNode) Execute(ctx core.Context, access *state.Access) error {

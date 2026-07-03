@@ -167,37 +167,37 @@ func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return newGraphNodeSpec(n.Base, NodeTypeLLM, config)
 }
 
-func (n *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
-		"state_scope": n.Scope(),
-		"tool_ids":    n.ToolIDs,
-		"parallel":    n.Parallel,
+		"state_scope": t.Scope(),
+		"tool_ids":    t.ToolIDs,
+		"parallel":    t.Parallel,
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeTools, config)
+	return newGraphNodeSpec(t.Base, NodeTypeTools, config)
 }
 
-func (n *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (a *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
-		"state_scope":      n.Scope(),
-		"tool_ids":         n.ToolIDs,
-		"system_prompt":    n.SystemPrompt,
-		"parallel":         n.Parallel,
-		"tool_name":        n.ToolName,
-		"tool_description": n.ToolDescription,
+		"state_scope":      a.Scope(),
+		"tool_ids":         a.ToolIDs,
+		"system_prompt":    a.SystemPrompt,
+		"parallel":         a.Parallel,
+		"tool_name":        a.ToolName,
+		"tool_description": a.ToolDescription,
 	}
-	if !n.InputPath.Empty() {
-		config["input_path"] = n.InputPath.String()
+	if !a.InputPath.Empty() {
+		config["input_path"] = a.InputPath.String()
 	}
-	if !n.OutputPath.Empty() {
-		config["output_path"] = n.OutputPath.String()
+	if !a.OutputPath.Empty() {
+		config["output_path"] = a.OutputPath.String()
 	}
-	if n.MaxIterations > 0 {
-		config["max_iterations"] = n.MaxIterations
+	if a.MaxIterations > 0 {
+		config["max_iterations"] = a.MaxIterations
 	}
-	if n.PromptMaxChars > 0 {
-		config["prompt_max_chars"] = n.PromptMaxChars
+	if a.PromptMaxChars > 0 {
+		config["prompt_max_chars"] = a.PromptMaxChars
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeAgent, config)
+	return newGraphNodeSpec(a.Base, NodeTypeAgent, config)
 }
 
 func (n *EnvironmentContextNode) GraphNodeSpec() dsl.GraphNodeSpec {

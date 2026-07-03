@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -12,6 +13,9 @@ import (
 	"time"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
@@ -48,6 +52,67 @@ func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
 	}
 	applyNodeOptions(&node.Base, options)
 	return node
+}
+
+func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        NodeTypeEnvironmentContext,
+			Title:       "Environment Context Node",
+			Description: "Collect workspace, project, and git context into shared state.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"environment_state_path": dsl.JSONSchema{"type": "string"},
+					"workspace_root":         dsl.JSONSchema{"type": "string"},
+					"include_git":            dsl.JSONSchema{"type": "boolean"},
+					"include_project":        dsl.JSONSchema{"type": "boolean"},
+					"git_status_limit":       dsl.JSONSchema{"type": "integer", "minimum": 1},
+				},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			environmentPath := config.TrimmedString(spec.Config, "environment_state_path")
+			if strings.TrimSpace(environmentPath) == "" {
+				environmentPath = state.Shared(accessors.KeyEnvironment).String()
+			}
+			parsed, err := state.ParsePath(environmentPath)
+			if err != nil {
+				return dsl.StateContract{}, err
+			}
+			return dsl.StateContract{
+				Fields: []dsl.StateFieldRef{
+					{
+						Path:          parsed.String(),
+						Mode:          dsl.StateAccessWrite,
+						Description:   "Collected workspace, project, and git context.",
+						MergeStrategy: dsl.StateMergeReplace,
+					},
+				},
+			}, nil
+		},
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+			_ = ctx
+			envNode := NewEnvironmentContextNode(WithID(spec.ID))
+			applyNodeMetadata(&envNode.Base, spec)
+			envNode.EnvironmentStatePath = config.TrimmedString(spec.Config, "environment_state_path")
+			envNode.WorkspaceRoot = config.TrimmedString(spec.Config, "workspace_root")
+			if value, ok := config.Bool(spec.Config, "include_git"); ok {
+				envNode.IncludeGit = value
+			}
+			if value, ok := config.Bool(spec.Config, "include_project"); ok {
+				envNode.IncludeProject = value
+			}
+			if value, ok := config.Int(spec.Config, "git_status_limit"); ok {
+				if value <= 0 {
+					return nil, fmt.Errorf("build environment_context node %q: git_status_limit must be greater than 0", spec.ID)
+				}
+				envNode.GitStatusLimit = value
+			}
+			return envNode, nil
+		},
+	}
 }
 
 func (n *EnvironmentContextNode) Execute(ctx core.Context, access *state.Access) error {

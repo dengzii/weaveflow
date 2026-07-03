@@ -9,7 +9,10 @@ import (
 	"sync"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/llms/parts"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
@@ -48,6 +51,74 @@ func NewAgentNode(options ...NodeOption) *AgentNode {
 	}
 	applyNodeOptions(&node.Base, options)
 	return node
+}
+
+func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        NodeTypeAgent,
+			Title:       "Agent Node",
+			Description: "Run a self-contained ReAct loop: LLM inference and tool execution iterate inside the node until a final answer or the iteration cap is reached.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"tool_ids":         dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"state_scope":      dsl.JSONSchema{"type": "string"},
+					"system_prompt":    dsl.JSONSchema{"type": "string"},
+					"input_path":       dsl.JSONSchema{"type": "string"},
+					"output_path":      dsl.JSONSchema{"type": "string"},
+					"max_iterations":   dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"parallel":         dsl.JSONSchema{"type": "boolean"},
+					"tool_name":        dsl.JSONSchema{"type": "string"},
+					"tool_description": dsl.JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			scope := nodeStateScope(spec.Config)
+			fields := []dsl.StateFieldRef{
+				{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages the agent reads and extends across each internal iteration."},
+				{Path: scopedConversationPath(scope, accessors.ConversationFieldIterationCount), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter bumped after every internal model turn."},
+				{Path: scopedConversationPath(scope, accessors.ConversationFieldMaxIterations), Mode: dsl.StateAccessReadWrite, Description: "Maximum iteration cap for the agent loop, applied if not already higher."},
+				{Path: scopedConversationPath(scope, accessors.ConversationFieldFinalAnswer), Mode: dsl.StateAccessWrite, Description: "Final answer written when the agent stops without further tool calls."},
+			}
+			if inputPath := strings.TrimSpace(config.String(spec.Config, "input_path")); inputPath != "" {
+				fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(inputPath), Mode: dsl.StateAccessRead, Required: true, Description: "State path the agent reads its initial task from.", Dynamic: true, PathConfigKey: "input_path"})
+			}
+			if outputPath := strings.TrimSpace(config.String(spec.Config, "output_path")); outputPath != "" {
+				fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(outputPath), Mode: dsl.StateAccessWrite, Description: "State path the agent writes its final answer to.", Dynamic: true, PathConfigKey: "output_path"})
+			} else {
+				fields = append(fields, dsl.StateFieldRef{Path: state.Shared(accessors.KeyFinal, accessors.FinalFieldAnswer).String(), Mode: dsl.StateAccessWrite, Description: "Default final answer written when output_path is not configured."})
+			}
+			return dsl.StateContract{Fields: fields}, nil
+		},
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+			_ = ctx
+			agentNode := NewAgentNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			applyNodeMetadata(&agentNode.Base, spec)
+			agentNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			agentNode.SystemPrompt = config.String(spec.Config, "system_prompt")
+			var err error
+			agentNode.InputPath, err = parseOptionalStatePath(config.String(spec.Config, "input_path"))
+			if err != nil {
+				return nil, fmt.Errorf("build agent node %q input_path: %w", spec.ID, err)
+			}
+			agentNode.OutputPath, err = parseOptionalStatePath(config.String(spec.Config, "output_path"))
+			if err != nil {
+				return nil, fmt.Errorf("build agent node %q output_path: %w", spec.ID, err)
+			}
+			agentNode.MaxIterations, _ = config.Int(spec.Config, "max_iterations")
+			agentNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
+				agentNode.Parallel = parallel
+			}
+			agentNode.ToolName = config.String(spec.Config, "tool_name")
+			agentNode.ToolDescription = config.String(spec.Config, "tool_description")
+			return agentNode, nil
+		},
+	}
 }
 
 func (a *AgentNode) Execute(ctx core.Context, access *state.Access) error {

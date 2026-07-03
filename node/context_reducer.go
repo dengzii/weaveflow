@@ -6,6 +6,9 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
@@ -46,6 +49,47 @@ func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
 	}
 	applyNodeOptions(&node.Base, options)
 	return node
+}
+
+func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        NodeTypeContextReducer,
+			Title:       "Context Reducer Node",
+			Description: "Compact older conversation context into a summary message before the next model turn.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"state_scope":     dsl.JSONSchema{"type": "string"},
+					"max_messages":    dsl.JSONSchema{"type": "integer", "minimum": 2},
+					"preserve_system": dsl.JSONSchema{"type": "boolean"},
+					"preserve_recent": dsl.JSONSchema{"type": "integer", "minimum": 0},
+					"summary_prefix":  dsl.JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+		},
+		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
+			scope := nodeStateScope(spec.Config)
+			return dsl.StateContract{
+				Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages read and compacted into a reduced message history."}},
+			}, nil
+		},
+		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+			_ = ctx
+			reducerNode := NewContextReducerNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			applyNodeMetadata(&reducerNode.Base, spec)
+			reducerNode.MaxMessages, _ = config.Int(spec.Config, "max_messages")
+			if value, ok := config.Bool(spec.Config, "preserve_system"); ok {
+				reducerNode.PreserveSystem = value
+			}
+			reducerNode.PreserveRecent, _ = config.Int(spec.Config, "preserve_recent")
+			if value := config.String(spec.Config, "summary_prefix"); value != "" {
+				reducerNode.SummaryPrefix = value
+			}
+			return reducerNode, nil
+		},
+	}
 }
 
 func (n *ContextReducerNode) Execute(ctx core.Context, access *state.Access) error {
