@@ -1,13 +1,13 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Trash2 } from "lucide-react";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
-import { END_NODE_REF } from "../../../lib/graphEditor";
+import { END_NODE_REF, graphNodePositions } from "../../../lib/graphEditor";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Textarea } from "../../../components/ui/textarea";
 import { exampleConfigForSchema } from "../../../lib/jsonSchemaDefaults";
-import { cn, stringifyJSON } from "../../../lib/utils";
+import { cn, formatTime, stringifyJSON } from "../../../lib/utils";
 import type {
   ConditionSchema,
   GraphDefinition,
@@ -16,6 +16,7 @@ import type {
   InitialStateRequirements,
   InitialStateRequirement,
   NodeTypeSchema,
+  StepRecord,
 } from "../../../types";
 import type { GraphLintIssue } from "./lint";
 import { JsonSchemaForm } from "./schemaForm";
@@ -35,10 +36,12 @@ interface GraphInspectorPanelProps {
   lintIssues: GraphLintIssue[];
   nodeConfigText: string;
   paletteNodeTypes: NodeTypeSchema[];
+  registryLoaded: boolean;
   selectedEdge: GraphEdgeSpec | null;
   selectedNode: GraphNodeSpec | null;
   selectedVirtualLoop: VirtualGraphLoop | null;
   selectedVirtualEdge: VirtualGraphEdge | null;
+  steps: StepRecord[];
   visibleVirtualNodes: GraphNodeSpec[];
   onApplyEdgeConfig: () => void;
   onApplyNodeConfig: () => void;
@@ -69,10 +72,12 @@ export function GraphInspectorPanel({
   lintIssues,
   nodeConfigText,
   paletteNodeTypes,
+  registryLoaded,
   selectedEdge,
   selectedNode,
   selectedVirtualLoop,
   selectedVirtualEdge,
+  steps,
   visibleVirtualNodes,
   onApplyEdgeConfig,
   onApplyNodeConfig,
@@ -107,9 +112,12 @@ export function GraphInspectorPanel({
 
       {inspectorMode === "node" && selectedNode ? (
         <NodeInspector
+          definition={definition}
           nodeConfigText={nodeConfigText}
           paletteNodeTypes={paletteNodeTypes}
+          registryLoaded={registryLoaded}
           selectedNode={selectedNode}
+          steps={steps}
           onApplyNodeConfig={onApplyNodeConfig}
           onChangeNode={onChangeNode}
           onChangeNodeConfigText={onChangeNodeConfigText}
@@ -153,31 +161,31 @@ function LintPanel({
   issues: GraphLintIssue[];
   onSelectIssue?: (issue: GraphLintIssue) => void;
 }) {
+  if (issues.length === 0) return null;
+
   return (
     <section className="grid gap-1 border-b border-border p-3">
       <div className="flex min-h-7 items-center gap-2">
-        {issues.length > 0 ? <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-300" /> : null}
+        <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-300" />
         <div className="text-xs font-semibold uppercase text-muted-foreground">Lint</div>
       </div>
-      {issues.length > 0 ? (
-        <div className="grid gap-1">
-          {issues.map((issue) => (
-            <button
-              key={issue.id}
-              type="button"
-              onClick={() => onSelectIssue?.(issue)}
-              className="grid gap-1 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <StatusText tone={issue.severity === "error" ? "danger" : "warn"}>{issue.severity}</StatusText>
-                {issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.nodeId}</span> : null}
-                {issue.path && !issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.path}</span> : null}
-              </div>
-              <div className="line-clamp-2 text-foreground">{issue.message}</div>
-            </button>
-          ))}
-        </div>
-      ) : null}
+      <div className="grid gap-1">
+        {issues.map((issue) => (
+          <button
+            key={issue.id}
+            type="button"
+            onClick={() => onSelectIssue?.(issue)}
+            className="grid gap-1 rounded-md px-2 py-1.5 text-left text-xs hover:bg-accent"
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <StatusText tone={issue.severity === "error" ? "danger" : "warn"}>{issue.severity}</StatusText>
+              {issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.nodeId}</span> : null}
+              {issue.path && !issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.path}</span> : null}
+            </div>
+            <div className="line-clamp-2 text-foreground">{issue.message}</div>
+          </button>
+        ))}
+      </div>
 
     </section>
   );
@@ -447,9 +455,12 @@ function renderRunInputControl(type: string, value: unknown, onChange: (value: u
 }
 
 function NodeInspector({
+  definition,
   nodeConfigText,
   paletteNodeTypes,
+  registryLoaded,
   selectedNode,
+  steps,
   onApplyNodeConfig,
   onChangeNode,
   onChangeNodeConfigText,
@@ -457,9 +468,12 @@ function NodeInspector({
   onDeleteNode,
 }: Pick<
   GraphInspectorPanelProps,
+  | "definition"
   | "nodeConfigText"
   | "paletteNodeTypes"
+  | "registryLoaded"
   | "selectedNode"
+  | "steps"
   | "onApplyNodeConfig"
   | "onChangeNode"
   | "onChangeNodeConfigText"
@@ -469,14 +483,30 @@ function NodeInspector({
   const [jsonOpen, setJsonOpen] = useState(false);
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   if (!selectedNode) return null;
+  const nodeTypeSchema = nodeTypeForType(paletteNodeTypes, selectedNode.type);
   const configSchema = schemaForNodeType(paletteNodeTypes, selectedNode.type);
   const nodeConfig = isPlainRecord(selectedNode.config) ? selectedNode.config : {};
+  const details = analyzeNodeDetails(definition, selectedNode, nodeTypeSchema, nodeConfig, configSchema, steps, registryLoaded);
+  const descriptionText = nodeTypeSchema?.description || selectedNode.description;
 
   return (
     <>
+      {descriptionText ? (
+        <section className="border-b border-border p-3 text-xs text-muted-foreground">
+          <div className="line-clamp-4">{descriptionText}</div>
+        </section>
+      ) : null}
+
       <InspectorBlock title="Config">
         <JsonSchemaForm
           schema={configSchema}
+          unavailableReason={
+            registryLoaded
+              ? selectedNode.type
+                ? `Type "${selectedNode.type}" is not present in the loaded registry.`
+                : "This node does not define a type."
+              : "Registry has not loaded from /registry."
+          }
           value={nodeConfig}
           onChange={(config) => onChangeNode((node) => ({ ...node, config }))}
         />
@@ -488,6 +518,51 @@ function NodeInspector({
           onChange={onChangeNodeConfigText}
           onApply={onApplyNodeConfig}
         />
+      </InspectorBlock>
+
+      <InspectorBlock title="Node Details">
+        <DetailGroup
+          title="Definition"
+          rows={[
+            ["index", details.indexLabel],
+            ["role", details.roles.join(", ") || "-"],
+            ["type", details.typeLabel],
+            ["schema", details.schemaLabel],
+            ["config", `${details.configKeys.length} keys`],
+            ["incoming", String(details.incoming.length)],
+            ["outgoing", String(details.outgoing.length)],
+          ]}
+        />
+
+        <DetailGroup
+          title="Local Graph"
+          rows={[
+            ["position", details.positionLabel],
+          ]}
+        />
+
+        {details.steps.length > 0 ? (
+          <DetailGroup
+            title="Runtime"
+            rows={[
+              ["steps", String(details.steps.length)],
+              ["last status", details.latestStep?.status ?? "-"],
+              ["attempt", String(details.latestStep?.attempt || 0)],
+              ["updated", formatTime(details.latestStep?.updated_at)],
+            ]}
+          />
+        ) : null}
+
+        {details.latestStep?.error_message ? (
+          <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+            <div className="mb-1 font-medium">Last error</div>
+            <div className="line-clamp-4">{details.latestStep.error_message}</div>
+          </div>
+        ) : null}
+
+        {nodeTypeSchema?.state_contract ? (
+          <JSONSummary title="State Contract" value={nodeTypeSchema.state_contract} />
+        ) : null}
       </InspectorBlock>
 
       <CollapsibleInspectorBlock title="Node Properties" open={propertiesOpen} onOpenChange={setPropertiesOpen}>
@@ -520,7 +595,7 @@ function NodeInspector({
             value={selectedNode.type ?? ""}
             onChange={(event) =>
               onChangeNode((node) => {
-                const schema = paletteNodeTypes.find((item) => item.type === event.target.value);
+                const schema = nodeTypeForType(paletteNodeTypes, event.target.value);
                 return {
                   ...node,
                   type: event.target.value,
@@ -531,7 +606,7 @@ function NodeInspector({
             }
             className={!selectedNode.type?.trim() ? "border-destructive focus:border-destructive" : undefined}
           >
-            {selectedNode.type && !paletteNodeTypes.some((item) => item.type === selectedNode.type) ? (
+            {selectedNode.type && !nodeTypeForType(paletteNodeTypes, selectedNode.type) ? (
               <option value={selectedNode.type}>{selectedNode.type}</option>
             ) : null}
             {paletteNodeTypes.map((nodeType) => (
@@ -551,6 +626,116 @@ function NodeInspector({
       </CollapsibleInspectorBlock>
     </>
   );
+}
+
+function DetailGroup({ title, rows }: { title: string; rows: Array<[string, string]> }) {
+  return (
+    <div className="rounded-md border border-border bg-muted p-2">
+      <div className="mb-2 text-[11px] font-semibold uppercase text-muted-foreground">{title}</div>
+      <DetailRows rows={rows} />
+    </div>
+  );
+}
+
+function DetailRows({ rows }: { rows: Array<[string, string]> }) {
+  return (
+    <div className="grid gap-1">
+      {rows.map(([label, value]) => (
+        <div key={label} className="grid grid-cols-[84px_minmax(0,1fr)] gap-2 text-xs">
+          <span className="text-muted-foreground">{label}</span>
+          <span className="break-words font-mono">{value || "-"}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function JSONSummary({ title, value }: { title: string; value: unknown }) {
+  return (
+    <details className="rounded-md border border-border bg-muted p-2">
+      <summary className="cursor-pointer text-[11px] font-semibold uppercase text-muted-foreground">{title}</summary>
+      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px]">{formatJSONSummary(value)}</pre>
+    </details>
+  );
+}
+
+function analyzeNodeDetails(
+  definition: GraphDefinition | null,
+  node: GraphNodeSpec,
+  nodeTypeSchema: NodeTypeSchema | undefined,
+  nodeConfig: Record<string, unknown>,
+  configSchema: Record<string, unknown> | undefined,
+  steps: StepRecord[],
+  registryLoaded: boolean
+) {
+  const nodes = definition?.nodes ?? [];
+  const nodeIndex = nodes.findIndex((item) => item.id === node.id);
+  const edges = definition?.edges ?? [];
+  const incoming = edges.filter((edge) => edge.to === node.id);
+  const outgoing = edges.filter((edge) => edge.from === node.id);
+  const position = definition ? graphNodePositions(definition).get(node.id) : undefined;
+  const schemaFields = configSchemaFields(configSchema);
+  const nodeSteps = steps
+    .filter((step) => step.node_id === node.id)
+    .sort((left, right) => timeValue(right.updated_at) - timeValue(left.updated_at));
+  const roles: string[] = [];
+  if (definition?.entry_point === node.id) roles.push("entry");
+  if (definition?.finish_point === node.id) roles.push("finish");
+  if (outgoing.some((edge) => edge.to === END_NODE_REF)) roles.push("end edge");
+
+  return {
+    incoming,
+    outgoing,
+    steps: nodeSteps,
+    latestStep: nodeSteps[0],
+    roles,
+    configKeys: Object.keys(nodeConfig).sort((left, right) => left.localeCompare(right)),
+    schemaFields,
+    indexLabel: nodeIndex >= 0 ? `${nodeIndex + 1} of ${nodes.length}` : "-",
+    positionLabel: position ? `${Math.round(position.x)}, ${Math.round(position.y)}` : "-",
+    schemaLabel: configSchema ? `${schemaFields.length} fields` : "none",
+    typeLabel: nodeTypeSchema
+      ? nodeTypeSchema.title && nodeTypeSchema.title !== nodeTypeSchema.type
+        ? `${nodeTypeSchema.title} (${nodeTypeSchema.type})`
+        : nodeTypeSchema.type
+      : node.type
+        ? `${node.type} (${registryLoaded ? "unregistered" : "registry unavailable"})`
+        : "-",
+  };
+}
+
+function timeValue(value?: string): number {
+  if (!value) return 0;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function configSchemaFields(schema: Record<string, unknown> | undefined): string[] {
+  const properties = isPlainRecord(schema?.properties) ? schema.properties : {};
+  const required = new Set(
+    Array.isArray(schema?.required) ? schema.required.filter((item): item is string => typeof item === "string") : []
+  );
+  return Object.keys(properties)
+    .sort((left, right) => left.localeCompare(right))
+    .map((key) => (required.has(key) ? `${key} *` : key));
+}
+
+function nodeTypeForType(nodeTypes: NodeTypeSchema[], type?: string): NodeTypeSchema | undefined {
+  const normalizedType = normalizeNodeType(type);
+  if (!normalizedType) return undefined;
+  return nodeTypes.find((nodeType) => normalizeNodeType(nodeType.type) === normalizedType);
+}
+
+function normalizeNodeType(type?: string): string {
+  return (type ?? "").trim();
+}
+
+function formatJSONSummary(value: unknown): string {
+  try {
+    return stringifyJSON(value);
+  } catch {
+    return String(value);
+  }
 }
 
 function CollapsibleInspectorBlock({
@@ -865,7 +1050,7 @@ function JsonConfigEditor({
 }
 
 function schemaForNodeType(nodeTypes: NodeTypeSchema[], type?: string): Record<string, unknown> | undefined {
-  const schema = nodeTypes.find((nodeType) => nodeType.type === type)?.config_schema;
+  const schema = nodeTypeForType(nodeTypes, type)?.config_schema;
   return isPlainRecord(schema) ? schema : undefined;
 }
 

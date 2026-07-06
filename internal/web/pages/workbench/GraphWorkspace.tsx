@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, FilePlus2, Search, Trash2, X } from "lucide-react";
 import {
@@ -66,6 +66,11 @@ import {
 } from "./graph-workspace/utils";
 
 const autoSaveWindowMs = 3000;
+const inspectorWidthStorageKey = "weaveflow.graphWorkspace.inspectorWidth";
+const defaultInspectorWidth = 380;
+const minInspectorWidth = 320;
+const maxInspectorWidth = 720;
+const minCanvasWidth = 360;
 
 interface GraphWorkspaceProps {
   definition: GraphDefinition | null;
@@ -128,12 +133,14 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   const [canvasSearchOpen, setCanvasSearchOpen] = useState(false);
   const [canvasSearchQuery, setCanvasSearchQuery] = useState("");
   const [canvasSearchIndex, setCanvasSearchIndex] = useState(0);
+  const [inspectorWidth, setInspectorWidth] = useState(readStoredInspectorWidth);
   const autoLoadedDraftRef = useRef(false);
   const autoSaveHydratedRef = useRef(false);
   const autoSaveTimerRef = useRef<number | null>(null);
   const activeDraftIdRef = useRef("");
   const lastSavedSignatureRef = useRef("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const workspaceRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setDrafts(readLocalGraphDrafts());
@@ -259,6 +266,18 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   useEffect(() => {
     activeDraftIdRef.current = activeDraftId;
   }, [activeDraftId]);
+
+  useEffect(() => {
+    const clampWidth = () => {
+      setInspectorWidth((current) => {
+        const next = clampInspectorWidth(current, workspaceRef.current?.clientWidth);
+        if (next !== current) writeStoredInspectorWidth(next);
+        return next;
+      });
+    };
+    window.addEventListener("resize", clampWidth);
+    return () => window.removeEventListener("resize", clampWidth);
+  }, []);
 
   useEffect(() => () => {
     if (autoSaveTimerRef.current !== null) {
@@ -935,6 +954,31 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setSelectedLoopId(null);
   }
 
+  function startInspectorResize(event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const workspaceRight = workspaceRef.current?.getBoundingClientRect().right ?? window.innerWidth;
+    const workspaceWidth = workspaceRef.current?.clientWidth;
+    const previousCursor = document.body.style.cursor;
+    const previousUserSelect = document.body.style.userSelect;
+    const onMove = (moveEvent: PointerEvent) => {
+      const nextWidth = clampInspectorWidth(workspaceRight - moveEvent.clientX, workspaceWidth);
+      setInspectorWidth(nextWidth);
+      writeStoredInspectorWidth(nextWidth);
+    };
+    const stopResize = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", stopResize);
+      window.removeEventListener("pointercancel", stopResize);
+      document.body.style.cursor = previousCursor;
+      document.body.style.userSelect = previousUserSelect;
+    };
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", stopResize);
+    window.addEventListener("pointercancel", stopResize);
+  }
+
   const inspectorTitle =
     inspectorMode === "edge"
       ? "Edge Properties"
@@ -948,8 +992,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
 
   return (
     <div
+      ref={workspaceRef}
       className="relative grid h-full min-h-0"
-      style={{ gridTemplateColumns: "minmax(0,1fr) 380px" }}
+      style={{ gridTemplateColumns: `minmax(0,1fr) 6px ${inspectorWidth}px` }}
     >
       {titleSlot
         ? createPortal(
@@ -1033,6 +1078,17 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         <ToastStack toasts={toasts} onDismiss={onDismissToast} />
       </section>
 
+      <div
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize inspector"
+        title="Drag to resize"
+        onPointerDown={startInspectorResize}
+        className="relative z-30 cursor-col-resize bg-border transition-colors hover:bg-primary/50"
+      >
+        <span className="absolute inset-y-0 -left-2 -right-2" />
+      </div>
+
       <GraphInspectorPanel
         conditions={conditions}
         definition={definition}
@@ -1045,10 +1101,12 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         lintIssues={lintIssues}
         nodeConfigText={nodeConfigText}
         paletteNodeTypes={paletteNodeTypes}
+        registryLoaded={Boolean(registry)}
         selectedEdge={selectedEdge}
         selectedNode={selectedNode}
         selectedVirtualLoop={selectedVirtualLoop}
         selectedVirtualEdge={selectedVirtualEdge}
+        steps={steps}
         visibleVirtualNodes={visibleVirtualNodes}
         onApplyEdgeConfig={applyEdgeConfig}
         onApplyNodeConfig={applyNodeConfig}
@@ -1083,6 +1141,39 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     </div>
   );
 });
+
+function readStoredInspectorWidth(): number {
+  if (typeof window === "undefined") return defaultInspectorWidth;
+  try {
+    const raw = window.localStorage.getItem(inspectorWidthStorageKey);
+    const parsed = raw ? Number(raw) : NaN;
+    if (!Number.isFinite(parsed)) return clampInspectorWidth(defaultInspectorWidth);
+    return clampInspectorWidth(parsed);
+  } catch {
+    return defaultInspectorWidth;
+  }
+}
+
+function writeStoredInspectorWidth(width: number): void {
+  if (typeof window === "undefined" || !Number.isFinite(width)) return;
+  try {
+    window.localStorage.setItem(inspectorWidthStorageKey, String(Math.round(width)));
+  } catch {
+    // Inspector width persistence is best effort.
+  }
+}
+
+function clampInspectorWidth(width: number, containerWidth?: number): number {
+  const availableWidth =
+    typeof containerWidth === "number" && Number.isFinite(containerWidth)
+      ? containerWidth
+      : typeof window === "undefined"
+        ? defaultInspectorWidth + minCanvasWidth
+        : window.innerWidth;
+  const maxByContainer = Math.max(minInspectorWidth, availableWidth - minCanvasWidth - 6);
+  const maxWidth = Math.max(minInspectorWidth, Math.min(maxInspectorWidth, maxByContainer));
+  return Math.max(minInspectorWidth, Math.min(maxWidth, Math.round(width)));
+}
 
 function graphCanvasViewportStorageKey(
   graphId: string,

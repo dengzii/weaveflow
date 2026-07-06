@@ -13,16 +13,17 @@ export interface SchemaFormIssue {
 
 interface JsonSchemaFormProps {
   schema?: Record<string, unknown>;
+  unavailableReason?: string;
   value: Record<string, unknown>;
   onChange: (value: Record<string, unknown>) => void;
 }
 
-export function JsonSchemaForm({ schema, value, onChange }: JsonSchemaFormProps) {
+export function JsonSchemaForm({ schema, unavailableReason, value, onChange }: JsonSchemaFormProps) {
   const normalizedSchema = normalizeConfigSchema(schema);
   if (!normalizedSchema) {
     return (
       <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">
-        No config schema is available for this type.
+        {unavailableReason || "No config schema is available for this type."}
       </div>
     );
   }
