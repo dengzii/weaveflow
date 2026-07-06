@@ -51,6 +51,23 @@ func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
 	return node
 }
 
+func (n *ContextReducerNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	config := map[string]any{
+		"state_scope":     n.Scope(),
+		"preserve_system": n.PreserveSystem,
+	}
+	if n.MaxMessages > 0 {
+		config["max_messages"] = n.MaxMessages
+	}
+	if n.PreserveRecent >= 0 {
+		config["preserve_recent"] = n.PreserveRecent
+	}
+	if strings.TrimSpace(n.SummaryPrefix) != "" {
+		config["summary_prefix"] = n.SummaryPrefix
+	}
+	return newGraphNodeSpec(n.Base, NodeTypeContextReducer, config)
+}
+
 func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{

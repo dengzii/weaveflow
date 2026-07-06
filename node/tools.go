@@ -35,6 +35,15 @@ func NewToolsNode(options ...NodeOption) *ToolsNode {
 	return node
 }
 
+func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	config := map[string]any{
+		"state_scope": t.Scope(),
+		"tool_ids":    t.ToolIDs,
+		"parallel":    t.Parallel,
+	}
+	return newGraphNodeSpec(t.Base, NodeTypeTools, config)
+}
+
 func ToolsNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{

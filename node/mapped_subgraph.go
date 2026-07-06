@@ -39,6 +39,15 @@ func NewMappedSubgraphNode(options ...NodeOption) *MappedSubgraphNode {
 	return node
 }
 
+func (n *MappedSubgraphNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	config := map[string]any{
+		"graph_ref":  n.GraphRef,
+		"input_map":  pathMappingConfig(n.InputMappings),
+		"output_map": pathMappingConfig(n.OutputMappings),
+	}
+	return newGraphNodeSpec(n.Base, NodeTypeMappedSubgraph, config)
+}
+
 func MappedSubgraphNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
@@ -192,6 +201,23 @@ func (n *MappedSubgraphNode) Contract(*state.Registry) (state.Contract, error) {
 		})
 	}
 	return state.NewContract(fields...), nil
+}
+
+func pathMappingConfig(mappings []PathMapping) map[string]string {
+	if len(mappings) == 0 {
+		return nil
+	}
+	config := make(map[string]string, len(mappings))
+	for _, mapping := range mappings {
+		if mapping.From.Empty() || mapping.To.Empty() {
+			continue
+		}
+		config[mapping.From.String()] = mapping.To.String()
+	}
+	if len(config) == 0 {
+		return nil
+	}
+	return config
 }
 
 func parsePathMappings(values map[string]string) ([]PathMapping, error) {

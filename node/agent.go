@@ -53,6 +53,30 @@ func NewAgentNode(options ...NodeOption) *AgentNode {
 	return node
 }
 
+func (a *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	config := map[string]any{
+		"state_scope":      a.Scope(),
+		"tool_ids":         a.ToolIDs,
+		"system_prompt":    a.SystemPrompt,
+		"parallel":         a.Parallel,
+		"tool_name":        a.ToolName,
+		"tool_description": a.ToolDescription,
+	}
+	if !a.InputPath.Empty() {
+		config["input_path"] = a.InputPath.String()
+	}
+	if !a.OutputPath.Empty() {
+		config["output_path"] = a.OutputPath.String()
+	}
+	if a.MaxIterations > 0 {
+		config["max_iterations"] = a.MaxIterations
+	}
+	if a.PromptMaxChars > 0 {
+		config["prompt_max_chars"] = a.PromptMaxChars
+	}
+	return newGraphNodeSpec(a.Base, NodeTypeAgent, config)
+}
+
 func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{

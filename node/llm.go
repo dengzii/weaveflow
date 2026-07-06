@@ -39,6 +39,17 @@ func NewLLMNode(options ...NodeOption) *LLMNode {
 	return node
 }
 
+func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	config := map[string]any{
+		"state_scope": n.Scope(),
+		"tool_ids":    n.ToolIDs,
+	}
+	if n.PromptMaxChars > 0 {
+		config["prompt_max_chars"] = n.PromptMaxChars
+	}
+	return newGraphNodeSpec(n.Base, NodeTypeLLM, config)
+}
+
 func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{

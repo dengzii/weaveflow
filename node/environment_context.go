@@ -54,6 +54,19 @@ func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
 	return node
 }
 
+func (n *EnvironmentContextNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	config := map[string]any{
+		"environment_state_path": n.EnvironmentStatePath,
+		"workspace_root":         n.WorkspaceRoot,
+		"include_git":            n.IncludeGit,
+		"include_project":        n.IncludeProject,
+	}
+	if n.GitStatusLimit > 0 {
+		config["git_status_limit"] = n.GitStatusLimit
+	}
+	return newGraphNodeSpec(n.Base, NodeTypeEnvironmentContext, config)
+}
+
 func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{

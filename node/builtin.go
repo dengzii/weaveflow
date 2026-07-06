@@ -38,6 +38,15 @@ func NewHumanMessageNode(content string, options ...NodeOption) *HumanMessageNod
 	return node
 }
 
+func (n *HumanMessageNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	config := map[string]any{
+		"state_scope":       n.Scope(),
+		"content":           n.Content,
+		"interrupt_message": n.InterruptMessage,
+	}
+	return newGraphNodeSpec(n.Base, NodeTypeHumanMessage, config)
+}
+
 func HumanMessageNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
