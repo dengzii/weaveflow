@@ -15,6 +15,7 @@ import type {
   RunResult,
   RuntimeEvent,
   StepRecord,
+  ToolsInfo,
 } from "./types";
 
 async function readResponse<T>(resp: Response): Promise<T> {
@@ -95,6 +96,10 @@ export async function setGraphDefinition(
 
 export async function getRegistry(): Promise<RegistryInfo> {
   return apiFetch<RegistryInfo>("/registry");
+}
+
+export async function getTools(): Promise<ToolsInfo> {
+  return apiFetch<ToolsInfo>("/tools");
 }
 
 export async function listGraphs(): Promise<CachedGraphSummary[]> {

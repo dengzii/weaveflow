@@ -87,7 +87,8 @@ function wellKnownExampleValue(key: string): unknown {
     case "context_paths":
       return ["shared.request.metadata"];
     case "tool_ids":
-      return ["web_fetch"];
+    case "tools_ids":
+      return [];
     case "limit":
       return 5;
     case "interrupt_message":

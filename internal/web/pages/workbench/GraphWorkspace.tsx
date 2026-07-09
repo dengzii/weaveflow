@@ -43,6 +43,7 @@ import type {
   NodeTypeSchema,
   RegistryInfo,
   StepRecord,
+  ToolDefinition,
 } from "../../types";
 import { CanvasContextMenu } from "./graph-workspace/CanvasContextMenu";
 import { defaultVirtualNodeIds, fallbackNodeTypes } from "./graph-workspace/constants";
@@ -80,6 +81,7 @@ interface GraphWorkspaceProps {
   steps: StepRecord[];
   selectedRunId: string;
   registry: RegistryInfo | null;
+  toolDefinitions: ToolDefinition[];
   graphId: string;
   graphVersion: string;
   graphSwitchDisabled: boolean;
@@ -101,6 +103,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   steps,
   selectedRunId,
   registry,
+  toolDefinitions,
   graphId,
   graphVersion,
   graphSwitchDisabled,
@@ -1102,6 +1105,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         nodeConfigText={nodeConfigText}
         paletteNodeTypes={paletteNodeTypes}
         registryLoaded={Boolean(registry)}
+        toolDefinitions={toolDefinitions}
         selectedEdge={selectedEdge}
         selectedNode={selectedNode}
         selectedVirtualLoop={selectedVirtualLoop}

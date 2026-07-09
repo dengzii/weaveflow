@@ -37,13 +37,13 @@ func main() {
 		graph = loaded
 	}
 
-	baseCtx := context.Background()
+	baseCtx := newRuntimeContext()
 	if strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "" {
 		model, err := openai.New()
 		if err != nil {
 			log.Fatal(err)
 		}
-		baseCtx = newRuntimeContext(model, *dataDir)
+		baseCtx = withModelServices(baseCtx, model, *dataDir)
 		fmt.Printf("model service: openai")
 		if name := strings.TrimSpace(os.Getenv("OPENAI_MODEL")); name != "" {
 			fmt.Printf(" (%s)", name)
@@ -88,17 +88,23 @@ func normalizePrefix(prefix string) string {
 	return strings.TrimRight(prefix, "/")
 }
 
-func newRuntimeContext(model llms.Model, baseDir string) context.Context {
-	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
+func newRuntimeContext() context.Context {
 	ctx := context.Background()
+	return core.WithTools(ctx, defaultTools())
+}
+
+func withModelServices(ctx context.Context, model llms.Model, baseDir string) context.Context {
+	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
 	ctx = core.WithModel(ctx, model)
-	ctx = core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
-	ctx = core.WithTools(ctx, map[string]core.Tool{
+	return core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
+}
+
+func defaultTools() map[string]core.Tool {
+	return map[string]core.Tool{
 		"read":  tools.NewRead(),
 		"write": tools.NewWrite(),
 		"edit":  tools.NewEdit(),
 		"glob":  tools.NewGlob(),
 		"grep":  tools.NewGrep(),
-	})
-	return ctx
+	}
 }

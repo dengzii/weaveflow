@@ -7,6 +7,7 @@ import {
   getGraphInfo,
   getInitialStateRequirements,
   getRegistry,
+  getTools,
   listRuns,
   getRunDetail,
   pauseRun,
@@ -27,6 +28,7 @@ import {
   type WorkspaceTab,
 } from "./workbench/constants";
 import { GraphWorkspace } from "./workbench/GraphWorkspace";
+import { RegistryDialog } from "./workbench/RegistryDialog";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
 import { SettingsWorkspace } from "./workbench/SettingsWorkspace";
 import { WorkbenchShell } from "./workbench/WorkbenchShell";
@@ -42,6 +44,7 @@ import type {
   RunRecord,
   RuntimeEvent,
   StepRecord,
+  ToolDefinition,
 } from "../types";
 
 export { workspaceTabs };
@@ -80,6 +83,7 @@ export function WorkbenchPage({
   const [graphInfo, setGraphInfo] = useState<GraphInfo | null>(null);
   const [initialRequirements, setInitialRequirements] = useState<InitialStateRequirements | null>(null);
   const [registry, setRegistry] = useState<RegistryInfo | null>(null);
+  const [toolDefinitions, setToolDefinitions] = useState<ToolDefinition[]>([]);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [steps, setSteps] = useState<StepRecord[]>([]);
@@ -89,6 +93,7 @@ export function WorkbenchPage({
   const [humanPromptText, setHumanPromptText] = useState("");
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
   const [runStatusVisible, setRunStatusVisible] = useState(readStoredRunStatusVisible);
+  const [registryDialogOpen, setRegistryDialogOpen] = useState(false);
   const [graphId, setGraphId] = useState("debug_graph");
   const [graphVersion, setGraphVersion] = useState("1.0");
   const [initialRequirementsError, setInitialRequirementsError] = useState("");
@@ -304,12 +309,14 @@ export function WorkbenchPage({
 
   const loadServerState = useCallback(async () => {
     try {
-      const [info, reg] = await Promise.all([
+      const [info, reg, tools] = await Promise.all([
         getGraphInfo().catch(() => null),
         getRegistry().catch(() => null),
+        getTools().catch(() => null),
       ]);
       setGraphInfo(info);
       setRegistry(reg);
+      setToolDefinitions(tools?.tools ?? []);
       if (info) {
         if (!preferLocalGraphRef.current) {
           setGraphId(info.id);
@@ -690,6 +697,7 @@ export function WorkbenchPage({
       onPause={() => controlRun("pause")}
       onStop={() => controlRun("cancel")}
       onResume={() => void resumeSelectedRun()}
+      onShowRegistry={() => setRegistryDialogOpen(true)}
       onTabChange={setTab}
       hasRunStatus={runs.length > 0 || Boolean(selectedRunId)}
       runStatusVisible={runStatusVisible}
@@ -719,6 +727,7 @@ export function WorkbenchPage({
           steps={steps}
           selectedRunId={selectedRunId}
           registry={registry}
+          toolDefinitions={toolDefinitions}
           graphId={graphId}
           graphVersion={graphVersion}
           graphSwitchDisabled={graphSwitchLocked}
@@ -742,6 +751,12 @@ export function WorkbenchPage({
         onChange={setHumanPromptText}
         onCancel={dismissHumanMessagePrompt}
         onSubmit={() => void submitHumanMessagePrompt()}
+      />
+      <RegistryDialog
+        open={registryDialogOpen}
+        registry={registry}
+        toolDefinitions={toolDefinitions}
+        onClose={() => setRegistryDialogOpen(false)}
       />
     </WorkbenchShell>
   );

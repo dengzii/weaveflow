@@ -1,9 +1,12 @@
-import { AlertCircle } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AlertCircle, Plus, Trash2 } from "lucide-react";
+import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Textarea } from "../../../components/ui/textarea";
 import { normalizeConfigSchema } from "../../../lib/schemaCompat";
 import { cn, stringifyJSON } from "../../../lib/utils";
+import type { ToolDefinition } from "../../../types";
 import { Field } from "./shared";
 
 export interface SchemaFormIssue {
@@ -15,10 +18,11 @@ interface JsonSchemaFormProps {
   schema?: Record<string, unknown>;
   unavailableReason?: string;
   value: Record<string, unknown>;
+  toolDefinitions?: ToolDefinition[];
   onChange: (value: Record<string, unknown>) => void;
 }
 
-export function JsonSchemaForm({ schema, unavailableReason, value, onChange }: JsonSchemaFormProps) {
+export function JsonSchemaForm({ schema, unavailableReason, value, toolDefinitions = [], onChange }: JsonSchemaFormProps) {
   const normalizedSchema = normalizeConfigSchema(schema);
   if (!normalizedSchema) {
     return (
@@ -48,6 +52,7 @@ export function JsonSchemaForm({ schema, unavailableReason, value, onChange }: J
           schema={propertySchema}
           rootValue={value}
           issues={issues}
+          toolDefinitions={toolDefinitions}
           onChange={onChange}
         />
       ))}
@@ -108,6 +113,7 @@ function SchemaField({
   schema,
   rootValue,
   issues,
+  toolDefinitions,
   onChange,
 }: {
   path: string;
@@ -115,6 +121,7 @@ function SchemaField({
   schema: unknown;
   rootValue: Record<string, unknown>;
   issues: SchemaFormIssue[];
+  toolDefinitions: ToolDefinition[];
   onChange: (value: Record<string, unknown>) => void;
 }) {
   const fieldSchema = isRecord(schema) ? schema : {};
@@ -146,12 +153,13 @@ function SchemaField({
                 schema={propertySchema}
                 rootValue={rootValue}
                 issues={issues}
+                toolDefinitions={toolDefinitions}
                 onChange={onChange}
               />
             ))}
           </div>
         ) : (
-          renderSchemaControl(type, fieldSchema, value, setValue, invalid)
+          renderSchemaControl(type, fieldSchema, value, setValue, invalid, path, name, toolDefinitions)
         )}
       </Field>
       {fieldIssues.map((issue) => (
@@ -170,7 +178,10 @@ function renderSchemaControl(
   schema: Record<string, unknown>,
   value: unknown,
   onChange: (value: unknown) => void,
-  invalid: boolean
+  invalid: boolean,
+  path: string,
+  name: string,
+  toolDefinitions: ToolDefinition[]
 ) {
   const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
   const controlClass = invalid ? "border-destructive focus:border-destructive" : undefined;
@@ -230,6 +241,14 @@ function renderSchemaControl(
     );
   }
 
+  if (type === "array" && isStringArraySchema(schema) && isToolIDsField(path, name)) {
+    return <ToolIDListControl value={value} invalid={invalid} toolDefinitions={toolDefinitions} onChange={onChange} />;
+  }
+
+  if (type === "array" && isStringArraySchema(schema)) {
+    return <StringListControl value={value} invalid={invalid} onChange={onChange} />;
+  }
+
   if (type === "object" || type === "array") {
     return (
       <Textarea
@@ -258,6 +277,132 @@ function renderSchemaControl(
       onChange={(event) => onChange(event.target.value)}
       className={controlClass}
     />
+  );
+}
+
+function ToolIDListControl({
+  value,
+  invalid,
+  toolDefinitions,
+  onChange,
+}: {
+  value: unknown;
+  invalid: boolean;
+  toolDefinitions: ToolDefinition[];
+  onChange: (value: unknown) => void;
+}) {
+  const values = uniqueStrings(stringListValues(value));
+  const tools = useMemo(() => uniqueToolDefinitions(toolDefinitions), [toolDefinitions]);
+  const toolIDs = tools.map((tool) => tool.id);
+  const toolIDSet = new Set(toolIDs);
+  const selectedSet = new Set(values);
+  const addableToolIDs = toolIDs.filter((id) => !selectedSet.has(id));
+  const [pendingToolID, setPendingToolID] = useState("");
+  const selectedPendingToolID = addableToolIDs.includes(pendingToolID) ? pendingToolID : addableToolIDs[0] ?? "";
+
+  const updateValue = (index: number, nextValue: string) => {
+    if (!toolIDSet.has(nextValue)) return;
+    onChange(uniqueStrings(values.map((item, itemIndex) => (itemIndex === index ? nextValue : item))));
+  };
+
+  const removeValue = (index: number) => {
+    const nextValues = values.filter((_, itemIndex) => itemIndex !== index);
+    onChange(nextValues.length > 0 ? nextValues : undefined);
+  };
+
+  const addValue = () => {
+    if (!selectedPendingToolID) return;
+    onChange(uniqueStrings([...values, selectedPendingToolID]));
+    setPendingToolID("");
+  };
+
+  return (
+    <div className="grid gap-2">
+      {values.map((item, index) => {
+        const unknown = !toolIDSet.has(item);
+        const selectClass = invalid || unknown ? "border-destructive focus:border-destructive" : undefined;
+        const selectableTools = tools.filter((tool) => tool.id === item || !selectedSet.has(tool.id));
+        return (
+          <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <Select value={item} onChange={(event) => updateValue(index, event.target.value)} className={selectClass}>
+              {unknown ? <option value={item}>{item} (unavailable)</option> : null}
+              {selectableTools.map((tool) => (
+                <option key={tool.id} value={tool.id}>
+                  {toolLabel(tool)}
+                </option>
+              ))}
+            </Select>
+            <Button type="button" variant="ghost" size="icon" title="Remove tool" onClick={() => removeValue(index)}>
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        );
+      })}
+      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+        <Select
+          value={selectedPendingToolID}
+          disabled={!selectedPendingToolID}
+          onChange={(event) => setPendingToolID(event.target.value)}
+        >
+          {selectedPendingToolID ? null : <option value="">No tools</option>}
+          {addableToolIDs.map((id) => {
+            const tool = tools.find((item) => item.id === id);
+            return (
+              <option key={id} value={id}>
+                {tool ? toolLabel(tool) : id}
+              </option>
+            );
+          })}
+        </Select>
+        <Button type="button" variant="outline" size="sm" disabled={!selectedPendingToolID} onClick={addValue}>
+          <Plus className="h-4 w-4" />
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function StringListControl({
+  value,
+  invalid,
+  onChange,
+}: {
+  value: unknown;
+  invalid: boolean;
+  onChange: (value: unknown) => void;
+}) {
+  const values = stringListValues(value);
+  const controlClass = invalid ? "border-destructive focus:border-destructive" : undefined;
+
+  const updateValue = (index: number, nextValue: string) => {
+    onChange(values.map((item, itemIndex) => (itemIndex === index ? nextValue : item)));
+  };
+
+  const removeValue = (index: number) => {
+    const nextValues = values.filter((_, itemIndex) => itemIndex !== index);
+    onChange(nextValues.length > 0 ? nextValues : undefined);
+  };
+
+  return (
+    <div className="grid gap-2">
+      {values.map((item, index) => (
+        <div key={index} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <Input
+            value={item}
+            onChange={(event) => updateValue(index, event.target.value)}
+            className={controlClass}
+          />
+          <Button type="button" variant="ghost" size="icon" title="Remove value" onClick={() => removeValue(index)}>
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
+      ))}
+      <Button type="button" variant="outline" size="sm" className="w-fit" onClick={() => onChange([...values, ""])}>
+        <Plus className="h-4 w-4" />
+        Add
+      </Button>
+    </div>
   );
 }
 
@@ -295,6 +440,18 @@ function schemaType(schema: Record<string, unknown>, value: unknown): string {
   if (typeof value === "number") return Number.isInteger(value) ? "integer" : "number";
   if (typeof value === "boolean") return "boolean";
   return "string";
+}
+
+function isStringArraySchema(schema: Record<string, unknown>): boolean {
+  if (!isRecord(schema.items)) return false;
+  return schemaType(schema.items, undefined) === "string";
+}
+
+function isToolIDsField(path: string, name: string): boolean {
+  const normalizedName = name.trim().toLowerCase();
+  if (normalizedName === "tool_ids" || normalizedName === "tools_ids") return true;
+  const parts = path.split(".").map((part) => part.trim().toLowerCase()).filter(Boolean);
+  return parts.at(-1) === "tool_ids" || parts.at(-1) === "tools_ids";
 }
 
 function requiredKeys(schema: Record<string, unknown>): string[] {
@@ -349,6 +506,56 @@ function formatStructuredValue(value: unknown, type: string): string {
   if (value === undefined || value === null) return type === "array" ? "[]" : "{}";
   if (typeof value === "string") return value;
   return stringifyJSON(value);
+}
+
+function stringListValues(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => (item == null ? "" : String(item)));
+  if (typeof value !== "string") return [];
+
+  const text = value.trim();
+  if (!text) return [];
+
+  try {
+    const parsed = JSON.parse(text) as unknown;
+    if (Array.isArray(parsed)) return parsed.map((item) => (item == null ? "" : String(item)));
+  } catch {
+    // Fall back to line parsing below.
+  }
+
+  return text
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function uniqueToolDefinitions(tools: ToolDefinition[]): ToolDefinition[] {
+  const seen = new Set<string>();
+  const out: ToolDefinition[] = [];
+  for (const tool of tools) {
+    const id = tool.id?.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ ...tool, id });
+  }
+  return out;
+}
+
+function toolLabel(tool: ToolDefinition): string {
+  const name = tool.name?.trim();
+  if (!name || name === tool.id) return tool.id;
+  return `${tool.id} (${name})`;
+}
+
+function uniqueStrings(values: string[]): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const value of values) {
+    const trimmed = value.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    out.push(trimmed);
+  }
+  return out;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

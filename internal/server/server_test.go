@@ -22,6 +22,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 	langgraph "github.com/smallnest/langgraphgo/graph"
+	"github.com/tmc/langchaingo/llms"
 )
 
 type contractTestNode struct {
@@ -132,6 +133,71 @@ func (s *recordingEventSink) ListEvents(runID string) ([]runtime.Event, error) {
 		}
 	}
 	return out, nil
+}
+
+func TestHandleToolsReturnsRuntimeToolDefinitions(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	ctx := core.WithTools(context.Background(), map[string]core.Tool{
+		"zeta": {
+			Function: &llms.FunctionDefinition{
+				Name:        "zeta",
+				Description: "Run zeta.",
+				Parameters:  map[string]any{"type": "object"},
+			},
+		},
+		"alpha": {
+			Function: &llms.FunctionDefinition{
+				Name:        "alpha_tool",
+				Description: "Run alpha.",
+				Parameters: map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"input": map[string]any{"type": "string"},
+					},
+				},
+				Strict: true,
+			},
+		},
+	})
+	srv, err := New(ctx, Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	w := serveHTTP(engine, http.MethodGet, "/tools", "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /tools status = %d, body = %s", w.Code, w.Body.String())
+	}
+	var response struct {
+		Data  toolsResponse `json:"data"`
+		Error string        `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode tools response: %v", err)
+	}
+	if response.Error != "" {
+		t.Fatalf("response error = %q", response.Error)
+	}
+	if len(response.Data.Tools) != 2 {
+		t.Fatalf("tools length = %d, want 2", len(response.Data.Tools))
+	}
+	if response.Data.Tools[0].ID != "alpha" || response.Data.Tools[1].ID != "zeta" {
+		t.Fatalf("tools order = %#v, want sorted by id", response.Data.Tools)
+	}
+	alpha := response.Data.Tools[0]
+	if alpha.Name != "alpha_tool" || alpha.Description != "Run alpha." || !alpha.Strict {
+		t.Fatalf("alpha tool definition = %#v", alpha)
+	}
+	parameters, ok := alpha.Parameters.(map[string]any)
+	if !ok || parameters["type"] != "object" {
+		t.Fatalf("alpha parameters = %#v, want object schema", alpha.Parameters)
+	}
+	if strings.Contains(strings.ToLower(w.Body.String()), "handler") {
+		t.Fatalf("tools response leaked handler field: %s", w.Body.String())
+	}
 }
 
 func TestNewPreservesExistingSinkAndBroadcasts(t *testing.T) {

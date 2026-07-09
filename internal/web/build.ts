@@ -8,7 +8,7 @@ const DEV_IDLE_TIMEOUT = parseInt(process.env.DEV_IDLE_TIMEOUT ?? "255");
 const distDir = resolve(import.meta.dir, "dist");
 
 const twBin = resolve(import.meta.dir, "node_modules/.bin/tailwindcss");
-const apiPrefixes = ["/graph", "/registry", "/runs", "/checkpoints", "/events"];
+const apiPrefixes = ["/graph", "/registry", "/tools", "/runs", "/checkpoints", "/events"];
 const hopByHopHeaderNames = new Set([
   "connection",
   "keep-alive",

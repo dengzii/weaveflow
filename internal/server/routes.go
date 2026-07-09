@@ -17,6 +17,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/graph/mermaid", s.handleGraphMermaid)
 
 	group.GET("/registry", s.handleRegistry)
+	group.GET("/tools", s.handleTools)
 
 	group.POST("/runs", s.handleStartRun)
 	group.POST("/runs/:run_id/resume", s.handleResumeRun)

@@ -17,6 +17,7 @@ import type {
   InitialStateRequirement,
   NodeTypeSchema,
   StepRecord,
+  ToolDefinition,
 } from "../../../types";
 import type { GraphLintIssue } from "./lint";
 import { JsonSchemaForm } from "./schemaForm";
@@ -37,6 +38,7 @@ interface GraphInspectorPanelProps {
   nodeConfigText: string;
   paletteNodeTypes: NodeTypeSchema[];
   registryLoaded: boolean;
+  toolDefinitions: ToolDefinition[];
   selectedEdge: GraphEdgeSpec | null;
   selectedNode: GraphNodeSpec | null;
   selectedVirtualLoop: VirtualGraphLoop | null;
@@ -73,6 +75,7 @@ export function GraphInspectorPanel({
   nodeConfigText,
   paletteNodeTypes,
   registryLoaded,
+  toolDefinitions,
   selectedEdge,
   selectedNode,
   selectedVirtualLoop,
@@ -116,6 +119,7 @@ export function GraphInspectorPanel({
           nodeConfigText={nodeConfigText}
           paletteNodeTypes={paletteNodeTypes}
           registryLoaded={registryLoaded}
+          toolDefinitions={toolDefinitions}
           selectedNode={selectedNode}
           steps={steps}
           onApplyNodeConfig={onApplyNodeConfig}
@@ -459,6 +463,7 @@ function NodeInspector({
   nodeConfigText,
   paletteNodeTypes,
   registryLoaded,
+  toolDefinitions,
   selectedNode,
   steps,
   onApplyNodeConfig,
@@ -472,6 +477,7 @@ function NodeInspector({
   | "nodeConfigText"
   | "paletteNodeTypes"
   | "registryLoaded"
+  | "toolDefinitions"
   | "selectedNode"
   | "steps"
   | "onApplyNodeConfig"
@@ -481,6 +487,7 @@ function NodeInspector({
   | "onDeleteNode"
 >) {
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   if (!selectedNode) return null;
   const nodeTypeSchema = nodeTypeForType(paletteNodeTypes, selectedNode.type);
@@ -508,6 +515,7 @@ function NodeInspector({
               : "Registry has not loaded from /registry."
           }
           value={nodeConfig}
+          toolDefinitions={toolDefinitions}
           onChange={(config) => onChangeNode((node) => ({ ...node, config }))}
         />
         <JsonConfigEditor
@@ -520,7 +528,7 @@ function NodeInspector({
         />
       </InspectorBlock>
 
-      <InspectorBlock title="Node Details">
+      <CollapsibleInspectorBlock title="Node Details" open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DetailGroup
           title="Definition"
           rows={[
@@ -563,7 +571,7 @@ function NodeInspector({
         {nodeTypeSchema?.state_contract ? (
           <JSONSummary title="State Contract" value={nodeTypeSchema.state_contract} />
         ) : null}
-      </InspectorBlock>
+      </CollapsibleInspectorBlock>
 
       <CollapsibleInspectorBlock title="Node Properties" open={propertiesOpen} onOpenChange={setPropertiesOpen}>
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">

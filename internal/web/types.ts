@@ -74,6 +74,18 @@ export interface RegistryInfo {
   graph_schema: Record<string, unknown>;
 }
 
+export interface ToolsInfo {
+  tools: ToolDefinition[];
+}
+
+export interface ToolDefinition {
+  id: string;
+  name?: string;
+  description?: string;
+  parameters?: unknown;
+  strict?: boolean;
+}
+
 export interface StateFieldDefinition {
   name: string;
   description?: string;

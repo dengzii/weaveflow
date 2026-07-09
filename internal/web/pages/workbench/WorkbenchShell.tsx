@@ -1,5 +1,6 @@
 import type { ComponentType, ReactNode } from "react";
 import {
+  Braces,
   ChevronUp,
   GitBranch,
   LayoutDashboard,
@@ -32,6 +33,7 @@ export function WorkbenchShell({
   onPause,
   onStop,
   onResume,
+  onShowRegistry,
   onToggleRunStatus,
   onTabChange,
 }: {
@@ -49,6 +51,7 @@ export function WorkbenchShell({
   onPause: () => void;
   onStop: () => void;
   onResume: () => void;
+  onShowRegistry: () => void;
   onToggleRunStatus: () => void;
   onTabChange: (tab: WorkspaceTab) => void;
 }) {
@@ -75,6 +78,10 @@ export function WorkbenchShell({
             </div>
           )}
           <div className="flex-1" />
+          <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">
+            <Braces className="h-4 w-4" />
+            Registry
+          </Button>
           <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground" title={streamStatusLabel(streamStatus)}>
             <span className={cn("h-2 w-2 rounded-full", streamStatusDotClass(streamStatus))} />
             <span className="whitespace-nowrap">{streamStatusLabel(streamStatus)}</span>
