@@ -41,6 +41,7 @@ type Server struct {
 	baseCtx  context.Context
 	graph    *wfgraph.Graph
 	runner   *runtime.GraphRunner
+	settings graphRuntimeSettings
 	registry *wfregistry.Registry
 	events   *EventHub
 	baseDir  string
@@ -79,6 +80,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	return &Server{
 		baseCtx:  ctx,
 		graph:    cfg.Graph,
+		settings: graphRuntimeSettingsFromContext(ctx, baseDir),
 		runner:   runner,
 		registry: reg,
 		events:   hub,

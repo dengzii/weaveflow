@@ -44,6 +44,45 @@ export interface GraphInfo {
   finish_point?: string;
 }
 
+export interface GraphSettings {
+  environment: Record<string, string>;
+  model: GraphModelSettings;
+  models: GraphModelSettings[];
+  memory: GraphMemorySettings;
+}
+
+export interface GraphModelSettings {
+  id: string;
+  enabled: boolean;
+  provider: string;
+  model?: string;
+  base_url?: string;
+  api_key_configured: boolean;
+}
+
+export interface GraphMemorySettings {
+  enabled: boolean;
+  directory?: string;
+}
+
+export interface GraphSettingsUpdate {
+  environment?: Record<string, string>;
+  models?: GraphModelSettingsUpdate[];
+  memory?: {
+    enabled?: boolean;
+    directory?: string;
+  };
+}
+
+export interface GraphModelSettingsUpdate {
+  id?: string;
+  enabled?: boolean;
+  provider?: string;
+  model?: string;
+  base_url?: string;
+  api_key?: string;
+}
+
 export interface GraphLoadResult {
   graph: GraphInfo;
   definition: GraphDefinition;
@@ -238,3 +277,4 @@ export interface CachedGraphSummary {
   session_count: number;
   latest_session?: string;
 }
+

@@ -13,10 +13,14 @@ import (
 
 func withRunnerEventContext(ctx context.Context, runner *GraphRunner, runID, stepID, nodeID string) core.Context {
 	coreCtx := core.NewContext(ctx)
-	if coreCtx.Model() == nil && coreCtx.Tools() == nil {
+	if coreCtx.Model() == nil && len(coreCtx.Models()) == 0 && coreCtx.Tools() == nil {
 		return coreCtx
 	}
-	ctx = core.WithModel(ctx, wrapLlm(coreCtx.Model()))
+	if models := wrapLlms(coreCtx.Models()); len(models) > 0 {
+		ctx = core.WithModels(ctx, models)
+	} else {
+		ctx = core.WithModel(ctx, wrapLlm(coreCtx.Model()))
+	}
 	ctx = core.WithTools(ctx, wrapToolCallEventTools(coreCtx.Tools(), runner, runID, stepID, nodeID))
 	ctx = core.WithMemory(ctx, coreCtx.Memory())
 	return core.NewContext(ctx)
@@ -94,6 +98,23 @@ func wrapToolCallEventTool(key string, tool core.Tool, runner *GraphRunner, runI
 		return result, nil
 	}
 	return tool
+}
+
+func wrapLlms(models map[string]llms.Model) map[string]llms.Model {
+	if len(models) == 0 {
+		return nil
+	}
+	wrapped := make(map[string]llms.Model, len(models))
+	for id, model := range models {
+		if strings.TrimSpace(id) == "" || model == nil {
+			continue
+		}
+		wrapped[id] = wrapLlm(model)
+	}
+	if len(wrapped) == 0 {
+		return nil
+	}
+	return wrapped
 }
 
 type llmWrap struct {

@@ -24,6 +24,7 @@ const defaultAgentPromptMaxChars = 1000000
 
 type AgentNode struct {
 	Base
+	ModelID         string
 	ToolIDs         []string
 	SystemPrompt    string
 	InputPath       state.Path
@@ -62,6 +63,9 @@ func (a *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		"tool_name":        a.ToolName,
 		"tool_description": a.ToolDescription,
 	}
+	if strings.TrimSpace(a.ModelID) != "" {
+		config["model_id"] = a.ModelID
+	}
 	if !a.InputPath.Empty() {
 		config["input_path"] = a.InputPath.String()
 	}
@@ -86,6 +90,7 @@ func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
+					"model_id":         dsl.JSONSchema{"type": "string"},
 					"tool_ids":         dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
 					"state_scope":      dsl.JSONSchema{"type": "string"},
 					"system_prompt":    dsl.JSONSchema{"type": "string"},
@@ -122,6 +127,7 @@ func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 			_ = ctx
 			agentNode := NewAgentNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
 			applyNodeMetadata(&agentNode.Base, spec)
+			agentNode.ModelID = config.String(spec.Config, "model_id")
 			agentNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			agentNode.SystemPrompt = config.String(spec.Config, "system_prompt")
 			var err error
@@ -146,8 +152,8 @@ func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func (a *AgentNode) Execute(ctx core.Context, access *state.Access) error {
-	if ctx.Model() == nil {
-		return errors.New("agent node: model service not available")
+	if ctx.Model(a.ModelID) == nil {
+		return fmt.Errorf("agent node: model %q not available", effectiveModelID(a.ModelID))
 	}
 
 	conversation, err := state.UseAccessor(access, accessors.ConversationID)
@@ -170,7 +176,7 @@ func (a *AgentNode) Execute(ctx core.Context, access *state.Access) error {
 }
 
 func (a *AgentNode) runLoop(ctx core.Context, conversation accessors.Conversation) error {
-	model := ctx.Model()
+	model := ctx.Model(a.ModelID)
 	nodeTools := ctx.FilterTools(a.ToolIDs)
 
 	var toolSets []llms.Tool
@@ -434,8 +440,8 @@ func (a *AgentNode) AsTool() core.Tool {
 			}
 
 			coreCtx := core.NewContext(ctx)
-			if coreCtx.Model() == nil {
-				return "", errors.New("agent tool: model service not available")
+			if coreCtx.Model(a.ModelID) == nil {
+				return "", fmt.Errorf("agent tool: model %q not available", effectiveModelID(a.ModelID))
 			}
 
 			registry, err := NewDefaultRegistry()

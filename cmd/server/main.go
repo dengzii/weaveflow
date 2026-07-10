@@ -95,7 +95,7 @@ func newRuntimeContext() context.Context {
 
 func withModelServices(ctx context.Context, model llms.Model, baseDir string) context.Context {
 	repo := memory.NewFileMemoryRepository(filepath.Join(baseDir, "memory"))
-	ctx = core.WithModel(ctx, model)
+	ctx = core.WithModels(ctx, map[string]llms.Model{core.DefaultModelID: model})
 	return core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
 }
 

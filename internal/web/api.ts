@@ -8,6 +8,8 @@ import type {
   GraphDefinition,
   GraphInfo,
   GraphLoadResult,
+  GraphSettings,
+  GraphSettingsUpdate,
   InitialStateRequirements,
   RegistryInfo,
   RunDetail,
@@ -56,6 +58,18 @@ export async function getGraphInfo(): Promise<GraphInfo> {
 
 export async function getGraphDefinition(): Promise<GraphDefinition> {
   return apiFetch<GraphDefinition>("/graph/definition");
+}
+
+export async function getGraphSettings(): Promise<GraphSettings> {
+  return apiFetch<GraphSettings>("/graph/settings");
+}
+
+export async function updateGraphSettings(settings: GraphSettingsUpdate): Promise<GraphSettings> {
+  return apiFetch<GraphSettings>("/graph/settings", {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(settings),
+  });
 }
 
 export async function getInitialStateRequirements(): Promise<InitialStateRequirements> {

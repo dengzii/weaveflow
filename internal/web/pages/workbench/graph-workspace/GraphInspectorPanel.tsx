@@ -1,5 +1,5 @@
-import { useMemo, useState, type ReactNode } from "react";
-import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Plus, Trash2 } from "lucide-react";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
 import { END_NODE_REF, graphNodePositions } from "../../../lib/graphEditor";
 import { Button } from "../../../components/ui/button";
@@ -13,6 +13,8 @@ import type {
   GraphDefinition,
   GraphEdgeSpec,
   GraphNodeSpec,
+  GraphSettings,
+  GraphSettingsUpdate,
   InitialStateRequirements,
   InitialStateRequirement,
   NodeTypeSchema,
@@ -38,6 +40,8 @@ interface GraphInspectorPanelProps {
   nodeConfigText: string;
   paletteNodeTypes: NodeTypeSchema[];
   registryLoaded: boolean;
+  graphSettings: GraphSettings | null;
+  onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
   toolDefinitions: ToolDefinition[];
   selectedEdge: GraphEdgeSpec | null;
   selectedNode: GraphNodeSpec | null;
@@ -75,6 +79,8 @@ export function GraphInspectorPanel({
   nodeConfigText,
   paletteNodeTypes,
   registryLoaded,
+  graphSettings,
+  onUpdateGraphSettings,
   toolDefinitions,
   selectedEdge,
   selectedNode,
@@ -108,6 +114,8 @@ export function GraphInspectorPanel({
           initialRequirements={initialRequirements}
           initialRequirementsError={initialRequirementsError}
           initialStateText={initialStateText}
+          graphSettings={graphSettings}
+          onUpdateGraphSettings={onUpdateGraphSettings}
           onChangeGraphField={onChangeGraphField}
           onChangeInitialStateText={onChangeInitialStateText}
         />
@@ -200,17 +208,22 @@ function GraphInspector({
   initialRequirements,
   initialRequirementsError,
   initialStateText,
+  graphSettings,
+  onUpdateGraphSettings,
   onChangeGraphField,
   onChangeInitialStateText,
 }: Pick<
   GraphInspectorPanelProps,
   | "definition"
+  | "graphSettings"
+  | "onUpdateGraphSettings"
   | "initialRequirements"
   | "initialRequirementsError"
   | "initialStateText"
   | "onChangeGraphField"
   | "onChangeInitialStateText"
 >) {
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const requiredInitialState = initialRequirements?.required ?? [];
   const hasEndEdge = (definition?.edges ?? []).some((edge) => edge.to === END_NODE_REF);
   const hasInitialStateHints = Boolean(
@@ -262,6 +275,10 @@ function GraphInspector({
         </Field>
       </InspectorBlock>
 
+      <CollapsibleInspectorBlock title="Graph Settings" open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <GraphSettingsEditor settings={graphSettings} onUpdateGraphSettings={onUpdateGraphSettings} />
+      </CollapsibleInspectorBlock>
+
       <InspectorBlock title="Run Input">
         {hasInitialStateHints ? <InitialStateRequirementList requirements={initialRequirements} showRequired={false} /> : null}
         <RunInputEditor
@@ -274,6 +291,333 @@ function GraphInspector({
 
     </>
   );
+}
+
+const MODEL_API_KEY_MASK = "********";
+
+interface EditableGraphModel {
+  id: string;
+  enabled: boolean;
+  provider: string;
+  model: string;
+  base_url: string;
+  api_key: string;
+  api_key_configured: boolean;
+}
+
+interface EditableEnvironmentVariable {
+  key: string;
+  value: string;
+}
+
+function GraphSettingsEditor({
+  settings,
+  onUpdateGraphSettings,
+}: {
+  settings: GraphSettings | null;
+  onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
+}) {
+  const [models, setModels] = useState<EditableGraphModel[]>([]);
+  const [memoryEnabled, setMemoryEnabled] = useState(false);
+  const [memoryDirectory, setMemoryDirectory] = useState("");
+  const [environmentRows, setEnvironmentRows] = useState<EditableEnvironmentVariable[]>([]);
+  const [newEnvironmentKey, setNewEnvironmentKey] = useState("");
+  const [newEnvironmentValue, setNewEnvironmentValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [status, setStatus] = useState("");
+
+  useEffect(() => {
+    setModels(modelsFromSettings(settings));
+    setMemoryEnabled(settings?.memory.enabled ?? false);
+    setMemoryDirectory(settings?.memory.directory ?? "");
+    setEnvironmentRows(environmentRowsFromSettings(settings));
+    setNewEnvironmentKey("");
+    setNewEnvironmentValue("");
+    setStatus("");
+  }, [settings]);
+
+  function updateModel(index: number, update: Partial<EditableGraphModel>) {
+    setModels((current) => current.map((model, modelIndex) => (modelIndex === index ? { ...model, ...update } : model)));
+  }
+
+  function addModel() {
+    setModels((current) => [
+      ...current,
+      {
+        id: nextModelID(current),
+        enabled: true,
+        provider: "openai",
+        model: "",
+        base_url: "",
+        api_key: "",
+        api_key_configured: false,
+      },
+    ]);
+  }
+
+  function updateEnvironment(index: number, update: Partial<EditableEnvironmentVariable>) {
+    setEnvironmentRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...update } : row)));
+  }
+
+  function removeEnvironment(index: number) {
+    setEnvironmentRows((current) => current.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  function addEnvironment() {
+    const key = newEnvironmentKey.trim();
+    if (!key) {
+      setStatus("Environment key is required.");
+      return;
+    }
+    if (environmentRows.some((row) => row.key.trim() === key)) {
+      setStatus(`Duplicate environment key: ${key}`);
+      return;
+    }
+    setEnvironmentRows((current) => [...current, { key, value: newEnvironmentValue }]);
+    setNewEnvironmentKey("");
+    setNewEnvironmentValue("");
+    setStatus("");
+  }
+
+  function removeModel(index: number) {
+    setModels((current) => current.filter((_, modelIndex) => modelIndex !== index));
+  }
+
+  async function save() {
+    let environment: Record<string, string>;
+    let modelUpdates: GraphSettingsUpdate["models"];
+    try {
+      environment = normalizeEnvironmentSettings(environmentRows);
+      modelUpdates = normalizeModelSettings(models);
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    setSaving(true);
+    setStatus("");
+    try {
+      await onUpdateGraphSettings({
+        environment,
+        models: modelUpdates,
+        memory: {
+          enabled: memoryEnabled,
+          directory: memoryDirectory.trim(),
+        },
+      });
+      setModels((current) => current.map((model) => ({ ...model, api_key: modelAPIKeyDisplayValue(model) })));
+      setStatus("Saved");
+    } catch (err) {
+      setStatus(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="grid gap-3">
+      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
+        <div className="flex min-h-8 items-center gap-2">
+          <span className="text-sm font-medium">Models</span>
+          <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={addModel}>
+            <Plus className="h-4 w-4" />
+            Add
+          </Button>
+        </div>
+
+        {models.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border bg-background/60 p-3 text-xs text-muted-foreground">
+            No models configured.
+          </div>
+        ) : (
+          <div className="grid gap-2">
+            {models.map((model, index) => (
+              <div key={`${model.id || "model"}-${index}`} className="grid gap-2 rounded-md border border-border bg-background p-2">
+                <div className="flex min-h-8 items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={model.enabled}
+                    onChange={(event) => updateModel(index, { enabled: event.target.checked })}
+                    className="h-4 w-4"
+                    aria-label="Enable model"
+                  />
+                  <Input
+                    value={model.id}
+                    onChange={(event) => updateModel(index, { id: event.target.value })}
+                    placeholder={index === 0 ? "default" : "model-id"}
+                    className="h-8 min-w-0 flex-1 font-mono text-xs"
+                  />
+                  <Button type="button" variant="ghost" size="icon" className="h-8 w-8" onClick={() => removeModel(index)} aria-label="Remove model">
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </div>
+
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <Field label="Provider">
+                    <Select value={model.provider} onChange={(event) => updateModel(index, { provider: event.target.value })}>
+                      <option value="openai">OpenAI</option>
+                    </Select>
+                  </Field>
+                  <Field label="Model name">
+                    <Input value={model.model} onChange={(event) => updateModel(index, { model: event.target.value })} placeholder="gpt-5" />
+                  </Field>
+                  <Field label="Base URL">
+                    <Input value={model.base_url} onChange={(event) => updateModel(index, { base_url: event.target.value })} placeholder="https://api.openai.com/v1" />
+                  </Field>
+                  <Field label="API key">
+                    <Input type={model.api_key.trim() === MODEL_API_KEY_MASK ? "text" : "password"} value={model.api_key} onChange={(event) => updateModel(index, { api_key: event.target.value })} />
+                  </Field>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
+        <label className="flex min-h-8 items-center gap-2 text-sm">
+          <input
+            type="checkbox"
+            checked={memoryEnabled}
+            onChange={(event) => setMemoryEnabled(event.target.checked)}
+            className="h-4 w-4"
+          />
+          <span>Memory</span>
+        </label>
+        <Field label="Directory">
+          <Input value={memoryDirectory} onChange={(event) => setMemoryDirectory(event.target.value)} />
+        </Field>
+      </div>
+
+      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
+        <div className="flex min-h-8 items-center gap-2">
+          <span className="text-sm font-medium">Environment</span>
+        </div>
+
+        {environmentRows.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border bg-background/60 p-3 text-xs text-muted-foreground">
+            No environment variables configured.
+          </div>
+        ) : (
+          <div className="grid gap-2">
+            {environmentRows.map((row, index) => (
+              <div key={`${row.key || "environment"}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_32px] gap-2">
+                <Input value={row.key} onChange={(event) => updateEnvironment(index, { key: event.target.value })} placeholder="KEY" className="font-mono text-xs" />
+                <Input value={row.value} onChange={(event) => updateEnvironment(index, { value: event.target.value })} placeholder="value" className="font-mono text-xs" />
+                <Button type="button" variant="ghost" size="icon" className="h-9 w-8" onClick={() => removeEnvironment(index)} aria-label="Remove environment variable">
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
+          <Input value={newEnvironmentKey} onChange={(event) => setNewEnvironmentKey(event.target.value)} placeholder="KEY" className="font-mono text-xs" />
+          <Input value={newEnvironmentValue} onChange={(event) => setNewEnvironmentValue(event.target.value)} placeholder="value" className="font-mono text-xs" />
+          <Button type="button" variant="outline" size="sm" onClick={addEnvironment} disabled={!newEnvironmentKey.trim()}>
+            <Plus className="h-4 w-4" />
+            Add
+          </Button>
+        </div>
+      </div>
+
+      {status ? <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">{status}</div> : null}
+      <Button variant="outline" size="sm" onClick={() => void save()} disabled={saving}>
+        <Braces className="h-4 w-4" />
+        {saving ? "Saving" : "Save Settings"}
+      </Button>
+    </div>
+  );
+}
+
+function modelsFromSettings(settings: GraphSettings | null): EditableGraphModel[] {
+  const configured = Array.isArray(settings?.models) ? settings.models : settings?.model ? [settings.model] : [];
+  return configured.map((model, index) => ({
+    id: model.id || (index === 0 ? "default" : `model-${index + 1}`),
+    enabled: model.enabled,
+    provider: model.provider || "openai",
+    model: model.model ?? "",
+    base_url: model.base_url ?? "",
+    api_key: model.api_key_configured ? MODEL_API_KEY_MASK : "",
+    api_key_configured: model.api_key_configured,
+  }));
+}
+
+function nextModelID(models: EditableGraphModel[]): string {
+  if (models.length === 0 && !models.some((model) => model.id.trim() === "default")) {
+    return "default";
+  }
+  const existing = new Set(models.map((model) => model.id.trim()).filter(Boolean));
+  let index = models.length + 1;
+  let id = `model-${index}`;
+  while (existing.has(id)) {
+    index += 1;
+    id = `model-${index}`;
+  }
+  return id;
+}
+
+function modelAPIKeyDisplayValue(model: EditableGraphModel): string {
+  const apiKey = model.api_key.trim();
+  if (apiKey && apiKey !== MODEL_API_KEY_MASK) return MODEL_API_KEY_MASK;
+  return model.api_key_configured ? MODEL_API_KEY_MASK : "";
+}
+
+function normalizeModelSettings(models: EditableGraphModel[]): GraphSettingsUpdate["models"] {
+  const seen = new Set<string>();
+  return models.map((model, index) => {
+    const id = model.id.trim();
+    if (!id) {
+      throw new Error(`Model ${index + 1} id is required.`);
+    }
+    if (seen.has(id)) {
+      throw new Error(`Duplicate model id: ${id}`);
+    }
+    seen.add(id);
+    const apiKey = model.api_key.trim();
+    return {
+      id,
+      enabled: model.enabled,
+      provider: model.provider || "openai",
+      model: model.model.trim(),
+      base_url: model.base_url.trim(),
+      api_key: apiKey && apiKey !== MODEL_API_KEY_MASK ? apiKey : undefined,
+    };
+  });
+}
+
+function environmentRowsFromSettings(settings: GraphSettings | null): EditableEnvironmentVariable[] {
+  return Object.entries(editableEnvironment(settings))
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => ({ key, value }));
+}
+
+function normalizeEnvironmentSettings(rows: EditableEnvironmentVariable[]): Record<string, string> {
+  const output: Record<string, string> = {};
+  const seen = new Set<string>();
+  for (const [index, row] of rows.entries()) {
+    const key = row.key.trim();
+    if (!key) {
+      throw new Error(`Environment ${index + 1} key is required.`);
+    }
+    if (seen.has(key)) {
+      throw new Error(`Duplicate environment key: ${key}`);
+    }
+    seen.add(key);
+    output[key] = row.value;
+  }
+  return output;
+}
+
+function editableEnvironment(settings: GraphSettings | null): Record<string, string> {
+  const input = settings?.environment ?? {};
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (key === "OPENAI_MODEL" || key === "OPENAI_BASE_URL") continue;
+    output[key] = value;
+  }
+  return output;
 }
 
 function RunInputEditor({
@@ -1261,3 +1605,5 @@ function uniqueStrings(values: string[]): string[] {
   }
   return result;
 }
+
+

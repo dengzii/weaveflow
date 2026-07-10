@@ -2,6 +2,7 @@ package node
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
@@ -18,6 +19,7 @@ import (
 
 type LLMNode struct {
 	Base
+	ModelID        string
 	ToolIDs        []string
 	PromptMaxChars int
 }
@@ -44,6 +46,9 @@ func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		"state_scope": n.Scope(),
 		"tool_ids":    n.ToolIDs,
 	}
+	if strings.TrimSpace(n.ModelID) != "" {
+		config["model_id"] = n.ModelID
+	}
 	if n.PromptMaxChars > 0 {
 		config["prompt_max_chars"] = n.PromptMaxChars
 	}
@@ -59,6 +64,7 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
+					"model_id":         dsl.JSONSchema{"type": "string"},
 					"tool_ids":         dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
 					"state_scope":      dsl.JSONSchema{"type": "string"},
 					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
@@ -82,6 +88,7 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 			_ = ctx
 			llmNode := NewLLMNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
 			applyNodeMetadata(&llmNode.Base, spec)
+			llmNode.ModelID = config.String(spec.Config, "model_id")
 			llmNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			llmNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
 			return llmNode, nil
@@ -90,9 +97,9 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
-	model := ctx.Model()
+	model := ctx.Model(n.ModelID)
 	if model == nil {
-		return errors.New("llm node: model service not available")
+		return fmt.Errorf("llm node: model %q not available", effectiveModelID(n.ModelID))
 	}
 	nodeTools := ctx.FilterTools(n.ToolIDs)
 
@@ -182,6 +189,14 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 		return conversation.SetFinalAnswer(extractText(aiMessage))
 	}
 	return nil
+}
+
+func effectiveModelID(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return core.DefaultModelID
+	}
+	return id
 }
 
 func (n *LLMNode) effectivePromptMaxChars() int {

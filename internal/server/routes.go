@@ -10,6 +10,8 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/graph", s.handleGraph)
 	group.POST("/graph", s.handleSetGraph)
 	group.PUT("/graph", s.handleSetGraph)
+	group.GET("/graph/settings", s.handleGraphSettings)
+	group.PUT("/graph/settings", s.handleSetGraphSettings)
 	group.GET("/graph/definition", s.handleGraphDefinition)
 	group.GET("/graph/nodes", s.handleGraphNodes)
 	group.GET("/graph/initial-state-requirements", s.handleGraphInitialStateRequirements)

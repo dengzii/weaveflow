@@ -7,6 +7,7 @@ import {
   getGraphInfo,
   getInitialStateRequirements,
   getRegistry,
+  getGraphSettings,
   getTools,
   listRuns,
   getRunDetail,
@@ -14,6 +15,7 @@ import {
   resumeRun,
   setGraphDefinition,
   startRun,
+  updateGraphSettings,
 } from "../api";
 import { Button } from "../components/ui/button";
 import { Textarea } from "../components/ui/textarea";
@@ -37,6 +39,8 @@ import { validateGraph } from "./workbench/graph-workspace/utils";
 import type {
   GraphDefinition,
   GraphInfo,
+  GraphSettings,
+  GraphSettingsUpdate,
   InitialStateRequirement,
   InitialStateRequirements,
   RegistryInfo,
@@ -84,6 +88,7 @@ export function WorkbenchPage({
   const [initialRequirements, setInitialRequirements] = useState<InitialStateRequirements | null>(null);
   const [registry, setRegistry] = useState<RegistryInfo | null>(null);
   const [toolDefinitions, setToolDefinitions] = useState<ToolDefinition[]>([]);
+  const [graphSettings, setGraphSettings] = useState<GraphSettings | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [steps, setSteps] = useState<StepRecord[]>([]);
@@ -309,14 +314,16 @@ export function WorkbenchPage({
 
   const loadServerState = useCallback(async () => {
     try {
-      const [info, reg, tools] = await Promise.all([
+      const [info, reg, tools, settings] = await Promise.all([
         getGraphInfo().catch(() => null),
         getRegistry().catch(() => null),
         getTools().catch(() => null),
+        getGraphSettings().catch(() => null),
       ]);
       setGraphInfo(info);
       setRegistry(reg);
       setToolDefinitions(tools?.tools ?? []);
+      setGraphSettings(settings);
       if (info) {
         if (!preferLocalGraphRef.current) {
           setGraphId(info.id);
@@ -685,6 +692,18 @@ export function WorkbenchPage({
     humanPromptCheckpointRef.current = "";
   }
 
+  async function saveGraphSettings(settings: GraphSettingsUpdate): Promise<GraphSettings> {
+    try {
+      const next = await updateGraphSettings(settings);
+      setGraphSettings(next);
+      pushToast("info", "Graph settings updated");
+      return next;
+    } catch (err) {
+      notifyError(err);
+      throw err;
+    }
+  }
+
   return (
     <WorkbenchShell
       tab={tab}
@@ -728,6 +747,8 @@ export function WorkbenchPage({
           selectedRunId={selectedRunId}
           registry={registry}
           toolDefinitions={toolDefinitions}
+          graphSettings={graphSettings}
+          onUpdateGraphSettings={saveGraphSettings}
           graphId={graphId}
           graphVersion={graphVersion}
           graphSwitchDisabled={graphSwitchLocked}

@@ -39,6 +39,8 @@ import type {
   GraphDefinition,
   GraphEdgeSpec,
   GraphNodeSpec,
+  GraphSettings,
+  GraphSettingsUpdate,
   InitialStateRequirements,
   NodeTypeSchema,
   RegistryInfo,
@@ -82,6 +84,8 @@ interface GraphWorkspaceProps {
   selectedRunId: string;
   registry: RegistryInfo | null;
   toolDefinitions: ToolDefinition[];
+  graphSettings: GraphSettings | null;
+  onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
   graphId: string;
   graphVersion: string;
   graphSwitchDisabled: boolean;
@@ -104,6 +108,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   selectedRunId,
   registry,
   toolDefinitions,
+  graphSettings,
+  onUpdateGraphSettings,
   graphId,
   graphVersion,
   graphSwitchDisabled,
@@ -1106,6 +1112,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         paletteNodeTypes={paletteNodeTypes}
         registryLoaded={Boolean(registry)}
         toolDefinitions={toolDefinitions}
+        graphSettings={graphSettings}
+        onUpdateGraphSettings={onUpdateGraphSettings}
         selectedEdge={selectedEdge}
         selectedNode={selectedNode}
         selectedVirtualLoop={selectedVirtualLoop}

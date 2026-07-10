@@ -311,6 +311,100 @@ func TestAgentNodeReadsRequestAndWritesFinalAccessor(t *testing.T) {
 	}
 }
 
+func TestLLMNodeUsesConfiguredModelID(t *testing.T) {
+	t.Parallel()
+
+	registry, err := NewDefaultRegistry()
+	if err != nil {
+		t.Fatalf("new default registry: %v", err)
+	}
+	seed := state.NewEditingAccess(registry, state.NewState()).WithScope("agent")
+	conversation, err := state.UseAccessor(seed, accessors.ConversationID)
+	if err != nil {
+		t.Fatalf("use conversation accessor: %v", err)
+	}
+	if err := conversation.SetMessages([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")}); err != nil {
+		t.Fatalf("seed conversation: %v", err)
+	}
+
+	defaultModel := &scriptedModel{responses: []*llms.ContentResponse{{
+		Choices: []*llms.ContentChoice{{Content: "default answer"}},
+	}}}
+	selectedModel := &scriptedModel{responses: []*llms.ContentResponse{{
+		Choices: []*llms.ContentChoice{{Content: "selected answer"}},
+	}}}
+	ctx := core.NewContext(core.WithModels(context.Background(), map[string]llms.Model{
+		core.DefaultModelID: defaultModel,
+		"selected":          selectedModel,
+	}))
+	llmNode := NewLLMNode(WithID("llm"))
+	llmNode.ModelID = "selected"
+
+	result, err := Execute(ctx, registry, seed.State(), llmNode)
+	if err != nil {
+		t.Fatalf("execute llm node: %v", err)
+	}
+	if defaultModel.calls != 0 {
+		t.Fatalf("default model calls = %d, want 0", defaultModel.calls)
+	}
+	if selectedModel.calls != 1 {
+		t.Fatalf("selected model calls = %d, want 1", selectedModel.calls)
+	}
+
+	access := state.NewAccess(registry, result.State).WithScope("agent")
+	updated, err := state.UseAccessor(access, accessors.ConversationID)
+	if err != nil {
+		t.Fatalf("use conversation accessor: %v", err)
+	}
+	if updated.FinalAnswer() != "selected answer" {
+		t.Fatalf("unexpected final answer %q", updated.FinalAnswer())
+	}
+}
+
+func TestAgentNodeUsesConfiguredModelID(t *testing.T) {
+	t.Parallel()
+
+	registry, err := NewDefaultRegistry()
+	if err != nil {
+		t.Fatalf("new default registry: %v", err)
+	}
+	initial := state.FromShared(map[string]any{
+		accessors.KeyRequest: map[string]any{
+			accessors.RequestFieldInput: "agent task",
+		},
+	})
+	defaultModel := &scriptedModel{responses: []*llms.ContentResponse{{
+		Choices: []*llms.ContentChoice{{Content: "default answer"}},
+	}}}
+	selectedModel := &scriptedModel{responses: []*llms.ContentResponse{{
+		Choices: []*llms.ContentChoice{{Content: "selected agent answer"}},
+	}}}
+	ctx := core.NewContext(core.WithModels(context.Background(), map[string]llms.Model{
+		core.DefaultModelID: defaultModel,
+		"selected":          selectedModel,
+	}))
+	agentNode := NewAgentNode(WithScope("worker"), WithID("agent"))
+	agentNode.ModelID = "selected"
+
+	result, err := Execute(ctx, registry, initial, agentNode)
+	if err != nil {
+		t.Fatalf("execute agent node: %v", err)
+	}
+	if defaultModel.calls != 0 {
+		t.Fatalf("default model calls = %d, want 0", defaultModel.calls)
+	}
+	if selectedModel.calls != 1 {
+		t.Fatalf("selected model calls = %d, want 1", selectedModel.calls)
+	}
+	final, err := state.UseAccessor(state.NewAccess(registry, result.State), accessors.FinalID)
+	if err != nil {
+		t.Fatalf("use final accessor: %v", err)
+	}
+	if final.Answer() != "selected agent answer" {
+		t.Fatalf("unexpected final answer %q", final.Answer())
+	}
+}
+
 type scriptedModel struct {
 	responses []*llms.ContentResponse
 	calls     int

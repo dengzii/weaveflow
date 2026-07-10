@@ -336,8 +336,20 @@ func WithModel(ctx context.Context, model llms.Model) context.Context {
 	return core.WithModel(ctx, model)
 }
 
+func WithModels(ctx context.Context, models map[string]llms.Model) context.Context {
+	return core.WithModels(ctx, models)
+}
+
 func ModelFromContext(ctx context.Context) llms.Model {
 	return core.ModelFromContext(ctx)
+}
+
+func ModelByIDFromContext(ctx context.Context, id string) llms.Model {
+	return core.ModelByIDFromContext(ctx, id)
+}
+
+func ModelsFromContext(ctx context.Context) map[string]llms.Model {
+	return core.ModelsFromContext(ctx)
 }
 
 func WithTools(ctx context.Context, available map[string]Tool) context.Context {

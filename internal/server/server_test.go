@@ -200,6 +200,114 @@ func TestHandleToolsReturnsRuntimeToolDefinitions(t *testing.T) {
 	}
 }
 
+func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("WEAVEFLOW_TEST_FLAG", "")
+	t.Setenv("WEAVEFLOW_TEST_TOKEN", "")
+
+	ctx := core.WithTools(context.Background(), map[string]core.Tool{
+		"alpha": {
+			Function: &llms.FunctionDefinition{Name: "alpha_tool"},
+		},
+	})
+	srv, err := New(ctx, Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	body := `{
+		"environment": {"WEAVEFLOW_TEST_FLAG": "enabled", "WEAVEFLOW_TEST_TOKEN": "secret-token"},
+		"models": [
+			{
+				"id": "default",
+				"enabled": true,
+				"provider": "openai",
+				"api_key": "test-key",
+				"model": "gpt-test",
+				"base_url": "http://127.0.0.1:9999/v1"
+			},
+			{
+				"id": "fast",
+				"enabled": true,
+				"provider": "openai",
+				"model": "gpt-fast",
+				"base_url": "http://127.0.0.1:9999/v1"
+			}
+		],
+		"memory": {"enabled": true}
+	}`
+	w := serveHTTP(engine, http.MethodPut, "/graph/settings", body)
+	if w.Code != http.StatusOK {
+		t.Fatalf("PUT /graph/settings status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var response struct {
+		Data  graphRuntimeSettings `json:"data"`
+		Error string               `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode settings response: %v", err)
+	}
+	if response.Error != "" {
+		t.Fatalf("response error = %q", response.Error)
+	}
+	if !response.Data.Model.Enabled || response.Data.Model.Provider != "openai" || response.Data.Model.Model != "gpt-test" {
+		t.Fatalf("model settings = %#v", response.Data.Model)
+	}
+	if len(response.Data.Models) != 2 {
+		t.Fatalf("models length = %d, want 2", len(response.Data.Models))
+	}
+	if response.Data.Models[0].ID != core.DefaultModelID || response.Data.Models[0].Model != "gpt-test" {
+		t.Fatalf("default model settings = %#v", response.Data.Models[0])
+	}
+	if response.Data.Models[1].ID != "fast" || response.Data.Models[1].Model != "gpt-fast" {
+		t.Fatalf("fast model settings = %#v", response.Data.Models[1])
+	}
+	if !response.Data.Model.APIKeyConfigured || !response.Data.Models[0].APIKeyConfigured || !response.Data.Models[1].APIKeyConfigured {
+		t.Fatalf("api key configured flags = model %#v models %#v", response.Data.Model, response.Data.Models)
+	}
+	if !response.Data.Memory.Enabled || response.Data.Memory.Directory == "" {
+		t.Fatalf("memory settings = %#v", response.Data.Memory)
+	}
+	if response.Data.Environment["WEAVEFLOW_TEST_FLAG"] != "enabled" {
+		t.Fatalf("environment = %#v", response.Data.Environment)
+	}
+	if _, ok := response.Data.Environment["WEAVEFLOW_TEST_TOKEN"]; ok {
+		t.Fatalf("settings response leaked secret environment name: %#v", response.Data.Environment)
+	}
+	if strings.Contains(w.Body.String(), "test-key") || strings.Contains(w.Body.String(), "secret-token") {
+		t.Fatalf("settings response leaked api key: %s", w.Body.String())
+	}
+	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "secret-token" {
+		t.Fatalf("WEAVEFLOW_TEST_TOKEN = %q, want secret-token", got)
+	}
+	if got := os.Getenv("WEAVEFLOW_TEST_FLAG"); got != "enabled" {
+		t.Fatalf("WEAVEFLOW_TEST_FLAG = %q, want enabled", got)
+	}
+	if got := os.Getenv("OPENAI_MODEL"); got != "gpt-test" {
+		t.Fatalf("OPENAI_MODEL = %q, want gpt-test", got)
+	}
+
+	coreCtx := core.NewContext(srv.baseCtx)
+	if coreCtx.Model() == nil {
+		t.Fatalf("runtime context model is nil")
+	}
+	if coreCtx.Model("fast") == nil {
+		t.Fatalf("runtime context fast model is nil")
+	}
+	if coreCtx.Memory() == nil {
+		t.Fatalf("runtime context memory is nil")
+	}
+	if _, ok := coreCtx.Tools()["alpha"]; !ok {
+		t.Fatalf("runtime context tools = %#v, want alpha preserved", coreCtx.Tools())
+	}
+}
+
 func TestNewPreservesExistingSinkAndBroadcasts(t *testing.T) {
 	sink := &recordingEventSink{}
 	runner := &runtime.GraphRunner{EventSink: sink}
