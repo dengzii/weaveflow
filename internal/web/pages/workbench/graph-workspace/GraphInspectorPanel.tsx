@@ -831,6 +831,7 @@ function NodeInspector({
   | "onDeleteNode"
 >) {
   const [jsonOpen, setJsonOpen] = useState(false);
+  const [configOpen, setConfigOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [propertiesOpen, setPropertiesOpen] = useState(false);
   if (!selectedNode) return null;
@@ -848,7 +849,27 @@ function NodeInspector({
         </section>
       ) : null}
 
-      <InspectorBlock title="Config">
+      <CollapsibleInspectorBlock
+        title="Config"
+        open={configOpen}
+        onOpenChange={setConfigOpen}
+        action={
+          <Button
+            type="button"
+            variant={jsonOpen ? "outline" : "ghost"}
+            size="icon"
+            title={jsonOpen ? "Hide JSON" : "Edit JSON"}
+            aria-label={jsonOpen ? "Hide JSON" : "Edit JSON"}
+            className="h-8 w-8"
+            onClick={(event) => {
+              event.stopPropagation();
+              setJsonOpen((open) => !open);
+            }}
+          >
+            <Braces className="h-4 w-4" />
+          </Button>
+        }
+      >
         <JsonSchemaForm
           schema={configSchema}
           unavailableReason={
@@ -869,8 +890,9 @@ function NodeInspector({
           onOpenChange={setJsonOpen}
           onChange={onChangeNodeConfigText}
           onApply={onApplyNodeConfig}
+          showToggle={false}
         />
-      </InspectorBlock>
+      </CollapsibleInspectorBlock>
 
       <CollapsibleInspectorBlock title="Node Details" open={detailsOpen} onOpenChange={setDetailsOpen}>
         <DetailGroup
@@ -1094,25 +1116,30 @@ function CollapsibleInspectorBlock({
   title,
   open,
   onOpenChange,
+  action,
   children,
 }: {
   title: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  action?: ReactNode;
   children: ReactNode;
 }) {
   const Icon = open ? ChevronDown : ChevronRight;
   return (
     <section className="border-b border-border last:border-b-0">
-      <button
-        type="button"
-        aria-expanded={open}
-        onClick={() => onOpenChange(!open)}
-        className="flex min-h-11 w-full items-center gap-2 px-3 text-left hover:bg-accent"
-      >
-        <Icon className="h-4 w-4 text-muted-foreground" />
-        <span className="text-xs font-semibold uppercase text-muted-foreground">{title}</span>
-      </button>
+      <div className="flex min-h-11 items-center gap-2 px-3 hover:bg-accent">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => onOpenChange(!open)}
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <Icon className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs font-semibold uppercase text-muted-foreground">{title}</span>
+        </button>
+        {action ? <div className="shrink-0" onClick={(event) => event.stopPropagation()}>{action}</div> : null}
+      </div>
       {open ? <div className="grid gap-3 p-3 pt-0">{children}</div> : null}
     </section>
   );
@@ -1367,6 +1394,7 @@ function JsonConfigEditor({
   onOpenChange,
   onChange,
   onApply,
+  showToggle = true,
 }: {
   open: boolean;
   value: string;
@@ -1374,15 +1402,18 @@ function JsonConfigEditor({
   onOpenChange: (open: boolean) => void;
   onChange: (value: string) => void;
   onApply: () => void;
+  showToggle?: boolean;
 }) {
   return (
     <div className="grid gap-2">
-      <div>
-        <Button variant="ghost" size="sm" onClick={() => onOpenChange(!open)}>
-          <Braces className="h-4 w-4" />
-          {open ? "Hide JSON" : "Edit JSON"}
-        </Button>
-      </div>
+      {showToggle ? (
+        <div>
+          <Button variant="ghost" size="sm" onClick={() => onOpenChange(!open)}>
+            <Braces className="h-4 w-4" />
+            {open ? "Hide JSON" : "Edit JSON"}
+          </Button>
+        </div>
+      ) : null}
       {open ? (
         <>
           <Textarea

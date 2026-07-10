@@ -129,7 +129,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   const [selectedLoopId, setSelectedLoopId] = useState<string | null>(null);
   const [nodeConfigText, setNodeConfigText] = useState("{}");
   const [edgeConfigText, setEdgeConfigText] = useState("{}");
-  const [localStatus, setLocalStatus] = useState("local ready");
+  const [, setLocalStatus] = useState("local ready");
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [graphMenuOpen, setGraphMenuOpen] = useState(false);
   const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null);
@@ -745,8 +745,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setVirtualEdges((current) => {
       const next = current.filter((item) => {
         if (item.id === nextEdge.id) return false;
-        if (nextEdge.kind === "entry" && item.kind === "entry" && item.from === nextEdge.from) return false;
-        return true;
+        return !(nextEdge.kind === "entry" && item.kind === "entry" && item.from === nextEdge.from);
+
       });
       return [...next, nextEdge];
     });
@@ -1229,6 +1229,7 @@ function GraphTitleMenu({
 }) {
   const title = definition?.name || graphId || "Untitled graph";
   const displayTitle = unsaved ? `*${title}` : title;
+  const scriptBadgeCount = graphScriptBadgeCount(definition);
 
   return (
     <div data-graph-title-menu className="relative min-w-0">
@@ -1237,9 +1238,10 @@ function GraphTitleMenu({
         className="flex max-w-[360px] min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-accent"
         onClick={() => onOpenChange(!graphMenuOpen)}
         aria-expanded={graphMenuOpen}
-        title={displayTitle}
+        title={scriptBadgeCount > 0 ? `${displayTitle} (${scriptBadgeCount} scripts)` : displayTitle}
       >
-        <span className="truncate text-sm font-semibold">{displayTitle}</span>
+        <span className="min-w-0 truncate text-sm font-semibold">{displayTitle}</span>
+        <ScriptCountBadge count={scriptBadgeCount} />
         <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${graphMenuOpen ? "rotate-180" : ""}`} />
       </button>
 
@@ -1267,28 +1269,92 @@ function GraphTitleMenu({
             {drafts.length === 0 ? (
               <div className="px-3 py-3 text-sm text-muted-foreground">No local graphs</div>
             ) : (
-              drafts.map((draft) => (
-                <button
-                  key={draft.id}
-                  type="button"
-                  className={`grid w-full gap-1 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent ${
-                    draft.id === activeDraftId ? "bg-accent" : ""
-                  } ${graphSwitchDisabled ? "cursor-not-allowed opacity-50 hover:bg-transparent" : ""}`}
-                  onClick={() => onLoadDraft(draft)}
-                  disabled={graphSwitchDisabled}
-                >
-                  <div className="truncate text-sm font-medium">{draft.title}</div>
-                  <div className="truncate text-xs text-muted-foreground">
-                    {draft.definition.nodes.length} nodes / {formatTime(draft.updatedAt)}
-                  </div>
-                </button>
-              ))
+              drafts.map((draft) => {
+                const draftScriptBadgeCount = graphScriptBadgeCount(draft.definition);
+                return (
+                  <button
+                    key={draft.id}
+                    type="button"
+                    className={`grid w-full gap-1 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent ${
+                      draft.id === activeDraftId ? "bg-accent" : ""
+                    } ${graphSwitchDisabled ? "cursor-not-allowed opacity-50 hover:bg-transparent" : ""}`}
+                    onClick={() => onLoadDraft(draft)}
+                    disabled={graphSwitchDisabled}
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-sm font-medium">{draft.title}</span>
+                      <ScriptCountBadge count={draftScriptBadgeCount} />
+                    </div>
+                    <div className="truncate text-xs text-muted-foreground">
+                      {draft.definition.nodes.length} nodes / {formatTime(draft.updatedAt)}
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </div>
       ) : null}
     </div>
   );
+}
+
+function ScriptCountBadge({ count }: { count: number }) {
+  if (count <= 0) return null;
+  const label = count > 99 ? "99+" : String(count);
+  return (
+    <span
+      className="inline-flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-semibold leading-none text-destructive-foreground"
+      title={`${count} pre/post scripts`}
+    >
+      {label}
+    </span>
+  );
+}
+
+function graphScriptBadgeCount(definition: GraphDefinition | null): number {
+  if (!definition) return 0;
+  const metadata = isRecord(definition.metadata) ? definition.metadata : undefined;
+  return scriptGroupCount(definition) + scriptGroupCount(metadata) + scriptGroupCount(metadata?.web);
+}
+
+function scriptGroupCount(value: unknown): number {
+  if (!isRecord(value)) return 0;
+  let count = 0;
+  count += scriptValueCount(value.pre);
+  count += scriptValueCount(value.post);
+  count += scriptValueCount(value.before);
+  count += scriptValueCount(value.after);
+  count += scriptValueCount(value.pre_script);
+  count += scriptValueCount(value.post_script);
+  count += scriptValueCount(value.pre_scripts);
+  count += scriptValueCount(value.post_scripts);
+  count += scriptValueCount(value.preScript);
+  count += scriptValueCount(value.postScript);
+  count += scriptValueCount(value.preScripts);
+  count += scriptValueCount(value.postScripts);
+  count += scriptContainerCount(value.scripts);
+  count += scriptContainerCount(value.hooks);
+  return count;
+}
+
+function scriptContainerCount(value: unknown): number {
+  if (!isRecord(value)) return 0;
+  return (
+    scriptValueCount(value.pre) +
+    scriptValueCount(value.post) +
+    scriptValueCount(value.before) +
+    scriptValueCount(value.after) +
+    scriptValueCount(value.pre_script) +
+    scriptValueCount(value.post_script)
+  );
+}
+
+function scriptValueCount(value: unknown): number {
+  if (typeof value === "string") return value.trim() ? 1 : 0;
+  if (Array.isArray(value)) return value.reduce((total, item) => total + scriptValueCount(item), 0);
+  if (isRecord(value)) return Object.keys(value).length > 0 ? 1 : 0;
+  return value ? 1 : 0;
 }
 
 function virtualEdgesFromDefinition(
@@ -1346,8 +1412,8 @@ function upsertVirtualEdge(
   const next = edges.filter((edge) => {
     if (edge.id === previousEdge.id) return false;
     if (edge.id === nextEdge.id) return false;
-    if (nextEdge.kind === "entry" && edge.kind === "entry" && edge.from === nextEdge.from) return false;
-    return true;
+    return !(nextEdge.kind === "entry" && edge.kind === "entry" && edge.from === nextEdge.from);
+
   });
   return [...next, nextEdge];
 }

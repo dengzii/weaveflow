@@ -78,14 +78,6 @@ export function WorkbenchShell({
             </div>
           )}
           <div className="flex-1" />
-          <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">
-            <Braces className="h-4 w-4" />
-            Registry
-          </Button>
-          <div className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground" title={streamStatusLabel(streamStatus)}>
-            <span className={cn("h-2 w-2 rounded-full", streamStatusDotClass(streamStatus))} />
-            <span className="whitespace-nowrap">{streamStatusLabel(streamStatus)}</span>
-          </div>
           {runControlMode === "active" ? (
             <>
               <Button variant="outline" size="sm" onClick={onPause} disabled={!hasRunStatus} title="Pause run">
@@ -114,6 +106,10 @@ export function WorkbenchShell({
               Run
             </Button>
           )}
+          <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">
+            <Braces className="h-4 w-4" />
+            Registry
+          </Button>
         </header>
 
         {streamStatus === "reconnecting" || streamStatus === "closed" ? (
@@ -127,6 +123,10 @@ export function WorkbenchShell({
         {runStatusVisible ? runStatusPanel : null}
 
         <footer className="flex h-9 items-center gap-3 border-t border-border bg-muted/40 px-4 text-xs text-muted-foreground">
+          <div className="flex shrink-0 items-center gap-1.5" title={streamStatusLabel(streamStatus)}>
+            <span className={cn("h-2 w-2 rounded-full", streamStatusDotClass(streamStatus))} />
+            <span className="whitespace-nowrap">{streamStatusLabel(streamStatus)}</span>
+          </div>
           <span>{definition ? `${definition.nodes.length} nodes` : "invalid graph"}</span>
           <span>{definition?.edges?.length ?? 0} edges</span>
           <span className="truncate">server API proxied at root</span>
@@ -162,7 +162,7 @@ function streamStatusLabel(status: StreamStatus): string {
 function streamStatusDotClass(status: StreamStatus): string {
   switch (status) {
     case "connected":
-      return "bg-cyan-600 dark:bg-cyan-300";
+      return "bg-emerald-600 dark:bg-emerald-300";
     case "connecting":
     case "reconnecting":
       return "bg-amber-600 dark:bg-amber-300";

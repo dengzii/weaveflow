@@ -55,7 +55,7 @@ func NewAgentNode(options ...NodeOption) *AgentNode {
 }
 
 func (a *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	config := map[string]any{
+	conf := map[string]any{
 		"state_scope":      a.Scope(),
 		"tool_ids":         a.ToolIDs,
 		"system_prompt":    a.SystemPrompt,
@@ -64,21 +64,21 @@ func (a *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		"tool_description": a.ToolDescription,
 	}
 	if strings.TrimSpace(a.ModelID) != "" {
-		config["model_id"] = a.ModelID
+		conf["model_id"] = a.ModelID
 	}
 	if !a.InputPath.Empty() {
-		config["input_path"] = a.InputPath.String()
+		conf["input_path"] = a.InputPath.String()
 	}
 	if !a.OutputPath.Empty() {
-		config["output_path"] = a.OutputPath.String()
+		conf["output_path"] = a.OutputPath.String()
 	}
 	if a.MaxIterations > 0 {
-		config["max_iterations"] = a.MaxIterations
+		conf["max_iterations"] = a.MaxIterations
 	}
 	if a.PromptMaxChars > 0 {
-		config["prompt_max_chars"] = a.PromptMaxChars
+		conf["prompt_max_chars"] = a.PromptMaxChars
 	}
-	return newGraphNodeSpec(a.Base, NodeTypeAgent, config)
+	return newGraphNodeSpec(a.Base, NodeTypeAgent, conf)
 }
 
 func AgentNodeTypeDefinition() registry.NodeTypeDefinition {

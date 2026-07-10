@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { AlertCircle, Plus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { AlertCircle, Plus, Trash2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
@@ -7,7 +7,6 @@ import { Textarea } from "../../../components/ui/textarea";
 import { normalizeConfigSchema } from "../../../lib/schemaCompat";
 import { cn, stringifyJSON } from "../../../lib/utils";
 import type { ToolDefinition } from "../../../types";
-import { Field } from "./shared";
 
 export interface SchemaFormIssue {
   path: string;
@@ -107,6 +106,15 @@ export function validateSchemaValue(
   return issues;
 }
 
+function SchemaControlField({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <div className="grid gap-1 text-sm">
+      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+      {children}
+    </div>
+  );
+}
+
 function SchemaField({
   path,
   name,
@@ -142,7 +150,7 @@ function SchemaField({
 
   return (
     <div className="grid gap-1">
-      <Field label={title}>
+      <SchemaControlField label={title}>
         {childProperties.length > 0 && type === "object" ? (
           <div className={cn("grid gap-3 rounded-md border border-border bg-muted/30 p-2", invalid && "border-destructive/70")}>
             {childProperties.map(([key, propertySchema]) => (
@@ -161,7 +169,7 @@ function SchemaField({
         ) : (
           renderSchemaControl(type, fieldSchema, value, setValue, invalid, path, name, toolDefinitions)
         )}
-      </Field>
+      </SchemaControlField>
       {fieldIssues.map((issue) => (
         <div key={`${issue.path}-${issue.message}`} className="flex items-center gap-1 text-xs text-destructive">
           <AlertCircle className="h-3.5 w-3.5" />
@@ -296,69 +304,111 @@ function ToolIDListControl({
   const toolIDs = tools.map((tool) => tool.id);
   const toolIDSet = new Set(toolIDs);
   const selectedSet = new Set(values);
-  const addableToolIDs = toolIDs.filter((id) => !selectedSet.has(id));
-  const [pendingToolID, setPendingToolID] = useState("");
-  const selectedPendingToolID = addableToolIDs.includes(pendingToolID) ? pendingToolID : addableToolIDs[0] ?? "";
+  const selectedToolsByID = new Map(tools.map((tool) => [tool.id, tool]));
+  const addableTools = tools.filter((tool) => !selectedSet.has(tool.id));
+  const pickerRef = useRef<HTMLSpanElement | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
-  const updateValue = (index: number, nextValue: string) => {
-    if (!toolIDSet.has(nextValue)) return;
-    onChange(uniqueStrings(values.map((item, itemIndex) => (itemIndex === index ? nextValue : item))));
-  };
-
-  const removeValue = (index: number) => {
-    const nextValues = values.filter((_, itemIndex) => itemIndex !== index);
+  const removeValue = (toolID: string) => {
+    const nextValues = values.filter((item) => item !== toolID);
     onChange(nextValues.length > 0 ? nextValues : undefined);
   };
 
-  const addValue = () => {
-    if (!selectedPendingToolID) return;
-    onChange(uniqueStrings([...values, selectedPendingToolID]));
-    setPendingToolID("");
+  const addValue = (toolID: string) => {
+    if (!toolID || selectedSet.has(toolID)) return;
+    onChange(uniqueStrings([...values, toolID]));
+    setPickerOpen(false);
   };
 
+  useEffect(() => {
+    if (!pickerOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && !pickerRef.current?.contains(target)) setPickerOpen(false);
+    };
+
+    document.addEventListener("pointerdown", handlePointerDown, true);
+    return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+  }, [pickerOpen]);
+
   return (
-    <div className="grid gap-2">
-      {values.map((item, index) => {
-        const unknown = !toolIDSet.has(item);
-        const selectClass = invalid || unknown ? "border-destructive focus:border-destructive" : undefined;
-        const selectableTools = tools.filter((tool) => tool.id === item || !selectedSet.has(tool.id));
+    <div
+      className={cn(
+        "flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-input bg-background p-2",
+        invalid && "border-destructive"
+      )}
+    >
+      {values.length === 0 ? <span className="text-xs text-muted-foreground">No tools selected.</span> : null}
+      {values.map((toolID) => {
+        const tool = selectedToolsByID.get(toolID);
+        const unknown = !toolIDSet.has(toolID);
         return (
-          <div key={`${item}-${index}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-            <Select value={item} onChange={(event) => updateValue(index, event.target.value)} className={selectClass}>
-              {unknown ? <option value={item}>{item} (unavailable)</option> : null}
-              {selectableTools.map((tool) => (
-                <option key={tool.id} value={tool.id}>
-                  {toolLabel(tool)}
-                </option>
-              ))}
-            </Select>
-            <Button type="button" variant="ghost" size="icon" title="Remove tool" onClick={() => removeValue(index)}>
-              <Trash2 className="h-4 w-4" />
-            </Button>
-          </div>
+          <span
+            key={toolID}
+            title={tool?.description || toolID}
+            className={cn(
+              "inline-flex h-7 max-w-full items-center gap-1 rounded-md border py-0 pl-2 pr-1 text-xs",
+              unknown ? "border-destructive/60 bg-destructive/10 text-destructive" : "border-border bg-muted text-foreground"
+            )}
+          >
+            <span className="max-w-40 truncate font-mono">{tool ? toolLabel(tool) : `${toolID} (unavailable)`}</span>
+            <button
+              type="button"
+              className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background hover:text-foreground"
+              title="Remove tool"
+              aria-label={`Remove ${toolID}`}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                removeValue(toolID);
+              }}
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </span>
         );
       })}
-      <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-        <Select
-          value={selectedPendingToolID}
-          disabled={!selectedPendingToolID}
-          onChange={(event) => setPendingToolID(event.target.value)}
+
+      <span ref={pickerRef} className="relative inline-flex">
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          disabled={addableTools.length === 0}
+          onMouseDown={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            if (addableTools.length > 0) setPickerOpen((open) => !open);
+          }}
         >
-          {selectedPendingToolID ? null : <option value="">No tools</option>}
-          {addableToolIDs.map((id) => {
-            const tool = tools.find((item) => item.id === id);
-            return (
-              <option key={id} value={id}>
-                {tool ? toolLabel(tool) : id}
-              </option>
-            );
-          })}
-        </Select>
-        <Button type="button" variant="outline" size="sm" disabled={!selectedPendingToolID} onClick={addValue}>
           <Plus className="h-4 w-4" />
           Add
         </Button>
-      </div>
+        {pickerOpen ? (
+          <div className="absolute left-0 top-full z-30 mt-1 grid max-h-64 w-72 justify-items-start gap-1 overflow-auto rounded-md border border-border bg-background p-1 shadow-lg">
+            {addableTools.map((tool) => (
+              <button
+                key={tool.id}
+                type="button"
+                className="inline-grid max-w-full min-w-0 gap-0.5 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
+                onClick={() => addValue(tool.id)}
+              >
+                <span className="truncate font-mono font-medium">{toolLabel(tool)}</span>
+                {tool.description ? <span className="line-clamp-2 text-muted-foreground">{tool.description}</span> : null}
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </span>
     </div>
   );
 }
@@ -561,3 +611,4 @@ function uniqueStrings(values: string[]): string[] {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
+
