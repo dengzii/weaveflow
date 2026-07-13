@@ -308,6 +308,46 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 	}
 }
 
+func TestGraphRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
+	expected := map[string]string{
+		"WEAVEFLOW_TOOL_WORKDIR":              t.TempDir(),
+		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": "false",
+		"WEAVEFLOW_BASH_TIMEOUT":              "120000",
+		"WEAVEFLOW_BASH_ALLOWLIST":            "go,git",
+		"GIT_BASH":                            "C:/Program Files/Git/bin/bash.exe",
+		"MSYS2_BASH":                          "C:/msys64/usr/bin/bash.exe",
+		"MINGW_BASH":                          "C:/msys64/mingw64/bin/bash.exe",
+	}
+	for key, value := range expected {
+		t.Setenv(key, value)
+	}
+
+	settings := graphRuntimeSettingsFromContext(context.Background(), "")
+	for key, value := range expected {
+		if settings.Environment[key] != value {
+			t.Fatalf("%s = %q, want %q", key, settings.Environment[key], value)
+		}
+	}
+
+	expectedPresets := map[string]graphEnvironmentPreset{
+		"WEAVEFLOW_TOOL_WORKDIR":              {Key: "WEAVEFLOW_TOOL_WORKDIR", Type: "string"},
+		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": {Key: "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", DefaultValue: "false", Type: "boolean"},
+		"WEAVEFLOW_BASH_TIMEOUT":              {Key: "WEAVEFLOW_BASH_TIMEOUT", DefaultValue: "120000", Type: "integer"},
+		"WEAVEFLOW_BASH_ALLOWLIST":            {Key: "WEAVEFLOW_BASH_ALLOWLIST", Type: "string"},
+		"GIT_BASH":                            {Key: "GIT_BASH", Type: "string"},
+		"MSYS2_BASH":                          {Key: "MSYS2_BASH", Type: "string"},
+		"MINGW_BASH":                          {Key: "MINGW_BASH", Type: "string"},
+	}
+	if len(settings.EnvironmentPresets) != len(expectedPresets) {
+		t.Fatalf("environment presets = %#v", settings.EnvironmentPresets)
+	}
+	for _, preset := range settings.EnvironmentPresets {
+		if expectedPresets[preset.Key] != preset {
+			t.Fatalf("environment preset %q = %#v, want %#v", preset.Key, preset, expectedPresets[preset.Key])
+		}
+	}
+}
+
 func TestNewPreservesExistingSinkAndBroadcasts(t *testing.T) {
 	sink := &recordingEventSink{}
 	runner := &runtime.GraphRunner{EventSink: sink}

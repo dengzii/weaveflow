@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/state/accessors"
 
@@ -281,6 +282,119 @@ func TestLLMNodeWritesScopedConversationFinalAnswer(t *testing.T) {
 	}
 }
 
+func TestLLMNodeSystemPromptConfigurationRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	llmNode := NewLLMNode(WithID("llm"))
+	llmNode.SystemPrompt = "You are a concise assistant."
+	spec := llmNode.GraphNodeSpec()
+	if got := spec.Config["system_prompt"]; got != llmNode.SystemPrompt {
+		t.Fatalf("system_prompt config = %#v, want %q", got, llmNode.SystemPrompt)
+	}
+
+	definition := LLMNodeTypeDefinition()
+	properties, ok := definition.ConfigSchema["properties"].(dsl.JSONSchema)
+	if !ok {
+		t.Fatalf("LLM config properties schema = %#v", definition.ConfigSchema["properties"])
+	}
+	systemPromptSchema, ok := properties["system_prompt"].(dsl.JSONSchema)
+	if !ok || systemPromptSchema["type"] != "string" || systemPromptSchema["x-control"] != "textarea" {
+		t.Fatalf("system_prompt schema = %#v, want textarea string property", properties["system_prompt"])
+	}
+
+	built, err := definition.Build(nil, spec)
+	if err != nil {
+		t.Fatalf("build LLM node: %v", err)
+	}
+	builtLLM, ok := built.(*LLMNode)
+	if !ok {
+		t.Fatalf("built node type = %T, want *LLMNode", built)
+	}
+	if builtLLM.SystemPrompt != llmNode.SystemPrompt {
+		t.Fatalf("built system prompt = %q, want %q", builtLLM.SystemPrompt, llmNode.SystemPrompt)
+	}
+}
+
+func TestAgentNodeSystemPromptSchemaUsesTextarea(t *testing.T) {
+	t.Parallel()
+
+	definition := AgentNodeTypeDefinition()
+	properties, ok := definition.ConfigSchema["properties"].(dsl.JSONSchema)
+	if !ok {
+		t.Fatalf("agent config properties schema = %#v", definition.ConfigSchema["properties"])
+	}
+	systemPromptSchema, ok := properties["system_prompt"].(dsl.JSONSchema)
+	if !ok || systemPromptSchema["type"] != "string" || systemPromptSchema["x-control"] != "textarea" {
+		t.Fatalf("system_prompt schema = %#v, want textarea string property", properties["system_prompt"])
+	}
+}
+
+func TestLLMNodeSeedsConfiguredSystemPrompt(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		initial        []llms.MessageContent
+		expectedPrompt string
+	}{
+		{
+			name: "adds prompt when missing",
+			initial: []llms.MessageContent{
+				llms.TextParts(llms.ChatMessageTypeHuman, "question"),
+			},
+			expectedPrompt: "configured system prompt",
+		},
+		{
+			name: "preserves existing prompt",
+			initial: []llms.MessageContent{
+				llms.TextParts(llms.ChatMessageTypeSystem, "existing system prompt"),
+				llms.TextParts(llms.ChatMessageTypeHuman, "question"),
+			},
+			expectedPrompt: "existing system prompt",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			registry, err := NewDefaultRegistry()
+			if err != nil {
+				t.Fatalf("new default registry: %v", err)
+			}
+			seed := state.NewEditingAccess(registry, state.NewState()).WithScope("agent")
+			conversation, err := state.UseAccessor(seed, accessors.ConversationID)
+			if err != nil {
+				t.Fatalf("use conversation accessor: %v", err)
+			}
+			if err := conversation.SetMessages(test.initial); err != nil {
+				t.Fatalf("seed conversation: %v", err)
+			}
+
+			model := &scriptedModel{responses: []*llms.ContentResponse{{
+				Choices: []*llms.ContentChoice{{Content: "answer"}},
+			}}}
+			ctx := core.NewContext(core.WithModel(context.Background(), model))
+			llmNode := NewLLMNode(WithID("llm"))
+			llmNode.SystemPrompt = "configured system prompt"
+
+			result, err := Execute(ctx, registry, seed.State(), llmNode)
+			if err != nil {
+				t.Fatalf("execute LLM node: %v", err)
+			}
+			if len(model.requests) != 1 {
+				t.Fatalf("model requests = %d, want 1", len(model.requests))
+			}
+			assertSingleSystemPrompt(t, model.requests[0], test.expectedPrompt)
+
+			access := state.NewAccess(registry, result.State).WithScope("agent")
+			updated, err := state.UseAccessor(access, accessors.ConversationID)
+			if err != nil {
+				t.Fatalf("use updated conversation accessor: %v", err)
+			}
+			assertSingleSystemPrompt(t, updated.Messages(), test.expectedPrompt)
+		})
+	}
+}
+
 func TestAgentNodeReadsRequestAndWritesFinalAccessor(t *testing.T) {
 	t.Parallel()
 
@@ -407,13 +521,15 @@ func TestAgentNodeUsesConfiguredModelID(t *testing.T) {
 
 type scriptedModel struct {
 	responses []*llms.ContentResponse
+	requests  [][]llms.MessageContent
 	calls     int
 }
 
-func (m *scriptedModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *scriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 	if m.calls >= len(m.responses) {
 		return nil, errors.New("scripted model exhausted")
 	}
+	m.requests = append(m.requests, cloneMessages(messages))
 	response := m.responses[m.calls]
 	m.calls++
 	return response, nil
@@ -421,4 +537,24 @@ func (m *scriptedModel) GenerateContent(context.Context, []llms.MessageContent, 
 
 func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
 	return "", errors.New("scripted model Call is not supported")
+}
+
+func assertSingleSystemPrompt(t *testing.T, messages []llms.MessageContent, expected string) {
+	t.Helper()
+
+	systemMessages := make([]llms.MessageContent, 0, 1)
+	for _, message := range messages {
+		if message.Role == llms.ChatMessageTypeSystem {
+			systemMessages = append(systemMessages, message)
+		}
+	}
+	if len(systemMessages) != 1 {
+		t.Fatalf("system message count = %d, want 1 in %#v", len(systemMessages), messages)
+	}
+	if len(messages) == 0 || messages[0].Role != llms.ChatMessageTypeSystem {
+		t.Fatalf("first message is not the system prompt in %#v", messages)
+	}
+	if got := extractText(messages[0]); got != expected {
+		t.Fatalf("system prompt = %q, want %q", got, expected)
+	}
 }

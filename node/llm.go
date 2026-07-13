@@ -21,6 +21,7 @@ type LLMNode struct {
 	Base
 	ModelID        string
 	ToolIDs        []string
+	SystemPrompt   string
 	PromptMaxChars int
 }
 
@@ -43,8 +44,9 @@ func NewLLMNode(options ...NodeOption) *LLMNode {
 
 func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	conf := map[string]any{
-		"state_scope": n.Scope(),
-		"tool_ids":    n.ToolIDs,
+		"state_scope":   n.Scope(),
+		"tool_ids":      n.ToolIDs,
+		"system_prompt": n.SystemPrompt,
 	}
 	if strings.TrimSpace(n.ModelID) != "" {
 		conf["model_id"] = n.ModelID
@@ -64,9 +66,14 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id":         dsl.JSONSchema{"type": "string"},
-					"tool_ids":         dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
-					"state_scope":      dsl.JSONSchema{"type": "string"},
+					"model_id":    dsl.JSONSchema{"type": "string"},
+					"tool_ids":    dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"state_scope": dsl.JSONSchema{"type": "string"},
+					"system_prompt": dsl.JSONSchema{
+						"type":      "string",
+						"title":     "System Prompt",
+						"x-control": "textarea",
+					},
 					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
 				},
 				"additionalProperties": false,
@@ -90,6 +97,7 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 			applyNodeMetadata(&llmNode.Base, spec)
 			llmNode.ModelID = config.String(spec.Config, "model_id")
 			llmNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			llmNode.SystemPrompt = config.String(spec.Config, "system_prompt")
 			llmNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
 			return llmNode, nil
 		},
@@ -117,6 +125,9 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 	}
 
 	if err := scrubPriorStepIfBoundaryCrossed(conversation, execution); err != nil {
+		return err
+	}
+	if err := n.seedSystemPrompt(conversation); err != nil {
 		return err
 	}
 	messages := conversation.Messages()
@@ -189,6 +200,21 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 		return conversation.SetFinalAnswer(extractText(aiMessage))
 	}
 	return nil
+}
+
+func (n *LLMNode) seedSystemPrompt(conversation accessors.Conversation) error {
+	if n == nil || conversation == nil || strings.TrimSpace(n.SystemPrompt) == "" {
+		return nil
+	}
+	messages := conversation.Messages()
+	for _, message := range messages {
+		if message.Role == llms.ChatMessageTypeSystem {
+			return nil
+		}
+	}
+	return conversation.SetMessages(append([]llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, n.SystemPrompt),
+	}, messages...))
 }
 
 func effectiveModelID(id string) string {

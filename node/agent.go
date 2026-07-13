@@ -90,10 +90,14 @@ func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id":         dsl.JSONSchema{"type": "string"},
-					"tool_ids":         dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
-					"state_scope":      dsl.JSONSchema{"type": "string"},
-					"system_prompt":    dsl.JSONSchema{"type": "string"},
+					"model_id":    dsl.JSONSchema{"type": "string"},
+					"tool_ids":    dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"state_scope": dsl.JSONSchema{"type": "string"},
+					"system_prompt": dsl.JSONSchema{
+						"type":      "string",
+						"title":     "System Prompt",
+						"x-control": "textarea",
+					},
 					"input_path":       dsl.JSONSchema{"type": "string"},
 					"output_path":      dsl.JSONSchema{"type": "string"},
 					"max_iterations":   dsl.JSONSchema{"type": "integer", "minimum": 1},

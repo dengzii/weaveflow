@@ -279,6 +279,17 @@ function renderSchemaControl(
     );
   }
 
+  if (type === "string" && schema["x-control"] === "textarea") {
+    return (
+      <Textarea
+        value={typeof value === "string" ? value : value == null ? "" : String(value)}
+        onChange={(event) => onChange(event.target.value)}
+        spellCheck={false}
+        className={cn("min-h-32 resize-y", controlClass)}
+      />
+    );
+  }
+
   return (
     <Input
       value={typeof value === "string" ? value : value == null ? "" : String(value)}

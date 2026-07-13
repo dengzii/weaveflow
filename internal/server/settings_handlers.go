@@ -20,10 +20,17 @@ import (
 )
 
 type graphRuntimeSettings struct {
-	Environment map[string]string    `json:"environment"`
-	Model       graphModelSettings   `json:"model"`
-	Models      []graphModelSettings `json:"models"`
-	Memory      graphMemorySettings  `json:"memory"`
+	Environment        map[string]string        `json:"environment"`
+	EnvironmentPresets []graphEnvironmentPreset `json:"environment_presets"`
+	Model              graphModelSettings       `json:"model"`
+	Models             []graphModelSettings     `json:"models"`
+	Memory             graphMemorySettings      `json:"memory"`
+}
+
+type graphEnvironmentPreset struct {
+	Key          string `json:"key"`
+	DefaultValue string `json:"default_value"`
+	Type         string `json:"type"`
 }
 
 type graphModelSettings struct {
@@ -127,13 +134,15 @@ func (s *Server) graphSettingsSnapshot() graphRuntimeSettings {
 	s.mu.RLock()
 	settings := sanitizedGraphSettings(s.settings)
 	s.mu.RUnlock()
+	settings.EnvironmentPresets = graphEnvironmentPresets()
 	markGraphModelAPIKeys(&settings, os.Getenv("OPENAI_API_KEY"))
 	return settings
 }
 
 func graphRuntimeSettingsFromContext(ctx context.Context, baseDir string) graphRuntimeSettings {
 	settings := graphRuntimeSettings{
-		Environment: currentGraphEnvironment(),
+		Environment:        currentGraphEnvironment(),
+		EnvironmentPresets: graphEnvironmentPresets(),
 		Memory: graphMemorySettings{
 			Enabled:   core.MemoryFromContext(ctx) != nil,
 			Directory: defaultMemoryDirectory(baseDir),
@@ -179,12 +188,33 @@ func graphModelSettingsFromContext(ctx context.Context) []graphModelSettings {
 
 func currentGraphEnvironment() map[string]string {
 	env := map[string]string{}
-	for _, key := range []string{"OPENAI_MODEL", "OPENAI_BASE_URL", "OPENAI_API_BASE", "OPENAI_ORGANIZATION"} {
+	keys := []string{
+		"OPENAI_MODEL",
+		"OPENAI_BASE_URL",
+		"OPENAI_API_BASE",
+		"OPENAI_ORGANIZATION",
+	}
+	for _, preset := range graphEnvironmentPresets() {
+		keys = append(keys, preset.Key)
+	}
+	for _, key := range keys {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 			env[key] = value
 		}
 	}
 	return env
+}
+
+func graphEnvironmentPresets() []graphEnvironmentPreset {
+	return []graphEnvironmentPreset{
+		{Key: "WEAVEFLOW_TOOL_WORKDIR", Type: "string"},
+		{Key: "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", DefaultValue: "false", Type: "boolean"},
+		{Key: "WEAVEFLOW_BASH_TIMEOUT", DefaultValue: "120000", Type: "integer"},
+		{Key: "WEAVEFLOW_BASH_ALLOWLIST", Type: "string"},
+		{Key: "GIT_BASH", Type: "string"},
+		{Key: "MSYS2_BASH", Type: "string"},
+		{Key: "MINGW_BASH", Type: "string"},
+	}
 }
 
 func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeSettingsRequest) (string, bool, error) {

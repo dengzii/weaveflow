@@ -46,9 +46,16 @@ export interface GraphInfo {
 
 export interface GraphSettings {
   environment: Record<string, string>;
+  environment_presets?: GraphEnvironmentPreset[];
   model: GraphModelSettings;
   models: GraphModelSettings[];
   memory: GraphMemorySettings;
+}
+
+export interface GraphEnvironmentPreset {
+  key: string;
+  default_value: string;
+  type: "string" | "boolean" | "integer";
 }
 
 export interface GraphModelSettings {

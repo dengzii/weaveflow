@@ -148,6 +148,7 @@ function schemaKeywordsFromField(field: JsonRecord): JsonRecord {
     "anyOf",
     "allOf",
     "format",
+    "x-control",
     "pattern",
     "minimum",
     "maximum",

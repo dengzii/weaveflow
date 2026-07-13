@@ -225,7 +225,6 @@ function GraphInspector({
 >) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const requiredInitialState = initialRequirements?.required ?? [];
-  const hasEndEdge = (definition?.edges ?? []).some((edge) => edge.to === END_NODE_REF);
   const hasInitialStateHints = Boolean(
     initialRequirements &&
       (initialRequirements.unresolved.length > 0 ||
@@ -252,27 +251,6 @@ function GraphInspector({
           disabled={!definition}
           className="h-20 text-xs"
         />
-      </InspectorBlock>
-
-      <InspectorBlock title="Routing">
-        <Field label="Entry point">
-          <NodeSelect
-            value={definition?.entry_point ?? ""}
-            nodes={definition?.nodes ?? []}
-            disabled={!definition}
-            className={!definition?.entry_point ? "border-destructive focus:border-destructive" : undefined}
-            onChange={(value) => onChangeGraphField("entry_point", value)}
-          />
-        </Field>
-        <Field label="Finish point">
-          <NodeSelect
-            value={definition?.finish_point ?? ""}
-            nodes={definition?.nodes ?? []}
-            disabled={!definition}
-            className={!definition?.finish_point && !hasEndEdge ? "border-destructive focus:border-destructive" : undefined}
-            onChange={(value) => onChangeGraphField("finish_point", value)}
-          />
-        </Field>
       </InspectorBlock>
 
       <CollapsibleInspectorBlock title="Graph Settings" open={settingsOpen} onOpenChange={setSettingsOpen}>
@@ -321,6 +299,7 @@ function GraphSettingsEditor({
   const [memoryEnabled, setMemoryEnabled] = useState(false);
   const [memoryDirectory, setMemoryDirectory] = useState("");
   const [environmentRows, setEnvironmentRows] = useState<EditableEnvironmentVariable[]>([]);
+  const [environmentPresetKey, setEnvironmentPresetKey] = useState("");
   const [newEnvironmentKey, setNewEnvironmentKey] = useState("");
   const [newEnvironmentValue, setNewEnvironmentValue] = useState("");
   const [saving, setSaving] = useState(false);
@@ -331,6 +310,7 @@ function GraphSettingsEditor({
     setMemoryEnabled(settings?.memory.enabled ?? false);
     setMemoryDirectory(settings?.memory.directory ?? "");
     setEnvironmentRows(environmentRowsFromSettings(settings));
+    setEnvironmentPresetKey("");
     setNewEnvironmentKey("");
     setNewEnvironmentValue("");
     setStatus("");
@@ -361,6 +341,14 @@ function GraphSettingsEditor({
 
   function removeEnvironment(index: number) {
     setEnvironmentRows((current) => current.filter((_, rowIndex) => rowIndex !== index));
+  }
+
+  function addEnvironmentPreset() {
+    const preset = settings?.environment_presets?.find((item) => item.key === environmentPresetKey);
+    if (!preset || environmentRows.some((row) => row.key.trim() === preset.key)) return;
+    setEnvironmentRows((current) => [...current, { key: preset.key, value: preset.default_value }]);
+    setEnvironmentPresetKey("");
+    setStatus("");
   }
 
   function addEnvironment() {
@@ -413,6 +401,10 @@ function GraphSettingsEditor({
       setSaving(false);
     }
   }
+
+  const availableEnvironmentPresets = (settings?.environment_presets ?? []).filter(
+    (preset) => !environmentRows.some((row) => row.key.trim() === preset.key)
+  );
 
   return (
     <div className="grid gap-3">
@@ -492,6 +484,25 @@ function GraphSettingsEditor({
       <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
         <div className="flex min-h-8 items-center gap-2">
           <span className="text-sm font-medium">Environment</span>
+        </div>
+
+        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+          <Select
+            value={environmentPresetKey}
+            onChange={(event) => setEnvironmentPresetKey(event.target.value)}
+            disabled={availableEnvironmentPresets.length === 0}
+          >
+            <option value="">{availableEnvironmentPresets.length === 0 ? "No presets available" : "Select preset"}</option>
+            {availableEnvironmentPresets.map((preset) => (
+              <option key={preset.key} value={preset.key}>
+                {preset.key}
+              </option>
+            ))}
+          </Select>
+          <Button type="button" variant="outline" size="sm" onClick={addEnvironmentPreset} disabled={!environmentPresetKey}>
+            <Plus className="h-4 w-4" />
+            Add preset
+          </Button>
         </div>
 
         {environmentRows.length === 0 ? (
