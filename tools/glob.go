@@ -92,7 +92,7 @@ func globTool(_ context.Context, input string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		root = "."
 	}
-	workspace, target, relRoot, err := resolveFileOperationPath(root)
+	workspace, target, relRoot, err := resolveToolPath(root)
 	if err != nil {
 		return "", err
 	}
@@ -147,7 +147,7 @@ func globTool(_ context.Context, input string) (string, error) {
 			size = info.Size()
 		}
 		matched = append(matched, globResult{
-			Path:    joinRelativePath(relRoot, rel),
+			Path:    joinToolRelativePath(relRoot, rel),
 			Size:    size,
 			ModTime: modTime,
 		})

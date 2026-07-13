@@ -7,7 +7,7 @@ import (
 )
 
 func TestOutlineSmoke_Go(t *testing.T) {
-	t.Setenv(fileToolSkipWorkspaceEnv, "true")
+	t.Setenv(toolSkipWorkspaceCheckEnv, "true")
 
 	tool := NewOutline()
 	out, err := tool.Handler(context.Background(), `{"file_path":"outline.go"}`)

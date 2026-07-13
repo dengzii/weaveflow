@@ -32,6 +32,19 @@ func TestBashToolRawInputStillWorks(t *testing.T) {
 	}
 }
 
+func TestBashToolUsesConfiguredWorkspace(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv(toolWorkspaceEnv, root)
+
+	out, err := bashTool(context.Background(), "echo hello")
+	if err != nil {
+		t.Fatalf("bashTool: %v", err)
+	}
+	if !strings.Contains(out, "working_dir: "+root) {
+		t.Fatalf("expected configured working directory, got: %s", out)
+	}
+}
+
 func TestBashToolRejectsUnsupportedShell(t *testing.T) {
 	_, err := bashTool(context.Background(), `{"command":"echo hello","shell":"fish"}`)
 	if err == nil {

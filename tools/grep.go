@@ -164,7 +164,7 @@ func grepTool(_ context.Context, input string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		root = "."
 	}
-	workspace, target, relRoot, err := resolveFileOperationPath(root)
+	workspace, target, relRoot, err := resolveToolPath(root)
 	if err != nil {
 		return "", err
 	}
@@ -211,7 +211,7 @@ func grepTool(_ context.Context, input string) (string, error) {
 
 		scanned++
 		fileMatches, stop := scanFileForGrep(path, re, limit-len(matches))
-		matches = append(matches, decorateGrepMatches(fileMatches, joinRelativePath(relRoot, rel))...)
+		matches = append(matches, decorateGrepMatches(fileMatches, joinToolRelativePath(relRoot, rel))...)
 		if stop {
 			truncated = true
 			return filepath.SkipAll

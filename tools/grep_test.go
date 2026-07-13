@@ -29,7 +29,7 @@ func setupGrepWorkspace(t *testing.T) string {
 			t.Fatalf("write %s: %v", full, err)
 		}
 	}
-	t.Setenv(fileToolWorkspaceEnv, root)
+	t.Setenv(toolWorkspaceEnv, root)
 	return root
 }
 

@@ -7,7 +7,7 @@ import (
 )
 
 func TestTreeProjectSize(t *testing.T) {
-	t.Setenv(fileToolSkipWorkspaceEnv, "true")
+	t.Setenv(toolSkipWorkspaceCheckEnv, "true")
 
 	tool := NewTree()
 	out, err := tool.Handler(context.Background(), `{"path":"..","max_depth":3}`)

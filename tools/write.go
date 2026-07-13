@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -12,6 +14,15 @@ import (
 type writeRequest struct {
 	FilePath string `json:"file_path"`
 	Content  string `json:"content"`
+}
+
+type writeResponse struct {
+	Action       string `json:"action"`
+	Path         string `json:"path"`
+	Workspace    string `json:"workspace"`
+	Exists       bool   `json:"exists,omitempty"`
+	Size         int64  `json:"size,omitempty"`
+	BytesWritten int    `json:"bytes_written,omitempty"`
 }
 
 func NewWrite() Tool {
@@ -52,13 +63,27 @@ func writeTool(_ context.Context, input string) (string, error) {
 		return "", fmt.Errorf("file_path is required")
 	}
 
-	workspace, target, relativePath, err := resolveFileOperationPath(req.FilePath)
+	workspace, target, relativePath, err := resolveToolPath(req.FilePath)
 	if err != nil {
 		return "", err
 	}
-	resp, err := writeFileOperation(workspace, target, relativePath, req.Content, false)
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return "", err
+	}
+	if err := os.WriteFile(target, []byte(req.Content), 0o644); err != nil {
+		return "", err
+	}
+	info, err := os.Stat(target)
 	if err != nil {
 		return "", err
+	}
+	resp := writeResponse{
+		Action:       "write",
+		Path:         relativePath,
+		Workspace:    workspace,
+		Exists:       true,
+		Size:         info.Size(),
+		BytesWritten: len(req.Content),
 	}
 	data, err := json.Marshal(resp)
 	if err != nil {

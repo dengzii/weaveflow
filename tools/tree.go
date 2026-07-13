@@ -87,7 +87,7 @@ func treeTool(_ context.Context, input string) (string, error) {
 	depth := normalizeTreeDepth(req.MaxDepth)
 	maxEntries := normalizeTreeMaxEntries(req.MaxEntries)
 
-	_, target, relativePath, err := resolveFileOperationPath(req.Path)
+	_, target, relativePath, err := resolveToolPath(req.Path)
 	if err != nil {
 		return "", err
 	}

@@ -70,7 +70,7 @@ func readTool(_ context.Context, input string) (string, error) {
 		return "", fmt.Errorf("file_path is required")
 	}
 
-	_, target, relativePath, err := resolveFileOperationPath(req.FilePath)
+	_, target, relativePath, err := resolveToolPath(req.FilePath)
 	if err != nil {
 		return "", err
 	}

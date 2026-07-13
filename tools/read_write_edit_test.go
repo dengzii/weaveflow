@@ -12,7 +12,7 @@ import (
 func setupReadWriteEditWorkspace(t *testing.T) string {
 	t.Helper()
 	root := t.TempDir()
-	t.Setenv(fileToolWorkspaceEnv, root)
+	t.Setenv(toolWorkspaceEnv, root)
 	return root
 }
 
@@ -43,7 +43,7 @@ func TestWriteToolOverwritesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeTool: %v", err)
 	}
-	var resp fileOperationResponse
+	var resp writeResponse
 	if err := json.Unmarshal([]byte(out), &resp); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}

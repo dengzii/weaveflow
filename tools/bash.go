@@ -18,7 +18,6 @@ import (
 )
 
 const (
-	bashToolWorkspaceEnv = "WEAVEFLOW_TOOL_WORKDIR"
 	bashToolTimeoutEnv   = "WEAVEFLOW_BASH_TIMEOUT"
 	bashToolAllowListEnv = "WEAVEFLOW_BASH_ALLOWLIST"
 	defaultBashTimeout   = 2 * time.Minute
@@ -115,7 +114,10 @@ func bashTool(ctx context.Context, input string) (string, error) {
 	}
 
 	timeout := normalizeBashTimeout(req.Timeout)
-	workingDir := getBashWorkingDir()
+	workingDir, err := toolWorkspaceDir()
+	if err != nil {
+		return "", err
+	}
 
 	result, err := executeBashCommand(ctx, command, workingDir, timeout, req.Shell)
 	if err != nil {
@@ -330,16 +332,6 @@ func mingwBashCandidates() []string {
 		)
 	}
 	return candidates
-}
-
-func getBashWorkingDir() string {
-	if dir := os.Getenv(bashToolWorkspaceEnv); dir != "" {
-		return dir
-	}
-	if dir, err := os.Getwd(); err == nil {
-		return dir
-	}
-	return "."
 }
 
 func normalizeBashTimeout(timeoutMilliseconds int) time.Duration {
