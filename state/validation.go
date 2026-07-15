@@ -184,7 +184,7 @@ func isWriteMode(mode AccessMode) bool {
 
 func pathAllowedByAny(path Path, allowed []Path) bool {
 	for _, candidate := range allowed {
-		if pathWithin(path, candidate) {
+		if path.String() == candidate.String() {
 			return true
 		}
 	}

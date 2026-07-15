@@ -148,8 +148,10 @@ func (m *llmWrap) GenerateContent(ctx context.Context, messages []llms.MessageCo
 		if strings.TrimSpace(choice1.Content) != "" {
 			_ = PublishRunnerContextEvent(ctx, EventLLMContent, map[string]any{"text": choice1.Content})
 		}
-		if choice1.FuncCall != nil {
-			_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, choice1.FuncCall)
+		for _, toolCall := range choice1.ToolCalls {
+			if toolCall.FunctionCall != nil {
+				_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, toolCall.FunctionCall)
+			}
 		}
 		_ = PublishRunnerContextEvent(ctx, EventLLMCall, buildLLMCallStatsPayload(m.m, choice1))
 	}

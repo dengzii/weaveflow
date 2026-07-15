@@ -22,7 +22,7 @@ func newClient(opts ...Option) (*options, *openaiclient.Client, error) {
 	options := &options{
 		token:        os.Getenv(tokenEnvVarName),
 		model:        os.Getenv(modelEnvVarName),
-		baseURL:      getEnvs(baseURLEnvVarName, baseAPIBaseEnvVarName),
+		baseURL:      os.Getenv(baseURLEnvVarName),
 		organization: os.Getenv(organizationEnvVarName),
 		apiType:      APIType(openaiclient.APITypeOpenAI),
 		httpClient:   httputil.DefaultClient,
@@ -55,14 +55,4 @@ func newClient(opts ...Option) (*options, *openaiclient.Client, error) {
 		options.responseFormat, clientOptions...,
 	)
 	return options, cli, err
-}
-
-func getEnvs(keys ...string) string {
-	for _, key := range keys {
-		val, ok := os.LookupEnv(key)
-		if ok {
-			return val
-		}
-	}
-	return ""
 }

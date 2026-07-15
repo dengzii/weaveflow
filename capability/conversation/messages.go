@@ -1,7 +1,8 @@
-package state
+package conversation
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 
 	"github.com/dengzii/weaveflow/llms/parts"
@@ -9,12 +10,12 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-type StateMessage struct {
-	Role  string             `json:"role"`
-	Parts []StateMessagePart `json:"parts,omitempty"`
+type Message struct {
+	Role  string        `json:"role"`
+	Parts []MessagePart `json:"parts,omitempty"`
 }
 
-type StateMessagePart struct {
+type MessagePart struct {
 	Kind         string `json:"kind"`
 	Text         string `json:"text,omitempty"`
 	URL          string `json:"url,omitempty"`
@@ -29,13 +30,13 @@ type StateMessagePart struct {
 	Content      string `json:"content,omitempty"`
 }
 
-func SerializeMessages(messages []llms.MessageContent) ([]StateMessage, error) {
+func SerializeMessages(messages []llms.MessageContent) ([]Message, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
-	result := make([]StateMessage, 0, len(messages))
+	result := make([]Message, 0, len(messages))
 	for _, message := range messages {
-		item := StateMessage{Role: string(message.Role)}
+		item := Message{Role: string(message.Role)}
 		for _, part := range message.Parts {
 			encoded, err := serializeMessagePart(part)
 			if err != nil {
@@ -48,7 +49,7 @@ func SerializeMessages(messages []llms.MessageContent) ([]StateMessage, error) {
 	return result, nil
 }
 
-func DeserializeMessages(messages []StateMessage) ([]llms.MessageContent, error) {
+func DeserializeMessages(messages []Message) ([]llms.MessageContent, error) {
 	if len(messages) == 0 {
 		return nil, nil
 	}
@@ -70,22 +71,58 @@ func DeserializeMessages(messages []StateMessage) ([]llms.MessageContent, error)
 	return result, nil
 }
 
-func serializeMessagePart(part llms.ContentPart) (StateMessagePart, error) {
+func EncodeMessages(messages []llms.MessageContent) ([]any, error) {
+	encoded, err := SerializeMessages(messages)
+	if err != nil {
+		return nil, err
+	}
+	payload, err := json.Marshal(encoded)
+	if err != nil {
+		return nil, err
+	}
+	var value []any
+	if err := json.Unmarshal(payload, &value); err != nil {
+		return nil, err
+	}
+	return value, nil
+}
+
+func DecodeMessages(value any) ([]llms.MessageContent, error) {
+	switch typed := value.(type) {
+	case nil:
+		return nil, nil
+	case []llms.MessageContent:
+		return cloneMessages(typed), nil
+	case []Message:
+		return DeserializeMessages(typed)
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var encoded []Message
+	if err := json.Unmarshal(payload, &encoded); err != nil {
+		return nil, err
+	}
+	return DeserializeMessages(encoded)
+}
+
+func serializeMessagePart(part llms.ContentPart) (MessagePart, error) {
 	switch typed := part.(type) {
 	case llms.TextContent:
-		return StateMessagePart{Kind: "text", Text: typed.Text}, nil
+		return MessagePart{Kind: "text", Text: typed.Text}, nil
 	case parts.ReasoningPart:
-		return StateMessagePart{Kind: "reasoning", Text: typed.Text}, nil
+		return MessagePart{Kind: "reasoning", Text: typed.Text}, nil
 	case llms.ImageURLContent:
-		return StateMessagePart{Kind: "image_url", URL: typed.URL, Detail: typed.Detail}, nil
+		return MessagePart{Kind: "image_url", URL: typed.URL, Detail: typed.Detail}, nil
 	case llms.BinaryContent:
-		return StateMessagePart{
+		return MessagePart{
 			Kind:     "binary",
 			MIMEType: typed.MIMEType,
 			Data:     base64.StdEncoding.EncodeToString(typed.Data),
 		}, nil
 	case llms.ToolCall:
-		part := StateMessagePart{
+		part := MessagePart{
 			Kind:       "tool_call",
 			ToolCallID: typed.ID,
 			ToolType:   typed.Type,
@@ -96,18 +133,18 @@ func serializeMessagePart(part llms.ContentPart) (StateMessagePart, error) {
 		}
 		return part, nil
 	case llms.ToolCallResponse:
-		return StateMessagePart{
+		return MessagePart{
 			Kind:       "tool_response",
 			ToolCallID: typed.ToolCallID,
 			Name:       typed.Name,
 			Content:    typed.Content,
 		}, nil
 	default:
-		return StateMessagePart{}, fmt.Errorf("unsupported message part type %T", part)
+		return MessagePart{}, fmt.Errorf("unsupported message part type %T", part)
 	}
 }
 
-func deserializeMessagePart(part StateMessagePart) (llms.ContentPart, error) {
+func deserializeMessagePart(part MessagePart) (llms.ContentPart, error) {
 	switch part.Kind {
 	case "text":
 		return llms.TextPart(part.Text), nil
@@ -134,6 +171,6 @@ func deserializeMessagePart(part StateMessagePart) (llms.ContentPart, error) {
 			Content:    part.Content,
 		}, nil
 	default:
-		return nil, fmt.Errorf("unsupported state message part kind %q", part.Kind)
+		return nil, fmt.Errorf("unsupported conversation message part kind %q", part.Kind)
 	}
 }

@@ -11,7 +11,6 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/google/uuid"
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -24,7 +23,6 @@ type GraphRunner struct {
 	CheckpointStore    CheckpointStore
 	ArtifactStore      ArtifactStore
 	Codec              state.StateCodec
-	StateRegistry      *state.Registry
 	EventSink          EventSink
 	GraphID            string
 	GraphVersion       string
@@ -127,6 +125,9 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string, input *state.Sta
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
+	if err := r.validateRunGraphHash(run); err != nil {
+		return RunRecord{}, nil, err
+	}
 	if strings.TrimSpace(run.LastCheckpointID) == "" {
 		return RunRecord{}, nil, fmt.Errorf("resume run %q: no checkpoint available", runID)
 	}
@@ -174,6 +175,9 @@ func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID str
 
 	run, err := r.ExecutionStore.GetRun(ctx, checkpoint.Record.RunID)
 	if err != nil {
+		return RunRecord{}, nil, err
+	}
+	if err := r.validateRunGraphHash(run); err != nil {
 		return RunRecord{}, nil, err
 	}
 
@@ -794,13 +798,13 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 		BreakpointHit:   hit,
 	}, artifacts)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encode checkpoint state: %w", err)
 	}
 	snapshot.Version = r.Codec.Version()
 
 	payload, err := r.Codec.Encode(snapshot)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encode checkpoint state: %w", err)
 	}
 
 	record := CheckpointRecord{
@@ -1161,10 +1165,24 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (st
 
 func (r *GraphRunner) validateRestoredCheckpoint(checkpoint RestoredCheckpoint) error {
 	record := checkpoint.Record
-	if codecName := strings.TrimSpace(record.StateCodec); codecName != "" && codecName != r.Codec.Name() {
+	codecName := strings.TrimSpace(record.StateCodec)
+	if codecName == "" {
+		return fmt.Errorf("checkpoint %q state codec is required", record.CheckpointID)
+	}
+	if codecName != r.Codec.Name() {
 		return fmt.Errorf("checkpoint %q uses state codec %q, runner configured for %q", record.CheckpointID, codecName, r.Codec.Name())
 	}
-	if version := strings.TrimSpace(record.StateVersion); version != "" && checkpoint.Snapshot.Version != "" && version != checkpoint.Snapshot.Version {
+	version := strings.TrimSpace(record.StateVersion)
+	if version == "" {
+		return fmt.Errorf("checkpoint %q state version is required", record.CheckpointID)
+	}
+	if version != r.Codec.Version() {
+		return fmt.Errorf("checkpoint %q uses state version %q, runner configured for %q", record.CheckpointID, version, r.Codec.Version())
+	}
+	if checkpoint.Snapshot.Version == "" {
+		return fmt.Errorf("checkpoint %q snapshot version is required", record.CheckpointID)
+	}
+	if version != checkpoint.Snapshot.Version {
 		return fmt.Errorf("checkpoint %q state version mismatch: record=%q snapshot=%q", record.CheckpointID, version, checkpoint.Snapshot.Version)
 	}
 	if record.RunID != "" && checkpoint.Runtime.RunID != "" && record.RunID != checkpoint.Runtime.RunID {
@@ -1197,6 +1215,18 @@ func (r *GraphRunner) graphHash() string {
 	return strings.TrimSpace(r.GraphHash)
 }
 
+func (r *GraphRunner) validateRunGraphHash(run RunRecord) error {
+	expected := r.graphHash()
+	if expected == "" {
+		return nil
+	}
+	actual := strings.TrimSpace(run.GraphHash)
+	if actual == expected {
+		return nil
+	}
+	return fmt.Errorf("resume run %q: graph hash mismatch: run uses %q, runner uses %q", run.RunID, actual, expected)
+}
+
 func (r *GraphRunner) graphSnapshotHash() string {
 	return strings.TrimSpace(r.GraphSnapshotHash)
 }
@@ -1226,22 +1256,6 @@ func (r *GraphRunner) runnerGraph() RunnerGraph {
 		return nil
 	}
 	return r.graph
-}
-
-func (r *GraphRunner) stateRegistry() *state.Registry {
-	if r == nil {
-		return defaultStateRegistry()
-	}
-	if r.StateRegistry == nil {
-		r.StateRegistry = defaultStateRegistry()
-	}
-	return r.StateRegistry
-}
-
-func defaultStateRegistry() *state.Registry {
-	registry := state.NewRegistry()
-	_ = accessors.InstallDefaultAccessors(registry)
-	return registry
 }
 
 func (r *GraphRunner) contractPolicy() ContractPolicy {

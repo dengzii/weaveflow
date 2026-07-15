@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Plus, Trash2 } from "lucide-react";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
-import { END_NODE_REF, graphNodePositions } from "../../../lib/graphEditor";
+import { END_NODE_REF, graphNodePositions, initialStateBindings, resolvedStatePortContract } from "../../../lib/graphEditor";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
@@ -18,6 +18,9 @@ import type {
   InitialStateRequirements,
   InitialStateRequirement,
   NodeTypeSchema,
+  RegistryInfo,
+  StateBinding,
+  StatePortDefinition,
   StepRecord,
   ToolDefinition,
 } from "../../../types";
@@ -30,6 +33,7 @@ import type { InspectorMode } from "./types";
 interface GraphInspectorPanelProps {
   conditions: ConditionSchema[];
   definition: GraphDefinition | null;
+  definitionText: string;
   edgeConfigText: string;
   initialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
@@ -39,6 +43,7 @@ interface GraphInspectorPanelProps {
   lintIssues: GraphLintIssue[];
   nodeConfigText: string;
   paletteNodeTypes: NodeTypeSchema[];
+  registry: RegistryInfo | null;
   registryLoaded: boolean;
   graphSettings: GraphSettings | null;
   onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
@@ -51,6 +56,7 @@ interface GraphInspectorPanelProps {
   visibleVirtualNodes: GraphNodeSpec[];
   onApplyEdgeConfig: () => void;
   onApplyNodeConfig: () => void;
+  onChangeDefinitionText: (value: string) => void;
   onChangeEdge: (update: (edge: GraphEdgeSpec) => GraphEdgeSpec) => void;
   onChangeEdgeConfigText: (value: string) => void;
   onChangeVirtualLoop: (update: (loop: VirtualGraphLoop) => VirtualGraphLoop) => void;
@@ -69,6 +75,7 @@ interface GraphInspectorPanelProps {
 export function GraphInspectorPanel({
   conditions,
   definition,
+  definitionText,
   edgeConfigText,
   initialRequirements,
   initialRequirementsError,
@@ -78,6 +85,7 @@ export function GraphInspectorPanel({
   lintIssues,
   nodeConfigText,
   paletteNodeTypes,
+  registry,
   registryLoaded,
   graphSettings,
   onUpdateGraphSettings,
@@ -90,6 +98,7 @@ export function GraphInspectorPanel({
   visibleVirtualNodes,
   onApplyEdgeConfig,
   onApplyNodeConfig,
+  onChangeDefinitionText,
   onChangeEdge,
   onChangeEdgeConfigText,
   onChangeVirtualLoop,
@@ -111,11 +120,14 @@ export function GraphInspectorPanel({
       {inspectorMode === "graph" ? (
         <GraphInspector
           definition={definition}
+          definitionText={definitionText}
           initialRequirements={initialRequirements}
           initialRequirementsError={initialRequirementsError}
           initialStateText={initialStateText}
           graphSettings={graphSettings}
+          registry={registry}
           onUpdateGraphSettings={onUpdateGraphSettings}
+          onChangeDefinitionText={onChangeDefinitionText}
           onChangeGraphField={onChangeGraphField}
           onChangeInitialStateText={onChangeInitialStateText}
         />
@@ -126,6 +138,7 @@ export function GraphInspectorPanel({
           definition={definition}
           nodeConfigText={nodeConfigText}
           paletteNodeTypes={paletteNodeTypes}
+          registry={registry}
           registryLoaded={registryLoaded}
           toolDefinitions={toolDefinitions}
           selectedNode={selectedNode}
@@ -143,6 +156,7 @@ export function GraphInspectorPanel({
           conditions={conditions}
           definition={definition}
           edgeConfigText={edgeConfigText}
+          registry={registry}
           selectedEdge={selectedEdge}
           selectedVirtualEdge={selectedVirtualEdge}
           visibleVirtualNodes={visibleVirtualNodes}
@@ -205,18 +219,24 @@ function LintPanel({
 
 function GraphInspector({
   definition,
+  definitionText,
   initialRequirements,
   initialRequirementsError,
   initialStateText,
   graphSettings,
+  registry,
   onUpdateGraphSettings,
+  onChangeDefinitionText,
   onChangeGraphField,
   onChangeInitialStateText,
 }: Pick<
   GraphInspectorPanelProps,
   | "definition"
+  | "definitionText"
   | "graphSettings"
+  | "registry"
   | "onUpdateGraphSettings"
+  | "onChangeDefinitionText"
   | "initialRequirements"
   | "initialRequirementsError"
   | "initialStateText"
@@ -224,6 +244,7 @@ function GraphInspector({
   | "onChangeInitialStateText"
 >) {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [jsonOpen, setJSONOpen] = useState(false);
   const requiredInitialState = initialRequirements?.required ?? [];
   const hasInitialStateHints = Boolean(
     initialRequirements &&
@@ -252,6 +273,25 @@ function GraphInspector({
           className="h-20 text-xs"
         />
       </InspectorBlock>
+
+      <InspectorBlock title="State Modules">
+        <StateModulesEditor
+          definition={definition}
+          registry={registry}
+          onChange={(stateModules) => onChangeGraphField("state_modules", stateModules)}
+        />
+      </InspectorBlock>
+
+      <CollapsibleInspectorBlock title="Graph JSON" open={jsonOpen} onOpenChange={setJSONOpen}>
+        <Textarea
+          aria-label="Graph JSON"
+          value={definitionText}
+          onChange={(event) => onChangeDefinitionText(event.target.value)}
+          className="h-80 resize-y font-mono text-[11px] leading-5"
+          spellCheck={false}
+        />
+        {!definition ? <StatusText tone="danger">Invalid Graph JSON</StatusText> : null}
+      </CollapsibleInspectorBlock>
 
       <CollapsibleInspectorBlock title="Graph Settings" open={settingsOpen} onOpenChange={setSettingsOpen}>
         <GraphSettingsEditor settings={graphSettings} onUpdateGraphSettings={onUpdateGraphSettings} />
@@ -817,6 +857,7 @@ function NodeInspector({
   definition,
   nodeConfigText,
   paletteNodeTypes,
+  registry,
   registryLoaded,
   toolDefinitions,
   selectedNode,
@@ -831,6 +872,7 @@ function NodeInspector({
   | "definition"
   | "nodeConfigText"
   | "paletteNodeTypes"
+  | "registry"
   | "registryLoaded"
   | "toolDefinitions"
   | "selectedNode"
@@ -859,6 +901,17 @@ function NodeInspector({
           <div className="line-clamp-4">{descriptionText}</div>
         </section>
       ) : null}
+
+      <InspectorBlock title="State Bindings">
+        <StateBindingsEditor
+          ownerId={selectedNode.id}
+          ports={nodeTypeSchema?.state_ports ?? []}
+          bindings={selectedNode.state}
+          definition={definition}
+          registry={registry}
+          onChange={(state) => onChangeNode((node) => ({ ...node, state }))}
+        />
+      </InspectorBlock>
 
       <CollapsibleInspectorBlock
         title="Config"
@@ -945,8 +998,8 @@ function NodeInspector({
           </div>
         ) : null}
 
-        {nodeTypeSchema?.state_contract ? (
-          <JSONSummary title="State Contract" value={nodeTypeSchema.state_contract} />
+        {(nodeTypeSchema?.state_ports?.length ?? 0) > 0 ? (
+          <JSONSummary title="State Ports" value={nodeTypeSchema?.state_ports} />
         ) : null}
       </CollapsibleInspectorBlock>
 
@@ -986,6 +1039,7 @@ function NodeInspector({
                   type: event.target.value,
                   name: node.name || schema?.title || node.name,
                   config: exampleConfigForSchema(schema?.config_schema),
+                  state: initialStateBindings(schema?.state_ports),
                 };
               })
             }
@@ -1011,6 +1065,323 @@ function NodeInspector({
       </CollapsibleInspectorBlock>
     </>
   );
+}
+
+function StateModulesEditor({
+  definition,
+  registry,
+  onChange,
+}: {
+  definition: GraphDefinition | null;
+  registry: RegistryInfo | null;
+  onChange: (modules: NonNullable<GraphDefinition["state_modules"]>) => void;
+}) {
+  const selected = new Set((definition?.state_modules ?? []).map((module) => `${module.name}\u0000${module.version}`));
+  const modules = registry?.state_modules ?? [];
+
+  if (modules.length === 0) {
+    return (
+      <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-[11px]">
+        {stringifyJSON(definition?.state_modules ?? [])}
+      </pre>
+    );
+  }
+
+  return (
+    <div className="grid gap-2">
+      {modules.map((module) => {
+        const key = `${module.name}\u0000${module.version}`;
+        const checked = selected.has(key);
+        return (
+          <label key={key} className="flex cursor-pointer items-start gap-2 rounded-md border border-border bg-muted/30 p-2">
+            <input
+              type="checkbox"
+              checked={checked}
+              className="mt-0.5"
+              onChange={() => {
+                const current = definition?.state_modules ?? [];
+                onChange(
+                  checked
+                    ? current.filter((item) => item.name !== module.name || item.version !== module.version)
+                    : [...current, { name: module.name, version: module.version }]
+                );
+              }}
+            />
+            <span className="min-w-0">
+              <span className="block truncate font-mono text-xs">{module.name}@{module.version}</span>
+              <span className="block text-[11px] text-muted-foreground">
+                {(module.fields?.length ?? 0)} fields · {(module.capabilities?.length ?? 0)} capabilities
+              </span>
+            </span>
+          </label>
+        );
+      })}
+    </div>
+  );
+}
+
+function StateBindingsEditor({
+  ownerId,
+  ports,
+  bindings,
+  definition,
+  registry,
+  onChange,
+}: {
+  ownerId: string;
+  ports: StatePortDefinition[];
+  bindings: Record<string, StateBinding> | undefined;
+  definition: GraphDefinition | null;
+  registry: RegistryInfo | null;
+  onChange: (bindings: Record<string, StateBinding>) => void;
+}) {
+  if (ports.length === 0) {
+    return <div className="text-xs text-muted-foreground">This component declares no state ports.</div>;
+  }
+
+  return (
+    <div className="grid gap-2">
+      {ports.map((port) => {
+        const binding = bindings?.[port.name];
+        const options = compatibleBindingPaths(port, ownerId, definition, registry);
+        const listId = `state-path-${sanitizeHTMLId(ownerId)}-${sanitizeHTMLId(port.name)}`;
+        const resolvedContract = resolvedStatePortContract(port, binding, registry);
+        return (
+          <div key={port.name} className="rounded-md border border-border bg-muted/30 p-2">
+            <div className="mb-2 flex min-w-0 items-start gap-2">
+              <div className="min-w-0 flex-1">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="font-mono text-xs font-semibold">{port.name}</span>
+                  {port.required ? <StatePortBadge label="required" /> : <StatePortBadge label="optional" />}
+                  {port.mode ? <StatePortBadge label={port.mode} /> : null}
+                  {port.capability ? <StatePortBadge label={port.capability} /> : null}
+                  {!port.capability && stateSchemaType(port.schema) ? <StatePortBadge label={stateSchemaType(port.schema)} /> : null}
+                </div>
+                {port.description ? <div className="mt-1 text-[11px] text-muted-foreground">{port.description}</div> : null}
+              </div>
+              {!binding && !port.required ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-7 w-7 shrink-0"
+                  title={`Bind ${port.name}`}
+                  onClick={() => onChange({ ...(bindings ?? {}), [port.name]: { path: options[0] ?? "" } })}
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                </Button>
+              ) : null}
+            </div>
+
+            {binding || port.required ? (
+              <div className="flex items-center gap-1.5">
+                <Input
+                  list={listId}
+                  aria-label={`${port.name} state path`}
+                  value={binding?.path ?? ""}
+                  placeholder={options[0] ?? "shared.path"}
+                  className={!binding?.path.trim() && port.required ? "border-destructive focus:border-destructive" : undefined}
+                  onChange={(event) => onChange({
+                    ...(bindings ?? {}),
+                    [port.name]: { path: event.target.value },
+                  })}
+                />
+                <datalist id={listId}>
+                  {options.map((path) => (
+                    <option
+                      key={path}
+                      value={path}
+                      label={bindingPathMetadata(path, port, definition, registry)}
+                    />
+                  ))}
+                </datalist>
+                {!port.required ? (
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    title={`Remove ${port.name} binding`}
+                    onClick={() => {
+                      const next = { ...(bindings ?? {}) };
+                      delete next[port.name];
+                      onChange(next);
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
+
+            {binding?.path.trim() ? (
+              <div className="mt-1 truncate text-[10px] text-muted-foreground">
+                {bindingPathMetadata(binding.path.trim(), port, definition, registry)}
+              </div>
+            ) : null}
+
+            {resolvedContract.length > 0 ? (
+              <details className="group mt-2">
+                <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground [&::-webkit-details-marker]:hidden">
+                  <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                  Resolved Contract · {resolvedContract.length} fields
+                </summary>
+                <div className="mt-1 grid gap-1 border-l border-border pl-2">
+                  {resolvedContract.map((field) => (
+                    <div key={`${field.path}:${field.mode}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 text-[11px]">
+                      <span className="truncate font-mono">{field.path}</span>
+                      <span className="text-muted-foreground">
+                        {[field.mode, field.required ? "required" : "", field.type, field.mergeStrategy].filter(Boolean).join(" · ")}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : (port.contract?.fields?.length ?? 0) > 0 ? (
+              <details className="group mt-2">
+                <summary className="flex cursor-pointer list-none items-center gap-1 text-[11px] text-muted-foreground [&::-webkit-details-marker]:hidden">
+                  <ChevronRight className="h-3 w-3 transition-transform group-open:rotate-90" />
+                  Relative Contract · {port.contract?.fields?.length ?? 0} fields
+                </summary>
+                <div className="mt-1 grid gap-1 border-l border-border pl-2">
+                  {port.contract?.fields?.map((field) => (
+                    <div key={`${field.path}:${field.mode}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 text-[11px]">
+                      <span className="truncate font-mono">{field.path}</span>
+                      <span className="text-muted-foreground">{field.mode}{field.required ? " · required" : ""}</span>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function StatePortBadge({ label }: { label: string }) {
+  return <span className="max-w-full truncate rounded bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{label}</span>;
+}
+
+function compatibleBindingPaths(
+  port: StatePortDefinition,
+  ownerId: string,
+  definition: GraphDefinition | null,
+  registry: RegistryInfo | null
+): string[] {
+  const options: string[] = [];
+  const add = (path: string | undefined) => {
+    const value = path?.trim();
+    if (value && !options.includes(value)) options.push(value);
+  };
+  const suffix = port.capability ? capabilityPathSuffix(port.capability) : port.name;
+  add(`shared.${suffix}`);
+  add(`scopes.${ownerId}.${suffix}`);
+
+  const selectedModuleKeys = new Set(
+    (definition?.state_modules ?? []).map((module) => `${module.name}\u0000${module.version}`)
+  );
+  if (!port.capability) {
+    for (const module of registry?.state_modules ?? []) {
+      if (!selectedModuleKeys.has(`${module.name}\u0000${module.version}`)) continue;
+      for (const field of module.fields ?? []) {
+        if (stateSchemasCompatible(field.schema, port.schema)) add(field.path);
+      }
+    }
+  }
+
+  for (const node of definition?.nodes ?? []) {
+    const nodeType = registry?.node_types.find((item) => item.type === node.type);
+    for (const [name, binding] of Object.entries(node.state ?? {})) {
+      const candidatePort = nodeType?.state_ports?.find((item) => item.name === name);
+      if (statePortsCompatible(port, candidatePort) && (Boolean(port.capability) || statePortWrites(candidatePort))) {
+        add(binding.path);
+      }
+    }
+  }
+  for (const edge of definition?.edges ?? []) {
+    const condition = edge.condition;
+    if (!condition) continue;
+    const conditionType = registry?.conditions.find((item) => item.type === condition.type);
+    for (const [name, binding] of Object.entries(condition.state ?? {})) {
+      const candidatePort = conditionType?.state_ports?.find((item) => item.name === name);
+      if (port.capability && statePortsCompatible(port, candidatePort)) add(binding.path);
+    }
+  }
+  return options;
+}
+
+function statePortsCompatible(left: StatePortDefinition, right: StatePortDefinition | undefined): boolean {
+  if (!right) return false;
+  if (left.capability || right.capability) return Boolean(left.capability) && left.capability === right.capability;
+  return stateSchemasCompatible(left.schema, right.schema);
+}
+
+function bindingPathMetadata(
+  path: string,
+  port: StatePortDefinition,
+  definition: GraphDefinition | null,
+  registry: RegistryInfo | null
+): string {
+  const details: string[] = [];
+  if (port.capability) details.push(`capability ${port.capability}`);
+  else if (stateSchemaType(port.schema)) details.push(`type ${stateSchemaType(port.schema)}`);
+
+  const modules = (registry?.state_modules ?? [])
+    .filter((module) => module.fields?.some((field) => field.path === path))
+    .map((module) => `${module.name}@${module.version}`);
+  if (modules.length > 0) details.push(`module ${modules.join(", ")}`);
+
+  const producers: string[] = [];
+  const consumers: string[] = [];
+  for (const node of definition?.nodes ?? []) {
+    const nodeType = registry?.node_types.find((item) => item.type === node.type);
+    for (const [name, binding] of Object.entries(node.state ?? {})) {
+      if (binding.path.trim() !== path) continue;
+      const candidatePort = nodeType?.state_ports?.find((item) => item.name === name);
+      if (statePortWrites(candidatePort)) producers.push(node.id);
+      if (statePortReads(candidatePort)) consumers.push(node.id);
+    }
+  }
+  if (producers.length > 0) details.push(`produced by ${uniqueStrings(producers).join(", ")}`);
+  if (consumers.length > 0) details.push(`consumed by ${uniqueStrings(consumers).join(", ")}`);
+  return details.join(" · ") || "custom absolute path";
+}
+
+function statePortReads(port: StatePortDefinition | undefined): boolean {
+  if (!port) return false;
+  if (port.capability) return (port.contract?.fields ?? []).some((field) => field.mode === "read" || field.mode === "read_write");
+  return port.mode === "read" || port.mode === "read_write";
+}
+
+function statePortWrites(port: StatePortDefinition | undefined): boolean {
+  if (!port) return false;
+  if (port.capability) return (port.contract?.fields ?? []).some((field) => field.mode === "write" || field.mode === "read_write");
+  return port.mode === "write" || port.mode === "read_write";
+}
+
+function stateSchemasCompatible(
+  left: Record<string, unknown> | undefined,
+  right: Record<string, unknown> | undefined
+): boolean {
+  const leftType = stateSchemaType(left);
+  const rightType = stateSchemaType(right);
+  return !leftType || !rightType || leftType === rightType;
+}
+
+function stateSchemaType(schema: Record<string, unknown> | undefined): string {
+  return typeof schema?.type === "string" ? schema.type.trim() : "";
+}
+
+function capabilityPathSuffix(capability: string): string {
+  const parts = capability.split(".").filter(Boolean);
+  const tail = parts.at(-1)?.match(/^v\d+$/i) ? parts.at(-2) : parts.at(-1);
+  return tail?.replace(/[^a-zA-Z0-9_-]+/g, "_") || "capability";
+}
+
+function sanitizeHTMLId(value: string): string {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "-");
 }
 
 function DetailGroup({ title, rows }: { title: string; rows: Array<[string, string]> }) {
@@ -1244,6 +1615,7 @@ function EdgeInspector({
   conditions,
   definition,
   edgeConfigText,
+  registry,
   selectedEdge,
   selectedVirtualEdge,
   visibleVirtualNodes,
@@ -1257,6 +1629,7 @@ function EdgeInspector({
   | "conditions"
   | "definition"
   | "edgeConfigText"
+  | "registry"
   | "selectedEdge"
   | "selectedVirtualEdge"
   | "visibleVirtualNodes"
@@ -1270,6 +1643,7 @@ function EdgeInspector({
   const activeEdge = selectedEdge ?? selectedVirtualEdge;
   const selectedCondition = selectedEdge?.condition ?? selectedVirtualEdge?.condition;
   const selectedConditionType = selectedCondition?.type;
+  const selectedConditionSchema = conditions.find((condition) => condition.type === selectedConditionType);
   const conditionSchema = schemaForCondition(conditions, selectedConditionType);
   const rawConditionConfig = selectedCondition?.config;
   const conditionConfig = isPlainRecord(rawConditionConfig) ? rawConditionConfig : {};
@@ -1304,7 +1678,13 @@ function EdgeInspector({
 
   function changeCondition(type: string) {
     const schema = conditions.find((condition) => condition.type === type);
-    const condition = type ? { type, config: exampleConfigForSchema(schema?.config_schema) } : undefined;
+    const condition = type
+      ? {
+          type,
+          config: exampleConfigForSchema(schema?.config_schema),
+          state: initialStateBindings(schema?.state_ports),
+        }
+      : undefined;
     if (selectedVirtualEdge) {
       onChangeVirtualEdge((edge) => ({ ...edge, condition }));
       return;
@@ -1378,21 +1758,45 @@ function EdgeInspector({
       </InspectorBlock>
 
       {selectedCondition ? (
-        <InspectorBlock title="Condition Config">
-          <JsonSchemaForm
-            schema={conditionSchema}
-            value={conditionConfig}
-            onChange={changeConditionConfig}
-          />
-          <JsonConfigEditor
-            open={jsonOpen}
-            value={edgeConfigText}
-            applyLabel="Apply Condition"
-            onOpenChange={setJsonOpen}
-            onChange={onChangeEdgeConfigText}
-            onApply={onApplyEdgeConfig}
-          />
-        </InspectorBlock>
+        <>
+          <InspectorBlock title="State Bindings">
+            <StateBindingsEditor
+              ownerId={`${activeEdge?.from ?? "edge"}_condition`}
+              ports={selectedConditionSchema?.state_ports ?? []}
+              bindings={selectedCondition.state}
+              definition={definition}
+              registry={registry}
+              onChange={(state) => {
+                if (selectedVirtualEdge) {
+                  onChangeVirtualEdge((edge) => ({
+                    ...edge,
+                    condition: edge.condition ? { ...edge.condition, state } : edge.condition,
+                  }));
+                  return;
+                }
+                onChangeEdge((edge) => ({
+                  ...edge,
+                  condition: edge.condition ? { ...edge.condition, state } : edge.condition,
+                }));
+              }}
+            />
+          </InspectorBlock>
+          <InspectorBlock title="Condition Config">
+            <JsonSchemaForm
+              schema={conditionSchema}
+              value={conditionConfig}
+              onChange={changeConditionConfig}
+            />
+            <JsonConfigEditor
+              open={jsonOpen}
+              value={edgeConfigText}
+              applyLabel="Apply Condition"
+              onOpenChange={setJsonOpen}
+              onChange={onChangeEdgeConfigText}
+              onApply={onApplyEdgeConfig}
+            />
+          </InspectorBlock>
+        </>
       ) : null}
     </>
   );

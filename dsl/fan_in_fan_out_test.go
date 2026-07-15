@@ -9,9 +9,10 @@ func TestGraphDefinitionRejectsDuplicateEdges(t *testing.T) {
 	t.Parallel()
 
 	def := GraphDefinition{
-		Version:     GraphDefinitionVersion,
-		EntryPoint:  "router",
-		FinishPoint: "a",
+		StateModules: []StateModuleRef{{Name: "test", Version: "1"}},
+		Version:      GraphDefinitionVersion,
+		EntryPoint:   "router",
+		FinishPoint:  "a",
 		Nodes: []GraphNodeSpec{
 			{ID: "router", Type: "router"},
 			{ID: "a", Type: "worker"},
@@ -32,9 +33,10 @@ func TestGraphDefinitionAllowsFanOutEdges(t *testing.T) {
 	t.Parallel()
 
 	def := GraphDefinition{
-		Version:     GraphDefinitionVersion,
-		EntryPoint:  "router",
-		FinishPoint: "b",
+		StateModules: []StateModuleRef{{Name: "test", Version: "1"}},
+		Version:      GraphDefinitionVersion,
+		EntryPoint:   "router",
+		FinishPoint:  "b",
 		Nodes: []GraphNodeSpec{
 			{ID: "router", Type: "router"},
 			{ID: "a", Type: "worker"},

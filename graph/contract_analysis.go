@@ -60,11 +60,12 @@ func (g *Graph) contractAnalysisGraph() graphbuild.ContractAnalysisGraph {
 	}
 
 	return graphbuild.ContractAnalysisGraph{
-		EntryPoint:        g.entryPoint,
-		EndNode:           langgraph.END,
-		InitialStatePaths: append([]string(nil), g.initialStatePaths...),
-		Edges:             defaultEdges,
-		ConditionalEdges:  conditionalEdges,
-		NodeContracts:     g.nodeContracts,
+		EntryPoint:         g.entryPoint,
+		EndNode:            langgraph.END,
+		InitialStatePaths:  append([]string(nil), g.initialStatePaths...),
+		Edges:              defaultEdges,
+		ConditionalEdges:   conditionalEdges,
+		NodeContracts:      g.nodeContracts,
+		ConditionContracts: g.conditionContracts,
 	}
 }

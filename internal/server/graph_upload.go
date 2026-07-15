@@ -25,6 +25,12 @@ type graphUploadRequest struct {
 	GraphVersion string
 }
 
+type graphUploadEnvelope struct {
+	Definition   json.RawMessage `json:"definition"`
+	GraphID      string          `json:"graph_id"`
+	GraphVersion string          `json:"graph_version"`
+}
+
 type graphLoadResponse struct {
 	Graph         graphInfo               `json:"graph"`
 	Definition    dsl.GraphDefinition     `json:"definition"`
@@ -70,30 +76,37 @@ func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
 		return graphUploadRequest{}, fmt.Errorf("graph definition is required")
 	}
 
-	var raw map[string]json.RawMessage
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return graphUploadRequest{}, fmt.Errorf("invalid JSON body: %w", err)
+	var envelope graphUploadEnvelope
+	if err := decodeStrictJSON(body, &envelope); err != nil {
+		return graphUploadRequest{}, fmt.Errorf("invalid graph upload: %w", err)
 	}
-
-	req := graphUploadRequest{}
-	req.GraphID = stringField(raw, "graph_id", "id")
-	req.GraphVersion = stringField(raw, "graph_version")
-
-	switch {
-	case len(raw["definition"]) > 0:
-		if err := json.Unmarshal(raw["definition"], &req.Definition); err != nil {
-			return graphUploadRequest{}, fmt.Errorf("invalid definition: %w", err)
-		}
-	case len(raw["graph"]) > 0:
-		if err := json.Unmarshal(raw["graph"], &req.Definition); err != nil {
-			return graphUploadRequest{}, fmt.Errorf("invalid graph: %w", err)
-		}
-	default:
-		if err := json.Unmarshal(body, &req.Definition); err != nil {
-			return graphUploadRequest{}, fmt.Errorf("invalid graph definition: %w", err)
-		}
+	if len(envelope.Definition) == 0 {
+		return graphUploadRequest{}, fmt.Errorf("graph upload definition is required")
 	}
-	return req, nil
+	definition, err := dsl.DeserializeGraphDefinition(envelope.Definition)
+	if err != nil {
+		return graphUploadRequest{}, fmt.Errorf("invalid definition: %w", err)
+	}
+	return graphUploadRequest{
+		Definition:   definition,
+		GraphID:      strings.TrimSpace(envelope.GraphID),
+		GraphVersion: strings.TrimSpace(envelope.GraphVersion),
+	}, nil
+}
+
+func decodeStrictJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("JSON body contains multiple values")
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadResponse, error) {
@@ -117,11 +130,11 @@ func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadRespon
 	graphVersion := firstNonEmpty(req.GraphVersion, metadataString(def.Metadata, "graph_version"), s.cfg.GraphVersion, runtime.DefaultGraphVersion)
 	runnerBaseDir := s.nextUploadedGraphBaseDir(graphID)
 	graphSessionID := graphSessionIDFromBaseDir(runnerBaseDir)
-	graphHash, err := dsl.SemanticGraphHash(def)
+	graphHash, err := graph.SemanticHash()
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("hash graph definition: %w", err)
 	}
-	graphSnapshotHash, err := dsl.SnapshotGraphHash(def)
+	graphSnapshotHash, err := graph.SnapshotHash()
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("hash graph snapshot: %w", err)
 	}
@@ -208,21 +221,6 @@ func writeGraphSessionSnapshot(baseDir string, manifest graphSessionManifest, de
 		return fmt.Errorf("write graph session manifest: %w", err)
 	}
 	return nil
-}
-
-func stringField(raw map[string]json.RawMessage, keys ...string) string {
-	for _, key := range keys {
-		if len(raw[key]) == 0 {
-			continue
-		}
-		var text string
-		if err := json.Unmarshal(raw[key], &text); err == nil {
-			if text = strings.TrimSpace(text); text != "" {
-				return text
-			}
-		}
-	}
-	return ""
 }
 
 func metadataString(metadata map[string]any, key string) string {

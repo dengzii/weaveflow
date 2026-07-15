@@ -7,7 +7,7 @@ export interface GraphDefinition {
   version?: string;
   name?: string;
   description?: string;
-  state_schema?: string;
+  state_modules?: StateModuleRef[];
   entry_point?: string;
   finish_point?: string;
   nodes: GraphNodeSpec[];
@@ -21,6 +21,7 @@ export interface GraphNodeSpec {
   type?: string;
   description?: string;
   config?: Record<string, unknown>;
+  state?: Record<string, StateBinding>;
 }
 
 export interface GraphEdgeSpec {
@@ -32,6 +33,16 @@ export interface GraphEdgeSpec {
 export interface GraphConditionSpec {
   type: string;
   config?: Record<string, unknown>;
+  state?: Record<string, StateBinding>;
+}
+
+export interface StateModuleRef {
+  name: string;
+  version: string;
+}
+
+export interface StateBinding {
+  path: string;
 }
 
 export interface GraphInfo {
@@ -114,7 +125,8 @@ export interface InitialStateRequirement {
 }
 
 export interface RegistryInfo {
-  state_fields: StateFieldDefinition[];
+  state_modules: StateModuleDefinition[];
+  capabilities: StateCapabilityDefinition[];
   node_types: NodeTypeSchema[];
   conditions: ConditionSchema[];
   graph_schema: Record<string, unknown>;
@@ -133,9 +145,52 @@ export interface ToolDefinition {
 }
 
 export interface StateFieldDefinition {
-  name: string;
+  path: string;
   description?: string;
   schema: Record<string, unknown>;
+}
+
+export interface StateCapabilityFieldDefinition {
+  name: string;
+  schema: Record<string, unknown>;
+  merge_strategy?: StateMergeStrategy;
+}
+
+export interface StateCapabilityDefinition {
+  id: string;
+  schema: Record<string, unknown>;
+  fields: StateCapabilityFieldDefinition[];
+}
+
+export interface StateModuleDefinition {
+  name: string;
+  version: string;
+  fields?: StateFieldDefinition[];
+  capabilities?: StateCapabilityDefinition[];
+}
+
+export type StateAccessMode = "read" | "write" | "read_write";
+export type StateMergeStrategy = "replace" | "merge" | "append";
+
+export interface RelativeStateFieldRef {
+  path: string;
+  mode: StateAccessMode;
+  required?: boolean;
+}
+
+export interface RelativeStateContract {
+  fields?: RelativeStateFieldRef[];
+}
+
+export interface StatePortDefinition {
+  name: string;
+  description?: string;
+  required?: boolean;
+  schema?: Record<string, unknown>;
+  mode?: StateAccessMode;
+  capability?: string;
+  contract?: RelativeStateContract;
+  merge_strategy?: StateMergeStrategy;
 }
 
 export interface NodeTypeSchema {
@@ -143,7 +198,7 @@ export interface NodeTypeSchema {
   title?: string;
   description?: string;
   config_schema?: Record<string, unknown>;
-  state_contract?: unknown;
+  state_ports?: StatePortDefinition[];
 }
 
 export interface ConditionSchema {
@@ -151,6 +206,7 @@ export interface ConditionSchema {
   title?: string;
   description?: string;
   config_schema?: Record<string, unknown>;
+  state_ports?: StatePortDefinition[];
 }
 
 export interface RunRecord {

@@ -32,55 +32,61 @@ type (
 	ToolHandler   = core.ToolHandler
 	MemoryManager = memory.Manager
 
-	GraphDefinition        = dsl.GraphDefinition
-	GraphInstanceConfig    = dsl.GraphInstanceConfig
-	GraphNodeSpec          = dsl.GraphNodeSpec
-	GraphEdgeSpec          = dsl.GraphEdgeSpec
-	GraphConditionSpec     = dsl.GraphConditionSpec
-	StateFieldDefinition   = dsl.StateFieldDefinition
-	StateContract          = dsl.StateContract
-	GraphResolver          = registry.GraphResolver
-	Registry               = registry.Registry
-	NodeTypeDefinition     = registry.NodeTypeDefinition
-	ConditionDefinition    = registry.ConditionDefinition
-	EdgeCondition          = registry.EdgeCondition
-	EdgeConditionMatcher   = registry.EdgeConditionMatcher
-	GraphRunner            = runtime.GraphRunner
-	ExecutionStore         = runtime.ExecutionStore
-	CheckpointStore        = runtime.CheckpointStore
-	EventSink              = runtime.EventSink
-	EventReader            = runtime.EventReader
-	ArtifactStore          = runtime.ArtifactStore
-	FileExecutionStore     = runtime.FileExecutionStore
-	FileCheckpointStore    = runtime.FileCheckpointStore
-	FileEventSink          = runtime.FileEventSink
-	FileArtifactStore      = runtime.FileArtifactStore
-	NoopExecutionStore     = runtime.NoopExecutionStore
-	NoopCheckpointStore    = runtime.NoopCheckpointStore
-	NoopArtifactStore      = runtime.NoopArtifactStore
-	NoopEventSink          = runtime.NoopEventSink
-	RunStatus              = runtime.RunStatus
-	StepStatus             = runtime.StepStatus
-	CheckpointStage        = runtime.CheckpointStage
-	EventType              = runtime.EventType
-	RunRecord              = runtime.RunRecord
-	StepRecord             = runtime.StepRecord
-	CheckpointRecord       = runtime.CheckpointRecord
-	RestoredCheckpoint     = runtime.RestoredCheckpoint
-	Artifact               = runtime.Artifact
-	Event                  = runtime.Event
-	WarningRecord          = runtime.WarningRecord
-	RunFilter              = runtime.RunFilter
-	Breakpoint             = runtime.Breakpoint
-	BreakpointHit          = runtime.BreakpointHit
-	RunnerMetadata         = runtime.RunnerMetadata
-	ContractPolicy         = runtime.ContractPolicy
-	ContractValidationMode = core.ContractValidationMode
-	ToolCallMetadata       = core.ToolCallMetadata
-	State                  = state.State
-	StateCodec             = state.StateCodec
-	ArtifactRef            = state.ArtifactRef
-	RuntimeState           = state.RuntimeState
+	GraphDefinition           = dsl.GraphDefinition
+	GraphInstanceConfig       = dsl.GraphInstanceConfig
+	GraphNodeSpec             = dsl.GraphNodeSpec
+	GraphEdgeSpec             = dsl.GraphEdgeSpec
+	GraphConditionSpec        = dsl.GraphConditionSpec
+	StateFieldDefinition      = dsl.StateFieldDefinition
+	StateModuleDefinition     = dsl.StateModuleDefinition
+	StateModuleRef            = dsl.StateModuleRef
+	StateCapabilityDefinition = dsl.StateCapabilityDefinition
+	StatePortDefinition       = dsl.StatePortDefinition
+	StateBinding              = dsl.StateBinding
+	StateContract             = dsl.StateContract
+	GraphResolver             = registry.GraphResolver
+	Registry                  = registry.Registry
+	NodeTypeDefinition        = registry.NodeTypeDefinition
+	ConditionDefinition       = registry.ConditionDefinition
+	EdgeCondition             = registry.EdgeCondition
+	EdgeConditionMatcher      = registry.EdgeConditionMatcher
+	GraphRunner               = runtime.GraphRunner
+	ExecutionStore            = runtime.ExecutionStore
+	CheckpointStore           = runtime.CheckpointStore
+	EventSink                 = runtime.EventSink
+	EventReader               = runtime.EventReader
+	ArtifactStore             = runtime.ArtifactStore
+	FileExecutionStore        = runtime.FileExecutionStore
+	FileCheckpointStore       = runtime.FileCheckpointStore
+	FileEventSink             = runtime.FileEventSink
+	FileArtifactStore         = runtime.FileArtifactStore
+	NoopExecutionStore        = runtime.NoopExecutionStore
+	NoopCheckpointStore       = runtime.NoopCheckpointStore
+	NoopArtifactStore         = runtime.NoopArtifactStore
+	NoopEventSink             = runtime.NoopEventSink
+	RunStatus                 = runtime.RunStatus
+	StepStatus                = runtime.StepStatus
+	CheckpointStage           = runtime.CheckpointStage
+	EventType                 = runtime.EventType
+	RunRecord                 = runtime.RunRecord
+	StepRecord                = runtime.StepRecord
+	CheckpointRecord          = runtime.CheckpointRecord
+	RestoredCheckpoint        = runtime.RestoredCheckpoint
+	Artifact                  = runtime.Artifact
+	Event                     = runtime.Event
+	WarningRecord             = runtime.WarningRecord
+	RunFilter                 = runtime.RunFilter
+	Breakpoint                = runtime.Breakpoint
+	BreakpointHit             = runtime.BreakpointHit
+	RunnerMetadata            = runtime.RunnerMetadata
+	ContractPolicy            = runtime.ContractPolicy
+	ContractValidationMode    = core.ContractValidationMode
+	ToolCallMetadata          = core.ToolCallMetadata
+	State                     = state.State
+	Path                      = state.Path
+	StateCodec                = state.StateCodec
+	ArtifactRef               = state.ArtifactRef
+	RuntimeState              = state.RuntimeState
 
 	Expression                = builtin.Expression
 	ExpressionConditionConfig = builtin.ExpressionConditionConfig
@@ -183,16 +189,16 @@ func NewEdgeCondition(spec GraphConditionSpec, match EdgeConditionMatcher) EdgeC
 	return registry.NewEdgeCondition(spec, match)
 }
 
-func LastMessageHasToolCalls(scopes ...string) EdgeCondition {
-	return builtin.LastMessageHasToolCalls(scopes...)
+func ConversationHasToolCalls(path Path) EdgeCondition {
+	return builtin.ConversationHasToolCalls(path)
 }
 
-func HasFinalAnswer(scopes ...string) EdgeCondition {
-	return builtin.HasFinalAnswer(scopes...)
+func ConversationHasFinalAnswer(path Path) EdgeCondition {
+	return builtin.ConversationHasFinalAnswer(path)
 }
 
-func ExpressionConditions(config ExpressionConditionConfig) (EdgeCondition, error) {
-	return builtin.ExpressionConditions(config)
+func ExpressionConditions(path Path, config ExpressionConditionConfig) (EdgeCondition, error) {
+	return builtin.ExpressionConditions(path, config)
 }
 
 func ParseExpressionConditionConfig(configMap map[string]any) (ExpressionConditionConfig, error) {
@@ -621,11 +627,12 @@ type runnerConfig struct {
 
 func defaultRunnerConfig() runnerConfig {
 	return runnerConfig{
-		executionStore:  NewNoopExecutionStore(),
-		checkpointStore: NewNoopCheckpointStore(),
-		eventSink:       NewNoopEventSink(),
-		artifactStore:   NewNoopArtifactStore(),
-		codec:           NewJSONStateCodec(""),
+		executionStore:     NewNoopExecutionStore(),
+		checkpointStore:    NewNoopCheckpointStore(),
+		eventSink:          NewNoopEventSink(),
+		artifactStore:      NewNoopArtifactStore(),
+		codec:              NewJSONStateCodec(""),
+		contractValidation: ContractValidationStrict,
 	}
 }
 

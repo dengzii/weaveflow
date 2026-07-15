@@ -179,7 +179,7 @@ func graphModelSettingsFromContext(ctx context.Context) []graphModelSettings {
 		}
 		if model.ID == core.DefaultModelID {
 			model.Model = strings.TrimSpace(os.Getenv("OPENAI_MODEL"))
-			model.BaseURL = firstNonEmpty(os.Getenv("OPENAI_BASE_URL"), os.Getenv("OPENAI_API_BASE"))
+			model.BaseURL = strings.TrimSpace(os.Getenv("OPENAI_BASE_URL"))
 		}
 		out = append(out, model)
 	}
@@ -191,7 +191,6 @@ func currentGraphEnvironment() map[string]string {
 	keys := []string{
 		"OPENAI_MODEL",
 		"OPENAI_BASE_URL",
-		"OPENAI_API_BASE",
 		"OPENAI_ORGANIZATION",
 	}
 	for _, preset := range graphEnvironmentPresets() {

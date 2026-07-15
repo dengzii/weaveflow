@@ -23,6 +23,9 @@ func (m *Model) GenerateContent(ctx context.Context, messages []llms.MessageCont
 	for _, option := range options {
 		option(&opts)
 	}
+	if err := validateCallOptions(opts); err != nil {
+		return nil, err
+	}
 
 	thinking := resolveThinkingSettings(m, &opts)
 
@@ -112,7 +115,6 @@ func (m *Model) GenerateContent(ctx context.Context, messages []llms.MessageCont
 		}
 		if len(parsed.ToolCalls) > 0 {
 			choice.ToolCalls = parsed.ToolCalls
-			choice.FuncCall = parsed.ToolCalls[0].FunctionCall
 		}
 	}
 
@@ -153,7 +155,7 @@ func generateOptionsFromCallOptions(opts llms.CallOptions) GenerateOptions {
 }
 
 func collectPromptTools(opts llms.CallOptions) []llms.Tool {
-	tools := make([]llms.Tool, 0, len(opts.Tools)+len(opts.Functions))
+	tools := make([]llms.Tool, 0, len(opts.Tools))
 	for _, fn := range opts.Tools {
 		if fn.Function == nil {
 			continue
@@ -168,18 +170,17 @@ func collectPromptTools(opts llms.CallOptions) []llms.Tool {
 			},
 		})
 	}
-	for _, fn := range opts.Functions {
-		tools = append(tools, llms.Tool{
-			Type: "function",
-			Function: &llms.FunctionDefinition{
-				Name:        fn.Name,
-				Description: fn.Description,
-				Parameters:  fn.Parameters,
-				Strict:      fn.Strict,
-			},
-		})
-	}
 	return tools
+}
+
+func validateCallOptions(opts llms.CallOptions) error {
+	if len(opts.Functions) > 0 {
+		return fmt.Errorf("legacy functions are unsupported; use tools")
+	}
+	if opts.FunctionCallBehavior != "" {
+		return fmt.Errorf("legacy function_call is unsupported; use tool_choice")
+	}
+	return nil
 }
 
 type thinkingSettings struct {
@@ -306,8 +307,6 @@ func promptRole(role llms.ChatMessageType) (string, error) {
 		return "User", nil
 	case llms.ChatMessageTypeAI:
 		return "Assistant", nil
-	case llms.ChatMessageTypeFunction:
-		return "Function", nil
 	case llms.ChatMessageTypeTool:
 		return "Tool", nil
 	default:
@@ -498,12 +497,6 @@ func parseStructuredResponse(raw string) (structuredResponse, bool) {
 		Content: firstString(payload, "content", "answer", "response"),
 	}
 
-	if functionCall, ok := payload["function_call"]; ok {
-		if toolCall, ok := parseFunctionCall(functionCall, "call_1"); ok {
-			response.ToolCalls = append(response.ToolCalls, toolCall)
-		}
-	}
-
 	if toolCalls, ok := payload["tool_calls"].([]any); ok {
 		for index, entry := range toolCalls {
 			if toolCall, ok := parseToolCall(entry, index+1); ok {
@@ -565,32 +558,6 @@ func parseToolCall(value any, index int) (llms.ToolCall, bool) {
 	return llms.ToolCall{
 		ID:   id,
 		Type: nonEmptyString(asString(object["type"]), "function"),
-		FunctionCall: &llms.FunctionCall{
-			Name:      name,
-			Arguments: arguments,
-		},
-	}, true
-}
-
-func parseFunctionCall(value any, defaultID string) (llms.ToolCall, bool) {
-	object, ok := value.(map[string]any)
-	if !ok {
-		return llms.ToolCall{}, false
-	}
-
-	name := asString(object["name"])
-	if name == "" {
-		return llms.ToolCall{}, false
-	}
-
-	arguments, err := marshalArguments(object["arguments"])
-	if err != nil {
-		return llms.ToolCall{}, false
-	}
-
-	return llms.ToolCall{
-		ID:   defaultID,
-		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      name,
 			Arguments: arguments,

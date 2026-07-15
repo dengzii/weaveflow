@@ -4,11 +4,11 @@ import "testing"
 
 func TestSemanticGraphHashIgnoresMetadataAndNodeOrder(t *testing.T) {
 	base := GraphDefinition{
-		Version:     GraphDefinitionVersion,
-		Name:        "hash-graph",
-		StateSchema: CommonStateSchemaID,
-		EntryPoint:  "start",
-		FinishPoint: "done",
+		Version:      GraphDefinitionVersion,
+		Name:         "hash-graph",
+		StateModules: []StateModuleRef{{Name: "test", Version: "1"}},
+		EntryPoint:   "start",
+		FinishPoint:  "done",
 		Nodes: []GraphNodeSpec{
 			{
 				ID:   "start",
@@ -63,11 +63,11 @@ func TestSemanticGraphHashIgnoresMetadataAndNodeOrder(t *testing.T) {
 
 func TestSnapshotGraphHashIncludesMetadata(t *testing.T) {
 	base := GraphDefinition{
-		Version:     GraphDefinitionVersion,
-		Name:        "hash-graph",
-		StateSchema: CommonStateSchemaID,
-		EntryPoint:  "start",
-		FinishPoint: "start",
+		Version:      GraphDefinitionVersion,
+		Name:         "hash-graph",
+		StateModules: []StateModuleRef{{Name: "test", Version: "1"}},
+		EntryPoint:   "start",
+		FinishPoint:  "start",
 		Nodes: []GraphNodeSpec{
 			{ID: "start", Name: "Start", Type: "input"},
 		},
@@ -95,11 +95,11 @@ func TestSnapshotGraphHashIncludesMetadata(t *testing.T) {
 
 func TestSemanticGraphHashPreservesEdgeOrder(t *testing.T) {
 	base := GraphDefinition{
-		Version:     GraphDefinitionVersion,
-		Name:        "hash-graph",
-		StateSchema: CommonStateSchemaID,
-		EntryPoint:  "router",
-		FinishPoint: "router",
+		Version:      GraphDefinitionVersion,
+		Name:         "hash-graph",
+		StateModules: []StateModuleRef{{Name: "test", Version: "1"}},
+		EntryPoint:   "router",
+		FinishPoint:  "router",
 		Nodes: []GraphNodeSpec{
 			{ID: "router", Name: "Router", Type: "router"},
 			{ID: "left", Name: "Left", Type: "worker"},
@@ -123,5 +123,109 @@ func TestSemanticGraphHashPreservesEdgeOrder(t *testing.T) {
 	}
 	if left == right {
 		t.Fatalf("semantic hash did not change after edge order change: %q", left)
+	}
+}
+
+func TestSemanticGraphHashCanonicalizesModulesAndIncludesVersions(t *testing.T) {
+	t.Parallel()
+	base := GraphDefinition{
+		Version: GraphDefinitionVersion,
+		StateModules: []StateModuleRef{
+			{Name: "example.protocols", Version: "1"},
+			{Name: "example.memory", Version: "2"},
+		},
+		Nodes: []GraphNodeSpec{{
+			ID: "node", Type: "node",
+			State: map[string]StateBinding{"input": {Path: "shared.input"}},
+		}},
+	}
+	reordered := base
+	reordered.StateModules = []StateModuleRef{base.StateModules[1], base.StateModules[0]}
+	changedVersion := base
+	changedVersion.StateModules = []StateModuleRef{
+		{Name: "example.protocols", Version: "1"},
+		{Name: "example.memory", Version: "3"},
+	}
+	changedBinding := base
+	changedBinding.Nodes = []GraphNodeSpec{{
+		ID: "node", Type: "node",
+		State: map[string]StateBinding{"input": {Path: "shared.other"}},
+	}}
+	spacedBinding := base
+	spacedBinding.Nodes = []GraphNodeSpec{{
+		ID: "node", Type: "node",
+		State: map[string]StateBinding{"input": {Path: "  shared.input  "}},
+	}}
+
+	baseHash, err := SemanticGraphHash(base)
+	if err != nil {
+		t.Fatalf("semantic hash base: %v", err)
+	}
+	reorderedHash, err := SemanticGraphHash(reordered)
+	if err != nil {
+		t.Fatalf("semantic hash reordered modules: %v", err)
+	}
+	if reorderedHash != baseHash {
+		t.Fatalf("module order changed semantic hash: %q != %q", reorderedHash, baseHash)
+	}
+	versionHash, err := SemanticGraphHash(changedVersion)
+	if err != nil {
+		t.Fatalf("semantic hash changed version: %v", err)
+	}
+	if versionHash == baseHash {
+		t.Fatal("module version did not change semantic hash")
+	}
+	bindingHash, err := SemanticGraphHash(changedBinding)
+	if err != nil {
+		t.Fatalf("semantic hash changed binding: %v", err)
+	}
+	if bindingHash == baseHash {
+		t.Fatal("state binding did not change semantic hash")
+	}
+	spacedHash, err := SemanticGraphHash(spacedBinding)
+	if err != nil {
+		t.Fatalf("semantic hash spaced binding: %v", err)
+	}
+	if spacedHash != baseHash {
+		t.Fatalf("binding whitespace changed semantic hash: %q != %q", spacedHash, baseHash)
+	}
+}
+
+func TestSemanticGraphHashIncludesResolvedCapabilityAndContract(t *testing.T) {
+	t.Parallel()
+	def := GraphDefinition{
+		Version:      GraphDefinitionVersion,
+		StateModules: []StateModuleRef{{Name: "test", Version: "1"}},
+		Nodes: []GraphNodeSpec{{
+			ID: "node", Type: "consumer", State: map[string]StateBinding{"root": {Path: "shared.thread"}},
+		}},
+	}
+	base := []StateBindingSemantic{{
+		ComponentType: "node", ComponentID: "node", Port: "root", Path: "shared.thread", Capability: "test.conversation.v1",
+		Contract: []StateContractSemanticField{{Path: "shared.thread.messages", Mode: StateAccessReadWrite, MergeStrategy: StateMergeReplace, Type: "array"}},
+	}}
+	reordered := append([]StateBindingSemantic(nil), base...)
+	reordered[0].Contract = []StateContractSemanticField{base[0].Contract[0]}
+	changedCapability := append([]StateBindingSemantic(nil), base...)
+	changedCapability[0].Capability = "test.conversation.v2"
+	changedContract := append([]StateBindingSemantic(nil), base...)
+	changedContract[0].Contract = append([]StateContractSemanticField(nil), base[0].Contract...)
+	changedContract[0].Contract[0].MergeStrategy = StateMergeAppend
+
+	baseHash, err := SemanticGraphHashWithStateBindings(def, base)
+	if err != nil {
+		t.Fatalf("base hash: %v", err)
+	}
+	reorderedHash, _ := SemanticGraphHashWithStateBindings(def, reordered)
+	if reorderedHash != baseHash {
+		t.Fatalf("equivalent bindings changed hash: %q != %q", reorderedHash, baseHash)
+	}
+	capabilityHash, _ := SemanticGraphHashWithStateBindings(def, changedCapability)
+	if capabilityHash == baseHash {
+		t.Fatal("capability major did not change semantic hash")
+	}
+	contractHash, _ := SemanticGraphHashWithStateBindings(def, changedContract)
+	if contractHash == baseHash {
+		t.Fatal("resolved contract did not change semantic hash")
 	}
 }

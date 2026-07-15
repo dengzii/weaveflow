@@ -3,11 +3,11 @@ package main
 import (
 	"context"
 	"fmt"
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/llms/openai"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -31,25 +31,32 @@ func ExploreExample() {
 	coreCtx := core.NewContext(ctx)
 
 	exploreNode := node.NewExploreNode()
-	exploreNode.ParentScope = "agent"
 	exploreNode.MaxIterations = 8
 	exploreNode.ToolResultCap = 4096
+	exploreNode.TaskPath = state.Shared("task")
+	exploreNode.ParentConversationPath = state.Scope("agent", "conversation")
+	exploreNode.ConversationPath = state.Scope("explore", "conversation")
+	exploreNode.ResultPath = state.Shared("explore_result")
 
-	currentState := state.NewState()
-	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMessages).String(), []llms.MessageContent{
+	currentState := state.FromShared(map[string]any{"task": "Where is the ExploreNode defined and what tools does it use by default?"})
+	seedAccess := state.NewEditingAccess(currentState)
+	parentSeed, err := conversationcap.Bind(seedAccess, exploreNode.ParentConversationPath)
+	must(err)
+	must(parentSeed.SetMessages([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeHuman, "Where is the ExploreNode defined and what tools does it use by default?"),
 	}))
+	currentState = seedAccess.State()
 
 	result, err := executeNode(coreCtx, exploreNode, currentState)
 	must(err)
 
-	parent := conversation(result, "agent")
+	parent := conversation(result, exploreNode.ParentConversationPath)
 	fmt.Println("parent conversation:")
 	for i, msg := range parent.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	explore := conversation(result, "explore")
+	explore := conversation(result, exploreNode.ConversationPath)
 	fmt.Println()
 	fmt.Printf("explore iterations used: %d / %d\n", explore.IterationCount(), explore.MaxIterations())
 	fmt.Println()

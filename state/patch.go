@@ -27,7 +27,7 @@ type PatchOp struct {
 }
 
 // Patch is an ordered list of state mutations. It is immutable from callers'
-// perspective: constructors and accessors clone operation values.
+// perspective: constructors and readers clone operation values.
 type Patch struct {
 	ops []PatchOp
 }

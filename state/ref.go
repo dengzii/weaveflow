@@ -3,7 +3,7 @@ package state
 import "reflect"
 
 // Ref is a typed handle to one state path.
-// It is intended to be declared once by an accessor and reused by business code.
+// It is intended to be declared once by a path-bound capability view and reused by business code.
 type Ref[T any] struct {
 	path        Path
 	required    bool

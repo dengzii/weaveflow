@@ -120,6 +120,12 @@ func cloneGraphNodeSpec(node dsl.GraphNodeSpec) dsl.GraphNodeSpec {
 	if len(node.Config) > 0 {
 		cloned.Config = config.CloneMap(node.Config)
 	}
+	if len(node.State) > 0 {
+		cloned.State = make(map[string]dsl.StateBinding, len(node.State))
+		for key, binding := range node.State {
+			cloned.State[key] = binding
+		}
+	}
 	return cloned
 }
 
@@ -129,6 +135,12 @@ func cloneGraphEdgeSpec(edge dsl.GraphEdgeSpec) dsl.GraphEdgeSpec {
 		copyCondition := *edge.Condition
 		if len(copyCondition.Config) > 0 {
 			copyCondition.Config = config.CloneMap(copyCondition.Config)
+		}
+		if len(copyCondition.State) > 0 {
+			copyCondition.State = make(map[string]dsl.StateBinding, len(copyCondition.State))
+			for key, binding := range edge.Condition.State {
+				copyCondition.State[key] = binding
+			}
 		}
 		cloned.Condition = &copyCondition
 	}

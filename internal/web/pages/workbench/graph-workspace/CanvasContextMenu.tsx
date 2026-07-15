@@ -28,7 +28,7 @@ export function CanvasContextMenu({
 }: CanvasContextMenuProps) {
   return (
     <div
-      className="fixed z-50 w-64 overflow-hidden rounded-md border border-border bg-panel shadow-lg"
+      className="fixed z-50 max-h-[calc(100vh-1rem)] w-64 overflow-y-auto rounded-md border border-border bg-panel shadow-lg"
       style={{ left: contextMenu.screen.x, top: contextMenu.screen.y }}
       onClick={(event) => event.stopPropagation()}
       onContextMenu={(event) => event.preventDefault()}
@@ -47,7 +47,7 @@ export function CanvasContextMenu({
               onClick={() => onAddVirtualNode(nodeType.type as VirtualNodeKind, contextMenu.position)}
             />
           ))}
-          {paletteNodeTypes.slice(0, 8).map((nodeType) => (
+          {paletteNodeTypes.map((nodeType) => (
             <CreateNodeItem
               key={nodeType.type}
               nodeType={nodeType}

@@ -12,8 +12,6 @@ type Node interface {
 	ID() string
 	Name() string
 	Description() string
-	Scope() string
-	AccessorUses() []AccessorUse
 	Execute(ctx Context, access *state.Access) error
 }
 
@@ -41,37 +39,10 @@ func (n *NodeInfo) Description() string {
 	return n.NodeDescription
 }
 
-type AccessorUse struct {
-	Name             string
-	Scope            string
-	InheritNodeScope bool
-}
-
-func Use(accessorName string) AccessorUse {
-	return AccessorUse{Name: accessorName, InheritNodeScope: true}
-}
-
-func UseRoot(accessorName string) AccessorUse {
-	return AccessorUse{Name: accessorName}
-}
-
-func UseScoped(accessorName string, scope string) AccessorUse {
-	return AccessorUse{Name: accessorName, Scope: scope}
-}
-
-func (u AccessorUse) EffectiveScope(nodeScope string) string {
-	if u.InheritNodeScope {
-		return nodeScope
-	}
-	return u.Scope
-}
-
 type NodeSpec struct {
-	ID           string
-	Name         string
-	Description  string
-	Scope        string
-	AccessorUses []AccessorUse
+	ID          string
+	Name        string
+	Description string
 }
 
 func (s NodeSpec) Validate() error {
@@ -99,14 +70,6 @@ func WithName(name string) NodeOption {
 	return func(base *NodeBase) {
 		if base != nil {
 			base.Spec.Name = strings.TrimSpace(name)
-		}
-	}
-}
-
-func WithScope(scope string) NodeOption {
-	return func(base *NodeBase) {
-		if base != nil {
-			base.Spec.Scope = strings.TrimSpace(scope)
 		}
 	}
 }
@@ -152,55 +115,18 @@ func (b *NodeBase) Description() string {
 	return b.Spec.Description
 }
 
-func (b *NodeBase) Scope() string {
-	return b.Spec.Scope
-}
-
-func (b *NodeBase) AccessorUses() []AccessorUse {
-	if len(b.Spec.AccessorUses) == 0 {
-		return nil
-	}
-	return append([]AccessorUse(nil), b.Spec.AccessorUses...)
-}
-
 type ContractProvider interface {
-	Contract(*state.Registry) (state.Contract, error)
+	Contract() state.Contract
 }
 
-func ContractFor(registry *state.Registry, node Node) (state.Contract, error) {
-	if registry == nil {
-		return state.Contract{}, fmt.Errorf("state registry is required")
-	}
+func ContractFor(node Node) (state.Contract, error) {
 	if node == nil {
 		return state.Contract{}, fmt.Errorf("node node is nil")
 	}
 	if provider, ok := node.(ContractProvider); ok {
-		return provider.Contract(registry)
+		return provider.Contract().Clone(), nil
 	}
-	return ContractFromAccessorUses(registry, node.ID(), node.Scope(), node.AccessorUses())
-}
-
-func ContractFromAccessorUses(registry *state.Registry, nodeID string, nodeScope string, uses []AccessorUse) (state.Contract, error) {
-	fields := make([]state.FieldAccess, 0)
-	wildcardRead := false
-	wildcardWrite := false
-	for _, use := range uses {
-		if use.Name == "" {
-			return state.Contract{}, fmt.Errorf("node %q declares an empty accessor use", nodeID)
-		}
-		contract, ok := registry.AccessorContract(use.Name, use.EffectiveScope(nodeScope))
-		if !ok {
-			return state.Contract{}, fmt.Errorf("node %q requires unregistered state accessor %q", nodeID, use.Name)
-		}
-		fields = append(fields, contract.Fields...)
-		wildcardRead = wildcardRead || contract.WildcardRead
-		wildcardWrite = wildcardWrite || contract.WildcardWrite
-	}
-
-	contract := state.NewContract(fields...)
-	contract.WildcardRead = wildcardRead
-	contract.WildcardWrite = wildcardWrite
-	return contract, nil
+	return state.Contract{}, nil
 }
 
 type ExecutionResult struct {
@@ -210,7 +136,6 @@ type ExecutionResult struct {
 }
 
 type NodeExecutionOptions struct {
-	Registry               *state.Registry
 	Contract               *state.Contract
 	InputState             *state.State
 	EnforceInputProjection bool
@@ -221,10 +146,8 @@ type NodeExecutionOptions struct {
 	OnWriteIssues          func([]state.ValidationIssue)
 }
 
-func ExecuteNode(ctx context.Context, registry *state.Registry, base *state.State, node Node) (ExecutionResult, error) {
-	return ExecuteNodeWithOptions(ctx, base, node, NodeExecutionOptions{
-		Registry: registry,
-	})
+func ExecuteNode(ctx context.Context, base *state.State, node Node) (ExecutionResult, error) {
+	return ExecuteNodeWithOptions(ctx, base, node, NodeExecutionOptions{})
 }
 
 func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, options NodeExecutionOptions) (ExecutionResult, error) {
@@ -240,13 +163,12 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 		}
 	}
 
-	registry := options.Registry
 	contract := state.Contract{}
 	if options.Contract != nil {
 		contract = options.Contract.Clone()
 	} else {
 		var err error
-		contract, err = ContractFor(registry, node)
+		contract, err = ContractFor(node)
 		if err != nil {
 			return ExecutionResult{}, err
 		}
@@ -268,7 +190,7 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 		}
 	}
 
-	access := state.NewEditingAccess(registry, inputState).WithScope(node.Scope())
+	access := state.NewEditingAccess(inputState)
 	if err := node.Execute(NewContext(ctx), access); err != nil {
 		return ExecutionResult{}, err
 	}

@@ -5,13 +5,13 @@ import (
 	"errors"
 	"strings"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -28,19 +28,18 @@ const (
 
 type ContextReducerNode struct {
 	Base
-	MaxMessages    int
-	PreserveSystem bool
-	PreserveRecent int
-	SummaryPrefix  string
+	MaxMessages      int
+	PreserveSystem   bool
+	PreserveRecent   int
+	SummaryPrefix    string
+	ConversationPath state.Path
 }
 
 func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
 	node := &ContextReducerNode{
 		Base: NewBase(Spec{
-			Name:         NodeTypeContextReducer,
-			Description:  "Compact older conversation context into a concise summary message.",
-			Scope:        DefaultScope,
-			AccessorUses: []AccessorUse{Use(accessors.ConversationID.Name())},
+			Name:        NodeTypeContextReducer,
+			Description: "Compact older conversation context into a concise summary message.",
 		}),
 		MaxMessages:    defaultContextReducerMaxMessages,
 		PreserveSystem: true,
@@ -51,9 +50,21 @@ func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
 	return node
 }
 
+func (n *ContextReducerNode) Validate() error {
+	if n == nil {
+		return errors.New("context reducer node is nil")
+	}
+	if err := n.Base.Validate(); err != nil {
+		return err
+	}
+	if n.ConversationPath.Empty() {
+		return errors.New("context reducer conversation path is required")
+	}
+	return nil
+}
+
 func (n *ContextReducerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
-		"state_scope":     n.Scope(),
 		"preserve_system": n.PreserveSystem,
 	}
 	if n.MaxMessages > 0 {
@@ -65,7 +76,7 @@ func (n *ContextReducerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if strings.TrimSpace(n.SummaryPrefix) != "" {
 		config["summary_prefix"] = n.SummaryPrefix
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeContextReducer, config)
+	return newGraphNodeSpec(n.Base, NodeTypeContextReducer, config, map[string]state.Path{"conversation": n.ConversationPath})
 }
 
 func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -77,7 +88,6 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"state_scope":     dsl.JSONSchema{"type": "string"},
 					"max_messages":    dsl.JSONSchema{"type": "integer", "minimum": 2},
 					"preserve_system": dsl.JSONSchema{"type": "boolean"},
 					"preserve_recent": dsl.JSONSchema{"type": "integer", "minimum": 0},
@@ -86,15 +96,18 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			scope := nodeStateScope(spec.Config)
-			return dsl.StateContract{
-				Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages read and compacted into a reduced message history."}},
-			}, nil
+		StatePorts: []dsl.StatePortDefinition{
+			capabilityPort("conversation", "Conversation messages compacted by the reducer.", conversationcap.CapabilityID, true,
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMessages, Mode: dsl.StateAccessReadWrite}),
 		},
-		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+		Build: func(ctx *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
 			_ = ctx
-			reducerNode := NewContextReducerNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			spec := resolved.Spec
+			conversationPath, err := resolvedPath(resolved, "conversation")
+			if err != nil {
+				return nil, err
+			}
+			reducerNode := NewContextReducerNode(WithID(spec.ID))
 			applyNodeMetadata(&reducerNode.Base, spec)
 			reducerNode.MaxMessages, _ = config.Int(spec.Config, "max_messages")
 			if value, ok := config.Bool(spec.Config, "preserve_system"); ok {
@@ -104,6 +117,7 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 			if value := config.String(spec.Config, "summary_prefix"); value != "" {
 				reducerNode.SummaryPrefix = value
 			}
+			reducerNode.ConversationPath = conversationPath
 			return reducerNode, nil
 		},
 	}
@@ -115,7 +129,7 @@ func (n *ContextReducerNode) Execute(ctx core.Context, access *state.Access) err
 		return errors.New("context reducer: model service not available")
 	}
 
-	conversation, err := state.UseAccessor(access, accessors.ConversationID)
+	conversation, err := conversationcap.Bind(access, n.ConversationPath)
 	if err != nil {
 		return err
 	}
@@ -139,8 +153,8 @@ func (n *ContextReducerNode) Execute(ctx core.Context, access *state.Access) err
 	summary, err := n.reduceMessages(ctx, model, reducible)
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "context.reducer.error", map[string]any{
-			"state_scope": access.Scope(),
-			"error":       err.Error(),
+			"conversation_path": n.ConversationPath.String(),
+			"error":             err.Error(),
 		})
 		return err
 	}
@@ -154,7 +168,7 @@ func (n *ContextReducerNode) Execute(ctx core.Context, access *state.Access) err
 	}
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "context.reducer", map[string]any{
-		"state_scope":           access.Scope(),
+		"conversation_path":     n.ConversationPath.String(),
 		"max_messages":          n.effectiveMaxMessages(),
 		"preserve_system":       n.PreserveSystem,
 		"preserve_recent":       n.effectivePreserveRecent(),

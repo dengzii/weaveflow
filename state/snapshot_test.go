@@ -2,26 +2,23 @@ package state
 
 import (
 	"testing"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
-func TestJSONStateCodecRoundTripsEnvelopeAndConversationMessages(t *testing.T) {
+func TestJSONStateCodecRoundTripsJSONShapeWithoutDomainReconstruction(t *testing.T) {
 	t.Parallel()
 
-	registry := NewRegistry()
-	access := NewEditingAccess(registry, NewState()).WithScope("agent")
+	access := NewEditingAccess(NewState())
 	if err := access.SetAny(Shared("request", "input"), "hello"); err != nil {
 		t.Fatalf("set request: %v", err)
 	}
-	if err := access.SetAny(Scope("agent", "conversation", "messages"), []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeHuman, "hi"),
-		llms.TextParts(llms.ChatMessageTypeAI, "done"),
+	if err := access.SetAny(Scope("agent", "thread", "items"), []any{
+		map[string]any{"kind": "input", "text": "hi"},
+		map[string]any{"kind": "output", "text": "done"},
 	}); err != nil {
-		t.Fatalf("set messages: %v", err)
+		t.Fatalf("set items: %v", err)
 	}
-	if err := access.SetAny(Scope("agent", "conversation", "iteration_count"), 2); err != nil {
-		t.Fatalf("set iteration: %v", err)
+	if err := access.SetAny(Scope("agent", "thread", "attempt"), 2); err != nil {
+		t.Fatalf("set attempt: %v", err)
 	}
 
 	snapshot, err := SnapshotFromState(access.State())
@@ -42,25 +39,49 @@ func TestJSONStateCodecRoundTripsEnvelopeAndConversationMessages(t *testing.T) {
 		t.Fatalf("state from snapshot: %v", err)
 	}
 
-	restoredAccess := NewAccess(registry, restored).WithScope("agent")
+	restoredAccess := NewAccess(restored)
 	input, ok := restoredAccess.ReadAny(Shared("request", "input"))
 	if !ok || input != "hello" {
 		t.Fatalf("unexpected request input %#v ok=%v", input, ok)
 	}
-	messagesValue, ok := restoredAccess.ReadAny(Scope("agent", "conversation", "messages"))
+	itemsValue, ok := restoredAccess.ReadAny(Scope("agent", "thread", "items"))
 	if !ok {
-		t.Fatal("expected restored messages")
+		t.Fatal("expected restored items")
 	}
-	messages, ok := messagesValue.([]llms.MessageContent)
+	items, ok := itemsValue.([]any)
 	if !ok {
-		t.Fatalf("expected []llms.MessageContent, got %T", messagesValue)
+		t.Fatalf("expected []any, got %T", itemsValue)
 	}
-	if len(messages) != 2 || messages[0].Role != llms.ChatMessageTypeHuman || messages[1].Role != llms.ChatMessageTypeAI {
-		t.Fatalf("unexpected messages %#v", messages)
+	if len(items) != 2 {
+		t.Fatalf("unexpected items %#v", items)
 	}
-	iteration, ok := restoredAccess.ReadAny(Scope("agent", "conversation", "iteration_count"))
-	if !ok || iteration != 2 {
-		t.Fatalf("expected int iteration 2, got %#v ok=%v", iteration, ok)
+	first, ok := items[0].(map[string]any)
+	if !ok || first["kind"] != "input" || first["text"] != "hi" {
+		t.Fatalf("expected map[string]any item, got %#v", items[0])
+	}
+	attempt, ok := restoredAccess.ReadAny(Scope("agent", "thread", "attempt"))
+	if !ok || attempt != 2 {
+		t.Fatalf("expected int attempt 2, got %#v ok=%v", attempt, ok)
+	}
+}
+
+func TestJSONStateCodecRejectsMissingMismatchedAndUnknownVersions(t *testing.T) {
+	t.Parallel()
+	codec := NewJSONStateCodec("")
+	if _, err := codec.Encode(StateSnapshot{}); err == nil {
+		t.Fatal("Encode() accepted a snapshot without version")
+	}
+	if _, err := codec.Encode(StateSnapshot{Version: "state-v1"}); err == nil {
+		t.Fatal("Encode() accepted a mismatched snapshot version")
+	}
+	for _, data := range []string{
+		`{"shared":{}}`,
+		`{"version":"state-v1","shared":{}}`,
+		`{"version":"state-v2","legacy":true}`,
+	} {
+		if _, err := codec.Decode([]byte(data)); err == nil {
+			t.Fatalf("Decode(%s) succeeded", data)
+		}
 	}
 }
 

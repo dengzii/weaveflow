@@ -12,13 +12,21 @@ func RegisterCoreNodeTypes(r *registry.Registry) error {
 	}
 
 	for _, def := range []registry.NodeTypeDefinition{
-		MappedSubgraphNodeTypeDefinition(),
-		HumanMessageNodeTypeDefinition(),
+		SubgraphNodeTypeDefinition(),
+		ConversationInputNodeTypeDefinition(),
 		ContextReducerNodeTypeDefinition(),
 		LLMNodeTypeDefinition(),
 		ToolsNodeTypeDefinition(),
 		AgentNodeTypeDefinition(),
 		EnvironmentContextNodeTypeDefinition(),
+		ExploreNodeTypeDefinition(),
+		PlanGeneratorNodeTypeDefinition(),
+		PlanStepNodeTypeDefinition(),
+		PlanReviewNodeTypeDefinition(),
+		PlanFinalizeNodeTypeDefinition(),
+		SupervisorNodeTypeDefinition(),
+		SupervisorWorkerNodeTypeDefinition(),
+		SupervisorFinalizeNodeTypeDefinition(),
 	} {
 		if err := r.RegisterNodeType(def); err != nil {
 			return fmt.Errorf("register node type %q: %w", def.Type, err)

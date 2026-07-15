@@ -19,7 +19,23 @@ type BuildContext struct {
 	OnContractDiagnostic func(core.ContractDiagnostic)
 }
 
-type NodeBuilder func(*BuildContext, dsl.GraphNodeSpec) (core.Node, error)
+type ResolvedStateBinding struct {
+	Path       state.Path
+	Capability string
+	Contract   state.Contract
+}
+
+type ResolvedNodeSpec struct {
+	Spec  dsl.GraphNodeSpec
+	State map[string]ResolvedStateBinding
+}
+
+type ResolvedConditionSpec struct {
+	Spec  dsl.GraphConditionSpec
+	State map[string]ResolvedStateBinding
+}
+
+type NodeBuilder func(*BuildContext, ResolvedNodeSpec) (core.Node, error)
 
 func (ctx *BuildContext) Clone() *BuildContext {
 	if ctx == nil {

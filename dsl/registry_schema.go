@@ -3,24 +3,43 @@ package dsl
 import "sort"
 
 type NodeTypeSchema struct {
-	Type          string         `json:"type"`
-	Title         string         `json:"title,omitempty"`
-	Description   string         `json:"description,omitempty"`
-	ConfigSchema  JSONSchema     `json:"config_schema"`
-	StateContract *StateContract `json:"state_contract,omitempty"`
+	Type         string                `json:"type"`
+	Title        string                `json:"title,omitempty"`
+	Description  string                `json:"description,omitempty"`
+	ConfigSchema JSONSchema            `json:"config_schema"`
+	StatePorts   []StatePortDefinition `json:"state_ports"`
 }
 
 type ConditionSchema struct {
-	Type         string     `json:"type"`
-	Title        string     `json:"title,omitempty"`
-	Description  string     `json:"description,omitempty"`
-	ConfigSchema JSONSchema `json:"config_schema"`
+	Type         string                `json:"type"`
+	Title        string                `json:"title,omitempty"`
+	Description  string                `json:"description,omitempty"`
+	ConfigSchema JSONSchema            `json:"config_schema"`
+	StatePorts   []StatePortDefinition `json:"state_ports"`
 }
 
-func BuildGraphDefinitionSchema(stateSchemaID string, stateFields map[string]StateFieldDefinition, nodeTypes map[string]NodeTypeSchema, conditions map[string]ConditionSchema) JSONSchema {
+func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, nodeTypes map[string]NodeTypeSchema, conditions map[string]ConditionSchema) JSONSchema {
+	bindingSchema := JSONSchema{
+		"type":                 "object",
+		"properties":           JSONSchema{"path": JSONSchema{"type": "string"}},
+		"required":             []string{"path"},
+		"additionalProperties": false,
+	}
 	nodeVariants := make([]any, 0, len(nodeTypes))
 	for _, key := range sortedNodeTypeSchemaKeys(nodeTypes) {
 		nodeDef := nodeTypes[key]
+		stateProperties := JSONSchema{}
+		requiredState := make([]string, 0)
+		for _, port := range nodeDef.StatePorts {
+			stateProperties[port.Name] = bindingSchema
+			if port.Required {
+				requiredState = append(requiredState, port.Name)
+			}
+		}
+		stateSchema := JSONSchema{"type": "object", "properties": stateProperties, "additionalProperties": false}
+		if len(requiredState) > 0 {
+			stateSchema["required"] = requiredState
+		}
 		nodeVariants = append(nodeVariants, JSONSchema{
 			"type": "object",
 			"properties": JSONSchema{
@@ -29,8 +48,9 @@ func BuildGraphDefinitionSchema(stateSchemaID string, stateFields map[string]Sta
 				"type":        JSONSchema{"const": nodeDef.Type},
 				"description": JSONSchema{"type": "string"},
 				"config":      nodeDef.ConfigSchema,
+				"state":       stateSchema,
 			},
-			"required":             []string{"id", "type"},
+			"required":             []string{"id", "type", "state"},
 			"additionalProperties": false,
 		})
 	}
@@ -38,33 +58,58 @@ func BuildGraphDefinitionSchema(stateSchemaID string, stateFields map[string]Sta
 	conditionVariants := make([]any, 0, len(conditions))
 	for _, key := range sortedConditionSchemaKeys(conditions) {
 		conditionDef := conditions[key]
+		stateProperties := JSONSchema{}
+		requiredState := make([]string, 0)
+		for _, port := range conditionDef.StatePorts {
+			stateProperties[port.Name] = bindingSchema
+			if port.Required {
+				requiredState = append(requiredState, port.Name)
+			}
+		}
+		stateSchema := JSONSchema{"type": "object", "properties": stateProperties, "additionalProperties": false}
+		if len(requiredState) > 0 {
+			stateSchema["required"] = requiredState
+		}
+		requiredProperties := []string{"type"}
+		if len(requiredState) > 0 {
+			requiredProperties = append(requiredProperties, "state")
+		}
 		conditionVariants = append(conditionVariants, JSONSchema{
 			"type": "object",
 			"properties": JSONSchema{
 				"type":   JSONSchema{"const": conditionDef.Type},
 				"config": conditionDef.ConfigSchema,
+				"state":  stateSchema,
 			},
-			"required":             []string{"type"},
+			"required":             requiredProperties,
 			"additionalProperties": false,
 		})
 	}
 
-	stateFieldSchemas := JSONSchema{}
-	for _, key := range sortedStateFieldDefinitionKeys(stateFields) {
-		field := stateFields[key]
-		stateFieldSchemas[field.Name] = field.Schema
+	moduleVariants := make([]any, 0, len(stateModules))
+	for _, key := range sortedStateModuleDefinitionKeys(stateModules) {
+		module := stateModules[key]
+		moduleVariants = append(moduleVariants, JSONSchema{
+			"type": "object",
+			"properties": JSONSchema{
+				"name":    JSONSchema{"const": module.Name},
+				"version": JSONSchema{"const": module.Version},
+			},
+			"required":             []string{"name", "version"},
+			"additionalProperties": false,
+		})
 	}
 
 	return JSONSchema{
 		"$schema": "https://json-schema.org/draft/2020-12/schema",
 		"type":    "object",
 		"properties": JSONSchema{
-			"version":      JSONSchema{"type": "string"},
-			"name":         JSONSchema{"type": "string"},
-			"description":  JSONSchema{"type": "string"},
-			"state_schema": JSONSchema{"const": stateSchemaID},
-			"entry_point":  JSONSchema{"type": "string"},
-			"finish_point": JSONSchema{"type": "string"},
+			"version":       JSONSchema{"const": GraphDefinitionVersion},
+			"name":          JSONSchema{"type": "string"},
+			"description":   JSONSchema{"type": "string"},
+			"state_modules": JSONSchema{"type": "array", "minItems": 1, "items": JSONSchema{"oneOf": moduleVariants}},
+			"entry_point":   JSONSchema{"type": "string"},
+			"finish_point":  JSONSchema{"type": "string"},
 			"nodes": JSONSchema{
 				"type":  "array",
 				"items": JSONSchema{"oneOf": nodeVariants},
@@ -85,18 +130,11 @@ func BuildGraphDefinitionSchema(stateSchemaID string, stateFields map[string]Sta
 			},
 			"metadata": JSONSchema{"type": "object"},
 		},
-		"required": []string{"nodes"},
-		"$defs": JSONSchema{
-			"common_state": JSONSchema{
-				"type":                 "object",
-				"properties":           stateFieldSchemas,
-				"additionalProperties": true,
-			},
-		},
+		"required": []string{"version", "state_modules", "nodes"},
 	}
 }
 
-func sortedStateFieldDefinitionKeys(input map[string]StateFieldDefinition) []string {
+func sortedStateModuleDefinitionKeys(input map[string]StateModuleDefinition) []string {
 	keys := make([]string, 0, len(input))
 	for key := range input {
 		keys = append(keys, key)

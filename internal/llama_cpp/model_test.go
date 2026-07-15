@@ -136,7 +136,7 @@ func TestSplitThinkingContent(t *testing.T) {
 	}
 }
 
-func TestCollectPromptToolsIncludesLegacyFunctionsWithoutDuplication(t *testing.T) {
+func TestCollectPromptToolsUsesTools(t *testing.T) {
 	t.Parallel()
 
 	tools := collectPromptTools(llms.CallOptions{
@@ -148,21 +148,37 @@ func TestCollectPromptToolsIncludesLegacyFunctionsWithoutDuplication(t *testing.
 				},
 			},
 		},
-		Functions: []llms.FunctionDefinition{
-			{
-				Name: "calculator",
-			},
-		},
 	})
 
-	if len(tools) != 2 {
-		t.Fatalf("expected 2 tools, got %d", len(tools))
+	if len(tools) != 1 {
+		t.Fatalf("expected 1 tool, got %d", len(tools))
 	}
 	if tools[0].Function == nil || tools[0].Function.Name != "current_time" {
 		t.Fatalf("unexpected first tool %#v", tools[0].Function)
 	}
-	if tools[1].Function == nil || tools[1].Function.Name != "calculator" {
-		t.Fatalf("unexpected second tool %#v", tools[1].Function)
+}
+
+func TestValidateCallOptionsRejectsLegacyFunctions(t *testing.T) {
+	t.Parallel()
+	if err := validateCallOptions(llms.CallOptions{Functions: []llms.FunctionDefinition{{Name: "legacy"}}}); err == nil {
+		t.Fatal("validateCallOptions() accepted legacy functions")
+	}
+	if err := validateCallOptions(llms.CallOptions{FunctionCallBehavior: llms.FunctionCallBehaviorAuto}); err == nil {
+		t.Fatal("validateCallOptions() accepted legacy function_call")
+	}
+}
+
+func TestParseStructuredResponseRejectsLegacyFunctionCall(t *testing.T) {
+	t.Parallel()
+	if parsed, ok := parseStructuredResponse(`{"function_call":{"name":"calculator","arguments":{}}}`); ok {
+		t.Fatalf("parseStructuredResponse() accepted legacy function_call: %#v", parsed)
+	}
+}
+
+func TestPromptRoleRejectsLegacyFunctionRole(t *testing.T) {
+	t.Parallel()
+	if role, err := promptRole(llms.ChatMessageTypeFunction); err == nil {
+		t.Fatalf("promptRole() accepted legacy function role %q", role)
 	}
 }
 

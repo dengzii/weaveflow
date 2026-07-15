@@ -17,7 +17,7 @@ import {
   type Viewport,
 } from "@xyflow/react";
 import { Focus, Lock, Maximize2, Network, Unlock, ZoomIn, ZoomOut } from "lucide-react";
-import type { GraphConditionSpec, GraphDefinition, GraphEdgeSpec, GraphNodeSpec, RuntimeEvent, StepRecord } from "../types";
+import type { GraphConditionSpec, GraphDefinition, GraphEdgeSpec, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord } from "../types";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, type NodePosition } from "../lib/graphEditor";
 import { subscribeRuntimeEvents } from "../lib/runtimeEvents";
 
@@ -28,6 +28,8 @@ interface FlowNodeData extends Record<string, unknown> {
   editable: boolean;
   attempt?: number;
   highlighted?: boolean;
+  bindingSummary?: string;
+  missingBindings?: boolean;
   virtualKind?: "start" | "end" | "loop";
   memberCount?: number;
   loopStartId?: string;
@@ -81,6 +83,7 @@ export function GraphCanvas({
   focusNodeSignal = 0,
   viewportStorageKey,
   highlightedNodeIds = [],
+  nodeTypes = [],
   virtualNodeIds = [START_NODE_REF, END_NODE_REF],
   virtualEdges = [],
   virtualLoops = [],
@@ -108,6 +111,7 @@ export function GraphCanvas({
   focusNodeSignal?: number;
   viewportStorageKey?: string;
   highlightedNodeIds?: string[];
+  nodeTypes?: NodeTypeSchema[];
   virtualNodeIds?: string[];
   virtualEdges?: VirtualGraphEdge[];
   virtualLoops?: VirtualGraphLoop[];
@@ -138,6 +142,7 @@ export function GraphCanvas({
         focusNodeSignal={focusNodeSignal}
         viewportStorageKey={viewportStorageKey}
         highlightedNodeIds={highlightedNodeIds}
+        nodeTypes={nodeTypes}
         virtualNodeIds={virtualNodeIds}
         virtualEdges={virtualEdges}
         virtualLoops={virtualLoops}
@@ -170,6 +175,7 @@ function GraphCanvasInner({
   focusNodeSignal,
   viewportStorageKey,
   highlightedNodeIds,
+  nodeTypes,
   virtualNodeIds,
   virtualEdges,
   virtualLoops,
@@ -197,6 +203,7 @@ function GraphCanvasInner({
   focusNodeSignal: number;
   viewportStorageKey?: string;
   highlightedNodeIds: string[];
+  nodeTypes: NodeTypeSchema[];
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
   virtualLoops: VirtualGraphLoop[];
@@ -331,6 +338,10 @@ function GraphCanvasInner({
         })),
         ...displayNodes.map((node) => {
           const virtualKind = virtualNodeKind(node.id);
+          const nodeType = nodeTypes.find((item) => item.type === node.type);
+          const statePorts = nodeType?.state_ports ?? [];
+          const boundPortCount = statePorts.filter((port) => Boolean(node.state?.[port.name]?.path.trim())).length;
+          const missingBindings = statePorts.some((port) => port.required && !node.state?.[port.name]?.path.trim());
           return {
             id: node.id,
             type: "debugNode",
@@ -346,6 +357,8 @@ function GraphCanvasInner({
               attempt: virtualKind ? 0 : runtimeRef.current.get(node.id)?.attempt || 0,
               editable: isInteractive,
               highlighted: highlightedNodeSet.has(node.id),
+              bindingSummary: virtualKind || statePorts.length === 0 ? undefined : `${boundPortCount}/${statePorts.length} state`,
+              missingBindings,
               virtualKind,
             },
           };
@@ -382,7 +395,7 @@ function GraphCanvasInner({
         };
       }),
     ]);
-  }, [definition, editable, highlightedNodeSet, isInteractive, selectedEdgeId, selectedLoopId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualLoops, virtualNodeIds]);
+  }, [definition, editable, highlightedNodeSet, isInteractive, nodeTypes, selectedEdgeId, selectedLoopId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualLoops, virtualNodeIds]);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -1005,7 +1018,14 @@ function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean 
       {editable && virtualKind !== "start" ? <Handle type="target" position={Position.Left} /> : null}
       <div className="truncate text-sm font-semibold">{data.label}</div>
       <div className="mt-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span className="truncate">{data.type}</span>
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span className="truncate">{data.type}</span>
+          {data.bindingSummary ? (
+            <span className={Boolean(data.missingBindings) ? "shrink-0 text-destructive" : "shrink-0"}>
+              {String(data.bindingSummary)}
+            </span>
+          ) : null}
+        </span>
         <span className="flex shrink-0 items-center gap-1">
           {attempt ? <span className="debug-node-attempt">#{attempt}</span> : null}
           <span>{status}</span>

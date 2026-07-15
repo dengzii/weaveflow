@@ -77,6 +77,7 @@ const minCanvasWidth = 360;
 
 interface GraphWorkspaceProps {
   definition: GraphDefinition | null;
+  definitionText: string;
   initialStateText: string;
   initialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
@@ -101,6 +102,7 @@ interface GraphWorkspaceProps {
 
 export const GraphWorkspace = memo(function GraphWorkspace({
   definition,
+  definitionText,
   initialStateText,
   initialRequirements,
   initialRequirementsError,
@@ -328,8 +330,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     [semanticVirtualEdges, virtualEdges]
   );
   const lintIssues = useMemo(
-    () => buildGraphLintIssues({ definition, initialStateText, initialRequirements }),
-    [definition, initialRequirements, initialStateText]
+    () => buildGraphLintIssues({ definition, initialStateText, initialRequirements, analysisError: initialRequirementsError, registry }),
+    [definition, initialRequirements, initialRequirementsError, initialStateText, registry]
   );
   const selectedVirtualEdge = useMemo(
     () => displayVirtualEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
@@ -403,9 +405,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       return;
     }
     const nextName = `debug_graph_${Date.now().toString(36)}`;
-    const next = createGraphDefinition(nextName, defaultGraphNodeType);
+    const next = createGraphDefinition(nextName, defaultGraphNodeType, registry?.state_modules);
     onGraphId(next.name || nextName);
-    onGraphVersion(next.version || "1.0");
+    onGraphVersion(next.version || "2.0");
     onDefinitionText(stringifyJSON(next));
     setActiveDraftId("");
     activeDraftIdRef.current = "";
@@ -424,6 +426,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   function saveLocal(options: { mode?: "manual" | "auto" } = {}) {
     if (!definition) {
       setLocalStatus("invalid graph json");
+      return;
+    }
+    const blockingIssue = lintIssues.find((issue) => issue.severity === "error");
+    if (blockingIssue) {
+      setLocalStatus(`cannot save: ${blockingIssue.message}`);
       return;
     }
     if (autoSaveTimerRef.current !== null) {
@@ -498,7 +505,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       return;
     }
     if (!definition) {
-      let next = createGraphDefinition(graphId || "debug_graph", nodeType);
+      let next = createGraphDefinition(graphId || "debug_graph", nodeType, registry?.state_modules);
       const node = next.nodes[0];
       if (position && node) next = withNodePosition(next, node.id, position);
       onDefinitionText(stringifyJSON(next));
@@ -921,6 +928,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       id: nextId,
       name: selectedNode.name ? `${selectedNode.name} copy` : nextId,
       config: cloneJSONRecord(selectedNode.config ?? {}),
+      state: cloneJSONRecord(selectedNode.state ?? {}),
     };
     const next = withNodePosition(
       {
@@ -1038,6 +1046,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           focusNodeSignal={focusNodeSignal}
           viewportStorageKey={graphCanvasViewportStorageKey(graphId, graphVersion, activeDraftId, definition)}
           highlightedNodeIds={highlightedNodeIds}
+          nodeTypes={paletteNodeTypes}
           onSelectNode={setSelectedNodeId}
           onSelectEdge={setSelectedEdgeId}
           onSelectLoop={setSelectedLoopId}
@@ -1101,6 +1110,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       <GraphInspectorPanel
         conditions={conditions}
         definition={definition}
+        definitionText={definitionText}
         edgeConfigText={edgeConfigText}
         initialRequirements={initialRequirements}
         initialRequirementsError={initialRequirementsError}
@@ -1110,6 +1120,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         lintIssues={lintIssues}
         nodeConfigText={nodeConfigText}
         paletteNodeTypes={paletteNodeTypes}
+        registry={registry}
         registryLoaded={Boolean(registry)}
         toolDefinitions={toolDefinitions}
         graphSettings={graphSettings}
@@ -1122,6 +1133,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         visibleVirtualNodes={visibleVirtualNodes}
         onApplyEdgeConfig={applyEdgeConfig}
         onApplyNodeConfig={applyNodeConfig}
+        onChangeDefinitionText={onDefinitionText}
         onChangeEdge={changeSelectedEdge}
         onChangeEdgeConfigText={setEdgeConfigText}
         onChangeVirtualLoop={changeSelectedVirtualLoop}

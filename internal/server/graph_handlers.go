@@ -34,10 +34,11 @@ type graphNodesResponse struct {
 }
 
 type registryResponse struct {
-	StateFields []dsl.StateFieldDefinition `json:"state_fields"`
-	NodeTypes   []dsl.NodeTypeSchema       `json:"node_types"`
-	Conditions  []dsl.ConditionSchema      `json:"conditions"`
-	GraphSchema dsl.JSONSchema             `json:"graph_schema"`
+	StateModules []dsl.StateModuleDefinition     `json:"state_modules"`
+	Capabilities []dsl.StateCapabilityDefinition `json:"capabilities"`
+	NodeTypes    []dsl.NodeTypeSchema            `json:"node_types"`
+	Conditions   []dsl.ConditionSchema           `json:"conditions"`
+	GraphSchema  dsl.JSONSchema                  `json:"graph_schema"`
 }
 
 func (s *Server) handleGraph(c *gin.Context) {
@@ -130,9 +131,15 @@ func (s *Server) handleRegistry(c *gin.Context) {
 		return
 	}
 
-	stateFields := make([]dsl.StateFieldDefinition, 0, len(s.registry.StateFields))
-	for _, key := range sortedStateFieldKeys(s.registry.StateFields) {
-		stateFields = append(stateFields, s.registry.StateFields[key])
+	modulesByKey := s.registry.StateModuleDefinitions()
+	stateModules := make([]dsl.StateModuleDefinition, 0, len(modulesByKey))
+	for _, key := range sortedStateModuleKeys(modulesByKey) {
+		stateModules = append(stateModules, modulesByKey[key])
+	}
+	capabilitiesByID := s.registry.CapabilityDefinitions()
+	capabilities := make([]dsl.StateCapabilityDefinition, 0, len(capabilitiesByID))
+	for _, key := range sortedCapabilityKeys(capabilitiesByID) {
+		capabilities = append(capabilities, capabilitiesByID[key])
 	}
 
 	nodeTypes := make([]dsl.NodeTypeSchema, 0, len(s.registry.NodeTypes))
@@ -146,10 +153,11 @@ func (s *Server) handleRegistry(c *gin.Context) {
 	}
 
 	writeData(c, http.StatusOK, registryResponse{
-		StateFields: stateFields,
-		NodeTypes:   nodeTypes,
-		Conditions:  conditions,
-		GraphSchema: s.registry.JSONSchema(),
+		StateModules: stateModules,
+		Capabilities: capabilities,
+		NodeTypes:    nodeTypes,
+		Conditions:   conditions,
+		GraphSchema:  s.registry.JSONSchema(),
 	})
 }
 
@@ -232,7 +240,16 @@ func sortedGraphNodeSpecKeys(input map[string]dsl.GraphNodeSpec) []string {
 	return keys
 }
 
-func sortedStateFieldKeys(input map[string]dsl.StateFieldDefinition) []string {
+func sortedStateModuleKeys(input map[string]dsl.StateModuleDefinition) []string {
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedCapabilityKeys(input map[string]dsl.StateCapabilityDefinition) []string {
 	keys := make([]string, 0, len(input))
 	for key := range input {
 		keys = append(keys, key)

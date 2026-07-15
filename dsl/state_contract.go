@@ -24,13 +24,36 @@ type StateFieldRef struct {
 	Required      bool               `json:"required,omitempty"`
 	Description   string             `json:"description,omitempty"`
 	Schema        JSONSchema         `json:"schema,omitempty"`
-	Dynamic       bool               `json:"dynamic,omitempty"`
-	PathConfigKey string             `json:"path_config_key,omitempty"`
 	MergeStrategy StateMergeStrategy `json:"merge_strategy,omitempty"`
 }
 
 type StateContract struct {
 	Fields []StateFieldRef `json:"fields,omitempty"`
+}
+
+type RelativeStateFieldRef struct {
+	Path     string          `json:"path"`
+	Mode     StateAccessMode `json:"mode"`
+	Required bool            `json:"required,omitempty"`
+}
+
+type RelativeStateContract struct {
+	Fields []RelativeStateFieldRef `json:"fields"`
+}
+
+type StatePortDefinition struct {
+	Name          string                `json:"name"`
+	Description   string                `json:"description,omitempty"`
+	Required      bool                  `json:"required,omitempty"`
+	Schema        JSONSchema            `json:"schema,omitempty"`
+	Mode          StateAccessMode       `json:"mode,omitempty"`
+	Capability    string                `json:"capability,omitempty"`
+	Contract      RelativeStateContract `json:"contract,omitempty"`
+	MergeStrategy StateMergeStrategy    `json:"merge_strategy,omitempty"`
+}
+
+func (s JSONSchema) Clone() JSONSchema {
+	return cloneJSONSchema(s)
 }
 
 func (c StateContract) Clone() StateContract {
@@ -82,6 +105,8 @@ func cloneJSONSchemaValue(value any) any {
 			cloned[i] = cloneJSONSchemaValue(item)
 		}
 		return cloned
+	case []string:
+		return append([]string(nil), typed...)
 	default:
 		return value
 	}

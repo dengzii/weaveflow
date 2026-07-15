@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
@@ -12,39 +13,46 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
 type LLMNode struct {
 	Base
-	ModelID        string
-	ToolIDs        []string
-	SystemPrompt   string
-	PromptMaxChars int
+	ModelID          string
+	ToolIDs          []string
+	SystemPrompt     string
+	PromptMaxChars   int
+	ConversationPath state.Path
+	OutputPath       state.Path
 }
 
 func NewLLMNode(options ...NodeOption) *LLMNode {
 	node := &LLMNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeLLM,
-			Description: "Run one LLM inference turn against a scoped conversation.",
-			Scope:       DefaultScope,
-			AccessorUses: []AccessorUse{
-				Use(accessors.ConversationID.Name()),
-				UseRoot(accessors.ExecutionID.Name()),
-				UseRoot(accessors.OrchestrationID.Name()),
-			},
+			Description: "Run one LLM inference turn against a bound conversation.",
 		}),
 	}
 	applyNodeOptions(&node.Base, options)
 	return node
 }
 
+func (n *LLMNode) Validate() error {
+	if n == nil {
+		return fmt.Errorf("llm node is nil")
+	}
+	if err := n.Base.Validate(); err != nil {
+		return err
+	}
+	if n.ConversationPath.Empty() {
+		return fmt.Errorf("llm node %q requires conversation path", n.ID())
+	}
+	return nil
+}
+
 func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	conf := map[string]any{
-		"state_scope":   n.Scope(),
 		"tool_ids":      n.ToolIDs,
 		"system_prompt": n.SystemPrompt,
 	}
@@ -54,7 +62,10 @@ func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if n.PromptMaxChars > 0 {
 		conf["prompt_max_chars"] = n.PromptMaxChars
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeLLM, conf)
+	return newGraphNodeSpec(n.Base, NodeTypeLLM, conf, map[string]state.Path{
+		"conversation": n.ConversationPath,
+		"output":       n.OutputPath,
+	})
 }
 
 func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -66,9 +77,8 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id":    dsl.JSONSchema{"type": "string"},
-					"tool_ids":    dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
-					"state_scope": dsl.JSONSchema{"type": "string"},
+					"model_id": dsl.JSONSchema{"type": "string"},
+					"tool_ids": dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",
@@ -79,26 +89,30 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			scope := nodeStateScope(spec.Config)
-			return dsl.StateContract{
-				Fields: []dsl.StateFieldRef{
-					{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages sent to the model and extended with the model response."},
-					{Path: scopedConversationPath(scope, accessors.ConversationFieldIterationCount), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter used to stop tool loops and incremented after each model turn."},
-					{Path: scopedConversationPath(scope, accessors.ConversationFieldMaxIterations), Mode: dsl.StateAccessRead, Description: "Maximum number of tool-using iterations allowed for the current conversation scope."},
-					{Path: scopedConversationPath(scope, accessors.ConversationFieldFinalAnswer), Mode: dsl.StateAccessWrite, Description: "Final answer written when the model finishes without further tool calls."},
-					{Path: state.Shared(accessors.KeyExecution).String(), Mode: dsl.StateAccessReadWrite, Description: "Plan step execution state: read current_step.id and track last_llm_step_id to scrub prior-step messages at step boundary."},
-				},
-			}, nil
+		StatePorts: []dsl.StatePortDefinition{
+			capabilityPort("conversation", "Conversation messages and loop state.", conversationcap.CapabilityID, true,
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMessages, Mode: dsl.StateAccessReadWrite},
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldFinalAnswer, Mode: dsl.StateAccessWrite},
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldIterationCount, Mode: dsl.StateAccessReadWrite},
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMaxIterations, Mode: dsl.StateAccessRead},
+			),
+			primitivePort("output", "Optional final text output.", "string", dsl.StateAccessWrite, false),
 		},
-		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+		Build: func(ctx *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
 			_ = ctx
-			llmNode := NewLLMNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			spec := resolved.Spec
+			conversationPath, err := resolvedPath(resolved, "conversation")
+			if err != nil {
+				return nil, err
+			}
+			llmNode := NewLLMNode(WithID(spec.ID))
 			applyNodeMetadata(&llmNode.Base, spec)
 			llmNode.ModelID = config.String(spec.Config, "model_id")
 			llmNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			llmNode.SystemPrompt = config.String(spec.Config, "system_prompt")
 			llmNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			llmNode.ConversationPath = conversationPath
+			llmNode.OutputPath = optionalResolvedPath(resolved, "output")
 			return llmNode, nil
 		},
 	}
@@ -111,20 +125,8 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 	}
 	nodeTools := ctx.FilterTools(n.ToolIDs)
 
-	conversation, err := state.UseAccessor(access, accessors.ConversationID)
+	conversation, err := conversationcap.Bind(access, n.ConversationPath)
 	if err != nil {
-		return err
-	}
-	execution, err := state.UseAccessor(access, accessors.ExecutionID)
-	if err != nil {
-		return err
-	}
-	orchestration, err := state.UseAccessor(access, accessors.OrchestrationID)
-	if err != nil {
-		return err
-	}
-
-	if err := scrubPriorStepIfBoundaryCrossed(conversation, execution); err != nil {
 		return err
 	}
 	if err := n.seedSystemPrompt(conversation); err != nil {
@@ -132,7 +134,6 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 	}
 	messages := conversation.Messages()
 	promptMessages := trimLLMPromptMessages(messages, n.effectivePromptMaxChars())
-	synthesizePlannerToolResult := shouldSynthesizePlannerToolResult(orchestration, promptMessages)
 
 	if conversation.IterationCount() >= conversation.MaxIterations() {
 		message := "Maximum tool iterations reached. Please simplify the question or reduce tool usage."
@@ -140,16 +141,17 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 		if err := conversation.SetMessages(append(messages, finalMessage)); err != nil {
 			return err
 		}
-		return conversation.SetFinalAnswer(message)
+		if err := conversation.SetFinalAnswer(message); err != nil {
+			return err
+		}
+		return n.writeOutput(access, message)
 	}
 
 	var toolSets []llms.Tool
-	if !synthesizePlannerToolResult {
-		for _, tool := range nodeTools {
-			toolSets = append(toolSets, tool.NewTool())
-		}
+	for _, tool := range nodeTools {
+		toolSets = append(toolSets, tool.NewTool())
 	}
-	if payload, err := buildLLMPromptArtifact(promptMessages, toolSets, access.Scope(), conversation.IterationCount(), conversation.MaxIterations()); err == nil {
+	if payload, err := buildLLMPromptArtifact(promptMessages, toolSets, n.ConversationPath.String(), conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
 	}
 
@@ -197,12 +199,16 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 		return err
 	}
 	if len(choice.ToolCalls) == 0 {
-		return conversation.SetFinalAnswer(extractText(aiMessage))
+		answer := extractText(aiMessage)
+		if err := conversation.SetFinalAnswer(answer); err != nil {
+			return err
+		}
+		return n.writeOutput(access, answer)
 	}
 	return nil
 }
 
-func (n *LLMNode) seedSystemPrompt(conversation accessors.Conversation) error {
+func (n *LLMNode) seedSystemPrompt(conversation *conversationcap.View) error {
 	if n == nil || conversation == nil || strings.TrimSpace(n.SystemPrompt) == "" {
 		return nil
 	}
@@ -215,6 +221,13 @@ func (n *LLMNode) seedSystemPrompt(conversation accessors.Conversation) error {
 	return conversation.SetMessages(append([]llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, n.SystemPrompt),
 	}, messages...))
+}
+
+func (n *LLMNode) writeOutput(access *state.Access, value string) error {
+	if n == nil || n.OutputPath.Empty() {
+		return nil
+	}
+	return state.Replace(access, state.NewRef[string](n.OutputPath), value)
 }
 
 func effectiveModelID(id string) string {
@@ -230,64 +243,4 @@ func (n *LLMNode) effectivePromptMaxChars() int {
 		return 20000
 	}
 	return n.PromptMaxChars
-}
-
-func scrubPriorStepIfBoundaryCrossed(conversation accessors.Conversation, execution accessors.Execution) error {
-	if conversation == nil || execution == nil {
-		return nil
-	}
-	currentStep := execution.CurrentStep()
-	currentStepID := ""
-	if currentStep != nil {
-		currentStepID, _ = currentStep["id"].(string)
-	}
-	lastStepID := execution.LastLLMStepID()
-	if currentStepID == "" {
-		return nil
-	}
-	if lastStepID == "" {
-		return execution.SetLastLLMStepID(currentStepID)
-	}
-	if currentStepID == lastStepID {
-		return nil
-	}
-
-	original := conversation.Messages()
-	scrubbed := scrubAIAndToolMessages(original)
-	if len(scrubbed) != len(original) {
-		if err := conversation.SetMessages(scrubbed); err != nil {
-			return err
-		}
-		if err := conversation.ResetIteration(); err != nil {
-			return err
-		}
-	}
-	return execution.SetLastLLMStepID(currentStepID)
-}
-
-func scrubAIAndToolMessages(messages []llms.MessageContent) []llms.MessageContent {
-	if len(messages) == 0 {
-		return messages
-	}
-	out := make([]llms.MessageContent, 0, len(messages))
-	for _, msg := range messages {
-		switch msg.Role {
-		case llms.ChatMessageTypeSystem, llms.ChatMessageTypeHuman:
-			out = append(out, msg)
-		default:
-		}
-	}
-	return out
-}
-
-func shouldSynthesizePlannerToolResult(orchestration accessors.Object, messages []llms.MessageContent) bool {
-	if orchestration == nil || len(messages) == 0 {
-		return false
-	}
-	modeValue, _ := orchestration.Field("mode")
-	mode, _ := modeValue.(string)
-	if !strings.EqualFold(strings.TrimSpace(mode), "planner") {
-		return false
-	}
-	return messageHasToolResponses(messages[len(messages)-1])
 }

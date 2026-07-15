@@ -18,7 +18,7 @@ const (
 )
 
 // Path is the canonical address format used by state.
-// Business code should construct paths through typed refs/accessors instead of
+// Business code should construct paths through typed refs or capability views instead of
 // parsing strings at call sites.
 type Path struct {
 	section  string

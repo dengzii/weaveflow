@@ -29,20 +29,17 @@ type StreamOptions struct {
 
 // ChatRequest is a request to complete a chat completion..
 type ChatRequest struct {
-	Model       string         `json:"model"`
-	Messages    []*ChatMessage `json:"messages"`
-	Temperature float64        `json:"temperature"`
-	TopP        float64        `json:"top_p,omitempty"`
-	// Deprecated: Use MaxCompletionTokens
-	// Note: Some OpenAI-compatible servers still require this field
-	MaxTokens           int      `json:"max_tokens,omitempty"`
-	MaxCompletionTokens int      `json:"max_completion_tokens,omitempty"`
-	N                   int      `json:"n,omitempty"`
-	StopWords           []string `json:"stop,omitempty"`
-	Stream              bool     `json:"stream,omitempty"`
-	FrequencyPenalty    float64  `json:"frequency_penalty,omitempty"`
-	PresencePenalty     float64  `json:"presence_penalty,omitempty"`
-	Seed                int      `json:"seed,omitempty"`
+	Model               string         `json:"model"`
+	Messages            []*ChatMessage `json:"messages"`
+	Temperature         float64        `json:"temperature"`
+	TopP                float64        `json:"top_p,omitempty"`
+	MaxCompletionTokens int            `json:"max_completion_tokens,omitempty"`
+	N                   int            `json:"n,omitempty"`
+	StopWords           []string       `json:"stop,omitempty"`
+	Stream              bool           `json:"stream,omitempty"`
+	FrequencyPenalty    float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty     float64        `json:"presence_penalty,omitempty"`
+	Seed                int            `json:"seed,omitempty"`
 
 	// ResponseFormat is the format of the response.
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
@@ -76,23 +73,15 @@ type ChatRequest struct {
 	// Return an error to stop streaming early.
 	StreamingReasoningFunc func(ctx context.Context, reasoningChunk, chunk []byte) error `json:"-"`
 
-	// Deprecated: use Tools instead.
-	Functions []FunctionDefinition `json:"functions,omitempty"`
-	// Deprecated: use ToolChoice instead.
-	FunctionCallBehavior FunctionCallBehavior `json:"function_call,omitempty"`
-
 	// Metadata allows you to specify additional information that will be passed to the model.
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
-// MarshalJSON ensures that only one of MaxTokens or MaxCompletionTokens is sent.
-// OpenAI's API returns an error if both fields are present.
 // Also omits temperature for reasoning models (GPT-5, o1, o3) that only accept default temperature.
 func (r ChatRequest) MarshalJSON() ([]byte, error) {
 	type Alias ChatRequest
 	aux := struct {
 		*Alias
-		MaxTokens           *int     `json:"max_tokens,omitempty"`
 		MaxCompletionTokens *int     `json:"max_completion_tokens,omitempty"`
 		Temperature         *float64 `json:"temperature,omitempty"`
 	}{
@@ -109,18 +98,8 @@ func (r ChatRequest) MarshalJSON() ([]byte, error) {
 		aux.Temperature = &r.Temperature
 	}
 
-	// Ensure only one token field is sent
-	if r.MaxCompletionTokens > 0 && r.MaxTokens > 0 {
-		// Both are set - this shouldn't happen with our logic,
-		// but if it does, prefer MaxCompletionTokens (modern field)
+	if r.MaxCompletionTokens > 0 {
 		aux.MaxCompletionTokens = &r.MaxCompletionTokens
-		aux.MaxTokens = nil
-	} else if r.MaxCompletionTokens > 0 {
-		aux.MaxCompletionTokens = &r.MaxCompletionTokens
-		aux.MaxTokens = nil
-	} else if r.MaxTokens > 0 {
-		aux.MaxTokens = &r.MaxTokens
-		aux.MaxCompletionTokens = nil
 	}
 
 	return json.Marshal(&aux)
@@ -201,7 +180,7 @@ type ResponseFormat struct {
 
 // ChatMessage is a message in a chat request.
 type ChatMessage struct { //nolint:musttag
-	// The role of the author of this message. One of system, user, assistant, function, or tool.
+	// The role of the author of this message. One of system, user, assistant, or tool.
 	Role string
 
 	// The content of the message.
@@ -217,10 +196,6 @@ type ChatMessage struct { //nolint:musttag
 
 	// ToolCalls is a list of tools that were called in the message.
 	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-
-	// FunctionCall represents a function call that was made in the message.
-	// Deprecated: use ToolCalls instead.
-	FunctionCall *FunctionCall
 
 	// ToolCallID is the ID of the tool call this message is for.
 	// Only present in tool messages.
@@ -246,9 +221,6 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 			Name         string             `json:"name,omitempty"`
 			ToolCalls    []ToolCall         `json:"tool_calls,omitempty"`
 
-			// Deprecated: use ToolCalls instead.
-			FunctionCall *FunctionCall `json:"function_call,omitempty"`
-
 			// ToolCallID is the ID of the tool call this message is for.
 			// Only present in tool messages.
 			ToolCallID string `json:"tool_call_id,omitempty"`
@@ -264,8 +236,6 @@ func (m ChatMessage) MarshalJSON() ([]byte, error) {
 		MultiContent []llms.ContentPart `json:"-"`
 		Name         string             `json:"name,omitempty"`
 		ToolCalls    []ToolCall         `json:"tool_calls,omitempty"`
-		// Deprecated: use ToolCalls instead.
-		FunctionCall *FunctionCall `json:"function_call,omitempty"`
 
 		// ToolCallID is the ID of the tool call this message is for.
 		// Only present in tool messages.
@@ -292,8 +262,6 @@ func (m *ChatMessage) UnmarshalJSON(data []byte) error {
 		MultiContent []llms.ContentPart `json:"-"` // not expected in response
 		Name         string             `json:"name,omitempty"`
 		ToolCalls    []ToolCall         `json:"tool_calls,omitempty"`
-		// Deprecated: use ToolCalls instead.
-		FunctionCall *FunctionCall `json:"function_call,omitempty"`
 
 		// ToolCallID is the ID of the tool call this message is for.
 		// Only present in tool messages.
@@ -337,7 +305,6 @@ type FinishReason string
 const (
 	FinishReasonStop          FinishReason = "stop"
 	FinishReasonLength        FinishReason = "length"
-	FinishReasonFunctionCall  FinishReason = "function_call"
 	FinishReasonToolCalls     FinishReason = "tool_calls"
 	FinishReasonContentFilter FinishReason = "content_filter"
 	FinishReasonNull          FinishReason = "null"
@@ -411,9 +378,8 @@ type StreamedChatResponsePayload struct {
 	Choices []struct {
 		Index float64 `json:"index,omitempty"`
 		Delta struct {
-			Role         string        `json:"role,omitempty"`
-			Content      string        `json:"content,omitempty"`
-			FunctionCall *FunctionCall `json:"function_call,omitempty"`
+			Role    string `json:"role,omitempty"`
+			Content string `json:"content,omitempty"`
 			// ToolCalls is a list of tools that were called in the message.
 			ToolCalls []*ToolCall `json:"tool_calls,omitempty"`
 			// This field is only used with the deepseek-reasoner model and represents the reasoning contents of the assistant message before the final answer.
@@ -441,18 +407,6 @@ type FunctionDefinition struct {
 	Strict bool `json:"strict,omitempty"`
 }
 
-// FunctionCallBehavior is the behavior to use when calling functions.
-type FunctionCallBehavior string
-
-const (
-	// FunctionCallBehaviorUnspecified is the empty string.
-	FunctionCallBehaviorUnspecified FunctionCallBehavior = ""
-	// FunctionCallBehaviorNone will not call any functions.
-	FunctionCallBehaviorNone FunctionCallBehavior = "none"
-	// FunctionCallBehaviorAuto will call functions automatically.
-	FunctionCallBehaviorAuto FunctionCallBehavior = "auto"
-)
-
 // FunctionCall is a call to a function.
 type FunctionCall struct {
 	// Name is the name of the function to call.
@@ -468,29 +422,7 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 			payload.StreamOptions = &StreamOptions{IncludeUsage: true}
 		}
 	}
-	// Build request payload
-
-	// Filter out internal metadata that shouldn't be sent to the API
-	originalMetadata := payload.Metadata
-	if payload.Metadata != nil {
-		filteredMetadata := make(map[string]any)
-		for k, v := range payload.Metadata {
-			// Skip internal openai: prefixed metadata fields
-			if !strings.HasPrefix(k, "openai:") {
-				filteredMetadata[k] = v
-			}
-		}
-		if len(filteredMetadata) > 0 {
-			payload.Metadata = filteredMetadata
-		} else {
-			payload.Metadata = nil
-		}
-	}
-
 	payloadBytes, err := json.Marshal(payload)
-
-	// Restore original metadata
-	payload.Metadata = originalMetadata
 	if err != nil {
 		return nil, err
 	}
@@ -569,7 +501,7 @@ func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *
 				continue
 			}
 
-			data := strings.TrimPrefix(line, "data:") // here use `data:` instead of `data: ` for compatibility
+			data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 			data = strings.TrimSpace(data)
 			if data == "[DONE]" {
 				return
@@ -640,10 +572,6 @@ func combineStreamingChatResponse(
 		response.Choices[0].FinishReason = choice.FinishReason
 		response.Choices[0].Message.ReasoningContent += choice.Delta.ReasoningContent
 
-		if choice.Delta.FunctionCall != nil {
-			chunk = updateFunctionCall(response.Choices[0].Message, choice.Delta.FunctionCall)
-		}
-
 		if len(choice.Delta.ToolCalls) > 0 {
 			chunk, response.Choices[0].Message.ToolCalls = updateToolCalls(response.Choices[0].Message.ToolCalls,
 				choice.Delta.ToolCalls)
@@ -663,16 +591,6 @@ func combineStreamingChatResponse(
 		}
 	}
 	return &response, nil
-}
-
-func updateFunctionCall(message ChatMessage, functionCall *FunctionCall) []byte {
-	if message.FunctionCall == nil {
-		message.FunctionCall = functionCall
-	} else {
-		message.FunctionCall.Arguments += functionCall.Arguments
-	}
-	chunk, _ := json.Marshal(message.FunctionCall) // nolint:errchkjson
-	return chunk
 }
 
 func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {

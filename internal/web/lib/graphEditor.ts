@@ -1,4 +1,16 @@
-import type { GraphDefinition, GraphEdgeSpec, GraphNodeSpec, NodeTypeSchema } from "../types";
+import type {
+  ConditionSchema,
+  GraphDefinition,
+  GraphEdgeSpec,
+  GraphNodeSpec,
+  NodeTypeSchema,
+  RegistryInfo,
+  StateAccessMode,
+  StateBinding,
+  StateMergeStrategy,
+  StateModuleDefinition,
+  StatePortDefinition,
+} from "../types";
 import { exampleConfigForSchema } from "./jsonSchemaDefaults";
 
 export const START_NODE_REF = "__start__";
@@ -9,12 +21,67 @@ export interface NodePosition {
   y: number;
 }
 
-export function createGraphDefinition(name: string, nodeType?: NodeTypeSchema): GraphDefinition {
+export interface ResolvedStateContractField {
+  path: string;
+  mode: StateAccessMode;
+  required: boolean;
+  mergeStrategy: StateMergeStrategy;
+  type: string;
+}
+
+export function resolvedStatePortContract(
+  port: StatePortDefinition,
+  binding: StateBinding | undefined,
+  registry: RegistryInfo | null
+): ResolvedStateContractField[] {
+  const root = binding?.path.trim() ?? "";
+  if (!root) return [];
+  if (!port.capability) {
+    if (!port.mode) return [];
+    return [{
+      path: root,
+      mode: port.mode,
+      required: Boolean(port.required && stateAccessReads(port.mode)),
+      mergeStrategy: port.merge_strategy ?? "replace",
+      type: stateSchemaType(port.schema),
+    }];
+  }
+
+  const capability = registry?.capabilities.find((item) => item.id === port.capability);
+  if (!capability) return [];
+  const fields = new Map(capability.fields.map((field) => [field.name, field]));
+  return (port.contract?.fields ?? []).flatMap((reference) => {
+    const field = fields.get(reference.path);
+    if (!field) return [];
+    return [{
+      path: `${root}.${reference.path}`,
+      mode: reference.mode,
+      required: Boolean(reference.required && stateAccessReads(reference.mode)),
+      mergeStrategy: field.merge_strategy ?? "replace",
+      type: stateSchemaType(field.schema),
+    }];
+  });
+}
+
+function stateAccessReads(mode: StateAccessMode): boolean {
+  return mode === "read" || mode === "read_write";
+}
+
+function stateSchemaType(schema: Record<string, unknown> | undefined): string {
+  return typeof schema?.type === "string" ? schema.type.trim() : "";
+}
+
+export function createGraphDefinition(
+  name: string,
+  nodeType?: NodeTypeSchema,
+  stateModules: StateModuleDefinition[] = []
+): GraphDefinition {
   const graphName = slugify(name || "debug_graph", "debug_graph");
   const nodes = nodeType ? [createNodeFromType(nodeType, [])] : [];
   return {
-    version: "1.0",
+    version: "2.0",
     name: graphName,
+    state_modules: stateModules.map(({ name: moduleName, version }) => ({ name: moduleName, version })),
     entry_point: nodes[0]?.id,
     nodes,
     edges: [],
@@ -24,11 +91,16 @@ export function createGraphDefinition(name: string, nodeType?: NodeTypeSchema): 
 export function createNodeFromType(nodeType: NodeTypeSchema, existingNodes: GraphNodeSpec[]): GraphNodeSpec {
   const baseID = slugify(nodeType.type || nodeType.title || "node", "node");
   const id = uniqueNodeId(baseID, existingNodes);
+  const stateBindings = initialStateBindings(nodeType.state_ports);
+  if (nodeType.type === "conversation_input" && nodeType.state_ports?.some((port) => port.name === "pending_input")) {
+    stateBindings.pending_input = { path: "" };
+  }
   return {
     id,
     name: nodeType.title || id,
     type: nodeType.type || "node",
     config: exampleConfigForSchema(nodeType.config_schema),
+    state: stateBindings,
   };
 }
 
@@ -96,19 +168,38 @@ export function removeGraphNode(definition: GraphDefinition, nodeID: string): Gr
   }, positions);
 }
 
-export function addGraphEdge(definition: GraphDefinition, from: string, to: string, conditionType?: string): GraphDefinition {
+export function addGraphEdge(
+  definition: GraphDefinition,
+  from: string,
+  to: string,
+  conditionType?: string,
+  conditions: ConditionSchema[] = []
+): GraphDefinition {
   const source = from.trim();
   const target = to.trim();
   if (!source || !target) return definition;
   if (findGraphEdgeIndex(definition, source, target) >= 0) return definition;
+  const conditionSchema = conditions.find((item) => item.type === conditionType?.trim());
   const condition = conditionType?.trim()
-    ? { type: conditionType.trim(), config: {} }
+    ? {
+        type: conditionType.trim(),
+        config: exampleConfigForSchema(conditionSchema?.config_schema),
+        state: initialStateBindings(conditionSchema?.state_ports),
+      }
     : undefined;
   const edge: GraphEdgeSpec = condition ? { from: source, to: target, condition } : { from: source, to: target };
   return {
     ...definition,
     edges: [...(definition.edges ?? []), edge],
   };
+}
+
+export function initialStateBindings(ports: StatePortDefinition[] | undefined): Record<string, StateBinding> {
+  const bindings: Record<string, StateBinding> = {};
+  for (const port of ports ?? []) {
+    if (port.required) bindings[port.name] = { path: "" };
+  }
+  return bindings;
 }
 
 export function updateGraphEdge(

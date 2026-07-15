@@ -38,6 +38,19 @@ func TestValidatePatchByContractReportsMissingRequiredWrite(t *testing.T) {
 	}
 }
 
+func TestValidatePatchByContractDoesNotGrantDescendantWriteAccess(t *testing.T) {
+	t.Parallel()
+	contract := NewContract(FieldAccess{
+		Path: Shared("output"), Mode: AccessWrite, Merge: MergeReplace,
+	})
+	issues := ValidatePatchByContract(NewPatch(PatchOp{
+		Kind: OpSet, Path: Shared("output", "hidden"), Value: true,
+	}), contract)
+	if len(issues) != 1 || issues[0].Kind != "write_not_allowed" || issues[0].Path != "shared.output.hidden" {
+		t.Fatalf("expected exact-path write rejection, got %#v", issues)
+	}
+}
+
 func TestValidateRequiredReads(t *testing.T) {
 	t.Parallel()
 
@@ -76,7 +89,7 @@ func TestProjectStateByContractSelectsReadablePaths(t *testing.T) {
 	)
 
 	projected := ProjectStateByContract(full, contract)
-	access := NewAccess(nil, projected)
+	access := NewAccess(projected)
 
 	input, ok := access.ReadAny(Shared("request", "input"))
 	if !ok || input != "hello" {

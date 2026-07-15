@@ -5,7 +5,7 @@ import { Check, ChevronDown, Filter, ListTree, Search, Trash2, X } from "lucide-
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { cn, formatTime, formatTimeMs, stringifyJSON } from "../../lib/utils";
-import type { RunRecord, RuntimeEvent, StepRecord } from "../../types";
+import type { GraphDefinition, RegistryInfo, RunRecord, RuntimeEvent, StatePortDefinition, StepRecord } from "../../types";
 import { StatusText, type StatusTone } from "./shared";
 import { statusTone } from "./utils";
 
@@ -34,7 +34,7 @@ interface EventFilterPopoverPosition {
 const viewOptions: Array<{ id: ViewMode; label: string }> = [
   { id: "events", label: "Events" },
   { id: "node", label: "By Node" },
-  { id: "state", label: "By State" },
+  { id: "state", label: "Run State" },
 ];
 
 const MIN_LEFT_WIDTH = 200;
@@ -68,6 +68,9 @@ export function RunStatusPanel({
   onDeleteRun,
   events,
   steps,
+  stateSnapshot,
+  definition,
+  registry,
   onHide,
 }: {
   run: RunRecord | null;
@@ -77,6 +80,9 @@ export function RunStatusPanel({
   onDeleteRun?: (runId: string) => void;
   events: RuntimeEvent[];
   steps: StepRecord[];
+  stateSnapshot?: unknown;
+  definition?: GraphDefinition | null;
+  registry?: RegistryInfo | null;
   onHide: () => void;
 }) {
   const [view, setView] = useState<ViewMode>("events");
@@ -124,7 +130,10 @@ export function RunStatusPanel({
   );
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
   const nodeBuckets = useMemo(() => groupByNode(steps, events), [steps, events]);
-  const stateBuckets = useMemo(() => groupByState(steps, events), [steps, events]);
+  const stateBuckets = useMemo(
+    () => groupRunState(stateSnapshot, definition ?? null, registry ?? null),
+    [definition, registry, stateSnapshot]
+  );
 
   useEffect(() => {
     setSelectedKey(null);
@@ -210,14 +219,14 @@ export function RunStatusPanel({
     }
     return {
       items: stateBuckets.map((bucket) => ({
-        key: bucket.status,
-        statusLabel: bucket.status,
-        statusTone: statusTone(bucket.status),
-        primary: `${bucket.steps.length} steps`,
-        secondary: `${bucket.events.length} events`,
+        key: bucket.key,
+        statusLabel: bucket.kind,
+        statusTone: "neutral",
+        primary: bucket.label,
+        secondary: bucket.summary,
       })),
       renderDetail: (key) => {
-        const target = stateBuckets.find((bucket) => bucket.status === key);
+        const target = stateBuckets.find((bucket) => bucket.key === key);
         if (!target) return null;
         return <StateDetail bucket={target} />;
       },
@@ -912,21 +921,15 @@ function StateDetail({ bucket }: { bucket: StateBucket }) {
   return (
     <div className="grid gap-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <StatusText tone={statusTone(bucket.status)}>{bucket.status}</StatusText>
-        <span className="ml-auto text-muted-foreground">
-          {bucket.steps.length} steps · {bucket.events.length} events
-        </span>
+        <StatusText tone="neutral">{bucket.kind}</StatusText>
+        <span className="font-mono">{bucket.label}</span>
+        <span className="ml-auto text-muted-foreground">{bucket.summary}</span>
       </div>
-      {bucket.steps.length > 0 ? (
-        <DetailSection title="Steps">
-          <StepRows steps={bucket.steps} showNode />
-        </DetailSection>
-      ) : null}
-      {bucket.events.length > 0 ? (
-        <DetailSection title="Events">
-          <EventRows events={bucket.events} />
-        </DetailSection>
-      ) : null}
+      <DetailSection title="State value">
+        <pre className="max-h-96 overflow-auto rounded-md border border-border bg-background p-2 text-[11px]">
+          {stringifyJSON(bucket.value)}
+        </pre>
+      </DetailSection>
     </div>
   );
 }
@@ -1110,6 +1113,13 @@ function eventPayloadFields(event: RuntimeEvent, payload: Record<string, unknown
       add("Kind", payload.kind);
       add("Event", payload.event);
       add("Message", payload.message, { multiline: true });
+      add("Next worker", payload.next_worker);
+      add("Worker", payload.worker_id);
+      add("Task", payload.task, { multiline: true });
+      add("Reason", payload.reason, { multiline: true });
+      add("Turn", payload.turn_count);
+      add("Result", payload.result, { multiline: true });
+      add("Answer", payload.answer, { multiline: true });
       break;
   }
 
@@ -1461,9 +1471,11 @@ interface NodeBucket {
 }
 
 interface StateBucket {
-  status: string;
-  steps: StepRecord[];
-  events: RuntimeEvent[];
+  key: string;
+  kind: "module" | "capability" | "shared" | "scope";
+  label: string;
+  summary: string;
+  value: unknown;
 }
 
 function groupByNode(steps: StepRecord[], events: RuntimeEvent[]): NodeBucket[] {
@@ -1500,60 +1512,108 @@ function groupByNode(steps: StepRecord[], events: RuntimeEvent[]): NodeBucket[] 
   return [...map.values()].sort((a, b) => timeRank(b.latestAt) - timeRank(a.latestAt));
 }
 
-function groupByState(steps: StepRecord[], events: RuntimeEvent[]): StateBucket[] {
-  const map = new Map<string, StateBucket>();
-  const ensure = (status: string): StateBucket => {
-    let bucket = map.get(status);
-    if (!bucket) {
-      bucket = { status, steps: [], events: [] };
-      map.set(status, bucket);
+function groupRunState(
+  snapshot: unknown,
+  definition: GraphDefinition | null,
+  registry: RegistryInfo | null
+): StateBucket[] {
+  const root = stateRecord(snapshot);
+  if (!root) return [];
+  const buckets: StateBucket[] = [];
+
+  const selectedModuleKeys = new Set(
+    (definition?.state_modules ?? []).map((module) => `${module.name}\u0000${module.version}`)
+  );
+  for (const module of registry?.state_modules ?? []) {
+    if (!selectedModuleKeys.has(`${module.name}\u0000${module.version}`)) continue;
+    const values: Record<string, unknown> = {};
+    for (const field of module.fields ?? []) {
+      const resolved = stateValueAtPath(root, field.path);
+      if (resolved.exists) values[field.path] = resolved.value;
     }
-    return bucket;
+    buckets.push({
+      key: `module:${module.name}:${module.version}`,
+      kind: "module",
+      label: `${module.name}@${module.version}`,
+      summary: `${Object.keys(values).length}/${module.fields?.length ?? 0} fields present`,
+      value: values,
+    });
+  }
+
+  const capabilityRoots = new Map<string, { capability: string; path: string }>();
+  const addCapabilityRoot = (port: StatePortDefinition | undefined, path: string | undefined) => {
+    const capability = port?.capability?.trim();
+    const rootPath = path?.trim();
+    if (!capability || !rootPath) return;
+    capabilityRoots.set(`${capability}\u0000${rootPath}`, { capability, path: rootPath });
   };
-
-  for (const step of steps) {
-    ensure(step.status || "unknown").steps.push(step);
+  for (const node of definition?.nodes ?? []) {
+    const nodeType = registry?.node_types.find((item) => item.type === node.type);
+    for (const [name, binding] of Object.entries(node.state ?? {})) {
+      addCapabilityRoot(nodeType?.state_ports?.find((port) => port.name === name), binding.path);
+    }
   }
-  for (const event of events) {
-    ensure(eventStateLabel(event.type)).events.push(event);
+  for (const edge of definition?.edges ?? []) {
+    if (!edge.condition) continue;
+    const condition = registry?.conditions.find((item) => item.type === edge.condition?.type);
+    for (const [name, binding] of Object.entries(edge.condition.state ?? {})) {
+      addCapabilityRoot(condition?.state_ports?.find((port) => port.name === name), binding.path);
+    }
+  }
+  for (const { capability, path } of capabilityRoots.values()) {
+    const resolved = stateValueAtPath(root, path);
+    buckets.push({
+      key: `capability:${capability}:${path}`,
+      kind: "capability",
+      label: path,
+      summary: capability,
+      value: resolved.exists ? resolved.value : null,
+    });
   }
 
-  for (const bucket of map.values()) {
-    bucket.steps.sort((a, b) => timeRank(b.updated_at ?? b.started_at) - timeRank(a.updated_at ?? a.started_at));
-    bucket.events.sort((a, b) => timeRank(b.timestamp) - timeRank(a.timestamp));
+  const shared = stateRecord(root.shared);
+  if (shared) {
+    buckets.push({
+      key: "section:shared",
+      kind: "shared",
+      label: "shared",
+      summary: stateValueSummary(shared),
+      value: shared,
+    });
   }
-
-  return [...map.values()].sort((a, b) => stateOrder(a.status) - stateOrder(b.status));
+  const scopes = stateRecord(root.scopes);
+  for (const [scope, value] of Object.entries(scopes ?? {})) {
+    buckets.push({
+      key: `scope:${scope}`,
+      kind: "scope",
+      label: `scopes.${scope}`,
+      summary: stateValueSummary(value),
+      value,
+    });
+  }
+  return buckets;
 }
 
-function eventStateLabel(type: string): string {
-  const lower = type.toLowerCase();
-  if (lower.includes("failed") || lower.includes("error")) return "failed";
-  if (lower.includes("finished") || lower.includes("succeeded") || lower.includes("completed")) return "succeeded";
-  if (lower.includes("canceled") || lower.includes("cancelled")) return "canceled";
-  if (lower.includes("paused")) return "paused";
-  if (lower.includes("started") || lower.includes("running") || lower.includes("pending")) return "running";
-  return "other";
+function stateRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 }
 
-function stateOrder(status: string): number {
-  switch (status) {
-    case "running":
-    case "pending":
-      return 0;
-    case "paused":
-      return 1;
-    case "failed":
-      return 2;
-    case "canceled":
-      return 3;
-    case "succeeded":
-    case "finished":
-    case "completed":
-      return 4;
-    default:
-      return 5;
+function stateValueAtPath(root: Record<string, unknown>, path: string): { exists: boolean; value?: unknown } {
+  let current: unknown = root;
+  for (const segment of path.split(".").map((item) => item.trim()).filter(Boolean)) {
+    const record = stateRecord(current);
+    if (!record || !Object.prototype.hasOwnProperty.call(record, segment)) return { exists: false };
+    current = record[segment];
   }
+  return { exists: true, value: current };
+}
+
+function stateValueSummary(value: unknown): string {
+  if (Array.isArray(value)) return `${value.length} items`;
+  const record = stateRecord(value);
+  if (record) return `${Object.keys(record).length} fields`;
+  if (value === null || value === undefined) return "empty";
+  return typeof value;
 }
 
 function timeRank(value?: string): number {

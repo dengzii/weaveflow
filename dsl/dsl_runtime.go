@@ -1,9 +1,11 @@
 package dsl
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"github.com/dengzii/weaveflow/core"
+	"io"
 	"strings"
 )
 
@@ -51,7 +53,7 @@ func (c GraphNodeInstanceConfig) Validate(nodeID string) error {
 
 // GraphInstanceConfig binds a graph definition to one runnable local instance.
 type GraphInstanceConfig struct {
-	Version      string                             `json:"version,omitempty"`
+	Version      string                             `json:"version"`
 	ID           string                             `json:"id"`
 	GraphRef     string                             `json:"graph_ref"`
 	GraphVersion string                             `json:"graph_version,omitempty"`
@@ -64,9 +66,7 @@ type GraphInstanceConfig struct {
 }
 
 func normalizeGraphInstanceConfig(cfg GraphInstanceConfig) GraphInstanceConfig {
-	if strings.TrimSpace(cfg.Version) == "" {
-		cfg.Version = GraphInstanceConfigVersion
-	}
+	cfg.Version = strings.TrimSpace(cfg.Version)
 	cfg.ID = strings.TrimSpace(cfg.ID)
 	cfg.GraphRef = strings.TrimSpace(cfg.GraphRef)
 	cfg.GraphVersion = strings.TrimSpace(cfg.GraphVersion)
@@ -77,6 +77,9 @@ func normalizeGraphInstanceConfig(cfg GraphInstanceConfig) GraphInstanceConfig {
 
 func (c GraphInstanceConfig) Validate() error {
 	c = normalizeGraphInstanceConfig(c)
+	if c.Version != GraphInstanceConfigVersion {
+		return fmt.Errorf("graph instance config version must be %q, got %q", GraphInstanceConfigVersion, c.Version)
+	}
 	if c.ID == "" {
 		return fmt.Errorf("graph instance id is required")
 	}
@@ -113,7 +116,7 @@ func SerializeGraphInstanceConfig(cfg GraphInstanceConfig) ([]byte, error) {
 
 func DeserializeGraphInstanceConfig(data []byte) (GraphInstanceConfig, error) {
 	var cfg GraphInstanceConfig
-	if err := json.Unmarshal(data, &cfg); err != nil {
+	if err := decodeStrictRuntimeJSON(data, &cfg); err != nil {
 		return GraphInstanceConfig{}, err
 	}
 	cfg = normalizeGraphInstanceConfig(cfg)
@@ -241,7 +244,7 @@ func (o RunDebugOptions) EffectiveBreakpoints() []core.Breakpoint {
 
 // RunRequest describes a single execution against one graph instance.
 type RunRequest struct {
-	Version                string           `json:"version,omitempty"`
+	Version                string           `json:"version"`
 	InstanceID             string           `json:"instance_id"`
 	Input                  map[string]any   `json:"input,omitempty"`
 	Stream                 bool             `json:"stream,omitempty"`
@@ -252,9 +255,7 @@ type RunRequest struct {
 }
 
 func normalizeRunRequest(req RunRequest) RunRequest {
-	if strings.TrimSpace(req.Version) == "" {
-		req.Version = RunRequestVersion
-	}
+	req.Version = strings.TrimSpace(req.Version)
 	req.InstanceID = strings.TrimSpace(req.InstanceID)
 	req.ResumeFromRunID = strings.TrimSpace(req.ResumeFromRunID)
 	req.ResumeFromCheckpointID = strings.TrimSpace(req.ResumeFromCheckpointID)
@@ -263,6 +264,9 @@ func normalizeRunRequest(req RunRequest) RunRequest {
 
 func (r RunRequest) Validate() error {
 	r = normalizeRunRequest(r)
+	if r.Version != RunRequestVersion {
+		return fmt.Errorf("run request version must be %q, got %q", RunRequestVersion, r.Version)
+	}
 	if r.InstanceID == "" {
 		return fmt.Errorf("run request instance_id is required")
 	}
@@ -287,11 +291,26 @@ func SerializeRunRequest(req RunRequest) ([]byte, error) {
 
 func DeserializeRunRequest(data []byte) (RunRequest, error) {
 	var req RunRequest
-	if err := json.Unmarshal(data, &req); err != nil {
+	if err := decodeStrictRuntimeJSON(data, &req); err != nil {
 		return RunRequest{}, err
 	}
 	req = normalizeRunRequest(req)
 	return req, req.Validate()
+}
+
+func decodeStrictRuntimeJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("runtime definition contains multiple JSON values")
+		}
+		return err
+	}
+	return nil
 }
 
 func isValidCheckpointStage(stage string) bool {

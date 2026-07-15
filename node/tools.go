@@ -5,29 +5,28 @@ import (
 	"fmt"
 	"sync"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )
 
 type ToolsNode struct {
 	Base
-	ToolIDs  []string
-	Parallel bool
+	ToolIDs          []string
+	Parallel         bool
+	ConversationPath state.Path
 }
 
 func NewToolsNode(options ...NodeOption) *ToolsNode {
 	node := &ToolsNode{
 		Base: NewBase(Spec{
-			Name:         NodeTypeTools,
-			Description:  "Execute tool calls emitted by the model.",
-			Scope:        DefaultScope,
-			AccessorUses: []AccessorUse{Use(accessors.ConversationID.Name())},
+			Name:        NodeTypeTools,
+			Description: "Execute tool calls emitted by the model.",
 		}),
 		Parallel: true,
 	}
@@ -35,13 +34,25 @@ func NewToolsNode(options ...NodeOption) *ToolsNode {
 	return node
 }
 
+func (t *ToolsNode) Validate() error {
+	if t == nil {
+		return fmt.Errorf("tools node is nil")
+	}
+	if err := t.Base.Validate(); err != nil {
+		return err
+	}
+	if t.ConversationPath.Empty() {
+		return fmt.Errorf("tools node %q requires conversation path", t.ID())
+	}
+	return nil
+}
+
 func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
-		"state_scope": t.Scope(),
-		"tool_ids":    t.ToolIDs,
-		"parallel":    t.Parallel,
+		"tool_ids": t.ToolIDs,
+		"parallel": t.Parallel,
 	}
-	return newGraphNodeSpec(t.Base, NodeTypeTools, config)
+	return newGraphNodeSpec(t.Base, NodeTypeTools, config, map[string]state.Path{"conversation": t.ConversationPath})
 }
 
 func ToolsNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -53,27 +64,30 @@ func ToolsNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"tool_ids":    dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
-					"state_scope": dsl.JSONSchema{"type": "string"},
-					"parallel":    dsl.JSONSchema{"type": "boolean"},
+					"tool_ids": dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"parallel": dsl.JSONSchema{"type": "boolean"},
 				},
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			scope := nodeStateScope(spec.Config)
-			return dsl.StateContract{
-				Fields: []dsl.StateFieldRef{{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages inspected for tool calls and extended with tool responses."}},
-			}, nil
+		StatePorts: []dsl.StatePortDefinition{
+			capabilityPort("conversation", "Conversation messages inspected for calls and extended with tool results.", conversationcap.CapabilityID, true,
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMessages, Mode: dsl.StateAccessReadWrite}),
 		},
-		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+		Build: func(ctx *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
 			_ = ctx
-			toolsNode := NewToolsNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			spec := resolved.Spec
+			conversationPath, err := resolvedPath(resolved, "conversation")
+			if err != nil {
+				return nil, err
+			}
+			toolsNode := NewToolsNode(WithID(spec.ID))
 			applyNodeMetadata(&toolsNode.Base, spec)
 			toolsNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
 				toolsNode.Parallel = parallel
 			}
+			toolsNode.ConversationPath = conversationPath
 			return toolsNode, nil
 		},
 	}
@@ -83,7 +97,7 @@ func (t *ToolsNode) Execute(ctx core.Context, access *state.Access) error {
 	if ctx.Tools() == nil {
 		return errors.New("tools node: tools not available")
 	}
-	conversation, err := state.UseAccessor(access, accessors.ConversationID)
+	conversation, err := conversationcap.Bind(access, t.ConversationPath)
 	if err != nil {
 		return err
 	}

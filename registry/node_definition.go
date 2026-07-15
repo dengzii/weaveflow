@@ -6,6 +6,6 @@ import (
 
 type NodeTypeDefinition struct {
 	dsl.NodeTypeSchema
-	Build                NodeBuilder                                        `json:"-"`
-	ResolveStateContract func(dsl.GraphNodeSpec) (dsl.StateContract, error) `json:"-"`
+	StatePorts []dsl.StatePortDefinition `json:"state_ports"`
+	Build      NodeBuilder               `json:"-"`
 }

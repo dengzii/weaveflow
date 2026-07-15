@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/dengzii/weaveflow/llms/openai"
@@ -27,15 +27,21 @@ func LLMExample() {
 	coreCtx := core.NewContext(ctx)
 
 	llmNode := node.NewLLMNode()
+	conversationPath := state.Scope("agent", "conversation")
+	llmNode.ConversationPath = conversationPath
 
 	currentState := state.NewState()
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, "You are a concise assistant. Use tools when they improve accuracy."),
 		llms.TextParts(llms.ChatMessageTypeHuman, "What is 42 * 58?"),
 	}
-	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMessages).String(), messages))
-	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMaxIterations).String(), 5))
-	inputConversation := conversation(currentState, "agent")
+	seedAccess := state.NewEditingAccess(currentState)
+	seed, err := conversationcap.Bind(seedAccess, conversationPath)
+	must(err)
+	must(seed.SetMessages(messages))
+	must(seed.SetMaxIterations(5))
+	currentState = seedAccess.State()
+	inputConversation := conversation(currentState, conversationPath)
 
 	fmt.Println("input messages:")
 	for i, msg := range inputConversation.Messages() {
@@ -45,7 +51,7 @@ func LLMExample() {
 	result, err := executeNode(coreCtx, llmNode, currentState)
 	must(err)
 
-	conv := conversation(result, "agent")
+	conv := conversation(result, conversationPath)
 	fmt.Println()
 	fmt.Println("messages after LLM:")
 	for i, msg := range conv.Messages() {

@@ -4,10 +4,9 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 	"strconv"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 const DefaultSnapshotVersion = "state-v2"
@@ -51,27 +50,40 @@ func (c *JSONStateCodec) Version() string {
 
 func (c *JSONStateCodec) Encode(snapshot StateSnapshot) ([]byte, error) {
 	if snapshot.Version == "" {
-		snapshot.Version = c.Version()
+		return nil, fmt.Errorf("state snapshot version is required")
+	}
+	if snapshot.Version != c.Version() {
+		return nil, fmt.Errorf("state snapshot version %q does not match codec version %q", snapshot.Version, c.Version())
 	}
 	return json.Marshal(snapshot)
 }
 
 func (c *JSONStateCodec) Decode(data []byte) (StateSnapshot, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
 	decoder.UseNumber()
 
 	var snapshot StateSnapshot
 	if err := decoder.Decode(&snapshot); err != nil {
 		return StateSnapshot{}, err
 	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return StateSnapshot{}, fmt.Errorf("state snapshot contains multiple JSON values")
+		}
+		return StateSnapshot{}, err
+	}
 	if snapshot.Version == "" {
-		snapshot.Version = c.Version()
+		return StateSnapshot{}, fmt.Errorf("state snapshot version is required")
+	}
+	if snapshot.Version != c.Version() {
+		return StateSnapshot{}, fmt.Errorf("state snapshot version %q does not match codec version %q", snapshot.Version, c.Version())
 	}
 	snapshot.Shared = normalizeDecodedMap(snapshot.Shared)
 	snapshot.Scopes = normalizeDecodedMap(snapshot.Scopes)
 	snapshot.Internal = normalizeDecodedMap(snapshot.Internal)
 	snapshot.Runtime = normalizeDecodedMap(snapshot.Runtime)
-	return DecodeSnapshotMessages(snapshot)
+	return snapshot, nil
 }
 
 func (c *JSONStateCodec) Diff(before, after StateSnapshot) ([]StateChange, error) {
@@ -111,30 +123,12 @@ func SnapshotFromState(state *State) (StateSnapshot, error) {
 }
 
 func StateFromSnapshot(snapshot StateSnapshot) (*State, error) {
-	decoded, err := DecodeSnapshotMessages(snapshot)
-	if err != nil {
-		return nil, err
-	}
 	return FromMap(map[string]any{
-		SectionShared:   emptyMapToEmpty(decoded.Shared),
-		SectionScopes:   emptyMapToEmpty(decoded.Scopes),
-		SectionInternal: emptyMapToEmpty(decoded.Internal),
-		SectionRuntime:  emptyMapToEmpty(decoded.Runtime),
+		SectionShared:   emptyMapToEmpty(snapshot.Shared),
+		SectionScopes:   emptyMapToEmpty(snapshot.Scopes),
+		SectionInternal: emptyMapToEmpty(snapshot.Internal),
+		SectionRuntime:  emptyMapToEmpty(snapshot.Runtime),
 	}), nil
-}
-
-func DecodeSnapshotMessages(snapshot StateSnapshot) (StateSnapshot, error) {
-	shared, err := decodeSnapshotSectionMessages(SectionShared, snapshot.Shared)
-	if err != nil {
-		return StateSnapshot{}, err
-	}
-	scopes, err := decodeSnapshotSectionMessages(SectionScopes, snapshot.Scopes)
-	if err != nil {
-		return StateSnapshot{}, err
-	}
-	snapshot.Shared = shared
-	snapshot.Scopes = scopes
-	return snapshot, nil
 }
 
 func DiffSnapshots(before, after StateSnapshot) ([]StateChange, error) {
@@ -185,7 +179,7 @@ func encodeSnapshotSection(value any) (map[string]any, error) {
 	if !ok || mapped == nil {
 		return map[string]any{}, nil
 	}
-	encoded, err := encodeSnapshotValue("", cloneMap(mapped))
+	encoded, err := encodeSnapshotValue(cloneMap(mapped))
 	if err != nil {
 		return nil, err
 	}
@@ -196,152 +190,41 @@ func encodeSnapshotSection(value any) (map[string]any, error) {
 	return section, nil
 }
 
-func encodeSnapshotValue(path string, value any) (any, error) {
-	if isConversationMessagesPath(path) {
-		switch typed := value.(type) {
-		case []llms.MessageContent:
-			return SerializeMessages(typed)
-		case []StateMessage:
-			return cloneValue(typed), nil
-		}
-	}
-
+func encodeSnapshotValue(value any) (any, error) {
 	switch typed := value.(type) {
 	case map[string]any:
 		result := make(map[string]any, len(typed))
 		for key, item := range typed {
-			nextPath := key
-			if path != "" {
-				nextPath = path + "." + key
-			}
-			encoded, err := encodeSnapshotValue(nextPath, item)
+			encoded, err := encodeSnapshotValue(item)
 			if err != nil {
 				return nil, err
 			}
 			result[key] = encoded
 		}
 		return result, nil
-	default:
-		return cloneValue(value), nil
-	}
-}
-
-func decodeSnapshotSectionMessages(section string, values map[string]any) (map[string]any, error) {
-	if len(values) == 0 {
-		return values, nil
-	}
-	decoded, err := decodeSnapshotMessagesValue(section, cloneMap(values))
-	if err != nil {
-		return nil, err
-	}
-	mapped, ok := decoded.(map[string]any)
-	if !ok {
-		return values, nil
-	}
-	return mapped, nil
-}
-
-func decodeSnapshotMessagesValue(path string, value any) (any, error) {
-	if isConversationMessagesPath(path) {
-		messages, err := decodeStateMessagesValue(value)
-		if err != nil {
-			return nil, fmt.Errorf("decode %s: %w", path, err)
-		}
-		return messages, nil
-	}
-
-	switch typed := value.(type) {
-	case map[string]any:
-		result := make(map[string]any, len(typed))
-		for key, item := range typed {
-			nextPath := key
-			if path != "" {
-				nextPath = path + "." + key
-			}
-			decoded, err := decodeSnapshotMessagesValue(nextPath, item)
+	case []any:
+		result := make([]any, len(typed))
+		for index, item := range typed {
+			encoded, err := encodeSnapshotValue(item)
 			if err != nil {
 				return nil, err
 			}
-			result[key] = decoded
+			result[index] = encoded
 		}
 		return result, nil
 	default:
-		return cloneValue(value), nil
-	}
-}
-
-func decodeStateMessagesValue(value any) ([]llms.MessageContent, error) {
-	switch typed := value.(type) {
-	case []llms.MessageContent:
-		return cloneMessagesForSnapshot(typed), nil
-	case []StateMessage:
-		return DeserializeMessages(typed)
-	case []any:
-		messages := make([]StateMessage, 0, len(typed))
-		for _, item := range typed {
-			messageMap, ok := item.(map[string]any)
-			if !ok {
-				return nil, fmt.Errorf("expected message object, got %T", item)
-			}
-			message, err := stateMessageFromMap(messageMap)
-			if err != nil {
-				return nil, err
-			}
-			messages = append(messages, message)
+		payload, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
 		}
-		return DeserializeMessages(messages)
-	case nil:
-		return nil, nil
-	default:
-		return nil, fmt.Errorf("expected messages slice, got %T", value)
-	}
-}
-
-func stateMessageFromMap(values map[string]any) (StateMessage, error) {
-	message := StateMessage{}
-	if role, ok := values["role"].(string); ok {
-		message.Role = role
-	}
-	if rawParts, ok := values["parts"].([]any); ok {
-		for _, rawPart := range rawParts {
-			partMap, ok := rawPart.(map[string]any)
-			if !ok {
-				return StateMessage{}, fmt.Errorf("expected message part object, got %T", rawPart)
-			}
-			message.Parts = append(message.Parts, stateMessagePartFromMap(partMap))
+		decoder := json.NewDecoder(bytes.NewReader(payload))
+		decoder.UseNumber()
+		var encoded any
+		if err := decoder.Decode(&encoded); err != nil {
+			return nil, err
 		}
+		return normalizeDecodedValue(encoded), nil
 	}
-	return message, nil
-}
-
-func stateMessagePartFromMap(values map[string]any) StateMessagePart {
-	return StateMessagePart{
-		Kind:         stringField(values, "kind"),
-		Text:         stringField(values, "text"),
-		URL:          stringField(values, "url"),
-		Detail:       stringField(values, "detail"),
-		MIMEType:     stringField(values, "mime_type"),
-		Data:         stringField(values, "data"),
-		ToolCallID:   stringField(values, "tool_call_id"),
-		ToolType:     stringField(values, "tool_type"),
-		FunctionName: stringField(values, "function_name"),
-		Arguments:    stringField(values, "arguments"),
-		Name:         stringField(values, "name"),
-		Content:      stringField(values, "content"),
-	}
-}
-
-func stringField(values map[string]any, key string) string {
-	value, _ := values[key].(string)
-	return value
-}
-
-func isConversationMessagesPath(path string) bool {
-	if path == "conversation.messages" {
-		return true
-	}
-	return len(path) > len(".conversation.messages") &&
-		path[len(path)-len(".conversation.messages"):] == ".conversation.messages"
 }
 
 func flattenSnapshot(snapshot StateSnapshot) (map[string]any, error) {
@@ -452,18 +335,4 @@ func emptyMapToEmpty(values map[string]any) map[string]any {
 		return map[string]any{}
 	}
 	return values
-}
-
-func cloneMessagesForSnapshot(messages []llms.MessageContent) []llms.MessageContent {
-	if len(messages) == 0 {
-		return nil
-	}
-	cloned := make([]llms.MessageContent, len(messages))
-	for i, message := range messages {
-		cloned[i] = llms.MessageContent{
-			Role:  message.Role,
-			Parts: append([]llms.ContentPart(nil), message.Parts...),
-		}
-	}
-	return cloned
 }

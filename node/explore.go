@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"strings"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -36,14 +39,17 @@ const (
 
 type ExploreNode struct {
 	Base
-	ParentScope        string
-	ExploreScope       string
-	MaxIterations      int
-	ToolIDs            []string
-	SystemPrompt       string
-	ToolResultCap      int
-	IncludeEnvironment bool
-	EnvironmentHeading string
+	MaxIterations          int
+	ToolIDs                []string
+	SystemPrompt           string
+	ToolResultCap          int
+	IncludeEnvironment     bool
+	EnvironmentHeading     string
+	TaskPath               state.Path
+	ParentConversationPath state.Path
+	ConversationPath       state.Path
+	EnvironmentPath        state.Path
+	ResultPath             state.Path
 }
 
 func NewExploreNode(options ...NodeOption) *ExploreNode {
@@ -52,8 +58,6 @@ func NewExploreNode(options ...NodeOption) *ExploreNode {
 			Name:        "explore",
 			Description: "Run an isolated file-reading loop and return a structured summary.",
 		}),
-		ParentScope:        DefaultScope,
-		ExploreScope:       accessors.KeyExplore,
 		MaxIterations:      defaultExploreMaxIterations,
 		ToolIDs:            []string{"read", "grep", "glob"},
 		ToolResultCap:      defaultExploreToolResultCap,
@@ -63,13 +67,97 @@ func NewExploreNode(options ...NodeOption) *ExploreNode {
 	return node
 }
 
-func (n *ExploreNode) AccessorUses() []AccessorUse {
-	return []AccessorUse{
-		UseScoped(accessors.ConversationID.Name(), n.effectiveParentScope()),
-		UseScoped(accessors.ConversationID.Name(), n.effectiveExploreScope()),
-		UseRoot(accessors.RequestID.Name()),
-		UseRoot(accessors.EnvironmentID.Name()),
-		UseRoot(accessors.FinalID.Name()),
+func (n *ExploreNode) Validate() error {
+	if n == nil {
+		return errors.New("explore node is nil")
+	}
+	if err := n.Base.Validate(); err != nil {
+		return err
+	}
+	if n.TaskPath.Empty() || n.ParentConversationPath.Empty() || n.ConversationPath.Empty() || n.ResultPath.Empty() {
+		return fmt.Errorf("explore node %q requires task, parent_conversation, conversation, and result paths", n.ID())
+	}
+	return nil
+}
+
+func (n *ExploreNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	return newGraphNodeSpec(n.Base, NodeTypeExplore, map[string]any{
+		"max_iterations": n.MaxIterations, "tool_ids": n.ToolIDs, "system_prompt": n.SystemPrompt,
+		"tool_result_cap": n.ToolResultCap, "include_environment": n.IncludeEnvironment, "environment_heading": n.EnvironmentHeading,
+	}, map[string]state.Path{
+		"task": n.TaskPath, "parent_conversation": n.ParentConversationPath, "conversation": n.ConversationPath,
+		"environment": n.EnvironmentPath, "result": n.ResultPath,
+	})
+}
+
+func ExploreNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type: NodeTypeExplore, Title: "Explore Node", Description: "Run an isolated file-reading loop and return a structured summary.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object", "properties": dsl.JSONSchema{
+					"max_iterations":      dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"tool_ids":            dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"system_prompt":       dsl.JSONSchema{"type": "string", "x-control": "textarea"},
+					"tool_result_cap":     dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"include_environment": dsl.JSONSchema{"type": "boolean"},
+					"environment_heading": dsl.JSONSchema{"type": "string"},
+				}, "additionalProperties": false,
+			},
+			StatePorts: []dsl.StatePortDefinition{
+				primitivePort("task", "Exploration request.", "string", dsl.StateAccessRead, true),
+				capabilityPort("parent_conversation", "Parent conversation receiving the summary.", conversationcap.CapabilityID, true,
+					dsl.RelativeStateFieldRef{Path: conversationcap.FieldMessages, Mode: dsl.StateAccessReadWrite},
+					dsl.RelativeStateFieldRef{Path: conversationcap.FieldFinalAnswer, Mode: dsl.StateAccessWrite}),
+				capabilityPort("conversation", "Isolated exploration conversation.", conversationcap.CapabilityID, true,
+					dsl.RelativeStateFieldRef{Path: conversationcap.FieldMessages, Mode: dsl.StateAccessReadWrite},
+					dsl.RelativeStateFieldRef{Path: conversationcap.FieldIterationCount, Mode: dsl.StateAccessReadWrite},
+					dsl.RelativeStateFieldRef{Path: conversationcap.FieldMaxIterations, Mode: dsl.StateAccessReadWrite}),
+				primitivePort("environment", "Optional environment context.", "object", dsl.StateAccessRead, false),
+				primitivePort("result", "Exploration summary.", "string", dsl.StateAccessWrite, true),
+			},
+		},
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+			spec := resolved.Spec
+			taskPath, err := resolvedPath(resolved, "task")
+			if err != nil {
+				return nil, err
+			}
+			parentPath, err := resolvedPath(resolved, "parent_conversation")
+			if err != nil {
+				return nil, err
+			}
+			conversationPath, err := resolvedPath(resolved, "conversation")
+			if err != nil {
+				return nil, err
+			}
+			resultPath, err := resolvedPath(resolved, "result")
+			if err != nil {
+				return nil, err
+			}
+			target := NewExploreNode(WithID(spec.ID))
+			applyNodeMetadata(&target.Base, spec)
+			if value, ok := config.Int(spec.Config, "max_iterations"); ok {
+				target.MaxIterations = value
+			}
+			if values := config.StringSlice(spec.Config, "tool_ids"); len(values) > 0 {
+				target.ToolIDs = values
+			}
+			if value := config.String(spec.Config, "system_prompt"); value != "" {
+				target.SystemPrompt = value
+			}
+			if value, ok := config.Int(spec.Config, "tool_result_cap"); ok {
+				target.ToolResultCap = value
+			}
+			if value, ok := config.Bool(spec.Config, "include_environment"); ok {
+				target.IncludeEnvironment = value
+			}
+			target.EnvironmentHeading = config.String(spec.Config, "environment_heading")
+			target.TaskPath, target.ParentConversationPath, target.ConversationPath = taskPath, parentPath, conversationPath
+			target.EnvironmentPath = optionalResolvedPath(resolved, "environment")
+			target.ResultPath = resultPath
+			return target, nil
+		},
 	}
 }
 
@@ -79,8 +167,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 		return errors.New("explore node: model service not available")
 	}
 
-	parentAccess := access.WithScope(n.effectiveParentScope())
-	parentConversation, err := state.UseAccessor(parentAccess, accessors.ConversationID)
+	parentConversation, err := conversationcap.Bind(access, n.ParentConversationPath)
 	if err != nil {
 		return err
 	}
@@ -91,9 +178,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 		return err
 	}
 
-	exploreScope := n.effectiveExploreScope()
-	exploreAccess := access.WithScope(exploreScope)
-	convo, err := state.UseAccessor(exploreAccess, accessors.ConversationID)
+	convo, err := conversationcap.Bind(access, n.ConversationPath)
 	if err != nil {
 		return err
 	}
@@ -119,7 +204,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 	for ; iter < maxIter; iter++ {
 		messages := convo.Messages()
 
-		if payload, err := buildLLMPromptArtifact(messages, toolSets, exploreScope, iter, maxIter); err == nil {
+		if payload, err := buildLLMPromptArtifact(messages, toolSets, n.ConversationPath.String(), iter, maxIter); err == nil {
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.prompt", payload)
 		}
 
@@ -198,17 +283,17 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 	}
 
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
-		"kind":           "explore_done",
-		"explore_scope":  exploreScope,
-		"iterations":     iter,
-		"terminated":     terminated,
-		"summary_length": len(summary),
+		"kind":              "explore_done",
+		"conversation_path": n.ConversationPath.String(),
+		"iterations":        iter,
+		"terminated":        terminated,
+		"summary_length":    len(summary),
 	})
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.summary", map[string]any{
-		"explore_scope": exploreScope,
-		"iterations":    iter,
-		"terminated":    terminated,
-		"summary":       summary,
+		"conversation_path": n.ConversationPath.String(),
+		"iterations":        iter,
+		"terminated":        terminated,
+		"summary":           summary,
 	})
 
 	return nil
@@ -219,11 +304,14 @@ func (n *ExploreNode) renderSystemPrompt(access *state.Access) string {
 	if !n.IncludeEnvironment {
 		return prompt
 	}
-	environment, err := state.UseAccessor(access, accessors.EnvironmentID)
-	if err != nil {
+	if n.EnvironmentPath.Empty() {
 		return prompt
 	}
-	values := environment.Value()
+	rawValue, ok := access.ReadAny(n.EnvironmentPath)
+	if !ok {
+		return prompt
+	}
+	values, _ := rawValue.(map[string]any)
 	if len(values) == 0 {
 		return prompt
 	}
@@ -258,7 +346,7 @@ func (n *ExploreNode) clampToolMessage(message llms.MessageContent) llms.Message
 	return message
 }
 
-func (n *ExploreNode) writeAnswerToParent(access *state.Access, parent accessors.Conversation, summary string) error {
+func (n *ExploreNode) writeAnswerToParent(access *state.Access, parent *conversationcap.View, summary string) error {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return nil
@@ -272,14 +360,10 @@ func (n *ExploreNode) writeAnswerToParent(access *state.Access, parent accessors
 	if err := parent.SetFinalAnswer(summary); err != nil {
 		return err
 	}
-	final, err := state.UseAccessor(access, accessors.FinalID)
-	if err != nil {
-		return err
-	}
-	return final.SetAnswer(summary)
+	return state.Replace(access, state.NewRef[string](n.ResultPath), summary)
 }
 
-func (n *ExploreNode) resolveRequest(access *state.Access, parent accessors.Conversation) (string, error) {
+func (n *ExploreNode) resolveRequest(access *state.Access, parent *conversationcap.View) (string, error) {
 	messages := parent.Messages()
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != llms.ChatMessageTypeHuman {
@@ -291,27 +375,13 @@ func (n *ExploreNode) resolveRequest(access *state.Access, parent accessors.Conv
 		}
 	}
 
-	request, err := state.UseAccessor(access, accessors.RequestID)
+	request, err := state.Get(access, state.NewRef[string](n.TaskPath))
 	if err == nil {
-		if input := strings.TrimSpace(request.Input()); input != "" {
+		if input := strings.TrimSpace(request); input != "" {
 			return input, nil
 		}
 	}
-	return "", errors.New("explore: no user input found in parent scope or request state")
-}
-
-func (n *ExploreNode) effectiveExploreScope() string {
-	if n == nil || strings.TrimSpace(n.ExploreScope) == "" {
-		return accessors.KeyExplore
-	}
-	return strings.TrimSpace(n.ExploreScope)
-}
-
-func (n *ExploreNode) effectiveParentScope() string {
-	if n == nil || strings.TrimSpace(n.ParentScope) == "" {
-		return ""
-	}
-	return strings.TrimSpace(n.ParentScope)
+	return "", errors.New("explore: no user input found in parent conversation or task state")
 }
 
 func (n *ExploreNode) effectiveMaxIterations() int {

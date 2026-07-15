@@ -45,7 +45,8 @@ export function SettingsWorkspace({ registry }: { registry: RegistryInfo | null 
           <div className="mb-2 text-sm font-medium">Registry Snapshot</div>
           <pre className="max-h-80 overflow-auto rounded bg-muted p-3 text-xs">
             {stringifyJSON({
-              state_fields: registry?.state_fields?.length ?? 0,
+              state_modules: registry?.state_modules?.map((module) => `${module.name}@${module.version}`) ?? [],
+              capabilities: registry?.capabilities?.map((capability) => capability.id) ?? [],
               node_types: registry?.node_types?.map((node) => node.type) ?? [],
               conditions: registry?.conditions?.map((condition) => condition.type) ?? [],
             })}

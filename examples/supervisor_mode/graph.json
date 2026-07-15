@@ -1,0 +1,126 @@
+{
+  "version": "2.0",
+  "name": "supervisor_mode",
+  "description": "A supervisor delegates to research and quantitative specialists, then synthesizes the final answer.",
+  "state_modules": [{"name": "weaveflow.protocols", "version": "1"}],
+  "entry_point": "supervisor",
+  "finish_point": "finalize",
+  "nodes": [
+    {
+      "id": "supervisor",
+      "name": "Supervisor",
+      "type": "supervisor",
+      "config": {
+        "members": [
+          {
+            "id": "researcher",
+            "name": "Researcher",
+            "description": "Identify qualitative tradeoffs, assumptions, and evidence relevant to the decision."
+          },
+          {
+            "id": "quantitative_analyst",
+            "name": "Quantitative Analyst",
+            "description": "Perform exact calculations, compare numeric scenarios, and check quantitative claims."
+          }
+        ],
+        "max_turns": 6,
+        "route_attempts": 2
+      },
+      "state": {
+        "objective": {"path": "shared.request.input"},
+        "supervisor": {"path": "shared.supervisor"}
+      }
+    },
+    {
+      "id": "researcher",
+      "name": "Researcher",
+      "type": "supervisor_worker",
+      "config": {
+        "worker_id": "researcher",
+        "role": "Identify qualitative tradeoffs and return a concise evidence-oriented brief.",
+        "max_iterations": 4,
+        "parallel": true
+      },
+      "state": {
+        "supervisor": {"path": "shared.supervisor"},
+        "conversation": {"path": "scopes.supervisor_researcher.conversation"}
+      }
+    },
+    {
+      "id": "quantitative_analyst",
+      "name": "Quantitative Analyst",
+      "type": "supervisor_worker",
+      "config": {
+        "worker_id": "quantitative_analyst",
+        "role": "Use the calculator for exact arithmetic and explain the comparison succinctly.",
+        "tool_ids": ["calculator"],
+        "max_iterations": 4,
+        "parallel": true
+      },
+      "state": {
+        "supervisor": {"path": "shared.supervisor"},
+        "conversation": {"path": "scopes.supervisor_quantitative_analyst.conversation"}
+      }
+    },
+    {
+      "id": "finalize",
+      "name": "Final Synthesis",
+      "type": "supervisor_finalize",
+      "config": {},
+      "state": {
+        "supervisor": {"path": "shared.supervisor"},
+        "result": {"path": "shared.final.answer"}
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "supervisor",
+      "to": "researcher",
+      "condition": {
+        "type": "supervisor_route_equals",
+        "config": {
+          "worker_id": "researcher"
+        },
+        "state": {
+          "supervisor": {"path": "shared.supervisor"}
+        }
+      }
+    },
+    {
+      "from": "supervisor",
+      "to": "quantitative_analyst",
+      "condition": {
+        "type": "supervisor_route_equals",
+        "config": {
+          "worker_id": "quantitative_analyst"
+        },
+        "state": {
+          "supervisor": {"path": "shared.supervisor"}
+        }
+      }
+    },
+    {
+      "from": "supervisor",
+      "to": "finalize"
+    },
+    {
+      "from": "researcher",
+      "to": "supervisor"
+    },
+    {
+      "from": "quantitative_analyst",
+      "to": "supervisor"
+    }
+  ],
+  "metadata": {
+    "web": {
+      "positions": {
+        "supervisor": {"x": 360, "y": 40},
+        "researcher": {"x": 80, "y": 240},
+        "quantitative_analyst": {"x": 640, "y": 240},
+        "finalize": {"x": 360, "y": 460}
+      }
+    }
+  }
+}

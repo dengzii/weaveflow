@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tmc/langchaingo/llms"
 	"go.uber.org/zap"
 )
 
@@ -61,13 +60,6 @@ type ArtifactRef struct {
 
 const runtimeArtifactsKey = "artifacts"
 
-const (
-	runtimeConversationKey                 = "conversation"
-	runtimeConversationFieldMessages       = "messages"
-	runtimeConversationFieldFinalAnswer    = "final_answer"
-	runtimeConversationFieldIterationCount = "iteration_count"
-)
-
 func SnapshotFromStateWithRuntime(state *State, runtime RuntimeState, artifacts []ArtifactRef) (StateSnapshot, error) {
 	snapshot, err := SnapshotFromState(state)
 	if err != nil {
@@ -118,19 +110,13 @@ func MergeResumeInput(base *State, input *State) (*State, error) {
 }
 
 func PrepareContinuationState(base *State, input *State) (*State, error) {
-	state := NewState()
-	if base != nil {
-		state = base.Clone()
-	}
-	resetConversationTurnState(state)
-	return MergeResumeInput(state, input)
+	return MergeResumeInput(base, input)
 }
 
 func SummaryFields(state *State) []zap.Field {
 	return []zap.Field{
 		zap.Int("state_keys", CountKeys(state)),
 		zap.Int("state_scopes", CountScopes(state)),
-		zap.Int("conversation_messages", CountConversationMessages(state)),
 	}
 }
 
@@ -148,18 +134,6 @@ func CountScopes(state *State) int {
 	}
 	scopes, _ := state.root[SectionScopes].(map[string]any)
 	return len(scopes)
-}
-
-func CountConversationMessages(state *State) int {
-	if state == nil {
-		return 0
-	}
-	total := countMessagesAt(state, statePath(SectionShared, runtimeConversationKey))
-	scopes, _ := state.root[SectionScopes].(map[string]any)
-	for scopeName := range scopes {
-		total += countMessagesAt(state, statePath(SectionScopes, scopeName, runtimeConversationKey))
-	}
-	return total
 }
 
 func CloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {
@@ -268,48 +242,4 @@ func artifactRefsFromValue(value any) ([]ArtifactRef, error) {
 		return nil, fmt.Errorf("decode runtime artifacts: %w", err)
 	}
 	return CloneArtifactRefs(artifacts), nil
-}
-
-func resetConversationTurnState(state *State) {
-	if state == nil {
-		return
-	}
-	deleteConversationTurn(state, Shared(runtimeConversationKey))
-	scopes, _ := state.root[SectionScopes].(map[string]any)
-	for scopeName := range scopes {
-		deleteConversationTurn(state, Scope(scopeName, runtimeConversationKey))
-	}
-}
-
-func deleteConversationTurn(state *State, path Path) {
-	_ = state.delete(path.MustChild(runtimeConversationFieldFinalAnswer))
-	_ = state.delete(path.MustChild(runtimeConversationFieldIterationCount))
-}
-
-func countMessagesAt(state *State, path string) int {
-	parsed, err := ParsePath(path + "." + runtimeConversationFieldMessages)
-	if err != nil {
-		return 0
-	}
-	raw, ok := state.read(parsed)
-	if !ok {
-		return 0
-	}
-	switch typed := raw.(type) {
-	case []llms.MessageContent:
-		return len(typed)
-	case []StateMessage:
-		return len(typed)
-	case []any:
-		return len(typed)
-	default:
-		return 0
-	}
-}
-
-func statePath(section string, segments ...string) string {
-	if len(segments) == 0 {
-		return section
-	}
-	return section + "." + strings.Join(segments, ".")
 }

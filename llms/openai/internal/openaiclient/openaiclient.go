@@ -10,12 +10,18 @@ import (
 )
 
 const (
-	defaultBaseURL              = "https://api.openai.com/v1"
-	defaultFunctionCallBehavior = "auto"
+	defaultBaseURL = "https://api.openai.com/v1"
 )
 
 // ErrEmptyResponse is returned when the OpenAI API returns an empty response.
 var ErrEmptyResponse = errors.New("empty response")
+
+type errorMessage struct {
+	Error struct {
+		Message string `json:"message"`
+		Type    string `json:"type"`
+	} `json:"error"`
+}
 
 type APIType string
 
@@ -86,25 +92,6 @@ func New(token string, model string, baseURL string, organization string,
 	}
 
 	return c, nil
-}
-
-// Completion is a completion.
-type Completion struct {
-	Text string `json:"text"`
-}
-
-// CreateCompletion creates a completion.
-func (c *Client) CreateCompletion(ctx context.Context, r *CompletionRequest) (*Completion, error) {
-	resp, err := c.createCompletion(ctx, r)
-	if err != nil {
-		return nil, err
-	}
-	if len(resp.Choices) == 0 {
-		return nil, ErrEmptyResponse
-	}
-	return &Completion{
-		Text: resp.Choices[0].Message.Content,
-	}, nil
 }
 
 // EmbeddingRequest is a request to create an embedding.

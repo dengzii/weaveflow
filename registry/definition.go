@@ -6,5 +6,6 @@ type GraphResolver func(graphRef string) (dsl.GraphDefinition, error)
 
 type ConditionDefinition struct {
 	dsl.ConditionSchema
-	Resolve func(dsl.GraphConditionSpec) (EdgeCondition, error) `json:"-"`
+	StatePorts []dsl.StatePortDefinition                          `json:"state_ports"`
+	Resolve    func(ResolvedConditionSpec) (EdgeCondition, error) `json:"-"`
 }

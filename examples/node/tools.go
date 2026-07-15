@@ -3,10 +3,10 @@ package main
 import (
 	"context"
 	"fmt"
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 	"github.com/dengzii/weaveflow/tools"
 
 	"github.com/tmc/langchaingo/llms"
@@ -22,6 +22,8 @@ func ToolsExample() {
 
 	toolsNode := node.NewToolsNode()
 	toolsNode.Parallel = true
+	conversationPath := state.Scope("agent", "conversation")
+	toolsNode.ConversationPath = conversationPath
 
 	currentState := state.NewState()
 	messages := []llms.MessageContent{
@@ -47,9 +49,13 @@ func ToolsExample() {
 			},
 		},
 	}
-	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMessages).String(), messages))
-	must(state.SetPath(currentState, state.Scope("agent", accessors.KeyConversation, accessors.ConversationFieldMaxIterations).String(), 5))
-	inputConversation := conversation(currentState, "agent")
+	seedAccess := state.NewEditingAccess(currentState)
+	seed, err := conversationcap.Bind(seedAccess, conversationPath)
+	must(err)
+	must(seed.SetMessages(messages))
+	must(seed.SetMaxIterations(5))
+	currentState = seedAccess.State()
+	inputConversation := conversation(currentState, conversationPath)
 
 	fmt.Println("messages before tool execution:")
 	for i, msg := range inputConversation.Messages() {
@@ -59,7 +65,7 @@ func ToolsExample() {
 	result, err := executeNode(ctx, toolsNode, currentState)
 	must(err)
 
-	conv := conversation(result, "agent")
+	conv := conversation(result, conversationPath)
 	fmt.Println()
 	fmt.Println("messages after tool execution:")
 	for i, msg := range conv.Messages() {

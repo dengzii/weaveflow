@@ -1,0 +1,182 @@
+package node
+
+import (
+	"errors"
+	"fmt"
+	"strings"
+
+	plancap "github.com/dengzii/weaveflow/capability/plan"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/state"
+
+	"github.com/tmc/langchaingo/llms"
+)
+
+const defaultPlanFinalizeSystemPrompt = `Synthesize the final user-facing answer from the objective and plan step results.
+Use successful evidence, acknowledge material failures when necessary, and do not invent missing facts.
+Answer directly in the same language as the objective.`
+
+type PlanFinalizeNode struct {
+	Base
+	ModelID      string
+	SystemPrompt string
+	PlanPath     state.Path
+	ResultPath   state.Path
+}
+
+func NewPlanFinalizeNode(options ...NodeOption) *PlanFinalizeNode {
+	target := &PlanFinalizeNode{
+		Base: NewBase(Spec{
+			Name:        NodeTypePlanFinalize,
+			Description: "Synthesize plan results into the final answer.",
+		}),
+		SystemPrompt: defaultPlanFinalizeSystemPrompt,
+	}
+	applyNodeOptions(&target.Base, options)
+	return target
+}
+
+func (n *PlanFinalizeNode) Validate() error {
+	if n == nil {
+		return errors.New("plan finalize node is nil")
+	}
+	if err := n.Base.Validate(); err != nil {
+		return err
+	}
+	if n.PlanPath.Empty() || n.ResultPath.Empty() {
+		return fmt.Errorf("plan finalize node %q requires plan and result paths", n.ID())
+	}
+	return nil
+}
+
+func (n *PlanFinalizeNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	return newGraphNodeSpec(n.Base, NodeTypePlanFinalize, map[string]any{
+		"model_id":      n.ModelID,
+		"system_prompt": n.SystemPrompt,
+	}, map[string]state.Path{"plan": n.PlanPath, "result": n.ResultPath})
+}
+
+func PlanFinalizeNodeTypeDefinition() registry.NodeTypeDefinition {
+	return registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:        NodeTypePlanFinalize,
+			Title:       "Plan Finalize",
+			Description: "Synthesize plan results into the final answer.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"model_id": dsl.JSONSchema{"type": "string"},
+					"system_prompt": dsl.JSONSchema{
+						"type":      "string",
+						"title":     "System Prompt",
+						"x-control": "textarea",
+					},
+				},
+				"additionalProperties": false,
+			},
+		},
+		StatePorts: []dsl.StatePortDefinition{
+			capabilityPort("plan", "Plan results and final status.", plancap.CapabilityID, true,
+				capabilityField(plancap.FieldObjective, dsl.StateAccessRead),
+				capabilityField(plancap.FieldStatus, dsl.StateAccessWrite),
+				capabilityField(plancap.FieldSummary, dsl.StateAccessRead),
+				capabilityField(plancap.FieldSteps, dsl.StateAccessRead),
+				capabilityField(plancap.FieldFinalAnswer, dsl.StateAccessWrite)),
+			primitivePort("result", "Final synthesized answer.", "string", dsl.StateAccessWrite, true),
+		},
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+			spec := resolved.Spec
+			planPath, err := resolvedPath(resolved, "plan")
+			if err != nil {
+				return nil, err
+			}
+			resultPath, err := resolvedPath(resolved, "result")
+			if err != nil {
+				return nil, err
+			}
+			target := NewPlanFinalizeNode(WithID(spec.ID))
+			applyNodeMetadata(&target.Base, spec)
+			target.ModelID = config.String(spec.Config, "model_id")
+			if _, exists := spec.Config["system_prompt"]; exists {
+				target.SystemPrompt = config.String(spec.Config, "system_prompt")
+			}
+			target.PlanPath = planPath
+			target.ResultPath = resultPath
+			return target, nil
+		},
+	}
+}
+
+func (n *PlanFinalizeNode) Execute(ctx core.Context, access *state.Access) error {
+	model := ctx.Model(n.ModelID)
+	if model == nil {
+		return fmt.Errorf("plan finalize node: model %q not available", effectiveModelID(n.ModelID))
+	}
+	planner, err := plancap.Bind(access, n.PlanPath)
+	if err != nil {
+		return err
+	}
+	plan := planner.Value()
+	objective := planString(plan[planFieldObjective])
+	steps := planStepsFromValue(plan[planFieldSteps])
+	if objective == "" {
+		return errors.New("plan finalize node: objective is empty")
+	}
+
+	response, err := model.GenerateContent(ctx, []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
+		llms.TextParts(llms.ChatMessageTypeHuman, buildPlanFinalizePrompt(objective, planString(plan[planFieldSummary]), steps)),
+	},
+		llms.WithThinkingMode(llms.ThinkingModeLow),
+		llms.WithTemperature(0.2),
+	)
+	if err != nil {
+		return fmt.Errorf("plan finalize node: synthesize answer: %w", err)
+	}
+	if response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
+		return errors.New("plan finalize node: model returned no choices")
+	}
+	answer := strings.TrimSpace(response.Choices[0].Content)
+	if answer == "" {
+		return errors.New("plan finalize node: model returned an empty answer")
+	}
+	if err := state.Replace(access, state.NewRef[string](n.ResultPath), answer); err != nil {
+		return err
+	}
+	if err := planner.SetField(planFieldFinalAnswer, answer); err != nil {
+		return err
+	}
+	return planner.SetField(planFieldStatus, PlanStatusDone)
+}
+
+func (n *PlanFinalizeNode) effectiveSystemPrompt() string {
+	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
+		return defaultPlanFinalizeSystemPrompt
+	}
+	return n.SystemPrompt
+}
+
+func buildPlanFinalizePrompt(objective string, summary string, steps []PlanStep) string {
+	var builder strings.Builder
+	builder.WriteString("Objective:\n")
+	builder.WriteString(objective)
+	if summary != "" {
+		builder.WriteString("\n\nPlan summary:\n")
+		builder.WriteString(summary)
+	}
+	builder.WriteString("\n\nStep results:\n")
+	for _, step := range steps {
+		fmt.Fprintf(&builder, "- [%s] %s\n  status: %s\n", step.ID, step.Title, step.Status)
+		if step.Result != "" {
+			fmt.Fprintf(&builder, "  result: %s\n", planTextLimit(step.Result, 6000))
+		}
+		if step.Error != "" {
+			fmt.Fprintf(&builder, "  error: %s\n", planTextLimit(step.Error, 1500))
+		}
+	}
+	builder.WriteString("\nProduce the final answer now.")
+	return builder.String()
+}

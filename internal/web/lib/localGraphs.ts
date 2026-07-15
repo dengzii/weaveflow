@@ -28,14 +28,7 @@ export function readLocalGraphDrafts(): LocalGraphDraft[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    let migrated = false;
-    const drafts = parsed.filter(isLocalGraphDraft).map((draft) => {
-      const next = migrateLocalGraphDraft(draft);
-      if (next !== draft) migrated = true;
-      return next;
-    });
-    if (migrated) writeLocalGraphDrafts(drafts);
-    return drafts.sort(sortDrafts);
+    return parsed.filter(isLocalGraphDraft).sort(sortDrafts);
   } catch {
     return [];
   }
@@ -49,7 +42,7 @@ export function saveLocalGraphDraft(input: SaveLocalGraphInput): LocalGraphDraft
     id: existing?.id ?? createDraftID(),
     title: input.title?.trim() || input.definition.name || input.graphId || "Untitled graph",
     graphId: input.graphId.trim() || input.definition.name || "debug_graph",
-    graphVersion: input.graphVersion.trim() || input.definition.version || "1.0",
+    graphVersion: input.graphVersion.trim() || input.definition.version || "2.0",
     definition: input.definition,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
@@ -129,47 +122,6 @@ function createDraftID() {
 
 function sortDrafts(a: LocalGraphDraft, b: LocalGraphDraft) {
   return b.updatedAt.localeCompare(a.updatedAt);
-}
-
-function migrateLocalGraphDraft(draft: LocalGraphDraft): LocalGraphDraft {
-  let changed = false;
-  const nodes = draft.definition.nodes.map((node) => {
-    const config = node.config;
-    if (!config) return node;
-    let nodeChanged = false;
-    const nextConfig = { ...config };
-
-    for (const key of ["input_path", "request_input_path"]) {
-      if (nextConfig[key] === "request.input") {
-        nextConfig[key] = "shared.request.input";
-        nodeChanged = true;
-      }
-    }
-
-    const contextPaths = nextConfig.context_paths;
-    if (Array.isArray(contextPaths)) {
-      const nextContextPaths = contextPaths.map((value) =>
-        value === "request.metadata" ? "shared.request.metadata" : value
-      );
-      if (nextContextPaths.some((value, index) => value !== contextPaths[index])) {
-        nextConfig.context_paths = nextContextPaths;
-        nodeChanged = true;
-      }
-    }
-
-    if (!nodeChanged) return node;
-    changed = true;
-    return { ...node, config: nextConfig };
-  });
-
-  if (!changed) return draft;
-  return {
-    ...draft,
-    definition: {
-      ...draft.definition,
-      nodes,
-    },
-  };
 }
 
 function isLocalGraphDraft(value: unknown): value is LocalGraphDraft {

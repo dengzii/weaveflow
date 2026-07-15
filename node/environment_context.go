@@ -18,7 +18,6 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 )
 
 const (
@@ -30,11 +29,11 @@ const (
 
 type EnvironmentContextNode struct {
 	Base
-	EnvironmentStatePath string
-	WorkspaceRoot        string
-	IncludeGit           bool
-	IncludeProject       bool
-	GitStatusLimit       int
+	EnvironmentPath state.Path
+	WorkspaceRoot   string
+	IncludeGit      bool
+	IncludeProject  bool
+	GitStatusLimit  int
 }
 
 func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
@@ -42,9 +41,6 @@ func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
 		Base: NewBase(Spec{
 			Name:        NodeTypeEnvironmentContext,
 			Description: "Collect deterministic workspace and project context for downstream agent nodes.",
-			AccessorUses: []AccessorUse{
-				UseRoot(accessors.EnvironmentID.Name()),
-			},
 		}),
 		IncludeGit:     true,
 		IncludeProject: true,
@@ -54,17 +50,29 @@ func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
 	return node
 }
 
+func (n *EnvironmentContextNode) Validate() error {
+	if n == nil {
+		return fmt.Errorf("environment context node is nil")
+	}
+	if err := n.Base.Validate(); err != nil {
+		return err
+	}
+	if n.EnvironmentPath.Empty() {
+		return fmt.Errorf("environment context node %q requires environment path", n.ID())
+	}
+	return nil
+}
+
 func (n *EnvironmentContextNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
-		"environment_state_path": n.EnvironmentStatePath,
-		"workspace_root":         n.WorkspaceRoot,
-		"include_git":            n.IncludeGit,
-		"include_project":        n.IncludeProject,
+		"workspace_root":  n.WorkspaceRoot,
+		"include_git":     n.IncludeGit,
+		"include_project": n.IncludeProject,
 	}
 	if n.GitStatusLimit > 0 {
 		config["git_status_limit"] = n.GitStatusLimit
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeEnvironmentContext, config)
+	return newGraphNodeSpec(n.Base, NodeTypeEnvironmentContext, config, map[string]state.Path{"environment": n.EnvironmentPath})
 }
 
 func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -76,40 +84,27 @@ func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"environment_state_path": dsl.JSONSchema{"type": "string"},
-					"workspace_root":         dsl.JSONSchema{"type": "string"},
-					"include_git":            dsl.JSONSchema{"type": "boolean"},
-					"include_project":        dsl.JSONSchema{"type": "boolean"},
-					"git_status_limit":       dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"workspace_root":   dsl.JSONSchema{"type": "string"},
+					"include_git":      dsl.JSONSchema{"type": "boolean"},
+					"include_project":  dsl.JSONSchema{"type": "boolean"},
+					"git_status_limit": dsl.JSONSchema{"type": "integer", "minimum": 1},
 				},
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			environmentPath := config.TrimmedString(spec.Config, "environment_state_path")
-			if strings.TrimSpace(environmentPath) == "" {
-				environmentPath = state.Shared(accessors.KeyEnvironment).String()
-			}
-			parsed, err := state.ParsePath(environmentPath)
-			if err != nil {
-				return dsl.StateContract{}, err
-			}
-			return dsl.StateContract{
-				Fields: []dsl.StateFieldRef{
-					{
-						Path:          parsed.String(),
-						Mode:          dsl.StateAccessWrite,
-						Description:   "Collected workspace, project, and git context.",
-						MergeStrategy: dsl.StateMergeReplace,
-					},
-				},
-			}, nil
+		StatePorts: []dsl.StatePortDefinition{
+			primitivePort("environment", "Collected workspace, project, and git context.", "object", dsl.StateAccessWrite, true),
 		},
-		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+		Build: func(ctx *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
 			_ = ctx
+			spec := resolved.Spec
+			environmentPath, err := resolvedPath(resolved, "environment")
+			if err != nil {
+				return nil, err
+			}
 			envNode := NewEnvironmentContextNode(WithID(spec.ID))
 			applyNodeMetadata(&envNode.Base, spec)
-			envNode.EnvironmentStatePath = config.TrimmedString(spec.Config, "environment_state_path")
+			envNode.EnvironmentPath = environmentPath
 			envNode.WorkspaceRoot = config.TrimmedString(spec.Config, "workspace_root")
 			if value, ok := config.Bool(spec.Config, "include_git"); ok {
 				envNode.IncludeGit = value
@@ -129,61 +124,29 @@ func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 }
 
 func (n *EnvironmentContextNode) Execute(ctx core.Context, access *state.Access) error {
-	path, err := n.environmentPath()
-	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "environment.context.error", map[string]any{"error": err.Error()})
-		return err
-	}
-
 	payload := n.collect(ctx)
-	if err := access.SetAny(path, payload); err != nil {
+	if err := access.SetAny(n.EnvironmentPath, payload); err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "environment.context.error", map[string]any{"error": err.Error()})
 		return err
 	}
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "environment.context", map[string]any{
-		"environment_path": path.String(),
+		"environment_path": n.EnvironmentPath.String(),
 		"context":          payload,
 	})
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
 		"kind":             "environment_context",
-		"environment_path": path.String(),
+		"environment_path": n.EnvironmentPath.String(),
 		"workspace_root":   payload["workspace_root"],
 	})
 	return nil
 }
 
-func (n *EnvironmentContextNode) Contract(registry *state.Registry) (state.Contract, error) {
-	base, err := contractFromAccessorUses(registry, n.ID(), n.Scope(), n.Base.AccessorUses())
-	if err != nil {
-		return state.Contract{}, err
+func (n *EnvironmentContextNode) Contract() state.Contract {
+	if n == nil || n.EnvironmentPath.Empty() {
+		return state.Contract{}
 	}
-	path, err := n.environmentPath()
-	if err != nil {
-		return state.Contract{}, err
-	}
-	fields := append([]state.FieldAccess(nil), base.Fields...)
-	if path.String() != state.Shared(accessors.KeyEnvironment).String() {
-		fields = append(fields, state.FieldAccess{
-			Path:        path,
-			Mode:        state.AccessWrite,
-			Merge:       state.MergeReplace,
-			Type:        "object",
-			Description: "Collected workspace, project, and git context.",
-		})
-	}
-	contract := state.NewContract(fields...)
-	contract.WildcardRead = base.WildcardRead
-	contract.WildcardWrite = base.WildcardWrite
-	return contract, nil
-}
-
-func (n *EnvironmentContextNode) environmentPath() (state.Path, error) {
-	text := strings.TrimSpace(n.EnvironmentStatePath)
-	if text == "" {
-		return state.Shared(accessors.KeyEnvironment), nil
-	}
-	return state.ParsePath(text)
+	return state.NewContract(state.FieldAccess{Path: n.EnvironmentPath, Mode: state.AccessWrite, Merge: state.MergeReplace, Type: "object", Description: "Collected workspace, project, and git context."})
 }
 
 func (n *EnvironmentContextNode) effectiveGitStatusLimit() int {

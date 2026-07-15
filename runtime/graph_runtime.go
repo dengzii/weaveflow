@@ -126,7 +126,6 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 		return currentState, fmt.Errorf("node %q is not executable", nodeID)
 	}
 	result, invokeErr := core.ExecuteNodeWithOptions(nodeCtx, currentState, executor, core.NodeExecutionOptions{
-		Registry:          e.runner.stateRegistry(),
 		Contract:          contractOption(contract, hasContract),
 		InputState:        inputState,
 		ApplyPatchToInput: hasContract && policy.EnforceProjection,
@@ -203,9 +202,8 @@ type contractStateArtifact struct {
 }
 
 type contractStateArtifactInfo struct {
-	StateKeys            int `json:"state_keys"`
-	StateScopes          int `json:"state_scopes"`
-	ConversationMessages int `json:"conversation_messages"`
+	StateKeys   int `json:"state_keys"`
+	StateScopes int `json:"state_scopes"`
 }
 
 func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, nodeID string, artifactType string, contract state.Contract, currentState *state.State) {
@@ -226,9 +224,8 @@ func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, 
 		Stage:    contractArtifactStage(artifactType),
 		Contract: contract,
 		Summary: contractStateArtifactInfo{
-			StateKeys:            state.CountKeys(currentState),
-			StateScopes:          state.CountScopes(currentState),
-			ConversationMessages: state.CountConversationMessages(currentState),
+			StateKeys:   state.CountKeys(currentState),
+			StateScopes: state.CountScopes(currentState),
 		},
 		Snapshot: snapshot,
 	}

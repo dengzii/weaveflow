@@ -9,7 +9,7 @@ import (
 
 type ExecutionResult = core.ExecutionResult
 
-func Execute(ctx context.Context, registry *state.Registry, base *state.State, target Node) (ExecutionResult, error) {
+func Execute(ctx context.Context, base *state.State, target Node) (ExecutionResult, error) {
 	ensureNodeID(target)
-	return core.ExecuteNode(ctx, registry, base, target)
+	return core.ExecuteNode(ctx, base, target)
 }

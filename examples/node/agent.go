@@ -25,11 +25,12 @@ func AgentExample() {
 	})
 	coreCtx := core.NewContext(ctx)
 
-	agent := node.NewAgentNode(node.WithScope("subagent"))
+	agent := node.NewAgentNode()
 	agent.SystemPrompt = "You are a concise assistant. Use tools when they improve accuracy. Return the final answer as plain text."
 	agent.ToolIDs = []string{"calculator", "current_time"}
-	agent.InputPath = state.Shared("task")
-	agent.OutputPath = state.Shared("agent_answer")
+	agent.TaskPath = state.Shared("task")
+	agent.ConversationPath = state.Scope("subagent", "conversation")
+	agent.ResultPath = state.Shared("agent_answer")
 	agent.MaxIterations = 6
 
 	currentState := state.FromShared(map[string]any{"task": "What is 42 * 58, and what is the current time?"})
@@ -37,7 +38,7 @@ func AgentExample() {
 	result, err := executeNode(coreCtx, agent, currentState)
 	must(err)
 
-	conv := conversation(result, "subagent")
+	conv := conversation(result, agent.ConversationPath)
 	fmt.Println("internal conversation:")
 	for i, msg := range conv.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
@@ -47,7 +48,7 @@ func AgentExample() {
 	fmt.Printf("iterations used: %d / %d\n", conv.IterationCount(), conv.MaxIterations())
 	fmt.Println("final answer:", conv.FinalAnswer())
 	if answer, ok := readState(result, state.Shared("agent_answer")); ok {
-		fmt.Println("output_path agent_answer:", answer)
+		fmt.Println("agent result:", answer)
 	}
 }
 
@@ -61,7 +62,7 @@ func AgentAsToolExample() {
 	must(err)
 
 	// Sub-agent: handles arithmetic questions in isolation.
-	subAgent := node.NewAgentNode(node.WithScope("math_subagent"), node.WithID("math_agent_node"))
+	subAgent := node.NewAgentNode(node.WithID("math_agent_node"))
 	subAgent.SystemPrompt = "You answer arithmetic questions. Use the calculator tool and return only the numeric result."
 	subAgent.ToolIDs = []string{"calculator"}
 	subAgent.MaxIterations = 4
@@ -78,19 +79,20 @@ func AgentAsToolExample() {
 
 	// Coordinator agent: only has access to current_time + the math_agent
 	// tool. When it needs arithmetic, it delegates instead of computing.
-	coordinator := node.NewAgentNode(node.WithScope("coordinator"))
+	coordinator := node.NewAgentNode()
 	coordinator.SystemPrompt = "You coordinate by delegating to specialist tools. For arithmetic, call math_agent. Return a plain-text final answer."
 	coordinator.ToolIDs = []string{"current_time", "math_agent"}
 	coordinator.MaxIterations = 6
-	coordinator.InputPath = state.Shared("task")
-	coordinator.OutputPath = state.Shared("final_answer")
+	coordinator.TaskPath = state.Shared("task")
+	coordinator.ConversationPath = state.Scope("coordinator", "conversation")
+	coordinator.ResultPath = state.Shared("final_answer")
 
 	currentState := state.FromShared(map[string]any{"task": "Please compute 1234 * 5678 and tell me the current time."})
 
 	result, err := executeNode(coreCtx, coordinator, currentState)
 	must(err)
 
-	conv := conversation(result, "coordinator")
+	conv := conversation(result, coordinator.ConversationPath)
 	fmt.Println("\n=> coordinator conversation:")
 	for i, msg := range conv.Messages() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
@@ -100,6 +102,6 @@ func AgentAsToolExample() {
 	fmt.Printf("coordinator iterations used: %d / %d\n", conv.IterationCount(), conv.MaxIterations())
 	fmt.Println("coordinator final answer:", conv.FinalAnswer())
 	if answer, ok := readState(result, state.Shared("final_answer")); ok {
-		fmt.Println("output_path final_answer:", answer)
+		fmt.Println("final result:", answer)
 	}
 }

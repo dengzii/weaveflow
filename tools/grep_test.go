@@ -119,9 +119,9 @@ func TestGrepCountOutputMode(t *testing.T) {
 	}
 }
 
-func TestGrepTypeFilterAndAliasCaseInsensitive(t *testing.T) {
+func TestGrepTypeFilterAndCaseInsensitive(t *testing.T) {
 	setupGrepWorkspace(t)
-	resp := runGrep(t, `{"pattern":"helloworld","type":"go","-i":true}`)
+	resp := runGrep(t, `{"pattern":"helloworld","type":"go","case_insensitive":true}`)
 	for _, m := range resp.Matches {
 		if !strings.HasSuffix(m.Path, ".go") {
 			t.Fatalf("expected only Go files, got %s", m.Path)
@@ -129,6 +129,19 @@ func TestGrepTypeFilterAndAliasCaseInsensitive(t *testing.T) {
 	}
 	if len(resp.Matches) == 0 {
 		t.Fatal("expected Go matches")
+	}
+}
+
+func TestParseGrepRequestRejectsLegacyFields(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{
+		`{"pattern":"value","-i":true}`,
+		`{"pattern":"value","-C":2}`,
+		`{"pattern":"value","head_limit":10}`,
+	} {
+		if _, err := parseGrepRequest(input); err == nil {
+			t.Fatalf("parseGrepRequest(%s) succeeded", input)
+		}
 	}
 }
 

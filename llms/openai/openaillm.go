@@ -24,7 +24,6 @@ const (
 	RoleSystem    = "system"
 	RoleAssistant = "assistant"
 	RoleUser      = "user"
-	RoleFunction  = "function"
 	RoleTool      = "tool"
 )
 
@@ -115,6 +114,9 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	for _, opt := range options {
 		opt(&opts)
 	}
+	if err := validateCallOptions(opts); err != nil {
+		return nil, err
+	}
 
 	// Determine the effective model for this request (don't mutate o.model to avoid races)
 	effectiveModel := opts.Model
@@ -171,15 +173,6 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 			}
 		case llms.ChatMessageTypeGeneric:
 			msg.Role = RoleUser
-		case llms.ChatMessageTypeFunction:
-			msg.Role = RoleFunction
-			// Extract name and content from ToolCallResponse for function messages
-			if len(mc.Parts) == 1 {
-				if p, ok := mc.Parts[0].(llms.ToolCallResponse); ok {
-					msg.Name = p.Name
-					msg.Content = p.Content
-				}
-			}
 		case llms.ChatMessageTypeTool:
 			msg.Role = RoleTool
 			// Here we extract tool calls from the message and populate the ToolCalls field.
@@ -212,14 +205,6 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 
 		chatMsgs = append(chatMsgs, msg)
 	}
-	// Check if we should use the legacy max_tokens field
-	useLegacyMaxTokens := false
-	if opts.Metadata != nil {
-		if v, ok := opts.Metadata["openai:use_legacy_max_tokens"].(bool); ok {
-			useLegacyMaxTokens = v
-		}
-	}
-
 	// Extract reasoning effort for thinking models
 	// Note: OpenAI o1/o3 models have built-in reasoning and don't support reasoning_effort parameter
 	// This is kept for future models that might support it (like GPT-5)
@@ -259,8 +244,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	apiMetadata := make(map[string]any)
 	if opts.Metadata != nil {
 		for k, v := range opts.Metadata {
-			// Skip internal metadata keys
-			if k == "thinking_config" || strings.HasPrefix(k, "openai:") {
+			if k == "thinking_config" {
 				continue
 			}
 			apiMetadata[k] = v
@@ -283,44 +267,16 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		PresencePenalty:        opts.PresencePenalty,
 		ReasoningEffort:        reasoningEffort,
 
-		// Token handling: check metadata flag for legacy behavior
-		// By default use max_completion_tokens (modern field)
-		// If WithLegacyMaxTokensField() is used, use max_tokens instead
-		MaxCompletionTokens: func() int {
-			if useLegacyMaxTokens {
-				return 0 // Don't set max_completion_tokens
-			}
-			return opts.MaxTokens
-		}(),
-		MaxTokens: func() int {
-			if useLegacyMaxTokens {
-				return opts.MaxTokens // Set the legacy field
-			}
-			return 0 // Don't set max_tokens
-		}(),
+		MaxCompletionTokens: opts.MaxTokens,
 
-		ToolChoice:           opts.ToolChoice,
-		FunctionCallBehavior: openaiclient.FunctionCallBehavior(opts.FunctionCallBehavior),
-		Seed:                 opts.Seed,
-		Metadata:             apiMetadata,
+		ToolChoice: opts.ToolChoice,
+		Seed:       opts.Seed,
+		Metadata:   apiMetadata,
 	}
 	if opts.JSONMode {
 		req.ResponseFormat = ResponseFormatJSON
 	}
 
-	// since req.Functions is deprecated, we need to use the new Tools API.
-	for _, fn := range opts.Functions {
-		req.Tools = append(req.Tools, openaiclient.Tool{
-			Type: "function",
-			Function: openaiclient.FunctionDefinition{
-				Name:        fn.Name,
-				Description: fn.Description,
-				Parameters:  fn.Parameters,
-				Strict:      fn.Strict,
-			},
-		})
-	}
-	// if opts.Tools is not empty, append them to req.Tools
 	for _, tool := range opts.Tools {
 		t, err := toolFromTool(tool)
 		if err != nil {
@@ -354,7 +310,7 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 				"TotalTokens":       result.Usage.TotalTokens,
 				"ReasoningTokens":   result.Usage.CompletionTokensDetails.ReasoningTokens,
 				"PromptAudioTokens": result.Usage.PromptTokensDetails.AudioTokens,
-				// Standardized fields for cross-provider compatibility
+				// Provider-neutral usage fields.
 				"ThinkingContent":                    c.Message.ReasoningContent,                           // Standardized field
 				"ThinkingTokens":                     result.Usage.CompletionTokensDetails.ReasoningTokens, // Standardized field
 				"PromptCachedTokens":                 result.Usage.PromptTokensDetails.CachedTokens,
@@ -365,13 +321,6 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 			},
 		}
 
-		// Legacy function call handling
-		if c.FinishReason == "function_call" {
-			choices[i].FuncCall = &llms.FunctionCall{
-				Name:      c.Message.FunctionCall.Name,
-				Arguments: c.Message.FunctionCall.Arguments,
-			}
-		}
 		for _, tool := range c.Message.ToolCalls {
 			choices[i].ToolCalls = append(choices[i].ToolCalls, llms.ToolCall{
 				ID:   tool.ID,
@@ -382,16 +331,22 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 				},
 			})
 		}
-		// populate legacy single-function call field for backwards compatibility
-		if len(choices[i].ToolCalls) > 0 {
-			choices[i].FuncCall = choices[i].ToolCalls[0].FunctionCall
-		}
 	}
 	response := &llms.ContentResponse{Choices: choices}
 	if o.CallbacksHandler != nil {
 		o.CallbacksHandler.HandleLLMGenerateContentEnd(ctx, response)
 	}
 	return response, nil
+}
+
+func validateCallOptions(opts llms.CallOptions) error {
+	if len(opts.Functions) > 0 {
+		return fmt.Errorf("legacy functions are unsupported; use tools")
+	}
+	if opts.FunctionCallBehavior != "" {
+		return fmt.Errorf("legacy function_call is unsupported; use tool_choice")
+	}
+	return nil
 }
 
 // SupportsReasoning implements the ReasoningModel interface.

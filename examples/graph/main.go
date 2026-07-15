@@ -12,7 +12,6 @@ import (
 	"github.com/dengzii/weaveflow/llms/openai"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 
 	"go.uber.org/zap"
 )
@@ -54,7 +53,7 @@ func runWithRunner(ctx context.Context) {
 
 func resumeFromCheckpoint(ctx context.Context) {
 	currentState := state.NewState()
-	tryPanic(state.SetPath(currentState, state.Scope(reactAgentStateScope, "pending_human_input").String(), "24+5*8-2=? 现在是几点."))
+	tryPanic(state.SetPath(currentState, reactAgentPendingInputPath.String(), "24+5*8-2=? 现在是几点."))
 
 	baseDir := ".local/instance"
 	graph, err := weaveflow.LoadGraphFromFile(filepath.Join(baseDir, "graph.json"), weaveflow.WithBuildContext(&weaveflow.BuildContext{}))
@@ -71,7 +70,7 @@ func resumeFromCheckpoint(ctx context.Context) {
 	tryPanic(err)
 
 	fmt.Println("=========Final Answer==========")
-	answer, _ := state.NewAccess(nil, currentState).ReadAny(state.Scope(reactAgentStateScope, accessors.KeyConversation, accessors.ConversationFieldFinalAnswer))
+	answer, _ := state.NewAccess(currentState).ReadAny(reactAgentConversationPath.MustChild("final_answer"))
 	fmt.Println(answer)
 }
 

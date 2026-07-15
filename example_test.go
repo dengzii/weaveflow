@@ -8,31 +8,31 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 )
 
 func ExampleRegistry_RegisterNodeType() {
 	reg := weaveflow.NewDefaultRegistry()
 	_ = reg.RegisterNodeType(weaveflow.NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{Type: "set_answer"},
-		ResolveStateContract: func(dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			return dsl.StateContract{
-				Fields: []dsl.StateFieldRef{{Path: "shared.answer", Mode: dsl.StateAccessWrite}},
-			}, nil
-		},
-		Build: func(_ *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
+		NodeTypeSchema: dsl.NodeTypeSchema{Type: "set_answer", StatePorts: []dsl.StatePortDefinition{{Name: "output", Required: true, Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeReplace}}},
+		Build: func(_ *weaveflow.BuildContext, resolved registry.ResolvedNodeSpec) (node.Node, error) {
+			spec := resolved.Spec
 			value, _ := spec.Config["value"].(string)
+			output := resolved.State["output"].Path
 			return node.NewFuncNode(node.Spec{ID: spec.ID}, func(_ core.Context, access *state.Access) error {
-				return access.SetAny(state.Shared("answer"), value)
+				return access.SetAny(output, value)
 			}), nil
 		},
 	})
 
 	graph, _ := weaveflow.BuildGraph(reg, weaveflow.GraphDefinition{
+		Version: "2.0", StateModules: []weaveflow.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
 		Nodes: []weaveflow.GraphNodeSpec{{
 			ID:     "answer",
 			Type:   "set_answer",
 			Config: map[string]any{"value": "done"},
+			State:  map[string]dsl.StateBinding{"output": {Path: "shared.answer"}},
 		}},
 		EntryPoint: "answer",
 		Edges: []weaveflow.GraphEdgeSpec{{
@@ -42,7 +42,7 @@ func ExampleRegistry_RegisterNodeType() {
 	})
 	runner, _ := weaveflow.NewRunner(graph)
 	_, finalState, _ := runner.Start(context.Background(), weaveflow.NewState())
-	answer, _ := state.NewAccess(nil, finalState).ReadAny(state.Shared("answer"))
+	answer, _ := state.NewAccess(finalState).ReadAny(state.Shared("answer"))
 	fmt.Println(answer)
 
 	// Output:
@@ -52,45 +52,42 @@ func ExampleRegistry_RegisterNodeType() {
 func ExampleRegistry_RegisterCondition() {
 	reg := weaveflow.NewDefaultRegistry()
 	_ = reg.RegisterNodeType(weaveflow.NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{Type: "set_flag"},
-		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			key, _ := spec.Config["key"].(string)
-			return dsl.StateContract{
-				Fields: []dsl.StateFieldRef{{Path: "shared." + key, Mode: dsl.StateAccessWrite}},
-			}, nil
-		},
-		Build: func(_ *weaveflow.BuildContext, spec dsl.GraphNodeSpec) (node.Node, error) {
-			key, _ := spec.Config["key"].(string)
+		NodeTypeSchema: dsl.NodeTypeSchema{Type: "set_flag", StatePorts: []dsl.StatePortDefinition{{Name: "output", Required: true, Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeReplace}}},
+		Build: func(_ *weaveflow.BuildContext, resolved registry.ResolvedNodeSpec) (node.Node, error) {
+			spec := resolved.Spec
+			output := resolved.State["output"].Path
 			value := spec.Config["value"]
 			return node.NewFuncNode(node.Spec{ID: spec.ID}, func(_ core.Context, access *state.Access) error {
-				return access.SetAny(state.Shared(key), value)
+				return access.SetAny(output, value)
 			}), nil
 		},
 	})
 	_ = reg.RegisterCondition(weaveflow.ConditionDefinition{
-		ConditionSchema: dsl.ConditionSchema{Type: "shared_equals"},
-		Resolve: func(spec dsl.GraphConditionSpec) (weaveflow.EdgeCondition, error) {
-			key, _ := spec.Config["key"].(string)
+		ConditionSchema: dsl.ConditionSchema{Type: "shared_equals", StatePorts: []dsl.StatePortDefinition{{Name: "value", Required: true, Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace}}},
+		Resolve: func(resolved registry.ResolvedConditionSpec) (weaveflow.EdgeCondition, error) {
+			spec := resolved.Spec
+			path := resolved.State["value"].Path
 			want := spec.Config["value"]
 			return weaveflow.NewEdgeCondition(spec, func(_ context.Context, current *state.State) bool {
-				got, ok := state.NewAccess(nil, current).ReadAny(state.Shared(key))
+				got, ok := state.NewAccess(current).ReadAny(path)
 				return ok && got == want
 			}), nil
 		},
 	})
 
 	graph, _ := weaveflow.BuildGraph(reg, weaveflow.GraphDefinition{
+		Version: "2.0", StateModules: []weaveflow.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
 		Nodes: []weaveflow.GraphNodeSpec{
-			{ID: "start", Type: "set_flag", Config: map[string]any{"key": "route", "value": "yes"}},
-			{ID: "yes", Type: "set_flag", Config: map[string]any{"key": "answer", "value": "matched"}},
-			{ID: "fallback", Type: "set_flag", Config: map[string]any{"key": "answer", "value": "fallback"}},
+			{ID: "start", Type: "set_flag", Config: map[string]any{"value": "yes"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.route"}}},
+			{ID: "yes", Type: "set_flag", Config: map[string]any{"value": "matched"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.answer"}}},
+			{ID: "fallback", Type: "set_flag", Config: map[string]any{"value": "fallback"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.answer"}}},
 		},
 		EntryPoint: "start",
 		Edges: []weaveflow.GraphEdgeSpec{
 			{
 				From:      "start",
 				To:        "yes",
-				Condition: &weaveflow.GraphConditionSpec{Type: "shared_equals", Config: map[string]any{"key": "route", "value": "yes"}},
+				Condition: &weaveflow.GraphConditionSpec{Type: "shared_equals", Config: map[string]any{"value": "yes"}, State: map[string]dsl.StateBinding{"value": {Path: "shared.route"}}},
 			},
 			{From: "start", To: "fallback"},
 			{From: "yes", To: weaveflow.EndNodeRef},
@@ -99,7 +96,7 @@ func ExampleRegistry_RegisterCondition() {
 	})
 	runner, _ := weaveflow.NewRunner(graph)
 	_, finalState, _ := runner.Start(context.Background(), weaveflow.NewState())
-	answer, _ := state.NewAccess(nil, finalState).ReadAny(state.Shared("answer"))
+	answer, _ := state.NewAccess(finalState).ReadAny(state.Shared("answer"))
 	fmt.Println(answer)
 
 	// Output:

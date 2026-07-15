@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
@@ -48,9 +49,54 @@ func (n *contractTestNode) Execute(core.Context, *state.Access) error {
 
 type interruptTestNode struct {
 	core.NodeBase
+	resumePath state.Path
 }
 
-func newInterruptTestNode(spec dsl.GraphNodeSpec) *interruptTestNode {
+func TestBindGraphUploadRejectsLegacyDefinitionFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+	ginContext.Request = httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(`{
+		"definition": {
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
+			"nodes": [{"id":"node","type":"conversation_input","state":{}}],
+			"state_schema": "legacy"
+		}
+	}`))
+	if _, err := bindGraphUpload(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("bindGraphUpload() error = %v, want unknown field", err)
+	}
+}
+
+func TestBindGraphUploadRejectsLegacyEnvelopeForms(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []string{
+		`{"graph": {}}`,
+		`{"id": "legacy", "definition": {}}`,
+		`{"version":"2.0","state_modules":[],"nodes":[]}`,
+	}
+	for _, body := range tests {
+		ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ginContext.Request = httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(body))
+		if _, err := bindGraphUpload(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("bindGraphUpload(%s) error = %v, want unknown field", body, err)
+		}
+	}
+}
+
+func TestCurrentGraphEnvironmentIgnoresLegacyOpenAIBaseURL(t *testing.T) {
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("OPENAI_API_BASE", "http://legacy.invalid/v1")
+	if value, ok := currentGraphEnvironment()["OPENAI_API_BASE"]; ok {
+		t.Fatalf("currentGraphEnvironment() exposed OPENAI_API_BASE=%q", value)
+	}
+	if models := graphModelSettingsFromContext(context.Background()); len(models) != 0 {
+		t.Fatalf("graphModelSettingsFromContext() used legacy base URL: %#v", models)
+	}
+}
+
+func newInterruptTestNode(spec dsl.GraphNodeSpec, resumePath state.Path) *interruptTestNode {
 	name := spec.Name
 	if name == "" {
 		name = spec.ID
@@ -60,11 +106,12 @@ func newInterruptTestNode(spec dsl.GraphNodeSpec) *interruptTestNode {
 			ID:   spec.ID,
 			Name: name,
 		}),
+		resumePath: resumePath,
 	}
 }
 
 func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) error {
-	if value, ok := access.ReadAny(state.Shared("resume")); ok && value == "ok" {
+	if value, ok := access.ReadAny(n.resumePath); ok && value == "ok" {
 		return nil
 	}
 	return &langgraph.NodeInterrupt{Node: n.ID(), Value: "waiting for resume input"}
@@ -452,15 +499,17 @@ func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
 	graphBody := `{
 		"graph_id": "debug-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
 				{
 					"id": "input",
-					"type": "human_message",
-					"config": {"content": "hello"}
+					"type": "conversation_input",
+					"config": {"content": "hello"},
+					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}
 			]
 		}
@@ -590,12 +639,13 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 	first := postGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			],
 			"metadata": {"web": {"positions": {"input": {"x": 10, "y": 20}}}}
 		}
@@ -604,12 +654,13 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 	second := postGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			],
 			"metadata": {"web": {"positions": {"input": {"x": 30, "y": 40}}}}
 		}
@@ -686,12 +737,13 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 	graphBody := `{
 		"graph_id": "debug-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			]
 		}
 	}`
@@ -742,12 +794,13 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 	graphBody := `{
 		"graph_id": "debug-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "human_message", "config": {"content": "hello"}}
+				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			]
 		}
 	}`
@@ -799,15 +852,17 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	graphBody := `{
 		"graph_id": "debug-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
 				{
 					"id": "input",
-					"type": "human_message",
-					"config": {"content": "hello"}
+					"type": "conversation_input",
+					"config": {"content": "hello"},
+					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}
 			]
 		}
@@ -881,15 +936,17 @@ func TestGetRunDetailAggregatesDebugRecords(t *testing.T) {
 	graphBody := `{
 		"graph_id": "debug-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
 				{
 					"id": "input",
-					"type": "human_message",
-					"config": {"content": "hello"}
+					"type": "conversation_input",
+					"config": {"content": "hello"},
+					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}
 			]
 		}
@@ -959,14 +1016,19 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	reg := wfregistry.NewRegistry()
+	if err := reg.RegisterStateModule(builtin.ProtocolsStateModuleDefinition()); err != nil {
+		t.Fatalf("register state module: %v", err)
+	}
 	if err := reg.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:          "interrupt_once",
-			Title:         "Interrupt Once",
-			StateContract: &dsl.StateContract{},
+			Type:  "interrupt_once",
+			Title: "Interrupt Once",
+			StatePorts: []dsl.StatePortDefinition{{
+				Name: "resume", Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace,
+			}},
 		},
-		Build: func(_ *wfregistry.BuildContext, spec dsl.GraphNodeSpec) (core.Node, error) {
-			return newInterruptTestNode(spec), nil
+		Build: func(_ *wfregistry.BuildContext, resolved wfregistry.ResolvedNodeSpec) (core.Node, error) {
+			return newInterruptTestNode(resolved.Spec, resolved.State["resume"].Path), nil
 		},
 	}); err != nil {
 		t.Fatalf("register node type: %v", err)
@@ -985,12 +1047,13 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	graphBody := `{
 		"graph_id": "interrupt-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "interrupt-graph",
 			"entry_point": "wait",
 			"finish_point": "wait",
 			"nodes": [
-				{"id": "wait", "type": "interrupt_once"}
+				{"id": "wait", "type": "interrupt_once", "state": {"resume": {"path": "shared.resume"}}}
 			]
 		}
 	}`
@@ -1116,14 +1179,19 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	reg := wfregistry.NewRegistry()
+	if err := reg.RegisterStateModule(builtin.ProtocolsStateModuleDefinition()); err != nil {
+		t.Fatalf("register state module: %v", err)
+	}
 	if err := reg.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:          "interrupt_once",
-			Title:         "Interrupt Once",
-			StateContract: &dsl.StateContract{},
+			Type:  "interrupt_once",
+			Title: "Interrupt Once",
+			StatePorts: []dsl.StatePortDefinition{{
+				Name: "resume", Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace,
+			}},
 		},
-		Build: func(_ *wfregistry.BuildContext, spec dsl.GraphNodeSpec) (core.Node, error) {
-			return newInterruptTestNode(spec), nil
+		Build: func(_ *wfregistry.BuildContext, resolved wfregistry.ResolvedNodeSpec) (core.Node, error) {
+			return newInterruptTestNode(resolved.Spec, resolved.State["resume"].Path), nil
 		},
 	}); err != nil {
 		t.Fatalf("register node type: %v", err)
@@ -1143,12 +1211,13 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 	graphBody := `{
 		"graph_id": "interrupt-graph",
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "interrupt-graph",
 			"entry_point": "wait",
 			"finish_point": "wait",
 			"nodes": [
-				{"id": "wait", "type": "interrupt_once"}
+				{"id": "wait", "type": "interrupt_once", "state": {"resume": {"path": "shared.resume"}}}
 			]
 		}
 	}`
@@ -1416,25 +1485,17 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	reg := wfregistry.NewRegistry()
-	contract := dsl.StateContract{
-		Fields: []dsl.StateFieldRef{
-			{
-				Path:        "shared.request.input",
-				Mode:        dsl.StateAccessRead,
-				Required:    true,
-				Description: "User request input.",
-				Schema:      dsl.JSONSchema{"type": "string"},
-			},
-		},
+	if err := reg.RegisterStateModule(builtin.ProtocolsStateModuleDefinition()); err != nil {
+		t.Fatalf("register state module: %v", err)
 	}
 	if err := reg.RegisterNodeType(wfregistry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:          "requires_input",
-			Title:         "Requires Input",
-			StateContract: &contract,
+			Type:       "requires_input",
+			Title:      "Requires Input",
+			StatePorts: []dsl.StatePortDefinition{{Name: "input", Description: "User request input.", Required: true, Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace}},
 		},
-		Build: func(_ *wfregistry.BuildContext, spec dsl.GraphNodeSpec) (core.Node, error) {
-			return newContractTestNode(spec), nil
+		Build: func(_ *wfregistry.BuildContext, resolved wfregistry.ResolvedNodeSpec) (core.Node, error) {
+			return newContractTestNode(resolved.Spec), nil
 		},
 	}); err != nil {
 		t.Fatalf("register node type: %v", err)
@@ -1452,14 +1513,16 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 
 	graphBody := `{
 		"definition": {
-			"version": "1.0",
+			"version": "2.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "requires-input",
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
 				{
 					"id": "input",
-					"type": "requires_input"
+					"type": "requires_input",
+					"state": {"input": {"path": "shared.request.input"}}
 				}
 			]
 		}

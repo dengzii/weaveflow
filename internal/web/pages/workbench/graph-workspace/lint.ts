@@ -1,5 +1,15 @@
 import { END_NODE_REF, graphEdgeId } from "../../../lib/graphEditor";
-import type { GraphDefinition, InitialStateRequirements, InitialStateRequirement, WarningRecord } from "../../../types";
+import type {
+  GraphDefinition,
+  InitialStateRequirements,
+  InitialStateRequirement,
+  RegistryInfo,
+  StateBinding,
+  StateCapabilityDefinition,
+  StateModuleDefinition,
+  StatePortDefinition,
+  WarningRecord,
+} from "../../../types";
 
 export type GraphLintSeverity = "error" | "warn";
 
@@ -16,10 +26,14 @@ export function buildGraphLintIssues({
   definition,
   initialStateText,
   initialRequirements,
+  analysisError = "",
+  registry = null,
 }: {
   definition: GraphDefinition | null;
   initialStateText: string;
   initialRequirements: InitialStateRequirements | null;
+  analysisError?: string;
+  registry?: RegistryInfo | null;
 }): GraphLintIssue[] {
   const issues: GraphLintIssue[] = [];
 
@@ -32,6 +46,22 @@ export function buildGraphLintIssues({
       },
     ];
   }
+
+  if (definition.version !== "2.0") {
+    issues.push({
+      id: "graph-version-invalid",
+      severity: "error",
+      message: `Graph version must be "2.0", got "${definition.version ?? ""}".`,
+      path: "version",
+    });
+  }
+
+  const selectedModules = lintStateModules(definition, registry, issues);
+  const selectedCapabilities = new Map<string, StateCapabilityDefinition>();
+  for (const module of selectedModules) {
+    for (const capability of module.capabilities ?? []) selectedCapabilities.set(capability.id, capability);
+  }
+  const rootCapabilities = new Map<string, string>();
 
   const nodeIds = new Set<string>();
   const duplicateNodeIds = new Set<string>();
@@ -54,9 +84,26 @@ export function buildGraphLintIssues({
         nodeId: node.id,
       });
     }
-    for (const pathIssue of lintStatePathReferences(node.id, node.config ?? {})) {
-      issues.push(pathIssue);
+    const nodeType = registry?.node_types.find((item) => item.type === node.type);
+    if (registry && node.type?.trim() && !nodeType) {
+      issues.push({
+        id: `node-type-unknown-${node.id}`,
+        severity: "error",
+        message: `Node "${node.id}" uses unregistered type "${node.type}".`,
+        nodeId: node.id,
+      });
     }
+    issues.push(...lintComponentBindings({
+      component: `Node "${node.id}"`,
+      stableId: `node-${node.id}`,
+      bindings: node.state,
+      ports: nodeType?.state_ports,
+      selectedModules,
+      selectedCapabilities,
+      registeredCapabilities: registry?.capabilities ?? [],
+      rootCapabilities,
+      nodeId: node.id,
+    }));
   }
 
   for (const nodeId of duplicateNodeIds) {
@@ -148,6 +195,28 @@ export function buildGraphLintIssues({
     } else {
       degree.set(edge.to, (degree.get(edge.to) ?? 0) + 1);
     }
+    if (edge.condition) {
+      const condition = registry?.conditions.find((item) => item.type === edge.condition?.type);
+      if (registry && !condition) {
+        issues.push({
+          id: `condition-type-unknown-${edgeId}`,
+          severity: "error",
+          message: `Edge condition "${edge.condition.type}" is not registered.`,
+          edgeId,
+        });
+      }
+      issues.push(...lintComponentBindings({
+        component: `Condition "${edge.condition.type}"`,
+        stableId: `condition-${edgeId}`,
+        bindings: edge.condition.state,
+        ports: condition?.state_ports,
+        selectedModules,
+        selectedCapabilities,
+        registeredCapabilities: registry?.capabilities ?? [],
+        rootCapabilities,
+        edgeId,
+      }));
+    }
   }
 
   if (definition.nodes.length > 1) {
@@ -162,6 +231,8 @@ export function buildGraphLintIssues({
       }
     }
   }
+
+  issues.push(...lintSupervisorTopology(definition));
 
   const parsedInitialState = parseInitialState(initialStateText);
   if (!parsedInitialState.ok) {
@@ -191,7 +262,125 @@ export function buildGraphLintIssues({
     issues.push(warningIssue(warning));
   }
 
+  if (analysisError.trim()) {
+    issues.push({
+      id: "graph-contract-analysis-error",
+      severity: "error",
+      message: analysisError.trim(),
+      path: "state",
+    });
+  }
+
   return dedupeIssues(issues);
+}
+
+function lintSupervisorTopology(definition: GraphDefinition): GraphLintIssue[] {
+  const issues: GraphLintIssue[] = [];
+  const workers = definition.nodes.filter((node) => node.type === "supervisor_worker");
+  const workerByMemberID = new Map<string, typeof workers[number]>();
+  for (const worker of workers) {
+    const workerID = configString(worker.config, "worker_id");
+    if (!workerID) continue;
+    const key = workerID.toLowerCase();
+    const existing = workerByMemberID.get(key);
+    if (existing) {
+      issues.push({
+        id: `supervisor-worker-duplicate-${key}-${worker.id}`,
+        severity: "error",
+        message: `Supervisor Worker nodes "${existing.id}" and "${worker.id}" share worker_id "${workerID}".`,
+        nodeId: worker.id,
+        path: "worker_id",
+      });
+      continue;
+    }
+    workerByMemberID.set(key, worker);
+  }
+
+  for (const supervisor of definition.nodes.filter((node) => node.type === "supervisor")) {
+    const rawMembers = supervisor.config?.members;
+    const members = Array.isArray(rawMembers) ? rawMembers.filter(isRecord) : [];
+    if (members.length === 0) {
+      issues.push({
+        id: `supervisor-members-empty-${supervisor.id}`,
+        severity: "error",
+        message: `Supervisor "${supervisor.id}" needs at least one configured member.`,
+        nodeId: supervisor.id,
+        path: "members",
+      });
+    }
+    const seen = new Set<string>();
+    for (const member of members) {
+      const memberID = recordString(member, "id");
+      if (!memberID) continue;
+      const memberKey = memberID.toLowerCase();
+      if (seen.has(memberKey)) {
+        issues.push({
+          id: `supervisor-member-duplicate-${supervisor.id}-${memberKey}`,
+          severity: "error",
+          message: `Supervisor "${supervisor.id}" has duplicate member id "${memberID}".`,
+          nodeId: supervisor.id,
+          path: "members",
+        });
+        continue;
+      }
+      seen.add(memberKey);
+
+      const worker = workerByMemberID.get(memberKey);
+      if (!worker) {
+        issues.push({
+          id: `supervisor-worker-missing-${supervisor.id}-${memberKey}`,
+          severity: "error",
+          message: `Supervisor member "${memberID}" has no matching Supervisor Worker node.`,
+          nodeId: supervisor.id,
+          path: "members",
+        });
+        continue;
+      }
+
+      const routeEdgeIndex = (definition.edges ?? []).findIndex((edge) =>
+        edge.from === supervisor.id
+        && edge.to === worker.id
+        && edge.condition?.type === "supervisor_route_equals"
+        && configString(edge.condition.config, "worker_id").toLowerCase() === memberKey
+      );
+      if (routeEdgeIndex < 0) {
+        issues.push({
+          id: `supervisor-route-missing-${supervisor.id}-${memberKey}`,
+          severity: "error",
+          message: `Supervisor member "${memberID}" needs a supervisor_route_equals edge to worker node "${worker.id}".`,
+          nodeId: supervisor.id,
+          path: "members",
+        });
+      }
+
+      const returnsToSupervisor = (definition.edges ?? []).some((edge) =>
+        edge.from === worker.id && edge.to === supervisor.id && !edge.condition
+      );
+      if (!returnsToSupervisor) {
+        issues.push({
+          id: `supervisor-return-missing-${supervisor.id}-${memberKey}`,
+          severity: "error",
+          message: `Supervisor worker "${worker.id}" needs a direct edge back to "${supervisor.id}".`,
+          nodeId: worker.id,
+        });
+      }
+    }
+
+    const hasFinalizeFallback = (definition.edges ?? []).some((edge) =>
+      edge.from === supervisor.id
+      && !edge.condition
+      && definition.nodes.some((node) => node.id === edge.to && node.type === "supervisor_finalize")
+    );
+    if (!hasFinalizeFallback) {
+      issues.push({
+        id: `supervisor-finalize-missing-${supervisor.id}`,
+        severity: "error",
+        message: `Supervisor "${supervisor.id}" needs a direct fallback edge to a Supervisor Finalize node.`,
+        nodeId: supervisor.id,
+      });
+    }
+  }
+  return issues;
 }
 
 export function issueCounts(issues: GraphLintIssue[]): { errors: number; warnings: number } {
@@ -201,69 +390,314 @@ export function issueCounts(issues: GraphLintIssue[]): { errors: number; warning
   };
 }
 
-function lintStatePathReferences(nodeId: string, config: Record<string, unknown>): GraphLintIssue[] {
+function lintStateModules(
+  definition: GraphDefinition,
+  registry: RegistryInfo | null,
+  issues: GraphLintIssue[]
+): StateModuleDefinition[] {
+  const refs = definition.state_modules ?? [];
+  if (refs.length === 0) {
+    issues.push({
+      id: "graph-state-modules-missing",
+      severity: "error",
+      message: "Graph must reference at least one state module.",
+      path: "state_modules",
+    });
+    return [];
+  }
+
+  const selected: StateModuleDefinition[] = [];
+  const seen = new Set<string>();
+  for (const [index, ref] of refs.entries()) {
+    const name = ref.name?.trim();
+    const version = ref.version?.trim();
+    const key = `${name}\u0000${version}`;
+    if (!name || !version) {
+      issues.push({
+        id: `graph-state-module-invalid-${index}`,
+        severity: "error",
+        message: "State module name and version are required.",
+        path: "state_modules",
+      });
+      continue;
+    }
+    if (seen.has(key)) {
+      issues.push({
+        id: `graph-state-module-duplicate-${name}-${version}`,
+        severity: "error",
+        message: `State module "${name}" version "${version}" is duplicated.`,
+        path: "state_modules",
+      });
+      continue;
+    }
+    seen.add(key);
+    if (!registry) continue;
+    const module = registry.state_modules.find((item) => item.name === name && item.version === version);
+    if (!module) {
+      issues.push({
+        id: `graph-state-module-unknown-${name}-${version}`,
+        severity: "error",
+        message: `State module "${name}" version "${version}" is not registered.`,
+        path: "state_modules",
+      });
+      continue;
+    }
+    selected.push(module);
+  }
+  return selected;
+}
+
+function lintComponentBindings({
+  component,
+  stableId,
+  bindings,
+  ports,
+  selectedModules,
+  selectedCapabilities,
+  registeredCapabilities,
+  rootCapabilities,
+  nodeId,
+  edgeId,
+}: {
+  component: string;
+  stableId: string;
+  bindings: Record<string, StateBinding> | undefined;
+  ports: StatePortDefinition[] | undefined;
+  selectedModules: StateModuleDefinition[];
+  selectedCapabilities: Map<string, StateCapabilityDefinition>;
+  registeredCapabilities: StateCapabilityDefinition[];
+  rootCapabilities: Map<string, string>;
+  nodeId?: string;
+  edgeId?: string;
+}): GraphLintIssue[] {
   const issues: GraphLintIssue[] = [];
-  const visit = (value: unknown, keyPath: string) => {
-    if (!isRecord(value)) return;
-    for (const [key, raw] of Object.entries(value)) {
-      const lower = key.toLowerCase();
-      const nextKeyPath = keyPath ? `${keyPath}.${key}` : key;
-      if (typeof raw === "string" && isStatePathConfigKey(lower)) {
-        const message = validateStatePath(raw);
-        if (message) {
-          issues.push({
-            id: `node-state-path-${nodeId}-${nextKeyPath}`,
-            severity: "warn",
-            message: `Node "${nodeId}" config "${nextKeyPath}" has an invalid state path: ${message}`,
-            nodeId,
-            path: nextKeyPath,
-          });
-        }
-      } else if (isRecord(raw) && isPathMappingKey(lower)) {
-        for (const [from, to] of Object.entries(raw)) {
-          for (const [label, pathValue] of [
-            ["key", from],
-            ["value", to],
-          ] as const) {
-            if (typeof pathValue !== "string") continue;
-            const message = validateStatePath(pathValue);
-            if (message) {
-              issues.push({
-                id: `node-state-map-${nodeId}-${nextKeyPath}-${label}-${pathValue}`,
-                severity: "warn",
-                message: `Node "${nodeId}" mapping "${nextKeyPath}" has an invalid ${label} path "${pathValue}": ${message}`,
-                nodeId,
-                path: nextKeyPath,
-              });
-            }
-          }
-        }
-      } else if (isRecord(raw)) {
-        visit(raw, nextKeyPath);
+  const bindingMap = isRecord(bindings) ? bindings : {};
+  const portMap = new Map((ports ?? []).map((port) => [port.name, port]));
+  const contractPaths = new Map<string, { type: string; merge: string }>();
+
+  if (ports) {
+    for (const port of ports) {
+      const path = bindingPath(bindingMap[port.name]);
+      if (port.required && !path) {
+        issues.push(bindingIssue(
+          `${stableId}-binding-required-${port.name}`,
+          `${component} requires state binding "${port.name}".`,
+          `state.${port.name}`,
+          nodeId,
+          edgeId
+        ));
       }
     }
-  };
+    for (const name of Object.keys(bindingMap)) {
+      if (!portMap.has(name)) {
+        issues.push(bindingIssue(
+          `${stableId}-binding-unknown-${name}`,
+          `${component} binds unknown state port "${name}".`,
+          `state.${name}`,
+          nodeId,
+          edgeId
+        ));
+      }
+    }
+  }
 
-  visit(config, "");
+  for (const [name, rawBinding] of Object.entries(bindingMap)) {
+    const path = bindingPath(rawBinding);
+    if (!path) continue;
+    const pathError = validateBindingPath(path);
+    if (pathError) {
+      issues.push(bindingIssue(
+        `${stableId}-binding-path-${name}`,
+        `${component} state binding "${name}" is invalid: ${pathError}`,
+        `state.${name}`,
+        nodeId,
+        edgeId
+      ));
+      continue;
+    }
+    const port = portMap.get(name);
+    if (!port) continue;
+
+    if (port.capability) {
+      const capability = selectedCapabilities.get(port.capability);
+      if (!capability) {
+        const registered = registeredCapabilities.some((item) => item.id === port.capability);
+        issues.push(bindingIssue(
+          `${stableId}-binding-capability-${name}`,
+          registered
+            ? `${component} state port "${name}" capability "${port.capability}" belongs to an unreferenced state module.`
+            : `${component} state port "${name}" capability "${port.capability}" is not registered.`,
+          `state.${name}`,
+          nodeId,
+          edgeId
+        ));
+        continue;
+      }
+      const existingCapability = rootCapabilities.get(path);
+      if (existingCapability && existingCapability !== port.capability) {
+        issues.push(bindingIssue(
+          `${stableId}-binding-capability-conflict-${name}`,
+          `State path "${path}" is bound to incompatible capabilities "${existingCapability}" and "${port.capability}".`,
+          `state.${name}`,
+          nodeId,
+          edgeId
+        ));
+      } else {
+        rootCapabilities.set(path, port.capability);
+      }
+      const exactField = moduleField(selectedModules, path);
+      if (exactField && !schemasCompatible(exactField.schema, capability.schema)) {
+        issues.push(bindingIssue(
+          `${stableId}-binding-schema-${name}`,
+          `${component} state port "${name}" capability schema conflicts with module field "${path}".`,
+          `state.${name}`,
+          nodeId,
+          edgeId
+        ));
+      }
+      for (const reference of port.contract?.fields ?? []) {
+        const field = capability.fields.find((item) => item.name === reference.path);
+        if (!field) {
+          issues.push(bindingIssue(
+            `${stableId}-binding-contract-${name}-${reference.path}`,
+            `${component} state port "${name}" references missing capability field "${reference.path}".`,
+            `state.${name}`,
+            nodeId,
+            edgeId
+          ));
+          continue;
+        }
+        const expandedPath = `${path}.${reference.path}`;
+        const expandedModuleField = moduleField(selectedModules, expandedPath);
+        if (expandedModuleField && !schemasCompatible(expandedModuleField.schema, field.schema)) {
+          issues.push(bindingIssue(
+            `${stableId}-binding-schema-${name}-${reference.path}`,
+            `${component} state port "${name}" capability field "${expandedPath}" conflicts with module field "${expandedPath}".`,
+            `state.${name}`,
+            nodeId,
+            edgeId
+          ));
+        }
+        mergeContractPath(
+          expandedPath,
+          schemaType(field.schema),
+          field.merge_strategy || "replace",
+          component,
+          stableId,
+          name,
+          contractPaths,
+          issues,
+          nodeId,
+          edgeId
+        );
+      }
+      continue;
+    }
+
+    const exactField = moduleField(selectedModules, path);
+    if (exactField && !schemasCompatible(exactField.schema, port.schema)) {
+      issues.push(bindingIssue(
+        `${stableId}-binding-schema-${name}`,
+        `${component} state port "${name}" type "${schemaType(port.schema)}" conflicts with module field "${path}" type "${schemaType(exactField.schema)}".`,
+        `state.${name}`,
+        nodeId,
+        edgeId
+      ));
+    }
+    mergeContractPath(
+      path,
+      schemaType(port.schema),
+      port.merge_strategy || "replace",
+      component,
+      stableId,
+      name,
+      contractPaths,
+      issues,
+      nodeId,
+      edgeId
+    );
+  }
   return issues;
 }
 
-function isStatePathConfigKey(key: string): boolean {
-  return key === "state_key" || key.endsWith("_path") || key.endsWith("state_path") || key.includes("state_path");
+function mergeContractPath(
+  path: string,
+  type: string,
+  merge: string,
+  component: string,
+  stableId: string,
+  portName: string,
+  contractPaths: Map<string, { type: string; merge: string }>,
+  issues: GraphLintIssue[],
+  nodeId?: string,
+  edgeId?: string
+) {
+  const existing = contractPaths.get(path);
+  if (!existing) {
+    contractPaths.set(path, { type, merge });
+    return;
+  }
+  if (existing.type && type && existing.type !== type) {
+    issues.push(bindingIssue(
+      `${stableId}-binding-contract-type-${portName}-${path}`,
+      `${component} resolves incompatible schema types "${existing.type}" and "${type}" at "${path}".`,
+      `state.${portName}`,
+      nodeId,
+      edgeId
+    ));
+  }
+  if (existing.merge !== merge) {
+    issues.push(bindingIssue(
+      `${stableId}-binding-contract-merge-${portName}-${path}`,
+      `${component} resolves incompatible merge strategies "${existing.merge}" and "${merge}" at "${path}".`,
+      `state.${portName}`,
+      nodeId,
+      edgeId
+    ));
+  }
 }
 
-function isPathMappingKey(key: string): boolean {
-  return key === "input_map" || key === "output_map" || key.endsWith("_map");
+function bindingIssue(
+  id: string,
+  message: string,
+  path: string,
+  nodeId?: string,
+  edgeId?: string
+): GraphLintIssue {
+  return { id, severity: "error", message, path, nodeId, edgeId };
 }
 
-function validateStatePath(path: string): string {
+function bindingPath(value: unknown): string {
+  return isRecord(value) && typeof value.path === "string" ? value.path.trim() : "";
+}
+
+function validateBindingPath(path: string): string {
   const parts = path.split(".").map((part) => part.trim());
-  if (parts.length === 0 || !parts[0]) return "path is empty";
+  if (parts.length < 2) return "a state section root cannot be bound";
   if (!["shared", "scopes", "internal", "runtime"].includes(parts[0])) {
-    return `section must be shared, scopes, internal, or runtime`;
+    return "section must be shared, scopes, internal, or runtime";
   }
   if (parts.some((part) => !part)) return "path contains an empty segment";
+  if (parts[0] === "internal" || parts[0] === "runtime") return `section "${parts[0]}" is reserved`;
   return "";
+}
+
+function moduleField(modules: StateModuleDefinition[], path: string) {
+  for (const module of modules) {
+    const field = module.fields?.find((item) => item.path === path);
+    if (field) return field;
+  }
+  return undefined;
+}
+
+function schemasCompatible(left: Record<string, unknown> | undefined, right: Record<string, unknown> | undefined): boolean {
+  const leftType = schemaType(left);
+  const rightType = schemaType(right);
+  return !leftType || !rightType || leftType === rightType;
+}
+
+function schemaType(schema: Record<string, unknown> | undefined): string {
+  return typeof schema?.type === "string" ? schema.type.trim() : "";
 }
 
 function parseInitialState(text: string):
@@ -343,4 +777,13 @@ function dedupeIssues(issues: GraphLintIssue[]): GraphLintIssue[] {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function configString(config: Record<string, unknown> | undefined, key: string): string {
+  if (!config) return "";
+  return typeof config[key] === "string" ? config[key].trim() : "";
+}
+
+function recordString(record: Record<string, unknown>, key: string): string {
+  return typeof record[key] === "string" ? record[key].trim() : "";
 }

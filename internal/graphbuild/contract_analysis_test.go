@@ -3,6 +3,7 @@ package graphbuild
 import (
 	"testing"
 
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/state"
 )
 
@@ -93,4 +94,65 @@ func TestAnalyzeInitialStateRequirementsReportsUnresolvedRuntimePath(t *testing.
 	if len(result.Unresolved) != 1 || result.Unresolved[0].Path != runtimePath.String() {
 		t.Fatalf("unresolved = %#v, want %q", result.Unresolved, runtimePath.String())
 	}
+}
+
+func TestAnalyzeContractDiagnosticsReportsMissingNodeAndConditionProducers(t *testing.T) {
+	t.Parallel()
+	missingNodePath := state.Shared("missing", "node")
+	missingConditionPath := state.Shared("missing", "condition")
+	result := AnalyzeContractDiagnostics(ContractAnalysisGraph{
+		EntryPoint: "entry",
+		EndNode:    "__end__",
+		Edges:      map[string][]string{"entry": {"reader"}, "reader": {"__end__"}},
+		NodeContracts: map[string]state.Contract{
+			"entry": {},
+			"reader": state.NewContract(state.FieldAccess{
+				Path: missingNodePath, Mode: state.AccessRead, Required: true, Merge: state.MergeReplace,
+			}),
+		},
+		ConditionContracts: map[string]state.Contract{
+			"entry": state.NewContract(state.FieldAccess{
+				Path: missingConditionPath, Mode: state.AccessRead, Required: true, Merge: state.MergeReplace,
+			}),
+		},
+	})
+
+	assertDiagnostic(t, result, "missing_required_read", "reader", missingNodePath.String())
+	assertDiagnostic(t, result, "missing_condition_read", "entry", missingConditionPath.String())
+	if err := ContractDiagnosticsError(result); err == nil {
+		t.Fatal("expected producer diagnostics to fail contract validation")
+	}
+}
+
+func TestAnalyzeContractDiagnosticsTracksParallelWavesBeyondInitialFanOut(t *testing.T) {
+	t.Parallel()
+	path := state.Shared("answer")
+	result := AnalyzeContractDiagnostics(ContractAnalysisGraph{
+		EntryPoint: "router",
+		EndNode:    "__end__",
+		Edges: map[string][]string{
+			"router":       {"left", "right"},
+			"left":         {"left_writer"},
+			"right":        {"right_writer"},
+			"left_writer":  {"__end__"},
+			"right_writer": {"__end__"},
+		},
+		NodeContracts: map[string]state.Contract{
+			"router": {}, "left": {}, "right": {},
+			"left_writer":  state.NewContract(state.FieldAccess{Path: path, Mode: state.AccessWrite, Merge: state.MergeReplace}),
+			"right_writer": state.NewContract(state.FieldAccess{Path: path, Mode: state.AccessWrite, Merge: state.MergeReplace}),
+		},
+	})
+
+	assertDiagnostic(t, result, "overlapping_write", "left_writer", path.String())
+}
+
+func assertDiagnostic(t *testing.T, diagnostics []core.ContractDiagnostic, kind, nodeID, path string) {
+	t.Helper()
+	for _, diagnostic := range diagnostics {
+		if diagnostic.Kind == kind && diagnostic.NodeID == nodeID && diagnostic.Path == path {
+			return
+		}
+	}
+	t.Fatalf("diagnostic kind=%q node=%q path=%q not found in %#v", kind, nodeID, path, diagnostics)
 }

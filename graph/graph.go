@@ -14,7 +14,6 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
-	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -28,6 +27,8 @@ const EndNodeRef = "__end__"
 type conditionalEdge struct {
 	to        string
 	condition registry.EdgeCondition
+	contract  state.Contract
+	resolved  bool
 }
 
 func SetLogger(l *zap.Logger) {
@@ -41,33 +42,39 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	nodes               map[string]core.Node
-	nodeSpecs           map[string]dsl.GraphNodeSpec
-	nodeContracts       map[string]state.Contract
-	stateRegistry       *state.Registry
-	initialStatePaths   []string
-	contractDiagnostics []ContractDiagnostic
-	defaultEdges        map[string][]string
-	conditionalEdges    map[string][]conditionalEdge
-	edgeSpecs           []dsl.GraphEdgeSpec
-	version             string
-	name                string
-	description         string
-	stateSchema         string
-	metadata            map[string]any
-	entryPoint          string
-	finishPoint         string
-	retryPolicy         *langgraph.RetryPolicy
+	nodes                 map[string]core.Node
+	nodeSpecs             map[string]dsl.GraphNodeSpec
+	nodeContracts         map[string]state.Contract
+	conditionContracts    map[string]state.Contract
+	stateBindingSemantics []dsl.StateBindingSemantic
+	initialStatePaths     []string
+	contractDiagnostics   []ContractDiagnostic
+	defaultEdges          map[string][]string
+	conditionalEdges      map[string][]conditionalEdge
+	edgeSpecs             []dsl.GraphEdgeSpec
+	version               string
+	name                  string
+	description           string
+	stateModules          []dsl.StateModuleRef
+	metadata              map[string]any
+	entryPoint            string
+	finishPoint           string
+	retryPolicy           *langgraph.RetryPolicy
 }
 
 func NewGraph() *Graph {
-	stateRegistry, _ := node.NewDefaultRegistry()
+	protocolModule := builtin.ProtocolsStateModuleDefinition()
+	initialStatePaths := make([]string, 0, len(protocolModule.Fields))
+	for _, field := range protocolModule.Fields {
+		initialStatePaths = append(initialStatePaths, field.Path)
+	}
 	return &Graph{
-		nodes:            map[string]core.Node{},
-		nodeSpecs:        map[string]dsl.GraphNodeSpec{},
-		defaultEdges:     map[string][]string{},
-		conditionalEdges: map[string][]conditionalEdge{},
-		stateRegistry:    stateRegistry,
+		nodes:             map[string]core.Node{},
+		nodeSpecs:         map[string]dsl.GraphNodeSpec{},
+		defaultEdges:      map[string][]string{},
+		conditionalEdges:  map[string][]conditionalEdge{},
+		stateModules:      []dsl.StateModuleRef{{Name: builtin.ProtocolsModuleName, Version: builtin.ProtocolsModuleVersion}},
+		initialStatePaths: initialStatePaths,
 	}
 }
 
@@ -78,12 +85,50 @@ func (g *Graph) setDefinitionMetadata(def dsl.GraphDefinition) {
 	g.version = strings.TrimSpace(def.Version)
 	g.name = strings.TrimSpace(def.Name)
 	g.description = strings.TrimSpace(def.Description)
-	g.stateSchema = strings.TrimSpace(def.StateSchema)
+	g.stateModules = append([]dsl.StateModuleRef(nil), def.StateModules...)
 	if len(def.Metadata) > 0 {
 		g.metadata = config.CloneMap(def.Metadata)
 	} else {
 		g.metadata = nil
 	}
+}
+
+func (g *Graph) setStateBindingSemantics(bindings []dsl.StateBindingSemantic) {
+	if g == nil || len(bindings) == 0 {
+		if g != nil {
+			g.stateBindingSemantics = nil
+		}
+		return
+	}
+	g.stateBindingSemantics = append([]dsl.StateBindingSemantic(nil), bindings...)
+}
+
+func (g *Graph) SemanticHash() (string, error) {
+	if g == nil {
+		return "", fmt.Errorf("graph is nil")
+	}
+	def, err := g.Definition()
+	if err != nil {
+		return "", err
+	}
+	bindings := g.stateBindingSemantics
+	if len(bindings) == 0 {
+		if resolved, resolveErr := graphbuild.ResolveGraphBindings(def, builtin.NewDefaultRegistry()); resolveErr == nil {
+			bindings = graphbuild.StateBindingSemantics(resolved)
+		}
+	}
+	return dsl.SemanticGraphHashWithStateBindings(def, bindings)
+}
+
+func (g *Graph) SnapshotHash() (string, error) {
+	if g == nil {
+		return "", fmt.Errorf("graph is nil")
+	}
+	def, err := g.Definition()
+	if err != nil {
+		return "", err
+	}
+	return dsl.SnapshotGraphHash(def)
 }
 
 func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
@@ -182,6 +227,55 @@ func (g *Graph) AddNode(targetNode core.Node) error {
 			Description: targetNode.Description(),
 		}
 	}
+	if err := g.attachNodeContract(id, targetNode); err != nil {
+		delete(g.nodes, id)
+		delete(g.nodeSpecs, id)
+		return err
+	}
+	return nil
+}
+
+func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+	if _, exists := g.nodeContracts[nodeID]; exists {
+		return nil
+	}
+	spec := g.nodeSpecs[nodeID]
+	reg := builtin.NewDefaultRegistry()
+	if _, registered := reg.NodeTypes[spec.Type]; registered {
+		def := dsl.GraphDefinition{
+			Version:      dsl.GraphDefinitionVersion,
+			StateModules: append([]dsl.StateModuleRef(nil), g.stateModules...),
+			Nodes:        []dsl.GraphNodeSpec{spec},
+		}
+		resolved, err := graphbuild.ResolveGraphBindings(def, reg)
+		if err != nil {
+			return err
+		}
+		contract, ok := resolved.NodeContracts[nodeID]
+		if !ok {
+			return fmt.Errorf("node %q has no resolved state contract", nodeID)
+		}
+		if g.nodeContracts == nil {
+			g.nodeContracts = map[string]state.Contract{}
+		}
+		g.nodeContracts[nodeID] = contract.Clone()
+		return nil
+	}
+
+	contract, err := core.ContractFor(targetNode)
+	if err != nil {
+		return err
+	}
+	if len(contract.Fields) == 0 && !contract.WildcardRead && !contract.WildcardWrite {
+		return nil
+	}
+	if g.nodeContracts == nil {
+		g.nodeContracts = map[string]state.Contract{}
+	}
+	g.nodeContracts[nodeID] = contract.Clone()
 	return nil
 }
 
@@ -278,14 +372,29 @@ func (g *Graph) addEdgeInternal(from, to string, trackSpec bool) error {
 }
 
 func (g *Graph) AddConditionalEdge(from, to string, condition registry.EdgeCondition) error {
-	return g.addConditionalEdgeInternal(from, to, condition, true)
+	contract, resolved, err := g.resolveDefaultConditionContract(condition.CloneSpec())
+	if err != nil {
+		return err
+	}
+	return g.addConditionalEdgeInternal(from, to, condition, true, contract, resolved, true)
+}
+
+func (g *Graph) AddResolvedConditionalEdge(from, to string, condition registry.EdgeCondition, contract state.Contract) error {
+	return g.addConditionalEdgeInternal(from, to, condition, true, contract, true, false)
 }
 
 func (g *Graph) addRuntimeConditionalEdge(from, to string, condition registry.EdgeCondition) error {
-	return g.addConditionalEdgeInternal(from, to, condition, false)
+	return g.addConditionalEdgeInternal(from, to, condition, false, state.Contract{}, false, false)
 }
 
-func (g *Graph) addConditionalEdgeInternal(from, to string, condition registry.EdgeCondition, trackSpec bool) error {
+func (g *Graph) addConditionalEdgeInternal(
+	from, to string,
+	condition registry.EdgeCondition,
+	trackSpec bool,
+	contract state.Contract,
+	resolved bool,
+	trackContract bool,
+) error {
 	if err := condition.Validate(); err != nil {
 		return err
 	}
@@ -302,7 +411,12 @@ func (g *Graph) addConditionalEdgeInternal(from, to string, condition registry.E
 	g.conditionalEdges[fromID] = append(g.conditionalEdges[fromID], conditionalEdge{
 		to:        toID,
 		condition: condition,
+		contract:  contract.Clone(),
+		resolved:  resolved,
 	})
+	if resolved && trackContract {
+		g.appendConditionContract(fromID, contract)
+	}
 	if trackSpec {
 		spec := condition.CloneSpec()
 		g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{
@@ -312,6 +426,46 @@ func (g *Graph) addConditionalEdgeInternal(from, to string, condition registry.E
 		})
 	}
 	return nil
+}
+
+func (g *Graph) resolveDefaultConditionContract(spec dsl.GraphConditionSpec) (state.Contract, bool, error) {
+	if g == nil || strings.TrimSpace(spec.Type) == "" {
+		return state.Contract{}, false, nil
+	}
+	reg := builtin.NewDefaultRegistry()
+	if _, ok := reg.Conditions[spec.Type]; !ok {
+		return state.Contract{}, false, nil
+	}
+	def := dsl.GraphDefinition{
+		Version:      dsl.GraphDefinitionVersion,
+		StateModules: append([]dsl.StateModuleRef(nil), g.stateModules...),
+		Edges: []dsl.GraphEdgeSpec{{
+			From: "source", To: "target", Condition: &spec,
+		}},
+	}
+	resolved, err := graphbuild.ResolveGraphBindings(def, reg)
+	if err != nil {
+		return state.Contract{}, false, err
+	}
+	contract, ok := resolved.ConditionContracts[0]
+	if !ok {
+		return state.Contract{}, false, fmt.Errorf("condition %q has no resolved state contract", spec.Type)
+	}
+	return contract, true, nil
+}
+
+func (g *Graph) appendConditionContract(from string, contract state.Contract) {
+	if g == nil {
+		return
+	}
+	if g.conditionContracts == nil {
+		g.conditionContracts = map[string]state.Contract{}
+	}
+	combined := g.conditionContracts[from].Clone()
+	combined.Fields = append(combined.Fields, contract.Fields...)
+	combined.WildcardRead = combined.WildcardRead || contract.WildcardRead
+	combined.WildcardWrite = combined.WildcardWrite || contract.WildcardWrite
+	g.conditionContracts[from] = combined
 }
 
 func (g *Graph) SetRetryPolicy(policy *langgraph.RetryPolicy) {
@@ -560,28 +714,35 @@ func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode 
 	if targetNode == nil {
 		return currentState, fmt.Errorf("node %q is nil", nodeID)
 	}
-	registry := g.stateAccessorRegistry()
-	resolvedContract, err := core.ContractFor(registry, targetNode)
+	resolvedContract, err := core.ContractFor(targetNode)
 	if err != nil {
 		return currentState, err
 	}
+	hasResolvedContract := false
 	if g != nil && len(g.nodeContracts) > 0 {
 		if nodeContract, ok := g.nodeContracts[nodeID]; ok {
 			resolvedContract = nodeContract.Clone()
+			hasResolvedContract = true
 		}
 	}
 	contract := &resolvedContract
+	var readIssues []state.ValidationIssue
 	var writeIssues []state.ValidationIssue
 	result, err := core.ExecuteNodeWithOptions(ctx, currentState, targetNode, core.NodeExecutionOptions{
-		Registry:       registry,
-		Contract:       contract,
-		ValidateWrites: len(contract.Fields) > 0 || contract.WildcardWrite,
+		Contract:               contract,
+		EnforceInputProjection: hasResolvedContract,
+		ValidateRequiredReads:  hasResolvedContract,
+		ValidateWrites:         hasResolvedContract || len(contract.Fields) > 0 || contract.WildcardWrite,
+		ApplyPatchToInput:      hasResolvedContract,
+		OnRequiredReadIssues: func(issues []state.ValidationIssue) {
+			readIssues = append([]state.ValidationIssue(nil), issues...)
+		},
 		OnWriteIssues: func(issues []state.ValidationIssue) {
 			writeIssues = append([]state.ValidationIssue(nil), issues...)
 		},
 	})
 	if err != nil {
-		if len(writeIssues) > 0 {
+		if len(readIssues) > 0 || len(writeIssues) > 0 {
 			return currentState, fmt.Errorf("node %q state contract violation: %w", nodeID, err)
 		}
 		return currentState, err
@@ -876,7 +1037,14 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 
 	if conditional := g.conditionalEdges[currentNodeID]; len(conditional) > 0 {
 		for _, edge := range conditional {
-			if edge.condition.Match(ctx, currentState) {
+			conditionState := currentState
+			if edge.resolved {
+				if issues := state.ValidateRequiredReads(currentState, edge.contract); len(issues) > 0 {
+					return nil, fmt.Errorf("condition %q on edge %q -> %q state contract violation: %s", edge.condition.Spec.Type, currentNodeID, g.serializeNodeRef(edge.to), issues[0].Message)
+				}
+				conditionState = state.ProjectStateByContract(currentState, edge.contract)
+			}
+			if edge.condition.Match(ctx, conditionState) {
 				return []string{edge.to}, nil
 			}
 		}
@@ -896,14 +1064,6 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 		return []string{langgraph.END}, nil
 	}
 	return nil, fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
-}
-
-func (g *Graph) stateAccessorRegistry() *state.Registry {
-	if g == nil || g.stateRegistry == nil {
-		registry, _ := node.NewDefaultRegistry()
-		return registry
-	}
-	return g.stateRegistry
 }
 
 func (g *Graph) Run(ctx context.Context, initialState *state.State) (*state.State, error) {
@@ -936,6 +1096,19 @@ func (g *Graph) setNodeContracts(contracts map[string]state.Contract) {
 	g.nodeContracts = make(map[string]state.Contract, len(contracts))
 	for key, value := range contracts {
 		g.nodeContracts[key] = value.Clone()
+	}
+}
+
+func (g *Graph) setConditionContracts(contracts map[string]state.Contract) {
+	if g == nil || len(contracts) == 0 {
+		if g != nil {
+			g.conditionContracts = nil
+		}
+		return
+	}
+	g.conditionContracts = make(map[string]state.Contract, len(contracts))
+	for key, value := range contracts {
+		g.conditionContracts[key] = value.Clone()
 	}
 }
 
@@ -999,6 +1172,13 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 		if len(spec.Config) > 0 {
 			spec.Config = config.CloneMap(spec.Config)
 		}
+		if len(spec.State) > 0 {
+			clonedState := make(map[string]dsl.StateBinding, len(spec.State))
+			for key, binding := range spec.State {
+				clonedState[key] = binding
+			}
+			spec.State = clonedState
+		}
 		nodeList = append(nodeList, spec)
 	}
 
@@ -1010,31 +1190,36 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 			copyCondition.Config = config.CloneMap(edge.Condition.Config)
 			edges[i].Condition = &copyCondition
 		}
+		if edge.Condition != nil && len(edge.Condition.State) > 0 {
+			copyCondition := *edges[i].Condition
+			copyCondition.State = make(map[string]dsl.StateBinding, len(edge.Condition.State))
+			for key, binding := range edge.Condition.State {
+				copyCondition.State[key] = binding
+			}
+			edges[i].Condition = &copyCondition
+		}
 	}
 
 	version := g.version
 	if version == "" {
 		version = dsl.GraphDefinitionVersion
 	}
-	stateSchema := g.stateSchema
-	if stateSchema == "" {
-		stateSchema = dsl.CommonStateSchemaID
-	}
+	stateModules := append([]dsl.StateModuleRef(nil), g.stateModules...)
 	var metadata map[string]any
 	if len(g.metadata) > 0 {
 		metadata = config.CloneMap(g.metadata)
 	}
 
 	return dsl.GraphDefinition{
-		Version:     version,
-		Name:        g.name,
-		Description: g.description,
-		StateSchema: stateSchema,
-		EntryPoint:  g.serializeNodeRef(g.entryPoint),
-		FinishPoint: g.serializeNodeRef(g.finishPoint),
-		Nodes:       nodeList,
-		Edges:       edges,
-		Metadata:    metadata,
+		Version:      version,
+		Name:         g.name,
+		Description:  g.description,
+		StateModules: stateModules,
+		EntryPoint:   g.serializeNodeRef(g.entryPoint),
+		FinishPoint:  g.serializeNodeRef(g.finishPoint),
+		Nodes:        nodeList,
+		Edges:        edges,
+		Metadata:     metadata,
 	}, nil
 }
 

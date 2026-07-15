@@ -8,6 +8,7 @@ import {
   getInitialStateRequirements,
   getRegistry,
   getGraphSettings,
+  getCheckpoint,
   getTools,
   listRuns,
   getRunDetail,
@@ -43,6 +44,7 @@ import type {
   GraphSettingsUpdate,
   InitialStateRequirement,
   InitialStateRequirements,
+  CheckpointRecord,
   RegistryInfo,
   RunInterrupt,
   RunRecord,
@@ -62,7 +64,7 @@ interface HumanMessagePrompt {
   runId: string;
   checkpointId: string;
   nodeId: string;
-  scope: string;
+  statePath: string;
   message: string;
 }
 
@@ -94,6 +96,7 @@ export function WorkbenchPage({
   const [steps, setSteps] = useState<StepRecord[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runInterrupt, setRunInterrupt] = useState<RunInterrupt | null>(null);
+  const [runState, setRunState] = useState<unknown>(null);
   const [humanPrompt, setHumanPrompt] = useState<HumanMessagePrompt | null>(null);
   const [humanPromptText, setHumanPromptText] = useState("");
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
@@ -207,6 +210,7 @@ export function WorkbenchPage({
     setEvents([]);
     setLiveEvents([]);
     setRunInterrupt(null);
+    setRunState(null);
     setHumanPrompt(null);
     setHumanPromptText("");
   }, []);
@@ -223,6 +227,10 @@ export function WorkbenchPage({
     },
     [definition]
   );
+
+  useEffect(() => {
+    maybeOpenHumanPrompt(runInterrupt);
+  }, [maybeOpenHumanPrompt, runInterrupt]);
 
   const refreshRuns = useCallback(async (
     identity: GraphIdentity = graphIdentityRef.current,
@@ -265,16 +273,19 @@ export function WorkbenchPage({
         setSteps([]);
         setEvents([]);
         setRunInterrupt(null);
+        setRunState(null);
         setHumanPrompt(null);
         setHumanPromptText("");
         humanPromptCheckpointRef.current = "";
         return;
       }
       const detail = await getRunDetail(runId, graphIdentityRef.current.id);
+      const state = await loadLatestRunState(detail.checkpoints, graphIdentityRef.current.id);
       if (runContextVersionRef.current !== contextVersion) return;
       setSteps(detail.steps);
       setEvents(detail.events);
       setRunInterrupt(detail.interrupt ?? null);
+      setRunState(state);
       setRuns((current) => current.map((run) => (run.run_id === detail.run.run_id ? detail.run : run)));
     },
     []
@@ -286,6 +297,7 @@ export function WorkbenchPage({
       const contextVersion = runContextVersionRef.current;
       try {
         const detail = await getRunDetail(runId, graphIdentityRef.current.id);
+        const state = await loadLatestRunState(detail.checkpoints, graphIdentityRef.current.id);
         if (runContextVersionRef.current !== contextVersion) return;
         setRuns((current) => {
           const exists = current.some((run) => run.run_id === detail.run.run_id);
@@ -304,6 +316,7 @@ export function WorkbenchPage({
         setSteps(detail.steps);
         setEvents(detail.events);
         setRunInterrupt(detail.interrupt ?? null);
+        setRunState(state);
         if (options.openHumanPrompt) maybeOpenHumanPrompt(detail.interrupt ?? null);
       } catch (err) {
         notifyError(err);
@@ -365,7 +378,7 @@ export function WorkbenchPage({
   }, [graphSwitchLocked, pushToast, resetRunState]);
 
   useEffect(() => {
-    if (!definition || validateGraph(definition)) {
+    if (!definition || validateGraph(definition, registry)) {
       setInitialRequirements(null);
       setInitialRequirementsError("");
       return;
@@ -390,7 +403,7 @@ export function WorkbenchPage({
       canceled = true;
       window.clearTimeout(timer);
     };
-  }, [definition, graphId, graphVersion]);
+  }, [definition, graphId, graphVersion, registry]);
 
   useEffect(() => {
     void refreshSelectedRun(selectedRunId).catch((err) => {
@@ -489,7 +502,7 @@ export function WorkbenchPage({
         pushToast("error", "Graph JSON is invalid");
         return;
       }
-      const graphValidationError = validateGraph(definition);
+      const graphValidationError = validateGraph(definition, registry);
       if (graphValidationError) {
         pushToast("error", `Graph validation failed: ${graphValidationError}`);
         setTab("graph");
@@ -668,7 +681,7 @@ export function WorkbenchPage({
               : run
           )
         );
-        const result = await resumeRun(prompt.runId, pendingHumanInputState(prompt.scope, text));
+        const result = await resumeRun(prompt.runId, pendingHumanInputState(prompt.statePath, text));
         setSelectedRunId(result.run.run_id);
         setRunInterrupt(result.interrupt ?? null);
         setRunStatusVisible(true);
@@ -733,6 +746,9 @@ export function WorkbenchPage({
           onDeleteRun={(runId) => void deleteSelectedRun(runId)}
           events={displayEvents}
           steps={steps}
+          stateSnapshot={runState}
+          definition={definition}
+          registry={registry}
           onHide={() => setRunStatusVisible(false)}
         />
       }
@@ -740,6 +756,7 @@ export function WorkbenchPage({
       {tab === "graph" ? (
         <GraphWorkspace
           definition={definition}
+          definitionText={definitionText}
           initialStateText={initialStateText}
           initialRequirements={initialRequirements}
           initialRequirementsError={initialRequirementsError}
@@ -835,43 +852,47 @@ function HumanMessagePromptDialog({
   );
 }
 
-function humanMessagePromptFromInterrupt(
+async function loadLatestRunState(checkpoints: CheckpointRecord[], graphId: string): Promise<unknown> {
+  const latest = [...checkpoints].sort(
+    (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at)
+  )[0];
+  if (!latest) return null;
+  const checkpoint = await getCheckpoint(latest.checkpoint_id, graphId);
+  return checkpoint.business ?? checkpoint.snapshot ?? null;
+}
+
+export function humanMessagePromptFromInterrupt(
   interrupt: RunInterrupt | null | undefined,
   definition: GraphDefinition | null
 ): HumanMessagePrompt | null {
   if (!interrupt?.run_id || !interrupt.checkpoint_id || !interrupt.node_id || !definition) return null;
   const node = definition.nodes.find((item) => item.id === interrupt.node_id);
-  if (node?.type !== "human_message") return null;
+  if (node?.type !== "conversation_input") return null;
   const config = isRecord(node.config) ? node.config : {};
   const configuredContent = typeof config.content === "string" ? config.content.trim() : "";
   if (configuredContent) return null;
-  const hasExplicitScope = Object.prototype.hasOwnProperty.call(config, "state_scope");
-  const scope = hasExplicitScope && typeof config.state_scope === "string" ? config.state_scope.trim() : "agent";
+  const statePath = node.state?.pending_input?.path.trim() ?? "";
+  if (!statePath) return null;
   return {
     runId: interrupt.run_id,
     checkpointId: interrupt.checkpoint_id,
     nodeId: interrupt.node_id,
-    scope,
+    statePath,
     message: interrupt.message || "The run is waiting for human input.",
   };
 }
 
-function pendingHumanInputState(scope: string, message: string): unknown {
-  const trimmedScope = scope.trim();
-  if (!trimmedScope) {
-    return {
-      shared: {
-        pending_human_input: message,
-      },
-    };
+export function pendingHumanInputState(path: string, message: string): unknown {
+  const segments = path.split(".").map((segment) => segment.trim()).filter(Boolean);
+  const root: Record<string, unknown> = {};
+  let cursor = root;
+  for (const segment of segments.slice(0, -1)) {
+    const next: Record<string, unknown> = {};
+    cursor[segment] = next;
+    cursor = next;
   }
-  return {
-    scopes: {
-      [trimmedScope]: {
-        pending_human_input: message,
-      },
-    },
-  };
+  if (segments.length > 0) cursor[segments[segments.length - 1]] = message;
+  return root;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

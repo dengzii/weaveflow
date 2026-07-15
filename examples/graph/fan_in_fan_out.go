@@ -93,7 +93,7 @@ func findBarrierCheckpoint(ctx context.Context, runner *runtime.GraphRunner, run
 }
 
 func printResult(currentState *state.State) {
-	access := state.NewAccess(nil, currentState)
+	access := state.NewAccess(currentState)
 	branches, _ := access.ReadAny(state.Shared("branches"))
 	count, _ := access.ReadAny(state.Shared("branch_count"))
 	fmt.Printf("branches: %#v\nbranch_count: %#v\n", branches, count)

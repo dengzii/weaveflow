@@ -15,7 +15,7 @@ Most agent frameworks make it easy to get a demo running and hard to understand 
 WeaveFlow takes the opposite approach:
 
 - Graphs are explicit and serializable.
-- Node state access is constrained through contracts.
+- Node and condition state access is resolved from explicit path bindings and constrained through contracts.
 - Execution emits structured events and checkpoints.
 - Runs can be paused, resumed, replayed, and inspected after the fact.
 - The framework ships with practical building blocks instead of only low-level primitives.
@@ -24,9 +24,9 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 
 ## Core Capabilities
 
-- Declarative graph DSL with JSON-serializable definitions.
+- Declarative Graph Definition v2 with explicit State Module dependencies and path bindings.
 - Deterministic runtime with execution stores, checkpoint stores, and event sinks.
-- State contracts that validate node read/write behavior at build time.
+- State Ports and capability contracts that validate node/condition read-write behavior at build time.
 - Built-in nodes for LLM calls, tool execution, planning, replanning, verification, routing, memory, iteration, and
   approval gates.
 - Artifact persistence for debugging and replay.
@@ -41,8 +41,9 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 | `dsl/`             | Serializable graph definitions, node specs, and contract schemas.                         |
 | `graph/`           | Topology, edge resolution, langgraph compilation, and lightweight `Graph.Run`.            |
 | `runtime/`         | Run lifecycle, checkpoints, resume, events, artifacts, and runtime contract policy.       |
-| `state/`           | Scoped state, snapshots, validation, merge behavior, and conversation helpers.            |
-| `registry/`        | Node/condition registration, build context, and graph instance configuration.             |
+| `state/`           | Paths, typed refs, snapshots, validation, projection, patches, and merge behavior.        |
+| `capability/`      | Path-bound typed views for conversation, plan, supervisor, and execution protocols.       |
+| `registry/`        | Node, condition, State Module, capability metadata, and build wiring.                     |
 | `node/`            | Production-oriented node implementations.                                                 |
 | `builtin/`         | Built-in conditions, helpers, and default registry wiring for advanced use.               |
 | `tools/`           | Bundled tool implementations.                                                             |
@@ -89,6 +90,26 @@ Then run:
 go run ./examples/graph
 ```
 
+Run the plan-mode example with an optional objective:
+
+```bash
+go run ./examples/plan_mode "Calculate 125 * 48 and verify the result."
+```
+
+Run the supervisor-mode example to route work between qualitative and quantitative specialists:
+
+```bash
+go run ./examples/supervisor_mode "Compare saving 250 per month for 3 years with 400 per month for 2 years."
+```
+
+Run the explicit state-binding examples:
+
+```bash
+go run ./examples/two_agent_handoff "Research and summarize explicit state bindings."
+go run ./examples/multi_llm "Draft and review an explanation of capability roots."
+go run ./examples/shared_tool_loop "Use the calculator to evaluate 125 * 48."
+```
+
 The example:
 
 - builds a ReAct-style graph,
@@ -99,29 +120,110 @@ The example:
 ## Minimal Example
 
 ```go
+model, err := openai.New()
+if err != nil {
+return err
+}
 g := weaveflow.NewGraph()
 
-human := node.NewHumanMessageNode("")
-llm := node.NewLLMNode()
-tool := node.NewToolsNode()
+conversationPath := state.Scope("agent", "conversation")
 
-_ = g.AddNode(human)
+input := node.NewConversationInputNode(node.WithID("input"))
+input.Content = "What is 125 * 48?"
+input.ConversationPath = conversationPath
+
+llm := node.NewLLMNode(node.WithID("llm"))
+llm.ToolIDs = []string{"calculator"}
+llm.ConversationPath = conversationPath
+llm.OutputPath = state.Shared("final", "answer")
+
+tool := node.NewToolsNode(node.WithID("tools"))
+tool.ToolIDs = []string{"calculator"}
+tool.ConversationPath = conversationPath
+
+_ = g.AddNode(input)
 _ = g.AddNode(llm)
 _ = g.AddNode(tool)
 
-_ = g.AddEdge(human.ID(), llm.ID())
-_ = g.AddConditionalEdge(llm.ID(), tool.ID(), weaveflow.LastMessageHasToolCalls())
+_ = g.AddEdge(input.ID(), llm.ID())
+_ = g.AddConditionalEdge(llm.ID(), tool.ID(), weaveflow.ConversationHasToolCalls(conversationPath))
 _ = g.AddEdge(tool.ID(), llm.ID())
 _ = g.AddEdge(llm.ID(), weaveflow.EndNodeRef)
 
-_ = g.SetEntryPoint(human.ID())
+_ = g.SetEntryPoint(input.ID())
 
 runner, err := weaveflow.NewRunner(g)
 if err != nil {
 return err
 }
-_, finalState, err := runner.Start(context.Background(), weaveflow.NewState())
+ctx := core.WithModel(context.Background(), model)
+ctx = core.WithTools(ctx, map[string]core.Tool{"calculator": tools.NewCalculator()})
+_, finalState, err := runner.Start(ctx, weaveflow.NewState())
+
 ```
+
+## Graph Definition v2 State Bindings
+
+Every Graph v2 definition declares its State Modules. Every Node and Condition binds its declared State Ports at the
+top-level `state` field; state paths never belong in component `config`.
+
+```json
+{
+  "version": "2.0",
+  "name": "two_step",
+  "state_modules": [
+    {
+      "name": "weaveflow.protocols",
+      "version": "1"
+    }
+  ],
+  "entry_point": "input",
+  "finish_point": "llm",
+  "nodes": [
+    {
+      "id": "input",
+      "type": "conversation_input",
+      "config": {
+        "content": "hello"
+      },
+      "state": {
+        "conversation": {
+          "path": "scopes.first.conversation"
+        }
+      }
+    },
+    {
+      "id": "llm",
+      "type": "llm",
+      "config": {
+        "model_id": "default"
+      },
+      "state": {
+        "conversation": {
+          "path": "scopes.first.conversation"
+        },
+        "output": {
+          "path": "shared.final.answer"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "input",
+      "to": "llm"
+    }
+  ]
+}
+```
+
+Primitive ports bind an exact path and carry a JSON schema plus access mode. Capability ports bind a root path and
+expand their declared relative fields into the concrete state contract. Two components share protocol state only when
+they bind the same capability root; isolated roots remain independent. Required bindings, reserved sections,
+schema/capability conflicts, producer requirements, and deterministic parallel write conflicts fail during graph build.
+Checkpoint resume validation uses a semantic hash that includes module versions, binding paths, capability IDs, and the
+expanded state contracts resolved by the registry. Built-in nodes added through the direct Go graph API resolve the
+same contracts, and each bound edge condition evaluates against its own projected contract view.
 
 Load a graph definition from disk:
 
@@ -155,10 +257,10 @@ weaveflow.WithGraphVersion("v1"),
 ## State Persistence
 
 Checkpoint state is persisted as JSON. After decode, the runtime guarantees JSON-compatible value shapes
-(`map[string]any`, `[]any`, strings, numbers, booleans, and null), plus explicit conversions owned by core accessors
-such as conversation messages and record collections. `state.Read[T]` intentionally uses Go type assertions; custom
-typed accessors should convert restored JSON shapes at the accessor boundary instead of relying on the snapshot codec
-to reconstruct arbitrary Go structs or typed slices.
+(`map[string]any`, `[]any`, strings, numbers, booleans, and null). Path-bound capability views explicitly decode the
+protocol shapes they own, such as conversation messages. `state.Read[T]` intentionally uses Go type assertions;
+applications should convert custom business values from their persisted JSON shape instead of expecting the snapshot
+codec to reconstruct arbitrary Go structs or typed slices.
 
 ## Debug Server
 
@@ -171,14 +273,14 @@ Start the API server with:
 go run ./cmd/server -addr :8080 -data .local/server
 ```
 
-To preload a graph definition:
+To preload a graph definition, including the ready-to-edit supervisor example:
 
 ```bash
-go run ./cmd/server -addr :8080 -data .local/server -graph path/to/graph.json
+go run ./cmd/server -addr :8080 -data .local/server -graph examples/supervisor_mode/graph.json
 ```
 
 If `OPENAI_API_KEY` is set, model-backed nodes are enabled. The server also wires local memory and the bundled `read`,
-`write`, `edit`, `glob`, and `grep` tools into the runtime context.
+`write`, `edit`, `glob`, `grep`, `calculator`, `current_time`, and `web_fetch` tools into the runtime context.
 
 The API routes are mounted at the root by default. Use `-prefix /debug` to mount them under a path prefix.
 
@@ -194,12 +296,17 @@ Open the printed dev-server URL; the app redirects to `/app/graph`.
 
 ## Examples
 
-| Path                  | Description                                              |
-|-----------------------|----------------------------------------------------------|
-| `examples/graph/`     | End-to-end ReAct-style agent with checkpoint and resume. |
-| `examples/dsl/`       | Exports the default registry and graph JSON schema.      |
-| `examples/node/`      | Focused runnable examples for individual node types.     |
-| `examples/llama_cpp/` | Runs against a local `llama.cpp` model.                  |
+| Path                          | Description                                                                        |
+|-------------------------------|------------------------------------------------------------------------------------|
+| `examples/graph/`             | End-to-end ReAct-style agent with checkpoint and resume.                           |
+| `examples/plan_mode/`         | Structured planning, tool execution, replanning, and final synthesis.              |
+| `examples/supervisor_mode/`   | Supervisor routing, specialist agent delegation, and final synthesis.              |
+| `examples/two_agent_handoff/` | Agent result-to-task handoff with isolated conversation roots.                     |
+| `examples/multi_llm/`         | Two model IDs with separate conversations and an explicit output-to-input handoff. |
+| `examples/shared_tool_loop/`  | LLM, Tools, and edge Condition sharing one conversation capability root.           |
+| `examples/dsl/`               | Exports the default registry and graph JSON schema.                                |
+| `examples/node/`              | Focused runnable examples for individual node types.                               |
+| `examples/llama_cpp/`         | Runs against a local `llama.cpp` model.                                            |
 
 ## Development
 
@@ -215,11 +322,9 @@ still evolving.
 
 Package boundary notes:
 
-- `graph.SetLogger` is a compatibility facade for `runtime.SetLogger`; runtime owns runner logging.
-- DSL-built mapped subgraphs invoke a graph function, typically `Graph.Run`, through
-  `MappedSubgraphNode.InvokeSubgraph`.
-  They do not create an independent `GraphRunner` run, checkpoint, or artifact lifecycle unless an application supplies
-  that behavior explicitly.
+- `runtime` owns runner logging and persisted run lifecycle.
+- DSL-built subgraphs use `SubgraphNode` object-valued `input` and `output` State Ports. A child graph receives only the
+  explicitly bound input snapshot; it does not inherit a parent node scope or any implicit state namespace.
 - Nested `GraphRunner` lifecycle support is not part of the current graph/runtime boundary. If it is needed later,
   parent/child run linkage should be designed as a separate feature.
 

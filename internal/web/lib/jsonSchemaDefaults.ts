@@ -1,5 +1,3 @@
-import { normalizeConfigSchema } from "./schemaCompat";
-
 export function exampleValueForSchema(schema: unknown): unknown {
   const normalizedSchema = normalizeConfigSchema(schema);
   if (!normalizedSchema) return undefined;
@@ -59,35 +57,11 @@ function schemaHasDefault(schema: unknown): boolean {
 
 function wellKnownExampleValue(key: string): unknown {
   switch (key) {
-    case "state_scope":
-      return "agent";
     case "graph_ref":
       return "example_graph";
-    case "state_key":
-      return "payload.items";
     case "max_iterations":
       return 2;
-    case "input_path":
-    case "request_input_path":
-      return "shared.request.input";
-    case "intent_state_path":
-      return "intent";
-    case "orchestration_state_path":
-      return "orchestration";
-    case "memory_state_path":
-      return "memory";
-    case "planner_state_path":
-      return "planner";
-    case "objective_path":
-      return "planner.objective";
-    case "query_path":
-      return "memory.query";
-    case "final_answer_path":
-      return "scopes.agent.final_answer";
-    case "context_paths":
-      return ["shared.request.metadata"];
     case "tool_ids":
-    case "tools_ids":
       return [];
     case "limit":
       return 5;
@@ -108,4 +82,8 @@ function cloneJSONValue(value: unknown): unknown {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function normalizeConfigSchema(schema: unknown): Record<string, unknown> | undefined {
+  return isRecord(schema) ? schema : undefined;
 }

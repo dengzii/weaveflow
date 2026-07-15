@@ -7,11 +7,12 @@ import type {
   ConditionSchema,
   NodeTypeSchema,
   RegistryInfo,
-  StateFieldDefinition,
+  StateCapabilityDefinition,
+  StateModuleDefinition,
   ToolDefinition,
 } from "../../types";
 
-type RegistrySectionKey = "nodes" | "tools" | "conditions" | "state" | "schema";
+type RegistrySectionKey = "nodes" | "tools" | "conditions" | "modules" | "capabilities" | "schema";
 
 interface RegistrySection {
   key: RegistrySectionKey;
@@ -81,11 +82,18 @@ export function RegistryDialog({
         items: (registry?.conditions ?? []).map(conditionItem),
       },
       {
-        key: "state",
-        label: "State Fields",
-        count: registry?.state_fields?.length ?? 0,
+        key: "modules",
+        label: "State Modules",
+        count: registry?.state_modules?.length ?? 0,
         icon: FileJson,
-        items: (registry?.state_fields ?? []).map(stateFieldItem),
+        items: (registry?.state_modules ?? []).map(stateModuleItem),
+      },
+      {
+        key: "capabilities",
+        label: "Capabilities",
+        count: registry?.capabilities?.length ?? 0,
+        icon: FileJson,
+        items: (registry?.capabilities ?? []).map(capabilityItem),
       },
       {
         key: "schema",
@@ -239,7 +247,7 @@ function nodeTypeItem(item: NodeTypeSchema): RegistryItem {
     title: item.title,
     description: item.description,
     config_schema: item.config_schema,
-    state_contract: item.state_contract,
+    state_ports: item.state_ports,
   };
   const nodeName = item.title?.trim() || "Node";
   return {
@@ -275,6 +283,7 @@ function conditionItem(item: ConditionSchema): RegistryItem {
     title: item.title,
     description: item.description,
     config_schema: item.config_schema,
+    state_ports: item.state_ports,
   };
   const conditionName = item.title?.trim() || "Condition";
   return {
@@ -286,18 +295,21 @@ function conditionItem(item: ConditionSchema): RegistryItem {
   };
 }
 
-function stateFieldItem(item: StateFieldDefinition): RegistryItem {
-  const definition = {
-    name: item.name,
-    description: item.description,
-    schema: item.schema,
-  };
+function stateModuleItem(item: StateModuleDefinition): RegistryItem {
   return {
-    key: `state:${item.name}`,
-    title: item.name,
-    description: item.description,
-    definition,
-    searchText: searchableText(item.name, "", item.description, definition),
+    key: `module:${item.name}:${item.version}`,
+    title: `${item.name}@${item.version}`,
+    definition: item,
+    searchText: searchableText(item.name, item.version, item),
+  };
+}
+
+function capabilityItem(item: StateCapabilityDefinition): RegistryItem {
+  return {
+    key: `capability:${item.id}`,
+    title: item.id,
+    definition: item,
+    searchText: searchableText(item.id, item),
   };
 }
 

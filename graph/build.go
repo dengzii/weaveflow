@@ -30,15 +30,16 @@ func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.G
 
 	graph := NewGraph()
 	graph.setDefinitionMetadata(def)
-	graph.setInitialStatePaths(graphbuild.InitialContractPathsFromStateFields(reg.StateFields))
-
-	contracts, err := graphbuild.ResolveNodeContracts(def, reg)
+	bindings, err := graphbuild.ResolveGraphBindings(def, reg)
 	if err != nil {
 		return nil, err
 	}
-	graph.setNodeContracts(contracts)
+	graph.setInitialStatePaths(bindings.InitialStatePaths)
+	graph.setNodeContracts(bindings.NodeContracts)
+	graph.setConditionContracts(bindings.ConditionContractsBySource)
+	graph.setStateBindingSemantics(graphbuild.StateBindingSemantics(bindings))
 
-	if err := graphbuild.PopulateGraph(graph, reg, def, ctx); err != nil {
+	if err := graphbuild.PopulateGraph(graph, reg, def, ctx, bindings); err != nil {
 		return nil, err
 	}
 	if err := graph.Validate(); err != nil {

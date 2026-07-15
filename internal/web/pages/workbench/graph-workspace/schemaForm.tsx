@@ -4,7 +4,7 @@ import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Textarea } from "../../../components/ui/textarea";
-import { normalizeConfigSchema } from "../../../lib/schemaCompat";
+import { exampleConfigForSchema } from "../../../lib/jsonSchemaDefaults";
 import { cn, stringifyJSON } from "../../../lib/utils";
 import type { ToolDefinition } from "../../../types";
 
@@ -83,6 +83,17 @@ export function validateSchemaValue(
   }
 
   const properties = schemaProperties(schema);
+  if (type === "array" && Array.isArray(value)) {
+    const minItems = typeof schema.minItems === "number" ? schema.minItems : 0;
+    if (value.length < minItems) {
+      issues.push({ path: basePath, message: `Expected at least ${minItems} item${minItems === 1 ? "" : "s"}.` });
+    }
+    if (isRecord(schema.items)) {
+      value.forEach((item, index) => {
+        issues.push(...validateSchemaValue(schema.items, item, joinPath(basePath, String(index))));
+      });
+    }
+  }
   if (properties.length === 0) return issues;
 
   const recordValue = isRecord(value) ? value : {};
@@ -279,6 +290,18 @@ function renderSchemaControl(
     );
   }
 
+  if (type === "array" && isObjectArraySchema(schema)) {
+    return (
+      <ObjectListControl
+        value={value}
+        schema={schema}
+        invalid={invalid}
+        toolDefinitions={toolDefinitions}
+        onChange={onChange}
+      />
+    );
+  }
+
   if (type === "string" && schema["x-control"] === "textarea") {
     return (
       <Textarea
@@ -296,6 +319,74 @@ function renderSchemaControl(
       onChange={(event) => onChange(event.target.value)}
       className={controlClass}
     />
+  );
+}
+
+function ObjectListControl({
+  value,
+  schema,
+  invalid,
+  toolDefinitions,
+  onChange,
+}: {
+  value: unknown;
+  schema: Record<string, unknown>;
+  invalid: boolean;
+  toolDefinitions: ToolDefinition[];
+  onChange: (value: unknown) => void;
+}) {
+  const itemSchema = isRecord(schema.items) ? schema.items : { type: "object", properties: {} };
+  const values = Array.isArray(value) ? value.map((item) => (isRecord(item) ? item : {})) : [];
+  const itemLabel =
+    typeof schema["x-item-title"] === "string" && schema["x-item-title"].trim()
+      ? schema["x-item-title"].trim()
+      : "Item";
+
+  function updateItem(index: number, item: Record<string, unknown>) {
+    onChange(values.map((current, currentIndex) => (currentIndex === index ? item : current)));
+  }
+
+  function removeItem(index: number) {
+    onChange(values.filter((_, currentIndex) => currentIndex !== index));
+  }
+
+  function addItem() {
+    onChange([...values, exampleConfigForSchema(itemSchema)]);
+  }
+
+  return (
+    <div className={cn("grid gap-2", invalid && "rounded-md border border-destructive/70 p-2")}>
+      {values.map((item, index) => (
+        <div key={index} className="grid gap-2 border-l-2 border-border pl-3">
+          <div className="flex h-7 items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground">{itemLabel} {index + 1}</span>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="ml-auto h-7 w-7"
+              title={`Remove ${itemLabel.toLowerCase()}`}
+              onClick={() => removeItem(index)}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          </div>
+          <JsonSchemaForm
+            schema={itemSchema}
+            value={item}
+            toolDefinitions={toolDefinitions}
+            onChange={(nextItem) => updateItem(index, nextItem)}
+          />
+        </div>
+      ))}
+      {values.length === 0 ? <span className="text-xs text-muted-foreground">No items configured.</span> : null}
+      <div>
+        <Button type="button" variant="outline" size="sm" onClick={addItem}>
+          <Plus className="h-3.5 w-3.5" />
+          Add {itemLabel}
+        </Button>
+      </div>
+    </div>
   );
 }
 
@@ -508,11 +599,20 @@ function isStringArraySchema(schema: Record<string, unknown>): boolean {
   return schemaType(schema.items, undefined) === "string";
 }
 
+function normalizeConfigSchema(schema: unknown): Record<string, unknown> | undefined {
+  return isRecord(schema) ? schema : undefined;
+}
+
+function isObjectArraySchema(schema: Record<string, unknown>): boolean {
+  if (!isRecord(schema.items)) return false;
+  return schema["x-control"] === "object-list" || schemaType(schema.items, undefined) === "object";
+}
+
 function isToolIDsField(path: string, name: string): boolean {
   const normalizedName = name.trim().toLowerCase();
-  if (normalizedName === "tool_ids" || normalizedName === "tools_ids") return true;
+  if (normalizedName === "tool_ids") return true;
   const parts = path.split(".").map((part) => part.trim().toLowerCase()).filter(Boolean);
-  return parts.at(-1) === "tool_ids" || parts.at(-1) === "tools_ids";
+  return parts.at(-1) === "tool_ids";
 }
 
 function requiredKeys(schema: Record<string, unknown>): string[] {

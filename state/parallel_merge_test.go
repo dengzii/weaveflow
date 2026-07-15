@@ -25,7 +25,7 @@ func TestMergeParallelPatchesAppendsInDeterministicBranchOrder(t *testing.T) {
 		t.Fatalf("merge parallel patches: %v", err)
 	}
 
-	itemsValue, ok := NewAccess(nil, merged).ReadAny(Shared("items"))
+	itemsValue, ok := NewAccess(merged).ReadAny(Shared("items"))
 	if !ok {
 		t.Fatal("expected merged items")
 	}
@@ -68,7 +68,7 @@ func TestMergeParallelPatchesMergesDisjointObjectKeys(t *testing.T) {
 		t.Fatalf("merge parallel patches: %v", err)
 	}
 
-	metaValue, ok := NewAccess(nil, merged).ReadAny(Shared("meta"))
+	metaValue, ok := NewAccess(merged).ReadAny(Shared("meta"))
 	if !ok {
 		t.Fatal("expected merged meta")
 	}
@@ -120,7 +120,7 @@ func TestMergeParallelPatchesAllowsIdenticalSetWrites(t *testing.T) {
 		t.Fatalf("merge parallel patches: %v", err)
 	}
 
-	status, ok := NewAccess(nil, merged).ReadAny(Shared("status"))
+	status, ok := NewAccess(merged).ReadAny(Shared("status"))
 	if !ok || status != "ready" {
 		t.Fatalf("expected ready status, got %#v ok=%v", status, ok)
 	}

@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -83,10 +84,10 @@ func TestGraphDefinitionPreservesMetadata(t *testing.T) {
 
 	g := newTestGraph(t, "input")
 	g.setDefinitionMetadata(dsl.GraphDefinition{
-		Version:     "1.0",
-		Name:        "debug_graph",
-		Description: "debug description",
-		StateSchema: dsl.CommonStateSchemaID,
+		Version:      dsl.GraphDefinitionVersion,
+		Name:         "debug_graph",
+		Description:  "debug description",
+		StateModules: []dsl.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
 		Metadata: map[string]any{
 			"web": map[string]any{
 				"positions": map[string]any{
@@ -156,7 +157,7 @@ func TestResolveNextNodesConditionalMatchingFallbackAndErrors(t *testing.T) {
 
 	g := newTestGraph(t, "router", "matched", "fallback")
 	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
-		value, ok := state.NewAccess(nil, current).ReadAny(state.Shared("route"))
+		value, ok := state.NewAccess(current).ReadAny(state.Shared("route"))
 		return ok && value == "matched"
 	})
 	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
@@ -214,7 +215,7 @@ func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 		t.Fatalf("set entry: %v", err)
 	}
 	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
-		value, ok := state.NewAccess(nil, current).ReadAny(state.Shared("route"))
+		value, ok := state.NewAccess(current).ReadAny(state.Shared("route"))
 		return ok && value == "matched"
 	})
 	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
@@ -256,8 +257,8 @@ func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 		t.Fatalf("run status = %q, want completed", run.Status)
 	}
 
-	graphResult, graphOK := state.NewAccess(nil, graphState).ReadAny(state.Shared("result"))
-	runnerResult, runnerOK := state.NewAccess(nil, runnerState).ReadAny(state.Shared("result"))
+	graphResult, graphOK := state.NewAccess(graphState).ReadAny(state.Shared("result"))
+	runnerResult, runnerOK := state.NewAccess(runnerState).ReadAny(state.Shared("result"))
 	if !graphOK || !runnerOK || graphResult != runnerResult || graphResult != "matched" {
 		t.Fatalf("graph result=%#v ok=%v runner result=%#v ok=%v", graphResult, graphOK, runnerResult, runnerOK)
 	}
@@ -304,6 +305,71 @@ func TestGraphRunAndRunnerStartContractWriteBehaviorAgree(t *testing.T) {
 	}
 	if run.Status != fruntime.RunStatusFailed {
 		t.Fatalf("run status = %q, want failed", run.Status)
+	}
+}
+
+func TestResolvedContractsProjectNodeInputAndPreserveUnboundState(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "worker", func(_ context.Context, access *state.Access) error {
+		if _, ok := access.ReadAny(state.Shared("secret")); ok {
+			return fmt.Errorf("unbound secret was visible")
+		}
+		value, ok := access.ReadAny(state.Shared("allowed"))
+		if !ok {
+			return fmt.Errorf("allowed input is missing")
+		}
+		return access.SetAny(state.Shared("result"), value)
+	})
+	if err := g.SetEntryPoint("worker"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.AddEdge("worker", EndNodeRef); err != nil {
+		t.Fatalf("add worker -> end: %v", err)
+	}
+	g.setInitialStatePaths([]string{"shared.allowed"})
+	g.setNodeContracts(map[string]state.Contract{
+		"worker": state.NewContract(
+			state.FieldAccess{Path: state.Shared("allowed"), Mode: state.AccessRead, Required: true, Merge: state.MergeReplace},
+			state.FieldAccess{Path: state.Shared("result"), Mode: state.AccessWrite, Merge: state.MergeReplace},
+		),
+	})
+	initial := state.FromShared(map[string]any{"allowed": "visible", "secret": "hidden"})
+
+	finalState, err := g.Run(context.Background(), initial)
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	access := state.NewAccess(finalState)
+	if result, ok := access.ReadAny(state.Shared("result")); !ok || result != "visible" {
+		t.Fatalf("result = %#v ok=%v", result, ok)
+	}
+	if secret, ok := access.ReadAny(state.Shared("secret")); !ok || secret != "hidden" {
+		t.Fatalf("unbound state was not preserved: secret=%#v ok=%v", secret, ok)
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	if runner.ContractValidation != core.ContractValidationStrict {
+		t.Fatalf("runner contract validation = %q, want strict", runner.ContractValidation)
+	}
+	_, runnerState, err := runner.Start(context.Background(), initial)
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	runnerAccess := state.NewAccess(runnerState)
+	if result, ok := runnerAccess.ReadAny(state.Shared("result")); !ok || result != "visible" {
+		t.Fatalf("runner result = %#v ok=%v", result, ok)
+	}
+	if secret, ok := runnerAccess.ReadAny(state.Shared("secret")); !ok || secret != "hidden" {
+		t.Fatalf("runner unbound state was not preserved: secret=%#v ok=%v", secret, ok)
 	}
 }
 
@@ -504,7 +570,7 @@ func TestFanOutFanInCompile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run fan-out/fan-in graph: %v", err)
 	}
-	count, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("branch_count"))
+	count, ok := state.NewAccess(finalState).ReadAny(state.Shared("branch_count"))
 	if !ok || count != 2 {
 		t.Fatalf("expected collector to see two branches, got %#v ok=%v", count, ok)
 	}

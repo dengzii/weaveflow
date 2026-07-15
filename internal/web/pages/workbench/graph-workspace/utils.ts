@@ -1,15 +1,33 @@
 import type { VirtualGraphEdge } from "../../../components/GraphCanvas";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId } from "../../../lib/graphEditor";
 import { parseJSON } from "../../../lib/utils";
-import type { GraphDefinition, GraphNodeSpec, NodeTypeSchema } from "../../../types";
+import type { GraphDefinition, GraphNodeSpec, NodeTypeSchema, RegistryInfo } from "../../../types";
 import { fallbackNodeTypes } from "./constants";
 import type { VirtualNodeKind } from "./types";
 
-export function validateGraph(definition: GraphDefinition | null): string {
+export function validateGraph(definition: GraphDefinition | null, registry?: RegistryInfo | null): string {
   if (!definition) return "invalid json";
+  if (definition.version !== "2.0") return "version must be 2.0";
+  if ((definition.state_modules ?? []).length === 0) return "state modules required";
   if (definition.nodes.length === 0) return "no nodes";
   const nodeIds = new Set(definition.nodes.map((node) => node.id));
   if (definition.nodes.some((node) => !node.id || !node.type)) return "node required";
+  for (const node of definition.nodes) {
+    const nodeType = registry?.node_types.find((item) => item.type === node.type);
+    for (const port of nodeType?.state_ports ?? []) {
+      if (port.required && !node.state?.[port.name]?.path.trim()) {
+        return `node ${node.id} requires state binding ${port.name}`;
+      }
+    }
+    if (node.type === "conversation_input") {
+      const content = typeof node.config?.content === "string" ? node.config.content.trim() : "";
+      const inputPath = node.state?.input?.path.trim() ?? "";
+      const pendingInputPath = node.state?.pending_input?.path.trim() ?? "";
+      if (!content && !inputPath && !pendingInputPath) {
+        return `node ${node.id} requires state binding pending_input when content and input are empty`;
+      }
+    }
+  }
   if (nodeIds.size !== definition.nodes.length) return "duplicate nodes";
   if (definition.entry_point && !nodeIds.has(definition.entry_point)) return "missing entry";
   if (definition.finish_point && !nodeIds.has(definition.finish_point)) return "missing finish";
@@ -21,6 +39,14 @@ export function validateGraph(definition: GraphDefinition | null): string {
     edgePairs.add(edgeKey);
     if (!nodeIds.has(edge.from)) return "missing source";
     if (edge.to !== END_NODE_REF && !nodeIds.has(edge.to)) return "missing target";
+    if (edge.condition) {
+      const condition = registry?.conditions.find((item) => item.type === edge.condition?.type);
+      for (const port of condition?.state_ports ?? []) {
+        if (port.required && !edge.condition.state?.[port.name]?.path.trim()) {
+          return `condition ${edge.condition.type} requires state binding ${port.name}`;
+        }
+      }
+    }
   }
   return "";
 }

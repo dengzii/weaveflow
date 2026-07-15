@@ -53,7 +53,7 @@ func TestNewRunnerAppliesDefaults(t *testing.T) {
 	if run.Status != RunStatusCompleted {
 		t.Fatalf("run status = %q, want completed", run.Status)
 	}
-	value, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("ok"))
+	value, ok := state.NewAccess(finalState).ReadAny(state.Shared("ok"))
 	if !ok || value != true {
 		t.Fatalf("final state ok = %#v, present=%v", value, ok)
 	}

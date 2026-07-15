@@ -5,34 +5,27 @@ import (
 	"encoding/json"
 	"fmt"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 )
 
 func executeNode(ctx context.Context, targetNode node.Node, currentState *state.State) (*state.State, error) {
-	registry, err := node.NewDefaultRegistry()
-	if err != nil {
-		return currentState, err
-	}
-	result, err := node.Execute(ctx, registry, currentState, targetNode)
+	result, err := node.Execute(ctx, currentState, targetNode)
 	if err != nil {
 		return currentState, err
 	}
 	return result.State, nil
 }
 
-func conversation(currentState *state.State, scope string) accessors.Conversation {
-	registry, err := node.NewDefaultRegistry()
-	must(err)
-	access := state.NewAccess(registry, currentState).WithScope(scope)
-	conversation, err := state.UseAccessor(access, accessors.ConversationID)
+func conversation(currentState *state.State, path state.Path) *conversationcap.View {
+	conversation, err := conversationcap.Bind(state.NewAccess(currentState), path)
 	must(err)
 	return conversation
 }
 
 func readState(currentState *state.State, path state.Path) (any, bool) {
-	return state.NewAccess(nil, currentState).ReadAny(path)
+	return state.NewAccess(currentState).ReadAny(path)
 }
 
 func printJSON(value any) {

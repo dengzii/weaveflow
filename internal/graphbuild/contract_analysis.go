@@ -11,12 +11,13 @@ import (
 )
 
 type ContractAnalysisGraph struct {
-	EntryPoint        string
-	EndNode           string
-	InitialStatePaths []string
-	Edges             map[string][]string
-	ConditionalEdges  map[string][]string
-	NodeContracts     map[string]state.Contract
+	EntryPoint         string
+	EndNode            string
+	InitialStatePaths  []string
+	Edges              map[string][]string
+	ConditionalEdges   map[string][]string
+	NodeContracts      map[string]state.Contract
+	ConditionContracts map[string]state.Contract
 }
 
 func AnalyzeContractDiagnostics(input ContractAnalysisGraph) []core.ContractDiagnostic {
@@ -36,6 +37,7 @@ func AnalyzeContractDiagnostics(input ContractAnalysisGraph) []core.ContractDiag
 	diagnostics = append(diagnostics, wildcardContractDiagnostics(input, reachable)...)
 	diagnostics = append(diagnostics, overlappingWriteDiagnostics(input, reachable)...)
 	diagnostics = append(diagnostics, requiredReadDiagnostics(input, reachable, ancestors)...)
+	diagnostics = append(diagnostics, requiredConditionReadDiagnostics(input, reachable, ancestors)...)
 
 	sort.SliceStable(diagnostics, func(i, j int) bool {
 		left := diagnostics[i]
@@ -86,6 +88,25 @@ func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialSt
 			switch {
 			case len(sources) == 0:
 				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("node %q requires input path %q but no initial input or upstream writer can provide it", nodeID, path))
+			case len(graphSources) > 0:
+				addInitialStateRequirement(provided, path, nodeID, graphSources, field, "")
+			default:
+				addInitialStateRequirement(required, path, nodeID, nil, field, "")
+			}
+		}
+	}
+	for _, nodeID := range reachable {
+		contract, ok := input.ConditionContracts[nodeID]
+		if !ok || contract.WildcardRead {
+			continue
+		}
+		for _, field := range requiredReadFields(contract) {
+			path := field.Path.String()
+			sources := requiredConditionReadSources(input, nodeID, path, ancestors[nodeID])
+			graphSources := nonInputSources(sources)
+			switch {
+			case len(sources) == 0:
+				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("condition after node %q requires path %q but no initial input or upstream writer can provide it", nodeID, path))
 			case len(graphSources) > 0:
 				addInitialStateRequirement(provided, path, nodeID, graphSources, field, "")
 			default:
@@ -418,12 +439,15 @@ func overlappingWriteDiagnostics(input ContractAnalysisGraph, reachable []string
 				if !ok {
 					continue
 				}
-				overlapPath, ok := overlappingWritePath(left, right)
+				overlapPath, compatible, ok := overlappingWritePath(left, right)
 				if !ok {
 					continue
 				}
+				if compatible {
+					continue
+				}
 				diagnostics = append(diagnostics, core.ContractDiagnostic{
-					Severity:    core.ContractDiagnosticSeverityWarning,
+					Severity:    core.ContractDiagnosticSeverityError,
 					Kind:        "overlapping_write",
 					NodeID:      leftID,
 					OtherNodeID: rightID,
@@ -442,59 +466,144 @@ func analysisParallelWaves(input ContractAnalysisGraph, reachable []string) [][]
 		reachableSet[nodeID] = struct{}{}
 	}
 
-	waves := make([][]string, 0)
-	addWave := func(targets []string) {
-		if len(targets) <= 1 {
-			return
-		}
-		seen := map[string]struct{}{}
-		wave := make([]string, 0, len(targets))
-		for _, target := range targets {
-			if isAnalysisEndTarget(input, target) {
-				continue
-			}
-			if _, ok := reachableSet[target]; !ok {
-				continue
-			}
-			if _, ok := seen[target]; ok {
-				continue
-			}
-			seen[target] = struct{}{}
-			wave = append(wave, target)
-		}
-		if len(wave) <= 1 {
-			return
-		}
-		waves = append(waves, wave)
+	if _, ok := reachableSet[input.EntryPoint]; !ok {
+		return nil
 	}
 
-	for _, from := range reachable {
-		if len(input.ConditionalEdges[from]) > 0 {
+	waves := make([][]string, 0)
+	queue := [][]string{{input.EntryPoint}}
+	visited := map[string]struct{}{}
+	for len(queue) > 0 {
+		frontier := queue[0]
+		queue = queue[1:]
+		frontier = normalizeAnalysisFrontier(frontier, input, reachableSet)
+		if len(frontier) == 0 {
 			continue
 		}
-		addWave(input.Edges[from])
+		key := strings.Join(frontier, "\x00")
+		if _, ok := visited[key]; ok {
+			continue
+		}
+		visited[key] = struct{}{}
+		if len(frontier) > 1 {
+			waves = append(waves, append([]string(nil), frontier...))
+		}
+		queue = append(queue, nextAnalysisFrontiers(input, frontier, reachableSet)...)
 	}
 	return waves
 }
 
-func overlappingWritePath(left, right state.Contract) (string, bool) {
-	if left.WildcardWrite || right.WildcardWrite {
-		return "*", true
+func nextAnalysisFrontiers(input ContractAnalysisGraph, frontier []string, reachable map[string]struct{}) [][]string {
+	combinations := [][]string{{}}
+	for _, nodeID := range frontier {
+		options := analysisNodeNextOptions(input, nodeID, reachable)
+		if len(options) == 0 {
+			options = [][]string{{}}
+		}
+		next := make([][]string, 0, len(combinations)*len(options))
+		for _, prefix := range combinations {
+			for _, option := range options {
+				combined := append(append([]string(nil), prefix...), option...)
+				next = append(next, combined)
+			}
+		}
+		combinations = next
 	}
-	for _, leftPath := range pathStrings(left.WritePaths()) {
-		for _, rightPath := range pathStrings(right.WritePaths()) {
+
+	seen := map[string]struct{}{}
+	result := make([][]string, 0, len(combinations))
+	for _, combination := range combinations {
+		normalized := normalizeAnalysisFrontier(combination, input, reachable)
+		if len(normalized) == 0 {
+			continue
+		}
+		key := strings.Join(normalized, "\x00")
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, normalized)
+	}
+	return result
+}
+
+func analysisNodeNextOptions(input ContractAnalysisGraph, nodeID string, reachable map[string]struct{}) [][]string {
+	conditional := input.ConditionalEdges[nodeID]
+	if len(conditional) > 0 {
+		options := make([][]string, 0, len(conditional)+len(input.Edges[nodeID]))
+		for _, target := range append(append([]string(nil), conditional...), input.Edges[nodeID]...) {
+			normalized := normalizeAnalysisFrontier([]string{target}, input, reachable)
+			if len(normalized) > 0 {
+				options = append(options, normalized)
+			} else {
+				options = append(options, []string{})
+			}
+		}
+		return options
+	}
+	return [][]string{normalizeAnalysisFrontier(input.Edges[nodeID], input, reachable)}
+}
+
+func normalizeAnalysisFrontier(frontier []string, input ContractAnalysisGraph, reachable map[string]struct{}) []string {
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(frontier))
+	for _, nodeID := range frontier {
+		if isAnalysisEndTarget(input, nodeID) {
+			continue
+		}
+		if _, ok := reachable[nodeID]; !ok {
+			continue
+		}
+		if _, ok := seen[nodeID]; ok {
+			continue
+		}
+		seen[nodeID] = struct{}{}
+		normalized = append(normalized, nodeID)
+	}
+	sort.Strings(normalized)
+	return normalized
+}
+
+func overlappingWritePath(left, right state.Contract) (string, bool, bool) {
+	if left.WildcardWrite || right.WildcardWrite {
+		return "*", false, true
+	}
+	for _, leftField := range writeFields(left) {
+		leftPath := leftField.Path.String()
+		for _, rightField := range writeFields(right) {
+			rightPath := rightField.Path.String()
 			if leftPath == rightPath {
-				return leftPath, true
+				leftMerge := effectiveAnalysisMerge(leftField.Merge)
+				rightMerge := effectiveAnalysisMerge(rightField.Merge)
+				compatible := leftMerge == rightMerge && (leftMerge == state.MergeAppend || leftMerge == state.MergeMerge)
+				return leftPath, compatible, true
 			}
 			if strings.HasPrefix(leftPath, rightPath+".") {
-				return rightPath, true
+				return rightPath, false, true
 			}
 			if strings.HasPrefix(rightPath, leftPath+".") {
-				return leftPath, true
+				return leftPath, false, true
 			}
 		}
 	}
-	return "", false
+	return "", false, false
+}
+
+func writeFields(contract state.Contract) []state.FieldAccess {
+	fields := make([]state.FieldAccess, 0)
+	for _, field := range contract.Fields {
+		if field.Mode == state.AccessWrite || field.Mode == state.AccessReadWrite {
+			fields = append(fields, field)
+		}
+	}
+	return fields
+}
+
+func effectiveAnalysisMerge(strategy state.MergeStrategy) state.MergeStrategy {
+	if strategy == "" {
+		return state.MergeReplace
+	}
+	return strategy
 }
 
 func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, ancestors map[string]map[string]struct{}) []core.ContractDiagnostic {
@@ -565,10 +674,50 @@ func requiredReadSources(input ContractAnalysisGraph, nodeID string, path string
 		}
 	}
 
-	if len(sources) == 0 && pathMayBeProvidedByInitialState(path) {
-		sources = append(sources, "input")
-	}
+	return compactStrings(sources)
+}
 
+func requiredConditionReadDiagnostics(input ContractAnalysisGraph, reachable []string, ancestors map[string]map[string]struct{}) []core.ContractDiagnostic {
+	diagnostics := make([]core.ContractDiagnostic, 0)
+	for _, nodeID := range reachable {
+		contract, ok := input.ConditionContracts[nodeID]
+		if !ok || contract.WildcardRead {
+			continue
+		}
+		for _, field := range requiredReadFields(contract) {
+			path := field.Path.String()
+			if sources := requiredConditionReadSources(input, nodeID, path, ancestors[nodeID]); len(sources) == 0 {
+				diagnostics = append(diagnostics, core.ContractDiagnostic{
+					Severity: core.ContractDiagnosticSeverityError, Kind: "missing_condition_read", NodeID: nodeID, Path: path,
+					Message: fmt.Sprintf("condition after node %q requires path %q but no initial input or upstream writer can provide it", nodeID, path),
+				})
+			}
+		}
+	}
+	return diagnostics
+}
+
+func requiredConditionReadSources(input ContractAnalysisGraph, nodeID string, path string, ancestors map[string]struct{}) []string {
+	sources := make([]string, 0)
+	for _, initialPath := range input.InitialStatePaths {
+		if sourceProvidesRead(initialPath, path) {
+			sources = append(sources, "input")
+			break
+		}
+	}
+	if contract, ok := input.NodeContracts[nodeID]; ok && contractProvidesRead(contract, path) {
+		sources = append(sources, nodeID)
+	}
+	ancestorIDs := make([]string, 0, len(ancestors))
+	for ancestorID := range ancestors {
+		ancestorIDs = append(ancestorIDs, ancestorID)
+	}
+	sort.Strings(ancestorIDs)
+	for _, ancestorID := range ancestorIDs {
+		if contract, ok := input.NodeContracts[ancestorID]; ok && contractProvidesRead(contract, path) {
+			sources = append(sources, ancestorID)
+		}
+	}
 	return compactStrings(sources)
 }
 
@@ -606,22 +755,6 @@ func sourceProvidesRead(sourcePath string, readPath string) bool {
 		return true
 	}
 	return sourcePath == readPath || strings.HasPrefix(readPath, sourcePath+".")
-}
-
-func pathMayBeProvidedByInitialState(path string) bool {
-	path = strings.TrimSpace(path)
-	switch {
-	case path == "", path == "*":
-		return false
-	case path == "shared" || strings.HasPrefix(path, "shared."):
-		return true
-	case strings.HasPrefix(path, "scopes."):
-		return true
-	case path == "internal" || strings.HasPrefix(path, "internal."):
-		return true
-	default:
-		return false
-	}
 }
 
 func compactStrings(values []string) []string {

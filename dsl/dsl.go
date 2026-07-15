@@ -1,8 +1,10 @@
 package dsl
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -27,13 +29,36 @@ func (r JSONSchema) WriteToFile(path string) error {
 	return err
 }
 
-const GraphDefinitionVersion = "1.0"
-const CommonStateSchemaID = "weaveflow.state.v2"
+const GraphDefinitionVersion = "2.0"
 
 type StateFieldDefinition struct {
-	Name        string     `json:"name"`
+	Path        string     `json:"path"`
 	Description string     `json:"description,omitempty"`
 	Schema      JSONSchema `json:"schema"`
+}
+
+type StateCapabilityFieldDefinition struct {
+	Name          string             `json:"name"`
+	Schema        JSONSchema         `json:"schema"`
+	MergeStrategy StateMergeStrategy `json:"merge_strategy,omitempty"`
+}
+
+type StateCapabilityDefinition struct {
+	ID     string                           `json:"id"`
+	Schema JSONSchema                       `json:"schema"`
+	Fields []StateCapabilityFieldDefinition `json:"fields"`
+}
+
+type StateModuleDefinition struct {
+	Name         string                      `json:"name"`
+	Version      string                      `json:"version"`
+	Fields       []StateFieldDefinition      `json:"fields,omitempty"`
+	Capabilities []StateCapabilityDefinition `json:"capabilities,omitempty"`
+}
+
+type StateModuleRef struct {
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 type GraphNodeSpecProvider interface {
@@ -41,6 +66,7 @@ type GraphNodeSpecProvider interface {
 }
 
 type GraphConditionSpec = core.GraphConditionSpec
+type StateBinding = core.StateBinding
 
 type GraphEdgeSpec struct {
 	From      string              `json:"from"`
@@ -49,15 +75,15 @@ type GraphEdgeSpec struct {
 }
 
 type GraphDefinition struct {
-	Version     string          `json:"version"`
-	Name        string          `json:"name,omitempty"`
-	Description string          `json:"description,omitempty"`
-	StateSchema string          `json:"state_schema,omitempty"`
-	EntryPoint  string          `json:"entry_point,omitempty"`
-	FinishPoint string          `json:"finish_point,omitempty"`
-	Nodes       []GraphNodeSpec `json:"nodes"`
-	Edges       []GraphEdgeSpec `json:"edges,omitempty"`
-	Metadata    map[string]any  `json:"metadata,omitempty"`
+	Version      string           `json:"version"`
+	Name         string           `json:"name,omitempty"`
+	Description  string           `json:"description,omitempty"`
+	StateModules []StateModuleRef `json:"state_modules"`
+	EntryPoint   string           `json:"entry_point,omitempty"`
+	FinishPoint  string           `json:"finish_point,omitempty"`
+	Nodes        []GraphNodeSpec  `json:"nodes"`
+	Edges        []GraphEdgeSpec  `json:"edges,omitempty"`
+	Metadata     map[string]any   `json:"metadata,omitempty"`
 }
 
 func NormalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
@@ -65,11 +91,19 @@ func NormalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
 }
 
 func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
-	if def.Version == "" {
-		def.Version = GraphDefinitionVersion
+	if len(def.StateModules) > 0 {
+		def.StateModules = append([]StateModuleRef(nil), def.StateModules...)
 	}
-	if def.StateSchema == "" {
-		def.StateSchema = CommonStateSchemaID
+	if len(def.Nodes) > 0 {
+		def.Nodes = append([]GraphNodeSpec(nil), def.Nodes...)
+	}
+	if len(def.Edges) > 0 {
+		def.Edges = append([]GraphEdgeSpec(nil), def.Edges...)
+	}
+	def.Version = strings.TrimSpace(def.Version)
+	for i := range def.StateModules {
+		def.StateModules[i].Name = strings.TrimSpace(def.StateModules[i].Name)
+		def.StateModules[i].Version = strings.TrimSpace(def.StateModules[i].Version)
 	}
 	for i := range def.Nodes {
 		def.Nodes[i].ID = strings.TrimSpace(def.Nodes[i].ID)
@@ -77,6 +111,16 @@ func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 		def.Nodes[i].Type = strings.TrimSpace(def.Nodes[i].Type)
 		if def.Nodes[i].Name == "" && def.Nodes[i].ID != "" {
 			def.Nodes[i].Name = def.Nodes[i].ID
+		}
+		if def.Nodes[i].State == nil {
+			def.Nodes[i].State = map[string]StateBinding{}
+		} else {
+			bindings := make(map[string]StateBinding, len(def.Nodes[i].State))
+			for name, binding := range def.Nodes[i].State {
+				binding.Path = strings.TrimSpace(binding.Path)
+				bindings[name] = binding
+			}
+			def.Nodes[i].State = bindings
 		}
 	}
 	for i := range def.Edges {
@@ -92,6 +136,23 @@ func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 
 func (d GraphDefinition) Validate() error {
 	def := NormalizeGraphDefinition(d)
+	if def.Version != GraphDefinitionVersion {
+		return fmt.Errorf("graph definition version must be %q, got %q", GraphDefinitionVersion, def.Version)
+	}
+	if len(def.StateModules) == 0 {
+		return fmt.Errorf("graph definition must include at least one state module")
+	}
+	moduleRefs := map[string]struct{}{}
+	for _, module := range def.StateModules {
+		if module.Name == "" || module.Version == "" {
+			return fmt.Errorf("graph state module name and version are required")
+		}
+		key := module.Name + "\x00" + module.Version
+		if _, exists := moduleRefs[key]; exists {
+			return fmt.Errorf("graph state module %q version %q is duplicated", module.Name, module.Version)
+		}
+		moduleRefs[key] = struct{}{}
+	}
 
 	if len(def.Nodes) == 0 {
 		return fmt.Errorf("graph definition must include at least one nodes")
@@ -156,7 +217,15 @@ func (d GraphDefinition) Serialize() ([]byte, error) {
 
 func DeserializeGraphDefinition(data []byte) (GraphDefinition, error) {
 	var def GraphDefinition
-	if err := json.Unmarshal(data, &def); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&def); err != nil {
+		return GraphDefinition{}, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return GraphDefinition{}, fmt.Errorf("graph definition contains multiple JSON values")
+		}
 		return GraphDefinition{}, err
 	}
 	def = NormalizeGraphDefinition(def)

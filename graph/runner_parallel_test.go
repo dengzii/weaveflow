@@ -68,7 +68,7 @@ func TestRunnerParallelFanOutFanInRecordsBranchSteps(t *testing.T) {
 	if run.Status != fruntime.RunStatusCompleted {
 		t.Fatalf("run status = %q, want completed", run.Status)
 	}
-	count, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("branch_count"))
+	count, ok := state.NewAccess(finalState).ReadAny(state.Shared("branch_count"))
 	if !ok || count != 2 {
 		t.Fatalf("expected collector to see two branches, got %#v ok=%v", count, ok)
 	}
@@ -216,7 +216,7 @@ func TestRunnerParallelResumeFromBarrierContinuesToCollector(t *testing.T) {
 	if resumedRun.Status != fruntime.RunStatusCompleted {
 		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
 	}
-	count, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("branch_count"))
+	count, ok := state.NewAccess(resumedState).ReadAny(state.Shared("branch_count"))
 	if !ok || count != 2 {
 		t.Fatalf("expected resumed collector to see two branches, got %#v ok=%v", count, ok)
 	}
@@ -277,7 +277,7 @@ func TestRunnerSequentialResumeFromAfterNodeStillWorks(t *testing.T) {
 	if resumedRun.Status != fruntime.RunStatusCompleted {
 		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
 	}
-	value, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("b"))
+	value, ok := state.NewAccess(resumedState).ReadAny(state.Shared("b"))
 	if !ok || value != true {
 		t.Fatalf("expected resumed run to execute b, got %#v ok=%v", value, ok)
 	}
@@ -300,7 +300,7 @@ func TestRunnerResumeFromAfterNodeUsesActualConditionalRouting(t *testing.T) {
 		t.Fatalf("set entry: %v", err)
 	}
 	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
-		value, ok := state.NewAccess(nil, current).ReadAny(state.Shared("route"))
+		value, ok := state.NewAccess(current).ReadAny(state.Shared("route"))
 		return ok && value == "right"
 	})
 	if err := g.AddConditionalEdge("router", "right", condition); err != nil {
@@ -351,7 +351,7 @@ func TestRunnerResumeFromAfterNodeUsesActualConditionalRouting(t *testing.T) {
 	if resumedRun.Status != fruntime.RunStatusCompleted {
 		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
 	}
-	visited, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("visited"))
+	visited, ok := state.NewAccess(resumedState).ReadAny(state.Shared("visited"))
 	if !ok || visited != "right" {
 		t.Fatalf("expected resumed run to route to right, got %#v ok=%v", visited, ok)
 	}
@@ -402,7 +402,7 @@ func TestRunnerParallelFanOutToEndLeavesLastCheckpointAtBarrier(t *testing.T) {
 	if run.Status != fruntime.RunStatusCompleted {
 		t.Fatalf("run status = %q, want completed", run.Status)
 	}
-	branches, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("branches"))
+	branches, ok := state.NewAccess(finalState).ReadAny(state.Shared("branches"))
 	items, _ := branches.([]any)
 	if !ok || len(items) != 2 {
 		t.Fatalf("expected merged branches, got %#v ok=%v", branches, ok)
@@ -444,7 +444,7 @@ func TestRunnerParallelBarrierNextNodeIDsUseActualConditionalRouting(t *testing.
 	}
 	conditionFor := func(branchID string) registry.EdgeCondition {
 		return registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
-			value, ok := state.NewAccess(nil, current).ReadAny(state.Scope(branchID, "route"))
+			value, ok := state.NewAccess(current).ReadAny(state.Scope(branchID, "route"))
 			return ok && value == "right"
 		})
 	}
@@ -518,7 +518,7 @@ func TestRunnerParallelBarrierNextNodeIDsUseActualConditionalRouting(t *testing.
 	if resumedRun.Status != fruntime.RunStatusCompleted {
 		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
 	}
-	visited, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("visited"))
+	visited, ok := state.NewAccess(resumedState).ReadAny(state.Shared("visited"))
 	items, _ := visited.([]any)
 	if !ok || len(items) != 2 {
 		t.Fatalf("expected resumed run to visit both routed collectors, got %#v ok=%v", visited, ok)
@@ -866,7 +866,7 @@ func TestRunnerParallelResumeFromBeforeBreakpointPreservesSiblingOutput(t *testi
 	if err != nil {
 		t.Fatalf("load pause checkpoint: %v", err)
 	}
-	branches, ok := state.NewAccess(nil, restored.Business).ReadAny(state.Shared("branches"))
+	branches, ok := state.NewAccess(restored.Business).ReadAny(state.Shared("branches"))
 	items, _ := branches.([]any)
 	if !ok || len(items) != 1 || items[0] != "b" {
 		t.Fatalf("expected paused checkpoint to preserve sibling b output, got %#v ok=%v", branches, ok)
@@ -879,7 +879,7 @@ func TestRunnerParallelResumeFromBeforeBreakpointPreservesSiblingOutput(t *testi
 	if resumedRun.Status != fruntime.RunStatusCompleted {
 		t.Fatalf("resumed status = %q, want completed", resumedRun.Status)
 	}
-	count, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("branch_count"))
+	count, ok := state.NewAccess(resumedState).ReadAny(state.Shared("branch_count"))
 	if !ok || count != 2 {
 		t.Fatalf("expected collector to see both branches after resume, got %#v ok=%v", count, ok)
 	}
@@ -943,7 +943,7 @@ func TestRunnerParallelExternalPauseStopsAtBarrier(t *testing.T) {
 	if got := atomic.LoadInt32(collectorCalls); got != 1 {
 		t.Fatalf("collector calls after resume = %d, want 1", got)
 	}
-	count, ok := state.NewAccess(nil, resumedState).ReadAny(state.Shared("branch_count"))
+	count, ok := state.NewAccess(resumedState).ReadAny(state.Shared("branch_count"))
 	if !ok || count != 2 {
 		t.Fatalf("expected resumed collector to see two branches, got %#v ok=%v", count, ok)
 	}
@@ -1301,7 +1301,7 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 	if gotACalls != 1 || gotBCalls != 2 {
 		t.Fatalf("expected a once and b twice, got a=%d b=%d", gotACalls, gotBCalls)
 	}
-	branches, ok := state.NewAccess(nil, finalState).ReadAny(state.Shared("branches"))
+	branches, ok := state.NewAccess(finalState).ReadAny(state.Shared("branches"))
 	items, _ := branches.([]any)
 	if !ok || len(items) != 2 {
 		t.Fatalf("expected two merged branches after retry, got %#v ok=%v", branches, ok)

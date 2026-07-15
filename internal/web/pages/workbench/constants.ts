@@ -4,16 +4,21 @@ export const workspaceTabs = ["graph", "settings"] as const;
 export type WorkspaceTab = (typeof workspaceTabs)[number];
 
 export const sampleGraph: GraphDefinition = {
-  version: "1.0",
+  version: "2.0",
   name: "debug_graph",
+  state_modules: [{ name: "weaveflow.protocols", version: "1" }],
   entry_point: "input",
   finish_point: "input",
   nodes: [
     {
       id: "input",
-      type: "human_message",
+      type: "conversation_input",
       name: "Input",
       config: { content: "hello" },
+      state: {
+        input: { path: "shared.request.input" },
+        conversation: { path: "shared.conversation" },
+      },
     },
   ],
 };

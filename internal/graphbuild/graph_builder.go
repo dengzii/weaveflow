@@ -7,6 +7,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/registry"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type GraphBuilder interface {
@@ -15,6 +16,10 @@ type GraphBuilder interface {
 	AddConditionalEdge(from, to string, condition registry.EdgeCondition) error
 	SetEntryPoint(ref string) error
 	SetFinishPoint(ref string) error
+}
+
+type resolvedConditionGraphBuilder interface {
+	AddResolvedConditionalEdge(from, to string, condition registry.EdgeCondition, contract state.Contract) error
 }
 
 func ValidateGraphBuildPath(path []string, next string) error {
@@ -35,9 +40,6 @@ func PrepareDefinition(def dsl.GraphDefinition, instance *dsl.GraphInstanceConfi
 	def = dsl.NormalizeGraphDefinition(def)
 	if err := def.Validate(); err != nil {
 		return dsl.GraphDefinition{}, ctx, err
-	}
-	if def.StateSchema != "" && def.StateSchema != dsl.CommonStateSchemaID {
-		return dsl.GraphDefinition{}, ctx, fmt.Errorf("unsupported state schema %q", def.StateSchema)
 	}
 	if ctx == nil {
 		ctx = &registry.BuildContext{}
@@ -64,6 +66,7 @@ func PopulateGraph(
 	reg *registry.Registry,
 	def dsl.GraphDefinition,
 	ctx *registry.BuildContext,
+	resolved ResolvedGraphBindings,
 ) error {
 	if target == nil {
 		return fmt.Errorf("graph builder is nil")
@@ -76,7 +79,11 @@ func PopulateGraph(
 		if !ok {
 			return fmt.Errorf("nodes type %q is not registered", nodeSpec.Type)
 		}
-		node, err := nodeDef.Build(ctx, nodeSpec)
+		resolvedSpec, ok := resolved.Nodes[nodeSpec.ID]
+		if !ok {
+			return fmt.Errorf("node %q has no resolved state bindings", nodeSpec.ID)
+		}
+		node, err := nodeDef.Build(ctx, resolvedSpec)
 		if err != nil {
 			return err
 		}
@@ -87,16 +94,30 @@ func PopulateGraph(
 			specTarget.SetNodeSpec(nodeSpec)
 		}
 	}
-	for _, edge := range def.Edges {
+	for edgeIndex, edge := range def.Edges {
 		if edge.Condition == nil {
 			if err := target.AddEdge(edge.From, edge.To); err != nil {
 				return err
 			}
 			continue
 		}
-		condition, err := reg.ResolveCondition(*edge.Condition)
+		resolvedCondition, ok := resolved.Conditions[edgeIndex]
+		if !ok {
+			return fmt.Errorf("condition on edge %q -> %q has no resolved state bindings", edge.From, edge.To)
+		}
+		condition, err := reg.ResolveCondition(resolvedCondition)
 		if err != nil {
 			return err
+		}
+		if resolvedTarget, ok := target.(resolvedConditionGraphBuilder); ok {
+			contract, exists := resolved.ConditionContracts[edgeIndex]
+			if !exists {
+				return fmt.Errorf("condition on edge %q -> %q has no resolved state contract", edge.From, edge.To)
+			}
+			if err := resolvedTarget.AddResolvedConditionalEdge(edge.From, edge.To, condition, contract); err != nil {
+				return err
+			}
+			continue
 		}
 		if err := target.AddConditionalEdge(edge.From, edge.To, condition); err != nil {
 			return err

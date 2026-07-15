@@ -7,7 +7,7 @@ import (
 
 // State is the private storage envelope for state.
 // External packages should use Access, typed Ref values, or registered
-// accessors instead of mutating this structure directly.
+// capability views instead of mutating this structure directly.
 type State struct {
 	root map[string]any
 }

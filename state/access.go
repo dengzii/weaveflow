@@ -7,7 +7,7 @@ type Reader interface {
 	ReadAny(path Path) (any, bool)
 }
 
-// Writer is the minimal mutation surface used by typed refs and accessors.
+// Writer is the minimal mutation surface used by typed refs and capability views.
 // Implementations are expected to record explicit patch operations.
 type Writer interface {
 	SetAny(path Path, value any) error
@@ -20,57 +20,25 @@ type Writer interface {
 // editing access records structured patch ops and applies them to a working copy
 // so later reads observe earlier writes.
 type Access struct {
-	registry *Registry
-	state    *State
-	editor   *Editor
-	scope    string
+	state  *State
+	editor *Editor
 }
 
 // NewAccess returns a read-only copy of state for inspection or condition
 // evaluation. Mutating methods on the returned access fail.
-func NewAccess(registry *Registry, state *State) *Access {
-	if registry == nil {
-		registry = NewRegistry()
-	}
+func NewAccess(state *State) *Access {
 	if state == nil {
 		state = NewState()
 	}
-	return &Access{registry: registry, state: state.Clone()}
+	return &Access{state: state.Clone()}
 }
 
 // NewEditingAccess returns a copy-on-write view over state. Mutations update
 // the working copy and are captured as a Patch for replay or parallel merging.
-func NewEditingAccess(registry *Registry, state *State) *Access {
-	access := NewAccess(registry, state)
+func NewEditingAccess(state *State) *Access {
+	access := NewAccess(state)
 	access.editor = NewEditor(access.state)
 	return access
-}
-
-// WithScope returns a shallow copy of access bound to a node scope. Registered
-// accessors may use this scope to resolve scoped paths.
-func (a *Access) WithScope(scope string) *Access {
-	if a == nil {
-		return nil
-	}
-	cloned := *a
-	cloned.scope = normalizeSegment(scope)
-	return &cloned
-}
-
-// Scope returns the current node scope associated with this access.
-func (a *Access) Scope() string {
-	if a == nil {
-		return ""
-	}
-	return a.scope
-}
-
-// Registry returns the accessor registry used to resolve typed accessors.
-func (a *Access) Registry() *Registry {
-	if a == nil || a.registry == nil {
-		return NewRegistry()
-	}
-	return a.registry
 }
 
 // ReadAny reads a cloned value at path. The returned value can be mutated by
@@ -140,7 +108,7 @@ func (a *Access) State() *State {
 // Read returns the value at ref and false when the path is missing or the value
 // has a different Go type. JSON checkpoint restore preserves JSON-compatible
 // shapes, but does not reconstruct arbitrary Go slice, map, or struct types;
-// accessors that expose typed values should convert restored JSON shapes
+// capability views that expose typed values should convert restored JSON shapes
 // explicitly.
 func Read[T any](reader Reader, ref Ref[T]) (T, bool) {
 	var zero T
@@ -179,12 +147,6 @@ func Get[T any](reader Reader, ref Ref[T]) (T, error) {
 // ReadRequired is the error-returning form of Read kept for call-site clarity.
 func ReadRequired[T any](reader Reader, ref Ref[T]) (T, error) {
 	return Get(reader, ref)
-}
-
-// Set replaces the value at ref. It is kept as a compatibility alias for
-// Replace.
-func Set[T any](writer Writer, ref Ref[T], value T) error {
-	return Replace(writer, ref, value)
 }
 
 // Replace records a replace operation for ref.

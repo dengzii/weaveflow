@@ -4,40 +4,68 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/state"
 )
 
 const (
-	NodeTypeMappedSubgraph     = "mapped_subgraph"
-	NodeTypeHumanMessage       = "human_message"
+	NodeTypeSubgraph           = "subgraph"
+	NodeTypeConversationInput  = "conversation_input"
 	NodeTypeContextReducer     = "context_reducer"
 	NodeTypeLLM                = "llm"
 	NodeTypeTools              = "tools"
 	NodeTypeAgent              = "agent"
 	NodeTypeEnvironmentContext = "environment_context"
+	NodeTypeExplore            = "explore"
 )
 
 var (
-	_ dsl.GraphNodeSpecProvider = (*MappedSubgraphNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*HumanMessageNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*SubgraphNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*ConversationInputNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ContextReducerNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*LLMNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ToolsNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*AgentNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*EnvironmentContextNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*ExploreNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*PlanGeneratorNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*PlanStepNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*PlanReviewNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*PlanFinalizeNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*SupervisorNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*SupervisorWorkerNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*SupervisorFinalizeNode)(nil)
 )
 
-func newGraphNodeSpec(base Base, nodeType string, config map[string]any) dsl.GraphNodeSpec {
+func newGraphNodeSpec(base Base, nodeType string, config map[string]any, statePaths ...map[string]state.Path) dsl.GraphNodeSpec {
 	spec := dsl.GraphNodeSpec{
 		ID:          base.ID(),
 		Name:        base.Name(),
 		Type:        nodeType,
 		Description: base.Description(),
 		Config:      compactGraphNodeConfig(config),
+		State:       graphStateBindings(statePaths...),
 	}
 	if spec.Name == "" {
 		spec.Name = spec.ID
 	}
 	return spec
+}
+
+func graphStateBindings(statePaths ...map[string]state.Path) map[string]dsl.StateBinding {
+	if len(statePaths) == 0 || len(statePaths[0]) == 0 {
+		return nil
+	}
+	bindings := make(map[string]dsl.StateBinding, len(statePaths[0]))
+	for name, path := range statePaths[0] {
+		if path.Empty() {
+			continue
+		}
+		bindings[name] = dsl.StateBinding{Path: path.String()}
+	}
+	if len(bindings) == 0 {
+		return nil
+	}
+	return bindings
 }
 
 func compactGraphNodeConfig(config map[string]any) map[string]any {
@@ -50,7 +78,7 @@ func compactGraphNodeConfig(config map[string]any) map[string]any {
 		case nil:
 			continue
 		case string:
-			if strings.TrimSpace(typed) == "" && key != "state_scope" {
+			if strings.TrimSpace(typed) == "" {
 				continue
 			}
 			out[key] = typed

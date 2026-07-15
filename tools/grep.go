@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -25,22 +26,15 @@ const (
 )
 
 type grepRequest struct {
-	Pattern              string `json:"pattern"`
-	Path                 string `json:"path,omitempty"`
-	Glob                 string `json:"glob,omitempty"`
-	Type                 string `json:"type,omitempty"`
-	OutputMode           string `json:"output_mode,omitempty"`
-	HeadLimit            int    `json:"head_limit,omitempty"`
-	Offset               int    `json:"offset,omitempty"`
-	After                int    `json:"-A,omitempty"`
-	Before               int    `json:"-B,omitempty"`
-	Context              int    `json:"context,omitempty"`
-	ContextAlias         int    `json:"-C,omitempty"`
-	LineNumbers          *bool  `json:"-n,omitempty"`
-	Multiline            bool   `json:"multiline,omitempty"`
-	MaxResults           int    `json:"max_results,omitempty"`
-	CaseInsensitive      bool   `json:"case_insensitive,omitempty"`
-	CaseInsensitiveAlias bool   `json:"-i,omitempty"`
+	Pattern         string `json:"pattern"`
+	Path            string `json:"path,omitempty"`
+	Glob            string `json:"glob,omitempty"`
+	Type            string `json:"type,omitempty"`
+	OutputMode      string `json:"output_mode,omitempty"`
+	Offset          int    `json:"offset,omitempty"`
+	Multiline       bool   `json:"multiline,omitempty"`
+	MaxResults      int    `json:"max_results,omitempty"`
+	CaseInsensitive bool   `json:"case_insensitive,omitempty"`
 }
 
 type grepMatch struct {
@@ -79,26 +73,6 @@ func NewGrep() Tool {
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"-A": map[string]any{
-						"type":        "number",
-						"description": "Number of lines to show after each match. Requires output_mode: content.",
-					},
-					"-B": map[string]any{
-						"type":        "number",
-						"description": "Number of lines to show before each match. Requires output_mode: content.",
-					},
-					"-C": map[string]any{
-						"type":        "number",
-						"description": "Alias for context.",
-					},
-					"-i": map[string]any{
-						"type":        "boolean",
-						"description": "Case insensitive search.",
-					},
-					"-n": map[string]any{
-						"type":        "boolean",
-						"description": "Show line numbers in output. Requires output_mode: content. Defaults to true.",
-					},
 					"pattern": map[string]any{
 						"type":        "string",
 						"description": "The regular expression pattern to search for in file contents",
@@ -120,21 +94,21 @@ func NewGrep() Tool {
 						"enum":        []string{"content", "files_with_matches", "count"},
 						"description": "Output mode: content, files_with_matches, or count.",
 					},
-					"head_limit": map[string]any{
+					"max_results": map[string]any{
 						"type":        "number",
-						"description": "Limit output to first N lines/entries. Defaults to 250 when unspecified.",
+						"description": "Maximum number of output entries. Defaults to 250 when unspecified.",
 					},
 					"offset": map[string]any{
 						"type":        "number",
-						"description": "Skip first N lines/entries before applying head_limit. Defaults to 0.",
+						"description": "Skip first N lines/entries before applying max_results. Defaults to 0.",
 					},
 					"multiline": map[string]any{
 						"type":        "boolean",
 						"description": "Enable multiline mode.",
 					},
-					"context": map[string]any{
-						"type":        "number",
-						"description": "Number of lines to show before and after each match. Requires output_mode: content.",
+					"case_insensitive": map[string]any{
+						"type":        "boolean",
+						"description": "Enable case-insensitive matching.",
 					},
 				},
 				"required":             []string{"pattern"},
@@ -152,7 +126,7 @@ func grepTool(_ context.Context, input string) (string, error) {
 	}
 
 	pattern := req.Pattern
-	if req.CaseInsensitive || req.CaseInsensitiveAlias {
+	if req.CaseInsensitive {
 		pattern = "(?i)" + pattern
 	}
 	re, err := regexp.Compile(pattern)
@@ -176,7 +150,7 @@ func grepTool(_ context.Context, input string) (string, error) {
 		return "", errors.New("grep root must be a directory")
 	}
 
-	limit := normalizeGrepLimit(firstNonZero(req.MaxResults, req.HeadLimit))
+	limit := normalizeGrepLimit(req.MaxResults)
 	matches := make([]grepMatch, 0, 32)
 	scanned := 0
 	truncated := false
@@ -260,8 +234,16 @@ func parseGrepRequest(input string) (grepRequest, error) {
 		return grepRequest{}, fmt.Errorf("grep input is required")
 	}
 	var req grepRequest
-	if err := json.Unmarshal([]byte(raw), &req); err != nil {
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&req); err != nil {
 		return grepRequest{}, fmt.Errorf("grep input must be valid JSON: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return grepRequest{}, fmt.Errorf("grep input contains multiple JSON values")
+		}
+		return grepRequest{}, fmt.Errorf("grep input must contain one JSON value: %w", err)
 	}
 	req.Pattern = strings.TrimSpace(req.Pattern)
 	if req.Pattern == "" {
@@ -287,15 +269,6 @@ func normalizeGrepOutputMode(mode string) string {
 	default:
 		return "content"
 	}
-}
-
-func firstNonZero(values ...int) int {
-	for _, value := range values {
-		if value != 0 {
-			return value
-		}
-	}
-	return 0
 }
 
 func offsetGrepMatches(matches []grepMatch, offset int) []grepMatch {

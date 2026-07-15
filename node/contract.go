@@ -7,10 +7,6 @@ import (
 
 type ContractProvider = core.ContractProvider
 
-func ContractFor(registry *state.Registry, node Node) (state.Contract, error) {
-	return core.ContractFor(registry, node)
-}
-
-func contractFromAccessorUses(registry *state.Registry, nodeID string, nodeScope string, uses []AccessorUse) (state.Contract, error) {
-	return core.ContractFromAccessorUses(registry, nodeID, nodeScope, uses)
+func ContractFor(node Node) (state.Contract, error) {
+	return core.ContractFor(node)
 }

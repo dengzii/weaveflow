@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
@@ -15,7 +16,6 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/state/accessors"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -24,16 +24,17 @@ const defaultAgentPromptMaxChars = 1000000
 
 type AgentNode struct {
 	Base
-	ModelID         string
-	ToolIDs         []string
-	SystemPrompt    string
-	InputPath       state.Path
-	OutputPath      state.Path
-	MaxIterations   int
-	PromptMaxChars  int
-	Parallel        bool
-	ToolName        string
-	ToolDescription string
+	ModelID          string
+	ToolIDs          []string
+	SystemPrompt     string
+	TaskPath         state.Path
+	ConversationPath state.Path
+	ResultPath       state.Path
+	MaxIterations    int
+	PromptMaxChars   int
+	Parallel         bool
+	ToolName         string
+	ToolDescription  string
 }
 
 func NewAgentNode(options ...NodeOption) *AgentNode {
@@ -41,12 +42,6 @@ func NewAgentNode(options ...NodeOption) *AgentNode {
 		Base: NewBase(Spec{
 			Name:        NodeTypeAgent,
 			Description: "Run a self-contained ReAct loop with configurable prompt and tools.",
-			Scope:       DefaultScope,
-			AccessorUses: []AccessorUse{
-				Use(accessors.ConversationID.Name()),
-				UseRoot(accessors.RequestID.Name()),
-				UseRoot(accessors.FinalID.Name()),
-			},
 		}),
 		Parallel: true,
 	}
@@ -54,9 +49,21 @@ func NewAgentNode(options ...NodeOption) *AgentNode {
 	return node
 }
 
+func (a *AgentNode) Validate() error {
+	if a == nil {
+		return fmt.Errorf("agent node is nil")
+	}
+	if err := a.Base.Validate(); err != nil {
+		return err
+	}
+	if a.TaskPath.Empty() || a.ConversationPath.Empty() || a.ResultPath.Empty() {
+		return fmt.Errorf("agent node %q requires task, conversation, and result paths", a.ID())
+	}
+	return nil
+}
+
 func (a *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	conf := map[string]any{
-		"state_scope":      a.Scope(),
 		"tool_ids":         a.ToolIDs,
 		"system_prompt":    a.SystemPrompt,
 		"parallel":         a.Parallel,
@@ -66,19 +73,15 @@ func (a *AgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if strings.TrimSpace(a.ModelID) != "" {
 		conf["model_id"] = a.ModelID
 	}
-	if !a.InputPath.Empty() {
-		conf["input_path"] = a.InputPath.String()
-	}
-	if !a.OutputPath.Empty() {
-		conf["output_path"] = a.OutputPath.String()
-	}
 	if a.MaxIterations > 0 {
 		conf["max_iterations"] = a.MaxIterations
 	}
 	if a.PromptMaxChars > 0 {
 		conf["prompt_max_chars"] = a.PromptMaxChars
 	}
-	return newGraphNodeSpec(a.Base, NodeTypeAgent, conf)
+	return newGraphNodeSpec(a.Base, NodeTypeAgent, conf, map[string]state.Path{
+		"task": a.TaskPath, "conversation": a.ConversationPath, "result": a.ResultPath,
+	})
 }
 
 func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -90,16 +93,13 @@ func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id":    dsl.JSONSchema{"type": "string"},
-					"tool_ids":    dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
-					"state_scope": dsl.JSONSchema{"type": "string"},
+					"model_id": dsl.JSONSchema{"type": "string"},
+					"tool_ids": dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",
 						"x-control": "textarea",
 					},
-					"input_path":       dsl.JSONSchema{"type": "string"},
-					"output_path":      dsl.JSONSchema{"type": "string"},
 					"max_iterations":   dsl.JSONSchema{"type": "integer", "minimum": 1},
 					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
 					"parallel":         dsl.JSONSchema{"type": "boolean"},
@@ -109,40 +109,39 @@ func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 				"additionalProperties": false,
 			},
 		},
-		ResolveStateContract: func(spec dsl.GraphNodeSpec) (dsl.StateContract, error) {
-			scope := nodeStateScope(spec.Config)
-			fields := []dsl.StateFieldRef{
-				{Path: scopedConversationPath(scope, accessors.ConversationFieldMessages), Mode: dsl.StateAccessReadWrite, Description: "Conversation messages the agent reads and extends across each internal iteration."},
-				{Path: scopedConversationPath(scope, accessors.ConversationFieldIterationCount), Mode: dsl.StateAccessReadWrite, Description: "Iteration counter bumped after every internal model turn."},
-				{Path: scopedConversationPath(scope, accessors.ConversationFieldMaxIterations), Mode: dsl.StateAccessReadWrite, Description: "Maximum iteration cap for the agent loop, applied if not already higher."},
-				{Path: scopedConversationPath(scope, accessors.ConversationFieldFinalAnswer), Mode: dsl.StateAccessWrite, Description: "Final answer written when the agent stops without further tool calls."},
-			}
-			if inputPath := strings.TrimSpace(config.String(spec.Config, "input_path")); inputPath != "" {
-				fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(inputPath), Mode: dsl.StateAccessRead, Required: true, Description: "State path the agent reads its initial task from.", Dynamic: true, PathConfigKey: "input_path"})
-			}
-			if outputPath := strings.TrimSpace(config.String(spec.Config, "output_path")); outputPath != "" {
-				fields = append(fields, dsl.StateFieldRef{Path: canonicalContractPath(outputPath), Mode: dsl.StateAccessWrite, Description: "State path the agent writes its final answer to.", Dynamic: true, PathConfigKey: "output_path"})
-			} else {
-				fields = append(fields, dsl.StateFieldRef{Path: state.Shared(accessors.KeyFinal, accessors.FinalFieldAnswer).String(), Mode: dsl.StateAccessWrite, Description: "Default final answer written when output_path is not configured."})
-			}
-			return dsl.StateContract{Fields: fields}, nil
+		StatePorts: []dsl.StatePortDefinition{
+			primitivePort("task", "Initial task for the agent.", "string", dsl.StateAccessRead, true),
+			capabilityPort("conversation", "Conversation owned by this agent loop.", conversationcap.CapabilityID, true,
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMessages, Mode: dsl.StateAccessReadWrite},
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldFinalAnswer, Mode: dsl.StateAccessReadWrite},
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldIterationCount, Mode: dsl.StateAccessReadWrite},
+				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMaxIterations, Mode: dsl.StateAccessReadWrite},
+			),
+			primitivePort("result", "Final answer produced by the agent.", "string", dsl.StateAccessWrite, true),
 		},
-		Build: func(ctx *registry.BuildContext, spec dsl.GraphNodeSpec) (Node, error) {
+		Build: func(ctx *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
 			_ = ctx
-			agentNode := NewAgentNode(WithScope(nodeStateScope(spec.Config)), WithID(spec.ID))
+			spec := resolved.Spec
+			taskPath, err := resolvedPath(resolved, "task")
+			if err != nil {
+				return nil, err
+			}
+			conversationPath, err := resolvedPath(resolved, "conversation")
+			if err != nil {
+				return nil, err
+			}
+			resultPath, err := resolvedPath(resolved, "result")
+			if err != nil {
+				return nil, err
+			}
+			agentNode := NewAgentNode(WithID(spec.ID))
 			applyNodeMetadata(&agentNode.Base, spec)
 			agentNode.ModelID = config.String(spec.Config, "model_id")
 			agentNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			agentNode.SystemPrompt = config.String(spec.Config, "system_prompt")
-			var err error
-			agentNode.InputPath, err = parseOptionalStatePath(config.String(spec.Config, "input_path"))
-			if err != nil {
-				return nil, fmt.Errorf("build agent node %q input_path: %w", spec.ID, err)
-			}
-			agentNode.OutputPath, err = parseOptionalStatePath(config.String(spec.Config, "output_path"))
-			if err != nil {
-				return nil, fmt.Errorf("build agent node %q output_path: %w", spec.ID, err)
-			}
+			agentNode.TaskPath = taskPath
+			agentNode.ConversationPath = conversationPath
+			agentNode.ResultPath = resultPath
 			agentNode.MaxIterations, _ = config.Int(spec.Config, "max_iterations")
 			agentNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
 			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
@@ -160,7 +159,7 @@ func (a *AgentNode) Execute(ctx core.Context, access *state.Access) error {
 		return fmt.Errorf("agent node: model %q not available", effectiveModelID(a.ModelID))
 	}
 
-	conversation, err := state.UseAccessor(access, accessors.ConversationID)
+	conversation, err := conversationcap.Bind(access, a.ConversationPath)
 	if err != nil {
 		return err
 	}
@@ -170,16 +169,20 @@ func (a *AgentNode) Execute(ctx core.Context, access *state.Access) error {
 		}
 	}
 
-	if err := a.seedConversation(conversation, a.readTaskFromAccess(access)); err != nil {
+	task, err := state.Get(access, state.NewRef[string](a.TaskPath))
+	if err != nil {
+		return err
+	}
+	if err := a.seedConversation(conversation, strings.TrimSpace(task)); err != nil {
 		return err
 	}
 	if err := a.runLoop(ctx, conversation); err != nil {
 		return err
 	}
-	return a.writeAnswer(access, conversation.FinalAnswer())
+	return state.Replace(access, state.NewRef[string](a.ResultPath), strings.TrimSpace(conversation.FinalAnswer()))
 }
 
-func (a *AgentNode) runLoop(ctx core.Context, conversation accessors.Conversation) error {
+func (a *AgentNode) runLoop(ctx core.Context, conversation *conversationcap.View) error {
 	model := ctx.Model(a.ModelID)
 	nodeTools := ctx.FilterTools(a.ToolIDs)
 
@@ -278,7 +281,7 @@ func (a *AgentNode) runLoop(ctx core.Context, conversation accessors.Conversatio
 	}
 }
 
-func (a *AgentNode) executeToolCalls(ctx core.Context, conversation accessors.Conversation, toolCalls []llms.ToolCall) error {
+func (a *AgentNode) executeToolCalls(ctx core.Context, conversation *conversationcap.View, toolCalls []llms.ToolCall) error {
 	if len(toolCalls) == 0 {
 		return nil
 	}
@@ -312,7 +315,7 @@ func (a *AgentNode) publishLoopStopped(ctx context.Context, iteration int, reaso
 	})
 }
 
-func (a *AgentNode) seedConversation(conversation accessors.Conversation, task string) error {
+func (a *AgentNode) seedConversation(conversation *conversationcap.View, task string) error {
 	messages := conversation.Messages()
 	hasSystem := false
 	hasAnyHuman := false
@@ -340,37 +343,7 @@ func (a *AgentNode) seedConversation(conversation accessors.Conversation, task s
 	return nil
 }
 
-func (a *AgentNode) readTaskFromAccess(access *state.Access) string {
-	if !a.InputPath.Empty() {
-		value, ok := access.ReadAny(a.InputPath)
-		if !ok {
-			return ""
-		}
-		return stringifyStateValue(value)
-	}
-	request, err := state.UseAccessor(access, accessors.RequestID)
-	if err != nil {
-		return ""
-	}
-	return strings.TrimSpace(request.Input())
-}
-
-func (a *AgentNode) writeAnswer(access *state.Access, answer string) error {
-	answer = strings.TrimSpace(answer)
-	if answer == "" {
-		return nil
-	}
-	if !a.OutputPath.Empty() {
-		return access.SetAny(a.OutputPath, answer)
-	}
-	final, err := state.UseAccessor(access, accessors.FinalID)
-	if err != nil {
-		return err
-	}
-	return final.SetAnswer(answer)
-}
-
-func (a *AgentNode) effectiveMaxIterations(conversation accessors.Conversation) int {
+func (a *AgentNode) effectiveMaxIterations(conversation *conversationcap.View) int {
 	if a.MaxIterations > 0 {
 		return a.MaxIterations
 	}
@@ -379,7 +352,7 @@ func (a *AgentNode) effectiveMaxIterations(conversation accessors.Conversation) 
 			return max
 		}
 	}
-	return accessors.DefaultMaxIterations
+	return conversationcap.DefaultMaxIterations
 }
 
 func (a *AgentNode) effectivePromptMaxChars() int {
@@ -389,22 +362,18 @@ func (a *AgentNode) effectivePromptMaxChars() int {
 	return a.PromptMaxChars
 }
 
-func (a *AgentNode) Contract(registry *state.Registry) (state.Contract, error) {
-	base, err := contractFromAccessorUses(registry, a.ID(), a.Scope(), a.Base.AccessorUses())
-	if err != nil {
-		return state.Contract{}, err
+func (a *AgentNode) Contract() state.Contract {
+	if a == nil {
+		return state.Contract{}
 	}
-	fields := append([]state.FieldAccess(nil), base.Fields...)
-	if !a.InputPath.Empty() {
-		fields = append(fields, state.FieldAccess{Path: a.InputPath, Mode: state.AccessRead, Type: "any"})
-	}
-	if !a.OutputPath.Empty() {
-		fields = append(fields, state.FieldAccess{Path: a.OutputPath, Mode: state.AccessWrite, Type: "string"})
-	}
-	contract := state.NewContract(fields...)
-	contract.WildcardRead = base.WildcardRead
-	contract.WildcardWrite = base.WildcardWrite
-	return contract, nil
+	return state.NewContract(
+		state.FieldAccess{Path: a.TaskPath, Mode: state.AccessRead, Required: true, Merge: state.MergeReplace, Type: "string"},
+		state.FieldAccess{Path: a.ConversationPath.MustChild(conversationcap.FieldMessages), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "array"},
+		state.FieldAccess{Path: a.ConversationPath.MustChild(conversationcap.FieldFinalAnswer), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "string"},
+		state.FieldAccess{Path: a.ConversationPath.MustChild(conversationcap.FieldIterationCount), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "integer"},
+		state.FieldAccess{Path: a.ConversationPath.MustChild(conversationcap.FieldMaxIterations), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "integer"},
+		state.FieldAccess{Path: a.ResultPath, Mode: state.AccessWrite, Merge: state.MergeReplace, Type: "string"},
+	)
 }
 
 func (a *AgentNode) AsTool() core.Tool {
@@ -448,12 +417,8 @@ func (a *AgentNode) AsTool() core.Tool {
 				return "", fmt.Errorf("agent tool: model %q not available", effectiveModelID(a.ModelID))
 			}
 
-			registry, err := NewDefaultRegistry()
-			if err != nil {
-				return "", err
-			}
-			access := state.NewEditingAccess(registry, state.NewState()).WithScope(a.Scope())
-			conversation, err := state.UseAccessor(access, accessors.ConversationID)
+			access := state.NewEditingAccess(state.NewState())
+			conversation, err := conversationcap.Bind(access, state.Shared("agent_tool", "conversation"))
 			if err != nil {
 				return "", err
 			}
@@ -504,12 +469,12 @@ func stringifyStateValue(value any) string {
 }
 
 type agentPromptArtifact struct {
-	AgentNodeID   string               `json:"agent_node_id,omitempty"`
-	StateScope    string               `json:"state_scope,omitempty"`
-	Iteration     int                  `json:"agent_iteration"`
-	MaxIterations int                  `json:"max_iterations,omitempty"`
-	Messages      []state.StateMessage `json:"messages,omitempty"`
-	Tools         []llmToolArtifact    `json:"tools,omitempty"`
+	AgentNodeID      string                    `json:"agent_node_id,omitempty"`
+	ConversationPath string                    `json:"conversation_path,omitempty"`
+	Iteration        int                       `json:"agent_iteration"`
+	MaxIterations    int                       `json:"max_iterations,omitempty"`
+	Messages         []conversationcap.Message `json:"messages,omitempty"`
+	Tools            []llmToolArtifact         `json:"tools,omitempty"`
 }
 
 type agentResponseArtifact struct {
@@ -519,16 +484,16 @@ type agentResponseArtifact struct {
 }
 
 func buildAgentPromptArtifact(a *AgentNode, messages []llms.MessageContent, tools []llms.Tool, iteration, maxIterations int) (agentPromptArtifact, error) {
-	serialized, err := state.SerializeMessages(messages)
+	serialized, err := conversationcap.SerializeMessages(messages)
 	if err != nil {
 		return agentPromptArtifact{}, err
 	}
 	payload := agentPromptArtifact{
-		AgentNodeID:   a.ID(),
-		StateScope:    a.Scope(),
-		Iteration:     iteration,
-		MaxIterations: maxIterations,
-		Messages:      serialized,
+		AgentNodeID:      a.ID(),
+		ConversationPath: a.ConversationPath.String(),
+		Iteration:        iteration,
+		MaxIterations:    maxIterations,
+		Messages:         serialized,
 	}
 	if len(tools) > 0 {
 		payload.Tools = make([]llmToolArtifact, 0, len(tools))

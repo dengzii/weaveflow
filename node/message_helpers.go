@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/llms/parts"
-	"github.com/dengzii/weaveflow/state"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -271,11 +271,11 @@ func promptMessageCharCount(message llms.MessageContent) int {
 }
 
 type llmPromptArtifact struct {
-	StateScope     string               `json:"state_scope,omitempty"`
-	IterationCount int                  `json:"iteration_count,omitempty"`
-	MaxIterations  int                  `json:"max_iterations,omitempty"`
-	Messages       []state.StateMessage `json:"messages,omitempty"`
-	Tools          []llmToolArtifact    `json:"tools,omitempty"`
+	ConversationPath string                    `json:"conversation_path,omitempty"`
+	IterationCount   int                       `json:"iteration_count,omitempty"`
+	MaxIterations    int                       `json:"max_iterations,omitempty"`
+	Messages         []conversationcap.Message `json:"messages,omitempty"`
+	Tools            []llmToolArtifact         `json:"tools,omitempty"`
 }
 
 type llmToolArtifact struct {
@@ -288,25 +288,24 @@ type llmResponseArtifact struct {
 }
 
 type llmResponseArtifactChoice struct {
-	Content          string             `json:"content,omitempty"`
-	StopReason       string             `json:"stop_reason,omitempty"`
-	ToolCalls        []llms.ToolCall    `json:"tool_calls,omitempty"`
-	FunctionCall     *llms.FunctionCall `json:"function_call,omitempty"`
-	ReasoningContent string             `json:"reasoning_content,omitempty"`
-	Usage            map[string]any     `json:"usage,omitempty"`
+	Content          string          `json:"content,omitempty"`
+	StopReason       string          `json:"stop_reason,omitempty"`
+	ToolCalls        []llms.ToolCall `json:"tool_calls,omitempty"`
+	ReasoningContent string          `json:"reasoning_content,omitempty"`
+	Usage            map[string]any  `json:"usage,omitempty"`
 }
 
-func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, stateScope string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
-	serializedMessages, err := state.SerializeMessages(messages)
+func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, conversationPath string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
+	serializedMessages, err := conversationcap.SerializeMessages(messages)
 	if err != nil {
 		return llmPromptArtifact{}, err
 	}
 
 	payload := llmPromptArtifact{
-		StateScope:     stateScope,
-		IterationCount: iterationCount,
-		MaxIterations:  maxIterations,
-		Messages:       serializedMessages,
+		ConversationPath: conversationPath,
+		IterationCount:   iterationCount,
+		MaxIterations:    maxIterations,
+		Messages:         serializedMessages,
 	}
 	if len(tools) > 0 {
 		payload.Tools = make([]llmToolArtifact, 0, len(tools))
@@ -336,10 +335,6 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 			Content:          choice.Content,
 			StopReason:       choice.StopReason,
 			ReasoningContent: choice.ReasoningContent,
-		}
-		if choice.FuncCall != nil {
-			copyCall := *choice.FuncCall
-			item.FunctionCall = &copyCall
 		}
 		if len(choice.ToolCalls) > 0 {
 			item.ToolCalls = redactToolCalls(choice.ToolCalls)
