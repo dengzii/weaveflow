@@ -14,6 +14,7 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
+	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -196,6 +197,7 @@ func (g *Graph) AddNode(targetNode core.Node) error {
 		}
 		id = g.allocateNodeID(targetNode)
 		setter.SetID(id)
+		node.ApplyDefaultStatePaths(targetNode)
 	}
 	if _, exists := g.nodes[id]; exists {
 		return fmt.Errorf("nodes id %q already exists", id)

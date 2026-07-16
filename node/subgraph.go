@@ -25,6 +25,7 @@ type SubgraphNode struct {
 func NewSubgraphNode(options ...NodeOption) *SubgraphNode {
 	target := &SubgraphNode{Base: NewBase(Spec{Name: NodeTypeSubgraph, Description: "Invoke another graph with an explicitly bound state snapshot."})}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 
@@ -60,8 +61,8 @@ func SubgraphNodeTypeDefinition() registry.NodeTypeDefinition {
 				"required": []string{"graph_ref"}, "additionalProperties": false,
 			},
 			StatePorts: []dsl.StatePortDefinition{
-				primitivePort("input", "State snapshot supplied to the subgraph.", "object", dsl.StateAccessRead, true),
-				primitivePort("output", "State snapshot returned by the subgraph.", "object", dsl.StateAccessWrite, true),
+				primitivePortWithDefault("input", "State snapshot supplied to the subgraph.", "object", dsl.StateAccessRead, true, "scopes.{node_id}.input"),
+				primitivePortWithDefault("output", "State snapshot returned by the subgraph.", "object", dsl.StateAccessWrite, true, "scopes.{node_id}.output"),
 			},
 		},
 		Build: func(ctx *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {

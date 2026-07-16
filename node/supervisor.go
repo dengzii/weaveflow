@@ -91,6 +91,7 @@ func NewSupervisorNode(options ...NodeOption) *SupervisorNode {
 		RouteAttempts: defaultSupervisorRouteAttempts,
 	}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

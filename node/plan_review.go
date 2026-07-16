@@ -26,6 +26,7 @@ func NewPlanReviewNode(options ...NodeOption) *PlanReviewNode {
 		Description: "Record a step result and decide whether to continue, replan, or finalize.",
 	})}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

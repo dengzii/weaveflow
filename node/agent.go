@@ -46,6 +46,7 @@ func NewAgentNode(options ...NodeOption) *AgentNode {
 		Parallel: true,
 	}
 	applyNodeOptions(&node.Base, options)
+	ApplyDefaultStatePaths(node)
 	return node
 }
 

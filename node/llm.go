@@ -35,6 +35,7 @@ func NewLLMNode(options ...NodeOption) *LLMNode {
 		}),
 	}
 	applyNodeOptions(&node.Base, options)
+	ApplyDefaultStatePaths(node)
 	return node
 }
 

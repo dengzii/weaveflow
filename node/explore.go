@@ -64,6 +64,7 @@ func NewExploreNode(options ...NodeOption) *ExploreNode {
 		IncludeEnvironment: true,
 	}
 	applyNodeOptions(&node.Base, options)
+	ApplyDefaultStatePaths(node)
 	return node
 }
 

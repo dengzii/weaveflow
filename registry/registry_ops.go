@@ -192,6 +192,7 @@ func validateStatePorts(ports []dsl.StatePortDefinition) error {
 		port := &ports[index]
 		port.Name = strings.TrimSpace(port.Name)
 		port.Capability = strings.TrimSpace(port.Capability)
+		port.DefaultPath = strings.TrimSpace(port.DefaultPath)
 		if port.Name == "" {
 			return fmt.Errorf("state port name is required")
 		}
@@ -199,6 +200,16 @@ func validateStatePorts(ports []dsl.StatePortDefinition) error {
 			return fmt.Errorf("state port %q is duplicated", port.Name)
 		}
 		seen[port.Name] = struct{}{}
+		if port.DefaultPath != "" {
+			defaultPath := strings.ReplaceAll(port.DefaultPath, "{node_id}", "node")
+			parsed, err := state.ParsePath(defaultPath)
+			if err != nil || len(parsed.Segments()) == 0 {
+				if err == nil {
+					err = fmt.Errorf("path must include a segment below its section")
+				}
+				return fmt.Errorf("state port %q default path %q: %w", port.Name, port.DefaultPath, err)
+			}
+		}
 		primitive := port.Capability == ""
 		if primitive {
 			if len(port.Schema) == 0 {

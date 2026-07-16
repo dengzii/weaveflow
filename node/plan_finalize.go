@@ -36,6 +36,7 @@ func NewPlanFinalizeNode(options ...NodeOption) *PlanFinalizeNode {
 		SystemPrompt: defaultPlanFinalizeSystemPrompt,
 	}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

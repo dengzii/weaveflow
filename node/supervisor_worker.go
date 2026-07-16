@@ -45,6 +45,7 @@ func NewSupervisorWorkerNode(options ...NodeOption) *SupervisorWorkerNode {
 		Parallel:      true,
 	}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

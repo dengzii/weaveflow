@@ -1,4 +1,4 @@
-import { END_NODE_REF, graphEdgeId } from "../../../lib/graphEditor";
+import { END_NODE_REF, graphEdgeId, resolveDefaultStatePath } from "../../../lib/graphEditor";
 import type {
   GraphDefinition,
   InitialStateRequirements,
@@ -214,6 +214,7 @@ export function buildGraphLintIssues({
         selectedCapabilities,
         registeredCapabilities: registry?.capabilities ?? [],
         rootCapabilities,
+        nodeId: edge.from,
         edgeId,
       }));
     }
@@ -471,12 +472,16 @@ function lintComponentBindings({
   edgeId?: string;
 }): GraphLintIssue[] {
   const issues: GraphLintIssue[] = [];
-  const bindingMap = isRecord(bindings) ? bindings : {};
+  const bindingMap: Record<string, unknown> = isRecord(bindings) ? { ...bindings } : {};
   const portMap = new Map((ports ?? []).map((port) => [port.name, port]));
   const contractPaths = new Map<string, { type: string; merge: string }>();
 
   if (ports) {
     for (const port of ports) {
+      if (!bindingMap[port.name]) {
+        const defaultPath = resolveDefaultStatePath(port.default_path, nodeId ?? "");
+        if (defaultPath) bindingMap[port.name] = { path: defaultPath };
+      }
       const path = bindingPath(bindingMap[port.name]);
       if (port.required && !path) {
         issues.push(bindingIssue(

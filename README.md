@@ -167,6 +167,13 @@ _, finalState, err := runner.Start(ctx, weaveflow.NewState())
 Every Graph v2 definition declares its State Modules. Every Node and Condition binds its declared State Ports at the
 top-level `state` field; state paths never belong in component `config`.
 
+Built-in state ports also declare a `default_path`. New nodes materialize those paths in their `state` bindings, and the
+graph resolver applies the same defaults when a binding is omitted. A `{node_id}` token is replaced with the node ID
+(with dots normalized to underscores), so conversation roots remain isolated. An explicit binding path always overrides
+the default. The built-in conventions are `shared.request.input` for input/task/objective ports,
+`shared.final.answer` for output/result ports, `shared.environment` for environment, shared protocol roots for plan,
+execution, and supervisor capabilities, and `scopes.<node_id>.<port>` for conversation capabilities.
+
 ```json
 {
   "version": "2.0",

@@ -44,6 +44,7 @@ type RelativeStateContract struct {
 type StatePortDefinition struct {
 	Name          string                `json:"name"`
 	Description   string                `json:"description,omitempty"`
+	DefaultPath   string                `json:"default_path,omitempty"`
 	Required      bool                  `json:"required,omitempty"`
 	Schema        JSONSchema            `json:"schema,omitempty"`
 	Mode          StateAccessMode       `json:"mode,omitempty"`

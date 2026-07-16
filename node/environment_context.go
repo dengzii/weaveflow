@@ -47,6 +47,7 @@ func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
 		GitStatusLimit: defaultEnvironmentGitStatusLimit,
 	}
 	applyNodeOptions(&node.Base, options)
+	ApplyDefaultStatePaths(node)
 	return node
 }
 

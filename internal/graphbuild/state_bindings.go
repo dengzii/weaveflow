@@ -48,10 +48,11 @@ func ResolveGraphBindings(def dsl.GraphDefinition, reg *registry.Registry) (Reso
 		if !ok {
 			return ResolvedGraphBindings{}, fmt.Errorf("node type %q is not registered", spec.Type)
 		}
-		bindings, contract, resolveErr := resolver.resolvePorts("node "+fmt.Sprintf("%q", spec.ID), definition.StatePorts, spec.State)
+		bindings, contract, resolveErr := resolver.resolvePorts("node "+fmt.Sprintf("%q", spec.ID), spec.ID, definition.StatePorts, spec.State)
 		if resolveErr != nil {
 			return ResolvedGraphBindings{}, resolveErr
 		}
+		spec.State = stateBindingSpecs(bindings)
 		result.Nodes[spec.ID] = registry.ResolvedNodeSpec{Spec: spec, State: bindings}
 		result.NodeContracts[spec.ID] = contract
 	}
@@ -64,11 +65,13 @@ func ResolveGraphBindings(def dsl.GraphDefinition, reg *registry.Registry) (Reso
 			return ResolvedGraphBindings{}, fmt.Errorf("condition %q is not registered", edge.Condition.Type)
 		}
 		label := fmt.Sprintf("condition %q on edge %q -> %q", edge.Condition.Type, edge.From, edge.To)
-		bindings, contract, resolveErr := resolver.resolvePorts(label, definition.StatePorts, edge.Condition.State)
+		bindings, contract, resolveErr := resolver.resolvePorts(label, edge.From, definition.StatePorts, edge.Condition.State)
 		if resolveErr != nil {
 			return ResolvedGraphBindings{}, resolveErr
 		}
-		result.Conditions[index] = registry.ResolvedConditionSpec{Spec: *edge.Condition, State: bindings}
+		conditionSpec := *edge.Condition
+		conditionSpec.State = stateBindingSpecs(bindings)
+		result.Conditions[index] = registry.ResolvedConditionSpec{Spec: conditionSpec, State: bindings}
 		result.ConditionContracts[index] = contract
 		combined, combineErr := mergeContracts(result.ConditionContractsBySource[edge.From], contract)
 		if combineErr != nil {
@@ -152,7 +155,7 @@ func newBindingResolver(def dsl.GraphDefinition, reg *registry.Registry) (*bindi
 	return resolver, nil
 }
 
-func (r *bindingResolver) resolvePorts(component string, ports []dsl.StatePortDefinition, specs map[string]dsl.StateBinding) (map[string]registry.ResolvedStateBinding, state.Contract, error) {
+func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.StatePortDefinition, specs map[string]dsl.StateBinding) (map[string]registry.ResolvedStateBinding, state.Contract, error) {
 	portDefinitions := make(map[string]dsl.StatePortDefinition, len(ports))
 	for _, port := range ports {
 		portDefinitions[port.Name] = port
@@ -167,13 +170,19 @@ func (r *bindingResolver) resolvePorts(component string, ports []dsl.StatePortDe
 	contract := state.Contract{}
 	for _, port := range ports {
 		binding, exists := specs[port.Name]
-		if !exists {
+		pathText := ""
+		if exists {
+			pathText = strings.TrimSpace(binding.Path)
+		}
+		if pathText == "" {
+			pathText = expandDefaultPath(port.DefaultPath, ownerID)
+		}
+		if pathText == "" {
 			if port.Required {
 				return nil, state.Contract{}, fmt.Errorf("%s requires state port %q", component, port.Name)
 			}
 			continue
 		}
-		pathText := strings.TrimSpace(binding.Path)
 		path, err := state.ParsePath(pathText)
 		if err != nil {
 			return nil, state.Contract{}, fmt.Errorf("%s state port %q path %q: %w", component, port.Name, pathText, err)
@@ -236,6 +245,30 @@ func (r *bindingResolver) resolvePorts(component string, ports []dsl.StatePortDe
 		bindings[port.Name] = resolved
 	}
 	return bindings, contract, nil
+}
+
+func expandDefaultPath(template, ownerID string) string {
+	template = strings.TrimSpace(template)
+	if template == "" {
+		return ""
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" {
+		ownerID = "node"
+	}
+	ownerID = strings.ReplaceAll(ownerID, ".", "_")
+	return strings.ReplaceAll(template, "{node_id}", ownerID)
+}
+
+func stateBindingSpecs(bindings map[string]registry.ResolvedStateBinding) map[string]dsl.StateBinding {
+	if len(bindings) == 0 {
+		return nil
+	}
+	specs := make(map[string]dsl.StateBinding, len(bindings))
+	for name, binding := range bindings {
+		specs[name] = dsl.StateBinding{Path: binding.Path.String()}
+	}
+	return specs
 }
 
 func expandCapabilityContract(root state.Path, capability dsl.StateCapabilityDefinition, relative dsl.RelativeStateContract, description string) (state.Contract, error) {

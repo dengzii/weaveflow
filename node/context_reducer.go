@@ -47,6 +47,7 @@ func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
 		SummaryPrefix:  defaultContextReducerSummaryLabel,
 	}
 	applyNodeOptions(&node.Base, options)
+	ApplyDefaultStatePaths(node)
 	return node
 }
 

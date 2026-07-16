@@ -21,6 +21,7 @@ const (
 	testCapabilityNode  = "capability"
 	testAlternativeNode = "alternative"
 	testMergeNode       = "merge"
+	testDefaultNode     = "default"
 	testConditionType   = "conversation_ready"
 )
 
@@ -246,6 +247,28 @@ func TestResolveGraphBindingsExpandsCapabilityAndMergesPorts(t *testing.T) {
 	assertContractField(t, combined, "shared.combined", state.AccessReadWrite, state.MergeReplace)
 }
 
+func TestResolveGraphBindingsUsesDefaultPaths(t *testing.T) {
+	t.Parallel()
+	reg := newBindingTestRegistry(t)
+	def := dsl.GraphDefinition{
+		Version:      dsl.GraphDefinitionVersion,
+		StateModules: []dsl.StateModuleRef{{Name: testModuleName, Version: testModuleVersion}},
+		Nodes:        []dsl.GraphNodeSpec{{ID: "writer.one", Type: testDefaultNode}},
+	}
+
+	resolved, err := ResolveGraphBindings(def, reg)
+	if err != nil {
+		t.Fatalf("ResolveGraphBindings(): %v", err)
+	}
+	binding := resolved.Nodes["writer.one"].State["value"]
+	if got := binding.Path.String(); got != "scopes.writer_one.value" {
+		t.Fatalf("default path = %q", got)
+	}
+	if got := resolved.Nodes["writer.one"].Spec.State["value"].Path; got != "scopes.writer_one.value" {
+		t.Fatalf("materialized spec path = %q", got)
+	}
+}
+
 func baseBindingDefinition() dsl.GraphDefinition {
 	return dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
@@ -292,6 +315,10 @@ func newBindingTestRegistry(t *testing.T) *registry.Registry {
 	mustRegisterNodeType(t, reg, testPrimitiveNode, []dsl.StatePortDefinition{
 		primitiveTestPort("value", "string", dsl.StateAccessRead, dsl.StateMergeReplace, true),
 	})
+	mustRegisterNodeType(t, reg, testDefaultNode, []dsl.StatePortDefinition{{
+		Name: "value", Required: true, DefaultPath: "scopes.{node_id}.value",
+		Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace,
+	}})
 	mustRegisterNodeType(t, reg, testCapabilityNode, []dsl.StatePortDefinition{
 		capabilityTestPort("root", testConversationCap,
 			dsl.RelativeStateFieldRef{Path: "messages", Mode: dsl.StateAccessReadWrite},

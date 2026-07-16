@@ -35,6 +35,7 @@ func NewConversationInputNode(options ...NodeOption) *ConversationInputNode {
 		InterruptMessage: "interrupt due to waiting for human input",
 	}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 
@@ -125,11 +126,14 @@ func (n *ConversationInputNode) Execute(_ core.Context, access *state.Access) er
 		return n.appendInput(conversation, content)
 	}
 	if !n.InputPath.Empty() {
-		input, readErr := state.Get(access, state.NewRef[string](n.InputPath))
-		if readErr != nil {
-			return readErr
+		raw, exists := access.ReadAny(n.InputPath)
+		if exists {
+			input, ok := raw.(string)
+			if !ok {
+				return fmt.Errorf("state path %q must be string, got %T", n.InputPath.String(), raw)
+			}
+			return n.appendInput(conversation, input)
 		}
-		return n.appendInput(conversation, input)
 	}
 	if pending, ok, pendingErr := n.consumePendingInput(access); pendingErr != nil {
 		return pendingErr
@@ -197,12 +201,14 @@ type SetFinalAnswerNode struct {
 func NewSetFinalAnswerNode(answer string, options ...NodeOption) *SetFinalAnswerNode {
 	target := &SetFinalAnswerNode{Base: NewBase(Spec{Name: "set_final_answer", Description: "Write a final answer."}), Answer: answer}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 
 func NewRequestToFinalAnswerNode(options ...NodeOption) *SetFinalAnswerNode {
 	target := &SetFinalAnswerNode{Base: NewBase(Spec{Name: "request_to_final_answer", Description: "Copy an input value into the final answer."}), FromRequest: true}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

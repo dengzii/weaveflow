@@ -11,7 +11,7 @@ import {
   pendingHumanInputState,
 } from "../pages/WorkbenchPage";
 import { validateGraph } from "../pages/workbench/graph-workspace/utils";
-import { addGraphEdge, createGraphDefinition, resolvedStatePortContract } from "./graphEditor";
+import { addGraphEdge, createGraphDefinition, createNodeFromType, initialStateBindings, resolvedStatePortContract } from "./graphEditor";
 
 const modules: StateModuleDefinition[] = [
   { name: "weaveflow.protocols", version: "1" },
@@ -41,6 +41,28 @@ const registry: RegistryInfo = {
 };
 
 describe("v2 graph editor defaults", () => {
+  test("materializes declared default state paths for nodes and ports", () => {
+    const schema: NodeTypeSchema = {
+      type: "agent",
+      state_ports: [
+        { name: "task", required: true, default_path: "shared.request.input" },
+        { name: "conversation", required: true, default_path: "scopes.{node_id}.conversation" },
+        { name: "result", default_path: "shared.final.answer" },
+      ],
+    };
+    expect(createNodeFromType(schema, [])).toMatchObject({
+      id: "agent",
+      state: {
+        task: { path: "shared.request.input" },
+        conversation: { path: "scopes.agent.conversation" },
+        result: { path: "shared.final.answer" },
+      },
+    });
+    expect(initialStateBindings([{ name: "conversation", default_path: "scopes.{node_id}.conversation" }], "writer.one")).toEqual({
+      conversation: { path: "scopes.writer_one.conversation" },
+    });
+  });
+
   test("creates version 2 graphs with module refs and required node bindings", () => {
     const graph = createGraphDefinition("handoff", nodeType, modules);
     expect(graph.version).toBe("2.0");
@@ -92,14 +114,14 @@ describe("v2 graph editor defaults", () => {
     const conversationInput: NodeTypeSchema = {
       type: "conversation_input",
       state_ports: [
-        { name: "conversation", required: true, capability: "weaveflow.conversation.v1" },
-        { name: "pending_input", schema: { type: "string" }, mode: "read_write" },
+        { name: "conversation", required: true, capability: "weaveflow.conversation.v1", default_path: "scopes.{node_id}.conversation" },
+        { name: "pending_input", schema: { type: "string" }, mode: "read_write", default_path: "shared.request.pending_input" },
       ],
     };
     const graph = createGraphDefinition("interactive", conversationInput, modules);
     expect(graph.nodes[0].state).toEqual({
-      conversation: { path: "" },
-      pending_input: { path: "" },
+      conversation: { path: "scopes.conversation_input.conversation" },
+      pending_input: { path: "shared.request.pending_input" },
     });
   });
 

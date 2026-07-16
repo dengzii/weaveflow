@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Plus, Trash2 } from "lucide-react";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
-import { END_NODE_REF, graphNodePositions, initialStateBindings, resolvedStatePortContract } from "../../../lib/graphEditor";
+import { END_NODE_REF, graphNodePositions, initialStateBindings, resolveDefaultStatePath, resolvedStatePortContract } from "../../../lib/graphEditor";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
@@ -1039,7 +1039,7 @@ function NodeInspector({
                   type: event.target.value,
                   name: node.name || schema?.title || node.name,
                   config: exampleConfigForSchema(schema?.config_schema),
-                  state: initialStateBindings(schema?.state_ports),
+                  state: initialStateBindings(schema?.state_ports, selectedNode.id),
                 };
               })
             }
@@ -1143,9 +1143,11 @@ function StateBindingsEditor({
     <div className="grid gap-2">
       {ports.map((port) => {
         const binding = bindings?.[port.name];
+        const defaultPath = resolveDefaultStatePath(port.default_path, ownerId);
+        const effectiveBinding = binding ?? (defaultPath ? { path: defaultPath } : undefined);
         const options = compatibleBindingPaths(port, ownerId, definition, registry);
         const listId = `state-path-${sanitizeHTMLId(ownerId)}-${sanitizeHTMLId(port.name)}`;
-        const resolvedContract = resolvedStatePortContract(port, binding, registry);
+        const resolvedContract = resolvedStatePortContract(port, effectiveBinding, registry);
         return (
           <div key={port.name} className="rounded-md border border-border bg-muted/30 p-2">
             <div className="mb-2 flex min-w-0 items-start gap-2">
@@ -1159,7 +1161,7 @@ function StateBindingsEditor({
                 </div>
                 {port.description ? <div className="mt-1 text-[11px] text-muted-foreground">{port.description}</div> : null}
               </div>
-              {!binding && !port.required ? (
+              {!effectiveBinding && !port.required ? (
                 <Button
                   type="button"
                   variant="ghost"
@@ -1173,14 +1175,14 @@ function StateBindingsEditor({
               ) : null}
             </div>
 
-            {binding || port.required ? (
+            {effectiveBinding || port.required ? (
               <div className="flex items-center gap-1.5">
                 <Input
                   list={listId}
                   aria-label={`${port.name} state path`}
-                  value={binding?.path ?? ""}
+                  value={effectiveBinding?.path ?? ""}
                   placeholder={options[0] ?? "shared.path"}
-                  className={!binding?.path.trim() && port.required ? "border-destructive focus:border-destructive" : undefined}
+                  className={!effectiveBinding?.path.trim() && port.required ? "border-destructive focus:border-destructive" : undefined}
                   onChange={(event) => onChange({
                     ...(bindings ?? {}),
                     [port.name]: { path: event.target.value },
@@ -1214,9 +1216,9 @@ function StateBindingsEditor({
               </div>
             ) : null}
 
-            {binding?.path.trim() ? (
+            {effectiveBinding?.path.trim() ? (
               <div className="mt-1 truncate text-[10px] text-muted-foreground">
-                {bindingPathMetadata(binding.path.trim(), port, definition, registry)}
+                {bindingPathMetadata(effectiveBinding.path.trim(), port, definition, registry)}
               </div>
             ) : null}
 
@@ -1682,7 +1684,7 @@ function EdgeInspector({
       ? {
           type,
           config: exampleConfigForSchema(schema?.config_schema),
-          state: initialStateBindings(schema?.state_ports),
+          state: initialStateBindings(schema?.state_ports, activeEdge?.from ?? ""),
         }
       : undefined;
     if (selectedVirtualEdge) {

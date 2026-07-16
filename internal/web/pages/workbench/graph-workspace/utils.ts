@@ -1,5 +1,5 @@
 import type { VirtualGraphEdge } from "../../../components/GraphCanvas";
-import { END_NODE_REF, START_NODE_REF, graphEdgeId } from "../../../lib/graphEditor";
+import { END_NODE_REF, START_NODE_REF, graphEdgeId, resolveDefaultStatePath } from "../../../lib/graphEditor";
 import { parseJSON } from "../../../lib/utils";
 import type { GraphDefinition, GraphNodeSpec, NodeTypeSchema, RegistryInfo } from "../../../types";
 import { fallbackNodeTypes } from "./constants";
@@ -15,14 +15,17 @@ export function validateGraph(definition: GraphDefinition | null, registry?: Reg
   for (const node of definition.nodes) {
     const nodeType = registry?.node_types.find((item) => item.type === node.type);
     for (const port of nodeType?.state_ports ?? []) {
-      if (port.required && !node.state?.[port.name]?.path.trim()) {
+      const path = node.state?.[port.name]?.path.trim() || resolveDefaultStatePath(port.default_path, node.id);
+      if (port.required && !path) {
         return `node ${node.id} requires state binding ${port.name}`;
       }
     }
     if (node.type === "conversation_input") {
       const content = typeof node.config?.content === "string" ? node.config.content.trim() : "";
-      const inputPath = node.state?.input?.path.trim() ?? "";
-      const pendingInputPath = node.state?.pending_input?.path.trim() ?? "";
+      const inputPort = nodeType?.state_ports?.find((port) => port.name === "input");
+      const pendingInputPort = nodeType?.state_ports?.find((port) => port.name === "pending_input");
+      const inputPath = node.state?.input?.path.trim() || resolveDefaultStatePath(inputPort?.default_path, node.id);
+      const pendingInputPath = node.state?.pending_input?.path.trim() || resolveDefaultStatePath(pendingInputPort?.default_path, node.id);
       if (!content && !inputPath && !pendingInputPath) {
         return `node ${node.id} requires state binding pending_input when content and input are empty`;
       }
@@ -42,7 +45,8 @@ export function validateGraph(definition: GraphDefinition | null, registry?: Reg
     if (edge.condition) {
       const condition = registry?.conditions.find((item) => item.type === edge.condition?.type);
       for (const port of condition?.state_ports ?? []) {
-        if (port.required && !edge.condition.state?.[port.name]?.path.trim()) {
+        const path = edge.condition.state?.[port.name]?.path.trim() || resolveDefaultStatePath(port.default_path, edge.from);
+        if (port.required && !path) {
           return `condition ${edge.condition.type} requires state binding ${port.name}`;
         }
       }

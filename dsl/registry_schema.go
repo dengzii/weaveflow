@@ -32,13 +32,17 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 		requiredState := make([]string, 0)
 		for _, port := range nodeDef.StatePorts {
 			stateProperties[port.Name] = bindingSchema
-			if port.Required {
+			if port.Required && port.DefaultPath == "" {
 				requiredState = append(requiredState, port.Name)
 			}
 		}
 		stateSchema := JSONSchema{"type": "object", "properties": stateProperties, "additionalProperties": false}
 		if len(requiredState) > 0 {
 			stateSchema["required"] = requiredState
+		}
+		requiredProperties := []string{"id", "type"}
+		if len(requiredState) > 0 {
+			requiredProperties = append(requiredProperties, "state")
 		}
 		nodeVariants = append(nodeVariants, JSONSchema{
 			"type": "object",
@@ -50,7 +54,7 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 				"config":      nodeDef.ConfigSchema,
 				"state":       stateSchema,
 			},
-			"required":             []string{"id", "type", "state"},
+			"required":             requiredProperties,
 			"additionalProperties": false,
 		})
 	}
@@ -62,7 +66,7 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 		requiredState := make([]string, 0)
 		for _, port := range conditionDef.StatePorts {
 			stateProperties[port.Name] = bindingSchema
-			if port.Required {
+			if port.Required && port.DefaultPath == "" {
 				requiredState = append(requiredState, port.Name)
 			}
 		}

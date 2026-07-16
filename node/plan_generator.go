@@ -71,6 +71,7 @@ func NewPlanGeneratorNode(options ...NodeOption) *PlanGeneratorNode {
 		MaxReplans:   defaultPlanMaxReplans,
 	}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

@@ -185,6 +185,7 @@ export interface RelativeStateContract {
 export interface StatePortDefinition {
   name: string;
   description?: string;
+  default_path?: string;
   required?: boolean;
   schema?: Record<string, unknown>;
   mode?: StateAccessMode;

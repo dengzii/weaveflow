@@ -42,6 +42,7 @@ func NewPlanStepNode(options ...NodeOption) *PlanStepNode {
 		MaxIterations: defaultPlanStepMaxIterations,
 	}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

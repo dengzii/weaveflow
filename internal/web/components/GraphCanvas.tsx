@@ -18,7 +18,7 @@ import {
 } from "@xyflow/react";
 import { Focus, Lock, Maximize2, Network, Unlock, ZoomIn, ZoomOut } from "lucide-react";
 import type { GraphConditionSpec, GraphDefinition, GraphEdgeSpec, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord } from "../types";
-import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, type NodePosition } from "../lib/graphEditor";
+import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, resolveDefaultStatePath, type NodePosition } from "../lib/graphEditor";
 import { subscribeRuntimeEvents } from "../lib/runtimeEvents";
 
 interface FlowNodeData extends Record<string, unknown> {
@@ -340,8 +340,8 @@ function GraphCanvasInner({
           const virtualKind = virtualNodeKind(node.id);
           const nodeType = nodeTypes.find((item) => item.type === node.type);
           const statePorts = nodeType?.state_ports ?? [];
-          const boundPortCount = statePorts.filter((port) => Boolean(node.state?.[port.name]?.path.trim())).length;
-          const missingBindings = statePorts.some((port) => port.required && !node.state?.[port.name]?.path.trim());
+          const boundPortCount = statePorts.filter((port) => Boolean(node.state?.[port.name]?.path.trim() || resolveDefaultStatePath(port.default_path, node.id))).length;
+          const missingBindings = statePorts.some((port) => port.required && !node.state?.[port.name]?.path.trim() && !resolveDefaultStatePath(port.default_path, node.id));
           return {
             id: node.id,
             type: "debugNode",

@@ -31,6 +31,7 @@ func NewToolsNode(options ...NodeOption) *ToolsNode {
 		Parallel: true,
 	}
 	applyNodeOptions(&node.Base, options)
+	ApplyDefaultStatePaths(node)
 	return node
 }
 

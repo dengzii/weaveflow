@@ -19,10 +19,24 @@ func TestConversationInputRequiresResumePathWhenInteractive(t *testing.T) {
 	t.Parallel()
 	target := NewConversationInputNode(WithID("input"))
 	target.ConversationPath = state.Scope("agent", "conversation")
+	target.InputPath = state.Path{}
+	target.PendingInputPath = state.Path{}
 
 	err := target.Validate()
 	if err == nil || !strings.Contains(err.Error(), "requires pending input path") {
 		t.Fatalf("validate error = %v, want pending input path error", err)
+	}
+}
+
+func TestGraphNodeSpecUsesDefaultStatePaths(t *testing.T) {
+	t.Parallel()
+	target := NewLLMNode(WithID("writer"))
+	spec := target.GraphNodeSpec()
+	if got := spec.State["conversation"].Path; got != "scopes.writer.conversation" {
+		t.Fatalf("conversation default path = %q", got)
+	}
+	if got := spec.State["output"].Path; got != "shared.final.answer" {
+		t.Fatalf("output default path = %q", got)
 	}
 }
 

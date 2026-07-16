@@ -38,6 +38,7 @@ func NewSupervisorFinalizeNode(options ...NodeOption) *SupervisorFinalizeNode {
 		SystemPrompt: defaultSupervisorFinalizeSystemPrompt,
 	}
 	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
 	return target
 }
 

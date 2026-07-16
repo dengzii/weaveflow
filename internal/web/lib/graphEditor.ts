@@ -91,10 +91,7 @@ export function createGraphDefinition(
 export function createNodeFromType(nodeType: NodeTypeSchema, existingNodes: GraphNodeSpec[]): GraphNodeSpec {
   const baseID = slugify(nodeType.type || nodeType.title || "node", "node");
   const id = uniqueNodeId(baseID, existingNodes);
-  const stateBindings = initialStateBindings(nodeType.state_ports);
-  if (nodeType.type === "conversation_input" && nodeType.state_ports?.some((port) => port.name === "pending_input")) {
-    stateBindings.pending_input = { path: "" };
-  }
+  const stateBindings = initialStateBindings(nodeType.state_ports, id);
   return {
     id,
     name: nodeType.title || id,
@@ -184,7 +181,7 @@ export function addGraphEdge(
     ? {
         type: conditionType.trim(),
         config: exampleConfigForSchema(conditionSchema?.config_schema),
-        state: initialStateBindings(conditionSchema?.state_ports),
+        state: initialStateBindings(conditionSchema?.state_ports, source),
       }
     : undefined;
   const edge: GraphEdgeSpec = condition ? { from: source, to: target, condition } : { from: source, to: target };
@@ -194,12 +191,20 @@ export function addGraphEdge(
   };
 }
 
-export function initialStateBindings(ports: StatePortDefinition[] | undefined): Record<string, StateBinding> {
+export function initialStateBindings(ports: StatePortDefinition[] | undefined, ownerID = ""): Record<string, StateBinding> {
   const bindings: Record<string, StateBinding> = {};
   for (const port of ports ?? []) {
-    if (port.required) bindings[port.name] = { path: "" };
+    const defaultPath = resolveDefaultStatePath(port.default_path, ownerID);
+    if (defaultPath || port.required) bindings[port.name] = { path: defaultPath };
   }
   return bindings;
+}
+
+export function resolveDefaultStatePath(template: string | undefined, ownerID: string): string {
+  const path = template?.trim() ?? "";
+  if (!path) return "";
+  const normalizedOwnerID = (ownerID.trim() || "node").replaceAll(".", "_");
+  return path.replaceAll("{node_id}", normalizedOwnerID);
 }
 
 export function updateGraphEdge(
