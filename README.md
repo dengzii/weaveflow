@@ -313,7 +313,6 @@ Open the printed dev-server URL; the app redirects to `/app/graph`.
 | `examples/shared_tool_loop/`  | LLM, Tools, and edge Condition sharing one conversation capability root.           |
 | `examples/dsl/`               | Exports the default registry and graph JSON schema.                                |
 | `examples/node/`              | Focused runnable examples for individual node types.                               |
-| `examples/llama_cpp/`         | Runs against a local `llama.cpp` model.                                            |
 
 ## Development
 
