@@ -9,6 +9,7 @@ import {
   Play,
   Settings,
   Square,
+  Zap,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
@@ -62,6 +63,7 @@ export function WorkbenchShell({
           <GitBranch className="h-4 w-4" />
         </div>
         <NavButton icon={LayoutDashboard} active={tab === "graph"} onClick={() => onTabChange("graph")} label="Graph" />
+        <NavButton icon={Zap} active={tab === "triggers"} onClick={() => onTabChange("triggers")} label="Triggers" />
         <div className="flex-1" />
         <NavButton icon={Settings} active={tab === "settings"} onClick={() => onTabChange("settings")} label="Settings" />
       </aside>
@@ -78,7 +80,7 @@ export function WorkbenchShell({
             </div>
           )}
           <div className="flex-1" />
-          {runControlMode === "active" ? (
+          {tab === "graph" && runControlMode === "active" ? (
             <>
               <Button variant="outline" size="sm" onClick={onPause} disabled={!hasRunStatus} title="Pause run">
                 <Pause className="h-4 w-4" />
@@ -89,7 +91,7 @@ export function WorkbenchShell({
                 Stop
               </Button>
             </>
-          ) : runControlMode === "resume" ? (
+          ) : tab === "graph" && runControlMode === "resume" ? (
             <>
               <Button size="sm" onClick={onResume} disabled={busy || !canResume} title="Resume paused run">
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -100,12 +102,12 @@ export function WorkbenchShell({
                 Stop
               </Button>
             </>
-          ) : (
+          ) : tab === "graph" ? (
             <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
               {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               Run
             </Button>
-          )}
+          ) : null}
           <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">
             <Braces className="h-4 w-4" />
             Registry

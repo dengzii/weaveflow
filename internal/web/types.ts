@@ -63,6 +63,54 @@ export interface GraphSettings {
   memory: GraphMemorySettings;
 }
 
+export type TriggerType = "webhook" | "schedule";
+export type TriggerConcurrency = "parallel" | "skip";
+
+export interface TriggerTarget {
+  graph_id: string;
+}
+
+export interface WebhookStateMapping {
+  parameter: string;
+  state_path: string;
+}
+
+export interface TriggerWebhookSpec {
+  signature_header?: string;
+  state_mappings?: WebhookStateMapping[];
+}
+
+export interface TriggerScheduleSpec {
+  cron: string;
+  timezone?: string;
+  input?: Record<string, unknown>;
+}
+
+export interface Trigger {
+  id: string;
+  name?: string;
+  type: TriggerType;
+  enabled: boolean;
+  target?: TriggerTarget;
+  concurrency?: TriggerConcurrency;
+  webhook?: TriggerWebhookSpec;
+  schedule?: TriggerScheduleSpec;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TriggerRecord {
+  id: string;
+  trigger_id: string;
+  trigger_type: TriggerType;
+  target: TriggerTarget;
+  status: string;
+  run?: RunRecord;
+  error_message?: string;
+  triggered_at: string;
+  updated_at: string;
+}
+
 export interface GraphEnvironmentPreset {
   key: string;
   default_value: string;

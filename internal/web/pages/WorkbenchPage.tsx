@@ -34,6 +34,7 @@ import { GraphWorkspace } from "./workbench/GraphWorkspace";
 import { RegistryDialog } from "./workbench/RegistryDialog";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
 import { SettingsWorkspace } from "./workbench/SettingsWorkspace";
+import { TriggerWorkspace } from "./workbench/TriggerWorkspace";
 import { WorkbenchShell } from "./workbench/WorkbenchShell";
 import type { ToastRecord, ToastTone } from "./workbench/graph-workspace/ToastStack";
 import { validateGraph } from "./workbench/graph-workspace/utils";
@@ -782,6 +783,7 @@ export function WorkbenchPage({
       {tab === "settings" ? (
         <SettingsWorkspace registry={registry} />
       ) : null}
+      {tab === "triggers" ? <TriggerWorkspace /> : null}
       <HumanMessagePromptDialog
         prompt={humanPrompt}
         value={humanPromptText}

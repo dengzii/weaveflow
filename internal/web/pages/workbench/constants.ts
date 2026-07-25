@@ -1,6 +1,6 @@
 import type { GraphDefinition } from "../../types";
 
-export const workspaceTabs = ["graph", "settings"] as const;
+export const workspaceTabs = ["graph", "triggers", "settings"] as const;
 export type WorkspaceTab = (typeof workspaceTabs)[number];
 
 export const sampleGraph: GraphDefinition = {

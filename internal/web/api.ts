@@ -18,6 +18,8 @@ import type {
   RuntimeEvent,
   StepRecord,
   ToolsInfo,
+  Trigger,
+  TriggerRecord,
 } from "./types";
 
 async function readResponse<T>(resp: Response): Promise<T> {
@@ -29,6 +31,12 @@ async function readResponse<T>(resp: Response): Promise<T> {
   }
   if (!resp.ok) {
     throw new Error(payload?.error || text || resp.statusText);
+  }
+  if (resp.status === 204) {
+    return undefined as T;
+  }
+  if (!payload) {
+    throw new Error("invalid API response: expected JSON");
   }
   if (payload && "data" in payload) {
     return payload.data as T;
@@ -116,8 +124,50 @@ export async function getTools(): Promise<ToolsInfo> {
   return apiFetch<ToolsInfo>("/tools");
 }
 
+export async function listTriggers(): Promise<Trigger[]> {
+  const items = await apiFetch<unknown>("/triggers");
+  if (!Array.isArray(items)) {
+    throw new Error("invalid trigger list response");
+  }
+  return items as Trigger[];
+}
+
+export async function listTriggerRecords(triggerID?: string, limit = 100): Promise<TriggerRecord[]> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (triggerID) query.set("trigger_id", triggerID);
+  const items = await apiFetch<unknown>(`/trigger-records?${query.toString()}`);
+  if (!Array.isArray(items)) {
+    throw new Error("invalid trigger record list response");
+  }
+  return items as TriggerRecord[];
+}
+
+export async function createTrigger(input: Record<string, unknown>): Promise<Trigger> {
+  return apiFetch<Trigger>("/triggers", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function updateTrigger(triggerID: string, input: Record<string, unknown>): Promise<Trigger> {
+  return apiFetch<Trigger>(`/triggers/${encodeURIComponent(triggerID)}`, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+}
+
+export async function deleteTrigger(triggerID: string): Promise<void> {
+  await apiFetch<unknown>(`/triggers/${encodeURIComponent(triggerID)}`, { method: "DELETE" });
+}
+
 export async function listGraphs(): Promise<CachedGraphSummary[]> {
-  return apiFetch<CachedGraphSummary[]>("/graphs");
+  const items = await apiFetch<unknown>("/graphs");
+  if (!Array.isArray(items)) {
+    throw new Error("invalid graph list response");
+  }
+  return items as CachedGraphSummary[];
 }
 
 export async function listRuns(graphId?: string): Promise<RunRecord[]> {

@@ -10,6 +10,7 @@ export function App() {
           <Route path="/" element={<Navigate to="/app/graph" replace />} />
           <Route path="/app" element={<Navigate to="/app/graph" replace />} />
           <Route path="/app/graph" element={<WorkbenchRoute tab="graph" />} />
+          <Route path="/app/triggers" element={<WorkbenchRoute tab="triggers" />} />
           <Route path="/app/settings" element={<WorkbenchRoute tab="settings" />} />
           <Route path="/app/*" element={<Navigate to="/app/graph" replace />} />
           <Route path="*" element={<Navigate to="/app/graph" replace />} />
