@@ -119,8 +119,8 @@ export function validateSchemaValue(
 
 function SchemaControlField({ label, children }: { label: string; children: ReactNode }) {
   return (
-    <div className="grid gap-1 text-sm">
-      <span className="text-xs font-medium text-muted-foreground">{label}</span>
+    <div className="grid min-w-0 gap-1 text-sm">
+      <span className="break-words text-xs font-medium text-muted-foreground">{label}</span>
       {children}
     </div>
   );
@@ -160,7 +160,7 @@ function SchemaField({
   };
 
   return (
-    <div className="grid gap-1">
+    <div className="grid min-w-0 gap-1">
       <SchemaControlField label={title}>
         {childProperties.length > 0 && type === "object" ? (
           <div className={cn("grid gap-3 rounded-md border border-border bg-muted/30 p-2", invalid && "border-destructive/70")}>
@@ -450,11 +450,11 @@ function ToolIDListControl({
             key={toolID}
             title={tool?.description || toolID}
             className={cn(
-              "inline-flex h-7 max-w-full items-center gap-1 rounded-md border py-0 pl-2 pr-1 text-xs",
+              "inline-flex min-h-7 max-w-full items-start gap-1 rounded-md border py-1 pl-2 pr-1 text-xs",
               unknown ? "border-destructive/60 bg-destructive/10 text-destructive" : "border-border bg-muted text-foreground"
             )}
           >
-            <span className="max-w-40 truncate font-mono">{tool ? toolLabel(tool) : `${toolID} (unavailable)`}</span>
+            <span className="min-w-0 break-all whitespace-normal font-mono">{tool ? toolLabel(tool) : `${toolID} (unavailable)`}</span>
             <button
               type="button"
               className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-sm text-muted-foreground hover:bg-background hover:text-foreground"
@@ -476,7 +476,7 @@ function ToolIDListControl({
         );
       })}
 
-      <span ref={pickerRef} className="relative inline-flex">
+      <span ref={pickerRef} className="relative flex w-full min-w-0">
         <Button
           type="button"
           variant="outline"
@@ -496,7 +496,7 @@ function ToolIDListControl({
           Add
         </Button>
         {pickerOpen ? (
-          <div className="absolute left-0 top-full z-30 mt-1 grid max-h-64 w-72 justify-items-start gap-1 overflow-auto rounded-md border border-border bg-background p-1 shadow-lg">
+          <div className="absolute inset-x-0 top-full z-30 mt-1 grid max-h-64 w-full min-w-0 justify-items-stretch gap-1 overflow-x-hidden overflow-y-auto rounded-md border border-border bg-background p-1 shadow-lg">
             {addableTools.map((tool) => (
               <button
                 key={tool.id}
@@ -504,7 +504,7 @@ function ToolIDListControl({
                 className="inline-grid max-w-full min-w-0 gap-0.5 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent"
                 onClick={() => addValue(tool.id)}
               >
-                <span className="truncate font-mono font-medium">{toolLabel(tool)}</span>
+                <span className="break-all font-mono font-medium">{toolLabel(tool)}</span>
                 {tool.description ? <span className="line-clamp-2 text-muted-foreground">{tool.description}</span> : null}
               </button>
             ))}

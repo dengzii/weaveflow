@@ -94,7 +94,7 @@ export function createNodeFromType(nodeType: NodeTypeSchema, existingNodes: Grap
   const stateBindings = initialStateBindings(nodeType.state_ports, id);
   return {
     id,
-    name: nodeType.title || id,
+    name: uniqueNodeName(nodeType.title || id, existingNodes),
     type: nodeType.type || "node",
     config: exampleConfigForSchema(nodeType.config_schema),
     state: stateBindings,
@@ -300,6 +300,17 @@ function uniqueNodeId(baseID: string, existingNodes: GraphNodeSpec[]): string {
     if (!used.has(id)) return id;
   }
   return `${baseID}_${Date.now().toString(36)}`;
+}
+
+function uniqueNodeName(baseName: string, existingNodes: GraphNodeSpec[]): string {
+  const name = baseName.trim();
+  const used = new Set(existingNodes.map((node) => node.name?.trim() || node.id));
+  if (!used.has(name)) return name;
+  for (let index = 1; index < 1000; index += 1) {
+    const candidate = `${name} ${index}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${name} ${Date.now().toString(36)}`;
 }
 
 function slugify(value: string, fallback: string): string {

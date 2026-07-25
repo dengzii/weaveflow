@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { AlertTriangle, Braces, ChevronDown, ChevronRight, FileJson, Plus, Trash2 } from "lucide-react";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
 import { END_NODE_REF, graphNodePositions, initialStateBindings, resolveDefaultStatePath, resolvedStatePortContract } from "../../../lib/graphEditor";
+import { analyzeVirtualGraphLoop } from "../../../lib/loopPresentation";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
@@ -114,7 +115,7 @@ export function GraphInspectorPanel({
   onSelectLintIssue,
 }: GraphInspectorPanelProps) {
   return (
-    <section className="min-h-0 overflow-auto border-l border-border bg-panel">
+    <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel [overflow-wrap:anywhere]">
       <PanelHeader icon={FileJson} title={inspectorTitle} />
       <LintPanel issues={lintIssues} onSelectIssue={onSelectLintIssue} />
       {inspectorMode === "graph" ? (
@@ -205,8 +206,8 @@ function LintPanel({
           >
             <div className="flex min-w-0 items-center gap-2">
               <StatusText tone={issue.severity === "error" ? "danger" : "warn"}>{issue.severity}</StatusText>
-              {issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.nodeId}</span> : null}
-              {issue.path && !issue.nodeId ? <span className="truncate font-mono text-muted-foreground">{issue.path}</span> : null}
+              {issue.nodeId ? <span className="min-w-0 break-all font-mono text-muted-foreground">{issue.nodeId}</span> : null}
+              {issue.path && !issue.nodeId ? <span className="min-w-0 break-all font-mono text-muted-foreground">{issue.path}</span> : null}
             </div>
             <div className="line-clamp-2 text-foreground">{issue.message}</div>
           </button>
@@ -788,7 +789,7 @@ function RunInputField({
 
   return (
     <div className="grid gap-1" title={sourceTitle}>
-      <span className="truncate font-mono text-xs font-medium">{requirement.path}</span>
+      <span className="min-w-0 break-all font-mono text-xs font-medium">{requirement.path}</span>
       {renderRunInputControl(type, value, onChange, invalid)}
       {invalid ? <div className="text-xs text-destructive">Required value is missing.</div> : null}
       {requirement.type ? <div className="text-[11px] text-muted-foreground">{requirement.type}</div> : null}
@@ -902,16 +903,14 @@ function NodeInspector({
         </section>
       ) : null}
 
-      <InspectorBlock title="State Bindings">
-        <StateBindingsEditor
-          ownerId={selectedNode.id}
-          ports={nodeTypeSchema?.state_ports ?? []}
-          bindings={selectedNode.state}
-          definition={definition}
-          registry={registry}
-          onChange={(state) => onChangeNode((node) => ({ ...node, state }))}
-        />
-      </InspectorBlock>
+      <StateBindingsBlock
+        ownerId={selectedNode.id}
+        ports={nodeTypeSchema?.state_ports ?? []}
+        bindings={selectedNode.state}
+        definition={definition}
+        registry={registry}
+        onChange={(state) => onChangeNode((node) => ({ ...node, state }))}
+      />
 
       <CollapsibleInspectorBlock
         title="Config"
@@ -1081,7 +1080,7 @@ function StateModulesEditor({
 
   if (modules.length === 0) {
     return (
-      <pre className="max-h-40 overflow-auto rounded bg-muted p-2 text-[11px]">
+      <pre className="max-h-40 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-all rounded bg-muted p-2 text-[11px]">
         {stringifyJSON(definition?.state_modules ?? [])}
       </pre>
     );
@@ -1108,7 +1107,7 @@ function StateModulesEditor({
               }}
             />
             <span className="min-w-0">
-              <span className="block truncate font-mono text-xs">{module.name}@{module.version}</span>
+              <span className="block break-all font-mono text-xs">{module.name}@{module.version}</span>
               <span className="block text-[11px] text-muted-foreground">
                 {(module.fields?.length ?? 0)} fields · {(module.capabilities?.length ?? 0)} capabilities
               </span>
@@ -1148,13 +1147,19 @@ function StateBindingsEditor({
         const options = compatibleBindingPaths(port, ownerId, definition, registry);
         const listId = `state-path-${sanitizeHTMLId(ownerId)}-${sanitizeHTMLId(port.name)}`;
         const resolvedContract = resolvedStatePortContract(port, effectiveBinding, registry);
+        const bindingMetadata = effectiveBinding?.path.trim()
+          ? bindingPathMetadata(effectiveBinding.path.trim(), port, definition, registry, false, false, false)
+          : "";
         return (
           <div key={port.name} className="rounded-md border border-border bg-muted/30 p-2">
             <div className="mb-2 flex min-w-0 items-start gap-2">
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="font-mono text-xs font-semibold">{port.name}</span>
-                  {port.required ? <StatePortBadge label="required" /> : <StatePortBadge label="optional" />}
+                  <span className="font-mono text-xs font-semibold">
+                    {port.required ? <span className="mr-0.5 text-destructive" aria-label="required">*</span> : null}
+                    {port.name}
+                  </span>
+                  {!port.required ? <StatePortBadge label="optional" /> : null}
                   {port.mode ? <StatePortBadge label={port.mode} /> : null}
                   {port.capability ? <StatePortBadge label={port.capability} /> : null}
                   {!port.capability && stateSchemaType(port.schema) ? <StatePortBadge label={stateSchemaType(port.schema)} /> : null}
@@ -1176,7 +1181,7 @@ function StateBindingsEditor({
             </div>
 
             {effectiveBinding || port.required ? (
-              <div className="flex items-center gap-1.5">
+              <div className="flex min-w-0 items-center gap-1.5">
                 <Input
                   list={listId}
                   aria-label={`${port.name} state path`}
@@ -1216,9 +1221,9 @@ function StateBindingsEditor({
               </div>
             ) : null}
 
-            {effectiveBinding?.path.trim() ? (
-              <div className="mt-1 truncate text-[10px] text-muted-foreground">
-                {bindingPathMetadata(effectiveBinding.path.trim(), port, definition, registry)}
+            {bindingMetadata ? (
+              <div className="mt-1 break-words text-[10px] text-muted-foreground">
+                {bindingMetadata}
               </div>
             ) : null}
 
@@ -1230,9 +1235,9 @@ function StateBindingsEditor({
                 </summary>
                 <div className="mt-1 grid gap-1 border-l border-border pl-2">
                   {resolvedContract.map((field) => (
-                    <div key={`${field.path}:${field.mode}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 text-[11px]">
-                      <span className="truncate font-mono">{field.path}</span>
-                      <span className="text-muted-foreground">
+                    <div key={`${field.path}:${field.mode}`} className="grid min-w-0 gap-0.5 text-[11px]">
+                      <span className="break-all font-mono">{field.path}</span>
+                      <span className="break-words text-muted-foreground">
                         {[field.mode, field.required ? "required" : "", field.type, field.mergeStrategy].filter(Boolean).join(" · ")}
                       </span>
                     </div>
@@ -1247,9 +1252,9 @@ function StateBindingsEditor({
                 </summary>
                 <div className="mt-1 grid gap-1 border-l border-border pl-2">
                   {port.contract?.fields?.map((field) => (
-                    <div key={`${field.path}:${field.mode}`} className="grid grid-cols-[minmax(0,1fr)_auto] gap-2 text-[11px]">
-                      <span className="truncate font-mono">{field.path}</span>
-                      <span className="text-muted-foreground">{field.mode}{field.required ? " · required" : ""}</span>
+                    <div key={`${field.path}:${field.mode}`} className="grid min-w-0 gap-0.5 text-[11px]">
+                      <span className="break-all font-mono">{field.path}</span>
+                      <span className="break-words text-muted-foreground">{field.mode}{field.required ? " · required" : ""}</span>
                     </div>
                   ))}
                 </div>
@@ -1263,7 +1268,37 @@ function StateBindingsEditor({
 }
 
 function StatePortBadge({ label }: { label: string }) {
-  return <span className="max-w-full truncate rounded bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">{label}</span>;
+  return <span className="max-w-full break-all rounded bg-background px-1.5 py-0.5 text-left font-mono text-[10px] leading-4 text-muted-foreground">{label}</span>;
+}
+
+function StateBindingsBlock({
+  ownerId,
+  ports,
+  bindings,
+  definition,
+  registry,
+  onChange,
+}: {
+  ownerId: string;
+  ports: StatePortDefinition[];
+  bindings: Record<string, StateBinding> | undefined;
+  definition: GraphDefinition | null;
+  registry: RegistryInfo | null;
+  onChange: (bindings: Record<string, StateBinding>) => void;
+}) {
+  const [open, setOpen] = useState(true);
+  return (
+    <CollapsibleInspectorBlock title="State Bindings" open={open} onOpenChange={setOpen}>
+      <StateBindingsEditor
+        ownerId={ownerId}
+        ports={ports}
+        bindings={bindings}
+        definition={definition}
+        registry={registry}
+        onChange={onChange}
+      />
+    </CollapsibleInspectorBlock>
+  );
 }
 
 function compatibleBindingPaths(
@@ -1324,11 +1359,17 @@ function bindingPathMetadata(
   path: string,
   port: StatePortDefinition,
   definition: GraphDefinition | null,
-  registry: RegistryInfo | null
+  registry: RegistryInfo | null,
+  includeCapability = true,
+  includeProducers = true,
+  includeConsumers = true
 ): string {
   const details: string[] = [];
-  if (port.capability) details.push(`capability ${port.capability}`);
-  else if (stateSchemaType(port.schema)) details.push(`type ${stateSchemaType(port.schema)}`);
+  if (port.capability) {
+    if (includeCapability) details.push(`capability ${port.capability}`);
+  } else if (stateSchemaType(port.schema)) {
+    details.push(`type ${stateSchemaType(port.schema)}`);
+  }
 
   const modules = (registry?.state_modules ?? [])
     .filter((module) => module.fields?.some((field) => field.path === path))
@@ -1346,9 +1387,9 @@ function bindingPathMetadata(
       if (statePortReads(candidatePort)) consumers.push(node.id);
     }
   }
-  if (producers.length > 0) details.push(`produced by ${uniqueStrings(producers).join(", ")}`);
-  if (consumers.length > 0) details.push(`consumed by ${uniqueStrings(consumers).join(", ")}`);
-  return details.join(" · ") || "custom absolute path";
+  if (includeProducers && producers.length > 0) details.push(`produced by ${uniqueStrings(producers).join(", ")}`);
+  if (includeConsumers && consumers.length > 0) details.push(`consumed by ${uniqueStrings(consumers).join(", ")}`);
+  return details.join(" · ") || (includeCapability ? "custom absolute path" : "");
 }
 
 function statePortReads(port: StatePortDefinition | undefined): boolean {
@@ -1401,7 +1442,7 @@ function DetailRows({ rows }: { rows: Array<[string, string]> }) {
       {rows.map(([label, value]) => (
         <div key={label} className="grid grid-cols-[84px_minmax(0,1fr)] gap-2 text-xs">
           <span className="text-muted-foreground">{label}</span>
-          <span className="break-words font-mono">{value || "-"}</span>
+          <span className="min-w-0 break-all font-mono">{value || "-"}</span>
         </div>
       ))}
     </div>
@@ -1412,7 +1453,7 @@ function JSONSummary({ title, value }: { title: string; value: unknown }) {
   return (
     <details className="rounded-md border border-border bg-muted p-2">
       <summary className="cursor-pointer text-[11px] font-semibold uppercase text-muted-foreground">{title}</summary>
-      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words text-[11px]">{formatJSONSummary(value)}</pre>
+      <pre className="mt-2 max-h-48 overflow-x-hidden overflow-y-auto whitespace-pre-wrap break-all text-[11px]">{formatJSONSummary(value)}</pre>
     </details>
   );
 }
@@ -1539,60 +1580,72 @@ function LoopInspector({
   "definition" | "selectedVirtualLoop" | "onChangeVirtualLoop" | "onDeleteLoop"
 >) {
   if (!selectedVirtualLoop) return null;
-  const analysis = analyzeVirtualLoop(definition, selectedVirtualLoop);
+  const analysis = analyzeVirtualGraphLoop(definition, selectedVirtualLoop);
   const selectedIds = new Set(selectedVirtualLoop.nodeIds);
+  const automatic = Boolean(selectedVirtualLoop.automatic);
 
   return (
     <>
       <InspectorBlock title="Loop Properties">
-        <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-          <Field label="Name">
-            <Input
-              value={selectedVirtualLoop.name ?? ""}
-              placeholder="Loop group"
-              onChange={(event) => onChangeVirtualLoop((loop) => ({ ...loop, name: event.target.value }))}
-            />
-          </Field>
-          <Button
-            variant="ghost"
-            size="icon"
-            onClick={() => onDeleteLoop(selectedVirtualLoop.id)}
-            title="Delete loop"
-            className="mt-5"
-          >
-            <Trash2 className="h-4 w-4" />
-          </Button>
-        </div>
+        {automatic ? (
+          <div className="rounded-md border border-border bg-muted px-2.5 py-2 text-xs text-muted-foreground">
+            Automatically detected from graph edges. This group exists only in the Web UI.
+          </div>
+        ) : (
+          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+            <Field label="Name">
+              <Input
+                value={selectedVirtualLoop.name ?? ""}
+                placeholder="Loop"
+                onChange={(event) => onChangeVirtualLoop((loop) => ({ ...loop, name: event.target.value }))}
+              />
+            </Field>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => onDeleteLoop(selectedVirtualLoop.id)}
+              title="Delete loop"
+              className="mt-5"
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        )}
         <div className="grid gap-1 text-xs">
           <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
             <span className="text-muted-foreground">id</span>
-            <span className="truncate font-mono">{selectedVirtualLoop.id}</span>
+            <span className="min-w-0 break-all font-mono">{selectedVirtualLoop.id}</span>
           </div>
           <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
             <span className="text-muted-foreground">loop start</span>
-            <span className="truncate font-mono">{analysis.loopStartId || "-"}</span>
+            <span className="min-w-0 break-all font-mono">{analysis.loopStartId || "-"}</span>
+          </div>
+          <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
+            <span className="text-muted-foreground">loop end</span>
+            <span className="min-w-0 break-all font-mono">{analysis.loopEndIds.join(", ") || "-"}</span>
           </div>
           <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
             <span className="text-muted-foreground">next</span>
-            <span className="truncate font-mono">{analysis.nextNodeId || "-"}</span>
+            <span className="min-w-0 break-all font-mono">{analysis.nextNodeIds.join(", ") || "-"}</span>
           </div>
           <div className="grid grid-cols-[84px_minmax(0,1fr)] gap-2">
             <span className="text-muted-foreground">condition</span>
-            <span className="truncate font-mono">{analysis.conditionTypes.join(", ") || "-"}</span>
+            <span className="min-w-0 break-all font-mono">{analysis.conditionLabels.join(", ") || "unconditional"}</span>
           </div>
         </div>
       </InspectorBlock>
 
       <InspectorBlock title="Loop Nodes">
-        <div className="grid max-h-80 gap-1 overflow-auto">
+        <div className="grid max-h-80 gap-1 overflow-x-hidden overflow-y-auto">
           {(definition?.nodes ?? []).map((node) => (
             <label
               key={node.id}
-              className="flex min-h-8 items-center gap-2 rounded-md px-2 text-sm hover:bg-accent"
+              className="flex min-h-8 min-w-0 items-start gap-2 rounded-md px-2 py-1 text-sm hover:bg-accent"
             >
               <input
                 type="checkbox"
                 checked={selectedIds.has(node.id)}
+                disabled={automatic}
                 onChange={(event) =>
                   onChangeVirtualLoop((loop) => ({
                     ...loop,
@@ -1603,8 +1656,8 @@ function LoopInspector({
                 }
                 className="h-4 w-4"
               />
-              <span className="min-w-0 flex-1 truncate">{node.name || node.id}</span>
-              <span className="max-w-24 truncate font-mono text-[11px] text-muted-foreground">{node.id}</span>
+              <span className="min-w-0 flex-1 break-words">{node.name || node.id}</span>
+              <span className="max-w-24 break-all font-mono text-[11px] text-muted-foreground">{node.id}</span>
             </label>
           ))}
         </div>
@@ -1761,28 +1814,26 @@ function EdgeInspector({
 
       {selectedCondition ? (
         <>
-          <InspectorBlock title="State Bindings">
-            <StateBindingsEditor
-              ownerId={`${activeEdge?.from ?? "edge"}_condition`}
-              ports={selectedConditionSchema?.state_ports ?? []}
-              bindings={selectedCondition.state}
-              definition={definition}
-              registry={registry}
-              onChange={(state) => {
-                if (selectedVirtualEdge) {
-                  onChangeVirtualEdge((edge) => ({
-                    ...edge,
-                    condition: edge.condition ? { ...edge.condition, state } : edge.condition,
-                  }));
-                  return;
-                }
-                onChangeEdge((edge) => ({
+          <StateBindingsBlock
+            ownerId={`${activeEdge?.from ?? "edge"}_condition`}
+            ports={selectedConditionSchema?.state_ports ?? []}
+            bindings={selectedCondition.state}
+            definition={definition}
+            registry={registry}
+            onChange={(state) => {
+              if (selectedVirtualEdge) {
+                onChangeVirtualEdge((edge) => ({
                   ...edge,
                   condition: edge.condition ? { ...edge.condition, state } : edge.condition,
                 }));
-              }}
-            />
-          </InspectorBlock>
+                return;
+              }
+              onChangeEdge((edge) => ({
+                ...edge,
+                condition: edge.condition ? { ...edge.condition, state } : edge.condition,
+              }));
+            }}
+          />
           <InspectorBlock title="Condition Config">
             <JsonSchemaForm
               schema={conditionSchema}
@@ -1859,37 +1910,6 @@ function schemaForCondition(conditions: ConditionSchema[], type?: string): Recor
   return isPlainRecord(schema) ? schema : undefined;
 }
 
-function analyzeVirtualLoop(definition: GraphDefinition | null, loop: VirtualGraphLoop) {
-  const nodeIds = uniqueStrings(loop.nodeIds).filter((nodeID) => definition?.nodes.some((node) => node.id === nodeID));
-  const nodeIdSet = new Set(nodeIds);
-  const incoming = new Map(nodeIds.map((nodeID) => [nodeID, 0]));
-  for (const edge of definition?.edges ?? []) {
-    if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to) || edge.from === edge.to) continue;
-    if (edge.condition) continue;
-    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
-  }
-
-  const loopStartId = nodeIds.find((nodeID) => (incoming.get(nodeID) ?? 0) === 0) ?? nodeIds[0] ?? "";
-  const conditionTypes: string[] = [];
-  const conditionSources = new Set<string>();
-  for (const edge of definition?.edges ?? []) {
-    if (loopStartId && nodeIdSet.has(edge.from) && edge.to === loopStartId && edge.condition?.type) {
-      conditionTypes.push(edge.condition.type);
-      conditionSources.add(edge.from);
-    }
-  }
-
-  const edges = definition?.edges ?? [];
-  const preferredExit = edges.find((edge) => conditionSources.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
-  const fallbackExit = edges.find((edge) => nodeIdSet.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
-
-  return {
-    loopStartId,
-    nextNodeId: (preferredExit ?? fallbackExit)?.to ?? "",
-    conditionTypes: uniqueStrings(conditionTypes),
-  };
-}
-
 function InitialStateRequirementList({
   requirements,
   showRequired = true,
@@ -1949,8 +1969,8 @@ function RequirementGroup({
       <div className="grid gap-1">
         {items.map((item) => (
           <div key={`${title}-${item.path}`} className="min-w-0 text-xs">
-            <div className="truncate font-mono text-foreground">{item.path}</div>
-            <div className="truncate text-muted-foreground">
+            <div className="break-all font-mono text-foreground">{item.path}</div>
+            <div className="break-words text-muted-foreground">
               {[item.type, item.nodes?.length ? `nodes:${item.nodes.join(",")}` : "", item.sources?.length ? `sources:${item.sources.join(",")}` : ""]
                 .filter(Boolean)
                 .join(" / ")}

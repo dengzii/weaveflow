@@ -35,6 +35,7 @@ import {
   writeLastLocalGraphDraftId,
 } from "../../lib/localGraphs";
 import { formatTime, stringifyJSON } from "../../lib/utils";
+import { detectVirtualGraphLoops, mergeVirtualGraphLoops } from "../../lib/loopPresentation";
 import type {
   GraphDefinition,
   GraphEdgeSpec,
@@ -152,6 +153,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   const lastSavedSignatureRef = useRef("");
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
+  const canvasRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     setDrafts(readLocalGraphDrafts());
@@ -304,6 +306,10 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   );
   const defaultGraphNodeType = paletteNodeTypes[0];
   const conditions = registry?.conditions ?? [];
+  const displayVirtualLoops = useMemo(
+    () => mergeVirtualGraphLoops(virtualLoops, detectVirtualGraphLoops(definition)),
+    [definition, virtualLoops]
+  );
   const selectedNode = useMemo(
     () => definition?.nodes.find((node) => node.id === selectedNodeId) ?? null,
     [definition, selectedNodeId]
@@ -338,8 +344,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     [displayVirtualEdges, selectedEdgeId]
   );
   const selectedVirtualLoop = useMemo(
-    () => virtualLoops.find((loop) => loop.id === selectedLoopId) ?? null,
-    [selectedLoopId, virtualLoops]
+    () => displayVirtualLoops.find((loop) => loop.id === selectedLoopId) ?? null,
+    [displayVirtualLoops, selectedLoopId]
   );
   const inspectorMode = selectedEdge || selectedVirtualEdge ? "edge" : selectedVirtualLoop ? "loop" : selectedVirtualNode ? "virtual" : selectedNode ? "node" : "graph";
   const searchableNodes = useMemo(
@@ -538,30 +544,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setLocalStatus(`${virtualNodeLabel(nodeID)} ready`);
   }
 
-  function addVirtualLoop(position?: NodePosition) {
-    if (!definition) {
-      setLocalStatus("invalid graph json");
-      return;
-    }
-    const loopID = nextVirtualLoopId(virtualLoops);
-    const loop: VirtualGraphLoop = {
-      id: loopID,
-      name: "Loop",
-      nodeIds: [],
-    };
-    setVirtualLoops((current) => [...current, loop]);
-    if (position) {
-      setDefinition(withNodePosition(definition, loopID, position));
-    }
-    setSelectedLoopId(loopID);
-    setSelectedNodeId(null);
-    setSelectedEdgeId(null);
-    setContextMenu(null);
-    setLocalStatus("loop created");
-  }
-
   function changeSelectedVirtualLoop(update: (loop: VirtualGraphLoop) => VirtualGraphLoop) {
-    if (!selectedVirtualLoop) return;
+    if (!selectedVirtualLoop || selectedVirtualLoop.automatic) return;
     setVirtualLoops((current) =>
       current.map((loop) => (loop.id === selectedVirtualLoop.id ? normalizeVirtualLoop(update({ ...loop })) : loop))
     );
@@ -569,6 +553,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
 
   function deleteVirtualLoop(loopID = selectedLoopId) {
     if (!loopID) return;
+    const loop = displayVirtualLoops.find((item) => item.id === loopID);
+    if (loop?.automatic) {
+      setLocalStatus("automatic loop follows graph edges");
+      return;
+    }
     setVirtualLoops((current) => current.filter((loop) => loop.id !== loopID));
     if (selectedLoopId === loopID) setSelectedLoopId(null);
     setContextMenu(null);
@@ -889,7 +878,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   }
 
   function handleLoopDrag(loopId: string, delta: NodePosition) {
-    const loop = virtualLoops.find((g) => g.id === loopId);
+    const loop = displayVirtualLoops.find((item) => item.id === loopId);
     if (!loop || !definition) return;
     const positions = graphNodePositions(definition);
     let next = definition;
@@ -950,7 +939,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setLocalStatus("invalid graph json");
       return;
     }
-    setDefinition(autoLayoutGraph(definition, virtualNodeIds, displayVirtualEdges, virtualLoops));
+    setDefinition(autoLayoutGraph(definition, virtualNodeIds, displayVirtualEdges, displayVirtualLoops));
     setFitViewSignal((value) => value + 1);
     setLocalStatus("auto layout applied");
   }
@@ -1032,7 +1021,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           )
         : null}
 
-      <section className="relative min-h-0 bg-canvas">
+      <section ref={canvasRef} className="relative min-h-0 bg-canvas">
         <GraphCanvas
           definition={definition}
           steps={steps}
@@ -1060,7 +1049,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           onLoopDrag={handleLoopDrag}
           virtualNodeIds={virtualNodeIds}
           virtualEdges={displayVirtualEdges}
-          virtualLoops={virtualLoops}
+          virtualLoops={displayVirtualLoops}
         />
         {canvasSearchOpen ? (
           <div className="absolute left-1/2 top-4 z-40 flex w-[min(420px,calc(100%-2rem))] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-panel p-2 shadow-lg">
@@ -1151,9 +1140,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
 
       {contextMenu ? (
         <CanvasContextMenu
+          boundaryRef={canvasRef}
           contextMenu={contextMenu}
           paletteNodeTypes={paletteNodeTypes}
-          onAddLoop={addVirtualLoop}
           onAddNode={addNode}
           onAddVirtualNode={addVirtualNode}
           onClose={() => setContextMenu(null)}
@@ -1529,15 +1518,6 @@ function uniqueNodeId(baseID: string, nodes: GraphNodeSpec[]): string {
     if (!used.has(id)) return id;
   }
   return `${baseID}_${Date.now().toString(36)}`;
-}
-
-function nextVirtualLoopId(loops: VirtualGraphLoop[]): string {
-  const used = new Set(loops.map((loop) => loop.id));
-  for (let index = 1; index < 1000; index += 1) {
-    const id = index === 1 ? "loop" : `loop:${index}`;
-    if (!used.has(id)) return id;
-  }
-  return `loop:${Date.now().toString(36)}`;
 }
 
 function uniqueStrings(values: string[]): string[] {

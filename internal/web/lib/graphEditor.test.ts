@@ -11,7 +11,7 @@ import {
   pendingHumanInputState,
 } from "../pages/WorkbenchPage";
 import { validateGraph } from "../pages/workbench/graph-workspace/utils";
-import { addGraphEdge, createGraphDefinition, createNodeFromType, initialStateBindings, resolvedStatePortContract } from "./graphEditor";
+import { addGraphEdge, addNodeToGraph, createGraphDefinition, createNodeFromType, initialStateBindings, resolvedStatePortContract } from "./graphEditor";
 
 const modules: StateModuleDefinition[] = [
   { name: "weaveflow.protocols", version: "1" },
@@ -68,6 +68,15 @@ describe("v2 graph editor defaults", () => {
     expect(graph.version).toBe("2.0");
     expect(graph.state_modules).toEqual([{ name: "weaveflow.protocols", version: "1" }]);
     expect(graph.nodes[0].state).toEqual({ task: { path: "" } });
+  });
+
+  test("numbers newly added nodes when their default names repeat", () => {
+    const titledNodeType: NodeTypeSchema = { type: "agent", title: "Node" };
+    const first = createGraphDefinition("numbered", titledNodeType, modules);
+    const second = addNodeToGraph(first, titledNodeType);
+    const third = addNodeToGraph(second, titledNodeType);
+
+    expect(third.nodes.map((node) => node.name)).toEqual(["Node", "Node 1", "Node 2"]);
   });
 
   test("creates required condition bindings", () => {

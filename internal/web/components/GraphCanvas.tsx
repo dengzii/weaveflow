@@ -16,10 +16,24 @@ import {
   type Node,
   type Viewport,
 } from "@xyflow/react";
-import { Focus, Lock, Maximize2, Network, Unlock, ZoomIn, ZoomOut } from "lucide-react";
-import type { GraphConditionSpec, GraphDefinition, GraphEdgeSpec, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord } from "../types";
+import { Focus, Lock, Maximize2, Network, Repeat2, Unlock, ZoomIn, ZoomOut } from "lucide-react";
+import type { GraphConditionSpec, GraphDefinition, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord } from "../types";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, resolveDefaultStatePath, type NodePosition } from "../lib/graphEditor";
+import {
+  analyzeVirtualGraphLoop,
+  conditionDisplayLabel,
+  edgeSegmentsForLoopDisplay,
+  graphEdgesForLoopDisplay,
+  loopContinueHandleId,
+  loopEndHandleId,
+  loopEndInnerHandleId,
+  loopStartHandleId,
+  loopStartInnerHandleId,
+  type VirtualGraphLoop,
+} from "../lib/loopPresentation";
 import { subscribeRuntimeEvents } from "../lib/runtimeEvents";
+
+export type { VirtualGraphLoop } from "../lib/loopPresentation";
 
 interface FlowNodeData extends Record<string, unknown> {
   label: string;
@@ -31,12 +45,8 @@ interface FlowNodeData extends Record<string, unknown> {
   bindingSummary?: string;
   missingBindings?: boolean;
   virtualKind?: "start" | "end" | "loop";
-  memberCount?: number;
-  loopStartId?: string;
-  nextNodeId?: string;
   width?: number;
   height?: number;
-  conditionLabel?: string;
 }
 
 export interface VirtualGraphEdge {
@@ -47,17 +57,11 @@ export interface VirtualGraphEdge {
   condition?: GraphConditionSpec;
 }
 
-export interface VirtualGraphLoop {
-  id: string;
-  name?: string;
-  nodeIds: string[];
-}
-
 const nodeWidth = 190;
 const nodeHeight = 76;
-const loopPaddingX = 34;
-const loopPaddingTop = 68;
-const loopPaddingBottom = 14;
+const loopPaddingX = 62;
+const loopPaddingTop = 54;
+const loopPaddingBottom = 20;
 const minLoopWidth = 250;
 const minLoopHeight = 150;
 const minZoom = 0.2;
@@ -313,8 +317,10 @@ function GraphCanvasInner({
         ...loopLayouts.map((layout) => ({
           id: layout.loop.id,
           type: "debugLoop",
+          className: "debug-loop-node",
           position: layout.position,
           draggable: editable,
+          dragHandle: ".debug-loop-title",
           selectable: true,
           selected: layout.loop.id === selectedLoopId,
           zIndex: 0,
@@ -324,12 +330,8 @@ function GraphCanvasInner({
             status: "idle",
             editable: isInteractive,
             virtualKind: "loop" as const,
-            memberCount: layout.nodeIds.length,
-            loopStartId: layout.loopStartId,
-            nextNodeId: layout.nextNodeId,
             width: layout.width,
             height: layout.height,
-            conditionLabel: layout.conditionLabel,
           },
           style: {
             width: layout.width,
@@ -366,35 +368,61 @@ function GraphCanvasInner({
       ]
     );
 
-    const displayGraphEdges = graphEdgesForDisplay(definition, loopLayouts);
-    setEdges([
-      ...virtualEdges.map((edge) => {
-        const selected = edge.id === selectedEdgeId;
-        return {
-          id: edge.id,
-          source: edge.from,
-          target: edge.to,
-          label: edge.condition?.type,
-          animated: Boolean(edge.condition),
-          selected,
-          reconnectable: false,
-          style: edgeStyle(selected),
-        };
-      }),
-      ...displayGraphEdges.map(({ edge, id, source, target }) => {
-        const selected = id === selectedEdgeId;
+    const displayVirtualEdges = virtualEdges.flatMap((edge) =>
+      edgeSegmentsForLoopDisplay(
+        definition,
+        { from: edge.from, to: edge.to, condition: edge.condition },
+        edge.id,
+        virtualLoops
+      )
+    );
+    const displayGraphEdges = graphEdgesForLoopDisplay(definition, virtualLoops);
+    setEdges(
+      [...displayVirtualEdges, ...displayGraphEdges].map(({
+        edge,
+        id,
+        selectionId = id,
+        source,
+        target,
+        sourceHandle,
+        targetHandle,
+        showLabel = true,
+        contained = false,
+      }) => {
+        const selected = selectionId === selectedEdgeId;
+        const condition = Boolean(edge.condition);
         return {
           id,
+          data: { selectionId },
           source,
           target,
-          label: edge.condition?.type,
-          animated: Boolean(edge.condition),
+          sourceHandle,
+          targetHandle,
+          type: contained ? "default" : undefined,
+          label: showLabel && edge.condition ? conditionDisplayLabel(edge.condition) : undefined,
+          labelStyle: showLabel && condition ? {
+            fill: "var(--foreground)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 10,
+            fontWeight: 600,
+          } : undefined,
+          labelBgStyle: showLabel && condition ? {
+            fill: "var(--panel)",
+            fillOpacity: 0.96,
+            stroke: "var(--border)",
+            strokeWidth: 1,
+          } : undefined,
+          labelBgPadding: showLabel && condition ? [7, 4] as [number, number] : undefined,
+          labelBgBorderRadius: showLabel && condition ? 5 : undefined,
+          animated: showLabel && condition,
           selected,
           reconnectable: false,
-          style: edgeStyle(selected),
+          interactionWidth: 24,
+          zIndex: 1,
+          style: edgeStyle(selected, condition),
         };
-      }),
-    ]);
+      })
+    );
   }, [definition, editable, highlightedNodeSet, isInteractive, nodeTypes, selectedEdgeId, selectedLoopId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualLoops, virtualNodeIds]);
 
   useEffect(() => {
@@ -478,6 +506,9 @@ function GraphCanvasInner({
 
   function handleConnect(connection: Connection) {
     if (!isInteractive || !connection.source || !connection.target) return;
+    const sourceIsLoop = virtualLoops.some((loop) => loop.id === connection.source);
+    const targetIsLoop = virtualLoops.some((loop) => loop.id === connection.target);
+    if (sourceIsLoop || targetIsLoop) return;
     const sourceKind = virtualNodeKind(connection.source);
     const targetKind = virtualNodeKind(connection.target);
     if (sourceKind === "end") return;
@@ -522,7 +553,8 @@ function GraphCanvasInner({
               onSelectLoop?.(node.id);
               onSelectNode?.(null);
               onSelectEdge?.(null);
-              onLoopContextMenu?.(node.id, screenPoint(event));
+              const loop = virtualLoops.find((item) => item.id === node.id);
+              if (!loop?.automatic) onLoopContextMenu?.(node.id, screenPoint(event));
             } else {
               const position = screenToFlowPosition({ x: event.clientX, y: event.clientY });
               onCreateNodeAt?.(position, screenPoint(event));
@@ -535,7 +567,7 @@ function GraphCanvasInner({
           onNodeContextMenu?.(node.id, screenPoint(event));
         }}
         onEdgeClick={(_, edge) => {
-          onSelectEdge?.(edge.id);
+          onSelectEdge?.(flowEdgeSelectionId(edge));
           onSelectNode?.(null);
           onSelectLoop?.(null);
         }}
@@ -543,10 +575,11 @@ function GraphCanvasInner({
           if (!isInteractive) return;
           event.preventDefault();
           event.stopPropagation();
-          onSelectEdge?.(edge.id);
+          const selectionId = flowEdgeSelectionId(edge);
+          onSelectEdge?.(selectionId);
           onSelectNode?.(null);
           onSelectLoop?.(null);
-          onEdgeContextMenu?.(edge.id, screenPoint(event));
+          onEdgeContextMenu?.(selectionId, screenPoint(event));
         }}
         onPaneClick={() => {
           onSelectNode?.(null);
@@ -733,11 +766,23 @@ function CanvasControls({
   );
 }
 
-function edgeStyle(selected: boolean) {
+function edgeColor(selected: boolean, condition: boolean): string {
+  if (selected) return "var(--flow-edge-selected)";
+  return condition ? "#8b5cf6" : "var(--muted-foreground)";
+}
+
+function edgeStyle(selected: boolean, condition: boolean) {
   return {
     strokeWidth: selected ? 2.6 : 1.4,
-    stroke: selected ? "var(--flow-edge-selected)" : undefined,
+    stroke: edgeColor(selected, condition),
   };
+}
+
+function flowEdgeSelectionId(edge: Edge): string {
+  const selectionId = edge.data && typeof edge.data === "object" && "selectionId" in edge.data
+    ? edge.data.selectionId
+    : undefined;
+  return typeof selectionId === "string" ? selectionId : edge.id;
 }
 
 function fitNodesToViewport(
@@ -750,12 +795,15 @@ function fitNodesToViewport(
   if (!rect || rect.width <= 0 || rect.height <= 0 || nodes.length === 0) return false;
 
   const bounds = nodes.reduce(
-    (current, node) => ({
-      minX: Math.min(current.minX, node.position.x),
-      minY: Math.min(current.minY, node.position.y),
-      maxX: Math.max(current.maxX, node.position.x + nodeWidth),
-      maxY: Math.max(current.maxY, node.position.y + nodeHeight),
-    }),
+    (current, node) => {
+      const dimensions = flowNodeDimensions(node);
+      return {
+        minX: Math.min(current.minX, node.position.x),
+        minY: Math.min(current.minY, node.position.y),
+        maxX: Math.max(current.maxX, node.position.x + dimensions.width),
+        maxY: Math.max(current.maxY, node.position.y + dimensions.height),
+      };
+    },
     { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity }
   );
   if (!Number.isFinite(bounds.minX) || !Number.isFinite(bounds.minY)) return false;
@@ -775,6 +823,15 @@ function fitNodesToViewport(
   };
   applyViewport(viewport);
   return true;
+}
+
+function flowNodeDimensions(node: Node<FlowNodeData>): { width: number; height: number } {
+  const dataWidth = typeof node.data.width === "number" ? node.data.width : 0;
+  const dataHeight = typeof node.data.height === "number" ? node.data.height : 0;
+  return {
+    width: dataWidth || node.measured?.width || node.width || nodeWidth,
+    height: dataHeight || node.measured?.height || node.height || nodeHeight,
+  };
 }
 
 function sameViewport(a: Viewport, b: Viewport): boolean {
@@ -1011,47 +1068,111 @@ function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean 
   const virtualKind = data.virtualKind;
   const attempt = typeof data.attempt === "number" && data.attempt > 0 ? data.attempt : 0;
   const highlighted = Boolean(data.highlighted);
-  return (
-    <div
-      className={`debug-node debug-node-${status}${virtualKind ? " debug-node-virtual" : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}`}
-    >
-      {editable && virtualKind !== "start" ? <Handle type="target" position={Position.Left} /> : null}
-      <div className="truncate text-sm font-semibold">{data.label}</div>
-      <div className="mt-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
-        <span className="flex min-w-0 items-center gap-1.5">
-          <span className="truncate">{data.type}</span>
-          {data.bindingSummary ? (
-            <span className={Boolean(data.missingBindings) ? "shrink-0 text-destructive" : "shrink-0"}>
-              {String(data.bindingSummary)}
-            </span>
-          ) : null}
-        </span>
-        <span className="flex shrink-0 items-center gap-1">
-          {attempt ? <span className="debug-node-attempt">#{attempt}</span> : null}
-          <span>{status}</span>
-        </span>
+  const className = `debug-node debug-node-${status}${virtualKind ? ` debug-node-virtual debug-node-virtual-${virtualKind}` : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}`;
+  if (virtualKind === "start" || virtualKind === "end") {
+    return (
+      <div className={className}>
+        {virtualKind === "end" ? <Handle type="target" position={Position.Left} isConnectable={editable} /> : null}
+        <div className="debug-node-virtual-label">{data.label}</div>
+        {virtualKind === "start" ? <Handle type="source" position={Position.Right} isConnectable={editable} /> : null}
       </div>
-      {editable && virtualKind !== "end" ? <Handle type="source" position={Position.Right} /> : null}
+    );
+  }
+
+  const typeLabel = humanizeNodeType(data.type);
+  const showType = !data.bindingSummary || shouldShowNodeType(data.label, typeLabel);
+  return (
+    <div className={className}>
+      <Handle type="target" position={Position.Left} isConnectable={editable} />
+      <div className="debug-node-header">
+        <span
+          className="debug-node-status-dot"
+          role="img"
+          aria-label={`Execution status: ${status}`}
+          title={`Execution status: ${status}`}
+        />
+        <div className="min-w-0 flex-1 truncate text-sm font-semibold">{data.label}</div>
+      </div>
+      <div className="debug-node-meta">
+        <span className="debug-node-meta-main">
+          {showType ? <span className="debug-node-type" title={typeLabel}>{typeLabel}</span> : null}
+        </span>
+        {attempt ? <span className="debug-node-attempt">#{attempt}</span> : null}
+      </div>
+      <Handle type="source" position={Position.Right} isConnectable={editable} />
     </div>
   );
+}
+
+function humanizeNodeType(value: string): string {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+    .replace(/[_-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function shouldShowNodeType(label: string, typeLabel: string): boolean {
+  const normalizedLabel = humanizeNodeType(label).replace(/\s+node$/, "");
+  return Boolean(typeLabel) && !normalizedLabel.includes(typeLabel);
 }
 
 function DebugLoop({ data, selected }: { data: FlowNodeData; selected?: boolean }) {
   const width = typeof data.width === "number" ? data.width : minLoopWidth;
   const height = typeof data.height === "number" ? data.height : minLoopHeight;
-  const conditionLabel = typeof data.conditionLabel === "string" ? data.conditionLabel : "";
   return (
     <div className={`debug-loop${selected ? " debug-loop-selected" : ""}`} style={{ width, height }}>
-      <Handle type="target" position={Position.Left} className="debug-loop-handle" />
-      <Handle type="source" position={Position.Right} className="debug-loop-handle" />
+      <Handle
+        id={loopStartHandleId}
+        type="target"
+        position={Position.Left}
+        className="debug-loop-handle debug-loop-handle-start"
+        isConnectable={false}
+        title="Loop start"
+        aria-label="Loop start"
+      />
+      <Handle
+        id={loopStartInnerHandleId}
+        type="source"
+        position={Position.Right}
+        className="debug-loop-handle debug-loop-handle-start debug-loop-handle-pair"
+        isConnectable={false}
+        aria-hidden="true"
+      />
+      <Handle
+        id={loopContinueHandleId}
+        type="target"
+        position={Position.Left}
+        className="debug-loop-handle debug-loop-handle-continue"
+        isConnectable={false}
+        title="Continue loop"
+        aria-label="Continue loop"
+      />
+      <Handle
+        id={loopEndInnerHandleId}
+        type="target"
+        position={Position.Left}
+        className="debug-loop-handle debug-loop-handle-end debug-loop-handle-pair"
+        isConnectable={false}
+        aria-hidden="true"
+      />
+      <Handle
+        id={loopEndHandleId}
+        type="source"
+        position={Position.Right}
+        className="debug-loop-handle debug-loop-handle-end"
+        isConnectable={false}
+        title="End loop"
+        aria-label="End loop"
+      />
+      <span className="debug-loop-port-label debug-loop-port-label-continue">continue</span>
       <div className="debug-loop-title" data-loop-title>
-        <span className="truncate">{data.label}</span>
+        <span className="flex min-w-0 items-center gap-1.5 truncate">
+          <Repeat2 className="h-3.5 w-3.5 shrink-0" />
+          <span className="truncate">{data.label}</span>
+        </span>
       </div>
-      {conditionLabel ? (
-        <div className="debug-loop-condition">
-          <span className="truncate">Loop condition: {conditionLabel}</span>
-        </div>
-      ) : null}
     </div>
   );
 }
@@ -1063,17 +1184,6 @@ interface VirtualLoopLayout {
   position: NodePosition;
   width: number;
   height: number;
-  loopStartId?: string;
-  nextNodeId?: string;
-  loopConditionEdgeIds: Set<string>;
-  conditionLabel: string;
-}
-
-interface DisplayGraphEdge {
-  edge: GraphEdgeSpec;
-  id: string;
-  source: string;
-  target: string;
 }
 
 function virtualLoopLayouts(
@@ -1084,54 +1194,16 @@ function virtualLoopLayouts(
   const nodeIds = new Set(definition.nodes.map((node) => node.id));
   const savedPositions = graphNodePositions(definition);
   return loops.map((loop) => {
-    const validNodeIds = uniqueStrings(loop.nodeIds).filter((nodeID) => nodeIds.has(nodeID));
-    const loopAnalysis = analyzeLoop(definition, validNodeIds);
+    const analysis = analyzeVirtualGraphLoop(definition, loop);
+    const validNodeIds = analysis.nodeIds.filter((nodeID) => nodeIds.has(nodeID));
     const bounds = loopBounds(loop.id, validNodeIds, positions, savedPositions);
     return {
-      loop: loop,
+      loop,
       nodeIds: validNodeIds,
       nodeIdSet: new Set(validNodeIds),
       ...bounds,
-      ...loopAnalysis,
     };
   });
-}
-
-function analyzeLoop(definition: GraphDefinition, nodeIds: string[]) {
-  const nodeIdSet = new Set(nodeIds);
-  const incoming = new Map(nodeIds.map((nodeID) => [nodeID, 0]));
-  for (const edge of definition.edges ?? []) {
-    if (!nodeIdSet.has(edge.from) || !nodeIdSet.has(edge.to) || edge.from === edge.to) continue;
-    if (edge.condition) continue;
-    incoming.set(edge.to, (incoming.get(edge.to) ?? 0) + 1);
-  }
-
-  const loopStartId = nodeIds.find((nodeID) => (incoming.get(nodeID) ?? 0) === 0) ?? nodeIds[0];
-  const loopConditionEdgeIds = new Set<string>();
-  const conditionSources = new Set<string>();
-  const conditionTypes: string[] = [];
-  let nextNodeId = "";
-
-  (definition.edges ?? []).forEach((edge, index) => {
-    if (loopStartId && nodeIdSet.has(edge.from) && edge.to === loopStartId && edge.condition) {
-      loopConditionEdgeIds.add(graphEdgeId(edge, index));
-      conditionSources.add(edge.from);
-      if (edge.condition.type) conditionTypes.push(edge.condition.type);
-    }
-  });
-
-  const edges = definition.edges ?? [];
-  const preferredExit = edges.find((edge) => conditionSources.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
-  const fallbackExit = edges.find((edge) => nodeIdSet.has(edge.from) && !nodeIdSet.has(edge.to) && !edge.condition);
-  const exitEdge = preferredExit ?? fallbackExit;
-  if (exitEdge) nextNodeId = exitEdge.to;
-
-  return {
-    loopStartId,
-    nextNodeId,
-    loopConditionEdgeIds,
-    conditionLabel: [...new Set(conditionTypes)].join(", "),
-  };
 }
 
 function loopBounds(
@@ -1177,37 +1249,6 @@ function loopBounds(
     width: Math.max(minLoopWidth, bounds.maxX - bounds.minX + loopPaddingX * 2),
     height: Math.max(minLoopHeight, bounds.maxY - bounds.minY + loopPaddingTop + loopPaddingBottom),
   };
-}
-
-function graphEdgesForDisplay(definition: GraphDefinition, loops: VirtualLoopLayout[]): DisplayGraphEdge[] {
-  return (definition.edges ?? []).flatMap((edge, index) => {
-    const id = graphEdgeId(edge, index);
-    if (loops.some((loop) => loop.loopConditionEdgeIds.has(id))) return [];
-
-    const sourceLoop = loops.find((loop) => loop.nodeIdSet.has(edge.from) && !loop.nodeIdSet.has(edge.to));
-    if (sourceLoop) {
-      return [{ edge, id, source: sourceLoop.loop.id, target: edge.to }];
-    }
-
-    const targetLoop = loops.find((loop) => !loop.nodeIdSet.has(edge.from) && loop.nodeIdSet.has(edge.to));
-    if (targetLoop) {
-      return [{ edge, id, source: edge.from, target: targetLoop.loop.id }];
-    }
-
-    return [{ edge, id, source: edge.from, target: edge.to }];
-  });
-}
-
-function uniqueStrings(values: string[]): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    const item = value.trim();
-    if (!item || seen.has(item)) continue;
-    seen.add(item);
-    result.push(item);
-  }
-  return result;
 }
 
 function layoutNodes(definition: GraphDefinition, virtualNodeIds: Set<string>) {

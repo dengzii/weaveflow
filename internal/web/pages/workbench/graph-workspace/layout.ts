@@ -1,5 +1,6 @@
 import dagre from "dagre";
-import { withNodePositions, type NodePosition } from "../../../lib/graphEditor";
+import { graphEdgeId, withNodePositions, type NodePosition } from "../../../lib/graphEditor";
+import { analyzeVirtualGraphLoop } from "../../../lib/loopPresentation";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
 import type { GraphDefinition } from "../../../types";
 
@@ -41,7 +42,11 @@ export function autoLayoutGraph(
   for (const edge of virtualEdges) {
     if (ids.has(edge.from) && ids.has(edge.to)) graph.setEdge(edge.from, edge.to);
   }
-  for (const edge of definition.edges ?? []) {
+  const hiddenBackEdgeIds = new Set(
+    virtualLoops.flatMap((loop) => [...analyzeVirtualGraphLoop(definition, loop).backEdgeIds])
+  );
+  for (const [index, edge] of (definition.edges ?? []).entries()) {
+    if (hiddenBackEdgeIds.has(graphEdgeId(edge, index))) continue;
     if (ids.has(edge.from) && ids.has(edge.to)) graph.setEdge(edge.from, edge.to);
   }
 

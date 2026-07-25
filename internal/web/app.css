@@ -209,17 +209,112 @@
 }
 
 .debug-node .react-flow__handle-left {
-  left: -5px;
+  left: 0;
 }
 
 .debug-node .react-flow__handle-right {
-  right: -5px;
+  right: 0;
+}
+
+.debug-node-header {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.debug-node-meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 6px;
+  color: var(--muted-foreground);
+  font-size: 12px;
+}
+
+.debug-node-meta-main,
+.debug-node-runtime {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.debug-node-runtime,
+.debug-node-binding {
+  flex: none;
+}
+
+.debug-node-type {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-node-status-dot {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--status-neutral-text);
+  box-shadow: 0 0 0 2px var(--status-neutral-bg);
+}
+
+.debug-node-running .debug-node-status-dot {
+  background: var(--status-live-text);
+  box-shadow: 0 0 0 2px var(--status-live-bg);
+  animation: debug-node-status-pulse 1.6s ease-in-out infinite;
+}
+
+.debug-node-succeeded .debug-node-status-dot {
+  background: var(--flow-edge-entry);
+  box-shadow: 0 0 0 2px var(--status-ok-bg);
+}
+
+.debug-node-failed .debug-node-status-dot {
+  background: var(--flow-edge-finish);
+  box-shadow: 0 0 0 2px var(--status-danger-bg);
+}
+
+.debug-node-paused .debug-node-status-dot {
+  background: var(--status-warn-text);
+  box-shadow: 0 0 0 2px var(--status-warn-bg);
+}
+
+.debug-node-canceled .debug-node-status-dot {
+  opacity: 0.7;
+}
+
+@keyframes debug-node-status-pulse {
+  50% {
+    opacity: 0.45;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .debug-node-running .debug-node-status-dot {
+    animation: none;
+  }
 }
 
 .debug-node-virtual {
+  width: 148px;
+  min-height: 52px;
   border-style: dashed;
+  border-radius: 10px;
   background: var(--muted);
+  padding: 10px 14px;
   box-shadow: none;
+}
+
+.debug-node-virtual-label {
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .debug-node-selected {
@@ -257,10 +352,12 @@
 .debug-loop {
   position: relative;
   height: 100%;
-  border: 1px dashed var(--flow-edge-selected);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--panel) 72%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--flow-edge-selected) 12%, transparent);
+  overflow: visible;
+  pointer-events: none;
+  border: 1px dashed color-mix(in srgb, var(--flow-edge-selected) 76%, var(--border));
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 82%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--flow-edge-selected) 10%, transparent);
 }
 
 .debug-loop-selected {
@@ -272,29 +369,105 @@
   display: flex;
   min-width: 0;
   align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  border-bottom: 1px solid var(--border);
-  padding: 8px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--flow-edge-selected) 24%, var(--border));
+  background: color-mix(in srgb, var(--flow-edge-selected) 7%, var(--panel));
+  padding: 8px 12px;
   color: var(--foreground);
   font-size: 12px;
   font-weight: 700;
-  text-transform: uppercase;
+  pointer-events: auto;
+  cursor: grab;
+  border-top-left-radius: 11px;
+  border-top-right-radius: 11px;
 }
 
-.debug-loop-condition {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 10px;
-  color: var(--flow-edge-selected);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.debug-loop-handle {
-  opacity: 0;
+.debug-flow .react-flow__node.debug-loop-node {
   pointer-events: none;
+}
+
+.debug-loop-handle-start,
+.debug-loop-handle-continue,
+.debug-loop-handle-end {
+  width: 12px;
+  height: 12px;
+  border: 2px solid var(--panel);
+  border-radius: 999px;
+  opacity: 1;
+  pointer-events: none;
+}
+
+.debug-loop-handle-start {
+  left: 0;
+  right: auto;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  background: #0284c7;
+  box-shadow: 0 0 0 1px #0284c7;
+}
+
+.debug-loop-handle-continue {
+  left: auto;
+  right: 0;
+  top: calc(50% + 34px);
+  bottom: auto;
+  width: 12px;
+  height: 12px;
+  transform: translate(50%, -50%) rotate(45deg);
+  border-radius: 3px;
+  background: #7c3aed;
+  box-shadow: 0 0 0 1px #7c3aed;
+}
+
+.debug-loop-handle-end {
+  left: auto;
+  right: 0;
+  top: 50%;
+  transform: translate(50%, -50%);
+  background: #d97706;
+  box-shadow: 0 0 0 1px #d97706;
+}
+
+.debug-loop-handle-pair {
+  opacity: 0;
+}
+
+.debug-loop-port-label {
+  position: absolute;
+  z-index: 1;
+  max-width: 54px;
+  transform: translateY(-50%);
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.debug-loop-port-label-continue {
+  left: auto;
+  right: 18px;
+  top: calc(50% + 34px);
+  bottom: auto;
+  transform: translateY(-50%);
+  color: #7c3aed;
+}
+
+.debug-flow .react-flow__edge-text {
+  paint-order: stroke;
+  stroke: color-mix(in srgb, var(--panel) 88%, transparent);
+  stroke-width: 1px;
+}
+
+.debug-flow .react-flow__edge-textbg {
+  fill: color-mix(in srgb, var(--panel) 96%, var(--background));
+  stroke: color-mix(in srgb, #8b5cf6 42%, var(--border));
+  stroke-width: 1px;
 }
 
 .debug-node-attempt {
