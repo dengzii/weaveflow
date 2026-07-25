@@ -12,6 +12,7 @@ import (
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
+	"github.com/dengzii/weaveflow/trigger"
 )
 
 type Config struct {
@@ -34,18 +35,25 @@ type Config struct {
 	GraphSessionID    string
 
 	EventBuffer int
+
+	TriggerStore   trigger.Store
+	TriggerService *trigger.Service
 }
 
 type Server struct {
-	mu       sync.RWMutex
-	baseCtx  context.Context
-	graph    *wfgraph.Graph
-	runner   *runtime.GraphRunner
-	settings graphRuntimeSettings
-	registry *wfregistry.Registry
-	events   *EventHub
-	baseDir  string
-	cfg      Config
+	mu             sync.RWMutex
+	graphMu        sync.Mutex
+	settingsMu     sync.Mutex
+	baseCtx        context.Context
+	graph          *wfgraph.Graph
+	runner         *runtime.GraphRunner
+	settings       graphRuntimeSettings
+	registry       *wfregistry.Registry
+	events         *EventHub
+	baseDir        string
+	cfg            Config
+	triggers       *trigger.Service
+	triggerRunners map[string]*runtime.GraphRunner
 }
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
@@ -77,16 +85,33 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		reg = builtin.NewDefaultRegistry()
 	}
 
-	return &Server{
-		baseCtx:  ctx,
-		graph:    cfg.Graph,
-		settings: graphRuntimeSettingsFromContext(ctx, baseDir),
-		runner:   runner,
-		registry: reg,
-		events:   hub,
-		baseDir:  baseDir,
-		cfg:      cfg,
-	}, nil
+	srv := &Server{
+		baseCtx:        ctx,
+		graph:          cfg.Graph,
+		settings:       graphRuntimeSettingsFromContext(ctx, baseDir),
+		runner:         runner,
+		registry:       reg,
+		events:         hub,
+		baseDir:        baseDir,
+		cfg:            cfg,
+		triggerRunners: make(map[string]*runtime.GraphRunner),
+	}
+	triggerService := cfg.TriggerService
+	if triggerService == nil {
+		triggerStore := cfg.TriggerStore
+		if triggerStore == nil {
+			triggerStore, err = trigger.NewFileStore(filepath.Join(baseDir, "triggers"))
+			if err != nil {
+				return nil, err
+			}
+		}
+		triggerService, err = trigger.NewService(triggerStore, trigger.RunnerResolverFunc(srv.resolveTriggerRunner))
+		if err != nil {
+			return nil, err
+		}
+	}
+	srv.triggers = triggerService
+	return srv, nil
 }
 
 func ensureBaseDir(baseDir string) (string, error) {
@@ -171,4 +196,25 @@ func (s *Server) Runner() *runtime.GraphRunner {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.runner
+}
+
+func (s *Server) TriggerService() *trigger.Service {
+	if s == nil {
+		return nil
+	}
+	return s.triggers
+}
+
+func (s *Server) Start(ctx context.Context) error {
+	if s == nil || s.triggers == nil {
+		return nil
+	}
+	return s.triggers.Start(ctx)
+}
+
+func (s *Server) Close() error {
+	if s == nil || s.triggers == nil {
+		return nil
+	}
+	return s.triggers.Close()
 }

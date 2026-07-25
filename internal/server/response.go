@@ -3,10 +3,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/trigger"
 
 	"github.com/gin-gonic/gin"
 )
@@ -16,6 +19,11 @@ var (
 	errRunnerNotConfigured      = errors.New("graph runner is not configured")
 	errRegistryNotConfigured    = errors.New("registry is not configured")
 	errEventStreamNotConfigured = errors.New("event stream is not configured")
+	errInvalidGraphDefinition   = errors.New("invalid graph definition")
+	errTriggerGraphNotFound     = errors.New("trigger graph not found")
+	errTriggerPayloadRequired   = errors.New("trigger payload is required")
+	errWebhookBodyTooLarge      = errors.New("webhook body is too large")
+	errRequestBodyTooLarge      = errors.New("request body is too large")
 )
 
 type apiResponse struct {
@@ -45,6 +53,20 @@ func statusForError(err error) int {
 		return http.StatusOK
 	case errors.Is(err, runtime.ErrRunnerRecordNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, trigger.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, errTriggerGraphNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, trigger.ErrExists), errors.Is(err, trigger.ErrBusy), errors.Is(err, trigger.ErrDisabled):
+		return http.StatusConflict
+	case errors.Is(err, trigger.ErrInvalidSignature):
+		return http.StatusUnauthorized
+	case errors.Is(err, errRequestBodyTooLarge), errors.Is(err, errWebhookBodyTooLarge):
+		return http.StatusRequestEntityTooLarge
+	case errors.Is(err, errInvalidGraphDefinition):
+		return http.StatusBadRequest
+	case errors.Is(err, trigger.ErrInvalidTrigger), errors.Is(err, trigger.ErrInvalidPayload), errors.Is(err, trigger.ErrInvalidStateMapping), errors.Is(err, trigger.ErrInvalidTarget), errors.Is(err, trigger.ErrTypeMismatch):
+		return http.StatusBadRequest
 	case errors.Is(err, runtime.ErrRunControlNotAllowed):
 		return http.StatusConflict
 	case errors.Is(err, errGraphNotConfigured),
@@ -59,6 +81,27 @@ func statusForError(err error) int {
 	default:
 		return http.StatusInternalServerError
 	}
+}
+
+func statusForRequestError(err error) int {
+	if errors.Is(err, errRequestBodyTooLarge) {
+		return http.StatusRequestEntityTooLarge
+	}
+	return http.StatusBadRequest
+}
+
+func readRequestBody(reader io.Reader, maxBytes int64) ([]byte, error) {
+	if reader == nil {
+		return nil, nil
+	}
+	data, err := io.ReadAll(io.LimitReader(reader, maxBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxBytes {
+		return nil, fmt.Errorf("%w: limit is %d bytes", errRequestBodyTooLarge, maxBytes)
+	}
+	return data, nil
 }
 
 func statusForListEventsError(err error) int {

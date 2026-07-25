@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -50,7 +51,11 @@ func (s *Server) resolveRunReader(c *gin.Context) runReader {
 	graphID := strings.TrimSpace(c.Query("graph_id"))
 	runner := s.currentRunner()
 	if graphID != "" {
-		cache := s.openGraphCache(graphID)
+		cache, err := s.openGraphCache(graphID)
+		if err != nil {
+			writeError(c, statusForError(err), err)
+			return nil
+		}
 		if runner != nil && graphID == effectiveRunnerGraphID(runner) {
 			if cache.hasSessions() {
 				return combineRunReaders(runner, cache)
@@ -84,55 +89,120 @@ func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
 	if err != nil {
 		return nil, err
 	}
-	var result []cachedGraphSummary
+	byGraphID := make(map[string]*cachedGraphSummary)
+	seenSessions := make(map[string]struct{})
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
 		graphDir := filepath.Join(graphsDir, entry.Name())
-		sessions, _ := os.ReadDir(graphDir)
-		var sessionNames []string
+		sessions, err := os.ReadDir(graphDir)
+		if err != nil {
+			return nil, fmt.Errorf("read graph storage %q: %w", entry.Name(), err)
+		}
 		for _, sess := range sessions {
-			if sess.IsDir() {
-				sessionNames = append(sessionNames, sess.Name())
+			if !sess.IsDir() {
+				continue
+			}
+			manifest, complete, err := readCachedGraphSession(graphDir, sess.Name())
+			if err != nil {
+				return nil, err
+			}
+			if !complete {
+				continue
+			}
+			key := manifest.GraphID + "\x00" + manifest.GraphSessionID
+			if _, exists := seenSessions[key]; exists {
+				continue
+			}
+			seenSessions[key] = struct{}{}
+			summary := byGraphID[manifest.GraphID]
+			if summary == nil {
+				summary = &cachedGraphSummary{ID: manifest.GraphID}
+				byGraphID[manifest.GraphID] = summary
+			}
+			summary.SessionCount++
+			if manifest.GraphSessionID > summary.LatestSession {
+				summary.LatestSession = manifest.GraphSessionID
 			}
 		}
-		sort.Strings(sessionNames)
-		var latest string
-		if len(sessionNames) > 0 {
-			latest = sessionNames[len(sessionNames)-1]
-		}
-		result = append(result, cachedGraphSummary{
-			ID:            entry.Name(),
-			SessionCount:  len(sessionNames),
-			LatestSession: latest,
-		})
 	}
+	result := make([]cachedGraphSummary, 0, len(byGraphID))
+	for _, summary := range byGraphID {
+		result = append(result, *summary)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, nil
 }
 
-func (s *Server) openGraphCache(graphID string) *graphCacheReader {
-	safe := safePathSegment(graphID)
-	graphDir := filepath.Join(s.baseDir, "graphs", safe)
-	sessions, err := os.ReadDir(graphDir)
-	if err != nil {
-		return &graphCacheReader{codec: state.NewJSONStateCodec("")}
-	}
-
+func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 	reader := &graphCacheReader{
 		codec: state.NewJSONStateCodec(""),
 	}
-	for _, sess := range sessions {
-		if !sess.IsDir() {
+	for _, graphDir := range graphStorageDirectories(s.baseDir, graphID) {
+		sessions, err := os.ReadDir(graphDir)
+		if os.IsNotExist(err) {
 			continue
 		}
-		base := filepath.Join(graphDir, sess.Name())
-		reader.executionStores = append(reader.executionStores, runtime.NewFileExecutionStore(filepath.Join(base, "execution")))
-		reader.checkpointStores = append(reader.checkpointStores, runtime.NewFileCheckpointStore(filepath.Join(base, "checkpoints")))
-		reader.artifactStores = append(reader.artifactStores, runtime.NewFileArtifactStore(filepath.Join(base, "artifacts")))
-		reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(base, "events")))
+		if err != nil {
+			return nil, err
+		}
+		for _, sess := range sessions {
+			if !sess.IsDir() {
+				continue
+			}
+			manifest, complete, err := readCachedGraphSession(graphDir, sess.Name())
+			if err != nil {
+				return nil, err
+			}
+			if !complete || manifest.GraphID != graphID {
+				continue
+			}
+			base := filepath.Join(graphDir, sess.Name())
+			reader.executionStores = append(reader.executionStores, runtime.NewFileExecutionStore(filepath.Join(base, "execution")))
+			reader.checkpointStores = append(reader.checkpointStores, runtime.NewFileCheckpointStore(filepath.Join(base, "checkpoints")))
+			reader.artifactStores = append(reader.artifactStores, runtime.NewFileArtifactStore(filepath.Join(base, "artifacts")))
+			reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(base, "events")))
+		}
 	}
-	return reader
+	return reader, nil
+}
+
+func readCachedGraphSession(graphDir string, sessionID string) (graphSessionManifest, bool, error) {
+	baseDir := filepath.Join(graphDir, sessionID)
+	manifestData, err := os.ReadFile(filepath.Join(baseDir, "graph.json"))
+	if os.IsNotExist(err) {
+		return graphSessionManifest{}, false, nil
+	}
+	if err != nil {
+		return graphSessionManifest{}, false, err
+	}
+	var manifest graphSessionManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		return graphSessionManifest{}, false, fmt.Errorf("decode graph session %q manifest: %w", sessionID, err)
+	}
+	manifest.GraphID = strings.TrimSpace(manifest.GraphID)
+	if manifest.GraphID == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q graph id is missing", sessionID)
+	}
+	manifest.GraphSessionID = firstNonEmpty(manifest.GraphSessionID, sessionID)
+	if manifest.GraphSessionID != sessionID {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q manifest id mismatch", sessionID)
+	}
+	definitionName := filepath.Clean(strings.TrimSpace(manifest.DefinitionPath))
+	if definitionName == "." {
+		definitionName = "definition.json"
+	}
+	if filepath.IsAbs(definitionName) || definitionName != filepath.Base(definitionName) {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q definition path is invalid", sessionID)
+	}
+	manifest.DefinitionPath = definitionName
+	if _, err := os.Stat(filepath.Join(baseDir, definitionName)); os.IsNotExist(err) {
+		return graphSessionManifest{}, false, nil
+	} else if err != nil {
+		return graphSessionManifest{}, false, err
+	}
+	return manifest, true, nil
 }
 
 func (r *graphCacheReader) hasSessions() bool {
@@ -197,7 +267,11 @@ func (s *Server) deleteCachedRun(ctx context.Context, graphID string, runID stri
 
 func (s *Server) cachedGraphReaders(graphID string) ([]*graphCacheReader, error) {
 	if strings.TrimSpace(graphID) != "" {
-		return []*graphCacheReader{s.openGraphCache(graphID)}, nil
+		reader, err := s.openGraphCache(graphID)
+		if err != nil {
+			return nil, err
+		}
+		return []*graphCacheReader{reader}, nil
 	}
 	graphs, err := s.listCachedGraphs()
 	if err != nil {
@@ -205,7 +279,11 @@ func (s *Server) cachedGraphReaders(graphID string) ([]*graphCacheReader, error)
 	}
 	readers := make([]*graphCacheReader, 0, len(graphs))
 	for _, graph := range graphs {
-		readers = append(readers, s.openGraphCache(graph.ID))
+		reader, err := s.openGraphCache(graph.ID)
+		if err != nil {
+			return nil, err
+		}
+		readers = append(readers, reader)
 	}
 	return readers, nil
 }
@@ -314,23 +392,16 @@ func cachedRunEventID(eventType runtime.EventType, runID string, at time.Time) s
 
 func (r *combinedRunReader) ListRuns(ctx context.Context, filter runtime.RunFilter) ([]runtime.RunRecord, error) {
 	byID := make(map[string]runtime.RunRecord)
-	var lastErr error
-	sawSuccess := false
 	for _, reader := range r.readers {
 		runs, err := reader.ListRuns(ctx, filter)
 		if err != nil {
-			lastErr = err
-			continue
+			return nil, err
 		}
-		sawSuccess = true
 		for _, run := range runs {
 			if _, exists := byID[run.RunID]; !exists {
 				byID[run.RunID] = run
 			}
 		}
-	}
-	if len(byID) == 0 && lastErr != nil && !sawSuccess {
-		return nil, lastErr
 	}
 	all := make([]runtime.RunRecord, 0, len(byID))
 	for _, run := range byID {
@@ -343,126 +414,92 @@ func (r *combinedRunReader) ListRuns(ctx context.Context, filter runtime.RunFilt
 }
 
 func (r *combinedRunReader) GetRun(ctx context.Context, runID string) (runtime.RunRecord, error) {
-	var lastErr error
 	for _, reader := range r.readers {
 		run, err := reader.GetRun(ctx, runID)
 		if err == nil {
 			return run, nil
 		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return runtime.RunRecord{}, lastErr
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			return runtime.RunRecord{}, err
+		}
 	}
 	return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
 }
 
 func (r *combinedRunReader) ListSteps(ctx context.Context, runID string) ([]runtime.StepRecord, error) {
-	var lastErr error
-	sawSuccess := false
 	for _, reader := range r.readers {
 		steps, err := reader.ListSteps(ctx, runID)
 		if err != nil {
-			lastErr = err
-			continue
+			return nil, err
 		}
-		sawSuccess = true
 		if len(steps) > 0 {
 			return steps, nil
 		}
-	}
-	if lastErr != nil && !sawSuccess {
-		return nil, lastErr
 	}
 	return []runtime.StepRecord{}, nil
 }
 
 func (r *combinedRunReader) ListCheckpoints(ctx context.Context, runID string) ([]runtime.CheckpointRecord, error) {
-	var lastErr error
-	sawSuccess := false
 	for _, reader := range r.readers {
 		checkpoints, err := reader.ListCheckpoints(ctx, runID)
 		if err != nil {
-			lastErr = err
-			continue
+			return nil, err
 		}
-		sawSuccess = true
 		if len(checkpoints) > 0 {
 			return checkpoints, nil
 		}
-	}
-	if lastErr != nil && !sawSuccess {
-		return nil, lastErr
 	}
 	return []runtime.CheckpointRecord{}, nil
 }
 
 func (r *combinedRunReader) LoadCheckpointState(ctx context.Context, checkpointID string) (runtime.RestoredCheckpoint, error) {
-	var lastErr error
 	for _, reader := range r.readers {
 		checkpoint, err := reader.LoadCheckpointState(ctx, checkpointID)
 		if err == nil {
 			return checkpoint, nil
 		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return runtime.RestoredCheckpoint{}, lastErr
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			return runtime.RestoredCheckpoint{}, err
+		}
 	}
 	return runtime.RestoredCheckpoint{}, runtime.ErrRunnerRecordNotFound
 }
 
 func (r *combinedRunReader) ListEvents(runID string) ([]runtime.Event, error) {
-	var lastErr error
-	sawSuccess := false
 	for _, reader := range r.readers {
 		events, err := reader.ListEvents(runID)
 		if err != nil {
-			lastErr = err
-			continue
+			return nil, err
 		}
-		sawSuccess = true
 		if len(events) > 0 {
 			return events, nil
 		}
-	}
-	if lastErr != nil && !sawSuccess {
-		return nil, lastErr
 	}
 	return []runtime.Event{}, nil
 }
 
 func (r *combinedRunReader) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
-	var lastErr error
-	sawSuccess := false
 	for _, reader := range r.readers {
 		artifacts, err := reader.ListArtifacts(ctx, runID)
 		if err != nil {
-			lastErr = err
-			continue
+			return nil, err
 		}
-		sawSuccess = true
 		if len(artifacts) > 0 {
 			return artifacts, nil
 		}
-	}
-	if lastErr != nil && !sawSuccess {
-		return nil, lastErr
 	}
 	return []state.ArtifactRef{}, nil
 }
 
 func (r *combinedRunReader) LoadArtifact(ctx context.Context, ref state.ArtifactRef) (runtime.Artifact, error) {
-	var lastErr error
 	for _, reader := range r.readers {
 		artifact, err := reader.LoadArtifact(ctx, ref)
 		if err == nil {
 			return artifact, nil
 		}
-		lastErr = err
-	}
-	if lastErr != nil {
-		return runtime.Artifact{}, lastErr
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			return runtime.Artifact{}, err
+		}
 	}
 	return runtime.Artifact{}, runtime.ErrRunnerRecordNotFound
 }
@@ -472,7 +509,7 @@ func (r *graphCacheReader) ListRuns(ctx context.Context, filter runtime.RunFilte
 	for _, store := range r.executionStores {
 		runs, err := store.ListRuns(ctx, filter)
 		if err != nil {
-			continue
+			return nil, err
 		}
 		all = append(all, runs...)
 	}
@@ -488,6 +525,9 @@ func (r *graphCacheReader) GetRun(ctx context.Context, runID string) (runtime.Ru
 		if err == nil {
 			return run, nil
 		}
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			return runtime.RunRecord{}, err
+		}
 	}
 	return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
 }
@@ -495,7 +535,10 @@ func (r *graphCacheReader) GetRun(ctx context.Context, runID string) (runtime.Ru
 func (r *graphCacheReader) ListSteps(ctx context.Context, runID string) ([]runtime.StepRecord, error) {
 	for _, store := range r.executionStores {
 		steps, err := store.ListSteps(ctx, runID)
-		if err == nil && len(steps) > 0 {
+		if err != nil {
+			return nil, err
+		}
+		if len(steps) > 0 {
 			return steps, nil
 		}
 	}
@@ -505,7 +548,10 @@ func (r *graphCacheReader) ListSteps(ctx context.Context, runID string) ([]runti
 func (r *graphCacheReader) ListCheckpoints(ctx context.Context, runID string) ([]runtime.CheckpointRecord, error) {
 	for _, store := range r.checkpointStores {
 		checkpoints, err := store.List(ctx, runID)
-		if err == nil && len(checkpoints) > 0 {
+		if err != nil {
+			return nil, err
+		}
+		if len(checkpoints) > 0 {
 			return checkpoints, nil
 		}
 	}
@@ -516,15 +562,18 @@ func (r *graphCacheReader) LoadCheckpointState(ctx context.Context, checkpointID
 	for _, store := range r.checkpointStores {
 		record, payload, err := store.Load(ctx, checkpointID)
 		if err != nil {
-			continue
+			if errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+				continue
+			}
+			return runtime.RestoredCheckpoint{}, err
 		}
 		snapshot, err := r.codec.Decode(payload)
 		if err != nil {
-			continue
+			return runtime.RestoredCheckpoint{}, err
 		}
 		restored, err := state.RestoreStateSnapshot(snapshot)
 		if err != nil {
-			continue
+			return runtime.RestoredCheckpoint{}, err
 		}
 		return runtime.RestoredCheckpoint{
 			Record:    record,
@@ -540,7 +589,10 @@ func (r *graphCacheReader) LoadCheckpointState(ctx context.Context, checkpointID
 func (r *graphCacheReader) ListEvents(runID string) ([]runtime.Event, error) {
 	for _, sink := range r.eventSinks {
 		events, err := sink.ListEvents(runID)
-		if err == nil && len(events) > 0 {
+		if err != nil {
+			return nil, err
+		}
+		if len(events) > 0 {
 			return events, nil
 		}
 	}
@@ -550,7 +602,10 @@ func (r *graphCacheReader) ListEvents(runID string) ([]runtime.Event, error) {
 func (r *graphCacheReader) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
 	for _, store := range r.artifactStores {
 		artifacts, err := store.List(ctx, runID)
-		if err == nil && len(artifacts) > 0 {
+		if err != nil {
+			return nil, err
+		}
+		if len(artifacts) > 0 {
 			return artifacts, nil
 		}
 	}
@@ -562,6 +617,9 @@ func (r *graphCacheReader) LoadArtifact(ctx context.Context, ref state.ArtifactR
 		artifact, err := store.Load(ctx, ref)
 		if err == nil {
 			return artifact, nil
+		}
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			return runtime.Artifact{}, err
 		}
 	}
 	return runtime.Artifact{}, runtime.ErrRunnerRecordNotFound

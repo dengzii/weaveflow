@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -19,5 +20,9 @@ func (s *Server) Run(addr string) error {
 	if strings.TrimSpace(addr) == "" {
 		addr = defaultListenAddr
 	}
+	if err := s.Start(context.Background()); err != nil {
+		return err
+	}
+	defer func() { _ = s.Close() }()
 	return s.Engine().Run(addr)
 }

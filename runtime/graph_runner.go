@@ -58,6 +58,60 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 }
 
 func (r *GraphRunner) Start(ctx context.Context, initialState *state.State) (RunRecord, *state.State, error) {
+	run, initialState, err := r.startRun(ctx, initialState)
+	if err != nil {
+		return RunRecord{}, initialState, err
+	}
+	return r.continueStartedRun(ctx, run, initialState)
+}
+
+// StartAsync creates and starts a run, then executes it in the background. The
+// returned run has already been persisted as running and EventRunStarted has
+// already been published. done is closed when execution stops.
+func (r *GraphRunner) StartAsync(ctx context.Context, initialState *state.State) (RunRecord, <-chan struct{}, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if initialState != nil {
+		initialState = initialState.Clone()
+	}
+	run, initialState, err := r.startRun(ctx, initialState)
+	if err != nil {
+		return RunRecord{}, nil, err
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				_, _, _ = r.failRun(
+					context.WithoutCancel(ctx),
+					run,
+					initialState,
+					"async_execution_panic",
+					fmt.Sprintf("panic: %v", recovered),
+				)
+			}
+		}()
+		finishedRun, finalState, runErr := r.continueStartedRun(ctx, run, initialState)
+		if runErr != nil && finishedRun.RunID == "" {
+			if finalState == nil {
+				finalState = initialState
+			}
+			_, _, _ = r.failRun(
+				context.WithoutCancel(ctx),
+				run,
+				finalState,
+				"async_execution_failed",
+				runErr.Error(),
+			)
+		}
+	}()
+	return run, done, nil
+}
+
+func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (RunRecord, *state.State, error) {
 	if err := r.validate(); err != nil {
 		return RunRecord{}, initialState, err
 	}
@@ -108,12 +162,15 @@ func (r *GraphRunner) Start(ctx context.Context, initialState *state.State) (Run
 	if err := r.publishEvent(ctx, run, "", "", EventRunStarted, nil); err != nil {
 		return RunRecord{}, initialState, err
 	}
+	logger.Info("run started", append(runLogFields(run), state.SummaryFields(initialState)...)...)
+	return run, initialState, nil
+}
+
+func (r *GraphRunner) continueStartedRun(ctx context.Context, run RunRecord, initialState *state.State) (RunRecord, *state.State, error) {
 	if err := r.publishStartupWarnings(ctx, run); err != nil {
 		return RunRecord{}, initialState, err
 	}
-	logger.Info("run started", append(runLogFields(run), state.SummaryFields(initialState)...)...)
-
-	return r.execute(ctx, run, initialState.Clone(), []string{entryPoint}, nil, nil)
+	return r.execute(ctx, run, initialState.Clone(), []string{run.EntryNodeID}, nil, nil)
 }
 
 func (r *GraphRunner) Resume(ctx context.Context, runID string, input *state.State) (RunRecord, *state.State, error) {

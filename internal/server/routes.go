@@ -21,6 +21,15 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	group.GET("/registry", s.handleRegistry)
 	group.GET("/tools", s.handleTools)
 
+	group.POST("/triggers", s.handleCreateTrigger)
+	group.GET("/triggers", s.handleListTriggers)
+	group.GET("/trigger-records", s.handleListTriggerRecords)
+	group.GET("/triggers/:trigger_id", s.handleGetTrigger)
+	group.GET("/triggers/:trigger_id/webhook", s.handleWebhookTrigger)
+	group.POST("/triggers/:trigger_id", s.handleInvokeTrigger)
+	group.PUT("/triggers/:trigger_id", s.handleUpdateTrigger)
+	group.DELETE("/triggers/:trigger_id", s.handleDeleteTrigger)
+
 	group.POST("/runs", s.handleStartRun)
 	group.POST("/runs/:run_id/resume", s.handleResumeRun)
 	group.POST("/checkpoints/:checkpoint_id/resume", s.handleResumeCheckpoint)

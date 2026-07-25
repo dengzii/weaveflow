@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -44,6 +43,8 @@ type runInterrupt struct {
 	Runtime                *state.RuntimeState  `json:"runtime,omitempty"`
 }
 
+const maxRunStateBodyBytes int64 = 8 << 20
+
 func (s *Server) handleStartRun(c *gin.Context) {
 	runner := s.requireRunner(c)
 	if runner == nil {
@@ -51,7 +52,7 @@ func (s *Server) handleStartRun(c *gin.Context) {
 	}
 	initialState, err := bindStatePayload(c, "initial_state", "state", "input")
 	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 	ctx, cancel := s.deriveRunContext(c)
@@ -78,7 +79,7 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 	}
 	input, err := bindStatePayload(c, "input", "state", "initial_state")
 	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 	ctx, cancel := s.deriveRunContext(c)
@@ -105,7 +106,7 @@ func (s *Server) handleResumeCheckpoint(c *gin.Context) {
 	}
 	input, err := bindStatePayload(c, "input", "state", "initial_state")
 	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 	ctx, cancel := s.deriveRunContext(c)
@@ -492,24 +493,44 @@ func interruptMessage(checkpoint runtime.RestoredCheckpoint) string {
 }
 
 func (s *Server) deriveRunContext(c *gin.Context) (context.Context, context.CancelFunc) {
-	base := context.Background()
-	if s != nil && s.baseCtx != nil {
-		base = s.baseCtx
+	requestCtx := context.Background()
+	if c != nil && c.Request != nil {
+		requestCtx = c.Request.Context()
 	}
-	ctx, cancel := context.WithCancel(base)
-	requestDone := c.Request.Context().Done()
-	go func() {
-		select {
-		case <-requestDone:
-			cancel()
-		case <-ctx.Done():
+	return s.deriveRunContextFrom(requestCtx)
+}
+
+func (s *Server) deriveRunContextFrom(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	base := context.Background()
+	if s != nil {
+		s.mu.RLock()
+		if s.baseCtx != nil {
+			base = s.baseCtx
 		}
-	}()
-	return ctx, cancel
+		s.mu.RUnlock()
+	}
+
+	var (
+		ctx    context.Context
+		cancel context.CancelFunc
+	)
+	if deadline, ok := parent.Deadline(); ok {
+		ctx, cancel = context.WithDeadline(base, deadline)
+	} else {
+		ctx, cancel = context.WithCancel(base)
+	}
+	stop := context.AfterFunc(parent, cancel)
+	return ctx, func() {
+		stop()
+		cancel()
+	}
 }
 
 func bindStatePayload(c *gin.Context, keys ...string) (*state.State, error) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readRequestBody(c.Request.Body, maxRunStateBodyBytes)
 	if err != nil {
 		return nil, err
 	}

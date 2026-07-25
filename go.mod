@@ -8,6 +8,7 @@ require (
 	github.com/gin-gonic/gin v1.12.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/smallnest/langgraphgo v0.8.5
 	github.com/tmc/langchaingo v0.1.14
 	github.com/yanyiwu/gojieba v1.4.7

@@ -2,9 +2,7 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -69,18 +67,24 @@ type graphMemorySettingsRequest struct {
 	Directory string `json:"directory"`
 }
 
+const maxGraphSettingsBodyBytes int64 = 1 << 20
+
 func (s *Server) handleGraphSettings(c *gin.Context) {
 	writeData(c, http.StatusOK, s.graphSettingsSnapshot())
 }
 
 func (s *Server) handleSetGraphSettings(c *gin.Context) {
+	s.settingsMu.Lock()
+	defer s.settingsMu.Unlock()
+
 	req, err := bindGraphSettingsRequest(c)
 	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 
-	next := s.graphSettingsSnapshot()
+	previous := s.graphSettingsSnapshot()
+	next := previous
 	apiKey, apiKeyProvided, err := applyGraphSettingsRequest(&next, req)
 	if err != nil {
 		writeError(c, http.StatusBadRequest, err)
@@ -99,7 +103,7 @@ func (s *Server) handleSetGraphSettings(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err)
 		return
 	}
-	if err := applyGraphSettingsEnvironment(next, apiKey, apiKeyProvided); err != nil {
+	if err := applyGraphSettingsEnvironment(previous, next, apiKey, apiKeyProvided); err != nil {
 		writeError(c, http.StatusBadRequest, err)
 		return
 	}
@@ -113,7 +117,7 @@ func (s *Server) handleSetGraphSettings(c *gin.Context) {
 }
 
 func bindGraphSettingsRequest(c *gin.Context) (graphRuntimeSettingsRequest, error) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readRequestBody(c.Request.Body, maxGraphSettingsBodyBytes)
 	if err != nil {
 		return graphRuntimeSettingsRequest{}, err
 	}
@@ -121,7 +125,7 @@ func bindGraphSettingsRequest(c *gin.Context) (graphRuntimeSettingsRequest, erro
 		return graphRuntimeSettingsRequest{}, fmt.Errorf("graph settings body is required")
 	}
 	var req graphRuntimeSettingsRequest
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := decodeStrictJSON(body, &req); err != nil {
 		return graphRuntimeSettingsRequest{}, fmt.Errorf("invalid JSON body: %w", err)
 	}
 	return req, nil
@@ -431,19 +435,48 @@ func cloneTools(input map[string]core.Tool) map[string]core.Tool {
 	return out
 }
 
-func applyGraphSettingsEnvironment(settings graphRuntimeSettings, apiKey string, apiKeyProvided bool) error {
-	keys := make([]string, 0, len(settings.Environment))
-	for key := range settings.Environment {
+func applyGraphSettingsEnvironment(previous graphRuntimeSettings, next graphRuntimeSettings, apiKey string, apiKeyProvided bool) error {
+	changes := make(map[string]string, len(previous.Environment)+len(next.Environment)+1)
+	for key := range previous.Environment {
+		if _, exists := next.Environment[key]; !exists {
+			changes[key] = ""
+		}
+	}
+	for key, value := range next.Environment {
+		changes[key] = value
+	}
+	if apiKeyProvided {
+		changes["OPENAI_API_KEY"] = apiKey
+	}
+
+	keys := make([]string, 0, len(changes))
+	for key, value := range changes {
+		if err := validateEnvironmentName(key); err != nil {
+			return err
+		}
+		if strings.ContainsRune(value, '\x00') {
+			return fmt.Errorf("environment variable %q contains a null byte", key)
+		}
 		keys = append(keys, key)
 	}
 	sort.Strings(keys)
-	for _, key := range keys {
-		if err := setOrUnsetEnv(key, settings.Environment[key]); err != nil {
-			return err
-		}
+
+	type originalEnvironmentValue struct {
+		value  string
+		exists bool
 	}
-	if apiKeyProvided {
-		if err := setOrUnsetEnv("OPENAI_API_KEY", apiKey); err != nil {
+	originals := make(map[string]originalEnvironmentValue, len(keys))
+	for _, key := range keys {
+		value, exists := os.LookupEnv(key)
+		originals[key] = originalEnvironmentValue{value: value, exists: exists}
+		if err := setOrUnsetEnv(key, changes[key]); err != nil {
+			for rollbackKey, original := range originals {
+				if original.exists {
+					_ = os.Setenv(rollbackKey, original.value)
+				} else {
+					_ = os.Unsetenv(rollbackKey)
+				}
+			}
 			return err
 		}
 	}

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -48,27 +49,25 @@ type graphSessionManifest struct {
 	CreatedAt         time.Time `json:"created_at"`
 }
 
+const maxGraphUploadBodyBytes int64 = 8 << 20
+
 func (s *Server) handleSetGraph(c *gin.Context) {
 	req, err := bindGraphUpload(c)
 	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 
 	resp, err := s.configureUploadedGraph(req)
 	if err != nil {
-		status := statusForError(err)
-		if status == http.StatusInternalServerError {
-			status = http.StatusBadRequest
-		}
-		writeError(c, status, err)
+		writeError(c, statusForError(err), err)
 		return
 	}
 	writeData(c, http.StatusOK, resp)
 }
 
 func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
-	body, err := io.ReadAll(c.Request.Body)
+	body, err := readRequestBody(c.Request.Body, maxGraphUploadBodyBytes)
 	if err != nil {
 		return graphUploadRequest{}, err
 	}
@@ -113,13 +112,16 @@ func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadRespon
 	if s == nil {
 		return graphLoadResponse{}, errGraphNotConfigured
 	}
+	s.graphMu.Lock()
+	defer s.graphMu.Unlock()
+
 	if s.registry == nil {
 		return graphLoadResponse{}, errRegistryNotConfigured
 	}
 
 	graph, err := wfgraph.BuildGraph(s.registry, req.Definition, &wfregistry.BuildContext{})
 	if err != nil {
-		return graphLoadResponse{}, err
+		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidGraphDefinition, err)
 	}
 	def, err := graph.Definition()
 	if err != nil {
@@ -163,6 +165,7 @@ func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadRespon
 	s.mu.Lock()
 	s.graph = graph
 	s.runner = runner
+	s.triggerRunners[graphID] = runner
 	s.mu.Unlock()
 
 	return graphLoadResponse{
@@ -185,9 +188,7 @@ func (s *Server) nextUploadedGraphBaseDir(graphID string) string {
 	if s == nil || strings.TrimSpace(s.baseDir) == "" {
 		return ""
 	}
-	base := filepath.Join(s.baseDir, "graphs", safePathSegment(graphID), time.Now().UTC().Format("20060102T150405.000000000Z"))
-	_ = os.MkdirAll(base, 0o755)
-	return base
+	return filepath.Join(s.baseDir, "graphs", graphStorageKey(graphID), time.Now().UTC().Format("20060102T150405.000000000Z"))
 }
 
 func graphSessionIDFromBaseDir(baseDir string) string {
@@ -202,14 +203,17 @@ func writeGraphSessionSnapshot(baseDir string, manifest graphSessionManifest, de
 	if strings.TrimSpace(baseDir) == "" {
 		return nil
 	}
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(baseDir, 0o700); err != nil {
 		return err
 	}
 	definition, err := def.Serialize()
 	if err != nil {
 		return fmt.Errorf("serialize graph definition snapshot: %w", err)
 	}
-	if err := os.WriteFile(filepath.Join(baseDir, manifest.DefinitionPath), definition, 0o644); err != nil {
+	if err := writeGraphSessionFile(filepath.Join(baseDir, manifest.DefinitionPath), definition); err != nil {
 		return fmt.Errorf("write graph definition snapshot: %w", err)
 	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
@@ -217,10 +221,35 @@ func writeGraphSessionSnapshot(baseDir string, manifest graphSessionManifest, de
 		return fmt.Errorf("serialize graph session manifest: %w", err)
 	}
 	data = append(data, '\n')
-	if err := os.WriteFile(filepath.Join(baseDir, "graph.json"), data, 0o644); err != nil {
+	if err := writeGraphSessionFile(filepath.Join(baseDir, "graph.json"), data); err != nil {
 		return fmt.Errorf("write graph session manifest: %w", err)
 	}
 	return nil
+}
+
+func writeGraphSessionFile(path string, data []byte) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), ".graph-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }
 
 func metadataString(metadata map[string]any, key string) string {
@@ -258,8 +287,51 @@ func safePathSegment(value string) string {
 	if out == "" {
 		return "graph"
 	}
-	if len(out) > 80 {
-		return out[:80]
+	runes := []rune(out)
+	if len(runes) > 80 {
+		return string(runes[:80])
 	}
 	return out
+}
+
+func graphStorageKey(graphID string) string {
+	graphID = strings.TrimSpace(graphID)
+	safe := safePathSegment(graphID)
+	if graphID == safe && !isReservedGraphStorageKey(safe) {
+		return safe
+	}
+	hash := sha256.Sum256([]byte(graphID))
+	suffix := fmt.Sprintf("%x", hash[:6])
+	runes := []rune(safe)
+	maxPrefix := 80 - len(suffix) - 1
+	if len(runes) > maxPrefix {
+		runes = runes[:maxPrefix]
+	}
+	return string(runes) + "-" + suffix
+}
+
+func isReservedGraphStorageKey(value string) bool {
+	base := strings.ToUpper(strings.SplitN(value, ".", 2)[0])
+	switch base {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	default:
+		return false
+	}
+}
+
+func graphStorageDirectories(baseDir string, graphID string) []string {
+	graphsDir := filepath.Join(baseDir, "graphs")
+	primary := filepath.Join(graphsDir, graphStorageKey(graphID))
+	legacyKey := safePathSegment(graphID)
+	if isReservedGraphStorageKey(legacyKey) {
+		return []string{primary}
+	}
+	legacy := filepath.Join(graphsDir, legacyKey)
+	if primary == legacy {
+		return []string{primary}
+	}
+	return []string{primary, legacy}
 }

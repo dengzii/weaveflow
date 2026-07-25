@@ -23,10 +23,7 @@ type toolDefinition struct {
 }
 
 func (s *Server) handleTools(c *gin.Context) {
-	available := map[string]core.Tool{}
-	if s != nil {
-		available = core.ToolsFromContext(s.baseCtx)
-	}
+	available := s.currentToolSet()
 
 	definitions := make([]toolDefinition, 0, len(available))
 	for _, id := range sortedToolKeys(available) {

@@ -60,6 +60,10 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := srv.Start(baseCtx); err != nil {
+		log.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
 
 	engine := gin.Default()
 	routePrefix := normalizePrefix(*prefix)

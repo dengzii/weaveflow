@@ -84,6 +84,20 @@ func TestBindGraphUploadRejectsLegacyEnvelopeForms(t *testing.T) {
 	}
 }
 
+func TestBindGraphSettingsRequestRejectsUnknownFields(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	for _, body := range []string{
+		`{"modle": {}}`,
+		`{"memory": {"enabled": true, "path": "legacy"}}`,
+	} {
+		ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+		ginContext.Request = httptest.NewRequest(http.MethodPut, "/graph/settings", strings.NewReader(body))
+		if _, err := bindGraphSettingsRequest(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("bindGraphSettingsRequest(%s) error = %v, want unknown field", body, err)
+		}
+	}
+}
+
 func TestCurrentGraphEnvironmentIgnoresLegacyOpenAIBaseURL(t *testing.T) {
 	t.Setenv("OPENAI_MODEL", "")
 	t.Setenv("OPENAI_BASE_URL", "")
@@ -353,6 +367,59 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 	if _, ok := coreCtx.Tools()["alpha"]; !ok {
 		t.Fatalf("runtime context tools = %#v, want alpha preserved", coreCtx.Tools())
 	}
+
+	w = serveHTTP(engine, http.MethodPut, "/graph/settings", `{"environment":{}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear visible environment status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := os.Getenv("WEAVEFLOW_TEST_FLAG"); got != "" {
+		t.Fatalf("removed WEAVEFLOW_TEST_FLAG = %q, want empty", got)
+	}
+	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "secret-token" {
+		t.Fatalf("omitted secret WEAVEFLOW_TEST_TOKEN = %q, want preserved", got)
+	}
+
+	w = serveHTTP(engine, http.MethodPut, "/graph/settings", `{"environment":{"WEAVEFLOW_TEST_TOKEN":""}}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("clear secret environment status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "" {
+		t.Fatalf("cleared WEAVEFLOW_TEST_TOKEN = %q, want empty", got)
+	}
+}
+
+func TestHandleToolsConcurrentWithSettingsUpdates(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ctx := core.WithTools(context.Background(), map[string]core.Tool{
+		"alpha": {Function: &llms.FunctionDefinition{Name: "alpha_tool"}},
+	})
+	srv, err := New(ctx, Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	const requests = 32
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			response := serveHTTP(engine, http.MethodGet, "/tools", "")
+			if response.Code != http.StatusOK {
+				t.Errorf("GET /tools status = %d, body = %s", response.Code, response.Body.String())
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			response := serveHTTP(engine, http.MethodPut, "/graph/settings", `{"memory":{"enabled":false}}`)
+			if response.Code != http.StatusOK {
+				t.Errorf("PUT /graph/settings status = %d, body = %s", response.Code, response.Body.String())
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestGraphRuntimeSettingsIncludesToolEnvironment(t *testing.T) {

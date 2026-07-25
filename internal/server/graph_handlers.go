@@ -42,20 +42,30 @@ type registryResponse struct {
 }
 
 func (s *Server) handleGraph(c *gin.Context) {
-	def, err := s.graphDefinition()
+	graph, runner := s.currentGraphRunner()
+	if graph == nil {
+		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
+		return
+	}
+	def, err := graph.Definition()
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, graphInfo{
-		ID:                s.graphID(),
-		Version:           s.graphVersion(),
-		GraphHash:         s.graphHash(),
-		GraphSnapshotHash: s.graphSnapshotHash(),
-		GraphSessionID:    s.graphSessionID(),
-		EntryPoint:        def.EntryPoint,
-		FinishPoint:       def.FinishPoint,
-	})
+	info := graphInfo{
+		ID:          "graph",
+		Version:     runtime.DefaultGraphVersion,
+		EntryPoint:  def.EntryPoint,
+		FinishPoint: def.FinishPoint,
+	}
+	if runner != nil {
+		info.ID = firstNonEmpty(runner.GraphID, info.ID)
+		info.Version = firstNonEmpty(runner.GraphVersion, info.Version)
+		info.GraphHash = strings.TrimSpace(runner.GraphHash)
+		info.GraphSnapshotHash = strings.TrimSpace(runner.GraphSnapshotHash)
+		info.GraphSessionID = strings.TrimSpace(runner.GraphSessionID)
+	}
+	writeData(c, http.StatusOK, info)
 }
 
 func (s *Server) handleGraphDefinition(c *gin.Context) {
@@ -96,7 +106,7 @@ func (s *Server) handleGraphInitialStateRequirements(c *gin.Context) {
 func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
 	req, err := bindGraphUpload(c)
 	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 	if s == nil || s.registry == nil {
@@ -169,66 +179,23 @@ func (s *Server) graphDefinition() (dsl.GraphDefinition, error) {
 	return graph.Definition()
 }
 
-func (s *Server) graphID() string {
-	runner := s.currentRunner()
-	if runner != nil {
-		if id := strings.TrimSpace(runner.GraphID); id != "" {
-			return id
-		}
-	}
-	return "graph"
-}
-
-func (s *Server) graphVersion() string {
-	runner := s.currentRunner()
-	if runner != nil {
-		if version := strings.TrimSpace(runner.GraphVersion); version != "" {
-			return version
-		}
-	}
-	return runtime.DefaultGraphVersion
-}
-
-func (s *Server) graphHash() string {
-	runner := s.currentRunner()
-	if runner != nil {
-		return strings.TrimSpace(runner.GraphHash)
-	}
-	return ""
-}
-
-func (s *Server) graphSnapshotHash() string {
-	runner := s.currentRunner()
-	if runner != nil {
-		return strings.TrimSpace(runner.GraphSnapshotHash)
-	}
-	return ""
-}
-
-func (s *Server) graphSessionID() string {
-	runner := s.currentRunner()
-	if runner != nil {
-		return strings.TrimSpace(runner.GraphSessionID)
-	}
-	return ""
-}
-
 func (s *Server) currentGraph() *wfgraph.Graph {
-	if s == nil {
-		return nil
-	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.graph
+	graph, _ := s.currentGraphRunner()
+	return graph
 }
 
 func (s *Server) currentRunner() *runtime.GraphRunner {
+	_, runner := s.currentGraphRunner()
+	return runner
+}
+
+func (s *Server) currentGraphRunner() (*wfgraph.Graph, *runtime.GraphRunner) {
 	if s == nil {
-		return nil
+		return nil, nil
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.runner
+	return s.graph, s.runner
 }
 
 func sortedGraphNodeSpecKeys(input map[string]dsl.GraphNodeSpec) []string {
