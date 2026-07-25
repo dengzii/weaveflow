@@ -17,6 +17,8 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+const defaultLLMPromptMaxChars = 200000
+
 type LLMNode struct {
 	Base
 	ModelID          string
@@ -85,7 +87,9 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 						"title":     "System Prompt",
 						"x-control": "textarea",
 					},
-					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"prompt_max_chars": dsl.JSONSchema{
+						"type": "integer", "minimum": 1, "default": defaultLLMPromptMaxChars,
+					},
 				},
 				"additionalProperties": false,
 			},
@@ -124,7 +128,10 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 	if model == nil {
 		return fmt.Errorf("llm node: model %q not available", effectiveModelID(n.ModelID))
 	}
-	nodeTools := ctx.FilterTools(n.ToolIDs)
+	var nodeTools map[string]core.Tool
+	if len(n.ToolIDs) > 0 {
+		nodeTools = ctx.FilterTools(n.ToolIDs)
+	}
 
 	conversation, err := conversationcap.Bind(access, n.ConversationPath)
 	if err != nil {
@@ -241,7 +248,7 @@ func effectiveModelID(id string) string {
 
 func (n *LLMNode) effectivePromptMaxChars() int {
 	if n == nil || n.PromptMaxChars <= 0 {
-		return 20000
+		return defaultLLMPromptMaxChars
 	}
 	return n.PromptMaxChars
 }

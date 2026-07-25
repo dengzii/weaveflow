@@ -9,6 +9,7 @@ import (
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -158,6 +159,68 @@ func TestLLMWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	}
 }
 
+func TestLLMDefaultPromptMaxChars(t *testing.T) {
+	t.Parallel()
+
+	if got := NewLLMNode().effectivePromptMaxChars(); got != 200000 {
+		t.Fatalf("default prompt max chars = %d, want 200000", got)
+	}
+	properties := LLMNodeTypeDefinition().NodeTypeSchema.ConfigSchema["properties"].(dsl.JSONSchema)
+	promptSchema := properties["prompt_max_chars"].(dsl.JSONSchema)
+	if got := promptSchema["default"]; got != 200000 {
+		t.Fatalf("prompt_max_chars schema default = %#v, want 200000", got)
+	}
+}
+
+func TestLLMOnlyInjectsConfiguredTools(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		toolIDs     []string
+		wantToolIDs []string
+	}{
+		{name: "no tool ids"},
+		{name: "selected tool", toolIDs: []string{"echo"}, wantToolIDs: []string{"echo"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			conversationPath := state.Scope("llm", "conversation")
+			access := state.NewEditingAccess(state.NewState())
+			view, _ := conversationcap.Bind(access, conversationPath)
+			_ = view.SetMessages([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")})
+			_ = view.SetMaxIterations(3)
+
+			model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "answer"}}}}}
+			availableTools := map[string]core.Tool{
+				"echo":  core.NewTool(&llms.FunctionDefinition{Name: "echo"}, nil),
+				"other": core.NewTool(&llms.FunctionDefinition{Name: "other"}, nil),
+			}
+			ctx := core.WithTools(core.WithModel(context.Background(), model), availableTools)
+			target := NewLLMNode(WithID("llm"))
+			target.ConversationPath = conversationPath
+			target.ToolIDs = tt.toolIDs
+
+			if _, err := Execute(ctx, access.State(), target); err != nil {
+				t.Fatalf("execute: %v", err)
+			}
+			if len(model.options) != 1 {
+				t.Fatalf("model calls = %d, want 1", len(model.options))
+			}
+			gotToolIDs := make([]string, 0, len(model.options[0].Tools))
+			for _, tool := range model.options[0].Tools {
+				if tool.Function != nil {
+					gotToolIDs = append(gotToolIDs, tool.Function.Name)
+				}
+			}
+			if strings.Join(gotToolIDs, ",") != strings.Join(tt.wantToolIDs, ",") {
+				t.Fatalf("injected tools = %v, want %v", gotToolIDs, tt.wantToolIDs)
+			}
+		})
+	}
+}
+
 func TestToolsUsesSameExplicitConversationRoot(t *testing.T) {
 	t.Parallel()
 	root := state.Scope("loop", "conversation")
@@ -211,15 +274,21 @@ type scriptedModel struct {
 	mu        sync.Mutex
 	responses []*llms.ContentResponse
 	calls     [][]llms.MessageContent
+	options   []llms.CallOptions
 }
 
-func (m *scriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *scriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.responses) == 0 {
 		return nil, errors.New("scripted model exhausted")
 	}
+	callOptions := llms.CallOptions{}
+	for _, option := range options {
+		option(&callOptions)
+	}
 	m.calls = append(m.calls, cloneMessages(messages))
+	m.options = append(m.options, callOptions)
 	response := m.responses[0]
 	m.responses = m.responses[1:]
 	return response, nil
