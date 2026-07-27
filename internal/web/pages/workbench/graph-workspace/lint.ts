@@ -1,5 +1,6 @@
-import { END_NODE_REF, graphEdgeId, resolveDefaultStatePath } from "../../../lib/graphEditor";
+import { END_NODE_REF, dynamicStatePortForName, graphEdgeId, resolveDefaultStatePath } from "../../../lib/graphEditor";
 import type {
+  DynamicStatePortDefinition,
   GraphDefinition,
   InitialStateRequirements,
   InitialStateRequirement,
@@ -98,6 +99,7 @@ export function buildGraphLintIssues({
       stableId: `node-${node.id}`,
       bindings: node.state,
       ports: nodeType?.state_ports,
+      dynamicPorts: nodeType?.dynamic_state_ports,
       selectedModules,
       selectedCapabilities,
       registeredCapabilities: registry?.capabilities ?? [],
@@ -210,6 +212,7 @@ export function buildGraphLintIssues({
         stableId: `condition-${edgeId}`,
         bindings: edge.condition.state,
         ports: condition?.state_ports,
+        dynamicPorts: condition?.dynamic_state_ports,
         selectedModules,
         selectedCapabilities,
         registeredCapabilities: registry?.capabilities ?? [],
@@ -453,6 +456,7 @@ function lintComponentBindings({
   stableId,
   bindings,
   ports,
+  dynamicPorts,
   selectedModules,
   selectedCapabilities,
   registeredCapabilities,
@@ -464,6 +468,7 @@ function lintComponentBindings({
   stableId: string;
   bindings: Record<string, StateBinding> | undefined;
   ports: StatePortDefinition[] | undefined;
+  dynamicPorts: DynamicStatePortDefinition | undefined;
   selectedModules: StateModuleDefinition[];
   selectedCapabilities: Map<string, StateCapabilityDefinition>;
   registeredCapabilities: StateCapabilityDefinition[];
@@ -476,8 +481,8 @@ function lintComponentBindings({
   const portMap = new Map((ports ?? []).map((port) => [port.name, port]));
   const contractPaths = new Map<string, { type: string; merge: string }>();
 
-  if (ports) {
-    for (const port of ports) {
+  if (ports || dynamicPorts) {
+    for (const port of ports ?? []) {
       if (!bindingMap[port.name]) {
         const defaultPath = resolveDefaultStatePath(port.default_path, nodeId ?? "");
         if (defaultPath) bindingMap[port.name] = { path: defaultPath };
@@ -493,8 +498,23 @@ function lintComponentBindings({
         ));
       }
     }
+    let dynamicCount = 0;
     for (const name of Object.keys(bindingMap)) {
-      if (!portMap.has(name)) {
+      if (portMap.has(name)) continue;
+      const dynamicPort = dynamicStatePortForName(name, dynamicPorts);
+      if (dynamicPort) {
+        dynamicCount += 1;
+        portMap.set(name, dynamicPort);
+        if (!bindingPath(bindingMap[name])) {
+          issues.push(bindingIssue(
+            `${stableId}-binding-required-${name}`,
+            `${component} requires a path for dynamic state binding "${name}".`,
+            `state.${name}`,
+            nodeId,
+            edgeId
+          ));
+        }
+      } else {
         issues.push(bindingIssue(
           `${stableId}-binding-unknown-${name}`,
           `${component} binds unknown state port "${name}".`,
@@ -503,6 +523,24 @@ function lintComponentBindings({
           edgeId
         ));
       }
+    }
+    if (dynamicPorts && dynamicCount < (dynamicPorts.min_ports ?? 0)) {
+      issues.push(bindingIssue(
+        `${stableId}-binding-dynamic-min`,
+        `${component} requires at least ${dynamicPorts.min_ports ?? 0} dynamic state binding(s).`,
+        "state",
+        nodeId,
+        edgeId
+      ));
+    }
+    if (dynamicPorts?.max_ports && dynamicCount > dynamicPorts.max_ports) {
+      issues.push(bindingIssue(
+        `${stableId}-binding-dynamic-max`,
+        `${component} allows at most ${dynamicPorts.max_ports} dynamic state binding(s).`,
+        "state",
+        nodeId,
+        edgeId
+      ));
     }
   }
 

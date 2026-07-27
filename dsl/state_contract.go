@@ -53,6 +53,16 @@ type StatePortDefinition struct {
 	MergeStrategy StateMergeStrategy    `json:"merge_strategy,omitempty"`
 }
 
+type DynamicStatePortDefinition struct {
+	Description   string             `json:"description,omitempty"`
+	NamePattern   string             `json:"name_pattern"`
+	MinPorts      int                `json:"min_ports,omitempty"`
+	MaxPorts      int                `json:"max_ports,omitempty"`
+	Schema        JSONSchema         `json:"schema"`
+	Mode          StateAccessMode    `json:"mode"`
+	MergeStrategy StateMergeStrategy `json:"merge_strategy"`
+}
+
 func (s JSONSchema) Clone() JSONSchema {
 	return cloneJSONSchema(s)
 }

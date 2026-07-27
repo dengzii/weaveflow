@@ -147,6 +147,7 @@ func cloneNodeTypeDefinition(def NodeTypeDefinition) NodeTypeDefinition {
 	cloned.ConfigSchema = def.ConfigSchema.Clone()
 	cloned.StatePorts = cloneStatePortDefinitions(def.StatePorts)
 	cloned.NodeTypeSchema.StatePorts = cloneStatePortDefinitions(def.NodeTypeSchema.StatePorts)
+	cloned.NodeTypeSchema.DynamicStatePorts = cloneDynamicStatePortDefinition(def.NodeTypeSchema.DynamicStatePorts)
 	return cloned
 }
 
@@ -155,7 +156,17 @@ func cloneConditionDefinition(def ConditionDefinition) ConditionDefinition {
 	cloned.ConfigSchema = def.ConfigSchema.Clone()
 	cloned.StatePorts = cloneStatePortDefinitions(def.StatePorts)
 	cloned.ConditionSchema.StatePorts = cloneStatePortDefinitions(def.ConditionSchema.StatePorts)
+	cloned.ConditionSchema.DynamicStatePorts = cloneDynamicStatePortDefinition(def.ConditionSchema.DynamicStatePorts)
 	return cloned
+}
+
+func cloneDynamicStatePortDefinition(def *dsl.DynamicStatePortDefinition) *dsl.DynamicStatePortDefinition {
+	if def == nil {
+		return nil
+	}
+	cloned := *def
+	cloned.Schema = def.Schema.Clone()
+	return &cloned
 }
 
 func cloneStatePortDefinitions(ports []dsl.StatePortDefinition) []dsl.StatePortDefinition {

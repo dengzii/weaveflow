@@ -26,6 +26,29 @@ func TestGraphDefinitionSchemaRequiresStateForConditionWithRequiredPort(t *testi
 	}
 }
 
+func TestGraphDefinitionSchemaAllowsDynamicStateBindings(t *testing.T) {
+	t.Parallel()
+	schema := BuildGraphDefinitionSchema(nil, map[string]NodeTypeSchema{
+		"dynamic": {
+			Type: "dynamic",
+			DynamicStatePorts: &DynamicStatePortDefinition{
+				NamePattern: "[A-Za-z_][A-Za-z0-9_]*", Schema: JSONSchema{"type": "object"},
+				Mode: StateAccessRead, MergeStrategy: StateMergeReplace,
+			},
+		},
+	}, nil)
+
+	properties := schema["properties"].(JSONSchema)
+	nodes := properties["nodes"].(JSONSchema)
+	node := nodes["items"].(JSONSchema)
+	variant := node["oneOf"].([]any)[0].(JSONSchema)
+	stateSchema := variant["properties"].(JSONSchema)["state"].(JSONSchema)
+	additional, ok := stateSchema["additionalProperties"].(JSONSchema)
+	if !ok || additional["type"] != "object" {
+		t.Fatalf("dynamic state additionalProperties = %#v", stateSchema["additionalProperties"])
+	}
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

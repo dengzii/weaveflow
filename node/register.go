@@ -3,6 +3,7 @@ package node
 import (
 	"fmt"
 
+	"github.com/dengzii/weaveflow/node/stateops"
 	"github.com/dengzii/weaveflow/registry"
 )
 
@@ -11,7 +12,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) error {
 		return fmt.Errorf("registry is nil")
 	}
 
-	for _, def := range []registry.NodeTypeDefinition{
+	definitions := []registry.NodeTypeDefinition{
 		SubgraphNodeTypeDefinition(),
 		ConversationInputNodeTypeDefinition(),
 		ContextReducerNodeTypeDefinition(),
@@ -27,7 +28,9 @@ func RegisterCoreNodeTypes(r *registry.Registry) error {
 		SupervisorNodeTypeDefinition(),
 		SupervisorWorkerNodeTypeDefinition(),
 		SupervisorFinalizeNodeTypeDefinition(),
-	} {
+	}
+	definitions = append(definitions, stateops.NodeTypeDefinitions()...)
+	for _, def := range definitions {
 		if err := r.RegisterNodeType(def); err != nil {
 			return fmt.Errorf("register node type %q: %w", def.Type, err)
 		}

@@ -13,6 +13,10 @@ export interface SchemaFormIssue {
   message: string;
 }
 
+export type JSONControlParseResult =
+  | { ok: true; value: unknown }
+  | { ok: false };
+
 interface JsonSchemaFormProps {
   schema?: Record<string, unknown>;
   unavailableReason?: string;
@@ -69,7 +73,7 @@ export function validateSchemaValue(
   const type = schemaType(schema, value);
   const required = requiredKeys(schema);
 
-  if (basePath && !isEmptyValue(value)) {
+  if (basePath && !isEmptyValue(value) && schema["x-control"] !== "json") {
     const typeIssue = validateSchemaType(type, value, basePath);
     if (typeIssue) issues.push(typeIssue);
   }
@@ -97,8 +101,9 @@ export function validateSchemaValue(
   if (properties.length === 0) return issues;
 
   const recordValue = isRecord(value) ? value : {};
+  const propertySchemas = new Map(properties);
   for (const key of required) {
-    if (isEmptyValue(recordValue[key])) {
+    if (requiredFieldMissing(recordValue, key, propertySchemas.get(key))) {
       issues.push({
         path: joinPath(basePath, key),
         message: "Required field.",
@@ -204,6 +209,10 @@ function renderSchemaControl(
 ) {
   const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
   const controlClass = invalid ? "border-destructive focus:border-destructive" : undefined;
+
+  if (schema["x-control"] === "json") {
+    return <JSONValueControl value={value} invalid={invalid} onChange={onChange} />;
+  }
 
   if (enumValues.length > 0) {
     return (
@@ -387,6 +396,40 @@ function ObjectListControl({
         </Button>
       </div>
     </div>
+  );
+}
+
+function JSONValueControl({
+  value,
+  invalid,
+  onChange,
+}: {
+  value: unknown;
+  invalid: boolean;
+  onChange: (value: unknown) => void;
+}) {
+  const formatted = useMemo(() => formatJSONControlValue(value), [value]);
+  const [draft, setDraft] = useState(formatted);
+  const [parseError, setParseError] = useState(false);
+
+  useEffect(() => {
+    setDraft(formatted);
+    setParseError(false);
+  }, [formatted]);
+
+  return (
+    <Textarea
+      value={draft}
+      onChange={(event) => {
+        const text = event.target.value;
+        setDraft(text);
+        const parsed = parseJSONControlText(text);
+        setParseError(!parsed.ok);
+        if (parsed.ok) onChange(parsed.value);
+      }}
+      spellCheck={false}
+      className={cn("min-h-24 resize-y font-mono text-xs", (invalid || parseError) && "border-destructive focus:border-destructive")}
+    />
   );
 }
 
@@ -658,6 +701,12 @@ function isEmptyValue(value: unknown): boolean {
   return value === undefined || value === null || (typeof value === "string" && value.trim() === "");
 }
 
+function requiredFieldMissing(record: Record<string, unknown>, key: string, schema: unknown): boolean {
+  if (!Object.prototype.hasOwnProperty.call(record, key) || record[key] === undefined) return true;
+  if (isRecord(schema) && schema["x-control"] === "json") return false;
+  return isEmptyValue(record[key]);
+}
+
 function coerceEnumValue(value: string, enumValues: unknown[]): unknown {
   const match = enumValues.find((item) => String(item) === value);
   return match ?? value;
@@ -666,6 +715,20 @@ function coerceEnumValue(value: string, enumValues: unknown[]): unknown {
 function formatStructuredValue(value: unknown, type: string): string {
   if (value === undefined || value === null) return type === "array" ? "[]" : "{}";
   if (typeof value === "string") return value;
+  return stringifyJSON(value);
+}
+
+export function parseJSONControlText(text: string): JSONControlParseResult {
+  if (!text.trim()) return { ok: true, value: undefined };
+  try {
+    return { ok: true, value: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false };
+  }
+}
+
+function formatJSONControlValue(value: unknown): string {
+  if (value === undefined) return "";
   return stringifyJSON(value);
 }
 

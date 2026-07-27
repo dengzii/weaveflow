@@ -2,6 +2,7 @@ package registry
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
@@ -151,6 +152,9 @@ func (r *Registry) RegisterNodeType(def NodeTypeDefinition) error {
 	if err := validateStatePorts(def.StatePorts); err != nil {
 		return fmt.Errorf("node type %q: %w", def.Type, err)
 	}
+	if err := validateDynamicStatePorts(def.DynamicStatePorts); err != nil {
+		return fmt.Errorf("node type %q: %w", def.Type, err)
+	}
 	def.NodeTypeSchema.StatePorts = append([]dsl.StatePortDefinition(nil), def.StatePorts...)
 	if _, exists := r.NodeTypes[def.Type]; exists {
 		return fmt.Errorf("node type %q is already registered", def.Type)
@@ -176,6 +180,9 @@ func (r *Registry) RegisterCondition(def ConditionDefinition) error {
 		def.ConditionSchema.StatePorts = append([]dsl.StatePortDefinition(nil), def.StatePorts...)
 	}
 	if err := validateStatePorts(def.StatePorts); err != nil {
+		return fmt.Errorf("condition %q: %w", def.Type, err)
+	}
+	if err := validateDynamicStatePorts(def.DynamicStatePorts); err != nil {
 		return fmt.Errorf("condition %q: %w", def.Type, err)
 	}
 	def.ConditionSchema.StatePorts = append([]dsl.StatePortDefinition(nil), def.StatePorts...)
@@ -248,6 +255,38 @@ func validateStatePorts(ports []dsl.StatePortDefinition) error {
 				return fmt.Errorf("capability state port %q field %q has invalid mode %q", port.Name, field.Path, field.Mode)
 			}
 		}
+	}
+	return nil
+}
+
+func validateDynamicStatePorts(def *dsl.DynamicStatePortDefinition) error {
+	if def == nil {
+		return nil
+	}
+	def.NamePattern = strings.TrimSpace(def.NamePattern)
+	if def.NamePattern == "" {
+		return fmt.Errorf("dynamic state port name pattern is required")
+	}
+	if _, err := regexp.Compile("^(?:" + def.NamePattern + ")$"); err != nil {
+		return fmt.Errorf("dynamic state port name pattern %q is invalid: %w", def.NamePattern, err)
+	}
+	if def.MinPorts < 0 {
+		return fmt.Errorf("dynamic state port min_ports cannot be negative")
+	}
+	if def.MaxPorts < 0 {
+		return fmt.Errorf("dynamic state port max_ports cannot be negative")
+	}
+	if def.MaxPorts > 0 && def.MaxPorts < def.MinPorts {
+		return fmt.Errorf("dynamic state port max_ports cannot be less than min_ports")
+	}
+	if len(def.Schema) == 0 {
+		return fmt.Errorf("dynamic state ports require schema")
+	}
+	if def.Mode != dsl.StateAccessRead {
+		return fmt.Errorf("dynamic state ports only support read mode")
+	}
+	if def.MergeStrategy != dsl.StateMergeReplace {
+		return fmt.Errorf("dynamic state ports only support replace merge strategy")
 	}
 	return nil
 }

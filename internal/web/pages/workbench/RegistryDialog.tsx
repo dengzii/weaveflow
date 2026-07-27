@@ -248,6 +248,7 @@ function nodeTypeItem(item: NodeTypeSchema): RegistryItem {
     description: item.description,
     config_schema: item.config_schema,
     state_ports: item.state_ports,
+    dynamic_state_ports: item.dynamic_state_ports,
   };
   const nodeName = item.title?.trim() || "Node";
   return {
@@ -284,6 +285,7 @@ function conditionItem(item: ConditionSchema): RegistryItem {
     description: item.description,
     config_schema: item.config_schema,
     state_ports: item.state_ports,
+    dynamic_state_ports: item.dynamic_state_ports,
   };
   const conditionName = item.title?.trim() || "Condition";
   return {

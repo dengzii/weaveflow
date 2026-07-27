@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
@@ -72,5 +73,77 @@ func TestExpressionConditionEvaluatesRelativeToBinding(t *testing.T) {
 	current := state.FromShared(map[string]any{"ticket": map[string]any{"status": "open"}})
 	if !condition.Match(context.Background(), current) {
 		t.Fatal("expected expression match")
+	}
+}
+
+func TestStateExpressionCombinesBoundInputs(t *testing.T) {
+	t.Parallel()
+	condition, err := StateExpression(map[string]state.Path{
+		"price": state.Shared("cart", "price"), "quantity": state.Shared("cart", "quantity"), "vip": state.Shared("user", "vip"),
+	}, "inputs.vip && inputs.price * inputs.quantity >= 100")
+	if err != nil {
+		t.Fatalf("StateExpression(): %v", err)
+	}
+	matching := state.FromShared(map[string]any{
+		"cart": map[string]any{"price": 25, "quantity": 4}, "user": map[string]any{"vip": true},
+	})
+	if !condition.Match(context.Background(), matching) {
+		t.Fatal("expected state expression match")
+	}
+	nonMatching := state.FromShared(map[string]any{
+		"cart": map[string]any{"price": 10, "quantity": 4}, "user": map[string]any{"vip": true},
+	})
+	if condition.Match(context.Background(), nonMatching) {
+		t.Fatal("unexpected state expression match")
+	}
+}
+
+func TestStateExpressionFailsClosed(t *testing.T) {
+	t.Parallel()
+	t.Run("missing input", func(t *testing.T) {
+		condition, err := StateExpression(map[string]state.Path{"value": state.Shared("value")}, "inputs.value > 0")
+		if err != nil {
+			t.Fatalf("StateExpression(): %v", err)
+		}
+		if condition.Match(context.Background(), state.NewState()) {
+			t.Fatal("missing input must not match")
+		}
+	})
+	t.Run("dynamic non boolean", func(t *testing.T) {
+		condition, err := StateExpression(map[string]state.Path{"value": state.Shared("value")}, "inputs.value")
+		if err != nil {
+			t.Fatalf("StateExpression(): %v", err)
+		}
+		if condition.Match(context.Background(), state.FromShared(map[string]any{"value": "yes"})) {
+			t.Fatal("non-boolean result must not match")
+		}
+	})
+}
+
+func TestStateExpressionRejectsInvalidOrStaticNonBooleanExpression(t *testing.T) {
+	t.Parallel()
+	for _, expression := range []string{"inputs.", "1 + 1"} {
+		_, err := StateExpression(map[string]state.Path{"value": state.Shared("value")}, expression)
+		if err == nil || (!strings.Contains(err.Error(), "compile CEL expression") && !strings.Contains(err.Error(), "not boolean")) {
+			t.Fatalf("StateExpression(%q) error = %v", expression, err)
+		}
+	}
+}
+
+func TestStateExpressionConditionDefinitionUsesDynamicPorts(t *testing.T) {
+	t.Parallel()
+	definition := NewDefaultRegistry().Conditions[ConditionTypeStateExpression]
+	if definition.DynamicStatePorts == nil || definition.DynamicStatePorts.MinPorts != 1 {
+		t.Fatalf("dynamic state ports = %#v", definition.DynamicStatePorts)
+	}
+	condition, err := definition.Resolve(registry.ResolvedConditionSpec{
+		Spec:  dsl.GraphConditionSpec{Type: ConditionTypeStateExpression, Config: map[string]any{"expression": "inputs.ready"}},
+		State: map[string]registry.ResolvedStateBinding{"ready": {Path: state.Shared("ready")}},
+	})
+	if err != nil {
+		t.Fatalf("Resolve(): %v", err)
+	}
+	if !condition.Match(context.Background(), state.FromShared(map[string]any{"ready": true})) {
+		t.Fatal("expected resolved condition match")
 	}
 }

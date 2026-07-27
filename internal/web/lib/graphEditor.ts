@@ -1,5 +1,6 @@
 import type {
   ConditionSchema,
+  DynamicStatePortDefinition,
   GraphDefinition,
   GraphEdgeSpec,
   GraphNodeSpec,
@@ -198,6 +199,43 @@ export function initialStateBindings(ports: StatePortDefinition[] | undefined, o
     if (defaultPath || port.required) bindings[port.name] = { path: defaultPath };
   }
   return bindings;
+}
+
+export function dynamicStatePortForName(
+  name: string,
+  dynamic: DynamicStatePortDefinition | undefined
+): StatePortDefinition | undefined {
+  if (!dynamic || !matchesDynamicStatePortName(name, dynamic)) return undefined;
+  return {
+    name,
+    description: dynamic.description,
+    required: true,
+    schema: dynamic.schema,
+    mode: dynamic.mode,
+    merge_strategy: dynamic.merge_strategy,
+  };
+}
+
+export function matchesDynamicStatePortName(name: string, dynamic: DynamicStatePortDefinition | undefined): boolean {
+  if (!dynamic) return false;
+  try {
+    return new RegExp(`^(?:${dynamic.name_pattern})$`).test(name);
+  } catch {
+    return false;
+  }
+}
+
+export function nextDynamicStatePortName(
+  bindings: Record<string, StateBinding> | undefined,
+  staticPorts: StatePortDefinition[],
+  dynamic: DynamicStatePortDefinition
+): string | null {
+  const occupied = new Set([...staticPorts.map((port) => port.name), ...Object.keys(bindings ?? {})]);
+  for (let index = 1; index <= 10_000; index += 1) {
+    const candidate = index === 1 ? "input" : `input_${index}`;
+    if (!occupied.has(candidate) && matchesDynamicStatePortName(candidate, dynamic)) return candidate;
+  }
+  return null;
 }
 
 export function resolveDefaultStatePath(template: string | undefined, ownerID: string): string {

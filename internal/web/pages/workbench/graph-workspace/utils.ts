@@ -1,5 +1,5 @@
 import type { VirtualGraphEdge } from "../../../components/GraphCanvas";
-import { END_NODE_REF, START_NODE_REF, graphEdgeId, resolveDefaultStatePath } from "../../../lib/graphEditor";
+import { END_NODE_REF, START_NODE_REF, graphEdgeId, matchesDynamicStatePortName, resolveDefaultStatePath } from "../../../lib/graphEditor";
 import { parseJSON } from "../../../lib/utils";
 import type { GraphDefinition, GraphNodeSpec, NodeTypeSchema, RegistryInfo } from "../../../types";
 import { fallbackNodeTypes } from "./constants";
@@ -18,6 +18,16 @@ export function validateGraph(definition: GraphDefinition | null, registry?: Reg
       const path = node.state?.[port.name]?.path.trim() || resolveDefaultStatePath(port.default_path, node.id);
       if (port.required && !path) {
         return `node ${node.id} requires state binding ${port.name}`;
+      }
+    }
+    if (nodeType?.dynamic_state_ports) {
+      const staticNames = new Set((nodeType.state_ports ?? []).map((port) => port.name));
+      const dynamicNames = Object.keys(node.state ?? {}).filter((name) => !staticNames.has(name) && matchesDynamicStatePortName(name, nodeType.dynamic_state_ports));
+      if (dynamicNames.length < (nodeType.dynamic_state_ports.min_ports ?? 0)) {
+        return `node ${node.id} requires at least ${nodeType.dynamic_state_ports.min_ports} dynamic state bindings`;
+      }
+      if (nodeType.dynamic_state_ports.max_ports && dynamicNames.length > nodeType.dynamic_state_ports.max_ports) {
+        return `node ${node.id} allows at most ${nodeType.dynamic_state_ports.max_ports} dynamic state bindings`;
       }
     }
     if (node.type === "conversation_input") {
@@ -48,6 +58,16 @@ export function validateGraph(definition: GraphDefinition | null, registry?: Reg
         const path = edge.condition.state?.[port.name]?.path.trim() || resolveDefaultStatePath(port.default_path, edge.from);
         if (port.required && !path) {
           return `condition ${edge.condition.type} requires state binding ${port.name}`;
+        }
+      }
+      if (condition?.dynamic_state_ports) {
+        const staticNames = new Set((condition.state_ports ?? []).map((port) => port.name));
+        const dynamicNames = Object.keys(edge.condition.state ?? {}).filter((name) => !staticNames.has(name) && matchesDynamicStatePortName(name, condition.dynamic_state_ports));
+        if (dynamicNames.length < (condition.dynamic_state_ports.min_ports ?? 0)) {
+          return `condition ${edge.condition.type} requires at least ${condition.dynamic_state_ports.min_ports} dynamic state bindings`;
+        }
+        if (condition.dynamic_state_ports.max_ports && dynamicNames.length > condition.dynamic_state_ports.max_ports) {
+          return `condition ${edge.condition.type} allows at most ${condition.dynamic_state_ports.max_ports} dynamic state bindings`;
         }
       }
     }

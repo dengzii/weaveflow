@@ -153,6 +153,55 @@ func TestRegisterConditionValidatesPortsAndResolver(t *testing.T) {
 	}
 }
 
+func TestRegisterNodeTypeValidatesAndClonesDynamicStatePorts(t *testing.T) {
+	t.Parallel()
+	dynamic := &dsl.DynamicStatePortDefinition{
+		NamePattern: " [A-Za-z_][A-Za-z0-9_]* ", MinPorts: 1, MaxPorts: 4,
+		Schema: dsl.JSONSchema{"type": "object"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace,
+	}
+	reg := NewRegistry()
+	if err := reg.RegisterNodeType(NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{Type: "dynamic", DynamicStatePorts: dynamic},
+		Build:          func(*BuildContext, ResolvedNodeSpec) (core.Node, error) { return nil, nil },
+	}); err != nil {
+		t.Fatalf("register dynamic node type: %v", err)
+	}
+	stored := reg.NodeTypes["dynamic"].DynamicStatePorts
+	if stored == nil || stored.NamePattern != "[A-Za-z_][A-Za-z0-9_]*" || stored.MinPorts != 1 || stored.MaxPorts != 4 {
+		t.Fatalf("dynamic state ports = %#v", stored)
+	}
+	dynamic.Schema["type"] = "string"
+	if stored.Schema["type"] != "object" {
+		t.Fatal("dynamic state port schema was not cloned")
+	}
+}
+
+func TestRegisterNodeTypeRejectsInvalidDynamicStatePorts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		dynamic dsl.DynamicStatePortDefinition
+		want    string
+	}{
+		{name: "pattern", dynamic: dsl.DynamicStatePortDefinition{NamePattern: "[", Schema: dsl.JSONSchema{"type": "object"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace}, want: "pattern"},
+		{name: "schema", dynamic: dsl.DynamicStatePortDefinition{NamePattern: "[a-z]+", Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace}, want: "schema"},
+		{name: "mode", dynamic: dsl.DynamicStatePortDefinition{NamePattern: "[a-z]+", Schema: dsl.JSONSchema{"type": "object"}, Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeReplace}, want: "read mode"},
+		{name: "merge", dynamic: dsl.DynamicStatePortDefinition{NamePattern: "[a-z]+", Schema: dsl.JSONSchema{"type": "object"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeMerge}, want: "replace"},
+		{name: "count", dynamic: dsl.DynamicStatePortDefinition{NamePattern: "[a-z]+", MinPorts: 2, MaxPorts: 1, Schema: dsl.JSONSchema{"type": "object"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace}, want: "max_ports"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := NewRegistry().RegisterNodeType(NodeTypeDefinition{
+				NodeTypeSchema: dsl.NodeTypeSchema{Type: "dynamic", DynamicStatePorts: &test.dynamic},
+				Build:          func(*BuildContext, ResolvedNodeSpec) (core.Node, error) { return nil, nil },
+			})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q error, got %v", test.want, err)
+			}
+		})
+	}
+}
+
 func TestRegisterNodeTypeRejectsInvalidPortContracts(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

@@ -11,7 +11,7 @@ import {
   pendingHumanInputState,
 } from "../pages/WorkbenchPage";
 import { validateGraph } from "../pages/workbench/graph-workspace/utils";
-import { addGraphEdge, addNodeToGraph, createGraphDefinition, createNodeFromType, initialStateBindings, resolvedStatePortContract } from "./graphEditor";
+import { addGraphEdge, addNodeToGraph, createGraphDefinition, createNodeFromType, dynamicStatePortForName, initialStateBindings, matchesDynamicStatePortName, nextDynamicStatePortName, resolvedStatePortContract } from "./graphEditor";
 
 const modules: StateModuleDefinition[] = [
   { name: "weaveflow.protocols", version: "1" },
@@ -84,6 +84,43 @@ describe("v2 graph editor defaults", () => {
     graph.nodes.push({ id: "finish", type: "agent", state: { task: { path: "" } } });
     const next = addGraphEdge(graph, graph.nodes[0].id, "finish", condition.type, [condition]);
     expect(next.edges?.[0].condition?.state).toEqual({ result: { path: "" } });
+  });
+
+  test("supports dynamic state aliases without auto-creating hidden paths", () => {
+    const dynamic = { name_pattern: "[A-Za-z_][A-Za-z0-9_]*", schema: {}, mode: "read" as const, merge_strategy: "replace" as const };
+    expect(initialStateBindings(undefined, "node")).toEqual({});
+    expect(nextDynamicStatePortName({ input: { path: "" } }, [{ name: "input" }], dynamic)).toBe("input_2");
+    expect(matchesDynamicStatePortName("price", dynamic)).toBe(true);
+    expect(matchesDynamicStatePortName("not-valid", dynamic)).toBe(false);
+    expect(dynamicStatePortForName("price", dynamic)).toMatchObject({ name: "price", required: true, mode: "read" });
+  });
+
+  test("creates state operation nodes with explicit bindings and JSON null config", () => {
+    const node = createNodeFromType({
+      type: "state_set",
+      title: "State Set",
+      config_schema: {
+        type: "object",
+        properties: {
+          value: {
+            type: ["null", "boolean", "number", "string", "array", "object"],
+            default: null,
+            "x-control": "json",
+          },
+        },
+        required: ["value"],
+      },
+      state_ports: [{
+        name: "target",
+        required: true,
+        mode: "write",
+        merge_strategy: "replace",
+        schema: { title: "Any JSON value" },
+      }],
+    }, []);
+
+    expect(node.config).toEqual({ value: null });
+    expect(node.state).toEqual({ target: { path: "" } });
   });
 
   test("blocks graphs with unresolved required bindings", () => {

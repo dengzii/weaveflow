@@ -3,6 +3,7 @@ package builtin
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
@@ -10,6 +11,7 @@ import (
 	supervisorcap "github.com/dengzii/weaveflow/capability/supervisor"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/internal/stateexpr"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
@@ -21,6 +23,7 @@ const (
 	ConditionTypeConversationHasToolCalls   = "conversation_has_tool_calls"
 	ConditionTypeConversationHasFinalAnswer = "conversation_has_final_answer"
 	ConditionTypeExpressionConditions       = "expression_conditions"
+	ConditionTypeStateExpression            = "state_expression"
 )
 
 const (
@@ -50,6 +53,7 @@ func registerCoreConditions(r *registry.Registry) error {
 		lastMessageHasToolCallsConditionDefinition(),
 		hasFinalAnswerConditionDefinition(),
 		expressionConditionsConditionDefinition(),
+		stateExpressionConditionDefinition(),
 		planStatusEqualsConditionDefinition(),
 		supervisorRouteEqualsConditionDefinition(),
 	} {
@@ -58,6 +62,97 @@ func registerCoreConditions(r *registry.Registry) error {
 		}
 	}
 	return nil
+}
+
+func stateExpressionConditionDefinition() registry.ConditionDefinition {
+	return registry.ConditionDefinition{
+		ConditionSchema: dsl.ConditionSchema{
+			Type:        ConditionTypeStateExpression,
+			Title:       "State Expression",
+			Description: "Routes when a restricted CEL expression over explicitly bound state inputs returns true.",
+			ConfigSchema: dsl.JSONSchema{
+				"type": "object",
+				"properties": dsl.JSONSchema{
+					"expression": dsl.JSONSchema{
+						"type": "string", "title": "CEL Expression", "x-control": "textarea",
+						"description": "Boolean CEL expression. Access bound values with inputs.<alias>.",
+					},
+				},
+				"required":             []string{"expression"},
+				"additionalProperties": false,
+			},
+			DynamicStatePorts: &dsl.DynamicStatePortDefinition{
+				Description:   "JSON value exposed to CEL as inputs.<alias>.",
+				NamePattern:   stateexpr.InputAliasPattern,
+				MinPorts:      1,
+				Schema:        dsl.JSONSchema{"title": "Any JSON value"},
+				Mode:          dsl.StateAccessRead,
+				MergeStrategy: dsl.StateMergeReplace,
+			},
+		},
+		Resolve: func(resolved registry.ResolvedConditionSpec) (registry.EdgeCondition, error) {
+			for key := range resolved.Spec.Config {
+				if key != "expression" {
+					return registry.EdgeCondition{}, fmt.Errorf("resolve %s condition: unknown config field %q", ConditionTypeStateExpression, key)
+				}
+			}
+			rawExpression, exists := resolved.Spec.Config["expression"]
+			if !exists {
+				return registry.EdgeCondition{}, fmt.Errorf("resolve %s condition: config field %q is required", ConditionTypeStateExpression, "expression")
+			}
+			expression, ok := rawExpression.(string)
+			if !ok || strings.TrimSpace(expression) == "" {
+				return registry.EdgeCondition{}, fmt.Errorf("resolve %s condition: config field %q must be a non-empty string", ConditionTypeStateExpression, "expression")
+			}
+			paths := make(map[string]state.Path, len(resolved.State))
+			for name, binding := range resolved.State {
+				if binding.Path.Empty() {
+					return registry.EdgeCondition{}, fmt.Errorf("resolve %s condition: state input %q has no resolved path", ConditionTypeStateExpression, name)
+				}
+				paths[name] = binding.Path
+			}
+			condition, err := StateExpression(paths, expression)
+			if err != nil {
+				return registry.EdgeCondition{}, fmt.Errorf("resolve %s condition: %w", ConditionTypeStateExpression, err)
+			}
+			return condition, nil
+		},
+	}
+}
+
+func StateExpression(paths map[string]state.Path, expression string) (registry.EdgeCondition, error) {
+	if len(paths) == 0 {
+		return registry.EdgeCondition{}, fmt.Errorf("at least one state input is required")
+	}
+	program, err := stateexpr.Compile(expression, stateexpr.CompileOptions{RequireBoolean: true})
+	if err != nil {
+		return registry.EdgeCondition{}, err
+	}
+	names := make([]string, 0, len(paths))
+	bindings := make(map[string]dsl.StateBinding, len(paths))
+	for name, path := range paths {
+		if path.Empty() {
+			return registry.EdgeCondition{}, fmt.Errorf("state input %q path is required", name)
+		}
+		names = append(names, name)
+		bindings[name] = dsl.StateBinding{Path: path.String()}
+	}
+	sort.Strings(names)
+	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
+		Type: ConditionTypeStateExpression, Config: map[string]any{"expression": strings.TrimSpace(expression)}, State: bindings,
+	}, func(ctx context.Context, current *state.State) bool {
+		access := state.NewAccess(current)
+		inputs := make(map[string]any, len(names))
+		for _, name := range names {
+			value, ok := access.ReadAny(paths[name])
+			if !ok {
+				return false
+			}
+			inputs[name] = value
+		}
+		matched, err := program.EvalBool(ctx, inputs)
+		return err == nil && matched
+	}), nil
 }
 
 func supervisorRouteEqualsConditionDefinition() registry.ConditionDefinition {

@@ -189,6 +189,37 @@ describe("state binding lint", () => {
     expect(issues.some((issue) => issue.message.includes("asset_path"))).toBe(false);
   });
 
+  test("accepts dynamic state aliases and enforces dynamic counts", () => {
+    const activeRegistry = bindingRegistry();
+    activeRegistry.node_types[0] = {
+      ...activeRegistry.node_types[0],
+      dynamic_state_ports: {
+        name_pattern: "[A-Za-z_][A-Za-z0-9_]*",
+        min_ports: 2,
+        max_ports: 3,
+        schema: {},
+        mode: "read",
+        merge_strategy: "replace",
+      },
+    };
+    const graph = bindingGraph();
+    graph.nodes[0] = {
+      ...graph.nodes[0],
+      state: {
+        ...graph.nodes[0].state,
+        price: { path: "shared.price" },
+        quantity: { path: "shared.quantity" },
+      },
+    };
+    const accepted = buildGraphLintIssues({ definition: graph, initialStateText: "{}", initialRequirements: null, registry: activeRegistry });
+    expect(accepted.some((issue) => issue.id.includes("binding-unknown-price"))).toBe(false);
+    expect(accepted.some((issue) => issue.id.includes("binding-dynamic-min"))).toBe(false);
+
+    graph.nodes[0].state = { ...graph.nodes[0].state, "not-valid": { path: "shared.bad" } };
+    const rejected = buildGraphLintIssues({ definition: graph, initialStateText: "{}", initialRequirements: null, registry: activeRegistry });
+    expect(rejected.some((issue) => issue.id.includes("binding-unknown-not-valid"))).toBe(true);
+  });
+
   test("rejects missing, unknown, reserved, and primitive-conflicting bindings", () => {
     const activeRegistry = bindingRegistry();
     const graph = bindingGraph();

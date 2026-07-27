@@ -2,6 +2,7 @@ package graphbuild
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -48,7 +49,7 @@ func ResolveGraphBindings(def dsl.GraphDefinition, reg *registry.Registry) (Reso
 		if !ok {
 			return ResolvedGraphBindings{}, fmt.Errorf("node type %q is not registered", spec.Type)
 		}
-		bindings, contract, resolveErr := resolver.resolvePorts("node "+fmt.Sprintf("%q", spec.ID), spec.ID, definition.StatePorts, spec.State)
+		bindings, contract, resolveErr := resolver.resolvePorts("node "+fmt.Sprintf("%q", spec.ID), spec.ID, definition.StatePorts, definition.DynamicStatePorts, spec.State)
 		if resolveErr != nil {
 			return ResolvedGraphBindings{}, resolveErr
 		}
@@ -65,7 +66,7 @@ func ResolveGraphBindings(def dsl.GraphDefinition, reg *registry.Registry) (Reso
 			return ResolvedGraphBindings{}, fmt.Errorf("condition %q is not registered", edge.Condition.Type)
 		}
 		label := fmt.Sprintf("condition %q on edge %q -> %q", edge.Condition.Type, edge.From, edge.To)
-		bindings, contract, resolveErr := resolver.resolvePorts(label, edge.From, definition.StatePorts, edge.Condition.State)
+		bindings, contract, resolveErr := resolver.resolvePorts(label, edge.From, definition.StatePorts, definition.DynamicStatePorts, edge.Condition.State)
 		if resolveErr != nil {
 			return ResolvedGraphBindings{}, resolveErr
 		}
@@ -155,20 +156,59 @@ func newBindingResolver(def dsl.GraphDefinition, reg *registry.Registry) (*bindi
 	return resolver, nil
 }
 
-func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.StatePortDefinition, specs map[string]dsl.StateBinding) (map[string]registry.ResolvedStateBinding, state.Contract, error) {
-	portDefinitions := make(map[string]dsl.StatePortDefinition, len(ports))
+func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.StatePortDefinition, dynamic *dsl.DynamicStatePortDefinition, specs map[string]dsl.StateBinding) (map[string]registry.ResolvedStateBinding, state.Contract, error) {
+	portDefinitions := make(map[string]dsl.StatePortDefinition, len(ports)+len(specs))
 	for _, port := range ports {
 		portDefinitions[port.Name] = port
 	}
-	for name := range specs {
-		if _, ok := portDefinitions[name]; !ok {
-			return nil, state.Contract{}, fmt.Errorf("%s binds unknown state port %q", component, name)
+	dynamicNames := make([]string, 0)
+	if dynamic != nil {
+		pattern, err := regexp.Compile("^(?:" + dynamic.NamePattern + ")$")
+		if err != nil {
+			return nil, state.Contract{}, fmt.Errorf("%s has invalid dynamic state port pattern: %w", component, err)
+		}
+		for name := range specs {
+			if _, static := portDefinitions[name]; static {
+				continue
+			}
+			if !pattern.MatchString(name) {
+				return nil, state.Contract{}, fmt.Errorf("%s binds unknown state port %q", component, name)
+			}
+			dynamicNames = append(dynamicNames, name)
+		}
+		if len(dynamicNames) < dynamic.MinPorts {
+			return nil, state.Contract{}, fmt.Errorf("%s requires at least %d dynamic state ports", component, dynamic.MinPorts)
+		}
+		if dynamic.MaxPorts > 0 && len(dynamicNames) > dynamic.MaxPorts {
+			return nil, state.Contract{}, fmt.Errorf("%s allows at most %d dynamic state ports", component, dynamic.MaxPorts)
+		}
+		sort.Strings(dynamicNames)
+		for _, name := range dynamicNames {
+			portDefinitions[name] = dsl.StatePortDefinition{
+				Name:          name,
+				Description:   dynamic.Description,
+				Required:      true,
+				Schema:        dynamic.Schema,
+				Mode:          dynamic.Mode,
+				MergeStrategy: dynamic.MergeStrategy,
+			}
+		}
+	} else {
+		for name := range specs {
+			if _, ok := portDefinitions[name]; !ok {
+				return nil, state.Contract{}, fmt.Errorf("%s binds unknown state port %q", component, name)
+			}
 		}
 	}
 
 	bindings := make(map[string]registry.ResolvedStateBinding, len(specs))
 	contract := state.Contract{}
-	for _, port := range ports {
+	resolvedPorts := make([]dsl.StatePortDefinition, 0, len(ports)+len(dynamicNames))
+	resolvedPorts = append(resolvedPorts, ports...)
+	for _, name := range dynamicNames {
+		resolvedPorts = append(resolvedPorts, portDefinitions[name])
+	}
+	for _, port := range resolvedPorts {
 		binding, exists := specs[port.Name]
 		pathText := ""
 		if exists {

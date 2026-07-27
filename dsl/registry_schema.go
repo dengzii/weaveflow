@@ -3,19 +3,21 @@ package dsl
 import "sort"
 
 type NodeTypeSchema struct {
-	Type         string                `json:"type"`
-	Title        string                `json:"title,omitempty"`
-	Description  string                `json:"description,omitempty"`
-	ConfigSchema JSONSchema            `json:"config_schema"`
-	StatePorts   []StatePortDefinition `json:"state_ports"`
+	Type              string                      `json:"type"`
+	Title             string                      `json:"title,omitempty"`
+	Description       string                      `json:"description,omitempty"`
+	ConfigSchema      JSONSchema                  `json:"config_schema"`
+	StatePorts        []StatePortDefinition       `json:"state_ports"`
+	DynamicStatePorts *DynamicStatePortDefinition `json:"dynamic_state_ports,omitempty"`
 }
 
 type ConditionSchema struct {
-	Type         string                `json:"type"`
-	Title        string                `json:"title,omitempty"`
-	Description  string                `json:"description,omitempty"`
-	ConfigSchema JSONSchema            `json:"config_schema"`
-	StatePorts   []StatePortDefinition `json:"state_ports"`
+	Type              string                      `json:"type"`
+	Title             string                      `json:"title,omitempty"`
+	Description       string                      `json:"description,omitempty"`
+	ConfigSchema      JSONSchema                  `json:"config_schema"`
+	StatePorts        []StatePortDefinition       `json:"state_ports"`
+	DynamicStatePorts *DynamicStatePortDefinition `json:"dynamic_state_ports,omitempty"`
 }
 
 func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, nodeTypes map[string]NodeTypeSchema, conditions map[string]ConditionSchema) JSONSchema {
@@ -36,7 +38,11 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 				requiredState = append(requiredState, port.Name)
 			}
 		}
-		stateSchema := JSONSchema{"type": "object", "properties": stateProperties, "additionalProperties": false}
+		additionalProperties := any(false)
+		if nodeDef.DynamicStatePorts != nil {
+			additionalProperties = bindingSchema
+		}
+		stateSchema := JSONSchema{"type": "object", "properties": stateProperties, "additionalProperties": additionalProperties}
 		if len(requiredState) > 0 {
 			stateSchema["required"] = requiredState
 		}
@@ -70,7 +76,11 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 				requiredState = append(requiredState, port.Name)
 			}
 		}
-		stateSchema := JSONSchema{"type": "object", "properties": stateProperties, "additionalProperties": false}
+		additionalProperties := any(false)
+		if conditionDef.DynamicStatePorts != nil {
+			additionalProperties = bindingSchema
+		}
+		stateSchema := JSONSchema{"type": "object", "properties": stateProperties, "additionalProperties": additionalProperties}
 		if len(requiredState) > 0 {
 			stateSchema["required"] = requiredState
 		}

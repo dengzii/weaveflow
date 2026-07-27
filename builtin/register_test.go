@@ -21,7 +21,7 @@ func TestDefaultRegistryExposesModulesCapabilitiesAndStatePorts(t *testing.T) {
 		}
 	}
 	for conditionType, definition := range reg.Conditions {
-		if len(definition.StatePorts) == 0 {
+		if len(definition.StatePorts) == 0 && definition.DynamicStatePorts == nil {
 			t.Fatalf("condition %q declares no state ports", conditionType)
 		}
 		if len(definition.ConditionSchema.StatePorts) != len(definition.StatePorts) {

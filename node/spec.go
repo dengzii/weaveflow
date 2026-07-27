@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/node/stateops"
 	"github.com/dengzii/weaveflow/state"
 )
 
@@ -16,6 +17,12 @@ const (
 	NodeTypeAgent              = "agent"
 	NodeTypeEnvironmentContext = "environment_context"
 	NodeTypeExplore            = "explore"
+	NodeTypeStateSet           = stateops.NodeTypeStateSet
+	NodeTypeStateCopy          = stateops.NodeTypeStateCopy
+	NodeTypeStateDelete        = stateops.NodeTypeStateDelete
+	NodeTypeStateMerge         = stateops.NodeTypeStateMerge
+	NodeTypeStateAppend        = stateops.NodeTypeStateAppend
+	NodeTypeStateTransform     = stateops.NodeTypeStateTransform
 )
 
 var (

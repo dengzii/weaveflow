@@ -18,7 +18,7 @@ import {
 } from "@xyflow/react";
 import { Focus, Lock, Maximize2, Network, Repeat2, Unlock, ZoomIn, ZoomOut } from "lucide-react";
 import type { GraphConditionSpec, GraphDefinition, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord } from "../types";
-import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, resolveDefaultStatePath, type NodePosition } from "../lib/graphEditor";
+import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, matchesDynamicStatePortName, resolveDefaultStatePath, type NodePosition } from "../lib/graphEditor";
 import {
   analyzeVirtualGraphLoop,
   conditionDisplayLabel,
@@ -342,8 +342,14 @@ function GraphCanvasInner({
           const virtualKind = virtualNodeKind(node.id);
           const nodeType = nodeTypes.find((item) => item.type === node.type);
           const statePorts = nodeType?.state_ports ?? [];
-          const boundPortCount = statePorts.filter((port) => Boolean(node.state?.[port.name]?.path.trim() || resolveDefaultStatePath(port.default_path, node.id))).length;
+          const staticPortNames = new Set(statePorts.map((port) => port.name));
+          const dynamicPortNames = Object.keys(node.state ?? {}).filter((name) => !staticPortNames.has(name) && matchesDynamicStatePortName(name, nodeType?.dynamic_state_ports));
+          const boundPortCount = statePorts.filter((port) => Boolean(node.state?.[port.name]?.path.trim() || resolveDefaultStatePath(port.default_path, node.id))).length
+            + dynamicPortNames.filter((name) => Boolean(node.state?.[name]?.path.trim())).length;
+          const totalPortCount = statePorts.length + dynamicPortNames.length;
           const missingBindings = statePorts.some((port) => port.required && !node.state?.[port.name]?.path.trim() && !resolveDefaultStatePath(port.default_path, node.id));
+          const dynamicMinimum = nodeType?.dynamic_state_ports?.min_ports ?? 0;
+          const missingDynamicBindings = dynamicPortNames.length < dynamicMinimum;
           return {
             id: node.id,
             type: "debugNode",
@@ -359,8 +365,8 @@ function GraphCanvasInner({
               attempt: virtualKind ? 0 : runtimeRef.current.get(node.id)?.attempt || 0,
               editable: isInteractive,
               highlighted: highlightedNodeSet.has(node.id),
-              bindingSummary: virtualKind || statePorts.length === 0 ? undefined : `${boundPortCount}/${statePorts.length} state`,
-              missingBindings,
+              bindingSummary: virtualKind || totalPortCount === 0 ? undefined : `${boundPortCount}/${totalPortCount} state`,
+              missingBindings: missingBindings || missingDynamicBindings,
               virtualKind,
             },
           };

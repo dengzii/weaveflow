@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { validateSchemaValue } from "./schemaForm";
+import { parseJSONControlText, validateSchemaValue } from "./schemaForm";
 
 describe("validateSchemaValue object lists", () => {
   const schema = {
@@ -42,5 +42,31 @@ describe("validateSchemaValue object lists", () => {
       path: "members",
       message: "Expected at least 1 item.",
     });
+  });
+});
+
+describe("JSON schema controls", () => {
+  const schema = {
+    type: "object",
+    properties: {
+      value: {
+        type: ["null", "boolean", "number", "string", "array", "object"],
+        "x-control": "json",
+      },
+    },
+    required: ["value"],
+  };
+
+  test("distinguishes an absent value from explicit null", () => {
+    expect(validateSchemaValue(schema, {})).toContainEqual({ path: "value", message: "Required field." });
+    expect(validateSchemaValue(schema, { value: null })).toEqual([]);
+    expect(validateSchemaValue(schema, { value: "" })).toEqual([]);
+  });
+
+  test("parses every JSON value without treating invalid text as a string", () => {
+    expect(parseJSONControlText("null")).toEqual({ ok: true, value: null });
+    expect(parseJSONControlText("42")).toEqual({ ok: true, value: 42 });
+    expect(parseJSONControlText('["a"]')).toEqual({ ok: true, value: ["a"] });
+    expect(parseJSONControlText("not-json")).toEqual({ ok: false });
   });
 });

@@ -242,12 +242,23 @@ export interface StatePortDefinition {
   merge_strategy?: StateMergeStrategy;
 }
 
+export interface DynamicStatePortDefinition {
+  description?: string;
+  name_pattern: string;
+  min_ports?: number;
+  max_ports?: number;
+  schema: Record<string, unknown>;
+  mode: StateAccessMode;
+  merge_strategy: StateMergeStrategy;
+}
+
 export interface NodeTypeSchema {
   type: string;
   title?: string;
   description?: string;
   config_schema?: Record<string, unknown>;
   state_ports?: StatePortDefinition[];
+  dynamic_state_ports?: DynamicStatePortDefinition;
 }
 
 export interface ConditionSchema {
@@ -256,6 +267,7 @@ export interface ConditionSchema {
   description?: string;
   config_schema?: Record<string, unknown>;
   state_ports?: StatePortDefinition[];
+  dynamic_state_ports?: DynamicStatePortDefinition;
 }
 
 export interface RunRecord {

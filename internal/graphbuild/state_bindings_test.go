@@ -191,6 +191,93 @@ func TestResolveGraphBindingsRejectsInvalidBindings(t *testing.T) {
 	}
 }
 
+func TestResolveGraphBindingsExpandsDynamicStatePorts(t *testing.T) {
+	t.Parallel()
+	reg := newBindingTestRegistry(t)
+	err := reg.RegisterNodeType(registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type: "dynamic",
+			StatePorts: []dsl.StatePortDefinition{
+				primitiveTestPort("output", "object", dsl.StateAccessWrite, dsl.StateMergeReplace, true),
+			},
+			DynamicStatePorts: &dsl.DynamicStatePortDefinition{
+				NamePattern: "[A-Za-z_][A-Za-z0-9_]*", MinPorts: 1,
+				Schema: dsl.JSONSchema{"type": "object"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace,
+			},
+		},
+		Build: func(_ *registry.BuildContext, spec registry.ResolvedNodeSpec) (core.Node, error) {
+			return &bindingTestNode{NodeInfo: core.NodeInfo{NodeID: spec.Spec.ID}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register dynamic node: %v", err)
+	}
+	def := dsl.GraphDefinition{
+		Version:      dsl.GraphDefinitionVersion,
+		StateModules: []dsl.StateModuleRef{{Name: testModuleName, Version: testModuleVersion}},
+		Nodes: []dsl.GraphNodeSpec{{
+			ID: "dynamic", Type: "dynamic",
+			State: map[string]dsl.StateBinding{
+				"zeta": {Path: "shared.zeta"}, "alpha": {Path: "shared.alpha"}, "output": {Path: "shared.output"},
+			},
+		}},
+	}
+	resolved, err := ResolveGraphBindings(def, reg)
+	if err != nil {
+		t.Fatalf("ResolveGraphBindings(): %v", err)
+	}
+	node := resolved.Nodes["dynamic"]
+	for _, name := range []string{"alpha", "zeta", "output"} {
+		if _, ok := node.State[name]; !ok {
+			t.Fatalf("resolved state missing %q: %#v", name, node.State)
+		}
+	}
+	if got := resolved.NodeContracts["dynamic"].Fields; len(got) != 3 || got[1].Path.String() != "shared.alpha" || got[2].Path.String() != "shared.zeta" {
+		t.Fatalf("dynamic contract fields = %#v", got)
+	}
+}
+
+func TestResolveGraphBindingsRejectsInvalidDynamicStatePorts(t *testing.T) {
+	t.Parallel()
+	reg := newBindingTestRegistry(t)
+	err := reg.RegisterNodeType(registry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type: "dynamic",
+			DynamicStatePorts: &dsl.DynamicStatePortDefinition{
+				NamePattern: "[A-Za-z_][A-Za-z0-9_]*", MinPorts: 1, MaxPorts: 1,
+				Schema: dsl.JSONSchema{"type": "object"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace,
+			},
+		},
+		Build: func(_ *registry.BuildContext, spec registry.ResolvedNodeSpec) (core.Node, error) {
+			return &bindingTestNode{NodeInfo: core.NodeInfo{NodeID: spec.Spec.ID}}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("register dynamic node: %v", err)
+	}
+	tests := []struct {
+		name  string
+		state map[string]dsl.StateBinding
+		want  string
+	}{
+		{name: "minimum", state: nil, want: "at least 1"},
+		{name: "maximum", state: map[string]dsl.StateBinding{"one": {Path: "shared.one"}, "two": {Path: "shared.two"}}, want: "at most 1"},
+		{name: "name", state: map[string]dsl.StateBinding{"not-valid": {Path: "shared.value"}}, want: "unknown state port"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			_, err := ResolveGraphBindings(dsl.GraphDefinition{
+				Version:      dsl.GraphDefinitionVersion,
+				StateModules: []dsl.StateModuleRef{{Name: testModuleName, Version: testModuleVersion}},
+				Nodes:        []dsl.GraphNodeSpec{{ID: "dynamic", Type: "dynamic", State: test.state}},
+			}, reg)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("expected %q error, got %v", test.want, err)
+			}
+		})
+	}
+}
+
 func TestResolveGraphBindingsExpandsCapabilityAndMergesPorts(t *testing.T) {
 	t.Parallel()
 	reg := newBindingTestRegistry(t)
