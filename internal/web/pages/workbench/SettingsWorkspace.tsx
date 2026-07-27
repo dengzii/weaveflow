@@ -1,5 +1,14 @@
-import { Braces, Settings } from "lucide-react";
+import { type FormEvent, useState } from "react";
+import { Braces, RotateCcw, Save, Server, Settings } from "lucide-react";
+import { Button } from "../../components/ui/button";
+import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
+import {
+  getBackendBaseUrl,
+  hasStoredBackendBaseUrl,
+  resetStoredBackendBaseUrl,
+  setStoredBackendBaseUrl,
+} from "../../lib/backend";
 import { themePreferences, useTheme, type ThemePreference } from "../../lib/theme";
 import { stringifyJSON } from "../../lib/utils";
 import type { RegistryInfo } from "../../types";
@@ -9,12 +18,64 @@ import { themePreferenceLabel } from "./utils";
 
 export function SettingsWorkspace({ registry }: { registry: RegistryInfo | null }) {
   const { preference, resolvedTheme, setPreference } = useTheme();
+  const [backendBaseUrl, setBackendBaseUrl] = useState(getBackendBaseUrl);
+  const [backendError, setBackendError] = useState("");
+  const hasBackendOverride = hasStoredBackendBaseUrl();
+
+  function saveBackend(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    try {
+      setStoredBackendBaseUrl(backendBaseUrl);
+      window.location.reload();
+    } catch (error) {
+      setBackendError(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  function resetBackend() {
+    try {
+      resetStoredBackendBaseUrl();
+      window.location.reload();
+    } catch (error) {
+      setBackendError(error instanceof Error ? error.message : String(error));
+    }
+  }
 
   return (
     <div className="grid h-full min-h-0 grid-cols-[420px_minmax(0,1fr)] bg-background">
       <section className="border-r border-border bg-panel p-4">
         <PanelHeader icon={Settings} title="Settings" inline />
         <div className="mt-4 grid gap-4">
+          <form className="grid gap-2 border-b border-border pb-4" onSubmit={saveBackend}>
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <Server className="h-4 w-4 text-muted-foreground" />
+              Server API
+            </div>
+            <label className="grid gap-1 text-sm">
+              <span className="text-xs font-medium text-muted-foreground">Backend base URL</span>
+              <Input
+                value={backendBaseUrl}
+                onChange={(event) => {
+                  setBackendBaseUrl(event.target.value);
+                  setBackendError("");
+                }}
+                spellCheck={false}
+                autoCapitalize="none"
+                aria-invalid={backendError ? true : undefined}
+              />
+            </label>
+            {backendError ? <div className="text-xs text-destructive">{backendError}</div> : null}
+            <div className="flex gap-2">
+              <Button type="submit" size="sm">
+                <Save className="h-3.5 w-3.5" />
+                Apply
+              </Button>
+              <Button type="button" variant="outline" size="sm" onClick={resetBackend} disabled={!hasBackendOverride}>
+                <RotateCcw className="h-3.5 w-3.5" />
+                Reset
+              </Button>
+            </div>
+          </form>
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Theme</span>
             <Select

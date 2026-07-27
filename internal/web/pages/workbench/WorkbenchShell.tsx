@@ -13,6 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
+import { getBackendBaseUrl } from "../../lib/backend";
 import type { GraphDefinition } from "../../types";
 import type { WorkspaceTab } from "./constants";
 
@@ -56,6 +57,8 @@ export function WorkbenchShell({
   onToggleRunStatus: () => void;
   onTabChange: (tab: WorkspaceTab) => void;
 }) {
+  const backendBaseUrl = getBackendBaseUrl();
+
   return (
     <div className="flex h-screen min-h-0 bg-background text-foreground">
       <aside className="flex w-16 shrink-0 flex-col items-center border-r border-border bg-sidebar py-3">
@@ -131,7 +134,9 @@ export function WorkbenchShell({
           </div>
           <span>{definition ? `${definition.nodes.length} nodes` : "invalid graph"}</span>
           <span>{definition?.edges?.length ?? 0} edges</span>
-          <span className="truncate">server API proxied at root</span>
+          <span className="truncate" title={`Server API: ${backendBaseUrl}`}>
+            Server: {backendBaseUrl}
+          </span>
           {hasRunStatus ? (
             <button
               className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"

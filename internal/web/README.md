@@ -7,7 +7,8 @@ bun install
 bun run dev
 ```
 
-Set `WEAVEFLOW_BACKEND` to point the dev proxy at a running `cmd/server` instance.
+The WebUI and API server run independently. API requests and the runtime event stream connect directly to the configured
+backend base URL, which defaults to `http://localhost:8080`.
 
 Common local setup:
 
@@ -15,16 +16,31 @@ Common local setup:
 export OPENAI_API_KEY=<your-api-key>
 export OPENAI_BASE_URL=<your-base-url>
 export OPENAI_MODEL=<your-model>
-go run ./cmd/server -addr :8081 -data .local/server
+go run ./cmd/server -addr :8080 -data .local/server
 ```
 
 ```powershell
-$env:WEAVEFLOW_BACKEND = "http://127.0.0.1:8081"
-$env:DEV_PORT = "3001"
 bun run dev
 ```
 
 Open `/app/graph` on the dev server. The root path redirects to the graph workspace.
+
+Change the Backend base URL under `/app/settings` when connecting to another API server. The browser override is stored
+locally and takes precedence over `config.js`. To set a deployment-wide default, run `bun run build` and edit the
+unbundled `dist/config.js`:
+
+```js
+window.__WEAVEFLOW_CONFIG__ = {
+  backendBaseUrl: "https://api.example.com/debug",
+};
+```
+
+Serve `dist/` with an SPA fallback to `index.html`. When the WebUI and API use different origins, allow the WebUI origin
+on the API server:
+
+```bash
+go run ./cmd/server -addr :8080 -prefix /debug -cors-origins https://web.example.com
+```
 
 The Graph workspace supports local graph drafts in browser `localStorage`, node type palette creation from `/registry`,
 node/edge editing, upload to `POST /graph`, and run debugging through the server API.

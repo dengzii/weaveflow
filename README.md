@@ -296,10 +296,28 @@ Run the web UI during development:
 ```bash
 cd internal/web
 bun install
-WEAVEFLOW_BACKEND=http://127.0.0.1:8080 bun run dev
+bun run dev
 ```
 
-Open the printed dev-server URL; the app redirects to `/app/graph`.
+Open the printed dev-server URL; the app redirects to `/app/graph`. The WebUI connects directly to
+`http://localhost:8080` by default. Change the Backend base URL under `/app/settings` to use another server; the value
+may include the server route prefix, for example `http://localhost:8080/debug`.
+
+`bun run build` creates a standalone static site in `internal/web/dist`. For deployment-wide configuration, edit the
+unbundled `dist/config.js`:
+
+```js
+window.__WEAVEFLOW_CONFIG__ = {
+  backendBaseUrl: "https://api.example.com/debug",
+};
+```
+
+The browser setting overrides `config.js`. A separately hosted WebUI also requires its origin to be allowed by the API
+server. Local WebUI origins on port `3031` are allowed by default; configure other origins explicitly:
+
+```bash
+go run ./cmd/server -addr :8080 -prefix /debug -cors-origins https://web.example.com
+```
 
 ## Examples
 

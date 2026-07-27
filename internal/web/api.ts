@@ -21,6 +21,7 @@ import type {
   Trigger,
   TriggerRecord,
 } from "./types";
+import { resolveBackendUrl } from "./lib/backend";
 
 async function readResponse<T>(resp: Response): Promise<T> {
   const contentType = resp.headers.get("content-type") ?? "";
@@ -45,7 +46,7 @@ async function readResponse<T>(resp: Response): Promise<T> {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const resp = await fetch(path, init);
+  const resp = await fetch(resolveBackendUrl(path), init);
   return readResponse<T>(resp);
 }
 

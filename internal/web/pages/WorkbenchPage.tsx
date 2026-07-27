@@ -23,6 +23,7 @@ import { Textarea } from "../components/ui/textarea";
 import { parseJSON, stringifyJSON } from "../lib/utils";
 import { pickInitialLocalGraphDraft, readLocalGraphDrafts } from "../lib/localGraphs";
 import { emitRuntimeEvent } from "../lib/runtimeEvents";
+import { resolveBackendUrl } from "../lib/backend";
 import {
   defaultInitialState,
   runtimeEventTypes,
@@ -413,7 +414,7 @@ export function WorkbenchPage({
   }, [notifyError, refreshSelectedRun, selectedRunId]);
 
   useEffect(() => {
-    const streamPath = "/events/stream";
+    const streamPath = resolveBackendUrl("/events/stream");
     let source: EventSource | null = null;
     let reconnectTimer = 0;
     let closed = false;

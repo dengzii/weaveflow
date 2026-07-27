@@ -25,6 +25,7 @@ func main() {
 	addr := flag.String("addr", ":8080", "listen address")
 	dataDir := flag.String("data", ".local/server", "data directory for graph debug runs")
 	prefix := flag.String("prefix", "", "route prefix")
+	corsOrigins := flag.String("cors-origins", defaultCORSOrigins, "comma-separated WebUI origins allowed by CORS; use * to allow all")
 	graphPath := flag.String("graph", "", "optional graph definition JSON file to preload")
 	flag.Parse()
 
@@ -66,6 +67,7 @@ func main() {
 	defer func() { _ = srv.Close() }()
 
 	engine := gin.Default()
+	engine.Use(corsMiddleware(*corsOrigins))
 	routePrefix := normalizePrefix(*prefix)
 	srv.RegisterRoutes(engine.Group(routePrefix))
 
