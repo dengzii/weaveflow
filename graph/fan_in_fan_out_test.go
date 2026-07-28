@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -620,6 +621,42 @@ func TestFanOutFanInCompileRejectsParallelMergeConflict(t *testing.T) {
 	_, err := g.Run(context.Background(), state.NewState())
 	if err == nil || !strings.Contains(err.Error(), "parallel state merge conflict") {
 		t.Fatalf("expected parallel merge conflict, got %v", err)
+	}
+}
+
+func TestFanOutFanInCompileSurfacesOriginalBranchFailure(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "success", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("result"), "ok")
+	})
+	mustAddNode(t, g, "failed", func(context.Context, *state.Access) error {
+		return errors.New("branch failed")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "success"},
+		{"router", "failed"},
+		{"success", EndNodeRef},
+		{"failed", EndNodeRef},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	_, err := g.Run(context.Background(), state.NewState())
+	if err == nil || !strings.Contains(err.Error(), "branch failed") {
+		t.Fatalf("expected original branch failure, got %v", err)
+	}
+	if strings.Contains(err.Error(), "parallel state merge requires branch patches") {
+		t.Fatalf("branch failure was masked by merge error: %v", err)
 	}
 }
 

@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -712,7 +713,12 @@ func (g *Graph) Compile() (*Runnable, error) {
 	return &Runnable{runnable: runnable}, nil
 }
 
-func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (*state.State, error) {
+func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (_ *state.State, resultErr error) {
+	defer func() {
+		if resultErr != nil {
+			recordFailedBranchPatch(patches, currentState, nodeID, resultErr)
+		}
+	}()
 	if targetNode == nil {
 		return currentState, fmt.Errorf("node %q is nil", nodeID)
 	}
@@ -780,7 +786,9 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 			nodeDef := node
 			compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
 				next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, state)
-				if err == nil && !patches.hasPatch(state, nodeID) {
+				if err != nil {
+					recordFailedBranchPatch(patches, state, nodeID, err)
+				} else if !patches.hasPatch(state, nodeID) {
 					patches.record(state, nodeID, stateDiffPatch(state, next))
 				}
 				return next, err
@@ -1282,15 +1290,34 @@ func (c *compilePatchCollector) record(base *state.State, nodeID string, patch s
 		order = len(c.orders)
 		c.orders[nodeID] = order
 	}
-	c.patches[base] = append(c.patches[base], state.BranchPatch{
+	branch := state.BranchPatch{
 		NodeID: nodeID,
 		Order:  order,
 		Patch:  patch,
-	})
+	}
+	for i := range c.patches[base] {
+		if c.patches[base][i].NodeID == nodeID {
+			c.patches[base][i] = branch
+			return
+		}
+	}
+	c.patches[base] = append(c.patches[base], branch)
 }
 
 func (c *compilePatchCollector) RecordBranchPatch(base *state.State, nodeID string, patch state.Patch) {
 	c.record(base, nodeID, patch)
+}
+
+func recordFailedBranchPatch(c *compilePatchCollector, base *state.State, nodeID string, err error) {
+	if c == nil || base == nil || err == nil {
+		return
+	}
+	var nodeInterrupt *langgraph.NodeInterrupt
+	var graphInterrupt *langgraph.GraphInterrupt
+	if (errors.As(err, &nodeInterrupt) || errors.As(err, &graphInterrupt)) && c.hasPatch(base, nodeID) {
+		return
+	}
+	c.record(base, nodeID, state.Patch{})
 }
 
 func (c *compilePatchCollector) notifyParallelWave(base *state.State, branches []state.BranchPatch) {

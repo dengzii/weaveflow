@@ -3,6 +3,7 @@ package graph
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1228,6 +1229,69 @@ func TestRunnerParallelMarksAllFailedActiveBranches(t *testing.T) {
 	}
 	if !failed["a"] || !failed["b"] {
 		t.Fatalf("expected both branch steps to fail, failed=%#v steps=%#v", failed, steps)
+	}
+}
+
+func TestRunnerParallelSurfacesOriginalBranchFailure(t *testing.T) {
+	t.Parallel()
+
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "success", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("result"), "ok")
+	})
+	mustAddNode(t, g, "failed", func(context.Context, *state.Access) error {
+		return errors.New("branch failed")
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "success"},
+		{"router", "failed"},
+		{"success", EndNodeRef},
+		{"failed", EndNodeRef},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil || !strings.Contains(err.Error(), "branch failed") {
+		t.Fatalf("expected original branch failure, got %v", err)
+	}
+	if strings.Contains(err.Error(), "parallel state merge requires branch patches") {
+		t.Fatalf("branch failure was masked by merge error: %v", err)
+	}
+	if run.Status != fruntime.RunStatusFailed || !strings.Contains(run.ErrorMessage, "branch failed") {
+		t.Fatalf("run did not retain original branch failure: %#v", run)
+	}
+
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	byNode := map[string]fruntime.StepRecord{}
+	for _, step := range steps {
+		byNode[step.NodeID] = step
+	}
+	if byNode["success"].Status != fruntime.StepStatusSucceeded {
+		t.Fatalf("successful sibling status = %q, want succeeded", byNode["success"].Status)
+	}
+	if byNode["failed"].Status != fruntime.StepStatusFailed || !strings.Contains(byNode["failed"].ErrorMessage, "branch failed") {
+		t.Fatalf("failed branch did not retain original error: %#v", byNode["failed"])
 	}
 }
 
