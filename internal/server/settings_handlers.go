@@ -91,7 +91,7 @@ func (s *Server) handleSetGraphSettings(c *gin.Context) {
 		return
 	}
 	if !apiKeyProvided {
-		apiKey = firstNonEmpty(next.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
+		apiKey = firstNonEmpty(firstGraphModelAPIKey(next), next.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
 	}
 	markGraphModelAPIKeys(&next, apiKey)
 	if next.Memory.Enabled && strings.TrimSpace(next.Memory.Directory) == "" {
@@ -103,8 +103,16 @@ func (s *Server) handleSetGraphSettings(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err)
 		return
 	}
-	if err := applyGraphSettingsEnvironment(previous, next, apiKey, apiKeyProvided); err != nil {
+	rollbackEnvironment, err := applyGraphSettingsEnvironment(previous, next, apiKey, apiKeyProvided)
+	if err != nil {
 		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	if err := persistGraphRuntimeSettings(s.baseDir, next); err != nil {
+		if rollbackErr := rollbackEnvironment(); rollbackErr != nil {
+			err = fmt.Errorf("%w; restore environment: %v", err, rollbackErr)
+		}
+		writeError(c, http.StatusInternalServerError, err)
 		return
 	}
 
@@ -237,7 +245,7 @@ func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeS
 	apiKey := ""
 	apiKeyProvided := false
 	if req.Models != nil {
-		models, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsListFromRequest(req.Models)
+		models, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsListFromRequest(settings.Models, req.Models)
 		if err != nil {
 			return "", false, err
 		}
@@ -276,9 +284,13 @@ func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeS
 	return apiKey, apiKeyProvided, nil
 }
 
-func graphModelSettingsListFromRequest(reqModels []graphModelSettingsRequest) ([]graphModelSettings, string, bool, error) {
+func graphModelSettingsListFromRequest(currentModels []graphModelSettings, reqModels []graphModelSettingsRequest) ([]graphModelSettings, string, bool, error) {
 	models := make([]graphModelSettings, 0, len(reqModels))
 	seen := map[string]struct{}{}
+	currentByID := make(map[string]graphModelSettings, len(currentModels))
+	for _, current := range currentModels {
+		currentByID[strings.TrimSpace(current.ID)] = current
+	}
 	apiKey := ""
 	apiKeyProvided := false
 	for index, req := range reqModels {
@@ -286,7 +298,11 @@ func graphModelSettingsListFromRequest(reqModels []graphModelSettingsRequest) ([
 		if index == 0 {
 			fallbackID = core.DefaultModelID
 		}
-		model, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsFromRequest(graphModelSettings{}, req, fallbackID)
+		current := currentByID[strings.TrimSpace(req.ID)]
+		if current.ID == "" && index < len(currentModels) {
+			current = currentModels[index]
+		}
+		model, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsFromRequest(current, req, fallbackID)
 		if err != nil {
 			return nil, "", false, err
 		}
@@ -435,7 +451,7 @@ func cloneTools(input map[string]core.Tool) map[string]core.Tool {
 	return out
 }
 
-func applyGraphSettingsEnvironment(previous graphRuntimeSettings, next graphRuntimeSettings, apiKey string, apiKeyProvided bool) error {
+func applyGraphSettingsEnvironment(previous graphRuntimeSettings, next graphRuntimeSettings, apiKey string, apiKeyProvided bool) (func() error, error) {
 	changes := make(map[string]string, len(previous.Environment)+len(next.Environment)+1)
 	for key := range previous.Environment {
 		if _, exists := next.Environment[key]; !exists {
@@ -452,10 +468,10 @@ func applyGraphSettingsEnvironment(previous graphRuntimeSettings, next graphRunt
 	keys := make([]string, 0, len(changes))
 	for key, value := range changes {
 		if err := validateEnvironmentName(key); err != nil {
-			return err
+			return nil, err
 		}
 		if strings.ContainsRune(value, '\x00') {
-			return fmt.Errorf("environment variable %q contains a null byte", key)
+			return nil, fmt.Errorf("environment variable %q contains a null byte", key)
 		}
 		keys = append(keys, key)
 	}
@@ -466,21 +482,33 @@ func applyGraphSettingsEnvironment(previous graphRuntimeSettings, next graphRunt
 		exists bool
 	}
 	originals := make(map[string]originalEnvironmentValue, len(keys))
+	restore := func() error {
+		var firstErr error
+		for _, key := range keys {
+			original := originals[key]
+			var err error
+			if original.exists {
+				err = os.Setenv(key, original.value)
+			} else {
+				err = os.Unsetenv(key)
+			}
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+		return firstErr
+	}
 	for _, key := range keys {
 		value, exists := os.LookupEnv(key)
 		originals[key] = originalEnvironmentValue{value: value, exists: exists}
+	}
+	for _, key := range keys {
 		if err := setOrUnsetEnv(key, changes[key]); err != nil {
-			for rollbackKey, original := range originals {
-				if original.exists {
-					_ = os.Setenv(rollbackKey, original.value)
-				} else {
-					_ = os.Unsetenv(rollbackKey)
-				}
-			}
-			return err
+			_ = restore()
+			return nil, err
 		}
 	}
-	return nil
+	return restore, nil
 }
 
 func setOrUnsetEnv(key string, value string) error {
@@ -563,8 +591,22 @@ func sanitizeGraphModelSettings(model graphModelSettings, fallbackID string) gra
 	model.Provider = strings.TrimSpace(model.Provider)
 	model.Model = strings.TrimSpace(model.Model)
 	model.BaseURL = strings.TrimSpace(model.BaseURL)
-	model.APIKey = ""
+	model.APIKey = strings.TrimSpace(model.APIKey)
 	return model
+}
+
+func firstGraphModelAPIKey(settings graphRuntimeSettings) string {
+	for _, model := range settings.Models {
+		if model.ID == core.DefaultModelID && strings.TrimSpace(model.APIKey) != "" {
+			return strings.TrimSpace(model.APIKey)
+		}
+	}
+	for _, model := range settings.Models {
+		if strings.TrimSpace(model.APIKey) != "" {
+			return strings.TrimSpace(model.APIKey)
+		}
+	}
+	return ""
 }
 
 func defaultGraphModelSettings(models []graphModelSettings) graphModelSettings {

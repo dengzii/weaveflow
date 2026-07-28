@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -95,6 +96,23 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		baseDir:        baseDir,
 		cfg:            cfg,
 		triggerRunners: make(map[string]*runtime.GraphRunner),
+	}
+	storedSettings, settingsFound, err := loadGraphRuntimeSettings(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	if settingsFound {
+		apiKey := firstGraphModelAPIKey(storedSettings)
+		markGraphModelAPIKeys(&storedSettings, firstNonEmpty(apiKey, os.Getenv("OPENAI_API_KEY")))
+		runtimeCtx, err := srv.buildRuntimeContext(storedSettings, apiKey)
+		if err != nil {
+			return nil, fmt.Errorf("restore graph runtime settings: %w", err)
+		}
+		if _, err := applyGraphSettingsEnvironment(srv.settings, storedSettings, apiKey, apiKey != ""); err != nil {
+			return nil, fmt.Errorf("restore graph runtime settings environment: %w", err)
+		}
+		srv.settings = storedSettings
+		srv.baseCtx = runtimeCtx
 	}
 	triggerService := cfg.TriggerService
 	if triggerService == nil {
