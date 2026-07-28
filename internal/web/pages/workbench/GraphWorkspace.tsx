@@ -1142,6 +1142,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         <CanvasContextMenu
           boundaryRef={canvasRef}
           contextMenu={contextMenu}
+          nodeGroups={registry?.node_groups ?? []}
           paletteNodeTypes={paletteNodeTypes}
           onAddNode={addNode}
           onAddVirtualNode={addVirtualNode}

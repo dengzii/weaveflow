@@ -12,7 +12,8 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/stateexpr"
-	"github.com/dengzii/weaveflow/node"
+	plannode "github.com/dengzii/weaveflow/node/plan"
+	supervisornode "github.com/dengzii/weaveflow/node/supervisor"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
@@ -158,7 +159,7 @@ func StateExpression(paths map[string]state.Path, expression string) (registry.E
 func supervisorRouteEqualsConditionDefinition() registry.ConditionDefinition {
 	return registry.ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{
-			Type:        node.ConditionTypeSupervisorRouteEquals,
+			Type:        supervisornode.ConditionTypeSupervisorRouteEquals,
 			Title:       "Supervisor Route Equals",
 			Description: "Routes to a worker when it matches the supervisor's selected member id.",
 			ConfigSchema: dsl.JSONSchema{
@@ -185,7 +186,7 @@ func supervisorRouteEqualsConditionDefinition() registry.ConditionDefinition {
 			if err != nil {
 				return registry.EdgeCondition{}, err
 			}
-			return node.SupervisorRouteEquals(path, workerID), nil
+			return supervisornode.SupervisorRouteEquals(path, workerID), nil
 		},
 	}
 }
@@ -193,7 +194,7 @@ func supervisorRouteEqualsConditionDefinition() registry.ConditionDefinition {
 func planStatusEqualsConditionDefinition() registry.ConditionDefinition {
 	return registry.ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{
-			Type:        node.ConditionTypePlanStatusEquals,
+			Type:        plannode.ConditionTypePlanStatusEquals,
 			Title:       "Plan Status Equals",
 			Description: "Routes when shared planner state has the configured status.",
 			ConfigSchema: dsl.JSONSchema{
@@ -202,11 +203,11 @@ func planStatusEqualsConditionDefinition() registry.ConditionDefinition {
 					"status": dsl.JSONSchema{
 						"type": "string",
 						"enum": []string{
-							node.PlanStatusPlanning,
-							node.PlanStatusExecuting,
-							node.PlanStatusReplan,
-							node.PlanStatusFinalizing,
-							node.PlanStatusDone,
+							plannode.PlanStatusPlanning,
+							plannode.PlanStatusExecuting,
+							plannode.PlanStatusReplan,
+							plannode.PlanStatusFinalizing,
+							plannode.PlanStatusDone,
 						},
 					},
 				},
@@ -227,7 +228,7 @@ func planStatusEqualsConditionDefinition() registry.ConditionDefinition {
 			if err != nil {
 				return registry.EdgeCondition{}, err
 			}
-			return node.PlanStatusEquals(path, status), nil
+			return plannode.PlanStatusEquals(path, status), nil
 		},
 	}
 }

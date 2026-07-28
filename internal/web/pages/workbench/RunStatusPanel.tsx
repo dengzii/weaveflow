@@ -19,6 +19,7 @@ interface ListItem {
   primary: string;
   secondary?: string;
   trailing?: string;
+  eventTypeFirst?: boolean;
 }
 
 interface EventFilterPopoverPosition {
@@ -192,6 +193,7 @@ export function RunStatusPanel({
           statusTone: eventTone(event.type),
           primary: event.node_id || event.run_id || "—",
           trailing: formatTimeMs(event.timestamp),
+          eventTypeFirst: event.type.startsWith("run."),
         })),
         renderDetail: (key) => {
           const target = filteredEventItems.find((item) => item.key === key)?.event;
@@ -451,22 +453,53 @@ export function RunStatusPanel({
                     type="button"
                     onClick={() => setSelectedKey(item.key)}
                     className={cn(
-                      "flex w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
+                      "w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
+                      view === "events"
+                        ? "grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem]"
+                        : "flex",
                       effectiveKey === item.key && "bg-accent text-accent-foreground"
                     )}
                   >
-                    {item.statusLabel ? (
-                      <StatusText tone={item.statusTone ?? "neutral"} className="shrink-0">
-                        {item.statusLabel}
-                      </StatusText>
-                    ) : null}
-                    <span className="truncate font-mono">{item.primary}</span>
-                    {item.secondary ? (
-                      <span className="truncate text-muted-foreground">{item.secondary}</span>
-                    ) : null}
-                    {item.trailing ? (
-                      <span className="ml-auto shrink-0 text-muted-foreground">{item.trailing}</span>
-                    ) : null}
+                    {view === "events" ? (
+                      <>
+                        {item.eventTypeFirst ? (
+                          <span className="col-span-2 min-w-0 truncate" title={item.statusLabel}>
+                            <StatusText tone={item.statusTone ?? "neutral"} className="max-w-full truncate align-middle">
+                              {item.statusLabel}
+                            </StatusText>
+                          </span>
+                        ) : (
+                          <>
+                            <span className="truncate font-mono" title={item.primary}>{item.primary}</span>
+                            {item.statusLabel ? (
+                              <span className="min-w-0 truncate" title={item.statusLabel}>
+                                <StatusText tone={item.statusTone ?? "neutral"} className="max-w-full truncate align-middle">
+                                  {item.statusLabel}
+                                </StatusText>
+                              </span>
+                            ) : (
+                              <span />
+                            )}
+                          </>
+                        )}
+                        <span className="truncate text-right text-muted-foreground">{item.trailing}</span>
+                      </>
+                    ) : (
+                      <>
+                        {item.statusLabel ? (
+                          <StatusText tone={item.statusTone ?? "neutral"} className="shrink-0">
+                            {item.statusLabel}
+                          </StatusText>
+                        ) : null}
+                        <span className="truncate font-mono">{item.primary}</span>
+                        {item.secondary ? (
+                          <span className="truncate text-muted-foreground">{item.secondary}</span>
+                        ) : null}
+                        {item.trailing ? (
+                          <span className="ml-auto shrink-0 text-muted-foreground">{item.trailing}</span>
+                        ) : null}
+                      </>
+                    )}
                   </button>
                 </li>
               ))}

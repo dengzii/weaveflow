@@ -13,7 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/llms/openai"
-	"github.com/dengzii/weaveflow/node"
+	supervisornode "github.com/dengzii/weaveflow/node/supervisor"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/tools"
 )
@@ -47,7 +47,7 @@ func main() {
 	must(err)
 
 	fmt.Println("objective:", objective)
-	if raw, ok := state.ReadPath(finalState, state.Shared("supervisor", node.SupervisorFieldHistory).String()); ok {
+	if raw, ok := state.ReadPath(finalState, state.Shared("supervisor", supervisornode.SupervisorFieldHistory).String()); ok {
 		fmt.Println("delegations:")
 		for _, turn := range decodeSupervisorHistory(raw) {
 			fmt.Printf("  %d. %s\n     task: %s\n     result: %s\n", turn.Turn, turn.WorkerID, turn.Task, turn.Result)
@@ -66,12 +66,12 @@ func newSupervisorGraph() (*wfgraph.Graph, error) {
 	return wfgraph.BuildGraph(builtin.NewDefaultRegistry(), definition, nil)
 }
 
-func decodeSupervisorHistory(raw any) []node.SupervisorTurn {
+func decodeSupervisorHistory(raw any) []supervisornode.SupervisorTurn {
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return nil
 	}
-	var history []node.SupervisorTurn
+	var history []supervisornode.SupervisorTurn
 	if err := json.Unmarshal(data, &history); err != nil {
 		return nil
 	}

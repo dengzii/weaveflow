@@ -344,6 +344,14 @@ func (a *AgentNode) seedConversation(conversation *conversationcap.View, task st
 	return nil
 }
 
+func (a *AgentNode) SeedConversation(conversation *conversationcap.View, task string) error {
+	return a.seedConversation(conversation, task)
+}
+
+func (a *AgentNode) RunLoop(ctx core.Context, conversation *conversationcap.View) error {
+	return a.runLoop(ctx, conversation)
+}
+
 func (a *AgentNode) effectiveMaxIterations(conversation *conversationcap.View) int {
 	if a.MaxIterations > 0 {
 		return a.MaxIterations

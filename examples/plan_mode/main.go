@@ -12,6 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/llms/openai"
 	"github.com/dengzii/weaveflow/node"
+	plannode "github.com/dengzii/weaveflow/node/plan"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/tools"
 
@@ -47,7 +48,7 @@ func main() {
 func newPlanGraph() (*weaveflow.Graph, error) {
 	graph := weaveflow.NewGraph()
 
-	generator := node.NewPlanGeneratorNode(node.WithID("generate_plan"))
+	generator := plannode.NewPlanGeneratorNode(node.WithID("generate_plan"))
 	generator.ToolIDs = []string{"calculator", "current_time"}
 	generator.MaxSteps = 5
 	generator.MaxReplans = 1
@@ -55,7 +56,7 @@ func newPlanGraph() (*weaveflow.Graph, error) {
 	generator.PlanPath = planStatePath
 	generator.ExecutionPath = planExecutionPath
 
-	step := node.NewPlanStepNode(node.WithID("prepare_step"))
+	step := plannode.NewPlanStepNode(node.WithID("prepare_step"))
 	step.MaxIterations = 4
 	step.PlanPath, step.ExecutionPath, step.ConversationPath = planStatePath, planExecutionPath, planConversationPath
 
@@ -68,9 +69,9 @@ func newPlanGraph() (*weaveflow.Graph, error) {
 	executeTools.Parallel = true
 	executeTools.ConversationPath = planConversationPath
 
-	review := node.NewPlanReviewNode(node.WithID("review_step"))
+	review := plannode.NewPlanReviewNode(node.WithID("review_step"))
 	review.PlanPath, review.ExecutionPath, review.ConversationPath = planStatePath, planExecutionPath, planConversationPath
-	synthesis := node.NewPlanSynthesisNode(node.WithID("synthesize_plan"))
+	synthesis := plannode.NewPlanSynthesisNode(node.WithID("synthesize_plan"))
 	synthesis.PlanPath, synthesis.ResultPath = planStatePath, planResultPath
 
 	for _, target := range []node.Node{generator, step, execute, executeTools, review, synthesis} {
@@ -87,7 +88,7 @@ func newPlanGraph() (*weaveflow.Graph, error) {
 	if err := graph.AddEdge(generator.ID(), step.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(step.ID(), execute.ID(), node.PlanStatusEquals(planStatePath, node.PlanStatusExecuting)); err != nil {
+	if err := graph.AddConditionalEdge(step.ID(), execute.ID(), plannode.PlanStatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(step.ID(), synthesis.ID()); err != nil {
@@ -102,10 +103,10 @@ func newPlanGraph() (*weaveflow.Graph, error) {
 	if err := graph.AddEdge(executeTools.ID(), execute.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(review.ID(), generator.ID(), node.PlanStatusEquals(planStatePath, node.PlanStatusReplan)); err != nil {
+	if err := graph.AddConditionalEdge(review.ID(), generator.ID(), plannode.PlanStatusEquals(planStatePath, plannode.PlanStatusReplan)); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(review.ID(), step.ID(), node.PlanStatusEquals(planStatePath, node.PlanStatusExecuting)); err != nil {
+	if err := graph.AddConditionalEdge(review.ID(), step.ID(), plannode.PlanStatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(review.ID(), synthesis.ID()); err != nil {

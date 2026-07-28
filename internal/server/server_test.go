@@ -30,6 +30,39 @@ type contractTestNode struct {
 	core.NodeBase
 }
 
+func TestRegistryResponseIncludesNodeGroups(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	reg := wfregistry.NewRegistry()
+	if err := reg.RegisterNodeTypeInGroup("Models", wfregistry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{Type: "llm_turn", Title: "LLM Turn", ConfigSchema: dsl.JSONSchema{"type": "object"}},
+		Build:          func(*wfregistry.BuildContext, wfregistry.ResolvedNodeSpec) (core.Node, error) { return nil, nil },
+	}); err != nil {
+		t.Fatalf("register grouped node type: %v", err)
+	}
+
+	srv := &Server{registry: reg}
+	engine := gin.New()
+	engine.GET("/registry", srv.handleRegistry)
+	w := httptest.NewRecorder()
+	engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/registry", nil))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GET /registry status = %d, body = %s", w.Code, w.Body.String())
+	}
+
+	var response struct {
+		Data registryResponse `json:"data"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode registry response: %v", err)
+	}
+	if len(response.Data.NodeGroups) != 1 || response.Data.NodeGroups[0].Name != "Models" {
+		t.Fatalf("node groups = %#v", response.Data.NodeGroups)
+	}
+	if nodeTypes := response.Data.NodeGroups[0].NodeTypes; len(nodeTypes) != 1 || nodeTypes[0] != "llm_turn" {
+		t.Fatalf("grouped node types = %#v", nodeTypes)
+	}
+}
+
 func newContractTestNode(spec dsl.GraphNodeSpec) *contractTestNode {
 	name := spec.Name
 	if name == "" {

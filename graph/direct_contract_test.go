@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -74,5 +76,40 @@ func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
 	answer, _ := state.ReadPath(result, "shared.final.answer")
 	if answer != "done" {
 		t.Fatalf("answer = %#v", answer)
+	}
+}
+
+func TestUserInputEntryProvidesAgentTaskWhenNodeIDIsInput(t *testing.T) {
+	t.Parallel()
+	definition := dsl.GraphDefinition{
+		Version:      dsl.GraphDefinitionVersion,
+		StateModules: []dsl.StateModuleRef{{Name: builtin.ProtocolsModuleName, Version: builtin.ProtocolsModuleVersion}},
+		EntryPoint:   "input",
+		FinishPoint:  "agent",
+		Nodes: []dsl.GraphNodeSpec{
+			{ID: "input", Type: node.NodeTypeUserInput, State: map[string]dsl.StateBinding{
+				"value": {Path: "shared.request.input"}, "pending_input": {Path: "shared.request.pending_input"},
+			}},
+			{ID: "agent", Type: node.NodeTypeAgent, State: map[string]dsl.StateBinding{
+				"task": {Path: "shared.request.input"}, "conversation": {Path: "scopes.agent.conversation"}, "result": {Path: "shared.final.answer"},
+			}},
+		},
+		Edges: []dsl.GraphEdgeSpec{{From: "input", To: "agent"}},
+	}
+
+	workflow, err := BuildGraph(builtin.NewDefaultRegistry(), definition, nil)
+	if err != nil {
+		t.Fatalf("BuildGraph(): %v", err)
+	}
+	requirements := workflow.InitialStateRequirements()
+	if len(requirements.Required) != 0 {
+		t.Fatalf("required = %#v, want empty", requirements.Required)
+	}
+	if len(requirements.ProvidedByUpstream) != 1 {
+		t.Fatalf("provided_by_upstream = %#v, want one item", requirements.ProvidedByUpstream)
+	}
+	provided := requirements.ProvidedByUpstream[0]
+	if provided.Path != "shared.request.input" || len(provided.Sources) != 1 || provided.Sources[0] != "input" {
+		t.Fatalf("provided_by_upstream = %#v, want source node input", provided)
 	}
 }

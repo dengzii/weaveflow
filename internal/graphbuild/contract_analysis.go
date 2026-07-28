@@ -84,12 +84,11 @@ func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialSt
 		for _, field := range requiredReadFields(contract) {
 			path := field.Path.String()
 			sources := requiredReadSources(input, nodeID, path, ancestors[nodeID])
-			graphSources := nonInputSources(sources)
 			switch {
-			case len(sources) == 0:
+			case sources.empty():
 				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("node %q requires input path %q but no initial input or upstream writer can provide it", nodeID, path))
-			case len(graphSources) > 0:
-				addInitialStateRequirement(provided, path, nodeID, graphSources, field, "")
+			case len(sources.nodes) > 0:
+				addInitialStateRequirement(provided, path, nodeID, sources.nodes, field, "")
 			default:
 				addInitialStateRequirement(required, path, nodeID, nil, field, "")
 			}
@@ -103,12 +102,11 @@ func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialSt
 		for _, field := range requiredReadFields(contract) {
 			path := field.Path.String()
 			sources := requiredConditionReadSources(input, nodeID, path, ancestors[nodeID])
-			graphSources := nonInputSources(sources)
 			switch {
-			case len(sources) == 0:
+			case sources.empty():
 				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("condition after node %q requires path %q but no initial input or upstream writer can provide it", nodeID, path))
-			case len(graphSources) > 0:
-				addInitialStateRequirement(provided, path, nodeID, graphSources, field, "")
+			case len(sources.nodes) > 0:
+				addInitialStateRequirement(provided, path, nodeID, sources.nodes, field, "")
 			default:
 				addInitialStateRequirement(required, path, nodeID, nil, field, "")
 			}
@@ -209,15 +207,22 @@ func sortedStringSet(input map[string]struct{}) []string {
 	return values
 }
 
-func nonInputSources(sources []string) []string {
-	out := make([]string, 0, len(sources))
-	for _, source := range sources {
-		if strings.TrimSpace(source) == "input" {
-			continue
-		}
-		out = append(out, source)
+type contractReadSources struct {
+	runInput bool
+	nodes    []string
+}
+
+func (s contractReadSources) empty() bool {
+	return !s.runInput && len(s.nodes) == 0
+}
+
+func (s contractReadSources) diagnosticLabels() []string {
+	labels := make([]string, 0, len(s.nodes)+1)
+	if s.runInput {
+		labels = append(labels, "run_input")
 	}
-	return compactStrings(out)
+	labels = append(labels, s.nodes...)
+	return labels
 }
 
 func contractAnalysisWarnings(input ContractAnalysisGraph) []core.ContractDiagnostic {
@@ -621,7 +626,7 @@ func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, an
 
 		for _, path := range required {
 			sources := requiredReadSources(input, nodeID, path, ancestors[nodeID])
-			if len(sources) == 0 {
+			if sources.empty() {
 				diagnostics = append(diagnostics, core.ContractDiagnostic{
 					Severity: core.ContractDiagnosticSeverityError,
 					Kind:     "missing_required_read",
@@ -631,14 +636,15 @@ func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, an
 				})
 				continue
 			}
-			if len(sources) > 1 {
+			diagnosticSources := sources.diagnosticLabels()
+			if len(diagnosticSources) > 1 {
 				diagnostics = append(diagnostics, core.ContractDiagnostic{
 					Severity: core.ContractDiagnosticSeverityWarning,
 					Kind:     "multiple_read_sources",
 					NodeID:   nodeID,
 					Path:     path,
-					Sources:  sources,
-					Message:  fmt.Sprintf("node %q can read required path %q from multiple sources: %s", nodeID, path, strings.Join(sources, ", ")),
+					Sources:  diagnosticSources,
+					Message:  fmt.Sprintf("node %q can read required path %q from multiple sources: %s", nodeID, path, strings.Join(diagnosticSources, ", ")),
 				})
 			}
 		}
@@ -646,17 +652,17 @@ func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, an
 	return diagnostics
 }
 
-func requiredReadSources(input ContractAnalysisGraph, nodeID string, path string, ancestors map[string]struct{}) []string {
-	sources := make([]string, 0)
+func requiredReadSources(input ContractAnalysisGraph, nodeID string, path string, ancestors map[string]struct{}) contractReadSources {
+	sources := contractReadSources{}
 	for _, initialPath := range input.InitialStatePaths {
 		if sourceProvidesRead(initialPath, path) {
-			sources = append(sources, "input")
+			sources.runInput = true
 			break
 		}
 	}
 
 	if contract, ok := input.NodeContracts[nodeID]; ok && selfRuntimePathProvidesRead(nodeID, contract, path) {
-		sources = append(sources, nodeID)
+		sources.nodes = append(sources.nodes, nodeID)
 	}
 
 	ancestorIDs := make([]string, 0, len(ancestors))
@@ -670,11 +676,13 @@ func requiredReadSources(input ContractAnalysisGraph, nodeID string, path string
 			continue
 		}
 		if contractProvidesRead(contract, path) {
-			sources = append(sources, ancestorID)
+			sources.nodes = append(sources.nodes, ancestorID)
 		}
 	}
 
-	return compactStrings(sources)
+	sort.Strings(sources.nodes)
+	sources.nodes = compactStrings(sources.nodes)
+	return sources
 }
 
 func requiredConditionReadDiagnostics(input ContractAnalysisGraph, reachable []string, ancestors map[string]map[string]struct{}) []core.ContractDiagnostic {
@@ -686,7 +694,7 @@ func requiredConditionReadDiagnostics(input ContractAnalysisGraph, reachable []s
 		}
 		for _, field := range requiredReadFields(contract) {
 			path := field.Path.String()
-			if sources := requiredConditionReadSources(input, nodeID, path, ancestors[nodeID]); len(sources) == 0 {
+			if sources := requiredConditionReadSources(input, nodeID, path, ancestors[nodeID]); sources.empty() {
 				diagnostics = append(diagnostics, core.ContractDiagnostic{
 					Severity: core.ContractDiagnosticSeverityError, Kind: "missing_condition_read", NodeID: nodeID, Path: path,
 					Message: fmt.Sprintf("condition after node %q requires path %q but no initial input or upstream writer can provide it", nodeID, path),
@@ -697,16 +705,16 @@ func requiredConditionReadDiagnostics(input ContractAnalysisGraph, reachable []s
 	return diagnostics
 }
 
-func requiredConditionReadSources(input ContractAnalysisGraph, nodeID string, path string, ancestors map[string]struct{}) []string {
-	sources := make([]string, 0)
+func requiredConditionReadSources(input ContractAnalysisGraph, nodeID string, path string, ancestors map[string]struct{}) contractReadSources {
+	sources := contractReadSources{}
 	for _, initialPath := range input.InitialStatePaths {
 		if sourceProvidesRead(initialPath, path) {
-			sources = append(sources, "input")
+			sources.runInput = true
 			break
 		}
 	}
 	if contract, ok := input.NodeContracts[nodeID]; ok && contractProvidesRead(contract, path) {
-		sources = append(sources, nodeID)
+		sources.nodes = append(sources.nodes, nodeID)
 	}
 	ancestorIDs := make([]string, 0, len(ancestors))
 	for ancestorID := range ancestors {
@@ -715,10 +723,12 @@ func requiredConditionReadSources(input ContractAnalysisGraph, nodeID string, pa
 	sort.Strings(ancestorIDs)
 	for _, ancestorID := range ancestorIDs {
 		if contract, ok := input.NodeContracts[ancestorID]; ok && contractProvidesRead(contract, path) {
-			sources = append(sources, ancestorID)
+			sources.nodes = append(sources.nodes, ancestorID)
 		}
 	}
-	return compactStrings(sources)
+	sort.Strings(sources.nodes)
+	sources.nodes = compactStrings(sources.nodes)
+	return sources
 }
 
 func selfRuntimePathProvidesRead(nodeID string, contract state.Contract, path string) bool {

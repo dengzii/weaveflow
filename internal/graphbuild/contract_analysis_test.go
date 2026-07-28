@@ -70,6 +70,52 @@ func TestAnalyzeInitialStateRequirementsSeparatesInitialAndUpstreamPaths(t *test
 	}
 }
 
+func TestAnalyzeInitialStateRequirementsDistinguishesInputNodeFromRunInput(t *testing.T) {
+	t.Parallel()
+	inputPath := state.Shared("request", "input")
+	analysis := ContractAnalysisGraph{
+		EntryPoint:        "input",
+		EndNode:           "__end__",
+		InitialStatePaths: []string{inputPath.String()},
+		Edges: map[string][]string{
+			"input": {"agent"},
+			"agent": {"__end__"},
+		},
+		NodeContracts: map[string]state.Contract{
+			"input": state.NewContract(state.FieldAccess{
+				Path: inputPath,
+				Mode: state.AccessReadWrite,
+			}),
+			"agent": state.NewContract(state.FieldAccess{
+				Path:     inputPath,
+				Mode:     state.AccessRead,
+				Required: true,
+				Type:     "string",
+			}),
+		},
+	}
+
+	requirements := AnalyzeInitialStateRequirements(analysis)
+	if len(requirements.Required) != 0 {
+		t.Fatalf("required = %#v, want empty", requirements.Required)
+	}
+	if len(requirements.ProvidedByUpstream) != 1 {
+		t.Fatalf("provided_by_upstream = %#v, want one item", requirements.ProvidedByUpstream)
+	}
+	provided := requirements.ProvidedByUpstream[0]
+	if provided.Path != inputPath.String() || len(provided.Sources) != 1 || provided.Sources[0] != "input" {
+		t.Fatalf("provided_by_upstream = %#v, want source node input", provided)
+	}
+
+	diagnostics := AnalyzeContractDiagnostics(analysis)
+	if len(diagnostics) != 1 || diagnostics[0].Kind != "multiple_read_sources" {
+		t.Fatalf("diagnostics = %#v, want one multiple_read_sources warning", diagnostics)
+	}
+	if got := diagnostics[0].Sources; len(got) != 2 || got[0] != "run_input" || got[1] != "input" {
+		t.Fatalf("diagnostic sources = %#v, want [run_input input]", got)
+	}
+}
+
 func TestAnalyzeInitialStateRequirementsReportsUnresolvedRuntimePath(t *testing.T) {
 	runtimePath := state.Runtime("other", "value")
 

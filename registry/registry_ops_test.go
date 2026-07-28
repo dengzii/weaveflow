@@ -136,6 +136,55 @@ func TestRegisterNodeTypeValidatesPortsAndBuilder(t *testing.T) {
 	}
 }
 
+func TestRegisterNodeTypeInGroupCreatesAndAppends(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	definition := func(nodeType string) NodeTypeDefinition {
+		return NodeTypeDefinition{
+			NodeTypeSchema: dsl.NodeTypeSchema{Type: nodeType},
+			Build:          func(*BuildContext, ResolvedNodeSpec) (core.Node, error) { return nil, nil },
+		}
+	}
+
+	if err := reg.RegisterNodeTypeInGroup(" Models ", definition("llm_turn")); err != nil {
+		t.Fatalf("register first grouped node type: %v", err)
+	}
+	if err := reg.RegisterNodeTypeInGroup("Models", definition("text_generation")); err != nil {
+		t.Fatalf("register second grouped node type: %v", err)
+	}
+	group, ok := reg.NodeGroups["Models"]
+	if !ok {
+		t.Fatal("node group was not created")
+	}
+	if group.Name != "Models" || len(group.NodeTypes) != 2 || group.NodeTypes[0] != "llm_turn" || group.NodeTypes[1] != "text_generation" {
+		t.Fatalf("node group = %#v", group)
+	}
+
+	groups := reg.NodeGroupDefinitions()
+	cloned := groups["Models"]
+	cloned.NodeTypes[0] = "changed"
+	groups["Models"] = cloned
+	delete(groups, "Models")
+	if reg.NodeGroups["Models"].NodeTypes[0] != "llm_turn" {
+		t.Fatalf("node group getter exposed mutable data: %#v", reg.NodeGroups["Models"])
+	}
+}
+
+func TestRegisterNodeTypeInGroupRejectsEmptyGroup(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	err := reg.RegisterNodeTypeInGroup(" ", NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{Type: "custom"},
+		Build:          func(*BuildContext, ResolvedNodeSpec) (core.Node, error) { return nil, nil },
+	})
+	if err == nil || !strings.Contains(err.Error(), "group") {
+		t.Fatalf("expected group error, got %v", err)
+	}
+	if len(reg.NodeTypes) != 0 || len(reg.NodeGroups) != 0 {
+		t.Fatalf("invalid grouped registration changed registry: nodes=%#v groups=%#v", reg.NodeTypes, reg.NodeGroups)
+	}
+}
+
 func TestRegisterConditionValidatesPortsAndResolver(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()

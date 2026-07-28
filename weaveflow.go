@@ -46,6 +46,7 @@ type (
 	StateContract             = dsl.StateContract
 	GraphResolver             = registry.GraphResolver
 	Registry                  = registry.Registry
+	NodeGroup                 = registry.NodeGroup
 	NodeTypeDefinition        = registry.NodeTypeDefinition
 	ConditionDefinition       = registry.ConditionDefinition
 	EdgeCondition             = registry.EdgeCondition

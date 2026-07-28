@@ -38,16 +38,17 @@ var (
 	_ dsl.GraphNodeSpecProvider = (*AgentNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*EnvironmentContextNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ExploreAgentNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanGeneratorNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanStepNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanReviewNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanSynthesisNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*SupervisorNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*SupervisorWorkerNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*SupervisorSynthesisNode)(nil)
 )
 
+type DefaultStatePathApplier interface {
+	ApplyDefaultStatePaths()
+}
+
 func newGraphNodeSpec(base Base, nodeType string, config map[string]any, statePaths ...map[string]state.Path) dsl.GraphNodeSpec {
+	return NewGraphNodeSpec(base, nodeType, config, statePaths...)
+}
+
+func NewGraphNodeSpec(base Base, nodeType string, config map[string]any, statePaths ...map[string]state.Path) dsl.GraphNodeSpec {
 	spec := dsl.GraphNodeSpec{
 		ID:          base.ID(),
 		Name:        base.Name(),
@@ -89,20 +90,6 @@ func defaultNodeStatePath(nodeID, nodeType, port string) state.Path {
 		if port == "input" || port == "output" {
 			template = "scopes.{node_id}." + port
 		}
-	case NodeTypePlanGenerator, NodeTypePlanStep, NodeTypePlanReview, NodeTypePlanSynthesis:
-		if port == "plan" {
-			template = "shared.plan"
-		} else if port == "execution" {
-			template = "shared.execution"
-		} else if port == "conversation" {
-			template = "scopes.{node_id}.conversation"
-		}
-	case NodeTypeSupervisor, NodeTypeSupervisorWorker, NodeTypeSupervisorSynthesis:
-		if port == "supervisor" {
-			template = "shared.supervisor"
-		} else if port == "conversation" {
-			template = "scopes.{node_id}.conversation"
-		}
 	case NodeTypeTextGeneration:
 		if port == "prompt" {
 			template = "shared.text_generation.prompt"
@@ -136,6 +123,10 @@ func defaultNodePathOwner(nodeID string) string {
 
 func ApplyDefaultStatePaths(node Node) {
 	if node == nil {
+		return
+	}
+	if applier, ok := node.(DefaultStatePathApplier); ok {
+		applier.ApplyDefaultStatePaths()
 		return
 	}
 	if strings.TrimSpace(node.ID()) == "" {
@@ -183,30 +174,6 @@ func ApplyDefaultStatePaths(node Node) {
 	case *SubgraphNode:
 		setScope(&typed.InputPath, defaultNodeOwner(typed, NodeTypeSubgraph), "input")
 		setScope(&typed.OutputPath, defaultNodeOwner(typed, NodeTypeSubgraph), "output")
-	case *PlanGeneratorNode:
-		setShared(&typed.ObjectivePath, "request", "input")
-		setShared(&typed.PlanPath, "plan")
-		setShared(&typed.ExecutionPath, "execution")
-	case *PlanStepNode:
-		setShared(&typed.PlanPath, "plan")
-		setShared(&typed.ExecutionPath, "execution")
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypePlanStep), "conversation")
-	case *PlanReviewNode:
-		setShared(&typed.PlanPath, "plan")
-		setShared(&typed.ExecutionPath, "execution")
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypePlanReview), "conversation")
-	case *PlanSynthesisNode:
-		setShared(&typed.PlanPath, "plan")
-		setShared(&typed.ResultPath, "final", "answer")
-	case *SupervisorNode:
-		setShared(&typed.ObjectivePath, "request", "input")
-		setShared(&typed.SupervisorPath, "supervisor")
-	case *SupervisorWorkerNode:
-		setShared(&typed.SupervisorPath, "supervisor")
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeSupervisorWorker), "conversation")
-	case *SupervisorSynthesisNode:
-		setShared(&typed.SupervisorPath, "supervisor")
-		setShared(&typed.ResultPath, "final", "answer")
 	case *SetFinalAnswerNode:
 		setShared(&typed.OutputPath, "final", "answer")
 		if typed.FromRequest {

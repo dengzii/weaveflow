@@ -134,6 +134,18 @@ func schemaType(schema dsl.JSONSchema) string {
 }
 
 func (r *Registry) RegisterNodeType(def NodeTypeDefinition) error {
+	return r.registerNodeType("", def)
+}
+
+func (r *Registry) RegisterNodeTypeInGroup(group string, def NodeTypeDefinition) error {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return fmt.Errorf("node group is required")
+	}
+	return r.registerNodeType(group, def)
+}
+
+func (r *Registry) registerNodeType(group string, def NodeTypeDefinition) error {
 	if r == nil {
 		return fmt.Errorf("registry is nil")
 	}
@@ -160,6 +172,15 @@ func (r *Registry) RegisterNodeType(def NodeTypeDefinition) error {
 		return fmt.Errorf("node type %q is already registered", def.Type)
 	}
 	r.NodeTypes[def.Type] = cloneNodeTypeDefinition(def)
+	if group != "" {
+		if r.NodeGroups == nil {
+			r.NodeGroups = map[string]NodeGroup{}
+		}
+		nodeGroup := r.NodeGroups[group]
+		nodeGroup.Name = group
+		nodeGroup.NodeTypes = append(nodeGroup.NodeTypes, def.Type)
+		r.NodeGroups[group] = nodeGroup
+	}
 	return nil
 }
 

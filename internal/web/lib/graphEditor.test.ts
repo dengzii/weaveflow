@@ -35,6 +35,7 @@ const condition: ConditionSchema = {
 const registry: RegistryInfo = {
   state_modules: modules,
   capabilities: [],
+  node_groups: [],
   node_types: [nodeType],
   conditions: [condition],
   graph_schema: {},

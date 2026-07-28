@@ -13,7 +13,7 @@ import (
 
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/trigger"
+	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 )
 

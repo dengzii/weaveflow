@@ -81,3 +81,27 @@ func optionalResolvedPath(spec registry.ResolvedNodeSpec, name string) state.Pat
 	}
 	return binding.Path
 }
+
+func PrimitivePort(name, description, schemaType string, mode dsl.StateAccessMode, required bool) dsl.StatePortDefinition {
+	return primitivePort(name, description, schemaType, mode, required)
+}
+
+func PrimitivePortWithDefault(name, description, schemaType string, mode dsl.StateAccessMode, required bool, defaultPath string) dsl.StatePortDefinition {
+	return primitivePortWithDefault(name, description, schemaType, mode, required, defaultPath)
+}
+
+func CapabilityPort(name, description, capabilityID string, required bool, fields ...dsl.RelativeStateFieldRef) dsl.StatePortDefinition {
+	return capabilityPort(name, description, capabilityID, required, fields...)
+}
+
+func CapabilityField(path string, mode dsl.StateAccessMode) dsl.RelativeStateFieldRef {
+	return capabilityField(path, mode)
+}
+
+func ResolvedPath(spec registry.ResolvedNodeSpec, name string) (state.Path, error) {
+	return resolvedPath(spec, name)
+}
+
+func OptionalResolvedPath(spec registry.ResolvedNodeSpec, name string) state.Path {
+	return optionalResolvedPath(spec, name)
+}

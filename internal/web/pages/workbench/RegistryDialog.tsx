@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { Braces, ChevronRight, FileJson, ListTree, Search, Settings, X } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
+import { groupNodeTypes } from "../../lib/nodeGroups";
 import { cn } from "../../lib/utils";
 import type {
   ConditionSchema,
@@ -19,6 +20,12 @@ interface RegistrySection {
   label: string;
   count: number;
   icon: ComponentType<{ className?: string }>;
+  items: RegistryItem[];
+  groups?: RegistryItemGroup[];
+}
+
+interface RegistryItemGroup {
+  name: string;
   items: RegistryItem[];
 }
 
@@ -66,6 +73,10 @@ export function RegistryDialog({
         count: registry?.node_types?.length ?? 0,
         icon: ListTree,
         items: (registry?.node_types ?? []).map(nodeTypeItem),
+        groups: groupNodeTypes(registry?.node_types ?? [], registry?.node_groups ?? []).map((group) => ({
+          name: group.name,
+          items: group.nodeTypes.map(nodeTypeItem),
+        })),
       },
       {
         key: "tools",
@@ -120,6 +131,15 @@ export function RegistryDialog({
   const filteredItems = normalizedQuery
     ? active.items.filter((item) => item.searchText.includes(normalizedQuery))
     : active.items;
+  const filteredGroups = (active.groups ?? [])
+    .map((group) => ({
+      ...group,
+      items:
+        normalizedQuery && !group.name.toLowerCase().includes(normalizedQuery)
+          ? group.items.filter((item) => item.searchText.includes(normalizedQuery))
+          : group.items,
+    }))
+    .filter((group) => group.items.length > 0);
   const emptyLabel = !registry && active.key !== "tools" ? "Registry unavailable" : "No matching entries";
 
   if (!open) return null;
@@ -168,7 +188,9 @@ export function RegistryDialog({
 
           <section className="min-h-0 min-w-0 overflow-auto p-4">
             <div className="grid min-w-0 gap-3">
-              {filteredItems.length > 0 ? (
+              {active.groups && filteredGroups.length > 0 ? (
+                filteredGroups.map((group) => <RegistryItemGroupCards key={group.name} group={group} />)
+              ) : !active.groups && filteredItems.length > 0 ? (
                 filteredItems.map((item) => <RegistryDefinitionCard key={item.key} item={item} />)
               ) : (
                 <EmptyState label={emptyLabel} />
@@ -178,6 +200,22 @@ export function RegistryDialog({
         </div>
       </div>
     </div>
+  );
+}
+
+function RegistryItemGroupCards({ group }: { group: RegistryItemGroup }) {
+  return (
+    <section className="grid min-w-0 gap-2">
+      <div className="flex items-center gap-2 px-1 text-xs font-semibold uppercase text-muted-foreground">
+        <span>{group.name}</span>
+        <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px]">{group.items.length}</span>
+      </div>
+      <div className="grid min-w-0 gap-3">
+        {group.items.map((item) => (
+          <RegistryDefinitionCard key={item.key} item={item} />
+        ))}
+      </div>
+    </section>
   );
 }
 

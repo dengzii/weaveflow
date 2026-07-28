@@ -175,6 +175,7 @@ export interface InitialStateRequirement {
 export interface RegistryInfo {
   state_modules: StateModuleDefinition[];
   capabilities: StateCapabilityDefinition[];
+  node_groups: NodeGroup[];
   node_types: NodeTypeSchema[];
   conditions: ConditionSchema[];
   graph_schema: Record<string, unknown>;
@@ -240,6 +241,11 @@ export interface StatePortDefinition {
   capability?: string;
   contract?: RelativeStateContract;
   merge_strategy?: StateMergeStrategy;
+}
+
+export interface NodeGroup {
+  name: string;
+  node_types: string[];
 }
 
 export interface DynamicStatePortDefinition {

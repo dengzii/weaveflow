@@ -7,7 +7,8 @@ import (
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/node"
+	plannode "github.com/dengzii/weaveflow/node/plan"
+	supervisornode "github.com/dengzii/weaveflow/node/supervisor"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
@@ -17,16 +18,16 @@ import (
 func TestPlanStatusConditionUsesResolvedBinding(t *testing.T) {
 	t.Parallel()
 	path := state.Scope("planner", "state")
-	definition := NewDefaultRegistry().Conditions[node.ConditionTypePlanStatusEquals]
+	definition := NewDefaultRegistry().Conditions[plannode.ConditionTypePlanStatusEquals]
 	condition, err := definition.Resolve(registry.ResolvedConditionSpec{
-		Spec:  dsl.GraphConditionSpec{Type: node.ConditionTypePlanStatusEquals, Config: map[string]any{"status": node.PlanStatusExecuting}},
+		Spec:  dsl.GraphConditionSpec{Type: plannode.ConditionTypePlanStatusEquals, Config: map[string]any{"status": plannode.PlanStatusExecuting}},
 		State: map[string]registry.ResolvedStateBinding{"plan": {Path: path}},
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	current := state.NewState()
-	_ = state.SetPath(current, path.MustChild("status").String(), node.PlanStatusExecuting)
+	_ = state.SetPath(current, path.MustChild("status").String(), plannode.PlanStatusExecuting)
 	if !condition.Match(context.Background(), current) {
 		t.Fatal("expected status match")
 	}
@@ -35,16 +36,16 @@ func TestPlanStatusConditionUsesResolvedBinding(t *testing.T) {
 func TestSupervisorRouteConditionUsesResolvedBinding(t *testing.T) {
 	t.Parallel()
 	path := state.Scope("team", "supervisor")
-	definition := NewDefaultRegistry().Conditions[node.ConditionTypeSupervisorRouteEquals]
+	definition := NewDefaultRegistry().Conditions[supervisornode.ConditionTypeSupervisorRouteEquals]
 	condition, err := definition.Resolve(registry.ResolvedConditionSpec{
-		Spec:  dsl.GraphConditionSpec{Type: node.ConditionTypeSupervisorRouteEquals, Config: map[string]any{"worker_id": "researcher"}},
+		Spec:  dsl.GraphConditionSpec{Type: supervisornode.ConditionTypeSupervisorRouteEquals, Config: map[string]any{"worker_id": "researcher"}},
 		State: map[string]registry.ResolvedStateBinding{"supervisor": {Path: path}},
 	})
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
 	current := state.NewState()
-	_ = state.SetPath(current, path.MustChild(node.SupervisorFieldRoute).String(), "researcher")
+	_ = state.SetPath(current, path.MustChild(supervisornode.SupervisorFieldRoute).String(), "researcher")
 	if !condition.Match(context.Background(), current) {
 		t.Fatal("expected route match")
 	}

@@ -36,6 +36,7 @@ type graphNodesResponse struct {
 type registryResponse struct {
 	StateModules []dsl.StateModuleDefinition     `json:"state_modules"`
 	Capabilities []dsl.StateCapabilityDefinition `json:"capabilities"`
+	NodeGroups   []wfregistry.NodeGroup          `json:"node_groups"`
 	NodeTypes    []dsl.NodeTypeSchema            `json:"node_types"`
 	Conditions   []dsl.ConditionSchema           `json:"conditions"`
 	GraphSchema  dsl.JSONSchema                  `json:"graph_schema"`
@@ -151,6 +152,11 @@ func (s *Server) handleRegistry(c *gin.Context) {
 	for _, key := range sortedCapabilityKeys(capabilitiesByID) {
 		capabilities = append(capabilities, capabilitiesByID[key])
 	}
+	nodeGroupsByName := s.registry.NodeGroupDefinitions()
+	nodeGroups := make([]wfregistry.NodeGroup, 0, len(nodeGroupsByName))
+	for _, key := range sortedNodeGroupKeys(nodeGroupsByName) {
+		nodeGroups = append(nodeGroups, nodeGroupsByName[key])
+	}
 
 	nodeTypes := make([]dsl.NodeTypeSchema, 0, len(s.registry.NodeTypes))
 	for _, key := range sortedNodeTypeKeys(s.registry.NodeTypes) {
@@ -165,6 +171,7 @@ func (s *Server) handleRegistry(c *gin.Context) {
 	writeData(c, http.StatusOK, registryResponse{
 		StateModules: stateModules,
 		Capabilities: capabilities,
+		NodeGroups:   nodeGroups,
 		NodeTypes:    nodeTypes,
 		Conditions:   conditions,
 		GraphSchema:  s.registry.JSONSchema(),
@@ -226,6 +233,15 @@ func sortedCapabilityKeys(input map[string]dsl.StateCapabilityDefinition) []stri
 }
 
 func sortedNodeTypeKeys(input map[string]wfregistry.NodeTypeDefinition) []string {
+	keys := make([]string, 0, len(input))
+	for key := range input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func sortedNodeGroupKeys(input map[string]wfregistry.NodeGroup) []string {
 	keys := make([]string, 0, len(input))
 	for key := range input {
 		keys = append(keys, key)

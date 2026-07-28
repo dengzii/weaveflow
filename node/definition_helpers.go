@@ -7,6 +7,10 @@ import (
 )
 
 func applyNodeMetadata(base *Base, spec dsl.GraphNodeSpec) {
+	ApplyNodeMetadata(base, spec)
+}
+
+func ApplyNodeMetadata(base *Base, spec dsl.GraphNodeSpec) {
 	if base == nil {
 		return
 	}

@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/dengzii/weaveflow/trigger"
+	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 )
 

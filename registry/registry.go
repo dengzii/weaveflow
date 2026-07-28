@@ -10,6 +10,7 @@ type Registry struct {
 	StateModules map[string]dsl.StateModuleDefinition     `json:"state_modules"`
 	Capabilities map[string]dsl.StateCapabilityDefinition `json:"capabilities"`
 	NodeTypes    map[string]NodeTypeDefinition            `json:"node_types"`
+	NodeGroups   map[string]NodeGroup                     `json:"node_groups"`
 	Conditions   map[string]ConditionDefinition           `json:"conditions"`
 
 	stateFields       map[string]dsl.StateFieldDefinition
@@ -21,6 +22,7 @@ func NewRegistry() *Registry {
 		StateModules:      map[string]dsl.StateModuleDefinition{},
 		Capabilities:      map[string]dsl.StateCapabilityDefinition{},
 		NodeTypes:         map[string]NodeTypeDefinition{},
+		NodeGroups:        map[string]NodeGroup{},
 		Conditions:        map[string]ConditionDefinition{},
 		stateFields:       map[string]dsl.StateFieldDefinition{},
 		capabilityModules: map[string]string{},
@@ -79,6 +81,17 @@ func (r *Registry) NodeTypeDefinitions() map[string]NodeTypeDefinition {
 	out := make(map[string]NodeTypeDefinition, len(r.NodeTypes))
 	for key, def := range r.NodeTypes {
 		out[key] = cloneNodeTypeDefinition(def)
+	}
+	return out
+}
+
+func (r *Registry) NodeGroupDefinitions() map[string]NodeGroup {
+	if r == nil || len(r.NodeGroups) == 0 {
+		return map[string]NodeGroup{}
+	}
+	out := make(map[string]NodeGroup, len(r.NodeGroups))
+	for key, group := range r.NodeGroups {
+		out[key] = cloneNodeGroup(group)
 	}
 	return out
 }
@@ -148,6 +161,12 @@ func cloneNodeTypeDefinition(def NodeTypeDefinition) NodeTypeDefinition {
 	cloned.StatePorts = cloneStatePortDefinitions(def.StatePorts)
 	cloned.NodeTypeSchema.StatePorts = cloneStatePortDefinitions(def.NodeTypeSchema.StatePorts)
 	cloned.NodeTypeSchema.DynamicStatePorts = cloneDynamicStatePortDefinition(def.NodeTypeSchema.DynamicStatePorts)
+	return cloned
+}
+
+func cloneNodeGroup(group NodeGroup) NodeGroup {
+	cloned := group
+	cloned.NodeTypes = append([]string(nil), group.NodeTypes...)
 	return cloned
 }
 

@@ -1,4 +1,4 @@
-package node
+package supervisor
 
 import (
 	"fmt"
@@ -208,10 +208,10 @@ func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) e
 	if err := conversation.SetMaxIterations(agent.MaxIterations); err != nil {
 		return err
 	}
-	if err := agent.seedConversation(conversation, task); err != nil {
+	if err := agent.SeedConversation(conversation, task); err != nil {
 		return err
 	}
-	if err := agent.runLoop(ctx, conversation); err != nil {
+	if err := agent.RunLoop(ctx, conversation); err != nil {
 		return fmt.Errorf("supervisor worker %q: %w", n.WorkerID, err)
 	}
 	result := conversation.FinalAnswer()

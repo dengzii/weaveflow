@@ -1,0 +1,160 @@
+{
+  "version": "2.0",
+  "name": "state_operations",
+  "state_modules": [
+    {
+      "name": "weaveflow.protocols",
+      "version": "1"
+    }
+  ],
+  "entry_point": "set_seed",
+  "finish_point": "delete_seed",
+  "nodes": [
+    {
+      "id": "set_seed",
+      "name": "Set Seed",
+      "type": "state_set",
+      "config": {
+        "value": {
+          "value": "base",
+          "nested": {
+            "left": 1
+          }
+        }
+      },
+      "state": {
+        "target": {
+          "path": "shared.seed"
+        }
+      }
+    },
+    {
+      "id": "copy_seed",
+      "name": "Copy Seed",
+      "type": "state_copy",
+      "state": {
+        "source": {
+          "path": "shared.seed"
+        },
+        "target": {
+          "path": "shared.working"
+        }
+      }
+    },
+    {
+      "id": "merge_metadata",
+      "name": "Merge Metadata",
+      "type": "state_merge",
+      "state": {
+        "source": {
+          "path": "shared.request.metadata"
+        },
+        "target": {
+          "path": "shared.working"
+        }
+      }
+    },
+    {
+      "id": "append_environment",
+      "name": "Append Environment",
+      "type": "state_append",
+      "state": {
+        "source": {
+          "path": "shared.environment"
+        },
+        "target": {
+          "path": "shared.items"
+        }
+      }
+    },
+    {
+      "id": "set_candidates",
+      "name": "Set Candidates",
+      "type": "state_set",
+      "config": {
+        "value": [
+          {
+            "name": "hidden",
+            "enabled": false
+          },
+          {
+            "name": "visible",
+            "enabled": true
+          }
+        ]
+      },
+      "state": {
+        "target": {
+          "path": "shared.candidates"
+        }
+      }
+    },
+    {
+      "id": "transform_candidates",
+      "name": "Transform Candidates",
+      "type": "state_transform",
+      "config": {
+        "expression": "inputs.candidates.filter(item, item.enabled).map(item, {'name': item.name})"
+      },
+      "state": {
+        "candidates": {
+          "path": "shared.candidates"
+        },
+        "output": {
+          "path": "shared.filtered_candidates"
+        }
+      }
+    },
+    {
+      "id": "delete_seed",
+      "name": "Delete Seed",
+      "type": "state_delete",
+      "state": {
+        "target": {
+          "path": "shared.seed"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "set_seed",
+      "to": "copy_seed"
+    },
+    {
+      "from": "copy_seed",
+      "to": "merge_metadata"
+    },
+    {
+      "from": "merge_metadata",
+      "to": "append_environment"
+    },
+    {
+      "from": "append_environment",
+      "to": "set_candidates"
+    },
+    {
+      "from": "set_candidates",
+      "to": "transform_candidates"
+    },
+    {
+      "from": "transform_candidates",
+      "to": "delete_seed",
+      "condition": {
+        "type": "state_expression",
+        "config": {
+          "expression": "inputs.result.size() > 0"
+        },
+        "state": {
+          "result": {
+            "path": "shared.filtered_candidates"
+          }
+        }
+      }
+    },
+    {
+      "from": "transform_candidates",
+      "to": "__end__"
+    }
+  ]
+}

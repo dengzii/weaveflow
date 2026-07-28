@@ -91,6 +91,7 @@ const registry: RegistryInfo = {
     },
   ],
   capabilities: [conversationCapability, planCapability],
+  node_groups: [],
   node_types: [
     {
       type: "writer",
