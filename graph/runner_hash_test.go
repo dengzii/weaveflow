@@ -152,7 +152,7 @@ func TestBuiltGraphHashPreservesCustomRegistrySemantics(t *testing.T) {
 		t.Fatalf("register module: %v", err)
 	}
 	if err := reg.RegisterNodeType(registry.NodeTypeDefinition{
-		NodeTypeSchema: dsl.NodeTypeSchema{Type: node.NodeTypeLLM, StatePorts: []dsl.StatePortDefinition{{
+		NodeTypeSchema: dsl.NodeTypeSchema{Type: node.NodeTypeLLMTurn, StatePorts: []dsl.StatePortDefinition{{
 			Name: "conversation", Required: true, Capability: capabilityID,
 			Contract: dsl.RelativeStateContract{Fields: []dsl.RelativeStateFieldRef{{Path: "messages", Mode: dsl.StateAccessRead}}},
 		}}},
@@ -168,7 +168,7 @@ func TestBuiltGraphHashPreservesCustomRegistrySemantics(t *testing.T) {
 		EntryPoint:   "llm",
 		FinishPoint:  "llm",
 		Nodes: []dsl.GraphNodeSpec{{
-			ID: "llm", Type: node.NodeTypeLLM,
+			ID: "llm", Type: node.NodeTypeLLMTurn,
 			State: map[string]dsl.StateBinding{"conversation": {Path: "shared.thread"}},
 		}},
 	}

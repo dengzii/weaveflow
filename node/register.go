@@ -14,20 +14,22 @@ func RegisterCoreNodeTypes(r *registry.Registry) error {
 
 	definitions := []registry.NodeTypeDefinition{
 		SubgraphNodeTypeDefinition(),
-		ConversationInputNodeTypeDefinition(),
+		UserInputNodeTypeDefinition(),
+		ConversationMessageNodeTypeDefinition(),
 		ContextReducerNodeTypeDefinition(),
-		LLMNodeTypeDefinition(),
-		ToolsNodeTypeDefinition(),
+		LLMTurnNodeTypeDefinition(),
+		TextGenerationNodeTypeDefinition(),
+		ToolExecutionNodeTypeDefinition(),
 		AgentNodeTypeDefinition(),
 		EnvironmentContextNodeTypeDefinition(),
-		ExploreNodeTypeDefinition(),
+		ExploreAgentNodeTypeDefinition(),
 		PlanGeneratorNodeTypeDefinition(),
 		PlanStepNodeTypeDefinition(),
 		PlanReviewNodeTypeDefinition(),
-		PlanFinalizeNodeTypeDefinition(),
+		PlanSynthesisNodeTypeDefinition(),
 		SupervisorNodeTypeDefinition(),
 		SupervisorWorkerNodeTypeDefinition(),
-		SupervisorFinalizeNodeTypeDefinition(),
+		SupervisorSynthesisNodeTypeDefinition(),
 	}
 	definitions = append(definitions, stateops.NodeTypeDefinitions()...)
 	for _, def := range definitions {

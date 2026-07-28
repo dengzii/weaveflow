@@ -140,22 +140,37 @@ func (m *llmWrap) GenerateContent(ctx context.Context, messages []llms.MessageCo
 
 	options = append(options, withLLMStreamingResponseEvent())
 	res, err := m.m.GenerateContent(ctx, messages, options...)
-	if err == nil && res != nil && len(res.Choices) > 0 && res.Choices[0] != nil {
-		choice1 := res.Choices[0]
-		if strings.TrimSpace(choice1.ReasoningContent) != "" {
-			_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, map[string]any{"text": choice1.ReasoningContent})
-		}
-		if strings.TrimSpace(choice1.Content) != "" {
-			_ = PublishRunnerContextEvent(ctx, EventLLMContent, map[string]any{"text": choice1.Content})
-		}
-		for _, toolCall := range choice1.ToolCalls {
-			if toolCall.FunctionCall != nil {
-				_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, toolCall.FunctionCall)
-			}
-		}
-		_ = PublishRunnerContextEvent(ctx, EventLLMCall, buildLLMCallStatsPayload(m.m, choice1))
-	}
+	publishLLMResponseEvents(ctx, m.m, res, err)
 	return res, err
+}
+
+func (m *llmWrap) GenerateCompletion(ctx context.Context, prompt string, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	completionModel, ok := m.m.(core.CompletionModel)
+	if !ok {
+		return nil, fmt.Errorf("model %T does not support text completions", m.m)
+	}
+	res, err := completionModel.GenerateCompletion(ctx, prompt, options...)
+	publishLLMResponseEvents(ctx, m.m, res, err)
+	return res, err
+}
+
+func publishLLMResponseEvents(ctx context.Context, model llms.Model, response *llms.ContentResponse, responseErr error) {
+	if responseErr != nil || response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
+		return
+	}
+	choice := response.Choices[0]
+	if strings.TrimSpace(choice.ReasoningContent) != "" {
+		_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, map[string]any{"text": choice.ReasoningContent})
+	}
+	if strings.TrimSpace(choice.Content) != "" {
+		_ = PublishRunnerContextEvent(ctx, EventLLMContent, map[string]any{"text": choice.Content})
+	}
+	for _, toolCall := range choice.ToolCalls {
+		if toolCall.FunctionCall != nil {
+			_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, toolCall.FunctionCall)
+		}
+	}
+	_ = PublishRunnerContextEvent(ctx, EventLLMCall, buildLLMCallStatsPayload(model, choice))
 }
 
 func buildLLMCallStatsPayload(model llms.Model, choice *llms.ContentChoice) map[string]any {

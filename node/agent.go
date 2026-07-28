@@ -89,7 +89,7 @@ func AgentNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypeAgent,
-			Title:       "Agent Node",
+			Title:       "Agent",
 			Description: "Run a self-contained ReAct loop: LLM inference and tool execution iterate inside the node until a final answer or the iteration cap is reached.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",

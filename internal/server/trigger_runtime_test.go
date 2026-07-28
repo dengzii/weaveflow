@@ -180,7 +180,7 @@ func triggerGraphUploadBody(graphID, graphVersion, content string) string {
 			"nodes": [
 				{
 					"id": "input",
-					"type": "conversation_input",
+					"type": "conversation_message",
 					"config": {"content": %q},
 					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}

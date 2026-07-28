@@ -7,8 +7,8 @@ import type {
   StateModuleDefinition,
 } from "../types";
 import {
-  humanMessagePromptFromInterrupt,
-  pendingHumanInputState,
+  pendingUserInputState,
+  userInputPromptFromInterrupt,
 } from "../pages/WorkbenchPage";
 import { validateGraph } from "../pages/workbench/graph-workspace/utils";
 import { addGraphEdge, addNodeToGraph, createGraphDefinition, createNodeFromType, dynamicStatePortForName, initialStateBindings, matchesDynamicStatePortName, nextDynamicStatePortName, resolvedStatePortContract } from "./graphEditor";
@@ -156,35 +156,35 @@ describe("v2 graph editor defaults", () => {
     }]);
   });
 
-  test("creates conversation input nodes with a visible pending input binding", () => {
-    const conversationInput: NodeTypeSchema = {
-      type: "conversation_input",
+  test("creates user input nodes with visible value and pending input bindings", () => {
+    const userInput: NodeTypeSchema = {
+      type: "user_input",
       state_ports: [
-        { name: "conversation", required: true, capability: "weaveflow.conversation.v1", default_path: "scopes.{node_id}.conversation" },
+        { name: "value", schema: { type: "string" }, mode: "read_write", default_path: "shared.request.input" },
         { name: "pending_input", schema: { type: "string" }, mode: "read_write", default_path: "shared.request.pending_input" },
       ],
     };
-    const graph = createGraphDefinition("interactive", conversationInput, modules);
+    const graph = createGraphDefinition("interactive", userInput, modules);
     expect(graph.nodes[0].state).toEqual({
-      conversation: { path: "scopes.conversation_input.conversation" },
+      value: { path: "shared.request.input" },
       pending_input: { path: "shared.request.pending_input" },
     });
   });
 
-  test("recognizes bound conversation input pauses and builds the resume patch", () => {
+  test("recognizes bound user input pauses and builds the resume patch", () => {
     const definition: GraphDefinition = {
       version: "2.0",
       state_modules: [{ name: "weaveflow.protocols", version: "1" }],
       nodes: [{
         id: "input",
-        type: "conversation_input",
+        type: "user_input",
         state: {
-          conversation: { path: "scopes.agent.conversation" },
+          value: { path: "scopes.agent.input" },
           pending_input: { path: "scopes.agent.pending_input" },
         },
       }],
     };
-    const prompt = humanMessagePromptFromInterrupt({
+    const prompt = userInputPromptFromInterrupt({
       run_id: "run-1",
       checkpoint_id: "checkpoint-1",
       node_id: "input",
@@ -197,24 +197,23 @@ describe("v2 graph editor defaults", () => {
       statePath: "scopes.agent.pending_input",
       message: "waiting for input",
     });
-    expect(pendingHumanInputState(prompt?.statePath ?? "", "hello")).toEqual({
+    expect(pendingUserInputState(prompt?.statePath ?? "", "hello")).toEqual({
       scopes: { agent: { pending_input: "hello" } },
     });
   });
 
-  test("blocks interactive conversation input without a pending input binding", () => {
-    const conversationInput: NodeTypeSchema = {
-      type: "conversation_input",
+  test("blocks user input without a pending input binding", () => {
+    const userInput: NodeTypeSchema = {
+      type: "user_input",
       state_ports: [
-        { name: "conversation", required: true, capability: "weaveflow.conversation.v1" },
-        { name: "input", schema: { type: "string" }, mode: "read" },
+        { name: "value", schema: { type: "string" }, mode: "read_write" },
         { name: "pending_input", schema: { type: "string" }, mode: "read_write" },
       ],
     };
-    const activeRegistry = { ...registry, node_types: [conversationInput] };
-    const graph = createGraphDefinition("interactive", conversationInput, modules);
+    const activeRegistry = { ...registry, node_types: [userInput] };
+    const graph = createGraphDefinition("interactive", userInput, modules);
     graph.finish_point = graph.nodes[0].id;
-    graph.nodes[0].state = { conversation: { path: "scopes.agent.conversation" } };
-    expect(validateGraph(graph, activeRegistry)).toContain("requires state binding pending_input");
+    graph.nodes[0].state = { value: { path: "scopes.agent.input" } };
+    expect(validateGraph(graph, activeRegistry)).toContain("requires state bindings value and pending_input");
   });
 });

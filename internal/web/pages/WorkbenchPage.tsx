@@ -62,7 +62,7 @@ type StreamStatus = "connecting" | "connected" | "reconnecting" | "closed";
 type GraphIdentity = { id: string; version: string };
 const RUN_STATUS_VISIBLE_STORAGE_KEY = "weaveflow.workbench.runStatus.visible";
 
-interface HumanMessagePrompt {
+interface UserInputPrompt {
   runId: string;
   checkpointId: string;
   nodeId: string;
@@ -99,7 +99,7 @@ export function WorkbenchPage({
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runInterrupt, setRunInterrupt] = useState<RunInterrupt | null>(null);
   const [runState, setRunState] = useState<unknown>(null);
-  const [humanPrompt, setHumanPrompt] = useState<HumanMessagePrompt | null>(null);
+  const [humanPrompt, setHumanPrompt] = useState<UserInputPrompt | null>(null);
   const [humanPromptText, setHumanPromptText] = useState("");
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
   const [runStatusVisible, setRunStatusVisible] = useState(readStoredRunStatusVisible);
@@ -217,9 +217,9 @@ export function WorkbenchPage({
     setHumanPromptText("");
   }, []);
 
-  const maybeOpenHumanPrompt = useCallback(
+  const maybeOpenUserInputPrompt = useCallback(
     (interrupt?: RunInterrupt | null) => {
-      const prompt = humanMessagePromptFromInterrupt(interrupt, definition);
+      const prompt = userInputPromptFromInterrupt(interrupt, definition);
       if (!prompt) return;
       if (ignoredHumanInterruptsRef.current.has(prompt.checkpointId)) return;
       if (humanPromptCheckpointRef.current === prompt.checkpointId) return;
@@ -231,8 +231,8 @@ export function WorkbenchPage({
   );
 
   useEffect(() => {
-    maybeOpenHumanPrompt(runInterrupt);
-  }, [maybeOpenHumanPrompt, runInterrupt]);
+    maybeOpenUserInputPrompt(runInterrupt);
+  }, [maybeOpenUserInputPrompt, runInterrupt]);
 
   const refreshRuns = useCallback(async (
     identity: GraphIdentity = graphIdentityRef.current,
@@ -319,12 +319,12 @@ export function WorkbenchPage({
         setEvents(detail.events);
         setRunInterrupt(detail.interrupt ?? null);
         setRunState(state);
-        if (options.openHumanPrompt) maybeOpenHumanPrompt(detail.interrupt ?? null);
+        if (options.openHumanPrompt) maybeOpenUserInputPrompt(detail.interrupt ?? null);
       } catch (err) {
         notifyError(err);
       }
     },
-    [maybeOpenHumanPrompt, notifyError]
+    [maybeOpenUserInputPrompt, notifyError]
   );
 
   const loadServerState = useCallback(async () => {
@@ -628,13 +628,13 @@ export function WorkbenchPage({
   async function resumeSelectedRun() {
     if (!selectedRunId) return;
     const runId = selectedRunId;
-    const humanPromptTarget = humanMessagePromptFromInterrupt(runInterrupt, definition);
+    const humanPromptTarget = userInputPromptFromInterrupt(runInterrupt, definition);
     if (humanPromptTarget) {
       humanPromptCheckpointRef.current = humanPromptTarget.checkpointId;
       setHumanPrompt(humanPromptTarget);
       setHumanPromptText("");
       setRunStatusVisible(true);
-      pushToast("warn", "Human input required to resume");
+      pushToast("warn", "User input required to resume");
       return;
     }
     setBusy(true);
@@ -663,7 +663,7 @@ export function WorkbenchPage({
     }
   }
 
-  async function submitHumanMessagePrompt() {
+  async function submitUserInputPrompt() {
     if (!humanPrompt) return;
     const prompt = humanPrompt;
     const text = humanPromptText.trim();
@@ -672,7 +672,7 @@ export function WorkbenchPage({
     setHumanPrompt(null);
     setHumanPromptText("");
     setRunInterrupt(null);
-    pushToast("info", "Human input submitted");
+    pushToast("info", "User input submitted");
     void (async () => {
       try {
         const runContextVersion = runContextVersionRef.current;
@@ -683,7 +683,7 @@ export function WorkbenchPage({
               : run
           )
         );
-        const result = await resumeRun(prompt.runId, pendingHumanInputState(prompt.statePath, text));
+        const result = await resumeRun(prompt.runId, pendingUserInputState(prompt.statePath, text));
         setSelectedRunId(result.run.run_id);
         setRunInterrupt(result.interrupt ?? null);
         setRunStatusVisible(true);
@@ -698,7 +698,7 @@ export function WorkbenchPage({
     })();
   }
 
-  function dismissHumanMessagePrompt() {
+  function dismissUserInputPrompt() {
     if (humanPrompt?.checkpointId) {
       ignoredHumanInterruptsRef.current.add(humanPrompt.checkpointId);
     }
@@ -785,13 +785,13 @@ export function WorkbenchPage({
         <SettingsWorkspace registry={registry} />
       ) : null}
       {tab === "triggers" ? <TriggerWorkspace /> : null}
-      <HumanMessagePromptDialog
+      <UserInputPromptDialog
         prompt={humanPrompt}
         value={humanPromptText}
         busy={busy}
         onChange={setHumanPromptText}
-        onCancel={dismissHumanMessagePrompt}
-        onSubmit={() => void submitHumanMessagePrompt()}
+        onCancel={dismissUserInputPrompt}
+        onSubmit={() => void submitUserInputPrompt()}
       />
       <RegistryDialog
         open={registryDialogOpen}
@@ -803,7 +803,7 @@ export function WorkbenchPage({
   );
 }
 
-function HumanMessagePromptDialog({
+function UserInputPromptDialog({
   prompt,
   value,
   busy,
@@ -811,7 +811,7 @@ function HumanMessagePromptDialog({
   onCancel,
   onSubmit,
 }: {
-  prompt: HumanMessagePrompt | null;
+  prompt: UserInputPrompt | null;
   value: string;
   busy: boolean;
   onChange: (value: string) => void;
@@ -824,7 +824,7 @@ function HumanMessagePromptDialog({
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4">
       <div className="w-[min(520px,100%)] rounded-md border border-border bg-panel shadow-xl">
         <div className="border-b border-border px-4 py-3">
-          <div className="text-sm font-semibold">Human input required</div>
+          <div className="text-sm font-semibold">User input required</div>
         </div>
         <div className="p-4">
           <Textarea
@@ -837,8 +837,8 @@ function HumanMessagePromptDialog({
               }
             }}
             autoFocus
-            aria-label="Human response"
-            placeholder={prompt.message || "The run is waiting for human input."}
+            aria-label="User response"
+            placeholder={prompt.message || "The run is waiting for user input."}
             className="min-h-28"
           />
         </div>
@@ -864,16 +864,13 @@ async function loadLatestRunState(checkpoints: CheckpointRecord[], graphId: stri
   return checkpoint.business ?? checkpoint.snapshot ?? null;
 }
 
-export function humanMessagePromptFromInterrupt(
+export function userInputPromptFromInterrupt(
   interrupt: RunInterrupt | null | undefined,
   definition: GraphDefinition | null
-): HumanMessagePrompt | null {
+): UserInputPrompt | null {
   if (!interrupt?.run_id || !interrupt.checkpoint_id || !interrupt.node_id || !definition) return null;
   const node = definition.nodes.find((item) => item.id === interrupt.node_id);
-  if (node?.type !== "conversation_input") return null;
-  const config = isRecord(node.config) ? node.config : {};
-  const configuredContent = typeof config.content === "string" ? config.content.trim() : "";
-  if (configuredContent) return null;
+  if (node?.type !== "user_input") return null;
   const statePath = node.state?.pending_input?.path.trim() ?? "";
   if (!statePath) return null;
   return {
@@ -881,11 +878,11 @@ export function humanMessagePromptFromInterrupt(
     checkpointId: interrupt.checkpoint_id,
     nodeId: interrupt.node_id,
     statePath,
-    message: interrupt.message || "The run is waiting for human input.",
+    message: interrupt.message || "The run is waiting for user input.",
   };
 }
 
-export function pendingHumanInputState(path: string, message: string): unknown {
+export function pendingUserInputState(path: string, message: string): unknown {
   const segments = path.split(".").map((segment) => segment.trim()).filter(Boolean);
   const root: Record<string, unknown> = {};
   let cursor = root;
@@ -896,10 +893,6 @@ export function pendingHumanInputState(path: string, message: string): unknown {
   }
   if (segments.length > 0) cursor[segments[segments.length - 1]] = message;
   return root;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 function runStatusFromEvent(eventType: string): string {

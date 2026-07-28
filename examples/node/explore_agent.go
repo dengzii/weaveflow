@@ -13,11 +13,11 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-// ExploreExample runs an ExploreNode standalone: the node reads the latest
+// ExploreAgentExample runs an ExploreAgentNode standalone: the node reads the latest
 // human message from the parent scope, drives its own isolated tool loop
 // (read / grep / glob) until the model stops calling tools, then writes
 // a structured summary back into the parent scope's final_answer.
-func ExploreExample() {
+func ExploreAgentExample() {
 	model, err := openai.New()
 	must(err)
 
@@ -30,7 +30,7 @@ func ExploreExample() {
 	})
 	coreCtx := core.NewContext(ctx)
 
-	exploreNode := node.NewExploreNode()
+	exploreNode := node.NewExploreAgentNode()
 	exploreNode.MaxIterations = 8
 	exploreNode.ToolResultCap = 4096
 	exploreNode.TaskPath = state.Shared("task")
@@ -38,12 +38,12 @@ func ExploreExample() {
 	exploreNode.ConversationPath = state.Scope("explore", "conversation")
 	exploreNode.ResultPath = state.Shared("explore_result")
 
-	currentState := state.FromShared(map[string]any{"task": "Where is the ExploreNode defined and what tools does it use by default?"})
+	currentState := state.FromShared(map[string]any{"task": "Where is the ExploreAgentNode defined and what tools does it use by default?"})
 	seedAccess := state.NewEditingAccess(currentState)
 	parentSeed, err := conversationcap.Bind(seedAccess, exploreNode.ParentConversationPath)
 	must(err)
 	must(parentSeed.SetMessages([]llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeHuman, "Where is the ExploreNode defined and what tools does it use by default?"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "Where is the ExploreAgentNode defined and what tools does it use by default?"),
 	}))
 	currentState = seedAccess.State()
 

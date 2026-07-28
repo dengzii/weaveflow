@@ -59,7 +59,7 @@ func TestBindGraphUploadRejectsLegacyDefinitionFields(t *testing.T) {
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
-			"nodes": [{"id":"node","type":"conversation_input","state":{}}],
+			"nodes": [{"id":"node","type":"conversation_message","state":{}}],
 			"state_schema": "legacy"
 		}
 	}`))
@@ -574,7 +574,7 @@ func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
 			"nodes": [
 				{
 					"id": "input",
-					"type": "conversation_input",
+					"type": "conversation_message",
 					"config": {"content": "hello"},
 					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}
@@ -712,7 +712,7 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
+				{"id": "input", "type": "conversation_message", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			],
 			"metadata": {"web": {"positions": {"input": {"x": 10, "y": 20}}}}
 		}
@@ -727,7 +727,7 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
+				{"id": "input", "type": "conversation_message", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			],
 			"metadata": {"web": {"positions": {"input": {"x": 30, "y": 40}}}}
 		}
@@ -810,7 +810,7 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
+				{"id": "input", "type": "conversation_message", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			]
 		}
 	}`
@@ -867,7 +867,7 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 			"entry_point": "input",
 			"finish_point": "input",
 			"nodes": [
-				{"id": "input", "type": "conversation_input", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
+				{"id": "input", "type": "conversation_message", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			]
 		}
 	}`
@@ -927,7 +927,7 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 			"nodes": [
 				{
 					"id": "input",
-					"type": "conversation_input",
+					"type": "conversation_message",
 					"config": {"content": "hello"},
 					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}
@@ -1011,7 +1011,7 @@ func TestGetRunDetailAggregatesDebugRecords(t *testing.T) {
 			"nodes": [
 				{
 					"id": "input",
-					"type": "conversation_input",
+					"type": "conversation_message",
 					"config": {"content": "hello"},
 					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}

@@ -30,14 +30,13 @@ export function validateGraph(definition: GraphDefinition | null, registry?: Reg
         return `node ${node.id} allows at most ${nodeType.dynamic_state_ports.max_ports} dynamic state bindings`;
       }
     }
-    if (node.type === "conversation_input") {
-      const content = typeof node.config?.content === "string" ? node.config.content.trim() : "";
-      const inputPort = nodeType?.state_ports?.find((port) => port.name === "input");
+    if (node.type === "user_input") {
+      const valuePort = nodeType?.state_ports?.find((port) => port.name === "value");
       const pendingInputPort = nodeType?.state_ports?.find((port) => port.name === "pending_input");
-      const inputPath = node.state?.input?.path.trim() || resolveDefaultStatePath(inputPort?.default_path, node.id);
+      const valuePath = node.state?.value?.path.trim() || resolveDefaultStatePath(valuePort?.default_path, node.id);
       const pendingInputPath = node.state?.pending_input?.path.trim() || resolveDefaultStatePath(pendingInputPort?.default_path, node.id);
-      if (!content && !inputPath && !pendingInputPath) {
-        return `node ${node.id} requires state binding pending_input when content and input are empty`;
+      if (!valuePath || !pendingInputPath) {
+        return `node ${node.id} requires state bindings value and pending_input`;
       }
     }
   }

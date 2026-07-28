@@ -15,17 +15,17 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-type ToolsNode struct {
+type ToolExecutionNode struct {
 	Base
 	ToolIDs          []string
 	Parallel         bool
 	ConversationPath state.Path
 }
 
-func NewToolsNode(options ...NodeOption) *ToolsNode {
-	node := &ToolsNode{
+func NewToolExecutionNode(options ...NodeOption) *ToolExecutionNode {
+	node := &ToolExecutionNode{
 		Base: NewBase(Spec{
-			Name:        NodeTypeTools,
+			Name:        NodeTypeToolExecution,
 			Description: "Execute tool calls emitted by the model.",
 		}),
 		Parallel: true,
@@ -35,33 +35,33 @@ func NewToolsNode(options ...NodeOption) *ToolsNode {
 	return node
 }
 
-func (t *ToolsNode) Validate() error {
+func (t *ToolExecutionNode) Validate() error {
 	if t == nil {
-		return fmt.Errorf("tools node is nil")
+		return fmt.Errorf("tool execution node is nil")
 	}
 	if err := t.Base.Validate(); err != nil {
 		return err
 	}
 	if t.ConversationPath.Empty() {
-		return fmt.Errorf("tools node %q requires conversation path", t.ID())
+		return fmt.Errorf("tool execution node %q requires conversation path", t.ID())
 	}
 	return nil
 }
 
-func (t *ToolsNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (t *ToolExecutionNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	config := map[string]any{
 		"tool_ids": t.ToolIDs,
 		"parallel": t.Parallel,
 	}
-	return newGraphNodeSpec(t.Base, NodeTypeTools, config, map[string]state.Path{"conversation": t.ConversationPath})
+	return newGraphNodeSpec(t.Base, NodeTypeToolExecution, config, map[string]state.Path{"conversation": t.ConversationPath})
 }
 
-func ToolsNodeTypeDefinition() registry.NodeTypeDefinition {
+func ToolExecutionNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        NodeTypeTools,
-			Title:       "Tools Node",
-			Description: "Built-in tool execution nodes.",
+			Type:        NodeTypeToolExecution,
+			Title:       "Tool Execution",
+			Description: "Execute tool calls emitted by a model in a bound conversation.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
@@ -82,21 +82,21 @@ func ToolsNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			toolsNode := NewToolsNode(WithID(spec.ID))
-			applyNodeMetadata(&toolsNode.Base, spec)
-			toolsNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			toolExecutionNode := NewToolExecutionNode(WithID(spec.ID))
+			applyNodeMetadata(&toolExecutionNode.Base, spec)
+			toolExecutionNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
-				toolsNode.Parallel = parallel
+				toolExecutionNode.Parallel = parallel
 			}
-			toolsNode.ConversationPath = conversationPath
-			return toolsNode, nil
+			toolExecutionNode.ConversationPath = conversationPath
+			return toolExecutionNode, nil
 		},
 	}
 }
 
-func (t *ToolsNode) Execute(ctx core.Context, access *state.Access) error {
+func (t *ToolExecutionNode) Execute(ctx core.Context, access *state.Access) error {
 	if ctx.Tools() == nil {
-		return errors.New("tools node: tools not available")
+		return errors.New("tool execution node: tools not available")
 	}
 	conversation, err := conversationcap.Bind(access, t.ConversationPath)
 	if err != nil {

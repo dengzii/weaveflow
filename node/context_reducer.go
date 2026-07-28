@@ -84,7 +84,7 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypeContextReducer,
-			Title:       "Context Reducer Node",
+			Title:       "Context Reducer",
 			Description: "Compact older conversation context into a summary message before the next model turn.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",

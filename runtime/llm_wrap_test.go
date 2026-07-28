@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/dengzii/weaveflow/core"
+
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -19,6 +21,10 @@ func (t *testLLM) GenerateContent(_ context.Context, _ []llms.MessageContent, _ 
 
 func (t *testLLM) Call(_ context.Context, _ string, _ ...llms.CallOption) (string, error) {
 	return "", t.err
+}
+
+func (t *testLLM) GenerateCompletion(_ context.Context, _ string, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+	return t.response, t.err
 }
 
 func TestWrapLlmGenerateContentPublishesFinalReasoningAndContentEvents(t *testing.T) {
@@ -83,5 +89,38 @@ func TestWrapLlmGenerateContentPublishesFinalReasoningAndContentEvents(t *testin
 	}
 	if contentPayload["text"] != "final answer" {
 		t.Fatalf("content payload text = %q, want %q", contentPayload["text"], "final answer")
+	}
+}
+
+func TestWrapLlmGenerateCompletionPublishesContentAndUsageEvents(t *testing.T) {
+	t.Parallel()
+
+	model := wrapLlm(&testLLM{response: &llms.ContentResponse{Choices: []*llms.ContentChoice{{
+		Content: "completion text",
+		GenerationInfo: map[string]any{
+			"PromptTokens":     4,
+			"CompletionTokens": 3,
+			"TotalTokens":      7,
+		},
+	}}}})
+	completionModel, ok := model.(core.CompletionModel)
+	if !ok {
+		t.Fatalf("wrapped model type = %T, want core.CompletionModel", model)
+	}
+
+	var eventTypes []EventType
+	ctx := WithRunnerEventPublisher(context.Background(), func(eventType EventType, _ any) error {
+		eventTypes = append(eventTypes, eventType)
+		return nil
+	})
+	response, err := completionModel.GenerateCompletion(ctx, "prompt")
+	if err != nil {
+		t.Fatalf("GenerateCompletion() error = %v", err)
+	}
+	if response.Choices[0].Content != "completion text" {
+		t.Fatalf("response = %#v", response)
+	}
+	if len(eventTypes) != 2 || eventTypes[0] != EventLLMContent || eventTypes[1] != EventLLMCall {
+		t.Fatalf("event types = %#v", eventTypes)
 	}
 }

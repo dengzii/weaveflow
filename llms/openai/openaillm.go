@@ -104,6 +104,56 @@ func (o *LLM) Call(ctx context.Context, prompt string, options ...llms.CallOptio
 	return llms.GenerateFromSinglePrompt(ctx, o, prompt, options...)
 }
 
+// GenerateCompletion requests a raw text completion without applying chat message templates.
+func (o *LLM) GenerateCompletion(ctx context.Context, prompt string, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	messages := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}
+	if o.CallbacksHandler != nil {
+		o.CallbacksHandler.HandleLLMGenerateContentStart(ctx, messages)
+	}
+
+	opts := llms.CallOptions{}
+	for _, option := range options {
+		option(&opts)
+	}
+	if err := validateCompletionCallOptions(opts); err != nil {
+		return nil, err
+	}
+
+	result, err := o.client.CreateCompletion(ctx, &openaiclient.CompletionRequest{
+		Model:            opts.Model,
+		Prompt:           prompt,
+		MaxTokens:        opts.MaxTokens,
+		Temperature:      opts.Temperature,
+		TopP:             opts.TopP,
+		N:                opts.N,
+		StopWords:        opts.StopWords,
+		FrequencyPenalty: opts.FrequencyPenalty,
+		PresencePenalty:  opts.PresencePenalty,
+		Seed:             opts.Seed,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	choices := make([]*llms.ContentChoice, len(result.Choices))
+	for index, choice := range result.Choices {
+		choices[index] = &llms.ContentChoice{
+			Content:    choice.Text,
+			StopReason: choice.FinishReason,
+			GenerationInfo: map[string]any{
+				"CompletionTokens": result.Usage.CompletionTokens,
+				"PromptTokens":     result.Usage.PromptTokens,
+				"TotalTokens":      result.Usage.TotalTokens,
+			},
+		}
+	}
+	response := &llms.ContentResponse{Choices: choices}
+	if o.CallbacksHandler != nil {
+		o.CallbacksHandler.HandleLLMGenerateContentEnd(ctx, response)
+	}
+	return response, nil
+}
+
 // GenerateContent implements the Model interface.
 func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) { //nolint: lll, cyclop, funlen
 	if o.CallbacksHandler != nil {
@@ -345,6 +395,19 @@ func validateCallOptions(opts llms.CallOptions) error {
 	}
 	if opts.FunctionCallBehavior != "" {
 		return fmt.Errorf("legacy function_call is unsupported; use tool_choice")
+	}
+	return nil
+}
+
+func validateCompletionCallOptions(opts llms.CallOptions) error {
+	if err := validateCallOptions(opts); err != nil {
+		return err
+	}
+	if len(opts.Tools) > 0 || opts.ToolChoice != nil {
+		return fmt.Errorf("tools are unsupported for text completions")
+	}
+	if opts.JSONMode {
+		return fmt.Errorf("JSON mode is unsupported for text completions")
 	}
 	return nil
 }

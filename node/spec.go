@@ -9,38 +9,42 @@ import (
 )
 
 const (
-	NodeTypeSubgraph           = "subgraph"
-	NodeTypeConversationInput  = "conversation_input"
-	NodeTypeContextReducer     = "context_reducer"
-	NodeTypeLLM                = "llm"
-	NodeTypeTools              = "tools"
-	NodeTypeAgent              = "agent"
-	NodeTypeEnvironmentContext = "environment_context"
-	NodeTypeExplore            = "explore"
-	NodeTypeStateSet           = stateops.NodeTypeStateSet
-	NodeTypeStateCopy          = stateops.NodeTypeStateCopy
-	NodeTypeStateDelete        = stateops.NodeTypeStateDelete
-	NodeTypeStateMerge         = stateops.NodeTypeStateMerge
-	NodeTypeStateAppend        = stateops.NodeTypeStateAppend
-	NodeTypeStateTransform     = stateops.NodeTypeStateTransform
+	NodeTypeSubgraph            = "subgraph"
+	NodeTypeUserInput           = "user_input"
+	NodeTypeConversationMessage = "conversation_message"
+	NodeTypeContextReducer      = "context_reducer"
+	NodeTypeLLMTurn             = "llm_turn"
+	NodeTypeTextGeneration      = "text_generation"
+	NodeTypeToolExecution       = "tool_execution"
+	NodeTypeAgent               = "agent"
+	NodeTypeEnvironmentContext  = "environment_context"
+	NodeTypeExploreAgent        = "explore_agent"
+	NodeTypeStateSet            = stateops.NodeTypeStateSet
+	NodeTypeStateCopy           = stateops.NodeTypeStateCopy
+	NodeTypeStateDelete         = stateops.NodeTypeStateDelete
+	NodeTypeStateMerge          = stateops.NodeTypeStateMerge
+	NodeTypeStateAppend         = stateops.NodeTypeStateAppend
+	NodeTypeStateTransform      = stateops.NodeTypeStateTransform
 )
 
 var (
 	_ dsl.GraphNodeSpecProvider = (*SubgraphNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*ConversationInputNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*UserInputNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*ConversationMessageNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ContextReducerNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*LLMNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*ToolsNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*LLMTurnNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*TextGenerationNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*ToolExecutionNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*AgentNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*EnvironmentContextNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*ExploreNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*ExploreAgentNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*PlanGeneratorNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*PlanStepNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*PlanReviewNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanFinalizeNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*PlanSynthesisNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*SupervisorNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*SupervisorWorkerNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*SupervisorFinalizeNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*SupervisorSynthesisNode)(nil)
 )
 
 func newGraphNodeSpec(base Base, nodeType string, config map[string]any, statePaths ...map[string]state.Path) dsl.GraphNodeSpec {
@@ -85,7 +89,7 @@ func defaultNodeStatePath(nodeID, nodeType, port string) state.Path {
 		if port == "input" || port == "output" {
 			template = "scopes.{node_id}." + port
 		}
-	case NodeTypePlanGenerator, NodeTypePlanStep, NodeTypePlanReview, NodeTypePlanFinalize:
+	case NodeTypePlanGenerator, NodeTypePlanStep, NodeTypePlanReview, NodeTypePlanSynthesis:
 		if port == "plan" {
 			template = "shared.plan"
 		} else if port == "execution" {
@@ -93,11 +97,21 @@ func defaultNodeStatePath(nodeID, nodeType, port string) state.Path {
 		} else if port == "conversation" {
 			template = "scopes.{node_id}.conversation"
 		}
-	case NodeTypeSupervisor, NodeTypeSupervisorWorker, NodeTypeSupervisorFinalize:
+	case NodeTypeSupervisor, NodeTypeSupervisorWorker, NodeTypeSupervisorSynthesis:
 		if port == "supervisor" {
 			template = "shared.supervisor"
 		} else if port == "conversation" {
 			template = "scopes.{node_id}.conversation"
+		}
+	case NodeTypeTextGeneration:
+		if port == "prompt" {
+			template = "shared.text_generation.prompt"
+		} else if port == "output" {
+			template = "shared.text_generation.result"
+		}
+	case NodeTypeUserInput:
+		if port == "value" {
+			template = "shared.request.input"
 		}
 	default:
 		if port == "conversation" || port == "parent_conversation" {
@@ -138,25 +152,30 @@ func ApplyDefaultStatePaths(node Node) {
 		}
 	}
 	switch typed := node.(type) {
-	case *ConversationInputNode:
-		setShared(&typed.InputPath, "request", "input")
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeConversationInput), "conversation")
+	case *UserInputNode:
+		setShared(&typed.ValuePath, "request", "input")
 		setShared(&typed.PendingInputPath, "request", "pending_input")
+	case *ConversationMessageNode:
+		setShared(&typed.InputPath, "request", "input")
+		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeConversationMessage), "conversation")
 	case *ContextReducerNode:
 		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeContextReducer), "conversation")
-	case *LLMNode:
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeLLM), "conversation")
+	case *LLMTurnNode:
+		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeLLMTurn), "conversation")
 		setShared(&typed.OutputPath, "final", "answer")
-	case *ToolsNode:
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeTools), "conversation")
+	case *TextGenerationNode:
+		setShared(&typed.PromptPath, "text_generation", "prompt")
+		setShared(&typed.OutputPath, "text_generation", "result")
+	case *ToolExecutionNode:
+		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeToolExecution), "conversation")
 	case *AgentNode:
 		setShared(&typed.TaskPath, "request", "input")
 		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeAgent), "conversation")
 		setShared(&typed.ResultPath, "final", "answer")
-	case *ExploreNode:
+	case *ExploreAgentNode:
 		setShared(&typed.TaskPath, "request", "input")
-		setScope(&typed.ParentConversationPath, defaultNodeOwner(typed, NodeTypeExplore), "parent_conversation")
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeExplore), "conversation")
+		setScope(&typed.ParentConversationPath, defaultNodeOwner(typed, NodeTypeExploreAgent), "parent_conversation")
+		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeExploreAgent), "conversation")
 		setShared(&typed.EnvironmentPath, "environment")
 		setShared(&typed.ResultPath, "final", "answer")
 	case *EnvironmentContextNode:
@@ -176,7 +195,7 @@ func ApplyDefaultStatePaths(node Node) {
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ExecutionPath, "execution")
 		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypePlanReview), "conversation")
-	case *PlanFinalizeNode:
+	case *PlanSynthesisNode:
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ResultPath, "final", "answer")
 	case *SupervisorNode:
@@ -185,7 +204,7 @@ func ApplyDefaultStatePaths(node Node) {
 	case *SupervisorWorkerNode:
 		setShared(&typed.SupervisorPath, "supervisor")
 		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeSupervisorWorker), "conversation")
-	case *SupervisorFinalizeNode:
+	case *SupervisorSynthesisNode:
 		setShared(&typed.SupervisorPath, "supervisor")
 		setShared(&typed.ResultPath, "final", "answer")
 	case *SetFinalAnswerNode:

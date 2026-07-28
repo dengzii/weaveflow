@@ -80,7 +80,7 @@ func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypeEnvironmentContext,
-			Title:       "Environment Context Node",
+			Title:       "Environment Context",
 			Description: "Collect workspace, project, and git context into shared state.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",

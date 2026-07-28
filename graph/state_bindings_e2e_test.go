@@ -138,7 +138,7 @@ func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 	}
 }
 
-func TestGraphV2MultipleLLMsUseDifferentModelsAndConversationRoots(t *testing.T) {
+func TestGraphV2MultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testing.T) {
 	t.Parallel()
 	firstModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("first output")}}
 	secondModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("second output")}}
@@ -150,14 +150,14 @@ func TestGraphV2MultipleLLMsUseDifferentModelsAndConversationRoots(t *testing.T)
 		FinishPoint:  "llm_two",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "input_one", Type: node.NodeTypeConversationInput,
+				ID: "input_one", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        binding("shared.request.input"),
 					"conversation": binding("scopes.llm_one.conversation"),
 				},
 			},
 			{
-				ID: "llm_one", Type: node.NodeTypeLLM,
+				ID: "llm_one", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "first"},
 				State: map[string]dsl.StateBinding{
 					"conversation": binding("scopes.llm_one.conversation"),
@@ -165,14 +165,14 @@ func TestGraphV2MultipleLLMsUseDifferentModelsAndConversationRoots(t *testing.T)
 				},
 			},
 			{
-				ID: "input_two", Type: node.NodeTypeConversationInput,
+				ID: "input_two", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        binding("shared.handoff.llm_one"),
 					"conversation": binding("scopes.llm_two.conversation"),
 				},
 			},
 			{
-				ID: "llm_two", Type: node.NodeTypeLLM,
+				ID: "llm_two", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "second"},
 				State: map[string]dsl.StateBinding{
 					"conversation": binding("scopes.llm_two.conversation"),
@@ -208,7 +208,7 @@ func TestGraphV2MultipleLLMsUseDifferentModelsAndConversationRoots(t *testing.T)
 	}
 }
 
-func TestGraphV2MultipleLLMsCanShareConversationRoot(t *testing.T) {
+func TestGraphV2MultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
 	t.Parallel()
 	firstModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("first output")}}
 	secondModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("second output")}}
@@ -221,14 +221,14 @@ func TestGraphV2MultipleLLMsCanShareConversationRoot(t *testing.T) {
 		FinishPoint:  "llm_two",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "input_one", Type: node.NodeTypeConversationInput,
+				ID: "input_one", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        binding("shared.request.input"),
 					"conversation": binding(conversationPath),
 				},
 			},
 			{
-				ID: "llm_one", Type: node.NodeTypeLLM,
+				ID: "llm_one", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "first"},
 				State: map[string]dsl.StateBinding{
 					"conversation": binding(conversationPath),
@@ -236,14 +236,14 @@ func TestGraphV2MultipleLLMsCanShareConversationRoot(t *testing.T) {
 				},
 			},
 			{
-				ID: "input_two", Type: node.NodeTypeConversationInput,
+				ID: "input_two", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        binding("shared.handoff.llm_one"),
 					"conversation": binding(conversationPath),
 				},
 			},
 			{
-				ID: "llm_two", Type: node.NodeTypeLLM,
+				ID: "llm_two", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "second"},
 				State: map[string]dsl.StateBinding{
 					"conversation": binding(conversationPath),
@@ -290,7 +290,7 @@ func TestGraphV2MultipleLLMsCanShareConversationRoot(t *testing.T) {
 	}
 }
 
-func TestGraphV2LLMToolsAndConditionShareConversationBinding(t *testing.T) {
+func TestGraphV2LLMTurnToolExecutionAndConditionShareConversationBinding(t *testing.T) {
 	t.Parallel()
 	model := &graphScriptedModel{responses: []*llms.ContentResponse{
 		{
@@ -317,14 +317,14 @@ func TestGraphV2LLMToolsAndConditionShareConversationBinding(t *testing.T) {
 		EntryPoint:   "input",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "input", Type: node.NodeTypeConversationInput,
+				ID: "input", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        binding("shared.request.input"),
 					"conversation": binding(conversationPath),
 				},
 			},
 			{
-				ID: "llm", Type: node.NodeTypeLLM,
+				ID: "llm", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "loop", "tool_ids": []any{"echo"}},
 				State: map[string]dsl.StateBinding{
 					"conversation": binding(conversationPath),
@@ -332,7 +332,7 @@ func TestGraphV2LLMToolsAndConditionShareConversationBinding(t *testing.T) {
 				},
 			},
 			{
-				ID: "tools", Type: node.NodeTypeTools,
+				ID: "tools", Type: node.NodeTypeToolExecution,
 				Config: map[string]any{"tool_ids": []any{"echo"}, "parallel": false},
 				State:  map[string]dsl.StateBinding{"conversation": binding(conversationPath)},
 			},

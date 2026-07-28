@@ -106,7 +106,7 @@ Run the explicit state-binding examples:
 
 ```bash
 go run ./examples/two_agent_handoff "Research and summarize explicit state bindings."
-go run ./examples/multi_llm "Draft and review an explanation of capability roots."
+go run ./examples/multi_llm_turns "Draft and review an explanation of capability roots."
 go run ./examples/shared_tool_loop "Use the calculator to evaluate 125 * 48."
 ```
 
@@ -115,7 +115,7 @@ The example:
 - builds a ReAct-style graph,
 - persists the graph definition to `.local/instance/graph.json`,
 - writes execution data, checkpoints, events, and artifacts under `.local/instance/`,
-- demonstrates resuming a paused run with additional human input.
+- demonstrates resuming a paused run with additional user input.
 
 ## Minimal Example
 
@@ -128,24 +128,28 @@ g := weaveflow.NewGraph()
 
 conversationPath := state.Scope("agent", "conversation")
 
-input := node.NewConversationInputNode(node.WithID("input"))
-input.Content = "What is 125 * 48?"
-input.ConversationPath = conversationPath
+input := node.NewUserInputNode(node.WithID("input"))
 
-llm := node.NewLLMNode(node.WithID("llm"))
+message := node.NewConversationMessageNode(node.WithID("message"))
+message.InputPath = input.ValuePath
+message.ConversationPath = conversationPath
+
+llm := node.NewLLMTurnNode(node.WithID("llm"))
 llm.ToolIDs = []string{"calculator"}
 llm.ConversationPath = conversationPath
 llm.OutputPath = state.Shared("final", "answer")
 
-tool := node.NewToolsNode(node.WithID("tools"))
+tool := node.NewToolExecutionNode(node.WithID("tools"))
 tool.ToolIDs = []string{"calculator"}
 tool.ConversationPath = conversationPath
 
 _ = g.AddNode(input)
+_ = g.AddNode(message)
 _ = g.AddNode(llm)
 _ = g.AddNode(tool)
 
-_ = g.AddEdge(input.ID(), llm.ID())
+_ = g.AddEdge(input.ID(), message.ID())
+_ = g.AddEdge(message.ID(), llm.ID())
 _ = g.AddConditionalEdge(llm.ID(), tool.ID(), weaveflow.ConversationHasToolCalls(conversationPath))
 _ = g.AddEdge(tool.ID(), llm.ID())
 _ = g.AddEdge(llm.ID(), weaveflow.EndNodeRef)
@@ -158,7 +162,10 @@ return err
 }
 ctx := core.WithModel(context.Background(), model)
 ctx = core.WithTools(ctx, map[string]core.Tool{"calculator": tools.NewCalculator()})
-_, finalState, err := runner.Start(ctx, weaveflow.NewState())
+initialState := state.FromShared(map[string]any{
+    "request": map[string]any{"input": "What is 125 * 48?"},
+})
+_, finalState, err := runner.Start(ctx, initialState)
 
 ```
 
@@ -170,7 +177,7 @@ top-level `state` field; state paths never belong in component `config`.
 Built-in state ports also declare a `default_path`. New nodes materialize those paths in their `state` bindings, and the
 graph resolver applies the same defaults when a binding is omitted. A `{node_id}` token is replaced with the node ID
 (with dots normalized to underscores), so conversation roots remain isolated. An explicit binding path always overrides
-the default. The built-in conventions are `shared.request.input` for input/task/objective ports,
+the default. The built-in conventions are `shared.request.input` for input/value/task/objective ports,
 `shared.final.answer` for output/result ports, `shared.environment` for environment, shared protocol roots for plan,
 execution, and supervisor capabilities, and `scopes.<node_id>.<port>` for conversation capabilities.
 
@@ -189,11 +196,23 @@ execution, and supervisor capabilities, and `scopes.<node_id>.<port>` for conver
   "nodes": [
     {
       "id": "input",
-      "type": "conversation_input",
-      "config": {
-        "content": "hello"
-      },
+      "type": "user_input",
       "state": {
+        "value": {
+          "path": "shared.request.input"
+        },
+        "pending_input": {
+          "path": "shared.request.pending_input"
+        }
+      }
+    },
+    {
+      "id": "message",
+      "type": "conversation_message",
+      "state": {
+        "input": {
+          "path": "shared.request.input"
+        },
         "conversation": {
           "path": "scopes.first.conversation"
         }
@@ -201,7 +220,7 @@ execution, and supervisor capabilities, and `scopes.<node_id>.<port>` for conver
     },
     {
       "id": "llm",
-      "type": "llm",
+      "type": "llm_turn",
       "config": {
         "model_id": "default"
       },
@@ -218,6 +237,10 @@ execution, and supervisor capabilities, and `scopes.<node_id>.<port>` for conver
   "edges": [
     {
       "from": "input",
+      "to": "message"
+    },
+    {
+      "from": "message",
       "to": "llm"
     }
   ]
@@ -327,7 +350,7 @@ go run ./cmd/server -addr :8080 -prefix /debug -cors-origins https://web.example
 | `examples/plan_mode/`         | Structured planning, tool execution, replanning, and final synthesis.              |
 | `examples/supervisor_mode/`   | Supervisor routing, specialist agent delegation, and final synthesis.              |
 | `examples/two_agent_handoff/` | Agent result-to-task handoff with isolated conversation roots.                     |
-| `examples/multi_llm/`         | Two model IDs with separate conversations and an explicit output-to-input handoff. |
+| `examples/multi_llm_turns/`   | Two LLM turns with separate models and conversations plus an explicit output-to-input handoff. |
 | `examples/shared_tool_loop/`  | LLM, Tools, and edge Condition sharing one conversation capability root.           |
 | `examples/dsl/`               | Exports the default registry and graph JSON schema.                                |
 | `examples/node/`              | Focused runnable examples for individual node types.                               |

@@ -7,7 +7,7 @@ const validSupervisorGraph: GraphDefinition = {
   name: "supervisor",
   state_modules: [{ name: "weaveflow.protocols", version: "1" }],
   entry_point: "supervisor",
-  finish_point: "finalize",
+  finish_point: "synthesis",
   nodes: [
     {
       id: "supervisor",
@@ -19,7 +19,7 @@ const validSupervisorGraph: GraphDefinition = {
       type: "supervisor_worker",
       config: { worker_id: "researcher" },
     },
-    { id: "finalize", type: "supervisor_finalize", config: {} },
+    { id: "synthesis", type: "supervisor_synthesis", config: {} },
   ],
   edges: [
     {
@@ -27,7 +27,7 @@ const validSupervisorGraph: GraphDefinition = {
       to: "research_node",
       condition: { type: "supervisor_route_equals", config: { worker_id: "researcher" } },
     },
-    { from: "supervisor", to: "finalize" },
+    { from: "supervisor", to: "synthesis" },
     { from: "research_node", to: "supervisor" },
   ],
 };
@@ -42,7 +42,7 @@ describe("supervisor graph lint", () => {
     expect(issues.filter((issue) => issue.id.startsWith("supervisor-"))).toEqual([]);
   });
 
-  test("reports missing worker routes, return edges, and finalize fallback", () => {
+  test("reports missing worker routes, return edges, and synthesis fallback", () => {
     const broken: GraphDefinition = {
       ...validSupervisorGraph,
       nodes: validSupervisorGraph.nodes.map((node) => ({ ...node, config: { ...(node.config ?? {}) } })),
@@ -56,7 +56,7 @@ describe("supervisor graph lint", () => {
     const ids = issues.map((issue) => issue.id);
     expect(ids).toContain("supervisor-route-missing-supervisor-researcher");
     expect(ids).toContain("supervisor-return-missing-supervisor-researcher");
-    expect(ids).toContain("supervisor-finalize-missing-supervisor");
+    expect(ids).toContain("supervisor-synthesis-missing-supervisor");
   });
 });
 

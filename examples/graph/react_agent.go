@@ -56,23 +56,29 @@ func newReActAgentMemory() memory.Manager {
 func newReActAgentGraph() *weaveflow.Graph {
 	graph := weaveflow.NewGraph()
 
-	humanInLoop := node.NewConversationInputNode()
-	humanInLoop.ConversationPath = reactAgentConversationPath
-	humanInLoop.PendingInputPath = reactAgentPendingInputPath
+	userInput := node.NewUserInputNode()
+	userInput.PendingInputPath = reactAgentPendingInputPath
 
-	tryPanic(graph.AddNode(humanInLoop))
+	tryPanic(graph.AddNode(userInput))
 
-	llm := node.NewLLMNode()
+	message := node.NewConversationMessageNode()
+	message.InputPath = userInput.ValuePath
+	message.ConversationPath = reactAgentConversationPath
+
+	tryPanic(graph.AddNode(message))
+
+	llm := node.NewLLMTurnNode()
 	llm.ConversationPath = reactAgentConversationPath
 
 	tryPanic(graph.AddNode(llm))
 
-	toolCall := node.NewToolsNode()
+	toolCall := node.NewToolExecutionNode()
 	toolCall.ConversationPath = reactAgentConversationPath
 
 	tryPanic(graph.AddNode(toolCall))
 
-	tryPanic(graph.AddEdge(humanInLoop.ID(), llm.ID()))
+	tryPanic(graph.AddEdge(userInput.ID(), message.ID()))
+	tryPanic(graph.AddEdge(message.ID(), llm.ID()))
 
 	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), weaveflow.ConversationHasToolCalls(reactAgentConversationPath))
 	tryPanic(err)
@@ -83,7 +89,7 @@ func newReActAgentGraph() *weaveflow.Graph {
 	err = graph.AddEdge(llm.ID(), weaveflow.EndNodeRef)
 	tryPanic(err)
 
-	tryPanic(graph.SetEntryPoint(humanInLoop.ID()))
+	tryPanic(graph.SetEntryPoint(userInput.ID()))
 
 	return graph
 }

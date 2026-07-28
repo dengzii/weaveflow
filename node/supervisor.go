@@ -20,9 +20,9 @@ import (
 )
 
 const (
-	NodeTypeSupervisor         = "supervisor"
-	NodeTypeSupervisorWorker   = "supervisor_worker"
-	NodeTypeSupervisorFinalize = "supervisor_finalize"
+	NodeTypeSupervisor          = "supervisor"
+	NodeTypeSupervisorWorker    = "supervisor_worker"
+	NodeTypeSupervisorSynthesis = "supervisor_synthesis"
 
 	ConditionTypeSupervisorRouteEquals = "supervisor_route_equals"
 

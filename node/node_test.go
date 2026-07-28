@@ -16,11 +16,9 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func TestConversationInputRequiresResumePathWhenInteractive(t *testing.T) {
+func TestUserInputRequiresResumePath(t *testing.T) {
 	t.Parallel()
-	target := NewConversationInputNode(WithID("input"))
-	target.ConversationPath = state.Scope("agent", "conversation")
-	target.InputPath = state.Path{}
+	target := NewUserInputNode(WithID("input"))
 	target.PendingInputPath = state.Path{}
 
 	err := target.Validate()
@@ -31,7 +29,7 @@ func TestConversationInputRequiresResumePathWhenInteractive(t *testing.T) {
 
 func TestGraphNodeSpecUsesDefaultStatePaths(t *testing.T) {
 	t.Parallel()
-	target := NewLLMNode(WithID("writer"))
+	target := NewLLMTurnNode(WithID("writer"))
 	spec := target.GraphNodeSpec()
 	if got := spec.State["conversation"].Path; got != "scopes.writer.conversation" {
 		t.Fatalf("conversation default path = %q", got)
@@ -41,12 +39,12 @@ func TestGraphNodeSpecUsesDefaultStatePaths(t *testing.T) {
 	}
 }
 
-func TestConversationInputInterruptsAndConsumesPendingInput(t *testing.T) {
+func TestUserInputInterruptsAndConsumesPendingInput(t *testing.T) {
 	t.Parallel()
-	conversationPath := state.Scope("agent", "conversation")
+	valuePath := state.Scope("agent", "input")
 	pendingInputPath := state.Scope("agent", "pending_input")
-	target := NewConversationInputNode(WithID("input"))
-	target.ConversationPath = conversationPath
+	target := NewUserInputNode(WithID("input"))
+	target.ValuePath = valuePath
 	target.PendingInputPath = pendingInputPath
 
 	_, err := Execute(context.Background(), state.NewState(), target)
@@ -67,20 +65,33 @@ func TestConversationInputInterruptsAndConsumesPendingInput(t *testing.T) {
 	if _, exists := state.NewAccess(result.State).ReadAny(pendingInputPath); exists {
 		t.Fatal("pending input was not consumed")
 	}
-	conversation, err := conversationcap.Bind(state.NewAccess(result.State), conversationPath)
-	if err != nil {
-		t.Fatalf("bind conversation: %v", err)
-	}
-	messages := conversation.Messages()
-	if len(messages) != 1 || messages[0].Role != llms.ChatMessageTypeHuman || extractText(messages[0]) != "new question" {
-		t.Fatalf("messages = %#v", messages)
+	value, exists := state.NewAccess(result.State).ReadAny(valuePath)
+	if !exists || value != "new question" {
+		t.Fatalf("value = %#v, exists = %v", value, exists)
 	}
 }
 
-func TestConversationInputUsesExplicitBoundRoot(t *testing.T) {
+func TestUserInputUsesExistingValue(t *testing.T) {
+	t.Parallel()
+	target := NewUserInputNode(WithID("input"))
+	access := state.NewEditingAccess(state.NewState())
+	if err := access.SetAny(target.ValuePath, "existing question"); err != nil {
+		t.Fatalf("set value: %v", err)
+	}
+	result, err := Execute(context.Background(), access.State(), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, exists := state.NewAccess(result.State).ReadAny(target.ValuePath)
+	if !exists || value != "existing question" {
+		t.Fatalf("value = %#v, exists = %v", value, exists)
+	}
+}
+
+func TestConversationMessageUsesExplicitBoundRoot(t *testing.T) {
 	t.Parallel()
 	root := state.Scope("writer", "thread")
-	target := NewConversationInputNode(WithID("input"))
+	target := NewConversationMessageNode(WithID("message"))
 	target.Content = "hello"
 	target.ConversationPath = root
 
@@ -101,7 +112,7 @@ func TestConversationInputUsesExplicitBoundRoot(t *testing.T) {
 	}
 }
 
-func TestConversationInputStartsNewTurnAtExplicitBoundRoot(t *testing.T) {
+func TestConversationMessageStartsNewTurnAtExplicitBoundRoot(t *testing.T) {
 	t.Parallel()
 	root := state.Scope("writer", "custom_thread")
 	access := state.NewEditingAccess(state.NewState())
@@ -110,7 +121,7 @@ func TestConversationInputStartsNewTurnAtExplicitBoundRoot(t *testing.T) {
 	_ = view.SetFinalAnswer("old answer")
 	_ = view.SetIterationCount(4)
 
-	target := NewConversationInputNode(WithID("input"))
+	target := NewConversationMessageNode(WithID("message"))
 	target.Content = "new question"
 	target.ConversationPath = root
 	result, err := Execute(context.Background(), access.State(), target)
@@ -127,7 +138,7 @@ func TestConversationInputStartsNewTurnAtExplicitBoundRoot(t *testing.T) {
 	}
 }
 
-func TestLLMWritesConversationAndOptionalOutputOnly(t *testing.T) {
+func TestLLMTurnWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	t.Parallel()
 	root := state.Scope("llm", "conversation")
 	output := state.Shared("handoff")
@@ -140,7 +151,7 @@ func TestLLMWritesConversationAndOptionalOutputOnly(t *testing.T) {
 
 	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "answer"}}}}}
 	ctx := core.WithModel(context.Background(), model)
-	target := NewLLMNode(WithID("llm"))
+	target := NewLLMTurnNode(WithID("llm"))
 	target.ConversationPath = root
 	target.OutputPath = output
 	result, err := Execute(ctx, initial, target)
@@ -159,20 +170,20 @@ func TestLLMWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	}
 }
 
-func TestLLMDefaultPromptMaxChars(t *testing.T) {
+func TestLLMTurnDefaultPromptMaxChars(t *testing.T) {
 	t.Parallel()
 
-	if got := NewLLMNode().effectivePromptMaxChars(); got != 200000 {
+	if got := NewLLMTurnNode().effectivePromptMaxChars(); got != 200000 {
 		t.Fatalf("default prompt max chars = %d, want 200000", got)
 	}
-	properties := LLMNodeTypeDefinition().NodeTypeSchema.ConfigSchema["properties"].(dsl.JSONSchema)
+	properties := LLMTurnNodeTypeDefinition().NodeTypeSchema.ConfigSchema["properties"].(dsl.JSONSchema)
 	promptSchema := properties["prompt_max_chars"].(dsl.JSONSchema)
 	if got := promptSchema["default"]; got != 200000 {
 		t.Fatalf("prompt_max_chars schema default = %#v, want 200000", got)
 	}
 }
 
-func TestLLMOnlyInjectsConfiguredTools(t *testing.T) {
+func TestLLMTurnOnlyInjectsConfiguredTools(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -198,7 +209,7 @@ func TestLLMOnlyInjectsConfiguredTools(t *testing.T) {
 				"other": core.NewTool(&llms.FunctionDefinition{Name: "other"}, nil),
 			}
 			ctx := core.WithTools(core.WithModel(context.Background(), model), availableTools)
-			target := NewLLMNode(WithID("llm"))
+			target := NewLLMTurnNode(WithID("llm"))
 			target.ConversationPath = conversationPath
 			target.ToolIDs = tt.toolIDs
 
@@ -221,7 +232,85 @@ func TestLLMOnlyInjectsConfiguredTools(t *testing.T) {
 	}
 }
 
-func TestToolsUsesSameExplicitConversationRoot(t *testing.T) {
+func TestTextGenerationUsesRawPromptAndWritesOutput(t *testing.T) {
+	t.Parallel()
+
+	promptPath := state.Shared("request", "input")
+	outputPath := state.Shared("final", "answer")
+	access := state.NewEditingAccess(state.NewState())
+	if err := access.SetAny(promptPath, "complete this"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: " result"}}}}}
+	target := NewTextGenerationNode(WithID("text_generation"))
+	target.PromptPath = promptPath
+	target.OutputPath = outputPath
+	target.MaxTokens = 32
+	target.Temperature = 0.2
+	target.StopWords = []string{"END"}
+
+	result, err := Execute(core.WithModel(context.Background(), model), access.State(), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, _ := state.ReadPath(result.State, outputPath.String())
+	if value != " result" {
+		t.Fatalf("output = %#v", value)
+	}
+	if len(model.completionPrompts) != 1 || model.completionPrompts[0] != "complete this" {
+		t.Fatalf("completion prompts = %#v", model.completionPrompts)
+	}
+	if len(model.calls) != 0 {
+		t.Fatalf("chat calls = %d, want 0", len(model.calls))
+	}
+	if len(model.completionOptions) != 1 {
+		t.Fatalf("completion options = %d, want 1", len(model.completionOptions))
+	}
+	options := model.completionOptions[0]
+	if options.MaxTokens != 32 || options.Temperature != 0.2 || len(options.StopWords) != 1 || options.StopWords[0] != "END" {
+		t.Fatalf("completion options = %#v", options)
+	}
+}
+
+func TestTextGenerationDefaultsAndSchema(t *testing.T) {
+	t.Parallel()
+
+	target := NewTextGenerationNode(WithID("text_generation"))
+	if got := target.PromptPath.String(); got != "shared.text_generation.prompt" {
+		t.Fatalf("prompt default path = %q", got)
+	}
+	if got := target.OutputPath.String(); got != "shared.text_generation.result" {
+		t.Fatalf("output default path = %q", got)
+	}
+	if target.Temperature != defaultTextGenerationTemperature {
+		t.Fatalf("temperature = %v, want %v", target.Temperature, defaultTextGenerationTemperature)
+	}
+	definition := TextGenerationNodeTypeDefinition()
+	properties := definition.NodeTypeSchema.ConfigSchema["properties"].(dsl.JSONSchema)
+	temperatureSchema := properties["temperature"].(dsl.JSONSchema)
+	if got := temperatureSchema["default"]; got != defaultTextGenerationTemperature {
+		t.Fatalf("temperature schema default = %#v", got)
+	}
+	if len(definition.StatePorts) != 2 || definition.StatePorts[0].Name != "prompt" || definition.StatePorts[0].DefaultPath != "shared.text_generation.prompt" || definition.StatePorts[1].DefaultPath != "shared.text_generation.result" {
+		t.Fatalf("state ports = %#v", definition.StatePorts)
+	}
+}
+
+func TestTextGenerationRejectsChatOnlyModel(t *testing.T) {
+	t.Parallel()
+
+	target := NewTextGenerationNode(WithID("text_generation"))
+	access := state.NewEditingAccess(state.NewState())
+	if err := access.SetAny(target.PromptPath, "complete"); err != nil {
+		t.Fatalf("set prompt: %v", err)
+	}
+	_, err := Execute(core.WithModel(context.Background(), chatOnlyModel{}), access.State(), target)
+	if err == nil || !strings.Contains(err.Error(), "does not support text generation") {
+		t.Fatalf("execute error = %v", err)
+	}
+}
+
+func TestToolExecutionUsesSameExplicitConversationRoot(t *testing.T) {
 	t.Parallel()
 	root := state.Scope("loop", "conversation")
 	initial := state.NewState()
@@ -232,7 +321,7 @@ func TestToolsUsesSameExplicitConversationRoot(t *testing.T) {
 	}}})
 	initial = access.State()
 	tool := core.NewTool(&llms.FunctionDefinition{Name: "echo"}, func(context.Context, string) (string, error) { return "ok", nil })
-	target := NewToolsNode(WithID("tools"))
+	target := NewToolExecutionNode(WithID("tools"))
 	target.ConversationPath = root
 	ctx := core.WithTools(context.Background(), map[string]core.Tool{"echo": tool})
 	result, err := Execute(ctx, initial, target)
@@ -271,10 +360,12 @@ func TestAgentUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
 }
 
 type scriptedModel struct {
-	mu        sync.Mutex
-	responses []*llms.ContentResponse
-	calls     [][]llms.MessageContent
-	options   []llms.CallOptions
+	mu                sync.Mutex
+	responses         []*llms.ContentResponse
+	calls             [][]llms.MessageContent
+	options           []llms.CallOptions
+	completionPrompts []string
+	completionOptions []llms.CallOptions
 }
 
 func (m *scriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
@@ -296,4 +387,31 @@ func (m *scriptedModel) GenerateContent(_ context.Context, messages []llms.Messa
 
 func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
 	return "", errors.New("scripted model Call is not supported")
+}
+
+func (m *scriptedModel) GenerateCompletion(_ context.Context, prompt string, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if len(m.responses) == 0 {
+		return nil, errors.New("scripted model exhausted")
+	}
+	callOptions := llms.CallOptions{}
+	for _, option := range options {
+		option(&callOptions)
+	}
+	m.completionPrompts = append(m.completionPrompts, prompt)
+	m.completionOptions = append(m.completionOptions, callOptions)
+	response := m.responses[0]
+	m.responses = m.responses[1:]
+	return response, nil
+}
+
+type chatOnlyModel struct{}
+
+func (chatOnlyModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+	return nil, errors.New("not implemented")
+}
+
+func (chatOnlyModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	return "", errors.New("not implemented")
 }

@@ -23,7 +23,7 @@ type PlanReviewNode struct {
 func NewPlanReviewNode(options ...NodeOption) *PlanReviewNode {
 	target := &PlanReviewNode{Base: NewBase(Spec{
 		Name:        NodeTypePlanReview,
-		Description: "Record a step result and decide whether to continue, replan, or finalize.",
+		Description: "Record a step result and decide whether to continue, replan, or finish.",
 	})}
 	applyNodeOptions(&target.Base, options)
 	ApplyDefaultStatePaths(target)
@@ -52,7 +52,7 @@ func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:         NodeTypePlanReview,
 			Title:        "Plan Review",
-			Description:  "Record a step result and decide whether to continue, replan, or finalize.",
+			Description:  "Record a step result and decide whether to continue, replan, or finish.",
 			ConfigSchema: dsl.JSONSchema{"type": "object", "additionalProperties": false},
 			StatePorts: []dsl.StatePortDefinition{
 				capabilityPort("plan", "Plan status and step results.", plancap.CapabilityID, true,

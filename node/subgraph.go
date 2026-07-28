@@ -54,7 +54,7 @@ func (n *SubgraphNode) GraphNodeSpec() dsl.GraphNodeSpec {
 func SubgraphNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type: NodeTypeSubgraph, Title: "Subgraph Node",
+			Type: NodeTypeSubgraph, Title: "Subgraph",
 			Description: "Invoke another graph using an explicitly bound JSON state snapshot.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object", "properties": dsl.JSONSchema{"graph_ref": dsl.JSONSchema{"type": "string"}},

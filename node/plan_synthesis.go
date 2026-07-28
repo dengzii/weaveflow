@@ -15,11 +15,11 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-const defaultPlanFinalizeSystemPrompt = `Synthesize the final user-facing answer from the objective and plan step results.
+const defaultPlanSynthesisSystemPrompt = `Synthesize the final user-facing answer from the objective and plan step results.
 Use successful evidence, acknowledge material failures when necessary, and do not invent missing facts.
 Answer directly in the same language as the objective.`
 
-type PlanFinalizeNode struct {
+type PlanSynthesisNode struct {
 	Base
 	ModelID      string
 	SystemPrompt string
@@ -27,44 +27,44 @@ type PlanFinalizeNode struct {
 	ResultPath   state.Path
 }
 
-func NewPlanFinalizeNode(options ...NodeOption) *PlanFinalizeNode {
-	target := &PlanFinalizeNode{
+func NewPlanSynthesisNode(options ...NodeOption) *PlanSynthesisNode {
+	target := &PlanSynthesisNode{
 		Base: NewBase(Spec{
-			Name:        NodeTypePlanFinalize,
+			Name:        NodeTypePlanSynthesis,
 			Description: "Synthesize plan results into the final answer.",
 		}),
-		SystemPrompt: defaultPlanFinalizeSystemPrompt,
+		SystemPrompt: defaultPlanSynthesisSystemPrompt,
 	}
 	applyNodeOptions(&target.Base, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
 
-func (n *PlanFinalizeNode) Validate() error {
+func (n *PlanSynthesisNode) Validate() error {
 	if n == nil {
-		return errors.New("plan finalize node is nil")
+		return errors.New("plan synthesis node is nil")
 	}
 	if err := n.Base.Validate(); err != nil {
 		return err
 	}
 	if n.PlanPath.Empty() || n.ResultPath.Empty() {
-		return fmt.Errorf("plan finalize node %q requires plan and result paths", n.ID())
+		return fmt.Errorf("plan synthesis node %q requires plan and result paths", n.ID())
 	}
 	return nil
 }
 
-func (n *PlanFinalizeNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.Base, NodeTypePlanFinalize, map[string]any{
+func (n *PlanSynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	return newGraphNodeSpec(n.Base, NodeTypePlanSynthesis, map[string]any{
 		"model_id":      n.ModelID,
 		"system_prompt": n.SystemPrompt,
 	}, map[string]state.Path{"plan": n.PlanPath, "result": n.ResultPath})
 }
 
-func PlanFinalizeNodeTypeDefinition() registry.NodeTypeDefinition {
+func PlanSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        NodeTypePlanFinalize,
-			Title:       "Plan Finalize",
+			Type:        NodeTypePlanSynthesis,
+			Title:       "Plan Synthesis",
 			Description: "Synthesize plan results into the final answer.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
@@ -98,7 +98,7 @@ func PlanFinalizeNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanFinalizeNode(WithID(spec.ID))
+			target := NewPlanSynthesisNode(WithID(spec.ID))
 			applyNodeMetadata(&target.Base, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if _, exists := spec.Config["system_prompt"]; exists {
@@ -111,10 +111,10 @@ func PlanFinalizeNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanFinalizeNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *PlanSynthesisNode) Execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
-		return fmt.Errorf("plan finalize node: model %q not available", effectiveModelID(n.ModelID))
+		return fmt.Errorf("plan synthesis node: model %q not available", effectiveModelID(n.ModelID))
 	}
 	planner, err := plancap.Bind(access, n.PlanPath)
 	if err != nil {
@@ -124,25 +124,25 @@ func (n *PlanFinalizeNode) Execute(ctx core.Context, access *state.Access) error
 	objective := planString(plan[planFieldObjective])
 	steps := planStepsFromValue(plan[planFieldSteps])
 	if objective == "" {
-		return errors.New("plan finalize node: objective is empty")
+		return errors.New("plan synthesis node: objective is empty")
 	}
 
 	response, err := model.GenerateContent(ctx, []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
-		llms.TextParts(llms.ChatMessageTypeHuman, buildPlanFinalizePrompt(objective, planString(plan[planFieldSummary]), steps)),
+		llms.TextParts(llms.ChatMessageTypeHuman, buildPlanSynthesisPrompt(objective, planString(plan[planFieldSummary]), steps)),
 	},
 		llms.WithThinkingMode(llms.ThinkingModeLow),
 		llms.WithTemperature(0.2),
 	)
 	if err != nil {
-		return fmt.Errorf("plan finalize node: synthesize answer: %w", err)
+		return fmt.Errorf("plan synthesis node: synthesize answer: %w", err)
 	}
 	if response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
-		return errors.New("plan finalize node: model returned no choices")
+		return errors.New("plan synthesis node: model returned no choices")
 	}
 	answer := strings.TrimSpace(response.Choices[0].Content)
 	if answer == "" {
-		return errors.New("plan finalize node: model returned an empty answer")
+		return errors.New("plan synthesis node: model returned an empty answer")
 	}
 	if err := state.Replace(access, state.NewRef[string](n.ResultPath), answer); err != nil {
 		return err
@@ -153,14 +153,14 @@ func (n *PlanFinalizeNode) Execute(ctx core.Context, access *state.Access) error
 	return planner.SetField(planFieldStatus, PlanStatusDone)
 }
 
-func (n *PlanFinalizeNode) effectiveSystemPrompt() string {
+func (n *PlanSynthesisNode) effectiveSystemPrompt() string {
 	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
-		return defaultPlanFinalizeSystemPrompt
+		return defaultPlanSynthesisSystemPrompt
 	}
 	return n.SystemPrompt
 }
 
-func buildPlanFinalizePrompt(objective string, summary string, steps []PlanStep) string {
+func buildPlanSynthesisPrompt(objective string, summary string, steps []PlanStep) string {
 	var builder strings.Builder
 	builder.WriteString("Objective:\n")
 	builder.WriteString(objective)

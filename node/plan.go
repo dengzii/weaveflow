@@ -19,7 +19,7 @@ const (
 	NodeTypePlanGenerator = "plan_generator"
 	NodeTypePlanStep      = "plan_step"
 	NodeTypePlanReview    = "plan_review"
-	NodeTypePlanFinalize  = "plan_finalize"
+	NodeTypePlanSynthesis = "plan_synthesis"
 
 	ConditionTypePlanStatusEquals = "plan_status_equals"
 )

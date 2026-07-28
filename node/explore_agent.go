@@ -19,9 +19,9 @@ import (
 )
 
 const (
-	defaultExploreMaxIterations = 12
-	defaultExploreToolResultCap = 4096
-	exploreSystemPrompt         = "" +
+	defaultExploreAgentMaxIterations = 12
+	defaultExploreAgentToolResultCap = 4096
+	exploreAgentSystemPrompt         = "" +
 		"You are a codebase explorer running in an isolated sub-session. " +
 		"Your job: answer the user's question by inspecting files in the workspace. " +
 		"\n" +
@@ -37,7 +37,7 @@ const (
 		"- Stop when answered. You are not the final responder; a separate summarizer will format your reply for the user."
 )
 
-type ExploreNode struct {
+type ExploreAgentNode struct {
 	Base
 	MaxIterations          int
 	ToolIDs                []string
@@ -52,15 +52,15 @@ type ExploreNode struct {
 	ResultPath             state.Path
 }
 
-func NewExploreNode(options ...NodeOption) *ExploreNode {
-	node := &ExploreNode{
+func NewExploreAgentNode(options ...NodeOption) *ExploreAgentNode {
+	node := &ExploreAgentNode{
 		Base: NewBase(Spec{
-			Name:        "explore",
+			Name:        NodeTypeExploreAgent,
 			Description: "Run an isolated file-reading loop and return a structured summary.",
 		}),
-		MaxIterations:      defaultExploreMaxIterations,
+		MaxIterations:      defaultExploreAgentMaxIterations,
 		ToolIDs:            []string{"read", "grep", "glob"},
-		ToolResultCap:      defaultExploreToolResultCap,
+		ToolResultCap:      defaultExploreAgentToolResultCap,
 		IncludeEnvironment: true,
 	}
 	applyNodeOptions(&node.Base, options)
@@ -68,21 +68,21 @@ func NewExploreNode(options ...NodeOption) *ExploreNode {
 	return node
 }
 
-func (n *ExploreNode) Validate() error {
+func (n *ExploreAgentNode) Validate() error {
 	if n == nil {
-		return errors.New("explore node is nil")
+		return errors.New("explore agent node is nil")
 	}
 	if err := n.Base.Validate(); err != nil {
 		return err
 	}
 	if n.TaskPath.Empty() || n.ParentConversationPath.Empty() || n.ConversationPath.Empty() || n.ResultPath.Empty() {
-		return fmt.Errorf("explore node %q requires task, parent_conversation, conversation, and result paths", n.ID())
+		return fmt.Errorf("explore agent node %q requires task, parent_conversation, conversation, and result paths", n.ID())
 	}
 	return nil
 }
 
-func (n *ExploreNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.Base, NodeTypeExplore, map[string]any{
+func (n *ExploreAgentNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	return newGraphNodeSpec(n.Base, NodeTypeExploreAgent, map[string]any{
 		"max_iterations": n.MaxIterations, "tool_ids": n.ToolIDs, "system_prompt": n.SystemPrompt,
 		"tool_result_cap": n.ToolResultCap, "include_environment": n.IncludeEnvironment, "environment_heading": n.EnvironmentHeading,
 	}, map[string]state.Path{
@@ -91,10 +91,10 @@ func (n *ExploreNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	})
 }
 
-func ExploreNodeTypeDefinition() registry.NodeTypeDefinition {
+func ExploreAgentNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type: NodeTypeExplore, Title: "Explore Node", Description: "Run an isolated file-reading loop and return a structured summary.",
+			Type: NodeTypeExploreAgent, Title: "Explore Agent", Description: "Run an isolated file-reading loop and return a structured summary.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object", "properties": dsl.JSONSchema{
 					"max_iterations":      dsl.JSONSchema{"type": "integer", "minimum": 1},
@@ -136,7 +136,7 @@ func ExploreNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewExploreNode(WithID(spec.ID))
+			target := NewExploreAgentNode(WithID(spec.ID))
 			applyNodeMetadata(&target.Base, spec)
 			if value, ok := config.Int(spec.Config, "max_iterations"); ok {
 				target.MaxIterations = value
@@ -162,10 +162,10 @@ func ExploreNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *ExploreAgentNode) Execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model()
 	if model == nil {
-		return errors.New("explore node: model service not available")
+		return errors.New("explore agent node: model service not available")
 	}
 
 	parentConversation, err := conversationcap.Bind(access, n.ParentConversationPath)
@@ -175,7 +175,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 
 	request, err := n.resolveRequest(access, parentConversation)
 	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.error", map[string]any{"error": err.Error()})
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.error", map[string]any{"error": err.Error()})
 		return err
 	}
 
@@ -206,7 +206,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 		messages := convo.Messages()
 
 		if payload, err := buildLLMPromptArtifact(messages, toolSets, n.ConversationPath.String(), iter, maxIter); err == nil {
-			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.prompt", payload)
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.prompt", payload)
 		}
 
 		resp, err := model.GenerateContent(
@@ -217,17 +217,17 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 			llms.WithTemperature(0),
 		)
 		if err != nil {
-			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.error", map[string]any{
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.error", map[string]any{
 				"error":     err.Error(),
 				"iteration": iter,
 			})
 			return err
 		}
 		if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
-			return errors.New("explore: model returned no choices")
+			return errors.New("explore agent: model returned no choices")
 		}
 		if payload := buildLLMResponseArtifact(resp); len(payload.Choices) > 0 {
-			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.response", payload)
+			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.response", payload)
 		}
 
 		choice := resp.Choices[0]
@@ -273,7 +273,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 
 	summary, err := summarizeExploration(ctx, model, convo.Messages())
 	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.summarizer.error", map[string]any{
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.summarizer.error", map[string]any{
 			"error": err.Error(),
 		})
 		return err
@@ -290,7 +290,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 		"terminated":        terminated,
 		"summary_length":    len(summary),
 	})
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore.summary", map[string]any{
+	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.summary", map[string]any{
 		"conversation_path": n.ConversationPath.String(),
 		"iterations":        iter,
 		"terminated":        terminated,
@@ -300,7 +300,7 @@ func (n *ExploreNode) Execute(ctx core.Context, access *state.Access) error {
 	return nil
 }
 
-func (n *ExploreNode) renderSystemPrompt(access *state.Access) string {
+func (n *ExploreAgentNode) renderSystemPrompt(access *state.Access) string {
 	prompt := n.effectiveSystemPrompt()
 	if !n.IncludeEnvironment {
 		return prompt
@@ -327,7 +327,7 @@ func (n *ExploreNode) renderSystemPrompt(access *state.Access) string {
 	return prompt + "\n\n" + heading + "\n" + string(raw)
 }
 
-func (n *ExploreNode) clampToolMessage(message llms.MessageContent) llms.MessageContent {
+func (n *ExploreAgentNode) clampToolMessage(message llms.MessageContent) llms.MessageContent {
 	cap := n.effectiveToolResultCap()
 	if cap <= 0 {
 		return message
@@ -347,7 +347,7 @@ func (n *ExploreNode) clampToolMessage(message llms.MessageContent) llms.Message
 	return message
 }
 
-func (n *ExploreNode) writeAnswerToParent(access *state.Access, parent *conversationcap.View, summary string) error {
+func (n *ExploreAgentNode) writeAnswerToParent(access *state.Access, parent *conversationcap.View, summary string) error {
 	summary = strings.TrimSpace(summary)
 	if summary == "" {
 		return nil
@@ -364,7 +364,7 @@ func (n *ExploreNode) writeAnswerToParent(access *state.Access, parent *conversa
 	return state.Replace(access, state.NewRef[string](n.ResultPath), summary)
 }
 
-func (n *ExploreNode) resolveRequest(access *state.Access, parent *conversationcap.View) (string, error) {
+func (n *ExploreAgentNode) resolveRequest(access *state.Access, parent *conversationcap.View) (string, error) {
 	messages := parent.Messages()
 	for i := len(messages) - 1; i >= 0; i-- {
 		if messages[i].Role != llms.ChatMessageTypeHuman {
@@ -382,31 +382,31 @@ func (n *ExploreNode) resolveRequest(access *state.Access, parent *conversationc
 			return input, nil
 		}
 	}
-	return "", errors.New("explore: no user input found in parent conversation or task state")
+	return "", errors.New("explore agent: no user input found in parent conversation or task state")
 }
 
-func (n *ExploreNode) effectiveMaxIterations() int {
+func (n *ExploreAgentNode) effectiveMaxIterations() int {
 	if n == nil || n.MaxIterations <= 0 {
-		return defaultExploreMaxIterations
+		return defaultExploreAgentMaxIterations
 	}
 	return n.MaxIterations
 }
 
-func (n *ExploreNode) effectiveToolResultCap() int {
+func (n *ExploreAgentNode) effectiveToolResultCap() int {
 	if n == nil || n.ToolResultCap <= 0 {
-		return defaultExploreToolResultCap
+		return defaultExploreAgentToolResultCap
 	}
 	return n.ToolResultCap
 }
 
-func (n *ExploreNode) effectiveSystemPrompt() string {
+func (n *ExploreAgentNode) effectiveSystemPrompt() string {
 	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
-		return exploreSystemPrompt
+		return exploreAgentSystemPrompt
 	}
 	return n.SystemPrompt
 }
 
-func (n *ExploreNode) effectiveToolIDs() []string {
+func (n *ExploreAgentNode) effectiveToolIDs() []string {
 	if n == nil || len(n.ToolIDs) == 0 {
 		return []string{"read", "grep", "glob"}
 	}
@@ -437,12 +437,12 @@ const exploreSummarizerSystemPrompt = "" +
 
 func summarizeExploration(ctx context.Context, model llms.Model, transcript []llms.MessageContent) (string, error) {
 	if model == nil {
-		return "", errors.New("explore summarizer: model is nil")
+		return "", errors.New("explore agent summarizer: model is nil")
 	}
 
 	body := buildReducerTranscript(stripExploreSystemMessages(transcript))
 	if strings.TrimSpace(body) == "" {
-		return "", errors.New("explore summarizer: transcript is empty")
+		return "", errors.New("explore agent summarizer: transcript is empty")
 	}
 
 	resp, err := model.GenerateContent(
@@ -460,12 +460,12 @@ func summarizeExploration(ctx context.Context, model llms.Model, transcript []ll
 		return "", err
 	}
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		return "", errors.New("explore summarizer returned no choices")
+		return "", errors.New("explore agent summarizer returned no choices")
 	}
 
 	summary := strings.TrimSpace(resp.Choices[0].Content)
 	if summary == "" {
-		return "", errors.New("explore summarizer returned empty summary")
+		return "", errors.New("explore agent summarizer returned empty summary")
 	}
 	return summary, nil
 }

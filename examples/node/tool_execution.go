@@ -12,7 +12,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func ToolsExample() {
+func ToolExecutionExample() {
 	toolSet := map[string]core.Tool{
 		"calculator":   tools.NewCalculator(),
 		"current_time": tools.NewCurrentTime(),
@@ -20,10 +20,10 @@ func ToolsExample() {
 
 	ctx := core.NewContext(core.WithTools(context.Background(), toolSet))
 
-	toolsNode := node.NewToolsNode()
-	toolsNode.Parallel = true
+	toolExecutionNode := node.NewToolExecutionNode()
+	toolExecutionNode.Parallel = true
 	conversationPath := state.Scope("agent", "conversation")
-	toolsNode.ConversationPath = conversationPath
+	toolExecutionNode.ConversationPath = conversationPath
 
 	currentState := state.NewState()
 	messages := []llms.MessageContent{
@@ -62,7 +62,7 @@ func ToolsExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	result, err := executeNode(ctx, toolsNode, currentState)
+	result, err := executeNode(ctx, toolExecutionNode, currentState)
 	must(err)
 
 	conv := conversation(result, conversationPath)

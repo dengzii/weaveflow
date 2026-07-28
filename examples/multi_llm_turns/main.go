@@ -34,7 +34,7 @@ func main() {
 		input = "Explain explicit state binding in one paragraph."
 	}
 
-	workflow, err := graph.BuildGraph(builtin.NewDefaultRegistry(), multiLLMDefinition(), &registry.BuildContext{})
+	workflow, err := graph.BuildGraph(builtin.NewDefaultRegistry(), multiLLMTurnDefinition(), &registry.BuildContext{})
 	if err != nil {
 		panic(err)
 	}
@@ -52,23 +52,23 @@ func main() {
 	fmt.Println(answer)
 }
 
-func multiLLMDefinition() dsl.GraphDefinition {
+func multiLLMTurnDefinition() dsl.GraphDefinition {
 	return dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
-		Name:         "isolated_multi_llm",
+		Name:         "isolated_multi_llm_turns",
 		StateModules: []dsl.StateModuleRef{{Name: builtin.ProtocolsModuleName, Version: builtin.ProtocolsModuleVersion}},
 		EntryPoint:   "input_one",
 		FinishPoint:  "llm_two",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "input_one", Type: node.NodeTypeConversationInput,
+				ID: "input_one", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        {Path: "shared.request.input"},
 					"conversation": {Path: "scopes.llm_one.conversation"},
 				},
 			},
 			{
-				ID: "llm_one", Type: node.NodeTypeLLM,
+				ID: "llm_one", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "first"},
 				State: map[string]dsl.StateBinding{
 					"conversation": {Path: "scopes.llm_one.conversation"},
@@ -76,7 +76,7 @@ func multiLLMDefinition() dsl.GraphDefinition {
 				},
 			},
 			{
-				ID: "input_two", Type: node.NodeTypeConversationInput,
+				ID: "input_two", Type: node.NodeTypeConversationMessage,
 				Config: map[string]any{"role": "human"},
 				State: map[string]dsl.StateBinding{
 					"input":        {Path: "shared.handoff.llm_one"},
@@ -84,7 +84,7 @@ func multiLLMDefinition() dsl.GraphDefinition {
 				},
 			},
 			{
-				ID: "llm_two", Type: node.NodeTypeLLM,
+				ID: "llm_two", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "second", "system_prompt": "Review and improve the first model's response."},
 				State: map[string]dsl.StateBinding{
 					"conversation": {Path: "scopes.llm_two.conversation"},

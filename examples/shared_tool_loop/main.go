@@ -47,19 +47,19 @@ func sharedToolLoopDefinition() dsl.GraphDefinition {
 	const conversationPath = "shared.tool_loop"
 	return dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
-		Name:         "shared_llm_tools_condition_loop",
+		Name:         "shared_llm_turn_tool_execution_condition_loop",
 		StateModules: []dsl.StateModuleRef{{Name: builtin.ProtocolsModuleName, Version: builtin.ProtocolsModuleVersion}},
 		EntryPoint:   "input",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "input", Type: node.NodeTypeConversationInput,
+				ID: "input", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        {Path: "shared.request.input"},
 					"conversation": {Path: conversationPath},
 				},
 			},
 			{
-				ID: "llm", Type: node.NodeTypeLLM,
+				ID: "llm", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"tool_ids": []string{"calculator"}},
 				State: map[string]dsl.StateBinding{
 					"conversation": {Path: conversationPath},
@@ -67,7 +67,7 @@ func sharedToolLoopDefinition() dsl.GraphDefinition {
 				},
 			},
 			{
-				ID: "tools", Type: node.NodeTypeTools,
+				ID: "tools", Type: node.NodeTypeToolExecution,
 				Config: map[string]any{"tool_ids": []string{"calculator"}, "parallel": false},
 				State:  map[string]dsl.StateBinding{"conversation": {Path: conversationPath}},
 			},

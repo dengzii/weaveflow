@@ -161,6 +161,25 @@ func (c *Client) CreateChat(ctx context.Context, r *ChatRequest) (*ChatCompletio
 	return resp, nil
 }
 
+// CreateCompletion creates a raw text completion request.
+func (c *Client) CreateCompletion(ctx context.Context, r *CompletionRequest) (*CompletionResponse, error) {
+	if r.Model == "" {
+		if c.Model == "" {
+			r.Model = defaultChatModel
+		} else {
+			r.Model = c.Model
+		}
+	}
+	resp, err := c.createCompletion(ctx, r)
+	if err != nil {
+		return nil, err
+	}
+	if len(resp.Choices) == 0 {
+		return nil, ErrEmptyResponse
+	}
+	return resp, nil
+}
+
 func IsAzure(apiType APIType) bool {
 	return apiType == APITypeAzure || apiType == APITypeAzureAD
 }

@@ -370,16 +370,16 @@ function lintSupervisorTopology(definition: GraphDefinition): GraphLintIssue[] {
       }
     }
 
-    const hasFinalizeFallback = (definition.edges ?? []).some((edge) =>
+    const hasSynthesisFallback = (definition.edges ?? []).some((edge) =>
       edge.from === supervisor.id
       && !edge.condition
-      && definition.nodes.some((node) => node.id === edge.to && node.type === "supervisor_finalize")
+      && definition.nodes.some((node) => node.id === edge.to && node.type === "supervisor_synthesis")
     );
-    if (!hasFinalizeFallback) {
+    if (!hasSynthesisFallback) {
       issues.push({
-        id: `supervisor-finalize-missing-${supervisor.id}`,
+        id: `supervisor-synthesis-missing-${supervisor.id}`,
         severity: "error",
-        message: `Supervisor "${supervisor.id}" needs a direct fallback edge to a Supervisor Finalize node.`,
+        message: `Supervisor "${supervisor.id}" needs a direct fallback edge to a Supervisor Synthesis node.`,
         nodeId: supervisor.id,
       });
     }

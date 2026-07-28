@@ -17,11 +17,11 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-const defaultSupervisorFinalizeSystemPrompt = `You synthesize the final user-facing answer for a supervised team.
+const defaultSupervisorSynthesisSystemPrompt = `You synthesize the final user-facing answer for a supervised team.
 Use the completed worker results as evidence. Resolve overlaps or conflicts, preserve important caveats, and answer the objective directly.
 Do not mention internal routing, worker ids, or the supervisor process unless the user explicitly asks.`
 
-type SupervisorFinalizeNode struct {
+type SupervisorSynthesisNode struct {
 	Base
 	ModelID        string
 	SystemPrompt   string
@@ -29,50 +29,50 @@ type SupervisorFinalizeNode struct {
 	ResultPath     state.Path
 }
 
-func NewSupervisorFinalizeNode(options ...NodeOption) *SupervisorFinalizeNode {
-	target := &SupervisorFinalizeNode{
+func NewSupervisorSynthesisNode(options ...NodeOption) *SupervisorSynthesisNode {
+	target := &SupervisorSynthesisNode{
 		Base: NewBase(Spec{
-			Name:        NodeTypeSupervisorFinalize,
+			Name:        NodeTypeSupervisorSynthesis,
 			Description: "Synthesize the final answer from the objective and completed supervisor delegations.",
 		}),
-		SystemPrompt: defaultSupervisorFinalizeSystemPrompt,
+		SystemPrompt: defaultSupervisorSynthesisSystemPrompt,
 	}
 	applyNodeOptions(&target.Base, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
 
-func (n *SupervisorFinalizeNode) Validate() error {
+func (n *SupervisorSynthesisNode) Validate() error {
 	if n == nil {
-		return fmt.Errorf("supervisor finalize node is nil")
+		return fmt.Errorf("supervisor synthesis node is nil")
 	}
 	if err := n.Base.Validate(); err != nil {
 		return err
 	}
 	if n.SupervisorPath.Empty() || n.ResultPath.Empty() {
-		return fmt.Errorf("supervisor finalize node %q requires supervisor and result paths", n.ID())
+		return fmt.Errorf("supervisor synthesis node %q requires supervisor and result paths", n.ID())
 	}
 	return nil
 }
 
-func (n *SupervisorFinalizeNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.Base, NodeTypeSupervisorFinalize, map[string]any{
+func (n *SupervisorSynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	return newGraphNodeSpec(n.Base, NodeTypeSupervisorSynthesis, map[string]any{
 		"model_id": n.ModelID, "system_prompt": n.SystemPrompt,
 	}, map[string]state.Path{"supervisor": n.SupervisorPath, "result": n.ResultPath})
 }
 
-func SupervisorFinalizeNodeTypeDefinition() registry.NodeTypeDefinition {
+func SupervisorSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        NodeTypeSupervisorFinalize,
-			Title:       "Supervisor Finalize",
+			Type:        NodeTypeSupervisorSynthesis,
+			Title:       "Supervisor Synthesis",
 			Description: "Generate the final user-facing answer from the supervisor objective and worker result history.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
 					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
 					"system_prompt": dsl.JSONSchema{
-						"type": "string", "title": "System Prompt", "x-control": "textarea", "default": defaultSupervisorFinalizeSystemPrompt,
+						"type": "string", "title": "System Prompt", "x-control": "textarea", "default": defaultSupervisorSynthesisSystemPrompt,
 					},
 				},
 				"additionalProperties": false,
@@ -98,7 +98,7 @@ func SupervisorFinalizeNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewSupervisorFinalizeNode(WithID(spec.ID))
+			target := NewSupervisorSynthesisNode(WithID(spec.ID))
 			applyNodeMetadata(&target.Base, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
@@ -111,10 +111,10 @@ func SupervisorFinalizeNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *SupervisorFinalizeNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *SupervisorSynthesisNode) Execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
-		return fmt.Errorf("supervisor finalize node: model %q not available", effectiveModelID(n.ModelID))
+		return fmt.Errorf("supervisor synthesis node: model %q not available", effectiveModelID(n.ModelID))
 	}
 	supervisor, err := supervisorcap.Bind(access, n.SupervisorPath)
 	if err != nil {
@@ -123,7 +123,7 @@ func (n *SupervisorFinalizeNode) Execute(ctx core.Context, access *state.Access)
 	current := supervisor.Value()
 	objective := supervisorString(current, SupervisorFieldObjective)
 	if objective == "" {
-		return fmt.Errorf("supervisor finalize node %q requires an objective", n.ID())
+		return fmt.Errorf("supervisor synthesis node %q requires an objective", n.ID())
 	}
 	history := supervisorHistoryFromValue(current[SupervisorFieldHistory])
 	historyJSON, _ := json.MarshalIndent(history, "", "  ")
@@ -132,20 +132,20 @@ func (n *SupervisorFinalizeNode) Execute(ctx core.Context, access *state.Access)
 		llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("Objective:\n%s\n\nCompleted worker results:\n%s", objective, historyJSON)),
 	}
 	if serialized, serializeErr := conversationcap.SerializeMessages(messages); serializeErr == nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "supervisor.finalize.prompt", map[string]any{"messages": serialized})
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "supervisor.synthesis.prompt", map[string]any{"messages": serialized})
 	}
 	response, err := model.GenerateContent(ctx, messages, llms.WithThinkingMode(llms.ThinkingModeHigh))
 	if err != nil {
 		return err
 	}
 	if response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
-		return fmt.Errorf("supervisor finalize node: llm returned no choices")
+		return fmt.Errorf("supervisor synthesis node: llm returned no choices")
 	}
 	answer := strings.TrimSpace(response.Choices[0].Content)
 	if answer == "" {
-		return fmt.Errorf("supervisor finalize node: llm returned an empty answer")
+		return fmt.Errorf("supervisor synthesis node: llm returned an empty answer")
 	}
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "supervisor.finalize.response", map[string]any{"content": answer})
+	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "supervisor.synthesis.response", map[string]any{"content": answer})
 	if err := state.Replace(access, state.NewRef[string](n.ResultPath), answer); err != nil {
 		return err
 	}
@@ -157,14 +157,14 @@ func (n *SupervisorFinalizeNode) Execute(ctx core.Context, access *state.Access)
 		return err
 	}
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
-		"event": "supervisor.finalized", "turn_count": supervisorInt(current, SupervisorFieldTurnCount), "answer": answer,
+		"event": "supervisor.synthesized", "turn_count": supervisorInt(current, SupervisorFieldTurnCount), "answer": answer,
 	})
 	return nil
 }
 
-func (n *SupervisorFinalizeNode) effectiveSystemPrompt() string {
+func (n *SupervisorSynthesisNode) effectiveSystemPrompt() string {
 	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
-		return defaultSupervisorFinalizeSystemPrompt
+		return defaultSupervisorSynthesisSystemPrompt
 	}
 	return strings.TrimSpace(n.SystemPrompt)
 }

@@ -14,7 +14,7 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-func LLMExample() {
+func LLMTurnExample() {
 	model, err := openai.New()
 	must(err)
 
@@ -26,9 +26,9 @@ func LLMExample() {
 	})
 	coreCtx := core.NewContext(ctx)
 
-	llmNode := node.NewLLMNode()
+	llmTurnNode := node.NewLLMTurnNode()
 	conversationPath := state.Scope("agent", "conversation")
-	llmNode.ConversationPath = conversationPath
+	llmTurnNode.ConversationPath = conversationPath
 
 	currentState := state.NewState()
 	messages := []llms.MessageContent{
@@ -48,7 +48,7 @@ func LLMExample() {
 		fmt.Printf("  [%d] %s: %s\n", i, msg.Role, describeMessage(msg))
 	}
 
-	result, err := executeNode(coreCtx, llmNode, currentState)
+	result, err := executeNode(coreCtx, llmTurnNode, currentState)
 	must(err)
 
 	conv := conversation(result, conversationPath)

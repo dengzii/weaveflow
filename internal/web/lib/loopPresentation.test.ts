@@ -17,7 +17,7 @@ import {
 } from "./loopPresentation";
 
 describe("loop presentation", () => {
-  test("detects and presents an LLM tools cycle without mutating the graph", () => {
+  test("detects and presents an LLM turn and tool execution cycle without mutating the graph", () => {
     const definition = toolLoopGraph();
     const original = JSON.parse(JSON.stringify(definition));
 
@@ -84,8 +84,8 @@ describe("loop presentation", () => {
       entry_point: "one",
       finish_point: "two",
       nodes: [
-        { id: "one", type: "llm", config: {} },
-        { id: "two", type: "tools", config: {} },
+        { id: "one", type: "llm_turn", config: {} },
+        { id: "two", type: "tool_execution", config: {} },
       ],
       edges: [{ from: "one", to: "two" }],
     };
@@ -155,12 +155,12 @@ describe("loop presentation", () => {
 function toolLoopGraph(): GraphDefinition {
   return {
     version: "2.0",
-    name: "shared_llm_tools_condition_loop",
+    name: "shared_llm_turn_tool_execution_condition_loop",
     entry_point: "input",
     nodes: [
-      { id: "input", type: "conversation_input", config: {} },
-      { id: "llm", type: "llm", config: {} },
-      { id: "tools", type: "tools", config: {} },
+      { id: "input", type: "user_input", config: {} },
+      { id: "llm", type: "llm_turn", config: {} },
+      { id: "tools", type: "tool_execution", config: {} },
     ],
     edges: [
       { from: "input", to: "llm" },

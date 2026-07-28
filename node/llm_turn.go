@@ -17,9 +17,9 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-const defaultLLMPromptMaxChars = 200000
+const defaultLLMTurnPromptMaxChars = 200000
 
-type LLMNode struct {
+type LLMTurnNode struct {
 	Base
 	ModelID          string
 	ToolIDs          []string
@@ -29,10 +29,10 @@ type LLMNode struct {
 	OutputPath       state.Path
 }
 
-func NewLLMNode(options ...NodeOption) *LLMNode {
-	node := &LLMNode{
+func NewLLMTurnNode(options ...NodeOption) *LLMTurnNode {
+	node := &LLMTurnNode{
 		Base: NewBase(Spec{
-			Name:        NodeTypeLLM,
+			Name:        NodeTypeLLMTurn,
 			Description: "Run one LLM inference turn against a bound conversation.",
 		}),
 	}
@@ -41,20 +41,20 @@ func NewLLMNode(options ...NodeOption) *LLMNode {
 	return node
 }
 
-func (n *LLMNode) Validate() error {
+func (n *LLMTurnNode) Validate() error {
 	if n == nil {
-		return fmt.Errorf("llm node is nil")
+		return fmt.Errorf("llm turn node is nil")
 	}
 	if err := n.Base.Validate(); err != nil {
 		return err
 	}
 	if n.ConversationPath.Empty() {
-		return fmt.Errorf("llm node %q requires conversation path", n.ID())
+		return fmt.Errorf("llm turn node %q requires conversation path", n.ID())
 	}
 	return nil
 }
 
-func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (n *LLMTurnNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	conf := map[string]any{
 		"tool_ids":      n.ToolIDs,
 		"system_prompt": n.SystemPrompt,
@@ -65,18 +65,18 @@ func (n *LLMNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if n.PromptMaxChars > 0 {
 		conf["prompt_max_chars"] = n.PromptMaxChars
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeLLM, conf, map[string]state.Path{
+	return newGraphNodeSpec(n.Base, NodeTypeLLMTurn, conf, map[string]state.Path{
 		"conversation": n.ConversationPath,
 		"output":       n.OutputPath,
 	})
 }
 
-func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
+func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:        NodeTypeLLM,
-			Title:       "LLM Node",
-			Description: "Built-in model inference nodes.",
+			Type:        NodeTypeLLMTurn,
+			Title:       "LLM Turn",
+			Description: "Run one model inference turn against a bound conversation.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
@@ -88,7 +88,7 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 						"x-control": "textarea",
 					},
 					"prompt_max_chars": dsl.JSONSchema{
-						"type": "integer", "minimum": 1, "default": defaultLLMPromptMaxChars,
+						"type": "integer", "minimum": 1, "default": defaultLLMTurnPromptMaxChars,
 					},
 				},
 				"additionalProperties": false,
@@ -110,23 +110,23 @@ func LLMNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			llmNode := NewLLMNode(WithID(spec.ID))
-			applyNodeMetadata(&llmNode.Base, spec)
-			llmNode.ModelID = config.String(spec.Config, "model_id")
-			llmNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
-			llmNode.SystemPrompt = config.String(spec.Config, "system_prompt")
-			llmNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
-			llmNode.ConversationPath = conversationPath
-			llmNode.OutputPath = optionalResolvedPath(resolved, "output")
-			return llmNode, nil
+			llmTurnNode := NewLLMTurnNode(WithID(spec.ID))
+			applyNodeMetadata(&llmTurnNode.Base, spec)
+			llmTurnNode.ModelID = config.String(spec.Config, "model_id")
+			llmTurnNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			llmTurnNode.SystemPrompt = config.String(spec.Config, "system_prompt")
+			llmTurnNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			llmTurnNode.ConversationPath = conversationPath
+			llmTurnNode.OutputPath = optionalResolvedPath(resolved, "output")
+			return llmTurnNode, nil
 		},
 	}
 }
 
-func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *LLMTurnNode) Execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
-		return fmt.Errorf("llm node: model %q not available", effectiveModelID(n.ModelID))
+		return fmt.Errorf("llm turn node: model %q not available", effectiveModelID(n.ModelID))
 	}
 	var nodeTools map[string]core.Tool
 	if len(n.ToolIDs) > 0 {
@@ -160,7 +160,7 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 		toolSets = append(toolSets, tool.NewTool())
 	}
 	if payload, err := buildLLMPromptArtifact(promptMessages, toolSets, n.ConversationPath.String(), conversation.IterationCount(), conversation.MaxIterations()); err == nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.prompt", payload)
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.prompt", payload)
 	}
 
 	resp, err := model.GenerateContent(
@@ -170,16 +170,16 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 		llms.WithThinkingMode(llms.ThinkingModeHigh),
 	)
 	if err != nil {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.error", map[string]any{"error": err.Error()})
 		return err
 	}
 	if resp == nil || len(resp.Choices) == 0 || resp.Choices[0] == nil {
-		err := errors.New("llm returned no choices")
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.error", map[string]any{"error": err.Error()})
+		err := errors.New("llm turn returned no choices")
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.error", map[string]any{"error": err.Error()})
 		return err
 	}
 	if payload := buildLLMResponseArtifact(resp); len(payload.Choices) > 0 {
-		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm.response", payload)
+		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.response", payload)
 	}
 
 	choice := resp.Choices[0]
@@ -193,7 +193,7 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 	for _, toolCall := range choice.ToolCalls {
 		if toolCall.Type == "" {
 			_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventWarning, map[string]any{
-				"message": "llm node received a tool call with no type",
+				"message": "llm turn node received a tool call with no type",
 			})
 			continue
 		}
@@ -216,7 +216,7 @@ func (n *LLMNode) Execute(ctx core.Context, access *state.Access) error {
 	return nil
 }
 
-func (n *LLMNode) seedSystemPrompt(conversation *conversationcap.View) error {
+func (n *LLMTurnNode) seedSystemPrompt(conversation *conversationcap.View) error {
 	if n == nil || conversation == nil || strings.TrimSpace(n.SystemPrompt) == "" {
 		return nil
 	}
@@ -231,7 +231,7 @@ func (n *LLMNode) seedSystemPrompt(conversation *conversationcap.View) error {
 	}, messages...))
 }
 
-func (n *LLMNode) writeOutput(access *state.Access, value string) error {
+func (n *LLMTurnNode) writeOutput(access *state.Access, value string) error {
 	if n == nil || n.OutputPath.Empty() {
 		return nil
 	}
@@ -246,9 +246,9 @@ func effectiveModelID(id string) string {
 	return id
 }
 
-func (n *LLMNode) effectivePromptMaxChars() int {
+func (n *LLMTurnNode) effectivePromptMaxChars() int {
 	if n == nil || n.PromptMaxChars <= 0 {
-		return defaultLLMPromptMaxChars
+		return defaultLLMTurnPromptMaxChars
 	}
 	return n.PromptMaxChars
 }

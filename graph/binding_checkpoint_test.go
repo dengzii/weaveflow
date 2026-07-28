@@ -25,14 +25,14 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		FinishPoint:  "llm",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "input", Type: node.NodeTypeConversationInput,
+				ID: "input", Type: node.NodeTypeConversationMessage,
 				State: map[string]dsl.StateBinding{
 					"input":        binding("shared.request.input"),
 					"conversation": binding(conversationPath),
 				},
 			},
 			{
-				ID: "llm", Type: node.NodeTypeLLM,
+				ID: "llm", Type: node.NodeTypeLLMTurn,
 				Config: map[string]any{"model_id": "writer"},
 				State: map[string]dsl.StateBinding{
 					"conversation": binding(conversationPath),
