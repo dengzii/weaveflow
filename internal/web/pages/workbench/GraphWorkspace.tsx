@@ -1,6 +1,7 @@
-import { memo, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronDown, FilePlus2, Search, Trash2, X } from "lucide-react";
+import { createTrigger, deleteTrigger, listTriggers, updateTrigger } from "../../api";
 import {
   GraphCanvas,
   hasStoredGraphCanvasViewport,
@@ -47,6 +48,8 @@ import type {
   RegistryInfo,
   StepRecord,
   ToolDefinition,
+  Trigger,
+  TriggerType,
 } from "../../types";
 import { CanvasContextMenu } from "./graph-workspace/CanvasContextMenu";
 import { defaultVirtualNodeIds, fallbackNodeTypes } from "./graph-workspace/constants";
@@ -54,7 +57,14 @@ import { autoLayoutGraph } from "./graph-workspace/layout";
 import { buildGraphLintIssues, type GraphLintIssue } from "./graph-workspace/lint";
 import { ToastStack, type ToastRecord } from "./graph-workspace/ToastStack";
 import { GraphInspectorPanel } from "./graph-workspace/GraphInspectorPanel";
+import { TriggerInspector } from "./graph-workspace/TriggerInspector";
+import {
+  projectTriggerCanvasNodes,
+  withCleanTriggerCanvasPositions,
+  withTriggerCanvasPosition,
+} from "./graph-workspace/triggerCanvas";
 import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } from "./graph-workspace/types";
+import { buildTriggerPayload, triggerEditorValues, triggerStatePathSuggestions } from "./triggerEditor";
 import {
   findLastEdgeId,
   isVirtualNodeId,
@@ -130,6 +140,10 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [selectedLoopId, setSelectedLoopId] = useState<string | null>(null);
+  const [graphTriggers, setGraphTriggers] = useState<Trigger[]>([]);
+  const [triggersHydrated, setTriggersHydrated] = useState(false);
+  const [triggerLoadError, setTriggerLoadError] = useState("");
+  const [selectedTriggerId, setSelectedTriggerId] = useState<string | null>(null);
   const [nodeConfigText, setNodeConfigText] = useState("{}");
   const [edgeConfigText, setEdgeConfigText] = useState("{}");
   const [, setLocalStatus] = useState("local ready");
@@ -154,6 +168,36 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLElement | null>(null);
+  const triggerRequestRef = useRef(0);
+
+  const refreshGraphTriggers = useCallback(async () => {
+    const request = ++triggerRequestRef.current;
+    const targetGraphID = graphId.trim();
+    if (!targetGraphID) {
+      setGraphTriggers([]);
+      setTriggersHydrated(true);
+      setTriggerLoadError("");
+      return [];
+    }
+    try {
+      const items = await listTriggers();
+      if (request !== triggerRequestRef.current) return null;
+      const matched = items.filter((item) => item.target?.graph_id?.trim() === targetGraphID);
+      setGraphTriggers(matched);
+      setTriggersHydrated(true);
+      setTriggerLoadError("");
+      return matched;
+    } catch (err) {
+      if (request !== triggerRequestRef.current) return null;
+      setTriggersHydrated(false);
+      setTriggerLoadError(err instanceof Error ? err.message : String(err));
+      return null;
+    }
+  }, [graphId]);
+  const validTriggerIDs = useMemo(
+    () => triggersHydrated ? graphTriggers.map((trigger) => trigger.id) : undefined,
+    [graphTriggers, triggersHydrated]
+  );
 
   useEffect(() => {
     setDrafts(readLocalGraphDrafts());
@@ -162,6 +206,17 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   useEffect(() => {
     setTitleSlot(document.getElementById("graph-title-slot"));
   }, []);
+
+  useEffect(() => {
+    setGraphTriggers([]);
+    setTriggersHydrated(false);
+    setTriggerLoadError("");
+    setSelectedTriggerId(null);
+    void refreshGraphTriggers();
+    return () => {
+      triggerRequestRef.current += 1;
+    };
+  }, [refreshGraphTriggers]);
 
   useEffect(() => {
     if (!graphMenuOpen) return;
@@ -251,7 +306,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
 
   useEffect(() => {
     if (!definition) return;
-    const signature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops);
+    const signature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops, validTriggerIDs);
     if (!autoSaveHydratedRef.current) {
       autoSaveHydratedRef.current = true;
       lastSavedSignatureRef.current = signature;
@@ -274,7 +329,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         autoSaveTimerRef.current = null;
       }
     };
-  }, [definition, graphId, graphVersion, virtualEdges, virtualLoops, virtualNodeIds]);
+  }, [definition, graphId, graphVersion, validTriggerIDs, virtualEdges, virtualLoops, virtualNodeIds]);
 
   useEffect(() => {
     activeDraftIdRef.current = activeDraftId;
@@ -315,6 +370,15 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     [definition, selectedNodeId]
   );
   const visibleVirtualNodes = useMemo(() => virtualNodeIds.map(virtualNodeSpec), [virtualNodeIds]);
+  const triggerCanvasNodes = useMemo(
+    () => projectTriggerCanvasNodes(definition, graphId, graphTriggers, virtualNodeIds),
+    [definition, graphId, graphTriggers, virtualNodeIds]
+  );
+  const selectedTrigger = useMemo(
+    () => graphTriggers.find((trigger) => trigger.id === selectedTriggerId) ?? null,
+    [graphTriggers, selectedTriggerId]
+  );
+  const triggerStatePaths = useMemo(() => triggerStatePathSuggestions(definition), [definition]);
   const selectedVirtualNode = useMemo(
     () => visibleVirtualNodes.find((node) => node.id === selectedNodeId) ?? null,
     [selectedNodeId, visibleVirtualNodes]
@@ -348,6 +412,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     [displayVirtualLoops, selectedLoopId]
   );
   const inspectorMode = selectedEdge || selectedVirtualEdge ? "edge" : selectedVirtualLoop ? "loop" : selectedVirtualNode ? "virtual" : selectedNode ? "node" : "graph";
+  const triggerInspectorOpen = Boolean(selectedTrigger);
   const searchableNodes = useMemo(
     () => [...visibleVirtualNodes, ...(definition?.nodes ?? [])],
     [definition, visibleVirtualNodes]
@@ -365,9 +430,13 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   );
   const isUnsaved = useMemo(() => {
     if (!definition) return false;
-    const currentSignature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops);
+    const currentSignature = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops, validTriggerIDs);
     return currentSignature !== lastSavedSignatureRef.current;
-  }, [definition, graphId, graphVersion, virtualEdges, virtualLoops, virtualNodeIds]);
+  }, [definition, graphId, graphVersion, validTriggerIDs, virtualEdges, virtualLoops, virtualNodeIds]);
+
+  useEffect(() => {
+    if (selectedTriggerId && triggersHydrated && !selectedTrigger) setSelectedTriggerId(null);
+  }, [selectedTrigger, selectedTriggerId, triggersHydrated]);
 
   useEffect(() => {
     if (!canvasSearchOpen || !canvasSearchQuery.trim()) return;
@@ -448,11 +517,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       title: definition.name || graphId,
       graphId,
       graphVersion,
-      definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges, virtualLoops),
+      definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges, virtualLoops, validTriggerIDs),
     });
     setActiveDraftId(draft.id);
     setDrafts(readLocalGraphDrafts());
-    lastSavedSignatureRef.current = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops);
+    lastSavedSignatureRef.current = autoSaveSignature(definition, graphId, graphVersion, virtualNodeIds, virtualEdges, virtualLoops, validTriggerIDs);
     setLocalStatus(`${options.mode === "auto" ? "autosaved" : "saved"} ${formatTime(draft.updatedAt)}`);
   }
 
@@ -858,6 +927,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setSelectedNodeId(null);
     setSelectedEdgeId(null);
     setSelectedLoopId(null);
+    setSelectedTriggerId(null);
     setContextMenu({ kind: "pane", position, screen });
   }
 
@@ -873,8 +943,97 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setContextMenu({ kind: "loop", loopId, screen });
   }
 
+  function openTriggerMenu(triggerId: string, screen: NodePosition) {
+    const trigger = graphTriggers.find((item) => item.id === triggerId);
+    if (!trigger) return;
+    selectTrigger(triggerId);
+    setContextMenu({ kind: "trigger", triggerId, enabled: trigger.enabled, screen });
+  }
+
   function moveNode(nodeID: string, position: NodePosition) {
     updateDefinition((current) => withNodePosition(current, nodeID, position));
+  }
+
+  function moveTrigger(triggerID: string, position: NodePosition) {
+    if (!definition) return;
+    setDefinition(withTriggerCanvasPosition(definition, triggerID, position, graphTriggers.map((trigger) => trigger.id)));
+  }
+
+  function selectTrigger(triggerID: string | null) {
+    setSelectedTriggerId(triggerID);
+    if (!triggerID) return;
+    setSelectedNodeId(null);
+    setSelectedEdgeId(null);
+    setSelectedLoopId(null);
+  }
+
+  async function createTriggerAt(type: TriggerType, position: NodePosition) {
+    setContextMenu(null);
+    const targetGraphID = graphId.trim();
+    const sourceDefinition = definition;
+    const request = triggerRequestRef.current;
+    if (!targetGraphID || !sourceDefinition || !triggersHydrated) return;
+    try {
+      const values = triggerEditorValues(null, { graph_id: targetGraphID }, type);
+      const saved = await createTrigger(buildTriggerPayload(values, null));
+      if (request !== triggerRequestRef.current) return;
+      const triggerIDs = [...graphTriggers.map((trigger) => trigger.id), saved.id];
+      setGraphTriggers((current) => [...current.filter((trigger) => trigger.id !== saved.id), saved]);
+      setDefinition(withTriggerCanvasPosition(sourceDefinition, saved.id, position, triggerIDs));
+      selectTrigger(saved.id);
+      setTriggerLoadError("");
+      await refreshGraphTriggers();
+    } catch (err) {
+      if (request === triggerRequestRef.current) {
+        setTriggerLoadError(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }
+
+  async function handleTriggerSaved(saved: Trigger) {
+    setGraphTriggers((current) => [...current.filter((trigger) => trigger.id !== saved.id), saved]);
+    setSelectedTriggerId(saved.id);
+    await refreshGraphTriggers();
+  }
+
+  async function handleTriggerDeleted() {
+    setSelectedTriggerId(null);
+    await refreshGraphTriggers();
+  }
+
+  function editTriggerFromMenu(triggerId: string) {
+    selectTrigger(triggerId);
+    setContextMenu(null);
+  }
+
+  async function toggleTriggerFromMenu(triggerId: string, enabled: boolean) {
+    setContextMenu(null);
+    const trigger = graphTriggers.find((item) => item.id === triggerId);
+    if (!trigger) return;
+    try {
+      const values = triggerEditorValues(trigger, trigger.target ?? { graph_id: graphId });
+      values.enabled = enabled;
+      const saved = await updateTrigger(trigger.id, buildTriggerPayload(values, trigger));
+      setGraphTriggers((current) => current.map((item) => (item.id === saved.id ? saved : item)));
+      setTriggerLoadError("");
+      await refreshGraphTriggers();
+    } catch (err) {
+      setTriggerLoadError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function deleteTriggerFromMenu(triggerId: string) {
+    setContextMenu(null);
+    const trigger = graphTriggers.find((item) => item.id === triggerId);
+    if (!trigger || !window.confirm(`Delete trigger ${trigger.id}?`)) return;
+    try {
+      await deleteTrigger(trigger.id);
+      if (selectedTriggerId === trigger.id) setSelectedTriggerId(null);
+      setTriggerLoadError("");
+      await refreshGraphTriggers();
+    } catch (err) {
+      setTriggerLoadError(err instanceof Error ? err.message : String(err));
+    }
   }
 
   function handleLoopDrag(loopId: string, delta: NodePosition) {
@@ -1030,27 +1189,52 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           selectedNodeId={selectedNodeId ?? undefined}
           selectedEdgeId={selectedEdgeId ?? undefined}
           selectedLoopId={selectedLoopId ?? undefined}
+          selectedTriggerId={selectedTriggerId ?? undefined}
           fitViewSignal={fitViewSignal}
           focusNodeId={focusNodeId}
           focusNodeSignal={focusNodeSignal}
           viewportStorageKey={graphCanvasViewportStorageKey(graphId, graphVersion, activeDraftId, definition)}
           highlightedNodeIds={highlightedNodeIds}
           nodeTypes={paletteNodeTypes}
-          onSelectNode={setSelectedNodeId}
-          onSelectEdge={setSelectedEdgeId}
-          onSelectLoop={setSelectedLoopId}
+          onSelectNode={(nodeID) => {
+            setSelectedNodeId(nodeID);
+            if (nodeID) {
+              setSelectedTriggerId(null);
+            }
+          }}
+          onSelectEdge={(edgeID) => {
+            setSelectedEdgeId(edgeID);
+            if (edgeID) {
+              setSelectedTriggerId(null);
+            }
+          }}
+          onSelectLoop={(loopID) => {
+            setSelectedLoopId(loopID);
+            if (loopID) {
+              setSelectedTriggerId(null);
+            }
+          }}
+          onSelectTrigger={selectTrigger}
           onNodePositionChange={moveNode}
+          onTriggerPositionChange={moveTrigger}
           onAutoLayout={applyAutoLayout}
           onConnectNodes={connectNodes}
           onCreateNodeAt={openCreateMenu}
           onNodeContextMenu={openNodeMenu}
           onEdgeContextMenu={openEdgeMenu}
           onLoopContextMenu={openLoopMenu}
+          onTriggerContextMenu={openTriggerMenu}
           onLoopDrag={handleLoopDrag}
           virtualNodeIds={virtualNodeIds}
           virtualEdges={displayVirtualEdges}
           virtualLoops={displayVirtualLoops}
+          triggerNodes={triggerCanvasNodes}
         />
+        {triggerLoadError ? (
+          <div className="absolute right-4 top-4 z-30 max-w-sm rounded border border-destructive/40 bg-panel p-2 text-xs text-destructive shadow-sm">
+            Trigger unavailable: {triggerLoadError}
+          </div>
+        ) : null}
         {canvasSearchOpen ? (
           <div className="absolute left-1/2 top-4 z-40 flex w-[min(420px,calc(100%-2rem))] -translate-x-1/2 items-center gap-2 rounded-md border border-border bg-panel p-2 shadow-lg">
             <Search className="h-4 w-4 shrink-0 text-muted-foreground" />
@@ -1096,6 +1280,15 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         <span className="absolute inset-y-0 -left-2 -right-2" />
       </div>
 
+      {triggerInspectorOpen ? (
+        <TriggerInspector
+          graphID={graphId}
+          trigger={selectedTrigger}
+          statePathSuggestions={triggerStatePaths}
+          onSaved={handleTriggerSaved}
+          onDeleted={handleTriggerDeleted}
+        />
+      ) : (
       <GraphInspectorPanel
         conditions={conditions}
         definition={definition}
@@ -1137,19 +1330,25 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         onDeleteNode={deleteSelectedNode}
         onSelectLintIssue={selectLintIssue}
       />
+      )}
 
       {contextMenu ? (
         <CanvasContextMenu
           boundaryRef={canvasRef}
           contextMenu={contextMenu}
+          canCreateTrigger={Boolean(graphId.trim() && triggersHydrated)}
           nodeGroups={registry?.node_groups ?? []}
           paletteNodeTypes={paletteNodeTypes}
           onAddNode={addNode}
           onAddVirtualNode={addVirtualNode}
+          onCreateTrigger={(type, position) => void createTriggerAt(type, position)}
           onClose={() => setContextMenu(null)}
           onDeleteEdge={deleteSelectedEdge}
           onDeleteLoop={deleteVirtualLoop}
           onDeleteNode={deleteSelectedNode}
+          onDeleteTrigger={(triggerId) => void deleteTriggerFromMenu(triggerId)}
+          onEditTrigger={editTriggerFromMenu}
+          onToggleTrigger={(triggerId, enabled) => void toggleTriggerFromMenu(triggerId, enabled)}
         />
       ) : null}
     </div>
@@ -1424,7 +1623,8 @@ function withSavedGraphWorkspaceState(
   definition: GraphDefinition,
   virtualNodeIds: string[],
   virtualEdges: VirtualGraphEdge[],
-  virtualLoops: VirtualGraphLoop[]
+  virtualLoops: VirtualGraphLoop[],
+  validTriggerIDs?: string[]
 ): GraphDefinition {
   const metadata = { ...(definition.metadata ?? {}) };
   const web = isRecord(metadata.web) ? { ...metadata.web } : {};
@@ -1442,7 +1642,8 @@ function withSavedGraphWorkspaceState(
     node_ids: loop.nodeIds,
   }));
   metadata.web = web;
-  return { ...definition, metadata };
+  const next = { ...definition, metadata };
+  return validTriggerIDs ? withCleanTriggerCanvasPositions(next, validTriggerIDs) : next;
 }
 
 function savedGraphWorkspaceState(definition: GraphDefinition): {
@@ -1548,12 +1749,13 @@ function autoSaveSignature(
   graphVersion: string,
   virtualNodeIds: string[],
   virtualEdges: VirtualGraphEdge[],
-  virtualLoops: VirtualGraphLoop[]
+  virtualLoops: VirtualGraphLoop[],
+  validTriggerIDs?: string[]
 ): string {
   return JSON.stringify({
     graphId,
     graphVersion,
-    definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges, virtualLoops),
+    definition: withSavedGraphWorkspaceState(definition, virtualNodeIds, virtualEdges, virtualLoops, validTriggerIDs),
   });
 }
 

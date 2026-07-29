@@ -2,10 +2,9 @@ package trigger
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -35,7 +34,7 @@ func (r *asyncRecordingStarter) StartAsync(_ context.Context, initial *state.Sta
 	return runtime.RunRecord{RunID: "run-async", Status: runtime.RunStatusRunning}, r.done, nil
 }
 
-func TestServiceInvokeWebhookBuildsStateAndChecksSignature(t *testing.T) {
+func TestServiceInvokeWebhookBuildsStateAndChecksAPIKey(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -52,8 +51,12 @@ func TestServiceInvokeWebhookBuildsStateAndChecksSignature(t *testing.T) {
 		Type:    TypeWebhook,
 		Enabled: true,
 		Target:  Target{GraphID: "graph-1"},
+		InitialState: map[string]any{
+			"shared": map[string]any{"tenant": map[string]any{"id": "tenant-1"}},
+			"scopes": map[string]any{"agent": map[string]any{"mode": "review"}},
+		},
 		Webhook: &WebhookSpec{
-			Secret: "secret",
+			APIKey: "secret",
 			StateMappings: []WebhookStateMapping{
 				{Parameter: "message", StatePath: "shared.webhook.message"},
 			},
@@ -63,13 +66,10 @@ func TestServiceInvokeWebhookBuildsStateAndChecksSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := []byte(`{"message":"hello"}`)
-	mac := hmac.New(sha256.New, []byte("secret"))
-	_, _ = mac.Write(body)
-	run, err := service.InvokeWebhook(context.Background(), "webhook-1", body, map[string]string{
-		DefaultSignatureHeader: "sha256=" + hex.EncodeToString(mac.Sum(nil)),
-		"Authorization":        "Bearer secret-token",
-		"Cookie":               "session=secret",
-		"X-Trace-ID":           "trace-1",
+	run, err := service.InvokeWebhook(context.Background(), "webhook-1", body, "secret", map[string]string{
+		"Authorization": "Bearer secret-token",
+		"Cookie":        "session=secret",
+		"X-Trace-ID":    "trace-1",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +89,14 @@ func TestServiceInvokeWebhookBuildsStateAndChecksSignature(t *testing.T) {
 	if !ok || mapped != "hello" {
 		t.Fatalf("mapped webhook input = %#v", mapped)
 	}
+	tenantID, ok := state.ReadPath(starter.initial, "shared.tenant.id")
+	if !ok || tenantID != "tenant-1" {
+		t.Fatalf("trigger initial shared state = %#v", tenantID)
+	}
+	agentMode, ok := state.ReadPath(starter.initial, "scopes.agent.mode")
+	if !ok || agentMode != "review" {
+		t.Fatalf("trigger initial scoped state = %#v", agentMode)
+	}
 	triggerID, ok := state.ReadPath(starter.initial, "shared.trigger.id")
 	if !ok || triggerID != "webhook-1" {
 		t.Fatalf("trigger id = %#v", triggerID)
@@ -101,9 +109,33 @@ func TestServiceInvokeWebhookBuildsStateAndChecksSignature(t *testing.T) {
 	if !ok || metadata["X-Trace-ID"] != "trace-1" {
 		t.Fatalf("webhook metadata = %#v", metadataValue)
 	}
-	for _, sensitive := range []string{DefaultSignatureHeader, "Authorization", "Cookie"} {
+	for _, sensitive := range []string{"Authorization", "Cookie"} {
 		if _, exists := metadata[sensitive]; exists {
 			t.Fatalf("sensitive header %q leaked into metadata: %#v", sensitive, metadata)
+		}
+	}
+}
+
+func TestTriggerRejectsInvalidInitialState(t *testing.T) {
+	tests := []map[string]any{
+		{"runtime": map[string]any{"run_id": "spoofed"}},
+		{"shared": "not-an-object"},
+		{"shared": map[string]any{"request": map[string]any{"input": "spoofed"}}},
+		{"shared": map[string]any{"trigger": map[string]any{"id": "spoofed"}}},
+	}
+	for _, initialState := range tests {
+		item := Trigger{
+			ID:           "webhook",
+			Type:         TypeWebhook,
+			Concurrency:  ConcurrencyParallel,
+			Target:       Target{GraphID: "graph-1"},
+			InitialState: initialState,
+			Webhook:      &WebhookSpec{},
+		}
+		if err := item.Validate(); err == nil {
+			t.Fatalf("initial state %#v was accepted", initialState)
+		} else if !errors.Is(err, ErrInvalidTrigger) {
+			t.Fatalf("initial state error = %v", err)
 		}
 	}
 }
@@ -136,7 +168,7 @@ func TestTriggerRejectsInvalidWebhookStateMappings(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsInvalidWebhookSignatureAndPayload(t *testing.T) {
+func TestServiceRejectsInvalidWebhookAPIKeyAndPayload(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -152,18 +184,44 @@ func TestServiceRejectsInvalidWebhookSignatureAndPayload(t *testing.T) {
 		Type:    TypeWebhook,
 		Enabled: true,
 		Target:  Target{GraphID: "graph-1"},
-		Webhook: &WebhookSpec{Secret: "secret"},
+		Webhook: &WebhookSpec{APIKey: "secret"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`{}`), map[string]string{}); err != ErrInvalidSignature {
-		t.Fatalf("invalid signature error = %v", err)
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`{}`), "wrong", nil); err != ErrInvalidAPIKey {
+		t.Fatalf("invalid api_key error = %v", err)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`not-json`), map[string]string{
-		DefaultSignatureHeader: "sha256=" + signBody("secret", []byte(`not-json`)),
-	}); !errors.Is(err, ErrInvalidPayload) {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`not-json`), "secret", nil); !errors.Is(err, ErrInvalidPayload) {
 		t.Fatalf("invalid payload error = %v", err)
+	}
+}
+
+func TestServiceUsesLegacyWebhookSecretAsAPIKey(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "legacy.json"),
+		[]byte(`{"id":"legacy","type":"webhook","enabled":true,"target":{"graph_id":"graph-1"},"webhook":{"secret":"legacy-key","signature_header":"X-Legacy-Signature"}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &recordingStarter{}
+	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
+		return starter, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.InvokeWebhook(context.Background(), "legacy", []byte(`{}`), "legacy-key", nil); err != nil {
+		t.Fatal(err)
+	}
+	if starter.calls != 1 {
+		t.Fatalf("legacy webhook calls = %d, want 1", starter.calls)
 	}
 }
 
@@ -189,10 +247,13 @@ func TestServiceInvokeScheduleAndValidatesCron(t *testing.T) {
 		t.Fatal("invalid cron was accepted")
 	}
 	_, err = service.Create(context.Background(), Trigger{
-		ID:       "schedule-1",
-		Type:     TypeSchedule,
-		Enabled:  true,
-		Target:   Target{GraphID: "graph-1"},
+		ID:      "schedule-1",
+		Type:    TypeSchedule,
+		Enabled: true,
+		Target:  Target{GraphID: "graph-1"},
+		InitialState: map[string]any{
+			"shared": map[string]any{"schedule": map[string]any{"attempt": float64(2)}},
+		},
 		Schedule: &ScheduleSpec{Cron: "0 12 * * *", Input: map[string]any{"source": "timer"}},
 	})
 	if err != nil {
@@ -208,6 +269,10 @@ func TestServiceInvokeScheduleAndValidatesCron(t *testing.T) {
 	input, ok := state.ReadPath(starter.initial, "shared.request.input")
 	if !ok || input.(map[string]any)["source"] != "timer" {
 		t.Fatalf("schedule input = %#v", input)
+	}
+	attempt, ok := state.ReadPath(starter.initial, "shared.schedule.attempt")
+	if !ok || attempt != float64(2) {
+		t.Fatalf("schedule initial state = %#v", attempt)
 	}
 	if _, err := service.Get(context.Background(), "schedule-1"); err != nil {
 		t.Fatal(err)
@@ -239,14 +304,14 @@ func TestServiceAsyncRunKeepsSkipConcurrencyActiveUntilCompletion(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	run, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), nil)
+	run, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != runtime.RunStatusRunning {
 		t.Fatalf("run status = %q, want running", run.Status)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), nil); !errors.Is(err, ErrBusy) {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), "", nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("second invocation error = %v, want ErrBusy", err)
 	}
 
@@ -264,7 +329,7 @@ func TestServiceAsyncRunKeepsSkipConcurrencyActiveUntilCompletion(t *testing.T) 
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), nil); err != nil {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), "", nil); err != nil {
 		t.Fatalf("invocation after completion error = %v", err)
 	}
 }
@@ -392,12 +457,6 @@ func TestServiceDeleteFailureKeepsPersistedScheduleActive(t *testing.T) {
 	}
 }
 
-func signBody(secret string, body []byte) string {
-	mac := hmac.New(sha256.New, []byte(secret))
-	_, _ = mac.Write(body)
-	return hex.EncodeToString(mac.Sum(nil))
-}
-
 func TestServiceRecordsStartedAndFailedInvocations(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {
@@ -422,7 +481,7 @@ func TestServiceRecordsStartedAndFailedInvocations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), nil)
+	run, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), "", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -434,7 +493,7 @@ func TestServiceRecordsStartedAndFailedInvocations(t *testing.T) {
 	service.resolver = RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
 		return nil, errors.New("graph unavailable")
 	})
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), nil); err == nil {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), "", nil); err == nil {
 		t.Fatal("failed invocation unexpectedly succeeded")
 	}
 

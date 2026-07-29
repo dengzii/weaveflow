@@ -16,8 +16,8 @@ import {
   type Node,
   type Viewport,
 } from "@xyflow/react";
-import { Focus, Lock, Maximize2, Network, Repeat2, Unlock, ZoomIn, ZoomOut } from "lucide-react";
-import type { GraphConditionSpec, GraphDefinition, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord } from "../types";
+import { Clock3, Focus, Lock, Maximize2, Network, Repeat2, Unlock, Webhook, ZoomIn, ZoomOut } from "lucide-react";
+import type { GraphConditionSpec, GraphDefinition, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord, TriggerCanvasNode, TriggerType } from "../types";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, matchesDynamicStatePortName, resolveDefaultStatePath, type NodePosition } from "../lib/graphEditor";
 import {
   analyzeVirtualGraphLoop,
@@ -44,7 +44,11 @@ interface FlowNodeData extends Record<string, unknown> {
   highlighted?: boolean;
   bindingSummary?: string;
   missingBindings?: boolean;
-  virtualKind?: "start" | "end" | "loop";
+  virtualKind?: "start" | "end" | "loop" | "trigger";
+  triggerId?: string;
+  triggerType?: TriggerType;
+  triggerEnabled?: boolean;
+  triggerValid?: boolean;
   width?: number;
   height?: number;
 }
@@ -67,6 +71,7 @@ const minLoopHeight = 150;
 const minZoom = 0.2;
 const maxZoom = 2;
 const viewportStoragePrefix = "weaveflow.workbench.graphCanvas.viewport.";
+const triggerTargetHandleID = "trigger-input";
 
 interface StoredCanvasViewport {
   x: number;
@@ -82,6 +87,7 @@ export function GraphCanvas({
   selectedNodeId,
   selectedEdgeId,
   selectedLoopId,
+  selectedTriggerId,
   fitViewSignal = 0,
   focusNodeId,
   focusNodeSignal = 0,
@@ -91,16 +97,20 @@ export function GraphCanvas({
   virtualNodeIds = [START_NODE_REF, END_NODE_REF],
   virtualEdges = [],
   virtualLoops = [],
+  triggerNodes = [],
   onAutoLayout,
   onSelectNode,
   onSelectEdge,
   onSelectLoop,
+  onSelectTrigger,
   onNodePositionChange,
+  onTriggerPositionChange,
   onConnectNodes,
   onCreateNodeAt,
   onNodeContextMenu,
   onEdgeContextMenu,
   onLoopContextMenu,
+  onTriggerContextMenu,
   onLoopDrag,
 }: {
   definition: GraphDefinition | null;
@@ -110,6 +120,7 @@ export function GraphCanvas({
   selectedNodeId?: string;
   selectedEdgeId?: string;
   selectedLoopId?: string;
+  selectedTriggerId?: string;
   fitViewSignal?: number;
   focusNodeId?: string;
   focusNodeSignal?: number;
@@ -119,16 +130,20 @@ export function GraphCanvas({
   virtualNodeIds?: string[];
   virtualEdges?: VirtualGraphEdge[];
   virtualLoops?: VirtualGraphLoop[];
+  triggerNodes?: TriggerCanvasNode[];
   onAutoLayout?: () => void;
   onSelectNode?: (nodeId: string | null) => void;
   onSelectEdge?: (edgeId: string | null) => void;
   onSelectLoop?: (groupId: string | null) => void;
+  onSelectTrigger?: (triggerId: string | null) => void;
   onNodePositionChange?: (nodeId: string, position: NodePosition) => void;
+  onTriggerPositionChange?: (triggerId: string, position: NodePosition) => void;
   onConnectNodes?: (source: string, target: string) => void;
   onCreateNodeAt?: (position: NodePosition, screenPosition: NodePosition) => void;
   onNodeContextMenu?: (nodeId: string, screenPosition: NodePosition) => void;
   onEdgeContextMenu?: (edgeId: string, screenPosition: NodePosition) => void;
   onLoopContextMenu?: (groupId: string, screenPosition: NodePosition) => void;
+  onTriggerContextMenu?: (triggerId: string, screenPosition: NodePosition) => void;
   onLoopDrag?: (groupId: string, delta: NodePosition) => void;
 }) {
   return (
@@ -141,6 +156,7 @@ export function GraphCanvas({
         selectedNodeId={selectedNodeId}
         selectedEdgeId={selectedEdgeId}
         selectedLoopId={selectedLoopId}
+        selectedTriggerId={selectedTriggerId}
         fitViewSignal={fitViewSignal}
         focusNodeId={focusNodeId}
         focusNodeSignal={focusNodeSignal}
@@ -150,16 +166,20 @@ export function GraphCanvas({
         virtualNodeIds={virtualNodeIds}
         virtualEdges={virtualEdges}
         virtualLoops={virtualLoops}
+        triggerNodes={triggerNodes}
         onAutoLayout={onAutoLayout}
         onSelectNode={onSelectNode}
         onSelectEdge={onSelectEdge}
         onSelectLoop={onSelectLoop}
+        onSelectTrigger={onSelectTrigger}
         onNodePositionChange={onNodePositionChange}
+        onTriggerPositionChange={onTriggerPositionChange}
         onConnectNodes={onConnectNodes}
         onCreateNodeAt={onCreateNodeAt}
         onNodeContextMenu={onNodeContextMenu}
         onEdgeContextMenu={onEdgeContextMenu}
         onLoopContextMenu={onLoopContextMenu}
+        onTriggerContextMenu={onTriggerContextMenu}
         onLoopDrag={onLoopDrag}
       />
     </ReactFlowProvider>
@@ -174,6 +194,7 @@ function GraphCanvasInner({
   selectedNodeId,
   selectedEdgeId,
   selectedLoopId,
+  selectedTriggerId,
   fitViewSignal,
   focusNodeId,
   focusNodeSignal,
@@ -183,16 +204,20 @@ function GraphCanvasInner({
   virtualNodeIds,
   virtualEdges,
   virtualLoops,
+  triggerNodes,
   onAutoLayout,
   onSelectNode,
   onSelectEdge,
   onSelectLoop,
+  onSelectTrigger,
   onNodePositionChange,
+  onTriggerPositionChange,
   onConnectNodes,
   onCreateNodeAt,
   onNodeContextMenu,
   onEdgeContextMenu,
   onLoopContextMenu,
+  onTriggerContextMenu,
   onLoopDrag,
 }: {
   definition: GraphDefinition | null;
@@ -202,6 +227,7 @@ function GraphCanvasInner({
   selectedNodeId?: string;
   selectedEdgeId?: string;
   selectedLoopId?: string;
+  selectedTriggerId?: string;
   fitViewSignal: number;
   focusNodeId?: string;
   focusNodeSignal: number;
@@ -211,16 +237,20 @@ function GraphCanvasInner({
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
   virtualLoops: VirtualGraphLoop[];
+  triggerNodes: TriggerCanvasNode[];
   onAutoLayout?: () => void;
   onSelectNode?: (nodeId: string | null) => void;
   onSelectEdge?: (edgeId: string | null) => void;
   onSelectLoop?: (groupId: string | null) => void;
+  onSelectTrigger?: (triggerId: string | null) => void;
   onNodePositionChange?: (nodeId: string, position: NodePosition) => void;
+  onTriggerPositionChange?: (triggerId: string, position: NodePosition) => void;
   onConnectNodes?: (source: string, target: string) => void;
   onCreateNodeAt?: (position: NodePosition, screenPosition: NodePosition) => void;
   onNodeContextMenu?: (nodeId: string, screenPosition: NodePosition) => void;
   onEdgeContextMenu?: (edgeId: string, screenPosition: NodePosition) => void;
   onLoopContextMenu?: (groupId: string, screenPosition: NodePosition) => void;
+  onTriggerContextMenu?: (triggerId: string, screenPosition: NodePosition) => void;
   onLoopDrag?: (groupId: string, delta: NodePosition) => void;
 }) {
   const { screenToFlowPosition, viewportInitialized } = useReactFlow();
@@ -338,6 +368,26 @@ function GraphCanvasInner({
             height: layout.height,
           },
         })),
+        ...triggerNodes.map((item) => ({
+          id: item.canvas_id,
+          type: "debugTrigger",
+          position: item.position,
+          draggable: editable,
+          selectable: true,
+          selected: item.trigger.id === selectedTriggerId,
+          zIndex: 2,
+          data: {
+            label: item.trigger.name || item.trigger.id,
+            type: item.trigger.type,
+            status: item.trigger.enabled ? "enabled" : "disabled",
+            editable: false,
+            virtualKind: "trigger" as const,
+            triggerId: item.trigger.id,
+            triggerType: item.trigger.type,
+            triggerEnabled: item.trigger.enabled,
+            triggerValid: item.valid,
+          },
+        })),
         ...displayNodes.map((node) => {
           const virtualKind = virtualNodeKind(node.id);
           const nodeType = nodeTypes.find((item) => item.type === node.type);
@@ -383,8 +433,7 @@ function GraphCanvasInner({
       )
     );
     const displayGraphEdges = graphEdgesForLoopDisplay(definition, virtualLoops);
-    setEdges(
-      [...displayVirtualEdges, ...displayGraphEdges].map(({
+    const flowEdges = [...displayVirtualEdges, ...displayGraphEdges].map(({
         edge,
         id,
         selectionId = id,
@@ -427,9 +476,30 @@ function GraphCanvasInner({
           zIndex: 1,
           style: edgeStyle(selected, condition),
         };
-      })
-    );
-  }, [definition, editable, highlightedNodeSet, isInteractive, nodeTypes, selectedEdgeId, selectedLoopId, selectedNodeId, setEdges, setNodes, virtualEdges, virtualLoops, virtualNodeIds]);
+      });
+    const triggerTarget = startVirtualNodeIds[0] ?? definition.entry_point;
+    const triggerEdges: Edge[] = triggerTarget
+      ? triggerNodes.map((item) => ({
+          id: `trigger-edge:${item.canvas_id}`,
+          source: item.canvas_id,
+          target: triggerTarget,
+          selectable: false,
+          reconnectable: false,
+          focusable: false,
+          interactionWidth: 0,
+          zIndex: 1,
+          data: { triggerEdge: true },
+          targetHandle: startVirtualNodeIds.length > 0 ? triggerTargetHandleID : undefined,
+          style: {
+            stroke: "var(--muted-foreground)",
+            strokeDasharray: "6 5",
+            strokeWidth: 1.5,
+            opacity: item.trigger.enabled ? 0.8 : 0.4,
+          },
+        }))
+      : [];
+    setEdges([...flowEdges, ...triggerEdges]);
+  }, [definition, editable, highlightedNodeSet, isInteractive, nodeTypes, selectedEdgeId, selectedLoopId, selectedNodeId, selectedTriggerId, setEdges, setNodes, triggerNodes, virtualEdges, virtualLoops, virtualNodeIds]);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -512,6 +582,7 @@ function GraphCanvasInner({
 
   function handleConnect(connection: Connection) {
     if (!isInteractive || !connection.source || !connection.target) return;
+    if (triggerNodes.some((item) => item.canvas_id === connection.source || item.canvas_id === connection.target)) return;
     const sourceIsLoop = virtualLoops.some((loop) => loop.id === connection.source);
     const targetIsLoop = virtualLoops.some((loop) => loop.id === connection.target);
     if (sourceIsLoop || targetIsLoop) return;
@@ -532,11 +603,18 @@ function GraphCanvasInner({
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={{ debugNode: DebugNode, debugLoop: DebugLoop }}
+        nodeTypes={{ debugNode: DebugNode, debugLoop: DebugLoop, debugTrigger: DebugTrigger }}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
         onNodeClick={(event, node) => {
+          if (node.data.virtualKind === "trigger") {
+            onSelectNode?.(null);
+            onSelectEdge?.(null);
+            onSelectLoop?.(null);
+            onSelectTrigger?.(String(node.data.triggerId || ""));
+            return;
+          }
           if (node.data.virtualKind === "loop") {
             if ((event.target as Element).closest?.("[data-loop-title]")) {
               onSelectLoop?.(node.id);
@@ -548,11 +626,21 @@ function GraphCanvasInner({
           onSelectNode?.(node.id);
           onSelectEdge?.(null);
           onSelectLoop?.(null);
+          onSelectTrigger?.(null);
         }}
         onNodeContextMenu={(event, node) => {
           if (!isInteractive) return;
           event.preventDefault();
           event.stopPropagation();
+          if (node.data.virtualKind === "trigger") {
+            const triggerId = String(node.data.triggerId || "");
+            onSelectNode?.(null);
+            onSelectEdge?.(null);
+            onSelectLoop?.(null);
+            onSelectTrigger?.(triggerId);
+            onTriggerContextMenu?.(triggerId, screenPoint(event));
+            return;
+          }
           if (node.data.virtualKind === "loop") {
             const target = event.target as Element;
             if (target.closest("[data-loop-title]")) {
@@ -570,14 +658,18 @@ function GraphCanvasInner({
           onSelectNode?.(node.id);
           onSelectEdge?.(null);
           onSelectLoop?.(null);
+          onSelectTrigger?.(null);
           onNodeContextMenu?.(node.id, screenPoint(event));
         }}
         onEdgeClick={(_, edge) => {
+          if (edge.data?.triggerEdge) return;
           onSelectEdge?.(flowEdgeSelectionId(edge));
           onSelectNode?.(null);
           onSelectLoop?.(null);
+          onSelectTrigger?.(null);
         }}
         onEdgeContextMenu={(event, edge) => {
+          if (edge.data?.triggerEdge) return;
           if (!isInteractive) return;
           event.preventDefault();
           event.stopPropagation();
@@ -585,12 +677,14 @@ function GraphCanvasInner({
           onSelectEdge?.(selectionId);
           onSelectNode?.(null);
           onSelectLoop?.(null);
+          onSelectTrigger?.(null);
           onEdgeContextMenu?.(selectionId, screenPoint(event));
         }}
         onPaneClick={() => {
           onSelectNode?.(null);
           onSelectEdge?.(null);
           onSelectLoop?.(null);
+          onSelectTrigger?.(null);
         }}
         onPaneContextMenu={(event) => {
           if (!isInteractive) return;
@@ -643,6 +737,10 @@ function GraphCanvasInner({
             }
             return;
           }
+          if (node.data.virtualKind === "trigger") {
+            onTriggerPositionChange?.(String(node.data.triggerId || ""), node.position);
+            return;
+          }
           onNodePositionChange?.(node.id, node.position);
         }}
         minZoom={minZoom}
@@ -658,7 +756,7 @@ function GraphCanvasInner({
         <CanvasControls
           interactive={interactive}
           canAutoLayout={Boolean(definition)}
-          hasSelection={Boolean(selectedNodeId || selectedEdgeId || selectedLoopId)}
+          hasSelection={Boolean(selectedNodeId || selectedEdgeId || selectedLoopId || selectedTriggerId)}
           onAutoLayout={onAutoLayout}
           onFitView={() => fitNodesToViewport(nodesRef.current, flowWrapperRef.current, applyViewport)}
           onFitSelection={() => fitNodesToViewport(selectedNodesForFit(), flowWrapperRef.current, applyViewport, 0.65)}
@@ -696,6 +794,9 @@ function GraphCanvasInner({
     }
     if (selectedNodeId) {
       return nodesRef.current.filter((node) => node.id === selectedNodeId);
+    }
+    if (selectedTriggerId) {
+      return nodesRef.current.filter((node) => node.data.triggerId === selectedTriggerId);
     }
     if (selectedEdgeId) {
       const edge = edgesRef.current.find((item) => item.id === selectedEdgeId);
@@ -1078,6 +1179,7 @@ function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean 
   if (virtualKind === "start" || virtualKind === "end") {
     return (
       <div className={className}>
+        {virtualKind === "start" ? <Handle id={triggerTargetHandleID} type="target" position={Position.Left} isConnectable={false} /> : null}
         {virtualKind === "end" ? <Handle type="target" position={Position.Left} isConnectable={editable} /> : null}
         <div className="debug-node-virtual-label">{data.label}</div>
         {virtualKind === "start" ? <Handle type="source" position={Position.Right} isConnectable={editable} /> : null}
@@ -1106,6 +1208,27 @@ function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean 
         {attempt ? <span className="debug-node-attempt">#{attempt}</span> : null}
       </div>
       <Handle type="source" position={Position.Right} isConnectable={editable} />
+    </div>
+  );
+}
+
+function DebugTrigger({ data, selected }: { data: FlowNodeData; selected?: boolean }) {
+  const enabled = Boolean(data.triggerEnabled);
+  const valid = data.triggerValid !== false;
+  const TriggerIcon = data.triggerType === "schedule" ? Clock3 : Webhook;
+  const className = `debug-node debug-node-virtual debug-node-virtual-trigger${valid ? "" : " debug-node-trigger-invalid"}${enabled ? "" : " debug-node-trigger-disabled"}${selected ? " debug-node-selected" : ""}`;
+  return (
+    <div className={className}>
+      <div className="debug-node-header">
+        <TriggerIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 flex-1 truncate text-sm font-semibold">{data.label}</div>
+        {!valid ? <span className="debug-node-status-dot" title="Invalid configuration" /> : null}
+      </div>
+      <div className="debug-node-meta">
+        <span className="debug-node-type">{data.triggerType}</span>
+        <span>{valid ? (enabled ? "enabled" : "disabled") : "invalid"}</span>
+      </div>
+      <Handle type="source" position={Position.Right} isConnectable={false} />
     </div>
   );
 }

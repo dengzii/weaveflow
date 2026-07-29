@@ -747,7 +747,10 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 			"nodes": [
 				{"id": "input", "type": "conversation_message", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			],
-			"metadata": {"web": {"positions": {"input": {"x": 10, "y": 20}}}}
+			"metadata": {"web": {
+				"positions": {"input": {"x": 10, "y": 20}},
+				"trigger_nodes": {"incoming": {"x": -320, "y": 80}}
+			}}
 		}
 	}`)
 	time.Sleep(time.Millisecond)
@@ -762,7 +765,10 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 			"nodes": [
 				{"id": "input", "type": "conversation_message", "config": {"content": "hello"}, "state": {"conversation": {"path": "scopes.input.conversation"}}}
 			],
-			"metadata": {"web": {"positions": {"input": {"x": 30, "y": 40}}}}
+			"metadata": {"web": {
+				"positions": {"input": {"x": 30, "y": 40}},
+				"trigger_nodes": {"incoming": {"x": -360, "y": 120}}
+			}}
 		}
 	}`)
 

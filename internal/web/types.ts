@@ -76,7 +76,7 @@ export interface WebhookStateMapping {
 }
 
 export interface TriggerWebhookSpec {
-  signature_header?: string;
+  api_key?: string;
   state_mappings?: WebhookStateMapping[];
 }
 
@@ -93,10 +93,23 @@ export interface Trigger {
   enabled: boolean;
   target?: TriggerTarget;
   concurrency?: TriggerConcurrency;
+  initial_state?: Record<string, unknown>;
   webhook?: TriggerWebhookSpec;
   schedule?: TriggerScheduleSpec;
   created_at: string;
   updated_at: string;
+}
+
+export interface TriggerCanvasPosition {
+  x: number;
+  y: number;
+}
+
+export interface TriggerCanvasNode {
+  canvas_id: string;
+  trigger: Trigger;
+  position: TriggerCanvasPosition;
+  valid: boolean;
 }
 
 export interface TriggerRecord {

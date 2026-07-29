@@ -2,18 +2,15 @@ package server
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 )
 
@@ -86,13 +83,19 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	create := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{"id":"hook","type":"webhook","target":{"graph_id":"graph-1"},"webhook":{"secret":"secret"}}`))
+	req := httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{"id":"hook","type":"webhook","target":{"graph_id":"graph-1"},"initial_state":{"shared":{"tenant":{"id":"tenant-1"}},"scopes":{"agent":{"mode":"review"}}},"webhook":{"api_key":"secret"}}`))
 	engine.ServeHTTP(create, req)
 	if create.Code != http.StatusCreated {
 		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
 	}
-	if strings.Contains(create.Body.String(), "secret") {
-		t.Fatalf("secret leaked in create response: %s", create.Body.String())
+	if strings.Contains(create.Body.String(), "secret") || strings.Contains(create.Body.String(), "api_key") {
+		t.Fatalf("api_key leaked in create response: %s", create.Body.String())
+	}
+	legacyAuth := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{"id":"legacy-auth","type":"webhook","target":{"graph_id":"graph-1"},"webhook":{"secret":"secret"}}`))
+	engine.ServeHTTP(legacyAuth, req)
+	if legacyAuth.Code != http.StatusBadRequest || !strings.Contains(legacyAuth.Body.String(), "unknown field") {
+		t.Fatalf("legacy webhook auth status = %d, body = %s", legacyAuth.Code, legacyAuth.Body.String())
 	}
 
 	invalid := httptest.NewRecorder()
@@ -122,11 +125,14 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 	}
 
 	body := []byte(`{"ok":true}`)
-	mac := hmac.New(sha256.New, []byte("secret"))
-	_, _ = mac.Write(body)
+	unauthorized := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/triggers/hook?api_key=wrong", strings.NewReader(string(body)))
+	engine.ServeHTTP(unauthorized, req)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("invalid api_key status = %d, body = %s", unauthorized.Code, unauthorized.Body.String())
+	}
 	webhook := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/triggers/hook", strings.NewReader(string(body)))
-	req.Header.Set(trigger.DefaultSignatureHeader, "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	req = httptest.NewRequest(http.MethodPost, "/triggers/hook?api_key=secret", strings.NewReader(string(body)))
 	engine.ServeHTTP(webhook, req)
 	if webhook.Code != http.StatusOK {
 		t.Fatalf("webhook status = %d, body = %s", webhook.Code, webhook.Body.String())
@@ -145,6 +151,14 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 	if starter.initial == nil {
 		t.Fatal("webhook did not start a run")
 	}
+	tenantID, ok := state.ReadPath(starter.initial, "shared.tenant.id")
+	if !ok || tenantID != "tenant-1" {
+		t.Fatalf("trigger initial shared state = %#v", tenantID)
+	}
+	agentMode, ok := state.ReadPath(starter.initial, "scopes.agent.mode")
+	if !ok || agentMode != "review" {
+		t.Fatalf("trigger initial scoped state = %#v", agentMode)
+	}
 	requireTriggerContextValue(t, starter, "injected")
 	select {
 	case <-starter.ctx.Done():
@@ -155,12 +169,15 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 		t.Fatalf("initial resolved target = %#v", resolvedTarget)
 	}
 
-	rawQuery := "input=hello&tag=a&tag=b"
-	mac = hmac.New(sha256.New, []byte("secret"))
-	_, _ = mac.Write([]byte(rawQuery))
+	missingAPIKey := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/triggers/hook/webhook?input=hello", nil)
+	engine.ServeHTTP(missingAPIKey, req)
+	if missingAPIKey.Code != http.StatusUnauthorized {
+		t.Fatalf("missing api_key status = %d, body = %s", missingAPIKey.Code, missingAPIKey.Body.String())
+	}
+	rawQuery := "api_key=secret&input=hello&tag=a&tag=b"
 	webhook = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/triggers/hook/webhook?"+rawQuery, nil)
-	req.Header.Set(trigger.DefaultSignatureHeader, "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	engine.ServeHTTP(webhook, req)
 	if webhook.Code != http.StatusOK {
 		t.Fatalf("GET webhook status = %d, body = %s", webhook.Code, webhook.Body.String())
@@ -173,6 +190,9 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 	values, ok := input.(map[string]any)
 	if !ok || values["input"] != "hello" {
 		t.Fatalf("GET webhook input = %#v", input)
+	}
+	if _, exists := values[trigger.APIKeyQueryParameter]; exists {
+		t.Fatalf("api_key leaked into GET webhook input: %#v", values)
 	}
 	tags, ok := values["tag"].([]string)
 	if !ok || len(tags) != 2 || tags[0] != "a" || tags[1] != "b" {
@@ -213,8 +233,8 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 	if update.Code != http.StatusOK {
 		t.Fatalf("update status = %d, body = %s", update.Code, update.Body.String())
 	}
-	if strings.Contains(update.Body.String(), "secret") {
-		t.Fatalf("secret leaked in update response: %s", update.Body.String())
+	if strings.Contains(update.Body.String(), "secret") || strings.Contains(update.Body.String(), "api_key") {
+		t.Fatalf("api_key leaked in update response: %s", update.Body.String())
 	}
 	var updated struct {
 		Data trigger.Trigger `json:"data"`
@@ -232,16 +252,13 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Webhook == nil || stored.Webhook.Secret != "secret" {
-		t.Fatalf("stored webhook secret was not preserved: %#v", stored.Webhook)
+	if stored.Webhook == nil || stored.Webhook.APIKey != "secret" {
+		t.Fatalf("stored webhook api_key was not preserved: %#v", stored.Webhook)
 	}
 
 	body = []byte(`{"user":{"id":"post-user"}}`)
-	mac = hmac.New(sha256.New, []byte("secret"))
-	_, _ = mac.Write(body)
 	webhook = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/triggers/hook", strings.NewReader(string(body)))
-	req.Header.Set(trigger.DefaultSignatureHeader, "sha256="+hex.EncodeToString(mac.Sum(nil)))
+	req = httptest.NewRequest(http.MethodPost, "/triggers/hook?api_key=secret", strings.NewReader(string(body)))
 	engine.ServeHTTP(webhook, req)
 	if webhook.Code != http.StatusOK {
 		t.Fatalf("updated webhook status = %d, body = %s", webhook.Code, webhook.Body.String())
@@ -255,12 +272,9 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 		t.Fatalf("POST mapped state = %#v", mapped)
 	}
 
-	rawQuery = "user.id=query-user"
-	mac = hmac.New(sha256.New, []byte("secret"))
-	_, _ = mac.Write([]byte(rawQuery))
+	rawQuery = "api_key=secret&user.id=query-user"
 	webhook = httptest.NewRecorder()
 	req = httptest.NewRequest(http.MethodGet, "/triggers/hook/webhook?"+rawQuery, nil)
-	req.Header.Set(trigger.DefaultSignatureHeader, "sha256="+hex.EncodeToString(mac.Sum(nil)))
 	engine.ServeHTTP(webhook, req)
 	if webhook.Code != http.StatusOK {
 		t.Fatalf("updated GET webhook status = %d, body = %s", webhook.Code, webhook.Body.String())
@@ -315,7 +329,7 @@ func TestTriggerRecordRouteListsInvocations(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "recorded-hook", []byte(`{}`), nil); err != nil {
+	if _, err := service.InvokeWebhook(context.Background(), "recorded-hook", []byte(`{}`), "", nil); err != nil {
 		t.Fatal(err)
 	}
 

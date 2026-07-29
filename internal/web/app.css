@@ -317,6 +317,26 @@
   font-weight: 700;
 }
 
+.debug-node-virtual-trigger {
+  width: 190px;
+  min-height: 70px;
+  background: color-mix(in srgb, var(--panel) 82%, var(--muted));
+  padding: 11px 12px;
+}
+
+.debug-node-trigger-invalid {
+  border-color: color-mix(in srgb, var(--status-danger-text) 68%, var(--border));
+}
+
+.debug-node-trigger-invalid .debug-node-status-dot {
+  background: var(--status-danger-text);
+  box-shadow: 0 0 0 2px var(--status-danger-bg);
+}
+
+.debug-node-trigger-disabled {
+  opacity: 0.62;
+}
+
 .debug-node-selected {
   border-color: var(--flow-edge-selected);
   box-shadow: var(--node-selected-shadow);

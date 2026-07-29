@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ type Target struct {
 }
 
 type WebhookSpec struct {
+	APIKey          string                `json:"api_key,omitempty"`
 	Secret          string                `json:"secret,omitempty"`
 	SignatureHeader string                `json:"signature_header,omitempty"`
 	StateMappings   []WebhookStateMapping `json:"state_mappings,omitempty"`
@@ -46,16 +48,17 @@ type ScheduleSpec struct {
 }
 
 type Trigger struct {
-	ID          string            `json:"id"`
-	Name        string            `json:"name,omitempty"`
-	Type        Type              `json:"type"`
-	Enabled     bool              `json:"enabled"`
-	Target      Target            `json:"target"`
-	Concurrency ConcurrencyPolicy `json:"concurrency,omitempty"`
-	Webhook     *WebhookSpec      `json:"webhook,omitempty"`
-	Schedule    *ScheduleSpec     `json:"schedule,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
-	UpdatedAt   time.Time         `json:"updated_at"`
+	ID           string            `json:"id"`
+	Name         string            `json:"name,omitempty"`
+	Type         Type              `json:"type"`
+	Enabled      bool              `json:"enabled"`
+	Target       Target            `json:"target"`
+	Concurrency  ConcurrencyPolicy `json:"concurrency,omitempty"`
+	InitialState map[string]any    `json:"initial_state,omitempty"`
+	Webhook      *WebhookSpec      `json:"webhook,omitempty"`
+	Schedule     *ScheduleSpec     `json:"schedule,omitempty"`
+	CreatedAt    time.Time         `json:"created_at"`
+	UpdatedAt    time.Time         `json:"updated_at"`
 }
 
 type TriggerResult struct {
@@ -85,7 +88,11 @@ func (t Trigger) Normalize(now time.Time) Trigger {
 		t.Concurrency = ConcurrencyParallel
 	}
 	if t.Webhook != nil {
-		t.Webhook.SignatureHeader = strings.TrimSpace(t.Webhook.SignatureHeader)
+		if t.Webhook.APIKey == "" {
+			t.Webhook.APIKey = t.Webhook.Secret
+		}
+		t.Webhook.Secret = ""
+		t.Webhook.SignatureHeader = ""
 		for i := range t.Webhook.StateMappings {
 			t.Webhook.StateMappings[i].Parameter = strings.TrimSpace(t.Webhook.StateMappings[i].Parameter)
 			t.Webhook.StateMappings[i].StatePath = strings.TrimSpace(t.Webhook.StateMappings[i].StatePath)
@@ -120,6 +127,9 @@ func (t Trigger) Validate() error {
 	if t.Target.GraphID == "" {
 		return fmt.Errorf("%w: %w: graph_id is required", ErrInvalidTrigger, ErrInvalidTarget)
 	}
+	if err := validateInitialState(t.InitialState); err != nil {
+		return fmt.Errorf("%w: initial_state: %v", ErrInvalidTrigger, err)
+	}
 	switch t.Type {
 	case TypeWebhook:
 		if t.Webhook == nil {
@@ -137,6 +147,29 @@ func (t Trigger) Validate() error {
 				return fmt.Errorf("%w: schedule timezone %q is invalid: %v", ErrInvalidTrigger, t.Schedule.Timezone, err)
 			}
 		}
+	}
+	return nil
+}
+
+func validateInitialState(initial map[string]any) error {
+	for section, value := range initial {
+		if section != state.SectionShared && section != state.SectionScopes {
+			return fmt.Errorf("state section %q is not allowed", section)
+		}
+		values, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("state section %q must be an object", section)
+		}
+		if section == state.SectionShared {
+			for _, reserved := range []string{"request", "trigger"} {
+				if _, exists := values[reserved]; exists {
+					return fmt.Errorf("state path %q is reserved", section+"."+reserved)
+				}
+			}
+		}
+	}
+	if _, err := json.Marshal(initial); err != nil {
+		return fmt.Errorf("must contain JSON-compatible values: %w", err)
 	}
 	return nil
 }

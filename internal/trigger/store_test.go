@@ -36,13 +36,16 @@ func TestFileStoreUpdateAtomicallyReplacesTrigger(t *testing.T) {
 		Enabled:     true,
 		Concurrency: ConcurrencyParallel,
 		Target:      Target{GraphID: "graph-1"},
-		Webhook:     &WebhookSpec{Secret: "first"},
+		InitialState: map[string]any{
+			"shared": map[string]any{"tenant": "tenant-1"},
+		},
+		Webhook: &WebhookSpec{APIKey: "first"},
 	}
 	if err := store.Create(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
 	item.Name = "updated"
-	item.Webhook.Secret = "second"
+	item.Webhook.APIKey = "second"
 	if err := store.Update(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
@@ -50,8 +53,12 @@ func TestFileStoreUpdateAtomicallyReplacesTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Name != "updated" || stored.Webhook == nil || stored.Webhook.Secret != "second" {
+	if stored.Name != "updated" || stored.Webhook == nil || stored.Webhook.APIKey != "second" {
 		t.Fatalf("updated trigger = %#v", stored)
+	}
+	shared, ok := stored.InitialState["shared"].(map[string]any)
+	if !ok || shared["tenant"] != "tenant-1" {
+		t.Fatalf("stored initial state = %#v", stored.InitialState)
 	}
 }
 

@@ -2,9 +2,8 @@ package trigger
 
 import (
 	"context"
-	"crypto/hmac"
 	"crypto/sha256"
-	"encoding/hex"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -22,14 +21,17 @@ var (
 	ErrInvalidTrigger      = errors.New("invalid trigger")
 	ErrDisabled            = errors.New("trigger is disabled")
 	ErrBusy                = errors.New("trigger is already running")
-	ErrInvalidSignature    = errors.New("webhook signature is invalid")
+	ErrInvalidAPIKey       = errors.New("webhook api_key is invalid")
 	ErrInvalidPayload      = errors.New("invalid webhook payload")
 	ErrInvalidStateMapping = errors.New("invalid webhook state mapping")
 	ErrInvalidTarget       = errors.New("invalid trigger target")
 	ErrTypeMismatch        = errors.New("trigger type mismatch")
 )
 
-const DefaultSignatureHeader = "X-Webhook-Signature"
+const (
+	APIKeyQueryParameter  = "api_key"
+	legacySignatureHeader = "X-Webhook-Signature"
+)
 
 const (
 	DefaultRecordLimit = 100
@@ -257,8 +259,8 @@ func (s *Service) Close() error {
 	return nil
 }
 
-func (s *Service) InvokeWebhook(ctx context.Context, id string, body []byte, headers map[string]string) (runtime.RunRecord, error) {
-	return s.invokeWebhook(ctx, id, body, headers, func() (any, error) {
+func (s *Service) InvokeWebhook(ctx context.Context, id string, body []byte, apiKey string, headers map[string]string) (runtime.RunRecord, error) {
+	return s.invokeWebhook(ctx, id, apiKey, headers, func() (any, error) {
 		if len(strings.TrimSpace(string(body))) == 0 {
 			return map[string]any{}, nil
 		}
@@ -270,15 +272,13 @@ func (s *Service) InvokeWebhook(ctx context.Context, id string, body []byte, hea
 	})
 }
 
-// InvokeWebhookInput invokes a webhook with an already decoded input. The
-// signature is verified against signaturePayload before the run is started.
-func (s *Service) InvokeWebhookInput(ctx context.Context, id string, input any, signaturePayload []byte, headers map[string]string) (runtime.RunRecord, error) {
-	return s.invokeWebhook(ctx, id, signaturePayload, headers, func() (any, error) {
+func (s *Service) InvokeWebhookInput(ctx context.Context, id string, input any, apiKey string, headers map[string]string) (runtime.RunRecord, error) {
+	return s.invokeWebhook(ctx, id, apiKey, headers, func() (any, error) {
 		return input, nil
 	})
 }
 
-func (s *Service) invokeWebhook(ctx context.Context, id string, signaturePayload []byte, headers map[string]string, input func() (any, error)) (runtime.RunRecord, error) {
+func (s *Service) invokeWebhook(ctx context.Context, id string, apiKey string, headers map[string]string, input func() (any, error)) (runtime.RunRecord, error) {
 	trigger, err := s.store.Get(ctx, id)
 	if err != nil {
 		return runtime.RunRecord{}, err
@@ -289,7 +289,7 @@ func (s *Service) invokeWebhook(ctx context.Context, id string, signaturePayload
 	if !trigger.Enabled {
 		return runtime.RunRecord{}, ErrDisabled
 	}
-	if err := verifyWebhookSignature(trigger.Webhook, signaturePayload, headers); err != nil {
+	if err := verifyWebhookAPIKey(trigger.Webhook, apiKey); err != nil {
 		return runtime.RunRecord{}, err
 	}
 	payload, err := input()
@@ -379,16 +379,19 @@ func (s *Service) invokeRun(ctx context.Context, trigger Trigger, input any, met
 	if runner == nil {
 		return runtime.RunRecord{}, fmt.Errorf("runner resolver returned nil")
 	}
-	initial := state.FromShared(map[string]any{
-		"request": map[string]any{
-			"input":    input,
-			"metadata": metadata,
-		},
-		"trigger": map[string]any{
-			"id":   trigger.ID,
-			"type": triggerType,
-		},
-	})
+	initial := state.FromMap(trigger.InitialState)
+	if err := state.SetPath(initial, "shared.request", map[string]any{
+		"input":    input,
+		"metadata": metadata,
+	}); err != nil {
+		return runtime.RunRecord{}, fmt.Errorf("initialize trigger request state: %w", err)
+	}
+	if err := state.SetPath(initial, "shared.trigger", map[string]any{
+		"id":   trigger.ID,
+		"type": triggerType,
+	}); err != nil {
+		return runtime.RunRecord{}, fmt.Errorf("initialize trigger identity state: %w", err)
+	}
 	if trigger.Type == TypeWebhook && trigger.Webhook != nil {
 		if err := applyWebhookStateMappings(initial, input, trigger.Webhook.StateMappings); err != nil {
 			return runtime.RunRecord{}, err
@@ -511,33 +514,27 @@ func (s *Service) scheduleContext() context.Context {
 	return s.ctx
 }
 
-func verifyWebhookSignature(spec *WebhookSpec, body []byte, headers map[string]string) error {
-	if spec == nil || spec.Secret == "" {
+func verifyWebhookAPIKey(spec *WebhookSpec, provided string) error {
+	if spec == nil {
 		return nil
 	}
-	header := spec.SignatureHeader
-	if header == "" {
-		header = DefaultSignatureHeader
+	expected := spec.APIKey
+	if expected == "" {
+		expected = spec.Secret
 	}
-	provided := ""
-	for key, value := range headers {
-		if strings.EqualFold(key, header) {
-			provided = strings.TrimSpace(value)
-			break
-		}
+	if expected == "" {
+		return nil
 	}
-	provided = strings.TrimPrefix(provided, "sha256=")
-	mac := hmac.New(sha256.New, []byte(spec.Secret))
-	_, _ = mac.Write(body)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(strings.ToLower(provided)), []byte(expected)) {
-		return ErrInvalidSignature
+	expectedHash := sha256.Sum256([]byte(expected))
+	providedHash := sha256.Sum256([]byte(provided))
+	if subtle.ConstantTimeCompare(expectedHash[:], providedHash[:]) != 1 {
+		return ErrInvalidAPIKey
 	}
 	return nil
 }
 
 func webhookMetadata(headers map[string]string, spec *WebhookSpec) map[string]any {
-	signatureHeader := DefaultSignatureHeader
+	signatureHeader := legacySignatureHeader
 	if spec != nil && strings.TrimSpace(spec.SignatureHeader) != "" {
 		signatureHeader = spec.SignatureHeader
 	}

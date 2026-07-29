@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/internal/trigger"
+	"github.com/dengzii/weaveflow/runtime"
 
 	"github.com/gin-gonic/gin"
 )
@@ -59,7 +59,7 @@ func statusForError(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, trigger.ErrExists), errors.Is(err, trigger.ErrBusy), errors.Is(err, trigger.ErrDisabled):
 		return http.StatusConflict
-	case errors.Is(err, trigger.ErrInvalidSignature):
+	case errors.Is(err, trigger.ErrInvalidAPIKey):
 		return http.StatusUnauthorized
 	case errors.Is(err, errRequestBodyTooLarge), errors.Is(err, errWebhookBodyTooLarge):
 		return http.StatusRequestEntityTooLarge

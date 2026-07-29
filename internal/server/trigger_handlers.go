@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/internal/trigger"
+	"github.com/dengzii/weaveflow/runtime"
 	"github.com/gin-gonic/gin"
 )
 
@@ -19,14 +19,20 @@ const (
 )
 
 type triggerPayload struct {
-	ID          string                    `json:"id,omitempty"`
-	Name        string                    `json:"name,omitempty"`
-	Type        trigger.Type              `json:"type"`
-	Enabled     *bool                     `json:"enabled,omitempty"`
-	Target      trigger.Target            `json:"target,omitempty"`
-	Concurrency trigger.ConcurrencyPolicy `json:"concurrency,omitempty"`
-	Webhook     *trigger.WebhookSpec      `json:"webhook,omitempty"`
-	Schedule    *trigger.ScheduleSpec     `json:"schedule,omitempty"`
+	ID           string                    `json:"id,omitempty"`
+	Name         string                    `json:"name,omitempty"`
+	Type         trigger.Type              `json:"type"`
+	Enabled      *bool                     `json:"enabled,omitempty"`
+	Target       trigger.Target            `json:"target,omitempty"`
+	Concurrency  trigger.ConcurrencyPolicy `json:"concurrency,omitempty"`
+	InitialState map[string]any            `json:"initial_state,omitempty"`
+	Webhook      *triggerWebhookPayload    `json:"webhook,omitempty"`
+	Schedule     *trigger.ScheduleSpec     `json:"schedule,omitempty"`
+}
+
+type triggerWebhookPayload struct {
+	APIKey        string                        `json:"api_key,omitempty"`
+	StateMappings []trigger.WebhookStateMapping `json:"state_mappings,omitempty"`
 }
 
 func (p triggerPayload) toTrigger(defaultEnabled bool) trigger.Trigger {
@@ -34,15 +40,23 @@ func (p triggerPayload) toTrigger(defaultEnabled bool) trigger.Trigger {
 	if p.Enabled != nil {
 		enabled = *p.Enabled
 	}
+	var webhook *trigger.WebhookSpec
+	if p.Webhook != nil {
+		webhook = &trigger.WebhookSpec{
+			APIKey:        p.Webhook.APIKey,
+			StateMappings: append([]trigger.WebhookStateMapping(nil), p.Webhook.StateMappings...),
+		}
+	}
 	return trigger.Trigger{
-		ID:          strings.TrimSpace(p.ID),
-		Name:        strings.TrimSpace(p.Name),
-		Type:        p.Type,
-		Enabled:     enabled,
-		Target:      p.Target,
-		Concurrency: p.Concurrency,
-		Webhook:     p.Webhook,
-		Schedule:    p.Schedule,
+		ID:           strings.TrimSpace(p.ID),
+		Name:         strings.TrimSpace(p.Name),
+		Type:         p.Type,
+		Enabled:      enabled,
+		Target:       p.Target,
+		Concurrency:  p.Concurrency,
+		InitialState: p.InitialState,
+		Webhook:      webhook,
+		Schedule:     p.Schedule,
 	}
 }
 
@@ -120,8 +134,11 @@ func (s *Server) handleUpdateTrigger(c *gin.Context) {
 	}
 	item := payload.toTrigger(existing.Enabled)
 	item.ID = id
-	if item.Webhook != nil && item.Webhook.Secret == "" && existing.Webhook != nil {
-		item.Webhook.Secret = existing.Webhook.Secret
+	if item.Webhook != nil && item.Webhook.APIKey == "" && existing.Webhook != nil {
+		item.Webhook.APIKey = existing.Webhook.APIKey
+		if item.Webhook.APIKey == "" {
+			item.Webhook.APIKey = existing.Webhook.Secret
+		}
 	}
 	if item.Target == (trigger.Target{}) {
 		item.Target = existing.Target
@@ -183,7 +200,7 @@ func (s *Server) handleInvokeTrigger(c *gin.Context) {
 				headers[key] = values[0]
 			}
 		}
-		run, runErr = service.InvokeWebhook(ctx, triggerID, body, headers)
+		run, runErr = service.InvokeWebhook(ctx, triggerID, body, c.Query(trigger.APIKeyQueryParameter), headers)
 	case trigger.TypeSchedule:
 		run, runErr = service.InvokeSchedule(ctx, triggerID)
 	default:
@@ -215,7 +232,7 @@ func (s *Server) handleWebhookTrigger(c *gin.Context) {
 		ctx,
 		strings.TrimSpace(c.Param("trigger_id")),
 		webhookQueryInput(c),
-		[]byte(c.Request.URL.RawQuery),
+		c.Query(trigger.APIKeyQueryParameter),
 		headers,
 	)
 	if err != nil {
@@ -227,6 +244,7 @@ func (s *Server) handleWebhookTrigger(c *gin.Context) {
 
 func webhookQueryInput(c *gin.Context) map[string]any {
 	query := c.Request.URL.Query()
+	query.Del(trigger.APIKeyQueryParameter)
 	input := make(map[string]any, len(query))
 	for key, values := range query {
 		if len(values) == 1 {
@@ -314,7 +332,9 @@ func decodeTriggerPayload(c *gin.Context) (triggerPayload, error) {
 func publicTrigger(item trigger.Trigger) trigger.Trigger {
 	if item.Webhook != nil {
 		copy := *item.Webhook
+		copy.APIKey = ""
 		copy.Secret = ""
+		copy.SignatureHeader = ""
 		item.Webhook = &copy
 	}
 	return item

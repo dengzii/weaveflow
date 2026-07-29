@@ -2,21 +2,28 @@ import { useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { ChevronRight } from "lucide-react";
 import type { NodePosition } from "../../../lib/graphEditor";
 import { partitionNodeTypes } from "../../../lib/nodeGroups";
-import type { GraphNodeSpec, NodeGroup, NodeTypeSchema } from "../../../types";
+import type { GraphNodeSpec, NodeGroup, NodeTypeSchema, TriggerType } from "../../../types";
 import { virtualNodeTypes } from "./constants";
 import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } from "./types";
+
+const triggerGroupKey = "__weaveflow_trigger_group__";
 
 interface CanvasContextMenuProps {
   boundaryRef: RefObject<HTMLElement | null>;
   contextMenu: CanvasContextMenuState;
+  canCreateTrigger: boolean;
   nodeGroups: NodeGroup[];
   paletteNodeTypes: NodeTypeSchema[];
   onAddNode: (nodeType: NodeTypeSchema, position?: NodePosition) => void;
   onAddVirtualNode: (kind: VirtualNodeKind, position?: NodePosition) => void;
+  onCreateTrigger: (type: TriggerType, position: NodePosition) => void;
   onClose: () => void;
   onDeleteEdge: (edgeId: string) => void;
   onDeleteLoop: (loopId: string) => void;
   onDeleteNode: (nodeId: string) => void;
+  onDeleteTrigger: (triggerId: string) => void;
+  onEditTrigger: (triggerId: string) => void;
+  onToggleTrigger: (triggerId: string, enabled: boolean) => void;
 }
 
 interface MenuLayout {
@@ -29,14 +36,19 @@ interface MenuLayout {
 export function CanvasContextMenu({
   boundaryRef,
   contextMenu,
+  canCreateTrigger,
   nodeGroups,
   paletteNodeTypes,
   onAddNode,
   onAddVirtualNode,
+  onCreateTrigger,
   onClose,
   onDeleteEdge,
   onDeleteLoop,
   onDeleteNode,
+  onDeleteTrigger,
+  onEditTrigger,
+  onToggleTrigger,
 }: CanvasContextMenuProps) {
   const menuRef = useRef<HTMLDivElement | null>(null);
   const submenuRef = useRef<HTMLDivElement | null>(null);
@@ -46,6 +58,7 @@ export function CanvasContextMenu({
   const [openGroupName, setOpenGroupName] = useState<string | null>(null);
   const { groups: groupedPaletteNodeTypes, ungroupedNodeTypes } = partitionNodeTypes(paletteNodeTypes, nodeGroups);
   const openGroup = groupedPaletteNodeTypes.find((group) => group.name === openGroupName) ?? null;
+  const triggerGroupOpen = openGroupName === triggerGroupKey;
 
   useLayoutEffect(() => {
     const menu = menuRef.current;
@@ -185,6 +198,16 @@ export function CanvasContextMenu({
                 onClick={() => onAddNode(nodeType, contextMenu.position)}
               />
             ))}
+            <CreateNodeGroupItem
+              buttonRef={(element) => {
+                if (element) groupButtonRefs.current.set(triggerGroupKey, element);
+                else groupButtonRefs.current.delete(triggerGroupKey);
+              }}
+              name="Trigger"
+              open={triggerGroupOpen}
+              disabled={!canCreateTrigger}
+              onOpen={() => openNodeGroup(triggerGroupKey)}
+            />
             {groupedPaletteNodeTypes.map((group) => (
               <CreateNodeGroupItem
                 key={group.name}
@@ -235,9 +258,25 @@ export function CanvasContextMenu({
             />
           </div>
         ) : null}
+
+        {contextMenu.kind === "trigger" ? (
+          <div>
+            <ContextMenuTitle>Trigger</ContextMenuTitle>
+            <ContextMenuAction label="Edit" onClick={() => onEditTrigger(contextMenu.triggerId)} />
+            <ContextMenuAction
+              label={contextMenu.enabled ? "Disable" : "Enable"}
+              onClick={() => onToggleTrigger(contextMenu.triggerId, !contextMenu.enabled)}
+            />
+            <ContextMenuAction
+              label="Delete"
+              tone="destructive"
+              onClick={() => onDeleteTrigger(contextMenu.triggerId)}
+            />
+          </div>
+        ) : null}
       </div>
 
-      {contextMenu.kind === "pane" && openGroup ? (
+      {contextMenu.kind === "pane" && (triggerGroupOpen || openGroup) ? (
         <div
           ref={submenuRef}
           className="fixed z-[60] max-h-[calc(100vh-1rem)] w-64 overflow-y-auto rounded-md border border-border bg-panel shadow-lg"
@@ -251,14 +290,27 @@ export function CanvasContextMenu({
           onClick={(event) => event.stopPropagation()}
           onContextMenu={(event) => event.preventDefault()}
         >
-          <ContextMenuTitle>{openGroup.name}</ContextMenuTitle>
-          {openGroup.nodeTypes.map((nodeType) => (
-            <CreateNodeItem
-              key={nodeType.type}
-              nodeType={nodeType}
-              onClick={() => onAddNode(nodeType, contextMenu.position)}
-            />
-          ))}
+          <ContextMenuTitle>{triggerGroupOpen ? "Trigger" : openGroup?.name ?? ""}</ContextMenuTitle>
+          {triggerGroupOpen ? (
+            <>
+              <CreateNodeItem
+                nodeType={{ type: "webhook", title: "Webhook" }}
+                onClick={() => onCreateTrigger("webhook", contextMenu.position)}
+              />
+              <CreateNodeItem
+                nodeType={{ type: "schedule", title: "Schedule" }}
+                onClick={() => onCreateTrigger("schedule", contextMenu.position)}
+              />
+            </>
+          ) : (
+            openGroup?.nodeTypes.map((nodeType) => (
+              <CreateNodeItem
+                key={nodeType.type}
+                nodeType={nodeType}
+                onClick={() => onAddNode(nodeType, contextMenu.position)}
+              />
+            ))
+          )}
         </div>
       ) : null}
     </>
@@ -294,21 +346,24 @@ function CreateNodeGroupItem({
   buttonRef,
   name,
   open,
+  disabled = false,
   onOpen,
 }: {
   buttonRef: (element: HTMLButtonElement | null) => void;
   name: string;
   open: boolean;
+  disabled?: boolean;
   onOpen: () => void;
 }) {
   return (
     <button
       ref={buttonRef}
-      className={`flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-accent ${
+      className={`flex w-full min-w-0 items-center gap-2 px-3 py-2 text-left text-sm font-medium hover:bg-accent disabled:cursor-not-allowed disabled:opacity-50 ${
         open ? "bg-accent" : ""
       }`}
       aria-expanded={open}
       aria-haspopup="menu"
+      disabled={disabled}
       onMouseEnter={onOpen}
       onFocus={onOpen}
       onClick={onOpen}
