@@ -117,6 +117,22 @@ export async function setGraphDefinition(
   });
 }
 
+export async function pushGraphDefinition(
+  definition: GraphDefinition,
+  graphId?: string,
+  graphVersion?: string
+): Promise<GraphLoadResult> {
+  return apiFetch<GraphLoadResult>("/graph/push", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      graph_id: graphId || undefined,
+      graph_version: graphVersion || undefined,
+      definition,
+    }),
+  });
+}
+
 export async function getRegistry(): Promise<RegistryInfo> {
   return apiFetch<RegistryInfo>("/registry");
 }

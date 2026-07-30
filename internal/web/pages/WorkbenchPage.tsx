@@ -13,6 +13,7 @@ import {
   listRuns,
   getRunDetail,
   pauseRun,
+  pushGraphDefinition,
   resumeRun,
   setGraphDefinition,
   startRun,
@@ -110,6 +111,7 @@ export function WorkbenchPage({
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>("connecting");
   const [busy, setBusy] = useState(false);
+  const [pushing, setPushing] = useState(false);
   const [runLaunchPending, setRunLaunchPending] = useState(false);
   const preferLocalGraphRef = useRef(false);
   const checkedLocalGraphRef = useRef(false);
@@ -719,15 +721,54 @@ export function WorkbenchPage({
     }
   }
 
+  async function pushGraph() {
+    setBusy(true);
+    setPushing(true);
+    try {
+      if (!definition) {
+        pushToast("error", "Graph JSON is invalid");
+        return;
+      }
+      const graphValidationError = validateGraph(definition, registry);
+      if (graphValidationError) {
+        pushToast("error", `Graph validation failed: ${graphValidationError}`);
+        return;
+      }
+
+      const requirements = await analyzeInitialStateRequirements(definition, graphId, graphVersion);
+      setInitialRequirements(requirements);
+      setInitialRequirementsError("");
+      if (requirements.unresolved.length > 0) {
+        const unresolved = requirements.unresolved.map((item) => item.path).slice(0, 4).join(", ");
+        const suffix = requirements.unresolved.length > 4 ? ` (+${requirements.unresolved.length - 4} more)` : "";
+        pushToast("error", `Unresolved state requirements: ${unresolved}${suffix}`);
+        return;
+      }
+
+      const result = await pushGraphDefinition(definition, graphId, graphVersion);
+      setGraphInfo(result.graph);
+      const session = result.graph.graph_session_id ? ` (${result.graph.graph_session_id})` : "";
+      pushToast("info", `Pushed ${result.graph.id}@${result.graph.version}${session}`);
+    } catch (err) {
+      setInitialRequirementsError(err instanceof Error ? err.message : String(err));
+      notifyError(err);
+    } finally {
+      setPushing(false);
+      setBusy(false);
+    }
+  }
+
   return (
     <WorkbenchShell
       tab={tab}
       streamStatus={streamStatus}
       busy={busy}
+      pushing={pushing}
       definition={definition}
       runControlMode={headerRunControlMode}
       canResume={canResumeSelectedRun}
       onRun={runGraph}
+      onPush={() => void pushGraph()}
       onPause={() => controlRun("pause")}
       onStop={() => controlRun("cancel")}
       onResume={() => void resumeSelectedRun()}

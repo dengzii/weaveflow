@@ -4,9 +4,12 @@ import { createTrigger, deleteTrigger, updateTrigger } from "../../api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
-import type { Trigger, TriggerTarget, WebhookStateMapping } from "../../types";
+import type { ChatChannelDefinition, Trigger, TriggerTarget, WebhookStateMapping } from "../../types";
+import { JsonSchemaForm } from "./graph-workspace/schemaForm";
 import {
   buildTriggerPayload,
+  chatChannelDefaultConfig,
+  editableChatChannelSchema,
   triggerEditorValues,
   triggerTargetKey,
   type TriggerEditorValues,
@@ -23,6 +26,7 @@ export function TriggerEditorForm({
   targetOptions,
   targetLocked = false,
   statePathSuggestions = [],
+  chatChannels = [],
   showIdentityFields = true,
   showTargetField = true,
   allowDelete = false,
@@ -34,6 +38,7 @@ export function TriggerEditorForm({
   targetOptions: TriggerTargetOption[];
   targetLocked?: boolean;
   statePathSuggestions?: string[];
+  chatChannels?: ChatChannelDefinition[];
   showIdentityFields?: boolean;
   showTargetField?: boolean;
   allowDelete?: boolean;
@@ -44,6 +49,11 @@ export function TriggerEditorForm({
   const [values, setValues] = useState<TriggerEditorValues>(() => triggerEditorValues(trigger, fallbackTarget));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const selectedChatChannel = chatChannels.find((channel) => channel.id === values.chatChannel);
+  const channelSchema = editableChatChannelSchema(
+    selectedChatChannel,
+    Boolean(trigger && trigger.chat?.channel === values.chatChannel)
+  );
 
   useEffect(() => {
     setValues(triggerEditorValues(trigger, fallbackTarget));
@@ -103,61 +113,214 @@ export function TriggerEditorForm({
   }
 
   return (
-    <div className="grid gap-3">
+    <div className="grid gap-4">
       {showIdentityFields ? (
-        <>
+        <div className="grid grid-cols-2 gap-2">
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Type</span>
             <Select value={values.type} onChange={(event) => change("type", event.target.value as TriggerEditorValues["type"])} disabled={Boolean(trigger)}>
               <option value="webhook">Webhook</option>
               <option value="schedule">Schedule</option>
+              <option value="chat">Chat</option>
             </Select>
           </label>
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">ID {trigger ? "" : "(optional)"}</span>
             <Input value={values.id} onChange={(event) => change("id", event.target.value)} placeholder="deploy-hook" disabled={Boolean(trigger)} />
           </label>
+        </div>
+      ) : null}
+
+      {values.type === "chat" ? (
+        <>
+          <section className="grid gap-3 rounded-md border border-primary/30 bg-muted/20 p-3">
+            <div className="flex items-start gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="text-xs font-semibold">Message routing</div>
+                <div className="mt-0.5 text-[11px] text-muted-foreground">
+                  Choose where messages arrive and which graph state is returned as the reply.
+                </div>
+              </div>
+              <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
+                Primary
+              </span>
+            </div>
+            <label className="grid gap-1 text-sm">
+              <span className="text-xs font-medium text-muted-foreground">Chat channel</span>
+              <Select
+                value={values.chatChannel}
+                onChange={(event) => {
+                  const channelID = event.target.value;
+                  const definition = chatChannels.find((channel) => channel.id === channelID);
+                  setValues((current) => ({
+                    ...current,
+                    chatChannel: channelID,
+                    chatChannelConfig: chatChannelDefaultConfig(definition),
+                  }));
+                }}
+              >
+                {!selectedChatChannel && values.chatChannel ? <option value={values.chatChannel}>{values.chatChannel} (unavailable)</option> : null}
+                {chatChannels.map((channel) => <option key={channel.id} value={channel.id}>{channel.title}</option>)}
+              </Select>
+              {selectedChatChannel?.description ? <span className="text-[11px] text-muted-foreground">{selectedChatChannel.description}</span> : null}
+            </label>
+            <label className="grid gap-1 text-sm">
+              <span className="text-xs font-medium text-muted-foreground">Reply state path</span>
+              <Input
+                list={statePathSuggestions.length > 0 ? statePathListID : undefined}
+                value={values.replyPath}
+                onChange={(event) => change("replyPath", event.target.value)}
+                placeholder="shared.final.answer"
+              />
+              <span className="text-[11px] text-muted-foreground">The final value at this path is sent back to the chat channel.</span>
+            </label>
+            <div className="grid gap-2 border-t border-border pt-3">
+              <div className="text-xs font-medium">Channel configuration</div>
+              <JsonSchemaForm
+                schema={channelSchema}
+                unavailableReason={chatChannels.length === 0 ? "Chat channel registry is unavailable." : "Select an available chat channel."}
+                value={values.chatChannelConfig}
+                onChange={(value) => change("chatChannelConfig", value)}
+              />
+              {trigger && trigger.chat?.channel === values.chatChannel ? (
+                <div className="text-[11px] text-muted-foreground">Leave sensitive fields blank to keep their configured values.</div>
+              ) : null}
+            </div>
+          </section>
+
+          <section className="grid gap-3 rounded-md border border-border p-3">
+            <div>
+              <div className="text-xs font-semibold">Response streaming</div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">Control whether model updates are forwarded before the final reply.</div>
+            </div>
+            <label className="flex items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2">
+              <input
+                className="h-4 w-4"
+                type="checkbox"
+                checked={values.streamUpdates}
+                onChange={(event) => change("streamUpdates", event.target.checked)}
+              />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium">Forward LLM content updates</span>
+                <span className="block text-[11px] text-muted-foreground">Send partial responses while the graph is running.</span>
+              </span>
+            </label>
+            {values.streamUpdates ? (
+              <label className="grid gap-1 text-sm">
+                <span className="text-xs font-medium text-muted-foreground">Streaming node IDs</span>
+                <Input
+                  value={values.streamNodeIDs}
+                  onChange={(event) => change("streamNodeIDs", event.target.value)}
+                  placeholder="Empty streams all LLM nodes"
+                />
+                <span className="text-[11px] text-muted-foreground">Optional. Separate node IDs with commas or spaces.</span>
+              </label>
+            ) : null}
+          </section>
         </>
       ) : null}
-      <label className="grid gap-1 text-sm">
-        <span className="text-xs font-medium text-muted-foreground">Name</span>
-        <Input value={values.name} onChange={(event) => change("name", event.target.value)} placeholder="Deploy webhook" />
-      </label>
-      {showTargetField ? (
-        <label className="grid gap-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Graph</span>
-          <Select
-            value={triggerTargetKey(values.target)}
-            onChange={(event) => {
-              const selected = targetOptions.find((option) => option.key === event.target.value);
-              if (selected) change("target", selected.target);
-            }}
-            disabled={targetLocked || targetOptions.length === 0}
-          >
-            {targetOptions.length === 0 ? <option value="">No graph available</option> : null}
-            {targetOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-          </Select>
-        </label>
-      ) : null}
-      <div className="grid grid-cols-2 gap-2">
-        <div className="grid gap-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Status</span>
-          <label className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm">
-            <input type="checkbox" checked={values.enabled} onChange={(event) => change("enabled", event.target.checked)} />
-            Enabled
-          </label>
+
+      <section className="grid gap-3 rounded-md border border-border p-3">
+        <div>
+          <div className="text-xs font-semibold">General</div>
+          <div className="mt-0.5 text-[11px] text-muted-foreground">Name, target graph, and execution policy.</div>
         </div>
         <label className="grid gap-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Concurrency</span>
-          <Select value={values.concurrency} onChange={(event) => change("concurrency", event.target.value as TriggerEditorValues["concurrency"])}>
-            <option value="parallel">Parallel</option>
-            <option value="skip">Skip while running</option>
-          </Select>
+          <span className="text-xs font-medium text-muted-foreground">Name</span>
+          <Input value={values.name} onChange={(event) => change("name", event.target.value)} placeholder="Deploy webhook" />
         </label>
-      </div>
-      <div className="grid gap-2 rounded-md border border-border p-3">
-        <div className="flex items-center gap-2">
-          <div className="min-w-0 flex-1 text-xs font-medium">Initial state</div>
+        {showTargetField ? (
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Graph</span>
+            <Select
+              value={triggerTargetKey(values.target)}
+              onChange={(event) => {
+                const selected = targetOptions.find((option) => option.key === event.target.value);
+                if (selected) change("target", selected.target);
+              }}
+              disabled={targetLocked || targetOptions.length === 0}
+            >
+              {targetOptions.length === 0 ? <option value="">No graph available</option> : null}
+              {targetOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+            </Select>
+          </label>
+        ) : null}
+        <div className="grid grid-cols-2 gap-2">
+          <div className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Status</span>
+            <label className="flex h-9 items-center gap-2 rounded-md border border-border px-3 text-sm">
+              <input type="checkbox" checked={values.enabled} onChange={(event) => change("enabled", event.target.checked)} />
+              Enabled
+            </label>
+          </div>
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Concurrency</span>
+            <Select value={values.concurrency} onChange={(event) => change("concurrency", event.target.value as TriggerEditorValues["concurrency"])}>
+              <option value="parallel">Parallel</option>
+              <option value="skip">Skip while running</option>
+            </Select>
+          </label>
+        </div>
+      </section>
+
+      {values.type === "webhook" ? (
+        <section className="grid gap-3 rounded-md border border-border p-3">
+          <div>
+            <div className="text-xs font-semibold">Webhook request</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">Authentication and request-to-state bindings.</div>
+          </div>
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">API key</span>
+            <Input type="password" value={values.apiKey} onChange={(event) => change("apiKey", event.target.value)} placeholder={trigger ? "Unchanged" : "Optional"} />
+          </label>
+          <div className="grid gap-2 border-t border-border pt-3">
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1 text-xs font-medium">State mappings</div>
+              <Button variant="outline" size="sm" onClick={() => change("mappings", [...values.mappings, emptyMapping()])}>
+                <Plus className="h-4 w-4" /> Add
+              </Button>
+            </div>
+            {values.mappings.length === 0 ? <div className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No additional state mappings.</div> : null}
+            {values.mappings.map((mapping, index) => (
+              <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_32px] gap-2">
+                <Input value={mapping.parameter} onChange={(event) => updateMapping(index, "parameter", event.target.value)} placeholder="user.id" aria-label={`Webhook parameter ${index + 1}`} />
+                <Input
+                  list={statePathSuggestions.length > 0 ? statePathListID : undefined}
+                  value={mapping.state_path}
+                  onChange={(event) => updateMapping(index, "state_path", event.target.value)}
+                  placeholder={statePathSuggestions[0] ?? "shared.user.id"}
+                  aria-label={`State path ${index + 1}`}
+                />
+                <Button variant="ghost" size="icon" onClick={() => change("mappings", values.mappings.filter((_, mappingIndex) => mappingIndex !== index))} title="Remove mapping" aria-label={`Remove mapping ${index + 1}`}>
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              </div>
+            ))}
+          </div>
+        </section>
+      ) : values.type === "schedule" ? (
+        <section className="grid gap-3 rounded-md border border-border p-3">
+          <div>
+            <div className="text-xs font-semibold">Schedule</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">When this trigger should start the graph.</div>
+          </div>
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Cron</span>
+            <Input value={values.cron} onChange={(event) => change("cron", event.target.value)} />
+          </label>
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Timezone</span>
+            <Input value={values.timezone} onChange={(event) => change("timezone", event.target.value)} />
+          </label>
+        </section>
+      ) : null}
+
+      <section className="grid gap-2 rounded-md border border-border p-3">
+        <div className="flex items-start gap-2">
+          <div className="min-w-0 flex-1">
+            <div className="text-xs font-semibold">Initial state</div>
+            <div className="mt-0.5 text-[11px] text-muted-foreground">Optional values written before the graph starts.</div>
+          </div>
           <Button
             variant="outline"
             size="sm"
@@ -198,50 +361,7 @@ export function TriggerEditorForm({
         <div className="text-[11px] text-muted-foreground">
           Paths support shared and scopes. Boolean, number, and null values are typed; other values are stored as text.
         </div>
-      </div>
-      {values.type === "webhook" ? (
-        <>
-          <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">API key</span>
-            <Input type="password" value={values.apiKey} onChange={(event) => change("apiKey", event.target.value)} placeholder={trigger ? "Unchanged" : "Optional"} />
-          </label>
-          <div className="grid gap-2 rounded-md border border-border p-3">
-            <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1 text-xs font-medium">State mappings</div>
-              <Button variant="outline" size="sm" onClick={() => change("mappings", [...values.mappings, emptyMapping()])}>
-                <Plus className="h-4 w-4" /> Add
-              </Button>
-            </div>
-            {values.mappings.length === 0 ? <div className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No additional state mappings.</div> : null}
-            {values.mappings.map((mapping, index) => (
-              <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_32px] gap-2">
-                <Input value={mapping.parameter} onChange={(event) => updateMapping(index, "parameter", event.target.value)} placeholder="user.id" aria-label={`Webhook parameter ${index + 1}`} />
-                <Input
-                  list={statePathSuggestions.length > 0 ? statePathListID : undefined}
-                  value={mapping.state_path}
-                  onChange={(event) => updateMapping(index, "state_path", event.target.value)}
-                  placeholder={statePathSuggestions[0] ?? "shared.user.id"}
-                  aria-label={`State path ${index + 1}`}
-                />
-                <Button variant="ghost" size="icon" onClick={() => change("mappings", values.mappings.filter((_, mappingIndex) => mappingIndex !== index))} title="Remove mapping" aria-label={`Remove mapping ${index + 1}`}>
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              </div>
-            ))}
-          </div>
-        </>
-      ) : (
-        <>
-          <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Cron</span>
-            <Input value={values.cron} onChange={(event) => change("cron", event.target.value)} />
-          </label>
-          <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Timezone</span>
-            <Input value={values.timezone} onChange={(event) => change("timezone", event.target.value)} />
-          </label>
-        </>
-      )}
+      </section>
       {statePathSuggestions.length > 0 ? (
         <datalist id={statePathListID}>
           {statePathSuggestions.map((path) => <option key={path} value={path} />)}

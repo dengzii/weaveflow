@@ -9,6 +9,7 @@ import {
   Play,
   Settings,
   Square,
+  Upload,
   Zap,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
@@ -24,6 +25,7 @@ export function WorkbenchShell({
   tab,
   streamStatus,
   busy,
+  pushing,
   definition,
   runControlMode,
   canResume,
@@ -32,6 +34,7 @@ export function WorkbenchShell({
   runStatusVisible,
   hasRunStatus,
   onRun,
+  onPush,
   onPause,
   onStop,
   onResume,
@@ -42,6 +45,7 @@ export function WorkbenchShell({
   tab: WorkspaceTab;
   streamStatus: StreamStatus;
   busy: boolean;
+  pushing: boolean;
   definition: GraphDefinition | null;
   runControlMode: RunControlMode;
   canResume: boolean;
@@ -50,6 +54,7 @@ export function WorkbenchShell({
   runStatusVisible: boolean;
   hasRunStatus: boolean;
   onRun: () => void;
+  onPush: () => void;
   onPause: () => void;
   onStop: () => void;
   onResume: () => void;
@@ -83,6 +88,12 @@ export function WorkbenchShell({
             </div>
           )}
           <div className="flex-1" />
+          {tab === "graph" ? (
+            <Button variant="outline" size="sm" onClick={onPush} disabled={busy || !definition} title="Push Draft to Official">
+              {pushing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              Push
+            </Button>
+          ) : null}
           {tab === "graph" && runControlMode === "active" ? (
             <>
               <Button variant="outline" size="sm" onClick={onPause} disabled={!hasRunStatus} title="Pause run">
@@ -106,9 +117,9 @@ export function WorkbenchShell({
               </Button>
             </>
           ) : tab === "graph" ? (
-            <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
-              {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Run
+            <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run Draft graph">
+              {busy && !pushing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Run Draft
             </Button>
           ) : null}
           <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">

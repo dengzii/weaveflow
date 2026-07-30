@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Clock3, History, Pencil, Power, RefreshCw, Trash2, Webhook, X } from "lucide-react";
+import { Clock3, History, MessageCircle, Pencil, Power, RefreshCw, Trash2, Webhook, X } from "lucide-react";
 import {
   deleteTrigger,
   getGraphInfo,
+  getRegistry,
   listGraphs,
   listTriggers,
   listTriggerRecords,
@@ -11,6 +12,7 @@ import {
 import { Button } from "../../components/ui/button";
 import type {
   CachedGraphSummary,
+  ChatChannelDefinition,
   GraphInfo,
   Trigger,
   TriggerRecord,
@@ -20,6 +22,7 @@ import { TriggerEditorForm } from "./TriggerEditorForm";
 import {
   buildTriggerPayload,
   buildTriggerTargetOptions,
+  chatTriggerURL,
   defaultTriggerTarget,
   triggerEditorValues,
   triggerTargetLabel,
@@ -33,6 +36,7 @@ export function TriggerWorkspace() {
   const [recordsBusy, setRecordsBusy] = useState(false);
   const [currentGraph, setCurrentGraph] = useState<GraphInfo | null>(null);
   const [cachedGraphs, setCachedGraphs] = useState<CachedGraphSummary[]>([]);
+  const [chatChannels, setChatChannels] = useState<ChatChannelDefinition[]>([]);
   const [editing, setEditing] = useState<Trigger | null>(null);
   const [error, setError] = useState("");
 
@@ -71,9 +75,10 @@ export function TriggerWorkspace() {
   useEffect(() => {
     void refresh();
     void refreshRecords();
-    void Promise.allSettled([getGraphInfo(), listGraphs()]).then(([current, cached]) => {
+    void Promise.allSettled([getGraphInfo(), listGraphs(), getRegistry()]).then(([current, cached, registry]) => {
       if (current.status === "fulfilled") setCurrentGraph(current.value);
       if (cached.status === "fulfilled" && Array.isArray(cached.value)) setCachedGraphs(cached.value);
+      if (registry.status === "fulfilled") setChatChannels(registry.value.chat_channels ?? []);
     });
   }, [refresh, refreshRecords]);
 
@@ -133,6 +138,7 @@ export function TriggerWorkspace() {
             trigger={editing}
             fallbackTarget={fallbackTarget}
             targetOptions={targetOptions}
+            chatChannels={chatChannels}
             onSaved={async () => {
               resetForm();
               await refresh();
@@ -184,7 +190,7 @@ export function TriggerWorkspace() {
           {items.map((item) => (
             <div key={item.id} className="rounded-md border border-border bg-panel p-3">
               <div className="flex items-center gap-3">
-                {item.type === "webhook" ? <Webhook className="h-4 w-4 text-muted-foreground" /> : <Clock3 className="h-4 w-4 text-muted-foreground" />}
+                <TriggerTypeIcon type={item.type} className="h-4 w-4 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
                   <div className="truncate text-sm font-medium">{item.name || item.id}</div>
                   <div className="truncate font-mono text-xs text-muted-foreground">{item.id}</div>
@@ -213,8 +219,14 @@ export function TriggerWorkspace() {
                     <code className="truncate">POST {webhookTriggerURLs(item.id).post}</code>
                     <code className="truncate">GET {webhookTriggerURLs(item.id).get}</code>
                   </div>
-                ) : (
+                ) : item.type === "schedule" ? (
                   <span>{item.schedule?.cron} ({item.schedule?.timezone || "UTC"})</span>
+                ) : (
+                  <div className="grid gap-0.5">
+                    <code className="truncate">POST {chatTriggerURL(item.id)}</code>
+                    <span>Channel: {item.chat?.channel || "http"}</span>
+                    <span>Reply: {item.chat?.reply_path || "shared.final.answer"}</span>
+                  </div>
                 )}
                 <div className="flex flex-wrap gap-x-4 gap-y-1">
                   <span>Graph: {triggerTargetLabel(item.target)}</span>
@@ -232,7 +244,7 @@ export function TriggerWorkspace() {
             {records.map((record) => (
               <div key={record.id} className="rounded-md border border-border bg-panel p-3">
                 <div className="flex items-start gap-3">
-                  {record.trigger_type === "webhook" ? <Webhook className="mt-0.5 h-4 w-4 text-muted-foreground" /> : <Clock3 className="mt-0.5 h-4 w-4 text-muted-foreground" />}
+                  <TriggerTypeIcon type={record.trigger_type} className="mt-0.5 h-4 w-4 text-muted-foreground" />
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium">{triggerNames.get(record.trigger_id) || record.trigger_id}</div>
                     <div className="truncate font-mono text-xs text-muted-foreground">{record.trigger_id}</div>
@@ -259,6 +271,11 @@ export function TriggerWorkspace() {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function TriggerTypeIcon({ type, className }: { type: Trigger["type"]; className?: string }) {
+  const Icon = type === "webhook" ? Webhook : type === "schedule" ? Clock3 : MessageCircle;
+  return <Icon className={className} />;
 }
 
 function recordStatusTone(status: string): StatusTone {

@@ -1,5 +1,5 @@
-import { Clock3, Webhook, Zap } from "lucide-react";
-import type { Trigger } from "../../../types";
+import { Clock3, MessageCircle, Webhook, Zap } from "lucide-react";
+import type { ChatChannelDefinition, Trigger } from "../../../types";
 import { TriggerEditorForm } from "../TriggerEditorForm";
 import { webhookTriggerURLs } from "../triggerEditor";
 import { PanelHeader } from "./shared";
@@ -8,16 +8,18 @@ export function TriggerInspector({
   graphID,
   trigger,
   statePathSuggestions,
+  chatChannels,
   onSaved,
   onDeleted,
 }: {
   graphID: string;
   trigger: Trigger | null;
   statePathSuggestions: string[];
+  chatChannels: ChatChannelDefinition[];
   onSaved: (trigger: Trigger) => void | Promise<void>;
   onDeleted: (trigger: Trigger) => void | Promise<void>;
 }) {
-  const Icon = trigger?.type === "webhook" ? Webhook : trigger?.type === "schedule" ? Clock3 : Zap;
+  const Icon = trigger?.type === "webhook" ? Webhook : trigger?.type === "schedule" ? Clock3 : trigger?.type === "chat" ? MessageCircle : Zap;
   const title = trigger?.name || "Trigger";
   const target = { graph_id: graphID };
   const webhookURLs = trigger ? webhookTriggerURLs(trigger.id) : null;
@@ -28,7 +30,8 @@ export function TriggerInspector({
       <div className="grid gap-3 p-3">
         {trigger ? (
           <div className="flex flex-wrap gap-2">
-            <InspectorLabel name="Type" value={trigger.type === "webhook" ? "Webhook" : "Schedule"} />
+            <InspectorLabel name="Type" value={trigger.type === "webhook" ? "Webhook" : trigger.type === "schedule" ? "Schedule" : "Chat"} />
+            {trigger.type === "chat" ? <InspectorLabel name="Channel" value={trigger.chat?.channel || "http"} /> : null}
             <InspectorLabel name="ID" value={trigger.id} mono />
           </div>
         ) : null}
@@ -41,6 +44,7 @@ export function TriggerInspector({
           targetOptions={[{ key: graphID, label: graphID || "Current graph", target }]}
           targetLocked
           statePathSuggestions={statePathSuggestions}
+          chatChannels={chatChannels}
           showIdentityFields={false}
           showTargetField={false}
           allowDelete

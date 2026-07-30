@@ -3,6 +3,8 @@ import type { GraphDefinition, Trigger } from "../../types";
 import {
   buildTriggerInitialState,
   buildTriggerPayload,
+  chatChannelDefaultConfig,
+  editableChatChannelSchema,
   triggerEditorValues,
   triggerInitialStateEntries,
   triggerStatePathSuggestions,
@@ -53,6 +55,53 @@ describe("trigger editor payload", () => {
     expect(values.type).toBe("schedule");
     expect(values.cron).toBe("*/5 * * * *");
     expect(values.initialStateEntries).toEqual([]);
+  });
+
+  test("builds a registered HTTP chat channel trigger", () => {
+    const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    values.streamNodeIDs = "answer, reviewer answer";
+
+    expect(buildTriggerPayload(values, null)).toEqual({
+      name: undefined,
+      type: "chat",
+      enabled: true,
+      concurrency: "parallel",
+      target: { graph_id: "graph-a" },
+      chat: {
+        channel: "http",
+        channel_config: {},
+        reply_path: "shared.final.answer",
+        stream_updates: true,
+        stream_node_ids: ["answer", "reviewer"],
+      },
+    });
+  });
+
+  test("keeps write-only channel fields editable without requiring the stored secret again", () => {
+    const definition = {
+      id: "wecom",
+      title: "WeCom",
+      config_schema: {
+        type: "object",
+        properties: {
+          bot_id: { type: "string" },
+          secret: { type: "string", writeOnly: true },
+        },
+        required: ["bot_id", "secret"],
+      },
+    };
+    expect(editableChatChannelSchema(definition, false)?.required).toEqual(["bot_id", "secret"]);
+    expect(editableChatChannelSchema(definition, true)?.required).toEqual(["bot_id"]);
+    expect(chatChannelDefaultConfig({
+      ...definition,
+      config_schema: {
+        ...definition.config_schema,
+        properties: {
+          ...definition.config_schema.properties,
+          endpoint: { type: "string", default: "wss://example.test" },
+        },
+      },
+    })).toEqual({ endpoint: "wss://example.test" });
   });
 
   test("edits initial state as path and value entries", () => {

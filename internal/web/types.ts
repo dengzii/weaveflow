@@ -63,7 +63,7 @@ export interface GraphSettings {
   memory: GraphMemorySettings;
 }
 
-export type TriggerType = "webhook" | "schedule";
+export type TriggerType = "webhook" | "schedule" | "chat";
 export type TriggerConcurrency = "parallel" | "skip";
 
 export interface TriggerTarget {
@@ -86,6 +86,21 @@ export interface TriggerScheduleSpec {
   input?: Record<string, unknown>;
 }
 
+export interface TriggerChatSpec {
+  channel?: string;
+  channel_config?: Record<string, unknown>;
+  reply_path?: string;
+  stream_updates?: boolean;
+  stream_node_ids?: string[];
+}
+
+export interface ChatChannelDefinition {
+  id: string;
+  title: string;
+  description?: string;
+  config_schema: Record<string, unknown>;
+}
+
 export interface Trigger {
   id: string;
   name?: string;
@@ -96,6 +111,7 @@ export interface Trigger {
   initial_state?: Record<string, unknown>;
   webhook?: TriggerWebhookSpec;
   schedule?: TriggerScheduleSpec;
+  chat?: TriggerChatSpec;
   created_at: string;
   updated_at: string;
 }
@@ -189,6 +205,7 @@ export interface RegistryInfo {
   state_modules: StateModuleDefinition[];
   capabilities: StateCapabilityDefinition[];
   node_groups: NodeGroup[];
+  chat_channels?: ChatChannelDefinition[];
   node_types: NodeTypeSchema[];
   conditions: ConditionSchema[];
   graph_schema: Record<string, unknown>;

@@ -1285,6 +1285,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           graphID={graphId}
           trigger={selectedTrigger}
           statePathSuggestions={triggerStatePaths}
+          chatChannels={registry?.chat_channels ?? []}
           onSaved={handleTriggerSaved}
           onDeleted={handleTriggerDeleted}
         />

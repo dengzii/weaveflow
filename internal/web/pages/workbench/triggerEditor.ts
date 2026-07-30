@@ -1,5 +1,6 @@
 import type {
   CachedGraphSummary,
+  ChatChannelDefinition,
   GraphDefinition,
   GraphInfo,
   Trigger,
@@ -28,6 +29,11 @@ export interface TriggerEditorValues {
   mappings: WebhookStateMapping[];
   cron: string;
   timezone: string;
+  replyPath: string;
+  streamUpdates: boolean;
+  streamNodeIDs: string;
+  chatChannel: string;
+  chatChannelConfig: Record<string, unknown>;
 }
 
 export interface TriggerInitialStateEntry {
@@ -52,6 +58,11 @@ export function triggerEditorValues(
     mappings: (trigger?.webhook?.state_mappings ?? []).map((mapping) => ({ ...mapping })),
     cron: trigger?.schedule?.cron ?? "*/5 * * * *",
     timezone: trigger?.schedule?.timezone ?? "UTC",
+    replyPath: trigger?.chat?.reply_path ?? "shared.final.answer",
+    streamUpdates: trigger?.chat?.stream_updates ?? true,
+    streamNodeIDs: (trigger?.chat?.stream_node_ids ?? []).join(", "),
+    chatChannel: trigger?.chat?.channel ?? "http",
+    chatChannelConfig: cloneRecord(trigger?.chat?.channel_config),
   };
 }
 
@@ -84,7 +95,7 @@ export function buildTriggerPayload(values: TriggerEditorValues, editing: Trigge
       api_key: values.apiKey || undefined,
       state_mappings: mappings,
     };
-  } else {
+  } else if (values.type === "schedule") {
     const cron = values.cron.trim();
     if (!cron) throw new Error("cron is required");
     input.schedule = {
@@ -92,8 +103,75 @@ export function buildTriggerPayload(values: TriggerEditorValues, editing: Trigge
       timezone: values.timezone.trim() || undefined,
       input: editing?.schedule?.input,
     };
+  } else {
+    const replyPath = values.replyPath.trim();
+    if (!replyPath) throw new Error("chat reply path is required");
+    const streamNodeIDs = Array.from(new Set(
+      values.streamNodeIDs.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean)
+    ));
+    input.chat = {
+      channel: values.chatChannel.trim() || "http",
+      channel_config: cloneRecord(values.chatChannelConfig),
+      reply_path: replyPath,
+      stream_updates: values.streamUpdates,
+      stream_node_ids: streamNodeIDs,
+    };
   }
   return input;
+}
+
+export function editableChatChannelSchema(
+  definition: ChatChannelDefinition | undefined,
+  preserveWriteOnly: boolean
+): Record<string, unknown> | undefined {
+  if (!definition) return undefined;
+  const schema = cloneRecord(definition.config_schema);
+  if (preserveWriteOnly) removeWriteOnlyRequirements(schema);
+  return schema;
+}
+
+export function chatChannelDefaultConfig(definition: ChatChannelDefinition | undefined): Record<string, unknown> {
+  if (!definition || !isJSONObject(definition.config_schema.properties)) return {};
+  const config: Record<string, unknown> = {};
+  for (const [key, rawProperty] of Object.entries(definition.config_schema.properties)) {
+    if (!isJSONObject(rawProperty)) continue;
+    if (Object.prototype.hasOwnProperty.call(rawProperty, "default")) {
+      config[key] = cloneJSONValue(rawProperty.default);
+      continue;
+    }
+    if (rawProperty.type === "object") {
+      const nested = chatChannelDefaultConfig({ id: key, title: key, config_schema: rawProperty });
+      if (Object.keys(nested).length > 0) config[key] = nested;
+    }
+  }
+  return config;
+}
+
+function removeWriteOnlyRequirements(schema: Record<string, unknown>) {
+  const properties = isJSONObject(schema.properties) ? schema.properties : {};
+  if (Array.isArray(schema.required)) {
+    schema.required = schema.required.filter((key) => {
+      if (typeof key !== "string") return true;
+      const property = properties[key];
+      return !isJSONObject(property) || property.writeOnly !== true;
+    });
+  }
+  for (const property of Object.values(properties)) {
+    if (isJSONObject(property)) removeWriteOnlyRequirements(property);
+  }
+}
+
+function cloneRecord(value: unknown): Record<string, unknown> {
+  if (!isJSONObject(value)) return {};
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+function cloneJSONValue(value: unknown): unknown {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+export function chatTriggerURL(triggerID: string): string {
+  return resolveBackendUrl(`/triggers/${encodeURIComponent(triggerID)}/chat`);
 }
 
 export function webhookTriggerURLs(triggerID: string): { post: string; get: string } {

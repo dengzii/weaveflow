@@ -301,6 +301,10 @@ export function CanvasContextMenu({
                 nodeType={{ type: "schedule", title: "Schedule" }}
                 onClick={() => onCreateTrigger("schedule", contextMenu.position)}
               />
+              <CreateNodeItem
+                nodeType={{ type: "chat", title: "Chat" }}
+                onClick={() => onCreateTrigger("chat", contextMenu.position)}
+              />
             </>
           ) : (
             openGroup?.nodeTypes.map((nodeType) => (

@@ -16,7 +16,7 @@ import {
   type Node,
   type Viewport,
 } from "@xyflow/react";
-import { Clock3, Focus, Lock, Maximize2, Network, Repeat2, Unlock, Webhook, ZoomIn, ZoomOut } from "lucide-react";
+import { Clock3, Focus, Lock, Maximize2, MessageCircle, Network, Repeat2, Unlock, Webhook, ZoomIn, ZoomOut } from "lucide-react";
 import type { GraphConditionSpec, GraphDefinition, GraphNodeSpec, NodeTypeSchema, RuntimeEvent, StepRecord, TriggerCanvasNode, TriggerType } from "../types";
 import { END_NODE_REF, START_NODE_REF, graphEdgeId, graphNodePositions, matchesDynamicStatePortName, resolveDefaultStatePath, type NodePosition } from "../lib/graphEditor";
 import {
@@ -1215,7 +1215,7 @@ function DebugNode({ data, selected }: { data: FlowNodeData; selected?: boolean 
 function DebugTrigger({ data, selected }: { data: FlowNodeData; selected?: boolean }) {
   const enabled = Boolean(data.triggerEnabled);
   const valid = data.triggerValid !== false;
-  const TriggerIcon = data.triggerType === "schedule" ? Clock3 : Webhook;
+  const TriggerIcon = data.triggerType === "schedule" ? Clock3 : data.triggerType === "chat" ? MessageCircle : Webhook;
   const className = `debug-node debug-node-virtual debug-node-virtual-trigger${valid ? "" : " debug-node-trigger-invalid"}${enabled ? "" : " debug-node-trigger-disabled"}${selected ? " debug-node-selected" : ""}`;
   return (
     <div className={className}>

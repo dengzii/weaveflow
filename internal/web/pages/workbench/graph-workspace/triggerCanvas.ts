@@ -61,6 +61,13 @@ export function triggerConfigurationValid(trigger: Trigger): boolean {
         Boolean(mapping.state_path.trim())
     );
   }
+  if (trigger.type === "chat") {
+    if (!trigger.chat) return false;
+    if (trigger.chat.reply_path !== undefined && (typeof trigger.chat.reply_path !== "string" || !trigger.chat.reply_path.trim())) return false;
+    return trigger.chat.stream_node_ids === undefined || (
+      Array.isArray(trigger.chat.stream_node_ids) && trigger.chat.stream_node_ids.every((nodeID) => typeof nodeID === "string" && Boolean(nodeID.trim()))
+    );
+  }
   if (trigger.type !== "schedule" || typeof trigger.schedule?.cron !== "string") return false;
   const cron = trigger.schedule.cron.trim();
   if (!cron || cron.split(/\s+/).length !== 5) return false;

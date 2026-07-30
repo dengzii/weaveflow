@@ -76,6 +76,15 @@ describe("trigger canvas projection", () => {
     expect(() => triggerConfigurationValid(invalid)).not.toThrow();
     expect(triggerConfigurationValid(invalid)).toBe(false);
   });
+
+  test("validates channel-neutral chat trigger settings", () => {
+    const chat = trigger("chat", "graph-a", "chat");
+    chat.chat = { reply_path: "shared.final.answer", stream_updates: true, stream_node_ids: ["answer"] };
+    expect(triggerConfigurationValid(chat)).toBe(true);
+
+    chat.chat.stream_node_ids = [""];
+    expect(triggerConfigurationValid(chat)).toBe(false);
+  });
 });
 
 function trigger(id: string, graphID: string, type: Trigger["type"]): Trigger {
@@ -86,6 +95,7 @@ function trigger(id: string, graphID: string, type: Trigger["type"]): Trigger {
     target: { graph_id: graphID },
     webhook: type === "webhook" ? {} : undefined,
     schedule: type === "schedule" ? { cron: "0 * * * *" } : undefined,
+    chat: type === "chat" ? { reply_path: "shared.final.answer", stream_updates: true } : undefined,
     created_at: "2026-07-29T00:00:00Z",
     updated_at: "2026-07-29T00:00:00Z",
   };

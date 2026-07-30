@@ -324,8 +324,10 @@ function renderSchemaControl(
 
   return (
     <Input
+      type={schema.writeOnly === true || schema.format === "password" ? "password" : undefined}
       value={typeof value === "string" ? value : value == null ? "" : String(value)}
       onChange={(event) => onChange(event.target.value)}
+      placeholder={schema.writeOnly === true ? "Sensitive value" : undefined}
       className={controlClass}
     />
   );
