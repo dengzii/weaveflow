@@ -15,6 +15,27 @@ type testLLM struct {
 	err      error
 }
 
+type streamingTestLLM struct {
+	chunks []string
+}
+
+func (m *streamingTestLLM) GenerateContent(ctx context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	callOptions := &llms.CallOptions{}
+	for _, option := range options {
+		option(callOptions)
+	}
+	for _, chunk := range m.chunks {
+		if err := callOptions.StreamingReasoningFunc(ctx, nil, []byte(chunk)); err != nil {
+			return nil, err
+		}
+	}
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "hello world"}}}, nil
+}
+
+func (m *streamingTestLLM) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	return "", nil
+}
+
 func (t *testLLM) GenerateContent(_ context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
 	return t.response, t.err
 }
@@ -122,5 +143,50 @@ func TestWrapLlmGenerateCompletionPublishesContentAndUsageEvents(t *testing.T) {
 	}
 	if len(eventTypes) != 2 || eventTypes[0] != EventLLMContent || eventTypes[1] != EventLLMCall {
 		t.Fatalf("event types = %#v", eventTypes)
+	}
+}
+
+func TestWrapLlmContentChunksCarryStableCallIDAndPreserveWhitespace(t *testing.T) {
+	t.Parallel()
+
+	model := wrapLlm(&streamingTestLLM{chunks: []string{"hello", " ", "world"}})
+	type publishedEvent struct {
+		typ     EventType
+		payload map[string]any
+	}
+	var events []publishedEvent
+	ctx := WithRunnerEventPublisher(context.Background(), func(eventType EventType, payload any) error {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		decoded := map[string]any{}
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return err
+		}
+		events = append(events, publishedEvent{typ: eventType, payload: decoded})
+		return nil
+	})
+
+	if _, err := model.GenerateContent(ctx, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 5 {
+		t.Fatalf("events = %#v", events)
+	}
+	callID, _ := events[0].payload["call_id"].(string)
+	if callID == "" {
+		t.Fatal("chunk call_id is empty")
+	}
+	for index, text := range []string{"hello", " ", "world"} {
+		if events[index].typ != EventLLMContentChunk || events[index].payload["text"] != text || events[index].payload["call_id"] != callID {
+			t.Fatalf("events[%d] = %#v", index, events[index])
+		}
+	}
+	if events[3].typ != EventLLMContent || events[3].payload["call_id"] != callID {
+		t.Fatalf("final content event = %#v", events[3])
+	}
+	if events[4].typ != EventLLMCall || events[4].payload["call_id"] != callID {
+		t.Fatalf("call event = %#v", events[4])
 	}
 }

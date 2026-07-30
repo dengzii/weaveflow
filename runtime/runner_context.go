@@ -10,9 +10,22 @@ import (
 type runnerEventPublisher func(eventType EventType, payload any) error
 type runnerArtifactRecorder func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
 
+// EventObserver synchronously observes fully populated events from one run.
+type EventObserver interface {
+	Observe(context.Context, Event) error
+}
+
+// EventObserverFunc adapts a function to EventObserver.
+type EventObserverFunc func(context.Context, Event) error
+
+func (f EventObserverFunc) Observe(ctx context.Context, event Event) error {
+	return f(ctx, event)
+}
+
 type runnerEventPublisherKey struct{}
 type runnerMetadataKey struct{}
 type runnerArtifactRecorderKey struct{}
+type runnerEventObserverKey struct{}
 
 var ErrArtifactRecorderUnavailable = errors.New("runner artifact recorder is unavailable")
 
@@ -39,6 +52,35 @@ func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Co
 		return nil
 	}
 	return context.WithValue(ctx, runnerMetadataKey{}, metadata)
+}
+
+// WithRunnerEventObserver attaches a synchronous, run-scoped event observer.
+// Observer errors propagate through the operation that published the event.
+func WithRunnerEventObserver(ctx context.Context, observer EventObserver) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if observer == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, runnerEventObserverKey{}, observer)
+}
+
+// RunnerEventObserverFromContext returns the run-scoped observer, if any.
+func RunnerEventObserverFromContext(ctx context.Context) EventObserver {
+	if ctx == nil {
+		return nil
+	}
+	observer, _ := ctx.Value(runnerEventObserverKey{}).(EventObserver)
+	return observer
+}
+
+func observeRunnerContextEvent(ctx context.Context, event Event) error {
+	observer := RunnerEventObserverFromContext(ctx)
+	if observer == nil {
+		return nil
+	}
+	return observer.Observe(ctx, event)
 }
 
 func WithRunnerArtifactRecorder(ctx context.Context, recorder func(context.Context, Artifact) (state.ArtifactRef, error)) context.Context {

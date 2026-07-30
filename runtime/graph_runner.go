@@ -925,14 +925,6 @@ func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord
 	})
 }
 
-func (r *GraphRunner) publishStateDiff(ctx context.Context, run RunRecord, step StepRecord, before, after *state.State) error {
-	changes, err := r.computeStateDiff(before, after)
-	if err != nil {
-		return err
-	}
-	return r.publishStateDiffChanges(ctx, run, step, changes)
-}
-
 func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState *state.State, step StepRecord, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
 	now := r.now()
 	run.Status = RunStatusPaused
@@ -1070,14 +1062,6 @@ func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRec
 	}
 }
 
-func (r *GraphRunner) resolveNextNode(ctx context.Context, currentName string, state *state.State) (string, error) {
-	graph := r.runnerGraph()
-	if graph == nil {
-		return "", errors.New("graph runner graph is nil")
-	}
-	return graph.ResolveNextNode(ctx, currentName, state)
-}
-
 func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpointSkip) *state.BreakpointHit {
 	if skip != nil && !skip.Consumed && skip.NodeID == nodeID && skip.Stage == stage {
 		skip.Consumed = true
@@ -1101,9 +1085,6 @@ func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpo
 }
 
 func (r *GraphRunner) publishEvent(ctx context.Context, run RunRecord, stepID string, nodeID string, eventType EventType, payload any) error {
-	if r.EventSink == nil {
-		return nil
-	}
 	var raw json.RawMessage
 	if payload != nil {
 		bytes, err := json.Marshal(payload)
@@ -1112,7 +1093,7 @@ func (r *GraphRunner) publishEvent(ctx context.Context, run RunRecord, stepID st
 		}
 		raw = bytes
 	}
-	return r.EventSink.Publish(ctx, Event{
+	event := Event{
 		ID:        newRunnerID(),
 		RunID:     run.RunID,
 		StepID:    stepID,
@@ -1120,7 +1101,13 @@ func (r *GraphRunner) publishEvent(ctx context.Context, run RunRecord, stepID st
 		Type:      eventType,
 		Timestamp: r.now(),
 		Payload:   raw,
-	})
+	}
+	if r.EventSink != nil {
+		if err := r.EventSink.Publish(ctx, event); err != nil {
+			return err
+		}
+	}
+	return observeRunnerContextEvent(ctx, event)
 }
 
 func (r *GraphRunner) validate() error {

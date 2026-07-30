@@ -56,6 +56,8 @@ type (
 	CheckpointStore           = runtime.CheckpointStore
 	EventSink                 = runtime.EventSink
 	EventReader               = runtime.EventReader
+	EventObserver             = runtime.EventObserver
+	EventObserverFunc         = runtime.EventObserverFunc
 	ArtifactStore             = runtime.ArtifactStore
 	FileExecutionStore        = runtime.FileExecutionStore
 	FileCheckpointStore       = runtime.FileCheckpointStore
@@ -329,6 +331,14 @@ func IsStreamingEvent(event EventType) bool {
 
 func WithRunnerEventPublisher(ctx context.Context, publisher func(EventType, any) error) context.Context {
 	return runtime.WithRunnerEventPublisher(ctx, publisher)
+}
+
+func WithRunnerEventObserver(ctx context.Context, observer EventObserver) context.Context {
+	return runtime.WithRunnerEventObserver(ctx, observer)
+}
+
+func RunnerEventObserverFromContext(ctx context.Context) EventObserver {
+	return runtime.RunnerEventObserverFromContext(ctx)
 }
 
 func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Context {

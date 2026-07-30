@@ -8,6 +8,7 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 
+	"github.com/google/uuid"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -137,10 +138,10 @@ func (m *llmWrap) SupportsReasoning() bool {
 }
 
 func (m *llmWrap) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-
-	options = append(options, withLLMStreamingResponseEvent())
+	handler := newLLMResponseEventHandler()
+	options = append(options, handler.callOption())
 	res, err := m.m.GenerateContent(ctx, messages, options...)
-	publishLLMResponseEvents(ctx, m.m, res, err)
+	publishLLMResponseEvents(ctx, m.m, handler.callID, res, err)
 	return res, err
 }
 
@@ -150,31 +151,39 @@ func (m *llmWrap) GenerateCompletion(ctx context.Context, prompt string, options
 		return nil, fmt.Errorf("model %T does not support text completions", m.m)
 	}
 	res, err := completionModel.GenerateCompletion(ctx, prompt, options...)
-	publishLLMResponseEvents(ctx, m.m, res, err)
+	publishLLMResponseEvents(ctx, m.m, uuid.NewString(), res, err)
 	return res, err
 }
 
-func publishLLMResponseEvents(ctx context.Context, model llms.Model, response *llms.ContentResponse, responseErr error) {
+func publishLLMResponseEvents(ctx context.Context, model llms.Model, callID string, response *llms.ContentResponse, responseErr error) {
 	if responseErr != nil || response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
 		return
 	}
 	choice := response.Choices[0]
 	if strings.TrimSpace(choice.ReasoningContent) != "" {
-		_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, map[string]any{"text": choice.ReasoningContent})
+		_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, llmTextEventPayload(callID, choice.ReasoningContent))
 	}
 	if strings.TrimSpace(choice.Content) != "" {
-		_ = PublishRunnerContextEvent(ctx, EventLLMContent, map[string]any{"text": choice.Content})
+		_ = PublishRunnerContextEvent(ctx, EventLLMContent, llmTextEventPayload(callID, choice.Content))
 	}
 	for _, toolCall := range choice.ToolCalls {
 		if toolCall.FunctionCall != nil {
 			_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, toolCall.FunctionCall)
 		}
 	}
-	_ = PublishRunnerContextEvent(ctx, EventLLMCall, buildLLMCallStatsPayload(model, choice))
+	_ = PublishRunnerContextEvent(ctx, EventLLMCall, buildLLMCallStatsPayload(model, callID, choice))
 }
 
-func buildLLMCallStatsPayload(model llms.Model, choice *llms.ContentChoice) map[string]any {
+func llmTextEventPayload(callID, text string) map[string]any {
+	return map[string]any{
+		"call_id": callID,
+		"text":    text,
+	}
+}
+
+func buildLLMCallStatsPayload(model llms.Model, callID string, choice *llms.ContentChoice) map[string]any {
 	payload := map[string]any{
+		"call_id":     callID,
 		"model":       llmWrapModelLabel(model),
 		"stop_reason": strings.TrimSpace(choice.StopReason),
 		"calls":       1,
@@ -254,18 +263,17 @@ func (m *llmWrap) Call(ctx context.Context, prompt string, options ...llms.CallO
 }
 
 type llmResponseEventHandler struct {
-	bufferReasoning  []byte
+	callID           string
 	toolCallDetected bool
 }
 
-func withLLMStreamingResponseEvent() llms.CallOption {
+func newLLMResponseEventHandler() *llmResponseEventHandler {
+	return &llmResponseEventHandler{callID: uuid.NewString()}
+}
 
-	handler := llmResponseEventHandler{
-		bufferReasoning: make([]byte, 0),
-	}
-
+func (l *llmResponseEventHandler) callOption() llms.CallOption {
 	return func(o *llms.CallOptions) {
-		o.StreamingReasoningFunc = handler.emitStreamingResponse
+		o.StreamingReasoningFunc = l.emitStreamingResponse
 	}
 }
 
@@ -275,8 +283,7 @@ func (l *llmResponseEventHandler) emitStreamingResponse(ctx context.Context, rea
 	}
 	reasoning := string(reasoningChunk)
 	if strings.TrimSpace(reasoning) != "" {
-		l.bufferReasoning = append(l.bufferReasoning, reasoningChunk...)
-		if err := PublishRunnerContextEvent(ctx, EventLLMReasoningChunk, map[string]any{"text": reasoning}); err != nil {
+		if err := PublishRunnerContextEvent(ctx, EventLLMReasoningChunk, llmTextEventPayload(l.callID, reasoning)); err != nil {
 			return err
 		}
 		if !HasRunnerEventPublisher(ctx) {
@@ -284,15 +291,15 @@ func (l *llmResponseEventHandler) emitStreamingResponse(ctx context.Context, rea
 		}
 	}
 	content := string(chunk)
-	if strings.TrimSpace(content) != "" {
+	if content != "" {
 		// Detect tool-call payload (JSON array); skip content emission for those.
-		if !l.toolCallDetected {
+		if !l.toolCallDetected && strings.TrimSpace(content) != "" {
 			l.toolCallDetected = strings.HasPrefix(content, "[{")
 		}
 		if l.toolCallDetected {
 			return nil
 		}
-		if err := PublishRunnerContextEvent(ctx, EventLLMContentChunk, map[string]any{"text": content}); err != nil {
+		if err := PublishRunnerContextEvent(ctx, EventLLMContentChunk, llmTextEventPayload(l.callID, content)); err != nil {
 			return err
 		}
 		if !HasRunnerEventPublisher(ctx) {
