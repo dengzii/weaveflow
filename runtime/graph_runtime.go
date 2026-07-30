@@ -396,9 +396,13 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, c
 	}
 	e.mu.Unlock()
 
-	nextNodeIDs, err := e.resolveNextNodesForWave(ctx, currentState, branchNodeIDs)
-	if err != nil {
-		return err
+	nextNodeIDs, _, hasSchedule := LoadGraphSchedule(currentState)
+	if !hasSchedule || len(nextNodeIDs) == 0 {
+		var err error
+		nextNodeIDs, err = e.resolveNextNodesForWave(ctx, currentState, branchNodeIDs)
+		if err != nil {
+			return err
+		}
 	}
 
 	e.mu.Lock()

@@ -8,9 +8,9 @@ import {
   getInitialStateRequirements,
   getRegistry,
   getGraphSettings,
-  getCheckpoint,
   getTools,
   listRuns,
+  listTriggerRecords,
   getRunDetail,
   pauseRun,
   pushGraphDefinition,
@@ -36,7 +36,6 @@ import { GraphWorkspace } from "./workbench/GraphWorkspace";
 import { RegistryDialog } from "./workbench/RegistryDialog";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
 import { SettingsWorkspace } from "./workbench/SettingsWorkspace";
-import { TriggerWorkspace } from "./workbench/TriggerWorkspace";
 import { WorkbenchShell } from "./workbench/WorkbenchShell";
 import type { ToastRecord, ToastTone } from "./workbench/graph-workspace/ToastStack";
 import { validateGraph } from "./workbench/graph-workspace/utils";
@@ -47,13 +46,13 @@ import type {
   GraphSettingsUpdate,
   InitialStateRequirement,
   InitialStateRequirements,
-  CheckpointRecord,
   RegistryInfo,
   RunInterrupt,
   RunRecord,
   RuntimeEvent,
   StepRecord,
   ToolDefinition,
+  TriggerType,
 } from "../types";
 
 export { workspaceTabs };
@@ -95,11 +94,11 @@ export function WorkbenchPage({
   const [toolDefinitions, setToolDefinitions] = useState<ToolDefinition[]>([]);
   const [graphSettings, setGraphSettings] = useState<GraphSettings | null>(null);
   const [runs, setRuns] = useState<RunRecord[]>([]);
+  const [runTriggerTypes, setRunTriggerTypes] = useState<Partial<Record<string, TriggerType>>>({});
   const [selectedRunId, setSelectedRunId] = useState("");
   const [steps, setSteps] = useState<StepRecord[]>([]);
   const [events, setEvents] = useState<RuntimeEvent[]>([]);
   const [runInterrupt, setRunInterrupt] = useState<RunInterrupt | null>(null);
-  const [runState, setRunState] = useState<unknown>(null);
   const [humanPrompt, setHumanPrompt] = useState<UserInputPrompt | null>(null);
   const [humanPromptText, setHumanPromptText] = useState("");
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
@@ -213,8 +212,8 @@ export function WorkbenchPage({
     setSteps([]);
     setEvents([]);
     setLiveEvents([]);
+    setRunTriggerTypes({});
     setRunInterrupt(null);
-    setRunState(null);
     setHumanPrompt(null);
     setHumanPromptText("");
   }, []);
@@ -241,13 +240,24 @@ export function WorkbenchPage({
     contextVersion = runContextVersionRef.current,
     autoSelect = true
   ) => {
-    const nextRuns = (await listRuns(identity.id)) ?? [];
+    const [nextRuns, triggerRecords] = await Promise.all([
+      listRuns(identity.id),
+      listTriggerRecords(undefined, 500).catch(() => []),
+    ]);
     if (runContextVersionRef.current !== contextVersion) return;
-    setRuns(nextRuns);
+    const nextRunTriggerTypes: Partial<Record<string, TriggerType>> = {};
+    for (const record of triggerRecords) {
+      const runID = record.run?.run_id;
+      if (record.target.graph_id === identity.id && runID) {
+        nextRunTriggerTypes[runID] = record.trigger_type;
+      }
+    }
+    setRunTriggerTypes(nextRunTriggerTypes);
+    setRuns(nextRuns ?? []);
     if (autoSelect) {
       setSelectedRunId((current) => {
-        if (current && nextRuns.some((run) => run.run_id === current)) return current;
-        return nextRuns.at(-1)?.run_id || "";
+        if (current && nextRuns?.some((run) => run.run_id === current)) return current;
+        return nextRuns?.at(-1)?.run_id || "";
       });
     }
   }, []);
@@ -277,19 +287,16 @@ export function WorkbenchPage({
         setSteps([]);
         setEvents([]);
         setRunInterrupt(null);
-        setRunState(null);
         setHumanPrompt(null);
         setHumanPromptText("");
         humanPromptCheckpointRef.current = "";
         return;
       }
       const detail = await getRunDetail(runId, graphIdentityRef.current.id);
-      const state = await loadLatestRunState(detail.checkpoints, graphIdentityRef.current.id);
       if (runContextVersionRef.current !== contextVersion) return;
       setSteps(detail.steps);
       setEvents(detail.events);
       setRunInterrupt(detail.interrupt ?? null);
-      setRunState(state);
       setRuns((current) => current.map((run) => (run.run_id === detail.run.run_id ? detail.run : run)));
     },
     []
@@ -301,7 +308,6 @@ export function WorkbenchPage({
       const contextVersion = runContextVersionRef.current;
       try {
         const detail = await getRunDetail(runId, graphIdentityRef.current.id);
-        const state = await loadLatestRunState(detail.checkpoints, graphIdentityRef.current.id);
         if (runContextVersionRef.current !== contextVersion) return;
         setRuns((current) => {
           const exists = current.some((run) => run.run_id === detail.run.run_id);
@@ -320,7 +326,6 @@ export function WorkbenchPage({
         setSteps(detail.steps);
         setEvents(detail.events);
         setRunInterrupt(detail.interrupt ?? null);
-        setRunState(state);
         if (options.openHumanPrompt) maybeOpenUserInputPrompt(detail.interrupt ?? null);
       } catch (err) {
         notifyError(err);
@@ -779,8 +784,8 @@ export function WorkbenchPage({
       onToggleRunStatus={() => setRunStatusVisible((visible) => !visible)}
       runStatusPanel={
         <RunStatusPanel
-          run={selectedRun}
           runs={runs}
+          runTriggerTypes={runTriggerTypes}
           selectedRunId={selectedRunId}
           onSelectRun={(runId) => {
             setSelectedRunId(runId);
@@ -788,10 +793,6 @@ export function WorkbenchPage({
           }}
           onDeleteRun={(runId) => void deleteSelectedRun(runId)}
           events={displayEvents}
-          steps={steps}
-          stateSnapshot={runState}
-          definition={definition}
-          registry={registry}
           onHide={() => setRunStatusVisible(false)}
         />
       }
@@ -825,7 +826,6 @@ export function WorkbenchPage({
       {tab === "settings" ? (
         <SettingsWorkspace registry={registry} />
       ) : null}
-      {tab === "triggers" ? <TriggerWorkspace /> : null}
       <UserInputPromptDialog
         prompt={humanPrompt}
         value={humanPromptText}
@@ -894,15 +894,6 @@ function UserInputPromptDialog({
       </div>
     </div>
   );
-}
-
-async function loadLatestRunState(checkpoints: CheckpointRecord[], graphId: string): Promise<unknown> {
-  const latest = [...checkpoints].sort(
-    (left, right) => Date.parse(right.created_at) - Date.parse(left.created_at)
-  )[0];
-  if (!latest) return null;
-  const checkpoint = await getCheckpoint(latest.checkpoint_id, graphId);
-  return checkpoint.business ?? checkpoint.snapshot ?? null;
 }
 
 export function userInputPromptFromInterrupt(

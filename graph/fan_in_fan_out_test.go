@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/dengzii/weaveflow/core"
@@ -14,6 +15,7 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
+	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func TestGraphAllowsMultipleDefaultEdges(t *testing.T) {
@@ -586,6 +588,147 @@ func TestFanOutFanInCompile(t *testing.T) {
 	}
 	if collectorCalls != 1 {
 		t.Fatalf("expected collector to execute once, calls=%#v", calls)
+	}
+}
+
+func TestFanOutFanInWaitsForUnevenBranches(t *testing.T) {
+	t.Parallel()
+
+	var collectorCalls atomic.Int32
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "fast", func(_ context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "fast")
+	})
+	mustAddNode(t, g, "slow", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "slow_tail", func(_ context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "slow")
+	})
+	mustAddNode(t, g, "collector", func(_ context.Context, access *state.Access) error {
+		collectorCalls.Add(1)
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return access.SetAny(state.Shared("branch_count"), len(items))
+	})
+
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "fast"},
+		{"router", "slow"},
+		{"fast", "collector"},
+		{"slow", "slow_tail"},
+		{"slow_tail", "collector"},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	finalState, err := g.Run(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("run uneven fan-in graph: %v", err)
+	}
+	count, ok := state.NewAccess(finalState).ReadAny(state.Shared("branch_count"))
+	if !ok || count != 2 {
+		t.Fatalf("collector branch count = %#v ok=%v, want 2", count, ok)
+	}
+	if calls := collectorCalls.Load(); calls != 1 {
+		t.Fatalf("collector calls = %d, want 1", calls)
+	}
+	if _, ok := state.ReadPath(finalState, "internal.graph_scheduler"); ok {
+		t.Fatal("final state retained graph scheduler metadata")
+	}
+
+	collectorCalls.Store(0)
+	runnable, err := g.Compile()
+	if err != nil {
+		t.Fatalf("compile uneven fan-in graph: %v", err)
+	}
+	var streamedState *state.State
+	for event := range runnable.Stream(context.Background(), state.NewState()) {
+		if event.Event != langgraph.EventChainEnd {
+			continue
+		}
+		if event.Error != nil {
+			t.Fatalf("stream uneven fan-in graph: %v", event.Error)
+		}
+		streamedState = event.State
+	}
+	if streamedState == nil {
+		t.Fatal("stream did not emit final state")
+	}
+	streamedCount, ok := state.NewAccess(streamedState).ReadAny(state.Shared("branch_count"))
+	if !ok || streamedCount != 2 {
+		t.Fatalf("streamed collector branch count = %#v ok=%v, want 2", streamedCount, ok)
+	}
+	if calls := collectorCalls.Load(); calls != 1 {
+		t.Fatalf("streamed collector calls = %d, want 1", calls)
+	}
+}
+
+func TestFanInDoesNotWaitForInactiveConditionalPredecessor(t *testing.T) {
+	t.Parallel()
+
+	var collectorCalls atomic.Int32
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "selected", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("selected"), true)
+	})
+	mustAddNode(t, g, "inactive", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("inactive"), true)
+	})
+	mustAddNode(t, g, "collector", func(context.Context, *state.Access) error {
+		collectorCalls.Add(1)
+		return nil
+	})
+
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) bool {
+		return true
+	})
+	if err := g.AddConditionalEdge("router", "selected", condition); err != nil {
+		t.Fatalf("add selected condition: %v", err)
+	}
+	if err := g.AddEdge("router", "inactive"); err != nil {
+		t.Fatalf("add inactive fallback: %v", err)
+	}
+	if err := g.AddEdge("selected", "collector"); err != nil {
+		t.Fatalf("add selected -> collector: %v", err)
+	}
+	if err := g.AddEdge("inactive", "collector"); err != nil {
+		t.Fatalf("add inactive -> collector: %v", err)
+	}
+
+	finalState, err := g.Run(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("run conditional fan-in graph: %v", err)
+	}
+	access := state.NewAccess(finalState)
+	if selected, ok := access.ReadAny(state.Shared("selected")); !ok || selected != true {
+		t.Fatalf("selected branch value = %#v ok=%v", selected, ok)
+	}
+	if _, ok := access.ReadAny(state.Shared("inactive")); ok {
+		t.Fatal("inactive conditional predecessor executed")
+	}
+	if calls := collectorCalls.Load(); calls != 1 {
+		t.Fatalf("collector calls = %d, want 1", calls)
 	}
 }
 

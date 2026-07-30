@@ -161,6 +161,14 @@ func SetPath(state *State, path string, value any) error {
 	return state.set(parsed, value)
 }
 
+func DeletePath(state *State, path string) error {
+	parsed, err := ParsePath(path)
+	if err != nil {
+		return err
+	}
+	return state.delete(parsed)
+}
+
 func MergePath(state *State, path string, value map[string]any) error {
 	parsed, err := ParsePath(path)
 	if err != nil {

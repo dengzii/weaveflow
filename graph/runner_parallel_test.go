@@ -147,6 +147,134 @@ func TestRunnerParallelFanOutFanInRecordsBranchSteps(t *testing.T) {
 	}
 }
 
+func TestRunnerParallelFanInWaitsForUnevenBranches(t *testing.T) {
+	t.Parallel()
+
+	var collectorCalls atomic.Int32
+	g := NewGraph()
+	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "fast", func(_ context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "fast")
+	})
+	mustAddNode(t, g, "slow", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, g, "slow_tail", func(_ context.Context, access *state.Access) error {
+		return access.AppendAny(state.Shared("branches"), "slow")
+	})
+	mustAddNode(t, g, "collector", func(_ context.Context, access *state.Access) error {
+		collectorCalls.Add(1)
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := g.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := g.SetFinishPoint("collector"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "fast"},
+		{"router", "slow"},
+		{"fast", "collector"},
+		{"slow", "slow_tail"},
+		{"slow_tail", "collector"},
+	} {
+		if err := g.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	run, finalState, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	count, ok := state.NewAccess(finalState).ReadAny(state.Shared("branch_count"))
+	if !ok || count != 2 {
+		t.Fatalf("collector branch count = %#v ok=%v, want 2", count, ok)
+	}
+	if calls := collectorCalls.Load(); calls != 1 {
+		t.Fatalf("collector calls = %d, want 1", calls)
+	}
+	if _, ok := state.ReadPath(finalState, "internal.graph_scheduler"); ok {
+		t.Fatal("final state retained graph scheduler metadata")
+	}
+
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	collectorSteps := 0
+	for _, step := range steps {
+		if step.NodeID == "collector" {
+			collectorSteps++
+		}
+	}
+	if collectorSteps != 1 {
+		t.Fatalf("collector steps = %d, want 1; steps=%#v", collectorSteps, steps)
+	}
+
+	checkpoints, err := runner.ListCheckpoints(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	barrierID := ""
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage != fruntime.CheckpointAfterParallelWave {
+			continue
+		}
+		restored, err := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
+		if err != nil {
+			t.Fatalf("load checkpoint %q: %v", checkpoint.CheckpointID, err)
+		}
+		if strings.Join(restored.Runtime.CurrentNodeIDs, ",") != "fast,slow" {
+			continue
+		}
+		if strings.Join(restored.Runtime.NextNodeIDs, ",") != "slow_tail" {
+			t.Fatalf("uneven barrier next nodes = %#v, want [slow_tail]", restored.Runtime.NextNodeIDs)
+		}
+		_, pending, ok := fruntime.LoadGraphSchedule(restored.Business)
+		if !ok || strings.Join(pending, ",") != "collector" {
+			t.Fatalf("uneven barrier pending fan-in = %#v ok=%v, want [collector]", pending, ok)
+		}
+		barrierID = checkpoint.CheckpointID
+		break
+	}
+	if barrierID == "" {
+		t.Fatalf("missing uneven branch barrier checkpoint: %#v", checkpoints)
+	}
+
+	collectorCalls.Store(0)
+	resumedRun, resumedState, err := runner.ResumeFromCheckpoint(context.Background(), barrierID, nil)
+	if err != nil {
+		t.Fatalf("resume uneven barrier: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed status = %q, want completed", resumedRun.Status)
+	}
+	resumedCount, ok := state.NewAccess(resumedState).ReadAny(state.Shared("branch_count"))
+	if !ok || resumedCount != 2 {
+		t.Fatalf("resumed collector branch count = %#v ok=%v, want 2", resumedCount, ok)
+	}
+	if calls := collectorCalls.Load(); calls != 1 {
+		t.Fatalf("collector calls after barrier resume = %d, want 1", calls)
+	}
+}
+
 func TestRunnerParallelResumeFromBarrierContinuesToCollector(t *testing.T) {
 	t.Parallel()
 

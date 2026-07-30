@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
@@ -692,7 +693,7 @@ func (g *Graph) terminalReachableNodes() map[string]struct{} {
 
 func (g *Graph) Compile() (*Runnable, error) {
 	compiled := langgraph.NewListenableStateGraph[*state.State]()
-	_, err := g.compileStateGraph(graphCompileTemplate{
+	patches, err := g.compileStateGraph(graphCompileTemplate{
 		stateGraph: compiled.StateGraph,
 		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
 			nodeDef := node
@@ -710,7 +711,14 @@ func (g *Graph) Compile() (*Runnable, error) {
 		return nil, err
 	}
 
-	return &Runnable{runnable: runnable}, nil
+	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
+		targetNode := compiled.GetListenableNode(nodeID)
+		if targetNode == nil {
+			return currentState, fmt.Errorf("node %q is not compiled", nodeID)
+		}
+		return targetNode.Execute(ctx, currentState)
+	})
+	return &Runnable{runnable: runnable, scheduled: scheduled}, nil
 }
 
 func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (_ *state.State, resultErr error) {
@@ -763,6 +771,53 @@ func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode 
 }
 
 func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[*state.State], error) {
+	patches, err := g.runnerPatchCollector(execution)
+	if err != nil {
+		return nil, err
+	}
+
+	compiled := langgraph.NewStateGraph[*state.State]()
+	if _, err := g.compileStateGraph(graphCompileTemplate{
+		stateGraph: compiled,
+		patches:    patches,
+		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
+			nodeDef := node
+			compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, currentState *state.State) (*state.State, error) {
+				next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, currentState)
+				if err != nil {
+					recordFailedBranchPatch(patches, currentState, nodeID, err)
+				} else if !patches.hasPatch(currentState, nodeID) {
+					patches.record(currentState, nodeID, stateDiffPatch(currentState, next))
+				}
+				return next, err
+			})
+		},
+	}); err != nil {
+		return nil, err
+	}
+
+	return compiled.Compile()
+}
+
+func (g *Graph) compileRunnableForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
+	patches, err := g.runnerPatchCollector(execution)
+	if err != nil {
+		return nil, err
+	}
+
+	return newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
+		nodeDef := g.nodes[nodeID]
+		next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, currentState)
+		if err != nil {
+			recordFailedBranchPatch(patches, currentState, nodeID, err)
+		} else if !patches.hasPatch(currentState, nodeID) {
+			patches.record(currentState, nodeID, stateDiffPatch(currentState, next))
+		}
+		return next, err
+	}), nil
+}
+
+func (g *Graph) runnerPatchCollector(execution fruntime.RunnerExecution) (*compilePatchCollector, error) {
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
@@ -777,32 +832,7 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph
 	if recorder, ok := execution.(fruntime.ParallelWaveRecorder); ok {
 		patches.setWaveRecorder(recorder)
 	}
-
-	compiled := langgraph.NewStateGraph[*state.State]()
-	if _, err := g.compileStateGraph(graphCompileTemplate{
-		stateGraph: compiled,
-		patches:    patches,
-		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
-			nodeDef := node
-			compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
-				next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, state)
-				if err != nil {
-					recordFailedBranchPatch(patches, state, nodeID, err)
-				} else if !patches.hasPatch(state, nodeID) {
-					patches.record(state, nodeID, stateDiffPatch(state, next))
-				}
-				return next, err
-			})
-		},
-	}); err != nil {
-		return nil, err
-	}
-
-	runnable, err := compiled.Compile()
-	if err != nil {
-		return nil, err
-	}
-	return runnable, nil
+	return patches, nil
 }
 
 type graphCompileTemplate struct {
@@ -849,8 +879,8 @@ func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State]
 		compiled.SetRetryPolicy(g.retryPolicy)
 	}
 
-	for nodeID, node := range g.nodes {
-		addNode(nodeID, node)
+	for nodeID, n := range g.nodes {
+		addNode(nodeID, n)
 	}
 
 	for from, conditional := range g.conditionalEdges {
@@ -883,29 +913,36 @@ func (g *Graph) configureStateMerger(compiled *langgraph.StateGraph[*state.State
 		return
 	}
 	compiled.SetStateMerger(func(ctx context.Context, current *state.State, newStates []*state.State) (*state.State, error) {
-		if len(newStates) == 0 {
-			if current == nil {
-				return state.NewState(), nil
-			}
+		return g.mergeCompiledStates(current, newStates, patches)
+	})
+}
+
+func (g *Graph) mergeCompiledStates(current *state.State, newStates []*state.State, patches *compilePatchCollector) (*state.State, error) {
+	if len(newStates) == 0 {
+		if current == nil {
+			return state.NewState(), nil
+		}
+		return current, nil
+	}
+	if len(newStates) == 1 {
+		if patches != nil {
+			_ = patches.consume(current)
+		}
+		if newStates[0] == nil {
 			return current, nil
 		}
-		if len(newStates) == 1 {
-			if patches != nil {
-				_ = patches.consume(current)
-			}
-			return newStates[0], nil
-		}
-		if patches == nil {
-			return nil, fmt.Errorf("parallel state merge requires branch patches")
-		}
-		branches := patches.consume(current)
-		if len(branches) != len(newStates) {
-			return nil, fmt.Errorf("parallel state merge requires branch patches: collected %d for %d branch states", len(branches), len(newStates))
-		}
-		patches.notifyParallelWave(current, branches)
-		return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{
-			Contracts: g.nodeContracts,
-		})
+		return newStates[0], nil
+	}
+	if patches == nil {
+		return nil, fmt.Errorf("parallel state merge requires branch patches")
+	}
+	branches := patches.consume(current)
+	if len(branches) != len(newStates) {
+		return nil, fmt.Errorf("parallel state merge requires branch patches: collected %d for %d branch states", len(branches), len(newStates))
+	}
+	patches.notifyParallelWave(current, branches)
+	return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{
+		Contracts: g.nodeContracts,
 	})
 }
 
@@ -1259,7 +1296,8 @@ func (g *Graph) nodeDisplayName(nodeID string) string {
 }
 
 type Runnable struct {
-	runnable *langgraph.ListenableRunnable[*state.State]
+	runnable  *langgraph.ListenableRunnable[*state.State]
+	scheduled *scheduledRunnable
 }
 
 type compilePatchCollector struct {
@@ -1372,23 +1410,68 @@ func (c *compilePatchCollector) consume(base *state.State) []state.BranchPatch {
 }
 
 func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*state.State, error) {
+	if r.scheduled != nil {
+		return r.scheduled.Invoke(ctx, initialState)
+	}
 	return r.runnable.Invoke(ctx, initialState)
 }
 
 func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error) {
+	if r.scheduled != nil {
+		return r.scheduled.InvokeWithConfig(ctx, initialState, config)
+	}
 	return r.runnable.InvokeWithConfig(ctx, initialState, config)
 }
 
 func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan langgraph.StreamEvent[*state.State] {
+	if r.scheduled != nil {
+		events := make(chan langgraph.StreamEvent[*state.State], 100)
+		go func() {
+			defer close(events)
+			events <- langgraph.StreamEvent[*state.State]{
+				Timestamp: time.Now(),
+				Event:     langgraph.EventChainStart,
+				State:     initialState,
+			}
+			scheduled := *r.scheduled
+			scheduled.observeNode = func(_ context.Context, event langgraph.NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
+				events <- langgraph.StreamEvent[*state.State]{
+					Timestamp: time.Now(),
+					NodeName:  nodeID,
+					Event:     event,
+					State:     currentState,
+					Error:     err,
+					Duration:  duration,
+				}
+			}
+			finalState, err := scheduled.Invoke(ctx, initialState)
+			events <- langgraph.StreamEvent[*state.State]{
+				Timestamp: time.Now(),
+				Event:     langgraph.EventChainEnd,
+				State:     finalState,
+				Error:     err,
+			}
+		}()
+		return events
+	}
 	return r.runnable.Stream(ctx, initialState)
 }
 
 func (r *Runnable) SetTracer(tracer *langgraph.Tracer) {
 	r.runnable.SetTracer(tracer)
+	if r.scheduled != nil {
+		r.scheduled.tracer = tracer
+	}
 }
 
 func (r *Runnable) WithTracer(tracer *langgraph.Tracer) *Runnable {
-	return &Runnable{runnable: r.runnable.WithTracer(tracer)}
+	var scheduled *scheduledRunnable
+	if r.scheduled != nil {
+		copyRunnable := *r.scheduled
+		copyRunnable.tracer = tracer
+		scheduled = &copyRunnable
+	}
+	return &Runnable{runnable: r.runnable.WithTracer(tracer), scheduled: scheduled}
 }
 
 func (r *Runnable) GetTracer() *langgraph.Tracer {

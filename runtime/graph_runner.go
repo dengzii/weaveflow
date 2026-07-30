@@ -306,7 +306,13 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	execution := newGraphRunnerExecution(r, run, currentState, artifacts, skip, cancelInvoke)
 	r.registerActiveExecution(run.RunID, execution)
 	defer r.unregisterActiveExecution(run.RunID, execution)
-	runnable, err := r.runnerGraph().CompileForRunner(execution)
+	var runnable RunnerRunnable
+	var err error
+	if compiler, ok := r.runnerGraph().(RunnerRunnableCompiler); ok {
+		runnable, err = compiler.CompileRunnableForRunner(execution)
+	} else {
+		runnable, err = r.runnerGraph().CompileForRunner(execution)
+	}
 	if err != nil {
 		return r.failRun(ctx, run, currentState, "compile_failed", err.Error())
 	}

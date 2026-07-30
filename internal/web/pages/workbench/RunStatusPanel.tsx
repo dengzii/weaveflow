@@ -1,26 +1,36 @@
 import { forwardRef, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, PointerEvent as ReactPointerEvent, ReactNode } from "react";
+import type {
+  CSSProperties,
+  KeyboardEvent as ReactKeyboardEvent,
+  PointerEvent as ReactPointerEvent,
+  ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Filter, ListTree, Search, Trash2, X } from "lucide-react";
+import {
+  Ban,
+  Check,
+  ChevronDown,
+  Circle,
+  Clock3,
+  Filter,
+  ListTree,
+  Loader2,
+  MessageCircle,
+  Pause,
+  Play,
+  Search,
+  Trash2,
+  Webhook,
+  X,
+} from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { cn, formatTime, formatTimeMs, stringifyJSON } from "../../lib/utils";
-import type { GraphDefinition, RegistryInfo, RunRecord, RuntimeEvent, StatePortDefinition, StepRecord } from "../../types";
+import type { RunRecord, RuntimeEvent, TriggerType } from "../../types";
 import { StatusText, type StatusTone } from "./shared";
-import { statusTone } from "./utils";
 
-type ViewMode = "events" | "node" | "state";
 type EventFilterMode = "include" | "exclude";
-
-interface ListItem {
-  key: string;
-  statusLabel?: string;
-  statusTone?: StatusTone;
-  primary: string;
-  secondary?: string;
-  trailing?: string;
-  eventTypeFirst?: boolean;
-}
+type ColumnRatios = [number, number, number];
 
 interface EventFilterPopoverPosition {
   anchor: "above" | "below";
@@ -32,17 +42,12 @@ interface EventFilterPopoverPosition {
   bottom?: number;
 }
 
-const viewOptions: Array<{ id: ViewMode; label: string }> = [
-  { id: "events", label: "Events" },
-  { id: "node", label: "By Node" },
-  { id: "state", label: "Run State" },
-];
-
-const MIN_LEFT_WIDTH = 200;
-const MIN_DETAIL_WIDTH = 240;
-const DEFAULT_LEFT_WIDTH_RATIO = `${100 / 3}%`;
 const MIN_PANEL_HEIGHT = 180;
 const DEFAULT_PANEL_HEIGHT = 320;
+const DEFAULT_COLUMN_RATIOS: ColumnRatios = [1, 1.5, 2];
+const MIN_COLUMN_WIDTHS: ColumnRatios = [180, 260, 280];
+const COLUMN_SEPARATOR_WIDTH = 1;
+const COLUMN_KEYBOARD_STEP_RATIO = 0.03;
 const FILTER_POPOVER_GAP = 4;
 const FILTER_POPOVER_MARGIN = 8;
 const FILTER_POPOVER_MIN_WIDTH = 320;
@@ -62,43 +67,31 @@ interface StoredEventFilters {
 }
 
 export function RunStatusPanel({
-  run,
   runs,
+  runTriggerTypes,
   selectedRunId,
   onSelectRun,
   onDeleteRun,
   events,
-  steps,
-  stateSnapshot,
-  definition,
-  registry,
   onHide,
 }: {
-  run: RunRecord | null;
-  runs?: RunRecord[];
+  runs: RunRecord[];
+  runTriggerTypes?: Partial<Record<string, TriggerType>>;
   selectedRunId?: string;
   onSelectRun?: (runId: string) => void;
   onDeleteRun?: (runId: string) => void;
   events: RuntimeEvent[];
-  steps: StepRecord[];
-  stateSnapshot?: unknown;
-  definition?: GraphDefinition | null;
-  registry?: RegistryInfo | null;
   onHide: () => void;
 }) {
-  const [view, setView] = useState<ViewMode>("events");
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [leftWidth, setLeftWidth] = useState<number | null>(null);
   const [panelHeight, setPanelHeight] = useState(readStoredPanelHeight);
+  const [columnRatios, setColumnRatios] = useState<ColumnRatios>(DEFAULT_COLUMN_RATIOS);
   const [eventFiltersOpen, setEventFiltersOpen] = useState(() => readStoredEventFilters().open ?? false);
   const [eventFilterMode, setEventFilterMode] = useState<EventFilterMode>(() => readStoredEventFilters().mode ?? "include");
   const [eventTypeFilters, setEventTypeFilters] = useState<string[]>(() => readStoredEventFilters().types ?? []);
   const [eventNodeFilters, setEventNodeFilters] = useState<string[]>(() => readStoredEventFilters().nodes ?? []);
   const [eventKeywordFilter, setEventKeywordFilter] = useState(() => readStoredEventFilters().keyword ?? "");
-  const [runMenuOpen, setRunMenuOpen] = useState(false);
-  const containerRef = useRef<HTMLDivElement | null>(null);
-  const runMenuRef = useRef<HTMLDivElement | null>(null);
-
+  const columnsRef = useRef<HTMLDivElement | null>(null);
   const sortedEvents = useMemo(
     () => [...events].sort((a, b) => timeRank(b.timestamp) - timeRank(a.timestamp)),
     [events]
@@ -106,10 +99,6 @@ export function RunStatusPanel({
   const runOptions = useMemo(
     () => [...(runs ?? [])].sort((a, b) => timeRank(b.started_at) - timeRank(a.started_at)),
     [runs]
-  );
-  const selectedRun = useMemo(
-    () => runOptions.find((item) => item.run_id === selectedRunId) ?? run ?? null,
-    [run, runOptions, selectedRunId]
   );
   const eventListItems = useMemo(
     () => sortedEvents.map((event, index) => ({ event, key: eventListKey(event, index) })),
@@ -130,15 +119,10 @@ export function RunStatusPanel({
     [eventFilterMode, eventKeywordFilter, eventListItems, eventNodeFilters, eventTypeFilters]
   );
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
-  const nodeBuckets = useMemo(() => groupByNode(steps, events), [steps, events]);
-  const stateBuckets = useMemo(
-    () => groupRunState(stateSnapshot, definition ?? null, registry ?? null),
-    [definition, registry, stateSnapshot]
-  );
 
   useEffect(() => {
     setSelectedKey(null);
-  }, [view]);
+  }, [selectedRunId]);
 
   useEffect(() => {
     writeStoredEventFilters({
@@ -163,102 +147,11 @@ export function RunStatusPanel({
     return () => window.removeEventListener("resize", clampPanelHeight);
   }, []);
 
-  useEffect(() => {
-    if (!runMenuOpen) return;
-    const closeOnPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (runMenuRef.current?.contains(target)) return;
-      setRunMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setRunMenuOpen(false);
-    };
-    window.addEventListener("pointerdown", closeOnPointerDown);
-    window.addEventListener("keydown", closeOnEscape);
-    return () => {
-      window.removeEventListener("pointerdown", closeOnPointerDown);
-      window.removeEventListener("keydown", closeOnEscape);
-    };
-  }, [runMenuOpen]);
-
-  const { items, renderDetail } = useMemo<{
-    items: ListItem[];
-    renderDetail: (key: string) => ReactNode;
-  }>(() => {
-    if (view === "events") {
-      return {
-        items: filteredEventItems.map(({ event, key }) => ({
-          key,
-          statusLabel: event.type,
-          statusTone: eventTone(event.type),
-          primary: event.node_id || event.run_id || "—",
-          trailing: formatTimeMs(event.timestamp),
-          eventTypeFirst: event.type.startsWith("run."),
-        })),
-        renderDetail: (key) => {
-          const target = filteredEventItems.find((item) => item.key === key)?.event;
-          if (!target) return null;
-          return <EventDetail event={target} />;
-        },
-      };
-    }
-    if (view === "node") {
-      return {
-        items: nodeBuckets.map((bucket) => ({
-          key: bucket.nodeId,
-          statusLabel: bucket.latestStatus || "—",
-          statusTone: statusTone(bucket.latestStatus),
-          primary: bucket.nodeId,
-          secondary: `${bucket.steps.length} steps · ${bucket.events.length} events`,
-          trailing: formatTime(bucket.latestAt),
-        })),
-        renderDetail: (key) => {
-          const target = nodeBuckets.find((bucket) => bucket.nodeId === key);
-          if (!target) return null;
-          return <NodeDetail bucket={target} />;
-        },
-      };
-    }
-    return {
-      items: stateBuckets.map((bucket) => ({
-        key: bucket.key,
-        statusLabel: bucket.kind,
-        statusTone: "neutral",
-        primary: bucket.label,
-        secondary: bucket.summary,
-      })),
-      renderDetail: (key) => {
-        const target = stateBuckets.find((bucket) => bucket.key === key);
-        if (!target) return null;
-        return <StateDetail bucket={target} />;
-      },
-    };
-  }, [filteredEventItems, nodeBuckets, stateBuckets, view]);
-
   const effectiveKey =
-    selectedKey && items.some((item) => item.key === selectedKey) ? selectedKey : items[0]?.key ?? null;
-
-  function startResize(event: ReactPointerEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const container = containerRef.current;
-    const listPane = event.currentTarget.previousElementSibling as HTMLElement | null;
-    const startX = event.clientX;
-    const startWidth = leftWidth ?? listPane?.getBoundingClientRect().width ?? MIN_LEFT_WIDTH;
-    const containerWidth = container?.clientWidth ?? Infinity;
-    const maxWidth = Math.max(MIN_LEFT_WIDTH, containerWidth - MIN_DETAIL_WIDTH);
-    const onMove = (moveEvent: PointerEvent) => {
-      const delta = moveEvent.clientX - startX;
-      setLeftWidth(Math.max(MIN_LEFT_WIDTH, Math.min(maxWidth, startWidth + delta)));
-    };
-    const onUp = () => {
-      window.removeEventListener("pointermove", onMove);
-      window.removeEventListener("pointerup", onUp);
-      document.body.style.cursor = "";
-    };
-    document.body.style.cursor = "col-resize";
-    window.addEventListener("pointermove", onMove);
-    window.addEventListener("pointerup", onUp);
-  }
+    selectedKey && filteredEventItems.some((item) => item.key === selectedKey)
+      ? selectedKey
+      : filteredEventItems[0]?.key ?? null;
+  const selectedEvent = filteredEventItems.find((item) => item.key === effectiveKey)?.event ?? null;
 
   function startResizeHeight(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -281,8 +174,43 @@ export function RunStatusPanel({
     window.addEventListener("pointerup", onUp);
   }
 
+  function startResizeColumns(boundary: 0 | 1, event: ReactPointerEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const container = columnsRef.current;
+    if (!container) return;
+    const startX = event.clientX;
+    const startRatios = columnRatios;
+    const availableWidth = Math.max(1, container.clientWidth - COLUMN_SEPARATOR_WIDTH * 2);
+    const onMove = (moveEvent: PointerEvent) => {
+      setColumnRatios(
+        resizeRunPanelColumnRatios(startRatios, boundary, moveEvent.clientX - startX, availableWidth)
+      );
+    };
+    const onUp = () => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      document.body.style.cursor = "";
+    };
+    document.body.style.cursor = "col-resize";
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  }
+
+  function resizeColumnsWithKeyboard(boundary: 0 | 1, event: ReactKeyboardEvent<HTMLDivElement>) {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const container = columnsRef.current;
+    if (!container) return;
+    const availableWidth = Math.max(1, container.clientWidth - COLUMN_SEPARATOR_WIDTH * 2);
+    const direction = event.key === "ArrowLeft" ? -1 : 1;
+    setColumnRatios((current) =>
+      resizeRunPanelColumnRatios(current, boundary, direction * availableWidth * COLUMN_KEYBOARD_STEP_RATIO, availableWidth)
+    );
+  }
+
   return (
     <section
+      aria-label="Run panel"
       className="flex min-h-0 flex-col bg-panel"
       style={{ height: panelHeight }}
     >
@@ -299,233 +227,223 @@ export function RunStatusPanel({
         <ListTree className="h-4 w-4 text-muted-foreground" />
         <div className="min-w-0 shrink-0">
           <div className="flex min-w-0 items-center gap-2">
-            <span className="truncate text-sm font-semibold">Run Status</span>
+            <span className="truncate text-sm font-semibold">Run</span>
           </div>
         </div>
-        {runOptions.length > 0 && onSelectRun ? (
-          <div ref={runMenuRef} className="relative min-w-0 max-w-[420px] flex-1 md:min-w-[220px]">
-            <button
-              type="button"
-              onClick={() => setRunMenuOpen((open) => !open)}
-              className="flex h-8 w-full min-w-0 items-center gap-2 rounded-md border border-border bg-background px-2 text-left text-xs hover:bg-accent/40"
-              title={selectedRun ? `Select run ${selectedRun.run_id}` : "Select run"}
-              aria-expanded={runMenuOpen}
-            >
-              {selectedRun ? (
-                <>
-                  <StatusText tone={statusTone(selectedRun.status)} className="shrink-0">
-                    {selectedRun.status}
-                  </StatusText>
-                  <span className="min-w-0 truncate font-mono">{shortRunId(selectedRun.run_id)}</span>
-                  <span className="hidden shrink-0 text-muted-foreground sm:inline">{formatTime(selectedRun.started_at)}</span>
-                </>
-              ) : (
-                <span className="text-muted-foreground">Select run</span>
-              )}
-              <ChevronDown className={cn("ml-auto h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", runMenuOpen && "rotate-180")} />
-            </button>
-            {runMenuOpen ? (
-              <div className="absolute left-0 top-[calc(100%+4px)] z-50 w-[min(520px,calc(100vw-2rem))] overflow-hidden rounded-md border border-border bg-panel shadow-lg">
-                <div className="max-h-72 overflow-auto p-1">
-                  {runOptions.map((option) => {
-                    const active = option.run_id === selectedRunId;
-                    const canDelete = Boolean(onDeleteRun) && !isRunActive(option.status);
-                    return (
-                      <div
-                        key={option.run_id}
-                        className={cn(
-                          "grid grid-cols-[minmax(0,1fr)_2rem] items-center rounded hover:bg-accent/50",
-                          active && "bg-accent text-accent-foreground"
-                        )}
-                      >
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onSelectRun(option.run_id);
-                            setRunMenuOpen(false);
-                          }}
-                          className="grid min-w-0 grid-cols-[1rem_5.5rem_minmax(0,1fr)_5.25rem] items-center gap-2 px-2 py-1.5 text-left text-xs"
-                        >
-                          <span className="flex h-4 w-4 items-center justify-center">
-                            {active ? <Check className="h-3.5 w-3.5" /> : null}
-                          </span>
-                          <StatusText tone={statusTone(option.status)} className="truncate">
-                            {option.status}
-                          </StatusText>
-                          <span className="min-w-0 truncate font-mono">{option.run_id}</span>
-                          <span className="shrink-0 text-right text-muted-foreground">{formatTime(option.started_at)}</span>
-                        </button>
-                        {onDeleteRun ? (
-                          <button
-                            type="button"
-                            onClick={(event) => {
-                              event.stopPropagation();
-                              if (!canDelete) return;
-                              setRunMenuOpen(false);
-                              onDeleteRun(option.run_id);
-                            }}
-                            disabled={!canDelete}
-                            title={canDelete ? "Delete run" : "Stop run before deleting"}
-                            aria-label={`Delete run ${option.run_id}`}
-                            className="mx-1 flex h-7 w-7 items-center justify-center rounded text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-35"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </button>
-                        ) : (
-                          <span className="h-7 w-7" />
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
-          </div>
-        ) : null}
-        <div className="hidden items-center gap-1 rounded-md border border-border bg-background p-0.5 md:inline-flex">
-          {viewOptions.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => setView(option.id)}
-              className={cn(
-                "rounded px-2 py-1 text-xs transition-colors",
-                view === option.id
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:bg-accent"
-              )}
-            >
-              {option.label}
-            </button>
-          ))}
-        </div>
+        <div className="flex-1" />
         <Button
           variant="ghost"
           size="icon"
           onClick={onHide}
-          title="Hide run status"
-          aria-label="Hide run status"
-          className="ml-auto"
+          title="Hide run panel"
+          aria-label="Hide run panel"
         >
           <ChevronDown className="h-4 w-4" />
         </Button>
       </div>
 
-      <div ref={containerRef} className="flex min-h-0 flex-1">
-        <div
-          className="min-h-0 shrink-0 overflow-auto border-r border-border"
-          style={{ width: leftWidth ?? DEFAULT_LEFT_WIDTH_RATIO }}
-        >
-          {view === "events" ? (
-            <EventFilterControls
-              open={eventFiltersOpen}
-              mode={eventFilterMode}
-              types={eventTypeFilters}
-              selectedNodes={eventNodeFilters}
-              keyword={eventKeywordFilter}
-              eventTypes={eventTypes}
-              nodes={eventNodes}
-              activeCount={activeEventFilterCount}
-              filteredCount={filteredEventItems.length}
-              totalCount={sortedEvents.length}
-              onOpenChange={setEventFiltersOpen}
-              onModeChange={setEventFilterMode}
-              onTypesChange={setEventTypeFilters}
-              onNodesChange={setEventNodeFilters}
-              onKeywordChange={setEventKeywordFilter}
-              onClear={() => {
-                setEventFilterMode("include");
-                setEventTypeFilters([]);
-                setEventNodeFilters([]);
-                setEventKeywordFilter("");
-              }}
-            />
-          ) : null}
-          {items.length === 0 ? (
-            <div className="p-3 text-sm text-muted-foreground">
-              {view === "events" && sortedEvents.length > 0 ? "No matching events" : "No items"}
-            </div>
-          ) : (
-            <ul className="divide-y divide-border">
-              {items.map((item) => (
-                <li key={item.key}>
-                  <button
-                    type="button"
-                    onClick={() => setSelectedKey(item.key)}
-                    className={cn(
-                      "w-full items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
-                      view === "events"
-                        ? "grid grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem]"
-                        : "flex",
-                      effectiveKey === item.key && "bg-accent text-accent-foreground"
-                    )}
-                  >
-                    {view === "events" ? (
-                      <>
-                        {item.eventTypeFirst ? (
-                          <span className="col-span-2 min-w-0 truncate" title={item.statusLabel}>
-                            <StatusText tone={item.statusTone ?? "neutral"} className="max-w-full truncate align-middle">
-                              {item.statusLabel}
+      <div
+        ref={columnsRef}
+        className="grid min-h-0 flex-1 overflow-hidden"
+        style={{ gridTemplateColumns: columnGridTemplate(columnRatios) }}
+      >
+        <div aria-label="Run list" className="flex min-h-0 min-w-0 flex-col">
+          <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
+            <span className="text-xs font-semibold">Run</span>
+            <span className="ml-auto text-xs text-muted-foreground">{runOptions.length}</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto">
+            {runOptions.length === 0 ? (
+              <div className="p-3 text-sm text-muted-foreground">No runs</div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {runOptions.map((option) => {
+                  const active = option.run_id === selectedRunId;
+                  const canDelete = Boolean(onDeleteRun) && !isRunActive(option.status);
+                  const triggerType = runTriggerTypes?.[option.run_id];
+                  return (
+                    <li
+                      key={option.run_id}
+                      className={cn(
+                        "grid grid-cols-[minmax(0,1fr)_2rem]",
+                        active && "bg-accent text-accent-foreground"
+                      )}
+                    >
+                      <button
+                        type="button"
+                        onClick={() => onSelectRun?.(option.run_id)}
+                        aria-pressed={active}
+                        className="min-w-0 px-3 py-1.5 text-left text-xs hover:bg-accent/40"
+                      >
+                        <div className="flex min-w-0 items-center gap-2">
+                          <RunSourceIcon triggerType={triggerType} />
+                          <RunStatusIcon status={option.status} />
+                          <span className="min-w-0 flex-1 truncate font-mono" title={option.run_id}>
+                            {option.run_id}
+                          </span>
+                          <span className="shrink-0 text-muted-foreground">
+                            {formatTime(option.started_at)}
+                          </span>
+                        </div>
+                      </button>
+                      {onDeleteRun ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (canDelete) onDeleteRun(option.run_id);
+                          }}
+                          disabled={!canDelete}
+                          title={canDelete ? "Delete run" : "Stop run before deleting"}
+                          aria-label={`Delete run ${option.run_id}`}
+                          className="m-1 flex h-7 w-7 items-center justify-center self-center rounded text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-35"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      ) : (
+                        <span />
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
+
+        <ColumnResizeHandle
+          label="Resize Run and Run Event columns"
+          value={columnBoundaryPercent(columnRatios, 0)}
+          onPointerDown={(event) => startResizeColumns(0, event)}
+          onKeyDown={(event) => resizeColumnsWithKeyboard(0, event)}
+        />
+
+        <div aria-label="Run event list" className="flex min-h-0 min-w-0 flex-col">
+          <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
+            <span className="text-xs font-semibold">Run Event</span>
+            <span className="ml-auto text-xs text-muted-foreground">
+              {filteredEventItems.length}/{sortedEvents.length}
+            </span>
+          </div>
+          <EventFilterControls
+            open={eventFiltersOpen}
+            mode={eventFilterMode}
+            types={eventTypeFilters}
+            selectedNodes={eventNodeFilters}
+            keyword={eventKeywordFilter}
+            eventTypes={eventTypes}
+            nodes={eventNodes}
+            activeCount={activeEventFilterCount}
+            filteredCount={filteredEventItems.length}
+            totalCount={sortedEvents.length}
+            onOpenChange={setEventFiltersOpen}
+            onModeChange={setEventFilterMode}
+            onTypesChange={setEventTypeFilters}
+            onNodesChange={setEventNodeFilters}
+            onKeywordChange={setEventKeywordFilter}
+            onClear={() => {
+              setEventFilterMode("include");
+              setEventTypeFilters([]);
+              setEventNodeFilters([]);
+              setEventKeywordFilter("");
+            }}
+          />
+          <div className="min-h-0 flex-1 overflow-auto">
+            {filteredEventItems.length === 0 ? (
+              <div className="p-3 text-sm text-muted-foreground">
+                {sortedEvents.length > 0 ? "No matching events" : "No run events"}
+              </div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {filteredEventItems.map(({ event, key }) => (
+                  <li key={key}>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedKey(key)}
+                      className={cn(
+                        "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
+                        effectiveKey === key && "bg-accent text-accent-foreground"
+                      )}
+                    >
+                      {event.type.startsWith("run.") ? (
+                        <span className="col-span-2 min-w-0 truncate" title={event.type}>
+                          <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
+                            {event.type}
+                          </StatusText>
+                        </span>
+                      ) : (
+                        <>
+                          <span className="truncate font-mono" title={event.node_id || event.run_id}>
+                            {event.node_id || event.run_id || "—"}
+                          </span>
+                          <span className="min-w-0 truncate" title={event.type}>
+                            <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
+                              {event.type}
                             </StatusText>
                           </span>
-                        ) : (
-                          <>
-                            <span className="truncate font-mono" title={item.primary}>{item.primary}</span>
-                            {item.statusLabel ? (
-                              <span className="min-w-0 truncate" title={item.statusLabel}>
-                                <StatusText tone={item.statusTone ?? "neutral"} className="max-w-full truncate align-middle">
-                                  {item.statusLabel}
-                                </StatusText>
-                              </span>
-                            ) : (
-                              <span />
-                            )}
-                          </>
-                        )}
-                        <span className="truncate text-right text-muted-foreground">{item.trailing}</span>
-                      </>
-                    ) : (
-                      <>
-                        {item.statusLabel ? (
-                          <StatusText tone={item.statusTone ?? "neutral"} className="shrink-0">
-                            {item.statusLabel}
-                          </StatusText>
-                        ) : null}
-                        <span className="truncate font-mono">{item.primary}</span>
-                        {item.secondary ? (
-                          <span className="truncate text-muted-foreground">{item.secondary}</span>
-                        ) : null}
-                        {item.trailing ? (
-                          <span className="ml-auto shrink-0 text-muted-foreground">{item.trailing}</span>
-                        ) : null}
-                      </>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+                        </>
+                      )}
+                      <span className="truncate text-right text-muted-foreground">
+                        {formatTimeMs(event.timestamp)}
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
         </div>
 
-        <div
-          role="separator"
-          aria-orientation="vertical"
-          onPointerDown={startResize}
-          className="relative w-px shrink-0 cursor-col-resize bg-border hover:bg-primary/50"
-          title="Drag to resize"
-        >
-          <span className="absolute inset-y-0 -left-1.5 -right-1.5" />
-        </div>
+        <ColumnResizeHandle
+          label="Resize Run Event and Event Detail columns"
+          value={columnBoundaryPercent(columnRatios, 1)}
+          onPointerDown={(event) => startResizeColumns(1, event)}
+          onKeyDown={(event) => resizeColumnsWithKeyboard(1, event)}
+        />
 
-        <div className="min-h-0 flex-1 overflow-auto p-3">
-          {effectiveKey ? (
-            renderDetail(effectiveKey)
-          ) : (
-            <div className="text-sm text-muted-foreground">Select an item</div>
-          )}
+        <div aria-label="Event detail" className="flex min-h-0 min-w-0 flex-col">
+          <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
+            <span className="text-xs font-semibold">Event Detail</span>
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto p-3">
+            {selectedEvent ? (
+              <EventDetail event={selectedEvent} />
+            ) : (
+              <div className="text-sm text-muted-foreground">Select an event</div>
+            )}
+          </div>
         </div>
       </div>
     </section>
+  );
+}
+
+function ColumnResizeHandle({
+  label,
+  value,
+  onPointerDown,
+  onKeyDown,
+}: {
+  label: string;
+  value: number;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void;
+}) {
+  return (
+    <div
+      role="separator"
+      aria-label={label}
+      aria-orientation="vertical"
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-valuenow={value}
+      tabIndex={0}
+      onPointerDown={onPointerDown}
+      onKeyDown={onKeyDown}
+      className="relative z-10 w-px cursor-col-resize bg-border outline-none hover:bg-primary/60 focus:bg-primary/60"
+      title="Drag to resize columns"
+    >
+      <span className="absolute inset-y-0 -left-1.5 -right-1.5" />
+    </div>
   );
 }
 
@@ -926,47 +844,6 @@ function EventDetail({ event }: { event: RuntimeEvent }) {
   );
 }
 
-function NodeDetail({ bucket }: { bucket: NodeBucket }) {
-  return (
-    <div className="grid gap-3 text-xs">
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusText tone={statusTone(bucket.latestStatus)}>{bucket.latestStatus || "—"}</StatusText>
-        <span className="font-mono">{bucket.nodeId}</span>
-        <span className="ml-auto text-muted-foreground">
-          {bucket.steps.length} steps · {bucket.events.length} events
-        </span>
-      </div>
-      {bucket.steps.length > 0 ? (
-        <DetailSection title="Steps">
-          <StepRows steps={bucket.steps} />
-        </DetailSection>
-      ) : null}
-      {bucket.events.length > 0 ? (
-        <DetailSection title="Events">
-          <EventRows events={bucket.events} />
-        </DetailSection>
-      ) : null}
-    </div>
-  );
-}
-
-function StateDetail({ bucket }: { bucket: StateBucket }) {
-  return (
-    <div className="grid gap-3 text-xs">
-      <div className="flex flex-wrap items-center gap-2">
-        <StatusText tone="neutral">{bucket.kind}</StatusText>
-        <span className="font-mono">{bucket.label}</span>
-        <span className="ml-auto text-muted-foreground">{bucket.summary}</span>
-      </div>
-      <DetailSection title="State value">
-        <pre className="max-h-96 overflow-auto rounded-md border border-border bg-background p-2 text-[11px]">
-          {stringifyJSON(bucket.value)}
-        </pre>
-      </DetailSection>
-    </div>
-  );
-}
-
 function DetailSection({ title, children }: { title: string; children: ReactNode }) {
   return (
     <div>
@@ -1324,56 +1201,6 @@ function changeKind(change: Record<string, unknown>): string {
   return "changed";
 }
 
-function StepRows({ steps, showNode }: { steps: StepRecord[]; showNode?: boolean }) {
-  return (
-    <>
-      {steps.map((step) => (
-        <div
-          key={step.step_id}
-          className="flex items-center gap-2 rounded border border-border bg-muted/30 px-2 py-1 text-xs"
-        >
-          <StatusText tone={statusTone(step.status)}>{step.status}</StatusText>
-          {showNode ? <span className="truncate font-mono">{step.node_id}</span> : null}
-          <span className="font-mono text-[10px] text-muted-foreground">{step.step_id}</span>
-          <span className="text-muted-foreground">attempt {step.attempt}</span>
-          {step.error_code ? (
-            <span className="truncate text-destructive">
-              {step.error_code}: {step.error_message ?? ""}
-            </span>
-          ) : null}
-          <span className="ml-auto text-muted-foreground">
-            {formatTime(step.finished_at ?? step.updated_at ?? step.started_at)}
-          </span>
-        </div>
-      ))}
-    </>
-  );
-}
-
-function EventRows({ events }: { events: RuntimeEvent[] }) {
-  return (
-    <>
-      {events.map((event, index) => (
-        <div
-          key={`${event.id}-${index}`}
-          className="rounded border border-border bg-muted/30 p-2 text-xs"
-        >
-          <div className="flex min-w-0 items-center gap-2">
-            <StatusText tone={eventTone(event.type)}>{event.type}</StatusText>
-            <span className="truncate font-mono text-muted-foreground">{event.node_id || event.run_id}</span>
-            <span className="ml-auto text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
-          </div>
-          {event.payload ? (
-            <pre className="mt-1 max-h-32 overflow-auto rounded bg-background p-2 text-[11px]">
-              {stringifyJSON(event.payload)}
-            </pre>
-          ) : null}
-        </div>
-      ))}
-    </>
-  );
-}
-
 function eventListKey(event: RuntimeEvent, index: number): string {
   return `${event.id || event.run_id || "event"}-${index}`;
 }
@@ -1431,12 +1258,78 @@ function isStringValue(value: unknown): value is string {
   return typeof value === "string";
 }
 
-function shortRunId(runId: string): string {
-  return runId.length > 18 ? `${runId.slice(0, 8)}…${runId.slice(-6)}` : runId;
-}
-
 function isRunActive(status: string): boolean {
   return status === "pending" || status === "running";
+}
+
+function RunSourceIcon({ triggerType }: { triggerType?: TriggerType }) {
+  let SourceIcon = Play;
+  let label = "Run";
+  if (triggerType === "chat") {
+    SourceIcon = MessageCircle;
+    label = "Chat";
+  } else if (triggerType === "webhook") {
+    SourceIcon = Webhook;
+    label = "Webhook";
+  } else if (triggerType === "schedule") {
+    SourceIcon = Clock3;
+    label = "Schedule";
+  }
+  return (
+    <span
+      data-run-source={triggerType ?? "direct"}
+      aria-label={label}
+      title={label}
+      className={cn(
+        "flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-border bg-muted/60 shadow-sm",
+        triggerType ? "text-primary" : "text-muted-foreground"
+      )}
+    >
+      <SourceIcon className="h-3.5 w-3.5" />
+    </span>
+  );
+}
+
+function RunStatusIcon({ status }: { status: string }) {
+  let StatusIcon = Circle;
+  let iconClassName = "text-muted-foreground";
+  switch (status) {
+    case "pending":
+      StatusIcon = Clock3;
+      break;
+    case "running":
+      StatusIcon = Loader2;
+      iconClassName = "animate-spin text-cyan-700 dark:text-cyan-300";
+      break;
+    case "paused":
+    case "interrupted":
+      StatusIcon = Pause;
+      iconClassName = "text-amber-700 dark:text-amber-300";
+      break;
+    case "completed":
+    case "finished":
+      StatusIcon = Check;
+      iconClassName = "text-emerald-700 dark:text-emerald-300";
+      break;
+    case "failed":
+      StatusIcon = X;
+      iconClassName = "text-destructive";
+      break;
+    case "canceled":
+      StatusIcon = Ban;
+      iconClassName = "text-destructive";
+      break;
+  }
+  return (
+    <span
+      data-run-status={status}
+      aria-label={status}
+      title={status}
+      className="flex h-4 w-4 shrink-0 items-center justify-center"
+    >
+      <StatusIcon className={cn("h-3.5 w-3.5", iconClassName)} />
+    </span>
+  );
 }
 
 function eventMatchesFilters(
@@ -1495,168 +1388,54 @@ function eventTone(type: string): StatusTone {
   return "neutral";
 }
 
-interface NodeBucket {
-  nodeId: string;
-  steps: StepRecord[];
-  events: RuntimeEvent[];
-  latestStatus: string;
-  latestAt: string;
-}
-
-interface StateBucket {
-  key: string;
-  kind: "module" | "capability" | "shared" | "scope";
-  label: string;
-  summary: string;
-  value: unknown;
-}
-
-function groupByNode(steps: StepRecord[], events: RuntimeEvent[]): NodeBucket[] {
-  const map = new Map<string, NodeBucket>();
-  const ensure = (nodeId: string): NodeBucket => {
-    let bucket = map.get(nodeId);
-    if (!bucket) {
-      bucket = { nodeId, steps: [], events: [], latestStatus: "", latestAt: "" };
-      map.set(nodeId, bucket);
-    }
-    return bucket;
-  };
-
-  for (const step of steps) {
-    if (!step.node_id) continue;
-    ensure(step.node_id).steps.push(step);
-  }
-  for (const event of events) {
-    if (!event.node_id) continue;
-    ensure(event.node_id).events.push(event);
-  }
-
-  for (const bucket of map.values()) {
-    bucket.steps.sort((a, b) => timeRank(b.updated_at ?? b.started_at) - timeRank(a.updated_at ?? a.started_at));
-    bucket.events.sort((a, b) => timeRank(b.timestamp) - timeRank(a.timestamp));
-    const latestStep = bucket.steps[0];
-    const latestEvent = bucket.events[0];
-    bucket.latestStatus = latestStep?.status ?? latestEvent?.type ?? "";
-    const stepAt = latestStep?.updated_at ?? latestStep?.started_at;
-    const eventAt = latestEvent?.timestamp;
-    bucket.latestAt = pickLatest(stepAt, eventAt);
-  }
-
-  return [...map.values()].sort((a, b) => timeRank(b.latestAt) - timeRank(a.latestAt));
-}
-
-function groupRunState(
-  snapshot: unknown,
-  definition: GraphDefinition | null,
-  registry: RegistryInfo | null
-): StateBucket[] {
-  const root = stateRecord(snapshot);
-  if (!root) return [];
-  const buckets: StateBucket[] = [];
-
-  const selectedModuleKeys = new Set(
-    (definition?.state_modules ?? []).map((module) => `${module.name}\u0000${module.version}`)
-  );
-  for (const module of registry?.state_modules ?? []) {
-    if (!selectedModuleKeys.has(`${module.name}\u0000${module.version}`)) continue;
-    const values: Record<string, unknown> = {};
-    for (const field of module.fields ?? []) {
-      const resolved = stateValueAtPath(root, field.path);
-      if (resolved.exists) values[field.path] = resolved.value;
-    }
-    buckets.push({
-      key: `module:${module.name}:${module.version}`,
-      kind: "module",
-      label: `${module.name}@${module.version}`,
-      summary: `${Object.keys(values).length}/${module.fields?.length ?? 0} fields present`,
-      value: values,
-    });
-  }
-
-  const capabilityRoots = new Map<string, { capability: string; path: string }>();
-  const addCapabilityRoot = (port: StatePortDefinition | undefined, path: string | undefined) => {
-    const capability = port?.capability?.trim();
-    const rootPath = path?.trim();
-    if (!capability || !rootPath) return;
-    capabilityRoots.set(`${capability}\u0000${rootPath}`, { capability, path: rootPath });
-  };
-  for (const node of definition?.nodes ?? []) {
-    const nodeType = registry?.node_types.find((item) => item.type === node.type);
-    for (const [name, binding] of Object.entries(node.state ?? {})) {
-      addCapabilityRoot(nodeType?.state_ports?.find((port) => port.name === name), binding.path);
-    }
-  }
-  for (const edge of definition?.edges ?? []) {
-    if (!edge.condition) continue;
-    const condition = registry?.conditions.find((item) => item.type === edge.condition?.type);
-    for (const [name, binding] of Object.entries(edge.condition.state ?? {})) {
-      addCapabilityRoot(condition?.state_ports?.find((port) => port.name === name), binding.path);
-    }
-  }
-  for (const { capability, path } of capabilityRoots.values()) {
-    const resolved = stateValueAtPath(root, path);
-    buckets.push({
-      key: `capability:${capability}:${path}`,
-      kind: "capability",
-      label: path,
-      summary: capability,
-      value: resolved.exists ? resolved.value : null,
-    });
-  }
-
-  const shared = stateRecord(root.shared);
-  if (shared) {
-    buckets.push({
-      key: "section:shared",
-      kind: "shared",
-      label: "shared",
-      summary: stateValueSummary(shared),
-      value: shared,
-    });
-  }
-  const scopes = stateRecord(root.scopes);
-  for (const [scope, value] of Object.entries(scopes ?? {})) {
-    buckets.push({
-      key: `scope:${scope}`,
-      kind: "scope",
-      label: `scopes.${scope}`,
-      summary: stateValueSummary(value),
-      value,
-    });
-  }
-  return buckets;
-}
-
-function stateRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
-}
-
-function stateValueAtPath(root: Record<string, unknown>, path: string): { exists: boolean; value?: unknown } {
-  let current: unknown = root;
-  for (const segment of path.split(".").map((item) => item.trim()).filter(Boolean)) {
-    const record = stateRecord(current);
-    if (!record || !Object.prototype.hasOwnProperty.call(record, segment)) return { exists: false };
-    current = record[segment];
-  }
-  return { exists: true, value: current };
-}
-
-function stateValueSummary(value: unknown): string {
-  if (Array.isArray(value)) return `${value.length} items`;
-  const record = stateRecord(value);
-  if (record) return `${Object.keys(record).length} fields`;
-  if (value === null || value === undefined) return "empty";
-  return typeof value;
-}
-
 function timeRank(value?: string): number {
   if (!value) return 0;
   const ts = Date.parse(value);
   return Number.isNaN(ts) ? 0 : ts;
 }
 
-function pickLatest(a?: string, b?: string): string {
-  if (!a) return b ?? "";
-  if (!b) return a;
-  return timeRank(a) >= timeRank(b) ? a : b;
+export function resizeRunPanelColumnRatios(
+  current: ColumnRatios,
+  boundary: 0 | 1,
+  deltaPixels: number,
+  availableWidth: number
+): ColumnRatios {
+  if (!Number.isFinite(deltaPixels) || !Number.isFinite(availableWidth) || availableWidth <= 0) return current;
+  const totalRatio = current[0] + current[1] + current[2];
+  if (totalRatio <= 0) return current;
+
+  const widths: ColumnRatios = [
+    (availableWidth * current[0]) / totalRatio,
+    (availableWidth * current[1]) / totalRatio,
+    (availableWidth * current[2]) / totalRatio,
+  ];
+  const leftIndex = boundary;
+  const rightIndex = boundary + 1;
+  const pairWidth = widths[leftIndex] + widths[rightIndex];
+  const pairMinimum = MIN_COLUMN_WIDTHS[leftIndex] + MIN_COLUMN_WIDTHS[rightIndex];
+  const minimumScale = Math.min(1, pairWidth / pairMinimum);
+  const leftMinimum = MIN_COLUMN_WIDTHS[leftIndex] * minimumScale;
+  const rightMinimum = MIN_COLUMN_WIDTHS[rightIndex] * minimumScale;
+  const clampedDelta = Math.max(
+    leftMinimum - widths[leftIndex],
+    Math.min(widths[rightIndex] - rightMinimum, deltaPixels)
+  );
+
+  widths[leftIndex] += clampedDelta;
+  widths[rightIndex] -= clampedDelta;
+  return [
+    (widths[0] / availableWidth) * totalRatio,
+    (widths[1] / availableWidth) * totalRatio,
+    (widths[2] / availableWidth) * totalRatio,
+  ];
+}
+
+function columnGridTemplate(ratios: ColumnRatios): string {
+  return `minmax(0, ${ratios[0]}fr) ${COLUMN_SEPARATOR_WIDTH}px minmax(0, ${ratios[1]}fr) ${COLUMN_SEPARATOR_WIDTH}px minmax(0, ${ratios[2]}fr)`;
+}
+
+function columnBoundaryPercent(ratios: ColumnRatios, boundary: 0 | 1): number {
+  const total = ratios[0] + ratios[1] + ratios[2];
+  const occupied = boundary === 0 ? ratios[0] : ratios[0] + ratios[1];
+  return total > 0 ? Math.round((occupied / total) * 100) : 0;
 }

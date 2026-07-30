@@ -10,7 +10,6 @@ import {
   Settings,
   Square,
   Upload,
-  Zap,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
@@ -71,7 +70,6 @@ export function WorkbenchShell({
           <GitBranch className="h-4 w-4" />
         </div>
         <NavButton icon={LayoutDashboard} active={tab === "graph"} onClick={() => onTabChange("graph")} label="Graph" />
-        <NavButton icon={Zap} active={tab === "triggers"} onClick={() => onTabChange("triggers")} label="Triggers" />
         <div className="flex-1" />
         <NavButton icon={Settings} active={tab === "settings"} onClick={() => onTabChange("settings")} label="Settings" />
       </aside>
@@ -152,10 +150,10 @@ export function WorkbenchShell({
             <button
               className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={onToggleRunStatus}
-              title={runStatusVisible ? "Hide run status" : "Show run status"}
+              title={runStatusVisible ? "Hide run panel" : "Show run panel"}
             >
               <ChevronUp className={`h-3.5 w-3.5 transition-transform ${runStatusVisible ? "rotate-180" : ""}`} />
-              Run status
+              Run
             </button>
           ) : null}
         </footer>

@@ -54,5 +54,5 @@ bindings, incompatible/reserved paths, unresolved producers, and parallel write 
 save/run.
 
 The Registry dialog exposes State Modules, capabilities, Node State Ports, Condition State Ports, and the generated
-Graph JSON Schema. Run Status includes a Run State view grouped by referenced modules, capability roots, `shared`, and
-individual `scopes` roots.
+Graph JSON Schema. The bottom Run panel uses resizable columns for the run list, the selected run's events, and the
+selected event details, with a default width ratio of `1:1.5:2`.

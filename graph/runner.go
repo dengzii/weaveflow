@@ -68,6 +68,13 @@ func (g *graphRunnerGraph) CompileForRunner(execution fruntime.RunnerExecution) 
 	return g.graph.compileForRunner(execution)
 }
 
+func (g *graphRunnerGraph) CompileRunnableForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
+	if g == nil || g.graph == nil {
+		return nil, fmt.Errorf("graph runner graph is nil")
+	}
+	return g.graph.compileRunnableForRunner(execution)
+}
+
 func (g *graphRunnerGraph) ResolveNodeID(nodeID string) (string, error) {
 	if g == nil || g.graph == nil {
 		return "", fmt.Errorf("graph runner graph is nil")
