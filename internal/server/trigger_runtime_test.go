@@ -6,10 +6,11 @@ import (
 	"testing"
 	"time"
 
+	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -26,7 +27,7 @@ func (*triggerRuntimeTestModel) Call(context.Context, string, ...llms.CallOption
 	return "", nil
 }
 
-func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
+func TestResolveTriggerRunnerUsesLatestPushedGraphSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	baseDir := t.TempDir()
 	uploader, err := New(context.Background(), Config{BaseDir: baseDir})
@@ -36,8 +37,12 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 	engine := gin.New()
 	uploader.RegisterRoutes(engine.Group(""))
 
-	postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "first"))
-	second := postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "second"))
+	postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "draft-only"))
+	if _, err := uploader.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"}); err == nil {
+		t.Fatal("draft graph was available to triggers before push")
+	}
+	second := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "official"))
+	postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "newer-draft"))
 
 	resolver, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {
@@ -52,14 +57,43 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 		t.Fatalf("resolved graph = version %q session %q, want version v2 session %q", runner.GraphVersion, runner.GraphSessionID, second.Graph.GraphSessionID)
 	}
 
-	third := postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "third"))
+	third := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v4", "next-official"))
 	resolved, err = resolver.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	runner = resolvedGraphRunner(t, resolved)
-	if runner.GraphVersion != "v3" || runner.GraphSessionID != third.Graph.GraphSessionID {
-		t.Fatalf("resolved graph after upload = version %q session %q, want version v3 session %q", runner.GraphVersion, runner.GraphSessionID, third.Graph.GraphSessionID)
+	if runner.GraphVersion != "v4" || runner.GraphSessionID != third.Graph.GraphSessionID {
+		t.Fatalf("resolved graph after push = version %q session %q, want version v4 session %q", runner.GraphVersion, runner.GraphSessionID, third.Graph.GraphSessionID)
+	}
+}
+
+func TestFailedPushKeepsPreviousOfficialGraph(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	official := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "official"))
+
+	failed := serveHTTP(engine, "POST", "/graph/push", `{
+		"graph_id":"graph-a",
+		"graph_version":"v2",
+		"definition":{"version":"2.0","name":"invalid","nodes":[]}
+	}`)
+	if failed.Code != 400 {
+		t.Fatalf("failed push status = %d, body = %s", failed.Code, failed.Body.String())
+	}
+
+	resolved, err := srv.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := resolvedGraphRunner(t, resolved)
+	if runner.GraphSessionID != official.Graph.GraphSessionID {
+		t.Fatalf("official session after failed push = %q, want %q", runner.GraphSessionID, official.Graph.GraphSessionID)
 	}
 }
 
@@ -92,6 +126,42 @@ func TestTriggerRunStarterUsesLatestRuntimeContext(t *testing.T) {
 		t.Fatalf("trigger model = %T %p, want latest model %p", got, got, latestModel)
 	}
 	requireTriggerContextValue(t, starter, "latest")
+}
+
+func TestTriggerRunStarterPreservesChatReplySink(t *testing.T) {
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &triggerTestStarter{}
+	wrapped := &triggerRunStarter{server: srv, runner: starter}
+	sink := chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil })
+	ctx := chatcap.WithReplySink(context.Background(), sink)
+
+	if _, _, err := wrapped.Start(ctx, state.NewState()); err != nil {
+		t.Fatal(err)
+	}
+	if chatcap.ReplySinkFromContext(starter.ctx) == nil {
+		t.Fatal("chat reply sink was dropped while deriving the runtime context")
+	}
+}
+
+func TestTriggerRunStarterPreservesRuntimeEventObserver(t *testing.T) {
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &triggerTestStarter{}
+	wrapped := &triggerRunStarter{server: srv, runner: starter}
+	observer := runtime.EventObserverFunc(func(context.Context, runtime.Event) error { return nil })
+	ctx := runtime.WithRunnerEventObserver(context.Background(), observer)
+
+	if _, _, err := wrapped.Start(ctx, state.NewState()); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.RunnerEventObserverFromContext(starter.ctx) == nil {
+		t.Fatal("runtime event observer was dropped while deriving the runtime context")
+	}
 }
 
 func TestTriggerRunStarterAsyncKeepsLatestContextUntilCompletion(t *testing.T) {

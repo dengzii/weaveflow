@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
 
+	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/google/uuid"
@@ -59,16 +62,18 @@ func (f RunnerResolverFunc) Resolve(ctx context.Context, target Target) (RunStar
 }
 
 type Service struct {
-	store    Store
-	resolver RunnerResolver
-	now      func() time.Time
+	store        Store
+	resolver     RunnerResolver
+	chatRegistry *chatchannel.Registry
+	now          func() time.Time
 
-	operationMu sync.Mutex
-	mu          sync.Mutex
-	ctx         context.Context
-	cancel      context.CancelFunc
-	schedules   map[string]*scheduleEntry
-	activeRuns  map[string]int
+	operationMu  sync.Mutex
+	mu           sync.Mutex
+	ctx          context.Context
+	cancel       context.CancelFunc
+	schedules    map[string]*scheduleEntry
+	chatChannels map[string]*chatChannelEntry
+	activeRuns   map[string]int
 }
 
 type scheduleEntry struct {
@@ -76,20 +81,74 @@ type scheduleEntry struct {
 	id   cron.EntryID
 }
 
-func NewService(store Store, resolver RunnerResolver) (*Service, error) {
+type chatChannelEntry struct {
+	channel string
+	ctx     context.Context
+	cancel  context.CancelFunc
+	done    chan struct{}
+}
+
+type ServiceOption func(*Service) error
+
+func WithChatChannels(registry *chatchannel.Registry) ServiceOption {
+	return func(service *Service) error {
+		if registry == nil {
+			return fmt.Errorf("chat channel registry is nil")
+		}
+		service.chatRegistry = registry
+		return nil
+	}
+}
+
+func NewService(store Store, resolver RunnerResolver, options ...ServiceOption) (*Service, error) {
 	if store == nil {
 		return nil, fmt.Errorf("trigger store is required")
 	}
 	if resolver == nil {
 		return nil, fmt.Errorf("runner resolver is required")
 	}
-	return &Service{
-		store:      store,
-		resolver:   resolver,
-		now:        time.Now,
-		schedules:  make(map[string]*scheduleEntry),
-		activeRuns: make(map[string]int),
-	}, nil
+	service := &Service{
+		store:        store,
+		resolver:     resolver,
+		chatRegistry: chatchannel.NewDefaultRegistry(),
+		now:          time.Now,
+		schedules:    make(map[string]*scheduleEntry),
+		chatChannels: make(map[string]*chatChannelEntry),
+		activeRuns:   make(map[string]int),
+	}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(service); err != nil {
+			return nil, err
+		}
+	}
+	return service, nil
+}
+
+func (s *Service) ChatChannelDefinitions() []chatchannel.Definition {
+	if s == nil || s.chatRegistry == nil {
+		return nil
+	}
+	return s.chatRegistry.Definitions()
+}
+
+func (s *Service) ChatChannels() *chatchannel.Registry {
+	if s == nil {
+		return nil
+	}
+	return s.chatRegistry
+}
+
+func (s *Service) RedactChatChannelConfig(item Trigger) Trigger {
+	if s == nil || s.chatRegistry == nil || item.Chat == nil {
+		return item
+	}
+	chat := *item.Chat
+	chat.ChannelConfig = s.chatRegistry.RedactConfig(chat.Channel, chat.ChannelConfig)
+	item.Chat = &chat
+	return item
 }
 
 func (s *Service) Create(ctx context.Context, trigger Trigger) (Trigger, error) {
@@ -114,10 +173,15 @@ func (s *Service) Create(ctx context.Context, trigger Trigger) (Trigger, error) 
 	if err != nil {
 		return Trigger{}, err
 	}
+	channel, err := s.buildChatChannel(trigger)
+	if err != nil {
+		return Trigger{}, err
+	}
 	if err := s.store.Create(ctx, trigger); err != nil {
 		return Trigger{}, err
 	}
 	s.replaceSchedule(trigger.ID, schedule)
+	s.replaceChatChannel(trigger.ID, trigger.Chat, channel)
 	return trigger, nil
 }
 
@@ -132,6 +196,18 @@ func (s *Service) Update(ctx context.Context, trigger Trigger) (Trigger, error) 
 	if err != nil {
 		return Trigger{}, err
 	}
+	if trigger.Chat != nil && previous.Chat != nil {
+		if strings.TrimSpace(trigger.Chat.Channel) == "" {
+			trigger.Chat.Channel = previous.Chat.Channel
+		}
+		if strings.TrimSpace(trigger.Chat.Channel) == strings.TrimSpace(previous.Chat.Channel) {
+			trigger.Chat.ChannelConfig = s.chatRegistry.MergeWriteOnlyConfig(
+				trigger.Chat.Channel,
+				previous.Chat.ChannelConfig,
+				trigger.Chat.ChannelConfig,
+			)
+		}
+	}
 	trigger = trigger.Normalize(previous.CreatedAt)
 	trigger.CreatedAt = previous.CreatedAt
 	trigger.UpdatedAt = s.now()
@@ -145,10 +221,15 @@ func (s *Service) Update(ctx context.Context, trigger Trigger) (Trigger, error) 
 	if err != nil {
 		return Trigger{}, err
 	}
+	channel, err := s.buildChatChannel(trigger)
+	if err != nil {
+		return Trigger{}, err
+	}
 	if err := s.store.Update(ctx, trigger); err != nil {
 		return Trigger{}, err
 	}
 	s.replaceSchedule(trigger.ID, schedule)
+	s.replaceChatChannel(trigger.ID, trigger.Chat, channel)
 	return trigger, nil
 }
 
@@ -184,6 +265,7 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 		return err
 	}
 	s.replaceSchedule(id, nil)
+	s.replaceChatChannel(id, nil, nil)
 	return nil
 }
 
@@ -209,6 +291,8 @@ func (s *Service) Start(ctx context.Context) error {
 		return err
 	}
 	schedules := make(map[string]*scheduleEntry)
+	channels := make(map[string]chatchannel.Instance)
+	channelNames := make(map[string]string)
 	for _, item := range items {
 		item = item.Normalize(s.now())
 		if err := item.Validate(); err != nil {
@@ -224,15 +308,39 @@ func (s *Service) Start(ctx context.Context) error {
 		if schedule != nil {
 			schedules[item.ID] = schedule
 		}
+		channel, err := s.buildChatChannel(item)
+		if err != nil {
+			return fmt.Errorf("load trigger %q: %w", item.ID, err)
+		}
+		if channel != nil {
+			channels[item.ID] = channel
+			channelNames[item.ID] = item.Chat.Channel
+		}
 	}
 
 	s.mu.Lock()
 	s.ctx, s.cancel = context.WithCancel(ctx)
 	s.schedules = schedules
+	s.chatChannels = make(map[string]*chatChannelEntry, len(channels))
+	pendingChannels := make(map[string]chatchannel.Instance, len(channels))
 	for _, schedule := range schedules {
 		schedule.cron.Start()
 	}
+	for id, channel := range channels {
+		channelCtx, cancel := context.WithCancel(s.ctx)
+		entry := &chatChannelEntry{channel: channelNames[id], ctx: channelCtx, cancel: cancel, done: make(chan struct{})}
+		s.chatChannels[id] = entry
+		pendingChannels[id] = channel
+	}
 	s.mu.Unlock()
+	for id, channel := range pendingChannels {
+		s.mu.Lock()
+		entry := s.chatChannels[id]
+		s.mu.Unlock()
+		if entry != nil {
+			go s.runChatChannel(id, channel, entry)
+		}
+	}
 	return nil
 }
 
@@ -249,12 +357,20 @@ func (s *Service) Close() error {
 	s.ctx = nil
 	entries := s.schedules
 	s.schedules = make(map[string]*scheduleEntry)
+	channels := s.chatChannels
+	s.chatChannels = make(map[string]*chatChannelEntry)
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
 	for _, entry := range entries {
 		entry.cron.Stop()
+	}
+	for _, entry := range channels {
+		entry.cancel()
+	}
+	for _, entry := range channels {
+		<-entry.done
 	}
 	return nil
 }
@@ -318,6 +434,292 @@ func (s *Service) InvokeSchedule(ctx context.Context, id string) (runtime.RunRec
 	return s.invoke(ctx, trigger, input, map[string]any{"scheduled_at": s.now().UTC().Format(time.RFC3339Nano)}, "schedule")
 }
 
+type ChatResult struct {
+	Run        runtime.RunRecord `json:"run"`
+	FinalReply string            `json:"final_reply,omitempty"`
+}
+
+func (s *Service) InvokeChat(ctx context.Context, id string, message chatcap.Message, sink chatcap.ReplySink) (ChatResult, error) {
+	if s == nil {
+		return ChatResult{}, fmt.Errorf("trigger service is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if sink == nil {
+		return ChatResult{}, chatcap.ErrReplySinkUnavailable
+	}
+	message = message.Normalize()
+	if err := message.Validate(); err != nil {
+		return ChatResult{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	}
+	item, err := s.store.Get(ctx, id)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	if item.Type != TypeChat {
+		return ChatResult{}, fmt.Errorf("%w: trigger %q is not a chat trigger", ErrTypeMismatch, id)
+	}
+	if !item.Enabled {
+		return ChatResult{}, ErrDisabled
+	}
+
+	now := s.now().UTC()
+	record := Record{
+		ID:          uuid.NewString(),
+		TriggerID:   item.ID,
+		TriggerType: item.Type,
+		Target:      item.Target,
+		Status:      runtime.RunStatusPending,
+		TriggeredAt: now,
+		UpdatedAt:   now,
+	}
+	if err := s.store.CreateRecord(ctx, record); err != nil {
+		return ChatResult{}, fmt.Errorf("create trigger record: %w", err)
+	}
+
+	result, runErr := s.invokeChatRun(ctx, item, message, sink)
+	record.UpdatedAt = s.now().UTC()
+	if result.Run.RunID != "" {
+		runCopy := result.Run
+		record.Run = &runCopy
+		record.Status = result.Run.Status
+	}
+	if runErr != nil {
+		if record.Status == "" || record.Status == runtime.RunStatusPending {
+			record.Status = runtime.RunStatusFailed
+		}
+		record.ErrorMessage = runErr.Error()
+	} else if record.Status == "" {
+		record.Status = runtime.RunStatusCompleted
+	}
+	_ = s.store.UpdateRecord(context.WithoutCancel(ctx), record)
+	return result, runErr
+}
+
+func (s *Service) invokeChatRun(ctx context.Context, item Trigger, message chatcap.Message, sink chatcap.ReplySink) (ChatResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	trackActive := false
+	if item.Concurrency == ConcurrencySkip {
+		s.mu.Lock()
+		if s.activeRuns[item.ID] > 0 {
+			s.mu.Unlock()
+			return ChatResult{}, ErrBusy
+		}
+		s.activeRuns[item.ID]++
+		s.mu.Unlock()
+		trackActive = true
+	}
+	if trackActive {
+		defer s.finishActive(item.ID)
+	}
+
+	runner, err := s.resolver.Resolve(ctx, item.Target)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	if runner == nil {
+		return ChatResult{}, fmt.Errorf("runner resolver returned nil")
+	}
+	metadata := make(map[string]any, len(message.Metadata)+2)
+	for key, value := range message.Metadata {
+		metadata[key] = value
+	}
+	if message.ID != "" {
+		metadata["message_id"] = message.ID
+	}
+	if message.ConversationID != "" {
+		metadata["conversation_id"] = message.ConversationID
+	}
+	initial, err := buildTriggerState(item, message.Content, metadata, string(TypeChat))
+	if err != nil {
+		return ChatResult{}, err
+	}
+	configuredSink := newChatInvocationSink(item.Chat, sink)
+	executionCtx := runtime.WithRunnerEventObserver(ctx, newChatLLMStreamObserver(configuredSink))
+	executionCtx = chatcap.WithReplySink(executionCtx, configuredSink)
+	run, finalState, runErr := runner.Start(executionCtx, initial)
+	finalReply, replyErr := chatFinalReply(finalState, item.Chat)
+	if runErr == nil && replyErr != nil {
+		runErr = replyErr
+	}
+	finishErr := configuredSink.finish(context.WithoutCancel(ctx), finalReply, runErr)
+	if runErr == nil && finishErr != nil {
+		runErr = finishErr
+	}
+	return ChatResult{Run: run, FinalReply: finalReply}, runErr
+}
+
+func buildTriggerState(item Trigger, input any, metadata map[string]any, triggerType string) (*state.State, error) {
+	initial := state.FromMap(item.InitialState)
+	if err := state.SetPath(initial, "shared.request", map[string]any{
+		"input":    input,
+		"metadata": metadata,
+	}); err != nil {
+		return nil, fmt.Errorf("initialize trigger request state: %w", err)
+	}
+	if err := state.SetPath(initial, "shared.trigger", map[string]any{
+		"id":   item.ID,
+		"type": triggerType,
+	}); err != nil {
+		return nil, fmt.Errorf("initialize trigger identity state: %w", err)
+	}
+	return initial, nil
+}
+
+func chatFinalReply(finalState *state.State, spec *ChatSpec) (string, error) {
+	path := "shared.final.answer"
+	if spec != nil && strings.TrimSpace(spec.ReplyPath) != "" {
+		path = spec.ReplyPath
+	}
+	value, ok := state.ReadPath(finalState, path)
+	if !ok || value == nil {
+		return "", nil
+	}
+	reply, ok := value.(string)
+	if !ok {
+		return "", fmt.Errorf("chat reply path %q must contain a string, got %T", path, value)
+	}
+	return strings.TrimSpace(reply), nil
+}
+
+type chatInvocationSink struct {
+	mu            sync.Mutex
+	target        chatcap.ReplySink
+	streamUpdates bool
+	streamNodeIDs map[string]struct{}
+	sequence      int64
+	streamed      bool
+	lastUpdate    string
+	messageSent   bool
+	lastMessage   string
+}
+
+type chatLLMStreamObserver struct {
+	mu      sync.Mutex
+	target  chatcap.ReplySink
+	content map[string]*strings.Builder
+}
+
+type chatLLMEventPayload struct {
+	CallID string `json:"call_id"`
+	Text   string `json:"text"`
+}
+
+func newChatLLMStreamObserver(target chatcap.ReplySink) *chatLLMStreamObserver {
+	return &chatLLMStreamObserver{
+		target:  target,
+		content: map[string]*strings.Builder{},
+	}
+}
+
+func (o *chatLLMStreamObserver) Observe(ctx context.Context, event runtime.Event) error {
+	if o == nil || o.target == nil {
+		return nil
+	}
+	if event.Type != runtime.EventLLMContentChunk && event.Type != runtime.EventLLMContent && event.Type != runtime.EventLLMCall {
+		return nil
+	}
+	var payload chatLLMEventPayload
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return fmt.Errorf("decode %s event payload: %w", event.Type, err)
+	}
+	key := chatLLMStreamKey(event, payload.CallID)
+
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if event.Type != runtime.EventLLMContentChunk {
+		delete(o.content, key)
+		return nil
+	}
+	if payload.Text == "" {
+		return nil
+	}
+	builder := o.content[key]
+	if builder == nil {
+		builder = &strings.Builder{}
+		o.content[key] = builder
+	}
+	_, _ = builder.WriteString(payload.Text)
+	if strings.TrimSpace(payload.Text) == "" {
+		return nil
+	}
+	return o.target.Emit(ctx, chatcap.Reply{
+		Kind:    chatcap.ReplyUpdate,
+		Content: builder.String(),
+		NodeID:  event.NodeID,
+	})
+}
+
+func chatLLMStreamKey(event runtime.Event, callID string) string {
+	if callID = strings.TrimSpace(callID); callID != "" {
+		return callID
+	}
+	return event.StepID + "\x00" + event.NodeID
+}
+
+func newChatInvocationSink(spec *ChatSpec, target chatcap.ReplySink) *chatInvocationSink {
+	sink := &chatInvocationSink{target: target}
+	if spec == nil {
+		return sink
+	}
+	sink.streamUpdates = spec.StreamUpdates
+	if len(spec.StreamNodeIDs) > 0 {
+		sink.streamNodeIDs = make(map[string]struct{}, len(spec.StreamNodeIDs))
+		for _, nodeID := range spec.StreamNodeIDs {
+			sink.streamNodeIDs[nodeID] = struct{}{}
+		}
+	}
+	return sink
+}
+
+func (s *chatInvocationSink) Emit(ctx context.Context, reply chatcap.Reply) error {
+	if s == nil || s.target == nil {
+		return chatcap.ErrReplySinkUnavailable
+	}
+	if reply.Kind == chatcap.ReplyUpdate {
+		if !s.streamUpdates {
+			return nil
+		}
+		if len(s.streamNodeIDs) > 0 {
+			if _, ok := s.streamNodeIDs[reply.NodeID]; !ok {
+				return nil
+			}
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.sequence++
+	reply.Sequence = s.sequence
+	switch reply.Kind {
+	case chatcap.ReplyUpdate:
+		s.streamed = true
+		s.lastUpdate = reply.Content
+	case chatcap.ReplyMessage:
+		s.messageSent = true
+		s.lastMessage = reply.Content
+	}
+	return s.target.Emit(ctx, reply)
+}
+
+func (s *chatInvocationSink) finish(ctx context.Context, content string, runErr error) error {
+	s.mu.Lock()
+	if strings.TrimSpace(content) == "" && s.streamed {
+		content = s.lastUpdate
+	}
+	if !s.streamed && s.messageSent && content == s.lastMessage {
+		content = ""
+	}
+	s.mu.Unlock()
+	reply := chatcap.Reply{Kind: chatcap.ReplyFinish, Content: content}
+	if runErr != nil {
+		reply.Error = runErr.Error()
+	}
+	return s.Emit(ctx, reply)
+}
+
 func (s *Service) invoke(ctx context.Context, item Trigger, input any, metadata map[string]any, triggerType string) (runtime.RunRecord, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -379,18 +781,9 @@ func (s *Service) invokeRun(ctx context.Context, trigger Trigger, input any, met
 	if runner == nil {
 		return runtime.RunRecord{}, fmt.Errorf("runner resolver returned nil")
 	}
-	initial := state.FromMap(trigger.InitialState)
-	if err := state.SetPath(initial, "shared.request", map[string]any{
-		"input":    input,
-		"metadata": metadata,
-	}); err != nil {
-		return runtime.RunRecord{}, fmt.Errorf("initialize trigger request state: %w", err)
-	}
-	if err := state.SetPath(initial, "shared.trigger", map[string]any{
-		"id":   trigger.ID,
-		"type": triggerType,
-	}); err != nil {
-		return runtime.RunRecord{}, fmt.Errorf("initialize trigger identity state: %w", err)
+	initial, err := buildTriggerState(trigger, input, metadata, triggerType)
+	if err != nil {
+		return runtime.RunRecord{}, err
 	}
 	if trigger.Type == TypeWebhook && trigger.Webhook != nil {
 		if err := applyWebhookStateMappings(initial, input, trigger.Webhook.StateMappings); err != nil {
@@ -492,6 +885,34 @@ func (s *Service) buildSchedule(trigger Trigger) (*scheduleEntry, error) {
 	return &scheduleEntry{cron: scheduler, id: entryID}, nil
 }
 
+func (s *Service) buildChatChannel(item Trigger) (chatchannel.Instance, error) {
+	if item.Type != TypeChat || item.Chat == nil {
+		return nil, nil
+	}
+	if s.chatRegistry == nil {
+		return nil, fmt.Errorf("%w: chat channel registry is unavailable", ErrInvalidTrigger)
+	}
+	channelID := strings.TrimSpace(item.Chat.Channel)
+	if err := s.chatRegistry.ValidateConfig(channelID, item.Chat.ChannelConfig); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidTrigger, err)
+	}
+	if !item.Enabled {
+		return nil, nil
+	}
+	instance, err := s.chatRegistry.NewInstance(channelID, chatchannel.InstanceConfig{
+		TriggerID: item.ID,
+		Config:    item.Chat.ChannelConfig,
+		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatcap.Message, sink chatcap.ReplySink) error {
+			_, err := s.InvokeChat(ctx, item.ID, message, sink)
+			return err
+		}),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidTrigger, err)
+	}
+	return instance, nil
+}
+
 func (s *Service) replaceSchedule(id string, schedule *scheduleEntry) {
 	s.mu.Lock()
 	previous := s.schedules[id]
@@ -506,6 +927,49 @@ func (s *Service) replaceSchedule(id string, schedule *scheduleEntry) {
 		previous.cron.Remove(previous.id)
 		previous.cron.Stop()
 	}
+}
+
+func (s *Service) replaceChatChannel(id string, spec *ChatSpec, channel chatchannel.Instance) {
+	s.mu.Lock()
+	previous := s.chatChannels[id]
+	delete(s.chatChannels, id)
+	runtimeCtx := s.ctx
+	s.mu.Unlock()
+	if previous != nil {
+		previous.cancel()
+		<-previous.done
+	}
+	if channel == nil || runtimeCtx == nil {
+		return
+	}
+	channelCtx, cancel := context.WithCancel(runtimeCtx)
+	entry := &chatChannelEntry{ctx: channelCtx, cancel: cancel, done: make(chan struct{})}
+	if spec != nil {
+		entry.channel = spec.Channel
+	}
+	s.mu.Lock()
+	if s.ctx != runtimeCtx {
+		s.mu.Unlock()
+		cancel()
+		close(entry.done)
+		return
+	}
+	s.chatChannels[id] = entry
+	s.mu.Unlock()
+	go s.runChatChannel(id, channel, entry)
+}
+
+func (s *Service) runChatChannel(id string, channel chatchannel.Instance, entry *chatChannelEntry) {
+	err := channel.Run(entry.ctx)
+	if err != nil && entry.ctx.Err() == nil {
+		log.Printf("chat channel %q for trigger %q stopped: %v", entry.channel, id, err)
+	}
+	close(entry.done)
+	s.mu.Lock()
+	if s.chatChannels[id] == entry {
+		delete(s.chatChannels, id)
+	}
+	s.mu.Unlock()
 }
 
 func (s *Service) scheduleContext() context.Context {

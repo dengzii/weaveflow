@@ -28,6 +28,7 @@ type triggerPayload struct {
 	InitialState map[string]any            `json:"initial_state,omitempty"`
 	Webhook      *triggerWebhookPayload    `json:"webhook,omitempty"`
 	Schedule     *trigger.ScheduleSpec     `json:"schedule,omitempty"`
+	Chat         *trigger.ChatSpec         `json:"chat,omitempty"`
 }
 
 type triggerWebhookPayload struct {
@@ -57,6 +58,7 @@ func (p triggerPayload) toTrigger(defaultEnabled bool) trigger.Trigger {
 		InitialState: p.InitialState,
 		Webhook:      webhook,
 		Schedule:     p.Schedule,
+		Chat:         p.Chat,
 	}
 }
 
@@ -80,7 +82,7 @@ func (s *Server) handleCreateTrigger(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusCreated, publicTrigger(item))
+	writeData(c, http.StatusCreated, s.publicTrigger(item))
 }
 
 func (s *Server) handleListTriggers(c *gin.Context) {
@@ -96,7 +98,7 @@ func (s *Server) handleListTriggers(c *gin.Context) {
 	}
 	result := make([]trigger.Trigger, 0, len(items))
 	for _, item := range items {
-		result = append(result, publicTrigger(item))
+		result = append(result, s.publicTrigger(item))
 	}
 	writeData(c, http.StatusOK, result)
 }
@@ -112,7 +114,7 @@ func (s *Server) handleGetTrigger(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, publicTrigger(item))
+	writeData(c, http.StatusOK, s.publicTrigger(item))
 }
 
 func (s *Server) handleUpdateTrigger(c *gin.Context) {
@@ -148,7 +150,7 @@ func (s *Server) handleUpdateTrigger(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, publicTrigger(item))
+	writeData(c, http.StatusOK, s.publicTrigger(item))
 }
 
 func (s *Server) handleDeleteTrigger(c *gin.Context) {
@@ -329,13 +331,16 @@ func decodeTriggerPayload(c *gin.Context) (triggerPayload, error) {
 	return payload, nil
 }
 
-func publicTrigger(item trigger.Trigger) trigger.Trigger {
+func (s *Server) publicTrigger(item trigger.Trigger) trigger.Trigger {
 	if item.Webhook != nil {
 		copy := *item.Webhook
 		copy.APIKey = ""
 		copy.Secret = ""
 		copy.SignatureHeader = ""
 		item.Webhook = &copy
+	}
+	if s != nil && s.triggers != nil {
+		item = s.triggers.RedactChatChannelConfig(item)
 	}
 	return item
 }

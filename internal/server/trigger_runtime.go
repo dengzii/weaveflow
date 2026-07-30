@@ -10,11 +10,12 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/builtin"
+	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/internal/trigger"
 )
 
 type triggerGraphSession struct {
@@ -35,9 +36,6 @@ func (s *Server) resolveTriggerRunner(_ context.Context, target trigger.Target) 
 	graphID := strings.TrimSpace(target.GraphID)
 	if graphID == "" {
 		return nil, fmt.Errorf("%w: graph_id is required", trigger.ErrInvalidTarget)
-	}
-	if runner := s.currentRunner(); triggerTargetMatchesRunner(graphID, runner) {
-		return &triggerRunStarter{server: s, runner: runner}, nil
 	}
 	runner, err := s.loadTriggerRunner(graphID)
 	if err != nil {
@@ -62,6 +60,12 @@ func (s *triggerRunStarter) Start(ctx context.Context, initial *state.State) (ru
 	}
 	runCtx, cancel := s.server.deriveRunContextFrom(ctx)
 	defer cancel()
+	if sink := chatcap.ReplySinkFromContext(ctx); sink != nil {
+		runCtx = chatcap.WithReplySink(runCtx, sink)
+	}
+	if observer := runtime.RunnerEventObserverFromContext(ctx); observer != nil {
+		runCtx = runtime.WithRunnerEventObserver(runCtx, observer)
+	}
 	return s.runner.Start(runCtx, initial)
 }
 
@@ -81,6 +85,12 @@ func (s *triggerRunStarter) StartAsync(ctx context.Context, initial *state.State
 	}
 
 	runCtx, cancel := s.server.deriveRunContextFrom(ctx)
+	if sink := chatcap.ReplySinkFromContext(ctx); sink != nil {
+		runCtx = chatcap.WithReplySink(runCtx, sink)
+	}
+	if observer := runtime.RunnerEventObserverFromContext(ctx); observer != nil {
+		runCtx = runtime.WithRunnerEventObserver(runCtx, observer)
+	}
 	run, innerDone, err := asyncRunner.StartAsync(runCtx, initial)
 	if err != nil {
 		cancel()
@@ -102,9 +112,15 @@ func triggerTargetMatchesRunner(graphID string, runner *runtime.GraphRunner) boo
 }
 
 func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error) {
-	session, err := s.latestTriggerGraphSession(graphID)
+	session, err := s.latestOfficialGraphSession(graphID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			s.mu.RLock()
+			cached := s.triggerRunners[graphID]
+			s.mu.RUnlock()
+			if cached != nil {
+				return cached, nil
+			}
 			return nil, fmt.Errorf("%w: %q", errTriggerGraphNotFound, graphID)
 		}
 		return nil, err
@@ -155,12 +171,8 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if triggerTargetMatchesRunner(graphID, s.runner) {
-		return s.runner, nil
-	}
 	if existing := s.triggerRunners[graphID]; existing != nil {
-		existingSession := strings.TrimSpace(existing.GraphSessionID)
-		if existingSession == session.manifest.GraphSessionID || existingSession > session.manifest.GraphSessionID {
+		if strings.TrimSpace(existing.GraphSessionID) == session.manifest.GraphSessionID {
 			return existing, nil
 		}
 	}
@@ -168,7 +180,7 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 	return runner, nil
 }
 
-func (s *Server) latestTriggerGraphSession(graphID string) (triggerGraphSession, error) {
+func (s *Server) latestOfficialGraphSession(graphID string) (triggerGraphSession, error) {
 	type candidate struct {
 		graphDir  string
 		sessionID string
@@ -195,7 +207,7 @@ func (s *Server) latestTriggerGraphSession(graphID string) (triggerGraphSession,
 		if err != nil {
 			return triggerGraphSession{}, err
 		}
-		if !complete || manifest.GraphID != graphID {
+		if !complete || !manifest.Official || manifest.GraphID != graphID {
 			continue
 		}
 		baseDir := filepath.Join(candidate.graphDir, candidate.sessionID)

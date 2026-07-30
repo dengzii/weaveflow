@@ -16,6 +16,7 @@ type Type string
 const (
 	TypeWebhook  Type = "webhook"
 	TypeSchedule Type = "schedule"
+	TypeChat     Type = "chat"
 )
 
 type ConcurrencyPolicy string
@@ -47,6 +48,14 @@ type ScheduleSpec struct {
 	Input    map[string]any `json:"input,omitempty"`
 }
 
+type ChatSpec struct {
+	Channel       string         `json:"channel"`
+	ChannelConfig map[string]any `json:"channel_config,omitempty"`
+	ReplyPath     string         `json:"reply_path,omitempty"`
+	StreamUpdates bool           `json:"stream_updates"`
+	StreamNodeIDs []string       `json:"stream_node_ids,omitempty"`
+}
+
 type Trigger struct {
 	ID           string            `json:"id"`
 	Name         string            `json:"name,omitempty"`
@@ -57,6 +66,7 @@ type Trigger struct {
 	InitialState map[string]any    `json:"initial_state,omitempty"`
 	Webhook      *WebhookSpec      `json:"webhook,omitempty"`
 	Schedule     *ScheduleSpec     `json:"schedule,omitempty"`
+	Chat         *ChatSpec         `json:"chat,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
 }
@@ -105,6 +115,30 @@ func (t Trigger) Normalize(now time.Time) Trigger {
 		t.Schedule.Cron = strings.TrimSpace(t.Schedule.Cron)
 		t.Schedule.Timezone = strings.TrimSpace(t.Schedule.Timezone)
 	}
+	if t.Chat != nil {
+		t.Chat.Channel = strings.TrimSpace(t.Chat.Channel)
+		if t.Chat.Channel == "" {
+			t.Chat.Channel = "http"
+		}
+		t.Chat.ReplyPath = strings.TrimSpace(t.Chat.ReplyPath)
+		if t.Chat.ReplyPath == "" {
+			t.Chat.ReplyPath = "shared.final.answer"
+		}
+		seen := make(map[string]struct{}, len(t.Chat.StreamNodeIDs))
+		nodeIDs := make([]string, 0, len(t.Chat.StreamNodeIDs))
+		for _, nodeID := range t.Chat.StreamNodeIDs {
+			nodeID = strings.TrimSpace(nodeID)
+			if nodeID == "" {
+				continue
+			}
+			if _, ok := seen[nodeID]; ok {
+				continue
+			}
+			seen[nodeID] = struct{}{}
+			nodeIDs = append(nodeIDs, nodeID)
+		}
+		t.Chat.StreamNodeIDs = nodeIDs
+	}
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
 	}
@@ -118,7 +152,7 @@ func (t Trigger) Validate() error {
 	if err := validateTriggerID(t.ID); err != nil {
 		return err
 	}
-	if t.Type != TypeWebhook && t.Type != TypeSchedule {
+	if t.Type != TypeWebhook && t.Type != TypeSchedule && t.Type != TypeChat {
 		return fmt.Errorf("%w: trigger type %q is invalid", ErrInvalidTrigger, t.Type)
 	}
 	if t.Concurrency != ConcurrencyParallel && t.Concurrency != ConcurrencySkip {
@@ -146,6 +180,23 @@ func (t Trigger) Validate() error {
 			if _, err := time.LoadLocation(t.Schedule.Timezone); err != nil {
 				return fmt.Errorf("%w: schedule timezone %q is invalid: %v", ErrInvalidTrigger, t.Schedule.Timezone, err)
 			}
+		}
+	case TypeChat:
+		if t.Chat == nil {
+			return fmt.Errorf("%w: chat spec is required", ErrInvalidTrigger)
+		}
+		path, err := state.ParsePath(t.Chat.ReplyPath)
+		if err != nil || len(path.Segments()) == 0 {
+			return fmt.Errorf("%w: chat reply_path %q is invalid", ErrInvalidTrigger, t.Chat.ReplyPath)
+		}
+		if path.Section() != state.SectionShared && path.Section() != state.SectionScopes {
+			return fmt.Errorf("%w: chat reply_path section %q is not allowed", ErrInvalidTrigger, path.Section())
+		}
+		if t.Chat.Channel == "" {
+			return fmt.Errorf("%w: chat channel is required", ErrInvalidTrigger)
+		}
+		if _, err := json.Marshal(t.Chat.ChannelConfig); err != nil {
+			return fmt.Errorf("%w: chat channel_config must contain JSON-compatible values: %v", ErrInvalidTrigger, err)
 		}
 	}
 	return nil

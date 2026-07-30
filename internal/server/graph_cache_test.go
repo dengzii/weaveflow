@@ -60,8 +60,8 @@ func TestGraphStorageSeparatesSanitizedIDCollisions(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	first := postGraphForHashTest(t, engine, triggerGraphUploadBody("graph/a", "v1", "first"))
-	second := postGraphForHashTest(t, engine, triggerGraphUploadBody("graph?a", "v1", "second"))
+	first := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph/a", "v1", "first"))
+	second := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph?a", "v1", "second"))
 	if filepath.Dir(first.RunnerBaseDir) == filepath.Dir(second.RunnerBaseDir) {
 		t.Fatalf("colliding graph IDs share storage directory %q", filepath.Dir(first.RunnerBaseDir))
 	}
@@ -97,7 +97,7 @@ func TestGraphStorageSupportsWindowsReservedGraphID(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	uploaded := postGraphForHashTest(t, engine, triggerGraphUploadBody("CON", "v1", "reserved"))
+	uploaded := pushGraphForHashTest(t, engine, triggerGraphUploadBody("CON", "v1", "reserved"))
 	if filepath.Base(filepath.Dir(uploaded.RunnerBaseDir)) == "CON" {
 		t.Fatalf("reserved graph ID used directly as storage directory: %q", uploaded.RunnerBaseDir)
 	}

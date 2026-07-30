@@ -10,10 +10,12 @@ import (
 
 	"github.com/dengzii/weaveflow/builtin"
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
+	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
+	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/dengzii/weaveflow/internal/trigger"
 )
 
 type Config struct {
@@ -39,6 +41,7 @@ type Config struct {
 
 	TriggerStore   trigger.Store
 	TriggerService *trigger.Service
+	ChatChannels   *chatchannel.Registry
 }
 
 type Server struct {
@@ -54,6 +57,7 @@ type Server struct {
 	baseDir        string
 	cfg            Config
 	triggers       *trigger.Service
+	chatChannels   *chatchannel.Registry
 	triggerRunners map[string]*runtime.GraphRunner
 }
 
@@ -97,6 +101,9 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		cfg:            cfg,
 		triggerRunners: make(map[string]*runtime.GraphRunner),
 	}
+	if runner != nil {
+		srv.triggerRunners[effectiveRunnerGraphID(runner)] = runner
+	}
 	storedSettings, settingsFound, err := loadGraphRuntimeSettings(baseDir)
 	if err != nil {
 		return nil, err
@@ -116,6 +123,13 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	triggerService := cfg.TriggerService
 	if triggerService == nil {
+		chatChannels := cfg.ChatChannels
+		if chatChannels == nil {
+			chatChannels = chatchannel.NewDefaultRegistry()
+			if err := wecom.Register(chatChannels); err != nil {
+				return nil, fmt.Errorf("register WeCom chat channel: %w", err)
+			}
+		}
 		triggerStore := cfg.TriggerStore
 		if triggerStore == nil {
 			triggerStore, err = trigger.NewFileStore(filepath.Join(baseDir, "triggers"))
@@ -123,12 +137,17 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 				return nil, err
 			}
 		}
-		triggerService, err = trigger.NewService(triggerStore, trigger.RunnerResolverFunc(srv.resolveTriggerRunner))
+		triggerService, err = trigger.NewService(
+			triggerStore,
+			trigger.RunnerResolverFunc(srv.resolveTriggerRunner),
+			trigger.WithChatChannels(chatChannels),
+		)
 		if err != nil {
 			return nil, err
 		}
 	}
 	srv.triggers = triggerService
+	srv.chatChannels = triggerService.ChatChannels()
 	return srv, nil
 }
 

@@ -2,15 +2,287 @@ package trigger
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
+	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
+
+type chatRecordingStarter struct {
+	initial *state.State
+}
+
+func (s *chatRecordingStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+	s.initial = initial.Clone()
+	if err := observeChatLLMEvent(ctx, runtime.EventLLMContentChunk, "step-worker", "worker", "call-worker", "ignored"); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
+	if err := observeChatLLMEvent(ctx, runtime.EventLLMContentChunk, "step-answer", "answer", "call-answer", "dra"); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
+	if err := observeChatLLMEvent(ctx, runtime.EventLLMContentChunk, "step-answer", "answer", "call-answer", "ft"); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
+	if err := observeChatLLMEvent(ctx, runtime.EventLLMContent, "step-answer", "answer", "call-answer", "draft"); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
+	if err := chatcap.EmitReply(ctx, chatcap.Reply{Kind: chatcap.ReplyMessage, Content: "side", NodeID: "notify"}); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
+	if err := state.SetPath(initial, "shared.final.answer", "final"); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
+	return runtime.RunRecord{RunID: "chat-run", Status: runtime.RunStatusCompleted}, initial, nil
+}
+
+func observeChatLLMEvent(ctx context.Context, eventType runtime.EventType, stepID, nodeID, callID, text string) error {
+	payload, err := json.Marshal(map[string]string{"call_id": callID, "text": text})
+	if err != nil {
+		return err
+	}
+	observer := runtime.RunnerEventObserverFromContext(ctx)
+	if observer == nil {
+		return errors.New("runtime event observer is unavailable")
+	}
+	return observer.Observe(ctx, runtime.Event{
+		RunID:   "chat-run",
+		StepID:  stepID,
+		NodeID:  nodeID,
+		Type:    eventType,
+		Payload: payload,
+	})
+}
+
+func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &chatRecordingStarter{}
+	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
+		return starter, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), Trigger{
+		ID:      "chat",
+		Type:    TypeChat,
+		Enabled: true,
+		Target:  Target{GraphID: "graph"},
+		Chat: &ChatSpec{
+			StreamUpdates: true,
+			StreamNodeIDs: []string{"answer"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var replies []chatcap.Reply
+	result, err := service.InvokeChat(context.Background(), "chat", chatcap.Message{
+		ID:             "message-1",
+		ConversationID: "conversation-1",
+		Content:        "hello",
+		Metadata:       map[string]any{"channel": "test"},
+	}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
+		replies = append(replies, reply)
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Run.RunID != "chat-run" || result.FinalReply != "final" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(replies) != 4 {
+		t.Fatalf("replies = %#v", replies)
+	}
+	if replies[0].Kind != chatcap.ReplyUpdate || replies[0].Content != "dra" || replies[0].Sequence != 1 {
+		t.Fatalf("update = %#v", replies[0])
+	}
+	if replies[1].Kind != chatcap.ReplyUpdate || replies[1].Content != "draft" || replies[1].Sequence != 2 {
+		t.Fatalf("update = %#v", replies[1])
+	}
+	if replies[2].Kind != chatcap.ReplyMessage || replies[2].Content != "side" || replies[2].Sequence != 3 {
+		t.Fatalf("message = %#v", replies[1])
+	}
+	if replies[3].Kind != chatcap.ReplyFinish || replies[3].Content != "final" || replies[3].Sequence != 4 {
+		t.Fatalf("finish = %#v", replies[3])
+	}
+	input, _ := state.ReadPath(starter.initial, "shared.request.input")
+	messageID, _ := state.ReadPath(starter.initial, "shared.request.metadata.message_id")
+	conversationID, _ := state.ReadPath(starter.initial, "shared.request.metadata.conversation_id")
+	channel, _ := state.ReadPath(starter.initial, "shared.request.metadata.channel")
+	if input != "hello" || messageID != "message-1" || conversationID != "conversation-1" || channel != "test" {
+		t.Fatalf("chat state = input:%#v message:%#v conversation:%#v channel:%#v", input, messageID, conversationID, channel)
+	}
+	records, err := service.ListRecords(context.Background(), "chat", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Status != runtime.RunStatusCompleted {
+		t.Fatalf("records = %#v", records)
+	}
+}
+
+func TestChatLLMStreamObserverAccumulatesContentPerCall(t *testing.T) {
+	var replies []chatcap.Reply
+	observer := newChatLLMStreamObserver(chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
+		replies = append(replies, reply)
+		return nil
+	}))
+	ctx := runtime.WithRunnerEventObserver(context.Background(), observer)
+
+	for _, item := range []struct {
+		typ    runtime.EventType
+		callID string
+		text   string
+	}{
+		{typ: runtime.EventLLMContentChunk, callID: "call-1", text: "hello"},
+		{typ: runtime.EventLLMContentChunk, callID: "call-1", text: " "},
+		{typ: runtime.EventLLMContentChunk, callID: "call-1", text: "world"},
+		{typ: runtime.EventLLMContent, callID: "call-1", text: "hello world"},
+		{typ: runtime.EventLLMContentChunk, callID: "call-2", text: "replacement"},
+	} {
+		if err := observeChatLLMEvent(ctx, item.typ, "step", "answer", item.callID, item.text); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(replies) != 3 {
+		t.Fatalf("replies = %#v", replies)
+	}
+	if replies[0].Content != "hello" || replies[1].Content != "hello world" || replies[2].Content != "replacement" {
+		t.Fatalf("reply contents = [%q %q %q]", replies[0].Content, replies[1].Content, replies[2].Content)
+	}
+}
+
+type lifecycleChannelFactory struct {
+	started chan map[string]any
+	stopped chan struct{}
+}
+
+func (factory *lifecycleChannelFactory) Definition() chatchannel.Definition {
+	return chatchannel.Definition{
+		ID:    "lifecycle",
+		Title: "Lifecycle",
+		ConfigSchema: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"name":   map[string]any{"type": "string"},
+				"secret": map[string]any{"type": "string", "writeOnly": true},
+			},
+			"required": []any{"name", "secret"},
+		},
+	}
+}
+
+func (factory *lifecycleChannelFactory) ValidateConfig(config map[string]any) error {
+	if config["name"] == "" || config["secret"] == "" || config["secret"] == nil {
+		return errors.New("name and secret are required")
+	}
+	return nil
+}
+
+func (factory *lifecycleChannelFactory) New(config chatchannel.InstanceConfig) (chatchannel.Instance, error) {
+	return &lifecycleChannel{config: config.Config, started: factory.started, stopped: factory.stopped}, nil
+}
+
+type lifecycleChannel struct {
+	config  map[string]any
+	started chan map[string]any
+	stopped chan struct{}
+}
+
+func (channel *lifecycleChannel) Run(ctx context.Context) error {
+	channel.started <- channel.config
+	<-ctx.Done()
+	channel.stopped <- struct{}{}
+	return nil
+}
+
+func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory := &lifecycleChannelFactory{started: make(chan map[string]any, 2), stopped: make(chan struct{}, 2)}
+	channels := chatchannel.NewDefaultRegistry()
+	if err := channels.Register(factory); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(
+		store,
+		RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) { return &recordingStarter{}, nil }),
+		WithChatChannels(channels),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), Trigger{
+		ID: "managed-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"},
+		Chat: &ChatSpec{
+			Channel:       "lifecycle",
+			ChannelConfig: map[string]any{"name": "first", "secret": "stored-secret"},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if redacted := service.RedactChatChannelConfig(created); redacted.Chat.ChannelConfig["secret"] != nil {
+		t.Fatalf("redacted chat config = %#v", redacted.Chat.ChannelConfig)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Close() }()
+	select {
+	case config := <-factory.started:
+		if config["name"] != "first" || config["secret"] != "stored-secret" {
+			t.Fatalf("started config = %#v", config)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("chat channel did not start")
+	}
+
+	updated, err := service.Update(context.Background(), Trigger{
+		ID: "managed-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"},
+		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "second"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.Chat.ChannelConfig["secret"] != "stored-secret" {
+		t.Fatalf("updated chat config = %#v", updated.Chat.ChannelConfig)
+	}
+	select {
+	case <-factory.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("previous chat channel did not stop")
+	}
+	select {
+	case config := <-factory.started:
+		if config["name"] != "second" || config["secret"] != "stored-secret" {
+			t.Fatalf("restarted config = %#v", config)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("updated chat channel did not start")
+	}
+	if err := service.Delete(context.Background(), "managed-chat"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-factory.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("deleted chat channel did not stop")
+	}
+}
 
 type recordingStarter struct {
 	initial *state.State

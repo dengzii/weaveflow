@@ -12,6 +12,7 @@ const (
 	NodeGroupModelTools    = "Model & Tools"
 	NodeGroupAgents        = "Agents"
 	NodeGroupOrchestration = "Orchestration"
+	NodeGroupOutput        = "Output"
 	NodeGroupState         = "State"
 )
 
@@ -34,6 +35,7 @@ func RegisterCoreNodeTypes(r *registry.Registry) error {
 		{NodeGroupAgents, AgentNodeTypeDefinition()},
 		{NodeGroupInputContext, EnvironmentContextNodeTypeDefinition()},
 		{NodeGroupAgents, ExploreAgentNodeTypeDefinition()},
+		{NodeGroupOutput, ChatReplyNodeTypeDefinition()},
 	}
 	for _, item := range definitions {
 		if err := r.RegisterNodeTypeInGroup(item.group, item.definition); err != nil {

@@ -46,6 +46,7 @@ type graphSessionManifest struct {
 	GraphSnapshotHash string    `json:"graph_snapshot_hash"`
 	GraphSessionID    string    `json:"graph_session_id"`
 	DefinitionPath    string    `json:"definition_path"`
+	Official          bool      `json:"official,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 }
 
@@ -59,6 +60,21 @@ func (s *Server) handleSetGraph(c *gin.Context) {
 	}
 
 	resp, err := s.configureUploadedGraph(req)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	writeData(c, http.StatusOK, resp)
+}
+
+func (s *Server) handlePushGraph(c *gin.Context) {
+	req, err := bindGraphUpload(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+
+	resp, err := s.configurePushedGraph(req)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -109,6 +125,14 @@ func decodeStrictJSON(data []byte, target any) error {
 }
 
 func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadResponse, error) {
+	return s.configureGraph(req, false)
+}
+
+func (s *Server) configurePushedGraph(req graphUploadRequest) (graphLoadResponse, error) {
+	return s.configureGraph(req, true)
+}
+
+func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoadResponse, error) {
 	if s == nil {
 		return graphLoadResponse{}, errGraphNotConfigured
 	}
@@ -147,6 +171,7 @@ func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadRespon
 		GraphSnapshotHash: graphSnapshotHash,
 		GraphSessionID:    graphSessionID,
 		DefinitionPath:    "definition.json",
+		Official:          official,
 		CreatedAt:         time.Now().UTC(),
 	}, def); err != nil {
 		return graphLoadResponse{}, err
@@ -165,7 +190,9 @@ func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadRespon
 	s.mu.Lock()
 	s.graph = graph
 	s.runner = runner
-	s.triggerRunners[graphID] = runner
+	if official {
+		s.triggerRunners[graphID] = runner
+	}
 	s.mu.Unlock()
 
 	return graphLoadResponse{

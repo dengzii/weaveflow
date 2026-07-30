@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dengzii/weaveflow/internal/chatchannel"
+	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -41,6 +43,70 @@ func (s *triggerTestStarter) StartAsync(ctx context.Context, initial *state.Stat
 }
 
 type triggerContextKey struct{}
+
+func TestChatChannelConfigIsValidatedRedactedAndPreserved(t *testing.T) {
+	channels := chatchannel.NewDefaultRegistry()
+	if err := wecom.Register(channels); err != nil {
+		t.Fatal(err)
+	}
+	store, err := trigger.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := trigger.NewService(
+		store,
+		trigger.RunnerResolverFunc(func(context.Context, trigger.Target) (trigger.RunStarter, error) {
+			return &triggerTestStarter{}, nil
+		}),
+		trigger.WithChatChannels(channels),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), TriggerService: service})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	create := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{
+		"id":"wecom-chat","type":"chat","enabled":false,"target":{"graph_id":"graph"},
+		"chat":{"channel":"wecom","channel_config":{"bot_id":"bot","secret":"stored-secret"},"stream_updates":true}
+	}`))
+	engine.ServeHTTP(create, request)
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
+	}
+	if strings.Contains(create.Body.String(), "stored-secret") {
+		t.Fatalf("create response leaked channel secret: %s", create.Body.String())
+	}
+	persisted, err := service.Get(context.Background(), "wecom-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Chat.ChannelConfig["secret"] != "stored-secret" {
+		t.Fatalf("persisted config = %#v", persisted.Chat.ChannelConfig)
+	}
+
+	update := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPut, "/triggers/wecom-chat", strings.NewReader(`{
+		"type":"chat","enabled":false,"target":{"graph_id":"graph"},
+		"chat":{"channel_config":{"bot_id":"updated-bot"},"stream_updates":true}
+	}`))
+	engine.ServeHTTP(update, request)
+	if update.Code != http.StatusOK {
+		t.Fatalf("update status = %d, body = %s", update.Code, update.Body.String())
+	}
+	persisted, err = service.Get(context.Background(), "wecom-chat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Chat.ChannelConfig["bot_id"] != "updated-bot" || persisted.Chat.ChannelConfig["secret"] != "stored-secret" {
+		t.Fatalf("updated config = %#v", persisted.Chat.ChannelConfig)
+	}
+}
 
 func requireTriggerContextValue(t *testing.T, starter *triggerTestStarter, want string) {
 	t.Helper()

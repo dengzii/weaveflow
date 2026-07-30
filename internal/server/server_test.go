@@ -16,6 +16,8 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
+	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/node"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
@@ -40,7 +42,11 @@ func TestRegistryResponseIncludesNodeGroups(t *testing.T) {
 		t.Fatalf("register grouped node type: %v", err)
 	}
 
-	srv := &Server{registry: reg}
+	chatChannels := chatchannel.NewDefaultRegistry()
+	if err := wecom.Register(chatChannels); err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{registry: reg, chatChannels: chatChannels}
 	engine := gin.New()
 	engine.GET("/registry", srv.handleRegistry)
 	w := httptest.NewRecorder()
@@ -60,6 +66,14 @@ func TestRegistryResponseIncludesNodeGroups(t *testing.T) {
 	}
 	if nodeTypes := response.Data.NodeGroups[0].NodeTypes; len(nodeTypes) != 1 || nodeTypes[0] != "llm_turn" {
 		t.Fatalf("grouped node types = %#v", nodeTypes)
+	}
+	if len(response.Data.ChatChannels) != 2 || response.Data.ChatChannels[0].ID != chatchannel.HTTPChannelID || response.Data.ChatChannels[1].ID != wecom.ChannelID {
+		t.Fatalf("chat channels = %#v", response.Data.ChatChannels)
+	}
+	properties, _ := response.Data.ChatChannels[1].ConfigSchema["properties"].(map[string]any)
+	secret, _ := properties["secret"].(map[string]any)
+	if secret["writeOnly"] != true {
+		t.Fatalf("WeCom secret schema = %#v", secret)
 	}
 }
 
@@ -1721,9 +1735,19 @@ func serveHTTPWithContext(ctx context.Context, engine *gin.Engine, method string
 
 func postGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
 	t.Helper()
-	w := serveHTTP(engine, http.MethodPost, "/graph", body)
+	return postGraphAtPathForHashTest(t, engine, "/graph", body)
+}
+
+func pushGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
+	t.Helper()
+	return postGraphAtPathForHashTest(t, engine, "/graph/push", body)
+}
+
+func postGraphAtPathForHashTest(t *testing.T, engine *gin.Engine, path string, body string) graphLoadResponse {
+	t.Helper()
+	w := serveHTTP(engine, http.MethodPost, path, body)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("POST %s status = %d, body = %s", path, w.Code, w.Body.String())
 	}
 	var decoded struct {
 		Data  graphLoadResponse `json:"data"`

@@ -7,6 +7,7 @@ import (
 
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 
@@ -40,6 +41,7 @@ type registryResponse struct {
 	NodeTypes    []dsl.NodeTypeSchema            `json:"node_types"`
 	Conditions   []dsl.ConditionSchema           `json:"conditions"`
 	GraphSchema  dsl.JSONSchema                  `json:"graph_schema"`
+	ChatChannels []chatchannel.Definition        `json:"chat_channels"`
 }
 
 func (s *Server) handleGraph(c *gin.Context) {
@@ -167,6 +169,10 @@ func (s *Server) handleRegistry(c *gin.Context) {
 	for _, key := range sortedConditionKeys(s.registry.Conditions) {
 		conditions = append(conditions, s.registry.Conditions[key].ConditionSchema)
 	}
+	var chatChannels []chatchannel.Definition
+	if s.chatChannels != nil {
+		chatChannels = s.chatChannels.Definitions()
+	}
 
 	writeData(c, http.StatusOK, registryResponse{
 		StateModules: stateModules,
@@ -175,6 +181,7 @@ func (s *Server) handleRegistry(c *gin.Context) {
 		NodeTypes:    nodeTypes,
 		Conditions:   conditions,
 		GraphSchema:  s.registry.JSONSchema(),
+		ChatChannels: chatChannels,
 	})
 }
 

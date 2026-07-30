@@ -19,6 +19,7 @@ const (
 	NodeTypeAgent               = "agent"
 	NodeTypeEnvironmentContext  = "environment_context"
 	NodeTypeExploreAgent        = "explore_agent"
+	NodeTypeChatReply           = "chat_reply"
 	NodeTypeStateSet            = stateops.NodeTypeStateSet
 	NodeTypeStateCopy           = stateops.NodeTypeStateCopy
 	NodeTypeStateDelete         = stateops.NodeTypeStateDelete
@@ -38,6 +39,7 @@ var (
 	_ dsl.GraphNodeSpecProvider = (*AgentNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*EnvironmentContextNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ExploreAgentNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*ChatReplyNode)(nil)
 )
 
 type DefaultStatePathApplier interface {
@@ -171,6 +173,8 @@ func ApplyDefaultStatePaths(node Node) {
 		setShared(&typed.ResultPath, "final", "answer")
 	case *EnvironmentContextNode:
 		setShared(&typed.EnvironmentPath, "environment")
+	case *ChatReplyNode:
+		setShared(&typed.InputPath, "final", "answer")
 	case *SubgraphNode:
 		setScope(&typed.InputPath, defaultNodeOwner(typed, NodeTypeSubgraph), "input")
 		setScope(&typed.OutputPath, defaultNodeOwner(typed, NodeTypeSubgraph), "output")

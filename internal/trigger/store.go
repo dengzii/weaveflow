@@ -385,7 +385,7 @@ func validateRecord(record Record) error {
 	if _, err := storeID(record.TriggerID); err != nil {
 		return fmt.Errorf("invalid trigger record: %w", err)
 	}
-	if record.TriggerType != TypeWebhook && record.TriggerType != TypeSchedule {
+	if record.TriggerType != TypeWebhook && record.TriggerType != TypeSchedule && record.TriggerType != TypeChat {
 		return fmt.Errorf("invalid trigger record: trigger type %q is invalid", record.TriggerType)
 	}
 	if strings.TrimSpace(record.Target.GraphID) == "" {
