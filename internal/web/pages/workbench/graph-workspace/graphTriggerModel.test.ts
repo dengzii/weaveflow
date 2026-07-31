@@ -1,0 +1,44 @@
+import { describe, expect, test } from "bun:test";
+import type { Trigger, TriggerType } from "../../../types";
+import { triggersForGraph, uniqueTriggerIDs, upsertTrigger } from "./graphTriggerModel";
+
+describe("graph trigger model", () => {
+  test("filters triggers by the normalized graph ID", () => {
+    const triggers = [
+      trigger("first", " graph-a "),
+      trigger("second", "graph-b"),
+      trigger("third", "graph-a"),
+    ];
+
+    expect(triggersForGraph(triggers, " graph-a ").map((item) => item.id)).toEqual(["first", "third"]);
+    expect(triggersForGraph(triggers, "   ")).toEqual([]);
+  });
+
+  test("replaces an existing trigger in place and appends a new trigger", () => {
+    const first = trigger("first", "graph-a");
+    const second = trigger("second", "graph-a");
+    const updated = { ...first, name: "Updated" };
+
+    expect(upsertTrigger([first, second], updated)).toEqual([updated, second]);
+    expect(upsertTrigger([first], second)).toEqual([first, second]);
+  });
+
+  test("builds stable unique trigger ID lists", () => {
+    expect(uniqueTriggerIDs(
+      [trigger("first", "graph-a"), trigger("second", "graph-a")],
+      [" second ", "third", ""]
+    )).toEqual(["first", "second", "third"]);
+  });
+});
+
+function trigger(id: string, graphID: string, type: TriggerType = "webhook"): Trigger {
+  return {
+    id,
+    type,
+    enabled: true,
+    concurrency: "parallel",
+    target: { graph_id: graphID },
+    created_at: "2026-07-31T00:00:00Z",
+    updated_at: "2026-07-31T00:00:00Z",
+  };
+}

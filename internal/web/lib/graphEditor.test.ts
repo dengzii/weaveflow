@@ -9,7 +9,7 @@ import type {
 import {
   pendingUserInputState,
   userInputPromptFromInterrupt,
-} from "../pages/WorkbenchPage";
+} from "../pages/workbench/userInputModel";
 import { validateGraph } from "../pages/workbench/graph-workspace/utils";
 import { addGraphEdge, addNodeToGraph, createGraphDefinition, createNodeFromType, dynamicStatePortForName, initialStateBindings, matchesDynamicStatePortName, nextDynamicStatePortName, resolvedStatePortContract } from "./graphEditor";
 
@@ -192,15 +192,16 @@ describe("v2 graph editor defaults", () => {
       message: "waiting for input",
     }, definition);
     expect(prompt).toEqual({
-      runId: "run-1",
-      checkpointId: "checkpoint-1",
-      nodeId: "input",
+      runID: "run-1",
+      checkpointID: "checkpoint-1",
+      nodeID: "input",
       statePath: "scopes.agent.pending_input",
       message: "waiting for input",
     });
     expect(pendingUserInputState(prompt?.statePath ?? "", "hello")).toEqual({
       scopes: { agent: { pending_input: "hello" } },
     });
+    expect(pendingUserInputState("scopes.__proto__.value", "unsafe")).toEqual({});
   });
 
   test("blocks user input without a pending input binding", () => {

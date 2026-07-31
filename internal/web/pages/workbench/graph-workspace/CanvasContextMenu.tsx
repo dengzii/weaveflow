@@ -1,10 +1,11 @@
-import { useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { useState, type RefObject } from "react";
 import { ChevronRight } from "lucide-react";
 import type { NodePosition } from "../../../lib/graphEditor";
 import { partitionNodeTypes } from "../../../lib/nodeGroups";
 import type { GraphNodeSpec, NodeGroup, NodeTypeSchema, TriggerType } from "../../../types";
 import { virtualNodeTypes } from "./constants";
 import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } from "./types";
+import { useCanvasContextMenuLayout } from "./useCanvasContextMenuLayout";
 
 const triggerGroupKey = "__weaveflow_trigger_group__";
 
@@ -26,13 +27,6 @@ interface CanvasContextMenuProps {
   onToggleTrigger: (triggerId: string, enabled: boolean) => void;
 }
 
-interface MenuLayout {
-  left: number;
-  top: number;
-  maxHeight: number;
-  maxWidth: number;
-}
-
 export function CanvasContextMenu({
   boundaryRef,
   contextMenu,
@@ -50,117 +44,21 @@ export function CanvasContextMenu({
   onEditTrigger,
   onToggleTrigger,
 }: CanvasContextMenuProps) {
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const submenuRef = useRef<HTMLDivElement | null>(null);
-  const groupButtonRefs = useRef(new Map<string, HTMLButtonElement>());
-  const [layout, setLayout] = useState<MenuLayout | null>(null);
-  const [submenuLayout, setSubmenuLayout] = useState<MenuLayout | null>(null);
   const [openGroupName, setOpenGroupName] = useState<string | null>(null);
+  const {
+    menuRef,
+    submenuRef,
+    groupButtonRefs,
+    layout,
+    submenuLayout,
+    resetSubmenuLayout,
+  } = useCanvasContextMenuLayout(boundaryRef, contextMenu, openGroupName);
   const { groups: groupedPaletteNodeTypes, ungroupedNodeTypes } = partitionNodeTypes(paletteNodeTypes, nodeGroups);
   const openGroup = groupedPaletteNodeTypes.find((group) => group.name === openGroupName) ?? null;
   const triggerGroupOpen = openGroupName === triggerGroupKey;
 
-  useLayoutEffect(() => {
-    const menu = menuRef.current;
-    if (!menu) return;
-
-    const updateLayout = () => {
-      const boundary = boundaryRef.current?.getBoundingClientRect();
-      const margin = 8;
-      const leftBound = Math.max(margin, (boundary?.left ?? 0) + margin);
-      const topBound = Math.max(margin, (boundary?.top ?? 0) + margin);
-      const rightBound = Math.min(window.innerWidth - margin, (boundary?.right ?? window.innerWidth) - margin);
-      const bottomBound = Math.min(window.innerHeight - margin, (boundary?.bottom ?? window.innerHeight) - margin);
-      const maxWidth = Math.max(0, rightBound - leftBound);
-      const maxHeight = Math.max(0, bottomBound - topBound);
-      const menuWidth = Math.min(menu.getBoundingClientRect().width, maxWidth);
-      const menuHeight = Math.min(menu.scrollHeight, maxHeight);
-      const preferredLeft = contextMenu.screen.x;
-      const preferredTop = contextMenu.screen.y;
-      const left = clampMenuCoordinate(
-        preferredLeft + menuWidth > rightBound ? preferredLeft - menuWidth : preferredLeft,
-        leftBound,
-        rightBound - menuWidth
-      );
-      const top = clampMenuCoordinate(
-        preferredTop + menuHeight > bottomBound ? preferredTop - menuHeight : preferredTop,
-        topBound,
-        bottomBound - menuHeight
-      );
-      const nextLayout = { left, top, maxHeight, maxWidth };
-      setLayout((current) =>
-        current &&
-        current.left === nextLayout.left &&
-        current.top === nextLayout.top &&
-        current.maxHeight === nextLayout.maxHeight &&
-        current.maxWidth === nextLayout.maxWidth
-          ? current
-          : nextLayout
-      );
-    };
-
-    updateLayout();
-    window.addEventListener("resize", updateLayout);
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateLayout);
-    resizeObserver?.observe(menu);
-    if (boundaryRef.current) resizeObserver?.observe(boundaryRef.current);
-    return () => {
-      window.removeEventListener("resize", updateLayout);
-      resizeObserver?.disconnect();
-    };
-  }, [boundaryRef, contextMenu]);
-
-  useLayoutEffect(() => {
-    const submenu = submenuRef.current;
-    const anchor = openGroupName ? groupButtonRefs.current.get(openGroupName) : null;
-    if (!submenu || !anchor) {
-      setSubmenuLayout(null);
-      return;
-    }
-
-    const updateLayout = () => {
-      const boundary = boundaryRef.current?.getBoundingClientRect();
-      const anchorRect = anchor.getBoundingClientRect();
-      const margin = 8;
-      const leftBound = Math.max(margin, (boundary?.left ?? 0) + margin);
-      const topBound = Math.max(margin, (boundary?.top ?? 0) + margin);
-      const rightBound = Math.min(window.innerWidth - margin, (boundary?.right ?? window.innerWidth) - margin);
-      const bottomBound = Math.min(window.innerHeight - margin, (boundary?.bottom ?? window.innerHeight) - margin);
-      const maxWidth = Math.max(0, rightBound - leftBound);
-      const maxHeight = Math.max(0, bottomBound - topBound);
-      const submenuWidth = Math.min(submenu.getBoundingClientRect().width, maxWidth);
-      const submenuHeight = Math.min(submenu.scrollHeight, maxHeight);
-      const preferredLeft = anchorRect.right + submenuWidth > rightBound ? anchorRect.left - submenuWidth : anchorRect.right;
-      const left = clampMenuCoordinate(preferredLeft, leftBound, rightBound - submenuWidth);
-      const top = clampMenuCoordinate(anchorRect.top, topBound, bottomBound - submenuHeight);
-      const nextLayout = { left, top, maxHeight, maxWidth };
-      setSubmenuLayout((current) =>
-        current &&
-        current.left === nextLayout.left &&
-        current.top === nextLayout.top &&
-        current.maxHeight === nextLayout.maxHeight &&
-        current.maxWidth === nextLayout.maxWidth
-          ? current
-          : nextLayout
-      );
-    };
-
-    updateLayout();
-    window.addEventListener("resize", updateLayout);
-    menuRef.current?.addEventListener("scroll", updateLayout);
-    const resizeObserver = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(updateLayout);
-    resizeObserver?.observe(anchor);
-    resizeObserver?.observe(submenu);
-    if (boundaryRef.current) resizeObserver?.observe(boundaryRef.current);
-    return () => {
-      window.removeEventListener("resize", updateLayout);
-      menuRef.current?.removeEventListener("scroll", updateLayout);
-      resizeObserver?.disconnect();
-    };
-  }, [boundaryRef, contextMenu, layout, openGroupName]);
-
   const openNodeGroup = (name: string) => {
-    if (name !== openGroupName) setSubmenuLayout(null);
+    if (name !== openGroupName) resetSubmenuLayout();
     setOpenGroupName(name);
   };
 
@@ -376,10 +274,6 @@ function CreateNodeGroupItem({
       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
     </button>
   );
-}
-
-function clampMenuCoordinate(value: number, min: number, max: number): number {
-  return Math.min(Math.max(value, min), Math.max(min, max));
 }
 
 function ContextMenuAction({

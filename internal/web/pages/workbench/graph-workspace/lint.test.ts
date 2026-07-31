@@ -60,6 +60,40 @@ describe("supervisor graph lint", () => {
   });
 });
 
+describe("initial state lint", () => {
+  const requirements = {
+    required: [
+      { path: "shared.retries", type: "integer" },
+      { path: "shared.enabled", type: "boolean" },
+    ],
+    provided_by_upstream: [],
+    unresolved: [],
+  };
+
+  test("rejects values that do not match their declared types", () => {
+    const issues = buildGraphLintIssues({
+      definition: validSupervisorGraph,
+      initialStateText: JSON.stringify({ shared: { retries: "3", enabled: "false" } }),
+      initialRequirements: requirements,
+    });
+
+    expect(issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "initial-state-missing-shared.retries" }),
+      expect.objectContaining({ id: "initial-state-missing-shared.enabled" }),
+    ]));
+  });
+
+  test("accepts zero and false as valid typed values", () => {
+    const issues = buildGraphLintIssues({
+      definition: validSupervisorGraph,
+      initialStateText: JSON.stringify({ shared: { retries: 0, enabled: false } }),
+      initialRequirements: requirements,
+    });
+
+    expect(issues.filter((issue) => issue.id.startsWith("initial-state-missing-"))).toEqual([]);
+  });
+});
+
 const conversationCapability = {
   id: "weaveflow.conversation.v1",
   schema: { type: "object" },

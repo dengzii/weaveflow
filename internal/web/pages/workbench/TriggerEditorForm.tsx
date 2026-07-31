@@ -373,7 +373,7 @@ export function TriggerEditorForm({
           {busy ? (trigger ? "Saving..." : "Creating...") : (trigger ? "Save changes" : "Create trigger")}
         </Button>
         {allowDelete && trigger ? (
-          <Button variant="destructive" size="icon" onClick={() => void remove()} disabled={busy} title="Delete trigger" aria-label="Delete trigger">
+          <Button variant="danger" size="icon" onClick={() => void remove()} disabled={busy} title="Delete trigger" aria-label="Delete trigger">
             <Trash2 className="h-4 w-4" />
           </Button>
         ) : null}

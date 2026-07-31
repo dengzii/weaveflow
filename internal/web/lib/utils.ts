@@ -27,6 +27,20 @@ export function parseJSON<T>(value: string): T {
   return JSON.parse(value) as T;
 }
 
+export function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function cloneJSONValue<Value>(value: Value): Value {
+  if (Array.isArray(value)) return value.map(cloneJSONValue) as Value;
+  if (isPlainRecord(value)) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, item]) => [key, cloneJSONValue(item)])
+    ) as Value;
+  }
+  return value;
+}
+
 function formatClockTime(date: Date): string {
   return [
     padNumber(date.getHours(), 2),

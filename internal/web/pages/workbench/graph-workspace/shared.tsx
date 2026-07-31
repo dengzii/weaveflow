@@ -1,4 +1,5 @@
 import type { ComponentType, ReactNode } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Select } from "../../../components/ui/select";
 import { cn } from "../../../lib/utils";
 import type { GraphNodeSpec } from "../../../types";
@@ -62,6 +63,39 @@ export function InspectorBlock({
         {action ? <div className="ml-auto">{action}</div> : null}
       </div>
       {children}
+    </section>
+  );
+}
+
+export function CollapsibleInspectorBlock({
+  title,
+  open,
+  onOpenChange,
+  action,
+  children,
+}: {
+  title: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  const Icon = open ? ChevronDown : ChevronRight;
+  return (
+    <section className="border-b border-border last:border-b-0">
+      <div className="flex min-h-11 items-center gap-2 px-3 hover:bg-accent">
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => onOpenChange(!open)}
+          className="flex min-h-11 min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <Icon className="h-4 w-4 text-muted-foreground" />
+          <span className="text-xs font-semibold uppercase text-muted-foreground">{title}</span>
+        </button>
+        {action ? <div className="shrink-0" onClick={(event) => event.stopPropagation()}>{action}</div> : null}
+      </div>
+      {open ? <div className="grid gap-3 p-3 pt-0">{children}</div> : null}
     </section>
   );
 }

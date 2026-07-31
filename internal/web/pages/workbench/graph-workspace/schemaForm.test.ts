@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { parseJSONControlText, validateSchemaValue } from "./schemaForm";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { JsonSchemaForm, parseJSONControlText, validateSchemaValue } from "./schemaForm";
+import { setPathValue } from "./schemaFormModel";
 
 describe("validateSchemaValue object lists", () => {
   const schema = {
@@ -43,6 +46,18 @@ describe("validateSchemaValue object lists", () => {
       message: "Expected at least 1 item.",
     });
   });
+
+  test("renders object arrays as structured item editors", () => {
+    const html = renderToStaticMarkup(createElement(JsonSchemaForm, {
+      schema,
+      value: { members: [{ id: "researcher", description: "Find facts." }] },
+      onChange: () => {},
+    }));
+
+    expect(html).toContain("Item 1");
+    expect(html).toContain("Add Item");
+    expect(html).not.toContain("<textarea");
+  });
 });
 
 describe("JSON schema controls", () => {
@@ -68,5 +83,10 @@ describe("JSON schema controls", () => {
     expect(parseJSONControlText("42")).toEqual({ ok: true, value: 42 });
     expect(parseJSONControlText('["a"]')).toEqual({ ok: true, value: ["a"] });
     expect(parseJSONControlText("not-json")).toEqual({ ok: false });
+  });
+
+  test("rejects unsafe schema paths", () => {
+    expect(setPathValue({}, "__proto__.polluted", "yes")).toEqual({});
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 });
