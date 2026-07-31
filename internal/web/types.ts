@@ -99,6 +99,34 @@ export interface ChatChannelDefinition {
   title: string;
   description?: string;
   config_schema: Record<string, unknown>;
+  setup?: ChatChannelSetupDefinition;
+}
+
+export interface ChatChannelSetupDefinition {
+  kind: "qr_code";
+}
+
+export type ChatChannelSetupStatus =
+  | "waiting"
+  | "scanned"
+  | "verification_required"
+  | "confirmed"
+  | "expired"
+  | "failed";
+
+export interface ChatChannelSetupAccount {
+  id?: string;
+  label?: string;
+}
+
+export interface ChatChannelSetupResult {
+  session_id: string;
+  channel_id: string;
+  status: ChatChannelSetupStatus;
+  qr_code_content?: string;
+  expires_at: string;
+  account?: ChatChannelSetupAccount;
+  message?: string;
 }
 
 export interface Trigger {

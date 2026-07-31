@@ -18,6 +18,7 @@ import (
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
+	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
 	"github.com/dengzii/weaveflow/node"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
@@ -42,11 +43,10 @@ func TestRegistryResponseIncludesNodeGroups(t *testing.T) {
 		t.Fatalf("register grouped node type: %v", err)
 	}
 
-	chatChannels := chatchannel.NewDefaultRegistry()
-	if err := wecom.Register(chatChannels); err != nil {
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), Registry: reg})
+	if err != nil {
 		t.Fatal(err)
 	}
-	srv := &Server{registry: reg, chatChannels: chatChannels}
 	engine := gin.New()
 	engine.GET("/registry", srv.handleRegistry)
 	w := httptest.NewRecorder()
@@ -67,13 +67,21 @@ func TestRegistryResponseIncludesNodeGroups(t *testing.T) {
 	if nodeTypes := response.Data.NodeGroups[0].NodeTypes; len(nodeTypes) != 1 || nodeTypes[0] != "llm_turn" {
 		t.Fatalf("grouped node types = %#v", nodeTypes)
 	}
-	if len(response.Data.ChatChannels) != 2 || response.Data.ChatChannels[0].ID != chatchannel.HTTPChannelID || response.Data.ChatChannels[1].ID != wecom.ChannelID {
+	if len(response.Data.ChatChannels) != 3 || response.Data.ChatChannels[0].ID != chatchannel.HTTPChannelID || response.Data.ChatChannels[1].ID != wecom.ChannelID || response.Data.ChatChannels[2].ID != weixin.ChannelID {
 		t.Fatalf("chat channels = %#v", response.Data.ChatChannels)
 	}
 	properties, _ := response.Data.ChatChannels[1].ConfigSchema["properties"].(map[string]any)
 	secret, _ := properties["secret"].(map[string]any)
 	if secret["writeOnly"] != true {
 		t.Fatalf("WeCom secret schema = %#v", secret)
+	}
+	properties, _ = response.Data.ChatChannels[2].ConfigSchema["properties"].(map[string]any)
+	botToken, _ := properties["bot_token"].(map[string]any)
+	if botToken["writeOnly"] != true {
+		t.Fatalf("WeChat bot token schema = %#v", botToken)
+	}
+	if setup := response.Data.ChatChannels[2].Setup; setup == nil || setup.Kind != chatchannel.SetupKindQRCode {
+		t.Fatalf("WeChat setup definition = %#v", setup)
 	}
 }
 

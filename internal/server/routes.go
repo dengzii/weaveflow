@@ -21,6 +21,9 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 
 	group.GET("/registry", s.handleRegistry)
 	group.GET("/tools", s.handleTools)
+	group.POST("/chat-channels/:channel_id/setup-sessions", s.handleStartChatChannelSetup)
+	group.POST("/chat-channels/:channel_id/setup-sessions/:session_id/poll", s.handlePollChatChannelSetup)
+	group.DELETE("/chat-channels/:channel_id/setup-sessions/:session_id", s.handleCancelChatChannelSetup)
 
 	group.POST("/triggers", s.handleCreateTrigger)
 	group.GET("/triggers", s.handleListTriggers)

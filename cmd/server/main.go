@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,7 +28,13 @@ func main() {
 	prefix := flag.String("prefix", "", "route prefix")
 	corsOrigins := flag.String("cors-origins", defaultCORSOrigins, "comma-separated WebUI origins allowed by CORS; use * to allow all")
 	graphPath := flag.String("graph", "", "optional graph definition JSON file to preload")
+	logLevel := flag.String("log-level", "info", "log level: debug, info, or error")
 	flag.Parse()
+	level, err := parseLogLevel(*logLevel)
+	if err != nil {
+		log.Fatal(err)
+	}
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
 	var graph *wfgraph.Graph
 	if strings.TrimSpace(*graphPath) != "" {
@@ -92,6 +99,19 @@ func normalizePrefix(prefix string) string {
 		prefix = "/" + prefix
 	}
 	return strings.TrimRight(prefix, "/")
+}
+
+func parseLogLevel(value string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "", "info":
+		return slog.LevelInfo, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return slog.LevelInfo, fmt.Errorf("unsupported log level %q: expected debug, info, or error", value)
+	}
 }
 
 func newRuntimeContext() context.Context {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type testFactory struct{}
@@ -35,6 +36,26 @@ func (testFactory) New(InstanceConfig) (Instance, error) { return testInstance{}
 type testInstance struct{}
 
 func (testInstance) Run(context.Context) error { return nil }
+
+type setupTestFactory struct{ testFactory }
+
+func (setupTestFactory) Definition() Definition {
+	definition := testFactory{}.Definition()
+	definition.ID = "setup"
+	definition.Setup = &SetupDefinition{Kind: SetupKindQRCode}
+	return definition
+}
+
+func (setupTestFactory) StartSetup(context.Context, SetupStartConfig) (SetupSession, SetupResult, error) {
+	result := SetupResult{Status: SetupStatusWaiting, QRCodeContent: "qr", ExpiresAt: time.Now().Add(time.Minute)}
+	return setupTestSession{}, result, nil
+}
+
+type setupTestSession struct{}
+
+func (setupTestSession) Poll(context.Context, SetupPollInput) (SetupResult, error) {
+	return SetupResult{Status: SetupStatusConfirmed, CredentialConfig: map[string]any{"secret": "token"}}, nil
+}
 
 func TestRegistryExposesDefinitionsAndProtectsWriteOnlyConfig(t *testing.T) {
 	registry := NewDefaultRegistry()
@@ -69,5 +90,23 @@ func TestRegistryValidatesConfigAndHandler(t *testing.T) {
 	}
 	if _, err := registry.NewInstance("test", InstanceConfig{}); err == nil {
 		t.Fatal("expected missing handler error")
+	}
+}
+
+func TestRegistryStartsOptionalSetupCapability(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register(setupTestFactory{}); err != nil {
+		t.Fatal(err)
+	}
+	definition, ok := registry.Definition("setup")
+	if !ok || definition.Setup == nil || definition.Setup.Kind != SetupKindQRCode {
+		t.Fatalf("setup definition = %#v", definition.Setup)
+	}
+	session, result, err := registry.StartSetup(context.Background(), "setup", SetupStartConfig{})
+	if err != nil || session == nil || result.QRCodeContent != "qr" {
+		t.Fatalf("StartSetup() session = %#v, result = %#v, err = %v", session, result, err)
+	}
+	if _, _, err := registry.StartSetup(context.Background(), "missing", SetupStartConfig{}); !errors.Is(err, ErrChannelNotFound) {
+		t.Fatalf("missing setup error = %v", err)
 	}
 }

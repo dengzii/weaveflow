@@ -1,10 +1,11 @@
-import { useEffect, useId, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
-import { createTrigger, deleteTrigger, updateTrigger } from "../../api";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { CheckCircle2, Link2, Plus, Trash2 } from "lucide-react";
+import { cancelChatChannelSetup, createTrigger, deleteTrigger, updateTrigger } from "../../api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
-import type { ChatChannelDefinition, Trigger, TriggerTarget, WebhookStateMapping } from "../../types";
+import type { ChatChannelDefinition, ChatChannelSetupAccount, Trigger, TriggerTarget, WebhookStateMapping } from "../../types";
+import { ChatChannelSetupDialog } from "./ChatChannelSetupDialog";
 import { JsonSchemaForm } from "./graph-workspace/schemaForm";
 import {
   buildTriggerPayload,
@@ -49,16 +50,42 @@ export function TriggerEditorForm({
   const [values, setValues] = useState<TriggerEditorValues>(() => triggerEditorValues(trigger, fallbackTarget));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [chatSetupSessionID, setChatSetupSessionID] = useState("");
+  const [chatSetupAccount, setChatSetupAccount] = useState<ChatChannelSetupAccount | undefined>();
+  const chatSetupSessionRef = useRef<{ channelID: string; sessionID: string } | null>(null);
   const selectedChatChannel = chatChannels.find((channel) => channel.id === values.chatChannel);
+  const hasStoredChannelCredential = Boolean(trigger && trigger.chat?.channel === values.chatChannel);
   const channelSchema = editableChatChannelSchema(
     selectedChatChannel,
-    Boolean(trigger && trigger.chat?.channel === values.chatChannel)
+    hasStoredChannelCredential || Boolean(chatSetupSessionID)
   );
 
+  const discardChatSetupSession = useCallback(() => {
+    const setup = chatSetupSessionRef.current;
+    chatSetupSessionRef.current = null;
+    if (setup) {
+      void cancelChatChannelSetup(setup.channelID, setup.sessionID).catch(() => undefined);
+    }
+  }, []);
+
   useEffect(() => {
+    discardChatSetupSession();
     setValues(triggerEditorValues(trigger, fallbackTarget));
     setError("");
-  }, [fallbackTarget.graph_id, trigger?.id, trigger?.updated_at]);
+    setSetupOpen(false);
+    setChatSetupSessionID("");
+    setChatSetupAccount(undefined);
+  }, [discardChatSetupSession, fallbackTarget.graph_id, trigger?.id, trigger?.updated_at]);
+
+  useEffect(() => () => discardChatSetupSession(), [discardChatSetupSession]);
+
+  const closeSetup = useCallback(() => setSetupOpen(false), []);
+  const confirmSetup = useCallback((sessionID: string, account?: ChatChannelSetupAccount) => {
+    chatSetupSessionRef.current = { channelID: values.chatChannel, sessionID };
+    setChatSetupSessionID(sessionID);
+    setChatSetupAccount(account);
+  }, [values.chatChannel]);
 
   function change<Key extends keyof TriggerEditorValues>(key: Key, value: TriggerEditorValues[Key]) {
     setValues((current) => ({ ...current, [key]: value }));
@@ -86,10 +113,14 @@ export function TriggerEditorForm({
     setBusy(true);
     setError("");
     try {
-      const payload = buildTriggerPayload(values, trigger);
+      const payload = buildTriggerPayload(values, trigger, chatSetupSessionID);
       const saved = trigger
         ? await updateTrigger(trigger.id, payload)
         : await createTrigger(payload);
+      chatSetupSessionRef.current = null;
+      setChatSetupSessionID("");
+      setChatSetupAccount(undefined);
+      setSetupOpen(false);
       await onSaved(saved);
     } catch (err) {
       setError(errorMessage(err));
@@ -104,6 +135,7 @@ export function TriggerEditorForm({
     setError("");
     try {
       await deleteTrigger(trigger.id);
+      discardChatSetupSession();
       await onDeleted?.(trigger);
     } catch (err) {
       setError(errorMessage(err));
@@ -113,7 +145,8 @@ export function TriggerEditorForm({
   }
 
   return (
-    <div className="grid gap-4">
+    <>
+      <div className="grid gap-4">
       {showIdentityFields ? (
         <div className="grid grid-cols-2 gap-2">
           <label className="grid gap-1 text-sm">
@@ -152,6 +185,10 @@ export function TriggerEditorForm({
                 onChange={(event) => {
                   const channelID = event.target.value;
                   const definition = chatChannels.find((channel) => channel.id === channelID);
+                  discardChatSetupSession();
+                  setSetupOpen(false);
+                  setChatSetupSessionID("");
+                  setChatSetupAccount(undefined);
                   setValues((current) => ({
                     ...current,
                     chatChannel: channelID,
@@ -176,6 +213,34 @@ export function TriggerEditorForm({
             </label>
             <div className="grid gap-2 border-t border-border pt-3">
               <div className="text-xs font-medium">Channel configuration</div>
+              {selectedChatChannel?.setup?.kind === "qr_code" ? (
+                <div className="flex min-w-0 items-center gap-3 py-1">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1.5 text-xs font-medium">
+                      {chatSetupSessionID || hasStoredChannelCredential ? (
+                        <CheckCircle2 className="h-3.5 w-3.5 text-[var(--status-ok-text)]" />
+                      ) : null}
+                      <span>{chatSetupSessionID ? "Connected" : hasStoredChannelCredential ? "Credentials configured" : "Not connected"}</span>
+                    </div>
+                    {chatSetupAccount?.label ? (
+                      <div className="mt-0.5 truncate text-[11px] text-muted-foreground">{chatSetupAccount.label}</div>
+                    ) : null}
+                  </div>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      discardChatSetupSession();
+                      setChatSetupSessionID("");
+                      setChatSetupAccount(undefined);
+                      setSetupOpen(true);
+                    }}
+                  >
+                    <Link2 className="h-4 w-4" />
+                    {chatSetupSessionID || hasStoredChannelCredential ? "Reconnect" : "Connect"}
+                  </Button>
+                </div>
+              ) : null}
               <JsonSchemaForm
                 schema={channelSchema}
                 unavailableReason={chatChannels.length === 0 ? "Chat channel registry is unavailable." : "Select an available chat channel."}
@@ -378,7 +443,16 @@ export function TriggerEditorForm({
           </Button>
         ) : null}
       </div>
-    </div>
+      </div>
+      {setupOpen && selectedChatChannel?.setup?.kind === "qr_code" ? (
+        <ChatChannelSetupDialog
+          channel={selectedChatChannel}
+          triggerID={trigger?.chat?.channel === selectedChatChannel.id ? trigger.id : undefined}
+          onClose={closeSetup}
+          onConfirmed={confirmSetup}
+        />
+      ) : null}
+    </>
   );
 }
 

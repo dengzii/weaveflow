@@ -1,11 +1,12 @@
 package wecom
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -86,7 +87,7 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 		return nil
 	})
 	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
-	instance, err := (Factory{Logger: log.New(io.Discard, "", 0)}).New(chatchannel.InstanceConfig{
+	instance, err := (Factory{Logger: discardLogger()}).New(chatchannel.InstanceConfig{
 		TriggerID: "chat", Handler: handler,
 		Config: map[string]any{"bot_id": "bot", "secret": "secret", "endpoint": endpoint},
 	})
@@ -148,7 +149,7 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 }
 
 func TestDisconnectedEventStopsInsteadOfCompetingForConnection(t *testing.T) {
-	channel := &Channel{config: Config{}, logger: log.New(io.Discard, "", 0)}
+	channel := &Channel{config: Config{}, logger: discardLogger()}
 	frame := incomingFrame{
 		Command: "aibot_event_callback",
 		Headers: headers{RequestID: "disconnect-request"},
@@ -232,7 +233,7 @@ func TestChannelPropagatesRejectedReplyAndSendsFailure(t *testing.T) {
 		return err
 	})
 	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
-	instance, err := (Factory{Logger: log.New(io.Discard, "", 0)}).New(chatchannel.InstanceConfig{
+	instance, err := (Factory{Logger: discardLogger()}).New(chatchannel.InstanceConfig{
 		TriggerID: "chat", Handler: handler,
 		Config: map[string]any{
 			"bot_id": "bot", "secret": "secret", "endpoint": endpoint,
@@ -357,7 +358,7 @@ func TestChannelReplyAckTimeoutSendsFailure(t *testing.T) {
 		return err
 	})
 	endpoint := "ws" + strings.TrimPrefix(server.URL, "http")
-	instance, err := (Factory{Logger: log.New(io.Discard, "", 0), ackTimeout: 50 * time.Millisecond}).New(chatchannel.InstanceConfig{
+	instance, err := (Factory{Logger: discardLogger(), ackTimeout: 50 * time.Millisecond}).New(chatchannel.InstanceConfig{
 		TriggerID: "chat", Handler: handler,
 		Config: map[string]any{
 			"bot_id": "bot", "secret": "secret", "endpoint": endpoint,
@@ -440,6 +441,55 @@ func (writer *controlledFrameWriter) WriteReply(ctx context.Context, frame outgo
 	}
 }
 
+func TestChannelLogsDebugInfoAndErrorWithoutSensitiveValues(t *testing.T) {
+	var logOutput bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logOutput, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	channel := &Channel{
+		config: Config{
+			Secret:         "private-wecom-secret",
+			WelcomeMessage: "private-welcome-message",
+		},
+		logger: logger,
+	}
+	workerErrors := make(chan error, 1)
+	if err := channel.handleIncomingFrame(
+		context.Background(),
+		newControlledFrameWriter(),
+		[]byte(`{"cmd":"unsupported_command","headers":{"req_id":"request-a"}}`),
+		workerErrors,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := channel.handleIncomingFrame(
+		context.Background(),
+		newControlledFrameWriter(),
+		[]byte(`{"headers":{"req_id":"request-b"},"errcode":45009,"errmsg":"rate limited"}`),
+		workerErrors,
+	); err != nil {
+		t.Fatal(err)
+	}
+	writer := newControlledFrameWriter()
+	writer.releases <- nil
+	if err := channel.handleEventCallback(context.Background(), writer, incomingFrame{
+		Headers: headers{RequestID: "request-c"},
+		Body:    json.RawMessage(`{"event":{"eventtype":"enter_chat"}}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	logs := logOutput.String()
+	for _, level := range []string{"level=DEBUG", "level=INFO", "level=ERROR"} {
+		if !strings.Contains(logs, level) {
+			t.Fatalf("logs do not contain %s: %s", level, logs)
+		}
+	}
+	for _, sensitive := range []string{"private-wecom-secret", "private-welcome-message"} {
+		if strings.Contains(logs, sensitive) {
+			t.Fatalf("logs contain sensitive value %q: %s", sensitive, logs)
+		}
+	}
+}
+
 func TestReplySinkCoalescesUpdatesAndAlwaysFinishes(t *testing.T) {
 	writer := newControlledFrameWriter()
 	sink := newReplySink(context.Background(), writer, "request", DefaultFailureMessage)
@@ -484,6 +534,10 @@ func TestReplySinkCoalescesUpdatesAndAlwaysFinishes(t *testing.T) {
 		t.Fatalf("unexpected extra frame: %#v", extra)
 	default:
 	}
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func TestValidateStreamContentUsesUTF8ByteLimit(t *testing.T) {

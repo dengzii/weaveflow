@@ -12,6 +12,7 @@ import (
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
+	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
@@ -45,20 +46,22 @@ type Config struct {
 }
 
 type Server struct {
-	mu             sync.RWMutex
-	graphMu        sync.Mutex
-	settingsMu     sync.Mutex
-	baseCtx        context.Context
-	graph          *wfgraph.Graph
-	runner         *runtime.GraphRunner
-	settings       graphRuntimeSettings
-	registry       *wfregistry.Registry
-	events         *EventHub
-	baseDir        string
-	cfg            Config
-	triggers       *trigger.Service
-	chatChannels   *chatchannel.Registry
-	triggerRunners map[string]*runtime.GraphRunner
+	mu              sync.RWMutex
+	graphMu         sync.Mutex
+	settingsMu      sync.Mutex
+	baseCtx         context.Context
+	graph           *wfgraph.Graph
+	runner          *runtime.GraphRunner
+	settings        graphRuntimeSettings
+	registry        *wfregistry.Registry
+	events          *EventHub
+	baseDir         string
+	cfg             Config
+	triggers        *trigger.Service
+	chatChannels    *chatchannel.Registry
+	chatSetup       *chatSetupManager
+	chatSetupSaveMu sync.Mutex
+	triggerRunners  map[string]*runtime.GraphRunner
 }
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
@@ -129,6 +132,9 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 			if err := wecom.Register(chatChannels); err != nil {
 				return nil, fmt.Errorf("register WeCom chat channel: %w", err)
 			}
+			if err := weixin.Register(chatChannels); err != nil {
+				return nil, fmt.Errorf("register WeChat chat channel: %w", err)
+			}
 		}
 		triggerStore := cfg.TriggerStore
 		if triggerStore == nil {
@@ -148,6 +154,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	srv.triggers = triggerService
 	srv.chatChannels = triggerService.ChatChannels()
+	srv.chatSetup = newChatSetupManager(srv.chatChannels)
 	return srv, nil
 }
 

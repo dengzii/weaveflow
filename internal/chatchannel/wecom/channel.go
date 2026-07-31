@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"strings"
 	"sync"
@@ -44,7 +44,7 @@ type Config struct {
 }
 
 type Factory struct {
-	Logger     *log.Logger
+	Logger     *slog.Logger
 	Dialer     *websocket.Dialer
 	ackTimeout time.Duration
 }
@@ -113,8 +113,14 @@ func (factory Factory) New(instance chatchannel.InstanceConfig) (chatchannel.Ins
 	}
 	logger := factory.Logger
 	if logger == nil {
-		logger = log.Default()
+		logger = slog.Default()
 	}
+	triggerID := strings.TrimSpace(instance.TriggerID)
+	logger = logger.With(
+		"component", "chat_channel",
+		"channel", ChannelID,
+		"trigger_id", triggerID,
+	)
 	dialer := factory.Dialer
 	if dialer == nil {
 		dialer = websocket.DefaultDialer
@@ -124,7 +130,7 @@ func (factory Factory) New(instance chatchannel.InstanceConfig) (chatchannel.Ins
 		ackTimeout = replyAckTimeout
 	}
 	return &Channel{
-		triggerID:  strings.TrimSpace(instance.TriggerID),
+		triggerID:  triggerID,
 		config:     config,
 		handler:    instance.Handler,
 		logger:     logger,
@@ -195,7 +201,7 @@ type Channel struct {
 	triggerID  string
 	config     Config
 	handler    chatchannel.Handler
-	logger     *log.Logger
+	logger     *slog.Logger
 	dialer     *websocket.Dialer
 	ackTimeout time.Duration
 }
@@ -207,14 +213,18 @@ func (channel *Channel) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	channel.logger.Info("WeCom channel starting")
+	defer channel.logger.Info("WeCom channel stopped")
 	reconnectDelay := initialReconnectDelay
 	for {
+		channel.logger.Debug("WeCom channel connecting")
 		conn, _, err := channel.dialer.DialContext(ctx, channel.config.Endpoint, nil)
 		if err != nil {
 			if ctx.Err() != nil {
+				channel.logger.Debug("WeCom connection attempt canceled")
 				return nil
 			}
-			channel.logger.Printf("WeCom channel %s connect failed: %v; retrying in %s", channel.triggerID, err, reconnectDelay)
+			channel.logger.Error("WeCom channel connection failed", "error", err, "retry_in", reconnectDelay)
 			if err := waitForReconnect(ctx, reconnectDelay); err != nil {
 				return nil
 			}
@@ -222,7 +232,7 @@ func (channel *Channel) Run(ctx context.Context) error {
 			continue
 		}
 
-		channel.logger.Printf("WeCom channel %s connected", channel.triggerID)
+		channel.logger.Info("WeCom channel connected")
 		err = channel.serveConnection(ctx, conn)
 		if ctx.Err() != nil {
 			return nil
@@ -230,9 +240,10 @@ func (channel *Channel) Run(ctx context.Context) error {
 		var subscriptionRejected *subscriptionRejectedError
 		var connectionReplaced *connectionReplacedError
 		if errors.As(err, &subscriptionRejected) || errors.As(err, &connectionReplaced) {
+			channel.logger.Error("WeCom channel terminated by platform", "error", err)
 			return err
 		}
-		channel.logger.Printf("WeCom channel %s closed: %v; retrying in %s", channel.triggerID, err, reconnectDelay)
+		channel.logger.Error("WeCom channel connection closed", "error", err, "retry_in", reconnectDelay)
 		if err := waitForReconnect(ctx, reconnectDelay); err != nil {
 			return nil
 		}
@@ -315,7 +326,8 @@ func (channel *Channel) serveConnection(ctx context.Context, conn *websocket.Con
 	if err := subscribe(conn, channel.config); err != nil {
 		return err
 	}
-	writer := newConnectionWriter(conn, channel.ackTimeout)
+	channel.logger.Info("WeCom channel subscription accepted")
+	writer := newConnectionWriter(conn, channel.ackTimeout, channel.logger)
 	defer writer.Close(errors.New("WeCom connection closed"))
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -340,6 +352,7 @@ func (channel *Channel) serveConnection(ctx context.Context, conn *websocket.Con
 				return err
 			}
 		case <-heartbeat.C:
+			channel.logger.Debug("WeCom channel sending heartbeat")
 			if err := writer.WriteFrame(outgoingFrame{Command: "ping", Headers: headers{RequestID: uuid.NewString()}}); err != nil {
 				return fmt.Errorf("send heartbeat: %w", err)
 			}
@@ -420,6 +433,7 @@ type connectionWriter struct {
 	writeMu    sync.Mutex
 	pendingMu  sync.Mutex
 	conn       *websocket.Conn
+	logger     *slog.Logger
 	ackTimeout time.Duration
 	pending    map[string]*pendingReply
 	gates      map[string]*requestGate
@@ -427,12 +441,16 @@ type connectionWriter struct {
 	closedErr  error
 }
 
-func newConnectionWriter(conn *websocket.Conn, ackTimeout time.Duration) *connectionWriter {
+func newConnectionWriter(conn *websocket.Conn, ackTimeout time.Duration, logger *slog.Logger) *connectionWriter {
 	if ackTimeout <= 0 {
 		ackTimeout = replyAckTimeout
 	}
+	if logger == nil {
+		logger = slog.New(slog.DiscardHandler)
+	}
 	return &connectionWriter{
 		conn:       conn,
+		logger:     logger,
 		ackTimeout: ackTimeout,
 		pending:    make(map[string]*pendingReply),
 		gates:      make(map[string]*requestGate),
@@ -458,6 +476,7 @@ func (writer *connectionWriter) WriteReply(ctx context.Context, frame outgoingFr
 	}
 	requestID := strings.TrimSpace(frame.Headers.RequestID)
 	if requestID == "" {
+		writer.logger.Error("WeCom reply rejected before send", "reason", "missing_request_id", "command", frame.Command)
 		return errors.New("WeCom reply req_id is required")
 	}
 	release, err := writer.acquireRequestGate(ctx, requestID)
@@ -477,7 +496,13 @@ func (writer *connectionWriter) WriteReply(ctx context.Context, frame outgoingFr
 	writer.pendingMu.Unlock()
 	defer writer.removePending(requestID, pending)
 
+	finalReply := false
+	if body, ok := frame.Body.(streamReplyBody); ok {
+		finalReply = body.Stream.Finish
+	}
+	writer.logger.Debug("WeCom reply sending", "request_id", requestID, "command", frame.Command, "final", finalReply)
 	if err := writer.WriteFrame(frame); err != nil {
+		writer.logger.Error("WeCom reply write failed", "request_id", requestID, "command", frame.Command, "error", err)
 		return err
 	}
 	timer := time.NewTimer(writer.ackTimeout)
@@ -485,21 +510,37 @@ func (writer *connectionWriter) WriteReply(ctx context.Context, frame outgoingFr
 	select {
 	case result := <-pending.result:
 		if result.err != nil {
+			writer.logger.Error("WeCom reply failed before ACK", "request_id", requestID, "error", result.err)
 			return result.err
 		}
 		if result.frame.ErrorCode == nil {
+			writer.logger.Error("WeCom reply ACK was invalid", "request_id", requestID, "reason", "missing_error_code")
 			return errors.New("WeCom reply ACK is missing errcode")
 		}
 		if *result.frame.ErrorCode != 0 {
+			writer.logger.Error("WeCom reply rejected by platform",
+				"request_id", requestID,
+				"error_code", *result.frame.ErrorCode,
+				"error_message", result.frame.ErrorMsg,
+			)
 			return fmt.Errorf("WeCom reply rejected: errcode=%d errmsg=%s", *result.frame.ErrorCode, result.frame.ErrorMsg)
+		}
+		if finalReply {
+			writer.logger.Info("WeCom final reply acknowledged", "request_id", requestID)
+		} else {
+			writer.logger.Debug("WeCom reply acknowledged", "request_id", requestID)
 		}
 		return nil
 	case <-timer.C:
+		writer.logger.Error("WeCom reply ACK timed out", "request_id", requestID, "timeout", writer.ackTimeout)
 		return fmt.Errorf("WeCom reply ACK timeout after %s for req_id %q", writer.ackTimeout, requestID)
 	case <-ctx.Done():
+		writer.logger.Debug("WeCom reply canceled", "request_id", requestID, "error", ctx.Err())
 		return ctx.Err()
 	case <-writer.done:
-		return writer.closeError()
+		err := writer.closeError()
+		writer.logger.Error("WeCom reply interrupted by connection close", "request_id", requestID, "error", err)
+		return err
 	}
 }
 
@@ -618,9 +659,18 @@ func (channel *Channel) handleIncomingFrame(ctx context.Context, writer frameWri
 	if err := json.Unmarshal(payload, &frame); err != nil {
 		return fmt.Errorf("decode incoming frame: %w", err)
 	}
+	channel.logger.Debug("WeCom frame received",
+		"command", frame.Command,
+		"request_id", frame.Headers.RequestID,
+		"payload_bytes", len(payload),
+	)
 	if frame.Command == "" {
 		if frame.ErrorCode != nil && *frame.ErrorCode != 0 {
-			channel.logger.Printf("WeCom channel %s request %s failed: errcode=%d errmsg=%s", channel.triggerID, frame.Headers.RequestID, *frame.ErrorCode, frame.ErrorMsg)
+			channel.logger.Error("WeCom request rejected",
+				"request_id", frame.Headers.RequestID,
+				"error_code", *frame.ErrorCode,
+				"error_message", frame.ErrorMsg,
+			)
 		}
 		return nil
 	}
@@ -638,7 +688,7 @@ func (channel *Channel) handleIncomingFrame(ctx context.Context, writer frameWri
 	case "aibot_event_callback":
 		return channel.handleEventCallback(ctx, writer, frame)
 	default:
-		channel.logger.Printf("WeCom channel %s ignoring unsupported command %q", channel.triggerID, frame.Command)
+		channel.logger.Debug("WeCom unsupported command ignored", "command", frame.Command)
 		return nil
 	}
 }
@@ -651,9 +701,20 @@ func (channel *Channel) handleMessageCallback(ctx context.Context, writer frameW
 	if err := json.Unmarshal(frame.Body, &body); err != nil {
 		return fmt.Errorf("decode message callback: %w", err)
 	}
+	channel.logger.Debug("WeCom message received",
+		"message_id", body.MessageID,
+		"message_type", body.MessageType,
+		"has_chat_id", strings.TrimSpace(body.ChatID) != "",
+	)
 	sink := newReplySink(ctx, writer, frame.Headers.RequestID, channel.config.FailureMessage)
 	if body.MessageType != "text" {
-		return sink.Emit(ctx, chatcap.Reply{Kind: chatcap.ReplyFinish, Content: channel.config.UnsupportedMessage})
+		err := sink.Emit(ctx, chatcap.Reply{Kind: chatcap.ReplyFinish, Content: channel.config.UnsupportedMessage})
+		if err != nil {
+			channel.logger.Error("WeCom unsupported message reply failed", "message_id", body.MessageID, "error", err)
+			return err
+		}
+		channel.logger.Info("WeCom unsupported message handled", "message_id", body.MessageID, "message_type", body.MessageType)
+		return nil
 	}
 	invocationCtx, cancel := context.WithTimeout(ctx, chatInvocationTimeout)
 	defer cancel()
@@ -668,9 +729,10 @@ func (channel *Channel) handleMessageCallback(ctx context.Context, writer frameW
 		},
 	}
 	if err := channel.handler.Handle(invocationCtx, message, sink); err != nil {
-		channel.logger.Printf("WeCom channel %s trigger failed for message %s: %v", channel.triggerID, body.MessageID, err)
+		channel.logger.Error("WeCom message trigger failed", "message_id", body.MessageID, "error", err)
 		return sink.Fail(context.WithoutCancel(ctx), err)
 	}
+	channel.logger.Info("WeCom message handled", "message_id", body.MessageID)
 	return nil
 }
 
@@ -679,6 +741,7 @@ func (channel *Channel) handleEventCallback(ctx context.Context, writer frameWri
 	if err := json.Unmarshal(frame.Body, &body); err != nil {
 		return fmt.Errorf("decode event callback: %w", err)
 	}
+	channel.logger.Debug("WeCom event received", "event_type", body.Event.EventType)
 	switch body.Event.EventType {
 	case "enter_chat":
 		if strings.TrimSpace(frame.Headers.RequestID) == "" {
@@ -686,11 +749,16 @@ func (channel *Channel) handleEventCallback(ctx context.Context, writer frameWri
 		}
 		reply := welcomeReplyBody{MessageType: "text"}
 		reply.Text.Content = channel.config.WelcomeMessage
-		return writer.WriteReply(ctx, outgoingFrame{Command: "aibot_respond_welcome_msg", Headers: headers{RequestID: frame.Headers.RequestID}, Body: reply})
+		if err := writer.WriteReply(ctx, outgoingFrame{Command: "aibot_respond_welcome_msg", Headers: headers{RequestID: frame.Headers.RequestID}, Body: reply}); err != nil {
+			channel.logger.Error("WeCom welcome message failed", "error", err)
+			return err
+		}
+		channel.logger.Info("WeCom welcome message sent")
+		return nil
 	case "disconnected_event":
 		return &connectionReplacedError{}
 	default:
-		channel.logger.Printf("WeCom channel %s ignoring unsupported event %q", channel.triggerID, body.Event.EventType)
+		channel.logger.Debug("WeCom unsupported event ignored", "event_type", body.Event.EventType)
 		return nil
 	}
 }

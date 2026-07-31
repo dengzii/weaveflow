@@ -19,16 +19,17 @@ const (
 )
 
 type triggerPayload struct {
-	ID           string                    `json:"id,omitempty"`
-	Name         string                    `json:"name,omitempty"`
-	Type         trigger.Type              `json:"type"`
-	Enabled      *bool                     `json:"enabled,omitempty"`
-	Target       trigger.Target            `json:"target,omitempty"`
-	Concurrency  trigger.ConcurrencyPolicy `json:"concurrency,omitempty"`
-	InitialState map[string]any            `json:"initial_state,omitempty"`
-	Webhook      *triggerWebhookPayload    `json:"webhook,omitempty"`
-	Schedule     *trigger.ScheduleSpec     `json:"schedule,omitempty"`
-	Chat         *trigger.ChatSpec         `json:"chat,omitempty"`
+	ID                 string                    `json:"id,omitempty"`
+	Name               string                    `json:"name,omitempty"`
+	Type               trigger.Type              `json:"type"`
+	Enabled            *bool                     `json:"enabled,omitempty"`
+	Target             trigger.Target            `json:"target,omitempty"`
+	Concurrency        trigger.ConcurrencyPolicy `json:"concurrency,omitempty"`
+	InitialState       map[string]any            `json:"initial_state,omitempty"`
+	Webhook            *triggerWebhookPayload    `json:"webhook,omitempty"`
+	Schedule           *trigger.ScheduleSpec     `json:"schedule,omitempty"`
+	Chat               *trigger.ChatSpec         `json:"chat,omitempty"`
+	ChatSetupSessionID string                    `json:"chat_setup_session_id,omitempty"`
 }
 
 type triggerWebhookPayload struct {
@@ -77,11 +78,23 @@ func (s *Server) handleCreateTrigger(c *gin.Context) {
 	if item.Target == (trigger.Target{}) {
 		item.Target = s.defaultTriggerTarget()
 	}
+	if strings.TrimSpace(payload.ChatSetupSessionID) != "" {
+		s.chatSetupSaveMu.Lock()
+		defer s.chatSetupSaveMu.Unlock()
+	}
+	releaseSetup, err := s.applyChatSetup(c.Request.Context(), setupRequestOwner(c), payload.ChatSetupSessionID, &item)
+	if err != nil {
+		writeError(c, statusForChatSetupError(err), err)
+		return
+	}
+	setupCommitted := false
+	defer func() { releaseSetup(setupCommitted) }()
 	item, err = service.Create(c.Request.Context(), item)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
+	setupCommitted = true
 	writeData(c, http.StatusCreated, s.publicTrigger(item))
 }
 
@@ -145,11 +158,23 @@ func (s *Server) handleUpdateTrigger(c *gin.Context) {
 	if item.Target == (trigger.Target{}) {
 		item.Target = existing.Target
 	}
+	if strings.TrimSpace(payload.ChatSetupSessionID) != "" {
+		s.chatSetupSaveMu.Lock()
+		defer s.chatSetupSaveMu.Unlock()
+	}
+	releaseSetup, err := s.applyChatSetup(c.Request.Context(), setupRequestOwner(c), payload.ChatSetupSessionID, &item)
+	if err != nil {
+		writeError(c, statusForChatSetupError(err), err)
+		return
+	}
+	setupCommitted := false
+	defer func() { releaseSetup(setupCommitted) }()
 	item, err = service.Update(c.Request.Context(), item)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
+	setupCommitted = true
 	writeData(c, http.StatusOK, s.publicTrigger(item))
 }
 

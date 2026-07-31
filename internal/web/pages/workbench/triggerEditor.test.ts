@@ -77,6 +77,17 @@ describe("trigger editor payload", () => {
     });
   });
 
+  test("adds a confirmed chat setup session only to the transport payload", () => {
+    const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    values.chatChannel = "weixin";
+
+    expect(buildTriggerPayload(values, null, " setup-session ")).toMatchObject({
+      chat: { channel: "weixin" },
+      chat_setup_session_id: "setup-session",
+    });
+    expect(buildTriggerPayload(values, null)).not.toHaveProperty("chat_setup_session_id");
+  });
+
   test("keeps write-only channel fields editable without requiring the stored secret again", () => {
     const definition = {
       id: "wecom",

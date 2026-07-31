@@ -66,7 +66,11 @@ export function triggerEditorValues(
   };
 }
 
-export function buildTriggerPayload(values: TriggerEditorValues, editing: Trigger | null): Record<string, unknown> {
+export function buildTriggerPayload(
+  values: TriggerEditorValues,
+  editing: Trigger | null,
+  chatSetupSessionID?: string
+): Record<string, unknown> {
   const graphID = triggerTargetKey(values.target);
   if (!graphID) throw new Error("graph is required");
 
@@ -116,6 +120,7 @@ export function buildTriggerPayload(values: TriggerEditorValues, editing: Trigge
       stream_updates: values.streamUpdates,
       stream_node_ids: streamNodeIDs,
     };
+    if (chatSetupSessionID?.trim()) input.chat_setup_session_id = chatSetupSessionID.trim();
   }
   return input;
 }

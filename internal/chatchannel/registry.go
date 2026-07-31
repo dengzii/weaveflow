@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 )
@@ -15,15 +16,24 @@ import (
 const HTTPChannelID = "http"
 
 var (
-	ErrChannelNotFound = errors.New("chat channel is not registered")
-	ErrInvalidConfig   = errors.New("invalid chat channel config")
+	ErrChannelNotFound   = errors.New("chat channel is not registered")
+	ErrInvalidConfig     = errors.New("invalid chat channel config")
+	ErrSetupUnavailable  = errors.New("chat channel setup is unavailable")
+	ErrInvalidSetupInput = errors.New("invalid chat channel setup input")
 )
 
+const SetupKindQRCode = "qr_code"
+
+type SetupDefinition struct {
+	Kind string `json:"kind"`
+}
+
 type Definition struct {
-	ID           string         `json:"id"`
-	Title        string         `json:"title"`
-	Description  string         `json:"description,omitempty"`
-	ConfigSchema map[string]any `json:"config_schema"`
+	ID           string           `json:"id"`
+	Title        string           `json:"title"`
+	Description  string           `json:"description,omitempty"`
+	ConfigSchema map[string]any   `json:"config_schema"`
+	Setup        *SetupDefinition `json:"setup,omitempty"`
 }
 
 type Handler interface {
@@ -50,6 +60,51 @@ type Factory interface {
 	Definition() Definition
 	ValidateConfig(map[string]any) error
 	New(InstanceConfig) (Instance, error)
+}
+
+type SetupStatus string
+
+const (
+	SetupStatusWaiting              SetupStatus = "waiting"
+	SetupStatusScanned              SetupStatus = "scanned"
+	SetupStatusVerificationRequired SetupStatus = "verification_required"
+	SetupStatusConfirmed            SetupStatus = "confirmed"
+	SetupStatusExpired              SetupStatus = "expired"
+	SetupStatusFailed               SetupStatus = "failed"
+)
+
+type SetupStartConfig struct {
+	ExistingConfig map[string]any
+}
+
+type SetupPollInput struct {
+	VerificationCode string
+}
+
+type SetupAccount struct {
+	ID    string `json:"id,omitempty"`
+	Label string `json:"label,omitempty"`
+}
+
+type SetupResult struct {
+	Status           SetupStatus
+	QRCodeContent    string
+	ExpiresAt        time.Time
+	Account          *SetupAccount
+	Message          string
+	CredentialConfig map[string]any
+}
+
+type SetupSession interface {
+	Poll(context.Context, SetupPollInput) (SetupResult, error)
+}
+
+type SetupFactory interface {
+	StartSetup(context.Context, SetupStartConfig) (SetupSession, SetupResult, error)
+}
+
+type CredentialIdentifier interface {
+	CredentialID(map[string]any) string
 }
 
 type Registry struct {
@@ -85,6 +140,14 @@ func (r *Registry) Register(factory Factory) error {
 	}
 	if definition.ConfigSchema == nil {
 		return fmt.Errorf("chat channel %q config schema is required", definition.ID)
+	}
+	if definition.Setup != nil {
+		if definition.Setup.Kind == "" {
+			return fmt.Errorf("chat channel %q setup kind is required", definition.ID)
+		}
+		if _, ok := factory.(SetupFactory); !ok {
+			return fmt.Errorf("chat channel %q declares setup but does not implement it", definition.ID)
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -159,6 +222,39 @@ func (r *Registry) NewInstance(id string, config InstanceConfig) (Instance, erro
 	return instance, nil
 }
 
+func (r *Registry) StartSetup(ctx context.Context, id string, config SetupStartConfig) (SetupSession, SetupResult, error) {
+	factory, ok := r.factory(id)
+	if !ok {
+		return nil, SetupResult{}, fmt.Errorf("%w: %q", ErrChannelNotFound, strings.TrimSpace(id))
+	}
+	setupFactory, ok := factory.(SetupFactory)
+	if !ok {
+		return nil, SetupResult{}, fmt.Errorf("%w: %q", ErrSetupUnavailable, strings.TrimSpace(id))
+	}
+	config.ExistingConfig = cloneConfig(config.ExistingConfig)
+	session, result, err := setupFactory.StartSetup(ctx, config)
+	if err != nil {
+		return nil, SetupResult{}, fmt.Errorf("start chat channel %q setup: %w", strings.TrimSpace(id), err)
+	}
+	if session == nil {
+		return nil, SetupResult{}, fmt.Errorf("start chat channel %q setup: session is nil", strings.TrimSpace(id))
+	}
+	result.CredentialConfig = cloneConfig(result.CredentialConfig)
+	return session, result, nil
+}
+
+func (r *Registry) CredentialID(id string, config map[string]any) string {
+	factory, ok := r.factory(id)
+	if !ok {
+		return ""
+	}
+	identifier, ok := factory.(CredentialIdentifier)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(identifier.CredentialID(cloneConfig(config)))
+}
+
 func (r *Registry) RedactConfig(id string, config map[string]any) map[string]any {
 	definition, ok := r.Definition(id)
 	if !ok {
@@ -194,11 +290,20 @@ func normalizeDefinition(definition Definition) Definition {
 	definition.ID = strings.TrimSpace(definition.ID)
 	definition.Title = strings.TrimSpace(definition.Title)
 	definition.Description = strings.TrimSpace(definition.Description)
+	if definition.Setup != nil {
+		setup := *definition.Setup
+		setup.Kind = strings.TrimSpace(setup.Kind)
+		definition.Setup = &setup
+	}
 	return definition
 }
 
 func cloneDefinition(definition Definition) Definition {
 	definition.ConfigSchema = cloneConfig(definition.ConfigSchema)
+	if definition.Setup != nil {
+		setup := *definition.Setup
+		definition.Setup = &setup
+	}
 	return definition
 }
 

@@ -3,6 +3,7 @@ import type {
   ArtifactDetail,
   ArtifactRef,
   CachedGraphSummary,
+  ChatChannelSetupResult,
   CheckpointDetail,
   CheckpointRecord,
   GraphDefinition,
@@ -139,6 +140,38 @@ export async function getRegistry(): Promise<RegistryInfo> {
 
 export async function getTools(): Promise<ToolsInfo> {
   return apiFetch<ToolsInfo>("/tools");
+}
+
+export async function startChatChannelSetup(channelID: string, triggerID?: string): Promise<ChatChannelSetupResult> {
+  return apiFetch<ChatChannelSetupResult>(`/chat-channels/${encodeURIComponent(channelID)}/setup-sessions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ trigger_id: triggerID || undefined }),
+  });
+}
+
+export async function pollChatChannelSetup(
+  channelID: string,
+  sessionID: string,
+  verificationCode?: string,
+  signal?: AbortSignal
+): Promise<ChatChannelSetupResult> {
+  return apiFetch<ChatChannelSetupResult>(
+    `/chat-channels/${encodeURIComponent(channelID)}/setup-sessions/${encodeURIComponent(sessionID)}/poll`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ verification_code: verificationCode || undefined }),
+      signal,
+    }
+  );
+}
+
+export async function cancelChatChannelSetup(channelID: string, sessionID: string): Promise<void> {
+  await apiFetch<unknown>(
+    `/chat-channels/${encodeURIComponent(channelID)}/setup-sessions/${encodeURIComponent(sessionID)}`,
+    { method: "DELETE" }
+  );
 }
 
 export async function listTriggers(): Promise<Trigger[]> {
