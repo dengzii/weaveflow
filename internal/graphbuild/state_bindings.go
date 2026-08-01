@@ -123,7 +123,7 @@ func appendResolvedBindingSemantics(target []dsl.StateBindingSemantic, component
 		}
 		for _, field := range binding.Contract.Fields {
 			semantic.Contract = append(semantic.Contract, dsl.StateContractSemanticField{
-				Path: field.Path.String(), Mode: field.Mode, Required: field.Required, MergeStrategy: field.Merge, Type: field.Type,
+				Path: field.Path.String(), Mode: dsl.StateAccessMode(field.Mode), Required: field.Required, MergeStrategy: dsl.StateMergeStrategy(field.Merge), Type: field.Type,
 			})
 		}
 		target = append(target, semantic)
@@ -238,9 +238,9 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 		if resolved.Capability == "" {
 			resolved.Contract = state.NewContract(state.FieldAccess{
 				Path:        path,
-				Mode:        port.Mode,
+				Mode:        state.AccessMode(port.Mode),
 				Required:    port.Required && canRead(port.Mode),
-				Merge:       effectiveMerge(port.MergeStrategy),
+				Merge:       effectiveMerge(state.MergeStrategy(port.MergeStrategy)),
 				Type:        schemaType(port.Schema),
 				Description: port.Description,
 			})
@@ -334,9 +334,9 @@ func expandCapabilityContract(root state.Path, capability dsl.StateCapabilityDef
 		}
 		contract.Fields = append(contract.Fields, state.FieldAccess{
 			Path:        path,
-			Mode:        reference.Mode,
+			Mode:        state.AccessMode(reference.Mode),
 			Required:    reference.Required && canRead(reference.Mode),
-			Merge:       field.MergeStrategy,
+			Merge:       state.MergeStrategy(field.MergeStrategy),
 			Type:        schemaType(field.Schema),
 			Description: description,
 		})
@@ -386,8 +386,8 @@ func mergeAccessModes(left, right state.AccessMode) state.AccessMode {
 	return state.AccessReadWrite
 }
 
-func canRead(mode state.AccessMode) bool {
-	return mode == state.AccessRead || mode == state.AccessReadWrite
+func canRead(mode dsl.StateAccessMode) bool {
+	return mode == dsl.StateAccessRead || mode == dsl.StateAccessReadWrite
 }
 
 func effectiveMerge(strategy state.MergeStrategy) state.MergeStrategy {

@@ -27,7 +27,7 @@ func main() {
 		input = "Use the calculator to evaluate 125 * 48, then explain the result."
 	}
 
-	workflow, err := graph.BuildGraph(builtin.NewDefaultRegistry(), sharedToolLoopDefinition(), &registry.BuildContext{})
+	workflow, err := graph.NewBuilder(builtin.NewDefaultRegistry()).Build(sharedToolLoopDefinition(), &registry.BuildContext{})
 	if err != nil {
 		panic(err)
 	}

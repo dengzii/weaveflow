@@ -51,7 +51,7 @@ type Graph struct {
 	conditionContracts    map[string]state.Contract
 	stateBindingSemantics []dsl.StateBindingSemantic
 	initialStatePaths     []string
-	contractDiagnostics   []ContractDiagnostic
+	contractDiagnostics   []core.ContractDiagnostic
 	defaultEdges          map[string][]string
 	conditionalEdges      map[string][]conditionalEdge
 	edgeSpecs             []dsl.GraphEdgeSpec
@@ -144,15 +144,6 @@ func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
 		return dsl.GraphDefinition{}, fmt.Errorf("load graph definition from %q: %w", path, err)
 	}
 	return def, nil
-}
-
-func LoadGraphFromFile(buildContext *registry.BuildContext, path string) (*Graph, error) {
-	def, err := LoadGraphDefinitionFile(path)
-	if err != nil {
-		return nil, err
-	}
-	reg := builtin.NewDefaultRegistry()
-	return BuildGraph(reg, def, buildContext)
 }
 
 func (g *Graph) WriteToFile(path string) error {

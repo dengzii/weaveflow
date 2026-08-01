@@ -13,7 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func TestGraphRuntimeSettingsPersistAcrossServerRestart(t *testing.T) {
+func TestRuntimeSettingsPersistAcrossServerRestart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_MODEL", "")
@@ -49,12 +49,12 @@ func TestGraphRuntimeSettingsPersistAcrossServerRestart(t *testing.T) {
 		],
 		"memory": {"enabled": true}
 	}`
-	response := serveHTTP(engine, http.MethodPut, "/graph/settings", body)
+	response := serveHTTP(engine, http.MethodPut, "/runtime/settings", body)
 	if response.Code != http.StatusOK {
-		t.Fatalf("PUT /graph/settings status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("PUT /runtime/settings status = %d, body = %s", response.Code, response.Body.String())
 	}
 
-	response = serveHTTP(engine, http.MethodPut, "/graph/settings", `{
+	response = serveHTTP(engine, http.MethodPut, "/runtime/settings", `{
 		"models": [
 			{"id":"default","enabled":true,"provider":"openai","model":"gpt-persisted","base_url":"http://127.0.0.1:9999/v1"},
 			{"id":"fast","enabled":true,"provider":"openai","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1"}
@@ -83,12 +83,12 @@ func TestGraphRuntimeSettingsPersistAcrossServerRestart(t *testing.T) {
 	}
 	restoredEngine := gin.New()
 	restored.RegisterRoutes(restoredEngine.Group(""))
-	response = serveHTTP(restoredEngine, http.MethodGet, "/graph/settings", "")
+	response = serveHTTP(restoredEngine, http.MethodGet, "/runtime/settings", "")
 	if response.Code != http.StatusOK {
-		t.Fatalf("GET /graph/settings status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("GET /runtime/settings status = %d, body = %s", response.Code, response.Body.String())
 	}
 	if strings.Contains(response.Body.String(), "persisted-key") {
-		t.Fatalf("GET /graph/settings leaked persisted API key: %s", response.Body.String())
+		t.Fatalf("GET /runtime/settings leaked persisted API key: %s", response.Body.String())
 	}
 	var settingsResponse struct {
 		Data graphRuntimeSettings `json:"data"`
@@ -114,8 +114,9 @@ func TestGraphRuntimeSettingsPersistAcrossServerRestart(t *testing.T) {
 	if !settingsResponse.Data.Memory.Enabled {
 		t.Fatalf("restored memory settings = %#v", settingsResponse.Data.Memory)
 	}
-	coreCtx := core.NewContext(restored.baseCtx)
+	runtimeContext := restored.runtime.runtimeContext()
+	coreCtx := core.NewContext(runtimeContext)
 	if coreCtx.Model() == nil || coreCtx.Model("fast") == nil {
-		t.Fatalf("restored runtime models = %#v", core.ModelsFromContext(restored.baseCtx))
+		t.Fatalf("restored runtime models = %#v", core.ModelsFromContext(runtimeContext))
 	}
 }

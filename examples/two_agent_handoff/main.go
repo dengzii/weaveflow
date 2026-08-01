@@ -28,7 +28,7 @@ func main() {
 		task = "Research why explicit state bindings improve multi-agent isolation, then write a concise answer."
 	}
 
-	workflow, err := graph.BuildGraph(builtin.NewDefaultRegistry(), twoAgentDefinition(), &registry.BuildContext{})
+	workflow, err := graph.NewBuilder(builtin.NewDefaultRegistry()).Build(twoAgentDefinition(), &registry.BuildContext{})
 	if err != nil {
 		panic(err)
 	}

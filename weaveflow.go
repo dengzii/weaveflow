@@ -80,7 +80,7 @@ type (
 	WarningRecord             = runtime.WarningRecord
 	RunFilter                 = runtime.RunFilter
 	Breakpoint                = runtime.Breakpoint
-	BreakpointHit             = runtime.BreakpointHit
+	BreakpointHit             = state.BreakpointHit
 	RunnerMetadata            = runtime.RunnerMetadata
 	ContractPolicy            = runtime.ContractPolicy
 	ContractValidationMode    = core.ContractValidationMode
@@ -224,7 +224,7 @@ func BuildGraph(reg *Registry, def GraphDefinition, options ...LoadGraphOption) 
 }
 
 func BuildGraphInstance(reg *Registry, def GraphDefinition, instance GraphInstanceConfig, ctx *BuildContext) (*Graph, error) {
-	return graph.BuildGraphInstance(reg, def, instance, ctx)
+	return graph.NewBuilder(reg).BuildInstance(def, instance, ctx)
 }
 
 func LoadGraphFromFile(path string, options ...LoadGraphOption) (*Graph, error) {
@@ -512,9 +512,9 @@ func (cfg *loadGraphConfig) build() (*Graph, error) {
 		cfg.buildContext = &BuildContext{}
 	}
 	if cfg.instanceConfig != nil {
-		return graph.BuildGraphInstance(cfg.registry, cfg.definition, *cfg.instanceConfig, cfg.buildContext)
+		return graph.NewBuilder(cfg.registry).BuildInstance(cfg.definition, *cfg.instanceConfig, cfg.buildContext)
 	}
-	return graph.BuildGraph(cfg.registry, cfg.definition, cfg.buildContext)
+	return graph.NewBuilder(cfg.registry).Build(cfg.definition, cfg.buildContext)
 }
 
 type RunnerOption interface {

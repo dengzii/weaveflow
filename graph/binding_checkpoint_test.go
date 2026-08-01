@@ -42,7 +42,7 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		},
 		Edges: []dsl.GraphEdgeSpec{{From: "input", To: "llm"}},
 	}
-	workflow, err := BuildGraph(builtin.NewDefaultRegistry(), definition, nil)
+	workflow, err := NewBuilder(builtin.NewDefaultRegistry()).Build(definition, nil)
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}

@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"strings"
-
-	"github.com/dengzii/weaveflow/core"
 )
 
 type JSONSchema map[string]any
@@ -65,8 +63,15 @@ type GraphNodeSpecProvider interface {
 	GraphNodeSpec() GraphNodeSpec
 }
 
-type GraphConditionSpec = core.GraphConditionSpec
-type StateBinding = core.StateBinding
+type GraphConditionSpec struct {
+	Type   string                  `json:"type"`
+	Config map[string]any          `json:"config,omitempty"`
+	State  map[string]StateBinding `json:"state,omitempty"`
+}
+
+type StateBinding struct {
+	Path string `json:"path"`
+}
 
 type GraphEdgeSpec struct {
 	From      string              `json:"from"`
@@ -87,7 +92,64 @@ type GraphDefinition struct {
 }
 
 func NormalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
-	return core.NormalizeGraphConditionSpec(spec)
+	spec.Type = strings.TrimSpace(spec.Type)
+	if len(spec.Config) == 0 {
+		spec.Config = nil
+	}
+	if len(spec.State) == 0 {
+		spec.State = nil
+	} else {
+		bindings := make(map[string]StateBinding, len(spec.State))
+		for name, binding := range spec.State {
+			binding.Path = strings.TrimSpace(binding.Path)
+			bindings[name] = binding
+		}
+		spec.State = bindings
+	}
+	return spec
+}
+
+func CloneGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
+	spec = NormalizeGraphConditionSpec(spec)
+	if len(spec.Config) > 0 {
+		spec.Config = cloneConditionConfig(spec.Config)
+	}
+	if len(spec.State) > 0 {
+		bindings := spec.State
+		spec.State = make(map[string]StateBinding, len(bindings))
+		for name, binding := range bindings {
+			spec.State[name] = binding
+		}
+	}
+	return spec
+}
+
+func cloneConditionConfig(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = cloneConditionConfigValue(value)
+	}
+	return cloned
+}
+
+func cloneConditionConfigValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneConditionConfig(typed)
+	case []any:
+		cloned := make([]any, len(typed))
+		for index, item := range typed {
+			cloned[index] = cloneConditionConfigValue(item)
+		}
+		return cloned
+	case []string:
+		return append([]string(nil), typed...)
+	default:
+		return value
+	}
 }
 
 func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {

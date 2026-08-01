@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"github.com/dengzii/weaveflow/core"
-	"github.com/dengzii/weaveflow/state"
 	"time"
+
+	"github.com/dengzii/weaveflow/state"
 )
 
 // Runtime records, stores, and control primitives live in the runtime package.
@@ -37,12 +37,12 @@ const (
 	StepStatusPaused    StepStatus = "paused"
 )
 
-type CheckpointStage = core.CheckpointStage
+type CheckpointStage string
 
 const (
-	CheckpointBeforeNode        = core.CheckpointBeforeNode
-	CheckpointAfterNode         = core.CheckpointAfterNode
-	CheckpointAfterParallelWave = core.CheckpointAfterParallelWave
+	CheckpointBeforeNode        CheckpointStage = "before_node"
+	CheckpointAfterNode         CheckpointStage = "after_node"
+	CheckpointAfterParallelWave CheckpointStage = "after_parallel_wave"
 )
 
 type EventType string
@@ -172,14 +172,25 @@ type Event struct {
 	Payload   json.RawMessage `json:"payload,omitempty"`
 }
 
-type WarningRecord = core.WarningRecord
+type WarningRecord struct {
+	Code        string   `json:"code,omitempty"`
+	NodeID      string   `json:"node_id,omitempty"`
+	OtherNodeID string   `json:"other_node_id,omitempty"`
+	Path        string   `json:"path,omitempty"`
+	Sources     []string `json:"sources,omitempty"`
+	Message     string   `json:"message"`
+}
 
 type RunFilter struct {
 	Statuses []RunStatus
 }
 
-type Breakpoint = core.Breakpoint
-type BreakpointHit = state.BreakpointHit
+type Breakpoint struct {
+	ID      string `json:"id"`
+	NodeID  string `json:"node_id"`
+	Stage   string `json:"stage"`
+	Enabled bool   `json:"enabled"`
+}
 
 type ExecutionStore interface {
 	CreateRun(ctx context.Context, run RunRecord) error

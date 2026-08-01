@@ -34,7 +34,7 @@ func main() {
 		input = "Explain explicit state binding in one paragraph."
 	}
 
-	workflow, err := graph.BuildGraph(builtin.NewDefaultRegistry(), multiLLMTurnDefinition(), &registry.BuildContext{})
+	workflow, err := graph.NewBuilder(builtin.NewDefaultRegistry()).Build(multiLLMTurnDefinition(), &registry.BuildContext{})
 	if err != nil {
 		panic(err)
 	}

@@ -20,6 +20,7 @@ type graphInfo struct {
 	GraphHash         string `json:"graph_hash,omitempty"`
 	GraphSnapshotHash string `json:"graph_snapshot_hash,omitempty"`
 	GraphSessionID    string `json:"graph_session_id,omitempty"`
+	Official          bool   `json:"official"`
 	EntryPoint        string `json:"entry_point,omitempty"`
 	FinishPoint       string `json:"finish_point,omitempty"`
 }
@@ -44,8 +45,8 @@ type registryResponse struct {
 	ChatChannels []chatchannel.Definition        `json:"chat_channels"`
 }
 
-func (s *Server) handleGraph(c *gin.Context) {
-	graph, runner := s.currentGraphRunner()
+func (s *Server) handleGetGraph(c *gin.Context) {
+	graph, runner, official := s.currentGraphState()
 	if graph == nil {
 		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
 		return
@@ -60,6 +61,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 		Version:     runtime.DefaultGraphVersion,
 		EntryPoint:  def.EntryPoint,
 		FinishPoint: def.FinishPoint,
+		Official:    official,
 	}
 	if runner != nil {
 		info.ID = firstNonEmpty(runner.GraphID, info.ID)
@@ -71,7 +73,7 @@ func (s *Server) handleGraph(c *gin.Context) {
 	writeData(c, http.StatusOK, info)
 }
 
-func (s *Server) handleGraphDefinition(c *gin.Context) {
+func (s *Server) handleGetGraphDefinition(c *gin.Context) {
 	def, err := s.graphDefinition()
 	if err != nil {
 		writeError(c, statusForError(err), err)
@@ -80,7 +82,7 @@ func (s *Server) handleGraphDefinition(c *gin.Context) {
 	writeData(c, http.StatusOK, def)
 }
 
-func (s *Server) handleGraphNodes(c *gin.Context) {
+func (s *Server) handleGetGraphNodes(c *gin.Context) {
 	graph := s.currentGraph()
 	if graph == nil {
 		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
@@ -97,7 +99,7 @@ func (s *Server) handleGraphNodes(c *gin.Context) {
 	})
 }
 
-func (s *Server) handleGraphInitialStateRequirements(c *gin.Context) {
+func (s *Server) handleGetGraphInitialStateRequirements(c *gin.Context) {
 	graph := s.currentGraph()
 	if graph == nil {
 		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
@@ -116,7 +118,7 @@ func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, errRegistryNotConfigured)
 		return
 	}
-	graph, err := wfgraph.BuildGraph(s.registry, req.Definition, &wfregistry.BuildContext{})
+	graph, err := wfgraph.NewBuilder(s.registry).Build(req.Definition, &wfregistry.BuildContext{})
 	if err != nil {
 		writeError(c, http.StatusBadRequest, err)
 		return
@@ -124,7 +126,7 @@ func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
 	writeData(c, http.StatusOK, graph.InitialStateRequirements())
 }
 
-func (s *Server) handleGraphMermaid(c *gin.Context) {
+func (s *Server) handleGetGraphMermaid(c *gin.Context) {
 	graph := s.currentGraph()
 	if graph == nil {
 		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
@@ -138,7 +140,7 @@ func (s *Server) handleGraphMermaid(c *gin.Context) {
 	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(text))
 }
 
-func (s *Server) handleRegistry(c *gin.Context) {
+func (s *Server) handleGetRegistry(c *gin.Context) {
 	if s == nil || s.registry == nil {
 		writeError(c, http.StatusServiceUnavailable, errRegistryNotConfigured)
 		return
@@ -204,12 +206,16 @@ func (s *Server) currentRunner() *runtime.GraphRunner {
 }
 
 func (s *Server) currentGraphRunner() (*wfgraph.Graph, *runtime.GraphRunner) {
-	if s == nil {
-		return nil, nil
+	graph, runner, _ := s.currentGraphState()
+	return graph, runner
+}
+
+func (s *Server) currentGraphState() (*wfgraph.Graph, *runtime.GraphRunner, bool) {
+	if s == nil || s.runtime == nil {
+		return nil, nil, false
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.graph, s.runner
+	session := s.runtime.currentSession()
+	return session.graph, session.runner, session.official
 }
 
 func sortedGraphNodeSpecKeys(input map[string]dsl.GraphNodeSpec) []string {

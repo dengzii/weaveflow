@@ -22,22 +22,22 @@ Use the completed worker results as evidence. Resolve overlaps or conflicts, pre
 Do not mention internal routing, worker ids, or the supervisor process unless the user explicitly asks.`
 
 type SupervisorSynthesisNode struct {
-	Base
+	core.NodeBase
 	ModelID        string
 	SystemPrompt   string
 	SupervisorPath state.Path
 	ResultPath     state.Path
 }
 
-func NewSupervisorSynthesisNode(options ...NodeOption) *SupervisorSynthesisNode {
+func NewSupervisorSynthesisNode(options ...core.NodeOption) *SupervisorSynthesisNode {
 	target := &SupervisorSynthesisNode{
-		Base: NewBase(Spec{
+		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypeSupervisorSynthesis,
 			Description: "Synthesize the final answer from the objective and completed supervisor delegations.",
 		}),
 		SystemPrompt: defaultSupervisorSynthesisSystemPrompt,
 	}
-	applyNodeOptions(&target.Base, options)
+	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
@@ -46,7 +46,7 @@ func (n *SupervisorSynthesisNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("supervisor synthesis node is nil")
 	}
-	if err := n.Base.Validate(); err != nil {
+	if err := n.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if n.SupervisorPath.Empty() || n.ResultPath.Empty() {
@@ -56,7 +56,7 @@ func (n *SupervisorSynthesisNode) Validate() error {
 }
 
 func (n *SupervisorSynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.Base, NodeTypeSupervisorSynthesis, map[string]any{
+	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisorSynthesis, map[string]any{
 		"model_id": n.ModelID, "system_prompt": n.SystemPrompt,
 	}, map[string]state.Path{"supervisor": n.SupervisorPath, "result": n.ResultPath})
 }
@@ -88,7 +88,7 @@ func SupervisorSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 				capabilityField(supervisorcap.FieldHistory, dsl.StateAccessRead)),
 			primitivePort("result", "Final synthesized answer.", "string", dsl.StateAccessWrite, true),
 		},
-		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
 			supervisorPath, err := resolvedPath(resolved, "supervisor")
 			if err != nil {
@@ -98,8 +98,8 @@ func SupervisorSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewSupervisorSynthesisNode(WithID(spec.ID))
-			applyNodeMetadata(&target.Base, spec)
+			target := NewSupervisorSynthesisNode(core.WithID(spec.ID))
+			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
 				target.SystemPrompt = prompt

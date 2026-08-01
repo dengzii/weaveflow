@@ -49,7 +49,7 @@ Rules:
 - When replanning, preserve successful information and replace only the ineffective path.`
 
 type PlanGeneratorNode struct {
-	Base
+	core.NodeBase
 	ModelID       string
 	ToolIDs       []string
 	SystemPrompt  string
@@ -60,9 +60,9 @@ type PlanGeneratorNode struct {
 	ExecutionPath state.Path
 }
 
-func NewPlanGeneratorNode(options ...NodeOption) *PlanGeneratorNode {
+func NewPlanGeneratorNode(options ...core.NodeOption) *PlanGeneratorNode {
 	target := &PlanGeneratorNode{
-		Base: NewBase(Spec{
+		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypePlanGenerator,
 			Description: "Generate or revise a structured execution plan.",
 		}),
@@ -70,7 +70,7 @@ func NewPlanGeneratorNode(options ...NodeOption) *PlanGeneratorNode {
 		MaxSteps:     defaultPlanMaxSteps,
 		MaxReplans:   defaultPlanMaxReplans,
 	}
-	applyNodeOptions(&target.Base, options)
+	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
@@ -79,7 +79,7 @@ func (n *PlanGeneratorNode) Validate() error {
 	if n == nil {
 		return errors.New("plan generator node is nil")
 	}
-	if err := n.Base.Validate(); err != nil {
+	if err := n.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if n.ObjectivePath.Empty() || n.PlanPath.Empty() || n.ExecutionPath.Empty() {
@@ -96,7 +96,7 @@ func (n *PlanGeneratorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		"max_steps":     n.MaxSteps,
 		"max_replans":   n.MaxReplans,
 	}
-	return newGraphNodeSpec(n.Base, NodeTypePlanGenerator, config, map[string]state.Path{
+	return newGraphNodeSpec(n.NodeBase, NodeTypePlanGenerator, config, map[string]state.Path{
 		"objective": n.ObjectivePath, "plan": n.PlanPath, "execution": n.ExecutionPath,
 	})
 }
@@ -140,7 +140,7 @@ func PlanGeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 				capabilityField(executioncap.FieldCurrentStep, dsl.StateAccessWrite),
 				capabilityField(executioncap.FieldLastLLMStep, dsl.StateAccessWrite)),
 		},
-		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
 			objectivePath, err := resolvedPath(resolved, "objective")
 			if err != nil {
@@ -154,8 +154,8 @@ func PlanGeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanGeneratorNode(WithID(spec.ID))
-			applyNodeMetadata(&target.Base, spec)
+			target := NewPlanGeneratorNode(core.WithID(spec.ID))
+			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			target.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			if _, exists := spec.Config["system_prompt"]; exists {

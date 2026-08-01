@@ -22,7 +22,7 @@ type toolDefinition struct {
 	Strict      bool   `json:"strict,omitempty"`
 }
 
-func (s *Server) handleTools(c *gin.Context) {
+func (s *Server) handleListRuntimeTools(c *gin.Context) {
 	available := s.currentToolSet()
 
 	definitions := make([]toolDefinition, 0, len(available))

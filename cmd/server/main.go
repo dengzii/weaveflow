@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/server"
@@ -38,7 +39,7 @@ func main() {
 
 	var graph *wfgraph.Graph
 	if strings.TrimSpace(*graphPath) != "" {
-		loaded, err := wfgraph.LoadGraphFromFile(&wfregistry.BuildContext{}, *graphPath)
+		loaded, err := wfgraph.NewBuilder(builtin.NewDefaultRegistry()).BuildFile(*graphPath, &wfregistry.BuildContext{})
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -83,7 +84,8 @@ func main() {
 		display = "http://127.0.0.1" + display
 	}
 	fmt.Printf("weaveflow debug server: %s%s\n", strings.TrimRight(display, "/"), routePrefix)
-	fmt.Printf("upload graph: POST %s%s/graph\n", strings.TrimRight(display, "/"), routePrefix)
+	fmt.Printf("update draft graph: PUT %s%s/graph\n", strings.TrimRight(display, "/"), routePrefix)
+	fmt.Printf("publish graph: POST %s%s/graph/publish\n", strings.TrimRight(display, "/"), routePrefix)
 
 	if err := engine.Run(*addr); err != nil {
 		log.Fatal(err)

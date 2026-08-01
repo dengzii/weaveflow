@@ -9,8 +9,6 @@ import (
 	"time"
 )
 
-type AnalyzerEventSink = EventAnalyzer
-
 type EventAnalyzer struct {
 	mu     sync.RWMutex
 	events map[string][]Event
@@ -206,10 +204,6 @@ type EventContractViolationRecord struct {
 
 func NewEventAnalyzer() *EventAnalyzer {
 	return &EventAnalyzer{events: make(map[string][]Event)}
-}
-
-func NewAnalyzerEventSink() *AnalyzerEventSink {
-	return NewEventAnalyzer()
 }
 
 func (a *EventAnalyzer) Publish(_ context.Context, event Event) error {

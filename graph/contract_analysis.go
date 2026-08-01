@@ -7,23 +7,11 @@ import (
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
-type ContractDiagnosticSeverity = core.ContractDiagnosticSeverity
-
-const (
-	ContractDiagnosticSeverityError   = core.ContractDiagnosticSeverityError
-	ContractDiagnosticSeverityWarning = core.ContractDiagnosticSeverityWarning
-)
-
-type ContractDiagnostic = core.ContractDiagnostic
-
-type InitialStateRequirements = core.InitialStateRequirements
-type InitialStateRequirement = core.InitialStateRequirement
-
-func (g *Graph) ContractDiagnostics() []ContractDiagnostic {
+func (g *Graph) ContractDiagnostics() []core.ContractDiagnostic {
 	if g == nil || len(g.contractDiagnostics) == 0 {
 		return nil
 	}
-	cloned := make([]ContractDiagnostic, len(g.contractDiagnostics))
+	cloned := make([]core.ContractDiagnostic, len(g.contractDiagnostics))
 	for i, diagnostic := range g.contractDiagnostics {
 		cloned[i] = diagnostic
 		if len(diagnostic.Sources) > 0 {
@@ -33,7 +21,7 @@ func (g *Graph) ContractDiagnostics() []ContractDiagnostic {
 	return cloned
 }
 
-func (g *Graph) InitialStateRequirements() InitialStateRequirements {
+func (g *Graph) InitialStateRequirements() core.InitialStateRequirements {
 	if g == nil {
 		return graphbuild.AnalyzeInitialStateRequirements(graphbuild.ContractAnalysisGraph{})
 	}

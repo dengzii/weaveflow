@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/builtin"
+	supervisorcap "github.com/dengzii/weaveflow/capability/supervisor"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
@@ -63,15 +64,15 @@ func newSupervisorGraph() (*wfgraph.Graph, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decode embedded supervisor graph: %w", err)
 	}
-	return wfgraph.BuildGraph(builtin.NewDefaultRegistry(), definition, nil)
+	return wfgraph.NewBuilder(builtin.NewDefaultRegistry()).Build(definition, nil)
 }
 
-func decodeSupervisorHistory(raw any) []supervisornode.SupervisorTurn {
+func decodeSupervisorHistory(raw any) []supervisorcap.Turn {
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return nil
 	}
-	var history []supervisornode.SupervisorTurn
+	var history []supervisorcap.Turn
 	if err := json.Unmarshal(data, &history); err != nil {
 		return nil
 	}

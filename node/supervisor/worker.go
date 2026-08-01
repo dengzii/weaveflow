@@ -9,6 +9,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
+	basenode "github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -21,7 +22,7 @@ Complete only the delegated task. Use your tools when they improve accuracy.
 Return a concise, evidence-based result to the supervisor; do not address the end user or delegate to another worker.`
 
 type SupervisorWorkerNode struct {
-	Base
+	core.NodeBase
 	WorkerID         string
 	Role             string
 	ModelID          string
@@ -34,9 +35,9 @@ type SupervisorWorkerNode struct {
 	ConversationPath state.Path
 }
 
-func NewSupervisorWorkerNode(options ...NodeOption) *SupervisorWorkerNode {
+func NewSupervisorWorkerNode(options ...core.NodeOption) *SupervisorWorkerNode {
 	target := &SupervisorWorkerNode{
-		Base: NewBase(Spec{
+		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypeSupervisorWorker,
 			Description: "Execute one supervisor delegation with an isolated specialist agent loop.",
 		}),
@@ -44,7 +45,7 @@ func NewSupervisorWorkerNode(options ...NodeOption) *SupervisorWorkerNode {
 		MaxIterations: defaultSupervisorWorkerMaxIterations,
 		Parallel:      true,
 	}
-	applyNodeOptions(&target.Base, options)
+	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
@@ -53,7 +54,7 @@ func (n *SupervisorWorkerNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("supervisor worker node is nil")
 	}
-	if err := n.Base.Validate(); err != nil {
+	if err := n.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(n.WorkerID) == "" {
@@ -84,7 +85,7 @@ func (n *SupervisorWorkerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if n.PromptMaxChars > 0 {
 		configMap["prompt_max_chars"] = n.PromptMaxChars
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeSupervisorWorker, configMap, map[string]state.Path{
+	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisorWorker, configMap, map[string]state.Path{
 		"supervisor": n.SupervisorPath, "conversation": n.ConversationPath,
 	})
 }
@@ -127,7 +128,7 @@ func SupervisorWorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 				capabilityField(conversationcap.FieldIterationCount, dsl.StateAccessReadWrite),
 				capabilityField(conversationcap.FieldMaxIterations, dsl.StateAccessReadWrite)),
 		},
-		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
 			supervisorPath, err := resolvedPath(resolved, "supervisor")
 			if err != nil {
@@ -137,8 +138,8 @@ func SupervisorWorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewSupervisorWorkerNode(WithID(spec.ID))
-			applyNodeMetadata(&target.Base, spec)
+			target := NewSupervisorWorkerNode(core.WithID(spec.ID))
+			applyNodeMetadata(&target.NodeBase, spec)
 			target.WorkerID = config.String(spec.Config, "worker_id")
 			target.Role = config.String(spec.Config, "role")
 			target.ModelID = config.String(spec.Config, "model_id")
@@ -187,7 +188,7 @@ func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) e
 	if err != nil {
 		return err
 	}
-	agent := NewAgentNode(WithID(n.ID() + "_agent"))
+	agent := basenode.NewAgentNode(core.WithID(n.ID() + "_agent"))
 	agent.ModelID = n.ModelID
 	agent.ToolIDs = append([]string(nil), n.ToolIDs...)
 	agent.SystemPrompt = n.effectiveSystemPrompt()
@@ -222,7 +223,7 @@ func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) e
 
 	history := supervisorHistoryFromValue(current[SupervisorFieldHistory])
 	turn := supervisorInt(current, SupervisorFieldTurnCount)
-	history = append(history, SupervisorTurn{Turn: turn, WorkerID: strings.TrimSpace(n.WorkerID), Task: task, Result: result})
+	history = append(history, supervisorcap.Turn{Turn: turn, WorkerID: strings.TrimSpace(n.WorkerID), Task: task, Result: result})
 	if err := supervisor.Merge(map[string]any{
 		SupervisorFieldHistory:    supervisorTurnMaps(history),
 		SupervisorFieldLastResult: result,

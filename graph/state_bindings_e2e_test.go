@@ -447,7 +447,7 @@ func TestGraphV2SubgraphUsesExplicitInputAndOutputBindings(t *testing.T) {
 		}
 		return child, nil
 	}}
-	workflow, err := BuildGraph(reg, parent, ctx)
+	workflow, err := NewBuilder(reg).Build(parent, ctx)
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}
@@ -483,7 +483,7 @@ func runBoundGraph(
 ) *state.State {
 	t.Helper()
 	reg := builtin.NewDefaultRegistry()
-	graph, err := BuildGraph(reg, def, &registry.BuildContext{})
+	graph, err := NewBuilder(reg).Build(def, &registry.BuildContext{})
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}

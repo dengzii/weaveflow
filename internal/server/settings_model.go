@@ -31,18 +31,6 @@ func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeS
 			return "", false, err
 		}
 		settings.Models = models
-		settings.Model = defaultGraphModelSettings(settings.Models)
-		if modelAPIKeyProvided {
-			apiKey = modelAPIKey
-			apiKeyProvided = true
-		}
-	} else if req.Model != nil {
-		model, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsFromRequest(settings.Model, *req.Model, core.DefaultModelID)
-		if err != nil {
-			return "", false, err
-		}
-		settings.Model = model
-		settings.Models = []graphModelSettings{model}
 		if modelAPIKeyProvided {
 			apiKey = modelAPIKey
 			apiKeyProvided = true
@@ -147,7 +135,6 @@ func applyEnvironmentModelDefaults(settings *graphRuntimeSettings) {
 		if value, ok := settings.Environment["OPENAI_BASE_URL"]; ok {
 			settings.Models[index].BaseURL = strings.TrimSpace(value)
 		}
-		settings.Model = settings.Models[index]
 		return
 	}
 }
@@ -156,9 +143,9 @@ func syncGraphModelEnvironment(settings *graphRuntimeSettings) {
 	if settings.Environment == nil {
 		settings.Environment = map[string]string{}
 	}
-	settings.Model = defaultGraphModelSettings(settings.Models)
-	settings.Environment["OPENAI_MODEL"] = settings.Model.Model
-	settings.Environment["OPENAI_BASE_URL"] = settings.Model.BaseURL
+	defaultModel := defaultGraphModelSettings(settings.Models)
+	settings.Environment["OPENAI_MODEL"] = defaultModel.Model
+	settings.Environment["OPENAI_BASE_URL"] = defaultModel.BaseURL
 }
 
 func markGraphModelAPIKeys(settings *graphRuntimeSettings, apiKey string) {
@@ -169,8 +156,6 @@ func markGraphModelAPIKeys(settings *graphRuntimeSettings, apiKey string) {
 	for index := range settings.Models {
 		settings.Models[index].APIKeyConfigured = settings.Models[index].APIKeyConfigured || configured || strings.TrimSpace(settings.Models[index].APIKey) != ""
 	}
-	settings.Model = defaultGraphModelSettings(settings.Models)
-	settings.Model.APIKeyConfigured = settings.Model.APIKeyConfigured || configured || strings.TrimSpace(settings.Model.APIKey) != ""
 }
 
 func sanitizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings {
@@ -183,21 +168,16 @@ func sanitizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings 
 		environment[name] = strings.TrimSpace(value)
 	}
 	settings.Environment = environment
-	settings.Models = sanitizedGraphModelList(settings.Models, settings.Model)
+	settings.Models = sanitizedGraphModelList(settings.Models)
 	if settings.Models == nil {
 		settings.Models = []graphModelSettings{}
 	}
-	settings.Model = defaultGraphModelSettings(settings.Models)
 	settings.Memory.Directory = strings.TrimSpace(settings.Memory.Directory)
 	return settings
 }
 
-func sanitizedGraphModelList(models []graphModelSettings, fallback graphModelSettings) []graphModelSettings {
+func sanitizedGraphModelList(models []graphModelSettings) []graphModelSettings {
 	if len(models) == 0 {
-		fallback = sanitizeGraphModelSettings(fallback, core.DefaultModelID)
-		if fallback.Enabled || fallback.Model != "" || fallback.BaseURL != "" || fallback.APIKeyConfigured {
-			return []graphModelSettings{fallback}
-		}
 		return nil
 	}
 	seen := map[string]struct{}{}

@@ -135,13 +135,13 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 	return nodes, nil
 }
 
-func buildRunnerWarnings(diagnostics []ContractDiagnostic) []fruntime.WarningRecord {
+func buildRunnerWarnings(diagnostics []core.ContractDiagnostic) []fruntime.WarningRecord {
 	if len(diagnostics) == 0 {
 		return nil
 	}
 	warnings := make([]fruntime.WarningRecord, 0, len(diagnostics))
 	for _, diagnostic := range diagnostics {
-		if diagnostic.Severity != ContractDiagnosticSeverityWarning {
+		if diagnostic.Severity != core.ContractDiagnosticSeverityWarning {
 			continue
 		}
 		warning := fruntime.WarningRecord{

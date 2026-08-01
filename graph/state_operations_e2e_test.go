@@ -100,11 +100,11 @@ func TestGraphV2DynamicTransformAndStateExpressionCondition(t *testing.T) {
 
 func TestGraphV2DynamicBindingsChangeSemanticHash(t *testing.T) {
 	t.Parallel()
-	left, err := BuildGraph(builtin.NewDefaultRegistry(), dynamicStateExpressionDefinition("shared.cart.price"), &registry.BuildContext{})
+	left, err := NewBuilder(builtin.NewDefaultRegistry()).Build(dynamicStateExpressionDefinition("shared.cart.price"), &registry.BuildContext{})
 	if err != nil {
 		t.Fatalf("BuildGraph(left): %v", err)
 	}
-	right, err := BuildGraph(builtin.NewDefaultRegistry(), dynamicStateExpressionDefinition("shared.cart.discounted_price"), &registry.BuildContext{})
+	right, err := NewBuilder(builtin.NewDefaultRegistry()).Build(dynamicStateExpressionDefinition("shared.cart.discounted_price"), &registry.BuildContext{})
 	if err != nil {
 		t.Fatalf("BuildGraph(right): %v", err)
 	}
@@ -149,7 +149,7 @@ func TestGraphV2StateMergeHandlesParallelFieldsAndConflicts(t *testing.T) {
 		}
 	})
 	t.Run("overlap", func(t *testing.T) {
-		workflow, err := BuildGraph(builtin.NewDefaultRegistry(), definition, &registry.BuildContext{})
+		workflow, err := NewBuilder(builtin.NewDefaultRegistry()).Build(definition, &registry.BuildContext{})
 		if err != nil {
 			t.Fatalf("BuildGraph(): %v", err)
 		}
@@ -166,7 +166,7 @@ func TestGraphV2StateMergeHandlesParallelFieldsAndConflicts(t *testing.T) {
 func TestStateOperationsExampleBuilds(t *testing.T) {
 	t.Parallel()
 	path := filepath.Join("..", "examples", "state_operations", "graph.json")
-	if _, err := LoadGraphFromFile(&registry.BuildContext{}, path); err != nil {
+	if _, err := NewBuilder(builtin.NewDefaultRegistry()).BuildFile(path, &registry.BuildContext{}); err != nil {
 		t.Fatalf("LoadGraphFromFile(%q): %v", path, err)
 	}
 }

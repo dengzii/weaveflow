@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -192,13 +193,19 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 
 	body := []byte(`{"ok":true}`)
 	unauthorized := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/triggers/hook?api_key=wrong", strings.NewReader(string(body)))
+	req = httptest.NewRequest(http.MethodPost, "/triggers/hook/invocations?api_key=wrong", strings.NewReader(string(body)))
 	engine.ServeHTTP(unauthorized, req)
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("invalid api_key status = %d, body = %s", unauthorized.Code, unauthorized.Body.String())
 	}
+	duplicateAPIKey := httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/triggers/hook/invocations?api_key=secret&api_key=secret", strings.NewReader(string(body)))
+	engine.ServeHTTP(duplicateAPIKey, req)
+	if duplicateAPIKey.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate api_key status = %d, body = %s", duplicateAPIKey.Code, duplicateAPIKey.Body.String())
+	}
 	webhook := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/triggers/hook?api_key=secret", strings.NewReader(string(body)))
+	req = httptest.NewRequest(http.MethodPost, "/triggers/hook/invocations?api_key=secret", strings.NewReader(string(body)))
 	engine.ServeHTTP(webhook, req)
 	if webhook.Code != http.StatusOK {
 		t.Fatalf("webhook status = %d, body = %s", webhook.Code, webhook.Body.String())
@@ -324,7 +331,7 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 
 	body = []byte(`{"user":{"id":"post-user"}}`)
 	webhook = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/triggers/hook?api_key=secret", strings.NewReader(string(body)))
+	req = httptest.NewRequest(http.MethodPost, "/triggers/hook/invocations?api_key=secret", strings.NewReader(string(body)))
 	engine.ServeHTTP(webhook, req)
 	if webhook.Code != http.StatusOK {
 		t.Fatalf("updated webhook status = %d, body = %s", webhook.Code, webhook.Body.String())
@@ -367,7 +374,7 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 		t.Fatalf("schedule id = %q", schedule.ID)
 	}
 	scheduledRun := httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/triggers/timer", nil)
+	req = httptest.NewRequest(http.MethodPost, "/triggers/timer/invocations", nil)
 	engine.ServeHTTP(scheduledRun, req)
 	if scheduledRun.Code != http.StatusOK {
 		t.Fatalf("schedule run status = %d, body = %s", scheduledRun.Code, scheduledRun.Body.String())
@@ -375,7 +382,7 @@ func TestTriggerRoutesCreateAndInvokeWebhook(t *testing.T) {
 	requireTriggerContextValue(t, starter, "injected")
 }
 
-func TestTriggerRecordRouteListsInvocations(t *testing.T) {
+func TestTriggerInvocationRoutesListInvocations(t *testing.T) {
 	store, err := trigger.NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -407,7 +414,7 @@ func TestTriggerRecordRouteListsInvocations(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	response := httptest.NewRecorder()
-	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/trigger-records?trigger_id=recorded-hook&limit=5", nil))
+	engine.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/triggers/recorded-hook/invocations?limit=5", nil))
 	if response.Code != http.StatusOK {
 		t.Fatalf("record list status = %d, body = %s", response.Code, response.Body.String())
 	}
@@ -426,8 +433,14 @@ func TestTriggerRecordRouteListsInvocations(t *testing.T) {
 	}
 
 	invalid := httptest.NewRecorder()
-	engine.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/trigger-records?limit=zero", nil))
+	engine.ServeHTTP(invalid, httptest.NewRequest(http.MethodGet, "/trigger-invocations?limit=zero", nil))
 	if invalid.Code != http.StatusBadRequest {
 		t.Fatalf("invalid limit status = %d, body = %s", invalid.Code, invalid.Body.String())
+	}
+	overLimit := httptest.NewRecorder()
+	path := fmt.Sprintf("/trigger-invocations?limit=%d", trigger.MaxRecordLimit+1)
+	engine.ServeHTTP(overLimit, httptest.NewRequest(http.MethodGet, path, nil))
+	if overLimit.Code != http.StatusBadRequest {
+		t.Fatalf("over-limit status = %d, body = %s", overLimit.Code, overLimit.Body.String())
 	}
 }

@@ -133,12 +133,8 @@ func (s *Server) deriveRunContextFrom(parent context.Context) (context.Context, 
 		parent = context.Background()
 	}
 	base := context.Background()
-	if s != nil {
-		s.mu.RLock()
-		if s.baseCtx != nil {
-			base = s.baseCtx
-		}
-		s.mu.RUnlock()
+	if s != nil && s.runtime != nil {
+		base = s.runtime.runtimeContext()
 	}
 
 	var (
@@ -157,44 +153,66 @@ func (s *Server) deriveRunContextFrom(parent context.Context) (context.Context, 
 	}
 }
 
-func bindStatePayload(c *gin.Context, keys ...string) (*state.State, error) {
-	body, err := readRequestBody(c.Request.Body, maxRunStateBodyBytes)
-	if err != nil {
-		return nil, err
-	}
-	if len(strings.TrimSpace(string(body))) == 0 {
-		return state.NewState(), nil
-	}
-
-	var root map[string]any
-	if err := json.Unmarshal(body, &root); err != nil {
-		return nil, fmt.Errorf("invalid JSON body: %w", err)
-	}
-	for _, key := range keys {
-		raw, ok := root[key]
-		if !ok || raw == nil {
-			continue
-		}
-		values, ok := raw.(map[string]any)
-		if !ok {
-			return nil, fmt.Errorf("%s must be an object", key)
-		}
-		return state.FromMap(values), nil
-	}
-	return state.FromMap(root), nil
+type startRunRequest struct {
+	InitialState map[string]any `json:"initial_state,omitempty"`
 }
 
-func parseRunStatuses(c *gin.Context) []runtime.RunStatus {
-	values := append([]string{}, c.QueryArray("status")...)
-	values = append(values, c.QueryArray("statuses")...)
+type resumeRunRequest struct {
+	Input map[string]any `json:"input,omitempty"`
+}
+
+func decodeStartRunRequest(c *gin.Context) (*state.State, error) {
+	var request startRunRequest
+	if err := decodeRunRequest(c, &request); err != nil {
+		return nil, err
+	}
+	if request.InitialState == nil {
+		return state.NewState(), nil
+	}
+	return state.FromMap(request.InitialState), nil
+}
+
+func decodeResumeRunRequest(c *gin.Context) (*state.State, error) {
+	var request resumeRunRequest
+	if err := decodeRunRequest(c, &request); err != nil {
+		return nil, err
+	}
+	if request.Input == nil {
+		return state.NewState(), nil
+	}
+	return state.FromMap(request.Input), nil
+}
+
+func decodeRunRequest(c *gin.Context, target any) error {
+	body, err := readRequestBody(c.Request.Body, maxRunStateBodyBytes)
+	if err != nil {
+		return err
+	}
+	if len(strings.TrimSpace(string(body))) == 0 {
+		return nil
+	}
+	if err := decodeStrictJSON(body, target); err != nil {
+		return invalidRequestf("invalid JSON body: %v", err)
+	}
+	return nil
+}
+
+func parseRunStatuses(c *gin.Context) ([]runtime.RunStatus, error) {
+	values := stringListQuery(c, "status")
 	statuses := make([]runtime.RunStatus, 0, len(values))
 	for _, value := range values {
-		for _, item := range strings.Split(value, ",") {
-			item = strings.TrimSpace(item)
-			if item != "" {
-				statuses = append(statuses, runtime.RunStatus(item))
-			}
+		status := runtime.RunStatus(value)
+		switch status {
+		case runtime.RunStatusPending,
+			runtime.RunStatusRunning,
+			runtime.RunStatusPaused,
+			runtime.RunStatusFailed,
+			runtime.RunStatusCompleted,
+			runtime.RunStatusCanceled:
+			statuses = append(statuses, status)
+		default:
+			return nil, invalidRequestf("unsupported status %q", value)
 		}
 	}
-	return statuses
+	return statuses, nil
 }

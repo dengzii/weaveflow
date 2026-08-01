@@ -9,16 +9,32 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 )
 
-func BuildGraph(reg *registry.Registry, def dsl.GraphDefinition, ctx *registry.BuildContext) (*Graph, error) {
-	return buildGraph(reg, def, nil, ctx, nil)
+type Builder struct {
+	registry *registry.Registry
 }
 
-func BuildGraphInstance(reg *registry.Registry, def dsl.GraphDefinition, instance dsl.GraphInstanceConfig, ctx *registry.BuildContext) (*Graph, error) {
-	return buildGraph(reg, def, &instance, ctx, nil)
+func NewBuilder(reg *registry.Registry) *Builder {
+	return &Builder{registry: reg}
 }
 
-func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.GraphInstanceConfig, ctx *registry.BuildContext, buildPath []string) (*Graph, error) {
-	if reg == nil {
+func (builder *Builder) Build(def dsl.GraphDefinition, ctx *registry.BuildContext) (*Graph, error) {
+	return builder.build(def, nil, ctx, nil)
+}
+
+func (builder *Builder) BuildInstance(def dsl.GraphDefinition, instance dsl.GraphInstanceConfig, ctx *registry.BuildContext) (*Graph, error) {
+	return builder.build(def, &instance, ctx, nil)
+}
+
+func (builder *Builder) BuildFile(path string, ctx *registry.BuildContext) (*Graph, error) {
+	def, err := LoadGraphDefinitionFile(path)
+	if err != nil {
+		return nil, err
+	}
+	return builder.Build(def, ctx)
+}
+
+func (builder *Builder) build(def dsl.GraphDefinition, instance *dsl.GraphInstanceConfig, ctx *registry.BuildContext, buildPath []string) (*Graph, error) {
+	if builder == nil || builder.registry == nil {
 		return nil, fmt.Errorf("registry is nil")
 	}
 	var err error
@@ -26,11 +42,11 @@ func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.G
 	if err != nil {
 		return nil, err
 	}
-	ctx.SubgraphBuilder = makeSubgraphBuilder(reg, ctx, buildPath)
+	ctx.SubgraphBuilder = builder.makeSubgraphBuilder(ctx, buildPath)
 
 	graph := NewGraph()
 	graph.setDefinitionMetadata(def)
-	bindings, err := graphbuild.ResolveGraphBindings(def, reg)
+	bindings, err := graphbuild.ResolveGraphBindings(def, builder.registry)
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +55,7 @@ func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.G
 	graph.setConditionContracts(bindings.ConditionContractsBySource)
 	graph.setStateBindingSemantics(graphbuild.StateBindingSemantics(bindings))
 
-	if err := graphbuild.PopulateGraph(graph, reg, def, ctx, bindings); err != nil {
+	if err := graphbuild.PopulateGraph(graph, builder.registry, def, ctx, bindings); err != nil {
 		return nil, err
 	}
 	if err := graph.Validate(); err != nil {
@@ -50,7 +66,7 @@ func buildGraph(reg *registry.Registry, def dsl.GraphDefinition, instance *dsl.G
 	return graph, nil
 }
 
-func makeSubgraphBuilder(reg *registry.Registry, parentCtx *registry.BuildContext, buildPath []string) registry.SubgraphBuilder {
+func (builder *Builder) makeSubgraphBuilder(parentCtx *registry.BuildContext, buildPath []string) registry.SubgraphBuilder {
 	return func(graphRef string) (registry.SubgraphRunner, error) {
 		graphRef = strings.TrimSpace(graphRef)
 		if graphRef == "" {
@@ -69,7 +85,7 @@ func makeSubgraphBuilder(reg *registry.Registry, parentCtx *registry.BuildContex
 		subgraphCtx := parentCtx.Clone()
 		subgraphCtx.InstanceConfig = nil
 		nextPath := append(append([]string(nil), buildPath...), graphRef)
-		graph, err := buildGraph(reg, def, nil, subgraphCtx, nextPath)
+		graph, err := builder.build(def, nil, subgraphCtx, nextPath)
 		if err != nil {
 			return nil, fmt.Errorf("build graph %q: %w", graphRef, err)
 		}

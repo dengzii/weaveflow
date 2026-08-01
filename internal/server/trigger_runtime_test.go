@@ -37,12 +37,12 @@ func TestResolveTriggerRunnerUsesLatestPushedGraphSession(t *testing.T) {
 	engine := gin.New()
 	uploader.RegisterRoutes(engine.Group(""))
 
-	postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "draft-only"))
+	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "draft-only"))
 	if _, err := uploader.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"}); err == nil {
 		t.Fatal("draft graph was available to triggers before push")
 	}
-	second := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "official"))
-	postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "newer-draft"))
+	second := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "official"))
+	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "newer-draft"))
 
 	resolver, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {
@@ -57,7 +57,7 @@ func TestResolveTriggerRunnerUsesLatestPushedGraphSession(t *testing.T) {
 		t.Fatalf("resolved graph = version %q session %q, want version v2 session %q", runner.GraphVersion, runner.GraphSessionID, second.Graph.GraphSessionID)
 	}
 
-	third := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v4", "next-official"))
+	third := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v4", "next-official"))
 	resolved, err = resolver.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -76,9 +76,9 @@ func TestFailedPushKeepsPreviousOfficialGraph(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	official := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "official"))
+	official := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "official"))
 
-	failed := serveHTTP(engine, "POST", "/graph/push", `{
+	failed := serveHTTP(engine, "POST", "/graph/publish", `{
 		"graph_id":"graph-a",
 		"graph_version":"v2",
 		"definition":{"version":"2.0","name":"invalid","nodes":[]}
@@ -115,9 +115,7 @@ func TestTriggerRunStarterUsesLatestRuntimeContext(t *testing.T) {
 		context.WithValue(context.Background(), triggerContextKey{}, "latest"),
 		map[string]llms.Model{core.DefaultModelID: latestModel},
 	)
-	srv.mu.Lock()
-	srv.baseCtx = latestCtx
-	srv.mu.Unlock()
+	srv.runtime.updateRuntime(srv.runtime.runtimeSettings(), latestCtx)
 
 	if _, _, err := wrapped.Start(context.Background(), state.NewState()); err != nil {
 		t.Fatal(err)
@@ -180,9 +178,7 @@ func TestTriggerRunStarterAsyncKeepsLatestContextUntilCompletion(t *testing.T) {
 		context.WithValue(context.Background(), triggerContextKey{}, "latest"),
 		map[string]llms.Model{core.DefaultModelID: latestModel},
 	)
-	srv.mu.Lock()
-	srv.baseCtx = latestCtx
-	srv.mu.Unlock()
+	srv.runtime.updateRuntime(srv.runtime.runtimeSettings(), latestCtx)
 
 	run, done, err := wrapped.StartAsync(context.Background(), state.NewState())
 	if err != nil {

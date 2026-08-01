@@ -50,11 +50,9 @@ const (
 	planFieldFinalAnswer  = plancap.FieldFinalAnswer
 )
 
-type PlanStep = plancap.Step
-
 type planModelOutput struct {
-	Summary string     `json:"summary"`
-	Steps   []PlanStep `json:"steps"`
+	Summary string         `json:"summary"`
+	Steps   []plancap.Step `json:"steps"`
 }
 
 func PlanStatusEquals(planPath state.Path, status string) registry.EdgeCondition {
@@ -93,11 +91,11 @@ func parsePlanModelOutput(content string) (planModelOutput, error) {
 	return planModelOutput{}, errors.New("content is not valid plan JSON")
 }
 
-func normalizePlanSteps(steps []PlanStep, maxSteps int, knownTools map[string]struct{}) []PlanStep {
+func normalizePlanSteps(steps []plancap.Step, maxSteps int, knownTools map[string]struct{}) []plancap.Step {
 	if maxSteps <= 0 {
 		maxSteps = len(steps)
 	}
-	normalized := make([]PlanStep, 0, min(len(steps), maxSteps))
+	normalized := make([]plancap.Step, 0, min(len(steps), maxSteps))
 	seenIDs := map[string]int{}
 	for _, step := range steps {
 		if len(normalized) >= maxSteps {
@@ -167,11 +165,11 @@ func stripPlanJSONFence(content string) string {
 	return strings.TrimSpace(content)
 }
 
-func planStepsFromValue(value any) []PlanStep {
+func planStepsFromValue(value any) []plancap.Step {
 	return plancap.DecodeSteps(value)
 }
 
-func planStepMaps(steps []PlanStep) []map[string]any {
+func planStepMaps(steps []plancap.Step) []map[string]any {
 	return plancap.EncodeSteps(steps)
 }
 

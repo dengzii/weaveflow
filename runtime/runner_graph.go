@@ -12,7 +12,7 @@ import (
 const DefaultGraphVersion = "1.0"
 
 type RunnerExecution interface {
-	ExecuteNode(ctx context.Context, nodeID string, executor RunnerNode, state *state.State) (*state.State, error)
+	ExecuteNode(ctx context.Context, nodeID string, executor core.Node, state *state.State) (*state.State, error)
 	OnGraphStep(ctx context.Context, stepNodeID string, state *state.State) error
 }
 
@@ -27,8 +27,6 @@ type ParallelWaveRecorder interface {
 type BranchPatchRecorderSetter interface {
 	SetBranchPatchRecorder(recorder BranchPatchRecorder)
 }
-
-type RunnerNode = core.Node
 
 type RunnerRunnable interface {
 	InvokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error)

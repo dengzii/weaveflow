@@ -61,7 +61,6 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 			APIKey:           strings.TrimSpace(model.APIKey),
 		})
 	}
-	settings.Model = defaultGraphModelSettings(settings.Models)
 	return sanitizedGraphSettings(settings), true, nil
 }
 

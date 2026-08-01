@@ -22,6 +22,7 @@ type GraphRunner struct {
 	ExecutionStore     ExecutionStore
 	CheckpointStore    CheckpointStore
 	ArtifactStore      ArtifactStore
+	RunDeleter         RunDeleter
 	Codec              state.StateCodec
 	EventSink          EventSink
 	GraphID            string
@@ -657,7 +658,10 @@ func (r *GraphRunner) DeleteRun(ctx context.Context, runID string) (RunRecord, e
 	if isActiveDeleteRunStatus(run.Status) || r.hasActiveExecution(runID) {
 		return RunRecord{}, fmt.Errorf("%w: run %q status %q must be stopped before deletion", ErrRunControlNotAllowed, runID, run.Status)
 	}
-	if err := deleteRunnerStoredRun(ctx, runID, r.ExecutionStore, r.CheckpointStore, r.EventSink, r.ArtifactStore); err != nil {
+	if r.RunDeleter == nil {
+		return RunRecord{}, fmt.Errorf("run deletion is not configured")
+	}
+	if err := r.RunDeleter.DeleteRun(ctx, runID); err != nil {
 		return RunRecord{}, err
 	}
 	return run, nil
@@ -733,33 +737,6 @@ func isActiveDeleteRunStatus(status RunStatus) bool {
 	default:
 		return false
 	}
-}
-
-type runDeletionStore interface {
-	DeleteRun(ctx context.Context, runID string) error
-}
-
-func deleteRunnerStoredRun(ctx context.Context, runID string, executionStore ExecutionStore, checkpointStore CheckpointStore, eventSink EventSink, artifactStore ArtifactStore) error {
-	executionDeleter, ok := executionStore.(runDeletionStore)
-	if !ok {
-		return fmt.Errorf("execution store does not support deleting runs")
-	}
-	if checkpointDeleter, ok := checkpointStore.(runDeletionStore); ok {
-		if err := checkpointDeleter.DeleteRun(ctx, runID); err != nil {
-			return err
-		}
-	}
-	if artifactDeleter, ok := artifactStore.(runDeletionStore); ok {
-		if err := artifactDeleter.DeleteRun(ctx, runID); err != nil {
-			return err
-		}
-	}
-	if eventDeleter, ok := eventSink.(runDeletionStore); ok {
-		if err := eventDeleter.DeleteRun(ctx, runID); err != nil {
-			return err
-		}
-	}
-	return executionDeleter.DeleteRun(ctx, runID)
 }
 
 func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, interrupt *langgraph.GraphInterrupt) (RunRecord, *state.State, error) {

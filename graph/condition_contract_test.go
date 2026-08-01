@@ -15,7 +15,7 @@ import (
 func TestResolvedConditionReceivesProjectedBoundState(t *testing.T) {
 	t.Parallel()
 	reg := conditionContractRegistry(t)
-	workflow, err := BuildGraph(reg, conditionContractDefinition(), nil)
+	workflow, err := NewBuilder(reg).Build(conditionContractDefinition(), nil)
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}
@@ -34,7 +34,7 @@ func TestResolvedConditionReceivesProjectedBoundState(t *testing.T) {
 
 func TestResolvedConditionValidatesRequiredBoundState(t *testing.T) {
 	t.Parallel()
-	workflow, err := BuildGraph(conditionContractRegistry(t), conditionContractDefinition(), nil)
+	workflow, err := NewBuilder(conditionContractRegistry(t)).Build(conditionContractDefinition(), nil)
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}

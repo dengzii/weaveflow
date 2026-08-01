@@ -20,22 +20,22 @@ Use successful evidence, acknowledge material failures when necessary, and do no
 Answer directly in the same language as the objective.`
 
 type PlanSynthesisNode struct {
-	Base
+	core.NodeBase
 	ModelID      string
 	SystemPrompt string
 	PlanPath     state.Path
 	ResultPath   state.Path
 }
 
-func NewPlanSynthesisNode(options ...NodeOption) *PlanSynthesisNode {
+func NewPlanSynthesisNode(options ...core.NodeOption) *PlanSynthesisNode {
 	target := &PlanSynthesisNode{
-		Base: NewBase(Spec{
+		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypePlanSynthesis,
 			Description: "Synthesize plan results into the final answer.",
 		}),
 		SystemPrompt: defaultPlanSynthesisSystemPrompt,
 	}
-	applyNodeOptions(&target.Base, options)
+	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
@@ -44,7 +44,7 @@ func (n *PlanSynthesisNode) Validate() error {
 	if n == nil {
 		return errors.New("plan synthesis node is nil")
 	}
-	if err := n.Base.Validate(); err != nil {
+	if err := n.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if n.PlanPath.Empty() || n.ResultPath.Empty() {
@@ -54,7 +54,7 @@ func (n *PlanSynthesisNode) Validate() error {
 }
 
 func (n *PlanSynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.Base, NodeTypePlanSynthesis, map[string]any{
+	return newGraphNodeSpec(n.NodeBase, NodeTypePlanSynthesis, map[string]any{
 		"model_id":      n.ModelID,
 		"system_prompt": n.SystemPrompt,
 	}, map[string]state.Path{"plan": n.PlanPath, "result": n.ResultPath})
@@ -88,7 +88,7 @@ func PlanSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 				capabilityField(plancap.FieldFinalAnswer, dsl.StateAccessWrite)),
 			primitivePort("result", "Final synthesized answer.", "string", dsl.StateAccessWrite, true),
 		},
-		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
 			planPath, err := resolvedPath(resolved, "plan")
 			if err != nil {
@@ -98,8 +98,8 @@ func PlanSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanSynthesisNode(WithID(spec.ID))
-			applyNodeMetadata(&target.Base, spec)
+			target := NewPlanSynthesisNode(core.WithID(spec.ID))
+			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if _, exists := spec.Config["system_prompt"]; exists {
 				target.SystemPrompt = config.String(spec.Config, "system_prompt")
@@ -160,7 +160,7 @@ func (n *PlanSynthesisNode) effectiveSystemPrompt() string {
 	return n.SystemPrompt
 }
 
-func buildPlanSynthesisPrompt(objective string, summary string, steps []PlanStep) string {
+func buildPlanSynthesisPrompt(objective string, summary string, steps []plancap.Step) string {
 	var builder strings.Builder
 	builder.WriteString("Objective:\n")
 	builder.WriteString(objective)

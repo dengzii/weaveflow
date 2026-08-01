@@ -91,7 +91,7 @@ func SubgraphNodeTypeDefinition() registry.NodeTypeDefinition {
 			target.GraphRef = graphRef
 			target.InputPath = inputPath
 			target.OutputPath = outputPath
-			target.InvokeSubgraph = runner
+			target.InvokeSubgraph = SubgraphInvoker(runner)
 			return target, nil
 		},
 	}

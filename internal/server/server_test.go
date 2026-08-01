@@ -48,7 +48,7 @@ func TestRegistryResponseIncludesNodeGroups(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := gin.New()
-	engine.GET("/registry", srv.handleRegistry)
+	engine.GET("/registry", srv.handleGetRegistry)
 	w := httptest.NewRecorder()
 	engine.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/registry", nil))
 	if w.Code != http.StatusOK {
@@ -110,7 +110,7 @@ type interruptTestNode struct {
 func TestBindGraphUploadRejectsLegacyDefinitionFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
-	ginContext.Request = httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(`{
+	ginContext.Request = httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(`{
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -132,7 +132,7 @@ func TestBindGraphUploadRejectsLegacyEnvelopeForms(t *testing.T) {
 	}
 	for _, body := range tests {
 		ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
-		ginContext.Request = httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(body))
+		ginContext.Request = httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(body))
 		if _, err := bindGraphUpload(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
 			t.Fatalf("bindGraphUpload(%s) error = %v, want unknown field", body, err)
 		}
@@ -143,13 +143,41 @@ func TestBindGraphSettingsRequestRejectsUnknownFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, body := range []string{
 		`{"modle": {}}`,
+		`{"model": {}}`,
 		`{"memory": {"enabled": true, "path": "legacy"}}`,
 	} {
 		ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
-		ginContext.Request = httptest.NewRequest(http.MethodPut, "/graph/settings", strings.NewReader(body))
+		ginContext.Request = httptest.NewRequest(http.MethodPut, "/runtime/settings", strings.NewReader(body))
 		if _, err := bindGraphSettingsRequest(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
 			t.Fatalf("bindGraphSettingsRequest(%s) error = %v, want unknown field", body, err)
 		}
+	}
+}
+
+func TestDecodeRunRequestsRejectLegacyPayloads(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	tests := []struct {
+		name   string
+		body   string
+		decode func(*gin.Context) (*state.State, error)
+	}{
+		{name: "start state wrapper", body: `{"state": {}}`, decode: decodeStartRunRequest},
+		{name: "start input wrapper", body: `{"input": {}}`, decode: decodeStartRunRequest},
+		{name: "start direct state", body: `{"shared": {}}`, decode: decodeStartRunRequest},
+		{name: "start non-object state", body: `{"initial_state": "legacy"}`, decode: decodeStartRunRequest},
+		{name: "resume state wrapper", body: `{"state": {}}`, decode: decodeResumeRunRequest},
+		{name: "resume initial state wrapper", body: `{"initial_state": {}}`, decode: decodeResumeRunRequest},
+		{name: "resume direct state", body: `{"shared": {}}`, decode: decodeResumeRunRequest},
+		{name: "resume non-object input", body: `{"input": []}`, decode: decodeResumeRunRequest},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
+			ginContext.Request = httptest.NewRequest(http.MethodPost, "/runs", strings.NewReader(test.body))
+			if _, err := test.decode(ginContext); err == nil {
+				t.Fatalf("decode(%s) error = nil, want invalid request", test.body)
+			}
+		})
 	}
 }
 
@@ -251,7 +279,7 @@ func (s *recordingEventSink) ListEvents(runID string) ([]runtime.Event, error) {
 	return out, nil
 }
 
-func TestHandleToolsReturnsRuntimeToolDefinitions(t *testing.T) {
+func TestHandleRuntimeToolsReturnsDefinitions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	ctx := core.WithTools(context.Background(), map[string]core.Tool{
@@ -283,19 +311,19 @@ func TestHandleToolsReturnsRuntimeToolDefinitions(t *testing.T) {
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
-	w := serveHTTP(engine, http.MethodGet, "/tools", "")
+	w := serveHTTP(engine, http.MethodGet, "/runtime/tools", "")
 	if w.Code != http.StatusOK {
-		t.Fatalf("GET /tools status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("GET /runtime/tools status = %d, body = %s", w.Code, w.Body.String())
 	}
 	var response struct {
 		Data  toolsResponse `json:"data"`
-		Error string        `json:"error"`
+		Error *apiError     `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode tools response: %v", err)
 	}
-	if response.Error != "" {
-		t.Fatalf("response error = %q", response.Error)
+	if response.Error != nil {
+		t.Fatalf("response error = %#v", response.Error)
 	}
 	if len(response.Data.Tools) != 2 {
 		t.Fatalf("tools length = %d, want 2", len(response.Data.Tools))
@@ -316,7 +344,7 @@ func TestHandleToolsReturnsRuntimeToolDefinitions(t *testing.T) {
 	}
 }
 
-func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
+func TestHandleRuntimeSettingsUpdatesContext(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_MODEL", "")
@@ -357,23 +385,20 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 		],
 		"memory": {"enabled": true}
 	}`
-	w := serveHTTP(engine, http.MethodPut, "/graph/settings", body)
+	w := serveHTTP(engine, http.MethodPut, "/runtime/settings", body)
 	if w.Code != http.StatusOK {
-		t.Fatalf("PUT /graph/settings status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /runtime/settings status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	var response struct {
 		Data  graphRuntimeSettings `json:"data"`
-		Error string               `json:"error"`
+		Error *apiError            `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode settings response: %v", err)
 	}
-	if response.Error != "" {
-		t.Fatalf("response error = %q", response.Error)
-	}
-	if !response.Data.Model.Enabled || response.Data.Model.Provider != "openai" || response.Data.Model.Model != "gpt-test" {
-		t.Fatalf("model settings = %#v", response.Data.Model)
+	if response.Error != nil {
+		t.Fatalf("response error = %#v", response.Error)
 	}
 	if len(response.Data.Models) != 2 {
 		t.Fatalf("models length = %d, want 2", len(response.Data.Models))
@@ -384,8 +409,8 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 	if response.Data.Models[1].ID != "fast" || response.Data.Models[1].Model != "gpt-fast" {
 		t.Fatalf("fast model settings = %#v", response.Data.Models[1])
 	}
-	if !response.Data.Model.APIKeyConfigured || !response.Data.Models[0].APIKeyConfigured || !response.Data.Models[1].APIKeyConfigured {
-		t.Fatalf("api key configured flags = model %#v models %#v", response.Data.Model, response.Data.Models)
+	if !response.Data.Models[0].APIKeyConfigured || !response.Data.Models[1].APIKeyConfigured {
+		t.Fatalf("api key configured flags = %#v", response.Data.Models)
 	}
 	if !response.Data.Memory.Enabled || response.Data.Memory.Directory == "" {
 		t.Fatalf("memory settings = %#v", response.Data.Memory)
@@ -409,7 +434,7 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 		t.Fatalf("OPENAI_MODEL = %q, want gpt-test", got)
 	}
 
-	coreCtx := core.NewContext(srv.baseCtx)
+	coreCtx := core.NewContext(srv.runtime.runtimeContext())
 	if coreCtx.Model() == nil {
 		t.Fatalf("runtime context model is nil")
 	}
@@ -423,7 +448,7 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 		t.Fatalf("runtime context tools = %#v, want alpha preserved", coreCtx.Tools())
 	}
 
-	w = serveHTTP(engine, http.MethodPut, "/graph/settings", `{"environment":{}}`)
+	w = serveHTTP(engine, http.MethodPut, "/runtime/settings", `{"environment":{}}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("clear visible environment status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -434,7 +459,7 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 		t.Fatalf("omitted secret WEAVEFLOW_TEST_TOKEN = %q, want preserved", got)
 	}
 
-	w = serveHTTP(engine, http.MethodPut, "/graph/settings", `{"environment":{"WEAVEFLOW_TEST_TOKEN":""}}`)
+	w = serveHTTP(engine, http.MethodPut, "/runtime/settings", `{"environment":{"WEAVEFLOW_TEST_TOKEN":""}}`)
 	if w.Code != http.StatusOK {
 		t.Fatalf("clear secret environment status = %d, body = %s", w.Code, w.Body.String())
 	}
@@ -443,7 +468,7 @@ func TestHandleGraphSettingsUpdatesRuntimeContext(t *testing.T) {
 	}
 }
 
-func TestHandleToolsConcurrentWithSettingsUpdates(t *testing.T) {
+func TestHandleRuntimeToolsConcurrentWithSettingsUpdates(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := core.WithTools(context.Background(), map[string]core.Tool{
 		"alpha": {Function: &llms.FunctionDefinition{Name: "alpha_tool"}},
@@ -461,23 +486,23 @@ func TestHandleToolsConcurrentWithSettingsUpdates(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			response := serveHTTP(engine, http.MethodGet, "/tools", "")
+			response := serveHTTP(engine, http.MethodGet, "/runtime/tools", "")
 			if response.Code != http.StatusOK {
-				t.Errorf("GET /tools status = %d, body = %s", response.Code, response.Body.String())
+				t.Errorf("GET /runtime/tools status = %d, body = %s", response.Code, response.Body.String())
 			}
 		}()
 		go func() {
 			defer wg.Done()
-			response := serveHTTP(engine, http.MethodPut, "/graph/settings", `{"memory":{"enabled":false}}`)
+			response := serveHTTP(engine, http.MethodPut, "/runtime/settings", `{"memory":{"enabled":false}}`)
 			if response.Code != http.StatusOK {
-				t.Errorf("PUT /graph/settings status = %d, body = %s", response.Code, response.Body.String())
+				t.Errorf("PUT /runtime/settings status = %d, body = %s", response.Code, response.Body.String())
 			}
 		}()
 	}
 	wg.Wait()
 }
 
-func TestGraphRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
+func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 	expected := map[string]string{
 		"WEAVEFLOW_TOOL_WORKDIR":              t.TempDir(),
 		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": "false",
@@ -595,20 +620,84 @@ func TestRegisterRoutesMountsOnRouterGroup(t *testing.T) {
 
 	var response struct {
 		Data  []runtime.Event `json:"data"`
-		Error string          `json:"error"`
+		Error *apiError       `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if response.Error != "" {
-		t.Fatalf("response error = %q", response.Error)
+	if response.Error != nil {
+		t.Fatalf("response error = %#v", response.Error)
 	}
 	if len(response.Data) != 1 || response.Data[0].ID != event.ID {
 		t.Fatalf("response data = %#v, want one %q event", response.Data, event.ID)
 	}
 }
 
-func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
+func TestRemovedServerRoutesAreUnavailable(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	tests := []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodPost, path: "/graph"},
+		{method: http.MethodPost, path: "/graph/push"},
+		{method: http.MethodGet, path: "/graph/settings"},
+		{method: http.MethodPut, path: "/graph/settings"},
+		{method: http.MethodGet, path: "/tools"},
+		{method: http.MethodGet, path: "/events/stream"},
+		{method: http.MethodGet, path: "/trigger-records"},
+		{method: http.MethodPost, path: "/triggers/example"},
+		{method: http.MethodPost, path: "/triggers/example/webhook"},
+		{method: http.MethodGet, path: "/runs/example/detail"},
+	}
+	for _, test := range tests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			response := serveHTTP(engine, test.method, test.path, "")
+			if response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
+				t.Fatalf("status = %d, want 404 or 405; body = %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestInvalidRunStatusReturnsStructuredError(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{
+		BaseDir: t.TempDir(),
+		Runner:  &runtime.GraphRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	response := serveHTTP(engine, http.MethodGet, "/runs?status=unknown", "")
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400; body = %s", response.Code, response.Body.String())
+	}
+	var decoded apiResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if decoded.Data != nil {
+		t.Fatalf("data = %#v, want nil", decoded.Data)
+	}
+	if decoded.Error == nil || decoded.Error.Code != "invalid_request" || decoded.Error.Message == "" {
+		t.Fatalf("error = %#v, want structured invalid_request", decoded.Error)
+	}
+}
+
+func TestPutGraphConfiguresRunnerForDebugRun(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
@@ -638,11 +727,11 @@ func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
 	}`
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req := httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(graphBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	var graphResponse struct {
@@ -748,7 +837,7 @@ func TestPostGraphConfiguresRunnerForDebugRun(t *testing.T) {
 	}
 }
 
-func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
+func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
@@ -758,7 +847,7 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
-	first := postGraphForHashTest(t, engine, `{
+	first := putGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
 		"definition": {
 			"version": "2.0",
@@ -776,7 +865,7 @@ func TestPostGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 		}
 	}`)
 	time.Sleep(time.Millisecond)
-	second := postGraphForHashTest(t, engine, `{
+	second := putGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
 		"definition": {
 			"version": "2.0",
@@ -876,21 +965,21 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 		}
 	}`
 
-	w := serveHTTP(engine, http.MethodPost, "/graph", graphBody)
+	w := serveHTTP(engine, http.MethodPut, "/graph", graphBody)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 	start := serveHTTP(engine, http.MethodPost, "/runs", `{}`)
 	result := decodeRunResultResponse(t, start, http.StatusOK)
 
-	deleted := decodeRunRecordResponse(t, serveHTTP(engine, http.MethodDelete, "/runs/"+result.Run.RunID+"?graph_id=debug-graph", ""), http.StatusOK)
-	if deleted.RunID != result.Run.RunID {
-		t.Fatalf("deleted run id = %q, want %q", deleted.RunID, result.Run.RunID)
+	deleted := serveHTTP(engine, http.MethodDelete, "/runs/"+result.Run.RunID+"?graph_id=debug-graph", "")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("DELETE /runs/:run_id status = %d, body = %s", deleted.Code, deleted.Body.String())
 	}
 
-	w = serveHTTP(engine, http.MethodGet, "/runs/"+result.Run.RunID+"/detail?graph_id=debug-graph", "")
+	w = serveHTTP(engine, http.MethodGet, "/runs/"+result.Run.RunID+"?graph_id=debug-graph", "")
 	if w.Code != http.StatusNotFound {
-		t.Fatalf("GET deleted run detail status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("GET deleted run status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	w = serveHTTP(engine, http.MethodGet, "/runs?graph_id=debug-graph", "")
@@ -933,9 +1022,9 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 		}
 	}`
 
-	w := serveHTTP(engine, http.MethodPost, "/graph", graphBody)
+	w := serveHTTP(engine, http.MethodPut, "/graph", graphBody)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 	start := serveHTTP(engine, http.MethodPost, "/runs", `{}`)
 	result := decodeRunResultResponse(t, start, http.StatusOK)
@@ -947,9 +1036,9 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 	cacheOnlyEngine := gin.New()
 	cacheOnlyServer.RegisterRoutes(cacheOnlyEngine.Group(""))
 
-	deleted := decodeRunRecordResponse(t, serveHTTP(cacheOnlyEngine, http.MethodDelete, "/runs/"+result.Run.RunID+"?graph_id=debug-graph", ""), http.StatusOK)
-	if deleted.RunID != result.Run.RunID {
-		t.Fatalf("deleted run id = %q, want %q", deleted.RunID, result.Run.RunID)
+	deleted := serveHTTP(cacheOnlyEngine, http.MethodDelete, "/runs/"+result.Run.RunID+"?graph_id=debug-graph", "")
+	if deleted.Code != http.StatusNoContent {
+		t.Fatalf("DELETE cached /runs/:run_id status = %d, body = %s", deleted.Code, deleted.Body.String())
 	}
 
 	w = serveHTTP(cacheOnlyEngine, http.MethodGet, "/runs?graph_id=debug-graph", "")
@@ -1003,11 +1092,11 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 		}
 
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+		req := httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(graphBody))
 		req.Header.Set("Content-Type", "application/json")
 		engine.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
-			t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+			t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 		}
 
 		w = httptest.NewRecorder()
@@ -1051,7 +1140,7 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	}
 }
 
-func TestGetRunDetailAggregatesDebugRecords(t *testing.T) {
+func TestRunInspectionResourcesExposeDebugRecords(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
@@ -1080,11 +1169,11 @@ func TestGetRunDetailAggregatesDebugRecords(t *testing.T) {
 		}
 	}`
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req := httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(graphBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	w = httptest.NewRecorder()
@@ -1106,37 +1195,31 @@ func TestGetRunDetailAggregatesDebugRecords(t *testing.T) {
 		t.Fatal("run id is empty")
 	}
 
-	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/runs/"+runID+"/detail", nil)
-	engine.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /runs/:run_id/detail status = %d, body = %s", w.Code, w.Body.String())
+	resources := getRunResourcesForTest(t, engine, runID, "")
+	if resources.Run.RunID != runID {
+		t.Fatalf("run id = %q, want %q", resources.Run.RunID, runID)
+	}
+	if len(resources.Steps) == 0 {
+		t.Fatal("steps are empty")
+	}
+	if len(resources.Checkpoints) == 0 {
+		t.Fatal("checkpoints are empty")
+	}
+	if len(resources.Events) == 0 {
+		t.Fatal("events are empty")
+	}
+	if resources.Artifacts == nil {
+		t.Fatal("artifacts is nil")
 	}
 
-	var detailResponse struct {
-		Data  runDetail `json:"data"`
-		Error string    `json:"error"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &detailResponse); err != nil {
-		t.Fatalf("decode detail response: %v", err)
-	}
-	if detailResponse.Error != "" {
-		t.Fatalf("response error = %q", detailResponse.Error)
-	}
-	if detailResponse.Data.Run.RunID != runID {
-		t.Fatalf("detail run id = %q, want %q", detailResponse.Data.Run.RunID, runID)
-	}
-	if len(detailResponse.Data.Steps) == 0 {
-		t.Fatal("detail steps are empty")
-	}
-	if len(detailResponse.Data.Checkpoints) == 0 {
-		t.Fatal("detail checkpoints are empty")
-	}
-	if len(detailResponse.Data.Events) == 0 {
-		t.Fatal("detail events are empty")
-	}
-	if detailResponse.Data.Artifacts == nil {
-		t.Fatal("detail artifacts is nil")
+	invalidFormat := serveHTTP(
+		engine,
+		http.MethodGet,
+		"/runs/"+runID+"/artifacts/missing?format=xml",
+		"",
+	)
+	if invalidFormat.Code != http.StatusBadRequest {
+		t.Fatalf("invalid artifact format status = %d, body = %s", invalidFormat.Code, invalidFormat.Body.String())
 	}
 }
 
@@ -1187,11 +1270,11 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	}`
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req := httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(graphBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	w = httptest.NewRecorder()
@@ -1204,13 +1287,13 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 
 	var startResponse struct {
 		Data  runResult `json:"data"`
-		Error string    `json:"error"`
+		Error *apiError `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &startResponse); err != nil {
 		t.Fatalf("decode start response: %v", err)
 	}
-	if startResponse.Error != "" {
-		t.Fatalf("start response error = %q", startResponse.Error)
+	if startResponse.Error != nil {
+		t.Fatalf("start response error = %#v", startResponse.Error)
 	}
 	if startResponse.Data.Run.Status != runtime.RunStatusPaused {
 		t.Fatalf("start status = %q, want %q", startResponse.Data.Run.Status, runtime.RunStatusPaused)
@@ -1234,26 +1317,15 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 		t.Fatalf("interrupt message = %q, want waiting for resume input", startResponse.Data.Interrupt.Message)
 	}
 
-	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/runs/"+startResponse.Data.Run.RunID+"/detail", nil)
-	engine.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /runs/:run_id/detail status = %d, body = %s", w.Code, w.Body.String())
+	resources := getRunResourcesForTest(t, engine, startResponse.Data.Run.RunID, "")
+	if resources.Interrupt == nil {
+		t.Fatal("interrupt is nil")
 	}
-	var detailResponse struct {
-		Data runDetail `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &detailResponse); err != nil {
-		t.Fatalf("decode detail response: %v", err)
-	}
-	if detailResponse.Data.Interrupt == nil {
-		t.Fatal("detail interrupt is nil")
-	}
-	if detailResponse.Data.Interrupt.Message != "waiting for resume input" {
-		t.Fatalf("detail interrupt message = %q, want waiting for resume input", detailResponse.Data.Interrupt.Message)
+	if resources.Interrupt.Message != "waiting for resume input" {
+		t.Fatalf("interrupt message = %q, want waiting for resume input", resources.Interrupt.Message)
 	}
 	var pausedPayload map[string]any
-	for _, event := range detailResponse.Data.Events {
+	for _, event := range resources.Events {
 		if event.Type != runtime.EventRunPaused {
 			continue
 		}
@@ -1287,13 +1359,13 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 
 	var resumeResponse struct {
 		Data  runResult `json:"data"`
-		Error string    `json:"error"`
+		Error *apiError `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resumeResponse); err != nil {
 		t.Fatalf("decode resume response: %v", err)
 	}
-	if resumeResponse.Error != "" {
-		t.Fatalf("resume response error = %q", resumeResponse.Error)
+	if resumeResponse.Error != nil {
+		t.Fatalf("resume response error = %#v", resumeResponse.Error)
 	}
 	if resumeResponse.Data.Run.Status != runtime.RunStatusCompleted {
 		t.Fatalf("resume status = %q, want %q", resumeResponse.Data.Run.Status, runtime.RunStatusCompleted)
@@ -1351,11 +1423,11 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 	}`
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req := httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(graphBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	w = httptest.NewRecorder()
@@ -1403,23 +1475,12 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 		t.Fatal("canceled cached run finished_at is nil")
 	}
 
-	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodGet, "/runs/"+startResponse.Data.Run.RunID+"/detail?graph_id=interrupt-graph", nil)
-	cacheOnlyEngine.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GET /runs/:run_id/detail status = %d, body = %s", w.Code, w.Body.String())
+	resources := getRunResourcesForTest(t, cacheOnlyEngine, startResponse.Data.Run.RunID, "interrupt-graph")
+	if resources.Run.Status != runtime.RunStatusCanceled {
+		t.Fatalf("run status = %q, want %q", resources.Run.Status, runtime.RunStatusCanceled)
 	}
-	var detailResponse struct {
-		Data runDetail `json:"data"`
-	}
-	if err := json.Unmarshal(w.Body.Bytes(), &detailResponse); err != nil {
-		t.Fatalf("decode detail response: %v", err)
-	}
-	if detailResponse.Data.Run.Status != runtime.RunStatusCanceled {
-		t.Fatalf("detail run status = %q, want %q", detailResponse.Data.Run.Status, runtime.RunStatusCanceled)
-	}
-	if !hasRuntimeEvent(detailResponse.Data.Events, runtime.EventRunCanceled) {
-		t.Fatal("detail events missing run.canceled")
+	if !hasRuntimeEvent(resources.Events, runtime.EventRunCanceled) {
+		t.Fatal("events missing run.canceled")
 	}
 }
 
@@ -1666,11 +1727,11 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	assertInitialStateRequirementResponse(t, w.Body.Bytes())
 
 	w = httptest.NewRecorder()
-	req = httptest.NewRequest(http.MethodPost, "/graph", strings.NewReader(graphBody))
+	req = httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(graphBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST /graph status = %d, body = %s", w.Code, w.Body.String())
+		t.Fatalf("PUT /graph status = %d, body = %s", w.Code, w.Body.String())
 	}
 
 	w = httptest.NewRecorder()
@@ -1686,13 +1747,13 @@ func assertInitialStateRequirementResponse(t *testing.T, body []byte) {
 	t.Helper()
 	var response struct {
 		Data  core.InitialStateRequirements `json:"data"`
-		Error string                        `json:"error"`
+		Error *apiError                     `json:"error"`
 	}
 	if err := json.Unmarshal(body, &response); err != nil {
 		t.Fatalf("decode requirements response: %v", err)
 	}
-	if response.Error != "" {
-		t.Fatalf("response error = %q", response.Error)
+	if response.Error != nil {
+		t.Fatalf("response error = %#v", response.Error)
 	}
 	if len(response.Data.Required) != 1 {
 		t.Fatalf("required = %#v, want one item", response.Data.Required)
@@ -1741,31 +1802,31 @@ func serveHTTPWithContext(ctx context.Context, engine *gin.Engine, method string
 	return w
 }
 
-func postGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
+func putGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
 	t.Helper()
-	return postGraphAtPathForHashTest(t, engine, "/graph", body)
+	return requestGraphForHashTest(t, engine, http.MethodPut, "/graph", body)
 }
 
-func pushGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
+func publishGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
 	t.Helper()
-	return postGraphAtPathForHashTest(t, engine, "/graph/push", body)
+	return requestGraphForHashTest(t, engine, http.MethodPost, "/graph/publish", body)
 }
 
-func postGraphAtPathForHashTest(t *testing.T, engine *gin.Engine, path string, body string) graphLoadResponse {
+func requestGraphForHashTest(t *testing.T, engine *gin.Engine, method, path string, body string) graphLoadResponse {
 	t.Helper()
-	w := serveHTTP(engine, http.MethodPost, path, body)
+	w := serveHTTP(engine, method, path, body)
 	if w.Code != http.StatusOK {
-		t.Fatalf("POST %s status = %d, body = %s", path, w.Code, w.Body.String())
+		t.Fatalf("%s %s status = %d, body = %s", method, path, w.Code, w.Body.String())
 	}
 	var decoded struct {
 		Data  graphLoadResponse `json:"data"`
-		Error string            `json:"error"`
+		Error *apiError         `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode graph response: %v", err)
 	}
-	if decoded.Error != "" {
-		t.Fatalf("response error = %q", decoded.Error)
+	if decoded.Error != nil {
+		t.Fatalf("response error = %#v", decoded.Error)
 	}
 	return decoded.Data
 }
@@ -1829,6 +1890,52 @@ func hasRuntimeEvent(events []runtime.Event, eventType runtime.EventType) bool {
 	return false
 }
 
+type runResourceSet struct {
+	Run         runtime.RunRecord
+	Steps       []runtime.StepRecord
+	Checkpoints []runtime.CheckpointRecord
+	Events      []runtime.Event
+	Artifacts   []state.ArtifactRef
+	Interrupt   *runInterrupt
+}
+
+func getRunResourcesForTest(t *testing.T, engine *gin.Engine, runID, graphID string) runResourceSet {
+	t.Helper()
+	query := ""
+	if graphID != "" {
+		query = "?graph_id=" + graphID
+	}
+	basePath := "/runs/" + runID
+	resources := runResourceSet{}
+	requests := []struct {
+		path   string
+		target any
+	}{
+		{path: basePath + query, target: &resources.Run},
+		{path: basePath + "/steps" + query, target: &resources.Steps},
+		{path: basePath + "/checkpoints" + query, target: &resources.Checkpoints},
+		{path: basePath + "/events" + query, target: &resources.Events},
+		{path: basePath + "/artifacts" + query, target: &resources.Artifacts},
+		{path: basePath + "/interrupt" + query, target: &resources.Interrupt},
+	}
+	for _, request := range requests {
+		response := serveHTTP(engine, http.MethodGet, request.path, "")
+		if response.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d, body = %s", request.path, response.Code, response.Body.String())
+		}
+		var envelope struct {
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+			t.Fatalf("decode GET %s response: %v", request.path, err)
+		}
+		if err := json.Unmarshal(envelope.Data, request.target); err != nil {
+			t.Fatalf("decode GET %s data: %v", request.path, err)
+		}
+	}
+	return resources
+}
+
 func decodeRunRecordResponse(t *testing.T, response *httptest.ResponseRecorder, wantStatus int) runtime.RunRecord {
 	t.Helper()
 	if response.Code != wantStatus {
@@ -1836,13 +1943,13 @@ func decodeRunRecordResponse(t *testing.T, response *httptest.ResponseRecorder, 
 	}
 	var decoded struct {
 		Data  runtime.RunRecord `json:"data"`
-		Error string            `json:"error"`
+		Error *apiError         `json:"error"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode run record response: %v", err)
 	}
-	if decoded.Error != "" {
-		t.Fatalf("response error = %q", decoded.Error)
+	if decoded.Error != nil {
+		t.Fatalf("response error = %#v", decoded.Error)
 	}
 	return decoded.Data
 }
@@ -1854,13 +1961,13 @@ func decodeRunResultResponse(t *testing.T, response *httptest.ResponseRecorder, 
 	}
 	var decoded struct {
 		Data  runResult `json:"data"`
-		Error string    `json:"error"`
+		Error *apiError `json:"error"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
 		t.Fatalf("decode run result response: %v", err)
 	}
-	if decoded.Error != "" {
-		t.Fatalf("response error = %q", decoded.Error)
+	if decoded.Error != nil {
+		t.Fatalf("response error = %#v", decoded.Error)
 	}
 	return decoded.Data
 }

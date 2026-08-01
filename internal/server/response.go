@@ -27,8 +27,13 @@ var (
 )
 
 type apiResponse struct {
-	Data  any    `json:"data,omitempty"`
-	Error string `json:"error,omitempty"`
+	Data  any       `json:"data"`
+	Error *apiError `json:"error,omitempty"`
+}
+
+type apiError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 func writeData(c *gin.Context, status int, data any) {
@@ -44,7 +49,53 @@ func writeErrorData(c *gin.Context, status int, err error, data any) {
 	if err != nil {
 		message = err.Error()
 	}
-	c.JSON(status, apiResponse{Data: data, Error: message})
+	c.JSON(status, apiResponse{
+		Data: data,
+		Error: &apiError{
+			Code:    errorCode(status, err),
+			Message: message,
+		},
+	})
+}
+
+func errorCode(status int, err error) string {
+	switch {
+	case errors.Is(err, errRequestBodyTooLarge), errors.Is(err, errWebhookBodyTooLarge):
+		return "request_too_large"
+	case errors.Is(err, errInvalidGraphDefinition):
+		return "invalid_graph_definition"
+	case errors.Is(err, trigger.ErrInvalidAPIKey):
+		return "invalid_api_key"
+	case errors.Is(err, trigger.ErrDisabled):
+		return "trigger_disabled"
+	case errors.Is(err, runtime.ErrRunControlNotAllowed):
+		return "run_control_not_allowed"
+	case errors.Is(err, context.Canceled):
+		return "request_canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "request_timeout"
+	}
+
+	switch status {
+	case http.StatusBadRequest:
+		return "invalid_request"
+	case http.StatusUnauthorized:
+		return "unauthorized"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusRequestEntityTooLarge:
+		return "request_too_large"
+	case http.StatusNotImplemented:
+		return "not_supported"
+	case http.StatusServiceUnavailable:
+		return "service_unavailable"
+	case http.StatusGatewayTimeout:
+		return "request_timeout"
+	default:
+		return "internal_error"
+	}
 }
 
 func statusForError(err error) int {
@@ -64,6 +115,8 @@ func statusForError(err error) int {
 	case errors.Is(err, errRequestBodyTooLarge), errors.Is(err, errWebhookBodyTooLarge):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, errInvalidGraphDefinition):
+		return http.StatusBadRequest
+	case errors.Is(err, errInvalidRequest):
 		return http.StatusBadRequest
 	case errors.Is(err, trigger.ErrInvalidTrigger), errors.Is(err, trigger.ErrInvalidPayload), errors.Is(err, trigger.ErrInvalidStateMapping), errors.Is(err, trigger.ErrInvalidTarget), errors.Is(err, trigger.ErrTypeMismatch):
 		return http.StatusBadRequest

@@ -94,7 +94,7 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState *s
 	}
 }
 
-func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, executor RunnerNode, currentState *state.State) (*state.State, error) {
+func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, executor core.Node, currentState *state.State) (*state.State, error) {
 	nodeCtx, err := e.beforeNode(ctx, nodeID, currentState)
 	if err != nil {
 		return currentState, err

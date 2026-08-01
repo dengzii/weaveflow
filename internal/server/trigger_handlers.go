@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/dengzii/weaveflow/internal/trigger"
@@ -35,6 +34,10 @@ type triggerPayload struct {
 type triggerWebhookPayload struct {
 	APIKey        string                        `json:"api_key,omitempty"`
 	StateMappings []trigger.WebhookStateMapping `json:"state_mappings,omitempty"`
+}
+
+type triggerInvocationResponse struct {
+	Run runtime.RunRecord `json:"run"`
 }
 
 func (p triggerPayload) toTrigger(defaultEnabled bool) trigger.Trigger {
@@ -122,7 +125,11 @@ func (s *Server) handleGetTrigger(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
 		return
 	}
-	item, err := service.Get(c.Request.Context(), strings.TrimSpace(c.Param("trigger_id")))
+	triggerID, ok := requirePathParam(c, "trigger_id")
+	if !ok {
+		return
+	}
+	item, err := service.Get(c.Request.Context(), triggerID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -136,7 +143,10 @@ func (s *Server) handleUpdateTrigger(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
 		return
 	}
-	id := strings.TrimSpace(c.Param("trigger_id"))
+	id, ok := requirePathParam(c, "trigger_id")
+	if !ok {
+		return
+	}
 	existing, err := service.Get(c.Request.Context(), id)
 	if err != nil {
 		writeError(c, statusForError(err), err)
@@ -184,20 +194,27 @@ func (s *Server) handleDeleteTrigger(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
 		return
 	}
-	if err := service.Delete(c.Request.Context(), strings.TrimSpace(c.Param("trigger_id"))); err != nil {
+	triggerID, ok := requirePathParam(c, "trigger_id")
+	if !ok {
+		return
+	}
+	if err := service.Delete(c.Request.Context(), triggerID); err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
 	c.Status(http.StatusNoContent)
 }
 
-func (s *Server) handleInvokeTrigger(c *gin.Context) {
+func (s *Server) handleCreateTriggerInvocation(c *gin.Context) {
 	service := s.TriggerService()
 	if service == nil {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
 		return
 	}
-	triggerID := strings.TrimSpace(c.Param("trigger_id"))
+	triggerID, ok := requirePathParam(c, "trigger_id")
+	if !ok {
+		return
+	}
 	item, err := service.Get(c.Request.Context(), triggerID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
@@ -205,6 +222,11 @@ func (s *Server) handleInvokeTrigger(c *gin.Context) {
 	}
 	ctx, cancel := s.deriveRunContext(c)
 	defer cancel()
+	apiKey, err := optionalStringQuery(c, trigger.APIKeyQueryParameter)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
 
 	var (
 		run    runtime.RunRecord
@@ -221,13 +243,7 @@ func (s *Server) handleInvokeTrigger(c *gin.Context) {
 			writeError(c, http.StatusRequestEntityTooLarge, errWebhookBodyTooLarge)
 			return
 		}
-		headers := make(map[string]string, len(c.Request.Header))
-		for key, values := range c.Request.Header {
-			if len(values) > 0 {
-				headers[key] = values[0]
-			}
-		}
-		run, runErr = service.InvokeWebhook(ctx, triggerID, body, c.Query(trigger.APIKeyQueryParameter), headers)
+		run, runErr = service.InvokeWebhook(ctx, triggerID, body, apiKey, requestHeaders(c))
 	case trigger.TypeSchedule:
 		run, runErr = service.InvokeSchedule(ctx, triggerID)
 	default:
@@ -237,7 +253,7 @@ func (s *Server) handleInvokeTrigger(c *gin.Context) {
 		writeError(c, statusForError(runErr), runErr)
 		return
 	}
-	writeData(c, http.StatusOK, map[string]any{"run": run})
+	writeData(c, http.StatusOK, triggerInvocationResponse{Run: run})
 }
 
 func (s *Server) handleWebhookTrigger(c *gin.Context) {
@@ -249,24 +265,27 @@ func (s *Server) handleWebhookTrigger(c *gin.Context) {
 	ctx, cancel := s.deriveRunContext(c)
 	defer cancel()
 
-	headers := make(map[string]string, len(c.Request.Header))
-	for key, values := range c.Request.Header {
-		if len(values) > 0 {
-			headers[key] = values[0]
-		}
+	triggerID, ok := requirePathParam(c, "trigger_id")
+	if !ok {
+		return
+	}
+	apiKey, err := optionalStringQuery(c, trigger.APIKeyQueryParameter)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
 	}
 	run, err := service.InvokeWebhookInput(
 		ctx,
-		strings.TrimSpace(c.Param("trigger_id")),
+		triggerID,
 		webhookQueryInput(c),
-		c.Query(trigger.APIKeyQueryParameter),
-		headers,
+		apiKey,
+		requestHeaders(c),
 	)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, map[string]any{"run": run})
+	writeData(c, http.StatusOK, triggerInvocationResponse{Run: run})
 }
 
 func webhookQueryInput(c *gin.Context) map[string]any {
@@ -283,22 +302,31 @@ func webhookQueryInput(c *gin.Context) map[string]any {
 	return input
 }
 
-func (s *Server) handleListTriggerRecords(c *gin.Context) {
+func (s *Server) handleListTriggerInvocations(c *gin.Context) {
 	service := s.TriggerService()
 	if service == nil {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
 		return
 	}
-	limit := trigger.DefaultRecordLimit
-	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
-		parsed, err := strconv.Atoi(raw)
-		if err != nil || parsed <= 0 {
-			writeError(c, http.StatusBadRequest, errors.New("limit must be a positive integer"))
-			return
-		}
-		limit = parsed
+	triggerID := optionalPathParam(c, "trigger_id")
+	queryTriggerID, err := optionalStringQuery(c, "trigger_id")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
 	}
-	items, err := service.ListRecords(c.Request.Context(), strings.TrimSpace(c.Query("trigger_id")), limit)
+	if triggerID != "" && queryTriggerID != "" {
+		writeError(c, http.StatusBadRequest, invalidRequestf("trigger_id query is not allowed on a scoped invocation route"))
+		return
+	}
+	if triggerID == "" {
+		triggerID = queryTriggerID
+	}
+	limit, err := positiveIntQuery(c, "limit", trigger.DefaultRecordLimit, trigger.MaxRecordLimit)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	items, err := service.ListRecords(c.Request.Context(), triggerID, limit)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -319,6 +347,16 @@ func (s *Server) handleListTriggerRecords(c *gin.Context) {
 		items[index].UpdatedAt = run.UpdatedAt
 	}
 	writeData(c, http.StatusOK, items)
+}
+
+func requestHeaders(c *gin.Context) map[string]string {
+	headers := make(map[string]string, len(c.Request.Header))
+	for key, values := range c.Request.Header {
+		if len(values) > 0 {
+			headers[key] = values[0]
+		}
+	}
+	return headers
 }
 
 func (s *Server) triggerRecordRun(ctx context.Context, record trigger.Record) (runtime.RunRecord, error) {

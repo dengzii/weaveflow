@@ -14,18 +14,18 @@ import (
 )
 
 type PlanReviewNode struct {
-	Base
+	core.NodeBase
 	PlanPath         state.Path
 	ExecutionPath    state.Path
 	ConversationPath state.Path
 }
 
-func NewPlanReviewNode(options ...NodeOption) *PlanReviewNode {
-	target := &PlanReviewNode{Base: NewBase(Spec{
+func NewPlanReviewNode(options ...core.NodeOption) *PlanReviewNode {
+	target := &PlanReviewNode{NodeBase: core.NewNodeBase(core.NodeSpec{
 		Name:        NodeTypePlanReview,
 		Description: "Record a step result and decide whether to continue, replan, or finish.",
 	})}
-	applyNodeOptions(&target.Base, options)
+	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
@@ -34,7 +34,7 @@ func (n *PlanReviewNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("plan review node is nil")
 	}
-	if err := n.Base.Validate(); err != nil {
+	if err := n.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if n.PlanPath.Empty() || n.ExecutionPath.Empty() || n.ConversationPath.Empty() {
@@ -44,7 +44,7 @@ func (n *PlanReviewNode) Validate() error {
 }
 
 func (n *PlanReviewNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.Base, NodeTypePlanReview, nil, map[string]state.Path{"plan": n.PlanPath, "execution": n.ExecutionPath, "conversation": n.ConversationPath})
+	return newGraphNodeSpec(n.NodeBase, NodeTypePlanReview, nil, map[string]state.Path{"plan": n.PlanPath, "execution": n.ExecutionPath, "conversation": n.ConversationPath})
 }
 
 func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -68,7 +68,7 @@ func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 					capabilityField(conversationcap.FieldFinalAnswer, dsl.StateAccessRead)),
 			},
 		},
-		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
 			planPath, err := resolvedPath(resolved, "plan")
 			if err != nil {
@@ -82,8 +82,8 @@ func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanReviewNode(WithID(spec.ID))
-			applyNodeMetadata(&target.Base, spec)
+			target := NewPlanReviewNode(core.WithID(spec.ID))
+			applyNodeMetadata(&target.NodeBase, spec)
 			target.PlanPath = planPath
 			target.ExecutionPath = executionPath
 			target.ConversationPath = conversationPath
@@ -127,7 +127,7 @@ func (n *PlanReviewNode) Execute(_ core.Context, access *state.Access) error {
 	if err := planner.SetField(planFieldSteps, planStepMaps(steps)); err != nil {
 		return err
 	}
-	stepResult := planStepMaps([]PlanStep{step})[0]
+	stepResult := planStepMaps([]plancap.Step{step})[0]
 	if err := execution.SetStepResult(step.ID, stepResult); err != nil {
 		return err
 	}

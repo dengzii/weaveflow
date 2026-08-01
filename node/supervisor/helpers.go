@@ -10,38 +10,17 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-type Node = basenode.Node
-type Base = basenode.Base
-type Spec = basenode.Spec
-type NodeOption = basenode.NodeOption
-
 var (
 	_ dsl.GraphNodeSpecProvider = (*SupervisorNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*SupervisorWorkerNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*SupervisorSynthesisNode)(nil)
 )
 
-func WithID(id string) NodeOption {
-	return basenode.WithID(id)
-}
-
-func WithName(name string) NodeOption {
-	return basenode.WithName(name)
-}
-
-func NewBase(spec Spec) Base {
-	return basenode.NewBase(spec)
-}
-
-func NewAgentNode(options ...NodeOption) *basenode.AgentNode {
-	return basenode.NewAgentNode(options...)
-}
-
-func applyNodeOptions(base *Base, options []NodeOption) {
+func applyNodeOptions(base *core.NodeBase, options []core.NodeOption) {
 	core.ApplyNodeOptions(base, options)
 }
 
-func ApplyDefaultStatePaths(target Node) {
+func ApplyDefaultStatePaths(target core.Node) {
 	if target == nil || strings.TrimSpace(target.ID()) == "" {
 		return
 	}
@@ -80,7 +59,7 @@ func (n *SupervisorSynthesisNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 
-func nodeOwner(target Node, fallback string) string {
+func nodeOwner(target core.Node, fallback string) string {
 	if target != nil {
 		if id := strings.TrimSpace(target.ID()); id != "" {
 			return id
@@ -97,7 +76,7 @@ func defaultNodeOwner(owner string) string {
 	return strings.ReplaceAll(owner, ".", "_")
 }
 
-func newGraphNodeSpec(base Base, nodeType string, config map[string]any, statePaths ...map[string]state.Path) dsl.GraphNodeSpec {
+func newGraphNodeSpec(base core.NodeBase, nodeType string, config map[string]any, statePaths ...map[string]state.Path) dsl.GraphNodeSpec {
 	if len(statePaths) > 0 {
 		paths := make(map[string]state.Path, len(statePaths[0]))
 		for name, path := range statePaths[0] {
@@ -149,7 +128,7 @@ func resolvedPath(spec registry.ResolvedNodeSpec, name string) (state.Path, erro
 	return basenode.ResolvedPath(spec, name)
 }
 
-func applyNodeMetadata(base *Base, spec dsl.GraphNodeSpec) {
+func applyNodeMetadata(base *core.NodeBase, spec dsl.GraphNodeSpec) {
 	basenode.ApplyNodeMetadata(base, spec)
 }
 

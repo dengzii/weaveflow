@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/dengzii/weaveflow/runtime"
@@ -18,15 +17,6 @@ type runResult struct {
 	Run       runtime.RunRecord `json:"run"`
 	State     *state.State      `json:"state,omitempty"`
 	Interrupt *runInterrupt     `json:"interrupt,omitempty"`
-}
-
-type runDetail struct {
-	Run         runtime.RunRecord          `json:"run"`
-	Steps       []runtime.StepRecord       `json:"steps"`
-	Checkpoints []runtime.CheckpointRecord `json:"checkpoints"`
-	Events      []runtime.Event            `json:"events"`
-	Artifacts   []state.ArtifactRef        `json:"artifacts"`
-	Interrupt   *runInterrupt              `json:"interrupt,omitempty"`
 }
 
 type runInterrupt struct {
@@ -49,7 +39,7 @@ func (s *Server) handleStartRun(c *gin.Context) {
 	if runner == nil {
 		return
 	}
-	initialState, err := bindStatePayload(c, "initial_state", "state", "input")
+	initialState, err := decodeStartRunRequest(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
 		return
@@ -71,12 +61,11 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 	if runner == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
-	input, err := bindStatePayload(c, "input", "state", "initial_state")
+	input, err := decodeResumeRunRequest(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
 		return
@@ -98,12 +87,11 @@ func (s *Server) handleResumeCheckpoint(c *gin.Context) {
 	if runner == nil {
 		return
 	}
-	checkpointID := strings.TrimSpace(c.Param("checkpoint_id"))
-	if checkpointID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("checkpoint_id is required"))
+	checkpointID, ok := requirePathParam(c, "checkpoint_id")
+	if !ok {
 		return
 	}
-	input, err := bindStatePayload(c, "input", "state", "initial_state")
+	input, err := decodeResumeRunRequest(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
 		return
@@ -125,9 +113,8 @@ func (s *Server) handlePauseRun(c *gin.Context) {
 	if runner == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
 	if err := runner.Pause(c.Request.Context(), runID); err != nil {
@@ -143,15 +130,18 @@ func (s *Server) handlePauseRun(c *gin.Context) {
 }
 
 func (s *Server) handleCancelRun(c *gin.Context) {
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
-	graphID := strings.TrimSpace(c.Query("graph_id"))
+	graphID, err := optionalStringQuery(c, "graph_id")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
 	runner := s.currentRunner()
 	if runner != nil && (graphID == "" || graphID == effectiveRunnerGraphID(runner)) {
-		err := runner.Cancel(c.Request.Context(), runID)
+		err = runner.Cancel(c.Request.Context(), runID)
 		if err == nil {
 			run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusCanceled)
 			if err != nil {
@@ -176,17 +166,20 @@ func (s *Server) handleCancelRun(c *gin.Context) {
 }
 
 func (s *Server) handleDeleteRun(c *gin.Context) {
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
-	graphID := strings.TrimSpace(c.Query("graph_id"))
+	graphID, err := optionalStringQuery(c, "graph_id")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
 	runner := s.currentRunner()
 	if runner != nil && (graphID == "" || graphID == effectiveRunnerGraphID(runner)) {
-		run, err := runner.DeleteRun(c.Request.Context(), runID)
+		_, err = runner.DeleteRun(c.Request.Context(), runID)
 		if err == nil {
-			writeData(c, http.StatusOK, run)
+			c.Status(http.StatusNoContent)
 			return
 		}
 		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
@@ -195,12 +188,12 @@ func (s *Server) handleDeleteRun(c *gin.Context) {
 		}
 	}
 
-	run, err := s.deleteCachedRun(c.Request.Context(), graphID, runID)
+	_, err = s.deleteCachedRun(c.Request.Context(), graphID, runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, run)
+	c.Status(http.StatusNoContent)
 }
 
 func waitForRunStatus(ctx context.Context, runner *runtime.GraphRunner, runID string, target runtime.RunStatus) (runtime.RunRecord, error) {
@@ -244,7 +237,12 @@ func (s *Server) handleListRuns(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	runs, err := reader.ListRuns(c.Request.Context(), runtime.RunFilter{Statuses: parseRunStatuses(c)})
+	statuses, err := parseRunStatuses(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	runs, err := reader.ListRuns(c.Request.Context(), runtime.RunFilter{Statuses: statuses})
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -257,9 +255,8 @@ func (s *Server) handleGetRun(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
 	run, err := reader.GetRun(c.Request.Context(), runID)
@@ -270,51 +267,21 @@ func (s *Server) handleGetRun(c *gin.Context) {
 	writeData(c, http.StatusOK, run)
 }
 
-func (s *Server) handleGetRunDetail(c *gin.Context) {
+func (s *Server) handleGetRunInterrupt(c *gin.Context) {
 	reader := s.resolveRunReader(c)
 	if reader == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
-
 	run, err := reader.GetRun(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	steps, err := reader.ListSteps(c.Request.Context(), runID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	checkpoints, err := reader.ListCheckpoints(c.Request.Context(), runID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	events, err := reader.ListEvents(runID)
-	if err != nil {
-		writeError(c, statusForListEventsError(err), err)
-		return
-	}
-	artifacts, err := reader.ListArtifacts(c.Request.Context(), runID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-
-	writeData(c, http.StatusOK, runDetail{
-		Run:         run,
-		Steps:       steps,
-		Checkpoints: checkpoints,
-		Events:      events,
-		Artifacts:   artifacts,
-		Interrupt:   s.buildRunInterrupt(c.Request.Context(), reader, run),
-	})
+	writeData(c, http.StatusOK, s.buildRunInterrupt(c.Request.Context(), reader, run))
 }
 
 func (s *Server) handleListSteps(c *gin.Context) {
@@ -322,9 +289,8 @@ func (s *Server) handleListSteps(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
 	steps, err := reader.ListSteps(c.Request.Context(), runID)
@@ -340,9 +306,8 @@ func (s *Server) handleListCheckpoints(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
 	checkpoints, err := reader.ListCheckpoints(c.Request.Context(), runID)
@@ -358,9 +323,8 @@ func (s *Server) handleGetCheckpoint(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	checkpointID := strings.TrimSpace(c.Param("checkpoint_id"))
-	if checkpointID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("checkpoint_id is required"))
+	checkpointID, ok := requirePathParam(c, "checkpoint_id")
+	if !ok {
 		return
 	}
 	checkpoint, err := reader.LoadCheckpointState(c.Request.Context(), checkpointID)
@@ -376,9 +340,8 @@ func (s *Server) handleListEvents(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
 	events, err := reader.ListEvents(runID)

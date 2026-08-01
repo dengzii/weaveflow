@@ -33,7 +33,10 @@ func (s *Server) handleStartChatChannelSetup(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-	channelID := strings.TrimSpace(c.Param("channel_id"))
+	channelID, ok := requirePathParam(c, "channel_id")
+	if !ok {
+		return
+	}
 	existingConfig, err := s.chatSetupExistingConfig(c.Request.Context(), channelID, payload.TriggerID)
 	if err != nil {
 		writeError(c, statusForChatSetupError(err), err)
@@ -61,10 +64,18 @@ func (s *Server) handlePollChatChannelSetup(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
+	sessionID, ok := requirePathParam(c, "session_id")
+	if !ok {
+		return
+	}
+	channelID, ok := requirePathParam(c, "channel_id")
+	if !ok {
+		return
+	}
 	result, err := s.chatSetup.Poll(
 		c.Request.Context(),
-		strings.TrimSpace(c.Param("session_id")),
-		strings.TrimSpace(c.Param("channel_id")),
+		sessionID,
+		channelID,
 		setupRequestOwner(c),
 		chatchannel.SetupPollInput{VerificationCode: payload.VerificationCode},
 	)
@@ -80,7 +91,15 @@ func (s *Server) handleCancelChatChannelSetup(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, chatchannel.ErrSetupUnavailable)
 		return
 	}
-	if err := s.chatSetup.Cancel(strings.TrimSpace(c.Param("session_id")), strings.TrimSpace(c.Param("channel_id")), setupRequestOwner(c)); err != nil {
+	sessionID, ok := requirePathParam(c, "session_id")
+	if !ok {
+		return
+	}
+	channelID, ok := requirePathParam(c, "channel_id")
+	if !ok {
+		return
+	}
+	if err := s.chatSetup.Cancel(sessionID, channelID, setupRequestOwner(c)); err != nil {
 		writeError(c, statusForChatSetupError(err), err)
 		return
 	}

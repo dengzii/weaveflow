@@ -52,7 +52,7 @@ type graphSessionManifest struct {
 
 const maxGraphUploadBodyBytes int64 = 8 << 20
 
-func (s *Server) handleSetGraph(c *gin.Context) {
+func (s *Server) handleUpdateGraph(c *gin.Context) {
 	req, err := bindGraphUpload(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
@@ -67,7 +67,7 @@ func (s *Server) handleSetGraph(c *gin.Context) {
 	writeData(c, http.StatusOK, resp)
 }
 
-func (s *Server) handlePushGraph(c *gin.Context) {
+func (s *Server) handlePublishGraph(c *gin.Context) {
 	req, err := bindGraphUpload(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
@@ -136,14 +136,14 @@ func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoa
 	if s == nil {
 		return graphLoadResponse{}, errGraphNotConfigured
 	}
-	s.graphMu.Lock()
-	defer s.graphMu.Unlock()
+	s.runtime.graphUpdateMu.Lock()
+	defer s.runtime.graphUpdateMu.Unlock()
 
 	if s.registry == nil {
 		return graphLoadResponse{}, errRegistryNotConfigured
 	}
 
-	graph, err := wfgraph.BuildGraph(s.registry, req.Definition, &wfregistry.BuildContext{})
+	graph, err := wfgraph.NewBuilder(s.registry).Build(req.Definition, &wfregistry.BuildContext{})
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidGraphDefinition, err)
 	}
@@ -154,8 +154,6 @@ func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoa
 
 	graphID := firstNonEmpty(req.GraphID, metadataString(def.Metadata, "id"), strings.TrimSpace(def.Name), s.cfg.GraphID, "graph")
 	graphVersion := firstNonEmpty(req.GraphVersion, metadataString(def.Metadata, "graph_version"), s.cfg.GraphVersion, runtime.DefaultGraphVersion)
-	runnerBaseDir := s.nextUploadedGraphBaseDir(graphID)
-	graphSessionID := graphSessionIDFromBaseDir(runnerBaseDir)
 	graphHash, err := graph.SemanticHash()
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("hash graph definition: %w", err)
@@ -164,6 +162,44 @@ func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoa
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("hash graph snapshot: %w", err)
 	}
+
+	// Reuse identical graph sessions. Publishing an active draft only changes
+	// its Official flag so repeated runs and pushes do not create new versions.
+	currentGraph, currentRunner, currentOfficial := s.currentGraphState()
+	if graphUploadMatchesRunner(currentRunner, graphID, graphVersion, graphHash, graphSnapshotHash) {
+		runnerBaseDir := s.uploadedGraphBaseDir(graphID, currentRunner.GraphSessionID)
+		if official && !currentOfficial {
+			if strings.TrimSpace(currentRunner.GraphSessionID) == "" {
+				return s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, true)
+			}
+			var err error
+			runnerBaseDir, err = s.promoteGraphSession(graphID, currentRunner.GraphSessionID)
+			if err != nil {
+				return graphLoadResponse{}, err
+			}
+			s.runtime.promoteCurrentSession(graphID, currentRunner)
+			currentOfficial = true
+		}
+		if currentGraph == nil {
+			currentGraph = graph
+		}
+		return graphResponse(currentGraph, currentRunner, runnerBaseDir, currentOfficial)
+	}
+
+	return s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, official)
+}
+
+func (s *Server) installUploadedGraph(
+	graph *wfgraph.Graph,
+	def dsl.GraphDefinition,
+	graphID string,
+	graphVersion string,
+	graphHash string,
+	graphSnapshotHash string,
+	official bool,
+) (graphLoadResponse, error) {
+	runnerBaseDir := s.nextUploadedGraphBaseDir(graphID)
+	graphSessionID := graphSessionIDFromBaseDir(runnerBaseDir)
 	if err := writeGraphSessionSnapshot(runnerBaseDir, graphSessionManifest{
 		GraphID:           graphID,
 		GraphVersion:      graphVersion,
@@ -187,13 +223,11 @@ func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoa
 	runner := newDefaultRunner(graph, cfg, runnerBaseDir)
 	attachEventHub(runner, s.events)
 
-	s.mu.Lock()
-	s.graph = graph
-	s.runner = runner
-	if official {
-		s.triggerRunners[graphID] = runner
-	}
-	s.mu.Unlock()
+	s.runtime.installSession(graphRuntimeSession{
+		graph:    graph,
+		runner:   runner,
+		official: official,
+	})
 
 	return graphLoadResponse{
 		Graph: graphInfo{
@@ -202,6 +236,7 @@ func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoa
 			GraphHash:         graphHash,
 			GraphSnapshotHash: graphSnapshotHash,
 			GraphSessionID:    graphSessionID,
+			Official:          official,
 			EntryPoint:        def.EntryPoint,
 			FinishPoint:       def.FinishPoint,
 		},
@@ -209,6 +244,86 @@ func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoa
 		RunnerBaseDir: runnerBaseDir,
 		Warnings:      runner.StartupWarnings,
 	}, nil
+}
+
+func graphUploadMatchesRunner(
+	runner *runtime.GraphRunner,
+	graphID string,
+	graphVersion string,
+	graphHash string,
+	graphSnapshotHash string,
+) bool {
+	if runner == nil {
+		return false
+	}
+	return effectiveRunnerGraphID(runner) == strings.TrimSpace(graphID) &&
+		firstNonEmpty(runner.GraphVersion, runtime.DefaultGraphVersion) == strings.TrimSpace(graphVersion) &&
+		strings.TrimSpace(runner.GraphHash) == strings.TrimSpace(graphHash) &&
+		strings.TrimSpace(runner.GraphSnapshotHash) == strings.TrimSpace(graphSnapshotHash)
+}
+
+func graphResponse(
+	graph *wfgraph.Graph,
+	runner *runtime.GraphRunner,
+	runnerBaseDir string,
+	official bool,
+) (graphLoadResponse, error) {
+	if graph == nil || runner == nil {
+		return graphLoadResponse{}, errGraphNotConfigured
+	}
+	def, err := graph.Definition()
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
+	return graphLoadResponse{
+		Graph: graphInfo{
+			ID:                effectiveRunnerGraphID(runner),
+			Version:           firstNonEmpty(runner.GraphVersion, runtime.DefaultGraphVersion),
+			GraphHash:         strings.TrimSpace(runner.GraphHash),
+			GraphSnapshotHash: strings.TrimSpace(runner.GraphSnapshotHash),
+			GraphSessionID:    strings.TrimSpace(runner.GraphSessionID),
+			Official:          official,
+			EntryPoint:        def.EntryPoint,
+			FinishPoint:       def.FinishPoint,
+		},
+		Definition:    def,
+		RunnerBaseDir: runnerBaseDir,
+		Warnings:      runner.StartupWarnings,
+	}, nil
+}
+
+func (s *Server) uploadedGraphBaseDir(graphID string, graphSessionID string) string {
+	if s == nil || strings.TrimSpace(s.baseDir) == "" || strings.TrimSpace(graphSessionID) == "" {
+		return ""
+	}
+	return filepath.Join(s.baseDir, "graphs", graphStorageKey(graphID), strings.TrimSpace(graphSessionID))
+}
+
+func (s *Server) promoteGraphSession(graphID string, graphSessionID string) (string, error) {
+	for _, graphDir := range graphStorageDirectories(s.baseDir, graphID) {
+		manifest, complete, err := readCachedGraphSession(graphDir, graphSessionID)
+		if err != nil {
+			return "", err
+		}
+		if !complete || manifest.GraphID != graphID {
+			continue
+		}
+		baseDir := filepath.Join(graphDir, graphSessionID)
+		if manifest.Official {
+			return baseDir, nil
+		}
+		manifest.Official = true
+		data, err := json.MarshalIndent(manifest, "", "  ")
+		if err != nil {
+			return "", fmt.Errorf("serialize graph session manifest: %w", err)
+		}
+		data = append(data, '\n')
+		if err := writeGraphSessionFile(filepath.Join(baseDir, "graph.json"), data); err != nil {
+			return "", fmt.Errorf("promote graph session %q: %w", graphSessionID, err)
+		}
+		return baseDir, nil
+	}
+	return "", fmt.Errorf("promote graph session %q: session not found", graphSessionID)
 }
 
 func (s *Server) nextUploadedGraphBaseDir(graphID string) string {

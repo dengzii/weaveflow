@@ -12,12 +12,16 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-func (s *Server) handleEventStream(c *gin.Context) {
+func (s *Server) handleRuntimeEventStream(c *gin.Context) {
 	if s == nil || s.events == nil {
 		writeError(c, http.StatusServiceUnavailable, errEventStreamNotConfigured)
 		return
 	}
-	filter := eventFilterFromQuery(c)
+	filter, err := eventFilterFromQuery(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
 	events, unsubscribe := s.events.Subscribe(filter)
 	defer unsubscribe()
 
@@ -46,26 +50,26 @@ func (s *Server) handleEventStream(c *gin.Context) {
 	}
 }
 
-func eventFilterFromQuery(c *gin.Context) eventFilter {
+func eventFilterFromQuery(c *gin.Context) (eventFilter, error) {
+	runID, err := optionalStringQuery(c, "run_id")
+	if err != nil {
+		return eventFilter{}, err
+	}
+	nodeID, err := optionalStringQuery(c, "node_id")
+	if err != nil {
+		return eventFilter{}, err
+	}
 	filter := eventFilter{
-		RunID:  strings.TrimSpace(c.Query("run_id")),
-		NodeID: strings.TrimSpace(c.Query("node_id")),
+		RunID:  runID,
+		NodeID: nodeID,
 	}
-	typeValues := append([]string{}, c.QueryArray("type")...)
-	typeValues = append(typeValues, c.QueryArray("types")...)
-	for _, value := range typeValues {
-		for _, item := range strings.Split(value, ",") {
-			item = strings.TrimSpace(item)
-			if item == "" {
-				continue
-			}
-			if filter.Types == nil {
-				filter.Types = map[runtime.EventType]struct{}{}
-			}
-			filter.Types[runtime.EventType(item)] = struct{}{}
+	for _, item := range stringListQuery(c, "type") {
+		if filter.Types == nil {
+			filter.Types = map[runtime.EventType]struct{}{}
 		}
+		filter.Types[runtime.EventType(item)] = struct{}{}
 	}
-	return filter
+	return filter, nil
 }
 
 func writeRuntimeEventSSE(c *gin.Context, event runtime.Event) {

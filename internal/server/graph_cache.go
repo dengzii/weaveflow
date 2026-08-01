@@ -48,7 +48,11 @@ type combinedRunReader struct {
 }
 
 func (s *Server) resolveRunReader(c *gin.Context) runReader {
-	graphID := strings.TrimSpace(c.Query("graph_id"))
+	graphID, err := optionalStringQuery(c, "graph_id")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return nil
+	}
 	runner := s.currentRunner()
 	if graphID != "" {
 		cache, err := s.openGraphCache(graphID)
@@ -318,33 +322,26 @@ func (r *graphCacheReader) deleteRun(ctx context.Context, runID string) (runtime
 			}
 			return runtime.RunRecord{}, err
 		}
-		if err := r.deleteRunInStore(ctx, index, store, runID); err != nil {
+		var checkpointStore runtime.RunDeleter
+		if index < len(r.checkpointStores) {
+			checkpointStore = r.checkpointStores[index]
+		}
+		var artifactStore runtime.RunDeleter
+		if index < len(r.artifactStores) {
+			artifactStore = r.artifactStores[index]
+		}
+		var eventStore runtime.RunDeleter
+		if index < len(r.eventSinks) {
+			eventStore = r.eventSinks[index]
+		}
+		deleter := runtime.NewRunDeletionCoordinator(store, checkpointStore, eventStore, artifactStore)
+		if err := deleter.DeleteRun(ctx, runID); err != nil {
 			return runtime.RunRecord{}, err
 		}
 		return run, nil
 	}
 	return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
 }
-
-func (r *graphCacheReader) deleteRunInStore(ctx context.Context, index int, store *runtime.FileExecutionStore, runID string) error {
-	if index >= 0 && index < len(r.checkpointStores) && r.checkpointStores[index] != nil {
-		if err := r.checkpointStores[index].DeleteRun(ctx, runID); err != nil {
-			return err
-		}
-	}
-	if index >= 0 && index < len(r.artifactStores) && r.artifactStores[index] != nil {
-		if err := r.artifactStores[index].DeleteRun(ctx, runID); err != nil {
-			return err
-		}
-	}
-	if index >= 0 && index < len(r.eventSinks) && r.eventSinks[index] != nil {
-		if err := r.eventSinks[index].DeleteRun(ctx, runID); err != nil {
-			return err
-		}
-	}
-	return store.DeleteRun(ctx, runID)
-}
-
 func (r *graphCacheReader) cancelPausedRunInStore(ctx context.Context, index int, store *runtime.FileExecutionStore, run runtime.RunRecord) (runtime.RunRecord, error) {
 	now := time.Now().UTC()
 

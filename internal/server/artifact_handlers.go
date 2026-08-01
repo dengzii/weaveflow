@@ -21,14 +21,21 @@ type artifactResponse struct {
 	Data     string           `json:"data_base64,omitempty"`
 }
 
+type artifactRepresentation string
+
+const (
+	artifactRepresentationJSON     artifactRepresentation = "json"
+	artifactRepresentationRaw      artifactRepresentation = "raw"
+	artifactRepresentationDownload artifactRepresentation = "download"
+)
+
 func (s *Server) handleListArtifacts(c *gin.Context) {
 	reader := s.resolveRunReader(c)
 	if reader == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	if runID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id is required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
 		return
 	}
 	artifacts, err := reader.ListArtifacts(c.Request.Context(), runID)
@@ -44,10 +51,17 @@ func (s *Server) handleGetArtifact(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	runID := strings.TrimSpace(c.Param("run_id"))
-	artifactID := strings.TrimSpace(c.Param("artifact_id"))
-	if runID == "" || artifactID == "" {
-		writeError(c, http.StatusBadRequest, fmt.Errorf("run_id and artifact_id are required"))
+	runID, ok := requirePathParam(c, "run_id")
+	if !ok {
+		return
+	}
+	artifactID, ok := requirePathParam(c, "artifact_id")
+	if !ok {
+		return
+	}
+	representation, err := artifactRepresentationFromQuery(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 	artifact, err := reader.LoadArtifact(c.Request.Context(), state.ArtifactRef{RunID: runID, ID: artifactID})
@@ -59,12 +73,12 @@ func (s *Server) handleGetArtifact(c *gin.Context) {
 		writeError(c, http.StatusNotFound, runtime.ErrRunnerRecordNotFound)
 		return
 	}
-	if shouldSendRawArtifact(c) {
+	if representation != artifactRepresentationJSON {
 		contentType := artifact.MIMEType
 		if strings.TrimSpace(contentType) == "" {
 			contentType = "application/octet-stream"
 		}
-		if isTruthy(c.Query("download")) {
+		if representation == artifactRepresentationDownload {
 			c.Header("Content-Disposition", "attachment; filename="+artifactFilename(artifact))
 		}
 		c.Data(http.StatusOK, contentType, artifact.Data)
@@ -73,16 +87,20 @@ func (s *Server) handleGetArtifact(c *gin.Context) {
 	writeData(c, http.StatusOK, buildArtifactResponse(artifact))
 }
 
-func shouldSendRawArtifact(c *gin.Context) bool {
-	return isTruthy(c.Query("raw")) || isTruthy(c.Query("download"))
-}
-
-func isTruthy(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "1", "true", "yes", "y", "on":
-		return true
+func artifactRepresentationFromQuery(c *gin.Context) (artifactRepresentation, error) {
+	value, err := optionalStringQuery(c, "format")
+	if err != nil {
+		return "", err
+	}
+	if value == "" {
+		return artifactRepresentationJSON, nil
+	}
+	representation := artifactRepresentation(strings.ToLower(value))
+	switch representation {
+	case artifactRepresentationJSON, artifactRepresentationRaw, artifactRepresentationDownload:
+		return representation, nil
 	default:
-		return false
+		return "", invalidRequestf("format must be one of json, raw, or download")
 	}
 }
 

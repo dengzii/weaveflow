@@ -8,7 +8,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-type SubgraphRunner = func(context.Context, *state.State) (*state.State, error)
+type SubgraphRunner func(context.Context, *state.State) (*state.State, error)
 
 type SubgraphBuilder func(graphRef string) (SubgraphRunner, error)
 

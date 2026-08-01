@@ -24,7 +24,7 @@ When the step has enough evidence, stop calling tools and return a concise resul
 Do not synthesize the overall final answer. Use the same language as the objective.`
 
 type PlanStepNode struct {
-	Base
+	core.NodeBase
 	SystemPrompt     string
 	MaxIterations    int
 	PlanPath         state.Path
@@ -32,16 +32,16 @@ type PlanStepNode struct {
 	ConversationPath state.Path
 }
 
-func NewPlanStepNode(options ...NodeOption) *PlanStepNode {
+func NewPlanStepNode(options ...core.NodeOption) *PlanStepNode {
 	target := &PlanStepNode{
-		Base: NewBase(Spec{
+		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypePlanStep,
 			Description: "Prepare the current plan step for an LLM/tool execution loop.",
 		}),
 		SystemPrompt:  defaultPlanStepSystemPrompt,
 		MaxIterations: defaultPlanStepMaxIterations,
 	}
-	applyNodeOptions(&target.Base, options)
+	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
@@ -50,7 +50,7 @@ func (n *PlanStepNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("plan step node is nil")
 	}
-	if err := n.Base.Validate(); err != nil {
+	if err := n.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if n.PlanPath.Empty() || n.ExecutionPath.Empty() || n.ConversationPath.Empty() {
@@ -60,7 +60,7 @@ func (n *PlanStepNode) Validate() error {
 }
 
 func (n *PlanStepNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.Base, NodeTypePlanStep, map[string]any{
+	return newGraphNodeSpec(n.NodeBase, NodeTypePlanStep, map[string]any{
 		"system_prompt":  n.SystemPrompt,
 		"max_iterations": n.MaxIterations,
 	}, map[string]state.Path{"plan": n.PlanPath, "execution": n.ExecutionPath, "conversation": n.ConversationPath})
@@ -100,7 +100,7 @@ func PlanStepNodeTypeDefinition() registry.NodeTypeDefinition {
 				capabilityField(conversationcap.FieldIterationCount, dsl.StateAccessWrite),
 				capabilityField(conversationcap.FieldMaxIterations, dsl.StateAccessWrite)),
 		},
-		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
 			planPath, err := resolvedPath(resolved, "plan")
 			if err != nil {
@@ -114,8 +114,8 @@ func PlanStepNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanStepNode(WithID(spec.ID))
-			applyNodeMetadata(&target.Base, spec)
+			target := NewPlanStepNode(core.WithID(spec.ID))
+			applyNodeMetadata(&target.NodeBase, spec)
 			if _, exists := spec.Config["system_prompt"]; exists {
 				target.SystemPrompt = config.String(spec.Config, "system_prompt")
 			}
@@ -165,7 +165,7 @@ func (n *PlanStepNode) Execute(_ core.Context, access *state.Access) error {
 	if err := planner.SetField(planFieldSteps, planStepMaps(steps)); err != nil {
 		return err
 	}
-	currentStep := planStepMaps([]PlanStep{step})[0]
+	currentStep := planStepMaps([]plancap.Step{step})[0]
 	currentStep["index"] = index
 	if err := execution.SetCurrentStep(currentStep); err != nil {
 		return err
@@ -194,7 +194,7 @@ func (n *PlanStepNode) effectiveMaxIterations() int {
 	return n.MaxIterations
 }
 
-func buildPlanStepPrompt(plan map[string]any, steps []PlanStep, index int) string {
+func buildPlanStepPrompt(plan map[string]any, steps []plancap.Step, index int) string {
 	var builder strings.Builder
 	builder.WriteString("Objective:\n")
 	builder.WriteString(planString(plan[planFieldObjective]))

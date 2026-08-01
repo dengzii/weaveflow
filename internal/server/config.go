@@ -30,6 +30,7 @@ type Config struct {
 	CheckpointStore runtime.CheckpointStore
 	ArtifactStore   runtime.ArtifactStore
 	EventSink       runtime.EventSink
+	RunDeleter      runtime.RunDeleter
 	Codec           state.StateCodec
 
 	GraphID           string
@@ -46,13 +47,7 @@ type Config struct {
 }
 
 type Server struct {
-	mu              sync.RWMutex
-	graphMu         sync.Mutex
-	settingsMu      sync.Mutex
-	baseCtx         context.Context
-	graph           *wfgraph.Graph
-	runner          *runtime.GraphRunner
-	settings        graphRuntimeSettings
+	runtime         *graphRuntimeManager
 	registry        *wfregistry.Registry
 	events          *EventHub
 	baseDir         string
@@ -61,7 +56,6 @@ type Server struct {
 	chatChannels    *chatchannel.Registry
 	chatSetup       *chatSetupManager
 	chatSetupSaveMu sync.Mutex
-	triggerRunners  map[string]*runtime.GraphRunner
 }
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
@@ -94,18 +88,11 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 
 	srv := &Server{
-		baseCtx:        ctx,
-		graph:          cfg.Graph,
-		settings:       graphRuntimeSettingsFromContext(ctx, baseDir),
-		runner:         runner,
-		registry:       reg,
-		events:         hub,
-		baseDir:        baseDir,
-		cfg:            cfg,
-		triggerRunners: make(map[string]*runtime.GraphRunner),
-	}
-	if runner != nil {
-		srv.triggerRunners[effectiveRunnerGraphID(runner)] = runner
+		runtime:  newGraphRuntimeManager(ctx, graphRuntimeSettingsFromContext(ctx, baseDir), cfg.Graph, runner),
+		registry: reg,
+		events:   hub,
+		baseDir:  baseDir,
+		cfg:      cfg,
 	}
 	storedSettings, settingsFound, err := loadGraphRuntimeSettings(baseDir)
 	if err != nil {
@@ -118,11 +105,10 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		if err != nil {
 			return nil, fmt.Errorf("restore graph runtime settings: %w", err)
 		}
-		if _, err := applyGraphSettingsEnvironment(srv.settings, storedSettings, apiKey, apiKey != ""); err != nil {
+		if _, err := applyGraphSettingsEnvironment(srv.runtime.runtimeSettings(), storedSettings, apiKey, apiKey != ""); err != nil {
 			return nil, fmt.Errorf("restore graph runtime settings environment: %w", err)
 		}
-		srv.settings = storedSettings
-		srv.baseCtx = runtimeCtx
+		srv.runtime.updateRuntime(storedSettings, runtimeCtx)
 	}
 	triggerService := cfg.TriggerService
 	if triggerService == nil {
@@ -132,7 +118,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 			if err := wecom.Register(chatChannels); err != nil {
 				return nil, fmt.Errorf("register WeCom chat channel: %w", err)
 			}
-			if err := weixin.Register(chatChannels); err != nil {
+			if err := weixin.RegisterWithCursorDirectory(chatChannels, filepath.Join(baseDir, "weixin")); err != nil {
 				return nil, fmt.Errorf("register WeChat chat channel: %w", err)
 			}
 		}
@@ -169,27 +155,53 @@ func ensureBaseDir(baseDir string) (string, error) {
 }
 
 func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string) *runtime.GraphRunner {
+	usesDefaultRunStores := cfg.ExecutionStore == nil &&
+		cfg.CheckpointStore == nil &&
+		cfg.ArtifactStore == nil &&
+		cfg.EventSink == nil
+
 	executionStore := cfg.ExecutionStore
+	var defaultExecutionDeleter runtime.RunDeleter
 	if executionStore == nil {
-		executionStore = runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution"))
+		store := runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution"))
+		executionStore = store
+		defaultExecutionDeleter = store
 	}
 	checkpointStore := cfg.CheckpointStore
+	var defaultCheckpointDeleter runtime.RunDeleter
 	if checkpointStore == nil {
-		checkpointStore = runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
+		store := runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
+		checkpointStore = store
+		defaultCheckpointDeleter = store
 	}
 	codec := cfg.Codec
 	if codec == nil {
 		codec = state.NewJSONStateCodec("")
 	}
 	eventSink := cfg.EventSink
+	var defaultEventDeleter runtime.RunDeleter
 	if eventSink == nil {
-		eventSink = runtime.NewFileEventSink(filepath.Join(baseDir, "events"))
+		store := runtime.NewFileEventSink(filepath.Join(baseDir, "events"))
+		eventSink = store
+		defaultEventDeleter = store
 	}
 
 	runner := wfgraph.NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink)
 	runner.ArtifactStore = cfg.ArtifactStore
+	var defaultArtifactDeleter runtime.RunDeleter
 	if runner.ArtifactStore == nil {
-		runner.ArtifactStore = runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
+		store := runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
+		runner.ArtifactStore = store
+		defaultArtifactDeleter = store
+	}
+	runner.RunDeleter = cfg.RunDeleter
+	if runner.RunDeleter == nil && usesDefaultRunStores {
+		runner.RunDeleter = runtime.NewRunDeletionCoordinator(
+			defaultExecutionDeleter,
+			defaultCheckpointDeleter,
+			defaultEventDeleter,
+			defaultArtifactDeleter,
+		)
 	}
 	runner.GraphID = strings.TrimSpace(cfg.GraphID)
 	runner.GraphVersion = strings.TrimSpace(cfg.GraphVersion)
@@ -234,12 +246,10 @@ func (s *Server) EventHub() *EventHub {
 }
 
 func (s *Server) Runner() *runtime.GraphRunner {
-	if s == nil {
+	if s == nil || s.runtime == nil {
 		return nil
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.runner
+	return s.runtime.currentSession().runner
 }
 
 func (s *Server) TriggerService() *trigger.Service {

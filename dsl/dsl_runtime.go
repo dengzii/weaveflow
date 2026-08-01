@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"github.com/dengzii/weaveflow/core"
 	"io"
 	"strings"
+
+	"github.com/dengzii/weaveflow/runtime"
 )
 
 const (
@@ -136,7 +137,7 @@ func normalizeDebugBreakpoint(bp DebugBreakpoint) DebugBreakpoint {
 	bp.NodeID = strings.TrimSpace(bp.NodeID)
 	bp.Stage = strings.TrimSpace(bp.Stage)
 	if bp.Stage == "" {
-		bp.Stage = string(core.CheckpointBeforeNode)
+		bp.Stage = string(runtime.CheckpointBeforeNode)
 	}
 	return bp
 }
@@ -152,7 +153,7 @@ func (b DebugBreakpoint) Validate() error {
 	return nil
 }
 
-func (b DebugBreakpoint) Breakpoint() core.Breakpoint {
+func (b DebugBreakpoint) Breakpoint() runtime.Breakpoint {
 	b = normalizeDebugBreakpoint(b)
 	id := b.ID
 	if id == "" {
@@ -162,7 +163,7 @@ func (b DebugBreakpoint) Breakpoint() core.Breakpoint {
 	if b.Enabled != nil {
 		enabled = *b.Enabled
 	}
-	return core.Breakpoint{
+	return runtime.Breakpoint{
 		ID:      id,
 		NodeID:  b.NodeID,
 		Stage:   b.Stage,
@@ -201,10 +202,10 @@ func (o RunDebugOptions) Validate() error {
 	return nil
 }
 
-func (o RunDebugOptions) EffectiveBreakpoints() []core.Breakpoint {
+func (o RunDebugOptions) EffectiveBreakpoints() []runtime.Breakpoint {
 	seen := map[string]struct{}{}
-	items := make([]core.Breakpoint, 0, len(o.Breakpoints)+len(o.PauseBefore)+len(o.PauseAfter))
-	appendBreakpoint := func(bp core.Breakpoint) {
+	items := make([]runtime.Breakpoint, 0, len(o.Breakpoints)+len(o.PauseBefore)+len(o.PauseAfter))
+	appendBreakpoint := func(bp runtime.Breakpoint) {
 		key := bp.NodeID + "|" + bp.Stage
 		if _, exists := seen[key]; exists {
 			return
@@ -220,10 +221,10 @@ func (o RunDebugOptions) EffectiveBreakpoints() []core.Breakpoint {
 		if trimmed == "" {
 			continue
 		}
-		appendBreakpoint(core.Breakpoint{
-			ID:      fmt.Sprintf("%s:%s", core.CheckpointBeforeNode, trimmed),
+		appendBreakpoint(runtime.Breakpoint{
+			ID:      fmt.Sprintf("%s:%s", runtime.CheckpointBeforeNode, trimmed),
 			NodeID:  trimmed,
-			Stage:   string(core.CheckpointBeforeNode),
+			Stage:   string(runtime.CheckpointBeforeNode),
 			Enabled: true,
 		})
 	}
@@ -232,10 +233,10 @@ func (o RunDebugOptions) EffectiveBreakpoints() []core.Breakpoint {
 		if trimmed == "" {
 			continue
 		}
-		appendBreakpoint(core.Breakpoint{
-			ID:      fmt.Sprintf("%s:%s", core.CheckpointAfterNode, trimmed),
+		appendBreakpoint(runtime.Breakpoint{
+			ID:      fmt.Sprintf("%s:%s", runtime.CheckpointAfterNode, trimmed),
 			NodeID:  trimmed,
-			Stage:   string(core.CheckpointAfterNode),
+			Stage:   string(runtime.CheckpointAfterNode),
 			Enabled: true,
 		})
 	}
@@ -315,7 +316,7 @@ func decodeStrictRuntimeJSON(data []byte, target any) error {
 
 func isValidCheckpointStage(stage string) bool {
 	switch stage {
-	case string(core.CheckpointBeforeNode), string(core.CheckpointAfterNode):
+	case string(runtime.CheckpointBeforeNode), string(runtime.CheckpointAfterNode):
 		return true
 	default:
 		return false

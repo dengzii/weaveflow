@@ -115,9 +115,7 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 	session, err := s.latestOfficialGraphSession(graphID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			s.mu.RLock()
-			cached := s.triggerRunners[graphID]
-			s.mu.RUnlock()
+			cached := s.runtime.triggerRunner(graphID)
 			if cached != nil {
 				return cached, nil
 			}
@@ -126,9 +124,7 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 		return nil, err
 	}
 
-	s.mu.RLock()
-	cached := s.triggerRunners[graphID]
-	s.mu.RUnlock()
+	cached := s.runtime.triggerRunner(graphID)
 	if cached != nil && strings.TrimSpace(cached.GraphSessionID) == session.manifest.GraphSessionID {
 		return cached, nil
 	}
@@ -141,7 +137,7 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 	if registry == nil {
 		registry = builtin.NewDefaultRegistry()
 	}
-	graph, err := wfgraph.BuildGraph(registry, definition, &wfregistry.BuildContext{})
+	graph, err := wfgraph.NewBuilder(registry).Build(definition, &wfregistry.BuildContext{})
 	if err != nil {
 		return nil, err
 	}
@@ -169,15 +165,7 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 	runner := newDefaultRunner(graph, cfg, session.baseDir)
 	attachEventHub(runner, s.events)
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if existing := s.triggerRunners[graphID]; existing != nil {
-		if strings.TrimSpace(existing.GraphSessionID) == session.manifest.GraphSessionID {
-			return existing, nil
-		}
-	}
-	s.triggerRunners[graphID] = runner
-	return runner, nil
+	return s.runtime.cacheTriggerRunner(graphID, runner), nil
 }
 
 func (s *Server) latestOfficialGraphSession(graphID string) (triggerGraphSession, error) {

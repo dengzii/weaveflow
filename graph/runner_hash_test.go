@@ -172,7 +172,7 @@ func TestBuiltGraphHashPreservesCustomRegistrySemantics(t *testing.T) {
 			State: map[string]dsl.StateBinding{"conversation": {Path: "shared.thread"}},
 		}},
 	}
-	workflow, err := BuildGraph(reg, definition, nil)
+	workflow, err := NewBuilder(reg).Build(definition, nil)
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}
@@ -233,7 +233,7 @@ func builtCapabilityGraphHash(t *testing.T, capabilityID string) string {
 			ID: "consumer", Type: "consumer", State: map[string]dsl.StateBinding{"thread": {Path: "shared.thread"}},
 		}},
 	}
-	g, err := BuildGraph(reg, def, nil)
+	g, err := NewBuilder(reg).Build(def, nil)
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}

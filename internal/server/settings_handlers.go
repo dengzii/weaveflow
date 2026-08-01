@@ -18,7 +18,6 @@ import (
 type graphRuntimeSettings struct {
 	Environment        map[string]string        `json:"environment"`
 	EnvironmentPresets []graphEnvironmentPreset `json:"environment_presets"`
-	Model              graphModelSettings       `json:"model"`
 	Models             []graphModelSettings     `json:"models"`
 	Memory             graphMemorySettings      `json:"memory"`
 }
@@ -46,7 +45,6 @@ type graphMemorySettings struct {
 
 type graphRuntimeSettingsRequest struct {
 	Environment map[string]string           `json:"environment"`
-	Model       *graphModelSettingsRequest  `json:"model"`
 	Models      []graphModelSettingsRequest `json:"models"`
 	Memory      *graphMemorySettingsRequest `json:"memory"`
 }
@@ -67,13 +65,13 @@ type graphMemorySettingsRequest struct {
 
 const maxGraphSettingsBodyBytes int64 = 1 << 20
 
-func (s *Server) handleGraphSettings(c *gin.Context) {
+func (s *Server) handleGetRuntimeSettings(c *gin.Context) {
 	writeData(c, http.StatusOK, s.graphSettingsSnapshot())
 }
 
-func (s *Server) handleSetGraphSettings(c *gin.Context) {
-	s.settingsMu.Lock()
-	defer s.settingsMu.Unlock()
+func (s *Server) handleUpdateRuntimeSettings(c *gin.Context) {
+	s.runtime.settingsUpdate.Lock()
+	defer s.runtime.settingsUpdate.Unlock()
 
 	req, err := bindGraphSettingsRequest(c)
 	if err != nil {
@@ -114,10 +112,7 @@ func (s *Server) handleSetGraphSettings(c *gin.Context) {
 		return
 	}
 
-	s.mu.Lock()
-	s.settings = sanitizedGraphSettings(next)
-	s.baseCtx = ctx
-	s.mu.Unlock()
+	s.runtime.updateRuntime(next, ctx)
 
 	writeData(c, http.StatusOK, s.graphSettingsSnapshot())
 }
@@ -138,12 +133,10 @@ func bindGraphSettingsRequest(c *gin.Context) (graphRuntimeSettingsRequest, erro
 }
 
 func (s *Server) graphSettingsSnapshot() graphRuntimeSettings {
-	if s == nil {
+	if s == nil || s.runtime == nil {
 		return graphRuntimeSettingsFromContext(context.Background(), "")
 	}
-	s.mu.RLock()
-	settings := sanitizedGraphSettings(s.settings)
-	s.mu.RUnlock()
+	settings := s.runtime.runtimeSettings()
 	settings.EnvironmentPresets = graphEnvironmentPresets()
 	markGraphModelAPIKeys(&settings, os.Getenv("OPENAI_API_KEY"))
 	return settings
@@ -159,7 +152,6 @@ func graphRuntimeSettingsFromContext(ctx context.Context, baseDir string) graphR
 		},
 	}
 	settings.Models = graphModelSettingsFromContext(ctx)
-	settings.Model = defaultGraphModelSettings(settings.Models)
 	return sanitizedGraphSettings(settings)
 }
 
@@ -232,7 +224,7 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings, apiKey strin
 }
 
 func enabledGraphModels(settings graphRuntimeSettings) []graphModelSettings {
-	models := sanitizedGraphModelList(settings.Models, settings.Model)
+	models := sanitizedGraphModelList(settings.Models)
 	out := make([]graphModelSettings, 0, len(models))
 	for _, model := range models {
 		if model.Enabled {
@@ -246,9 +238,7 @@ func (s *Server) currentToolSet() map[string]core.Tool {
 	if s == nil {
 		return nil
 	}
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return cloneTools(core.ToolsFromContext(s.baseCtx))
+	return cloneTools(core.ToolsFromContext(s.runtime.runtimeContext()))
 }
 
 func cloneTools(input map[string]core.Tool) map[string]core.Tool {

@@ -61,10 +61,8 @@ type SupervisorMember struct {
 	Description string `json:"description"`
 }
 
-type SupervisorTurn = supervisorcap.Turn
-
 type SupervisorNode struct {
-	Base
+	core.NodeBase
 	ModelID        string
 	SystemPrompt   string
 	Members        []SupervisorMember
@@ -80,9 +78,9 @@ type supervisorRouteOutput struct {
 	Reason     string `json:"reason"`
 }
 
-func NewSupervisorNode(options ...NodeOption) *SupervisorNode {
+func NewSupervisorNode(options ...core.NodeOption) *SupervisorNode {
 	target := &SupervisorNode{
-		Base: NewBase(Spec{
+		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypeSupervisor,
 			Description: "Route work among specialist workers until the objective is ready for final synthesis.",
 		}),
@@ -90,7 +88,7 @@ func NewSupervisorNode(options ...NodeOption) *SupervisorNode {
 		MaxTurns:      defaultSupervisorMaxTurns,
 		RouteAttempts: defaultSupervisorRouteAttempts,
 	}
-	applyNodeOptions(&target.Base, options)
+	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
@@ -99,7 +97,7 @@ func (n *SupervisorNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("supervisor node is nil")
 	}
-	if err := n.Base.Validate(); err != nil {
+	if err := n.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if len(n.Members) == 0 {
@@ -145,7 +143,7 @@ func (n *SupervisorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 		}
 		members = append(members, item)
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeSupervisor, map[string]any{
+	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisor, map[string]any{
 		"model_id":       n.ModelID,
 		"system_prompt":  n.SystemPrompt,
 		"members":        members,
@@ -199,7 +197,7 @@ func SupervisorNodeTypeDefinition() registry.NodeTypeDefinition {
 				capabilityField(supervisorcap.FieldMaxTurns, dsl.StateAccessWrite),
 				capabilityField(supervisorcap.FieldHistory, dsl.StateAccessRead)),
 		},
-		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
 			objectivePath, err := resolvedPath(resolved, "objective")
 			if err != nil {
@@ -209,8 +207,8 @@ func SupervisorNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewSupervisorNode(WithID(spec.ID))
-			applyNodeMetadata(&target.Base, spec)
+			target := NewSupervisorNode(core.WithID(spec.ID))
+			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
 				target.SystemPrompt = prompt
@@ -287,7 +285,7 @@ func (n *SupervisorNode) Execute(ctx core.Context, access *state.Access) error {
 	return n.setRoute(ctx, supervisor, route, turnCount)
 }
 
-func (n *SupervisorNode) selectRoute(ctx core.Context, objective string, history []SupervisorTurn, turnCount, maxTurns int) (supervisorRouteOutput, error) {
+func (n *SupervisorNode) selectRoute(ctx core.Context, objective string, history []supervisorcap.Turn, turnCount, maxTurns int) (supervisorRouteOutput, error) {
 	membersJSON, _ := json.MarshalIndent(n.normalizedMembers(), "", "  ")
 	historyJSON, _ := json.MarshalIndent(history, "", "  ")
 	humanPrompt := fmt.Sprintf("Objective:\n%s\n\nAvailable workers:\n%s\n\nCompleted delegations (%d/%d):\n%s", objective, membersJSON, turnCount, maxTurns, historyJSON)
@@ -487,11 +485,11 @@ func stripSupervisorJSONFence(content string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func supervisorHistoryFromValue(raw any) []SupervisorTurn {
+func supervisorHistoryFromValue(raw any) []supervisorcap.Turn {
 	return supervisorcap.DecodeHistory(raw)
 }
 
-func supervisorTurnMaps(turns []SupervisorTurn) []map[string]any {
+func supervisorTurnMaps(turns []supervisorcap.Turn) []map[string]any {
 	return supervisorcap.EncodeHistory(turns)
 }
 

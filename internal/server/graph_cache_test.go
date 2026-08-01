@@ -19,7 +19,7 @@ func TestListCachedGraphsPreservesOriginalGraphID(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	postGraphForHashTest(t, engine, triggerGraphUploadBody("graph with spaces", "v1", "hello"))
+	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph with spaces", "v1", "hello"))
 
 	graphs, err := srv.listCachedGraphs()
 	if err != nil {
@@ -38,7 +38,7 @@ func TestListCachedGraphsIgnoresIncompleteSessions(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	uploaded := postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
+	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
 	if err := os.MkdirAll(filepath.Join(filepath.Dir(uploaded.RunnerBaseDir), "zzzz-incomplete"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -60,8 +60,8 @@ func TestGraphStorageSeparatesSanitizedIDCollisions(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	first := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph/a", "v1", "first"))
-	second := pushGraphForHashTest(t, engine, triggerGraphUploadBody("graph?a", "v1", "second"))
+	first := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph/a", "v1", "first"))
+	second := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph?a", "v1", "second"))
 	if filepath.Dir(first.RunnerBaseDir) == filepath.Dir(second.RunnerBaseDir) {
 		t.Fatalf("colliding graph IDs share storage directory %q", filepath.Dir(first.RunnerBaseDir))
 	}
@@ -97,7 +97,7 @@ func TestGraphStorageSupportsWindowsReservedGraphID(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	uploaded := pushGraphForHashTest(t, engine, triggerGraphUploadBody("CON", "v1", "reserved"))
+	uploaded := publishGraphForHashTest(t, engine, triggerGraphUploadBody("CON", "v1", "reserved"))
 	if filepath.Base(filepath.Dir(uploaded.RunnerBaseDir)) == "CON" {
 		t.Fatalf("reserved graph ID used directly as storage directory: %q", uploaded.RunnerBaseDir)
 	}
@@ -131,7 +131,7 @@ func TestGraphCacheSurfacesCorruptRunRecords(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	uploaded := postGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
+	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
 	started := decodeRunResultResponse(t, serveHTTP(engine, http.MethodPost, "/runs", `{}`), http.StatusOK)
 	runPath := filepath.Join(uploaded.RunnerBaseDir, "execution", "runs", started.Run.RunID+".json")
 	if err := os.WriteFile(runPath, []byte("{"), 0o644); err != nil {
@@ -165,7 +165,7 @@ func TestGraphUploadDistinguishesInvalidDefinitionFromStorageFailure(t *testing.
 		}
 		engine := gin.New()
 		srv.RegisterRoutes(engine.Group(""))
-		response := serveHTTP(engine, http.MethodPost, "/graph", `{
+		response := serveHTTP(engine, http.MethodPut, "/graph", `{
 			"definition": {
 				"version": "2.0",
 				"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -190,7 +190,7 @@ func TestGraphUploadDistinguishesInvalidDefinitionFromStorageFailure(t *testing.
 		}
 		engine := gin.New()
 		srv.RegisterRoutes(engine.Group(""))
-		response := serveHTTP(engine, http.MethodPost, "/graph", triggerGraphUploadBody("graph-a", "v1", "hello"))
+		response := serveHTTP(engine, http.MethodPut, "/graph", triggerGraphUploadBody("graph-a", "v1", "hello"))
 		if response.Code != http.StatusInternalServerError {
 			t.Fatalf("storage failure status = %d, body = %s", response.Code, response.Body.String())
 		}
