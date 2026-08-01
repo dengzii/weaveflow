@@ -3,6 +3,8 @@ package trigger
 import (
 	"context"
 	"errors"
+	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -118,5 +120,78 @@ func TestFileStorePersistsFiltersAndLimitsRecords(t *testing.T) {
 	}
 	if len(all) != 3 || all[0].ID != "record-3" || all[1].ID != "record-2" || all[2].ID != "record-1" {
 		t.Fatalf("ordered records = %#v", all)
+	}
+}
+
+func TestFileStorePersistsChatHistoryByConversationWithMillisecondIDs(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	triggeredAt := time.Date(2026, 8, 1, 8, 0, 0, 123000000, time.UTC)
+	history := ChatHistory{
+		TriggerID: "chat", UserID: "user/a", ConversationID: "conversation:one",
+		TriggeredAt: triggeredAt, Status: runtime.RunStatusPending,
+		TriggerMeta: ChatTriggerMeta{Channel: "weixin", MessageID: "message-1"}, GraphID: "graph",
+		Messages: []ChatHistoryMessage{{
+			Sequence: 1, Direction: ChatMessageInbound, Role: ChatMessageRoleUser, Kind: ChatMessageInput,
+			MessageID: "message-1", Content: "hello", CreatedAt: triggeredAt,
+		}},
+	}
+	first, err := store.CreateChatHistory(context.Background(), history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateChatHistory(context.Background(), history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.ID != triggeredAt.UnixMilli() || second.ID != first.ID+1 {
+		t.Fatalf("chat history ids = %d, %d", first.ID, second.ID)
+	}
+
+	completedAt := triggeredAt.Add(time.Second)
+	first.Status = runtime.RunStatusCompleted
+	first.CompletedAt = &completedAt
+	first.RunID = "run-1"
+	first.FinalAnswer = "world"
+	first.Messages = append(first.Messages, ChatHistoryMessage{
+		Sequence: 2, Direction: ChatMessageOutbound, Role: ChatMessageRoleAssistant, Kind: ChatMessageFinal,
+		Content: "world", CreatedAt: completedAt,
+	})
+	if err := store.UpdateChatHistory(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := NewFileStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	items, err := reopened.ListChatHistory(context.Background(), ChatHistoryFilter{
+		TriggerID: "chat", UserID: "user/a", ConversationID: "conversation:one", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || items[0].ID != second.ID || items[1].ID != first.ID || items[1].FinalAnswer != "world" || items[1].RunID != "run-1" {
+		t.Fatalf("chat history = %#v", items)
+	}
+	historyDir := store.chatHistoryDir(history.TriggerID, history.UserID, history.ConversationID)
+	if filepath.Base(historyDir) == history.ConversationID || filepath.Base(filepath.Dir(historyDir)) == history.UserID {
+		t.Fatalf("unsafe identifiers were used as raw path segments: %q", historyDir)
+	}
+	if filepath.Base(store.chatHistoryPath(first)) != strconv.FormatInt(first.ID, 10)+".json" {
+		t.Fatalf("chat history path = %q", store.chatHistoryPath(first))
+	}
+
+	other, err := reopened.ListChatHistory(context.Background(), ChatHistoryFilter{
+		TriggerID: "chat", UserID: "user/a", ConversationID: "conversation:two", Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(other) != 0 {
+		t.Fatalf("other conversation history = %#v", other)
 	}
 }

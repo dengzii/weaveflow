@@ -49,11 +49,23 @@ type ScheduleSpec struct {
 }
 
 type ChatSpec struct {
-	Channel       string         `json:"channel"`
-	ChannelConfig map[string]any `json:"channel_config,omitempty"`
-	ReplyPath     string         `json:"reply_path,omitempty"`
-	StreamUpdates bool           `json:"stream_updates"`
-	StreamNodeIDs []string       `json:"stream_node_ids,omitempty"`
+	Channel       string             `json:"channel"`
+	ChannelConfig map[string]any     `json:"channel_config,omitempty"`
+	ReplyPath     string             `json:"reply_path,omitempty"`
+	StreamUpdates bool               `json:"stream_updates"`
+	StreamNodeIDs []string           `json:"stream_node_ids,omitempty"`
+	HistoryLimit  int                `json:"history_limit,omitempty"`
+	StateBindings *ChatStateBindings `json:"state_bindings,omitempty"`
+}
+
+type ChatStateBindings struct {
+	Conversation   string `json:"conversation,omitempty"`
+	RawHistory     string `json:"raw_history,omitempty"`
+	TriggerID      string `json:"trigger_id,omitempty"`
+	Channel        string `json:"channel,omitempty"`
+	UserID         string `json:"user_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	MessageID      string `json:"message_id,omitempty"`
 }
 
 type Trigger struct {
@@ -138,6 +150,7 @@ func (t Trigger) Normalize(now time.Time) Trigger {
 			nodeIDs = append(nodeIDs, nodeID)
 		}
 		t.Chat.StreamNodeIDs = nodeIDs
+		t.Chat.StateBindings = normalizeChatStateBindings(t.Chat.StateBindings)
 	}
 	if t.CreatedAt.IsZero() {
 		t.CreatedAt = now
@@ -198,8 +211,111 @@ func (t Trigger) Validate() error {
 		if _, err := json.Marshal(t.Chat.ChannelConfig); err != nil {
 			return fmt.Errorf("%w: chat channel_config must contain JSON-compatible values: %v", ErrInvalidTrigger, err)
 		}
+		if t.Chat.HistoryLimit < 0 || t.Chat.HistoryLimit > MaxRecordLimit {
+			return fmt.Errorf("%w: chat history_limit must be between 0 and %d", ErrInvalidTrigger, MaxRecordLimit)
+		}
+		if err := validateChatStateBindings(t.Chat.StateBindings); err != nil {
+			return fmt.Errorf("%w: chat state_bindings: %v", ErrInvalidTrigger, err)
+		}
 	}
 	return nil
+}
+
+func normalizeChatStateBindings(bindings *ChatStateBindings) *ChatStateBindings {
+	if bindings == nil {
+		return nil
+	}
+	normalized := *bindings
+	paths := []*string{
+		&normalized.Conversation,
+		&normalized.RawHistory,
+		&normalized.TriggerID,
+		&normalized.Channel,
+		&normalized.UserID,
+		&normalized.ConversationID,
+		&normalized.MessageID,
+	}
+	for _, value := range paths {
+		*value = strings.TrimSpace(*value)
+		if path, err := state.ParsePath(*value); err == nil {
+			*value = path.String()
+		}
+	}
+	if normalized == (ChatStateBindings{}) {
+		return nil
+	}
+	return &normalized
+}
+
+func validateChatStateBindings(bindings *ChatStateBindings) error {
+	if bindings == nil {
+		return nil
+	}
+	values := []struct {
+		name          string
+		path          string
+		effectivePath string
+	}{
+		{name: "conversation", path: bindings.Conversation, effectivePath: chatConversationMessagesPath(bindings.Conversation)},
+		{name: "raw_history", path: bindings.RawHistory},
+		{name: "trigger_id", path: bindings.TriggerID},
+		{name: "channel", path: bindings.Channel},
+		{name: "user_id", path: bindings.UserID},
+		{name: "conversation_id", path: bindings.ConversationID},
+		{name: "message_id", path: bindings.MessageID},
+	}
+	validated := make([]struct {
+		name string
+		path string
+	}, 0, len(values))
+	for _, value := range values {
+		if value.path == "" {
+			continue
+		}
+		path, err := state.ParsePath(value.path)
+		if err != nil {
+			return fmt.Errorf("%s path is invalid: %w", value.name, err)
+		}
+		if len(path.Segments()) == 0 {
+			return fmt.Errorf("%s path must include a field", value.name)
+		}
+		if path.Section() != state.SectionShared && path.Section() != state.SectionScopes {
+			return fmt.Errorf("%s path section %q is not allowed", value.name, path.Section())
+		}
+		canonical := path.String()
+		effectivePath := canonical
+		if value.effectivePath != "" {
+			effectivePath = value.effectivePath
+		}
+		if statePathsOverlap(effectivePath, "shared.request.input") {
+			return fmt.Errorf("%s path %q overlaps the chat input path", value.name, canonical)
+		}
+		for _, previous := range validated {
+			if statePathsOverlap(effectivePath, previous.path) {
+				return fmt.Errorf("%s path %q overlaps %s path %q", value.name, canonical, previous.name, previous.path)
+			}
+		}
+		validated = append(validated, struct {
+			name string
+			path string
+		}{name: value.name, path: effectivePath})
+	}
+	return nil
+}
+
+func chatConversationMessagesPath(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	if path, err := state.ParsePath(root); err == nil {
+		root = path.String()
+	}
+	return root + ".messages"
+}
+
+func statePathsOverlap(left, right string) bool {
+	return left == right || strings.HasPrefix(left, right+".") || strings.HasPrefix(right, left+".")
 }
 
 func validateInitialState(initial map[string]any) error {

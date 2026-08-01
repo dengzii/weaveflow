@@ -39,7 +39,9 @@ const (
 	reconnectDelay            = time.Second
 	sendRetryDelay            = 200 * time.Millisecond
 	sendRetryAttempts         = 3
-	typingRequestTimeout      = 5 * time.Second
+	typingRequestTimeout      = 10 * time.Second
+	typingKeepaliveInterval   = 5 * time.Second
+	typingTicketTTL           = 24 * time.Hour
 	typingStatusActive        = 1
 	typingStatusCancel        = 2
 	maxMessageSize            = 16 << 20
@@ -54,13 +56,22 @@ type Config struct {
 }
 
 type Factory struct {
-	Logger       *slog.Logger
-	HTTPClient   *http.Client
-	setupBaseURL string
+	Logger                *slog.Logger
+	HTTPClient            *http.Client
+	CursorDirectory       string
+	LegacyCursorDirectory string
+	setupBaseURL          string
 }
 
 func Register(registry *chatchannel.Registry) error {
 	return registry.Register(Factory{})
+}
+
+func RegisterWithCursorDirectory(registry *chatchannel.Registry, cursorDirectory string) error {
+	return registry.Register(Factory{
+		CursorDirectory:       strings.TrimSpace(cursorDirectory),
+		LegacyCursorDirectory: DefaultCursorDirectory,
+	})
 }
 
 func (Factory) Definition() chatchannel.Definition {
@@ -88,7 +99,7 @@ func (Factory) Definition() chatchannel.Definition {
 				"cursor_file": map[string]any{
 					"type":        "string",
 					"title":       "Cursor file",
-					"description": "Optional path for the get_updates_buf cursor. Defaults to .local/weaveflow/weixin/<trigger-id>.sync.",
+					"description": "Optional path for the get_updates_buf cursor. By default Server stores it under <data>/weixin/<trigger-id>.sync.",
 				},
 				"unsupported_message": map[string]any{
 					"type":    "string",
@@ -117,22 +128,30 @@ func (factory Factory) New(instance chatchannel.InstanceConfig) (chatchannel.Ins
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(config.CursorFile) == "" {
-		config.CursorFile = defaultCursorFile(instance.TriggerID)
-	}
 	triggerID := strings.TrimSpace(instance.TriggerID)
+	legacyCursorFile := ""
+	if strings.TrimSpace(config.CursorFile) == "" {
+		config.CursorFile = cursorFile(factory.CursorDirectory, triggerID)
+		if strings.TrimSpace(factory.LegacyCursorDirectory) != "" {
+			legacyCursorFile = cursorFile(factory.LegacyCursorDirectory, triggerID)
+			if sameCursorPath(legacyCursorFile, config.CursorFile) {
+				legacyCursorFile = ""
+			}
+		}
+	}
 	logger := factory.loggerFor(triggerID)
 	client := factory.HTTPClient
 	if client == nil {
 		client = &http.Client{Timeout: pollTimeout}
 	}
 	return &Channel{
-		triggerID: triggerID,
-		config:    config,
-		handler:   instance.Handler,
-		logger:    logger,
-		client:    client,
-		wechatUIN: randomWeChatUIN(),
+		triggerID:        triggerID,
+		config:           config,
+		legacyCursorFile: legacyCursorFile,
+		handler:          instance.Handler,
+		logger:           logger,
+		client:           client,
+		wechatUIN:        randomWeChatUIN(),
 	}, nil
 }
 
@@ -199,12 +218,31 @@ func configString(raw map[string]any, key string) string {
 }
 
 type Channel struct {
-	triggerID string
-	config    Config
-	handler   chatchannel.Handler
-	logger    *slog.Logger
-	client    *http.Client
-	wechatUIN string
+	triggerID        string
+	config           Config
+	legacyCursorFile string
+	handler          chatchannel.Handler
+	logger           *slog.Logger
+	client           *http.Client
+	wechatUIN        string
+	typingMu         sync.Mutex
+	typingTickets    map[string]cachedTypingTicket
+	typingKeepalive  time.Duration
+}
+
+type cachedTypingTicket struct {
+	value     string
+	expiresAt time.Time
+}
+
+type typingSession struct {
+	channel   *Channel
+	messageID string
+	recipient string
+	ticket    string
+	done      chan struct{}
+	stopped   chan struct{}
+	stopOnce  sync.Once
 }
 
 func (channel *Channel) Run(ctx context.Context) error {
@@ -213,6 +251,10 @@ func (channel *Channel) Run(ctx context.Context) error {
 	}
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	if err := migrateCursorFile(channel.legacyCursorFile, channel.config.CursorFile); err != nil {
+		channel.logger.Error("WeChat cursor migration failed", "error", err)
+		return fmt.Errorf("migrate WeChat cursor: %w", err)
 	}
 	cursor, err := readCursor(channel.config.CursorFile)
 	if err != nil {
@@ -349,18 +391,19 @@ func (channel *Channel) handleMessage(ctx context.Context, incoming weixinMessag
 	invocationCtx, cancel := context.WithTimeout(ctx, chatInvocationTimeout)
 	defer cancel()
 	typingCtx, cancelTyping := context.WithTimeout(invocationCtx, typingRequestTimeout)
-	typingTicket, typingErr := channel.startTyping(typingCtx, recipient, incoming.ContextToken)
+	typing, typingErr := channel.startTyping(typingCtx, invocationCtx, messageID, recipient, incoming.ContextToken)
 	cancelTyping()
 	if typingErr != nil {
 		channel.logger.Error("WeChat typing start failed", "message_id", messageID, "error", typingErr)
 	} else {
 		channel.logger.Debug("WeChat typing started", "message_id", messageID)
 	}
-	defer func() {
-		channel.stopTyping(ctx, messageID, recipient, typingTicket)
-	}()
-	message := chatcap.Message{
+	if typing != nil {
+		defer typing.stop(ctx)
+	}
+	message := chatchannel.InboundMessage{
 		ID:             messageID,
+		UserID:         recipient,
 		ConversationID: firstNonEmpty(recipient, incoming.SessionID, messageID),
 		Content:        content,
 		Metadata: map[string]any{
@@ -373,8 +416,9 @@ func (channel *Channel) handleMessage(ctx context.Context, incoming weixinMessag
 		},
 	}
 	handleErr := channel.handler.Handle(invocationCtx, message, sink)
-	channel.stopTyping(ctx, messageID, recipient, typingTicket)
-	typingTicket = ""
+	if typing != nil {
+		typing.stop(ctx)
+	}
 	if handleErr != nil {
 		channel.logger.Error("WeChat message trigger failed", "message_id", message.ID, "error", handleErr)
 		return sink.fail(context.WithoutCancel(ctx))
@@ -383,7 +427,36 @@ func (channel *Channel) handleMessage(ctx context.Context, incoming weixinMessag
 	return nil
 }
 
-func (channel *Channel) startTyping(ctx context.Context, recipient, contextToken string) (string, error) {
+func (channel *Channel) startTyping(requestCtx, keepaliveCtx context.Context, messageID, recipient, contextToken string) (*typingSession, error) {
+	ticket, err := channel.typingTicket(requestCtx, recipient, contextToken)
+	if err != nil {
+		return nil, err
+	}
+	if err := channel.sendTyping(requestCtx, recipient, ticket, typingStatusActive); err != nil {
+		channel.invalidateTypingTicket(recipient, ticket)
+		return nil, err
+	}
+	session := &typingSession{
+		channel:   channel,
+		messageID: messageID,
+		recipient: recipient,
+		ticket:    ticket,
+		done:      make(chan struct{}),
+		stopped:   make(chan struct{}),
+	}
+	go session.keepalive(keepaliveCtx)
+	return session, nil
+}
+
+func (channel *Channel) typingTicket(ctx context.Context, recipient, contextToken string) (string, error) {
+	now := time.Now()
+	channel.typingMu.Lock()
+	cached := channel.typingTickets[recipient]
+	channel.typingMu.Unlock()
+	if cached.value != "" && now.Before(cached.expiresAt) {
+		return cached.value, nil
+	}
+
 	request := getTypingConfigRequest{
 		WeChatUserID: recipient,
 		ContextToken: contextToken,
@@ -400,10 +473,57 @@ func (channel *Channel) startTyping(ctx context.Context, recipient, contextToken
 	if ticket == "" {
 		return "", errors.New("iLink getconfig returned an empty typing_ticket")
 	}
-	if err := channel.sendTyping(ctx, recipient, ticket, typingStatusActive); err != nil {
-		return ticket, err
+	channel.typingMu.Lock()
+	if channel.typingTickets == nil {
+		channel.typingTickets = make(map[string]cachedTypingTicket)
 	}
+	channel.typingTickets[recipient] = cachedTypingTicket{value: ticket, expiresAt: now.Add(typingTicketTTL)}
+	channel.typingMu.Unlock()
 	return ticket, nil
+}
+
+func (channel *Channel) invalidateTypingTicket(recipient, ticket string) {
+	channel.typingMu.Lock()
+	defer channel.typingMu.Unlock()
+	if cached := channel.typingTickets[recipient]; cached.value == ticket {
+		delete(channel.typingTickets, recipient)
+	}
+}
+
+func (session *typingSession) keepalive(ctx context.Context) {
+	defer close(session.stopped)
+	interval := session.channel.typingKeepalive
+	if interval <= 0 {
+		interval = typingKeepaliveInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-session.done:
+			return
+		case <-ticker.C:
+			requestCtx, cancel := context.WithTimeout(ctx, typingRequestTimeout)
+			err := session.channel.sendTyping(requestCtx, session.recipient, session.ticket, typingStatusActive)
+			cancel()
+			if err != nil {
+				session.channel.logger.Error("WeChat typing keepalive failed", "message_id", session.messageID, "error", err)
+			}
+		}
+	}
+}
+
+func (session *typingSession) stop(ctx context.Context) {
+	if session == nil {
+		return
+	}
+	session.stopOnce.Do(func() {
+		close(session.done)
+		<-session.stopped
+		session.channel.stopTyping(ctx, session.messageID, session.recipient, session.ticket)
+	})
 }
 
 func (channel *Channel) stopTyping(ctx context.Context, messageID, recipient, ticket string) {
@@ -723,13 +843,87 @@ func randomWeChatUIN() string {
 	return base64.StdEncoding.EncodeToString([]byte(strconv.FormatUint(uint64(value), 10)))
 }
 
-func defaultCursorFile(triggerID string) string {
+func cursorFile(directory, triggerID string) string {
+	directory = strings.TrimSpace(directory)
+	if directory == "" {
+		directory = DefaultCursorDirectory
+	}
 	triggerID = strings.TrimSpace(triggerID)
 	if triggerID == "" {
 		triggerID = "default"
 	}
 	triggerID = strings.NewReplacer(`\`, "_", "/", "_", ":", "_").Replace(triggerID)
-	return filepath.Join(DefaultCursorDirectory, triggerID+".sync")
+	return filepath.Join(directory, triggerID+".sync")
+}
+
+func migrateCursorFile(sourcePath, targetPath string) error {
+	sourcePath = strings.TrimSpace(sourcePath)
+	targetPath = strings.TrimSpace(targetPath)
+	if sourcePath == "" || targetPath == "" || sameCursorPath(sourcePath, targetPath) {
+		return nil
+	}
+
+	targetInfo, err := os.Stat(targetPath)
+	if err == nil {
+		if targetInfo.IsDir() {
+			return fmt.Errorf("cursor target %q is a directory", targetPath)
+		}
+		if err := os.Remove(sourcePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove legacy cursor %q: %w", sourcePath, err)
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect cursor target %q: %w", targetPath, err)
+	}
+	if _, err := os.Stat(sourcePath); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("inspect legacy cursor %q: %w", sourcePath, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create cursor directory: %w", err)
+	}
+	renameErr := os.Rename(sourcePath, targetPath)
+	if renameErr == nil {
+		return nil
+	}
+	if targetInfo, targetErr := os.Stat(targetPath); targetErr == nil {
+		if targetInfo.IsDir() {
+			return fmt.Errorf("cursor target %q is a directory", targetPath)
+		}
+		if err := os.Remove(sourcePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove legacy cursor %q: %w", sourcePath, err)
+		}
+		return nil
+	} else if !errors.Is(targetErr, os.ErrNotExist) {
+		return fmt.Errorf("inspect cursor target %q after failed rename: %w", targetPath, targetErr)
+	}
+
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		return fmt.Errorf("move cursor from %q to %q: rename: %v; read legacy cursor: %w", sourcePath, targetPath, renameErr, err)
+	}
+	cursor := strings.TrimRight(string(data), "\r\n")
+	if err := writeCursor(targetPath, cursor); err != nil {
+		return fmt.Errorf("move cursor from %q to %q: rename: %v; write cursor copy: %w", sourcePath, targetPath, renameErr, err)
+	}
+	if err := os.Remove(sourcePath); err != nil {
+		return fmt.Errorf("remove copied legacy cursor %q: %w", sourcePath, err)
+	}
+	return nil
+}
+
+func sameCursorPath(leftPath, rightPath string) bool {
+	leftAbsolute, leftErr := filepath.Abs(filepath.Clean(leftPath))
+	rightAbsolute, rightErr := filepath.Abs(filepath.Clean(rightPath))
+	if leftErr == nil && rightErr == nil && leftAbsolute == rightAbsolute {
+		return true
+	}
+	leftInfo, leftErr := os.Stat(leftPath)
+	rightInfo, rightErr := os.Stat(rightPath)
+	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
 }
 
 func readCursor(path string) (string, error) {

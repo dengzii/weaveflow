@@ -25,13 +25,3 @@ func TestReplySinkContext(t *testing.T) {
 		t.Fatalf("missing sink error = %v", err)
 	}
 }
-
-func TestMessageValidate(t *testing.T) {
-	if err := (Message{}).Validate(); err == nil {
-		t.Fatal("empty chat message should fail validation")
-	}
-	message := (Message{ID: " id ", ConversationID: " chat ", Content: " hello "}).Normalize()
-	if message.ID != "id" || message.ConversationID != "chat" || message.Content != "hello" {
-		t.Fatalf("normalized message = %#v", message)
-	}
-}

@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -20,6 +22,140 @@ import (
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 )
+
+func TestRegisterWithCursorDirectoryUsesManagedCursorPath(t *testing.T) {
+	cursorDirectory := filepath.Join(t.TempDir(), "weixin")
+	channels := chatchannel.NewRegistry()
+	if err := RegisterWithCursorDirectory(channels, cursorDirectory); err != nil {
+		t.Fatal(err)
+	}
+	instance, err := channels.NewInstance(ChannelID, chatchannel.InstanceConfig{
+		TriggerID: "team/chat:primary",
+		Handler:   chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error { return nil }),
+		Config:    map[string]any{"bot_token": "token"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel, ok := instance.(*Channel)
+	if !ok {
+		t.Fatalf("instance type = %T", instance)
+	}
+	want := filepath.Join(cursorDirectory, "team_chat_primary.sync")
+	if channel.config.CursorFile != want {
+		t.Fatalf("cursor file = %q, want %q", channel.config.CursorFile, want)
+	}
+	if channel.legacyCursorFile != cursorFile(DefaultCursorDirectory, "team/chat:primary") {
+		t.Fatalf("legacy cursor file = %q", channel.legacyCursorFile)
+	}
+}
+
+func TestFactoryExplicitCursorFileOverridesManagedDirectory(t *testing.T) {
+	explicitCursorFile := filepath.Join(t.TempDir(), "custom", "cursor.sync")
+	instance, err := (Factory{
+		CursorDirectory:       filepath.Join(t.TempDir(), "managed"),
+		LegacyCursorDirectory: filepath.Join(t.TempDir(), "legacy"),
+	}).New(chatchannel.InstanceConfig{
+		TriggerID: "explicit",
+		Config: map[string]any{
+			"bot_token":   "token",
+			"cursor_file": explicitCursorFile,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	channel := instance.(*Channel)
+	if channel.config.CursorFile != explicitCursorFile {
+		t.Fatalf("cursor file = %q, want %q", channel.config.CursorFile, explicitCursorFile)
+	}
+	if channel.legacyCursorFile != "" {
+		t.Fatalf("legacy cursor file = %q, want empty", channel.legacyCursorFile)
+	}
+}
+
+func TestChannelMigratesLegacyCursorBeforePolling(t *testing.T) {
+	rootDirectory := t.TempDir()
+	legacyDirectory := filepath.Join(rootDirectory, "legacy")
+	cursorDirectory := filepath.Join(rootDirectory, "server", "weixin")
+	triggerID := "migrate"
+	legacyCursorFile := cursorFile(legacyDirectory, triggerID)
+	if err := writeCursor(legacyCursorFile, "legacy-cursor"); err != nil {
+		t.Fatal(err)
+	}
+
+	receivedCursor := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/ilink/bot/getupdates" {
+			http.NotFound(response, request)
+			return
+		}
+		var payload getUpdatesRequest
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+			t.Errorf("decode getupdates request: %v", err)
+			return
+		}
+		receivedCursor <- payload.Cursor
+		_ = json.NewEncoder(response).Encode(map[string]any{"ret": -14, "errmsg": "stop after first poll"})
+	}))
+	defer server.Close()
+
+	instance, err := (Factory{
+		HTTPClient:            server.Client(),
+		CursorDirectory:       cursorDirectory,
+		LegacyCursorDirectory: legacyDirectory,
+	}).New(chatchannel.InstanceConfig{
+		TriggerID: triggerID,
+		Handler:   chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error { return nil }),
+		Config:    map[string]any{"bot_token": "token", "base_url": server.URL},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = instance.Run(context.Background())
+	var tokenErr *tokenError
+	if !errors.As(err, &tokenErr) {
+		t.Fatalf("Run() error = %v", err)
+	}
+	select {
+	case cursor := <-receivedCursor:
+		if cursor != "legacy-cursor" {
+			t.Fatalf("first poll cursor = %q", cursor)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first poll was not received")
+	}
+	targetCursorFile := cursorFile(cursorDirectory, triggerID)
+	cursor, err := readCursor(targetCursorFile)
+	if err != nil || cursor != "legacy-cursor" {
+		t.Fatalf("migrated cursor = %q, err = %v", cursor, err)
+	}
+	if _, err := os.Stat(legacyCursorFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy cursor still exists: %v", err)
+	}
+}
+
+func TestMigrateCursorFileKeepsExistingTarget(t *testing.T) {
+	rootDirectory := t.TempDir()
+	legacyCursorFile := filepath.Join(rootDirectory, "legacy", "cursor.sync")
+	targetCursorFile := filepath.Join(rootDirectory, "server", "weixin", "cursor.sync")
+	if err := writeCursor(legacyCursorFile, "stale-cursor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeCursor(targetCursorFile, "current-cursor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := migrateCursorFile(legacyCursorFile, targetCursorFile); err != nil {
+		t.Fatal(err)
+	}
+	cursor, err := readCursor(targetCursorFile)
+	if err != nil || cursor != "current-cursor" {
+		t.Fatalf("target cursor = %q, err = %v", cursor, err)
+	}
+	if _, err := os.Stat(legacyCursorFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("legacy cursor still exists: %v", err)
+	}
+}
 
 func TestChannelPollsAndSendsWithOfficialHeadersAndCursor(t *testing.T) {
 	type receivedUpdate struct {
@@ -114,8 +250,8 @@ func TestChannelPollsAndSendsWithOfficialHeadersAndCursor(t *testing.T) {
 
 	instance, err := (Factory{Logger: discardLogger(), HTTPClient: server.Client()}).New(chatchannel.InstanceConfig{
 		TriggerID: "chat-a",
-		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatcap.Message, sink chatcap.ReplySink) error {
-			if message.ID != "12345" || message.ConversationID != "user-a" || message.Content != "hello" {
+		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatchannel.InboundMessage, sink chatcap.ReplySink) error {
+			if message.ID != "12345" || message.UserID != "user-a" || message.ConversationID != "user-a" || message.Content != "hello" {
 				t.Errorf("message = %#v", message)
 			}
 			if message.Metadata["channel"] != ChannelID || message.Metadata["session_id"] != "session-a" {
@@ -226,6 +362,135 @@ func TestChannelPollsAndSendsWithOfficialHeadersAndCursor(t *testing.T) {
 	}
 }
 
+func TestChannelStartsTypingBeforeGraphAndCachesTicket(t *testing.T) {
+	var mu sync.Mutex
+	var events []string
+	getConfigCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/ilink/bot/getconfig":
+			mu.Lock()
+			getConfigCalls++
+			mu.Unlock()
+			_ = json.NewEncoder(response).Encode(map[string]any{"ret": 0, "typing_ticket": "ticket"})
+		case "/ilink/bot/sendtyping":
+			var payload sendTypingRequest
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("decode sendtyping request: %v", err)
+				return
+			}
+			event := "typing-active"
+			if payload.Status == typingStatusCancel {
+				event = "typing-cancel"
+			}
+			mu.Lock()
+			events = append(events, event)
+			mu.Unlock()
+			_ = json.NewEncoder(response).Encode(map[string]any{"ret": 0})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	channel := &Channel{
+		config:          Config{BotToken: "token", BaseURL: server.URL},
+		client:          server.Client(),
+		logger:          discardLogger(),
+		wechatUIN:       randomWeChatUIN(),
+		typingKeepalive: time.Hour,
+	}
+	channel.handler = chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error {
+		mu.Lock()
+		events = append(events, "graph")
+		mu.Unlock()
+		return nil
+	})
+	for index := range 2 {
+		if err := channel.handleMessage(context.Background(), weixinMessage{
+			MessageID:    json.RawMessage(strconv.Itoa(index + 1)),
+			FromUserID:   "user",
+			ContextToken: "ctx",
+			MessageType:  1,
+			ItemList:     []messageItem{{Type: 1, TextItem: &textItem{Text: "hello"}}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if getConfigCalls != 1 {
+		t.Fatalf("getconfig calls = %d", getConfigCalls)
+	}
+	wantEvents := []string{"typing-active", "graph", "typing-cancel", "typing-active", "graph", "typing-cancel"}
+	if !slices.Equal(events, wantEvents) {
+		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+func TestChannelKeepsTypingActiveWhileGraphRuns(t *testing.T) {
+	typingStatuses := make(chan int, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/ilink/bot/getconfig":
+			_ = json.NewEncoder(response).Encode(map[string]any{"ret": 0, "typing_ticket": "ticket"})
+		case "/ilink/bot/sendtyping":
+			var payload sendTypingRequest
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				t.Errorf("decode sendtyping request: %v", err)
+				return
+			}
+			typingStatuses <- payload.Status
+			_ = json.NewEncoder(response).Encode(map[string]any{"ret": 0})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	channel := &Channel{
+		config:          Config{BotToken: "token", BaseURL: server.URL},
+		client:          server.Client(),
+		logger:          discardLogger(),
+		wechatUIN:       randomWeChatUIN(),
+		typingKeepalive: 10 * time.Millisecond,
+	}
+	channel.handler = chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error {
+		for index := range 2 {
+			select {
+			case status := <-typingStatuses:
+				if status != typingStatusActive {
+					t.Fatalf("typing status %d = %d", index, status)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for typing status")
+			}
+		}
+		return nil
+	})
+	if err := channel.handleMessage(context.Background(), weixinMessage{
+		MessageID:    json.RawMessage(`1`),
+		FromUserID:   "user",
+		ContextToken: "ctx",
+		MessageType:  1,
+		ItemList:     []messageItem{{Type: 1, TextItem: &textItem{Text: "hello"}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.After(time.Second)
+	for {
+		select {
+		case status := <-typingStatuses:
+			if status == typingStatusCancel {
+				return
+			}
+		case <-deadline:
+			t.Fatal("timed out waiting for typing cancel")
+		}
+	}
+}
+
 func TestChannelSendsUnsupportedAndFailureMessages(t *testing.T) {
 	var mu sync.Mutex
 	var contents []string
@@ -264,7 +529,7 @@ func TestChannelSendsUnsupportedAndFailureMessages(t *testing.T) {
 		config: Config{BotToken: "token", BaseURL: server.URL, UnsupportedMessage: "unsupported", FailureMessage: "failed"},
 		client: server.Client(),
 		logger: discardLogger(),
-		handler: chatchannel.HandlerFunc(func(context.Context, chatcap.Message, chatcap.ReplySink) error {
+		handler: chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error {
 			return errors.New("graph failed")
 		}),
 		wechatUIN: randomWeChatUIN(),
@@ -308,7 +573,7 @@ func TestChannelRunsGraphWhenTypingIsUnavailable(t *testing.T) {
 		config: Config{BotToken: "token", BaseURL: server.URL},
 		client: server.Client(),
 		logger: discardLogger(),
-		handler: chatchannel.HandlerFunc(func(ctx context.Context, _ chatcap.Message, sink chatcap.ReplySink) error {
+		handler: chatchannel.HandlerFunc(func(ctx context.Context, _ chatchannel.InboundMessage, sink chatcap.ReplySink) error {
 			handlerCalled = true
 			return sink.Emit(ctx, chatcap.Reply{Kind: chatcap.ReplyFinish, Content: "reply"})
 		}),
@@ -371,7 +636,7 @@ func TestChannelStopsOnInvalidToken(t *testing.T) {
 
 	instance, err := (Factory{HTTPClient: server.Client()}).New(chatchannel.InstanceConfig{
 		TriggerID: "invalid-token",
-		Handler:   chatchannel.HandlerFunc(func(context.Context, chatcap.Message, chatcap.ReplySink) error { return nil }),
+		Handler:   chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error { return nil }),
 		Config:    map[string]any{"bot_token": "token", "base_url": server.URL, "cursor_file": filepathForTest(t)},
 	})
 	if err != nil {

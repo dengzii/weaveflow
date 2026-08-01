@@ -52,7 +52,7 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	buffered := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"message_id":"m1","conversation_id":"c1","content":"hello"}`))
+	request := httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"message_id":"m1","user_id":"u1","conversation_id":"c1","content":"hello"}`))
 	engine.ServeHTTP(buffered, request)
 	if buffered.Code != http.StatusOK {
 		t.Fatalf("buffered status = %d body = %s", buffered.Code, buffered.Body.String())
@@ -70,7 +70,7 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	}
 
 	streamed := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"content":"hello"}`))
+	request = httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"hello"}`))
 	request.Header.Set("Accept", "text/event-stream")
 	engine.ServeHTTP(streamed, request)
 	if streamed.Code != http.StatusOK || streamed.Header().Get("Content-Type") != "text/event-stream" {
@@ -80,5 +80,12 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 		if !strings.Contains(streamed.Body.String(), expected) {
 			t.Fatalf("stream body missing %q: %s", expected, streamed.Body.String())
 		}
+	}
+
+	missingIdentity := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"content":"hello"}`))
+	engine.ServeHTTP(missingIdentity, request)
+	if missingIdentity.Code != http.StatusBadRequest {
+		t.Fatalf("missing identity status = %d body = %s", missingIdentity.Code, missingIdentity.Body.String())
 	}
 }

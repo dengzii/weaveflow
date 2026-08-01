@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 )
@@ -21,7 +22,10 @@ func (s *Server) handleChatTrigger(c *gin.Context) {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
 		return
 	}
-	triggerID := strings.TrimSpace(c.Param("trigger_id"))
+	triggerID, ok := requirePathParam(c, "trigger_id")
+	if !ok {
+		return
+	}
 	item, err := service.Get(c.Request.Context(), triggerID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
@@ -57,7 +61,7 @@ func (s *Server) handleChatTrigger(c *gin.Context) {
 	writeData(c, http.StatusOK, response)
 }
 
-func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context, service *trigger.Service, triggerID string, message chatcap.Message) {
+func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context, service *trigger.Service, triggerID string, message chatchannel.InboundMessage) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
@@ -75,21 +79,21 @@ func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context,
 	writeChatSSEEvent(c.Writer, "result", result)
 }
 
-func decodeChatMessage(c *gin.Context) (chatcap.Message, error) {
+func decodeChatMessage(c *gin.Context) (chatchannel.InboundMessage, error) {
 	body, err := readRequestBody(c.Request.Body, maxChatTriggerBodyBytes)
 	if err != nil {
-		return chatcap.Message{}, err
+		return chatchannel.InboundMessage{}, err
 	}
 	if len(strings.TrimSpace(string(body))) == 0 {
-		return chatcap.Message{}, fmt.Errorf("chat message is required")
+		return chatchannel.InboundMessage{}, fmt.Errorf("chat message is required")
 	}
-	var message chatcap.Message
+	var message chatchannel.InboundMessage
 	if err := decodeStrictJSON(body, &message); err != nil {
-		return chatcap.Message{}, err
+		return chatchannel.InboundMessage{}, err
 	}
 	message = message.Normalize()
 	if err := message.Validate(); err != nil {
-		return chatcap.Message{}, err
+		return chatchannel.InboundMessage{}, err
 	}
 	return message, nil
 }

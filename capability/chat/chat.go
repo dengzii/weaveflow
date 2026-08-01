@@ -3,7 +3,6 @@ package chat
 import (
 	"context"
 	"errors"
-	"strings"
 )
 
 type ReplyKind string
@@ -15,27 +14,6 @@ const (
 )
 
 var ErrReplySinkUnavailable = errors.New("chat reply sink is unavailable")
-
-type Message struct {
-	ID             string         `json:"message_id,omitempty"`
-	ConversationID string         `json:"conversation_id,omitempty"`
-	Content        string         `json:"content"`
-	Metadata       map[string]any `json:"metadata,omitempty"`
-}
-
-func (m Message) Normalize() Message {
-	m.ID = strings.TrimSpace(m.ID)
-	m.ConversationID = strings.TrimSpace(m.ConversationID)
-	m.Content = strings.TrimSpace(m.Content)
-	return m
-}
-
-func (m Message) Validate() error {
-	if strings.TrimSpace(m.Content) == "" {
-		return errors.New("chat message content is required")
-	}
-	return nil
-}
 
 type Reply struct {
 	Kind     ReplyKind `json:"kind"`

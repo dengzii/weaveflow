@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
 )
 
 func TestClientConsumesChatReplyEvents(t *testing.T) {
@@ -21,7 +22,7 @@ func TestClientConsumesChatReplyEvents(t *testing.T) {
 	defer server.Close()
 
 	var replies []chatcap.Reply
-	err := (Client{}).Invoke(context.Background(), server.URL, chatcap.Message{Content: "question"}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
+	err := (Client{}).Invoke(context.Background(), server.URL, chatchannel.InboundMessage{Content: "question"}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
 		replies = append(replies, reply)
 		return nil
 	}))
@@ -40,7 +41,7 @@ func TestClientReturnsStreamError(t *testing.T) {
 	}))
 	defer server.Close()
 
-	err := (Client{}).Invoke(context.Background(), server.URL, chatcap.Message{Content: "question"}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil }))
+	err := (Client{}).Invoke(context.Background(), server.URL, chatchannel.InboundMessage{Content: "question"}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil }))
 	if err == nil || err.Error() != "graph failed" {
 		t.Fatalf("error = %v", err)
 	}

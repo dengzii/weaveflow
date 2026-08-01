@@ -17,15 +17,30 @@ var (
 	ErrExists   = errors.New("trigger already exists")
 )
 
-type Store interface {
+type TriggerStore interface {
 	Create(context.Context, Trigger) error
 	Update(context.Context, Trigger) error
 	Get(context.Context, string) (Trigger, error)
 	List(context.Context) ([]Trigger, error)
 	Delete(context.Context, string) error
+}
+
+type InvocationStore interface {
 	CreateRecord(context.Context, Record) error
 	UpdateRecord(context.Context, Record) error
 	ListRecords(context.Context, string, int) ([]Record, error)
+}
+
+type ChatHistoryStore interface {
+	CreateChatHistory(context.Context, ChatHistory) (ChatHistory, error)
+	UpdateChatHistory(context.Context, ChatHistory) error
+	ListChatHistory(context.Context, ChatHistoryFilter) ([]ChatHistory, error)
+}
+
+type Store interface {
+	TriggerStore
+	InvocationStore
+	ChatHistoryStore
 }
 
 type FileStore struct {

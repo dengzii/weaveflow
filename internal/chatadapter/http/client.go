@@ -11,13 +11,14 @@ import (
 	"strings"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
 )
 
 type Client struct {
 	HTTPClient *http.Client
 }
 
-func (c Client) Invoke(ctx context.Context, endpoint string, message chatcap.Message, sink chatcap.ReplySink) error {
+func (c Client) Invoke(ctx context.Context, endpoint string, message chatchannel.InboundMessage, sink chatcap.ReplySink) error {
 	if sink == nil {
 		return chatcap.ErrReplySinkUnavailable
 	}

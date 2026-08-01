@@ -37,12 +37,12 @@ type Definition struct {
 }
 
 type Handler interface {
-	Handle(context.Context, chatcap.Message, chatcap.ReplySink) error
+	Handle(context.Context, InboundMessage, chatcap.ReplySink) error
 }
 
-type HandlerFunc func(context.Context, chatcap.Message, chatcap.ReplySink) error
+type HandlerFunc func(context.Context, InboundMessage, chatcap.ReplySink) error
 
-func (f HandlerFunc) Handle(ctx context.Context, message chatcap.Message, sink chatcap.ReplySink) error {
+func (f HandlerFunc) Handle(ctx context.Context, message InboundMessage, sink chatcap.ReplySink) error {
 	return f(ctx, message, sink)
 }
 

@@ -49,7 +49,10 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 		}
 		if err := conn.WriteJSON(map[string]any{
 			"cmd": "aibot_msg_callback", "headers": map[string]string{"req_id": "callback-request"},
-			"body": map[string]any{"msgid": "message-1", "msgtype": "text", "text": map[string]string{"content": "hello"}},
+			"body": map[string]any{
+				"msgid": "message-1", "msgtype": "text", "chatid": "group-1",
+				"from": map[string]string{"userid": "user-1"}, "text": map[string]string{"content": "hello"},
+			},
 		}); err != nil {
 			results <- serverResult{err: err}
 			return
@@ -71,8 +74,9 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 	}))
 	defer server.Close()
 
-	handler := chatchannel.HandlerFunc(func(ctx context.Context, message chatcap.Message, sink chatcap.ReplySink) error {
-		if message.Content != "hello" || message.Metadata["channel"] != ChannelID {
+	handler := chatchannel.HandlerFunc(func(ctx context.Context, message chatchannel.InboundMessage, sink chatcap.ReplySink) error {
+		if message.Content != "hello" || message.UserID != "user-1" || message.ConversationID != "group-1" ||
+			message.Metadata["channel"] != ChannelID || message.Metadata["sender_id"] != "user-1" {
 			return fmt.Errorf("unexpected message: %#v", message)
 		}
 		for _, reply := range []chatcap.Reply{
@@ -224,7 +228,7 @@ func TestChannelPropagatesRejectedReplyAndSendsFailure(t *testing.T) {
 	defer server.Close()
 
 	handlerErrors := make(chan error, 1)
-	handler := chatchannel.HandlerFunc(func(ctx context.Context, _ chatcap.Message, sink chatcap.ReplySink) error {
+	handler := chatchannel.HandlerFunc(func(ctx context.Context, _ chatchannel.InboundMessage, sink chatcap.ReplySink) error {
 		if err := sink.Emit(ctx, chatcap.Reply{Kind: chatcap.ReplyUpdate, Content: "partial"}); err != nil {
 			return err
 		}
@@ -349,7 +353,7 @@ func TestChannelReplyAckTimeoutSendsFailure(t *testing.T) {
 	defer server.Close()
 
 	handlerErrors := make(chan error, 1)
-	handler := chatchannel.HandlerFunc(func(ctx context.Context, _ chatcap.Message, sink chatcap.ReplySink) error {
+	handler := chatchannel.HandlerFunc(func(ctx context.Context, _ chatchannel.InboundMessage, sink chatcap.ReplySink) error {
 		if err := sink.Emit(ctx, chatcap.Reply{Kind: chatcap.ReplyUpdate, Content: "partial"}); err != nil {
 			return err
 		}
