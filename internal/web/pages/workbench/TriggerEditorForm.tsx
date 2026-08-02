@@ -20,6 +20,13 @@ import {
 
 const emptyMapping = (): WebhookStateMapping => ({ parameter: "", state_path: "" });
 const emptyInitialStateEntry = (): TriggerInitialStateEntry => ({ path: "", value: "" });
+const chatMetadataBindingFields = [
+  { key: "chatTriggerIDStatePath", label: "Trigger ID", placeholder: "scopes.chat.trigger_id" },
+  { key: "chatChannelStatePath", label: "Channel", placeholder: "scopes.chat.channel" },
+  { key: "chatUserIDStatePath", label: "User ID", placeholder: "scopes.chat.user_id" },
+  { key: "chatConversationIDStatePath", label: "Conversation ID", placeholder: "scopes.chat.conversation_id" },
+  { key: "chatMessageIDStatePath", label: "Message ID", placeholder: "scopes.chat.message_id" },
+] as const;
 
 export function TriggerEditorForm({
   trigger,
@@ -250,6 +257,57 @@ export function TriggerEditorForm({
               {trigger && trigger.chat?.channel === values.chatChannel ? (
                 <div className="text-[11px] text-muted-foreground">Leave sensitive fields blank to keep their configured values.</div>
               ) : null}
+            </div>
+          </section>
+
+          <section className="grid gap-3 rounded-md border border-border p-3">
+            <div>
+              <div className="text-xs font-semibold">Conversation state</div>
+              <div className="mt-0.5 text-[11px] text-muted-foreground">Optional conversation, audit history, and trigger metadata bindings.</div>
+            </div>
+            <label className="grid gap-1 text-sm">
+              <span className="text-xs font-medium text-muted-foreground">History rounds</span>
+              <Input
+                type="number"
+                min="0"
+                max="500"
+                step="1"
+                value={values.chatHistoryLimit}
+                onChange={(event) => change("chatHistoryLimit", event.target.value)}
+                placeholder="Not loaded"
+              />
+            </label>
+            <label className="grid gap-1 text-sm">
+              <span className="text-xs font-medium text-muted-foreground">Conversation root path</span>
+              <Input
+                list={statePathSuggestions.length > 0 ? statePathListID : undefined}
+                value={values.chatConversationStatePath}
+                onChange={(event) => change("chatConversationStatePath", event.target.value)}
+                placeholder="scopes.agent.conversation"
+              />
+            </label>
+            <label className="grid gap-1 text-sm">
+              <span className="text-xs font-medium text-muted-foreground">Raw history state path</span>
+              <Input
+                list={statePathSuggestions.length > 0 ? statePathListID : undefined}
+                value={values.chatRawHistoryStatePath}
+                onChange={(event) => change("chatRawHistoryStatePath", event.target.value)}
+                placeholder="scopes.chat.raw_history"
+              />
+            </label>
+            <div className="grid gap-2 border-t border-border pt-3">
+              <div className="text-xs font-medium">Trigger metadata bindings</div>
+              {chatMetadataBindingFields.map((field) => (
+                <label key={field.key} className="grid gap-1 text-sm">
+                  <span className="text-xs font-medium text-muted-foreground">{field.label} state path</span>
+                  <Input
+                    list={statePathSuggestions.length > 0 ? statePathListID : undefined}
+                    value={values[field.key]}
+                    onChange={(event) => change(field.key, event.target.value)}
+                    placeholder={field.placeholder}
+                  />
+                </label>
+              ))}
             </div>
           </section>
 

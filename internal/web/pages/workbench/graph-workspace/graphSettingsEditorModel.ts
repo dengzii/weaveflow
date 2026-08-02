@@ -1,4 +1,4 @@
-import type { GraphSettings, GraphSettingsUpdate } from "../../../types";
+import type { RuntimeSettings, RuntimeSettingsUpdate } from "../../../types";
 
 export const MODEL_API_KEY_MASK = "********";
 
@@ -17,8 +17,8 @@ export interface EditableEnvironmentVariable {
   value: string;
 }
 
-export function modelsFromSettings(settings: GraphSettings | null): EditableGraphModel[] {
-  const configured = Array.isArray(settings?.models) ? settings.models : settings?.model ? [settings.model] : [];
+export function modelsFromSettings(settings: RuntimeSettings | null): EditableGraphModel[] {
+  const configured = Array.isArray(settings?.models) ? settings.models : [];
   return configured.map((model, index) => ({
     id: model.id || (index === 0 ? "default" : `model-${index + 1}`),
     enabled: model.enabled,
@@ -49,7 +49,7 @@ export function modelAPIKeyDisplayValue(model: EditableGraphModel): string {
   return model.api_key_configured ? MODEL_API_KEY_MASK : "";
 }
 
-export function normalizeModelSettings(models: EditableGraphModel[]): GraphSettingsUpdate["models"] {
+export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSettingsUpdate["models"] {
   const seen = new Set<string>();
   return models.map((model, index) => {
     const modelID = model.id.trim();
@@ -72,7 +72,7 @@ export function normalizeModelSettings(models: EditableGraphModel[]): GraphSetti
   });
 }
 
-export function environmentRowsFromSettings(settings: GraphSettings | null): EditableEnvironmentVariable[] {
+export function environmentRowsFromSettings(settings: RuntimeSettings | null): EditableEnvironmentVariable[] {
   return Object.entries(editableEnvironment(settings))
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([key, value]) => ({ key, value }));
@@ -95,7 +95,7 @@ export function normalizeEnvironmentSettings(rows: EditableEnvironmentVariable[]
   return environment;
 }
 
-function editableEnvironment(settings: GraphSettings | null): Record<string, string> {
+function editableEnvironment(settings: RuntimeSettings | null): Record<string, string> {
   const input = settings?.environment ?? {};
   const environment: Record<string, string> = {};
   for (const [key, value] of Object.entries(input)) {

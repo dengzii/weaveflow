@@ -4,6 +4,7 @@ import type {
   GraphDefinition,
   GraphInfo,
   Trigger,
+  TriggerChatStateBindings,
   TriggerConcurrency,
   TriggerTarget,
   TriggerType,
@@ -34,6 +35,14 @@ export interface TriggerEditorValues {
   streamNodeIDs: string;
   chatChannel: string;
   chatChannelConfig: Record<string, unknown>;
+  chatHistoryLimit: string;
+  chatConversationStatePath: string;
+  chatRawHistoryStatePath: string;
+  chatTriggerIDStatePath: string;
+  chatChannelStatePath: string;
+  chatUserIDStatePath: string;
+  chatConversationIDStatePath: string;
+  chatMessageIDStatePath: string;
 }
 
 export interface TriggerInitialStateEntry {
@@ -63,6 +72,14 @@ export function triggerEditorValues(
     streamNodeIDs: (trigger?.chat?.stream_node_ids ?? []).join(", "),
     chatChannel: trigger?.chat?.channel ?? "http",
     chatChannelConfig: cloneRecord(trigger?.chat?.channel_config),
+    chatHistoryLimit: trigger?.chat?.history_limit ? String(trigger.chat.history_limit) : "",
+    chatConversationStatePath: trigger?.chat?.state_bindings?.conversation ?? "",
+    chatRawHistoryStatePath: trigger?.chat?.state_bindings?.raw_history ?? "",
+    chatTriggerIDStatePath: trigger?.chat?.state_bindings?.trigger_id ?? "",
+    chatChannelStatePath: trigger?.chat?.state_bindings?.channel ?? "",
+    chatUserIDStatePath: trigger?.chat?.state_bindings?.user_id ?? "",
+    chatConversationIDStatePath: trigger?.chat?.state_bindings?.conversation_id ?? "",
+    chatMessageIDStatePath: trigger?.chat?.state_bindings?.message_id ?? "",
   };
 }
 
@@ -113,16 +130,80 @@ export function buildTriggerPayload(
     const streamNodeIDs = Array.from(new Set(
       values.streamNodeIDs.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean)
     ));
-    input.chat = {
+    const chat: Record<string, unknown> = {
       channel: values.chatChannel.trim() || "http",
       channel_config: cloneRecord(values.chatChannelConfig),
       reply_path: replyPath,
       stream_updates: values.streamUpdates,
       stream_node_ids: streamNodeIDs,
     };
+    const historyLimit = parseChatHistoryLimit(values.chatHistoryLimit);
+    if (historyLimit > 0) chat.history_limit = historyLimit;
+    const stateBindings = buildChatStateBindings(values);
+    if (Object.keys(stateBindings).length > 0) chat.state_bindings = stateBindings;
+    input.chat = chat;
     if (chatSetupSessionID?.trim()) input.chat_setup_session_id = chatSetupSessionID.trim();
   }
   return input;
+}
+
+function parseChatHistoryLimit(value: string): number {
+  const trimmed = value.trim();
+  if (!trimmed) return 0;
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error("chat history rounds must be an integer between 0 and 500");
+  }
+  const limit = Number(trimmed);
+  if (!Number.isSafeInteger(limit) || limit > 500) {
+    throw new Error("chat history rounds must be an integer between 0 and 500");
+  }
+  return limit;
+}
+
+function buildChatStateBindings(values: TriggerEditorValues): TriggerChatStateBindings {
+  const fields: Array<{ key: keyof TriggerChatStateBindings; label: string; value: string; conversation?: boolean }> = [
+    { key: "conversation", label: "conversation", value: values.chatConversationStatePath, conversation: true },
+    { key: "raw_history", label: "raw history", value: values.chatRawHistoryStatePath },
+    { key: "trigger_id", label: "trigger ID", value: values.chatTriggerIDStatePath },
+    { key: "channel", label: "channel", value: values.chatChannelStatePath },
+    { key: "user_id", label: "user ID", value: values.chatUserIDStatePath },
+    { key: "conversation_id", label: "conversation ID", value: values.chatConversationIDStatePath },
+    { key: "message_id", label: "message ID", value: values.chatMessageIDStatePath },
+  ];
+  const bindings: TriggerChatStateBindings = {};
+  const configured: Array<{ label: string; path: string }> = [];
+  for (const field of fields) {
+    const path = normalizeChatStatePath(field.value, field.label);
+    if (!path) continue;
+    const effectivePath = field.conversation ? `${path}.messages` : path;
+    if (statePathsOverlap(effectivePath, "shared.request.input")) {
+      throw new Error(`${field.label} state path ${path} overlaps the chat input path`);
+    }
+    const previous = configured.find((entry) => statePathsOverlap(effectivePath, entry.path));
+    if (previous) {
+      throw new Error(`${field.label} state path ${path} overlaps ${previous.label} state path ${previous.path}`);
+    }
+    bindings[field.key] = path;
+    configured.push({ label: field.label, path: effectivePath });
+  }
+  return bindings;
+}
+
+function normalizeChatStatePath(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const segments = trimmed.split(".").map((segment) => segment.trim());
+  if (segments.length < 2 || segments.some((segment) => !segment)) {
+    throw new Error(`${label} state path must include a section and field`);
+  }
+  if (segments[0] !== "shared" && segments[0] !== "scopes") {
+    throw new Error(`${label} state section ${segments[0]} is not allowed`);
+  }
+  return segments.join(".");
+}
+
+function statePathsOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}.`) || right.startsWith(`${left}.`);
 }
 
 export function editableChatChannelSchema(
@@ -182,7 +263,7 @@ export function chatTriggerURL(triggerID: string): string {
 export function webhookTriggerURLs(triggerID: string): { post: string; get: string } {
   const encodedID = encodeURIComponent(triggerID);
   return {
-    post: withAPIKeyPlaceholder(resolveBackendUrl(`/triggers/${encodedID}`)),
+		post: withAPIKeyPlaceholder(resolveBackendUrl(`/triggers/${encodedID}/invocations`)),
     get: withAPIKeyPlaceholder(resolveBackendUrl(`/triggers/${encodedID}/webhook`)),
   };
 }

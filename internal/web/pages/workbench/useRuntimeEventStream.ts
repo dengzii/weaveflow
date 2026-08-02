@@ -30,7 +30,7 @@ export function useRuntimeEventStream(onEvent: (event: RuntimeEvent) => void): R
   onEventRef.current = onEvent;
 
   useEffect(() => {
-    const streamURL = resolveBackendUrl("/events/stream");
+    const streamURL = resolveBackendUrl("/runtime/events/stream");
     let source: EventSource | null = null;
     let reconnectTimer: number | null = null;
     let closed = false;

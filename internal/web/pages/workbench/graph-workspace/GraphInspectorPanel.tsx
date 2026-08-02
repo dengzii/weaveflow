@@ -5,11 +5,11 @@ import type {
   GraphDefinition,
   GraphEdgeSpec,
   GraphNodeSpec,
-  GraphSettings,
-  GraphSettingsUpdate,
   InitialStateRequirements,
   NodeTypeSchema,
   RegistryInfo,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
   StepRecord,
   ToolDefinition,
 } from "../../../types";
@@ -37,8 +37,8 @@ interface GraphInspectorPanelProps {
   paletteNodeTypes: NodeTypeSchema[];
   registry: RegistryInfo | null;
   registryLoaded: boolean;
-  graphSettings: GraphSettings | null;
-  onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
+  runtimeSettings: RuntimeSettings | null;
+  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
   toolDefinitions: ToolDefinition[];
   selectedEdge: GraphEdgeSpec | null;
   selectedNode: GraphNodeSpec | null;
@@ -79,8 +79,8 @@ export function GraphInspectorPanel({
   paletteNodeTypes,
   registry,
   registryLoaded,
-  graphSettings,
-  onUpdateGraphSettings,
+  runtimeSettings,
+  onUpdateRuntimeSettings,
   toolDefinitions,
   selectedEdge,
   selectedNode,
@@ -116,9 +116,9 @@ export function GraphInspectorPanel({
           initialRequirements={initialRequirements}
           initialRequirementsError={initialRequirementsError}
           initialStateText={initialStateText}
-          graphSettings={graphSettings}
+          runtimeSettings={runtimeSettings}
           registry={registry}
-          onUpdateGraphSettings={onUpdateGraphSettings}
+          onUpdateRuntimeSettings={onUpdateRuntimeSettings}
           onChangeDefinitionText={onChangeDefinitionText}
           onChangeGraphField={onChangeGraphField}
           onChangeInitialStateText={onChangeInitialStateText}

@@ -25,17 +25,19 @@ import {
   readStoredEventFilters,
   readStoredPanelHeight,
   resizeRunPanelColumnRatios,
+  stateHistoryEntries,
   timeRank,
   uniqueSorted,
   writeStoredEventFilters,
   writeStoredPanelHeight,
 } from "./runStatusModel";
-import type { ColumnRatios, EventFilterMode } from "./runStatusModel";
+import type { ColumnRatios, EventFilterMode, StateChangeKind, StateHistoryEntry } from "./runStatusModel";
 import { StatusText } from "./shared";
 
 export { resizeRunPanelColumnRatios } from "./runStatusModel";
 
 const COLUMN_KEYBOARD_STEP_RATIO = 0.03;
+type RunPanelView = "events" | "state";
 
 export function RunStatusPanel({
   runs,
@@ -55,6 +57,7 @@ export function RunStatusPanel({
   onHide: () => void;
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
+  const [panelView, setPanelView] = useState<RunPanelView>("events");
   const [panelHeight, setPanelHeight] = useState(readStoredPanelHeight);
   const [columnRatios, setColumnRatios] = useState<ColumnRatios>(DEFAULT_COLUMN_RATIOS);
   const [eventFiltersOpen, setEventFiltersOpen] = useState(() => readStoredEventFilters().open ?? false);
@@ -89,6 +92,18 @@ export function RunStatusPanel({
       ),
     [eventFilterMode, eventKeywordFilter, eventListItems, eventNodeFilters, eventTypeFilters]
   );
+  const stateHistoryItems = useMemo(
+    () =>
+      stateHistoryEntries(sortedEvents).map((entry, index) => ({
+        ...entry,
+        key: eventListKey(entry.event, index),
+      })),
+    [sortedEvents]
+  );
+  const totalStateChanges = useMemo(
+    () => stateHistoryItems.reduce((total, entry) => total + entry.changes.length, 0),
+    [stateHistoryItems]
+  );
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
 
   useEffect(() => {
@@ -118,11 +133,12 @@ export function RunStatusPanel({
     return () => window.removeEventListener("resize", clampPanelHeight);
   }, []);
 
+  const visibleItems = panelView === "events" ? filteredEventItems : stateHistoryItems;
   const effectiveKey =
-    selectedKey && filteredEventItems.some((item) => item.key === selectedKey)
+    selectedKey && visibleItems.some((item) => item.key === selectedKey)
       ? selectedKey
-      : filteredEventItems[0]?.key ?? null;
-  const selectedEvent = filteredEventItems.find((item) => item.key === effectiveKey)?.event ?? null;
+      : visibleItems[0]?.key ?? null;
+  const selectedEvent = visibleItems.find((item) => item.key === effectiveKey)?.event ?? null;
 
   function startResizeHeight(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -227,107 +243,239 @@ export function RunStatusPanel({
         />
 
         <ColumnResizeHandle
-          label="Resize Run and Run Event columns"
+          label="Resize Run and Event columns"
           value={columnBoundaryPercent(columnRatios, 0)}
           onPointerDown={(event) => startResizeColumns(0, event)}
           onKeyDown={(event) => resizeColumnsWithKeyboard(0, event)}
         />
 
-        <div aria-label="Run event list" className="flex min-h-0 min-w-0 flex-col">
+        <div aria-label={panelView === "events" ? "Event list" : "State history list"} className="flex min-h-0 min-w-0 flex-col">
           <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
-            <span className="text-xs font-semibold">Run Event</span>
-            <RunEventFilterControls
-              open={eventFiltersOpen}
-              mode={eventFilterMode}
-              types={eventTypeFilters}
-              selectedNodes={eventNodeFilters}
-              keyword={eventKeywordFilter}
-              eventTypes={eventTypes}
-              nodes={eventNodes}
-              activeCount={activeEventFilterCount}
-              filteredCount={filteredEventItems.length}
-              totalCount={sortedEvents.length}
-              onOpenChange={setEventFiltersOpen}
-              onModeChange={setEventFilterMode}
-              onTypesChange={setEventTypeFilters}
-              onNodesChange={setEventNodeFilters}
-              onKeywordChange={setEventKeywordFilter}
-              onClear={() => {
-                setEventFilterMode("include");
-                setEventTypeFilters([]);
-                setEventNodeFilters([]);
-                setEventKeywordFilter("");
-              }}
-            />
+            <div role="tablist" aria-label="Run history view" className="flex h-full items-stretch gap-3">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={panelView === "events"}
+                onClick={() => setPanelView("events")}
+                className={cn(
+                  "border-b-2 border-transparent text-xs font-semibold text-muted-foreground hover:text-foreground",
+                  panelView === "events" && "border-primary text-foreground"
+                )}
+              >
+                Event
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={panelView === "state"}
+                onClick={() => setPanelView("state")}
+                className={cn(
+                  "flex items-center gap-1 border-b-2 border-transparent text-xs font-semibold text-muted-foreground hover:text-foreground",
+                  panelView === "state" && "border-primary text-foreground"
+                )}
+              >
+                State
+              </button>
+            </div>
+            {panelView === "events" ? (
+              <RunEventFilterControls
+                open={eventFiltersOpen}
+                mode={eventFilterMode}
+                types={eventTypeFilters}
+                selectedNodes={eventNodeFilters}
+                keyword={eventKeywordFilter}
+                eventTypes={eventTypes}
+                nodes={eventNodes}
+                activeCount={activeEventFilterCount}
+                filteredCount={filteredEventItems.length}
+                totalCount={sortedEvents.length}
+                onOpenChange={setEventFiltersOpen}
+                onModeChange={setEventFilterMode}
+                onTypesChange={setEventTypeFilters}
+                onNodesChange={setEventNodeFilters}
+                onKeywordChange={setEventKeywordFilter}
+                onClear={() => {
+                  setEventFilterMode("include");
+                  setEventTypeFilters([]);
+                  setEventNodeFilters([]);
+                  setEventKeywordFilter("");
+                }}
+              />
+            ) : (
+              <span className="ml-auto text-[11px] text-muted-foreground">
+                {stateHistoryItems.length} updates · {totalStateChanges} paths
+              </span>
+            )}
           </div>
           <div className="min-h-0 flex-1 overflow-auto">
-            {filteredEventItems.length === 0 ? (
-              <div className="p-3 text-sm text-muted-foreground">
-                {sortedEvents.length > 0 ? "No matching events" : "No run events"}
-              </div>
+            {panelView === "events" ? (
+              <EventHistoryList
+                items={filteredEventItems}
+                effectiveKey={effectiveKey}
+                onSelect={setSelectedKey}
+                hasEvents={sortedEvents.length > 0}
+              />
             ) : (
-              <ul className="divide-y divide-border">
-                {filteredEventItems.map(({ event, key }) => (
-                  <li key={key}>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedKey(key)}
-                      className={cn(
-                        "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
-                        effectiveKey === key && "bg-accent text-accent-foreground"
-                      )}
-                    >
-                      {event.type.startsWith("run.") ? (
-                        <span className="col-span-2 min-w-0 truncate" title={event.type}>
-                          <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
-                            {event.type}
-                          </StatusText>
-                        </span>
-                      ) : (
-                        <>
-                          <span className="truncate font-mono" title={event.node_id || event.run_id}>
-                            {event.node_id || event.run_id || "—"}
-                          </span>
-                          <span className="min-w-0 truncate" title={event.type}>
-                            <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
-                              {event.type}
-                            </StatusText>
-                          </span>
-                        </>
-                      )}
-                      <span className="truncate text-right text-muted-foreground">
-                        {formatTimeMs(event.timestamp)}
-                      </span>
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              <StateHistoryList items={stateHistoryItems} effectiveKey={effectiveKey} onSelect={setSelectedKey} />
             )}
           </div>
         </div>
 
         <ColumnResizeHandle
-          label="Resize Run Event and Event Detail columns"
+          label="Resize Event and Event Detail columns"
           value={columnBoundaryPercent(columnRatios, 1)}
           onPointerDown={(event) => startResizeColumns(1, event)}
           onKeyDown={(event) => resizeColumnsWithKeyboard(1, event)}
         />
 
-        <div aria-label="Event detail" className="flex min-h-0 min-w-0 flex-col">
+        <div aria-label={panelView === "events" ? "Event detail" : "State change detail"} className="flex min-h-0 min-w-0 flex-col">
           <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
-            <span className="text-xs font-semibold">Event Detail</span>
+            <span className="text-xs font-semibold">{panelView === "events" ? "Event Detail" : "State Detail"}</span>
           </div>
           <div className="min-h-0 flex-1 overflow-auto p-3">
             {selectedEvent ? (
               <RunEventDetail event={selectedEvent} />
             ) : (
-              <div className="text-sm text-muted-foreground">Select an event</div>
+              <div className="text-sm text-muted-foreground">
+                {panelView === "events" ? "Select an event" : "No state changes recorded"}
+              </div>
             )}
           </div>
         </div>
       </div>
     </section>
   );
+}
+
+function EventHistoryList({
+  items,
+  effectiveKey,
+  onSelect,
+  hasEvents,
+}: {
+  items: Array<{ event: RuntimeEvent; key: string }>;
+  effectiveKey: string | null;
+  onSelect: (key: string) => void;
+  hasEvents: boolean;
+}) {
+  if (items.length === 0) {
+    return <div className="p-3 text-sm text-muted-foreground">{hasEvents ? "No matching events" : "No run events"}</div>;
+  }
+  return (
+    <ul className="divide-y divide-border">
+      {items.map(({ event, key }) => (
+        <li key={key}>
+          <button
+            type="button"
+            onClick={() => onSelect(key)}
+            className={cn(
+              "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
+              effectiveKey === key && "bg-accent text-accent-foreground"
+            )}
+          >
+            {event.type.startsWith("run.") ? (
+              <span className="col-span-2 min-w-0 truncate" title={event.type}>
+                <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
+                  {event.type}
+                </StatusText>
+              </span>
+            ) : (
+              <>
+                <span className="truncate font-mono" title={event.node_id || event.run_id}>
+                  {event.node_id || event.run_id || "—"}
+                </span>
+                <span className="min-w-0 truncate" title={event.type}>
+                  <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
+                    {event.type}
+                  </StatusText>
+                </span>
+              </>
+            )}
+            <span className="truncate text-right text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function StateHistoryList({
+  items,
+  effectiveKey,
+  onSelect,
+}: {
+  items: Array<StateHistoryEntry & { key: string }>;
+  effectiveKey: string | null;
+  onSelect: (key: string) => void;
+}) {
+  if (items.length === 0) {
+    return <div className="p-3 text-sm text-muted-foreground">No state changes recorded</div>;
+  }
+  return (
+    <ul className="divide-y divide-border">
+      {items.map(({ event, changes, key }) => (
+        <li key={key}>
+          <button
+            type="button"
+            onClick={() => onSelect(key)}
+            className={cn(
+              "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] gap-x-2 gap-y-1 px-3 py-1.5 text-left text-xs hover:bg-accent/40",
+              effectiveKey === key && "bg-accent text-accent-foreground"
+            )}
+          >
+            <span className="truncate font-mono" title={event.node_id || event.run_id}>
+              {event.node_id || event.run_id || "—"}
+            </span>
+            <span className="min-w-0 truncate text-muted-foreground">
+              {changes.length} {changes.length === 1 ? "path" : "paths"}
+            </span>
+            <span className="truncate text-right text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
+            <span className="col-span-3 flex min-w-0 flex-wrap gap-1">
+              {changes.slice(0, 4).map((change, index) => (
+                <span
+                  key={`${change.path}-${index}`}
+                  className="flex min-w-0 max-w-full items-center gap-1 rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[10px]"
+                  title={`${change.kind}: ${change.path}`}
+                >
+                  <span className={stateChangeKindClass(change.kind)}>{stateChangeKindSymbol(change.kind)}</span>
+                  <span className="truncate">{change.path}</span>
+                </span>
+              ))}
+              {changes.length > 4 ? (
+                <span className="rounded bg-muted/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">+{changes.length - 4}</span>
+              ) : null}
+            </span>
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function stateChangeKindSymbol(kind: StateChangeKind): string {
+  switch (kind) {
+    case "added":
+      return "+";
+    case "removed":
+      return "−";
+    case "updated":
+      return "~";
+    default:
+      return "•";
+  }
+}
+
+function stateChangeKindClass(kind: StateChangeKind): string {
+  switch (kind) {
+    case "added":
+      return "text-emerald-600 dark:text-emerald-300";
+    case "removed":
+      return "text-rose-600 dark:text-rose-300";
+    case "updated":
+      return "text-amber-600 dark:text-amber-300";
+    default:
+      return "text-muted-foreground";
+  }
 }
 
 function ColumnResizeHandle({

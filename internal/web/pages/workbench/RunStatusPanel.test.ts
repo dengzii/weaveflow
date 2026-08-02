@@ -12,7 +12,7 @@ describe("RunStatusPanel", () => {
         selectedRunId: "run-new",
         onSelectRun: () => undefined,
         onDeleteRun: () => undefined,
-        events: [runtimeEvent()],
+        events: [runtimeEvent(), stateChangeEvent()],
         onHide: () => undefined,
       })
     );
@@ -20,12 +20,19 @@ describe("RunStatusPanel", () => {
     expect(markup).toContain(
       "grid-template-columns:minmax(0, 1fr) 1px minmax(0, 1.5fr) 1px minmax(0, 2fr)"
     );
-    expect(markup).toContain('aria-label="Resize Run and Run Event columns"');
-    expect(markup).toContain('aria-label="Resize Run Event and Event Detail columns"');
+    expect(markup).toContain('aria-label="Resize Run and Event columns"');
+    expect(markup).toContain('aria-label="Resize Event and Event Detail columns"');
     expect(markup).toContain('aria-label="Run list"');
-    expect(markup).toContain('aria-label="Run event list"');
+    expect(markup).toContain('aria-label="Event list"');
     expect(markup).toContain('aria-label="Event detail"');
-    expect(markup).toMatch(/Run Event<\/span><div class="ml-auto[^>]*>.*aria-label="Filter events"/);
+    expect(markup).toContain('aria-label="Run history view"');
+    expect(markup).toContain('role="tab" aria-selected="true"');
+    expect(markup).toContain(">Event</button>");
+    expect(markup).toContain(">State</button>");
+    expect(markup).not.toContain("data-state-history-count");
+    expect(markup).not.toContain("Run Event");
+    expect(markup).not.toContain("State History");
+    expect(markup.indexOf('aria-label="Run history view"')).toBeLessThan(markup.indexOf('aria-label="Filter events"'));
   });
 
   test("resizes adjacent columns while preserving the total ratio", () => {
@@ -97,6 +104,23 @@ function runtimeEvent(): RuntimeEvent {
     node_id: "llm",
     type: "nodes.started",
     timestamp: "2026-07-30T02:00:01Z",
+  };
+}
+
+function stateChangeEvent(): RuntimeEvent {
+  return {
+    id: "state-1",
+    run_id: "run-new",
+    step_id: "step-1",
+    node_id: "llm",
+    type: "state.changed",
+    timestamp: "2026-07-30T02:00:02Z",
+    payload: {
+      changes: [
+        { path: "shared.answer", after: "ready" },
+        { path: "shared.count", before: 1, after: 2 },
+      ],
+    },
   };
 }
 

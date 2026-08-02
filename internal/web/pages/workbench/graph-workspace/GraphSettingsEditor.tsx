@@ -3,7 +3,7 @@ import { Braces, Plus, Trash2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
-import type { GraphSettings, GraphSettingsUpdate } from "../../../types";
+import type { RuntimeSettings, RuntimeSettingsUpdate } from "../../../types";
 import { Field } from "./shared";
 import {
   MODEL_API_KEY_MASK,
@@ -16,12 +16,12 @@ import {
 } from "./graphSettingsEditorModel";
 import type { EditableEnvironmentVariable, EditableGraphModel } from "./graphSettingsEditorModel";
 
-export function GraphSettingsEditor({
+export function RuntimeSettingsEditor({
   settings,
-  onUpdateGraphSettings,
+  onUpdateRuntimeSettings,
 }: {
-  settings: GraphSettings | null;
-  onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
+  settings: RuntimeSettings | null;
+  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
 }) {
   const [models, setModels] = useState<EditableGraphModel[]>([]);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
@@ -101,7 +101,7 @@ export function GraphSettingsEditor({
 
   async function save() {
     let environment: Record<string, string>;
-    let modelUpdates: GraphSettingsUpdate["models"];
+    let modelUpdates: RuntimeSettingsUpdate["models"];
     try {
       environment = normalizeEnvironmentSettings(environmentRows);
       modelUpdates = normalizeModelSettings(models);
@@ -113,7 +113,7 @@ export function GraphSettingsEditor({
     setSaving(true);
     setStatus("");
     try {
-      await onUpdateGraphSettings({
+      await onUpdateRuntimeSettings({
         environment,
         models: modelUpdates,
         memory: {

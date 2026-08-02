@@ -9,7 +9,7 @@ import {
   reconcileRunEvents,
   runControlModeFromRun,
   runStatusFromEvent,
-  runTriggerTypesFromRecords,
+  runTriggerTypesFromInvocations,
   selectedRunIDAfterDeletion,
   upsertRunFromEvent,
 } from "./workbenchRunModel";
@@ -109,9 +109,9 @@ describe("workbench run model", () => {
     ]);
   });
 
-  test("maps Trigger records to runs in the current graph", () => {
+  test("maps Trigger invocations to runs in the current graph", () => {
     expect(
-      runTriggerTypesFromRecords(
+      runTriggerTypesFromInvocations(
         [
           {
             id: "record-1",

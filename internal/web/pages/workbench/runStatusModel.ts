@@ -4,6 +4,17 @@ import type { StatusTone } from "./shared";
 
 export type EventFilterMode = "include" | "exclude";
 export type ColumnRatios = [number, number, number];
+export type StateChangeKind = "added" | "updated" | "removed" | "changed";
+
+export interface StateHistoryChange {
+  path: string;
+  kind: StateChangeKind;
+}
+
+export interface StateHistoryEntry {
+  event: RuntimeEvent;
+  changes: StateHistoryChange[];
+}
 
 export interface StoredEventFilters {
   open?: boolean;
@@ -24,6 +35,38 @@ const PANEL_HEIGHT_STORAGE_KEY = "weaveflow.workbench.runStatus.height";
 
 export function eventListKey(event: RuntimeEvent, index: number): string {
   return `${event.id || event.run_id || "event"}-${index}`;
+}
+
+export function stateHistoryEntries(events: RuntimeEvent[]): StateHistoryEntry[] {
+  return events
+    .filter((event) => event.type === "state.changed")
+    .map((event) => ({ event, changes: stateChanges(event.payload) }));
+}
+
+function stateChanges(payload: unknown): StateHistoryChange[] {
+  if (!isRecord(payload) || !Array.isArray(payload.changes)) return [];
+  return payload.changes.map((change, index) => {
+    if (!isRecord(change)) {
+      return { path: `change ${index + 1}`, kind: "changed" };
+    }
+    return {
+      path: typeof change.path === "string" && change.path.trim() ? change.path.trim() : `change ${index + 1}`,
+      kind: stateChangeKind(change),
+    };
+  });
+}
+
+function stateChangeKind(change: Record<string, unknown>): StateChangeKind {
+  const hasBefore = Object.prototype.hasOwnProperty.call(change, "before");
+  const hasAfter = Object.prototype.hasOwnProperty.call(change, "after");
+  if (hasBefore && hasAfter) return "updated";
+  if (hasAfter) return "added";
+  if (hasBefore) return "removed";
+  return "changed";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function readStoredPanelHeight(): number {

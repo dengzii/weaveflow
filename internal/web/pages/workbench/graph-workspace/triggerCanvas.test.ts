@@ -79,10 +79,38 @@ describe("trigger canvas projection", () => {
 
   test("validates channel-neutral chat trigger settings", () => {
     const chat = trigger("chat", "graph-a", "chat");
-    chat.chat = { reply_path: "shared.final.answer", stream_updates: true, stream_node_ids: ["answer"] };
+    chat.chat = {
+      reply_path: "shared.final.answer",
+      stream_updates: true,
+      stream_node_ids: ["answer"],
+      history_limit: 10,
+      state_bindings: {
+        conversation: "scopes.agent.conversation",
+        raw_history: "scopes.chat.raw_history",
+        user_id: "scopes.chat.user_id",
+      },
+    };
     expect(triggerConfigurationValid(chat)).toBe(true);
 
     chat.chat.stream_node_ids = [""];
+    expect(triggerConfigurationValid(chat)).toBe(false);
+  });
+
+  test("rejects invalid chat history and state binding settings", () => {
+    const chat = trigger("chat", "graph-a", "chat");
+    chat.chat = { history_limit: 501 };
+    expect(triggerConfigurationValid(chat)).toBe(false);
+
+    chat.chat = { state_bindings: { raw_history: "runtime.chat.history" } };
+    expect(triggerConfigurationValid(chat)).toBe(false);
+
+    chat.chat = { state_bindings: { user_id: "shared.request.input.user_id" } };
+    expect(triggerConfigurationValid(chat)).toBe(false);
+
+    chat.chat = { state_bindings: { raw_history: "scopes.chat", message_id: "scopes.chat.message_id" } };
+    expect(triggerConfigurationValid(chat)).toBe(false);
+
+    chat.chat = { state_bindings: { conversation: "scopes.chat", message_id: "scopes.chat.messages.message_id" } };
     expect(triggerConfigurationValid(chat)).toBe(false);
   });
 });

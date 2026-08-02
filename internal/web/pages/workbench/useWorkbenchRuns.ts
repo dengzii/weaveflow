@@ -2,9 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelRun,
   deleteRun,
-  getRunDetail,
+  getRunInspection,
   listRuns,
-  listTriggerRecords,
+  listTriggerInvocations,
   pauseRun,
   resumeRun,
   startRun,
@@ -34,7 +34,7 @@ import {
   reconcileRunEvents,
   runControlModeFromRun,
   runStatusFromEvent,
-  runTriggerTypesFromRecords,
+  runTriggerTypesFromInvocations,
   selectedRunIDAfterDeletion,
   upsertRunFromEvent,
   type GraphIdentity,
@@ -110,7 +110,7 @@ export function useWorkbenchRuns({
   const ignoredHumanInterruptsRef = useRef<Set<string>>(new Set());
   const humanPromptCheckpointRef = useRef("");
 
-  const clearSelectedRunDetail = useCallback(() => {
+  const clearSelectedRunInspection = useCallback(() => {
     setSteps([]);
     setStoredEvents([]);
     setRunInterrupt(null);
@@ -130,8 +130,8 @@ export function useWorkbenchRuns({
     selectedRunIDRef.current = runID;
     selectedRunRequestRef.current += 1;
     setSelectedRunID(runID);
-    clearSelectedRunDetail();
-  }, [clearSelectedRunDetail]);
+    clearSelectedRunInspection();
+  }, [clearSelectedRunInspection]);
 
   const reportError = useCallback((error: unknown): string => {
     const message = error instanceof Error ? error.message : String(error);
@@ -173,8 +173,8 @@ export function useWorkbenchRuns({
     updateSelectedRunID("");
     setLiveEvents([]);
     setRunTriggerTypes({});
-    clearSelectedRunDetail();
-  }, [clearSelectedRunDetail, updateRuns, updateSelectedRunID]);
+    clearSelectedRunInspection();
+  }, [clearSelectedRunInspection, updateRuns, updateSelectedRunID]);
 
   const maybeOpenUserInputPrompt = useCallback((interrupt?: RunInterrupt | null) => {
     const prompt = userInputPromptFromInterrupt(interrupt, definition);
@@ -196,13 +196,13 @@ export function useWorkbenchRuns({
     autoSelect = true
   ) => {
     const contextVersion = runContextVersionRef.current;
-    const [nextRuns, triggerRecords] = await Promise.all([
+    const [nextRuns, triggerInvocations] = await Promise.all([
       listRuns(identity.id),
-      listTriggerRecords(undefined, 500).catch(() => []),
+      listTriggerInvocations(undefined, 500).catch(() => []),
     ]);
     if (runContextVersionRef.current !== contextVersion) return;
     updateRuns(nextRuns ?? []);
-    setRunTriggerTypes(runTriggerTypesFromRecords(triggerRecords, identity.id));
+    setRunTriggerTypes(runTriggerTypesFromInvocations(triggerInvocations, identity.id));
     if (!autoSelect) return;
     const currentRunID = selectedRunIDRef.current;
     const nextRunID = currentRunID && nextRuns.some((run) => run.run_id === currentRunID)
@@ -223,11 +223,11 @@ export function useWorkbenchRuns({
     const contextVersion = runContextVersionRef.current;
     const requestVersion = ++selectedRunRequestRef.current;
     if (!runID) {
-      clearSelectedRunDetail();
+      clearSelectedRunInspection();
       return;
     }
     const graphID = runsRef.current.find((run) => run.run_id === runID)?.graph_id || graphIdentityRef.current.id;
-    const detail = await getRunDetail(runID, graphID);
+    const inspection = await getRunInspection(runID, graphID);
     if (
       runContextVersionRef.current !== contextVersion ||
       selectedRunRequestRef.current !== requestVersion ||
@@ -235,11 +235,11 @@ export function useWorkbenchRuns({
     ) {
       return;
     }
-    setSteps(detail.steps);
-    setStoredEvents(detail.events);
-    setRunInterrupt(detail.interrupt ?? null);
-    updateRuns((current) => current.map((run) => (run.run_id === detail.run.run_id ? detail.run : run)));
-  }, [clearSelectedRunDetail, updateRuns]);
+    setSteps(inspection.steps);
+    setStoredEvents(inspection.events);
+    setRunInterrupt(inspection.interrupt ?? null);
+    updateRuns((current) => current.map((run) => (run.run_id === inspection.run.run_id ? inspection.run : run)));
+  }, [clearSelectedRunInspection, updateRuns]);
 
   const refreshPausedRun = useCallback(async (
     runID: string,
@@ -249,13 +249,13 @@ export function useWorkbenchRuns({
     const contextVersion = runContextVersionRef.current;
     try {
       const graphID = runsRef.current.find((run) => run.run_id === runID)?.graph_id || graphIdentityRef.current.id;
-      const detail = await getRunDetail(runID, graphID);
+      const inspection = await getRunInspection(runID, graphID);
       if (runContextVersionRef.current !== contextVersion) return;
       updateRuns((current) => {
-        const exists = current.some((run) => run.run_id === detail.run.run_id);
+        const exists = current.some((run) => run.run_id === inspection.run.run_id);
         return exists
-          ? current.map((run) => (run.run_id === detail.run.run_id ? detail.run : run))
-          : [...current, detail.run];
+          ? current.map((run) => (run.run_id === inspection.run.run_id ? inspection.run : run))
+          : [...current, inspection.run];
       });
 
       const selectedRun = selectedRunIDRef.current;
@@ -264,10 +264,10 @@ export function useWorkbenchRuns({
 
       updateSelectedRunID(runID);
       setRunStatusVisible(true);
-      setSteps(detail.steps);
-      setStoredEvents(detail.events);
-      setRunInterrupt(detail.interrupt ?? null);
-      if (options.openHumanPrompt) maybeOpenUserInputPrompt(detail.interrupt ?? null);
+      setSteps(inspection.steps);
+      setStoredEvents(inspection.events);
+      setRunInterrupt(inspection.interrupt ?? null);
+      if (options.openHumanPrompt) maybeOpenUserInputPrompt(inspection.interrupt ?? null);
     } catch (error) {
       reportError(error);
     }
@@ -327,7 +327,7 @@ export function useWorkbenchRuns({
     updateSelectedRunID("");
     setLiveEvents([]);
     ignoredHumanInterruptsRef.current.clear();
-    clearSelectedRunDetail();
+    clearSelectedRunInspection();
     setRunStatusVisible(true);
     try {
       const result = await startRun(initialState);
@@ -345,7 +345,7 @@ export function useWorkbenchRuns({
     } finally {
       if (runContextVersionRef.current === runContextVersion) setRunBusy(false);
     }
-  }, [clearSelectedRunDetail, onNotify, refreshRuns, refreshSelectedRun, reportError, updateSelectedRunID]);
+  }, [clearSelectedRunInspection, onNotify, refreshRuns, refreshSelectedRun, reportError, updateSelectedRunID]);
 
   const controlSelectedRun = useCallback(async (kind: "pause" | "cancel") => {
     const runID = selectedRunIDRef.current;
@@ -396,7 +396,7 @@ export function useWorkbenchRuns({
       updateSelectedRunID(nextRunID);
       if (wasSelected || !nextRunID) {
         setLiveEvents([]);
-        clearSelectedRunDetail();
+        clearSelectedRunInspection();
       }
       if (launchRunIDRef.current === runID) launchRunIDRef.current = "";
       await refreshRuns(graphIdentityRef.current, false);
@@ -407,7 +407,7 @@ export function useWorkbenchRuns({
     } finally {
       setRunBusy(false);
     }
-  }, [clearSelectedRunDetail, onNotify, refreshRuns, refreshSelectedRun, reportError, updateRuns, updateSelectedRunID]);
+  }, [clearSelectedRunInspection, onNotify, refreshRuns, refreshSelectedRun, reportError, updateRuns, updateSelectedRunID]);
 
   const refreshAfterResumeFailure = useCallback(async (runID: string) => {
     try {

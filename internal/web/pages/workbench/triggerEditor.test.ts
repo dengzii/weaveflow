@@ -77,6 +77,85 @@ describe("trigger editor payload", () => {
     });
   });
 
+  test("builds optional chat history and metadata state bindings", () => {
+    const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    values.chatHistoryLimit = "10";
+    values.chatConversationStatePath = " scopes.agent.conversation ";
+    values.chatRawHistoryStatePath = " scopes.chat.raw_history ";
+    values.chatTriggerIDStatePath = "scopes.chat.trigger_id";
+    values.chatChannelStatePath = "scopes.chat.channel";
+    values.chatUserIDStatePath = "scopes.chat.user_id";
+    values.chatConversationIDStatePath = "scopes.chat.conversation_id";
+    values.chatMessageIDStatePath = "scopes.chat.message_id";
+
+    expect(buildTriggerPayload(values, null)).toMatchObject({
+      chat: {
+        history_limit: 10,
+        state_bindings: {
+          conversation: "scopes.agent.conversation",
+          raw_history: "scopes.chat.raw_history",
+          trigger_id: "scopes.chat.trigger_id",
+          channel: "scopes.chat.channel",
+          user_id: "scopes.chat.user_id",
+          conversation_id: "scopes.chat.conversation_id",
+          message_id: "scopes.chat.message_id",
+        },
+      },
+    });
+  });
+
+  test("loads optional chat state settings when editing", () => {
+    const chat: Trigger = {
+      id: "chat",
+      type: "chat",
+      enabled: true,
+      target: { graph_id: "graph-a" },
+      chat: {
+        history_limit: 25,
+        state_bindings: {
+          conversation: "scopes.agent.conversation",
+          raw_history: "scopes.chat.raw_history",
+          user_id: "scopes.chat.user_id",
+        },
+      },
+      created_at: "2026-07-29T00:00:00Z",
+      updated_at: "2026-07-29T00:00:00Z",
+    };
+
+    const values = triggerEditorValues(chat, { graph_id: "fallback" });
+    expect(values.chatHistoryLimit).toBe("25");
+    expect(values.chatConversationStatePath).toBe("scopes.agent.conversation");
+    expect(values.chatRawHistoryStatePath).toBe("scopes.chat.raw_history");
+    expect(values.chatUserIDStatePath).toBe("scopes.chat.user_id");
+    expect(values.chatMessageIDStatePath).toBe("");
+  });
+
+  test("rejects invalid chat history rounds and state bindings", () => {
+    for (const historyLimit of ["-1", "1.5", "501"]) {
+      const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+      values.chatHistoryLimit = historyLimit;
+      expect(() => buildTriggerPayload(values, null)).toThrow("integer between 0 and 500");
+    }
+
+    const invalidSection = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    invalidSection.chatRawHistoryStatePath = "runtime.chat.history";
+    expect(() => buildTriggerPayload(invalidSection, null)).toThrow("section runtime is not allowed");
+
+    const inputOverlap = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    inputOverlap.chatUserIDStatePath = "shared.request.input.user_id";
+    expect(() => buildTriggerPayload(inputOverlap, null)).toThrow("overlaps the chat input path");
+
+    const bindingOverlap = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    bindingOverlap.chatRawHistoryStatePath = "scopes.chat";
+    bindingOverlap.chatUserIDStatePath = "scopes.chat.user_id";
+    expect(() => buildTriggerPayload(bindingOverlap, null)).toThrow("overlaps raw history state path");
+
+    const conversationOverlap = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    conversationOverlap.chatConversationStatePath = "scopes.chat";
+    conversationOverlap.chatUserIDStatePath = "scopes.chat.messages.user_id";
+    expect(() => buildTriggerPayload(conversationOverlap, null)).toThrow("overlaps conversation state path");
+  });
+
   test("adds a confirmed chat setup session only to the transport payload", () => {
     const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     values.chatChannel = "weixin";
@@ -152,7 +231,7 @@ describe("trigger editor payload", () => {
 
   test("builds full webhook URLs with the api_key query parameter", () => {
     expect(webhookTriggerURLs("incoming hook")).toEqual({
-      post: "http://localhost:8080/triggers/incoming%20hook?api_key=YOUR_API_KEY",
+		post: "http://localhost:8080/triggers/incoming%20hook/invocations?api_key=YOUR_API_KEY",
       get: "http://localhost:8080/triggers/incoming%20hook/webhook?api_key=YOUR_API_KEY",
     });
   });

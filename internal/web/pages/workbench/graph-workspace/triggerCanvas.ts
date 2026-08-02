@@ -64,6 +64,10 @@ export function triggerConfigurationValid(trigger: Trigger): boolean {
   if (trigger.type === "chat") {
     if (!trigger.chat) return false;
     if (trigger.chat.reply_path !== undefined && (typeof trigger.chat.reply_path !== "string" || !trigger.chat.reply_path.trim())) return false;
+    if (trigger.chat.history_limit !== undefined && (
+      !Number.isInteger(trigger.chat.history_limit) || trigger.chat.history_limit < 0 || trigger.chat.history_limit > 500
+    )) return false;
+    if (!chatStateBindingsValid(trigger.chat.state_bindings)) return false;
     return trigger.chat.stream_node_ids === undefined || (
       Array.isArray(trigger.chat.stream_node_ids) && trigger.chat.stream_node_ids.every((nodeID) => typeof nodeID === "string" && Boolean(nodeID.trim()))
     );
@@ -80,6 +84,34 @@ export function triggerConfigurationValid(trigger: Trigger): boolean {
   } catch {
     return false;
   }
+}
+
+function chatStateBindingsValid(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!isRecord(value)) return false;
+  const configured: string[] = [];
+  for (const key of ["conversation", "raw_history", "trigger_id", "channel", "user_id", "conversation_id", "message_id"]) {
+    const rawPath = value[key];
+    if (rawPath === undefined || rawPath === "") continue;
+    if (typeof rawPath !== "string") return false;
+    const path = normalizeChatStatePath(rawPath);
+    const effectivePath = key === "conversation" && path ? `${path}.messages` : path;
+    if (!effectivePath || statePathsOverlap(effectivePath, "shared.request.input")) return false;
+    if (configured.some((current) => statePathsOverlap(effectivePath, current))) return false;
+    configured.push(effectivePath);
+  }
+  return true;
+}
+
+function normalizeChatStatePath(value: string): string | undefined {
+  const segments = value.trim().split(".").map((segment) => segment.trim());
+  if (segments.length < 2 || segments.some((segment) => !segment)) return undefined;
+  if (segments[0] !== "shared" && segments[0] !== "scopes") return undefined;
+  return segments.join(".");
+}
+
+function statePathsOverlap(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}.`) || right.startsWith(`${left}.`);
 }
 
 export function withTriggerCanvasPosition(

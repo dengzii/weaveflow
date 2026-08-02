@@ -43,7 +43,7 @@ go run ./cmd/server -addr :8080 -prefix /debug -cors-origins https://web.example
 ```
 
 The Graph workspace supports local graph drafts in browser `localStorage`, node type palette creation from `/registry`,
-node/edge editing, upload to `POST /graph`, and run debugging through the server API.
+node/edge editing, upload to `PUT /graph`, and run debugging through the server API.
 
 Graph definitions use version `2.0`. The Graph Inspector selects registered State Modules; Node and edge Condition
 Inspectors render a separate State Bindings section from each component's `state_ports`. The path picker filters module

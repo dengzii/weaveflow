@@ -9,18 +9,19 @@ import type {
   GraphDefinition,
   GraphInfo,
   GraphLoadResult,
-  GraphSettings,
-  GraphSettingsUpdate,
   InitialStateRequirements,
   RegistryInfo,
-  RunDetail,
+  RunInspection,
+  RunInterrupt,
   RunRecord,
   RunResult,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
   RuntimeEvent,
   StepRecord,
   ToolsInfo,
   Trigger,
-  TriggerRecord,
+  TriggerInvocation,
 } from "./types";
 import { resolveBackendUrl } from "./lib/backend";
 
@@ -32,7 +33,7 @@ async function readResponse<T>(resp: Response): Promise<T> {
     payload = JSON.parse(text) as ApiResponse<T>;
   }
   if (!resp.ok) {
-    throw new Error(payload?.error || text || resp.statusText);
+    throw new Error(payload?.error?.message || text || resp.statusText);
   }
   if (resp.status === 204) {
     return undefined as T;
@@ -70,12 +71,12 @@ export async function getGraphDefinition(): Promise<GraphDefinition> {
   return apiFetch<GraphDefinition>("/graph/definition");
 }
 
-export async function getGraphSettings(): Promise<GraphSettings> {
-  return apiFetch<GraphSettings>("/graph/settings");
+export async function getRuntimeSettings(): Promise<RuntimeSettings> {
+  return apiFetch<RuntimeSettings>("/runtime/settings");
 }
 
-export async function updateGraphSettings(settings: GraphSettingsUpdate): Promise<GraphSettings> {
-  return apiFetch<GraphSettings>("/graph/settings", {
+export async function updateRuntimeSettings(settings: RuntimeSettingsUpdate): Promise<RuntimeSettings> {
+  return apiFetch<RuntimeSettings>("/runtime/settings", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(settings),
@@ -108,7 +109,7 @@ export async function setGraphDefinition(
   graphVersion?: string
 ): Promise<GraphLoadResult> {
   return apiFetch<GraphLoadResult>("/graph", {
-    method: "POST",
+    method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       graph_id: graphId || undefined,
@@ -118,12 +119,12 @@ export async function setGraphDefinition(
   });
 }
 
-export async function pushGraphDefinition(
+export async function publishGraphDefinition(
   definition: GraphDefinition,
   graphId?: string,
   graphVersion?: string
 ): Promise<GraphLoadResult> {
-  return apiFetch<GraphLoadResult>("/graph/push", {
+  return apiFetch<GraphLoadResult>("/graph/publish", {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -139,7 +140,7 @@ export async function getRegistry(): Promise<RegistryInfo> {
 }
 
 export async function getTools(): Promise<ToolsInfo> {
-  return apiFetch<ToolsInfo>("/tools");
+  return apiFetch<ToolsInfo>("/runtime/tools");
 }
 
 export async function startChatChannelSetup(channelID: string, triggerID?: string): Promise<ChatChannelSetupResult> {
@@ -182,14 +183,16 @@ export async function listTriggers(): Promise<Trigger[]> {
   return items as Trigger[];
 }
 
-export async function listTriggerRecords(triggerID?: string, limit = 100): Promise<TriggerRecord[]> {
+export async function listTriggerInvocations(triggerID?: string, limit = 100): Promise<TriggerInvocation[]> {
   const query = new URLSearchParams({ limit: String(limit) });
-  if (triggerID) query.set("trigger_id", triggerID);
-  const items = await apiFetch<unknown>(`/trigger-records?${query.toString()}`);
+  const path = triggerID
+    ? `/triggers/${encodeURIComponent(triggerID)}/invocations`
+    : "/trigger-invocations";
+  const items = await apiFetch<unknown>(`${path}?${query.toString()}`);
   if (!Array.isArray(items)) {
-    throw new Error("invalid trigger record list response");
+    throw new Error("invalid trigger invocation list response");
   }
-  return items as TriggerRecord[];
+  return items as TriggerInvocation[];
 }
 
 export async function createTrigger(input: Record<string, unknown>): Promise<Trigger> {
@@ -248,8 +251,22 @@ export async function resumeCheckpoint(checkpointId: string, input: unknown): Pr
   });
 }
 
-export async function getRunDetail(runId: string, graphId?: string): Promise<RunDetail> {
-  return apiFetch<RunDetail>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/detail`, graphId));
+export async function getRun(runId: string, graphId?: string): Promise<RunRecord> {
+  return apiFetch<RunRecord>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}`, graphId));
+}
+
+export async function getRunInterrupt(runId: string, graphId?: string): Promise<RunInterrupt | null> {
+  return apiFetch<RunInterrupt | null>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/interrupt`, graphId));
+}
+
+export async function getRunInspection(runId: string, graphId?: string): Promise<RunInspection> {
+  const [run, steps, events, interrupt] = await Promise.all([
+    getRun(runId, graphId),
+    listSteps(runId, graphId),
+    listEvents(runId, graphId),
+    getRunInterrupt(runId, graphId),
+  ]);
+  return { run, steps, events, interrupt };
 }
 
 export async function pauseRun(runId: string): Promise<RunRecord> {
@@ -260,8 +277,8 @@ export async function cancelRun(runId: string, graphId?: string): Promise<RunRec
   return apiFetch<RunRecord>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/cancel`, graphId), { method: "POST" });
 }
 
-export async function deleteRun(runId: string, graphId?: string): Promise<RunRecord> {
-  return apiFetch<RunRecord>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}`, graphId), { method: "DELETE" });
+export async function deleteRun(runId: string, graphId?: string): Promise<void> {
+  await apiFetch<void>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}`, graphId), { method: "DELETE" });
 }
 
 export async function listSteps(runId: string, graphId?: string): Promise<StepRecord[]> {

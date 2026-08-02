@@ -24,7 +24,7 @@ export function WorkbenchShell({
   tab,
   streamStatus,
   busy,
-  pushing,
+  publishing,
   definition,
   runControlMode,
   canResume,
@@ -33,7 +33,7 @@ export function WorkbenchShell({
   runStatusVisible,
   hasRunStatus,
   onRun,
-  onPush,
+  onPublish,
   onPause,
   onStop,
   onResume,
@@ -44,7 +44,7 @@ export function WorkbenchShell({
   tab: WorkspaceTab;
   streamStatus: StreamStatus;
   busy: boolean;
-  pushing: boolean;
+  publishing: boolean;
   definition: GraphDefinition | null;
   runControlMode: RunControlMode;
   canResume: boolean;
@@ -53,7 +53,7 @@ export function WorkbenchShell({
   runStatusVisible: boolean;
   hasRunStatus: boolean;
   onRun: () => void;
-  onPush: () => void;
+  onPublish: () => void;
   onPause: () => void;
   onStop: () => void;
   onResume: () => void;
@@ -87,9 +87,9 @@ export function WorkbenchShell({
           )}
           <div className="flex-1" />
           {tab === "graph" ? (
-            <Button variant="outline" size="sm" onClick={onPush} disabled={busy || !definition} title="Push Draft to Official">
-              {pushing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              Push
+            <Button variant="outline" size="sm" onClick={onPublish} disabled={busy || !definition} title="Publish Draft as Official">
+              {publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
+              Publish
             </Button>
           ) : null}
           {tab === "graph" && runControlMode === "active" ? (
@@ -116,7 +116,7 @@ export function WorkbenchShell({
             </>
           ) : tab === "graph" ? (
             <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run Draft graph">
-              {busy && !pushing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              {busy && !publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               Run Draft
             </Button>
           ) : null}

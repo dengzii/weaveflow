@@ -20,11 +20,11 @@ import type {
   GraphDefinition,
   GraphEdgeSpec,
   GraphNodeSpec,
-  GraphSettings,
-  GraphSettingsUpdate,
   InitialStateRequirements,
   NodeTypeSchema,
   RegistryInfo,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
   StepRecord,
   ToolDefinition,
   Trigger,
@@ -93,8 +93,8 @@ interface GraphWorkspaceProps {
   selectedRunId: string;
   registry: RegistryInfo | null;
   toolDefinitions: ToolDefinition[];
-  graphSettings: GraphSettings | null;
-  onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
+  runtimeSettings: RuntimeSettings | null;
+  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
   graphId: string;
   graphVersion: string;
   graphSwitchDisabled: boolean;
@@ -118,8 +118,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   selectedRunId,
   registry,
   toolDefinitions,
-  graphSettings,
-  onUpdateGraphSettings,
+  runtimeSettings,
+  onUpdateRuntimeSettings,
   graphId,
   graphVersion,
   graphSwitchDisabled,
@@ -824,8 +824,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         registry={registry}
         registryLoaded={Boolean(registry)}
         toolDefinitions={toolDefinitions}
-        graphSettings={graphSettings}
-        onUpdateGraphSettings={onUpdateGraphSettings}
+        runtimeSettings={runtimeSettings}
+        onUpdateRuntimeSettings={onUpdateRuntimeSettings}
         selectedEdge={selectedEdge}
         selectedNode={selectedNode}
         selectedVirtualLoop={selectedVirtualLoop}

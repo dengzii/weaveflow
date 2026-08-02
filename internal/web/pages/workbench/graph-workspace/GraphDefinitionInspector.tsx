@@ -3,14 +3,14 @@ import { Input } from "../../../components/ui/input";
 import { Textarea } from "../../../components/ui/textarea";
 import type {
   GraphDefinition,
-  GraphSettings,
-  GraphSettingsUpdate,
   InitialStateRequirements,
   RegistryInfo,
+  RuntimeSettings,
+  RuntimeSettingsUpdate,
 } from "../../../types";
 import { StatusText } from "../shared";
 import { CollapsibleInspectorBlock, InspectorBlock } from "./shared";
-import { GraphSettingsEditor } from "./GraphSettingsEditor";
+import { RuntimeSettingsEditor } from "./GraphSettingsEditor";
 import { InitialStateRequirementList } from "./InitialStateRequirementList";
 import { RunInputEditor } from "./RunInputEditor";
 import { StateModulesEditor } from "./StateModulesEditor";
@@ -21,9 +21,9 @@ interface GraphDefinitionInspectorProps {
   initialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
   initialStateText: string;
-  graphSettings: GraphSettings | null;
+  runtimeSettings: RuntimeSettings | null;
   registry: RegistryInfo | null;
-  onUpdateGraphSettings: (settings: GraphSettingsUpdate) => Promise<GraphSettings>;
+  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
   onChangeDefinitionText: (value: string) => void;
   onChangeGraphField: <Key extends keyof GraphDefinition>(key: Key, value: GraphDefinition[Key]) => void;
   onChangeInitialStateText: (value: string) => void;
@@ -35,9 +35,9 @@ export function GraphDefinitionInspector({
   initialRequirements,
   initialRequirementsError,
   initialStateText,
-  graphSettings,
+  runtimeSettings,
   registry,
-  onUpdateGraphSettings,
+  onUpdateRuntimeSettings,
   onChangeDefinitionText,
   onChangeGraphField,
   onChangeInitialStateText,
@@ -92,8 +92,8 @@ export function GraphDefinitionInspector({
         {!definition ? <StatusText tone="danger">Invalid graph JSON</StatusText> : null}
       </CollapsibleInspectorBlock>
 
-      <CollapsibleInspectorBlock title="Graph Settings" open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <GraphSettingsEditor settings={graphSettings} onUpdateGraphSettings={onUpdateGraphSettings} />
+      <CollapsibleInspectorBlock title="Runtime Settings" open={settingsOpen} onOpenChange={setSettingsOpen}>
+        <RuntimeSettingsEditor settings={runtimeSettings} onUpdateRuntimeSettings={onUpdateRuntimeSettings} />
       </CollapsibleInspectorBlock>
 
       <InspectorBlock title="Run Input">

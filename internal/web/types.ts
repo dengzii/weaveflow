@@ -1,6 +1,11 @@
 export interface ApiResponse<T> {
-  data?: T;
-  error?: string;
+  data: T;
+  error?: ApiError;
+}
+
+export interface ApiError {
+  code: string;
+  message: string;
 }
 
 export interface GraphDefinition {
@@ -51,16 +56,16 @@ export interface GraphInfo {
   graph_hash?: string;
   graph_snapshot_hash?: string;
   graph_session_id?: string;
+  official?: boolean;
   entry_point?: string;
   finish_point?: string;
 }
 
-export interface GraphSettings {
+export interface RuntimeSettings {
   environment: Record<string, string>;
-  environment_presets?: GraphEnvironmentPreset[];
-  model: GraphModelSettings;
-  models: GraphModelSettings[];
-  memory: GraphMemorySettings;
+  environment_presets?: RuntimeEnvironmentPreset[];
+  models: RuntimeModelSettings[];
+  memory: RuntimeMemorySettings;
 }
 
 export type TriggerType = "webhook" | "schedule" | "chat";
@@ -92,6 +97,18 @@ export interface TriggerChatSpec {
   reply_path?: string;
   stream_updates?: boolean;
   stream_node_ids?: string[];
+  history_limit?: number;
+  state_bindings?: TriggerChatStateBindings;
+}
+
+export interface TriggerChatStateBindings {
+  conversation?: string;
+  raw_history?: string;
+  trigger_id?: string;
+  channel?: string;
+  user_id?: string;
+  conversation_id?: string;
+  message_id?: string;
 }
 
 export interface ChatChannelDefinition {
@@ -156,7 +173,7 @@ export interface TriggerCanvasNode {
   valid: boolean;
 }
 
-export interface TriggerRecord {
+export interface TriggerInvocation {
   id: string;
   trigger_id: string;
   trigger_type: TriggerType;
@@ -168,13 +185,13 @@ export interface TriggerRecord {
   updated_at: string;
 }
 
-export interface GraphEnvironmentPreset {
+export interface RuntimeEnvironmentPreset {
   key: string;
   default_value: string;
   type: "string" | "boolean" | "integer";
 }
 
-export interface GraphModelSettings {
+export interface RuntimeModelSettings {
   id: string;
   enabled: boolean;
   provider: string;
@@ -183,21 +200,21 @@ export interface GraphModelSettings {
   api_key_configured: boolean;
 }
 
-export interface GraphMemorySettings {
+export interface RuntimeMemorySettings {
   enabled: boolean;
   directory?: string;
 }
 
-export interface GraphSettingsUpdate {
+export interface RuntimeSettingsUpdate {
   environment?: Record<string, string>;
-  models?: GraphModelSettingsUpdate[];
+  models?: RuntimeModelSettingsUpdate[];
   memory?: {
     enabled?: boolean;
     directory?: string;
   };
 }
 
-export interface GraphModelSettingsUpdate {
+export interface RuntimeModelSettingsUpdate {
   id?: string;
   enabled?: boolean;
   provider?: string;
@@ -434,13 +451,11 @@ export interface RunResult {
   interrupt?: RunInterrupt;
 }
 
-export interface RunDetail {
+export interface RunInspection {
   run: RunRecord;
   steps: StepRecord[];
-  checkpoints: CheckpointRecord[];
   events: RuntimeEvent[];
-  artifacts: ArtifactRef[];
-  interrupt?: RunInterrupt;
+  interrupt: RunInterrupt | null;
 }
 
 export interface CheckpointDetail {

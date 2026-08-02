@@ -3,7 +3,7 @@ import type {
   RunInterrupt,
   RunRecord,
   RuntimeEvent,
-  TriggerRecord,
+  TriggerInvocation,
   TriggerType,
 } from "../../types";
 import { hasFilledInitialStatePath } from "./graph-workspace/runInputModel";
@@ -110,15 +110,15 @@ export function reconcileRunEvents(
   });
 }
 
-export function runTriggerTypesFromRecords(
-  records: TriggerRecord[],
+export function runTriggerTypesFromInvocations(
+  invocations: TriggerInvocation[],
   graphID: string
 ): Partial<Record<string, TriggerType>> {
   const triggerTypes: Partial<Record<string, TriggerType>> = {};
-  for (const record of records) {
-    const runID = record.run?.run_id;
-    if (record.target.graph_id === graphID && runID) {
-      triggerTypes[runID] = record.trigger_type;
+  for (const invocation of invocations) {
+    const runID = invocation.run?.run_id;
+    if (invocation.target.graph_id === graphID && runID) {
+      triggerTypes[runID] = invocation.trigger_type;
     }
   }
   return triggerTypes;

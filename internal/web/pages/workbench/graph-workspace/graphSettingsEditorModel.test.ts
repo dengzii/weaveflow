@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GraphSettings } from "../../../types";
+import type { RuntimeSettings } from "../../../types";
 import {
   MODEL_API_KEY_MASK,
   environmentRowsFromSettings,
@@ -81,7 +81,7 @@ describe("graph settings editor model", () => {
   });
 });
 
-function graphSettings(): GraphSettings {
+function graphSettings(): RuntimeSettings {
   return {
     environment: {
       Z_VALUE: "z",
