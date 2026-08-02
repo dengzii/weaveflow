@@ -1,15 +1,25 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type {
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
+  ReactNode,
 } from "react";
 import {
   ChevronDown,
+  ChevronRight,
   ListTree,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
-import { cn, formatTimeMs } from "../../lib/utils";
-import type { RunRecord, RuntimeEvent, TriggerType } from "../../types";
+import { getCheckpoint } from "../../api";
+import { cn, formatTimeMs, stringifyJSON } from "../../lib/utils";
+import type {
+  CheckpointDetail,
+  CheckpointRecord,
+  RunRecord,
+  RuntimeEvent,
+  StepRecord,
+  TriggerType,
+} from "../../types";
 import { RunEventDetail } from "./RunEventDetail";
 import { RunEventFilterControls } from "./RunEventFilters";
 import { RunList } from "./RunList";
@@ -37,7 +47,12 @@ import { StatusText } from "./shared";
 export { resizeRunPanelColumnRatios } from "./runStatusModel";
 
 const COLUMN_KEYBOARD_STEP_RATIO = 0.03;
+const MAX_CACHED_CHECKPOINTS = 6;
+const snapshotJSONCache = new WeakMap<object, string>();
 type RunPanelView = "events" | "state";
+type StateDetailView = "diff" | "snapshot";
+type EventHistoryItem = { event: RuntimeEvent; key: string };
+type StateHistoryItem = StateHistoryEntry & { key: string };
 
 export function RunStatusPanel({
   runs,
@@ -45,6 +60,8 @@ export function RunStatusPanel({
   selectedRunId,
   onSelectRun,
   onDeleteRun,
+  steps,
+  checkpoints,
   events,
   onHide,
 }: {
@@ -53,11 +70,16 @@ export function RunStatusPanel({
   selectedRunId?: string;
   onSelectRun?: (runId: string) => void;
   onDeleteRun?: (runId: string) => void;
+  steps?: StepRecord[];
+  checkpoints?: CheckpointRecord[];
   events: RuntimeEvent[];
   onHide: () => void;
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [panelView, setPanelView] = useState<RunPanelView>("events");
+  const [stateDetailView, setStateDetailView] = useState<StateDetailView>("snapshot");
+  const [checkpointDetails, setCheckpointDetails] = useState<Record<string, CheckpointDetail>>({});
+  const [checkpointErrors, setCheckpointErrors] = useState<Record<string, string>>({});
   const [panelHeight, setPanelHeight] = useState(readStoredPanelHeight);
   const [columnRatios, setColumnRatios] = useState<ColumnRatios>(DEFAULT_COLUMN_RATIOS);
   const [eventFiltersOpen, setEventFiltersOpen] = useState(() => readStoredEventFilters().open ?? false);
@@ -66,6 +88,8 @@ export function RunStatusPanel({
   const [eventNodeFilters, setEventNodeFilters] = useState<string[]>(() => readStoredEventFilters().nodes ?? []);
   const [eventKeywordFilter, setEventKeywordFilter] = useState(() => readStoredEventFilters().keyword ?? "");
   const columnsRef = useRef<HTMLDivElement | null>(null);
+  const checkpointRequestIDsRef = useRef<Set<string>>(new Set());
+  const checkpointContextVersionRef = useRef(0);
   const sortedEvents = useMemo(
     () => [...events].sort((a, b) => timeRank(b.timestamp) - timeRank(a.timestamp)),
     [events]
@@ -94,11 +118,11 @@ export function RunStatusPanel({
   );
   const stateHistoryItems = useMemo(
     () =>
-      stateHistoryEntries(sortedEvents).map((entry, index) => ({
+      stateHistoryEntries(sortedEvents, steps, checkpoints).map((entry, index) => ({
         ...entry,
-        key: eventListKey(entry.event, index),
+        key: stateHistoryListKey(entry, index),
       })),
-    [sortedEvents]
+    [checkpoints, sortedEvents, steps]
   );
   const totalStateChanges = useMemo(
     () => stateHistoryItems.reduce((total, entry) => total + entry.changes.length, 0),
@@ -107,8 +131,18 @@ export function RunStatusPanel({
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
 
   useEffect(() => {
+    checkpointContextVersionRef.current += 1;
+    checkpointRequestIDsRef.current.clear();
     setSelectedKey(null);
+    setStateDetailView("snapshot");
+    setCheckpointDetails({});
+    setCheckpointErrors({});
   }, [selectedRunId]);
+
+  useEffect(() => () => {
+    checkpointContextVersionRef.current += 1;
+    checkpointRequestIDsRef.current.clear();
+  }, []);
 
   useEffect(() => {
     writeStoredEventFilters({
@@ -138,7 +172,54 @@ export function RunStatusPanel({
     selectedKey && visibleItems.some((item) => item.key === selectedKey)
       ? selectedKey
       : visibleItems[0]?.key ?? null;
-  const selectedEvent = visibleItems.find((item) => item.key === effectiveKey)?.event ?? null;
+  const selectedEvent = panelView === "events"
+    ? filteredEventItems.find((item) => item.key === effectiveKey)?.event ?? null
+    : null;
+  const selectedStateEntry = panelView === "state"
+    ? stateHistoryItems.find((item) => item.key === effectiveKey) ?? null
+    : null;
+  const deferredStateEntry = useDeferredValue(selectedStateEntry);
+  const selectedCheckpointID = selectedStateEntry?.checkpointID ?? "";
+  const selectedGraphID = runs.find((run) => run.run_id === selectedRunId)?.graph_id;
+  const selectedCheckpointDetail = selectedCheckpointID ? checkpointDetails[selectedCheckpointID] : undefined;
+  const selectedCheckpointError = selectedCheckpointID ? checkpointErrors[selectedCheckpointID] : undefined;
+  const deferredCheckpointID = deferredStateEntry?.checkpointID ?? "";
+  const deferredCheckpointDetail = deferredCheckpointID ? checkpointDetails[deferredCheckpointID] : undefined;
+  const deferredCheckpointError = deferredCheckpointID ? checkpointErrors[deferredCheckpointID] : undefined;
+
+  useEffect(() => {
+    if (
+      panelView !== "state" ||
+      !selectedCheckpointID ||
+      selectedCheckpointDetail ||
+      selectedCheckpointError ||
+      checkpointRequestIDsRef.current.has(selectedCheckpointID)
+    ) {
+      return;
+    }
+    const contextVersion = checkpointContextVersionRef.current;
+    checkpointRequestIDsRef.current.add(selectedCheckpointID);
+    void getCheckpoint(selectedCheckpointID, selectedGraphID)
+      .then((detail) => {
+        if (checkpointContextVersionRef.current !== contextVersion) return;
+        startTransition(() => {
+          setCheckpointDetails((current) => cacheCheckpointDetail(current, {
+            record: detail.record,
+            snapshot: detail.snapshot,
+          }));
+        });
+      })
+      .catch((error: unknown) => {
+        if (checkpointContextVersionRef.current !== contextVersion) return;
+        const message = error instanceof Error ? error.message : String(error);
+        setCheckpointErrors((current) => ({ ...current, [selectedCheckpointID]: message }));
+      })
+      .finally(() => {
+        if (checkpointContextVersionRef.current === contextVersion) {
+          checkpointRequestIDsRef.current.delete(selectedCheckpointID);
+        }
+      });
+  }, [panelView, selectedCheckpointDetail, selectedCheckpointError, selectedCheckpointID, selectedGraphID]);
 
   function startResizeHeight(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -328,17 +409,32 @@ export function RunStatusPanel({
           onKeyDown={(event) => resizeColumnsWithKeyboard(1, event)}
         />
 
-        <div aria-label={panelView === "events" ? "Event detail" : "State change detail"} className="flex min-h-0 min-w-0 flex-col">
+        <div aria-label={panelView === "events" ? "Event detail" : "State detail"} className="flex min-h-0 min-w-0 flex-col">
           <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
             <span className="text-xs font-semibold">{panelView === "events" ? "Event Detail" : "State Detail"}</span>
+            {panelView === "state" ? (
+              <StateDetailTabs view={stateDetailView} onChange={setStateDetailView} />
+            ) : null}
           </div>
-          <div className="min-h-0 flex-1 overflow-auto p-3">
-            {selectedEvent ? (
-              <RunEventDetail event={selectedEvent} />
+          <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
+            {panelView === "events" ? (
+              selectedEvent ? <RunEventDetail event={selectedEvent} /> : <EmptyDetail>Select an event</EmptyDetail>
+            ) : stateDetailView === "diff" ? (
+              deferredStateEntry?.event
+                ? <RunEventDetail event={deferredStateEntry.event} />
+                : <EmptyDetail>This checkpoint has no path-level diff</EmptyDetail>
+            ) : deferredStateEntry ? (
+              deferredCheckpointError ? (
+                <EmptyDetail>Checkpoint load failed: {deferredCheckpointError}</EmptyDetail>
+              ) : deferredCheckpointDetail ? (
+                <StateSnapshotDetail key={deferredCheckpointID} detail={deferredCheckpointDetail} />
+              ) : deferredCheckpointID ? (
+                <EmptyDetail>Loading checkpoint snapshot…</EmptyDetail>
+              ) : (
+                <EmptyDetail>No checkpoint is linked to this state change</EmptyDetail>
+              )
             ) : (
-              <div className="text-sm text-muted-foreground">
-                {panelView === "events" ? "Select an event" : "No state changes recorded"}
-              </div>
+              <EmptyDetail>No state checkpoints recorded</EmptyDetail>
             )}
           </div>
         </div>
@@ -347,13 +443,27 @@ export function RunStatusPanel({
   );
 }
 
+function cacheCheckpointDetail(
+  current: Record<string, CheckpointDetail>,
+  detail: CheckpointDetail
+): Record<string, CheckpointDetail> {
+  const next = { ...current };
+  delete next[detail.record.checkpoint_id];
+  next[detail.record.checkpoint_id] = detail;
+  const checkpointIDs = Object.keys(next);
+  for (const checkpointID of checkpointIDs.slice(0, -MAX_CACHED_CHECKPOINTS)) {
+    delete next[checkpointID];
+  }
+  return next;
+}
+
 function EventHistoryList({
   items,
   effectiveKey,
   onSelect,
   hasEvents,
 }: {
-  items: Array<{ event: RuntimeEvent; key: string }>;
+  items: EventHistoryItem[];
   effectiveKey: string | null;
   onSelect: (key: string) => void;
   hasEvents: boolean;
@@ -363,93 +473,310 @@ function EventHistoryList({
   }
   return (
     <ul className="divide-y divide-border">
-      {items.map(({ event, key }) => (
-        <li key={key}>
-          <button
-            type="button"
-            onClick={() => onSelect(key)}
-            className={cn(
-              "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
-              effectiveKey === key && "bg-accent text-accent-foreground"
-            )}
-          >
-            {event.type.startsWith("run.") ? (
-              <span className="col-span-2 min-w-0 truncate" title={event.type}>
-                <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
-                  {event.type}
-                </StatusText>
-              </span>
-            ) : (
-              <>
-                <span className="truncate font-mono" title={event.node_id || event.run_id}>
-                  {event.node_id || event.run_id || "—"}
-                </span>
-                <span className="min-w-0 truncate" title={event.type}>
-                  <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
-                    {event.type}
-                  </StatusText>
-                </span>
-              </>
-            )}
-            <span className="truncate text-right text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
-          </button>
-        </li>
+      {items.map((item) => (
+        <EventHistoryRow
+          key={item.key}
+          item={item}
+          selected={effectiveKey === item.key}
+          onSelect={onSelect}
+        />
       ))}
     </ul>
   );
 }
+
+const EventHistoryRow = memo(function EventHistoryRow({
+  item,
+  selected,
+  onSelect,
+}: {
+  item: EventHistoryItem;
+  selected: boolean;
+  onSelect: (key: string) => void;
+}) {
+  const { event, key } = item;
+  return (
+    <li className="[contain-intrinsic-size:auto_28px] [content-visibility:auto]">
+      <button
+        type="button"
+        onClick={() => onSelect(key)}
+        className={cn(
+          "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
+          selected && "bg-accent text-accent-foreground"
+        )}
+      >
+        {event.type.startsWith("run.") ? (
+          <span className="col-span-2 min-w-0 truncate" title={event.type}>
+            <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
+              {event.type}
+            </StatusText>
+          </span>
+        ) : (
+          <>
+            <span className="truncate font-mono" title={event.node_id || event.run_id}>
+              {event.node_id || event.run_id || "—"}
+            </span>
+            <span className="min-w-0 truncate" title={event.type}>
+              <StatusText tone={eventTone(event.type)} className="max-w-full truncate align-middle">
+                {event.type}
+              </StatusText>
+            </span>
+          </>
+        )}
+        <span className="truncate text-right text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
+      </button>
+    </li>
+  );
+});
 
 function StateHistoryList({
   items,
   effectiveKey,
   onSelect,
 }: {
-  items: Array<StateHistoryEntry & { key: string }>;
+  items: StateHistoryItem[];
   effectiveKey: string | null;
   onSelect: (key: string) => void;
 }) {
   if (items.length === 0) {
-    return <div className="p-3 text-sm text-muted-foreground">No state changes recorded</div>;
+    return <div className="p-3 text-sm text-muted-foreground">No state checkpoints recorded</div>;
   }
   return (
     <ul className="divide-y divide-border">
-      {items.map(({ event, changes, key }) => (
-        <li key={key}>
-          <button
-            type="button"
-            onClick={() => onSelect(key)}
-            className={cn(
-              "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] gap-x-2 gap-y-1 px-3 py-1.5 text-left text-xs hover:bg-accent/40",
-              effectiveKey === key && "bg-accent text-accent-foreground"
-            )}
-          >
-            <span className="truncate font-mono" title={event.node_id || event.run_id}>
-              {event.node_id || event.run_id || "—"}
-            </span>
-            <span className="min-w-0 truncate text-muted-foreground">
-              {changes.length} {changes.length === 1 ? "path" : "paths"}
-            </span>
-            <span className="truncate text-right text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
-            <span className="col-span-3 flex min-w-0 flex-wrap gap-1">
-              {changes.slice(0, 4).map((change, index) => (
-                <span
-                  key={`${change.path}-${index}`}
-                  className="flex min-w-0 max-w-full items-center gap-1 rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[10px]"
-                  title={`${change.kind}: ${change.path}`}
-                >
-                  <span className={stateChangeKindClass(change.kind)}>{stateChangeKindSymbol(change.kind)}</span>
-                  <span className="truncate">{change.path}</span>
-                </span>
-              ))}
-              {changes.length > 4 ? (
-                <span className="rounded bg-muted/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">+{changes.length - 4}</span>
-              ) : null}
-            </span>
-          </button>
-        </li>
+      {items.map((entry) => (
+        <StateHistoryRow
+          key={entry.key}
+          entry={entry}
+          selected={effectiveKey === entry.key}
+          onSelect={onSelect}
+        />
       ))}
     </ul>
   );
+}
+
+const StateHistoryRow = memo(function StateHistoryRow({
+  entry,
+  selected,
+  onSelect,
+}: {
+  entry: StateHistoryItem;
+  selected: boolean;
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <li className="[contain-intrinsic-size:auto_48px] [content-visibility:auto]">
+      <button
+        type="button"
+        onClick={() => onSelect(entry.key)}
+        className={cn(
+          "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] gap-x-2 gap-y-1 px-3 py-1.5 text-left text-xs hover:bg-accent/40",
+          selected && "bg-accent text-accent-foreground"
+        )}
+      >
+        <span className="truncate font-mono" title={entry.nodeID || entry.checkpoint?.run_id}>
+          {entry.nodeID || entry.checkpoint?.run_id || "—"}
+        </span>
+        <span className="min-w-0 truncate text-muted-foreground">
+          {stateHistoryLabel(entry)}
+        </span>
+        <span className="truncate text-right text-muted-foreground">{formatTimeMs(entry.timestamp)}</span>
+        <span className="col-span-3 flex min-w-0 flex-wrap gap-1">
+          {entry.changes.slice(0, 4).map((change, index) => (
+            <span
+              key={`${change.path}-${index}`}
+              className="flex min-w-0 max-w-full items-center gap-1 rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[10px]"
+              title={`${change.kind}: ${change.path}`}
+            >
+              <span className={stateChangeKindClass(change.kind)}>{stateChangeKindSymbol(change.kind)}</span>
+              <span className="truncate">{change.path}</span>
+            </span>
+          ))}
+          {entry.changes.length > 4 ? (
+            <span className="rounded bg-muted/70 px-1.5 py-0.5 text-[10px] text-muted-foreground">+{entry.changes.length - 4}</span>
+          ) : entry.kind !== "change" ? (
+            <span className="rounded bg-muted/70 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+              {entry.checkpoint?.stage}
+            </span>
+          ) : null}
+        </span>
+      </button>
+    </li>
+  );
+});
+
+function stateHistoryListKey(entry: StateHistoryEntry, index: number): string {
+  if (entry.checkpointID) return `checkpoint-${entry.checkpointID}-${entry.kind}`;
+  if (entry.event) return eventListKey(entry.event, index);
+  return `state-${entry.kind}-${entry.nodeID}-${entry.stepID}-${index}`;
+}
+
+function stateHistoryLabel(entry: StateHistoryEntry): string {
+  switch (entry.kind) {
+    case "baseline":
+      return "Initial snapshot";
+    case "barrier":
+      return "Parallel merge";
+    default:
+      return `${entry.changes.length} ${entry.changes.length === 1 ? "path" : "paths"}`;
+  }
+}
+
+function EmptyDetail({ children }: { children: ReactNode }) {
+  return <div className="whitespace-pre-wrap break-words text-sm text-muted-foreground">{children}</div>;
+}
+
+export function StateDetailTabs({
+  view,
+  onChange,
+}: {
+  view: StateDetailView;
+  onChange: (view: StateDetailView) => void;
+}) {
+  return (
+    <div role="tablist" aria-label="State detail view" className="ml-auto flex h-full items-stretch gap-3">
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "diff"}
+        onClick={() => onChange("diff")}
+        className={cn(
+          "border-b-2 border-transparent text-[11px] font-semibold text-muted-foreground hover:text-foreground",
+          view === "diff" && "border-primary text-foreground"
+        )}
+      >
+        Diff
+      </button>
+      <button
+        type="button"
+        role="tab"
+        aria-selected={view === "snapshot"}
+        onClick={() => onChange("snapshot")}
+        className={cn(
+          "border-b-2 border-transparent text-[11px] font-semibold text-muted-foreground hover:text-foreground",
+          view === "snapshot" && "border-primary text-foreground"
+        )}
+      >
+        Snapshot
+      </button>
+    </div>
+  );
+}
+
+export const StateSnapshotDetail = memo(function StateSnapshotDetail({ detail }: { detail: CheckpointDetail }) {
+  const snapshot = recordValue(detail.snapshot);
+  if (!snapshot) {
+    return <EmptyDetail>Checkpoint does not contain a readable State snapshot</EmptyDetail>;
+  }
+  const version = typeof snapshot.version === "string" ? snapshot.version : detail.record.state_version;
+
+  return (
+    <div className="grid min-w-0 gap-3 text-xs">
+      <div className="grid min-w-0 gap-1 rounded-md border border-border bg-muted/20 p-2">
+        <SnapshotMetaRow label="Checkpoint" value={detail.record.checkpoint_id} />
+        <SnapshotMetaRow label="Stage" value={detail.record.stage} />
+        {detail.record.step_id ? <SnapshotMetaRow label="Step" value={detail.record.step_id} /> : null}
+        {detail.record.node_id ? <SnapshotMetaRow label="Node" value={detail.record.node_id} /> : null}
+        {version ? <SnapshotMetaRow label="Version" value={version} /> : null}
+        <SnapshotMetaRow label="Created" value={formatTimeMs(detail.record.created_at)} />
+      </div>
+      <StateSnapshotSection title="shared" value={snapshot.shared ?? {}} defaultOpen />
+      <StateSnapshotSection title="scopes" value={snapshot.scopes ?? {}} defaultOpen />
+      <StateSnapshotSection title="internal" value={snapshot.internal ?? {}} />
+      <StateSnapshotSection title="runtime" value={snapshot.runtime ?? {}} />
+    </div>
+  );
+});
+
+function SnapshotMetaRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] gap-2">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="min-w-0 break-all font-mono">{value}</span>
+    </div>
+  );
+}
+
+function StateSnapshotSection({
+  title,
+  value,
+  defaultOpen = false,
+}: {
+  title: string;
+  value: unknown;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const [serialization, setSerialization] = useState<{ value: unknown; text: string } | null>(null);
+  const serializedValue = serialization?.value === value ? serialization.text : null;
+
+  useEffect(() => {
+    if (!open || serializedValue !== null) return;
+    return scheduleSnapshotSerialization(() => {
+      setSerialization({ value, text: serializeSnapshotValue(value) });
+    });
+  }, [open, serializedValue, value]);
+
+  return (
+    <section className="min-w-0 rounded-md border border-border bg-background">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className="flex w-full min-w-0 items-center gap-1.5 px-2 py-1.5 text-left font-mono text-xs font-semibold hover:bg-accent/40"
+      >
+        <ChevronRight className={cn("h-3.5 w-3.5 shrink-0 transition-transform", open && "rotate-90")} />
+        <span className="truncate">{title}</span>
+      </button>
+      {open ? (
+        serializedValue === null ? (
+          <div
+            aria-label={`${title} state snapshot`}
+            className="border-t border-border p-2 text-[11px] text-muted-foreground [overflow-wrap:anywhere]"
+          >
+            Preparing snapshot…
+          </div>
+        ) : (
+          <pre
+            aria-label={`${title} state snapshot`}
+            className="min-w-0 whitespace-pre-wrap break-words border-t border-border p-2 text-[11px] [overflow-wrap:anywhere]"
+          >
+            {serializedValue}
+          </pre>
+        )
+      ) : null}
+    </section>
+  );
+}
+
+function scheduleSnapshotSerialization(callback: () => void): () => void {
+  const idleWindow = window as Window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
+    const handle = idleWindow.requestIdleCallback(callback, { timeout: 100 });
+    return () => idleWindow.cancelIdleCallback?.(handle);
+  }
+  const handle = window.setTimeout(callback, 0);
+  return () => window.clearTimeout(handle);
+}
+
+function serializeSnapshotValue(value: unknown): string {
+  if (value && typeof value === "object") {
+    const cached = snapshotJSONCache.get(value);
+    if (cached !== undefined) return cached;
+    const serialized = stringifyJSON(value) ?? "null";
+    snapshotJSONCache.set(value, serialized);
+    return serialized;
+  }
+  return stringifyJSON(value) ?? "null";
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
 }
 
 function stateChangeKindSymbol(kind: StateChangeKind): string {

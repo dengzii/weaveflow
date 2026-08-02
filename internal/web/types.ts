@@ -454,6 +454,7 @@ export interface RunResult {
 export interface RunInspection {
   run: RunRecord;
   steps: StepRecord[];
+  checkpoints: CheckpointRecord[];
   events: RuntimeEvent[];
   interrupt: RunInterrupt | null;
 }

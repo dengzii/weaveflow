@@ -12,6 +12,7 @@ import {
 import { emitRuntimeEvent } from "../../lib/runtimeEvents";
 import { parseJSON } from "../../lib/utils";
 import type {
+  CheckpointRecord,
   GraphDefinition,
   RunInterrupt,
   RunRecord,
@@ -57,6 +58,7 @@ interface WorkbenchRunsController {
   runTriggerTypes: Partial<Record<string, TriggerType>>;
   selectedRunID: string;
   steps: StepRecord[];
+  checkpoints: CheckpointRecord[];
   displayEvents: RuntimeEvent[];
   humanPrompt: UserInputPrompt | null;
   humanPromptText: string;
@@ -91,6 +93,7 @@ export function useWorkbenchRuns({
   const [runTriggerTypes, setRunTriggerTypes] = useState<Partial<Record<string, TriggerType>>>({});
   const [selectedRunID, setSelectedRunID] = useState("");
   const [steps, setSteps] = useState<StepRecord[]>([]);
+  const [checkpoints, setCheckpoints] = useState<CheckpointRecord[]>([]);
   const [storedEvents, setStoredEvents] = useState<RuntimeEvent[]>([]);
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
   const [runInterrupt, setRunInterrupt] = useState<RunInterrupt | null>(null);
@@ -112,6 +115,7 @@ export function useWorkbenchRuns({
 
   const clearSelectedRunInspection = useCallback(() => {
     setSteps([]);
+    setCheckpoints([]);
     setStoredEvents([]);
     setRunInterrupt(null);
     setHumanPrompt(null);
@@ -236,6 +240,7 @@ export function useWorkbenchRuns({
       return;
     }
     setSteps(inspection.steps);
+    setCheckpoints((current) => mergeFetchedCheckpoints(current, inspection.checkpoints));
     setStoredEvents(inspection.events);
     setRunInterrupt(inspection.interrupt ?? null);
     updateRuns((current) => current.map((run) => (run.run_id === inspection.run.run_id ? inspection.run : run)));
@@ -265,6 +270,7 @@ export function useWorkbenchRuns({
       updateSelectedRunID(runID);
       setRunStatusVisible(true);
       setSteps(inspection.steps);
+      setCheckpoints((current) => mergeFetchedCheckpoints(current, inspection.checkpoints));
       setStoredEvents(inspection.events);
       setRunInterrupt(inspection.interrupt ?? null);
       if (options.openHumanPrompt) maybeOpenUserInputPrompt(inspection.interrupt ?? null);
@@ -283,6 +289,10 @@ export function useWorkbenchRuns({
     if (!shouldTrack) return;
 
     emitRuntimeEvent(event);
+    const checkpoint = checkpointRecordFromEvent(event);
+    if (checkpoint) {
+      setCheckpoints((current) => upsertCheckpoint(current, checkpoint));
+    }
     setLiveEvents((current) => {
       const retainRunID = event.run_id || selectedRun || launchRun;
       const next = [event, ...current];
@@ -502,6 +512,7 @@ export function useWorkbenchRuns({
     runTriggerTypes,
     selectedRunID,
     steps,
+    checkpoints,
     displayEvents,
     humanPrompt,
     humanPromptText,
@@ -525,6 +536,54 @@ export function useWorkbenchRuns({
     submitUserInputPrompt,
     dismissUserInputPrompt,
   };
+}
+
+function checkpointRecordFromEvent(event: RuntimeEvent): CheckpointRecord | null {
+  if (event.type !== "checkpoint.created" || !event.run_id || !isRecord(event.payload)) return null;
+  const checkpointID = stringField(event.payload, "checkpoint_id");
+  const stage = stringField(event.payload, "stage");
+  if (!checkpointID || !stage) return null;
+  return {
+    checkpoint_id: checkpointID,
+    run_id: event.run_id,
+    step_id: event.step_id ?? "",
+    node_id: event.node_id ?? "",
+    stage,
+    state_codec: "",
+    state_version: "",
+    created_at: event.timestamp,
+  };
+}
+
+function upsertCheckpoint(current: CheckpointRecord[], checkpoint: CheckpointRecord): CheckpointRecord[] {
+  const existingIndex = current.findIndex((item) => item.checkpoint_id === checkpoint.checkpoint_id);
+  const next = existingIndex >= 0
+    ? current.map((item, index) => (index === existingIndex ? { ...checkpoint, ...item } : item))
+    : [...current, checkpoint];
+  return next.sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
+}
+
+function mergeFetchedCheckpoints(
+  current: CheckpointRecord[],
+  fetched: CheckpointRecord[]
+): CheckpointRecord[] {
+  const checkpointsByID = new Map(current.map((checkpoint) => [checkpoint.checkpoint_id, checkpoint]));
+  for (const checkpoint of fetched) {
+    const existing = checkpointsByID.get(checkpoint.checkpoint_id);
+    checkpointsByID.set(checkpoint.checkpoint_id, existing ? { ...existing, ...checkpoint } : checkpoint);
+  }
+  return [...checkpointsByID.values()].sort(
+    (left, right) => Date.parse(left.created_at) - Date.parse(right.created_at)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringField(record: Record<string, unknown>, field: string): string {
+  const value = record[field];
+  return typeof value === "string" ? value.trim() : "";
 }
 
 function readStoredRunStatusVisible(): boolean {

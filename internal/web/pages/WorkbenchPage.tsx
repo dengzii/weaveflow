@@ -130,6 +130,7 @@ export function WorkbenchPage({
     runTriggerTypes,
     selectedRunID,
     steps,
+    checkpoints,
     displayEvents,
     humanPrompt,
     humanPromptText,
@@ -397,6 +398,8 @@ export function WorkbenchPage({
           selectedRunId={selectedRunID}
           onSelectRun={selectRun}
           onDeleteRun={(runID) => void deleteRunRecord(runID)}
+          steps={steps}
+          checkpoints={checkpoints}
           events={displayEvents}
           onHide={hideRunStatus}
         />

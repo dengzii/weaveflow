@@ -260,13 +260,14 @@ export async function getRunInterrupt(runId: string, graphId?: string): Promise<
 }
 
 export async function getRunInspection(runId: string, graphId?: string): Promise<RunInspection> {
-  const [run, steps, events, interrupt] = await Promise.all([
+  const [run, steps, checkpoints, events, interrupt] = await Promise.all([
     getRun(runId, graphId),
     listSteps(runId, graphId),
+    listCheckpoints(runId, graphId),
     listEvents(runId, graphId),
     getRunInterrupt(runId, graphId),
   ]);
-  return { run, steps, events, interrupt };
+  return { run, steps, checkpoints, events, interrupt };
 }
 
 export async function pauseRun(runId: string): Promise<RunRecord> {

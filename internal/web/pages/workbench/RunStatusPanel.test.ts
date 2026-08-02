@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { RunRecord, RuntimeEvent } from "../../types";
-import { RunStatusPanel, resizeRunPanelColumnRatios } from "./RunStatusPanel";
+import type { CheckpointDetail, RunRecord, RuntimeEvent } from "../../types";
+import {
+  RunStatusPanel,
+  StateDetailTabs,
+  StateSnapshotDetail,
+  resizeRunPanelColumnRatios,
+} from "./RunStatusPanel";
 
 describe("RunStatusPanel", () => {
   test("renders resizable columns with the default 1 to 1.5 to 2 ratio", () => {
@@ -32,6 +37,7 @@ describe("RunStatusPanel", () => {
     expect(markup).not.toContain("data-state-history-count");
     expect(markup).not.toContain("Run Event");
     expect(markup).not.toContain("State History");
+    expect(markup).toContain("content-visibility:auto");
     expect(markup.indexOf('aria-label="Run history view"')).toBeLessThan(markup.indexOf('aria-label="Filter events"'));
   });
 
@@ -42,6 +48,32 @@ describe("RunStatusPanel", () => {
     expect(resized[1]).toBeCloseTo(1.35);
     expect(resized[2]).toBeCloseTo(2);
     expect(resized[0] + resized[1] + resized[2]).toBeCloseTo(4.5);
+  });
+
+  test("renders Snapshot as the default State detail with complete State sections", () => {
+    const tabs = renderToStaticMarkup(
+      createElement(StateDetailTabs, { view: "snapshot", onChange: () => undefined })
+    );
+    const detail = renderToStaticMarkup(
+      createElement(StateSnapshotDetail, { detail: checkpointDetail() })
+    );
+
+    expect(tabs).toContain('aria-label="State detail view"');
+    expect(tabs).toContain('role="tab" aria-selected="false"');
+    expect(tabs).toContain(">Diff</button>");
+    expect(tabs).toContain('role="tab" aria-selected="true"');
+    expect(tabs).toContain(">Snapshot</button>");
+    expect(detail).toContain(">shared</span>");
+    expect(detail).toContain(">scopes</span>");
+    expect(detail).toContain(">internal</span>");
+    expect(detail).toContain(">runtime</span>");
+    expect(detail).toContain('aria-label="shared state snapshot"');
+    expect(detail).toContain('aria-label="scopes state snapshot"');
+    expect(detail).not.toContain('aria-label="internal state snapshot"');
+    expect(detail).not.toContain('aria-label="runtime state snapshot"');
+    expect(detail).toContain("Preparing snapshot…");
+    expect(detail).not.toContain("ready");
+    expect(detail).toContain("overflow-wrap:anywhere");
   });
 
   test("renders direct, chat, and webhook run sources as icons", () => {
@@ -120,6 +152,28 @@ function stateChangeEvent(): RuntimeEvent {
         { path: "shared.answer", after: "ready" },
         { path: "shared.count", before: 1, after: 2 },
       ],
+    },
+  };
+}
+
+function checkpointDetail(): CheckpointDetail {
+  return {
+    record: {
+      checkpoint_id: "checkpoint-after",
+      run_id: "run-new",
+      step_id: "step-1",
+      node_id: "llm",
+      stage: "after_node",
+      state_codec: "json",
+      state_version: "state-v2",
+      created_at: "2026-07-30T02:00:02Z",
+    },
+    snapshot: {
+      version: "state-v2",
+      shared: { answer: "ready" },
+      scopes: { llm: { messages: [] } },
+      internal: { retries: 0 },
+      runtime: { run_id: "run-new" },
     },
   };
 }

@@ -1,10 +1,11 @@
 import { stringifyJSON } from "../../lib/utils";
-import type { RuntimeEvent } from "../../types";
+import type { CheckpointRecord, RuntimeEvent, StepRecord } from "../../types";
 import type { StatusTone } from "./shared";
 
 export type EventFilterMode = "include" | "exclude";
 export type ColumnRatios = [number, number, number];
 export type StateChangeKind = "added" | "updated" | "removed" | "changed";
+export type StateHistoryKind = "baseline" | "change" | "barrier";
 
 export interface StateHistoryChange {
   path: string;
@@ -12,8 +13,14 @@ export interface StateHistoryChange {
 }
 
 export interface StateHistoryEntry {
-  event: RuntimeEvent;
+  kind: StateHistoryKind;
+  checkpointID: string;
+  checkpoint?: CheckpointRecord;
+  event?: RuntimeEvent;
   changes: StateHistoryChange[];
+  nodeID: string;
+  stepID: string;
+  timestamp: string;
 }
 
 export interface StoredEventFilters {
@@ -37,10 +44,78 @@ export function eventListKey(event: RuntimeEvent, index: number): string {
   return `${event.id || event.run_id || "event"}-${index}`;
 }
 
-export function stateHistoryEntries(events: RuntimeEvent[]): StateHistoryEntry[] {
-  return events
-    .filter((event) => event.type === "state.changed")
-    .map((event) => ({ event, changes: stateChanges(event.payload) }));
+export function stateHistoryEntries(
+  events: RuntimeEvent[],
+  steps: StepRecord[] = [],
+  checkpoints: CheckpointRecord[] = []
+): StateHistoryEntry[] {
+  const sortedCheckpoints = [...checkpoints].sort(compareCheckpointTime);
+  const checkpointsByID = new Map(sortedCheckpoints.map((checkpoint) => [checkpoint.checkpoint_id, checkpoint]));
+  const afterCheckpointByStepID = new Map(
+    sortedCheckpoints
+      .filter((checkpoint) => checkpoint.stage === "after_node" && checkpoint.step_id)
+      .map((checkpoint) => [checkpoint.step_id, checkpoint])
+  );
+  const stepByID = new Map(steps.map((step) => [step.step_id, step]));
+  const entries: StateHistoryEntry[] = [];
+  const baseline = sortedCheckpoints.find((checkpoint) => checkpoint.stage === "before_node");
+
+  if (baseline) {
+    entries.push(checkpointHistoryEntry("baseline", baseline));
+  }
+  for (const checkpoint of sortedCheckpoints) {
+    if (checkpoint.stage === "after_parallel_wave") {
+      entries.push(checkpointHistoryEntry("barrier", checkpoint));
+    }
+  }
+  for (const event of events) {
+    if (event.type !== "state.changed") continue;
+    const step = event.step_id ? stepByID.get(event.step_id) : undefined;
+    const checkpoint = step?.checkpoint_after_id
+      ? checkpointsByID.get(step.checkpoint_after_id)
+      : event.step_id
+        ? afterCheckpointByStepID.get(event.step_id)
+        : undefined;
+    entries.push({
+      kind: "change",
+      checkpointID: checkpoint?.checkpoint_id ?? step?.checkpoint_after_id ?? "",
+      checkpoint,
+      event,
+      changes: stateChanges(event.payload),
+      nodeID: event.node_id ?? checkpoint?.node_id ?? "",
+      stepID: event.step_id ?? checkpoint?.step_id ?? "",
+      timestamp: event.timestamp,
+    });
+  }
+  return entries.sort((left, right) => {
+    const timestampOrder = timeRank(right.timestamp) - timeRank(left.timestamp);
+    if (timestampOrder !== 0) return timestampOrder;
+    return stateHistoryIdentity(left).localeCompare(stateHistoryIdentity(right));
+  });
+}
+
+function checkpointHistoryEntry(
+  kind: Exclude<StateHistoryKind, "change">,
+  checkpoint: CheckpointRecord
+): StateHistoryEntry {
+  return {
+    kind,
+    checkpointID: checkpoint.checkpoint_id,
+    checkpoint,
+    changes: [],
+    nodeID: checkpoint.node_id,
+    stepID: checkpoint.step_id,
+    timestamp: checkpoint.created_at,
+  };
+}
+
+function compareCheckpointTime(left: CheckpointRecord, right: CheckpointRecord): number {
+  const timestampOrder = timeRank(left.created_at) - timeRank(right.created_at);
+  return timestampOrder !== 0 ? timestampOrder : left.checkpoint_id.localeCompare(right.checkpoint_id);
+}
+
+function stateHistoryIdentity(entry: StateHistoryEntry): string {
+  return entry.checkpointID || entry.event?.id || `${entry.kind}-${entry.nodeID}-${entry.stepID}`;
 }
 
 function stateChanges(payload: unknown): StateHistoryChange[] {

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { RuntimeEvent } from "../../types";
+import type { CheckpointRecord, RuntimeEvent, StepRecord } from "../../types";
 import { eventMatchesFilters, stateHistoryEntries, uniqueSorted } from "./runStatusModel";
 
 describe("run status model", () => {
@@ -52,7 +52,7 @@ describe("run status model", () => {
     ]);
   });
 
-  test("builds state history with stable paths and change kinds", () => {
+  test("builds checkpoint-backed state history with baseline, changes, and parallel barriers", () => {
     const event: RuntimeEvent = {
       id: "state-1",
       run_id: "run-1",
@@ -70,8 +70,38 @@ describe("run status model", () => {
       },
     };
 
-    expect(stateHistoryEntries([runtimeEvent(), event])).toEqual([
+    const steps: StepRecord[] = [{
+      step_id: "step-1",
+      run_id: "run-1",
+      node_id: "worker",
+      node_name: "Worker",
+      status: "succeeded",
+      attempt: 1,
+      checkpoint_before_id: "checkpoint-before",
+      checkpoint_after_id: "checkpoint-after",
+      started_at: "2026-07-30T02:00:00Z",
+      updated_at: "2026-07-30T02:00:02Z",
+    }];
+    const checkpoints: CheckpointRecord[] = [
+      checkpointRecord("checkpoint-before", "before_node", "2026-07-30T02:00:00Z"),
+      checkpointRecord("checkpoint-after", "after_node", "2026-07-30T02:00:01Z"),
+      checkpointRecord("checkpoint-barrier", "after_parallel_wave", "2026-07-30T02:00:03Z"),
+    ];
+
+    expect(stateHistoryEntries([runtimeEvent(), event], steps, checkpoints)).toEqual([
       {
+        kind: "barrier",
+        checkpointID: "checkpoint-barrier",
+        checkpoint: checkpoints[2],
+        changes: [],
+        nodeID: "worker",
+        stepID: "step-1",
+        timestamp: "2026-07-30T02:00:03Z",
+      },
+      {
+        kind: "change",
+        checkpointID: "checkpoint-after",
+        checkpoint: checkpoints[1],
         event,
         changes: [
           { path: "shared.answer", kind: "added" },
@@ -79,6 +109,18 @@ describe("run status model", () => {
           { path: "shared.legacy", kind: "removed" },
           { path: "change 4", kind: "changed" },
         ],
+        nodeID: "worker",
+        stepID: "step-1",
+        timestamp: "2026-07-30T02:00:02Z",
+      },
+      {
+        kind: "baseline",
+        checkpointID: "checkpoint-before",
+        checkpoint: checkpoints[0],
+        changes: [],
+        nodeID: "worker",
+        stepID: "step-1",
+        timestamp: "2026-07-30T02:00:00Z",
       },
     ]);
   });
@@ -93,5 +135,18 @@ function runtimeEvent(): RuntimeEvent {
     type: "nodes.failed",
     timestamp: "2026-07-30T02:00:01Z",
     payload: { error: "request timeout" },
+  };
+}
+
+function checkpointRecord(checkpointID: string, stage: string, createdAt: string): CheckpointRecord {
+  return {
+    checkpoint_id: checkpointID,
+    run_id: "run-1",
+    step_id: "step-1",
+    node_id: "worker",
+    stage,
+    state_codec: "json",
+    state_version: "state-v2",
+    created_at: createdAt,
   };
 }
