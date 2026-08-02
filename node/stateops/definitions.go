@@ -155,7 +155,7 @@ func StateTransformNodeTypeDefinition() registry.NodeTypeDefinition {
 				"properties": dsl.JSONSchema{
 					"expression": dsl.JSONSchema{
 						"type": "string", "title": "CEL Expression", "x-control": "textarea",
-						"description": "Restricted CEL expression. Use inputs.<alias>; legacy graphs may continue using input.",
+						"description": "Restricted CEL expression. Use inputs.<alias>.",
 					},
 				},
 				"required":             []string{"expression"},
@@ -170,7 +170,6 @@ func StateTransformNodeTypeDefinition() registry.NodeTypeDefinition {
 			},
 		},
 		StatePorts: []dsl.StatePortDefinition{
-			{Name: "input", Description: "Legacy JSON value exposed to the expression as input.", Schema: anyJSONSchema(), Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace},
 			primitivePort("output", "Transformed JSON value to replace.", anyJSONSchema(), dsl.StateAccessWrite, dsl.StateMergeReplace),
 		},
 		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
@@ -195,18 +194,15 @@ func StateTransformNodeTypeDefinition() registry.NodeTypeDefinition {
 				return nil, fmt.Errorf("build %s node %q: %w", NodeTypeStateTransform, spec.ID, err)
 			}
 			applyMetadata(&node.NodeBase, spec)
-			if input, ok := resolved.State["input"]; ok {
-				node.InputPath = input.Path
-			}
 			node.InputPaths = map[string]state.Path{}
 			for name, binding := range resolved.State {
-				if name == "input" || name == "output" {
+				if name == "output" {
 					continue
 				}
 				node.InputPaths[name] = binding.Path
 			}
-			if node.InputPath.Empty() && len(node.InputPaths) == 0 {
-				return nil, fmt.Errorf("build %s node %q: requires legacy state port %q or at least one dynamic input", NodeTypeStateTransform, spec.ID, "input")
+			if len(node.InputPaths) == 0 {
+				return nil, fmt.Errorf("build %s node %q: requires at least one dynamic input", NodeTypeStateTransform, spec.ID)
 			}
 			node.OutputPath = output
 			return node, nil

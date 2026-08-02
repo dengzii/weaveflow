@@ -18,7 +18,6 @@ const (
 
 type StateTransformNode struct {
 	core.NodeBase
-	InputPath  state.Path
 	InputPaths map[string]state.Path
 	OutputPath state.Path
 	Expression string
@@ -26,7 +25,7 @@ type StateTransformNode struct {
 }
 
 func NewStateTransformNode(expression string, options ...core.NodeOption) (*StateTransformNode, error) {
-	program, err := stateexpr.Compile(expression, stateexpr.CompileOptions{LegacyInput: true})
+	program, err := stateexpr.Compile(expression, stateexpr.CompileOptions{})
 	if err != nil {
 		return nil, err
 	}
@@ -47,11 +46,11 @@ func (n *StateTransformNode) Validate() error {
 	if n.OutputPath.Empty() {
 		return fmt.Errorf("%s node %q requires resolved state port %q", NodeTypeStateTransform, n.ID(), "output")
 	}
-	if n.InputPath.Empty() && len(n.InputPaths) == 0 {
-		return fmt.Errorf("%s node %q requires legacy state port %q or at least one dynamic input", NodeTypeStateTransform, n.ID(), "input")
+	if len(n.InputPaths) == 0 {
+		return fmt.Errorf("%s node %q requires at least one dynamic input", NodeTypeStateTransform, n.ID())
 	}
 	for name, path := range n.InputPaths {
-		if name == "input" || name == "output" {
+		if name == "output" {
 			return fmt.Errorf("%s node %q dynamic input alias %q is reserved", NodeTypeStateTransform, n.ID(), name)
 		}
 		if path.Empty() {
@@ -76,15 +75,7 @@ func (n *StateTransformNode) Execute(ctx core.Context, access *state.Access) err
 		}
 		inputs[name] = value
 	}
-	var legacyInput any
-	if !n.InputPath.Empty() {
-		value, err := readRequired(access, n.InputPath, NodeTypeStateTransform, n.ID(), "input")
-		if err != nil {
-			return err
-		}
-		legacyInput = value
-	}
-	output, err := n.program.EvalJSON(ctx, inputs, legacyInput, !n.InputPath.Empty())
+	output, err := n.program.EvalJSON(ctx, inputs)
 	if err != nil {
 		return fmt.Errorf("%s node %q: %w", NodeTypeStateTransform, n.ID(), err)
 	}
@@ -98,7 +89,7 @@ func (n *StateTransformNode) Contract() state.Contract {
 	if n == nil || n.OutputPath.Empty() {
 		return state.Contract{}
 	}
-	fields := make([]state.FieldAccess, 0, len(n.InputPaths)+2)
+	fields := make([]state.FieldAccess, 0, len(n.InputPaths)+1)
 	indexes := map[string]int{}
 	appendRead := func(path state.Path, description string) {
 		if path.Empty() {
@@ -111,7 +102,6 @@ func (n *StateTransformNode) Contract() state.Contract {
 		indexes[key] = len(fields)
 		fields = append(fields, state.FieldAccess{Path: path, Mode: state.AccessRead, Required: true, Merge: state.MergeReplace, Description: description})
 	}
-	appendRead(n.InputPath, "Legacy JSON value exposed as input.")
 	for _, name := range sortedInputNames(n.InputPaths) {
 		appendRead(n.InputPaths[name], "JSON value exposed as inputs."+name+".")
 	}
@@ -129,10 +119,7 @@ func (n *StateTransformNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if n == nil {
 		return dsl.GraphNodeSpec{Type: NodeTypeStateTransform}
 	}
-	paths := make(map[string]state.Path, len(n.InputPaths)+2)
-	if !n.InputPath.Empty() {
-		paths["input"] = n.InputPath
-	}
+	paths := make(map[string]state.Path, len(n.InputPaths)+1)
 	for name, path := range n.InputPaths {
 		paths[name] = path
 	}

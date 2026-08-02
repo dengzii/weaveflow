@@ -35,6 +35,13 @@ func TestReadToolReturnsNumberedLines(t *testing.T) {
 	}
 }
 
+func TestReadToolRejectsRemovedPagesParameter(t *testing.T) {
+	_, err := readTool(context.Background(), `{"file_path":"ignored","pages":"1"}`)
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("read pages parameter error = %v", err)
+	}
+}
+
 func TestWriteToolOverwritesFile(t *testing.T) {
 	root := setupReadWriteEditWorkspace(t)
 	path := filepath.Join(root, "notes.txt")

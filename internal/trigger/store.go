@@ -1,10 +1,12 @@
 package trigger
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -147,11 +149,14 @@ func (s *FileStore) getLocked(id string) (Trigger, error) {
 		return Trigger{}, err
 	}
 	var trigger Trigger
-	if err := json.Unmarshal(data, &trigger); err != nil {
+	if err := decodeStoredJSON(data, &trigger); err != nil {
 		return Trigger{}, fmt.Errorf("decode trigger %q: %w", id, err)
 	}
 	if strings.TrimSpace(trigger.ID) != id {
 		return Trigger{}, fmt.Errorf("decode trigger %q: stored id %q does not match file name", id, trigger.ID)
+	}
+	if err := validateStoredTrigger(trigger); err != nil {
+		return Trigger{}, fmt.Errorf("decode trigger %q: %w", id, err)
 	}
 	return trigger, nil
 }
@@ -293,7 +298,7 @@ func (s *FileStore) ListRecords(ctx context.Context, triggerID string, limit int
 			return nil, err
 		}
 		var record Record
-		if err := json.Unmarshal(data, &record); err != nil {
+		if err := decodeStoredJSON(data, &record); err != nil {
 			return nil, fmt.Errorf("decode trigger record %q: %w", entry.Name(), err)
 		}
 		fileID := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
@@ -328,6 +333,9 @@ func (s *FileStore) recordPath(id string) string {
 }
 
 func (s *FileStore) writeLocked(ctx context.Context, path string, trigger Trigger) error {
+	if err := validateStoredTrigger(trigger); err != nil {
+		return err
+	}
 	data, err := json.MarshalIndent(trigger, "", "  ")
 	if err != nil {
 		return err
@@ -391,6 +399,31 @@ func (s *FileStore) writeRecordLocked(ctx context.Context, path string, record R
 		return err
 	}
 	return os.Rename(tempPath, path)
+}
+
+func validateStoredTrigger(trigger Trigger) error {
+	if err := trigger.Validate(); err != nil {
+		return err
+	}
+	if trigger.CreatedAt.IsZero() || trigger.UpdatedAt.IsZero() {
+		return fmt.Errorf("invalid trigger: timestamps are required")
+	}
+	return nil
+}
+
+func decodeStoredJSON(data []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("stored JSON contains multiple values")
+		}
+		return err
+	}
+	return nil
 }
 
 func validateRecord(record Record) error {

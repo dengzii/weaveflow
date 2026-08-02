@@ -57,7 +57,7 @@ describe("graph workspace model", () => {
     expect(upsertVirtualEdge([previous, conflict], previous, next)).toEqual([next]);
   });
 
-  test("round-trips workspace metadata and accepts legacy loop groups", () => {
+  test("round-trips workspace metadata", () => {
     const definition: GraphDefinition = { nodes: [{ id: "one", type: "task" }], metadata: { owner: "team" } };
     const edge: VirtualGraphEdge = { id: "entry", from: "__start__", to: "one", kind: "entry" };
     const saved = withSavedGraphWorkspaceState(
@@ -73,11 +73,6 @@ describe("graph workspace model", () => {
     expect(restored.virtualEdges).toEqual([edge]);
     expect(restored.virtualLoops).toEqual([{ id: "loop", name: "Cycle", nodeIds: ["one"] }]);
 
-    const legacy = savedGraphWorkspaceState({
-      nodes: [],
-      metadata: { web: { virtual_groups: [{ id: "legacy", node_ids: ["one"] }] } },
-    });
-    expect(legacy.virtualLoops).toEqual([{ id: "legacy", name: undefined, nodeIds: ["one"] }]);
     expect(savedGraphWorkspaceState({ nodes: [] }).virtualNodeIDs).toEqual(defaultVirtualNodeIds);
   });
 

@@ -300,30 +300,28 @@ func (s *Server) uploadedGraphBaseDir(graphID string, graphSessionID string) str
 }
 
 func (s *Server) promoteGraphSession(graphID string, graphSessionID string) (string, error) {
-	for _, graphDir := range graphStorageDirectories(s.baseDir, graphID) {
-		manifest, complete, err := readCachedGraphSession(graphDir, graphSessionID)
-		if err != nil {
-			return "", err
-		}
-		if !complete || manifest.GraphID != graphID {
-			continue
-		}
-		baseDir := filepath.Join(graphDir, graphSessionID)
-		if manifest.Official {
-			return baseDir, nil
-		}
-		manifest.Official = true
-		data, err := json.MarshalIndent(manifest, "", "  ")
-		if err != nil {
-			return "", fmt.Errorf("serialize graph session manifest: %w", err)
-		}
-		data = append(data, '\n')
-		if err := writeGraphSessionFile(filepath.Join(baseDir, "graph.json"), data); err != nil {
-			return "", fmt.Errorf("promote graph session %q: %w", graphSessionID, err)
-		}
+	graphDir := graphStorageDirectory(s.baseDir, graphID)
+	manifest, complete, err := readCachedGraphSession(graphDir, graphSessionID)
+	if err != nil {
+		return "", err
+	}
+	if !complete || manifest.GraphID != graphID {
+		return "", fmt.Errorf("promote graph session %q: session not found", graphSessionID)
+	}
+	baseDir := filepath.Join(graphDir, graphSessionID)
+	if manifest.Official {
 		return baseDir, nil
 	}
-	return "", fmt.Errorf("promote graph session %q: session not found", graphSessionID)
+	manifest.Official = true
+	data, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return "", fmt.Errorf("serialize graph session manifest: %w", err)
+	}
+	data = append(data, '\n')
+	if err := writeGraphSessionFile(filepath.Join(baseDir, "graph.json"), data); err != nil {
+		return "", fmt.Errorf("promote graph session %q: %w", graphSessionID, err)
+	}
+	return baseDir, nil
 }
 
 func (s *Server) nextUploadedGraphBaseDir(graphID string) string {
@@ -464,16 +462,6 @@ func isReservedGraphStorageKey(value string) bool {
 	}
 }
 
-func graphStorageDirectories(baseDir string, graphID string) []string {
-	graphsDir := filepath.Join(baseDir, "graphs")
-	primary := filepath.Join(graphsDir, graphStorageKey(graphID))
-	legacyKey := safePathSegment(graphID)
-	if isReservedGraphStorageKey(legacyKey) {
-		return []string{primary}
-	}
-	legacy := filepath.Join(graphsDir, legacyKey)
-	if primary == legacy {
-		return []string{primary}
-	}
-	return []string{primary, legacy}
+func graphStorageDirectory(baseDir string, graphID string) string {
+	return filepath.Join(baseDir, "graphs", graphStorageKey(graphID))
 }

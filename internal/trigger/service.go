@@ -23,10 +23,7 @@ var (
 	ErrTypeMismatch        = errors.New("trigger type mismatch")
 )
 
-const (
-	APIKeyQueryParameter  = "api_key"
-	legacySignatureHeader = "X-Webhook-Signature"
-)
+const APIKeyQueryParameter = "api_key"
 
 const (
 	DefaultRecordLimit      = 100
@@ -259,7 +256,6 @@ func (s *Service) Start(ctx context.Context) error {
 	channels := make(map[string]chatchannel.Instance)
 	channelNames := make(map[string]string)
 	for _, item := range items {
-		item = item.Normalize(s.now())
 		if err := item.Validate(); err != nil {
 			return fmt.Errorf("load trigger %q: %w", item.ID, err)
 		}

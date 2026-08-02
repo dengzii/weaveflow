@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"go/ast"
 	"go/parser"
@@ -105,8 +104,8 @@ func NewOutline() Tool {
 
 func outlineTool(_ context.Context, input string) (string, error) {
 	var req outlineRequest
-	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &req); err != nil {
-		return "", fmt.Errorf("outline input must be valid JSON: %w", err)
+	if err := decodeToolRequest(input, "outline", &req); err != nil {
+		return "", err
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {

@@ -2,14 +2,75 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 )
+
+func TestReadCachedGraphSessionRequiresCurrentManifestFields(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		field string
+		want  string
+	}{
+		{field: "graph_version", want: "graph version is missing"},
+		{field: "graph_hash", want: "graph hash is missing"},
+		{field: "graph_snapshot_hash", want: "graph snapshot hash is missing"},
+		{field: "graph_session_id", want: "manifest id is missing"},
+		{field: "definition_path", want: "definition path is missing"},
+		{field: "created_at", want: "created_at is missing"},
+		{field: "legacy", want: "unknown field"},
+	}
+	for _, test := range tests {
+		t.Run(test.field, func(t *testing.T) {
+			t.Parallel()
+
+			graphDirectory := t.TempDir()
+			sessionID := "20260802T010203.000000000Z"
+			sessionDirectory := filepath.Join(graphDirectory, sessionID)
+			if err := os.MkdirAll(sessionDirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(sessionDirectory, "definition.json"), []byte(`{}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			manifest := map[string]any{
+				"graph_id":            "graph-a",
+				"graph_version":       "v1",
+				"graph_hash":          "hash",
+				"graph_snapshot_hash": "snapshot-hash",
+				"graph_session_id":    sessionID,
+				"definition_path":     "definition.json",
+				"created_at":          time.Date(2026, 8, 2, 1, 2, 3, 0, time.UTC),
+			}
+			if test.field == "legacy" {
+				manifest[test.field] = true
+			} else {
+				delete(manifest, test.field)
+			}
+			data, err := json.Marshal(manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(sessionDirectory, "graph.json"), data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			_, _, err = readCachedGraphSession(graphDirectory, sessionID)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("readCachedGraphSession() error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
 
 func TestListCachedGraphsPreservesOriginalGraphID(t *testing.T) {
 	gin.SetMode(gin.TestMode)

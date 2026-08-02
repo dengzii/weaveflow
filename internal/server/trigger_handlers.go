@@ -161,9 +161,6 @@ func (s *Server) handleUpdateTrigger(c *gin.Context) {
 	item.ID = id
 	if item.Webhook != nil && item.Webhook.APIKey == "" && existing.Webhook != nil {
 		item.Webhook.APIKey = existing.Webhook.APIKey
-		if item.Webhook.APIKey == "" {
-			item.Webhook.APIKey = existing.Webhook.Secret
-		}
 	}
 	if item.Target == (trigger.Target{}) {
 		item.Target = existing.Target
@@ -398,8 +395,6 @@ func (s *Server) publicTrigger(item trigger.Trigger) trigger.Trigger {
 	if item.Webhook != nil {
 		copy := *item.Webhook
 		copy.APIKey = ""
-		copy.Secret = ""
-		copy.SignatureHeader = ""
 		item.Webhook = &copy
 	}
 	if s != nil && s.triggers != nil {

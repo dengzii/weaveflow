@@ -183,13 +183,9 @@ func globTool(_ context.Context, input string) (string, error) {
 }
 
 func parseGlobRequest(input string) (globRequest, error) {
-	raw := strings.TrimSpace(input)
-	if raw == "" {
-		return globRequest{}, fmt.Errorf("glob input is required")
-	}
 	var req globRequest
-	if err := json.Unmarshal([]byte(raw), &req); err != nil {
-		return globRequest{}, fmt.Errorf("glob input must be valid JSON: %w", err)
+	if err := decodeToolRequest(input, "glob", &req); err != nil {
+		return globRequest{}, err
 	}
 	req.Pattern = strings.TrimSpace(req.Pattern)
 	if req.Pattern == "" {

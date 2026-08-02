@@ -181,18 +181,6 @@ func TestDecodeRunRequestsRejectLegacyPayloads(t *testing.T) {
 	}
 }
 
-func TestCurrentGraphEnvironmentIgnoresLegacyOpenAIBaseURL(t *testing.T) {
-	t.Setenv("OPENAI_MODEL", "")
-	t.Setenv("OPENAI_BASE_URL", "")
-	t.Setenv("OPENAI_API_BASE", "http://legacy.invalid/v1")
-	if value, ok := currentGraphEnvironment()["OPENAI_API_BASE"]; ok {
-		t.Fatalf("currentGraphEnvironment() exposed OPENAI_API_BASE=%q", value)
-	}
-	if models := graphModelSettingsFromContext(context.Background()); len(models) != 0 {
-		t.Fatalf("graphModelSettingsFromContext() used legacy base URL: %#v", models)
-	}
-}
-
 func newInterruptTestNode(spec dsl.GraphNodeSpec, resumePath state.Path) *interruptTestNode {
 	name := spec.Name
 	if name == "" {
@@ -630,41 +618,6 @@ func TestRegisterRoutesMountsOnRouterGroup(t *testing.T) {
 	}
 	if len(response.Data) != 1 || response.Data[0].ID != event.ID {
 		t.Fatalf("response data = %#v, want one %q event", response.Data, event.ID)
-	}
-}
-
-func TestRemovedServerRoutesAreUnavailable(t *testing.T) {
-	gin.SetMode(gin.TestMode)
-
-	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
-	engine := gin.New()
-	srv.RegisterRoutes(engine.Group(""))
-
-	tests := []struct {
-		method string
-		path   string
-	}{
-		{method: http.MethodPost, path: "/graph"},
-		{method: http.MethodPost, path: "/graph/push"},
-		{method: http.MethodGet, path: "/graph/settings"},
-		{method: http.MethodPut, path: "/graph/settings"},
-		{method: http.MethodGet, path: "/tools"},
-		{method: http.MethodGet, path: "/events/stream"},
-		{method: http.MethodGet, path: "/trigger-records"},
-		{method: http.MethodPost, path: "/triggers/example"},
-		{method: http.MethodPost, path: "/triggers/example/webhook"},
-		{method: http.MethodGet, path: "/runs/example/detail"},
-	}
-	for _, test := range tests {
-		t.Run(test.method+" "+test.path, func(t *testing.T) {
-			response := serveHTTP(engine, test.method, test.path, "")
-			if response.Code != http.StatusNotFound && response.Code != http.StatusMethodNotAllowed {
-				t.Fatalf("status = %d, want 404 or 405; body = %s", response.Code, response.Body.String())
-			}
-		})
 	}
 }
 

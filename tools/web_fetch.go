@@ -65,14 +65,9 @@ func NewWebFetch() Tool {
 }
 
 func webFetchTool(_ context.Context, input string) (string, error) {
-	raw := strings.TrimSpace(input)
-	if raw == "" {
-		return "", fmt.Errorf("web_fetch input is required")
-	}
-
 	var req webFetchRequest
-	if err := json.Unmarshal([]byte(raw), &req); err != nil {
-		return "", fmt.Errorf("web_fetch input must be valid JSON: %w", err)
+	if err := decodeToolRequest(input, "web_fetch", &req); err != nil {
+		return "", err
 	}
 	req.URL = strings.TrimSpace(req.URL)
 	if req.URL == "" {

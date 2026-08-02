@@ -195,10 +195,9 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 			return nil, err
 		}
 		var history ChatHistory
-		if err := json.Unmarshal(data, &history); err != nil {
+		if err := decodeStoredJSON(data, &history); err != nil {
 			return nil, fmt.Errorf("decode chat history %q: %w", path, err)
 		}
-		history = normalizeChatHistory(history)
 		if err := validateChatHistory(history); err != nil {
 			return nil, fmt.Errorf("decode chat history %q: %w", path, err)
 		}

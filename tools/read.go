@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -17,7 +16,6 @@ type readRequest struct {
 	FilePath string `json:"file_path"`
 	Offset   int    `json:"offset,omitempty"`
 	Limit    int    `json:"limit,omitempty"`
-	Pages    string `json:"pages,omitempty"`
 }
 
 func NewRead() Tool {
@@ -47,10 +45,6 @@ func NewRead() Tool {
 						"exclusiveMinimum": 0,
 						"description":      "The number of lines to read. Only provide if the file is too large to read at once.",
 					},
-					"pages": map[string]any{
-						"type":        "string",
-						"description": "Page range for PDF files. Accepted for schema compatibility; PDF parsing is not implemented.",
-					},
 				},
 				"required":             []string{"file_path"},
 				"additionalProperties": false,
@@ -62,8 +56,8 @@ func NewRead() Tool {
 
 func readTool(_ context.Context, input string) (string, error) {
 	var req readRequest
-	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &req); err != nil {
-		return "", fmt.Errorf("read input must be valid JSON: %w", err)
+	if err := decodeToolRequest(input, "read", &req); err != nil {
+		return "", err
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {

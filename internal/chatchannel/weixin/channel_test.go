@@ -45,16 +45,12 @@ func TestRegisterWithCursorDirectoryUsesManagedCursorPath(t *testing.T) {
 	if channel.config.CursorFile != want {
 		t.Fatalf("cursor file = %q, want %q", channel.config.CursorFile, want)
 	}
-	if channel.legacyCursorFile != cursorFile(DefaultCursorDirectory, "team/chat:primary") {
-		t.Fatalf("legacy cursor file = %q", channel.legacyCursorFile)
-	}
 }
 
 func TestFactoryExplicitCursorFileOverridesManagedDirectory(t *testing.T) {
 	explicitCursorFile := filepath.Join(t.TempDir(), "custom", "cursor.sync")
 	instance, err := (Factory{
-		CursorDirectory:       filepath.Join(t.TempDir(), "managed"),
-		LegacyCursorDirectory: filepath.Join(t.TempDir(), "legacy"),
+		CursorDirectory: filepath.Join(t.TempDir(), "managed"),
 	}).New(chatchannel.InstanceConfig{
 		TriggerID: "explicit",
 		Config: map[string]any{
@@ -68,92 +64,6 @@ func TestFactoryExplicitCursorFileOverridesManagedDirectory(t *testing.T) {
 	channel := instance.(*Channel)
 	if channel.config.CursorFile != explicitCursorFile {
 		t.Fatalf("cursor file = %q, want %q", channel.config.CursorFile, explicitCursorFile)
-	}
-	if channel.legacyCursorFile != "" {
-		t.Fatalf("legacy cursor file = %q, want empty", channel.legacyCursorFile)
-	}
-}
-
-func TestChannelMigratesLegacyCursorBeforePolling(t *testing.T) {
-	rootDirectory := t.TempDir()
-	legacyDirectory := filepath.Join(rootDirectory, "legacy")
-	cursorDirectory := filepath.Join(rootDirectory, "server", "weixin")
-	triggerID := "migrate"
-	legacyCursorFile := cursorFile(legacyDirectory, triggerID)
-	if err := writeCursor(legacyCursorFile, "legacy-cursor"); err != nil {
-		t.Fatal(err)
-	}
-
-	receivedCursor := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/ilink/bot/getupdates" {
-			http.NotFound(response, request)
-			return
-		}
-		var payload getUpdatesRequest
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-			t.Errorf("decode getupdates request: %v", err)
-			return
-		}
-		receivedCursor <- payload.Cursor
-		_ = json.NewEncoder(response).Encode(map[string]any{"ret": -14, "errmsg": "stop after first poll"})
-	}))
-	defer server.Close()
-
-	instance, err := (Factory{
-		HTTPClient:            server.Client(),
-		CursorDirectory:       cursorDirectory,
-		LegacyCursorDirectory: legacyDirectory,
-	}).New(chatchannel.InstanceConfig{
-		TriggerID: triggerID,
-		Handler:   chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error { return nil }),
-		Config:    map[string]any{"bot_token": "token", "base_url": server.URL},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = instance.Run(context.Background())
-	var tokenErr *tokenError
-	if !errors.As(err, &tokenErr) {
-		t.Fatalf("Run() error = %v", err)
-	}
-	select {
-	case cursor := <-receivedCursor:
-		if cursor != "legacy-cursor" {
-			t.Fatalf("first poll cursor = %q", cursor)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("first poll was not received")
-	}
-	targetCursorFile := cursorFile(cursorDirectory, triggerID)
-	cursor, err := readCursor(targetCursorFile)
-	if err != nil || cursor != "legacy-cursor" {
-		t.Fatalf("migrated cursor = %q, err = %v", cursor, err)
-	}
-	if _, err := os.Stat(legacyCursorFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("legacy cursor still exists: %v", err)
-	}
-}
-
-func TestMigrateCursorFileKeepsExistingTarget(t *testing.T) {
-	rootDirectory := t.TempDir()
-	legacyCursorFile := filepath.Join(rootDirectory, "legacy", "cursor.sync")
-	targetCursorFile := filepath.Join(rootDirectory, "server", "weixin", "cursor.sync")
-	if err := writeCursor(legacyCursorFile, "stale-cursor"); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeCursor(targetCursorFile, "current-cursor"); err != nil {
-		t.Fatal(err)
-	}
-	if err := migrateCursorFile(legacyCursorFile, targetCursorFile); err != nil {
-		t.Fatal(err)
-	}
-	cursor, err := readCursor(targetCursorFile)
-	if err != nil || cursor != "current-cursor" {
-		t.Fatalf("target cursor = %q, err = %v", cursor, err)
-	}
-	if _, err := os.Stat(legacyCursorFile); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("legacy cursor still exists: %v", err)
 	}
 }
 

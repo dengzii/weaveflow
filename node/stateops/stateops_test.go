@@ -158,13 +158,13 @@ func TestStateAppendNodePreservesAppendInputSemantics(t *testing.T) {
 func TestStateTransformNodeFiltersMapsAndProjects(t *testing.T) {
 	t.Parallel()
 	node, err := NewStateTransformNode(
-		"input.filter(item, item.enabled).map(item, {'id': item.id, 'score': item.score * 2.0})",
+		"inputs.items.filter(item, item.enabled).map(item, {'id': item.id, 'score': item.score * 2.0})",
 		core.WithID("transform"),
 	)
 	if err != nil {
 		t.Fatalf("NewStateTransformNode(): %v", err)
 	}
-	node.InputPath = mustPath(t, "shared.items")
+	node.InputPaths = map[string]state.Path{"items": mustPath(t, "shared.items")}
 	node.OutputPath = mustPath(t, "shared.result")
 	result := executeNode(t, state.FromShared(map[string]any{
 		"items": []any{
@@ -200,12 +200,12 @@ func TestStateTransformNodeCombinesDynamicInputs(t *testing.T) {
 
 func TestStateTransformNodeSupportsSameInputAndOutputPath(t *testing.T) {
 	t.Parallel()
-	node, err := NewStateTransformNode("{'count': input.count + 1.0}", core.WithID("transform_same"))
+	node, err := NewStateTransformNode("{'count': inputs.value.count + 1.0}", core.WithID("transform_same"))
 	if err != nil {
 		t.Fatalf("NewStateTransformNode(): %v", err)
 	}
-	node.InputPath = mustPath(t, "shared.value")
-	node.OutputPath = node.InputPath
+	node.InputPaths = map[string]state.Path{"value": mustPath(t, "shared.value")}
+	node.OutputPath = node.InputPaths["value"]
 	result := executeNode(t, state.FromShared(map[string]any{"value": map[string]any{"count": 1}}), node)
 	assertSinglePatch(t, result.Patch, state.OpSet, "shared.value", map[string]any{"count": float64(2)})
 	contract := node.Contract()
@@ -217,13 +217,13 @@ func TestStateTransformNodeSupportsSameInputAndOutputPath(t *testing.T) {
 func TestStateTransformNodeHandlesMissingAndNullDeterministically(t *testing.T) {
 	t.Parallel()
 	node, err := NewStateTransformNode(
-		"{'name': input.?name.orValue('unknown'), 'value': input.?value.orValue(null)}",
+		"{'name': inputs.value.?name.orValue('unknown'), 'value': inputs.value.?value.orValue(null)}",
 		core.WithID("transform_optional"),
 	)
 	if err != nil {
 		t.Fatalf("NewStateTransformNode(): %v", err)
 	}
-	node.InputPath = mustPath(t, "shared.input")
+	node.InputPaths = map[string]state.Path{"value": mustPath(t, "shared.input")}
 	node.OutputPath = mustPath(t, "shared.output")
 	result := executeNode(t, state.FromShared(map[string]any{"input": map[string]any{"value": nil}}), node)
 	assertSinglePatch(t, result.Patch, state.OpSet, "shared.output", map[string]any{"name": "unknown", "value": nil})
@@ -233,7 +233,7 @@ func TestStateTransformDefinitionCompilesExpressionAtBuildTime(t *testing.T) {
 	t.Parallel()
 	definition := StateTransformNodeTypeDefinition()
 	resolved := resolvedNodeSpec(t, NodeTypeStateTransform, map[string]any{"expression": "unbound.value"}, map[string]string{
-		"input": "shared.input", "output": "shared.output",
+		"value": "shared.input", "output": "shared.output",
 	})
 	_, err := definition.Build(&registry.BuildContext{}, resolved)
 	if err == nil || !strings.Contains(err.Error(), "state_transform") || !strings.Contains(err.Error(), "unbound") {
@@ -244,11 +244,11 @@ func TestStateTransformDefinitionCompilesExpressionAtBuildTime(t *testing.T) {
 func TestStateTransformNodeEnforcesSizeLimitsAndJSONOutput(t *testing.T) {
 	t.Parallel()
 	t.Run("input", func(t *testing.T) {
-		node, err := NewStateTransformNode("input", core.WithID("large_input"))
+		node, err := NewStateTransformNode("inputs.value", core.WithID("large_input"))
 		if err != nil {
 			t.Fatalf("NewStateTransformNode(): %v", err)
 		}
-		node.InputPath = mustPath(t, "shared.input")
+		node.InputPaths = map[string]state.Path{"value": mustPath(t, "shared.input")}
 		node.OutputPath = mustPath(t, "shared.output")
 		_, err = core.ExecuteNode(context.Background(), state.FromShared(map[string]any{"input": strings.Repeat("x", maxTransformInputBytes+1)}), node)
 		if err == nil || !strings.Contains(err.Error(), "input exceeds") {
@@ -256,11 +256,11 @@ func TestStateTransformNodeEnforcesSizeLimitsAndJSONOutput(t *testing.T) {
 		}
 	})
 	t.Run("output", func(t *testing.T) {
-		node, err := NewStateTransformNode("input + input", core.WithID("large_output"))
+		node, err := NewStateTransformNode("inputs.value + inputs.value", core.WithID("large_output"))
 		if err != nil {
 			t.Fatalf("NewStateTransformNode(): %v", err)
 		}
-		node.InputPath = mustPath(t, "shared.input")
+		node.InputPaths = map[string]state.Path{"value": mustPath(t, "shared.input")}
 		node.OutputPath = mustPath(t, "shared.output")
 		_, err = core.ExecuteNode(context.Background(), state.FromShared(map[string]any{"input": strings.Repeat("x", maxTransformOutputBytes/2+1)}), node)
 		if err == nil || !strings.Contains(err.Error(), "output exceeds") {
@@ -272,7 +272,7 @@ func TestStateTransformNodeEnforcesSizeLimitsAndJSONOutput(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewStateTransformNode(): %v", err)
 		}
-		node.InputPath = mustPath(t, "shared.input")
+		node.InputPaths = map[string]state.Path{"value": mustPath(t, "shared.input")}
 		node.OutputPath = mustPath(t, "shared.output")
 		_, err = core.ExecuteNode(context.Background(), state.FromShared(map[string]any{"input": true}), node)
 		if err == nil || !strings.Contains(err.Error(), "not JSON compatible") {
@@ -283,11 +283,11 @@ func TestStateTransformNodeEnforcesSizeLimitsAndJSONOutput(t *testing.T) {
 
 func TestStateTransformNodeEnforcesRuntimeCostLimit(t *testing.T) {
 	t.Parallel()
-	node, err := NewStateTransformNode("input.map(item, item)", core.WithID("cost_limit"))
+	node, err := NewStateTransformNode("inputs.value.map(item, item)", core.WithID("cost_limit"))
 	if err != nil {
 		t.Fatalf("NewStateTransformNode(): %v", err)
 	}
-	node.InputPath = mustPath(t, "shared.input")
+	node.InputPaths = map[string]state.Path{"value": mustPath(t, "shared.input")}
 	node.OutputPath = mustPath(t, "shared.output")
 	input := make([]any, 120_000)
 	for index := range input {
@@ -312,7 +312,7 @@ func TestStateOperationDefinitionsDeclareStrictPorts(t *testing.T) {
 		NodeTypeStateDelete:    {{"target", dsl.StateAccessWrite, dsl.StateMergeReplace, true}},
 		NodeTypeStateMerge:     {{"source", dsl.StateAccessRead, dsl.StateMergeReplace, true}, {"target", dsl.StateAccessWrite, dsl.StateMergeMerge, true}},
 		NodeTypeStateAppend:    {{"source", dsl.StateAccessRead, dsl.StateMergeReplace, true}, {"target", dsl.StateAccessWrite, dsl.StateMergeAppend, true}},
-		NodeTypeStateTransform: {{"input", dsl.StateAccessRead, dsl.StateMergeReplace, false}, {"output", dsl.StateAccessWrite, dsl.StateMergeReplace, true}},
+		NodeTypeStateTransform: {{"output", dsl.StateAccessWrite, dsl.StateMergeReplace, true}},
 	}
 	for _, definition := range NodeTypeDefinitions() {
 		ports := wantPorts[definition.Type]

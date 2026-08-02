@@ -61,7 +61,7 @@ describe("graph workspace edge model", () => {
     });
   });
 
-  test("updates real edges and clears a conflicting legacy finish point", () => {
+  test("updates real edges and clears a conflicting finish point", () => {
     const definition = graph({
       finish_point: "review",
       edges: [{ from: "task", to: "review" }],

@@ -13,6 +13,10 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
+type calculatorRequest struct {
+	Expression string `json:"expression"`
+}
+
 func NewCalculator() Tool {
 	return Tool{
 		Function: &llms.FunctionDefinition{
@@ -35,7 +39,11 @@ func NewCalculator() Tool {
 }
 
 func calculatorTool(_ context.Context, input string) (string, error) {
-	expression := strings.TrimSpace(input)
+	var req calculatorRequest
+	if err := decodeToolRequest(input, "calculator", &req); err != nil {
+		return "", err
+	}
+	expression := strings.TrimSpace(req.Expression)
 	if expression == "" {
 		return "", errors.New("expression is required")
 	}

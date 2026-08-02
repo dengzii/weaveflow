@@ -120,3 +120,31 @@ func TestRuntimeSettingsPersistAcrossServerRestart(t *testing.T) {
 		t.Fatalf("restored runtime models = %#v", core.ModelsFromContext(runtimeContext))
 	}
 }
+
+func TestLoadGraphRuntimeSettingsRejectsModelWithoutID(t *testing.T) {
+	baseDir := t.TempDir()
+	data := []byte(`{"version":1,"environment":{},"models":[{"enabled":true,"provider":"openai"}],"memory":{"enabled":false}}`)
+	if err := os.WriteFile(graphRuntimeSettingsPath(baseDir), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := loadGraphRuntimeSettings(baseDir)
+	if err == nil || !strings.Contains(err.Error(), "id is required") {
+		t.Fatalf("loadGraphRuntimeSettings() error = %v", err)
+	}
+}
+
+func TestRuntimeSettingsRejectsModelWithoutID(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	server, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	server.RegisterRoutes(engine.Group(""))
+
+	response := serveHTTP(engine, http.MethodPut, "/runtime/settings", `{"models":[{"enabled":true,"provider":"openai"}]}`)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "model id is required") {
+		t.Fatalf("PUT /runtime/settings status = %d, body = %s", response.Code, response.Body.String())
+	}
+}

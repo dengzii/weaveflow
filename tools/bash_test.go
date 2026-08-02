@@ -22,13 +22,9 @@ func TestBashToolAutoShellExecutesCommand(t *testing.T) {
 	}
 }
 
-func TestBashToolRawInputStillWorks(t *testing.T) {
-	out, err := bashTool(context.Background(), "echo hello")
-	if err != nil {
-		t.Fatalf("bashTool: %v", err)
-	}
-	if !strings.Contains(out, "hello") {
-		t.Fatalf("expected command output, got:\n%s", out)
+func TestBashToolRejectsRawInput(t *testing.T) {
+	if _, err := bashTool(context.Background(), "echo hello"); err == nil {
+		t.Fatal("raw Bash input was accepted")
 	}
 }
 
@@ -36,7 +32,7 @@ func TestBashToolUsesConfiguredWorkspace(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(toolWorkspaceEnv, root)
 
-	out, err := bashTool(context.Background(), "echo hello")
+	out, err := bashTool(context.Background(), `{"command":"echo hello","shell":"auto"}`)
 	if err != nil {
 		t.Fatalf("bashTool: %v", err)
 	}
@@ -65,11 +61,12 @@ func TestBashToolRejectsBackgroundMode(t *testing.T) {
 	}
 }
 
-func TestResolveShellSupportsAliases(t *testing.T) {
-	tests := []string{"", "auto", "pwsh", "powershell", "cmd", "bash", "git-bash", "gitbash", "msys", "msys2"}
-	for _, tt := range tests {
-		t.Run(tt, func(t *testing.T) {
-			_, _ = resolveShell(tt)
+func TestResolveShellRejectsAliases(t *testing.T) {
+	for _, alias := range []string{"powershell", "git-bash", "gitbash", "msys", "msys2"} {
+		t.Run(alias, func(t *testing.T) {
+			if _, err := resolveShell(alias); err == nil {
+				t.Fatalf("shell alias %q was accepted", alias)
+			}
 		})
 	}
 }

@@ -119,11 +119,7 @@ export function savedGraphWorkspaceState(definition: GraphDefinition): {
   const virtualNodeIDs = rawNodeIDs.filter((item): item is string => typeof item === "string" && item.trim() !== "");
   const rawEdges = Array.isArray(web?.virtual_edges) ? web.virtual_edges : [];
   const virtualEdges = rawEdges.filter(isVirtualGraphEdge);
-  const rawLoops = Array.isArray(web?.virtual_loops)
-    ? web.virtual_loops
-    : Array.isArray(web?.virtual_groups)
-      ? web.virtual_groups
-      : [];
+  const rawLoops = Array.isArray(web?.virtual_loops) ? web.virtual_loops : [];
   const virtualLoops = rawLoops.map(parseVirtualGraphLoop).filter((loop): loop is VirtualGraphLoop => Boolean(loop));
   return {
     virtualNodeIDs: virtualNodeIDs.length ? virtualNodeIDs : defaultVirtualNodeIds,

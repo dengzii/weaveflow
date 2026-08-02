@@ -3,7 +3,6 @@ package tools
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -97,8 +96,8 @@ func NewBash() Tool {
 
 func bashTool(ctx context.Context, input string) (string, error) {
 	var req bashRequest
-	if err := json.Unmarshal([]byte(input), &req); err != nil {
-		req.Command = strings.TrimSpace(input)
+	if err := decodeToolRequest(input, "bash", &req); err != nil {
+		return "", err
 	}
 
 	command := strings.TrimSpace(req.Command)
@@ -219,13 +218,13 @@ func resolveShell(requested string) (shellSpec, error) {
 		return resolveAutoShell()
 	case "bash":
 		return resolveExecutableShell("bash", []string{"-lc"}, "bash")
-	case "pwsh", "powershell":
+	case "pwsh":
 		return resolvePwshShell()
 	case "cmd":
 		return resolveExecutableShell(windowsDefaultShell, []string{"/C"}, "cmd")
-	case "git_bash", "git-bash", "gitbash":
+	case "git_bash":
 		return resolveGitBashShell("git_bash")
-	case "mingw", "msys", "msys2":
+	case "mingw":
 		return resolveMingwShell()
 	default:
 		return shellSpec{}, fmt.Errorf("unsupported shell %q; use auto, bash, pwsh, cmd, git_bash, or mingw", requested)

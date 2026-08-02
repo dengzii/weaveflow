@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -143,31 +142,30 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 	reader := &graphCacheReader{
 		codec: state.NewJSONStateCodec(""),
 	}
-	for _, graphDir := range graphStorageDirectories(s.baseDir, graphID) {
-		sessions, err := os.ReadDir(graphDir)
-		if os.IsNotExist(err) {
+	graphDir := graphStorageDirectory(s.baseDir, graphID)
+	sessions, err := os.ReadDir(graphDir)
+	if os.IsNotExist(err) {
+		return reader, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	for _, sess := range sessions {
+		if !sess.IsDir() {
 			continue
 		}
+		manifest, complete, err := readCachedGraphSession(graphDir, sess.Name())
 		if err != nil {
 			return nil, err
 		}
-		for _, sess := range sessions {
-			if !sess.IsDir() {
-				continue
-			}
-			manifest, complete, err := readCachedGraphSession(graphDir, sess.Name())
-			if err != nil {
-				return nil, err
-			}
-			if !complete || manifest.GraphID != graphID {
-				continue
-			}
-			base := filepath.Join(graphDir, sess.Name())
-			reader.executionStores = append(reader.executionStores, runtime.NewFileExecutionStore(filepath.Join(base, "execution")))
-			reader.checkpointStores = append(reader.checkpointStores, runtime.NewFileCheckpointStore(filepath.Join(base, "checkpoints")))
-			reader.artifactStores = append(reader.artifactStores, runtime.NewFileArtifactStore(filepath.Join(base, "artifacts")))
-			reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(base, "events")))
+		if !complete || manifest.GraphID != graphID {
+			continue
 		}
+		base := filepath.Join(graphDir, sess.Name())
+		reader.executionStores = append(reader.executionStores, runtime.NewFileExecutionStore(filepath.Join(base, "execution")))
+		reader.checkpointStores = append(reader.checkpointStores, runtime.NewFileCheckpointStore(filepath.Join(base, "checkpoints")))
+		reader.artifactStores = append(reader.artifactStores, runtime.NewFileArtifactStore(filepath.Join(base, "artifacts")))
+		reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(base, "events")))
 	}
 	return reader, nil
 }
@@ -182,23 +180,42 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 		return graphSessionManifest{}, false, err
 	}
 	var manifest graphSessionManifest
-	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+	if err := decodeStrictJSON(manifestData, &manifest); err != nil {
 		return graphSessionManifest{}, false, fmt.Errorf("decode graph session %q manifest: %w", sessionID, err)
 	}
 	manifest.GraphID = strings.TrimSpace(manifest.GraphID)
 	if manifest.GraphID == "" {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q graph id is missing", sessionID)
 	}
-	manifest.GraphSessionID = firstNonEmpty(manifest.GraphSessionID, sessionID)
+	manifest.GraphVersion = strings.TrimSpace(manifest.GraphVersion)
+	if manifest.GraphVersion == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q graph version is missing", sessionID)
+	}
+	manifest.GraphHash = strings.TrimSpace(manifest.GraphHash)
+	if manifest.GraphHash == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q graph hash is missing", sessionID)
+	}
+	manifest.GraphSnapshotHash = strings.TrimSpace(manifest.GraphSnapshotHash)
+	if manifest.GraphSnapshotHash == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q graph snapshot hash is missing", sessionID)
+	}
+	manifest.GraphSessionID = strings.TrimSpace(manifest.GraphSessionID)
+	if manifest.GraphSessionID == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q manifest id is missing", sessionID)
+	}
 	if manifest.GraphSessionID != sessionID {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q manifest id mismatch", sessionID)
 	}
-	definitionName := filepath.Clean(strings.TrimSpace(manifest.DefinitionPath))
-	if definitionName == "." {
-		definitionName = "definition.json"
+	definitionPath := strings.TrimSpace(manifest.DefinitionPath)
+	if definitionPath == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q definition path is missing", sessionID)
 	}
+	definitionName := filepath.Clean(definitionPath)
 	if filepath.IsAbs(definitionName) || definitionName != filepath.Base(definitionName) {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q definition path is invalid", sessionID)
+	}
+	if manifest.CreatedAt.IsZero() {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q created_at is missing", sessionID)
 	}
 	manifest.DefinitionPath = definitionName
 	if _, err := os.Stat(filepath.Join(baseDir, definitionName)); os.IsNotExist(err) {

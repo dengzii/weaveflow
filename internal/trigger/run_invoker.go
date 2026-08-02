@@ -71,7 +71,7 @@ func (s *Service) invokeWebhook(ctx context.Context, id string, apiKey string, h
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
-	metadata := webhookMetadata(headers, trigger.Webhook)
+	metadata := webhookMetadata(headers)
 	return s.invoke(ctx, trigger, payload, metadata, "webhook")
 }
 
@@ -256,9 +256,6 @@ func verifyWebhookAPIKey(spec *WebhookSpec, provided string) error {
 	}
 	expected := spec.APIKey
 	if expected == "" {
-		expected = spec.Secret
-	}
-	if expected == "" {
 		return nil
 	}
 	expectedHash := sha256.Sum256([]byte(expected))
@@ -269,16 +266,11 @@ func verifyWebhookAPIKey(spec *WebhookSpec, provided string) error {
 	return nil
 }
 
-func webhookMetadata(headers map[string]string, spec *WebhookSpec) map[string]any {
-	signatureHeader := legacySignatureHeader
-	if spec != nil && strings.TrimSpace(spec.SignatureHeader) != "" {
-		signatureHeader = spec.SignatureHeader
-	}
+func webhookMetadata(headers map[string]string) map[string]any {
 	metadata := make(map[string]any, len(headers))
 	for key, value := range headers {
 		switch {
-		case strings.EqualFold(key, signatureHeader),
-			strings.EqualFold(key, "Authorization"),
+		case strings.EqualFold(key, "Authorization"),
 			strings.EqualFold(key, "Proxy-Authorization"),
 			strings.EqualFold(key, "Cookie"),
 			strings.EqualFold(key, "Set-Cookie"):

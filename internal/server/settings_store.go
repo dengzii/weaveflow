@@ -45,6 +45,20 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 	if stored.Version != graphRuntimeSettingsVersion {
 		return graphRuntimeSettings{}, false, fmt.Errorf("unsupported graph runtime settings version %d", stored.Version)
 	}
+	seenModelIDs := make(map[string]struct{}, len(stored.Models))
+	for index, model := range stored.Models {
+		modelID := strings.TrimSpace(model.ID)
+		if modelID == "" {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model %d id is required", index)
+		}
+		if _, exists := seenModelIDs[modelID]; exists {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model id %q is duplicated", modelID)
+		}
+		seenModelIDs[modelID] = struct{}{}
+		if strings.TrimSpace(model.Provider) != "openai" {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model %q provider must be openai", modelID)
+		}
+	}
 	settings := graphRuntimeSettings{
 		Environment: stored.Environment,
 		Memory:      stored.Memory,

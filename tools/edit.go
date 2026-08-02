@@ -65,8 +65,8 @@ func NewEdit() Tool {
 
 func editTool(_ context.Context, input string) (string, error) {
 	var req editRequest
-	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &req); err != nil {
-		return "", fmt.Errorf("edit input must be valid JSON: %w", err)
+	if err := decodeToolRequest(input, "edit", &req); err != nil {
+		return "", err
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {

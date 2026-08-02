@@ -484,7 +484,7 @@ func (b *eventAnalysisBuilder) applyNodeFinished(node *EventNodeUsage, event Eve
 func (b *eventAnalysisBuilder) applyNodeFailed(analysis *EventRunAnalysis, node *EventNodeUsage, event Event) {
 	if node != nil {
 		node.Failed++
-		node.LastError = firstNonEmpty(payloadString(event.Payload, "error"), payloadString(event.Payload, "error_message"))
+		node.LastError = payloadString(event.Payload, "error")
 		if attempt := payloadInt(event.Payload, "attempt"); attempt > node.AttemptCount {
 			node.AttemptCount = attempt
 		}
@@ -641,13 +641,18 @@ func (b *eventAnalysisBuilder) popActiveSubgraph(event Event, ref string) *Event
 }
 
 func (b *eventAnalysisBuilder) appendError(analysis *EventRunAnalysis, event Event) {
+	code := payloadString(event.Payload, "error_code")
+	message := payloadString(event.Payload, "error")
+	if event.Type == EventRunFailed {
+		message = payloadString(event.Payload, "error_message")
+	}
 	analysis.Errors = append(analysis.Errors, EventErrorRecord{
 		Type:      event.Type,
 		NodeID:    event.NodeID,
 		StepID:    event.StepID,
 		Timestamp: event.Timestamp,
-		Code:      firstNonEmpty(payloadString(event.Payload, "error_code"), payloadString(event.Payload, "code")),
-		Message:   firstNonEmpty(payloadString(event.Payload, "error_message"), payloadString(event.Payload, "error")),
+		Code:      code,
+		Message:   message,
 	})
 }
 
@@ -906,7 +911,7 @@ func checkpointRecordFromEvent(event Event) EventCheckpointRecord {
 
 func artifactRecordFromEvent(event Event) EventArtifactRecord {
 	return EventArtifactRecord{
-		ArtifactID: firstNonEmpty(payloadString(event.Payload, "artifact_id"), payloadString(event.Payload, "id")),
+		ArtifactID: payloadString(event.Payload, "artifact_id"),
 		Type:       payloadString(event.Payload, "type"),
 		MIMEType:   payloadString(event.Payload, "mime_type"),
 		NodeID:     event.NodeID,

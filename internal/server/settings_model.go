@@ -65,16 +65,9 @@ func graphModelSettingsListFromRequest(
 	}
 	apiKey := ""
 	apiKeyProvided := false
-	for index, req := range reqModels {
-		fallbackID := ""
-		if index == 0 {
-			fallbackID = core.DefaultModelID
-		}
+	for _, req := range reqModels {
 		current := currentByID[strings.TrimSpace(req.ID)]
-		if current.ID == "" && index < len(currentModels) {
-			current = currentModels[index]
-		}
-		model, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsFromRequest(current, req, fallbackID)
+		model, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsFromRequest(current, req)
 		if err != nil {
 			return nil, "", false, err
 		}
@@ -94,14 +87,13 @@ func graphModelSettingsListFromRequest(
 func graphModelSettingsFromRequest(
 	current graphModelSettings,
 	req graphModelSettingsRequest,
-	fallbackID string,
 ) (graphModelSettings, string, bool, error) {
-	model := current
-	model.ID = firstNonEmpty(req.ID, model.ID, fallbackID)
-	model.ID = strings.TrimSpace(model.ID)
-	if model.ID == "" {
+	modelID := strings.TrimSpace(req.ID)
+	if modelID == "" {
 		return graphModelSettings{}, "", false, fmt.Errorf("model id is required")
 	}
+	model := current
+	model.ID = modelID
 	if req.Enabled != nil {
 		model.Enabled = *req.Enabled
 	} else if current.ID == "" {
@@ -118,7 +110,7 @@ func graphModelSettingsFromRequest(
 		model.APIKey = apiKey
 		model.APIKeyConfigured = true
 	}
-	return sanitizeGraphModelSettings(model, model.ID), apiKey, apiKey != "", nil
+	return sanitizeGraphModelSettings(model), apiKey, apiKey != "", nil
 }
 
 func applyEnvironmentModelDefaults(settings *graphRuntimeSettings) {
@@ -182,12 +174,8 @@ func sanitizedGraphModelList(models []graphModelSettings) []graphModelSettings {
 	}
 	seen := map[string]struct{}{}
 	out := make([]graphModelSettings, 0, len(models))
-	for index, model := range models {
-		fallbackID := ""
-		if index == 0 {
-			fallbackID = core.DefaultModelID
-		}
-		model = sanitizeGraphModelSettings(model, fallbackID)
+	for _, model := range models {
+		model = sanitizeGraphModelSettings(model)
 		if model.ID == "" {
 			continue
 		}
@@ -209,8 +197,7 @@ func sanitizedGraphModelList(models []graphModelSettings) []graphModelSettings {
 	return out
 }
 
-func sanitizeGraphModelSettings(model graphModelSettings, fallbackID string) graphModelSettings {
-	model.ID = firstNonEmpty(model.ID, fallbackID)
+func sanitizeGraphModelSettings(model graphModelSettings) graphModelSettings {
 	model.ID = strings.TrimSpace(model.ID)
 	model.Provider = firstNonEmpty(model.Provider, "openai")
 	model.Provider = strings.TrimSpace(model.Provider)

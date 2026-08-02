@@ -5,8 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -831,34 +829,6 @@ func TestServiceRejectsInvalidWebhookAPIKeyAndPayload(t *testing.T) {
 	}
 	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`not-json`), "secret", nil); !errors.Is(err, ErrInvalidPayload) {
 		t.Fatalf("invalid payload error = %v", err)
-	}
-}
-
-func TestServiceUsesLegacyWebhookSecretAsAPIKey(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(dir, "legacy.json"),
-		[]byte(`{"id":"legacy","type":"webhook","enabled":true,"target":{"graph_id":"graph-1"},"webhook":{"secret":"legacy-key","signature_header":"X-Legacy-Signature"}}`),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewFileStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	starter := &recordingStarter{}
-	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
-		return starter, nil
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := service.InvokeWebhook(context.Background(), "legacy", []byte(`{}`), "legacy-key", nil); err != nil {
-		t.Fatal(err)
-	}
-	if starter.calls != 1 {
-		t.Fatalf("legacy webhook calls = %d, want 1", starter.calls)
 	}
 }
 

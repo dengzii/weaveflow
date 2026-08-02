@@ -149,16 +149,16 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 	if err != nil {
 		return nil, err
 	}
-	if expected := strings.TrimSpace(session.manifest.GraphHash); expected != "" && expected != graphHash {
+	if session.manifest.GraphHash != graphHash {
 		return nil, fmt.Errorf("graph session %q hash mismatch", session.manifest.GraphSessionID)
 	}
-	if expected := strings.TrimSpace(session.manifest.GraphSnapshotHash); expected != "" && expected != graphSnapshotHash {
+	if session.manifest.GraphSnapshotHash != graphSnapshotHash {
 		return nil, fmt.Errorf("graph session %q snapshot hash mismatch", session.manifest.GraphSessionID)
 	}
 
 	cfg := s.cfg
 	cfg.GraphID = graphID
-	cfg.GraphVersion = firstNonEmpty(session.manifest.GraphVersion, metadataString(definition.Metadata, "graph_version"), runtime.DefaultGraphVersion)
+	cfg.GraphVersion = session.manifest.GraphVersion
 	cfg.GraphHash = graphHash
 	cfg.GraphSnapshotHash = graphSnapshotHash
 	cfg.GraphSessionID = session.manifest.GraphSessionID
@@ -169,36 +169,28 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 }
 
 func (s *Server) latestOfficialGraphSession(graphID string) (triggerGraphSession, error) {
-	type candidate struct {
-		graphDir  string
-		sessionID string
+	var candidates []string
+	graphDir := graphStorageDirectory(s.baseDir, graphID)
+	entries, err := os.ReadDir(graphDir)
+	if err != nil && !os.IsNotExist(err) {
+		return triggerGraphSession{}, err
 	}
-	var candidates []candidate
-	for _, graphDir := range graphStorageDirectories(s.baseDir, graphID) {
-		entries, err := os.ReadDir(graphDir)
-		if os.IsNotExist(err) {
-			continue
-		}
-		if err != nil {
-			return triggerGraphSession{}, err
-		}
-		for _, entry := range entries {
-			if entry.IsDir() {
-				candidates = append(candidates, candidate{graphDir: graphDir, sessionID: entry.Name()})
-			}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			candidates = append(candidates, entry.Name())
 		}
 	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].sessionID > candidates[j].sessionID })
+	sort.Sort(sort.Reverse(sort.StringSlice(candidates)))
 
-	for _, candidate := range candidates {
-		manifest, complete, err := readCachedGraphSession(candidate.graphDir, candidate.sessionID)
+	for _, sessionID := range candidates {
+		manifest, complete, err := readCachedGraphSession(graphDir, sessionID)
 		if err != nil {
 			return triggerGraphSession{}, err
 		}
 		if !complete || !manifest.Official || manifest.GraphID != graphID {
 			continue
 		}
-		baseDir := filepath.Join(candidate.graphDir, candidate.sessionID)
+		baseDir := filepath.Join(graphDir, sessionID)
 		definitionName := manifest.DefinitionPath
 		definitionPath := filepath.Join(baseDir, definitionName)
 		return triggerGraphSession{

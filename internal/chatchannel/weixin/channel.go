@@ -56,11 +56,10 @@ type Config struct {
 }
 
 type Factory struct {
-	Logger                *slog.Logger
-	HTTPClient            *http.Client
-	CursorDirectory       string
-	LegacyCursorDirectory string
-	setupBaseURL          string
+	Logger          *slog.Logger
+	HTTPClient      *http.Client
+	CursorDirectory string
+	setupBaseURL    string
 }
 
 func Register(registry *chatchannel.Registry) error {
@@ -69,8 +68,7 @@ func Register(registry *chatchannel.Registry) error {
 
 func RegisterWithCursorDirectory(registry *chatchannel.Registry, cursorDirectory string) error {
 	return registry.Register(Factory{
-		CursorDirectory:       strings.TrimSpace(cursorDirectory),
-		LegacyCursorDirectory: DefaultCursorDirectory,
+		CursorDirectory: strings.TrimSpace(cursorDirectory),
 	})
 }
 
@@ -129,15 +127,8 @@ func (factory Factory) New(instance chatchannel.InstanceConfig) (chatchannel.Ins
 		return nil, err
 	}
 	triggerID := strings.TrimSpace(instance.TriggerID)
-	legacyCursorFile := ""
 	if strings.TrimSpace(config.CursorFile) == "" {
 		config.CursorFile = cursorFile(factory.CursorDirectory, triggerID)
-		if strings.TrimSpace(factory.LegacyCursorDirectory) != "" {
-			legacyCursorFile = cursorFile(factory.LegacyCursorDirectory, triggerID)
-			if sameCursorPath(legacyCursorFile, config.CursorFile) {
-				legacyCursorFile = ""
-			}
-		}
 	}
 	logger := factory.loggerFor(triggerID)
 	client := factory.HTTPClient
@@ -145,13 +136,12 @@ func (factory Factory) New(instance chatchannel.InstanceConfig) (chatchannel.Ins
 		client = &http.Client{Timeout: pollTimeout}
 	}
 	return &Channel{
-		triggerID:        triggerID,
-		config:           config,
-		legacyCursorFile: legacyCursorFile,
-		handler:          instance.Handler,
-		logger:           logger,
-		client:           client,
-		wechatUIN:        randomWeChatUIN(),
+		triggerID: triggerID,
+		config:    config,
+		handler:   instance.Handler,
+		logger:    logger,
+		client:    client,
+		wechatUIN: randomWeChatUIN(),
 	}, nil
 }
 
@@ -218,16 +208,15 @@ func configString(raw map[string]any, key string) string {
 }
 
 type Channel struct {
-	triggerID        string
-	config           Config
-	legacyCursorFile string
-	handler          chatchannel.Handler
-	logger           *slog.Logger
-	client           *http.Client
-	wechatUIN        string
-	typingMu         sync.Mutex
-	typingTickets    map[string]cachedTypingTicket
-	typingKeepalive  time.Duration
+	triggerID       string
+	config          Config
+	handler         chatchannel.Handler
+	logger          *slog.Logger
+	client          *http.Client
+	wechatUIN       string
+	typingMu        sync.Mutex
+	typingTickets   map[string]cachedTypingTicket
+	typingKeepalive time.Duration
 }
 
 type cachedTypingTicket struct {
@@ -251,10 +240,6 @@ func (channel *Channel) Run(ctx context.Context) error {
 	}
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if err := migrateCursorFile(channel.legacyCursorFile, channel.config.CursorFile); err != nil {
-		channel.logger.Error("WeChat cursor migration failed", "error", err)
-		return fmt.Errorf("migrate WeChat cursor: %w", err)
 	}
 	cursor, err := readCursor(channel.config.CursorFile)
 	if err != nil {
@@ -854,76 +839,6 @@ func cursorFile(directory, triggerID string) string {
 	}
 	triggerID = strings.NewReplacer(`\`, "_", "/", "_", ":", "_").Replace(triggerID)
 	return filepath.Join(directory, triggerID+".sync")
-}
-
-func migrateCursorFile(sourcePath, targetPath string) error {
-	sourcePath = strings.TrimSpace(sourcePath)
-	targetPath = strings.TrimSpace(targetPath)
-	if sourcePath == "" || targetPath == "" || sameCursorPath(sourcePath, targetPath) {
-		return nil
-	}
-
-	targetInfo, err := os.Stat(targetPath)
-	if err == nil {
-		if targetInfo.IsDir() {
-			return fmt.Errorf("cursor target %q is a directory", targetPath)
-		}
-		if err := os.Remove(sourcePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove legacy cursor %q: %w", sourcePath, err)
-		}
-		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("inspect cursor target %q: %w", targetPath, err)
-	}
-	if _, err := os.Stat(sourcePath); errors.Is(err, os.ErrNotExist) {
-		return nil
-	} else if err != nil {
-		return fmt.Errorf("inspect legacy cursor %q: %w", sourcePath, err)
-	}
-
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return fmt.Errorf("create cursor directory: %w", err)
-	}
-	renameErr := os.Rename(sourcePath, targetPath)
-	if renameErr == nil {
-		return nil
-	}
-	if targetInfo, targetErr := os.Stat(targetPath); targetErr == nil {
-		if targetInfo.IsDir() {
-			return fmt.Errorf("cursor target %q is a directory", targetPath)
-		}
-		if err := os.Remove(sourcePath); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove legacy cursor %q: %w", sourcePath, err)
-		}
-		return nil
-	} else if !errors.Is(targetErr, os.ErrNotExist) {
-		return fmt.Errorf("inspect cursor target %q after failed rename: %w", targetPath, targetErr)
-	}
-
-	data, err := os.ReadFile(sourcePath)
-	if err != nil {
-		return fmt.Errorf("move cursor from %q to %q: rename: %v; read legacy cursor: %w", sourcePath, targetPath, renameErr, err)
-	}
-	cursor := strings.TrimRight(string(data), "\r\n")
-	if err := writeCursor(targetPath, cursor); err != nil {
-		return fmt.Errorf("move cursor from %q to %q: rename: %v; write cursor copy: %w", sourcePath, targetPath, renameErr, err)
-	}
-	if err := os.Remove(sourcePath); err != nil {
-		return fmt.Errorf("remove copied legacy cursor %q: %w", sourcePath, err)
-	}
-	return nil
-}
-
-func sameCursorPath(leftPath, rightPath string) bool {
-	leftAbsolute, leftErr := filepath.Abs(filepath.Clean(leftPath))
-	rightAbsolute, rightErr := filepath.Abs(filepath.Clean(rightPath))
-	if leftErr == nil && rightErr == nil && leftAbsolute == rightAbsolute {
-		return true
-	}
-	leftInfo, leftErr := os.Stat(leftPath)
-	rightInfo, rightErr := os.Stat(rightPath)
-	return leftErr == nil && rightErr == nil && os.SameFile(leftInfo, rightInfo)
 }
 
 func readCursor(path string) (string, error) {

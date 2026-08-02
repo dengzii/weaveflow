@@ -3,13 +3,46 @@ package trigger
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/dengzii/weaveflow/runtime"
 )
+
+func TestFileStoreRejectsRemovedChatHistoryBinding(t *testing.T) {
+	directory := t.TempDir()
+	store, err := NewFileStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data := []byte(`{
+		"id":"chat",
+		"type":"chat",
+		"enabled":true,
+		"target":{"graph_id":"graph"},
+		"concurrency":"parallel",
+		"chat":{
+			"channel":"http",
+			"reply_path":"shared.final.answer",
+			"stream_updates":false,
+			"state_bindings":{"history":"shared.history"}
+		},
+		"created_at":"2026-08-02T00:00:00Z",
+		"updated_at":"2026-08-02T00:00:00Z"
+	}`)
+	if err := os.WriteFile(filepath.Join(directory, "chat.json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = store.Get(context.Background(), "chat")
+	if err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("Get() error = %v", err)
+	}
+}
 
 func TestFileStoreHonorsCanceledContext(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
@@ -41,7 +74,9 @@ func TestFileStoreUpdateAtomicallyReplacesTrigger(t *testing.T) {
 		InitialState: map[string]any{
 			"shared": map[string]any{"tenant": "tenant-1"},
 		},
-		Webhook: &WebhookSpec{APIKey: "first"},
+		Webhook:   &WebhookSpec{APIKey: "first"},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
 	}
 	if err := store.Create(context.Background(), item); err != nil {
 		t.Fatal(err)

@@ -1,6 +1,7 @@
 package trigger
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -31,10 +32,20 @@ type Target struct {
 }
 
 type WebhookSpec struct {
-	APIKey          string                `json:"api_key,omitempty"`
-	Secret          string                `json:"secret,omitempty"`
-	SignatureHeader string                `json:"signature_header,omitempty"`
-	StateMappings   []WebhookStateMapping `json:"state_mappings,omitempty"`
+	APIKey        string                `json:"api_key,omitempty"`
+	StateMappings []WebhookStateMapping `json:"state_mappings,omitempty"`
+}
+
+func (s *WebhookSpec) UnmarshalJSON(data []byte) error {
+	type webhookSpec WebhookSpec
+	var decoded webhookSpec
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&decoded); err != nil {
+		return err
+	}
+	*s = WebhookSpec(decoded)
+	return nil
 }
 
 type WebhookStateMapping struct {
@@ -110,11 +121,6 @@ func (t Trigger) Normalize(now time.Time) Trigger {
 		t.Concurrency = ConcurrencyParallel
 	}
 	if t.Webhook != nil {
-		if t.Webhook.APIKey == "" {
-			t.Webhook.APIKey = t.Webhook.Secret
-		}
-		t.Webhook.Secret = ""
-		t.Webhook.SignatureHeader = ""
 		for i := range t.Webhook.StateMappings {
 			t.Webhook.StateMappings[i].Parameter = strings.TrimSpace(t.Webhook.StateMappings[i].Parameter)
 			t.Webhook.StateMappings[i].StatePath = strings.TrimSpace(t.Webhook.StateMappings[i].StatePath)

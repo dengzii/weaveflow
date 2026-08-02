@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -75,11 +74,8 @@ func NewTree() Tool {
 
 func treeTool(_ context.Context, input string) (string, error) {
 	var req treeRequest
-	trimmed := strings.TrimSpace(input)
-	if trimmed != "" && trimmed != "{}" {
-		if err := json.Unmarshal([]byte(trimmed), &req); err != nil {
-			return "", fmt.Errorf("tree input must be valid JSON: %w", err)
-		}
+	if err := decodeToolRequest(input, "tree", &req); err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(req.Path) == "" {
 		req.Path = "."

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -229,21 +228,9 @@ func grepTool(_ context.Context, input string) (string, error) {
 }
 
 func parseGrepRequest(input string) (grepRequest, error) {
-	raw := strings.TrimSpace(input)
-	if raw == "" {
-		return grepRequest{}, fmt.Errorf("grep input is required")
-	}
 	var req grepRequest
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&req); err != nil {
-		return grepRequest{}, fmt.Errorf("grep input must be valid JSON: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			return grepRequest{}, fmt.Errorf("grep input contains multiple JSON values")
-		}
-		return grepRequest{}, fmt.Errorf("grep input must contain one JSON value: %w", err)
+	if err := decodeToolRequest(input, "grep", &req); err != nil {
+		return grepRequest{}, err
 	}
 	req.Pattern = strings.TrimSpace(req.Pattern)
 	if req.Pattern == "" {

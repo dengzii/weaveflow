@@ -55,8 +55,8 @@ func NewWrite() Tool {
 
 func writeTool(_ context.Context, input string) (string, error) {
 	var req writeRequest
-	if err := json.Unmarshal([]byte(strings.TrimSpace(input)), &req); err != nil {
-		return "", fmt.Errorf("write input must be valid JSON: %w", err)
+	if err := decodeToolRequest(input, "write", &req); err != nil {
+		return "", err
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {

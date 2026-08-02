@@ -21,7 +21,6 @@ const (
 )
 
 type CompileOptions struct {
-	LegacyInput    bool
 	RequireBoolean bool
 }
 
@@ -40,9 +39,6 @@ func Compile(expression string, options CompileOptions) (*Program, error) {
 		cel.OptionalTypes(),
 		cel.CrossTypeNumericComparisons(true),
 		cel.ParserExpressionSizeLimit(MaxExpressionCodePoints),
-	}
-	if options.LegacyInput {
-		environmentOptions = append(environmentOptions, cel.Variable("input", cel.DynType))
 	}
 	environment, err := cel.NewEnv(environmentOptions...)
 	if err != nil {
@@ -66,16 +62,13 @@ func Compile(expression string, options CompileOptions) (*Program, error) {
 	return &Program{program: compiled, requireBoolean: options.RequireBoolean}, nil
 }
 
-func (p *Program) EvalJSON(ctx context.Context, inputs map[string]any, legacyInput any, hasLegacyInput bool) (any, error) {
+func (p *Program) EvalJSON(ctx context.Context, inputs map[string]any) (any, error) {
 	if p == nil || p.program == nil {
 		return nil, fmt.Errorf("CEL expression is not compiled")
 	}
 	activation := map[string]any{"inputs": inputs}
 	if activation["inputs"] == nil {
 		activation["inputs"] = map[string]any{}
-	}
-	if hasLegacyInput {
-		activation["input"] = legacyInput
 	}
 	normalizedActivation, size, err := normalizeJSONObject(activation)
 	if err != nil {
@@ -111,7 +104,7 @@ func (p *Program) EvalJSON(ctx context.Context, inputs map[string]any, legacyInp
 }
 
 func (p *Program) EvalBool(ctx context.Context, inputs map[string]any) (bool, error) {
-	value, err := p.EvalJSON(ctx, inputs, nil, false)
+	value, err := p.EvalJSON(ctx, inputs)
 	if err != nil {
 		return false, err
 	}
