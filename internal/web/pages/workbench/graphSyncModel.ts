@@ -17,6 +17,11 @@ export function graphUploadSignature(
   });
 }
 
+export function graphAnalysisSignature(definition: GraphDefinition): string {
+  const { metadata: _metadata, ...executableDefinition } = definition;
+  return JSON.stringify(canonicalJSONValue(executableDefinition));
+}
+
 export function graphUploadRequired(signature: string, synced: SyncedGraphState | null): boolean {
   return !synced || synced.signature !== signature;
 }

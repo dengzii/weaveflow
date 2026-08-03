@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import type { GraphDefinition } from "../../types";
 import {
+  graphAnalysisSignature,
   graphPublishRequired,
   graphUploadRequired,
   graphUploadSignature,
@@ -20,6 +21,31 @@ describe("graph sync model", () => {
     };
 
     expect(graphUploadSignature(first, "graph", "v1")).toBe(graphUploadSignature(second, "graph", "v1"));
+  });
+
+  test("excludes non-executable metadata from graph analysis signatures", () => {
+    const first: GraphDefinition = {
+      nodes: [{ id: "input", type: "task", config: { prompt: "hello" } }],
+      metadata: { web: { positions: { input: { x: 10, y: 20 } } } },
+    };
+    const moved: GraphDefinition = {
+      ...first,
+      metadata: { web: { positions: { input: { x: 300, y: 400 } } } },
+    };
+
+    expect(graphAnalysisSignature(first)).toBe(graphAnalysisSignature(moved));
+    expect(graphUploadSignature(first, "graph", "v1")).not.toBe(graphUploadSignature(moved, "graph", "v1"));
+  });
+
+  test("changes graph analysis signatures for executable graph changes", () => {
+    const first: GraphDefinition = {
+      nodes: [{ id: "input", type: "task", config: { prompt: "hello" } }],
+    };
+    const changed: GraphDefinition = {
+      nodes: [{ id: "input", type: "task", config: { prompt: "updated" } }],
+    };
+
+    expect(graphAnalysisSignature(first)).not.toBe(graphAnalysisSignature(changed));
   });
 
   test("uploads only when graph content or identity changed", () => {

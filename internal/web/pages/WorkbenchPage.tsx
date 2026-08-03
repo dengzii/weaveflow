@@ -30,6 +30,7 @@ import type { ToastRecord, ToastTone } from "./workbench/graph-workspace/ToastSt
 import { validateGraph } from "./workbench/graph-workspace/utils";
 import { missingInitialStateRequirements } from "./workbench/workbenchRunModel";
 import {
+  graphAnalysisSignature,
   graphPublishRequired,
   graphUploadRequired,
   graphUploadSignature,
@@ -48,6 +49,17 @@ import type {
 export { workspaceTabs };
 export type { WorkspaceTab };
 export { pendingUserInputState, userInputPromptFromInterrupt } from "./workbench/userInputModel";
+
+interface CachedInitialStateRequirements {
+  signature: string;
+  requirements: InitialStateRequirements;
+}
+
+interface PendingInitialStateRequirements {
+  signature: string;
+  controller: AbortController;
+  promise: Promise<InitialStateRequirements>;
+}
 
 export function WorkbenchPage({
   tab: controlledTab,
@@ -79,9 +91,12 @@ export function WorkbenchPage({
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
   const [busy, setBusy] = useState(false);
   const [publishing, setPublishing] = useState(false);
+  const [serverStateLoaded, setServerStateLoaded] = useState(false);
   const preferLocalGraphRef = useRef(false);
   const checkedLocalGraphRef = useRef(false);
   const syncedGraphRef = useRef<SyncedGraphState | null>(null);
+  const initialRequirementsCacheRef = useRef<CachedInitialStateRequirements | null>(null);
+  const initialRequirementsRequestRef = useRef<PendingInitialStateRequirements | null>(null);
   const toastSeqRef = useRef(0);
 
   if (!checkedLocalGraphRef.current) {
@@ -96,6 +111,10 @@ export function WorkbenchPage({
       return null;
     }
   }, [definitionText]);
+  const initialRequirementsSignature = useMemo(
+    () => definition ? graphAnalysisSignature(definition) : "",
+    [definition]
+  );
 
   const currentGraphIdentity = useMemo(
     () => ({
@@ -123,6 +142,35 @@ export function WorkbenchPage({
       return message;
     },
     [pushToast]
+  );
+
+  const analyzeGraphDefinition = useCallback(
+    (targetDefinition: GraphDefinition): Promise<InitialStateRequirements> => {
+      const signature = graphAnalysisSignature(targetDefinition);
+      const cached = initialRequirementsCacheRef.current;
+      if (cached?.signature === signature) return Promise.resolve(cached.requirements);
+
+      const pending = initialRequirementsRequestRef.current;
+      if (pending?.signature === signature) return pending.promise;
+      pending?.controller.abort();
+
+      const controller = new AbortController();
+      const promise = analyzeInitialStateRequirements(targetDefinition, controller.signal)
+        .then((requirements) => {
+          if (!controller.signal.aborted) {
+            initialRequirementsCacheRef.current = { signature, requirements };
+          }
+          return requirements;
+        })
+        .finally(() => {
+          if (initialRequirementsRequestRef.current?.controller === controller) {
+            initialRequirementsRequestRef.current = null;
+          }
+        });
+      initialRequirementsRequestRef.current = { signature, controller, promise };
+      return promise;
+    },
+    []
   );
 
   const {
@@ -161,8 +209,16 @@ export function WorkbenchPage({
   });
   const workbenchBusy = busy || runBusy;
 
-  const refreshInitialRequirements = useCallback(async () => {
+  const refreshInitialRequirements = useCallback(async (targetDefinition?: GraphDefinition) => {
+    initialRequirementsRequestRef.current?.controller.abort();
+    initialRequirementsRequestRef.current = null;
     const requirements = await getInitialStateRequirements();
+    if (targetDefinition) {
+      initialRequirementsCacheRef.current = {
+        signature: graphAnalysisSignature(targetDefinition),
+        requirements,
+      };
+    }
     setInitialRequirements(requirements);
     setInitialRequirementsError("");
     return requirements;
@@ -192,7 +248,7 @@ export function WorkbenchPage({
           setGraphId(info.id);
           setGraphVersion(info.version);
           if (serverDefinition) setDefinitionText(stringifyJSON(serverDefinition));
-          await refreshInitialRequirements().catch((err) => {
+          await refreshInitialRequirements(serverDefinition ?? undefined).catch((err) => {
             setInitialRequirements(null);
             setInitialRequirementsError(err instanceof Error ? err.message : String(err));
           });
@@ -204,6 +260,8 @@ export function WorkbenchPage({
       await refreshRuns(loadIdentity, !preferLocalGraphRef.current).catch(() => undefined);
     } catch (err) {
       notifyError(err);
+    } finally {
+      setServerStateLoaded(true);
     }
   }, [notifyError, refreshInitialRequirements, refreshRuns]);
 
@@ -226,14 +284,21 @@ export function WorkbenchPage({
   }, [graphSwitchLocked, pushToast, resetRunState]);
 
   useEffect(() => {
+    if (!serverStateLoaded) return;
     if (!definition || validateGraph(definition, registry)) {
       setInitialRequirements(null);
       setInitialRequirementsError("");
       return;
     }
+    const cached = initialRequirementsCacheRef.current;
+    if (cached?.signature === initialRequirementsSignature) {
+      setInitialRequirements(cached.requirements);
+      setInitialRequirementsError("");
+      return;
+    }
     let canceled = false;
     const timer = window.setTimeout(() => {
-      void analyzeInitialStateRequirements(definition, graphId, graphVersion)
+      void analyzeGraphDefinition(definition)
         .then((requirements) => {
           if (!canceled) {
             setInitialRequirements(requirements);
@@ -241,7 +306,7 @@ export function WorkbenchPage({
           }
         })
         .catch((err) => {
-          if (!canceled) {
+          if (!canceled && !(err instanceof Error && err.name === "AbortError")) {
             setInitialRequirements(null);
             setInitialRequirementsError(err instanceof Error ? err.message : String(err));
           }
@@ -250,8 +315,10 @@ export function WorkbenchPage({
     return () => {
       canceled = true;
       window.clearTimeout(timer);
+      const pending = initialRequirementsRequestRef.current;
+      if (pending?.signature === initialRequirementsSignature) pending.controller.abort();
     };
-  }, [definition, graphId, graphVersion, registry]);
+  }, [analyzeGraphDefinition, initialRequirementsSignature, registry, serverStateLoaded]);
 
   async function runGraph() {
     setBusy(true);
@@ -266,7 +333,7 @@ export function WorkbenchPage({
         setTab("graph");
         return;
       }
-      const requirements = await analyzeInitialStateRequirements(definition, graphId, graphVersion);
+      const requirements = await analyzeGraphDefinition(definition);
       setInitialRequirements(requirements);
       setInitialRequirementsError("");
 
@@ -297,10 +364,6 @@ export function WorkbenchPage({
           signature: graphUploadSignature(definition, result.graph.id, result.graph.version),
           official: result.graph.official === true,
         };
-        await refreshInitialRequirements().catch((err) => {
-          setInitialRequirements(null);
-          setInitialRequirementsError(err instanceof Error ? err.message : String(err));
-        });
       }
       await startConfiguredRun(initialState);
     } catch (err) {
@@ -343,7 +406,7 @@ export function WorkbenchPage({
         return;
       }
 
-      const requirements = await analyzeInitialStateRequirements(definition, graphId, graphVersion);
+      const requirements = await analyzeGraphDefinition(definition);
       setInitialRequirements(requirements);
       setInitialRequirementsError("");
       if (requirements.unresolved.length > 0) {

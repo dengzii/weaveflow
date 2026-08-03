@@ -89,15 +89,13 @@ export async function getInitialStateRequirements(): Promise<InitialStateRequire
 
 export async function analyzeInitialStateRequirements(
   definition: GraphDefinition,
-  graphId?: string,
-  graphVersion?: string
+  signal?: AbortSignal
 ): Promise<InitialStateRequirements> {
   return apiFetch<InitialStateRequirements>("/graph/initial-state-requirements", {
     method: "POST",
     headers: { "content-type": "application/json" },
+    signal,
     body: JSON.stringify({
-      graph_id: graphId || undefined,
-      graph_version: graphVersion || undefined,
       definition,
     }),
   });
