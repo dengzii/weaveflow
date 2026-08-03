@@ -70,6 +70,9 @@ func TestRegistryResponseIncludesNodeGroups(t *testing.T) {
 	if len(response.Data.ChatChannels) != 3 || response.Data.ChatChannels[0].ID != chatchannel.HTTPChannelID || response.Data.ChatChannels[1].ID != wecom.ChannelID || response.Data.ChatChannels[2].ID != weixin.ChannelID {
 		t.Fatalf("chat channels = %#v", response.Data.ChatChannels)
 	}
+	if response.Data.ChatChannels[1].Title != "WeCom Bot" || response.Data.ChatChannels[2].Title != "WeChat Bot" {
+		t.Fatalf("chat channel titles = %#v", response.Data.ChatChannels)
+	}
 	properties, _ := response.Data.ChatChannels[1].ConfigSchema["properties"].(map[string]any)
 	secret, _ := properties["secret"].(map[string]any)
 	if secret["writeOnly"] != true {

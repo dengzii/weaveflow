@@ -120,7 +120,7 @@ export function buildGraphCanvasElements({
       selected: item.trigger.id === selectedTriggerID,
       zIndex: 2,
       data: {
-        label: item.trigger.name || item.trigger.id,
+        label: item.label,
         type: item.trigger.type,
         status: item.trigger.enabled ? "enabled" : "disabled",
         editable: false,

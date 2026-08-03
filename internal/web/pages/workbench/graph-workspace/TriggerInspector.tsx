@@ -1,7 +1,7 @@
 import { Clock3, MessageCircle, Webhook, Zap } from "lucide-react";
 import type { ChatChannelDefinition, Trigger } from "../../../types";
 import { TriggerEditorForm } from "../TriggerEditorForm";
-import { webhookTriggerURLs } from "../triggerEditor";
+import { triggerTypeName, webhookTriggerURLs } from "../triggerEditor";
 import { PanelHeader } from "./shared";
 
 export function TriggerInspector({
@@ -20,14 +20,14 @@ export function TriggerInspector({
   onDeleted: (trigger: Trigger) => void | Promise<void>;
 }) {
   const Icon = trigger?.type === "webhook" ? Webhook : trigger?.type === "schedule" ? Clock3 : trigger?.type === "chat" ? MessageCircle : Zap;
-  const title = trigger?.name || "Trigger";
+  const title = trigger ? (trigger.name?.trim() || triggerTypeName(trigger.type)) : "Trigger";
   const target = { graph_id: graphID };
   const webhookURLs = trigger ? webhookTriggerURLs(trigger.id) : null;
 
   return (
     <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel [overflow-wrap:anywhere]">
       <PanelHeader icon={Icon} title={title} />
-      <div className="grid gap-3 p-3">
+      <div className="grid gap-3 border-b border-border p-3">
         {trigger ? (
           <div className="flex flex-wrap gap-2">
             <InspectorLabel name="Type" value={trigger.type === "webhook" ? "Webhook" : trigger.type === "schedule" ? "Schedule" : "Chat"} />
@@ -38,26 +38,26 @@ export function TriggerInspector({
         <div className="rounded border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
           Trigger configuration remains a server resource. Only this card's position is stored in Graph metadata.
         </div>
-        <TriggerEditorForm
-          trigger={trigger}
-          fallbackTarget={target}
-          targetOptions={[{ key: graphID, label: graphID || "Current graph", target }]}
-          targetLocked
-          statePathSuggestions={statePathSuggestions}
-          chatChannels={chatChannels}
-          showIdentityFields={false}
-          showTargetField={false}
-          allowDelete
-          onSaved={onSaved}
-          onDeleted={onDeleted}
-        />
-        {trigger?.type === "webhook" ? (
-          <div className="grid gap-1 border-t border-border pt-3 text-xs text-muted-foreground">
-            <code className="break-all">POST {webhookURLs?.post}</code>
-            <code className="break-all">GET {webhookURLs?.get}</code>
-          </div>
-        ) : null}
       </div>
+      <TriggerEditorForm
+        trigger={trigger}
+        fallbackTarget={target}
+        targetOptions={[{ key: graphID, label: graphID || "Current graph", target }]}
+        targetLocked
+        statePathSuggestions={statePathSuggestions}
+        chatChannels={chatChannels}
+        showIdentityFields={false}
+        showTargetField={false}
+        allowDelete
+        onSaved={onSaved}
+        onDeleted={onDeleted}
+      />
+      {trigger?.type === "webhook" ? (
+        <div className="grid gap-1 border-t border-border p-3 text-xs text-muted-foreground">
+          <code className="break-all">POST {webhookURLs?.post}</code>
+          <code className="break-all">GET {webhookURLs?.get}</code>
+        </div>
+      ) : null}
     </section>
   );
 }

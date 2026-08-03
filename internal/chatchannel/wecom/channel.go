@@ -56,7 +56,7 @@ func Register(registry *chatchannel.Registry) error {
 func (Factory) Definition() chatchannel.Definition {
 	return chatchannel.Definition{
 		ID:          ChannelID,
-		Title:       "WeCom Intelligent Bot",
+		Title:       "WeCom Bot",
 		Description: "Connect to a WeCom intelligent bot through the API-mode long connection.",
 		ConfigSchema: map[string]any{
 			"type": "object",

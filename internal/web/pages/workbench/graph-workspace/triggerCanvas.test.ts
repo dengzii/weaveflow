@@ -34,12 +34,26 @@ const triggers: Trigger[] = [
 
 describe("trigger canvas projection", () => {
   test("filters by graph, uses namespaced IDs, and keeps stored positions", () => {
-    const nodes = projectTriggerCanvasNodes(definition, "graph-a", triggers, ["__start__"]);
+    const nodes = projectTriggerCanvasNodes(definition, "graph-a", triggers, ["__start__"], []);
     expect(nodes.map((node) => node.trigger.id)).toEqual(["incoming", "nightly"]);
     expect(nodes[0]?.position).toEqual({ x: -500, y: 20 });
     expect(nodes[1]?.position.x).toBe(-520);
     expect(nodes.every((node) => node.valid)).toBe(true);
     expect(nodes.every((node) => !definition.nodes.some((real) => real.id === node.canvas_id))).toBe(true);
+  });
+
+  test("uses the registered chat channel title as the Chat Trigger card label", () => {
+    const chat = trigger("assistant", "graph-a", "chat");
+    chat.name = "Chat";
+    chat.chat = { channel: "weixin", reply_path: "shared.final.answer", stream_updates: true };
+
+    const nodes = projectTriggerCanvasNodes(definition, "graph-a", [chat], ["__start__"], [{
+      id: "weixin",
+      title: "WeChat Bot",
+      config_schema: {},
+    }]);
+
+    expect(nodes[0]?.label).toBe("WeChat Bot");
   });
 
   test("avoids a real-node collision in the canvas namespace", () => {

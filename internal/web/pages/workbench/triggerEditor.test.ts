@@ -8,6 +8,7 @@ import {
   triggerEditorValues,
   triggerInitialStateEntries,
   triggerStatePathSuggestions,
+  triggerTypeName,
   webhookTriggerURLs,
 } from "./triggerEditor";
 
@@ -30,7 +31,7 @@ describe("trigger editor payload", () => {
     const payload = buildTriggerPayload(values, webhook);
 
     expect(payload).toEqual({
-      name: undefined,
+      name: "Webhook",
       type: "webhook",
       enabled: false,
       concurrency: "skip",
@@ -53,8 +54,20 @@ describe("trigger editor payload", () => {
     const values = triggerEditorValues(null, { graph_id: "graph-a" }, "schedule");
 
     expect(values.type).toBe("schedule");
+    expect(values.name).toBe("Schedule");
     expect(values.cron).toBe("*/5 * * * *");
     expect(values.initialStateEntries).toEqual([]);
+  });
+
+  test("keeps an existing trigger name immutable in update payloads", () => {
+    const existing = { ...webhook, name: "Webhook 3" };
+    const values = triggerEditorValues(existing, { graph_id: "fallback" });
+    values.name = "Renamed";
+
+    expect(buildTriggerPayload(values, existing)).toMatchObject({ name: "Webhook 3" });
+    expect(triggerTypeName("webhook")).toBe("Webhook");
+    expect(triggerTypeName("schedule")).toBe("Schedule");
+    expect(triggerTypeName("chat")).toBe("Chat");
   });
 
   test("builds a registered HTTP chat channel trigger", () => {
@@ -62,7 +75,7 @@ describe("trigger editor payload", () => {
     values.streamNodeIDs = "answer, reviewer answer";
 
     expect(buildTriggerPayload(values, null)).toEqual({
-      name: undefined,
+      name: "Chat",
       type: "chat",
       enabled: true,
       concurrency: "parallel",

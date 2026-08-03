@@ -55,10 +55,11 @@ export function triggerEditorValues(
   fallbackTarget: TriggerTarget,
   initialType: TriggerType = "webhook"
 ): TriggerEditorValues {
+  const type = trigger?.type ?? initialType;
   return {
     id: trigger?.id ?? "",
-    name: trigger?.name ?? "",
-    type: trigger?.type ?? initialType,
+    name: trigger?.name?.trim() || triggerTypeName(type),
+    type,
     enabled: trigger?.enabled ?? true,
     concurrency: trigger?.concurrency ?? "parallel",
     target: trigger?.target ?? fallbackTarget,
@@ -92,7 +93,7 @@ export function buildTriggerPayload(
   if (!graphID) throw new Error("graph is required");
 
   const input: Record<string, unknown> = {
-    name: values.name.trim() || undefined,
+    name: editing ? (editing.name?.trim() || triggerTypeName(editing.type)) : values.name.trim(),
     type: values.type,
     enabled: values.enabled,
     concurrency: values.concurrency,
@@ -145,6 +146,12 @@ export function buildTriggerPayload(
     if (chatSetupSessionID?.trim()) input.chat_setup_session_id = chatSetupSessionID.trim();
   }
   return input;
+}
+
+export function triggerTypeName(type: TriggerType): string {
+  if (type === "webhook") return "Webhook";
+  if (type === "schedule") return "Schedule";
+  return "Chat";
 }
 
 function parseChatHistoryLimit(value: string): number {

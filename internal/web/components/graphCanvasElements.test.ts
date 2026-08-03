@@ -29,6 +29,7 @@ function options(
 function triggerNode(enabled = true): TriggerCanvasNode {
   return {
     canvas_id: "trigger:trigger-1",
+    label: "Inbound webhook",
     position: { x: -500, y: 80 },
     valid: true,
     trigger: {

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { Trigger, TriggerType } from "../../../types";
-import { triggersForGraph, uniqueTriggerIDs, upsertTrigger } from "./graphTriggerModel";
+import { nextTriggerName, triggersForGraph, uniqueTriggerIDs, upsertTrigger } from "./graphTriggerModel";
 
 describe("graph trigger model", () => {
   test("filters triggers by the normalized graph ID", () => {
@@ -28,6 +28,19 @@ describe("graph trigger model", () => {
       [trigger("first", "graph-a"), trigger("second", "graph-a")],
       [" second ", "third", ""]
     )).toEqual(["first", "second", "third"]);
+  });
+
+  test("increments generated names for triggers of the same type", () => {
+    const unnamed = trigger("first", "graph-a");
+    const second = { ...trigger("second", "graph-a"), name: "Webhook 2" };
+    const fourth = { ...trigger("fourth", "graph-a"), name: "Webhook 4" };
+    const custom = { ...trigger("custom", "graph-a"), name: "Incoming" };
+    const schedule = { ...trigger("schedule", "graph-a", "schedule"), name: "Schedule" };
+
+    expect(nextTriggerName([], "webhook")).toBe("Webhook");
+    expect(nextTriggerName([unnamed, second, fourth, custom, schedule], "webhook")).toBe("Webhook 5");
+    expect(nextTriggerName([unnamed, second, fourth, custom, schedule], "schedule")).toBe("Schedule 2");
+    expect(nextTriggerName([unnamed, second, fourth, custom, schedule], "chat")).toBe("Chat");
   });
 });
 

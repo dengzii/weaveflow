@@ -1,5 +1,6 @@
 import { START_NODE_REF, graphNodePositions, type NodePosition } from "../../../lib/graphEditor";
-import type { GraphDefinition, Trigger, TriggerCanvasNode } from "../../../types";
+import type { ChatChannelDefinition, GraphDefinition, Trigger, TriggerCanvasNode } from "../../../types";
+import { triggerTypeName } from "../triggerEditor";
 
 const triggerCanvasPrefix = "__weaveflow_trigger__:";
 
@@ -14,7 +15,8 @@ export function projectTriggerCanvasNodes(
   definition: GraphDefinition | null,
   graphID: string,
   triggers: Trigger[],
-  virtualNodeIDs: string[]
+  virtualNodeIDs: string[],
+  chatChannels: readonly ChatChannelDefinition[]
 ): TriggerCanvasNode[] {
   if (!definition || !graphID.trim()) return [];
   const matched = triggers
@@ -35,6 +37,7 @@ export function projectTriggerCanvasNodes(
     usedIDs.add(canvasID);
     return {
       canvas_id: canvasID,
+      label: triggerCanvasLabel(trigger, chatChannels),
       trigger,
       position: stored.get(trigger.id) ?? {
         x: anchor.x - 260,
@@ -43,6 +46,15 @@ export function projectTriggerCanvasNodes(
       valid: triggerConfigurationValid(trigger),
     };
   });
+}
+
+function triggerCanvasLabel(trigger: Trigger, chatChannels: readonly ChatChannelDefinition[]): string {
+  if (trigger.type === "chat") {
+    const channelID = trigger.chat?.channel?.trim() || "http";
+    const channel = chatChannels.find((item) => item.id === channelID);
+    return channel?.title.trim() || channelID;
+  }
+  return trigger.name?.trim() || triggerTypeName(trigger.type);
 }
 
 export function triggerConfigurationValid(trigger: Trigger): boolean {

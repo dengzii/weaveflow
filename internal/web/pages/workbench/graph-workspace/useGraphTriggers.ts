@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createTrigger, deleteTrigger, listTriggers, updateTrigger } from "../../../api";
 import type { Trigger, TriggerType } from "../../../types";
 import { buildTriggerPayload, triggerEditorValues } from "../triggerEditor";
-import { triggersForGraph, uniqueTriggerIDs, upsertTrigger } from "./graphTriggerModel";
+import { nextTriggerName, triggersForGraph, uniqueTriggerIDs, upsertTrigger } from "./graphTriggerModel";
 
 export interface CreatedGraphTrigger {
   trigger: Trigger;
@@ -89,6 +89,7 @@ export function useGraphTriggers(graphID: string) {
     const requestGeneration = ++requestGenerationRef.current;
     try {
       const values = triggerEditorValues(null, { graph_id: targetGraphID }, type);
+      values.name = nextTriggerName(triggersRef.current, type);
       const saved = await createTrigger(buildTriggerPayload(values, null));
       if (!isCurrentRequest(requestGeneration, targetGraphID)) return null;
       const triggerIDs = uniqueTriggerIDs(triggersRef.current, [saved.id]);

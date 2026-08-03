@@ -75,7 +75,7 @@ func RegisterWithCursorDirectory(registry *chatchannel.Registry, cursorDirectory
 func (Factory) Definition() chatchannel.Definition {
 	return chatchannel.Definition{
 		ID:          ChannelID,
-		Title:       "WeChat iLink Bot",
+		Title:       "WeChat Bot",
 		Description: "Connect directly to a Tencent WeChat iLink bot through the official HTTP API.",
 		Setup:       &chatchannel.SetupDefinition{Kind: chatchannel.SetupKindQRCode},
 		ConfigSchema: map[string]any{

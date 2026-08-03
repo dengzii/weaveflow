@@ -267,8 +267,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   );
   const visibleVirtualNodes = useMemo(() => virtualNodeIds.map(virtualNodeSpec), [virtualNodeIds]);
   const triggerCanvasNodes = useMemo(
-    () => projectTriggerCanvasNodes(definition, graphId, graphTriggers, virtualNodeIds),
-    [definition, graphId, graphTriggers, virtualNodeIds]
+    () => projectTriggerCanvasNodes(definition, graphId, graphTriggers, virtualNodeIds, registry?.chat_channels ?? []),
+    [definition, graphId, graphTriggers, registry?.chat_channels, virtualNodeIds]
   );
   const triggerStatePaths = useMemo(() => triggerStatePathSuggestions(definition), [definition]);
   const selectedVirtualNode = useMemo(

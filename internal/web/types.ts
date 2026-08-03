@@ -168,6 +168,7 @@ export interface TriggerCanvasPosition {
 
 export interface TriggerCanvasNode {
   canvas_id: string;
+  label: string;
   trigger: Trigger;
   position: TriggerCanvasPosition;
   valid: boolean;

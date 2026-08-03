@@ -6,6 +6,7 @@ import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import type { ChatChannelDefinition, ChatChannelSetupAccount, Trigger, TriggerTarget, WebhookStateMapping } from "../../types";
 import { ChatChannelSetupDialog } from "./ChatChannelSetupDialog";
+import { CollapsibleInspectorBlock } from "./graph-workspace/shared";
 import { JsonSchemaForm } from "./graph-workspace/schemaForm";
 import {
   buildTriggerPayload,
@@ -13,6 +14,7 @@ import {
   editableChatChannelSchema,
   triggerEditorValues,
   triggerTargetKey,
+  triggerTypeName,
   type TriggerEditorValues,
   type TriggerInitialStateEntry,
   type TriggerTargetOption,
@@ -60,6 +62,13 @@ export function TriggerEditorForm({
   const [setupOpen, setSetupOpen] = useState(false);
   const [chatSetupSessionID, setChatSetupSessionID] = useState("");
   const [chatSetupAccount, setChatSetupAccount] = useState<ChatChannelSetupAccount | undefined>();
+  const [identityOpen, setIdentityOpen] = useState(true);
+  const [messageRoutingOpen, setMessageRoutingOpen] = useState(true);
+  const [conversationStateOpen, setConversationStateOpen] = useState(false);
+  const [responseStreamingOpen, setResponseStreamingOpen] = useState(false);
+  const [generalOpen, setGeneralOpen] = useState(true);
+  const [sourceSettingsOpen, setSourceSettingsOpen] = useState(true);
+  const [initialStateOpen, setInitialStateOpen] = useState(false);
   const chatSetupSessionRef = useRef<{ channelID: string; sessionID: string } | null>(null);
   const selectedChatChannel = chatChannels.find((channel) => channel.id === values.chatChannel);
   const hasStoredChannelCredential = Boolean(trigger && trigger.chat?.channel === values.chatChannel);
@@ -153,12 +162,20 @@ export function TriggerEditorForm({
 
   return (
     <>
-      <div className="grid gap-4">
+      <div className="min-w-0">
       {showIdentityFields ? (
-        <div className="grid grid-cols-2 gap-2">
+        <CollapsibleInspectorBlock title="Trigger Properties" open={identityOpen} onOpenChange={setIdentityOpen}>
+          <div className="grid grid-cols-2 gap-2">
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Type</span>
-            <Select value={values.type} onChange={(event) => change("type", event.target.value as TriggerEditorValues["type"])} disabled={Boolean(trigger)}>
+            <Select
+              value={values.type}
+              onChange={(event) => {
+                const type = event.target.value as TriggerEditorValues["type"];
+                setValues((current) => ({ ...current, type, name: triggerTypeName(type) }));
+              }}
+              disabled={Boolean(trigger)}
+            >
               <option value="webhook">Webhook</option>
               <option value="schedule">Schedule</option>
               <option value="chat">Chat</option>
@@ -168,22 +185,19 @@ export function TriggerEditorForm({
             <span className="text-xs font-medium text-muted-foreground">ID {trigger ? "" : "(optional)"}</span>
             <Input value={values.id} onChange={(event) => change("id", event.target.value)} placeholder="deploy-hook" disabled={Boolean(trigger)} />
           </label>
-        </div>
+          </div>
+        </CollapsibleInspectorBlock>
       ) : null}
 
       {values.type === "chat" ? (
         <>
-          <section className="grid gap-3 rounded-md border border-primary/30 bg-muted/20 p-3">
-            <div className="flex items-start gap-3">
-              <div className="min-w-0 flex-1">
-                <div className="text-xs font-semibold">Message routing</div>
-                <div className="mt-0.5 text-[11px] text-muted-foreground">
-                  Choose where messages arrive and which graph state is returned as the reply.
-                </div>
-              </div>
-              <span className="rounded bg-primary px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary-foreground">
-                Primary
-              </span>
+          <CollapsibleInspectorBlock
+            title="Chat Configuration"
+            open={messageRoutingOpen}
+            onOpenChange={setMessageRoutingOpen}
+          >
+            <div className="text-[11px] text-muted-foreground">
+              Choose where messages arrive and which graph state is returned as the reply.
             </div>
             <label className="grid gap-1 text-sm">
               <span className="text-xs font-medium text-muted-foreground">Chat channel</span>
@@ -258,13 +272,10 @@ export function TriggerEditorForm({
                 <div className="text-[11px] text-muted-foreground">Leave sensitive fields blank to keep their configured values.</div>
               ) : null}
             </div>
-          </section>
+          </CollapsibleInspectorBlock>
 
-          <section className="grid gap-3 rounded-md border border-border p-3">
-            <div>
-              <div className="text-xs font-semibold">Conversation state</div>
-              <div className="mt-0.5 text-[11px] text-muted-foreground">Optional conversation, audit history, and trigger metadata bindings.</div>
-            </div>
+          <CollapsibleInspectorBlock title="Conversation State" open={conversationStateOpen} onOpenChange={setConversationStateOpen}>
+            <div className="text-[11px] text-muted-foreground">Optional conversation, audit history, and trigger metadata bindings.</div>
             <label className="grid gap-1 text-sm">
               <span className="text-xs font-medium text-muted-foreground">History rounds</span>
               <Input
@@ -309,13 +320,10 @@ export function TriggerEditorForm({
                 </label>
               ))}
             </div>
-          </section>
+          </CollapsibleInspectorBlock>
 
-          <section className="grid gap-3 rounded-md border border-border p-3">
-            <div>
-              <div className="text-xs font-semibold">Response streaming</div>
-              <div className="mt-0.5 text-[11px] text-muted-foreground">Control whether model updates are forwarded before the final reply.</div>
-            </div>
+          <CollapsibleInspectorBlock title="Response Streaming" open={responseStreamingOpen} onOpenChange={setResponseStreamingOpen}>
+            <div className="text-[11px] text-muted-foreground">Control whether model updates are forwarded before the final reply.</div>
             <label className="flex items-center gap-3 rounded-md border border-border bg-muted/30 px-3 py-2">
               <input
                 className="h-4 w-4"
@@ -339,19 +347,12 @@ export function TriggerEditorForm({
                 <span className="text-[11px] text-muted-foreground">Optional. Separate node IDs with commas or spaces.</span>
               </label>
             ) : null}
-          </section>
+          </CollapsibleInspectorBlock>
         </>
       ) : null}
 
-      <section className="grid gap-3 rounded-md border border-border p-3">
-        <div>
-          <div className="text-xs font-semibold">General</div>
-          <div className="mt-0.5 text-[11px] text-muted-foreground">Name, target graph, and execution policy.</div>
-        </div>
-        <label className="grid gap-1 text-sm">
-          <span className="text-xs font-medium text-muted-foreground">Name</span>
-          <Input value={values.name} onChange={(event) => change("name", event.target.value)} placeholder="Deploy webhook" />
-        </label>
+      <CollapsibleInspectorBlock title="General" open={generalOpen} onOpenChange={setGeneralOpen}>
+        <div className="text-[11px] text-muted-foreground">Target graph and execution policy.</div>
         {showTargetField ? (
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Graph</span>
@@ -384,25 +385,33 @@ export function TriggerEditorForm({
             </Select>
           </label>
         </div>
-      </section>
+      </CollapsibleInspectorBlock>
 
       {values.type === "webhook" ? (
-        <section className="grid gap-3 rounded-md border border-border p-3">
-          <div>
-            <div className="text-xs font-semibold">Webhook request</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">Authentication and request-to-state bindings.</div>
-          </div>
+        <CollapsibleInspectorBlock
+          title="Webhook Request"
+          open={sourceSettingsOpen}
+          onOpenChange={setSourceSettingsOpen}
+          action={
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                change("mappings", [...values.mappings, emptyMapping()]);
+                setSourceSettingsOpen(true);
+              }}
+            >
+              <Plus className="h-4 w-4" /> Add mapping
+            </Button>
+          }
+        >
+          <div className="text-[11px] text-muted-foreground">Authentication and request-to-state bindings.</div>
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">API key</span>
             <Input type="password" value={values.apiKey} onChange={(event) => change("apiKey", event.target.value)} placeholder={trigger ? "Unchanged" : "Optional"} />
           </label>
           <div className="grid gap-2 border-t border-border pt-3">
-            <div className="flex items-center gap-2">
-              <div className="min-w-0 flex-1 text-xs font-medium">State mappings</div>
-              <Button variant="outline" size="sm" onClick={() => change("mappings", [...values.mappings, emptyMapping()])}>
-                <Plus className="h-4 w-4" /> Add
-              </Button>
-            </div>
+            <div className="text-xs font-medium">State mappings</div>
             {values.mappings.length === 0 ? <div className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No additional state mappings.</div> : null}
             {values.mappings.map((mapping, index) => (
               <div key={index} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_32px] gap-2">
@@ -420,13 +429,10 @@ export function TriggerEditorForm({
               </div>
             ))}
           </div>
-        </section>
+        </CollapsibleInspectorBlock>
       ) : values.type === "schedule" ? (
-        <section className="grid gap-3 rounded-md border border-border p-3">
-          <div>
-            <div className="text-xs font-semibold">Schedule</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">When this trigger should start the graph.</div>
-          </div>
+        <CollapsibleInspectorBlock title="Schedule" open={sourceSettingsOpen} onOpenChange={setSourceSettingsOpen}>
+          <div className="text-[11px] text-muted-foreground">When this trigger should start the graph.</div>
           <label className="grid gap-1 text-sm">
             <span className="text-xs font-medium text-muted-foreground">Cron</span>
             <Input value={values.cron} onChange={(event) => change("cron", event.target.value)} />
@@ -435,23 +441,27 @@ export function TriggerEditorForm({
             <span className="text-xs font-medium text-muted-foreground">Timezone</span>
             <Input value={values.timezone} onChange={(event) => change("timezone", event.target.value)} />
           </label>
-        </section>
+        </CollapsibleInspectorBlock>
       ) : null}
 
-      <section className="grid gap-2 rounded-md border border-border p-3">
-        <div className="flex items-start gap-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-xs font-semibold">Initial state</div>
-            <div className="mt-0.5 text-[11px] text-muted-foreground">Optional values written before the graph starts.</div>
-          </div>
+      <CollapsibleInspectorBlock
+        title="Initial State"
+        open={initialStateOpen}
+        onOpenChange={setInitialStateOpen}
+        action={
           <Button
             variant="outline"
             size="sm"
-            onClick={() => change("initialStateEntries", [...values.initialStateEntries, emptyInitialStateEntry()])}
+            onClick={() => {
+              change("initialStateEntries", [...values.initialStateEntries, emptyInitialStateEntry()]);
+              setInitialStateOpen(true);
+            }}
           >
             <Plus className="h-4 w-4" /> Add
           </Button>
-        </div>
+        }
+      >
+        <div className="text-[11px] text-muted-foreground">Optional values written before the graph starts.</div>
         {values.initialStateEntries.length === 0 ? (
           <div className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No initial state values.</div>
         ) : null}
@@ -484,22 +494,24 @@ export function TriggerEditorForm({
         <div className="text-[11px] text-muted-foreground">
           Paths support shared and scopes. Boolean, number, and null values are typed; other values are stored as text.
         </div>
-      </section>
+      </CollapsibleInspectorBlock>
       {statePathSuggestions.length > 0 ? (
         <datalist id={statePathListID}>
           {statePathSuggestions.map((path) => <option key={path} value={path} />)}
         </datalist>
       ) : null}
-      {error ? <div className="rounded border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">{error}</div> : null}
-      <div className="flex gap-2">
-        <Button className="flex-1" onClick={() => void submit()} disabled={busy || !triggerTargetKey(values.target)}>
-          {busy ? (trigger ? "Saving..." : "Creating...") : (trigger ? "Save changes" : "Create trigger")}
-        </Button>
-        {allowDelete && trigger ? (
-          <Button variant="danger" size="icon" onClick={() => void remove()} disabled={busy} title="Delete trigger" aria-label="Delete trigger">
-            <Trash2 className="h-4 w-4" />
+      <div className="grid gap-3 p-3">
+        {error ? <div className="rounded border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">{error}</div> : null}
+        <div className="flex gap-2">
+          <Button className="flex-1" onClick={() => void submit()} disabled={busy || !triggerTargetKey(values.target)}>
+            {busy ? (trigger ? "Saving..." : "Creating...") : (trigger ? "Save changes" : "Create trigger")}
           </Button>
-        ) : null}
+          {allowDelete && trigger ? (
+            <Button variant="danger" size="icon" onClick={() => void remove()} disabled={busy} title="Delete trigger" aria-label="Delete trigger">
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          ) : null}
+        </div>
       </div>
       </div>
       {setupOpen && selectedChatChannel?.setup?.kind === "qr_code" ? (
