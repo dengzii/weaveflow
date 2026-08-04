@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeaveFlow Graph"
+  short_description: "Create, configure, and debug WeaveFlow agent graphs"
+  default_prompt: "Use $weaveflow-graph to create, configure, and debug an agent graph through the WeaveFlow server API."
