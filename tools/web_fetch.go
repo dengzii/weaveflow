@@ -20,9 +20,10 @@ const (
 )
 
 type webFetchRequest struct {
-	URL      string `json:"url"`
-	Prompt   string `json:"prompt,omitempty"`
-	MaxBytes int    `json:"max_bytes,omitempty"`
+	URL         string `json:"url"`
+	Prompt      string `json:"prompt,omitempty"`
+	Description string `json:"description"`
+	MaxBytes    int    `json:"max_bytes,omitempty"`
 }
 
 type webFetchResponse struct {
@@ -51,12 +52,17 @@ func NewWebFetch() Tool {
 						"type":        "string",
 						"description": "The prompt to run on the fetched content",
 					},
+					"description": map[string]any{
+						"type":        "string",
+						"minLength":   1,
+						"description": "Clear, concise description of why this URL is being fetched.",
+					},
 					"max_bytes": map[string]any{
 						"type":        "integer",
 						"description": "Optional max bytes of text content to return. Default 64KB, max 256KB.",
 					},
 				},
-				"required":             []string{"url", "prompt"},
+				"required":             []string{"url", "prompt", "description"},
 				"additionalProperties": false,
 			},
 		},
@@ -72,6 +78,10 @@ func webFetchTool(_ context.Context, input string) (string, error) {
 	req.URL = strings.TrimSpace(req.URL)
 	if req.URL == "" {
 		return "", fmt.Errorf("url is required")
+	}
+	req.Description = strings.TrimSpace(req.Description)
+	if req.Description == "" {
+		return "", fmt.Errorf("description is required")
 	}
 	if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
 		req.URL = "https://" + req.URL

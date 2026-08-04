@@ -7,7 +7,7 @@ import (
 )
 
 func TestBashToolAutoShellExecutesCommand(t *testing.T) {
-	out, err := bashTool(context.Background(), `{"command":"echo hello","shell":"auto","timeout":5000}`)
+	out, err := bashTool(context.Background(), `{"command":"echo hello","description":"Print a greeting","shell":"auto","timeout":5000}`)
 	if err != nil {
 		t.Fatalf("bashTool: %v", err)
 	}
@@ -32,7 +32,7 @@ func TestBashToolUsesConfiguredWorkspace(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv(toolWorkspaceEnv, root)
 
-	out, err := bashTool(context.Background(), `{"command":"echo hello","shell":"auto"}`)
+	out, err := bashTool(context.Background(), `{"command":"echo hello","description":"Print a greeting","shell":"auto"}`)
 	if err != nil {
 		t.Fatalf("bashTool: %v", err)
 	}
@@ -42,7 +42,7 @@ func TestBashToolUsesConfiguredWorkspace(t *testing.T) {
 }
 
 func TestBashToolRejectsUnsupportedShell(t *testing.T) {
-	_, err := bashTool(context.Background(), `{"command":"echo hello","shell":"fish"}`)
+	_, err := bashTool(context.Background(), `{"command":"echo hello","description":"Print a greeting","shell":"fish"}`)
 	if err == nil {
 		t.Fatal("expected unsupported shell error")
 	}
@@ -52,7 +52,7 @@ func TestBashToolRejectsUnsupportedShell(t *testing.T) {
 }
 
 func TestBashToolRejectsBackgroundMode(t *testing.T) {
-	_, err := bashTool(context.Background(), `{"command":"echo hello","run_in_background":true}`)
+	_, err := bashTool(context.Background(), `{"command":"echo hello","description":"Print a greeting","run_in_background":true}`)
 	if err == nil {
 		t.Fatal("expected background mode error")
 	}

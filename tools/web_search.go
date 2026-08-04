@@ -2,31 +2,40 @@ package tools
 
 import (
 	"context"
+	"fmt"
 	"os"
+	"strings"
 
 	"github.com/smallnest/langgraphgo/tool"
 	"github.com/tmc/langchaingo/llms"
 )
 
 type webSearch struct {
-	tavily *tool.TavilySearch
+	tavily            *tool.TavilySearch
+	initializationErr error
 }
 
 func (w *webSearch) webSearchTool(ctx context.Context, input string) (string, error) {
-	return w.tavily.Call(ctx, input)
+	if w.initializationErr != nil {
+		return "", fmt.Errorf("web_search unavailable: %w", w.initializationErr)
+	}
+
+	var request struct {
+		Query string `json:"query"`
+	}
+	if err := decodeToolRequest(input, "web_search", &request); err != nil {
+		return "", err
+	}
+	request.Query = strings.TrimSpace(request.Query)
+	if request.Query == "" {
+		return "", fmt.Errorf("query is required")
+	}
+	return w.tavily.Call(ctx, request.Query)
 }
 
 func NewWebSearch() Tool {
-
-	key, hasKey := os.LookupEnv("TAVILY_API_KEY")
-	if !hasKey {
-		panic("TAVILY_API_KEY not set")
-	}
-	search, err := tool.NewTavilySearch(key)
-	if err != nil {
-		panic(err)
-	}
-	w := webSearch{tavily: search}
+	search, err := tool.NewTavilySearch(strings.TrimSpace(os.Getenv("TAVILY_API_KEY")))
+	w := webSearch{tavily: search, initializationErr: err}
 	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name: "web_search",
@@ -41,20 +50,6 @@ func NewWebSearch() Tool {
 						"type":        "string",
 						"minLength":   2,
 						"description": "The search query to use",
-					},
-					"allowed_domains": map[string]any{
-						"type":        "array",
-						"description": "Only include search results from these domains",
-						"items": map[string]any{
-							"type": "string",
-						},
-					},
-					"blocked_domains": map[string]any{
-						"type":        "array",
-						"description": "Never include search results from these domains",
-						"items": map[string]any{
-							"type": "string",
-						},
 					},
 				},
 				"required":             []string{"query"},

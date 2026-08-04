@@ -29,7 +29,7 @@ const (
 type bashRequest struct {
 	Command                   string `json:"command"`
 	Timeout                   int    `json:"timeout,omitempty"`
-	Description               string `json:"description,omitempty"`
+	Description               string `json:"description"`
 	RunInBackground           bool   `json:"run_in_background,omitempty"`
 	DangerouslyDisableSandbox bool   `json:"dangerouslyDisableSandbox,omitempty"`
 	Shell                     string `json:"shell,omitempty"`
@@ -70,6 +70,7 @@ func NewBash() Tool {
 					},
 					"description": map[string]any{
 						"type":        "string",
+						"minLength":   1,
 						"description": "Clear, concise description of what this command does in active voice.",
 					},
 					"run_in_background": map[string]any{
@@ -86,7 +87,7 @@ func NewBash() Tool {
 						"description": "Optional shell runtime. auto defaults to pwsh/cmd on Windows and bash/sh elsewhere.",
 					},
 				},
-				"required":             []string{"command"},
+				"required":             []string{"command", "description"},
 				"additionalProperties": false,
 			},
 		},
@@ -103,6 +104,10 @@ func bashTool(ctx context.Context, input string) (string, error) {
 	command := strings.TrimSpace(req.Command)
 	if command == "" {
 		return "", errors.New("command is required")
+	}
+	req.Description = strings.TrimSpace(req.Description)
+	if req.Description == "" {
+		return "", errors.New("description is required")
 	}
 
 	if err := validateBashCommand(command); err != nil {

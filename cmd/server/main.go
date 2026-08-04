@@ -129,13 +129,17 @@ func withModelServices(ctx context.Context, model llms.Model, baseDir string) co
 
 func defaultTools() map[string]core.Tool {
 	return map[string]core.Tool{
-		"read":         tools.NewRead(),
-		"write":        tools.NewWrite(),
+		"bash":         tools.NewBash(),
+		"calculator":   tools.NewCalculator(),
+		"current_time": tools.NewCurrentTime(),
 		"edit":         tools.NewEdit(),
 		"glob":         tools.NewGlob(),
 		"grep":         tools.NewGrep(),
-		"calculator":   tools.NewCalculator(),
-		"current_time": tools.NewCurrentTime(),
+		"outline":      tools.NewOutline(),
+		"read":         tools.NewRead(),
+		"tree":         tools.NewTree(),
 		"web_fetch":    tools.NewWebFetch(),
+		"web_search":   tools.NewWebSearch(),
+		"write":        tools.NewWrite(),
 	}
 }
