@@ -10,8 +10,12 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/dengzii/weaveflow/core"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -84,7 +88,7 @@ func NewBash() Tool {
 					"shell": map[string]any{
 						"type":        "string",
 						"enum":        []string{"auto", "bash", "pwsh", "cmd", "git_bash", "mingw"},
-						"description": "Optional shell runtime. auto defaults to pwsh/cmd on Windows and bash/sh elsewhere.",
+						"description": "Optional shell runtime. auto uses Git Bash when available on Windows, then pwsh/cmd; elsewhere it uses bash/sh.",
 					},
 				},
 				"required":             []string{"command", "description"},
@@ -110,15 +114,18 @@ func bashTool(ctx context.Context, input string) (string, error) {
 		return "", errors.New("description is required")
 	}
 
-	if err := validateBashCommand(command); err != nil {
+	if err := validateBashCommand(ctx, command); err != nil {
 		return "", err
 	}
 	if req.RunInBackground {
 		return "", errors.New("run_in_background is not supported by this Bash tool")
 	}
 
-	timeout := normalizeBashTimeout(req.Timeout)
-	workingDir, err := toolWorkspaceDir()
+	timeout, err := normalizeBashTimeout(ctx, req.Timeout)
+	if err != nil {
+		return "", err
+	}
+	workingDir, err := toolWorkspaceDir(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -132,7 +139,11 @@ func bashTool(ctx context.Context, input string) (string, error) {
 }
 
 func executeBashCommand(ctx context.Context, command, workingDir string, timeout time.Duration, requestedShell string) (*bashResponse, error) {
-	shell, err := resolveShell(requestedShell)
+	shell, err := resolveShell(ctx, requestedShell)
+	if err != nil {
+		return nil, err
+	}
+	environment, err := commandEnvironment(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -143,6 +154,7 @@ func executeBashCommand(ctx context.Context, command, workingDir string, timeout
 	args = append(args, command)
 	cmd := exec.CommandContext(execCtx, shell.Path, args...)
 	cmd.Dir = workingDir
+	cmd.Env = environment
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
@@ -212,7 +224,7 @@ func formatBashResponse(resp *bashResponse) string {
 	return b.String()
 }
 
-func resolveShell(requested string) (shellSpec, error) {
+func resolveShell(ctx context.Context, requested string) (shellSpec, error) {
 	kind := strings.ToLower(strings.TrimSpace(requested))
 	if kind == "" {
 		kind = "auto"
@@ -220,7 +232,7 @@ func resolveShell(requested string) (shellSpec, error) {
 
 	switch kind {
 	case "auto":
-		return resolveAutoShell()
+		return resolveAutoShell(ctx)
 	case "bash":
 		return resolveExecutableShell("bash", []string{"-lc"}, "bash")
 	case "pwsh":
@@ -228,22 +240,29 @@ func resolveShell(requested string) (shellSpec, error) {
 	case "cmd":
 		return resolveExecutableShell(windowsDefaultShell, []string{"/C"}, "cmd")
 	case "git_bash":
-		return resolveGitBashShell("git_bash")
+		return resolveGitBashShell(ctx, "git_bash")
 	case "mingw":
-		return resolveMingwShell()
+		return resolveMingwShell(ctx)
 	default:
 		return shellSpec{}, fmt.Errorf("unsupported shell %q; use auto, bash, pwsh, cmd, git_bash, or mingw", requested)
 	}
 }
 
-func resolveAutoShell() (shellSpec, error) {
-	if runtime.GOOS == "windows" {
+func resolveAutoShell(ctx context.Context) (shellSpec, error) {
+	return resolveAutoShellForOS(ctx, runtime.GOOS)
+}
+
+func resolveAutoShellForOS(ctx context.Context, goos string) (shellSpec, error) {
+	if goos == "windows" {
+		if spec, err := resolveGitBashShell(ctx, "git_bash"); err == nil {
+			return spec, nil
+		}
 		if spec, err := resolvePwshShell(); err == nil {
 			return spec, nil
 		}
 		return resolveExecutableShell(windowsDefaultShell, []string{"/C"}, "cmd")
 	}
-	if shell := os.Getenv("SHELL"); shell != "" {
+	if shell := toolEnvironmentVariable(ctx, "SHELL"); shell != "" {
 		return shellSpec{Name: "bash", Path: shell, Args: []string{"-lc"}}, nil
 	}
 	if spec, err := resolveExecutableShell("bash", []string{"-lc"}, "bash"); err == nil {
@@ -262,8 +281,8 @@ func resolvePwshShell() (shellSpec, error) {
 	return shellSpec{}, errors.New("pwsh shell requested but neither pwsh nor powershell was found")
 }
 
-func resolveGitBashShell(name string) (shellSpec, error) {
-	for _, candidate := range gitBashCandidates() {
+func resolveGitBashShell(ctx context.Context, name string) (shellSpec, error) {
+	for _, candidate := range gitBashCandidates(ctx) {
 		if path, ok := executableCandidate(candidate); ok {
 			return shellSpec{Name: name, Path: path, Args: []string{"-lc"}}, nil
 		}
@@ -271,13 +290,13 @@ func resolveGitBashShell(name string) (shellSpec, error) {
 	return shellSpec{}, errors.New("git_bash shell requested but Git Bash was not found")
 }
 
-func resolveMingwShell() (shellSpec, error) {
-	for _, candidate := range mingwBashCandidates() {
+func resolveMingwShell(ctx context.Context) (shellSpec, error) {
+	for _, candidate := range mingwBashCandidates(ctx) {
 		if path, ok := executableCandidate(candidate); ok {
 			return shellSpec{Name: "mingw", Path: path, Args: []string{"-lc"}}, nil
 		}
 	}
-	return resolveGitBashShell("mingw")
+	return resolveGitBashShell(ctx, "mingw")
 }
 
 func resolveExecutableShell(path string, args []string, name string) (shellSpec, error) {
@@ -306,26 +325,26 @@ func executableCandidate(path string) (string, bool) {
 	return "", false
 }
 
-func gitBashCandidates() []string {
+func gitBashCandidates(ctx context.Context) []string {
 	candidates := []string{
-		os.Getenv("GIT_BASH"),
+		toolEnvironmentVariable(ctx, "GIT_BASH"),
 		"bash",
 	}
 	if runtime.GOOS == "windows" {
 		candidates = append(candidates,
-			filepath.Join(os.Getenv("ProgramFiles"), "Git", "bin", "bash.exe"),
-			filepath.Join(os.Getenv("ProgramFiles"), "Git", "usr", "bin", "bash.exe"),
-			filepath.Join(os.Getenv("ProgramFiles(x86)"), "Git", "bin", "bash.exe"),
-			filepath.Join(os.Getenv("ProgramFiles(x86)"), "Git", "usr", "bin", "bash.exe"),
+			filepath.Join(toolEnvironmentVariable(ctx, "ProgramFiles"), "Git", "bin", "bash.exe"),
+			filepath.Join(toolEnvironmentVariable(ctx, "ProgramFiles"), "Git", "usr", "bin", "bash.exe"),
+			filepath.Join(toolEnvironmentVariable(ctx, "ProgramFiles(x86)"), "Git", "bin", "bash.exe"),
+			filepath.Join(toolEnvironmentVariable(ctx, "ProgramFiles(x86)"), "Git", "usr", "bin", "bash.exe"),
 		)
 	}
 	return candidates
 }
 
-func mingwBashCandidates() []string {
+func mingwBashCandidates(ctx context.Context) []string {
 	candidates := []string{
-		os.Getenv("MSYS2_BASH"),
-		os.Getenv("MINGW_BASH"),
+		toolEnvironmentVariable(ctx, "MSYS2_BASH"),
+		toolEnvironmentVariable(ctx, "MINGW_BASH"),
 	}
 	if runtime.GOOS == "windows" {
 		candidates = append(candidates,
@@ -338,19 +357,27 @@ func mingwBashCandidates() []string {
 	return candidates
 }
 
-func normalizeBashTimeout(timeoutMilliseconds int) time.Duration {
+func normalizeBashTimeout(ctx context.Context, timeoutMilliseconds int) (time.Duration, error) {
 	if timeoutMilliseconds <= 0 {
-		return defaultBashTimeout
+		configured := toolEnvironmentVariable(ctx, bashToolTimeoutEnv)
+		if configured == "" {
+			return defaultBashTimeout, nil
+		}
+		value, err := strconv.Atoi(configured)
+		if err != nil || value <= 0 {
+			return 0, fmt.Errorf("%s must be a positive integer", bashToolTimeoutEnv)
+		}
+		timeoutMilliseconds = value
 	}
-	d := time.Duration(timeoutMilliseconds) * time.Millisecond
-	if d > maxBashTimeout {
-		return maxBashTimeout
+	timeout := time.Duration(timeoutMilliseconds) * time.Millisecond
+	if timeout > maxBashTimeout {
+		return maxBashTimeout, nil
 	}
-	return d
+	return timeout, nil
 }
 
-func validateBashCommand(command string) error {
-	allowList := os.Getenv(bashToolAllowListEnv)
+func validateBashCommand(ctx context.Context, command string) error {
+	allowList := toolEnvironmentVariable(ctx, bashToolAllowListEnv)
 	if allowList == "" {
 		return nil
 	}
@@ -366,4 +393,62 @@ func validateBashCommand(command string) error {
 	}
 
 	return fmt.Errorf("command %q is not in the allowed list: %s", firstWord, allowList)
+}
+
+func commandEnvironment(ctx context.Context) ([]string, error) {
+	environment := make([]string, 0, len(os.Environ())+len(core.EnvironmentFromContext(ctx)))
+	indexes := map[string]int{}
+	for _, entry := range os.Environ() {
+		name, _, found := strings.Cut(entry, "=")
+		if found && name != "" && isSensitiveToolEnvironmentName(name) {
+			continue
+		}
+		environment = append(environment, entry)
+		if found && name != "" {
+			indexes[normalizedEnvironmentName(name)] = len(environment) - 1
+		}
+	}
+
+	configured := core.EnvironmentFromContext(ctx)
+	keys := make([]string, 0, len(configured))
+	for key := range configured {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value := configured[key]
+		if key == "" || strings.ContainsAny(key, "=\x00") {
+			return nil, fmt.Errorf("invalid environment variable name %q", key)
+		}
+		if strings.ContainsRune(value, '\x00') {
+			return nil, fmt.Errorf("environment variable %q contains a null byte", key)
+		}
+		if isSensitiveToolEnvironmentName(key) {
+			continue
+		}
+		entry := key + "=" + value
+		normalized := normalizedEnvironmentName(key)
+		if index, exists := indexes[normalized]; exists {
+			environment[index] = entry
+			continue
+		}
+		indexes[normalized] = len(environment)
+		environment = append(environment, entry)
+	}
+	return environment, nil
+}
+
+func normalizedEnvironmentName(name string) string {
+	if runtime.GOOS == "windows" {
+		return strings.ToUpper(name)
+	}
+	return name
+}
+
+func isSensitiveToolEnvironmentName(name string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	return strings.Contains(upper, "KEY") ||
+		strings.Contains(upper, "TOKEN") ||
+		strings.Contains(upper, "SECRET") ||
+		strings.Contains(upper, "PASSWORD")
 }

@@ -158,7 +158,7 @@ func (n *EnvironmentContextNode) effectiveGitStatusLimit() int {
 }
 
 func (n *EnvironmentContextNode) collect(ctx context.Context) map[string]any {
-	workspaceRoot, cwd, source := n.resolveWorkspaceRoot()
+	workspaceRoot, cwd, source := n.resolveWorkspaceRoot(ctx)
 	payload := map[string]any{
 		"workspace_root": workspaceRoot,
 		"cwd":            cwd,
@@ -166,7 +166,7 @@ func (n *EnvironmentContextNode) collect(ctx context.Context) map[string]any {
 		"os":             goruntime.GOOS,
 		"arch":           goruntime.GOARCH,
 	}
-	if shell := currentShell(); shell != "" {
+	if shell := currentShell(ctx); shell != "" {
 		payload["shell"] = shell
 	}
 	if n.IncludeProject {
@@ -182,7 +182,7 @@ func (n *EnvironmentContextNode) collect(ctx context.Context) map[string]any {
 	return payload
 }
 
-func (n *EnvironmentContextNode) resolveWorkspaceRoot() (workspaceRoot string, cwd string, source string) {
+func (n *EnvironmentContextNode) resolveWorkspaceRoot(ctx context.Context) (workspaceRoot string, cwd string, source string) {
 	cwd = "."
 	if dir, err := os.Getwd(); err == nil && strings.TrimSpace(dir) != "" {
 		cwd = normalizeFilesystemPath(dir)
@@ -191,8 +191,13 @@ func (n *EnvironmentContextNode) resolveWorkspaceRoot() (workspaceRoot string, c
 	candidate := strings.TrimSpace(n.WorkspaceRoot)
 	source = "config"
 	if candidate == "" {
-		candidate = strings.TrimSpace(os.Getenv(environmentToolWorkdirEnv))
-		source = "tool_env"
+		if value, exists := core.EnvironmentFromContext(ctx)[environmentToolWorkdirEnv]; exists {
+			candidate = strings.TrimSpace(value)
+			source = "runtime_environment"
+		} else {
+			candidate = strings.TrimSpace(os.Getenv(environmentToolWorkdirEnv))
+			source = "tool_env"
+		}
 	}
 	if candidate == "" {
 		candidate = cwd
@@ -204,7 +209,15 @@ func (n *EnvironmentContextNode) resolveWorkspaceRoot() (workspaceRoot string, c
 	return normalizeFilesystemPath(candidate), cwd, source
 }
 
-func currentShell() string {
+func currentShell(ctx context.Context) string {
+	if environment := core.EnvironmentFromContext(ctx); environment != nil {
+		if shell, exists := environment["SHELL"]; exists {
+			return strings.TrimSpace(shell)
+		}
+		if shell, exists := environment["COMSPEC"]; exists {
+			return strings.TrimSpace(shell)
+		}
+	}
 	if shell := strings.TrimSpace(os.Getenv("SHELL")); shell != "" {
 		return shell
 	}

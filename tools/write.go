@@ -53,7 +53,7 @@ func NewWrite() Tool {
 	}
 }
 
-func writeTool(_ context.Context, input string) (string, error) {
+func writeTool(ctx context.Context, input string) (string, error) {
 	var req writeRequest
 	if err := decodeToolRequest(input, "write", &req); err != nil {
 		return "", err
@@ -63,7 +63,7 @@ func writeTool(_ context.Context, input string) (string, error) {
 		return "", fmt.Errorf("file_path is required")
 	}
 
-	workspace, target, relativePath, err := resolveToolPath(req.FilePath)
+	workspace, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
 		return "", err
 	}

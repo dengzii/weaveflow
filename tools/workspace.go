@@ -1,10 +1,13 @@
 package tools
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/dengzii/weaveflow/core"
 )
 
 const (
@@ -12,8 +15,8 @@ const (
 	toolSkipWorkspaceCheckEnv = "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK"
 )
 
-func toolWorkspaceDir() (string, error) {
-	dir := strings.TrimSpace(os.Getenv(toolWorkspaceEnv))
+func toolWorkspaceDir(ctx context.Context) (string, error) {
+	dir := toolEnvironmentVariable(ctx, toolWorkspaceEnv)
 	if dir == "" {
 		var err error
 		dir, err = os.Getwd()
@@ -24,12 +27,12 @@ func toolWorkspaceDir() (string, error) {
 	return filepath.Abs(dir)
 }
 
-func resolveToolPath(path string) (workspace string, target string, relative string, err error) {
+func resolveToolPath(ctx context.Context, path string) (workspace string, target string, relative string, err error) {
 	if strings.TrimSpace(path) == "" {
 		return "", "", "", errors.New("tool path is required")
 	}
 
-	workspace, err = toolWorkspaceDir()
+	workspace, err = toolWorkspaceDir(ctx)
 	if err != nil {
 		return "", "", "", err
 	}
@@ -50,7 +53,7 @@ func resolveToolPath(path string) (workspace string, target string, relative str
 		return "", "", "", err
 	}
 	if relative == ".." || strings.HasPrefix(relative, ".."+string(os.PathSeparator)) {
-		if !skipToolWorkspaceCheckEnabled() {
+		if !skipToolWorkspaceCheckEnabled(ctx) {
 			return "", "", "", errors.New("path escapes workspace")
 		}
 		relative = filepath.ToSlash(target)
@@ -59,12 +62,21 @@ func resolveToolPath(path string) (workspace string, target string, relative str
 	return filepath.ToSlash(workspace), target, filepath.ToSlash(relative), nil
 }
 
-func skipToolWorkspaceCheckEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(toolSkipWorkspaceCheckEnv))) {
+func skipToolWorkspaceCheckEnabled(ctx context.Context) bool {
+	switch strings.ToLower(toolEnvironmentVariable(ctx, toolSkipWorkspaceCheckEnv)) {
 	case "1", "true", "yes", "on":
 		return true
 	}
 	return false
+}
+
+func toolEnvironmentVariable(ctx context.Context, name string) string {
+	if environment := core.EnvironmentFromContext(ctx); environment != nil {
+		if value, exists := environment[name]; exists {
+			return strings.TrimSpace(value)
+		}
+	}
+	return strings.TrimSpace(os.Getenv(name))
 }
 
 func joinToolRelativePath(base string, name string) string {

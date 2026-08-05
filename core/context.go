@@ -17,6 +17,7 @@ type modelKey struct{}
 type modelsKey struct{}
 type toolsKey struct{}
 type memoryKey struct{}
+type environmentKey struct{}
 
 type Context struct {
 	context.Context
@@ -76,6 +77,13 @@ func WithMemory(ctx context.Context, manager memory.Manager) context.Context {
 	return context.WithValue(ctx, memoryKey{}, manager)
 }
 
+func WithEnvironment(ctx context.Context, environment map[string]string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, environmentKey{}, cloneEnvironment(environment))
+}
+
 func ModelFromContext(ctx context.Context) llms.Model {
 	if ctx == nil {
 		return nil
@@ -129,6 +137,18 @@ func MemoryFromContext(ctx context.Context) memory.Manager {
 	return manager
 }
 
+func EnvironmentFromContext(ctx context.Context) map[string]string {
+	if ctx == nil {
+		return nil
+	}
+	environment, _ := ctx.Value(environmentKey{}).(map[string]string)
+	return environment
+}
+
+func EnvironmentVariableFromContext(ctx context.Context, name string) string {
+	return EnvironmentFromContext(ctx)[strings.TrimSpace(name)]
+}
+
 func (c Context) Deadline() (time.Time, bool) { return c.Context.Deadline() }
 func (c Context) Done() <-chan struct{}       { return c.Context.Done() }
 func (c Context) Err() error                  { return c.Context.Err() }
@@ -150,6 +170,10 @@ func (c Context) Tools() map[string]Tool {
 
 func (c Context) Memory() memory.Manager {
 	return MemoryFromContext(c)
+}
+
+func (c Context) Environment() map[string]string {
+	return EnvironmentFromContext(c)
 }
 
 func (c Context) FilterTools(ids []string) map[string]Tool {
@@ -187,6 +211,24 @@ func cloneModels(input map[string]llms.Model) map[string]llms.Model {
 			continue
 		}
 		out[id] = model
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneEnvironment(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(input))
+	for key, value := range input {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		out[name] = value
 	}
 	if len(out) == 0 {
 		return nil

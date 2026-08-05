@@ -118,7 +118,7 @@ func NewGrep() Tool {
 	}
 }
 
-func grepTool(_ context.Context, input string) (string, error) {
+func grepTool(ctx context.Context, input string) (string, error) {
 	req, err := parseGrepRequest(input)
 	if err != nil {
 		return "", err
@@ -137,7 +137,7 @@ func grepTool(_ context.Context, input string) (string, error) {
 	if strings.TrimSpace(root) == "" {
 		root = "."
 	}
-	workspace, target, relRoot, err := resolveToolPath(root)
+	workspace, target, relRoot, err := resolveToolPath(ctx, root)
 	if err != nil {
 		return "", err
 	}

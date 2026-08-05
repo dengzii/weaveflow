@@ -63,7 +63,7 @@ func NewEdit() Tool {
 	}
 }
 
-func editTool(_ context.Context, input string) (string, error) {
+func editTool(ctx context.Context, input string) (string, error) {
 	var req editRequest
 	if err := decodeToolRequest(input, "edit", &req); err != nil {
 		return "", err
@@ -79,7 +79,7 @@ func editTool(_ context.Context, input string) (string, error) {
 		return "", fmt.Errorf("new_string must be different from old_string")
 	}
 
-	workspace, target, relativePath, err := resolveToolPath(req.FilePath)
+	workspace, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
 		return "", err
 	}

@@ -72,7 +72,7 @@ func NewTree() Tool {
 	}
 }
 
-func treeTool(_ context.Context, input string) (string, error) {
+func treeTool(ctx context.Context, input string) (string, error) {
 	var req treeRequest
 	if err := decodeToolRequest(input, "tree", &req); err != nil {
 		return "", err
@@ -83,7 +83,7 @@ func treeTool(_ context.Context, input string) (string, error) {
 	depth := normalizeTreeDepth(req.MaxDepth)
 	maxEntries := normalizeTreeMaxEntries(req.MaxEntries)
 
-	_, target, relativePath, err := resolveToolPath(req.Path)
+	_, target, relativePath, err := resolveToolPath(ctx, req.Path)
 	if err != nil {
 		return "", err
 	}

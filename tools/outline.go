@@ -102,7 +102,7 @@ func NewOutline() Tool {
 	}
 }
 
-func outlineTool(_ context.Context, input string) (string, error) {
+func outlineTool(ctx context.Context, input string) (string, error) {
 	var req outlineRequest
 	if err := decodeToolRequest(input, "outline", &req); err != nil {
 		return "", err
@@ -112,7 +112,7 @@ func outlineTool(_ context.Context, input string) (string, error) {
 		return "", fmt.Errorf("file_path is required")
 	}
 
-	_, target, relativePath, err := resolveToolPath(req.FilePath)
+	_, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
 		return "", err
 	}

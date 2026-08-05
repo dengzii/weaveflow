@@ -54,7 +54,7 @@ func NewRead() Tool {
 	}
 }
 
-func readTool(_ context.Context, input string) (string, error) {
+func readTool(ctx context.Context, input string) (string, error) {
 	var req readRequest
 	if err := decodeToolRequest(input, "read", &req); err != nil {
 		return "", err
@@ -64,7 +64,7 @@ func readTool(_ context.Context, input string) (string, error) {
 		return "", fmt.Errorf("file_path is required")
 	}
 
-	_, target, relativePath, err := resolveToolPath(req.FilePath)
+	_, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
 		return "", err
 	}

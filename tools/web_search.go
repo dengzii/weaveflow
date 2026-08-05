@@ -3,21 +3,20 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
+
+	"github.com/dengzii/weaveflow/core"
 
 	"github.com/smallnest/langgraphgo/tool"
 	"github.com/tmc/langchaingo/llms"
 )
 
-type webSearch struct {
-	tavily            *tool.TavilySearch
-	initializationErr error
-}
+const tavilyAPIKeyEnvironment = "TAVILY_API_KEY"
 
-func (w *webSearch) webSearchTool(ctx context.Context, input string) (string, error) {
-	if w.initializationErr != nil {
-		return "", fmt.Errorf("web_search unavailable: %w", w.initializationErr)
+func webSearchTool(ctx context.Context, input string) (string, error) {
+	search, err := tavilySearchFromContext(ctx)
+	if err != nil {
+		return "", fmt.Errorf("web_search unavailable: %w", err)
 	}
 
 	var request struct {
@@ -30,12 +29,18 @@ func (w *webSearch) webSearchTool(ctx context.Context, input string) (string, er
 	if request.Query == "" {
 		return "", fmt.Errorf("query is required")
 	}
-	return w.tavily.Call(ctx, request.Query)
+	return search.Call(ctx, request.Query)
+}
+
+func tavilySearchFromContext(ctx context.Context) (*tool.TavilySearch, error) {
+	apiKey := strings.TrimSpace(core.EnvironmentVariableFromContext(ctx, tavilyAPIKeyEnvironment))
+	if apiKey == "" {
+		return nil, fmt.Errorf("%s not set", tavilyAPIKeyEnvironment)
+	}
+	return tool.NewTavilySearch(apiKey)
 }
 
 func NewWebSearch() Tool {
-	search, err := tool.NewTavilySearch(strings.TrimSpace(os.Getenv("TAVILY_API_KEY")))
-	w := webSearch{tavily: search, initializationErr: err}
 	return Tool{
 		Function: &llms.FunctionDefinition{
 			Name: "web_search",
@@ -56,6 +61,6 @@ func NewWebSearch() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: w.webSearchTool,
+		Handler: webSearchTool,
 	}
 }
