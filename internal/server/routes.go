@@ -18,7 +18,6 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 func (s *Server) registerGraphRoutes(group *gin.RouterGroup) {
 	group.GET("/graph", s.handleGetGraph)
 	group.PUT("/graph", s.handleUpdateGraph)
-	group.POST("/graph/publish", s.handlePublishGraph)
 	group.GET("/graph/definition", s.handleGetGraphDefinition)
 	group.GET("/graph/nodes", s.handleGetGraphNodes)
 	group.GET("/graph/initial-state-requirements", s.handleGetGraphInitialStateRequirements)
@@ -29,7 +28,6 @@ func (s *Server) registerGraphRoutes(group *gin.RouterGroup) {
 
 func (s *Server) registerRuntimeRoutes(group *gin.RouterGroup) {
 	group.GET("/runtime/settings", s.handleGetRuntimeSettings)
-	group.PUT("/runtime/settings", s.handleUpdateRuntimeSettings)
 	group.GET("/runtime/tools", s.handleListRuntimeTools)
 	group.GET("/runtime/events/stream", s.handleRuntimeEventStream)
 }

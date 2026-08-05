@@ -142,17 +142,17 @@ func TestBindGraphUploadRejectsLegacyEnvelopeForms(t *testing.T) {
 	}
 }
 
-func TestBindGraphSettingsRequestRejectsUnknownFields(t *testing.T) {
+func TestBindGraphUploadRejectsUnknownSettingsFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, body := range []string{
-		`{"modle": {}}`,
-		`{"model": {}}`,
-		`{"memory": {"enabled": true, "path": "legacy"}}`,
+		`{"definition":{},"settings":{"modle": {}}}`,
+		`{"definition":{},"settings":{"model": {}}}`,
+		`{"definition":{},"settings":{"memory": {"enabled": true, "path": "legacy"}}}`,
 	} {
 		ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
-		ginContext.Request = httptest.NewRequest(http.MethodPut, "/runtime/settings", strings.NewReader(body))
-		if _, err := bindGraphSettingsRequest(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
-			t.Fatalf("bindGraphSettingsRequest(%s) error = %v, want unknown field", body, err)
+		ginContext.Request = httptest.NewRequest(http.MethodPut, "/graph", strings.NewReader(body))
+		if _, err := bindGraphUpload(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
+			t.Fatalf("bindGraphUpload(%s) error = %v, want unknown field", body, err)
 		}
 	}
 }
@@ -335,11 +335,12 @@ func TestHandleRuntimeToolsReturnsDefinitions(t *testing.T) {
 	}
 }
 
-func TestHandleRuntimeSettingsUpdatesContext(t *testing.T) {
+func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_MODEL", "")
 	t.Setenv("OPENAI_BASE_URL", "")
+	t.Setenv("TAVILY_API_KEY", "")
 	t.Setenv("WEAVEFLOW_TEST_FLAG", "")
 	t.Setenv("WEAVEFLOW_TEST_TOKEN", "")
 
@@ -355,8 +356,8 @@ func TestHandleRuntimeSettingsUpdatesContext(t *testing.T) {
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
-	body := `{
-		"environment": {"WEAVEFLOW_TEST_FLAG": "enabled", "WEAVEFLOW_TEST_TOKEN": "secret-token"},
+	settings := `{
+		"environment": {"TAVILY_API_KEY": "tavily-key", "WEAVEFLOW_TEST_FLAG": "enabled", "WEAVEFLOW_TEST_TOKEN": "secret-token"},
 		"models": [
 			{
 				"id": "default",
@@ -376,53 +377,44 @@ func TestHandleRuntimeSettingsUpdatesContext(t *testing.T) {
 		],
 		"memory": {"enabled": true}
 	}`
-	w := serveHTTP(engine, http.MethodPut, "/runtime/settings", body)
-	if w.Code != http.StatusOK {
-		t.Fatalf("PUT /runtime/settings status = %d, body = %s", w.Code, w.Body.String())
-	}
+	uploaded := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", settings))
 
-	var response struct {
-		Data  graphRuntimeSettings `json:"data"`
-		Error *apiError            `json:"error"`
+	if len(uploaded.Settings.Models) != 2 {
+		t.Fatalf("models length = %d, want 2", len(uploaded.Settings.Models))
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode settings response: %v", err)
+	if uploaded.Settings.Models[0].ID != core.DefaultModelID || uploaded.Settings.Models[0].Model != "gpt-test" {
+		t.Fatalf("default model settings = %#v", uploaded.Settings.Models[0])
 	}
-	if response.Error != nil {
-		t.Fatalf("response error = %#v", response.Error)
+	if uploaded.Settings.Models[1].ID != "fast" || uploaded.Settings.Models[1].Model != "gpt-fast" {
+		t.Fatalf("fast model settings = %#v", uploaded.Settings.Models[1])
 	}
-	if len(response.Data.Models) != 2 {
-		t.Fatalf("models length = %d, want 2", len(response.Data.Models))
+	if !uploaded.Settings.Models[0].APIKeyConfigured || !uploaded.Settings.Models[1].APIKeyConfigured {
+		t.Fatalf("api key configured flags = %#v", uploaded.Settings.Models)
 	}
-	if response.Data.Models[0].ID != core.DefaultModelID || response.Data.Models[0].Model != "gpt-test" {
-		t.Fatalf("default model settings = %#v", response.Data.Models[0])
+	if !uploaded.Settings.Memory.Enabled || uploaded.Settings.Memory.Directory == "" {
+		t.Fatalf("memory settings = %#v", uploaded.Settings.Memory)
 	}
-	if response.Data.Models[1].ID != "fast" || response.Data.Models[1].Model != "gpt-fast" {
-		t.Fatalf("fast model settings = %#v", response.Data.Models[1])
+	if uploaded.Settings.Environment["WEAVEFLOW_TEST_FLAG"] != "enabled" {
+		t.Fatalf("environment = %#v", uploaded.Settings.Environment)
 	}
-	if !response.Data.Models[0].APIKeyConfigured || !response.Data.Models[1].APIKeyConfigured {
-		t.Fatalf("api key configured flags = %#v", response.Data.Models)
+	if _, ok := uploaded.Settings.Environment["WEAVEFLOW_TEST_TOKEN"]; ok {
+		t.Fatalf("settings response leaked secret environment name: %#v", uploaded.Settings.Environment)
 	}
-	if !response.Data.Memory.Enabled || response.Data.Memory.Directory == "" {
-		t.Fatalf("memory settings = %#v", response.Data.Memory)
+	if _, ok := uploaded.Settings.Environment["TAVILY_API_KEY"]; ok {
+		t.Fatalf("settings response leaked TAVILY_API_KEY: %#v", uploaded.Settings.Environment)
 	}
-	if response.Data.Environment["WEAVEFLOW_TEST_FLAG"] != "enabled" {
-		t.Fatalf("environment = %#v", response.Data.Environment)
+	responseData, err := json.Marshal(uploaded)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, ok := response.Data.Environment["WEAVEFLOW_TEST_TOKEN"]; ok {
-		t.Fatalf("settings response leaked secret environment name: %#v", response.Data.Environment)
+	if strings.Contains(string(responseData), "test-key") || strings.Contains(string(responseData), "secret-token") || strings.Contains(string(responseData), "tavily-key") {
+		t.Fatalf("upload response leaked a secret: %s", responseData)
 	}
-	if strings.Contains(w.Body.String(), "test-key") || strings.Contains(w.Body.String(), "secret-token") {
-		t.Fatalf("settings response leaked api key: %s", w.Body.String())
+	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "" {
+		t.Fatalf("graph upload mutated process WEAVEFLOW_TEST_TOKEN = %q", got)
 	}
-	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "secret-token" {
-		t.Fatalf("WEAVEFLOW_TEST_TOKEN = %q, want secret-token", got)
-	}
-	if got := os.Getenv("WEAVEFLOW_TEST_FLAG"); got != "enabled" {
-		t.Fatalf("WEAVEFLOW_TEST_FLAG = %q, want enabled", got)
-	}
-	if got := os.Getenv("OPENAI_MODEL"); got != "gpt-test" {
-		t.Fatalf("OPENAI_MODEL = %q, want gpt-test", got)
+	if got := os.Getenv("WEAVEFLOW_TEST_FLAG"); got != "" {
+		t.Fatalf("graph upload mutated process WEAVEFLOW_TEST_FLAG = %q", got)
 	}
 
 	coreCtx := core.NewContext(srv.runtime.runtimeContext())
@@ -438,28 +430,31 @@ func TestHandleRuntimeSettingsUpdatesContext(t *testing.T) {
 	if _, ok := coreCtx.Tools()["alpha"]; !ok {
 		t.Fatalf("runtime context tools = %#v, want alpha preserved", coreCtx.Tools())
 	}
-
-	w = serveHTTP(engine, http.MethodPut, "/runtime/settings", `{"environment":{}}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("clear visible environment status = %d, body = %s", w.Code, w.Body.String())
-	}
-	if got := os.Getenv("WEAVEFLOW_TEST_FLAG"); got != "" {
-		t.Fatalf("removed WEAVEFLOW_TEST_FLAG = %q, want empty", got)
-	}
-	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "secret-token" {
-		t.Fatalf("omitted secret WEAVEFLOW_TEST_TOKEN = %q, want preserved", got)
+	if got := coreCtx.Environment()["TAVILY_API_KEY"]; got != "tavily-key" {
+		t.Fatalf("runtime context TAVILY_API_KEY = %q, want tavily-key", got)
 	}
 
-	w = serveHTTP(engine, http.MethodPut, "/runtime/settings", `{"environment":{"WEAVEFLOW_TEST_TOKEN":""}}`)
-	if w.Code != http.StatusOK {
-		t.Fatalf("clear secret environment status = %d, body = %s", w.Code, w.Body.String())
+	withoutVisibleEnvironment := `{
+		"environment": {},
+		"models": [
+			{"id":"default","enabled":true,"provider":"openai","model":"gpt-test","base_url":"http://127.0.0.1:9999/v1"},
+			{"id":"fast","enabled":true,"provider":"openai","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1"}
+		],
+		"memory": {"enabled": true}
+	}`
+	second := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", withoutVisibleEnvironment))
+	if second.Graph.GraphSessionID == uploaded.Graph.GraphSessionID {
+		t.Fatal("changed graph settings reused the previous session")
 	}
-	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "" {
-		t.Fatalf("cleared WEAVEFLOW_TEST_TOKEN = %q, want empty", got)
+	if got := core.EnvironmentVariableFromContext(srv.runtime.runtimeContext(), "WEAVEFLOW_TEST_FLAG"); got != "" {
+		t.Fatalf("removed visible environment = %q, want empty", got)
+	}
+	if got := core.EnvironmentVariableFromContext(srv.runtime.runtimeContext(), "TAVILY_API_KEY"); got != "tavily-key" {
+		t.Fatalf("preserved runtime context TAVILY_API_KEY = %q, want tavily-key", got)
 	}
 }
 
-func TestHandleRuntimeToolsConcurrentWithSettingsUpdates(t *testing.T) {
+func TestHandleRuntimeToolsConcurrentWithGraphUploads(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	ctx := core.WithTools(context.Background(), map[string]core.Tool{
 		"alpha": {Function: &llms.FunctionDefinition{Name: "alpha_tool"}},
@@ -470,6 +465,7 @@ func TestHandleRuntimeToolsConcurrentWithSettingsUpdates(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
+	uploadBody := triggerGraphUploadBody("concurrent-settings", "v1", "settings")
 
 	const requests = 32
 	var wg sync.WaitGroup
@@ -484,9 +480,9 @@ func TestHandleRuntimeToolsConcurrentWithSettingsUpdates(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			response := serveHTTP(engine, http.MethodPut, "/runtime/settings", `{"memory":{"enabled":false}}`)
+			response := serveHTTP(engine, http.MethodPut, "/graph", uploadBody)
 			if response.Code != http.StatusOK {
-				t.Errorf("PUT /runtime/settings status = %d, body = %s", response.Code, response.Body.String())
+				t.Errorf("PUT /graph status = %d, body = %s", response.Code, response.Body.String())
 			}
 		}()
 	}
@@ -495,6 +491,7 @@ func TestHandleRuntimeToolsConcurrentWithSettingsUpdates(t *testing.T) {
 
 func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 	expected := map[string]string{
+		"TAVILY_API_KEY":                      "test-tavily-key",
 		"WEAVEFLOW_TOOL_WORKDIR":              t.TempDir(),
 		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": "false",
 		"WEAVEFLOW_BASH_TIMEOUT":              "120000",
@@ -515,6 +512,7 @@ func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 	}
 
 	expectedPresets := map[string]graphEnvironmentPreset{
+		"TAVILY_API_KEY":                      {Key: "TAVILY_API_KEY", Type: "string"},
 		"WEAVEFLOW_TOOL_WORKDIR":              {Key: "WEAVEFLOW_TOOL_WORKDIR", Type: "string"},
 		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": {Key: "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", DefaultValue: "false", Type: "boolean"},
 		"WEAVEFLOW_BASH_TIMEOUT":              {Key: "WEAVEFLOW_BASH_TIMEOUT", DefaultValue: "120000", Type: "integer"},
@@ -530,6 +528,16 @@ func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 		if expectedPresets[preset.Key] != preset {
 			t.Fatalf("environment preset %q = %#v, want %#v", preset.Key, preset, expectedPresets[preset.Key])
 		}
+	}
+}
+
+func TestRuntimeSettingsContextEnvironmentOverridesProcess(t *testing.T) {
+	t.Setenv("TAVILY_API_KEY", "process-key")
+	ctx := core.WithEnvironment(context.Background(), map[string]string{"TAVILY_API_KEY": "context-key"})
+
+	settings := graphRuntimeSettingsFromContext(ctx, "")
+	if got := settings.Environment["TAVILY_API_KEY"]; got != "context-key" {
+		t.Fatalf("TAVILY_API_KEY = %q, want context-key", got)
 	}
 }
 
@@ -1626,6 +1634,52 @@ func TestCancelRunCancelsActiveContext(t *testing.T) {
 	}
 }
 
+func TestCancelRunUsesTriggerSessionRunner(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	defer close(release)
+	graph := newRunControlTestGraph(t, started, release, true)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	runner := newDefaultRunner(graph, Config{
+		GraphID:        "trigger-graph",
+		GraphVersion:   "2.0",
+		GraphSessionID: "trigger-session",
+	}, t.TempDir())
+	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
+		graph:       graph,
+		runner:      runner,
+		baseContext: context.Background(),
+	})
+	if srv.currentRunner() != nil {
+		t.Fatal("current runner is configured")
+	}
+
+	run, done, err := runner.StartAsync(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("StartAsync() error = %v", err)
+	}
+	waitForSignal(t, started, "trigger run node start")
+
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	cancelResponse := serveHTTP(
+		engine,
+		http.MethodPost,
+		"/runs/"+run.RunID+"/cancel?graph_id=trigger-graph",
+		"",
+	)
+	canceledRun := decodeRunRecordResponse(t, cancelResponse, http.StatusOK)
+	if canceledRun.Status != runtime.RunStatusCanceled {
+		t.Fatalf("cancel response status = %q, want %q", canceledRun.Status, runtime.RunStatusCanceled)
+	}
+	waitForSignal(t, done, "trigger run completion")
+}
+
 func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1761,11 +1815,6 @@ func serveHTTPWithContext(ctx context.Context, engine *gin.Engine, method string
 func putGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
 	t.Helper()
 	return requestGraphForHashTest(t, engine, http.MethodPut, "/graph", body)
-}
-
-func publishGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
-	t.Helper()
-	return requestGraphForHashTest(t, engine, http.MethodPost, "/graph/publish", body)
 }
 
 func requestGraphForHashTest(t *testing.T, engine *gin.Engine, method, path string, body string) graphLoadResponse {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -24,33 +26,40 @@ type graphUploadRequest struct {
 	Definition   dsl.GraphDefinition
 	GraphID      string
 	GraphVersion string
+	Settings     *graphRuntimeSettingsRequest
 }
 
 type graphUploadEnvelope struct {
-	Definition   json.RawMessage `json:"definition"`
-	GraphID      string          `json:"graph_id"`
-	GraphVersion string          `json:"graph_version"`
+	Definition   json.RawMessage              `json:"definition"`
+	GraphID      string                       `json:"graph_id"`
+	GraphVersion string                       `json:"graph_version"`
+	Settings     *graphRuntimeSettingsRequest `json:"settings"`
 }
 
 type graphLoadResponse struct {
 	Graph         graphInfo               `json:"graph"`
 	Definition    dsl.GraphDefinition     `json:"definition"`
 	RunnerBaseDir string                  `json:"runner_base_dir,omitempty"`
+	Settings      graphRuntimeSettings    `json:"settings"`
 	Warnings      []runtime.WarningRecord `json:"warnings,omitempty"`
 }
 
 type graphSessionManifest struct {
-	GraphID           string    `json:"graph_id"`
-	GraphVersion      string    `json:"graph_version"`
-	GraphHash         string    `json:"graph_hash"`
-	GraphSnapshotHash string    `json:"graph_snapshot_hash"`
-	GraphSessionID    string    `json:"graph_session_id"`
-	DefinitionPath    string    `json:"definition_path"`
-	Official          bool      `json:"official,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
+	GraphID             string    `json:"graph_id"`
+	GraphVersion        string    `json:"graph_version"`
+	GraphHash           string    `json:"graph_hash"`
+	GraphSnapshotHash   string    `json:"graph_snapshot_hash"`
+	GraphSessionID      string    `json:"graph_session_id"`
+	DefinitionPath      string    `json:"definition_path"`
+	SettingsPath        string    `json:"settings_path"`
+	RuntimeSettingsHash string    `json:"runtime_settings_hash"`
+	CreatedAt           time.Time `json:"created_at"`
 }
 
-const maxGraphUploadBodyBytes int64 = 8 << 20
+const (
+	maxGraphUploadBodyBytes   int64 = 8 << 20
+	retainedGraphSessionCount       = 5
+)
 
 func (s *Server) handleUpdateGraph(c *gin.Context) {
 	req, err := bindGraphUpload(c)
@@ -58,23 +67,12 @@ func (s *Server) handleUpdateGraph(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-
-	resp, err := s.configureUploadedGraph(req)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	writeData(c, http.StatusOK, resp)
-}
-
-func (s *Server) handlePublishGraph(c *gin.Context) {
-	req, err := bindGraphUpload(c)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
+	if req.Settings == nil {
+		writeError(c, http.StatusBadRequest, fmt.Errorf("graph upload settings are required"))
 		return
 	}
 
-	resp, err := s.configurePushedGraph(req)
+	resp, err := s.configureGraph(req)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -106,6 +104,7 @@ func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
 		Definition:   definition,
 		GraphID:      strings.TrimSpace(envelope.GraphID),
 		GraphVersion: strings.TrimSpace(envelope.GraphVersion),
+		Settings:     envelope.Settings,
 	}, nil
 }
 
@@ -124,15 +123,7 @@ func decodeStrictJSON(data []byte, target any) error {
 	return nil
 }
 
-func (s *Server) configureUploadedGraph(req graphUploadRequest) (graphLoadResponse, error) {
-	return s.configureGraph(req, false)
-}
-
-func (s *Server) configurePushedGraph(req graphUploadRequest) (graphLoadResponse, error) {
-	return s.configureGraph(req, true)
-}
-
-func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoadResponse, error) {
+func (s *Server) configureGraph(req graphUploadRequest) (graphLoadResponse, error) {
 	if s == nil {
 		return graphLoadResponse{}, errGraphNotConfigured
 	}
@@ -163,30 +154,46 @@ func (s *Server) configureGraph(req graphUploadRequest, official bool) (graphLoa
 		return graphLoadResponse{}, fmt.Errorf("hash graph snapshot: %w", err)
 	}
 
-	// Reuse identical graph sessions. Publishing an active draft only changes
-	// its Official flag so repeated runs and pushes do not create new versions.
-	currentGraph, currentRunner, currentOfficial := s.currentGraphState()
-	if graphUploadMatchesRunner(currentRunner, graphID, graphVersion, graphHash, graphSnapshotHash) {
+	previousSettings, err := s.runtimeSettingsForGraph(graphID)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
+	nextSettings := previousSettings
+	apiKey, apiKeyProvided, err := applyGraphSettingsRequest(&nextSettings, *req.Settings)
+	if err != nil {
+		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)
+	}
+	if !apiKeyProvided {
+		apiKey = firstNonEmpty(firstGraphModelAPIKey(nextSettings), nextSettings.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
+	}
+	markGraphModelAPIKeys(&nextSettings, apiKey)
+	if nextSettings.Memory.Enabled && strings.TrimSpace(nextSettings.Memory.Directory) == "" {
+		nextSettings.Memory.Directory = defaultMemoryDirectory(s.baseDir)
+	}
+	baseContext, err := s.buildRuntimeContext(nextSettings, apiKey)
+	if err != nil {
+		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)
+	}
+	runtimeSettingsHash, err := graphRuntimeSettingsHash(nextSettings)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
+
+	current := s.runtime.currentSession()
+	currentGraph := current.graph
+	currentRunner := current.runner
+	if graphUploadMatchesSession(current, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash) {
 		runnerBaseDir := s.uploadedGraphBaseDir(graphID, currentRunner.GraphSessionID)
-		if official && !currentOfficial {
-			if strings.TrimSpace(currentRunner.GraphSessionID) == "" {
-				return s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, true)
-			}
-			var err error
-			runnerBaseDir, err = s.promoteGraphSession(graphID, currentRunner.GraphSessionID)
-			if err != nil {
-				return graphLoadResponse{}, err
-			}
-			s.runtime.promoteCurrentSession(graphID, currentRunner)
-			currentOfficial = true
+		if err := s.pruneGraphSessions(graphID, currentRunner.GraphSessionID); err != nil {
+			return graphLoadResponse{}, err
 		}
 		if currentGraph == nil {
 			currentGraph = graph
 		}
-		return graphResponse(currentGraph, currentRunner, runnerBaseDir, currentOfficial)
+		return graphResponse(currentGraph, currentRunner, runnerBaseDir, current.settings)
 	}
 
-	return s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, official)
+	return s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash, nextSettings, baseContext)
 }
 
 func (s *Server) installUploadedGraph(
@@ -196,21 +203,30 @@ func (s *Server) installUploadedGraph(
 	graphVersion string,
 	graphHash string,
 	graphSnapshotHash string,
-	official bool,
+	runtimeSettingsHash string,
+	settings graphRuntimeSettings,
+	baseContext context.Context,
 ) (graphLoadResponse, error) {
 	runnerBaseDir := s.nextUploadedGraphBaseDir(graphID)
 	graphSessionID := graphSessionIDFromBaseDir(runnerBaseDir)
 	if err := writeGraphSessionSnapshot(runnerBaseDir, graphSessionManifest{
-		GraphID:           graphID,
-		GraphVersion:      graphVersion,
-		GraphHash:         graphHash,
-		GraphSnapshotHash: graphSnapshotHash,
-		GraphSessionID:    graphSessionID,
-		DefinitionPath:    "definition.json",
-		Official:          official,
-		CreatedAt:         time.Now().UTC(),
-	}, def); err != nil {
+		GraphID:             graphID,
+		GraphVersion:        graphVersion,
+		GraphHash:           graphHash,
+		GraphSnapshotHash:   graphSnapshotHash,
+		GraphSessionID:      graphSessionID,
+		DefinitionPath:      "definition.json",
+		SettingsPath:        graphRuntimeSettingsFileName,
+		RuntimeSettingsHash: runtimeSettingsHash,
+		CreatedAt:           time.Now().UTC(),
+	}, def, settings); err != nil {
 		return graphLoadResponse{}, err
+	}
+	if err := s.pruneGraphSessions(graphID, graphSessionID); err != nil {
+		if cleanupErr := os.RemoveAll(runnerBaseDir); cleanupErr != nil {
+			return graphLoadResponse{}, fmt.Errorf("prune graph sessions: %v; remove new graph session: %w", err, cleanupErr)
+		}
+		return graphLoadResponse{}, fmt.Errorf("prune graph sessions: %w", err)
 	}
 
 	cfg := s.cfg
@@ -224,9 +240,10 @@ func (s *Server) installUploadedGraph(
 	attachEventHub(runner, s.events)
 
 	s.runtime.installSession(graphRuntimeSession{
-		graph:    graph,
-		runner:   runner,
-		official: official,
+		graph:       graph,
+		runner:      runner,
+		baseContext: baseContext,
+		settings:    settings,
 	})
 
 	return graphLoadResponse{
@@ -236,24 +253,30 @@ func (s *Server) installUploadedGraph(
 			GraphHash:         graphHash,
 			GraphSnapshotHash: graphSnapshotHash,
 			GraphSessionID:    graphSessionID,
-			Official:          official,
 			EntryPoint:        def.EntryPoint,
 			FinishPoint:       def.FinishPoint,
 		},
 		Definition:    def,
 		RunnerBaseDir: runnerBaseDir,
+		Settings:      graphSettingsResponse(settings),
 		Warnings:      runner.StartupWarnings,
 	}, nil
 }
 
-func graphUploadMatchesRunner(
-	runner *runtime.GraphRunner,
+func graphUploadMatchesSession(
+	session graphRuntimeSession,
 	graphID string,
 	graphVersion string,
 	graphHash string,
 	graphSnapshotHash string,
+	runtimeSettingsHash string,
 ) bool {
+	runner := session.runner
 	if runner == nil {
+		return false
+	}
+	settingsHash, err := graphRuntimeSettingsHash(session.settings)
+	if err != nil || settingsHash != strings.TrimSpace(runtimeSettingsHash) {
 		return false
 	}
 	return effectiveRunnerGraphID(runner) == strings.TrimSpace(graphID) &&
@@ -266,7 +289,7 @@ func graphResponse(
 	graph *wfgraph.Graph,
 	runner *runtime.GraphRunner,
 	runnerBaseDir string,
-	official bool,
+	settings graphRuntimeSettings,
 ) (graphLoadResponse, error) {
 	if graph == nil || runner == nil {
 		return graphLoadResponse{}, errGraphNotConfigured
@@ -282,12 +305,12 @@ func graphResponse(
 			GraphHash:         strings.TrimSpace(runner.GraphHash),
 			GraphSnapshotHash: strings.TrimSpace(runner.GraphSnapshotHash),
 			GraphSessionID:    strings.TrimSpace(runner.GraphSessionID),
-			Official:          official,
 			EntryPoint:        def.EntryPoint,
 			FinishPoint:       def.FinishPoint,
 		},
 		Definition:    def,
 		RunnerBaseDir: runnerBaseDir,
+		Settings:      graphSettingsResponse(settings),
 		Warnings:      runner.StartupWarnings,
 	}, nil
 }
@@ -297,31 +320,6 @@ func (s *Server) uploadedGraphBaseDir(graphID string, graphSessionID string) str
 		return ""
 	}
 	return filepath.Join(s.baseDir, "graphs", graphStorageKey(graphID), strings.TrimSpace(graphSessionID))
-}
-
-func (s *Server) promoteGraphSession(graphID string, graphSessionID string) (string, error) {
-	graphDir := graphStorageDirectory(s.baseDir, graphID)
-	manifest, complete, err := readCachedGraphSession(graphDir, graphSessionID)
-	if err != nil {
-		return "", err
-	}
-	if !complete || manifest.GraphID != graphID {
-		return "", fmt.Errorf("promote graph session %q: session not found", graphSessionID)
-	}
-	baseDir := filepath.Join(graphDir, graphSessionID)
-	if manifest.Official {
-		return baseDir, nil
-	}
-	manifest.Official = true
-	data, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		return "", fmt.Errorf("serialize graph session manifest: %w", err)
-	}
-	data = append(data, '\n')
-	if err := writeGraphSessionFile(filepath.Join(baseDir, "graph.json"), data); err != nil {
-		return "", fmt.Errorf("promote graph session %q: %w", graphSessionID, err)
-	}
-	return baseDir, nil
 }
 
 func (s *Server) nextUploadedGraphBaseDir(graphID string) string {
@@ -339,7 +337,7 @@ func graphSessionIDFromBaseDir(baseDir string) string {
 	return strings.TrimSpace(filepath.Base(baseDir))
 }
 
-func writeGraphSessionSnapshot(baseDir string, manifest graphSessionManifest, def dsl.GraphDefinition) error {
+func writeGraphSessionSnapshot(baseDir string, manifest graphSessionManifest, def dsl.GraphDefinition, settings graphRuntimeSettings) error {
 	if strings.TrimSpace(baseDir) == "" {
 		return nil
 	}
@@ -356,6 +354,9 @@ func writeGraphSessionSnapshot(baseDir string, manifest graphSessionManifest, de
 	if err := writeGraphSessionFile(filepath.Join(baseDir, manifest.DefinitionPath), definition); err != nil {
 		return fmt.Errorf("write graph definition snapshot: %w", err)
 	}
+	if err := persistGraphRuntimeSettings(baseDir, settings); err != nil {
+		return fmt.Errorf("write graph runtime settings snapshot: %w", err)
+	}
 	data, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return fmt.Errorf("serialize graph session manifest: %w", err)
@@ -365,6 +366,15 @@ func writeGraphSessionSnapshot(baseDir string, manifest graphSessionManifest, de
 		return fmt.Errorf("write graph session manifest: %w", err)
 	}
 	return nil
+}
+
+func graphRuntimeSettingsHash(settings graphRuntimeSettings) (string, error) {
+	data, err := encodeGraphRuntimeSettings(settings)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(data)
+	return fmt.Sprintf("%x", hash[:]), nil
 }
 
 func writeGraphSessionFile(path string, data []byte) error {
@@ -464,4 +474,61 @@ func isReservedGraphStorageKey(value string) bool {
 
 func graphStorageDirectory(baseDir string, graphID string) string {
 	return filepath.Join(baseDir, "graphs", graphStorageKey(graphID))
+}
+
+func (s *Server) pruneGraphSessions(graphID string, protectedSessionID string) error {
+	if s == nil || strings.TrimSpace(s.baseDir) == "" {
+		return nil
+	}
+	protectedSessionID = strings.TrimSpace(protectedSessionID)
+
+	graphDir := graphStorageDirectory(s.baseDir, graphID)
+	entries, err := os.ReadDir(graphDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read graph sessions: %w", err)
+	}
+
+	type graphSessionCandidate struct {
+		id        string
+		createdAt time.Time
+	}
+	candidates := make([]graphSessionCandidate, 0, len(entries))
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		manifest, complete, err := readCachedGraphSession(graphDir, entry.Name())
+		if err != nil {
+			return fmt.Errorf("inspect graph session %q: %w", entry.Name(), err)
+		}
+		if !complete || manifest.GraphID != strings.TrimSpace(graphID) {
+			continue
+		}
+		candidates = append(candidates, graphSessionCandidate{
+			id:        entry.Name(),
+			createdAt: manifest.CreatedAt,
+		})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].id == protectedSessionID {
+			return true
+		}
+		if candidates[j].id == protectedSessionID {
+			return false
+		}
+		if candidates[i].createdAt.Equal(candidates[j].createdAt) {
+			return candidates[i].id > candidates[j].id
+		}
+		return candidates[i].createdAt.After(candidates[j].createdAt)
+	})
+
+	for _, candidate := range candidates[min(retainedGraphSessionCount, len(candidates)):] {
+		if err := os.RemoveAll(filepath.Join(graphDir, candidate.id)); err != nil {
+			return fmt.Errorf("remove graph session %q: %w", candidate.id, err)
+		}
+	}
+	return nil
 }

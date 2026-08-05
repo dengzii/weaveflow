@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -63,88 +64,56 @@ type graphMemorySettingsRequest struct {
 	Directory string `json:"directory"`
 }
 
-const maxGraphSettingsBodyBytes int64 = 1 << 20
-
 func (s *Server) handleGetRuntimeSettings(c *gin.Context) {
 	writeData(c, http.StatusOK, s.graphSettingsSnapshot())
 }
 
-func (s *Server) handleUpdateRuntimeSettings(c *gin.Context) {
-	s.runtime.settingsUpdate.Lock()
-	defer s.runtime.settingsUpdate.Unlock()
-
-	req, err := bindGraphSettingsRequest(c)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
-	}
-
-	previous := s.graphSettingsSnapshot()
-	next := previous
-	apiKey, apiKeyProvided, err := applyGraphSettingsRequest(&next, req)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
-		return
-	}
-	if !apiKeyProvided {
-		apiKey = firstNonEmpty(firstGraphModelAPIKey(next), next.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
-	}
-	markGraphModelAPIKeys(&next, apiKey)
-	if next.Memory.Enabled && strings.TrimSpace(next.Memory.Directory) == "" {
-		next.Memory.Directory = defaultMemoryDirectory(s.baseDir)
-	}
-
-	ctx, err := s.buildRuntimeContext(next, apiKey)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
-		return
-	}
-	rollbackEnvironment, err := applyGraphSettingsEnvironment(previous, next, apiKey, apiKeyProvided)
-	if err != nil {
-		writeError(c, http.StatusBadRequest, err)
-		return
-	}
-	if err := persistGraphRuntimeSettings(s.baseDir, next); err != nil {
-		if rollbackErr := rollbackEnvironment(); rollbackErr != nil {
-			err = fmt.Errorf("%w; restore environment: %v", err, rollbackErr)
-		}
-		writeError(c, http.StatusInternalServerError, err)
-		return
-	}
-
-	s.runtime.updateRuntime(next, ctx)
-
-	writeData(c, http.StatusOK, s.graphSettingsSnapshot())
-}
-
-func bindGraphSettingsRequest(c *gin.Context) (graphRuntimeSettingsRequest, error) {
-	body, err := readRequestBody(c.Request.Body, maxGraphSettingsBodyBytes)
-	if err != nil {
-		return graphRuntimeSettingsRequest{}, err
-	}
-	if len(strings.TrimSpace(string(body))) == 0 {
-		return graphRuntimeSettingsRequest{}, fmt.Errorf("graph settings body is required")
-	}
-	var req graphRuntimeSettingsRequest
-	if err := decodeStrictJSON(body, &req); err != nil {
-		return graphRuntimeSettingsRequest{}, fmt.Errorf("invalid JSON body: %w", err)
-	}
-	return req, nil
-}
-
 func (s *Server) graphSettingsSnapshot() graphRuntimeSettings {
 	if s == nil || s.runtime == nil {
-		return graphRuntimeSettingsFromContext(context.Background(), "")
+		return graphSettingsResponse(graphRuntimeSettingsFromContext(context.Background(), ""))
 	}
-	settings := s.runtime.runtimeSettings()
+	return graphSettingsResponse(s.runtime.runtimeSettings())
+}
+
+func graphSettingsResponse(settings graphRuntimeSettings) graphRuntimeSettings {
+	settings = sanitizedGraphSettings(settings)
 	settings.EnvironmentPresets = graphEnvironmentPresets()
-	markGraphModelAPIKeys(&settings, os.Getenv("OPENAI_API_KEY"))
 	return settings
 }
 
+func (s *Server) runtimeSettingsForGraph(graphID string) (graphRuntimeSettings, error) {
+	if s == nil || s.runtime == nil {
+		return graphRuntimeSettingsFromContext(context.Background(), ""), nil
+	}
+	current := s.runtime.currentSession()
+	if current.runner != nil && effectiveRunnerGraphID(current.runner) == strings.TrimSpace(graphID) {
+		return normalizedGraphSettings(current.settings), nil
+	}
+	session, err := s.latestGraphSession(graphID)
+	if err == nil {
+		settings, found, loadErr := loadGraphRuntimeSettings(session.baseDir)
+		if loadErr != nil {
+			return graphRuntimeSettings{}, loadErr
+		}
+		if !found {
+			return graphRuntimeSettings{}, fmt.Errorf("graph session %q settings are missing", session.manifest.GraphSessionID)
+		}
+		return settings, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return graphRuntimeSettings{}, err
+	}
+	settings, _ := s.runtime.defaults()
+	return settings, nil
+}
+
 func graphRuntimeSettingsFromContext(ctx context.Context, baseDir string) graphRuntimeSettings {
+	environment := currentGraphEnvironment()
+	for key, value := range core.EnvironmentFromContext(ctx) {
+		environment[key] = value
+	}
 	settings := graphRuntimeSettings{
-		Environment:        currentGraphEnvironment(),
+		Environment:        environment,
 		EnvironmentPresets: graphEnvironmentPresets(),
 		Memory: graphMemorySettings{
 			Enabled:   core.MemoryFromContext(ctx) != nil,
@@ -152,7 +121,7 @@ func graphRuntimeSettingsFromContext(ctx context.Context, baseDir string) graphR
 		},
 	}
 	settings.Models = graphModelSettingsFromContext(ctx)
-	return sanitizedGraphSettings(settings)
+	return normalizedGraphSettings(settings)
 }
 
 func graphModelSettingsFromContext(ctx context.Context) []graphModelSettings {
@@ -189,7 +158,7 @@ func graphModelSettingsFromContext(ctx context.Context) []graphModelSettings {
 }
 
 func (s *Server) buildRuntimeContext(settings graphRuntimeSettings, apiKey string) (context.Context, error) {
-	ctx := context.Background()
+	ctx := core.WithEnvironment(context.Background(), settings.Environment)
 	if tools := s.currentToolSet(); len(tools) > 0 {
 		ctx = core.WithTools(ctx, tools)
 	}

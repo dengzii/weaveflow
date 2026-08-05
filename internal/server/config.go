@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/dengzii/weaveflow/builtin"
+	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
@@ -87,28 +88,14 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		reg = builtin.NewDefaultRegistry()
 	}
 
+	initialSettings := graphRuntimeSettingsFromContext(ctx, baseDir)
+	ctx = core.WithEnvironment(ctx, initialSettings.Environment)
 	srv := &Server{
-		runtime:  newGraphRuntimeManager(ctx, graphRuntimeSettingsFromContext(ctx, baseDir), cfg.Graph, runner),
+		runtime:  newGraphRuntimeManager(ctx, initialSettings, cfg.Graph, runner),
 		registry: reg,
 		events:   hub,
 		baseDir:  baseDir,
 		cfg:      cfg,
-	}
-	storedSettings, settingsFound, err := loadGraphRuntimeSettings(baseDir)
-	if err != nil {
-		return nil, err
-	}
-	if settingsFound {
-		apiKey := firstGraphModelAPIKey(storedSettings)
-		markGraphModelAPIKeys(&storedSettings, firstNonEmpty(apiKey, os.Getenv("OPENAI_API_KEY")))
-		runtimeCtx, err := srv.buildRuntimeContext(storedSettings, apiKey)
-		if err != nil {
-			return nil, fmt.Errorf("restore graph runtime settings: %w", err)
-		}
-		if _, err := applyGraphSettingsEnvironment(srv.runtime.runtimeSettings(), storedSettings, apiKey, apiKey != ""); err != nil {
-			return nil, fmt.Errorf("restore graph runtime settings environment: %w", err)
-		}
-		srv.runtime.updateRuntime(storedSettings, runtimeCtx)
 	}
 	triggerService := cfg.TriggerService
 	if triggerService == nil {

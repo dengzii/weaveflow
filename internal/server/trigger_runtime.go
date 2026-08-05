@@ -37,28 +37,25 @@ func (s *Server) resolveTriggerRunner(_ context.Context, target trigger.Target) 
 	if graphID == "" {
 		return nil, fmt.Errorf("%w: graph_id is required", trigger.ErrInvalidTarget)
 	}
-	runner, err := s.loadTriggerRunner(graphID)
+	session, err := s.loadTriggerSession(graphID)
 	if err != nil {
 		return nil, err
 	}
-	return &triggerRunStarter{server: s, runner: runner}, nil
+	return &triggerRunStarter{baseContext: session.baseContext, runner: session.runner}, nil
 }
 
-// triggerRunStarter binds graph selection to the resolver while taking runtime
-// services such as models from the server at the instant the run starts.
+// triggerRunStarter keeps graph execution and runtime settings on the same
+// immutable uploaded session.
 type triggerRunStarter struct {
-	server *Server
-	runner trigger.RunStarter
+	baseContext context.Context
+	runner      trigger.RunStarter
 }
 
 func (s *triggerRunStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
 	if s == nil || s.runner == nil {
 		return runtime.RunRecord{}, nil, fmt.Errorf("trigger runner is not configured")
 	}
-	if s.server == nil {
-		return s.runner.Start(ctx, initial)
-	}
-	runCtx, cancel := s.server.deriveRunContextFrom(ctx)
+	runCtx, cancel := deriveRunContextFromBase(ctx, s.baseContext)
 	defer cancel()
 	if sink := chatcap.ReplySinkFromContext(ctx); sink != nil {
 		runCtx = chatcap.WithReplySink(runCtx, sink)
@@ -80,11 +77,7 @@ func (s *triggerRunStarter) StartAsync(ctx context.Context, initial *state.State
 		close(done)
 		return run, done, err
 	}
-	if s.server == nil {
-		return asyncRunner.StartAsync(ctx, initial)
-	}
-
-	runCtx, cancel := s.server.deriveRunContextFrom(ctx)
+	runCtx, cancel := deriveRunContextFromBase(ctx, s.baseContext)
 	if sink := chatcap.ReplySinkFromContext(ctx); sink != nil {
 		runCtx = chatcap.WithReplySink(runCtx, sink)
 	}
@@ -111,27 +104,27 @@ func triggerTargetMatchesRunner(graphID string, runner *runtime.GraphRunner) boo
 	return runner != nil && strings.TrimSpace(graphID) == effectiveRunnerGraphID(runner)
 }
 
-func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error) {
-	session, err := s.latestOfficialGraphSession(graphID)
+func (s *Server) loadTriggerSession(graphID string) (graphRuntimeSession, error) {
+	session, err := s.latestGraphSession(graphID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			cached := s.runtime.triggerRunner(graphID)
-			if cached != nil {
+			cached := s.runtime.triggerSession(graphID)
+			if cached.runner != nil {
 				return cached, nil
 			}
-			return nil, fmt.Errorf("%w: %q", errTriggerGraphNotFound, graphID)
+			return graphRuntimeSession{}, fmt.Errorf("%w: %q", errTriggerGraphNotFound, graphID)
 		}
-		return nil, err
+		return graphRuntimeSession{}, err
 	}
 
-	cached := s.runtime.triggerRunner(graphID)
-	if cached != nil && strings.TrimSpace(cached.GraphSessionID) == session.manifest.GraphSessionID {
+	cached := s.runtime.triggerSession(graphID)
+	if cached.runner != nil && strings.TrimSpace(cached.runner.GraphSessionID) == session.manifest.GraphSessionID {
 		return cached, nil
 	}
 
 	definition, err := wfgraph.LoadGraphDefinitionFile(session.definitionPath)
 	if err != nil {
-		return nil, err
+		return graphRuntimeSession{}, err
 	}
 	registry := s.registry
 	if registry == nil {
@@ -139,21 +132,34 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 	}
 	graph, err := wfgraph.NewBuilder(registry).Build(definition, &wfregistry.BuildContext{})
 	if err != nil {
-		return nil, err
+		return graphRuntimeSession{}, err
 	}
 	graphHash, err := graph.SemanticHash()
 	if err != nil {
-		return nil, err
+		return graphRuntimeSession{}, err
 	}
 	graphSnapshotHash, err := graph.SnapshotHash()
 	if err != nil {
-		return nil, err
+		return graphRuntimeSession{}, err
 	}
 	if session.manifest.GraphHash != graphHash {
-		return nil, fmt.Errorf("graph session %q hash mismatch", session.manifest.GraphSessionID)
+		return graphRuntimeSession{}, fmt.Errorf("graph session %q hash mismatch", session.manifest.GraphSessionID)
 	}
 	if session.manifest.GraphSnapshotHash != graphSnapshotHash {
-		return nil, fmt.Errorf("graph session %q snapshot hash mismatch", session.manifest.GraphSessionID)
+		return graphRuntimeSession{}, fmt.Errorf("graph session %q snapshot hash mismatch", session.manifest.GraphSessionID)
+	}
+	settings, found, err := loadGraphRuntimeSettings(session.baseDir)
+	if err != nil {
+		return graphRuntimeSession{}, err
+	}
+	if !found {
+		return graphRuntimeSession{}, fmt.Errorf("graph session %q settings are missing", session.manifest.GraphSessionID)
+	}
+	apiKey := firstNonEmpty(firstGraphModelAPIKey(settings), settings.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
+	markGraphModelAPIKeys(&settings, apiKey)
+	baseContext, err := s.buildRuntimeContext(settings, apiKey)
+	if err != nil {
+		return graphRuntimeSession{}, err
 	}
 
 	cfg := s.cfg
@@ -165,10 +171,15 @@ func (s *Server) loadTriggerRunner(graphID string) (*runtime.GraphRunner, error)
 	runner := newDefaultRunner(graph, cfg, session.baseDir)
 	attachEventHub(runner, s.events)
 
-	return s.runtime.cacheTriggerRunner(graphID, runner), nil
+	return s.runtime.cacheTriggerSession(graphID, graphRuntimeSession{
+		graph:       graph,
+		runner:      runner,
+		baseContext: baseContext,
+		settings:    settings,
+	}), nil
 }
 
-func (s *Server) latestOfficialGraphSession(graphID string) (triggerGraphSession, error) {
+func (s *Server) latestGraphSession(graphID string) (triggerGraphSession, error) {
 	var candidates []string
 	graphDir := graphStorageDirectory(s.baseDir, graphID)
 	entries, err := os.ReadDir(graphDir)
@@ -187,7 +198,7 @@ func (s *Server) latestOfficialGraphSession(graphID string) (triggerGraphSession
 		if err != nil {
 			return triggerGraphSession{}, err
 		}
-		if !complete || !manifest.Official || manifest.GraphID != graphID {
+		if !complete || manifest.GraphID != graphID {
 			continue
 		}
 		baseDir := filepath.Join(graphDir, sessionID)

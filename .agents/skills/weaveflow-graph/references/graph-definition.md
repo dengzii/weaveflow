@@ -16,7 +16,7 @@ Construct graphs from the live registry. Do not maintain a private list of node 
     - Treat capability ports as a root binding for the capability's relative fields.
     - For `dynamic_state_ports`, validate the alias against `name_pattern`, `min_ports`, and `max_ports`.
 6. For each conditional edge, find `conditions[].type` and apply its config and state schema the same way.
-7. Validate the complete definition through `POST /graph/initial-state-requirements` before Draft upload.
+7. Validate the complete definition through `POST /graph/initial-state-requirements` before graph upload.
 
 ## Core Shape
 
@@ -124,8 +124,9 @@ Before the run, confirm all of the following:
 
 ## Identity And Versioning
 
-The upload envelope carries `graph_id` and `graph_version`; the definition may also carry `metadata.id` and
-`metadata.graph_version`. Prefer explicit envelope values.
+The upload envelope carries `graph_id`, `graph_version`, the definition, and required graph-scoped `settings`; the
+definition may also carry `metadata.id` and `metadata.graph_version`. Prefer explicit envelope values. Upload the
+definition and settings together so node config, models, environment, and memory cannot refer to different revisions.
 
 Record all returned identities:
 
@@ -137,6 +138,8 @@ Record all returned identities:
 
 Changing canvas metadata can change the snapshot hash without changing the semantic hash. Changing node behavior or
 resolved state bindings changes semantics and can prevent an old checkpoint from resuming on the current runner.
+Changing only runtime settings still creates a new session even when the definition hashes are unchanged. Every
+successful session is immediately available to both direct runs and triggers for its `graph_id`.
 
 ## Repository Examples And Truth Sources
 

@@ -37,19 +37,18 @@ just because the probe fails.
 |--------|-------------------------------------|----------------------------------------------------------------------------------------------|
 | `GET`  | `/registry`                         | Return state modules, capabilities, node types, conditions, graph schema, and chat channels. |
 | `GET`  | `/runtime/tools`                    | Return tool IDs and function schemas available to agent nodes.                               |
-| `GET`  | `/runtime/settings`                 | Return sanitized process-wide model, environment, and memory settings.                       |
-| `PUT`  | `/runtime/settings`                 | Update process-wide runtime settings for future runs.                                        |
+| `GET`  | `/runtime/settings`                 | Return sanitized settings for the current graph session, or server defaults when empty.      |
 | `POST` | `/graph/initial-state-requirements` | Build a candidate and return required initial state without installing it.                   |
-| `PUT`  | `/graph`                            | Install a Draft graph session and make it current for `/runs`.                               |
-| `POST` | `/graph/publish`                    | Install and mark an Official graph session for triggers.                                     |
+| `PUT`  | `/graph`                            | Install one complete definition-and-settings session for runs and triggers.                  |
 | `GET`  | `/graph`                            | Return current graph identity and hashes.                                                    |
 | `GET`  | `/graph/definition`                 | Return the normalized current definition.                                                    |
 | `GET`  | `/graph/nodes`                      | Return current resolved node specs.                                                          |
 | `GET`  | `/graph/initial-state-requirements` | Return requirements for the current graph.                                                   |
 | `GET`  | `/graph/mermaid`                    | Return current graph as plain Mermaid text.                                                  |
-| `GET`  | `/graphs`                           | Summarize persisted graph sessions by logical graph ID.                                      |
+| `GET`  | `/graphs`                           | Return each logical graph's latest complete definition-and-settings session.                 |
 
-The candidate analysis, draft upload, and publish endpoints all use the same strict envelope, with an 8 MiB limit:
+Candidate analysis and graph upload accept the same strict envelope, with an 8 MiB limit. `settings` is required by
+`PUT /graph`; include it during candidate analysis as well so the validated request matches the intended upload:
 
 ```json
 {
@@ -59,50 +58,25 @@ The candidate analysis, draft upload, and publish endpoints all use the same str
     "version": "2.0",
     "state_modules": [],
     "nodes": []
+  },
+  "settings": {
+    "environment": {},
+    "models": [],
+    "memory": {
+      "enabled": false,
+      "directory": ""
+    }
   }
 }
 ```
 
 Unknown fields, extra JSON values, a missing definition, and invalid Graph v2 content are rejected. Build one envelope
-and send it first to candidate analysis, then to Draft upload.
+and send it first to candidate analysis, then to graph upload.
 
 ```powershell
 $definition = Get-Content -Raw ".local/support-agent.json" | ConvertFrom-Json
-$envelope = @{
-  graph_id = "support-agent"
-  graph_version = "v1"
-  definition = $definition
-} | ConvertTo-Json -Depth 100
-
-Invoke-RestMethod "$weaveflowBaseURL/graph/initial-state-requirements" `
-  -Method Post -ContentType "application/json" -Body $envelope
-
-$loaded = Invoke-RestMethod "$weaveflowBaseURL/graph" `
-  -Method Put -ContentType "application/json" -Body $envelope
-```
-
-Check `data.graph.official`, `graph_hash`, `graph_snapshot_hash`, `graph_session_id`, and `data.warnings`. Draft upload
-changes the current runner but does not change the Official graph used by triggers.
-
-## Runtime Settings
-
-Settings are process-wide and affect future runs, not runs already in progress. The request is strict and accepts only
-`environment`, `models`, and `memory`.
-
-- Omit a top-level field to preserve it.
-- Send `environment: {}` to clear environment values managed by settings.
-- Sending `models` replaces the model list. Reconstruct every model that must remain.
-- Use model IDs in graph node `config.model_id`. The default ID is `default`.
-- Only provider `openai` is supported.
-- Enabling a model requires an API key from the request, saved settings, or process environment.
-- GET responses never expose API keys; `api_key_configured` only reports presence.
-- Do not send response-only fields such as `environment_presets` or `api_key_configured` back to the strict PUT
-  endpoint.
-
-Example model update:
-
-```powershell
-$modelUpdate = @{
+$settings = @{
+  environment = @{}
   models = @(
     @{
       id = "default"
@@ -113,19 +87,75 @@ $modelUpdate = @{
       api_key = $env:OPENAI_API_KEY
     }
   )
-} | ConvertTo-Json -Depth 20
+  memory = @{ enabled = $false; directory = "" }
+}
+$envelopeObject = @{
+  graph_id = "support-agent"
+  graph_version = "v1"
+  definition = $definition
+  settings = $settings
+}
+$envelope = $envelopeObject | ConvertTo-Json -Depth 100
 
-Invoke-RestMethod "$weaveflowBaseURL/runtime/settings" `
-  -Method Put -ContentType "application/json" -Body $modelUpdate
+Invoke-RestMethod "$weaveflowBaseURL/graph/initial-state-requirements" `
+  -Method Post -ContentType "application/json" -Body $envelope
+
+$loaded = Invoke-RestMethod "$weaveflowBaseURL/graph" `
+  -Method Put -ContentType "application/json" -Body $envelope
 ```
 
-Do not echo `$modelUpdate` when it contains a key.
+Check `data.graph.graph_hash`, `graph_snapshot_hash`, `graph_session_id`, `data.settings`, and `data.warnings`. A successful
+upload changes the current runner and immediately becomes the latest complete session resolved by triggers for that
+`graph_id`.
+
+## Runtime Settings
+
+Settings belong to the immutable graph session and affect runs and triggers created from that session, not runs already
+in progress. They can only be changed by uploading a graph. The required `settings` object is strict and accepts only
+`environment`, `models`, and `memory`.
+
+- Omit a field inside `settings` to inherit it from the current or latest complete session for the same `graph_id`, or
+  from server defaults when the graph has no session.
+- Send `environment: {}` to clear environment values managed by settings.
+- Sending `models` replaces the model list. Reconstruct every model that must remain.
+- Use model IDs in graph node `config.model_id`. The default ID is `default`.
+- Only provider `openai` is supported.
+- Enabling a model requires an API key from the request, the latest session for the same graph, or process environment.
+- GET responses never expose API keys; `api_key_configured` only reports presence.
+- Do not send response-only fields such as `environment_presets` or `api_key_configured` in an upload.
+
+Example model update:
+
+```powershell
+$settings = @{
+  environment = @{}
+  models = @(
+    @{
+      id = "default"
+      enabled = $true
+      provider = "openai"
+      model = $env:OPENAI_MODEL
+      base_url = $env:OPENAI_BASE_URL
+      api_key = $env:OPENAI_API_KEY
+    }
+  )
+  memory = @{ enabled = $false; directory = "" }
+}
+
+$envelopeObject.settings = $settings
+$loaded = Invoke-RestMethod "$weaveflowBaseURL/graph" `
+  -Method Put -ContentType "application/json" -Body ($envelopeObject | ConvertTo-Json -Depth 100)
+```
+
+Do not echo `$settings`, `$envelopeObject`, or `$envelope` when any contains a key. The definition, including node
+config, and settings are persisted together; `definition.json` and `runtime-settings.json` are written before the
+session manifest, so readers ignore incomplete sessions.
 
 ## Run And Inspection Endpoints
 
 | Method   | Path                                   | Purpose                                                                      |
 |----------|----------------------------------------|------------------------------------------------------------------------------|
-| `POST`   | `/runs`                                | Synchronously run the current Draft graph.                                   |
+| `POST`   | `/runs`                                | Synchronously run the current uploaded graph session.                        |
 | `GET`    | `/runs`                                | List current runs; add `graph_id` for persisted sessions of a logical graph. |
 | `GET`    | `/runs/:run_id`                        | Read a run record.                                                           |
 | `POST`   | `/runs/:run_id/pause`                  | Request a safe-point pause on the current runner and wait for it.            |
@@ -186,14 +216,8 @@ drop events for slow consumers. `llm.content_chunk` and `llm.reasoning_chunk` ar
 Subscribe before the run when chunks matter, close the stream afterward, and use `/runs/:run_id/events` for durable
 history.
 
-## Publication
+## Trigger Visibility
 
-Publish only after explicit authorization:
-
-```powershell
-$published = Invoke-RestMethod "$weaveflowBaseURL/graph/publish" `
-  -Method Post -ContentType "application/json" -Body $envelope
-```
-
-Verify `data.graph.official` is `true` and record the returned graph session ID. Publication changes which graph future
-triggers resolve; it does not execute a run.
+There is no separate publication endpoint or second graph copy. Every successful `PUT /graph` creates one complete
+session used by direct runs and immediately eligible for triggers. A trigger resolves the latest complete session for
+its `graph_id`; a failed or incomplete upload does not replace that result. Uploading does not execute a run.

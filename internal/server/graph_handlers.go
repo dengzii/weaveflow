@@ -20,7 +20,6 @@ type graphInfo struct {
 	GraphHash         string `json:"graph_hash,omitempty"`
 	GraphSnapshotHash string `json:"graph_snapshot_hash,omitempty"`
 	GraphSessionID    string `json:"graph_session_id,omitempty"`
-	Official          bool   `json:"official"`
 	EntryPoint        string `json:"entry_point,omitempty"`
 	FinishPoint       string `json:"finish_point,omitempty"`
 }
@@ -46,7 +45,7 @@ type registryResponse struct {
 }
 
 func (s *Server) handleGetGraph(c *gin.Context) {
-	graph, runner, official := s.currentGraphState()
+	graph, runner := s.currentGraphRunner()
 	if graph == nil {
 		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
 		return
@@ -61,7 +60,6 @@ func (s *Server) handleGetGraph(c *gin.Context) {
 		Version:     runtime.DefaultGraphVersion,
 		EntryPoint:  def.EntryPoint,
 		FinishPoint: def.FinishPoint,
-		Official:    official,
 	}
 	if runner != nil {
 		info.ID = firstNonEmpty(runner.GraphID, info.ID)
@@ -206,16 +204,12 @@ func (s *Server) currentRunner() *runtime.GraphRunner {
 }
 
 func (s *Server) currentGraphRunner() (*wfgraph.Graph, *runtime.GraphRunner) {
-	graph, runner, _ := s.currentGraphState()
-	return graph, runner
-}
-
-func (s *Server) currentGraphState() (*wfgraph.Graph, *runtime.GraphRunner, bool) {
 	if s == nil || s.runtime == nil {
-		return nil, nil, false
+		return nil, nil
 	}
 	session := s.runtime.currentSession()
-	return session.graph, session.runner, session.official
+	graph, runner := session.graph, session.runner
+	return graph, runner
 }
 
 func sortedGraphNodeSpecKeys(input map[string]dsl.GraphNodeSpec) []string {

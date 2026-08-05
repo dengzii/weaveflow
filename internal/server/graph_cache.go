@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
@@ -29,9 +30,13 @@ type runReader interface {
 }
 
 type cachedGraphSummary struct {
-	ID            string `json:"id"`
-	SessionCount  int    `json:"session_count"`
-	LatestSession string `json:"latest_session,omitempty"`
+	ID            string               `json:"id"`
+	GraphVersion  string               `json:"graph_version"`
+	Definition    dsl.GraphDefinition  `json:"definition"`
+	Settings      graphRuntimeSettings `json:"settings"`
+	SessionCount  int                  `json:"session_count"`
+	LatestSession string               `json:"latest_session"`
+	UpdatedAt     time.Time            `json:"updated_at"`
 }
 
 type graphCacheReader struct {
@@ -93,6 +98,7 @@ func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
 		return nil, err
 	}
 	byGraphID := make(map[string]*cachedGraphSummary)
+	latestCreatedAt := make(map[string]time.Time)
 	seenSessions := make(map[string]struct{})
 	for _, entry := range entries {
 		if !entry.IsDir() {
@@ -125,8 +131,30 @@ func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
 				byGraphID[manifest.GraphID] = summary
 			}
 			summary.SessionCount++
-			if manifest.GraphSessionID > summary.LatestSession {
+			latestAt := latestCreatedAt[manifest.GraphID]
+			if manifest.CreatedAt.After(latestAt) ||
+				(manifest.CreatedAt.Equal(latestAt) && manifest.GraphSessionID > summary.LatestSession) {
+				definitionData, err := os.ReadFile(filepath.Join(graphDir, sess.Name(), manifest.DefinitionPath))
+				if err != nil {
+					return nil, fmt.Errorf("read graph session %q definition: %w", manifest.GraphSessionID, err)
+				}
+				definition, err := dsl.DeserializeGraphDefinition(definitionData)
+				if err != nil {
+					return nil, fmt.Errorf("decode graph session %q definition: %w", manifest.GraphSessionID, err)
+				}
+				settings, found, err := loadGraphRuntimeSettings(filepath.Join(graphDir, sess.Name()))
+				if err != nil {
+					return nil, fmt.Errorf("read graph session %q settings: %w", manifest.GraphSessionID, err)
+				}
+				if !found {
+					return nil, fmt.Errorf("graph session %q settings are missing", manifest.GraphSessionID)
+				}
+				summary.GraphVersion = manifest.GraphVersion
+				summary.Definition = definition
+				summary.Settings = graphSettingsResponse(settings)
 				summary.LatestSession = manifest.GraphSessionID
+				summary.UpdatedAt = manifest.CreatedAt
+				latestCreatedAt[manifest.GraphID] = manifest.CreatedAt
 			}
 		}
 	}
@@ -218,10 +246,42 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q created_at is missing", sessionID)
 	}
 	manifest.DefinitionPath = definitionName
+	settingsPath := strings.TrimSpace(manifest.SettingsPath)
+	if settingsPath == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q settings path is missing", sessionID)
+	}
+	settingsName := filepath.Clean(settingsPath)
+	if filepath.IsAbs(settingsName) || settingsName != filepath.Base(settingsName) {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q settings path is invalid", sessionID)
+	}
+	manifest.SettingsPath = settingsName
+	manifest.RuntimeSettingsHash = strings.TrimSpace(manifest.RuntimeSettingsHash)
+	if manifest.RuntimeSettingsHash == "" {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q runtime settings hash is missing", sessionID)
+	}
 	if _, err := os.Stat(filepath.Join(baseDir, definitionName)); os.IsNotExist(err) {
 		return graphSessionManifest{}, false, nil
 	} else if err != nil {
 		return graphSessionManifest{}, false, err
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, settingsName)); os.IsNotExist(err) {
+		return graphSessionManifest{}, false, nil
+	} else if err != nil {
+		return graphSessionManifest{}, false, err
+	}
+	settings, found, err := loadGraphRuntimeSettings(baseDir)
+	if err != nil {
+		return graphSessionManifest{}, false, err
+	}
+	if !found {
+		return graphSessionManifest{}, false, nil
+	}
+	settingsHash, err := graphRuntimeSettingsHash(settings)
+	if err != nil {
+		return graphSessionManifest{}, false, err
+	}
+	if settingsHash != manifest.RuntimeSettingsHash {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session %q runtime settings hash mismatch", sessionID)
 	}
 	return manifest, true, nil
 }

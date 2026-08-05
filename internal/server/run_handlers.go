@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/dengzii/weaveflow/runtime"
@@ -139,8 +140,8 @@ func (s *Server) handleCancelRun(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-	runner := s.currentRunner()
-	if runner != nil && (graphID == "" || graphID == effectiveRunnerGraphID(runner)) {
+	runner := s.runControlRunner(graphID)
+	if runner != nil {
 		err = runner.Cancel(c.Request.Context(), runID)
 		if err == nil {
 			run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusCanceled)
@@ -163,6 +164,18 @@ func (s *Server) handleCancelRun(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, run)
+}
+
+func (s *Server) runControlRunner(graphID string) *runtime.GraphRunner {
+	runner := s.currentRunner()
+	graphID = strings.TrimSpace(graphID)
+	if runner != nil && (graphID == "" || graphID == effectiveRunnerGraphID(runner)) {
+		return runner
+	}
+	if graphID == "" || s == nil || s.runtime == nil {
+		return nil
+	}
+	return s.runtime.triggerSession(graphID).runner
 }
 
 func (s *Server) handleDeleteRun(c *gin.Context) {

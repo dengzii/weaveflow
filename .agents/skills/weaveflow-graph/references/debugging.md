@@ -25,7 +25,7 @@ summarized, not dumped.
 
 | Symptom                                        | Inspect first                                                                          | Likely correction                                                                          |
 |------------------------------------------------|----------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------|
-| `service_unavailable` on graph or runs         | `GET /registry`, then graph state                                                      | Install a valid Draft; do not mistake an empty graph for a dead server.                    |
+| `service_unavailable` on graph or runs         | `GET /registry`, then graph state                                                      | Upload a valid graph session; do not mistake an empty graph for a dead server.             |
 | `invalid_graph_definition`                     | Candidate-analysis message and `GET /registry`                                         | Fix schema, node type, state binding, state module, edge, or condition errors.             |
 | Required state missing or `contract.violation` | Requirements, node state ports, checkpoint business state                              | Add the correct initial state or bind the port to the intended path.                       |
 | `model "..." not available`                    | Runtime settings and node `config.model_id`                                            | Enable that exact ID or use an existing model such as `default`.                           |
@@ -78,15 +78,15 @@ ID, and timestamp.
 
 ## Completion Criteria
 
-Do not call a graph fixed only because Draft upload succeeds. Require:
+Do not call a graph fixed only because upload succeeds. Require:
 
 1. Candidate analysis succeeds.
-2. Draft upload returns the intended identity and no unexplained warnings.
+2. Graph upload returns the intended identity, settings, and no unexplained warnings.
 3. A representative run reaches the expected terminal status or expected interrupt.
 4. The final state contains the intended output path.
 5. Failed steps and failure events are absent, or are understood and expected.
 6. Relevant artifacts and persisted events agree with the run result.
-7. Publish remains a separate, explicitly authorized action.
+7. Account for the fact that the uploaded session is immediately available to triggers for its `graph_id`.
 
 Use `docs/server-business-flow.md`, `internal/server/run_handlers.go`, `internal/server/run_support.go`, and
 `runtime/runner_types.go` when deeper runtime semantics are needed.

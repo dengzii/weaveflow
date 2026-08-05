@@ -129,12 +129,19 @@ func (s *Server) deriveRunContext(c *gin.Context) (context.Context, context.Canc
 }
 
 func (s *Server) deriveRunContextFrom(parent context.Context) (context.Context, context.CancelFunc) {
-	if parent == nil {
-		parent = context.Background()
-	}
 	base := context.Background()
 	if s != nil && s.runtime != nil {
 		base = s.runtime.runtimeContext()
+	}
+	return deriveRunContextFromBase(parent, base)
+}
+
+func deriveRunContextFromBase(parent context.Context, base context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	if base == nil {
+		base = context.Background()
 	}
 
 	var (

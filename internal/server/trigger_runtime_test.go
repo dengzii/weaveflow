@@ -27,7 +27,7 @@ func (*triggerRuntimeTestModel) Call(context.Context, string, ...llms.CallOption
 	return "", nil
 }
 
-func TestResolveTriggerRunnerUsesLatestPushedGraphSession(t *testing.T) {
+func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	baseDir := t.TempDir()
 	uploader, err := New(context.Background(), Config{BaseDir: baseDir})
@@ -37,18 +37,21 @@ func TestResolveTriggerRunnerUsesLatestPushedGraphSession(t *testing.T) {
 	engine := gin.New()
 	uploader.RegisterRoutes(engine.Group(""))
 
-	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "draft-only"))
-	if _, err := uploader.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"}); err == nil {
-		t.Fatal("draft graph was available to triggers before push")
+	first := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "first"))
+	resolved, err := uploader.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
+	if err != nil {
+		t.Fatal(err)
 	}
-	second := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "official"))
-	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "newer-draft"))
+	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID != first.Graph.GraphSessionID {
+		t.Fatalf("resolved first graph session = %q, want %q", runner.GraphSessionID, first.Graph.GraphSessionID)
+	}
+	second := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "second"))
 
 	resolver, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := resolver.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
+	resolved, err = resolver.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,18 +60,18 @@ func TestResolveTriggerRunnerUsesLatestPushedGraphSession(t *testing.T) {
 		t.Fatalf("resolved graph = version %q session %q, want version v2 session %q", runner.GraphVersion, runner.GraphSessionID, second.Graph.GraphSessionID)
 	}
 
-	third := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v4", "next-official"))
+	third := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "third"))
 	resolved, err = resolver.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	runner = resolvedGraphRunner(t, resolved)
-	if runner.GraphVersion != "v4" || runner.GraphSessionID != third.Graph.GraphSessionID {
-		t.Fatalf("resolved graph after push = version %q session %q, want version v4 session %q", runner.GraphVersion, runner.GraphSessionID, third.Graph.GraphSessionID)
+	if runner.GraphVersion != "v3" || runner.GraphSessionID != third.Graph.GraphSessionID {
+		t.Fatalf("resolved graph after upload = version %q session %q, want version v3 session %q", runner.GraphVersion, runner.GraphSessionID, third.Graph.GraphSessionID)
 	}
 }
 
-func TestFailedPushKeepsPreviousOfficialGraph(t *testing.T) {
+func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
 	if err != nil {
@@ -76,15 +79,16 @@ func TestFailedPushKeepsPreviousOfficialGraph(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	official := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "official"))
+	previous := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "previous"))
 
-	failed := serveHTTP(engine, "POST", "/graph/publish", `{
+	failed := serveHTTP(engine, "PUT", "/graph", `{
 		"graph_id":"graph-a",
 		"graph_version":"v2",
-		"definition":{"version":"2.0","name":"invalid","nodes":[]}
+		"definition":{"version":"2.0","name":"invalid","nodes":[]},
+		"settings":{"environment":{},"models":[],"memory":{"enabled":false}}
 	}`)
 	if failed.Code != 400 {
-		t.Fatalf("failed push status = %d, body = %s", failed.Code, failed.Body.String())
+		t.Fatalf("failed upload status = %d, body = %s", failed.Code, failed.Body.String())
 	}
 
 	resolved, err := srv.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
@@ -92,47 +96,32 @@ func TestFailedPushKeepsPreviousOfficialGraph(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := resolvedGraphRunner(t, resolved)
-	if runner.GraphSessionID != official.Graph.GraphSessionID {
-		t.Fatalf("official session after failed push = %q, want %q", runner.GraphSessionID, official.Graph.GraphSessionID)
+	if runner.GraphSessionID != previous.Graph.GraphSessionID {
+		t.Fatalf("session after failed upload = %q, want %q", runner.GraphSessionID, previous.Graph.GraphSessionID)
 	}
 }
 
-func TestTriggerRunStarterUsesLatestRuntimeContext(t *testing.T) {
-	initialModel := &triggerRuntimeTestModel{id: "initial"}
-	latestModel := &triggerRuntimeTestModel{id: "latest"}
-	initialCtx := core.WithModels(
-		context.WithValue(context.Background(), triggerContextKey{}, "initial"),
-		map[string]llms.Model{core.DefaultModelID: initialModel},
-	)
-	srv, err := New(initialCtx, Config{BaseDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
+func TestTriggerRunStarterUsesSessionRuntimeContext(t *testing.T) {
+	sessionModel := &triggerRuntimeTestModel{id: "session"}
 	starter := &triggerTestStarter{}
-	wrapped := &triggerRunStarter{server: srv, runner: starter}
-	latestCtx := core.WithModels(
-		context.WithValue(context.Background(), triggerContextKey{}, "latest"),
-		map[string]llms.Model{core.DefaultModelID: latestModel},
+	sessionContext := core.WithModels(
+		context.WithValue(context.Background(), triggerContextKey{}, "session"),
+		map[string]llms.Model{core.DefaultModelID: sessionModel},
 	)
-	srv.runtime.updateRuntime(srv.runtime.runtimeSettings(), latestCtx)
+	wrapped := &triggerRunStarter{baseContext: sessionContext, runner: starter}
 
 	if _, _, err := wrapped.Start(context.Background(), state.NewState()); err != nil {
 		t.Fatal(err)
 	}
-	if got := core.ModelByIDFromContext(starter.ctx, core.DefaultModelID); got != latestModel {
-		t.Fatalf("trigger model = %T %p, want latest model %p", got, got, latestModel)
+	if got := core.ModelByIDFromContext(starter.ctx, core.DefaultModelID); got != sessionModel {
+		t.Fatalf("trigger model = %T %p, want session model %p", got, got, sessionModel)
 	}
-	requireTriggerContextValue(t, starter, "latest")
+	requireTriggerContextValue(t, starter, "session")
 }
 
 func TestTriggerRunStarterPreservesChatReplySink(t *testing.T) {
-	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
 	starter := &triggerTestStarter{}
-	wrapped := &triggerRunStarter{server: srv, runner: starter}
+	wrapped := &triggerRunStarter{baseContext: context.Background(), runner: starter}
 	sink := chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil })
 	ctx := chatcap.WithReplySink(context.Background(), sink)
 
@@ -145,12 +134,8 @@ func TestTriggerRunStarterPreservesChatReplySink(t *testing.T) {
 }
 
 func TestTriggerRunStarterPreservesRuntimeEventObserver(t *testing.T) {
-	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
 	starter := &triggerTestStarter{}
-	wrapped := &triggerRunStarter{server: srv, runner: starter}
+	wrapped := &triggerRunStarter{baseContext: context.Background(), runner: starter}
 	observer := runtime.EventObserverFunc(func(context.Context, runtime.Event) error { return nil })
 	ctx := runtime.WithRunnerEventObserver(context.Background(), observer)
 
@@ -162,23 +147,15 @@ func TestTriggerRunStarterPreservesRuntimeEventObserver(t *testing.T) {
 	}
 }
 
-func TestTriggerRunStarterAsyncKeepsLatestContextUntilCompletion(t *testing.T) {
-	initialModel := &triggerRuntimeTestModel{id: "initial"}
-	latestModel := &triggerRuntimeTestModel{id: "latest"}
-	initialCtx := core.WithModels(context.Background(), map[string]llms.Model{core.DefaultModelID: initialModel})
-	srv, err := New(initialCtx, Config{BaseDir: t.TempDir()})
-	if err != nil {
-		t.Fatal(err)
-	}
-
+func TestTriggerRunStarterAsyncKeepsSessionContextUntilCompletion(t *testing.T) {
+	sessionModel := &triggerRuntimeTestModel{id: "session"}
 	runDone := make(chan struct{})
 	starter := &triggerTestStarter{done: runDone}
-	wrapped := &triggerRunStarter{server: srv, runner: starter}
-	latestCtx := core.WithModels(
-		context.WithValue(context.Background(), triggerContextKey{}, "latest"),
-		map[string]llms.Model{core.DefaultModelID: latestModel},
+	sessionContext := core.WithModels(
+		context.WithValue(context.Background(), triggerContextKey{}, "session"),
+		map[string]llms.Model{core.DefaultModelID: sessionModel},
 	)
-	srv.runtime.updateRuntime(srv.runtime.runtimeSettings(), latestCtx)
+	wrapped := &triggerRunStarter{baseContext: sessionContext, runner: starter}
 
 	run, done, err := wrapped.StartAsync(context.Background(), state.NewState())
 	if err != nil {
@@ -187,10 +164,10 @@ func TestTriggerRunStarterAsyncKeepsLatestContextUntilCompletion(t *testing.T) {
 	if run.Status != runtime.RunStatusRunning {
 		t.Fatalf("run status = %q, want running", run.Status)
 	}
-	if got := core.ModelByIDFromContext(starter.ctx, core.DefaultModelID); got != latestModel {
-		t.Fatalf("trigger model = %T %p, want latest model %p", got, got, latestModel)
+	if got := core.ModelByIDFromContext(starter.ctx, core.DefaultModelID); got != sessionModel {
+		t.Fatalf("trigger model = %T %p, want session model %p", got, got, sessionModel)
 	}
-	requireTriggerContextValue(t, starter, "latest")
+	requireTriggerContextValue(t, starter, "session")
 	select {
 	case <-starter.ctx.Done():
 		t.Fatal("async trigger context canceled before completion")
@@ -234,6 +211,15 @@ func resolvedGraphRunner(t *testing.T, starter trigger.RunStarter) *runtime.Grap
 }
 
 func triggerGraphUploadBody(graphID, graphVersion, content string) string {
+	return graphUploadBodyWithSettings(
+		graphID,
+		graphVersion,
+		content,
+		`{"environment":{},"models":[],"memory":{"enabled":false}}`,
+	)
+}
+
+func graphUploadBodyWithSettings(graphID, graphVersion, content, settings string) string {
 	return fmt.Sprintf(`{
 		"graph_id": %q,
 		"graph_version": %q,
@@ -251,6 +237,7 @@ func triggerGraphUploadBody(graphID, graphVersion, content string) string {
 					"state": {"conversation": {"path": "scopes.input.conversation"}}
 				}
 			]
-		}
-	}`, graphID, graphVersion, graphID, content)
+		},
+		"settings": %s
+	}`, graphID, graphVersion, graphID, content, settings)
 }

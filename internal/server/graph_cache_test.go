@@ -26,6 +26,8 @@ func TestReadCachedGraphSessionRequiresCurrentManifestFields(t *testing.T) {
 		{field: "graph_snapshot_hash", want: "graph snapshot hash is missing"},
 		{field: "graph_session_id", want: "manifest id is missing"},
 		{field: "definition_path", want: "definition path is missing"},
+		{field: "settings_path", want: "settings path is missing"},
+		{field: "runtime_settings_hash", want: "runtime settings hash is missing"},
 		{field: "created_at", want: "created_at is missing"},
 		{field: "legacy", want: "unknown field"},
 	}
@@ -42,14 +44,24 @@ func TestReadCachedGraphSessionRequiresCurrentManifestFields(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(sessionDirectory, "definition.json"), []byte(`{}`), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			settings := graphRuntimeSettings{Environment: map[string]string{}, Models: []graphModelSettings{}}
+			settingsHash, err := graphRuntimeSettingsHash(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := persistGraphRuntimeSettings(sessionDirectory, settings); err != nil {
+				t.Fatal(err)
+			}
 			manifest := map[string]any{
-				"graph_id":            "graph-a",
-				"graph_version":       "v1",
-				"graph_hash":          "hash",
-				"graph_snapshot_hash": "snapshot-hash",
-				"graph_session_id":    sessionID,
-				"definition_path":     "definition.json",
-				"created_at":          time.Date(2026, 8, 2, 1, 2, 3, 0, time.UTC),
+				"graph_id":              "graph-a",
+				"graph_version":         "v1",
+				"graph_hash":            "hash",
+				"graph_snapshot_hash":   "snapshot-hash",
+				"graph_session_id":      sessionID,
+				"definition_path":       "definition.json",
+				"settings_path":         graphRuntimeSettingsFileName,
+				"runtime_settings_hash": settingsHash,
+				"created_at":            time.Date(2026, 8, 2, 1, 2, 3, 0, time.UTC),
 			}
 			if test.field == "legacy" {
 				manifest[test.field] = true
@@ -111,6 +123,45 @@ func TestListCachedGraphsIgnoresIncompleteSessions(t *testing.T) {
 	if len(graphs) != 1 || graphs[0].SessionCount != 1 || graphs[0].LatestSession != uploaded.Graph.GraphSessionID {
 		t.Fatalf("listCachedGraphs() = %#v, want only completed session %q", graphs, uploaded.Graph.GraphSessionID)
 	}
+	if graphs[0].GraphVersion != "v1" || graphs[0].Definition.Name != "graph-a" || graphs[0].UpdatedAt.IsZero() {
+		t.Fatalf("latest graph details = %#v, want uploaded graph definition", graphs[0])
+	}
+}
+
+func TestListCachedGraphsLoadsLatestDefinition(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "first"))
+	time.Sleep(time.Millisecond)
+	latest := putGraphForHashTest(t, engine, graphUploadBodyWithSettings(
+		"graph-a",
+		"v2",
+		"latest",
+		`{"environment":{"MODE":"latest"},"models":[],"memory":{"enabled":false}}`,
+	))
+
+	graphs, err := srv.listCachedGraphs()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(graphs) != 1 {
+		t.Fatalf("listCachedGraphs() = %#v, want one graph", graphs)
+	}
+	graph := graphs[0]
+	if graph.SessionCount != 2 || graph.LatestSession != latest.Graph.GraphSessionID {
+		t.Fatalf("graph sessions = %#v, want latest session %q", graph, latest.Graph.GraphSessionID)
+	}
+	if graph.GraphVersion != "v2" || graph.Settings.Environment["MODE"] != "latest" {
+		t.Fatalf("graph metadata = %#v, want latest v2 settings", graph)
+	}
+	if len(graph.Definition.Nodes) != 1 || graph.Definition.Nodes[0].Config["content"] != "latest" {
+		t.Fatalf("graph definition = %#v, want latest content", graph.Definition)
+	}
 }
 
 func TestGraphStorageSeparatesSanitizedIDCollisions(t *testing.T) {
@@ -121,8 +172,8 @@ func TestGraphStorageSeparatesSanitizedIDCollisions(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	first := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph/a", "v1", "first"))
-	second := publishGraphForHashTest(t, engine, triggerGraphUploadBody("graph?a", "v1", "second"))
+	first := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph/a", "v1", "first"))
+	second := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph?a", "v1", "second"))
 	if filepath.Dir(first.RunnerBaseDir) == filepath.Dir(second.RunnerBaseDir) {
 		t.Fatalf("colliding graph IDs share storage directory %q", filepath.Dir(first.RunnerBaseDir))
 	}
@@ -158,7 +209,7 @@ func TestGraphStorageSupportsWindowsReservedGraphID(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	uploaded := publishGraphForHashTest(t, engine, triggerGraphUploadBody("CON", "v1", "reserved"))
+	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("CON", "v1", "reserved"))
 	if filepath.Base(filepath.Dir(uploaded.RunnerBaseDir)) == "CON" {
 		t.Fatalf("reserved graph ID used directly as storage directory: %q", uploaded.RunnerBaseDir)
 	}
@@ -233,7 +284,8 @@ func TestGraphUploadDistinguishesInvalidDefinitionFromStorageFailure(t *testing.
 				"entry_point": "missing",
 				"finish_point": "missing",
 				"nodes": [{"id":"missing","type":"not_registered","state":{}}]
-			}
+			},
+			"settings": {"environment":{},"models":[],"memory":{"enabled":false}}
 		}`)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("invalid graph status = %d, body = %s", response.Code, response.Body.String())

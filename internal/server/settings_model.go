@@ -11,14 +11,20 @@ import (
 
 func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeSettingsRequest) (string, bool, error) {
 	if req.Environment != nil {
-		settings.Environment = map[string]string{}
+		environment := map[string]string{}
+		for key, value := range settings.Environment {
+			if isSecretEnvironmentName(key) {
+				environment[key] = value
+			}
+		}
 		for key, value := range req.Environment {
 			name := strings.TrimSpace(key)
 			if err := validateEnvironmentName(name); err != nil {
 				return "", false, err
 			}
-			settings.Environment[name] = strings.TrimSpace(value)
+			environment[name] = strings.TrimSpace(value)
 		}
+		settings.Environment = environment
 	} else if settings.Environment == nil {
 		settings.Environment = map[string]string{}
 	}
@@ -150,11 +156,11 @@ func markGraphModelAPIKeys(settings *graphRuntimeSettings, apiKey string) {
 	}
 }
 
-func sanitizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings {
+func normalizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings {
 	environment := make(map[string]string, len(settings.Environment))
 	for key, value := range settings.Environment {
 		name := strings.TrimSpace(key)
-		if name == "" || isSecretEnvironmentName(name) {
+		if name == "" {
 			continue
 		}
 		environment[name] = strings.TrimSpace(value)
@@ -165,6 +171,16 @@ func sanitizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings 
 		settings.Models = []graphModelSettings{}
 	}
 	settings.Memory.Directory = strings.TrimSpace(settings.Memory.Directory)
+	return settings
+}
+
+func sanitizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings {
+	settings = normalizedGraphSettings(settings)
+	for key := range settings.Environment {
+		if isSecretEnvironmentName(key) {
+			delete(settings.Environment, key)
+		}
+	}
 	return settings
 }
 

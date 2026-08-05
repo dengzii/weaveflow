@@ -10,19 +10,19 @@ import (
 )
 
 type graphRuntimeSession struct {
-	graph    *wfgraph.Graph
-	runner   *runtime.GraphRunner
-	official bool
+	graph       *wfgraph.Graph
+	runner      *runtime.GraphRunner
+	baseContext context.Context
+	settings    graphRuntimeSettings
 }
 
 type graphRuntimeManager struct {
-	mu             sync.RWMutex
-	graphUpdateMu  sync.Mutex
-	settingsUpdate sync.Mutex
-	current        graphRuntimeSession
-	baseContext    context.Context
-	settings       graphRuntimeSettings
-	triggerRunners map[string]*runtime.GraphRunner
+	mu              sync.RWMutex
+	graphUpdateMu   sync.Mutex
+	current         graphRuntimeSession
+	defaultContext  context.Context
+	defaultSettings graphRuntimeSettings
+	triggerSessions map[string]graphRuntimeSession
 }
 
 func newGraphRuntimeManager(
@@ -36,15 +36,17 @@ func newGraphRuntimeManager(
 	}
 	manager := &graphRuntimeManager{
 		current: graphRuntimeSession{
-			graph:  graph,
-			runner: runner,
+			graph:       graph,
+			runner:      runner,
+			baseContext: baseContext,
+			settings:    normalizedGraphSettings(settings),
 		},
-		baseContext:    baseContext,
-		settings:       settings,
-		triggerRunners: make(map[string]*runtime.GraphRunner),
+		defaultContext:  baseContext,
+		defaultSettings: normalizedGraphSettings(settings),
+		triggerSessions: make(map[string]graphRuntimeSession),
 	}
 	if runner != nil {
-		manager.triggerRunners[effectiveRunnerGraphID(runner)] = runner
+		manager.triggerSessions[effectiveRunnerGraphID(runner)] = manager.current
 	}
 	return manager
 }
@@ -65,22 +67,9 @@ func (manager *graphRuntimeManager) installSession(session graphRuntimeSession) 
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	manager.current = session
-	if session.official && session.runner != nil {
-		manager.triggerRunners[effectiveRunnerGraphID(session.runner)] = session.runner
+	if session.runner != nil {
+		manager.triggerSessions[effectiveRunnerGraphID(session.runner)] = session
 	}
-}
-
-func (manager *graphRuntimeManager) promoteCurrentSession(graphID string, runner *runtime.GraphRunner) {
-	if manager == nil || runner == nil {
-		return
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	if manager.current.runner != runner {
-		return
-	}
-	manager.current.official = true
-	manager.triggerRunners[strings.TrimSpace(graphID)] = runner
 }
 
 func (manager *graphRuntimeManager) runtimeContext() context.Context {
@@ -89,10 +78,10 @@ func (manager *graphRuntimeManager) runtimeContext() context.Context {
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	if manager.baseContext == nil {
+	if manager.current.baseContext == nil {
 		return context.Background()
 	}
-	return manager.baseContext
+	return manager.current.baseContext
 }
 
 func (manager *graphRuntimeManager) runtimeSettings() graphRuntimeSettings {
@@ -101,42 +90,38 @@ func (manager *graphRuntimeManager) runtimeSettings() graphRuntimeSettings {
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return sanitizedGraphSettings(manager.settings)
+	return normalizedGraphSettings(manager.current.settings)
 }
 
-func (manager *graphRuntimeManager) updateRuntime(settings graphRuntimeSettings, baseContext context.Context) {
+func (manager *graphRuntimeManager) defaults() (graphRuntimeSettings, context.Context) {
 	if manager == nil {
-		return
-	}
-	if baseContext == nil {
-		baseContext = context.Background()
-	}
-	manager.mu.Lock()
-	defer manager.mu.Unlock()
-	manager.settings = sanitizedGraphSettings(settings)
-	manager.baseContext = baseContext
-}
-
-func (manager *graphRuntimeManager) triggerRunner(graphID string) *runtime.GraphRunner {
-	if manager == nil {
-		return nil
+		return graphRuntimeSettingsFromContext(context.Background(), ""), context.Background()
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
-	return manager.triggerRunners[strings.TrimSpace(graphID)]
+	return normalizedGraphSettings(manager.defaultSettings), manager.defaultContext
 }
 
-func (manager *graphRuntimeManager) cacheTriggerRunner(graphID string, runner *runtime.GraphRunner) *runtime.GraphRunner {
-	if manager == nil || runner == nil {
-		return runner
+func (manager *graphRuntimeManager) triggerSession(graphID string) graphRuntimeSession {
+	if manager == nil {
+		return graphRuntimeSession{}
+	}
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	return manager.triggerSessions[strings.TrimSpace(graphID)]
+}
+
+func (manager *graphRuntimeManager) cacheTriggerSession(graphID string, session graphRuntimeSession) graphRuntimeSession {
+	if manager == nil || session.runner == nil {
+		return session
 	}
 	graphID = strings.TrimSpace(graphID)
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if existing := manager.triggerRunners[graphID]; existing != nil &&
-		strings.TrimSpace(existing.GraphSessionID) == strings.TrimSpace(runner.GraphSessionID) {
+	if existing := manager.triggerSessions[graphID]; existing.runner != nil &&
+		strings.TrimSpace(existing.runner.GraphSessionID) == strings.TrimSpace(session.runner.GraphSessionID) {
 		return existing
 	}
-	manager.triggerRunners[graphID] = runner
-	return runner
+	manager.triggerSessions[graphID] = session
+	return session
 }

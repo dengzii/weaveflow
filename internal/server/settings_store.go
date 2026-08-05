@@ -75,11 +75,23 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 			APIKey:           strings.TrimSpace(model.APIKey),
 		})
 	}
-	return sanitizedGraphSettings(settings), true, nil
+	markGraphModelAPIKeys(&settings, firstGraphModelAPIKey(settings))
+	return normalizedGraphSettings(settings), true, nil
 }
 
 func persistGraphRuntimeSettings(baseDir string, settings graphRuntimeSettings) error {
-	settings = sanitizedGraphSettings(settings)
+	data, err := encodeGraphRuntimeSettings(settings)
+	if err != nil {
+		return err
+	}
+	if err := writeGraphRuntimeSettingsFile(graphRuntimeSettingsPath(baseDir), data); err != nil {
+		return fmt.Errorf("write graph runtime settings: %w", err)
+	}
+	return nil
+}
+
+func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
+	settings = normalizedGraphSettings(settings)
 	stored := graphRuntimeSettingsFile{
 		Version:     graphRuntimeSettingsVersion,
 		Environment: settings.Environment,
@@ -98,13 +110,10 @@ func persistGraphRuntimeSettings(baseDir string, settings graphRuntimeSettings) 
 	}
 	data, err := json.MarshalIndent(stored, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode graph runtime settings: %w", err)
+		return nil, fmt.Errorf("encode graph runtime settings: %w", err)
 	}
 	data = append(data, '\n')
-	if err := writeGraphRuntimeSettingsFile(graphRuntimeSettingsPath(baseDir), data); err != nil {
-		return fmt.Errorf("write graph runtime settings: %w", err)
-	}
-	return nil
+	return data, nil
 }
 
 func graphRuntimeSettingsPath(baseDir string) string {
