@@ -34,6 +34,8 @@ export interface StoredEventFilters {
 export const MIN_PANEL_HEIGHT = 180;
 export const DEFAULT_COLUMN_RATIOS: ColumnRatios = [1, 1.5, 2];
 export const COLUMN_SEPARATOR_WIDTH = 1;
+export const EVENT_ROW_HEIGHT = 28;
+export const EVENT_ROW_OVERSCAN = 10;
 
 const DEFAULT_PANEL_HEIGHT = 320;
 const MIN_COLUMN_WIDTHS: ColumnRatios = [180, 260, 280];
@@ -41,7 +43,28 @@ const EVENT_FILTER_STORAGE_KEY = "weaveflow.workbench.runStatus.eventFilters";
 const PANEL_HEIGHT_STORAGE_KEY = "weaveflow.workbench.runStatus.height";
 
 export function eventListKey(event: RuntimeEvent, index: number): string {
-  return `${event.id || event.run_id || "event"}-${index}`;
+  if (event.id) return `event-${event.id}`;
+  return `event-${event.run_id || "run"}-${event.type}-${event.timestamp}-${event.node_id ?? ""}-${event.step_id ?? ""}-${index}`;
+}
+
+export function fixedVirtualRange(
+  itemCount: number,
+  scrollTop: number,
+  viewportHeight: number,
+  rowHeight: number,
+  overscan: number
+): { start: number; end: number; offset: number } {
+  if (itemCount <= 0 || rowHeight <= 0) return { start: 0, end: 0, offset: 0 };
+  const safeScrollTop = Math.max(0, Number.isFinite(scrollTop) ? scrollTop : 0);
+  const safeViewportHeight = Math.max(0, Number.isFinite(viewportHeight) ? viewportHeight : 0);
+  const safeOverscan = Math.max(0, Math.floor(overscan));
+  const start = Math.min(
+    itemCount - 1,
+    Math.max(0, Math.floor(safeScrollTop / rowHeight) - safeOverscan)
+  );
+  const visibleEnd = Math.ceil((safeScrollTop + safeViewportHeight) / rowHeight);
+  const end = Math.min(itemCount, Math.max(start + 1, visibleEnd + safeOverscan));
+  return { start, end, offset: start * rowHeight };
 }
 
 export function stateHistoryEntries(

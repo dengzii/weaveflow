@@ -1,5 +1,6 @@
 import { memo, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
   PointerEvent as ReactPointerEvent,
   ReactNode,
@@ -8,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   ListTree,
+  LoaderCircle,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { getCheckpoint } from "../../api";
@@ -26,12 +28,15 @@ import { RunList } from "./RunList";
 import {
   COLUMN_SEPARATOR_WIDTH,
   DEFAULT_COLUMN_RATIOS,
+  EVENT_ROW_HEIGHT,
+  EVENT_ROW_OVERSCAN,
   MIN_PANEL_HEIGHT,
   columnBoundaryPercent,
   columnGridTemplate,
   eventListKey,
   eventMatchesFilters,
   eventTone,
+  fixedVirtualRange,
   readStoredEventFilters,
   readStoredPanelHeight,
   resizeRunPanelColumnRatios,
@@ -63,6 +68,9 @@ export function RunStatusPanel({
   steps,
   checkpoints,
   events,
+  hasOlderEvents = false,
+  olderEventsLoading = false,
+  onLoadOlderEvents,
   onHide,
 }: {
   runs: RunRecord[];
@@ -73,6 +81,9 @@ export function RunStatusPanel({
   steps?: StepRecord[];
   checkpoints?: CheckpointRecord[];
   events: RuntimeEvent[];
+  hasOlderEvents?: boolean;
+  olderEventsLoading?: boolean;
+  onLoadOlderEvents?: () => void;
   onHide: () => void;
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
@@ -90,20 +101,16 @@ export function RunStatusPanel({
   const columnsRef = useRef<HTMLDivElement | null>(null);
   const checkpointRequestIDsRef = useRef<Set<string>>(new Set());
   const checkpointContextVersionRef = useRef(0);
-  const sortedEvents = useMemo(
-    () => [...events].sort((a, b) => timeRank(b.timestamp) - timeRank(a.timestamp)),
-    [events]
-  );
   const runOptions = useMemo(
     () => [...(runs ?? [])].sort((a, b) => timeRank(b.started_at) - timeRank(a.started_at)),
     [runs]
   );
   const eventListItems = useMemo(
-    () => sortedEvents.map((event, index) => ({ event, key: eventListKey(event, index) })),
-    [sortedEvents]
+    () => events.map((event, index) => ({ event, key: eventListKey(event, index) })),
+    [events]
   );
-  const eventTypes = useMemo(() => uniqueSorted(sortedEvents.map((event) => event.type)), [sortedEvents]);
-  const eventNodes = useMemo(() => uniqueSorted(sortedEvents.map((event) => event.node_id || "")), [sortedEvents]);
+  const eventTypes = useMemo(() => uniqueSorted(events.map((event) => event.type)), [events]);
+  const eventNodes = useMemo(() => uniqueSorted(events.map((event) => event.node_id || "")), [events]);
   const filteredEventItems = useMemo(
     () =>
       eventListItems.filter(({ event }) =>
@@ -118,11 +125,13 @@ export function RunStatusPanel({
   );
   const stateHistoryItems = useMemo(
     () =>
-      stateHistoryEntries(sortedEvents, steps, checkpoints).map((entry, index) => ({
-        ...entry,
-        key: stateHistoryListKey(entry, index),
-      })),
-    [checkpoints, sortedEvents, steps]
+      panelView === "state"
+        ? stateHistoryEntries(events, steps, checkpoints).map((entry, index) => ({
+            ...entry,
+            key: stateHistoryListKey(entry, index),
+          }))
+        : [],
+    [checkpoints, events, panelView, steps]
   );
   const totalStateChanges = useMemo(
     () => stateHistoryItems.reduce((total, entry) => total + entry.changes.length, 0),
@@ -279,7 +288,7 @@ export function RunStatusPanel({
   return (
     <section
       aria-label="Run panel"
-      className="flex min-h-0 flex-col bg-panel"
+      className="relative z-20 isolate flex min-h-0 shrink-0 flex-col overflow-hidden bg-panel"
       style={{ height: panelHeight }}
     >
       <div
@@ -369,7 +378,7 @@ export function RunStatusPanel({
                 nodes={eventNodes}
                 activeCount={activeEventFilterCount}
                 filteredCount={filteredEventItems.length}
-                totalCount={sortedEvents.length}
+                totalCount={events.length}
                 onOpenChange={setEventFiltersOpen}
                 onModeChange={setEventFilterMode}
                 onTypesChange={setEventTypeFilters}
@@ -388,16 +397,21 @@ export function RunStatusPanel({
               </span>
             )}
           </div>
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div className="min-h-0 flex-1">
             {panelView === "events" ? (
               <EventHistoryList
                 items={filteredEventItems}
                 effectiveKey={effectiveKey}
                 onSelect={setSelectedKey}
-                hasEvents={sortedEvents.length > 0}
+                hasEvents={events.length > 0}
+                hasOlderEvents={hasOlderEvents}
+                loading={olderEventsLoading}
+                onLoadOlder={onLoadOlderEvents}
               />
             ) : (
-              <StateHistoryList items={stateHistoryItems} effectiveKey={effectiveKey} onSelect={setSelectedKey} />
+              <div className="h-full overflow-auto">
+                <StateHistoryList items={stateHistoryItems} effectiveKey={effectiveKey} onSelect={setSelectedKey} />
+              </div>
             )}
           </div>
         </div>
@@ -462,26 +476,99 @@ function EventHistoryList({
   effectiveKey,
   onSelect,
   hasEvents,
+  hasOlderEvents,
+  loading,
+  onLoadOlder,
 }: {
   items: EventHistoryItem[];
   effectiveKey: string | null;
   onSelect: (key: string) => void;
   hasEvents: boolean;
+  hasOlderEvents: boolean;
+  loading: boolean;
+  onLoadOlder?: () => void;
 }) {
-  if (items.length === 0) {
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const [scrollTop, setScrollTop] = useState(0);
+  const [viewportHeight, setViewportHeight] = useState(0);
+
+  useEffect(() => {
+    const viewport = viewportRef.current;
+    if (!viewport) return;
+    const measure = () => setViewportHeight(viewport.clientHeight);
+    measure();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const observer = new ResizeObserver(measure);
+    observer.observe(viewport);
+    return () => observer.disconnect();
+  }, []);
+
+  if (items.length === 0 && !hasOlderEvents) {
     return <div className="p-3 text-sm text-muted-foreground">{hasEvents ? "No matching events" : "No run events"}</div>;
   }
+
+  if (items.length === 0) {
+    return (
+      <div className="h-full overflow-auto p-3 text-sm text-muted-foreground">
+        <div>{hasEvents ? "No matching events" : "No run events"}</div>
+        <LoadOlderEventsButton loading={loading} onLoad={onLoadOlder} />
+      </div>
+    );
+  }
+
+  const range = fixedVirtualRange(
+    items.length,
+    scrollTop,
+    viewportHeight,
+    EVENT_ROW_HEIGHT,
+    EVENT_ROW_OVERSCAN
+  );
+  const loadControlHeight = hasOlderEvents ? 36 : 0;
   return (
-    <ul className="divide-y divide-border">
-      {items.map((item) => (
-        <EventHistoryRow
-          key={item.key}
-          item={item}
-          selected={effectiveKey === item.key}
-          onSelect={onSelect}
-        />
-      ))}
-    </ul>
+    <div
+      ref={viewportRef}
+      className="h-full overflow-auto"
+      onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
+    >
+      <ul
+        className="relative"
+        style={{ height: items.length * EVENT_ROW_HEIGHT + loadControlHeight }}
+      >
+        {items.slice(range.start, range.end).map((item, index) => (
+          <EventHistoryRow
+            key={item.key}
+            item={item}
+            selected={effectiveKey === item.key}
+            onSelect={onSelect}
+            style={{
+              position: "absolute",
+              top: range.offset + index * EVENT_ROW_HEIGHT,
+              height: EVENT_ROW_HEIGHT,
+            }}
+          />
+        ))}
+        {hasOlderEvents ? (
+          <li
+            className="absolute inset-x-0 flex h-9 items-center justify-center border-t border-border"
+            style={{ top: items.length * EVENT_ROW_HEIGHT }}
+          >
+            <LoadOlderEventsButton loading={loading} onLoad={onLoadOlder} />
+          </li>
+        ) : null}
+      </ul>
+    </div>
+  );
+}
+
+function LoadOlderEventsButton({ loading, onLoad }: { loading: boolean; onLoad?: () => void }) {
+  return (
+    <Button variant="ghost" size="sm" disabled={loading || !onLoad} onClick={onLoad}>
+      {loading ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" /> : <ChevronDown className="h-3.5 w-3.5" />}
+      Load older
+    </Button>
   );
 }
 
@@ -489,19 +576,21 @@ const EventHistoryRow = memo(function EventHistoryRow({
   item,
   selected,
   onSelect,
+  style,
 }: {
   item: EventHistoryItem;
   selected: boolean;
   onSelect: (key: string) => void;
+  style: CSSProperties;
 }) {
   const { event, key } = item;
   return (
-    <li className="[contain-intrinsic-size:auto_28px] [content-visibility:auto]">
+    <li className="w-full border-b border-border" style={style}>
       <button
         type="button"
         onClick={() => onSelect(key)}
         className={cn(
-          "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 py-1 text-left text-xs hover:bg-accent/40",
+          "grid h-7 w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 text-left text-xs hover:bg-accent/40",
           selected && "bg-accent text-accent-foreground"
         )}
       >

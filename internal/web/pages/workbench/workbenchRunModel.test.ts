@@ -5,9 +5,13 @@ import {
   isTerminalRunStatus,
   markRunResuming,
   matchesGraphIdentity,
+  MAX_LIVE_RUNTIME_EVENTS,
   mergeLiveRuntimeEvents,
+  mergeRefreshedRuns,
+  mergeStoredRuntimeEvents,
   missingInitialStateRequirements,
   reconcileRunEvents,
+  runListEventAction,
   runControlModeFromRun,
   runStatusFromEvent,
   runTriggerTypesFromInvocations,
@@ -82,6 +86,33 @@ describe("workbench run model", () => {
     );
   });
 
+  test("refreshes the run list for unknown lifecycle events", () => {
+    const created: RuntimeEvent = {
+      id: "event-created",
+      run_id: "trigger-run",
+      type: "run.created",
+      timestamp: "2026-01-01T00:00:01Z",
+    };
+
+    expect(runListEventAction([baseRun], created)).toBe("refresh");
+    expect(runListEventAction([{ ...baseRun, run_id: "trigger-run" }], created)).toBe("update");
+    expect(runListEventAction([baseRun], { ...created, type: "nodes.started" })).toBe("ignore");
+    expect(runListEventAction([baseRun], { ...created, run_id: "" })).toBe("ignore");
+  });
+
+  test("keeps newer live run state when a list refresh finishes later", () => {
+    const finished = {
+      ...baseRun,
+      status: "finished",
+      updated_at: "2026-01-01T00:01:00Z",
+      finished_at: "2026-01-01T00:01:00Z",
+    };
+    const newRun = { ...baseRun, run_id: "run-2" };
+
+    expect(mergeRefreshedRuns([finished], [baseRun, newRun])).toEqual([finished, newRun]);
+    expect(mergeRefreshedRuns([finished], [newRun])).toEqual([newRun]);
+  });
+
   test("batches live events and coalesces LLM chunks by call", () => {
     const first: RuntimeEvent = {
       id: "chunk-1",
@@ -123,6 +154,45 @@ describe("workbench run model", () => {
     );
     expect(continued).toHaveLength(2);
     expect(continued[0]).toMatchObject({ id: "chunk-1", payload: { text: "hello!" } });
+  });
+
+  test("caps live events after preserving streaming chunk coalescing", () => {
+    const events = Array.from({ length: MAX_LIVE_RUNTIME_EVENTS + 1 }, (_, index): RuntimeEvent => ({
+      id: `event-${index}`,
+      run_id: "run-1",
+      type: "nodes.started",
+      timestamp: `2026-01-01T00:00:${String(index % 60).padStart(2, "0")}Z`,
+    }));
+    const chunk: RuntimeEvent = {
+      id: "chunk-1",
+      run_id: "run-1",
+      step_id: "step-1",
+      node_id: "answer",
+      type: "llm.content_chunk",
+      timestamp: "2026-01-01T00:02:00Z",
+      payload: { call_id: "call-1", text: "a" },
+    };
+
+    const merged = mergeLiveRuntimeEvents(
+      [],
+      [...events, chunk, { ...chunk, id: "chunk-2", payload: { call_id: "call-1", text: "b" } }],
+      "run-1"
+    );
+
+    expect(merged).toHaveLength(MAX_LIVE_RUNTIME_EVENTS);
+    expect(merged[0]).toMatchObject({ id: "chunk-1", payload: { text: "ab" } });
+  });
+
+  test("appends older stored pages without duplicating event ids", () => {
+    const newer = runtimeEventWithID("newer");
+    const duplicate = runtimeEventWithID("duplicate");
+    const older = runtimeEventWithID("older");
+
+    expect(mergeStoredRuntimeEvents([newer, duplicate], [{ ...duplicate }, older])).toEqual([
+      newer,
+      duplicate,
+      older,
+    ]);
   });
 
   test("matches graph identities and validates typed initial requirements", () => {
@@ -209,3 +279,12 @@ describe("workbench run model", () => {
     expect(selectedRunIDAfterDeletion([baseRun], "run-1", "run-1")).toBe("");
   });
 });
+
+function runtimeEventWithID(id: string): RuntimeEvent {
+  return {
+    id,
+    run_id: "run-1",
+    type: "nodes.started",
+    timestamp: "2026-01-01T00:00:00Z",
+  };
+}

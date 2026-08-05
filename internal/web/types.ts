@@ -433,6 +433,11 @@ export interface RuntimeEvent {
   payload?: unknown;
 }
 
+export interface RuntimeEventPage {
+  items: RuntimeEvent[];
+  next_cursor: string;
+}
+
 export interface RunInterrupt {
   run_id: string;
   checkpoint_id: string;
@@ -457,6 +462,7 @@ export interface RunInspection {
   steps: StepRecord[];
   checkpoints: CheckpointRecord[];
   events: RuntimeEvent[];
+  event_cursor: string;
   interrupt: RunInterrupt | null;
 }
 

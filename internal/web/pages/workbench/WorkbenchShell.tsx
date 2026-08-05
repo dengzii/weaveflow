@@ -76,7 +76,7 @@ export function WorkbenchShell({
         <NavButton icon={Settings} active={tab === "settings"} onClick={() => onTabChange("settings")} label="Settings" />
       </aside>
 
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
           {tab === "graph" ? (
             <div id="graph-title-slot" className="min-w-0" />
@@ -141,7 +141,7 @@ export function WorkbenchShell({
           </div>
         ) : null}
 
-        <section className="min-h-0 flex-1">{children}</section>
+        <section className="relative isolate min-h-0 flex-1 overflow-hidden">{children}</section>
 
         {runStatusVisible ? runStatusPanel : null}
 

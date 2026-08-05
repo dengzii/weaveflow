@@ -29,8 +29,19 @@ type runnerEventObserverKey struct{}
 
 var ErrArtifactRecorderUnavailable = errors.New("runner artifact recorder is unavailable")
 
+var ErrInvalidEventCursor = errors.New("invalid event cursor")
+
 type EventReader interface {
 	ListEvents(runID string) ([]Event, error)
+}
+
+type EventPage struct {
+	Items      []Event `json:"items"`
+	NextCursor string  `json:"next_cursor"`
+}
+
+type EventPageReader interface {
+	ListEventPage(runID, cursor string, limit int) (EventPage, error)
 }
 
 type RunnerMetadata struct {

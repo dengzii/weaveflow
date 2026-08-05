@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -618,8 +619,8 @@ func TestRegisterRoutesMountsOnRouterGroup(t *testing.T) {
 	}
 
 	var response struct {
-		Data  []runtime.Event `json:"data"`
-		Error *apiError       `json:"error"`
+		Data  runtime.EventPage `json:"data"`
+		Error *apiError         `json:"error"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
@@ -627,8 +628,70 @@ func TestRegisterRoutesMountsOnRouterGroup(t *testing.T) {
 	if response.Error != nil {
 		t.Fatalf("response error = %#v", response.Error)
 	}
-	if len(response.Data) != 1 || response.Data[0].ID != event.ID {
+	if len(response.Data.Items) != 1 || response.Data.Items[0].ID != event.ID {
 		t.Fatalf("response data = %#v, want one %q event", response.Data, event.ID)
+	}
+}
+
+func TestListEventsPaginatesNewestFirstAndValidatesParameters(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	sink := &recordingEventSink{}
+	runner := &runtime.GraphRunner{EventSink: sink}
+	srv, err := New(context.Background(), Config{Runner: runner})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	for index := 0; index < 501; index++ {
+		if err := sink.Publish(context.Background(), runtime.Event{
+			ID:    fmt.Sprintf("event-%03d", index),
+			RunID: "run-1",
+			Type:  runtime.EventRunStarted,
+		}); err != nil {
+			t.Fatalf("Publish() error = %v", err)
+		}
+	}
+
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group("/debug"))
+
+	defaultPage := decodeEventPageResponse(t, serveHTTP(engine, http.MethodGet, "/debug/runs/run-1/events", ""), http.StatusOK)
+	if len(defaultPage.Items) != defaultEventPageLimit {
+		t.Fatalf("default page item count = %d, want %d", len(defaultPage.Items), defaultEventPageLimit)
+	}
+	if defaultPage.Items[0].ID != "event-500" || defaultPage.Items[len(defaultPage.Items)-1].ID != "event-001" {
+		t.Fatalf("default page bounds = %q..%q", defaultPage.Items[0].ID, defaultPage.Items[len(defaultPage.Items)-1].ID)
+	}
+	if defaultPage.NextCursor == "" {
+		t.Fatal("default page next cursor is empty")
+	}
+
+	first := decodeEventPageResponse(t, serveHTTP(engine, http.MethodGet, "/debug/runs/run-1/events?limit=2", ""), http.StatusOK)
+	if len(first.Items) != 2 || first.Items[0].ID != "event-500" || first.Items[1].ID != "event-499" {
+		t.Fatalf("first page = %#v", first)
+	}
+	second := decodeEventPageResponse(
+		t,
+		serveHTTP(engine, http.MethodGet, "/debug/runs/run-1/events?limit=2&cursor="+first.NextCursor, ""),
+		http.StatusOK,
+	)
+	if len(second.Items) != 2 || second.Items[0].ID != "event-498" || second.Items[1].ID != "event-497" {
+		t.Fatalf("second page = %#v", second)
+	}
+
+	maximum := decodeEventPageResponse(t, serveHTTP(engine, http.MethodGet, "/debug/runs/run-1/events?limit=2000", ""), http.StatusOK)
+	if len(maximum.Items) != 501 {
+		t.Fatalf("maximum page item count = %d, want 501", len(maximum.Items))
+	}
+	for _, path := range []string{
+		"/debug/runs/run-1/events?limit=0",
+		"/debug/runs/run-1/events?limit=2001",
+		"/debug/runs/run-1/events?cursor=invalid",
+	} {
+		response := serveHTTP(engine, http.MethodGet, path, "")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, want 400; body = %s", path, response.Code, response.Body.String())
+		}
 	}
 }
 
@@ -1904,6 +1967,20 @@ type runResourceSet struct {
 	Interrupt   *runInterrupt
 }
 
+func decodeEventPageResponse(t *testing.T, response *httptest.ResponseRecorder, wantStatus int) runtime.EventPage {
+	t.Helper()
+	if response.Code != wantStatus {
+		t.Fatalf("status = %d, want %d; body = %s", response.Code, wantStatus, response.Body.String())
+	}
+	var envelope struct {
+		Data runtime.EventPage `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode event page response: %v", err)
+	}
+	return envelope.Data
+}
+
 func getRunResourcesForTest(t *testing.T, engine *gin.Engine, runID, graphID string) runResourceSet {
 	t.Helper()
 	query := ""
@@ -1912,6 +1989,7 @@ func getRunResourcesForTest(t *testing.T, engine *gin.Engine, runID, graphID str
 	}
 	basePath := "/runs/" + runID
 	resources := runResourceSet{}
+	eventPage := runtime.EventPage{}
 	requests := []struct {
 		path   string
 		target any
@@ -1919,7 +1997,7 @@ func getRunResourcesForTest(t *testing.T, engine *gin.Engine, runID, graphID str
 		{path: basePath + query, target: &resources.Run},
 		{path: basePath + "/steps" + query, target: &resources.Steps},
 		{path: basePath + "/checkpoints" + query, target: &resources.Checkpoints},
-		{path: basePath + "/events" + query, target: &resources.Events},
+		{path: basePath + "/events" + query, target: &eventPage},
 		{path: basePath + "/artifacts" + query, target: &resources.Artifacts},
 		{path: basePath + "/interrupt" + query, target: &resources.Interrupt},
 	}
@@ -1938,6 +2016,7 @@ func getRunResourcesForTest(t *testing.T, engine *gin.Engine, runID, graphID str
 			t.Fatalf("decode GET %s data: %v", request.path, err)
 		}
 	}
+	resources.Events = eventPage.Items
 	return resources
 }
 

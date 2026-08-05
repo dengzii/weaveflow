@@ -2,16 +2,19 @@ package runtime
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"github.com/dengzii/weaveflow/state"
 	"io"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/dengzii/weaveflow/state"
 
 	"go.uber.org/zap"
 )
@@ -72,6 +75,28 @@ func (c *CombineEventSink) ListEvents(runID string) ([]Event, error) {
 		return events, nil
 	}
 	return nil, fmt.Errorf("combine event sink does not support listing events")
+}
+
+func (c *CombineEventSink) ListEventPage(runID, cursor string, limit int) (EventPage, error) {
+	for _, sink := range c.sinks {
+		reader, ok := sink.(EventPageReader)
+		if !ok {
+			continue
+		}
+		page, err := reader.ListEventPage(runID, cursor, limit)
+		if err != nil {
+			return EventPage{}, err
+		}
+		if len(page.Items) > 0 || page.NextCursor != "" {
+			return page, nil
+		}
+	}
+
+	events, err := c.ListEvents(runID)
+	if err != nil {
+		return EventPage{}, err
+	}
+	return PaginateEventsNewestFirst(events, cursor, limit)
 }
 
 type LoggerEventSink struct {
@@ -457,6 +482,9 @@ func (s *FileEventSink) PublishBatch(ctx context.Context, events []Event) error 
 }
 
 func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	path := s.eventsPath(runID)
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
@@ -480,6 +508,159 @@ func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
 		items = append(items, event)
 	}
 	return items, nil
+}
+
+func (s *FileEventSink) ListEventPage(runID, cursor string, limit int) (EventPage, error) {
+	if limit <= 0 {
+		return EventPage{}, fmt.Errorf("event page limit must be positive")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	f, err := os.Open(s.eventsPath(runID))
+	if os.IsNotExist(err) {
+		return EventPage{Items: []Event{}}, nil
+	}
+	if err != nil {
+		return EventPage{}, err
+	}
+	defer f.Close()
+
+	info, err := f.Stat()
+	if err != nil {
+		return EventPage{}, err
+	}
+	offset, err := eventFileCursorOffset(f, info.Size(), cursor)
+	if err != nil {
+		return EventPage{}, err
+	}
+
+	items := make([]Event, 0, limit)
+	for offset > 0 && len(items) < limit {
+		line, lineStart, err := readPreviousJSONLine(f, offset)
+		if err != nil {
+			if err == io.EOF {
+				break
+			}
+			return EventPage{}, err
+		}
+		offset = lineStart
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var event Event
+		if err := json.Unmarshal(line, &event); err != nil {
+			return EventPage{}, err
+		}
+		items = append(items, event)
+	}
+
+	nextCursor := ""
+	if offset > 0 {
+		nextCursor = strconv.FormatInt(offset, 10)
+	}
+	return EventPage{Items: items, NextCursor: nextCursor}, nil
+}
+
+func PaginateEventsNewestFirst(events []Event, cursor string, limit int) (EventPage, error) {
+	if limit <= 0 {
+		return EventPage{}, fmt.Errorf("event page limit must be positive")
+	}
+	if len(events) == 0 {
+		return EventPage{Items: []Event{}}, nil
+	}
+
+	start := 0
+	if cursor != "" {
+		parsed, err := strconv.Atoi(cursor)
+		if err != nil || parsed < 0 || parsed > len(events) {
+			return EventPage{}, fmt.Errorf("%w: %q", ErrInvalidEventCursor, cursor)
+		}
+		start = parsed
+	}
+
+	end := min(start+limit, len(events))
+	items := make([]Event, 0, end-start)
+	for index := start; index < end; index++ {
+		items = append(items, cloneEvent(events[len(events)-1-index]))
+	}
+	nextCursor := ""
+	if end < len(events) {
+		nextCursor = strconv.Itoa(end)
+	}
+	return EventPage{Items: items, NextCursor: nextCursor}, nil
+}
+
+func eventFileCursorOffset(file *os.File, size int64, cursor string) (int64, error) {
+	if cursor == "" {
+		return size, nil
+	}
+	offset, err := strconv.ParseInt(cursor, 10, 64)
+	if err != nil || offset < 0 || offset > size {
+		return 0, fmt.Errorf("%w: %q", ErrInvalidEventCursor, cursor)
+	}
+	if offset == 0 || offset == size {
+		return offset, nil
+	}
+	var previous [1]byte
+	if _, err := file.ReadAt(previous[:], offset-1); err != nil {
+		return 0, err
+	}
+	if previous[0] != '\n' {
+		return 0, fmt.Errorf("%w: %q", ErrInvalidEventCursor, cursor)
+	}
+	return offset, nil
+}
+
+func readPreviousJSONLine(file *os.File, end int64) ([]byte, int64, error) {
+	if end <= 0 {
+		return nil, 0, io.EOF
+	}
+
+	lineEnd := end
+	var value [1]byte
+	for lineEnd > 0 {
+		if _, err := file.ReadAt(value[:], lineEnd-1); err != nil {
+			return nil, 0, err
+		}
+		if value[0] != '\n' && value[0] != '\r' {
+			break
+		}
+		lineEnd--
+	}
+	if lineEnd == 0 {
+		return nil, 0, io.EOF
+	}
+
+	const blockSize int64 = 64 * 1024
+	parts := make([][]byte, 0, 1)
+	total := 0
+	scanEnd := lineEnd
+	lineStart := int64(0)
+	for scanEnd > 0 {
+		scanStart := max(int64(0), scanEnd-blockSize)
+		part := make([]byte, scanEnd-scanStart)
+		if _, err := file.ReadAt(part, scanStart); err != nil {
+			return nil, 0, err
+		}
+		if separator := bytes.LastIndexByte(part, '\n'); separator >= 0 {
+			lineStart = scanStart + int64(separator) + 1
+			part = part[separator+1:]
+			parts = append(parts, part)
+			total += len(part)
+			break
+		}
+		parts = append(parts, part)
+		total += len(part)
+		scanEnd = scanStart
+	}
+
+	line := make([]byte, 0, total)
+	for index := len(parts) - 1; index >= 0; index-- {
+		line = append(line, parts[index]...)
+	}
+	return line, lineStart, nil
 }
 
 func (s *FileEventSink) DeleteRun(_ context.Context, runID string) error {

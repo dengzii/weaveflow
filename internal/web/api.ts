@@ -17,7 +17,7 @@ import type {
   RunResult,
   RuntimeSettings,
   RuntimeSettingsUpdate,
-  RuntimeEvent,
+  RuntimeEventPage,
   StepRecord,
   ToolsInfo,
   Trigger,
@@ -269,14 +269,21 @@ export async function getRunInterrupt(runId: string, graphId?: string): Promise<
 }
 
 export async function getRunInspection(runId: string, graphId?: string): Promise<RunInspection> {
-  const [run, steps, checkpoints, events, interrupt] = await Promise.all([
+  const [run, steps, checkpoints, eventPage, interrupt] = await Promise.all([
     getRun(runId, graphId),
     listSteps(runId, graphId),
     listCheckpoints(runId, graphId),
     listEvents(runId, graphId),
     getRunInterrupt(runId, graphId),
   ]);
-  return { run, steps, checkpoints, events, interrupt };
+  return {
+    run,
+    steps,
+    checkpoints,
+    events: eventPage.items,
+    event_cursor: eventPage.next_cursor,
+    interrupt,
+  };
 }
 
 export async function pauseRun(runId: string): Promise<RunRecord> {
@@ -313,6 +320,15 @@ export async function getArtifact(runId: string, artifactId: string, graphId?: s
   );
 }
 
-export async function listEvents(runId: string, graphId?: string): Promise<RuntimeEvent[]> {
-  return apiFetch<RuntimeEvent[]>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/events`, graphId));
+export async function listEvents(
+  runId: string,
+  graphId?: string,
+  cursor?: string,
+  limit = 500
+): Promise<RuntimeEventPage> {
+  const query = new URLSearchParams({ limit: String(limit) });
+  if (cursor) query.set("cursor", cursor);
+  return apiFetch<RuntimeEventPage>(
+    appendGraphQuery(`/runs/${encodeURIComponent(runId)}/events?${query.toString()}`, graphId)
+  );
 }

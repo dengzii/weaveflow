@@ -118,6 +118,8 @@ func statusForError(err error) int {
 		return http.StatusBadRequest
 	case errors.Is(err, errInvalidRequest):
 		return http.StatusBadRequest
+	case errors.Is(err, runtime.ErrInvalidEventCursor):
+		return http.StatusBadRequest
 	case errors.Is(err, trigger.ErrInvalidTrigger), errors.Is(err, trigger.ErrInvalidPayload), errors.Is(err, trigger.ErrInvalidStateMapping), errors.Is(err, trigger.ErrInvalidTarget), errors.Is(err, trigger.ErrTypeMismatch):
 		return http.StatusBadRequest
 	case errors.Is(err, runtime.ErrRunControlNotAllowed):

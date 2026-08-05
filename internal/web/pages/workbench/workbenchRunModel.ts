@@ -56,6 +56,22 @@ export function matchesGraphIdentity(run: RunRecord, identity: GraphIdentity): b
   return run.graph_id === identity.id && run.graph_version === identity.version;
 }
 
+export type RunListEventAction = "ignore" | "refresh" | "update";
+
+export function runListEventAction(runs: RunRecord[], event: RuntimeEvent): RunListEventAction {
+  if (!event.run_id) return "ignore";
+  if (runs.some((run) => run.run_id === event.run_id)) return "update";
+  return runStatusFromEvent(event.type) ? "refresh" : "ignore";
+}
+
+export function mergeRefreshedRuns(current: RunRecord[], refreshed: RunRecord[]): RunRecord[] {
+  const currentByID = new Map(current.map((run) => [run.run_id, run]));
+  return refreshed.map((run) => {
+    const existing = currentByID.get(run.run_id);
+    return existing && Date.parse(existing.updated_at) > Date.parse(run.updated_at) ? existing : run;
+  });
+}
+
 export function upsertRunFromEvent(
   runs: RunRecord[],
   event: RuntimeEvent,
@@ -141,7 +157,22 @@ export function mergeLiveRuntimeEvents(
     emittedStreamingKeys.add(key);
     newestFirst.push(streamingEvents.get(key) ?? event);
   }
-  return newestFirst;
+  return newestFirst.slice(0, MAX_LIVE_RUNTIME_EVENTS);
+}
+
+export const MAX_LIVE_RUNTIME_EVENTS = 5000;
+
+export function mergeStoredRuntimeEvents(
+  current: RuntimeEvent[],
+  older: RuntimeEvent[]
+): RuntimeEvent[] {
+  const seen = new Set<string>();
+  return [...current, ...older].filter((event) => {
+    const key = runtimeEventIdentity(event);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export function reconcileRunEvents(
@@ -152,11 +183,15 @@ export function reconcileRunEvents(
   const seen = new Set<string>();
   return [...liveEvents, ...storedEvents].filter((event) => {
     if (selectedRunID && event.run_id !== selectedRunID) return false;
-    const key = event.id || `${event.run_id}:${event.type}:${event.timestamp}:${event.node_id ?? ""}`;
+    const key = runtimeEventIdentity(event);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
+}
+
+function runtimeEventIdentity(event: RuntimeEvent): string {
+  return event.id || `${event.run_id}:${event.type}:${event.timestamp}:${event.node_id ?? ""}:${event.step_id ?? ""}`;
 }
 
 export function runTriggerTypesFromInvocations(

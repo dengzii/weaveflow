@@ -3,6 +3,7 @@ import {
   cancelRun,
   deleteRun,
   getRunInspection,
+  listEvents,
   listRuns,
   listTriggerInvocations,
   pauseRun,
@@ -33,7 +34,10 @@ import {
   markRunResuming,
   matchesGraphIdentity,
   mergeLiveRuntimeEvents,
+  mergeRefreshedRuns,
+  mergeStoredRuntimeEvents,
   reconcileRunEvents,
+  runListEventAction,
   runControlModeFromRun,
   runStatusFromEvent,
   runTriggerTypesFromInvocations,
@@ -62,6 +66,8 @@ interface WorkbenchRunsController {
   steps: StepRecord[];
   checkpoints: CheckpointRecord[];
   displayEvents: RuntimeEvent[];
+  hasOlderEvents: boolean;
+  olderEventsLoading: boolean;
   humanPrompt: UserInputPrompt | null;
   humanPromptText: string;
   runStatusVisible: boolean;
@@ -72,6 +78,7 @@ interface WorkbenchRunsController {
   streamStatus: ReturnType<typeof useRuntimeEventStream>;
   setHumanPromptText: (value: string) => void;
   selectRun: (runID: string) => void;
+  loadOlderEvents: () => Promise<void>;
   hideRunStatus: () => void;
   toggleRunStatus: () => void;
   resetRunState: () => void;
@@ -98,6 +105,8 @@ export function useWorkbenchRuns({
   const [checkpoints, setCheckpoints] = useState<CheckpointRecord[]>([]);
   const [storedEvents, setStoredEvents] = useState<RuntimeEvent[]>([]);
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
+  const [nextEventCursor, setNextEventCursor] = useState("");
+  const [olderEventsLoading, setOlderEventsLoading] = useState(false);
   const [runInterrupt, setRunInterrupt] = useState<RunInterrupt | null>(null);
   const [humanPrompt, setHumanPrompt] = useState<UserInputPrompt | null>(null);
   const [humanPromptText, setHumanPromptText] = useState("");
@@ -117,6 +126,12 @@ export function useWorkbenchRuns({
   const pendingLiveEventsRef = useRef<RuntimeEvent[]>([]);
   const liveEventsFlushTimerRef = useRef<number | null>(null);
   const liveEventsVersionRef = useRef(0);
+  const eventCursorRef = useRef("");
+  const eventPageLoadingRef = useRef(false);
+  const eventPageRequestRef = useRef(0);
+  const eventRunRefreshRequestedRef = useRef(false);
+  const eventRunRefreshRunningRef = useRef(false);
+  const eventStreamConnectedRef = useRef(false);
 
   const discardPendingLiveEvents = useCallback(() => {
     pendingLiveEventsRef.current = [];
@@ -159,13 +174,27 @@ export function useWorkbenchRuns({
   }, [flushPendingLiveEvents]);
 
   const clearSelectedRunInspection = useCallback(() => {
+    eventPageRequestRef.current += 1;
+    eventCursorRef.current = "";
+    eventPageLoadingRef.current = false;
     setSteps([]);
     setCheckpoints([]);
     setStoredEvents([]);
+    setNextEventCursor("");
+    setOlderEventsLoading(false);
     setRunInterrupt(null);
     setHumanPrompt(null);
     setHumanPromptText("");
     humanPromptCheckpointRef.current = "";
+  }, []);
+
+  const replaceStoredEventPage = useCallback((events: RuntimeEvent[], nextCursor: string) => {
+    eventPageRequestRef.current += 1;
+    eventCursorRef.current = nextCursor;
+    eventPageLoadingRef.current = false;
+    setStoredEvents(events);
+    setNextEventCursor(nextCursor);
+    setOlderEventsLoading(false);
   }, []);
 
   const updateRuns = useCallback((nextRuns: RunRecord[] | ((current: RunRecord[]) => RunRecord[])) => {
@@ -252,7 +281,7 @@ export function useWorkbenchRuns({
       listTriggerInvocations(undefined, 500).catch(() => []),
     ]);
     if (runContextVersionRef.current !== contextVersion) return;
-    updateRuns(nextRuns ?? []);
+    updateRuns((current) => mergeRefreshedRuns(current, nextRuns ?? []));
     setRunTriggerTypes(runTriggerTypesFromInvocations(triggerInvocations, identity.id));
     if (!autoSelect) return;
     const currentRunID = selectedRunIDRef.current;
@@ -288,10 +317,10 @@ export function useWorkbenchRuns({
     }
     setSteps(inspection.steps);
     setCheckpoints((current) => mergeFetchedCheckpoints(current, inspection.checkpoints));
-    setStoredEvents(inspection.events);
+    replaceStoredEventPage(inspection.events, inspection.event_cursor);
     setRunInterrupt(inspection.interrupt ?? null);
     updateRuns((current) => current.map((run) => (run.run_id === inspection.run.run_id ? inspection.run : run)));
-  }, [clearSelectedRunInspection, updateRuns]);
+  }, [clearSelectedRunInspection, replaceStoredEventPage, updateRuns]);
 
   const refreshPausedRun = useCallback(async (
     runID: string,
@@ -318,15 +347,78 @@ export function useWorkbenchRuns({
       setRunStatusVisible(true);
       setSteps(inspection.steps);
       setCheckpoints((current) => mergeFetchedCheckpoints(current, inspection.checkpoints));
-      setStoredEvents(inspection.events);
+      replaceStoredEventPage(inspection.events, inspection.event_cursor);
       setRunInterrupt(inspection.interrupt ?? null);
       if (options.openHumanPrompt) maybeOpenUserInputPrompt(inspection.interrupt ?? null);
     } catch (error) {
       reportError(error);
     }
-  }, [maybeOpenUserInputPrompt, reportError, updateRuns, updateSelectedRunID]);
+  }, [maybeOpenUserInputPrompt, replaceStoredEventPage, reportError, updateRuns, updateSelectedRunID]);
+
+  const loadOlderEvents = useCallback(async () => {
+    const runID = selectedRunIDRef.current;
+    const cursor = eventCursorRef.current;
+    if (!runID || !cursor || eventPageLoadingRef.current) return;
+
+    const contextVersion = runContextVersionRef.current;
+    const selectedRunRequestVersion = selectedRunRequestRef.current;
+    const pageRequestVersion = ++eventPageRequestRef.current;
+    const graphID = runsRef.current.find((run) => run.run_id === runID)?.graph_id || graphIdentityRef.current.id;
+    eventPageLoadingRef.current = true;
+    setOlderEventsLoading(true);
+    try {
+      const page = await listEvents(runID, graphID, cursor);
+      if (
+        runContextVersionRef.current !== contextVersion ||
+        selectedRunRequestRef.current !== selectedRunRequestVersion ||
+        eventPageRequestRef.current !== pageRequestVersion ||
+        selectedRunIDRef.current !== runID
+      ) {
+        return;
+      }
+      setStoredEvents((current) => mergeStoredRuntimeEvents(current, page.items));
+      eventCursorRef.current = page.next_cursor;
+      setNextEventCursor(page.next_cursor);
+    } catch (error) {
+      if (eventPageRequestRef.current === pageRequestVersion) reportError(error);
+    } finally {
+      if (eventPageRequestRef.current === pageRequestVersion) {
+        eventPageLoadingRef.current = false;
+        setOlderEventsLoading(false);
+      }
+    }
+  }, [reportError]);
+
+  const requestEventRunRefresh = useCallback(() => {
+    eventRunRefreshRequestedRef.current = true;
+    if (eventRunRefreshRunningRef.current) return;
+
+    eventRunRefreshRunningRef.current = true;
+    void (async () => {
+      try {
+        while (eventRunRefreshRequestedRef.current) {
+          eventRunRefreshRequestedRef.current = false;
+          try {
+            await refreshRuns(graphIdentityRef.current, false);
+          } catch (error) {
+            reportError(error);
+          }
+        }
+      } finally {
+        eventRunRefreshRunningRef.current = false;
+      }
+    })();
+  }, [refreshRuns, reportError]);
 
   const handleRuntimeEvent = useCallback((event: RuntimeEvent) => {
+    const listAction = runListEventAction(runsRef.current, event);
+    const nextStatus = runStatusFromEvent(event.type);
+    if (listAction === "update") {
+      updateRuns((current) => upsertRunFromEvent(current, event, nextStatus, graphIdentityRef.current));
+    } else if (listAction === "refresh") {
+      requestEventRunRefresh();
+    }
+
     const selectedRun = selectedRunIDRef.current;
     const launchRun = launchRunIDRef.current;
     const launchMatches = launchPendingRef.current && (!launchRun || event.run_id === launchRun);
@@ -341,8 +433,7 @@ export function useWorkbenchRuns({
     if (checkpoint) {
       setCheckpoints((current) => upsertCheckpoint(current, checkpoint));
     }
-    const nextStatus = runStatusFromEvent(event.type);
-    if (event.run_id) {
+    if (event.run_id && listAction !== "update") {
       updateRuns((current) => upsertRunFromEvent(current, event, nextStatus, graphIdentityRef.current));
     }
     if (event.run_id && (event.type === "run.created" || (launchPendingRef.current && !launchRunIDRef.current))) {
@@ -359,8 +450,17 @@ export function useWorkbenchRuns({
     if (event.run_id && event.type === "run.paused") {
       void refreshPausedRun(event.run_id, { openHumanPrompt: true });
     }
-  }, [enqueueLiveEvent, refreshPausedRun, updateRuns, updateSelectedRunID]);
+  }, [enqueueLiveEvent, refreshPausedRun, requestEventRunRefresh, updateRuns, updateSelectedRunID]);
   const streamStatus = useRuntimeEventStream(handleRuntimeEvent);
+
+  useEffect(() => {
+    if (streamStatus !== "connected") return;
+    if (eventStreamConnectedRef.current) {
+      requestEventRunRefresh();
+      return;
+    }
+    eventStreamConnectedRef.current = true;
+  }, [requestEventRunRefresh, streamStatus]);
 
   useEffect(() => {
     void refreshSelectedRun(selectedRunID).catch(reportError);
@@ -557,6 +657,8 @@ export function useWorkbenchRuns({
     steps,
     checkpoints,
     displayEvents,
+    hasOlderEvents: Boolean(nextEventCursor),
+    olderEventsLoading,
     humanPrompt,
     humanPromptText,
     runStatusVisible,
@@ -567,6 +669,7 @@ export function useWorkbenchRuns({
     streamStatus,
     setHumanPromptText,
     selectRun,
+    loadOlderEvents,
     hideRunStatus,
     toggleRunStatus,
     resetRunState,

@@ -237,6 +237,14 @@ func (a *EventAnalyzer) ListEvents(runID string) ([]Event, error) {
 	return cloneEvents(a.events[runID]), nil
 }
 
+func (a *EventAnalyzer) ListEventPage(runID, cursor string, limit int) (EventPage, error) {
+	events, err := a.ListEvents(runID)
+	if err != nil {
+		return EventPage{}, err
+	}
+	return PaginateEventsNewestFirst(events, cursor, limit)
+}
+
 func (a *EventAnalyzer) RunIDs() []string {
 	if a == nil {
 		return nil

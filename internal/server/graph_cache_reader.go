@@ -97,6 +97,19 @@ func (r *combinedRunReader) ListEvents(runID string) ([]runtime.Event, error) {
 	return []runtime.Event{}, nil
 }
 
+func (r *combinedRunReader) ListEventPage(runID, cursor string, limit int) (runtime.EventPage, error) {
+	for _, reader := range r.readers {
+		page, err := reader.ListEventPage(runID, cursor, limit)
+		if err != nil {
+			return runtime.EventPage{}, err
+		}
+		if len(page.Items) > 0 || page.NextCursor != "" {
+			return page, nil
+		}
+	}
+	return runtime.EventPage{Items: []runtime.Event{}}, nil
+}
+
 func (r *combinedRunReader) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
 	for _, reader := range r.readers {
 		artifacts, err := reader.ListArtifacts(ctx, runID)
@@ -216,6 +229,19 @@ func (r *graphCacheReader) ListEvents(runID string) ([]runtime.Event, error) {
 		}
 	}
 	return []runtime.Event{}, nil
+}
+
+func (r *graphCacheReader) ListEventPage(runID, cursor string, limit int) (runtime.EventPage, error) {
+	for _, sink := range r.eventSinks {
+		page, err := sink.ListEventPage(runID, cursor, limit)
+		if err != nil {
+			return runtime.EventPage{}, err
+		}
+		if len(page.Items) > 0 || page.NextCursor != "" {
+			return page, nil
+		}
+	}
+	return runtime.EventPage{Items: []runtime.Event{}}, nil
 }
 
 func (r *graphCacheReader) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {

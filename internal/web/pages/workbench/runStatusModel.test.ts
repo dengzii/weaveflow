@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { CheckpointRecord, RuntimeEvent, StepRecord } from "../../types";
-import { eventMatchesFilters, stateHistoryEntries, uniqueSorted } from "./runStatusModel";
+import {
+  eventListKey,
+  eventMatchesFilters,
+  fixedVirtualRange,
+  stateHistoryEntries,
+  uniqueSorted,
+} from "./runStatusModel";
 
 describe("run status model", () => {
   test("matches all selected event facets and payload keywords", () => {
@@ -50,6 +56,14 @@ describe("run status model", () => {
       "nodes.failed",
       "warning",
     ]);
+  });
+
+  test("keeps event ids stable and calculates virtual ranges at the start, middle, and end", () => {
+    expect(eventListKey(runtimeEvent(), 4)).toBe("event-event-1");
+    expect(eventListKey(runtimeEvent(), 40)).toBe("event-event-1");
+    expect(fixedVirtualRange(100, 0, 280, 28, 2)).toEqual({ start: 0, end: 12, offset: 0 });
+    expect(fixedVirtualRange(100, 1400, 280, 28, 2)).toEqual({ start: 48, end: 62, offset: 1344 });
+    expect(fixedVirtualRange(100, 2600, 280, 28, 2)).toEqual({ start: 90, end: 100, offset: 2520 });
   });
 
   test("builds checkpoint-backed state history with baseline, changes, and parallel barriers", () => {

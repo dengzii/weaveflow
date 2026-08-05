@@ -33,6 +33,11 @@ type runInterrupt struct {
 	Runtime                *state.RuntimeState  `json:"runtime,omitempty"`
 }
 
+const (
+	defaultEventPageLimit = 500
+	maximumEventPageLimit = 2000
+)
+
 const maxRunStateBodyBytes int64 = 8 << 20
 
 func (s *Server) handleStartRun(c *gin.Context) {
@@ -357,10 +362,20 @@ func (s *Server) handleListEvents(c *gin.Context) {
 	if !ok {
 		return
 	}
-	events, err := reader.ListEvents(runID)
+	limit, err := positiveIntQuery(c, "limit", defaultEventPageLimit, maximumEventPageLimit)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	cursor, err := optionalStringQuery(c, "cursor")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	page, err := reader.ListEventPage(runID, cursor, limit)
 	if err != nil {
 		writeError(c, statusForListEventsError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, events)
+	writeData(c, http.StatusOK, page)
 }

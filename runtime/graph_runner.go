@@ -572,6 +572,20 @@ func (r *GraphRunner) ListEvents(runID string) ([]Event, error) {
 	return reader.ListEvents(runID)
 }
 
+func (r *GraphRunner) ListEventPage(runID, cursor string, limit int) (EventPage, error) {
+	if r == nil || r.EventSink == nil {
+		return EventPage{}, errors.New("graph runner event sink is nil")
+	}
+	if reader, ok := r.EventSink.(EventPageReader); ok {
+		return reader.ListEventPage(runID, cursor, limit)
+	}
+	events, err := r.ListEvents(runID)
+	if err != nil {
+		return EventPage{}, err
+	}
+	return PaginateEventsNewestFirst(events, cursor, limit)
+}
+
 func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 	run, err := r.ExecutionStore.GetRun(ctx, runID)
 	if err != nil {

@@ -25,6 +25,7 @@ type runReader interface {
 	ListCheckpoints(ctx context.Context, runID string) ([]runtime.CheckpointRecord, error)
 	LoadCheckpointState(ctx context.Context, checkpointID string) (runtime.RestoredCheckpoint, error)
 	ListEvents(runID string) ([]runtime.Event, error)
+	ListEventPage(runID, cursor string, limit int) (runtime.EventPage, error)
 	ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error)
 	LoadArtifact(ctx context.Context, ref state.ArtifactRef) (runtime.Artifact, error)
 }

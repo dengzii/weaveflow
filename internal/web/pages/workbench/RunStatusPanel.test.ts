@@ -18,6 +18,8 @@ describe("RunStatusPanel", () => {
         onSelectRun: () => undefined,
         onDeleteRun: () => undefined,
         events: [runtimeEvent(), stateChangeEvent()],
+        hasOlderEvents: true,
+        onLoadOlderEvents: () => undefined,
         onHide: () => undefined,
       })
     );
@@ -37,7 +39,11 @@ describe("RunStatusPanel", () => {
     expect(markup).not.toContain("data-state-history-count");
     expect(markup).not.toContain("Run Event");
     expect(markup).not.toContain("State History");
-    expect(markup).toContain("content-visibility:auto");
+    expect(markup).toContain("position:absolute");
+    expect(markup).toContain("height:28px");
+    expect(markup).toContain("Load older");
+    expect(markup).toContain("relative z-20 isolate flex min-h-0 shrink-0 flex-col overflow-hidden bg-panel");
+    expect(markup).not.toContain("content-visibility:auto");
     expect(markup.indexOf('aria-label="Run history view"')).toBeLessThan(markup.indexOf('aria-label="Filter events"'));
   });
 

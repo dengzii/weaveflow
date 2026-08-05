@@ -221,6 +221,8 @@ export function WorkbenchPage({
     steps,
     checkpoints,
     displayEvents,
+    hasOlderEvents,
+    olderEventsLoading,
     humanPrompt,
     humanPromptText,
     runStatusVisible,
@@ -231,6 +233,7 @@ export function WorkbenchPage({
     streamStatus,
     setHumanPromptText,
     selectRun,
+    loadOlderEvents,
     hideRunStatus,
     toggleRunStatus,
     resetRunState,
@@ -531,6 +534,9 @@ export function WorkbenchPage({
           steps={steps}
           checkpoints={checkpoints}
           events={displayEvents}
+          hasOlderEvents={hasOlderEvents}
+          olderEventsLoading={olderEventsLoading}
+          onLoadOlderEvents={() => void loadOlderEvents()}
           onHide={hideRunStatus}
         />
       }
