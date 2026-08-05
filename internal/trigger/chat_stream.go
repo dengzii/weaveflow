@@ -18,10 +18,8 @@ type chatInvocationSink struct {
 	streamUpdates bool
 	streamNodeIDs map[string]struct{}
 	sequence      int64
-	streamed      bool
-	lastUpdate    string
-	messageSent   bool
-	lastMessage   string
+	replySent     bool
+	lastReply     string
 }
 
 type chatLLMStreamObserver struct {
@@ -129,26 +127,21 @@ func (s *chatInvocationSink) Emit(ctx context.Context, reply chatcap.Reply) erro
 		return err
 	}
 	switch reply.Kind {
-	case chatcap.ReplyUpdate:
-		s.streamed = true
-		s.lastUpdate = reply.Content
-	case chatcap.ReplyMessage:
-		s.messageSent = true
-		s.lastMessage = reply.Content
+	case chatcap.ReplyUpdate, chatcap.ReplyMessage:
+		s.replySent = true
+		s.lastReply = reply.Content
 	}
 	return nil
 }
 
-func (s *chatInvocationSink) finish(ctx context.Context, content string, runErr error) error {
+func (s *chatInvocationSink) finalReply() (string, bool) {
 	s.mu.Lock()
-	if strings.TrimSpace(content) == "" && s.streamed {
-		content = s.lastUpdate
-	}
-	if !s.streamed && s.messageSent && content == s.lastMessage {
-		content = ""
-	}
-	s.mu.Unlock()
-	reply := chatcap.Reply{Kind: chatcap.ReplyFinish, Content: content}
+	defer s.mu.Unlock()
+	return s.lastReply, s.replySent
+}
+
+func (s *chatInvocationSink) finish(ctx context.Context, runErr error) error {
+	reply := chatcap.Reply{Kind: chatcap.ReplyFinish}
 	if runErr != nil {
 		reply.Error = runErr.Error()
 	}

@@ -40,9 +40,6 @@ func (s *chatRecordingStarter) Start(ctx context.Context, initial *state.State) 
 	if err := chatcap.EmitReply(ctx, chatcap.Reply{Kind: chatcap.ReplyMessage, Content: "side", NodeID: "notify"}); err != nil {
 		return runtime.RunRecord{}, initial, err
 	}
-	if err := state.SetPath(initial, "shared.final.answer", "final"); err != nil {
-		return runtime.RunRecord{}, initial, err
-	}
 	return runtime.RunRecord{RunID: "chat-run", Status: runtime.RunStatusCompleted}, initial, nil
 }
 
@@ -168,7 +165,7 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Run.RunID != "chat-run" || result.FinalReply != "final" || result.ConversationID == "" || result.ConversationID == "conversation-1" {
+	if result.Run.RunID != "chat-run" || result.FinalReply != "side" || result.ConversationID == "" || result.ConversationID == "conversation-1" {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(replies) != 4 {
@@ -183,7 +180,7 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 	if replies[2].Kind != chatcap.ReplyMessage || replies[2].Content != "side" || replies[2].Sequence != 3 {
 		t.Fatalf("message = %#v", replies[1])
 	}
-	if replies[3].Kind != chatcap.ReplyFinish || replies[3].Content != "final" || replies[3].Sequence != 4 {
+	if replies[3].Kind != chatcap.ReplyFinish || replies[3].Content != "" || replies[3].Sequence != 4 {
 		t.Fatalf("finish = %#v", replies[3])
 	}
 	input, _ := state.ReadPath(starter.initial, "shared.request.input")
@@ -213,11 +210,67 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 1 || history[0].FinalAnswer != "final" || history[0].GraphID != "graph" || history[0].RunID != "chat-run" {
+	if len(history) != 1 || history[0].FinalAnswer != "side" || history[0].GraphID != "graph" || history[0].RunID != "chat-run" {
 		t.Fatalf("chat history = %#v", history)
 	}
-	if len(history[0].Messages) != 3 || history[0].Messages[0].Kind != ChatMessageInput || history[0].Messages[1].Content != "side" || history[0].Messages[2].Kind != ChatMessageFinal {
+	if len(history[0].Messages) != 2 || history[0].Messages[0].Kind != ChatMessageInput || history[0].Messages[1].Content != "side" || history[0].Messages[1].Kind != ChatMessageFinal {
 		t.Fatalf("chat history messages = %#v", history[0].Messages)
+	}
+}
+
+type chatNoReplyStarter struct{}
+
+func (chatNoReplyStarter) Start(_ context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+	return runtime.RunRecord{RunID: "no-reply-run", Status: runtime.RunStatusCompleted}, initial, nil
+}
+
+func TestServiceInvokeChatRejectsCompletedRunWithoutReply(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
+		return chatNoReplyStarter{}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), Trigger{
+		ID: "no-reply", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	var replies []chatcap.Reply
+	result, invokeErr := service.InvokeChat(context.Background(), "no-reply", chatchannel.InboundMessage{
+		ID: "message-1", UserID: "user-1", ConversationID: "conversation-1", Content: "hello",
+	}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
+		replies = append(replies, reply)
+		return nil
+	}))
+	if !errors.Is(invokeErr, ErrChatReplyMissing) {
+		t.Fatalf("InvokeChat() error = %v, want ErrChatReplyMissing", invokeErr)
+	}
+	if result.Run.RunID != "no-reply-run" || result.FinalReply != "" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(replies) != 1 || replies[0].Kind != chatcap.ReplyFinish || replies[0].Error != ErrChatReplyMissing.Error() || replies[0].Content != "" {
+		t.Fatalf("replies = %#v", replies)
+	}
+	records, err := service.ListRecords(context.Background(), "no-reply", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Status != runtime.RunStatusFailed || records[0].ErrorMessage != ErrChatReplyMissing.Error() {
+		t.Fatalf("records = %#v", records)
+	}
+	history, err := service.ListChatHistory(context.Background(), ChatHistoryFilter{
+		TriggerID: "no-reply", UserID: "user-1", ChannelConversationID: "conversation-1", ConversationID: result.ConversationID, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Status != runtime.RunStatusFailed || history[0].ErrorMessage != ErrChatReplyMissing.Error() {
+		t.Fatalf("history = %#v", history)
 	}
 }
 
@@ -225,11 +278,11 @@ type chatHistoryStarter struct {
 	initials []*state.State
 }
 
-func (s *chatHistoryStarter) Start(_ context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+func (s *chatHistoryStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
 	s.initials = append(s.initials, initial.Clone())
 	input, _ := state.ReadPath(initial, "shared.request.input")
 	answer := "answer:" + fmt.Sprint(input)
-	if err := state.SetPath(initial, "shared.final.answer", answer); err != nil {
+	if err := chatcap.EmitReply(ctx, chatcap.Reply{Kind: chatcap.ReplyMessage, Content: answer, NodeID: "reply"}); err != nil {
 		return runtime.RunRecord{}, initial, err
 	}
 	now := time.Date(2026, 7, 31, 9, len(s.initials), 0, 0, time.UTC)
@@ -892,7 +945,6 @@ func TestTriggerRejectsInvalidChatStateBindings(t *testing.T) {
 				Target:      Target{GraphID: "graph-1"},
 				Chat: &ChatSpec{
 					Channel:       "http",
-					ReplyPath:     "shared.final.answer",
 					HistoryLimit:  test.historyLimit,
 					StateBindings: test.bindings,
 				},

@@ -27,7 +27,6 @@ func TestFileStoreRejectsRemovedChatHistoryBinding(t *testing.T) {
 		"concurrency":"parallel",
 		"chat":{
 			"channel":"http",
-			"reply_path":"shared.final.answer",
 			"stream_updates":false,
 			"state_bindings":{"history":"shared.history"}
 		},

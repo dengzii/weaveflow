@@ -241,6 +241,13 @@ func (channel *Channel) Run(ctx context.Context) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	runCtx, stopWorkers := context.WithCancel(ctx)
+	workerErrors := make(chan error, 1)
+	var workers sync.WaitGroup
+	defer func() {
+		stopWorkers()
+		workers.Wait()
+	}()
 	cursor, err := readCursor(channel.config.CursorFile)
 	if err != nil {
 		channel.logger.Error("WeChat cursor read failed", "error", err)
@@ -249,11 +256,24 @@ func (channel *Channel) Run(ctx context.Context) error {
 	channel.logger.Info("WeChat channel starting", "has_cursor", cursor != "")
 	defer channel.logger.Info("WeChat channel stopped")
 	for {
+		select {
+		case workerErr := <-workerErrors:
+			return workerErr
+		default:
+		}
 		channel.logger.Debug("WeChat channel polling", "has_cursor", cursor != "")
-		response, err := channel.getUpdates(ctx, cursor)
+		response, err := channel.getUpdates(runCtx, cursor)
 		if err != nil {
 			if ctx.Err() != nil {
 				channel.logger.Debug("WeChat poll canceled")
+				return nil
+			}
+			select {
+			case workerErr := <-workerErrors:
+				return workerErr
+			default:
+			}
+			if runCtx.Err() != nil {
 				return nil
 			}
 			var tokenErr *tokenError
@@ -279,14 +299,7 @@ func (channel *Channel) Run(ctx context.Context) error {
 		if len(response.Messages) > 0 {
 			channel.logger.Info("WeChat message batch received", "message_count", len(response.Messages))
 		}
-		if err := channel.handleMessages(ctx, response.Messages); err != nil {
-			var tokenErr *tokenError
-			if errors.As(err, &tokenErr) {
-				channel.logger.Error("WeChat message batch stopped by authentication failure", "error", err)
-				return err
-			}
-			channel.logger.Error("WeChat message batch failed", "error", err)
-		}
+		channel.handleMessages(runCtx, response.Messages, &workers, stopWorkers, workerErrors)
 		if nextCursor != cursor {
 			if err := writeCursor(channel.config.CursorFile, nextCursor); err != nil {
 				channel.logger.Error("WeChat cursor persist failed", "error", err)
@@ -316,20 +329,29 @@ func (channel *Channel) getUpdates(ctx context.Context, cursor string) (getUpdat
 	return response, nil
 }
 
-func (channel *Channel) handleMessages(ctx context.Context, messages []weixinMessage) error {
-	var firstErr error
+func (channel *Channel) handleMessages(ctx context.Context, messages []weixinMessage, workers *sync.WaitGroup, stopWorkers context.CancelFunc, workerErrors chan<- error) {
 	for _, message := range messages {
-		if err := channel.handleMessage(ctx, message); err != nil {
-			if firstErr == nil {
-				firstErr = err
+		message := message
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			err := channel.handleMessage(ctx, message)
+			if err == nil || ctx.Err() != nil {
+				return
 			}
 			var tokenErr *tokenError
 			if errors.As(err, &tokenErr) {
-				return err
+				channel.logger.Error("WeChat message handling stopped by authentication failure", "error", err)
+				select {
+				case workerErrors <- err:
+				default:
+				}
+				stopWorkers()
+				return
 			}
-		}
+			channel.logger.Error("WeChat message handling failed", "message_id", message.messageIDString(), "error", err)
+		}()
 	}
-	return firstErr
 }
 
 func (channel *Channel) handleMessage(ctx context.Context, incoming weixinMessage) error {

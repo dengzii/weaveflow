@@ -6,17 +6,19 @@ import (
 )
 
 type InboundMessage struct {
-	ID             string         `json:"message_id,omitempty"`
-	UserID         string         `json:"user_id,omitempty"`
-	ConversationID string         `json:"conversation_id,omitempty"`
-	Content        string         `json:"content"`
-	Metadata       map[string]any `json:"metadata,omitempty"`
+	ID                    string         `json:"message_id,omitempty"`
+	UserID                string         `json:"user_id,omitempty"`
+	ConversationID        string         `json:"conversation_id,omitempty"`
+	ChannelConversationID string         `json:"-"`
+	Content               string         `json:"content"`
+	Metadata              map[string]any `json:"metadata,omitempty"`
 }
 
 func (m InboundMessage) Normalize() InboundMessage {
 	m.ID = strings.TrimSpace(m.ID)
 	m.UserID = strings.TrimSpace(m.UserID)
 	m.ConversationID = strings.TrimSpace(m.ConversationID)
+	m.ChannelConversationID = strings.TrimSpace(m.ChannelConversationID)
 	m.Content = strings.TrimSpace(m.Content)
 	return m
 }

@@ -86,6 +86,7 @@ func TestChannelPollsAndSendsWithOfficialHeadersAndCursor(t *testing.T) {
 	var sends []receivedSend
 	var typings []receivedTyping
 	sendSeen := make(chan struct{}, 2)
+	typingSeen := make(chan struct{}, 2)
 	secondPollSeen := make(chan struct{}, 1)
 	cursorFile := filepathForTest(t)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
@@ -152,6 +153,7 @@ func TestChannelPollsAndSendsWithOfficialHeadersAndCursor(t *testing.T) {
 			typings = append(typings, receivedTyping{request: payload, headers: request.Header.Clone()})
 			mu.Unlock()
 			_ = json.NewEncoder(response).Encode(map[string]any{"ret": 0})
+			typingSeen <- struct{}{}
 		default:
 			http.NotFound(response, request)
 		}
@@ -197,6 +199,14 @@ func TestChannelPollsAndSendsWithOfficialHeadersAndCursor(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			cancel()
 			t.Fatal("timed out waiting for iLink replies")
+		}
+	}
+	for range 2 {
+		select {
+		case <-typingSeen:
+		case <-time.After(5 * time.Second):
+			cancel()
+			t.Fatal("timed out waiting for iLink typing updates")
 		}
 	}
 	select {
@@ -336,6 +346,77 @@ func TestChannelStartsTypingBeforeGraphAndCachesTicket(t *testing.T) {
 	wantEvents := []string{"typing-active", "graph", "typing-cancel", "typing-active", "graph", "typing-cancel"}
 	if !slices.Equal(events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", events, wantEvents)
+	}
+}
+
+func TestHandleMessagesAllowsStopWhilePreviousMessageIsRunning(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		switch request.URL.Path {
+		case "/ilink/bot/getconfig":
+			_ = json.NewEncoder(response).Encode(map[string]any{"ret": 0, "typing_ticket": "ticket"})
+		case "/ilink/bot/sendtyping":
+			_ = json.NewEncoder(response).Encode(map[string]any{"ret": 0})
+		default:
+			http.NotFound(response, request)
+		}
+	}))
+	defer server.Close()
+
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	stopHandled := make(chan struct{})
+	channel := &Channel{
+		config:          Config{BotToken: "token", BaseURL: server.URL},
+		client:          server.Client(),
+		logger:          discardLogger(),
+		wechatUIN:       randomWeChatUIN(),
+		typingKeepalive: time.Hour,
+	}
+	channel.handler = chatchannel.HandlerFunc(func(_ context.Context, message chatchannel.InboundMessage, _ chatcap.ReplySink) error {
+		switch message.Content {
+		case "long task":
+			close(firstStarted)
+			<-releaseFirst
+		case "/stop":
+			close(stopHandled)
+		}
+		return nil
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	workerErrors := make(chan error, 1)
+	var workers sync.WaitGroup
+	channel.handleMessages(ctx, []weixinMessage{
+		{
+			MessageID: json.RawMessage("1"), FromUserID: "user", ContextToken: "ctx-1", MessageType: 1,
+			ItemList: []messageItem{{Type: 1, TextItem: &textItem{Text: "long task"}}},
+		},
+		{
+			MessageID: json.RawMessage("2"), FromUserID: "user", ContextToken: "ctx-2", MessageType: 1,
+			ItemList: []messageItem{{Type: 1, TextItem: &textItem{Text: "/stop"}}},
+		},
+	}, &workers, cancel, workerErrors)
+	select {
+	case <-firstStarted:
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		workers.Wait()
+		t.Fatal("first message did not start")
+	}
+	select {
+	case <-stopHandled:
+	case <-time.After(time.Second):
+		close(releaseFirst)
+		workers.Wait()
+		t.Fatal("stop message waited for the previous message")
+	}
+	close(releaseFirst)
+	workers.Wait()
+	select {
+	case err := <-workerErrors:
+		t.Fatalf("message worker error = %v", err)
+	default:
 	}
 }
 

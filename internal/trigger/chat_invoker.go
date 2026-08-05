@@ -108,7 +108,7 @@ func (s *Service) InvokeChat(ctx context.Context, id string, message chatchannel
 		record.Status = result.Run.Status
 	}
 	if runErr != nil {
-		if record.Status == "" || record.Status == runtime.RunStatusPending {
+		if record.Status == "" || record.Status == runtime.RunStatusPending || record.Status == runtime.RunStatusRunning || record.Status == runtime.RunStatusCompleted {
 			record.Status = runtime.RunStatusFailed
 		}
 		record.ErrorMessage = runErr.Error()
@@ -155,12 +155,12 @@ func (s *Service) invokeChatRun(ctx context.Context, item Trigger, message chatc
 	configuredSink := newChatInvocationSink(item.Chat, sink, historyRecorder.RecordReply)
 	executionCtx := runtime.WithRunnerEventObserver(ctx, newChatLLMStreamObserver(configuredSink))
 	executionCtx = chatcap.WithReplySink(executionCtx, configuredSink)
-	run, finalState, runErr := runner.Start(executionCtx, initial)
-	finalReply, replyErr := chatFinalReply(finalState, item.Chat)
-	if runErr == nil && replyErr != nil {
-		runErr = replyErr
+	run, _, runErr := runner.Start(executionCtx, initial)
+	finalReply, replySent := configuredSink.finalReply()
+	if runErr == nil && !replySent {
+		runErr = ErrChatReplyMissing
 	}
-	finishErr := configuredSink.finish(context.WithoutCancel(ctx), finalReply, runErr)
+	finishErr := configuredSink.finish(context.WithoutCancel(ctx), runErr)
 	if runErr == nil && finishErr != nil {
 		runErr = finishErr
 	}
@@ -281,20 +281,4 @@ func (s *Service) lockChatHistory(triggerID, userID, conversationID string) func
 		}
 		s.mu.Unlock()
 	}
-}
-
-func chatFinalReply(finalState *state.State, spec *ChatSpec) (string, error) {
-	path := "shared.final.answer"
-	if spec != nil && strings.TrimSpace(spec.ReplyPath) != "" {
-		path = spec.ReplyPath
-	}
-	value, ok := state.ReadPath(finalState, path)
-	if !ok || value == nil {
-		return "", nil
-	}
-	reply, ok := value.(string)
-	if !ok {
-		return "", fmt.Errorf("chat reply path %q must contain a string, got %T", path, value)
-	}
-	return strings.TrimSpace(reply), nil
 }

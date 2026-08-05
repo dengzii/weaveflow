@@ -140,7 +140,7 @@ func (r *chatHistoryRecorder) Finish(result ChatResult, runErr error) error {
 	r.history.Status = result.Run.Status
 	if runErr != nil {
 		r.history.ErrorMessage = runErr.Error()
-		if r.history.Status == "" || r.history.Status == runtime.RunStatusPending || r.history.Status == runtime.RunStatusRunning {
+		if r.history.Status == "" || r.history.Status == runtime.RunStatusPending || r.history.Status == runtime.RunStatusRunning || r.history.Status == runtime.RunStatusCompleted {
 			r.history.Status = runtime.RunStatusFailed
 		}
 	} else if r.history.Status == "" || r.history.Status == runtime.RunStatusPending || r.history.Status == runtime.RunStatusRunning {

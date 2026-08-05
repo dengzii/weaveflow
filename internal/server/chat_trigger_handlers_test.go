@@ -21,9 +21,6 @@ func (chatHandlerStarter) Start(ctx context.Context, initial *state.State) (runt
 	if err := chatcap.EmitReply(ctx, chatcap.Reply{Kind: chatcap.ReplyMessage, Content: "first", NodeID: "reply"}); err != nil {
 		return runtime.RunRecord{}, initial, err
 	}
-	if err := state.SetPath(initial, "shared.final.answer", "final"); err != nil {
-		return runtime.RunRecord{}, initial, err
-	}
 	return runtime.RunRecord{RunID: "chat-run", Status: runtime.RunStatusCompleted}, initial, nil
 }
 
@@ -59,7 +56,8 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	}
 	var response struct {
 		Data struct {
-			Replies []chatcap.Reply `json:"replies"`
+			Result  trigger.ChatResult `json:"result"`
+			Replies []chatcap.Reply    `json:"replies"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(buffered.Body.Bytes(), &response); err != nil {
@@ -67,6 +65,9 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	}
 	if len(response.Data.Replies) != 2 || response.Data.Replies[0].Kind != chatcap.ReplyMessage || response.Data.Replies[1].Kind != chatcap.ReplyFinish {
 		t.Fatalf("buffered replies = %#v", response.Data.Replies)
+	}
+	if response.Data.Result.FinalReply != "first" || response.Data.Result.ConversationID == "" || response.Data.Result.ConversationID == "c1" || response.Data.Replies[1].Content != "" {
+		t.Fatalf("buffered result = %#v", response.Data.Result)
 	}
 
 	streamed := httptest.NewRecorder()
@@ -80,6 +81,25 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 		if !strings.Contains(streamed.Body.String(), expected) {
 			t.Fatalf("stream body missing %q: %s", expected, streamed.Body.String())
 		}
+	}
+
+	newConversation := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"/new"}`))
+	engine.ServeHTTP(newConversation, request)
+	if newConversation.Code != http.StatusOK {
+		t.Fatalf("new conversation status = %d body = %s", newConversation.Code, newConversation.Body.String())
+	}
+	var newResponse struct {
+		Data struct {
+			Result  trigger.ChatResult `json:"result"`
+			Replies []chatcap.Reply    `json:"replies"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(newConversation.Body.Bytes(), &newResponse); err != nil {
+		t.Fatal(err)
+	}
+	if newResponse.Data.Result.Command != "/new" || newResponse.Data.Result.ConversationID == "" || newResponse.Data.Result.ConversationID == response.Data.Result.ConversationID || len(newResponse.Data.Replies) != 1 {
+		t.Fatalf("new conversation response = %#v", newResponse.Data)
 	}
 
 	missingIdentity := httptest.NewRecorder()

@@ -21,6 +21,7 @@ var (
 	ErrInvalidStateMapping = errors.New("invalid webhook state mapping")
 	ErrInvalidTarget       = errors.New("invalid trigger target")
 	ErrTypeMismatch        = errors.New("trigger type mismatch")
+	ErrChatReplyMissing    = errors.New("chat graph completed without a reply")
 )
 
 const APIKeyQueryParameter = "api_key"
