@@ -64,19 +64,32 @@ export function upsertRunFromEvent(
 ): RunRecord[] {
   if (!event.run_id) return runs;
   let found = false;
+  let changed = false;
+  const checkpointID = stringPayloadField(event.payload, "checkpoint_id");
   const updated = runs.map((run) => {
     if (run.run_id !== event.run_id) return run;
     found = true;
+    if (!nextStatus && !checkpointID) return run;
     const status = nextStatus || run.status;
-    return {
+    const next = {
       ...run,
       status,
       updated_at: event.timestamp,
       finished_at: isTerminalRunStatus(status) ? event.timestamp : run.finished_at,
-      last_checkpoint_id: stringPayloadField(event.payload, "checkpoint_id") || run.last_checkpoint_id,
+      last_checkpoint_id: checkpointID || run.last_checkpoint_id,
     };
+    if (
+      next.status === run.status &&
+      next.updated_at === run.updated_at &&
+      next.finished_at === run.finished_at &&
+      next.last_checkpoint_id === run.last_checkpoint_id
+    ) {
+      return run;
+    }
+    changed = true;
+    return next;
   });
-  if (found) return updated;
+  if (found) return changed ? updated : runs;
 
   const status = nextStatus || "running";
   return [
@@ -93,6 +106,42 @@ export function upsertRunFromEvent(
       finished_at: isTerminalRunStatus(status) ? event.timestamp : undefined,
     },
   ];
+}
+
+export function mergeLiveRuntimeEvents(
+  current: RuntimeEvent[],
+  incoming: RuntimeEvent[],
+  retainRunID: string
+): RuntimeEvent[] {
+  if (incoming.length === 0) return current;
+
+  const chronological = [...current].reverse().concat(incoming);
+  const retained = retainRunID
+    ? chronological.filter((event) => !event.run_id || event.run_id === retainRunID)
+    : chronological;
+  const streamingEvents = new Map<string, RuntimeEvent>();
+
+  for (const event of retained) {
+    const key = streamingEventKey(event);
+    if (!key) continue;
+    const previous = streamingEvents.get(key);
+    streamingEvents.set(key, previous ? mergeStreamingEvent(previous, event) : event);
+  }
+
+  const emittedStreamingKeys = new Set<string>();
+  const newestFirst: RuntimeEvent[] = [];
+  for (let index = retained.length - 1; index >= 0; index -= 1) {
+    const event = retained[index];
+    const key = streamingEventKey(event);
+    if (!key) {
+      newestFirst.push(event);
+      continue;
+    }
+    if (emittedStreamingKeys.has(key)) continue;
+    emittedStreamingKeys.add(key);
+    newestFirst.push(streamingEvents.get(key) ?? event);
+  }
+  return newestFirst;
 }
 
 export function reconcileRunEvents(
@@ -165,7 +214,31 @@ function isResumableRunStatus(status: string): boolean {
 }
 
 function stringPayloadField(payload: unknown, field: string): string {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
-  const value = (payload as Record<string, unknown>)[field];
+  const value = payloadRecord(payload)?.[field];
   return typeof value === "string" ? value : "";
+}
+
+function streamingEventKey(event: RuntimeEvent): string {
+  if (event.type !== "llm.content_chunk" && event.type !== "llm.reasoning_chunk") return "";
+  const callID = stringPayloadField(event.payload, "call_id");
+  const text = stringPayloadField(event.payload, "text");
+  if (!callID || !text) return "";
+  return JSON.stringify([event.run_id, event.step_id ?? "", event.node_id ?? "", event.type, callID]);
+}
+
+function mergeStreamingEvent(previous: RuntimeEvent, event: RuntimeEvent): RuntimeEvent {
+  const payload = payloadRecord(event.payload) ?? {};
+  return {
+    ...event,
+    id: previous.id || event.id,
+    payload: {
+      ...payload,
+      text: stringPayloadField(previous.payload, "text") + stringPayloadField(event.payload, "text"),
+    },
+  };
+}
+
+function payloadRecord(payload: unknown): Record<string, unknown> | null {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  return payload as Record<string, unknown>;
 }

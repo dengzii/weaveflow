@@ -5,6 +5,7 @@ import {
   isTerminalRunStatus,
   markRunResuming,
   matchesGraphIdentity,
+  mergeLiveRuntimeEvents,
   missingInitialStateRequirements,
   reconcileRunEvents,
   runControlModeFromRun,
@@ -69,6 +70,59 @@ describe("workbench run model", () => {
       entry_node_id: "entry",
       status: "running",
     });
+
+    const streamingEvent = {
+      ...event,
+      type: "llm.content_chunk",
+      payload: { call_id: "call-1", text: "hello" },
+    };
+    const existingRuns = [baseRun];
+    expect(upsertRunFromEvent(existingRuns, streamingEvent, "", { id: "graph-1", version: "2.0" })).toBe(
+      existingRuns
+    );
+  });
+
+  test("batches live events and coalesces LLM chunks by call", () => {
+    const first: RuntimeEvent = {
+      id: "chunk-1",
+      run_id: "run-1",
+      step_id: "step-1",
+      node_id: "answer",
+      type: "llm.content_chunk",
+      timestamp: "2026-01-01T00:00:01Z",
+      payload: { call_id: "call-1", text: "hel" },
+    };
+    const second: RuntimeEvent = {
+      ...first,
+      id: "chunk-2",
+      timestamp: "2026-01-01T00:00:02Z",
+      payload: { call_id: "call-1", text: "lo" },
+    };
+    const finished: RuntimeEvent = {
+      id: "event-finished",
+      run_id: "run-1",
+      step_id: "step-1",
+      node_id: "answer",
+      type: "nodes.finished",
+      timestamp: "2026-01-01T00:00:03Z",
+    };
+
+    const merged = mergeLiveRuntimeEvents([], [first, second, finished], "run-1");
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toBe(finished);
+    expect(merged[1]).toMatchObject({
+      id: "chunk-1",
+      timestamp: second.timestamp,
+      payload: { call_id: "call-1", text: "hello" },
+    });
+
+    const continued = mergeLiveRuntimeEvents(
+      merged,
+      [{ ...second, id: "chunk-3", payload: { call_id: "call-1", text: "!" } }],
+      "run-1"
+    );
+    expect(continued).toHaveLength(2);
+    expect(continued[0]).toMatchObject({ id: "chunk-1", payload: { text: "hello!" } });
   });
 
   test("matches graph identities and validates typed initial requirements", () => {

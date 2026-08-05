@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelRun,
   deleteRun,
@@ -32,6 +32,7 @@ import {
   isTerminalRunStatus,
   markRunResuming,
   matchesGraphIdentity,
+  mergeLiveRuntimeEvents,
   reconcileRunEvents,
   runControlModeFromRun,
   runStatusFromEvent,
@@ -43,6 +44,7 @@ import {
 } from "./workbenchRunModel";
 
 const RUN_STATUS_VISIBLE_STORAGE_KEY = "weaveflow.workbench.runStatus.visible";
+const LIVE_EVENT_FLUSH_INTERVAL_MS = 80;
 
 type RunNotificationTone = "info" | "warn" | "error";
 
@@ -112,6 +114,49 @@ export function useWorkbenchRuns({
   const selectedRunRequestRef = useRef(0);
   const ignoredHumanInterruptsRef = useRef<Set<string>>(new Set());
   const humanPromptCheckpointRef = useRef("");
+  const pendingLiveEventsRef = useRef<RuntimeEvent[]>([]);
+  const liveEventsFlushTimerRef = useRef<number | null>(null);
+  const liveEventsVersionRef = useRef(0);
+
+  const discardPendingLiveEvents = useCallback(() => {
+    pendingLiveEventsRef.current = [];
+    if (liveEventsFlushTimerRef.current !== null) {
+      window.clearTimeout(liveEventsFlushTimerRef.current);
+      liveEventsFlushTimerRef.current = null;
+    }
+  }, []);
+
+  const clearLiveEvents = useCallback(() => {
+    liveEventsVersionRef.current += 1;
+    discardPendingLiveEvents();
+    setLiveEvents([]);
+  }, [discardPendingLiveEvents]);
+
+  const flushPendingLiveEvents = useCallback(() => {
+    liveEventsFlushTimerRef.current = null;
+    const incoming = pendingLiveEventsRef.current;
+    pendingLiveEventsRef.current = [];
+    if (incoming.length === 0) return;
+    const contextVersion = runContextVersionRef.current;
+    const liveEventsVersion = liveEventsVersionRef.current;
+    const retainRunID = incoming.at(-1)?.run_id || selectedRunIDRef.current || launchRunIDRef.current;
+    startTransition(() => {
+      setLiveEvents((current) =>
+        runContextVersionRef.current === contextVersion && liveEventsVersionRef.current === liveEventsVersion
+          ? mergeLiveRuntimeEvents(current, incoming, retainRunID)
+          : current
+      );
+    });
+  }, []);
+
+  const enqueueLiveEvent = useCallback((event: RuntimeEvent) => {
+    pendingLiveEventsRef.current.push(event);
+    if (liveEventsFlushTimerRef.current !== null) return;
+    liveEventsFlushTimerRef.current = window.setTimeout(
+      flushPendingLiveEvents,
+      LIVE_EVENT_FLUSH_INTERVAL_MS
+    );
+  }, [flushPendingLiveEvents]);
 
   const clearSelectedRunInspection = useCallback(() => {
     setSteps([]);
@@ -166,6 +211,8 @@ export function useWorkbenchRuns({
     writeStoredRunStatusVisible(runStatusVisible);
   }, [runStatusVisible]);
 
+  useEffect(() => discardPendingLiveEvents, [discardPendingLiveEvents]);
+
   const resetRunState = useCallback(() => {
     runContextVersionRef.current += 1;
     launchPendingRef.current = false;
@@ -175,10 +222,10 @@ export function useWorkbenchRuns({
     setRunBusy(false);
     updateRuns([]);
     updateSelectedRunID("");
-    setLiveEvents([]);
+    clearLiveEvents();
     setRunTriggerTypes({});
     clearSelectedRunInspection();
-  }, [clearSelectedRunInspection, updateRuns, updateSelectedRunID]);
+  }, [clearLiveEvents, clearSelectedRunInspection, updateRuns, updateSelectedRunID]);
 
   const maybeOpenUserInputPrompt = useCallback((interrupt?: RunInterrupt | null) => {
     const prompt = userInputPromptFromInterrupt(interrupt, definition);
@@ -289,15 +336,11 @@ export function useWorkbenchRuns({
     if (!shouldTrack) return;
 
     emitRuntimeEvent(event);
+    enqueueLiveEvent(event);
     const checkpoint = checkpointRecordFromEvent(event);
     if (checkpoint) {
       setCheckpoints((current) => upsertCheckpoint(current, checkpoint));
     }
-    setLiveEvents((current) => {
-      const retainRunID = event.run_id || selectedRun || launchRun;
-      const next = [event, ...current];
-      return retainRunID ? next.filter((item) => !item.run_id || item.run_id === retainRunID) : next;
-    });
     const nextStatus = runStatusFromEvent(event.type);
     if (event.run_id) {
       updateRuns((current) => upsertRunFromEvent(current, event, nextStatus, graphIdentityRef.current));
@@ -316,7 +359,7 @@ export function useWorkbenchRuns({
     if (event.run_id && event.type === "run.paused") {
       void refreshPausedRun(event.run_id, { openHumanPrompt: true });
     }
-  }, [refreshPausedRun, updateRuns, updateSelectedRunID]);
+  }, [enqueueLiveEvent, refreshPausedRun, updateRuns, updateSelectedRunID]);
   const streamStatus = useRuntimeEventStream(handleRuntimeEvent);
 
   useEffect(() => {
@@ -335,7 +378,7 @@ export function useWorkbenchRuns({
     launchRunIDRef.current = "";
     setRunLaunchPending(true);
     updateSelectedRunID("");
-    setLiveEvents([]);
+    clearLiveEvents();
     ignoredHumanInterruptsRef.current.clear();
     clearSelectedRunInspection();
     setRunStatusVisible(true);
@@ -355,7 +398,7 @@ export function useWorkbenchRuns({
     } finally {
       if (runContextVersionRef.current === runContextVersion) setRunBusy(false);
     }
-  }, [clearSelectedRunInspection, onNotify, refreshRuns, refreshSelectedRun, reportError, updateSelectedRunID]);
+  }, [clearLiveEvents, clearSelectedRunInspection, onNotify, refreshRuns, refreshSelectedRun, reportError, updateSelectedRunID]);
 
   const controlSelectedRun = useCallback(async (kind: "pause" | "cancel") => {
     const runID = selectedRunIDRef.current;
@@ -405,7 +448,7 @@ export function useWorkbenchRuns({
       updateRuns(remainingRuns);
       updateSelectedRunID(nextRunID);
       if (wasSelected || !nextRunID) {
-        setLiveEvents([]);
+        clearLiveEvents();
         clearSelectedRunInspection();
       }
       if (launchRunIDRef.current === runID) launchRunIDRef.current = "";
@@ -417,7 +460,7 @@ export function useWorkbenchRuns({
     } finally {
       setRunBusy(false);
     }
-  }, [clearSelectedRunInspection, onNotify, refreshRuns, refreshSelectedRun, reportError, updateRuns, updateSelectedRunID]);
+  }, [clearLiveEvents, clearSelectedRunInspection, onNotify, refreshRuns, refreshSelectedRun, reportError, updateRuns, updateSelectedRunID]);
 
   const refreshAfterResumeFailure = useCallback(async (runID: string) => {
     try {
