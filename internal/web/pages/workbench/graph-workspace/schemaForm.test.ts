@@ -89,4 +89,38 @@ describe("JSON schema controls", () => {
     expect(setPathValue({}, "__proto__.polluted", "yes")).toEqual({});
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
+
+  test("renders sensitive values with a fixed ten-character mask", () => {
+    const html = renderToStaticMarkup(createElement(JsonSchemaForm, {
+      schema: {
+        type: "object",
+        properties: {
+          secret: { type: "string", writeOnly: true },
+          api_key: { type: "string", format: "password" },
+        },
+      },
+      value: { secret: "short", api_key: "much-longer-api-key" },
+      onChange: () => {},
+    }));
+
+    expect(html.match(/value="\*{10}"/g)).toHaveLength(2);
+    expect(html).not.toContain("short");
+    expect(html).not.toContain("much-longer-api-key");
+  });
+
+  test("renders configured write-only values as masked when the value is redacted", () => {
+    const html = renderToStaticMarkup(createElement(JsonSchemaForm, {
+      schema: {
+        type: "object",
+        properties: {
+          secret: { type: "string", writeOnly: true },
+        },
+      },
+      value: {},
+      writeOnlyValuesConfigured: true,
+      onChange: () => {},
+    }));
+
+    expect(html).toContain('value="**********"');
+  });
 });

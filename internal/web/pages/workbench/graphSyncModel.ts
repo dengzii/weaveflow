@@ -1,33 +1,30 @@
-import type { GraphDefinition } from "../../types";
+import type { GraphDefinition, RuntimeSettingsUpdate } from "../../types";
 
-export interface SyncedGraphState {
-  signature: string;
-  official: boolean;
+export function graphSaveIdentity(graphID: string, graphVersion: string): string {
+  return JSON.stringify([graphID.trim(), graphVersion.trim()]);
 }
 
-export function graphUploadSignature(
+export function graphSaveSignature(
   definition: GraphDefinition,
+  settings: RuntimeSettingsUpdate,
   graphID: string,
   graphVersion: string
 ): string {
-  return JSON.stringify({
+  return JSON.stringify(canonicalJSONValue({
+    definition,
     graph_id: graphID.trim(),
     graph_version: graphVersion.trim(),
-    definition: canonicalJSONValue(definition),
-  });
+    settings,
+  }));
+}
+
+export function isGraphSavePending(currentSignature: string, savedSignature?: string): boolean {
+  return Boolean(currentSignature && currentSignature !== savedSignature);
 }
 
 export function graphAnalysisSignature(definition: GraphDefinition): string {
   const { metadata: _metadata, ...executableDefinition } = definition;
   return JSON.stringify(canonicalJSONValue(executableDefinition));
-}
-
-export function graphUploadRequired(signature: string, synced: SyncedGraphState | null): boolean {
-  return !synced || synced.signature !== signature;
-}
-
-export function graphPublishRequired(signature: string, synced: SyncedGraphState | null): boolean {
-  return graphUploadRequired(signature, synced) || !synced?.official;
 }
 
 function canonicalJSONValue(value: unknown): unknown {

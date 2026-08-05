@@ -18,7 +18,7 @@ import {
 
 describe("graph workspace model", () => {
   test("builds stable, encoded viewport keys with definition fallbacks", () => {
-    expect(graphCanvasViewportStorageKey("graph one", "v1", "draft/a", null)).toBe("draft%2Fa:graph%20one:v1");
+    expect(graphCanvasViewportStorageKey("graph one", "v1", "cache/a", null)).toBe("cache%2Fa:graph%20one:v1");
     expect(graphCanvasViewportStorageKey("", "", "", { name: "fallback", version: "2.0", nodes: [] })).toBe(
       "server:fallback:2.0"
     );

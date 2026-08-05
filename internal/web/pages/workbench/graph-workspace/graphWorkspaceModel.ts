@@ -9,11 +9,11 @@ import { virtualEdgeId } from "./utils";
 export function graphCanvasViewportStorageKey(
   graphID: string,
   graphVersion: string,
-  activeDraftID: string,
+  activeCacheID: string,
   definition: GraphDefinition | null
 ): string {
   return [
-    activeDraftID || "server",
+    activeCacheID || "server",
     graphID || definition?.name || "graph",
     graphVersion || definition?.version || "1.0",
   ]

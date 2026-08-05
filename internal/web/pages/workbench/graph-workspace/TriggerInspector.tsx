@@ -1,23 +1,30 @@
 import { Clock3, MessageCircle, Webhook, Zap } from "lucide-react";
 import type { ChatChannelDefinition, Trigger } from "../../../types";
 import { TriggerEditorForm } from "../TriggerEditorForm";
-import { triggerTypeName, webhookTriggerURLs } from "../triggerEditor";
+import { triggerTypeName, webhookTriggerURLs, type TriggerEditorValues } from "../triggerEditor";
+import type { TriggerDraftSetup } from "./useGraphTriggers";
 import { PanelHeader } from "./shared";
 
 export function TriggerInspector({
   graphID,
   trigger,
+  values,
+  persisted,
+  chatSetupChannelID,
+  chatSetupSessionID,
   statePathSuggestions,
   chatChannels,
-  onSaved,
-  onDeleted,
+  onChange,
 }: {
   graphID: string;
   trigger: Trigger | null;
+  values: TriggerEditorValues;
+  persisted: boolean;
+  chatSetupChannelID: string;
+  chatSetupSessionID: string;
   statePathSuggestions: string[];
   chatChannels: ChatChannelDefinition[];
-  onSaved: (trigger: Trigger) => void | Promise<void>;
-  onDeleted: (trigger: Trigger) => void | Promise<void>;
+  onChange: (values: TriggerEditorValues, setup: TriggerDraftSetup) => void;
 }) {
   const Icon = trigger?.type === "webhook" ? Webhook : trigger?.type === "schedule" ? Clock3 : trigger?.type === "chat" ? MessageCircle : Zap;
   const title = trigger ? (trigger.name?.trim() || triggerTypeName(trigger.type)) : "Trigger";
@@ -25,7 +32,7 @@ export function TriggerInspector({
   const webhookURLs = trigger ? webhookTriggerURLs(trigger.id) : null;
 
   return (
-    <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel [overflow-wrap:anywhere]">
+    <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel pb-[45vh] [overflow-wrap:anywhere]">
       <PanelHeader icon={Icon} title={title} />
       <div className="grid gap-3 border-b border-border p-3">
         {trigger ? (
@@ -36,21 +43,22 @@ export function TriggerInspector({
           </div>
         ) : null}
         <div className="rounded border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
-          Trigger configuration remains a server resource. Only this card's position is stored in Graph metadata.
+          Triggers start this graph from webhooks, schedules, or chat messages.
         </div>
       </div>
       <TriggerEditorForm
         trigger={trigger}
-        fallbackTarget={target}
+        values={values}
+        persisted={persisted}
+        chatSetupChannelID={chatSetupChannelID}
+        chatSetupSessionID={chatSetupSessionID}
         targetOptions={[{ key: graphID, label: graphID || "Current graph", target }]}
         targetLocked
         statePathSuggestions={statePathSuggestions}
         chatChannels={chatChannels}
         showIdentityFields={false}
         showTargetField={false}
-        allowDelete
-        onSaved={onSaved}
-        onDeleted={onDeleted}
+        onChange={onChange}
       />
       {trigger?.type === "webhook" ? (
         <div className="grid gap-1 border-t border-border p-3 text-xs text-muted-foreground">

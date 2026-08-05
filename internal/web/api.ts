@@ -52,6 +52,22 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   return readResponse<T>(resp);
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function requireRuntimeSettings(value: unknown, source: string): RuntimeSettings {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.environment) ||
+    !Array.isArray(value.models) ||
+    !isRecord(value.memory)
+  ) {
+    throw new Error(`invalid ${source}: runtime settings are missing`);
+  }
+  return value as unknown as RuntimeSettings;
+}
+
 function graphQuery(graphId?: string): string {
   if (!graphId) return "";
   return `?graph_id=${encodeURIComponent(graphId)}`;
@@ -72,15 +88,8 @@ export async function getGraphDefinition(): Promise<GraphDefinition> {
 }
 
 export async function getRuntimeSettings(): Promise<RuntimeSettings> {
-  return apiFetch<RuntimeSettings>("/runtime/settings");
-}
-
-export async function updateRuntimeSettings(settings: RuntimeSettingsUpdate): Promise<RuntimeSettings> {
-  return apiFetch<RuntimeSettings>("/runtime/settings", {
-    method: "PUT",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(settings),
-  });
+  const settings = await apiFetch<unknown>("/runtime/settings");
+  return requireRuntimeSettings(settings, "GET /runtime/settings response");
 }
 
 export async function getInitialStateRequirements(): Promise<InitialStateRequirements> {
@@ -103,34 +112,27 @@ export async function analyzeInitialStateRequirements(
 
 export async function setGraphDefinition(
   definition: GraphDefinition,
+  settings: RuntimeSettingsUpdate,
   graphId?: string,
   graphVersion?: string
 ): Promise<GraphLoadResult> {
-  return apiFetch<GraphLoadResult>("/graph", {
+  const result = await apiFetch<unknown>("/graph", {
     method: "PUT",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
       graph_id: graphId || undefined,
       graph_version: graphVersion || undefined,
       definition,
+      settings,
     }),
   });
-}
-
-export async function publishGraphDefinition(
-  definition: GraphDefinition,
-  graphId?: string,
-  graphVersion?: string
-): Promise<GraphLoadResult> {
-  return apiFetch<GraphLoadResult>("/graph/publish", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      graph_id: graphId || undefined,
-      graph_version: graphVersion || undefined,
-      definition,
-    }),
-  });
+  if (!isRecord(result) || !isRecord(result.graph) || !isRecord(result.definition)) {
+    throw new Error("invalid PUT /graph response: graph result is missing");
+  }
+  return {
+    ...result,
+    settings: requireRuntimeSettings(result.settings, "PUT /graph response"),
+  } as unknown as GraphLoadResult;
 }
 
 export async function getRegistry(): Promise<RegistryInfo> {
@@ -218,7 +220,16 @@ export async function listGraphs(): Promise<CachedGraphSummary[]> {
   if (!Array.isArray(items)) {
     throw new Error("invalid graph list response");
   }
-  return items as CachedGraphSummary[];
+  return items.map((item, index) => {
+    const source = `GET /graphs response graph ${index + 1}`;
+    if (!isRecord(item) || !isRecord(item.definition)) {
+      throw new Error(`invalid ${source}: graph summary is missing`);
+    }
+    return {
+      ...item,
+      settings: requireRuntimeSettings(item.settings, source),
+    } as unknown as CachedGraphSummary;
+  });
 }
 
 export async function listRuns(graphId?: string): Promise<RunRecord[]> {

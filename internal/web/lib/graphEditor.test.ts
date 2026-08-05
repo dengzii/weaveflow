@@ -11,7 +11,7 @@ import {
   userInputPromptFromInterrupt,
 } from "../pages/workbench/userInputModel";
 import { validateGraph } from "../pages/workbench/graph-workspace/utils";
-import { addGraphEdge, addNodeToGraph, createGraphDefinition, createNodeFromType, dynamicStatePortForName, initialStateBindings, matchesDynamicStatePortName, nextDynamicStatePortName, resolvedStatePortContract } from "./graphEditor";
+import { addGraphEdge, addNodeToGraph, createGraphDefinition, createGraphID, createNodeFromType, dynamicStatePortForName, initialStateBindings, matchesDynamicStatePortName, nextDynamicStatePortName, resolvedStatePortContract } from "./graphEditor";
 
 const modules: StateModuleDefinition[] = [
   { name: "weaveflow.protocols", version: "1" },
@@ -42,6 +42,16 @@ const registry: RegistryInfo = {
 };
 
 describe("v2 graph editor defaults", () => {
+  test("creates graph IDs without the debug prefix", () => {
+    expect(createGraphID(1_234_567_890)).toBe("graph_kf12oi");
+  });
+
+  test("creates empty graph definitions without an entry point", () => {
+    const graph = createGraphDefinition("empty", undefined, modules);
+    expect(graph.nodes).toEqual([]);
+    expect(graph.entry_point).toBeUndefined();
+  });
+
   test("materializes declared default state paths for nodes and ports", () => {
     const schema: NodeTypeSchema = {
       type: "agent",

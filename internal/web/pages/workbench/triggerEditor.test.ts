@@ -5,6 +5,7 @@ import {
   buildTriggerPayload,
   chatChannelDefaultConfig,
   editableChatChannelSchema,
+  triggerDraftFromEditorValues,
   triggerEditorValues,
   triggerInitialStateEntries,
   triggerStatePathSuggestions,
@@ -59,6 +60,18 @@ describe("trigger editor payload", () => {
     expect(values.initialStateEntries).toEqual([]);
   });
 
+  test("keeps incomplete trigger edits in the local draft until server save validation", () => {
+    const values = triggerEditorValues(null, { graph_id: "graph-a" }, "schedule");
+    values.id = "schedule-draft";
+    values.cron = "";
+
+    expect(triggerDraftFromEditorValues(values, null)).toMatchObject({
+      id: "schedule-draft",
+      schedule: { cron: "" },
+    });
+    expect(() => buildTriggerPayload(values, null)).toThrow("cron is required");
+  });
+
   test("keeps an existing trigger name immutable in update payloads", () => {
     const existing = { ...webhook, name: "Webhook 3" };
     const values = triggerEditorValues(existing, { graph_id: "fallback" });
@@ -83,7 +96,6 @@ describe("trigger editor payload", () => {
       chat: {
         channel: "http",
         channel_config: {},
-        reply_path: "shared.final.answer",
         stream_updates: true,
         stream_node_ids: ["answer", "reviewer"],
       },
@@ -188,12 +200,19 @@ describe("trigger editor payload", () => {
         type: "object",
         properties: {
           bot_id: { type: "string" },
+          endpoint: { type: "string" },
           secret: { type: "string", writeOnly: true },
         },
         required: ["bot_id", "secret"],
       },
     };
-    expect(editableChatChannelSchema(definition, false)?.required).toEqual(["bot_id", "secret"]);
+    const createSchema = editableChatChannelSchema(definition, false);
+    expect(createSchema?.required).toEqual(["bot_id", "secret"]);
+    expect(Object.keys(createSchema?.properties as Record<string, unknown>)).toEqual([
+      "bot_id",
+      "secret",
+      "endpoint",
+    ]);
     expect(editableChatChannelSchema(definition, true)?.required).toEqual(["bot_id"]);
     expect(chatChannelDefaultConfig({
       ...definition,

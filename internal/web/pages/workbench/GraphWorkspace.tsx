@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   GraphCanvas,
@@ -8,12 +8,13 @@ import {
 } from "../../components/GraphCanvas";
 import {
   createGraphDefinition,
+  createGraphID,
   graphEdgeId,
   updateGraphNode,
   withNodePosition,
   type NodePosition,
 } from "../../lib/graphEditor";
-import { pickInitialLocalGraphDraft, type LocalGraphDraft } from "../../lib/localGraphs";
+import type { LocalGraph } from "../../lib/localGraphs";
 import { stringifyJSON } from "../../lib/utils";
 import { detectVirtualGraphLoops, mergeVirtualGraphLoops } from "../../lib/loopPresentation";
 import type {
@@ -38,11 +39,16 @@ import { buildGraphLintIssues, type GraphLintIssue } from "./graph-workspace/lin
 import { ToastStack, type ToastRecord } from "./graph-workspace/ToastStack";
 import { GraphInspectorPanel } from "./graph-workspace/GraphInspectorPanel";
 import { GraphTitleMenu } from "./graph-workspace/GraphTitleMenu";
+import {
+  GraphTransferDialog,
+  type GraphTransferMode,
+} from "./graph-workspace/GraphTransferDialog";
+import type { ParsedGraphImport } from "./graph-workspace/graphTransferModel";
 import { TriggerInspector } from "./graph-workspace/TriggerInspector";
 import { useCanvasSearch } from "./graph-workspace/useCanvasSearch";
-import { useGraphTriggers } from "./graph-workspace/useGraphTriggers";
+import type { GraphTriggerController, TriggerDraftSetup } from "./graph-workspace/useGraphTriggers";
 import { useGraphWorkspaceSelection } from "./graph-workspace/useGraphWorkspaceSelection";
-import { useLocalGraphDrafts } from "./graph-workspace/useLocalGraphDrafts";
+import { useLocalGraphs } from "./graph-workspace/useLocalGraphs";
 import { useResizableInspector } from "./graph-workspace/useResizableInspector";
 import {
   projectTriggerCanvasNodes,
@@ -51,8 +57,10 @@ import {
 import {
   graphCanvasViewportStorageKey,
   mergeVirtualEdges,
+  savedGraphWorkspaceState,
   uniqueStrings,
   virtualEdgesFromDefinition,
+  withSavedGraphWorkspaceState,
 } from "./graph-workspace/graphWorkspaceModel";
 import {
   connectGraphWorkspaceNodes,
@@ -76,7 +84,7 @@ import {
   type GraphWorkspaceLoopMutation,
 } from "./graph-workspace/graphWorkspaceLoopModel";
 import type { CanvasContextMenu as CanvasContextMenuState, VirtualNodeKind } from "./graph-workspace/types";
-import { triggerStatePathSuggestions } from "./triggerEditor";
+import { triggerStatePathSuggestions, type TriggerEditorValues } from "./triggerEditor";
 import {
   parseJSONObject,
   realNodeTypes,
@@ -93,10 +101,13 @@ interface GraphWorkspaceProps {
   selectedRunId: string;
   registry: RegistryInfo | null;
   toolDefinitions: ToolDefinition[];
-  runtimeSettings: RuntimeSettings | null;
-  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
+  runtimeSettings: RuntimeSettings;
+  graphTriggers: GraphTriggerController;
+  onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
+  onReplaceRuntimeSettings: (settings: RuntimeSettings) => void;
   graphId: string;
   graphVersion: string;
+  serverGraphsLoaded: boolean;
   graphSwitchDisabled: boolean;
   toasts: ToastRecord[];
   onGraphId: (value: string) => void;
@@ -105,7 +116,6 @@ interface GraphWorkspaceProps {
   onInitialStateText: (value: string) => void;
   onDismissToast: (id: string) => void;
   onGraphSwitch: () => boolean;
-  onLocalGraphLoaded?: () => void;
 }
 
 export const GraphWorkspace = memo(function GraphWorkspace({
@@ -119,9 +129,12 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   registry,
   toolDefinitions,
   runtimeSettings,
-  onUpdateRuntimeSettings,
+  graphTriggers: graphTriggerController,
+  onChangeRuntimeSettings,
+  onReplaceRuntimeSettings,
   graphId,
   graphVersion,
+  serverGraphsLoaded,
   graphSwitchDisabled,
   toasts,
   onGraphId,
@@ -130,19 +143,19 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   onInitialStateText,
   onDismissToast,
   onGraphSwitch,
-  onLocalGraphLoaded,
 }: GraphWorkspaceProps) {
   const [nodeConfigText, setNodeConfigText] = useState("{}");
   const [edgeConfigText, setEdgeConfigText] = useState("{}");
   const [, setLocalStatus] = useState("local ready");
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null);
   const [graphMenuOpen, setGraphMenuOpen] = useState(false);
+  const [graphTransferMode, setGraphTransferMode] = useState<GraphTransferMode | null>(null);
   const [titleSlot, setTitleSlot] = useState<HTMLElement | null>(null);
   const [virtualNodeIds, setVirtualNodeIds] = useState<string[]>(defaultVirtualNodeIds);
   const [virtualEdges, setVirtualEdges] = useState<VirtualGraphEdge[]>([]);
   const [virtualLoops, setVirtualLoops] = useState<VirtualGraphLoop[]>([]);
   const [fitViewSignal, setFitViewSignal] = useState(0);
-  const autoLoadedDraftRef = useRef(false);
+  const autoLoadedGraphRef = useRef(false);
   const canvasRef = useRef<HTMLElement | null>(null);
   const {
     workspaceRef,
@@ -153,16 +166,16 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     triggers: graphTriggers,
     hydrated: triggersHydrated,
     loadError: triggerLoadError,
+    selectedDraft: selectedTriggerDraft,
     selectedTrigger,
     selectedTriggerID: selectedTriggerId,
     validTriggerIDs,
     setSelectedTriggerID: setSelectedTriggerId,
     createForGraph: createGraphTrigger,
-    recordSaved: recordTriggerSaved,
-    recordDeleted: recordTriggerDeleted,
+    updateDraft: updateTriggerDraft,
     updateEnabled: updateTriggerEnabled,
     remove: removeGraphTrigger,
-  } = useGraphTriggers(graphId);
+  } = graphTriggerController;
   const {
     selectedNodeID: selectedNodeId,
     selectedEdgeID: selectedEdgeId,
@@ -219,11 +232,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         return;
       }
       if (isEditableKeyboardTarget(event.target)) return;
-      if ((event.ctrlKey || event.metaKey) && key === "s") {
-        event.preventDefault();
-        saveLocal();
-        return;
-      }
       if ((event.ctrlKey || event.metaKey) && key === "d") {
         event.preventDefault();
         duplicateSelectedNode();
@@ -255,7 +263,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     () => realNodeTypes(nodeTypes?.length ? nodeTypes : fallbackNodeTypes),
     [nodeTypes]
   );
-  const defaultGraphNodeType = paletteNodeTypes[0];
   const conditions = registry?.conditions ?? [];
   const displayVirtualLoops = useMemo(
     () => mergeVirtualGraphLoops(virtualLoops, detectVirtualGraphLoops(definition)),
@@ -295,34 +302,53 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     () => buildGraphLintIssues({ definition, initialStateText, initialRequirements, analysisError: initialRequirementsError, registry }),
     [definition, initialRequirements, initialRequirementsError, initialStateText, registry]
   );
+  const exportDefinition = useMemo(
+    () => definition
+      ? withSavedGraphWorkspaceState(
+          definition,
+          virtualNodeIds,
+          virtualEdges,
+          virtualLoops,
+          validTriggerIDs
+        )
+      : null,
+    [definition, validTriggerIDs, virtualEdges, virtualLoops, virtualNodeIds]
+  );
   const blockingSaveMessage = lintIssues.find((issue) => issue.severity === "error")?.message;
   const {
-    drafts,
-    activeDraftID: activeDraftId,
-    isUnsaved,
-    saveLocal,
-    activateDraft,
-    resetActiveDraft,
-    deleteActiveDraft,
-  } = useLocalGraphDrafts({
+    graphs,
+    cacheHydrated,
+    activeCacheID,
+    activateGraph,
+    resetActiveGraph,
+    deleteActiveGraph,
+  } = useLocalGraphs({
     snapshot: {
       definition,
       graphID: graphId,
       graphVersion,
+      runtimeSettings,
       virtualNodeIDs: virtualNodeIds,
       virtualEdges,
       virtualLoops,
       validTriggerIDs,
     },
+    serverGraphsLoaded,
     blockingSaveMessage,
     onStatus: setLocalStatus,
   });
   useEffect(() => {
-    if (autoLoadedDraftRef.current) return;
-    autoLoadedDraftRef.current = true;
-    const draft = pickInitialLocalGraphDraft(drafts);
-    if (draft) loadDraft(draft);
-  }, []);
+    if (autoLoadedGraphRef.current || !cacheHydrated) return;
+    autoLoadedGraphRef.current = true;
+    const cachedGraph = definition
+      ? graphs.find((item) =>
+          item.graphId === graphId &&
+          item.graphVersion === graphVersion &&
+          stringifyJSON(item.definition) === stringifyJSON(definition)
+        )
+      : undefined;
+    if (cachedGraph) loadCachedGraphWithoutGuard(cachedGraph);
+  }, [cacheHydrated, definition, graphId, graphVersion, graphs]);
   const selectedVirtualEdge = useMemo(
     () => displayVirtualEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
     [displayVirtualEdges, selectedEdgeId]
@@ -395,49 +421,78 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setLocalStatus("run active");
       return;
     }
-    const nextName = `debug_graph_${Date.now().toString(36)}`;
-    const next = createGraphDefinition(nextName, defaultGraphNodeType, registry?.state_modules);
+    const nextName = createGraphID();
+    const next = createGraphDefinition(nextName, undefined, registry?.state_modules);
     onGraphId(next.name || nextName);
     onGraphVersion(next.version || "2.0");
     onDefinitionText(stringifyJSON(next));
-    resetActiveDraft();
+    resetActiveGraph();
     clearSelection();
     setVirtualNodeIds(defaultVirtualNodeIds);
     setVirtualEdges([]);
     setVirtualLoops([]);
+    setFitViewSignal((value) => value + 1);
     setLocalStatus("new graph");
     setGraphMenuOpen(false);
   }
 
-  function loadDraft(draft: LocalGraphDraft) {
+  function loadCachedGraph(graph: LocalGraph) {
     if (!onGraphSwitch()) {
       setLocalStatus("run active");
       return;
     }
-    loadDraftWithoutGuard(draft);
+    loadCachedGraphWithoutGuard(graph);
   }
 
-  function loadDraftWithoutGuard(draft: LocalGraphDraft) {
-    const savedState = activateDraft(draft);
-    onLocalGraphLoaded?.();
-    onGraphId(draft.graphId);
-    onGraphVersion(draft.graphVersion);
-    onDefinitionText(stringifyJSON(draft.definition));
+  function loadCachedGraphWithoutGuard(graph: LocalGraph) {
+    const activation = activateGraph(graph);
+    const savedState = activation.workspaceState;
+    onGraphId(graph.graphId);
+    onGraphVersion(graph.graphVersion);
+    onDefinitionText(stringifyJSON(graph.definition));
+    onReplaceRuntimeSettings(activation.runtimeSettings);
     setVirtualNodeIds(savedState.virtualNodeIDs);
     setVirtualEdges(savedState.virtualEdges);
     setVirtualLoops(savedState.virtualLoops);
     clearSelection();
-    setLocalStatus(`loaded ${draft.title}`);
+    setLocalStatus(`loaded ${graph.title}`);
     setGraphMenuOpen(false);
-    const viewportKey = graphCanvasViewportStorageKey(draft.graphId, draft.graphVersion, draft.id, draft.definition);
+    const viewportKey = graphCanvasViewportStorageKey(graph.graphId, graph.graphVersion, graph.id, graph.definition);
     if (!hasStoredGraphCanvasViewport(viewportKey)) {
-      window.setTimeout(() => setFitViewSignal((value) => value + 1), 80);
+      setFitViewSignal((value) => value + 1);
     }
   }
 
   function deleteCurrentGraph() {
-    deleteActiveDraft();
+    deleteActiveGraph();
     setGraphMenuOpen(false);
+  }
+
+  function openGraphTransfer(mode: GraphTransferMode) {
+    setGraphMenuOpen(false);
+    setGraphTransferMode(mode);
+  }
+
+  function importGraph(graph: ParsedGraphImport): boolean {
+    if (!onGraphSwitch()) {
+      setLocalStatus("run active");
+      return false;
+    }
+    const nextGraphID = graph.graphID || graph.definition.name || "imported_graph";
+    const nextGraphVersion = graph.graphVersion || graph.definition.version || "2.0";
+    const workspaceState = savedGraphWorkspaceState(graph.definition);
+    onGraphId(nextGraphID);
+    onGraphVersion(nextGraphVersion);
+    onDefinitionText(stringifyJSON(graph.definition));
+    if (graph.settings) onReplaceRuntimeSettings(graph.settings);
+    resetActiveGraph();
+    setVirtualNodeIds(workspaceState.virtualNodeIDs);
+    setVirtualEdges(workspaceState.virtualEdges);
+    setVirtualLoops(workspaceState.virtualLoops);
+    clearSelection();
+    setLocalStatus(`imported ${graph.definition.name || nextGraphID}`);
+    setFitViewSignal((value) => value + 1);
+    return true;
   }
 
   function addNode(nodeType: NodeTypeSchema, position?: NodePosition) {
@@ -639,13 +694,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     selectTrigger(created.trigger.id);
   }
 
-  async function handleTriggerSaved(saved: Trigger) {
-    if (await recordTriggerSaved(saved)) selectTrigger(saved.id);
-  }
-
-  async function handleTriggerDeleted(deleted: Trigger) {
-    await recordTriggerDeleted(deleted);
-  }
+  const handleTriggerChanged = useCallback((values: TriggerEditorValues, setup: TriggerDraftSetup) => {
+    if (selectedTriggerId && updateTriggerDraft(selectedTriggerId, values, setup)) {
+      selectTrigger(selectedTriggerId);
+    }
+  }, [selectTrigger, selectedTriggerId, updateTriggerDraft]);
 
   function editTriggerFromMenu(triggerID: string) {
     selectTrigger(triggerID);
@@ -727,16 +780,17 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       {titleSlot
         ? createPortal(
             <GraphTitleMenu
-              activeDraftID={activeDraftId}
+              activeCacheID={activeCacheID}
               definition={definition}
-              drafts={drafts}
+              graphs={graphs}
               graphID={graphId}
               open={graphMenuOpen}
               graphSwitchDisabled={graphSwitchDisabled}
-              unsaved={isUnsaved}
               onCreateGraph={createGraph}
               onDeleteGraph={deleteCurrentGraph}
-              onLoadDraft={loadDraft}
+              onExportGraph={() => openGraphTransfer("export")}
+              onImportGraph={() => openGraphTransfer("import")}
+              onLoadGraph={loadCachedGraph}
               onOpenChange={setGraphMenuOpen}
             />,
             titleSlot
@@ -756,7 +810,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           fitViewSignal={fitViewSignal}
           focusNodeId={canvasSearch.focusNodeID}
           focusNodeSignal={canvasSearch.focusNodeSignal}
-          viewportStorageKey={graphCanvasViewportStorageKey(graphId, graphVersion, activeDraftId, definition)}
+          viewportStorageKey={graphCanvasViewportStorageKey(graphId, graphVersion, activeCacheID, definition)}
           highlightedNodeIds={canvasSearch.highlightedNodeIDs}
           nodeTypes={paletteNodeTypes}
           onSelectNode={setSelectedNodeId}
@@ -802,10 +856,13 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         <TriggerInspector
           graphID={graphId}
           trigger={selectedTrigger}
+          values={selectedTriggerDraft!.values}
+          persisted={selectedTriggerDraft!.persisted}
+          chatSetupChannelID={selectedTriggerDraft!.chatSetupChannelID}
+          chatSetupSessionID={selectedTriggerDraft!.chatSetupSessionID}
           statePathSuggestions={triggerStatePaths}
           chatChannels={registry?.chat_channels ?? []}
-          onSaved={handleTriggerSaved}
-          onDeleted={handleTriggerDeleted}
+          onChange={handleTriggerChanged}
         />
       ) : (
       <GraphInspectorPanel
@@ -825,7 +882,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         registryLoaded={Boolean(registry)}
         toolDefinitions={toolDefinitions}
         runtimeSettings={runtimeSettings}
-        onUpdateRuntimeSettings={onUpdateRuntimeSettings}
+        onChangeRuntimeSettings={onChangeRuntimeSettings}
         selectedEdge={selectedEdge}
         selectedNode={selectedNode}
         selectedVirtualLoop={selectedVirtualLoop}
@@ -870,6 +927,16 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           onToggleTrigger={(triggerId, enabled) => void toggleTriggerFromMenu(triggerId, enabled)}
         />
       ) : null}
+
+      <GraphTransferDialog
+        mode={graphTransferMode}
+        definition={exportDefinition}
+        graphID={graphId}
+        graphVersion={graphVersion}
+        runtimeSettings={runtimeSettings}
+        onClose={() => setGraphTransferMode(null)}
+        onImport={importGraph}
+      />
     </div>
   );
 });

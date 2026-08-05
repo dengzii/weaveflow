@@ -7,12 +7,11 @@ import {
   getRegistry,
   getRuntimeSettings,
   getTools,
-  publishGraphDefinition,
+  listGraphs,
   setGraphDefinition,
-  updateRuntimeSettings,
 } from "../api";
+import { cacheServerGraphs } from "../lib/localGraphs";
 import { parseJSON, stringifyJSON } from "../lib/utils";
-import { pickInitialLocalGraphDraft, readLocalGraphDrafts } from "../lib/localGraphs";
 import {
   defaultInitialState,
   sampleGraph,
@@ -28,14 +27,19 @@ import { UserInputPromptDialog } from "./workbench/UserInputPromptDialog";
 import { useWorkbenchRuns } from "./workbench/useWorkbenchRuns";
 import type { ToastRecord, ToastTone } from "./workbench/graph-workspace/ToastStack";
 import { validateGraph } from "./workbench/graph-workspace/utils";
+import {
+  applyRuntimeSettingsUpdate,
+  runtimeSettingsUpload,
+} from "./workbench/graph-workspace/graphSettingsEditorModel";
 import { missingInitialStateRequirements } from "./workbench/workbenchRunModel";
 import {
   graphAnalysisSignature,
-  graphPublishRequired,
-  graphUploadRequired,
-  graphUploadSignature,
-  type SyncedGraphState,
+  graphSaveIdentity,
+  graphSaveSignature,
+  isGraphSavePending,
 } from "./workbench/graphSyncModel";
+import { isSaveShortcut } from "./workbench/utils";
+import { useGraphTriggers } from "./workbench/graph-workspace/useGraphTriggers";
 import type {
   GraphDefinition,
   GraphInfo,
@@ -61,6 +65,12 @@ interface PendingInitialStateRequirements {
   promise: Promise<InitialStateRequirements>;
 }
 
+const emptyRuntimeSettings: RuntimeSettings = {
+  environment: {},
+  models: [],
+  memory: { enabled: false },
+};
+
 export function WorkbenchPage({
   tab: controlledTab,
   onTabChange,
@@ -83,26 +93,22 @@ export function WorkbenchPage({
   const [initialRequirements, setInitialRequirements] = useState<InitialStateRequirements | null>(null);
   const [registry, setRegistry] = useState<RegistryInfo | null>(null);
   const [toolDefinitions, setToolDefinitions] = useState<ToolDefinition[]>([]);
-  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings | null>(null);
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings>(emptyRuntimeSettings);
   const [registryDialogOpen, setRegistryDialogOpen] = useState(false);
   const [graphId, setGraphId] = useState("debug_graph");
   const [graphVersion, setGraphVersion] = useState("1.0");
   const [initialRequirementsError, setInitialRequirementsError] = useState("");
   const [toasts, setToasts] = useState<ToastRecord[]>([]);
   const [busy, setBusy] = useState(false);
-  const [publishing, setPublishing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedGraphSignatures, setSavedGraphSignatures] = useState<Record<string, string>>({});
   const [serverStateLoaded, setServerStateLoaded] = useState(false);
-  const preferLocalGraphRef = useRef(false);
-  const checkedLocalGraphRef = useRef(false);
-  const syncedGraphRef = useRef<SyncedGraphState | null>(null);
+  const [serverGraphsLoaded, setServerGraphsLoaded] = useState(false);
   const initialRequirementsCacheRef = useRef<CachedInitialStateRequirements | null>(null);
   const initialRequirementsRequestRef = useRef<PendingInitialStateRequirements | null>(null);
   const toastSeqRef = useRef(0);
-
-  if (!checkedLocalGraphRef.current) {
-    checkedLocalGraphRef.current = true;
-    preferLocalGraphRef.current = Boolean(pickInitialLocalGraphDraft(readLocalGraphDrafts()));
-  }
+  const savingRef = useRef(false);
+  const graphTriggers = useGraphTriggers(graphId);
 
   const definition = useMemo(() => {
     try {
@@ -123,6 +129,41 @@ export function WorkbenchPage({
     }),
     [graphId, graphInfo?.id, graphInfo?.version, graphVersion]
   );
+  const currentGraphSaveSignature = useMemo(
+    () => definition
+      ? graphSaveSignature(
+          definition,
+          runtimeSettingsUpload(runtimeSettings),
+          currentGraphIdentity.id,
+          currentGraphIdentity.version
+        )
+      : "",
+    [currentGraphIdentity.id, currentGraphIdentity.version, definition, runtimeSettings]
+  );
+  const graphUnsaved = Boolean(
+    graphTriggers.isUnsaved || (
+      serverStateLoaded &&
+      isGraphSavePending(
+        currentGraphSaveSignature,
+        savedGraphSignatures[graphSaveIdentity(currentGraphIdentity.id, currentGraphIdentity.version)]
+      )
+    )
+  );
+  const recordSavedGraph = useCallback((
+    targetDefinition: GraphDefinition,
+    targetSettings: RuntimeSettingsUpdate,
+    targetGraphID: string,
+    targetGraphVersion: string
+  ) => {
+    const identity = graphSaveIdentity(targetGraphID, targetGraphVersion);
+    const signature = graphSaveSignature(
+      targetDefinition,
+      targetSettings,
+      targetGraphID,
+      targetGraphVersion
+    );
+    setSavedGraphSignatures((current) => ({ ...current, [identity]: signature }));
+  }, []);
 
   const pushToast = useCallback((tone: ToastTone, message: string) => {
     const trimmed = message.trim();
@@ -226,38 +267,73 @@ export function WorkbenchPage({
 
   const loadServerState = useCallback(async () => {
     try {
-      const [info, reg, tools, settings] = await Promise.all([
+      const [info, reg, tools, settings, graphs] = await Promise.all([
         getGraphInfo().catch(() => null),
         getRegistry().catch(() => null),
         getTools().catch(() => null),
         getRuntimeSettings().catch(() => null),
+        listGraphs().catch((err) => {
+          notifyError(err);
+          return [];
+        }),
       ]);
       setGraphInfo(info);
       setRegistry(reg);
       setToolDefinitions(tools?.tools ?? []);
-      setRuntimeSettings(settings);
+      cacheServerGraphs(graphs);
+      const nextSavedGraphSignatures = Object.fromEntries(
+        graphs.map((graph) => [
+          graphSaveIdentity(graph.id, graph.graph_version),
+          graphSaveSignature(
+            graph.definition,
+            runtimeSettingsUpload(graph.settings),
+            graph.id,
+            graph.graph_version
+          ),
+        ])
+      );
       if (info) {
-        const serverDefinition = await getGraphDefinition().catch(() => null);
+        const cachedGraph = graphs.find((graph) =>
+          graph.id === info.id && graph.graph_version === info.version
+        ) ?? graphs.find((graph) => graph.id === info.id);
+        const serverDefinition = await getGraphDefinition().catch(() => null) ?? cachedGraph?.definition;
+        const serverSettings = settings ?? cachedGraph?.settings ?? emptyRuntimeSettings;
+        setGraphId(info.id);
+        setGraphVersion(info.version);
+        setRuntimeSettings(serverSettings);
+        if (serverDefinition) setDefinitionText(stringifyJSON(serverDefinition));
         if (serverDefinition) {
-          syncedGraphRef.current = {
-            signature: graphUploadSignature(serverDefinition, info.id, info.version),
-            official: info.official === true,
-          };
+          nextSavedGraphSignatures[graphSaveIdentity(info.id, info.version)] = graphSaveSignature(
+            serverDefinition,
+            runtimeSettingsUpload(serverSettings),
+            info.id,
+            info.version
+          );
         }
-        if (!preferLocalGraphRef.current) {
-          setGraphId(info.id);
-          setGraphVersion(info.version);
-          if (serverDefinition) setDefinitionText(stringifyJSON(serverDefinition));
-          await refreshInitialRequirements(serverDefinition ?? undefined).catch((err) => {
-            setInitialRequirements(null);
-            setInitialRequirementsError(err instanceof Error ? err.message : String(err));
-          });
-        }
+        await refreshInitialRequirements(serverDefinition ?? undefined).catch((err) => {
+          setInitialRequirements(null);
+          setInitialRequirementsError(err instanceof Error ? err.message : String(err));
+        });
+      } else if (graphs[0]) {
+        setGraphId(graphs[0].id);
+        setGraphVersion(graphs[0].graph_version);
+        setDefinitionText(stringifyJSON(graphs[0].definition));
+        setRuntimeSettings(graphs[0].settings);
+      } else if (settings) {
+        setRuntimeSettings(settings);
       }
-      const loadIdentity = info
-        ? { id: info.id || "graph", version: info.version || "1.0" }
+      setSavedGraphSignatures(nextSavedGraphSignatures);
+      setServerGraphsLoaded(true);
+      const initialGraph = info ?? graphs[0];
+      const loadIdentity = initialGraph
+        ? {
+            id: initialGraph.id || "graph",
+            version: "version" in initialGraph
+              ? initialGraph.version || "1.0"
+              : initialGraph.graph_version || "1.0",
+          }
         : undefined;
-      await refreshRuns(loadIdentity, !preferLocalGraphRef.current).catch(() => undefined);
+      await refreshRuns(loadIdentity, true).catch(() => undefined);
     } catch (err) {
       notifyError(err);
     } finally {
@@ -269,16 +345,11 @@ export function WorkbenchPage({
     void loadServerState();
   }, [loadServerState]);
 
-  const handleLocalGraphLoaded = useCallback(() => {
-    preferLocalGraphRef.current = true;
-  }, []);
-
   const prepareGraphSwitch = useCallback(() => {
     if (graphSwitchLocked) {
       pushToast("warn", "Cannot switch graph while a run is active");
       return false;
     }
-    preferLocalGraphRef.current = true;
     resetRunState();
     return true;
   }, [graphSwitchLocked, pushToast, resetRunState]);
@@ -296,29 +367,9 @@ export function WorkbenchPage({
       setInitialRequirementsError("");
       return;
     }
-    let canceled = false;
-    const timer = window.setTimeout(() => {
-      void analyzeGraphDefinition(definition)
-        .then((requirements) => {
-          if (!canceled) {
-            setInitialRequirements(requirements);
-            setInitialRequirementsError("");
-          }
-        })
-        .catch((err) => {
-          if (!canceled && !(err instanceof Error && err.name === "AbortError")) {
-            setInitialRequirements(null);
-            setInitialRequirementsError(err instanceof Error ? err.message : String(err));
-          }
-        });
-    }, 350);
-    return () => {
-      canceled = true;
-      window.clearTimeout(timer);
-      const pending = initialRequirementsRequestRef.current;
-      if (pending?.signature === initialRequirementsSignature) pending.controller.abort();
-    };
-  }, [analyzeGraphDefinition, initialRequirementsSignature, registry, serverStateLoaded]);
+    setInitialRequirements(null);
+    setInitialRequirementsError("");
+  }, [definition, initialRequirementsSignature, registry, serverStateLoaded]);
 
   async function runGraph() {
     setBusy(true);
@@ -354,17 +405,19 @@ export function WorkbenchPage({
         return;
       }
 
-      const signature = graphUploadSignature(definition, currentGraphIdentity.id, currentGraphIdentity.version);
-      if (graphUploadRequired(signature, syncedGraphRef.current)) {
-        const result = await setGraphDefinition(definition, graphId, graphVersion);
-        setGraphInfo(result.graph);
-        setGraphId(result.graph.id);
-        setGraphVersion(result.graph.version);
-        syncedGraphRef.current = {
-          signature: graphUploadSignature(definition, result.graph.id, result.graph.version),
-          official: result.graph.official === true,
-        };
-      }
+      const settings = runtimeSettingsUpload(runtimeSettings);
+      const result = await setGraphDefinition(definition, settings, graphId, graphVersion);
+      const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
+      setGraphInfo(result.graph);
+      setGraphId(result.graph.id);
+      setGraphVersion(result.graph.version);
+      setRuntimeSettings(nextRuntimeSettings);
+      recordSavedGraph(
+        definition,
+        runtimeSettingsUpload(nextRuntimeSettings),
+        result.graph.id,
+        result.graph.version
+      );
       await startConfiguredRun(initialState);
     } catch (err) {
       setInitialRequirementsError(err instanceof Error ? err.message : String(err));
@@ -374,21 +427,21 @@ export function WorkbenchPage({
     }
   }
 
-  async function saveRuntimeSettings(settings: RuntimeSettingsUpdate): Promise<RuntimeSettings> {
-    try {
-      const next = await updateRuntimeSettings(settings);
-      setRuntimeSettings(next);
-      pushToast("info", "Runtime settings updated");
-      return next;
-    } catch (err) {
-      notifyError(err);
-      throw err;
-    }
-  }
+  const changeRuntimeSettings = useCallback((settings: RuntimeSettingsUpdate): RuntimeSettings => {
+    const next = applyRuntimeSettingsUpdate(runtimeSettings, settings);
+    setRuntimeSettings(next);
+    return next;
+  }, [runtimeSettings]);
 
-  async function publishGraph() {
+  const replaceRuntimeSettings = useCallback((settings: RuntimeSettings) => {
+    setRuntimeSettings(settings);
+  }, []);
+
+  async function saveGraph() {
+    if (savingRef.current) return;
+    savingRef.current = true;
     setBusy(true);
-    setPublishing(true);
+    setSaving(true);
     try {
       if (!definition) {
         pushToast("error", "Graph JSON is invalid");
@@ -399,12 +452,7 @@ export function WorkbenchPage({
         pushToast("error", `Graph validation failed: ${graphValidationError}`);
         return;
       }
-
-      const signature = graphUploadSignature(definition, currentGraphIdentity.id, currentGraphIdentity.version);
-      if (!graphPublishRequired(signature, syncedGraphRef.current)) {
-        pushToast("info", `Already published ${currentGraphIdentity.id}@${currentGraphIdentity.version}`);
-        return;
-      }
+      if (graphTriggers.isUnsaved) graphTriggers.validate();
 
       const requirements = await analyzeGraphDefinition(definition);
       setInitialRequirements(requirements);
@@ -416,36 +464,55 @@ export function WorkbenchPage({
         return;
       }
 
-      const result = await publishGraphDefinition(definition, graphId, graphVersion);
+      const settings = runtimeSettingsUpload(runtimeSettings);
+      const result = await setGraphDefinition(definition, settings, graphId, graphVersion);
+      const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
       setGraphInfo(result.graph);
       setGraphId(result.graph.id);
       setGraphVersion(result.graph.version);
-      syncedGraphRef.current = {
-        signature: graphUploadSignature(definition, result.graph.id, result.graph.version),
-        official: result.graph.official === true,
-      };
+      setRuntimeSettings(nextRuntimeSettings);
+      recordSavedGraph(
+        definition,
+        runtimeSettingsUpload(nextRuntimeSettings),
+        result.graph.id,
+        result.graph.version
+      );
+      if (graphTriggers.isUnsaved) await graphTriggers.save();
       const session = result.graph.graph_session_id ? ` (${result.graph.graph_session_id})` : "";
-      pushToast("info", `Published ${result.graph.id}@${result.graph.version}${session}`);
+      pushToast("info", `Saved ${result.graph.id}@${result.graph.version}${session}`);
     } catch (err) {
       setInitialRequirementsError(err instanceof Error ? err.message : String(err));
       notifyError(err);
     } finally {
-      setPublishing(false);
+      savingRef.current = false;
+      setSaving(false);
       setBusy(false);
     }
   }
+
+  useEffect(() => {
+    const handleSaveShortcut = (event: KeyboardEvent) => {
+      if (tab !== "graph" || !isSaveShortcut(event)) return;
+      event.preventDefault();
+      if (event.repeat || workbenchBusy || !definition) return;
+      void saveGraph();
+    };
+    window.addEventListener("keydown", handleSaveShortcut);
+    return () => window.removeEventListener("keydown", handleSaveShortcut);
+  });
 
   return (
     <WorkbenchShell
       tab={tab}
       streamStatus={streamStatus}
       busy={workbenchBusy}
-      publishing={publishing}
+      saving={saving}
+      unsaved={graphUnsaved}
       definition={definition}
       runControlMode={runControlMode}
       canResume={canResumeSelectedRun}
       onRun={runGraph}
-      onPublish={() => void publishGraph()}
+      onSave={() => void saveGraph()}
       onPause={() => void pauseSelectedRun()}
       onStop={() => void cancelSelectedRun()}
       onResume={() => void resumeSelectedRun()}
@@ -480,9 +547,12 @@ export function WorkbenchPage({
           registry={registry}
           toolDefinitions={toolDefinitions}
           runtimeSettings={runtimeSettings}
-          onUpdateRuntimeSettings={saveRuntimeSettings}
+          graphTriggers={graphTriggers}
+          onChangeRuntimeSettings={changeRuntimeSettings}
+          onReplaceRuntimeSettings={replaceRuntimeSettings}
           graphId={graphId}
           graphVersion={graphVersion}
+          serverGraphsLoaded={serverGraphsLoaded}
           graphSwitchDisabled={graphSwitchLocked}
           toasts={toasts}
           onGraphId={setGraphId}
@@ -491,7 +561,6 @@ export function WorkbenchPage({
           onInitialStateText={setInitialStateText}
           onDismissToast={dismissToast}
           onGraphSwitch={prepareGraphSwitch}
-          onLocalGraphLoaded={handleLocalGraphLoaded}
         />
       ) : null}
       {tab === "settings" ? (

@@ -56,7 +56,6 @@ export interface GraphInfo {
   graph_hash?: string;
   graph_snapshot_hash?: string;
   graph_session_id?: string;
-  official?: boolean;
   entry_point?: string;
   finish_point?: string;
 }
@@ -94,7 +93,6 @@ export interface TriggerScheduleSpec {
 export interface TriggerChatSpec {
   channel?: string;
   channel_config?: Record<string, unknown>;
-  reply_path?: string;
   stream_updates?: boolean;
   stream_node_ids?: string[];
   history_limit?: number;
@@ -199,6 +197,7 @@ export interface RuntimeModelSettings {
   model?: string;
   base_url?: string;
   api_key_configured: boolean;
+  api_key?: string;
 }
 
 export interface RuntimeMemorySettings {
@@ -227,6 +226,7 @@ export interface RuntimeModelSettingsUpdate {
 export interface GraphLoadResult {
   graph: GraphInfo;
   definition: GraphDefinition;
+  settings: RuntimeSettings;
   runner_base_dir?: string;
   warnings?: WarningRecord[];
 }
@@ -479,7 +479,11 @@ export interface WarningRecord {
 
 export interface CachedGraphSummary {
   id: string;
+  graph_version: string;
+  definition: GraphDefinition;
+  settings: RuntimeSettings;
   session_count: number;
-  latest_session?: string;
+  latest_session: string;
+  updated_at: string;
 }
 

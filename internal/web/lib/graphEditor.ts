@@ -89,6 +89,10 @@ export function createGraphDefinition(
   };
 }
 
+export function createGraphID(timestamp = Date.now()): string {
+  return `graph_${timestamp.toString(36)}`;
+}
+
 export function createNodeFromType(nodeType: NodeTypeSchema, existingNodes: GraphNodeSpec[]): GraphNodeSpec {
   const baseID = slugify(nodeType.type || nodeType.title || "node", "node");
   const id = uniqueNodeId(baseID, existingNodes);

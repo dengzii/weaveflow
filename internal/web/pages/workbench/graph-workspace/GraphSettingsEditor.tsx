@@ -1,14 +1,12 @@
-import { useEffect, useState } from "react";
-import { Braces, Plus, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { Plus, Trash2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import { Input } from "../../../components/ui/input";
+import { Input, SensitiveInput } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import type { RuntimeSettings, RuntimeSettingsUpdate } from "../../../types";
 import { Field } from "./shared";
 import {
-  MODEL_API_KEY_MASK,
   environmentRowsFromSettings,
-  modelAPIKeyDisplayValue,
   modelsFromSettings,
   nextModelID,
   normalizeEnvironmentSettings,
@@ -18,10 +16,10 @@ import type { EditableEnvironmentVariable, EditableGraphModel } from "./graphSet
 
 export function RuntimeSettingsEditor({
   settings,
-  onUpdateRuntimeSettings,
+  onChangeRuntimeSettings,
 }: {
   settings: RuntimeSettings | null;
-  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
+  onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
 }) {
   const [models, setModels] = useState<EditableGraphModel[]>([]);
   const [memoryEnabled, setMemoryEnabled] = useState(false);
@@ -30,10 +28,14 @@ export function RuntimeSettingsEditor({
   const [environmentPresetKey, setEnvironmentPresetKey] = useState("");
   const [newEnvironmentKey, setNewEnvironmentKey] = useState("");
   const [newEnvironmentValue, setNewEnvironmentValue] = useState("");
-  const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState("");
+  const locallyAppliedSettingsRef = useRef<RuntimeSettings | null>(null);
 
   useEffect(() => {
+    if (settings === locallyAppliedSettingsRef.current) {
+      locallyAppliedSettingsRef.current = null;
+      return;
+    }
     setModels(modelsFromSettings(settings));
     setMemoryEnabled(settings?.memory.enabled ?? false);
     setMemoryDirectory(settings?.memory.directory ?? "");
@@ -45,14 +47,16 @@ export function RuntimeSettingsEditor({
   }, [settings]);
 
   function updateModel(index: number, update: Partial<EditableGraphModel>) {
-    setModels((current) => current.map((model, modelIndex) => (modelIndex === index ? { ...model, ...update } : model)));
+    const nextModels = models.map((model, modelIndex) => (modelIndex === index ? { ...model, ...update } : model));
+    setModels(nextModels);
+    publish(nextModels, memoryEnabled, memoryDirectory, environmentRows);
   }
 
   function addModel() {
-    setModels((current) => [
-      ...current,
+    const nextModels = [
+      ...models,
       {
-        id: nextModelID(current),
+        id: nextModelID(models),
         enabled: true,
         provider: "openai",
         model: "",
@@ -60,23 +64,30 @@ export function RuntimeSettingsEditor({
         api_key: "",
         api_key_configured: false,
       },
-    ]);
+    ];
+    setModels(nextModels);
+    publish(nextModels, memoryEnabled, memoryDirectory, environmentRows);
   }
 
   function updateEnvironment(index: number, update: Partial<EditableEnvironmentVariable>) {
-    setEnvironmentRows((current) => current.map((row, rowIndex) => (rowIndex === index ? { ...row, ...update } : row)));
+    const nextRows = environmentRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...update } : row));
+    setEnvironmentRows(nextRows);
+    publish(models, memoryEnabled, memoryDirectory, nextRows);
   }
 
   function removeEnvironment(index: number) {
-    setEnvironmentRows((current) => current.filter((_, rowIndex) => rowIndex !== index));
+    const nextRows = environmentRows.filter((_, rowIndex) => rowIndex !== index);
+    setEnvironmentRows(nextRows);
+    publish(models, memoryEnabled, memoryDirectory, nextRows);
   }
 
   function addEnvironmentPreset() {
     const preset = settings?.environment_presets?.find((item) => item.key === environmentPresetKey);
     if (!preset || environmentRows.some((row) => row.key.trim() === preset.key)) return;
-    setEnvironmentRows((current) => [...current, { key: preset.key, value: preset.default_value }]);
+    const nextRows = [...environmentRows, { key: preset.key, value: preset.default_value }];
+    setEnvironmentRows(nextRows);
     setEnvironmentPresetKey("");
-    setStatus("");
+    publish(models, memoryEnabled, memoryDirectory, nextRows);
   }
 
   function addEnvironment() {
@@ -89,44 +100,48 @@ export function RuntimeSettingsEditor({
       setStatus(`Duplicate environment key: ${key}`);
       return;
     }
-    setEnvironmentRows((current) => [...current, { key, value: newEnvironmentValue }]);
+    const nextRows = [...environmentRows, { key, value: newEnvironmentValue }];
+    setEnvironmentRows(nextRows);
     setNewEnvironmentKey("");
     setNewEnvironmentValue("");
-    setStatus("");
+    publish(models, memoryEnabled, memoryDirectory, nextRows);
   }
 
   function removeModel(index: number) {
-    setModels((current) => current.filter((_, modelIndex) => modelIndex !== index));
+    const nextModels = models.filter((_, modelIndex) => modelIndex !== index);
+    setModels(nextModels);
+    publish(nextModels, memoryEnabled, memoryDirectory, environmentRows);
   }
 
-  async function save() {
+  function publish(
+    nextModels: EditableGraphModel[],
+    nextMemoryEnabled: boolean,
+    nextMemoryDirectory: string,
+    nextEnvironmentRows: EditableEnvironmentVariable[]
+  ) {
     let environment: Record<string, string>;
     let modelUpdates: RuntimeSettingsUpdate["models"];
     try {
-      environment = normalizeEnvironmentSettings(environmentRows);
-      modelUpdates = normalizeModelSettings(models);
+      environment = normalizeEnvironmentSettings(nextEnvironmentRows);
+      modelUpdates = normalizeModelSettings(nextModels);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
       return;
     }
 
-    setSaving(true);
     setStatus("");
     try {
-      await onUpdateRuntimeSettings({
+      const next = onChangeRuntimeSettings({
         environment,
         models: modelUpdates,
         memory: {
-          enabled: memoryEnabled,
-          directory: memoryDirectory.trim(),
+          enabled: nextMemoryEnabled,
+          directory: nextMemoryDirectory.trim(),
         },
       });
-      setModels((current) => current.map((model) => ({ ...model, api_key: modelAPIKeyDisplayValue(model) })));
-      setStatus("Settings saved.");
+      locallyAppliedSettingsRef.current = next;
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
     }
   }
 
@@ -185,7 +200,11 @@ export function RuntimeSettingsEditor({
                     <Input value={model.base_url} onChange={(event) => updateModel(index, { base_url: event.target.value })} placeholder="https://api.openai.com/v1" />
                   </Field>
                   <Field label="API key">
-                    <Input type={model.api_key.trim() === MODEL_API_KEY_MASK ? "text" : "password"} value={model.api_key} onChange={(event) => updateModel(index, { api_key: event.target.value })} />
+                    <SensitiveInput
+                      value={model.api_key}
+                      configured={model.api_key_configured}
+                      onValueChange={(value) => updateModel(index, { api_key: value })}
+                    />
                   </Field>
                 </div>
               </div>
@@ -199,13 +218,24 @@ export function RuntimeSettingsEditor({
           <input
             type="checkbox"
             checked={memoryEnabled}
-            onChange={(event) => setMemoryEnabled(event.target.checked)}
+            onChange={(event) => {
+              const enabled = event.target.checked;
+              setMemoryEnabled(enabled);
+              publish(models, enabled, memoryDirectory, environmentRows);
+            }}
             className="h-4 w-4"
           />
           <span>Memory</span>
         </label>
         <Field label="Directory">
-          <Input value={memoryDirectory} onChange={(event) => setMemoryDirectory(event.target.value)} />
+          <Input
+            value={memoryDirectory}
+            onChange={(event) => {
+              const directory = event.target.value;
+              setMemoryDirectory(directory);
+              publish(models, memoryEnabled, directory, environmentRows);
+            }}
+          />
         </Field>
       </div>
 
@@ -242,7 +272,16 @@ export function RuntimeSettingsEditor({
             {environmentRows.map((row, index) => (
               <div key={`${row.key || "environment"}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_32px] gap-2">
                 <Input value={row.key} onChange={(event) => updateEnvironment(index, { key: event.target.value })} placeholder="KEY" className="font-mono text-xs" />
-                <Input value={row.value} onChange={(event) => updateEnvironment(index, { value: event.target.value })} placeholder="value" className="font-mono text-xs" />
+                {isSensitiveEnvironmentName(row.key) ? (
+                  <SensitiveInput
+                    value={row.value}
+                    onValueChange={(value) => updateEnvironment(index, { value })}
+                    placeholder="value"
+                    className="font-mono text-xs"
+                  />
+                ) : (
+                  <Input value={row.value} onChange={(event) => updateEnvironment(index, { value: event.target.value })} placeholder="value" className="font-mono text-xs" />
+                )}
                 <Button type="button" variant="ghost" size="icon" className="h-9 w-8" onClick={() => removeEnvironment(index)} aria-label="Remove environment variable">
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -253,7 +292,16 @@ export function RuntimeSettingsEditor({
 
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
           <Input value={newEnvironmentKey} onChange={(event) => setNewEnvironmentKey(event.target.value)} placeholder="KEY" className="font-mono text-xs" />
-          <Input value={newEnvironmentValue} onChange={(event) => setNewEnvironmentValue(event.target.value)} placeholder="value" className="font-mono text-xs" />
+          {isSensitiveEnvironmentName(newEnvironmentKey) ? (
+            <SensitiveInput
+              value={newEnvironmentValue}
+              onValueChange={setNewEnvironmentValue}
+              placeholder="value"
+              className="font-mono text-xs"
+            />
+          ) : (
+            <Input value={newEnvironmentValue} onChange={(event) => setNewEnvironmentValue(event.target.value)} placeholder="value" className="font-mono text-xs" />
+          )}
           <Button type="button" variant="outline" size="sm" onClick={addEnvironment} disabled={!newEnvironmentKey.trim()}>
             <Plus className="h-4 w-4" />
             Add variable
@@ -262,10 +310,14 @@ export function RuntimeSettingsEditor({
       </div>
 
       {status ? <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">{status}</div> : null}
-      <Button variant="outline" size="sm" onClick={() => void save()} disabled={saving}>
-        <Braces className="h-4 w-4" />
-        {saving ? "Saving..." : "Save settings"}
-      </Button>
     </div>
   );
+}
+
+function isSensitiveEnvironmentName(value: string): boolean {
+  const normalized = value.trim().toUpperCase();
+  return normalized.includes("KEY")
+    || normalized.includes("TOKEN")
+    || normalized.includes("SECRET")
+    || normalized.includes("PASSWORD");
 }

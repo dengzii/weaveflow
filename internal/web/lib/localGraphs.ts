@@ -1,14 +1,12 @@
-import type { GraphDefinition } from "../types";
+import type { CachedGraphSummary, GraphDefinition, RuntimeSettings } from "../types";
 
-const storageKey = "weaveflow:web:local-graphs:v1";
-const lastDraftStorageKey = "weaveflow:web:last-local-graph:v1";
-
-export interface LocalGraphDraft {
+export interface LocalGraph {
   id: string;
   title: string;
   graphId: string;
   graphVersion: string;
   definition: GraphDefinition;
+  runtimeSettings: RuntimeSettings;
   createdAt: string;
   updatedAt: string;
 }
@@ -19,120 +17,65 @@ export interface SaveLocalGraphInput {
   graphId: string;
   graphVersion: string;
   definition: GraphDefinition;
+  runtimeSettings: RuntimeSettings;
 }
 
-export function readLocalGraphDrafts(): LocalGraphDraft[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(storageKey);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as unknown;
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(isLocalGraphDraft).sort(sortDrafts);
-  } catch {
-    return [];
-  }
+let cachedGraphs: LocalGraph[] = [];
+
+export function readLocalGraphs(): LocalGraph[] {
+  return [...cachedGraphs].sort(sortGraphs);
 }
 
-export function saveLocalGraphDraft(input: SaveLocalGraphInput): LocalGraphDraft {
+export function cacheServerGraphs(graphs: CachedGraphSummary[]): LocalGraph[] {
+  cachedGraphs = graphs.map((graph) => ({
+    id: serverGraphCacheID(graph),
+    title: graph.definition.name || graph.id,
+    graphId: graph.id,
+    graphVersion: graph.graph_version,
+    definition: graph.definition,
+    runtimeSettings: graph.settings,
+    createdAt: graph.updated_at,
+    updatedAt: graph.updated_at,
+  })).sort(sortGraphs);
+  return readLocalGraphs();
+}
+
+export function saveLocalGraph(input: SaveLocalGraphInput): LocalGraph {
   const now = new Date().toISOString();
-  const drafts = readLocalGraphDrafts();
-  const existing = input.id ? drafts.find((draft) => draft.id === input.id) : undefined;
-  const draft: LocalGraphDraft = {
-    id: existing?.id ?? createDraftID(),
+  const graphs = readLocalGraphs();
+  const existing = input.id ? graphs.find((graph) => graph.id === input.id) : undefined;
+  const graph: LocalGraph = {
+    id: existing?.id ?? createLocalGraphID(),
     title: input.title?.trim() || input.definition.name || input.graphId || "Untitled graph",
     graphId: input.graphId.trim() || input.definition.name || "debug_graph",
     graphVersion: input.graphVersion.trim() || input.definition.version || "2.0",
     definition: input.definition,
+    runtimeSettings: input.runtimeSettings,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
-  writeLocalGraphDrafts([draft, ...drafts.filter((item) => item.id !== draft.id)].sort(sortDrafts));
-  writeLastLocalGraphDraftId(draft.id);
-  return draft;
+  writeLocalGraphs([graph, ...graphs.filter((item) => item.id !== graph.id)].sort(sortGraphs));
+  return graph;
 }
 
-export function deleteLocalGraphDraft(id: string): LocalGraphDraft[] {
-  const drafts = readLocalGraphDrafts().filter((draft) => draft.id !== id);
-  writeLocalGraphDrafts(drafts);
-  if (readLastLocalGraphDraftId() === id) {
-    clearLastLocalGraphDraftId();
-  }
-  return drafts;
+export function deleteLocalGraph(id: string): LocalGraph[] {
+  const graphs = readLocalGraphs().filter((graph) => graph.id !== id);
+  writeLocalGraphs(graphs);
+  return graphs;
 }
 
-export function pickInitialLocalGraphDraft(drafts: LocalGraphDraft[]): LocalGraphDraft | null {
-  const lastDraftId = readLastLocalGraphDraftId();
-  if (lastDraftId) {
-    const lastDraft = drafts.find((draft) => draft.id === lastDraftId);
-    if (lastDraft) return lastDraft;
-  }
-  return drafts[0] ?? null;
+function writeLocalGraphs(graphs: LocalGraph[]) {
+  cachedGraphs = graphs.slice(0, 80);
 }
 
-export function readLastLocalGraphDraftId(): string {
-  if (typeof window === "undefined") return "";
-  try {
-    return window.localStorage.getItem(lastDraftStorageKey) ?? "";
-  } catch {
-    return "";
-  }
+function createLocalGraphID() {
+  return `local_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
-export function writeLastLocalGraphDraftId(id: string) {
-  if (typeof window === "undefined" || !id) return;
-  try {
-    window.localStorage.setItem(lastDraftStorageKey, id);
-  } catch {
-    // best effort only
-  }
-}
-
-export function duplicateLocalGraphDraft(id: string): LocalGraphDraft | null {
-  const source = readLocalGraphDrafts().find((draft) => draft.id === id);
-  if (!source) return null;
-  return saveLocalGraphDraft({
-    title: `${source.title} Copy`,
-    graphId: `${source.graphId}_copy`,
-    graphVersion: source.graphVersion,
-    definition: {
-      ...source.definition,
-      name: source.definition.name ? `${source.definition.name}_copy` : source.definition.name,
-    },
-  });
-}
-
-function writeLocalGraphDrafts(drafts: LocalGraphDraft[]) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(storageKey, JSON.stringify(drafts.slice(0, 80)));
-}
-
-function clearLastLocalGraphDraftId() {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.removeItem(lastDraftStorageKey);
-  } catch {
-    // best effort only
-  }
-}
-
-function createDraftID() {
-  return `draft_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function sortDrafts(a: LocalGraphDraft, b: LocalGraphDraft) {
+function sortGraphs(a: LocalGraph, b: LocalGraph) {
   return b.updatedAt.localeCompare(a.updatedAt);
 }
 
-function isLocalGraphDraft(value: unknown): value is LocalGraphDraft {
-  if (!value || typeof value !== "object") return false;
-  const draft = value as LocalGraphDraft;
-  return (
-    typeof draft.id === "string" &&
-    typeof draft.title === "string" &&
-    typeof draft.graphId === "string" &&
-    typeof draft.graphVersion === "string" &&
-    Boolean(draft.definition) &&
-    Array.isArray(draft.definition.nodes)
-  );
+function serverGraphCacheID(graph: CachedGraphSummary) {
+  return `server:${graph.id}:${graph.latest_session}`;
 }

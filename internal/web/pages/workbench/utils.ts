@@ -1,5 +1,14 @@
 import type { ThemePreference } from "../../lib/theme";
 
+export function isSaveShortcut(event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">): boolean {
+  return (
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    event.key.toLowerCase() === "s"
+  );
+}
+
 export function statusTone(status?: string): "neutral" | "ok" | "warn" | "danger" | "live" {
   switch (status) {
     case "completed":

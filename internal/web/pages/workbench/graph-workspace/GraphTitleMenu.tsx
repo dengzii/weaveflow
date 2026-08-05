@@ -1,37 +1,38 @@
-import { ChevronDown, FilePlus2, Trash2 } from "lucide-react";
+import { ChevronDown, Download, FilePlus2, FileUp, Trash2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { formatTime } from "../../../lib/utils";
 import type { GraphDefinition } from "../../../types";
-import type { LocalGraphDraft } from "../../../lib/localGraphs";
+import type { LocalGraph } from "../../../lib/localGraphs";
 import { graphScriptBadgeCount } from "./graphWorkspaceModel";
 
 export function GraphTitleMenu({
-  activeDraftID,
+  activeCacheID,
   definition,
-  drafts,
+  graphs,
   graphID,
   open,
   graphSwitchDisabled,
-  unsaved,
   onCreateGraph,
   onDeleteGraph,
-  onLoadDraft,
+  onExportGraph,
+  onImportGraph,
+  onLoadGraph,
   onOpenChange,
 }: {
-  activeDraftID: string;
+  activeCacheID: string;
   definition: GraphDefinition | null;
-  drafts: LocalGraphDraft[];
+  graphs: LocalGraph[];
   graphID: string;
   open: boolean;
   graphSwitchDisabled: boolean;
-  unsaved: boolean;
   onCreateGraph: () => void;
   onDeleteGraph: () => void;
-  onLoadDraft: (draft: LocalGraphDraft) => void;
+  onExportGraph: () => void;
+  onImportGraph: () => void;
+  onLoadGraph: (graph: LocalGraph) => void;
   onOpenChange: (open: boolean) => void;
 }) {
   const title = definition?.name || graphID || "Untitled graph";
-  const displayTitle = unsaved ? `*${title}` : title;
   const scriptBadgeCount = graphScriptBadgeCount(definition);
 
   return (
@@ -41,9 +42,9 @@ export function GraphTitleMenu({
         className="flex max-w-[360px] min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-accent"
         onClick={() => onOpenChange(!open)}
         aria-expanded={open}
-        title={scriptBadgeCount > 0 ? `${displayTitle} (${scriptBadgeCount} scripts)` : displayTitle}
+        title={scriptBadgeCount > 0 ? `${title} (${scriptBadgeCount} scripts)` : title}
       >
-        <span className="min-w-0 truncate text-sm font-semibold">{displayTitle}</span>
+        <span className="min-w-0 truncate text-sm font-semibold">{title}</span>
         <ScriptCountBadge count={scriptBadgeCount} />
         <ChevronDown className={`h-4 w-4 shrink-0 text-muted-foreground transition-transform ${open ? "rotate-180" : ""}`} />
       </button>
@@ -59,8 +60,32 @@ export function GraphTitleMenu({
               type="button"
               variant="ghost"
               size="icon"
+              className="h-8 w-8"
+              onClick={onImportGraph}
+              disabled={graphSwitchDisabled}
+              title="Import graph"
+              aria-label="Import graph"
+            >
+              <FileUp className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8"
+              onClick={onExportGraph}
+              disabled={!definition}
+              title="Export graph"
+              aria-label="Export graph"
+            >
+              <Download className="h-4 w-4" />
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
               onClick={onDeleteGraph}
-              disabled={!activeDraftID}
+              disabled={!activeCacheID}
               title="Delete graph"
               aria-label="Delete graph"
               className="ml-auto"
@@ -70,27 +95,27 @@ export function GraphTitleMenu({
           </div>
 
           <div className="max-h-80 overflow-auto">
-            {drafts.length === 0 ? (
-              <div className="px-3 py-3 text-sm text-muted-foreground">No local graphs.</div>
+            {graphs.length === 0 ? (
+              <div className="px-3 py-3 text-sm text-muted-foreground">No graphs.</div>
             ) : (
-              drafts.map((draft) => {
-                const draftScriptBadgeCount = graphScriptBadgeCount(draft.definition);
+              graphs.map((graph) => {
+                const graphBadgeCount = graphScriptBadgeCount(graph.definition);
                 return (
                   <button
-                    key={draft.id}
+                    key={graph.id}
                     type="button"
                     className={`grid w-full gap-1 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent ${
-                      draft.id === activeDraftID ? "bg-accent" : ""
+                      graph.id === activeCacheID ? "bg-accent" : ""
                     } ${graphSwitchDisabled ? "cursor-not-allowed opacity-50 hover:bg-transparent" : ""}`}
-                    onClick={() => onLoadDraft(draft)}
+                    onClick={() => onLoadGraph(graph)}
                     disabled={graphSwitchDisabled}
                   >
                     <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-sm font-medium">{draft.title}</span>
-                      <ScriptCountBadge count={draftScriptBadgeCount} />
+                      <span className="truncate text-sm font-medium">{graph.title}</span>
+                      <ScriptCountBadge count={graphBadgeCount} />
                     </div>
                     <div className="truncate text-xs text-muted-foreground">
-                      {draft.definition.nodes.length} nodes / {formatTime(draft.updatedAt)}
+                      {graph.definition.nodes.length} nodes / {formatTime(graph.updatedAt)}
                     </div>
                   </button>
                 );

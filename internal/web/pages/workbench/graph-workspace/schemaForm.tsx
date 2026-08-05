@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import { AlertCircle } from "lucide-react";
-import { Input } from "../../../components/ui/input";
+import { Input, SensitiveInput } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Textarea } from "../../../components/ui/textarea";
 import { cn, isPlainRecord } from "../../../lib/utils";
@@ -34,6 +34,7 @@ interface JsonSchemaFormProps {
   unavailableReason?: string;
   value: Record<string, unknown>;
   toolDefinitions?: ToolDefinition[];
+  writeOnlyValuesConfigured?: boolean;
   onChange: (value: Record<string, unknown>) => void;
 }
 
@@ -42,6 +43,7 @@ export function JsonSchemaForm({
   unavailableReason,
   value,
   toolDefinitions = [],
+  writeOnlyValuesConfigured = false,
   onChange,
 }: JsonSchemaFormProps) {
   const normalizedSchema = normalizeConfigSchema(schema);
@@ -74,6 +76,7 @@ export function JsonSchemaForm({
           rootValue={value}
           issues={issues}
           toolDefinitions={toolDefinitions}
+          writeOnlyValuesConfigured={writeOnlyValuesConfigured}
           onChange={onChange}
         />
       ))}
@@ -97,6 +100,7 @@ function SchemaField({
   rootValue,
   issues,
   toolDefinitions,
+  writeOnlyValuesConfigured,
   onChange,
 }: {
   path: string;
@@ -105,6 +109,7 @@ function SchemaField({
   rootValue: Record<string, unknown>;
   issues: SchemaFormIssue[];
   toolDefinitions: ToolDefinition[];
+  writeOnlyValuesConfigured: boolean;
   onChange: (value: Record<string, unknown>) => void;
 }) {
   const fieldSchema = isPlainRecord(schema) ? schema : {};
@@ -142,12 +147,23 @@ function SchemaField({
                 rootValue={rootValue}
                 issues={issues}
                 toolDefinitions={toolDefinitions}
+                writeOnlyValuesConfigured={writeOnlyValuesConfigured}
                 onChange={onChange}
               />
             ))}
           </div>
         ) : (
-          renderSchemaControl(type, fieldSchema, value, setValue, invalid, path, name, toolDefinitions)
+          renderSchemaControl(
+            type,
+            fieldSchema,
+            value,
+            setValue,
+            invalid,
+            path,
+            name,
+            toolDefinitions,
+            writeOnlyValuesConfigured
+          )
         )}
       </SchemaControlField>
       {fieldIssues.map((issue) => (
@@ -169,7 +185,8 @@ function renderSchemaControl(
   invalid: boolean,
   path: string,
   name: string,
-  toolDefinitions: ToolDefinition[]
+  toolDefinitions: ToolDefinition[],
+  writeOnlyValuesConfigured: boolean
 ) {
   const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
   const controlClass = invalid ? "border-destructive focus:border-destructive" : undefined;
@@ -245,6 +262,7 @@ function renderSchemaControl(
             schema={itemSchema}
             value={itemValue}
             toolDefinitions={toolDefinitions}
+            writeOnlyValuesConfigured={writeOnlyValuesConfigured}
             onChange={onItemChange}
           />
         )}
@@ -289,6 +307,18 @@ function renderSchemaControl(
     );
   }
 
+  if (type === "string" && (schema.writeOnly === true || schema.format === "password")) {
+    return (
+      <SensitiveInput
+        value={typeof value === "string" ? value : value == null ? "" : String(value)}
+        configured={schema.writeOnly === true && writeOnlyValuesConfigured}
+        onValueChange={onChange}
+        placeholder={schema.writeOnly === true ? "Sensitive value" : undefined}
+        className={controlClass}
+      />
+    );
+  }
+
   if (type === "string" && schema["x-control"] === "textarea") {
     return (
       <Textarea
@@ -302,10 +332,8 @@ function renderSchemaControl(
 
   return (
     <Input
-      type={schema.writeOnly === true || schema.format === "password" ? "password" : undefined}
       value={typeof value === "string" ? value : value == null ? "" : String(value)}
       onChange={(event) => onChange(event.target.value)}
-      placeholder={schema.writeOnly === true ? "Sensitive value" : undefined}
       className={controlClass}
     />
   );

@@ -38,7 +38,7 @@ interface GraphInspectorPanelProps {
   registry: RegistryInfo | null;
   registryLoaded: boolean;
   runtimeSettings: RuntimeSettings | null;
-  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
+  onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
   toolDefinitions: ToolDefinition[];
   selectedEdge: GraphEdgeSpec | null;
   selectedNode: GraphNodeSpec | null;
@@ -80,7 +80,7 @@ export function GraphInspectorPanel({
   registry,
   registryLoaded,
   runtimeSettings,
-  onUpdateRuntimeSettings,
+  onChangeRuntimeSettings,
   toolDefinitions,
   selectedEdge,
   selectedNode,
@@ -106,7 +106,7 @@ export function GraphInspectorPanel({
   onSelectLintIssue,
 }: GraphInspectorPanelProps) {
   return (
-    <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel [overflow-wrap:anywhere]">
+    <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel pb-[45vh] [overflow-wrap:anywhere]">
       <PanelHeader icon={FileJson} title={inspectorTitle} />
       <LintPanel issues={lintIssues} onSelectIssue={onSelectLintIssue} />
       {inspectorMode === "graph" ? (
@@ -118,7 +118,7 @@ export function GraphInspectorPanel({
           initialStateText={initialStateText}
           runtimeSettings={runtimeSettings}
           registry={registry}
-          onUpdateRuntimeSettings={onUpdateRuntimeSettings}
+          onChangeRuntimeSettings={onChangeRuntimeSettings}
           onChangeDefinitionText={onChangeDefinitionText}
           onChangeGraphField={onChangeGraphField}
           onChangeInitialStateText={onChangeInitialStateText}

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
   MiniMap,
@@ -49,6 +49,12 @@ export { hasStoredGraphCanvasViewport } from "./graphCanvasViewport";
 
 export type { VirtualGraphLoop } from "../lib/loopPresentation";
 export type { VirtualGraphEdge } from "./graphCanvasElements";
+
+const graphCanvasNodeTypes = {
+  debugNode: GraphNode,
+  debugLoop: GraphLoopNode,
+  debugTrigger: GraphTriggerNode,
+};
 
 export function GraphCanvas({
   definition,
@@ -251,7 +257,7 @@ function GraphCanvasInner({
   const stepRuntime = useMemo(() => runtimeFromSteps(steps, selectedRunId), [selectedRunId, steps]);
   const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const nextRunId = selectedRunId ?? "";
     if (runtimeRunIdRef.current === nextRunId) return;
     runtimeRunIdRef.current = nextRunId;
@@ -259,7 +265,7 @@ function GraphCanvasInner({
     setNodes((current) => resetRuntimeNodes(current));
   }, [selectedRunId, setNodes]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (stepRuntime.size === 0) return;
     const next = new Map(runtimeRef.current);
     for (const [nodeId, runtime] of stepRuntime) {
@@ -296,8 +302,8 @@ function GraphCanvasInner({
     });
   }), [selectedRunId, setNodes]);
 
-  useEffect(() => {
-    const elements = buildGraphCanvasElements({
+  const buildCanvasElements = useCallback(
+    () => buildGraphCanvasElements({
       definition,
       editable,
       interactive: isInteractive,
@@ -312,10 +318,29 @@ function GraphCanvasInner({
       virtualEdges,
       virtualLoops,
       virtualNodeIDs: virtualNodeIds,
-    });
+    }),
+    [
+      definition,
+      editable,
+      highlightedNodeSet,
+      isInteractive,
+      nodeTypes,
+      selectedEdgeId,
+      selectedLoopId,
+      selectedNodeId,
+      selectedTriggerId,
+      triggerNodes,
+      virtualEdges,
+      virtualLoops,
+      virtualNodeIds,
+    ]
+  );
+
+  useLayoutEffect(() => {
+    const elements = buildCanvasElements();
     setNodes(elements.nodes);
     setEdges(elements.edges);
-  }, [definition, editable, highlightedNodeSet, isInteractive, nodeTypes, selectedEdgeId, selectedLoopId, selectedNodeId, selectedTriggerId, setEdges, setNodes, triggerNodes, virtualEdges, virtualLoops, virtualNodeIds]);
+  }, [buildCanvasElements, setEdges, setNodes]);
 
   useEffect(() => {
     nodesRef.current = nodes;
@@ -354,7 +379,7 @@ function GraphCanvasInner({
     [persistViewport, store]
   );
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const key = normalizeViewportStorageKey(viewportStorageKey);
     if (!viewportInitialized || !key || restoredViewportKeyRef.current === key) {
       return;
@@ -363,29 +388,19 @@ function GraphCanvasInner({
     const stored = readStoredCanvasViewport(key);
     if (!stored) return;
     suppressViewportPersistUntilRef.current = Date.now() + 600;
-    window.requestAnimationFrame(() => {
-      applyViewport(stored, { persist: false });
-    });
+    applyViewport(stored, { persist: false });
   }, [applyViewport, viewportInitialized, viewportStorageKey]);
 
-  useEffect(() => {
-    if (!fitViewSignal || fitViewSignal === handledFitViewSignal.current || nodes.length === 0 || !viewportInitialized) {
+  useLayoutEffect(() => {
+    if (!fitViewSignal || fitViewSignal === handledFitViewSignal.current || !viewportInitialized) {
       return;
     }
-    const signal = fitViewSignal;
-    window.setTimeout(() => {
-      window.requestAnimationFrame(() => {
-        window.requestAnimationFrame(() => {
-          const applied = fitNodesToViewport(nodesRef.current, flowWrapperRef.current, (viewport) => {
-            applyViewport(viewport);
-          });
-          if (applied) {
-            handledFitViewSignal.current = signal;
-          }
-        });
-      });
-    }, 120);
-  }, [applyViewport, fitViewSignal, nodes.length, viewportInitialized]);
+    const elements = buildCanvasElements();
+    const applied = fitNodesToViewport(elements.nodes, flowWrapperRef.current, (viewport) => {
+      applyViewport(viewport);
+    });
+    if (applied) handledFitViewSignal.current = fitViewSignal;
+  }, [applyViewport, buildCanvasElements, fitViewSignal, viewportInitialized]);
 
   useEffect(() => {
     if (!focusNodeId || !focusNodeSignal || !viewportInitialized) return;
@@ -419,7 +434,7 @@ function GraphCanvasInner({
       <ReactFlow
         nodes={nodes}
         edges={edges}
-        nodeTypes={{ debugNode: GraphNode, debugLoop: GraphLoopNode, debugTrigger: GraphTriggerNode }}
+        nodeTypes={graphCanvasNodeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}

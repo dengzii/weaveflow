@@ -7,9 +7,9 @@ import {
   Loader2,
   Pause,
   Play,
+  Save,
   Settings,
   Square,
-  Upload,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
@@ -24,7 +24,8 @@ export function WorkbenchShell({
   tab,
   streamStatus,
   busy,
-  publishing,
+  saving,
+  unsaved,
   definition,
   runControlMode,
   canResume,
@@ -33,7 +34,7 @@ export function WorkbenchShell({
   runStatusVisible,
   hasRunStatus,
   onRun,
-  onPublish,
+  onSave,
   onPause,
   onStop,
   onResume,
@@ -44,7 +45,8 @@ export function WorkbenchShell({
   tab: WorkspaceTab;
   streamStatus: StreamStatus;
   busy: boolean;
-  publishing: boolean;
+  saving: boolean;
+  unsaved: boolean;
   definition: GraphDefinition | null;
   runControlMode: RunControlMode;
   canResume: boolean;
@@ -53,7 +55,7 @@ export function WorkbenchShell({
   runStatusVisible: boolean;
   hasRunStatus: boolean;
   onRun: () => void;
-  onPublish: () => void;
+  onSave: () => void;
   onPause: () => void;
   onStop: () => void;
   onResume: () => void;
@@ -87,9 +89,16 @@ export function WorkbenchShell({
           )}
           <div className="flex-1" />
           {tab === "graph" ? (
-            <Button variant="outline" size="sm" onClick={onPublish} disabled={busy || !definition} title="Publish Draft as Official">
-              {publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Upload className="h-4 w-4" />}
-              Publish
+            <Button
+              variant="outline"
+              size="sm"
+              className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
+              onClick={onSave}
+              disabled={busy || !definition}
+              title="Save graph"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save
             </Button>
           ) : null}
           {tab === "graph" && runControlMode === "active" ? (
@@ -115,9 +124,9 @@ export function WorkbenchShell({
               </Button>
             </>
           ) : tab === "graph" ? (
-            <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run Draft graph">
-              {busy && !publishing ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Run Draft
+            <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
+              {busy && !saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              Run
             </Button>
           ) : null}
           <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">
@@ -137,15 +146,16 @@ export function WorkbenchShell({
         {runStatusVisible ? runStatusPanel : null}
 
         <footer className="flex h-9 items-center gap-3 border-t border-border bg-muted/40 px-4 text-xs text-muted-foreground">
-          <div className="flex shrink-0 items-center gap-1.5" title={streamStatusLabel(streamStatus)}>
-            <span className={cn("h-2 w-2 rounded-full", streamStatusDotClass(streamStatus))} />
-            <span className="whitespace-nowrap">{streamStatusLabel(streamStatus)}</span>
+          <div
+            className="flex min-w-0 items-center gap-1.5"
+            title={`${streamStatusLabel(streamStatus)}: ${backendBaseUrl}`}
+            aria-label={`${streamStatusLabel(streamStatus)}: ${backendBaseUrl}`}
+          >
+            <span className={cn("h-2 w-2 shrink-0 rounded-full", streamStatusDotClass(streamStatus))} aria-hidden="true" />
+            <span className="truncate">{backendBaseUrl}</span>
           </div>
           <span>{definition ? `${definition.nodes.length} nodes` : "invalid graph"}</span>
           <span>{definition?.edges?.length ?? 0} edges</span>
-          <span className="truncate" title={`Server API: ${backendBaseUrl}`}>
-            Server: {backendBaseUrl}
-          </span>
           {hasRunStatus ? (
             <button
               className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"

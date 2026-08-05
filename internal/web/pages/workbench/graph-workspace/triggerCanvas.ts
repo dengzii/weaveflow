@@ -75,7 +75,6 @@ export function triggerConfigurationValid(trigger: Trigger): boolean {
   }
   if (trigger.type === "chat") {
     if (!trigger.chat) return false;
-    if (trigger.chat.reply_path !== undefined && (typeof trigger.chat.reply_path !== "string" || !trigger.chat.reply_path.trim())) return false;
     if (trigger.chat.history_limit !== undefined && (
       !Number.isInteger(trigger.chat.history_limit) || trigger.chat.history_limit < 0 || trigger.chat.history_limit > 500
     )) return false;

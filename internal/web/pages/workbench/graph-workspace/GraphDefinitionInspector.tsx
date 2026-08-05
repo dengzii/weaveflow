@@ -23,7 +23,7 @@ interface GraphDefinitionInspectorProps {
   initialStateText: string;
   runtimeSettings: RuntimeSettings | null;
   registry: RegistryInfo | null;
-  onUpdateRuntimeSettings: (settings: RuntimeSettingsUpdate) => Promise<RuntimeSettings>;
+  onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
   onChangeDefinitionText: (value: string) => void;
   onChangeGraphField: <Key extends keyof GraphDefinition>(key: Key, value: GraphDefinition[Key]) => void;
   onChangeInitialStateText: (value: string) => void;
@@ -37,7 +37,7 @@ export function GraphDefinitionInspector({
   initialStateText,
   runtimeSettings,
   registry,
-  onUpdateRuntimeSettings,
+  onChangeRuntimeSettings,
   onChangeDefinitionText,
   onChangeGraphField,
   onChangeInitialStateText,
@@ -93,7 +93,7 @@ export function GraphDefinitionInspector({
       </CollapsibleInspectorBlock>
 
       <CollapsibleInspectorBlock title="Runtime Settings" open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <RuntimeSettingsEditor settings={runtimeSettings} onUpdateRuntimeSettings={onUpdateRuntimeSettings} />
+        <RuntimeSettingsEditor settings={runtimeSettings} onChangeRuntimeSettings={onChangeRuntimeSettings} />
       </CollapsibleInspectorBlock>
 
       <InspectorBlock title="Run Input">

@@ -30,7 +30,6 @@ export interface TriggerEditorValues {
   mappings: WebhookStateMapping[];
   cron: string;
   timezone: string;
-  replyPath: string;
   streamUpdates: boolean;
   streamNodeIDs: string;
   chatChannel: string;
@@ -68,7 +67,6 @@ export function triggerEditorValues(
     mappings: (trigger?.webhook?.state_mappings ?? []).map((mapping) => ({ ...mapping })),
     cron: trigger?.schedule?.cron ?? "*/5 * * * *",
     timezone: trigger?.schedule?.timezone ?? "UTC",
-    replyPath: trigger?.chat?.reply_path ?? "shared.final.answer",
     streamUpdates: trigger?.chat?.stream_updates ?? true,
     streamNodeIDs: (trigger?.chat?.stream_node_ids ?? []).join(", "),
     chatChannel: trigger?.chat?.channel ?? "http",
@@ -126,15 +124,12 @@ export function buildTriggerPayload(
       input: editing?.schedule?.input,
     };
   } else {
-    const replyPath = values.replyPath.trim();
-    if (!replyPath) throw new Error("chat reply path is required");
     const streamNodeIDs = Array.from(new Set(
       values.streamNodeIDs.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean)
     ));
     const chat: Record<string, unknown> = {
       channel: values.chatChannel.trim() || "http",
       channel_config: cloneRecord(values.chatChannelConfig),
-      reply_path: replyPath,
       stream_updates: values.streamUpdates,
       stream_node_ids: streamNodeIDs,
     };
@@ -146,6 +141,66 @@ export function buildTriggerPayload(
     if (chatSetupSessionID?.trim()) input.chat_setup_session_id = chatSetupSessionID.trim();
   }
   return input;
+}
+
+export function triggerDraftFromEditorValues(
+  values: TriggerEditorValues,
+  current: Trigger | null,
+  timestamp = new Date().toISOString()
+): Trigger {
+  let initialState = current?.initial_state;
+  try {
+    const nextInitialState = buildTriggerInitialState(values.initialStateEntries);
+    initialState = Object.keys(nextInitialState).length > 0 ? nextInitialState : undefined;
+  } catch {
+    initialState = current?.initial_state;
+  }
+
+  const trigger: Trigger = {
+    id: values.id.trim(),
+    name: values.name.trim() || triggerTypeName(values.type),
+    type: values.type,
+    enabled: values.enabled,
+    concurrency: values.concurrency,
+    target: { graph_id: values.target.graph_id.trim() },
+    initial_state: initialState,
+    created_at: current?.created_at || timestamp,
+    updated_at: current?.updated_at || timestamp,
+  };
+
+  if (values.type === "webhook") {
+    trigger.webhook = {
+      api_key: values.apiKey || undefined,
+      state_mappings: values.mappings.map((mapping) => ({ ...mapping })),
+    };
+  } else if (values.type === "schedule") {
+    trigger.schedule = {
+      cron: values.cron,
+      timezone: values.timezone,
+      input: current?.schedule?.input,
+    };
+  } else {
+    const historyLimit = /^\d+$/.test(values.chatHistoryLimit.trim())
+      ? Number(values.chatHistoryLimit.trim())
+      : undefined;
+    trigger.chat = {
+      channel: values.chatChannel,
+      channel_config: cloneRecord(values.chatChannelConfig),
+      stream_updates: values.streamUpdates,
+      stream_node_ids: values.streamNodeIDs.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean),
+      history_limit: historyLimit,
+      state_bindings: {
+        conversation: values.chatConversationStatePath,
+        raw_history: values.chatRawHistoryStatePath,
+        trigger_id: values.chatTriggerIDStatePath,
+        channel: values.chatChannelStatePath,
+        user_id: values.chatUserIDStatePath,
+        conversation_id: values.chatConversationIDStatePath,
+        message_id: values.chatMessageIDStatePath,
+      },
+    };
+  }
+  return trigger;
 }
 
 export function triggerTypeName(type: TriggerType): string {
@@ -219,6 +274,7 @@ export function editableChatChannelSchema(
 ): Record<string, unknown> | undefined {
   if (!definition) return undefined;
   const schema = cloneRecord(definition.config_schema);
+  placeSchemaPropertyAfter(schema, "secret", "bot_id");
   if (preserveWriteOnly) removeWriteOnlyRequirements(schema);
   return schema;
 }
@@ -252,6 +308,24 @@ function removeWriteOnlyRequirements(schema: Record<string, unknown>) {
   for (const property of Object.values(properties)) {
     if (isJSONObject(property)) removeWriteOnlyRequirements(property);
   }
+}
+
+function placeSchemaPropertyAfter(schema: Record<string, unknown>, propertyName: string, anchorName: string) {
+  if (!isJSONObject(schema.properties)) return;
+  const properties = schema.properties;
+  if (
+    !Object.prototype.hasOwnProperty.call(properties, propertyName)
+    || !Object.prototype.hasOwnProperty.call(properties, anchorName)
+  ) return;
+
+  const property = properties[propertyName];
+  const reorderedProperties: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(properties)) {
+    if (key === propertyName) continue;
+    reorderedProperties[key] = value;
+    if (key === anchorName) reorderedProperties[propertyName] = property;
+  }
+  schema.properties = reorderedProperties;
 }
 
 function cloneRecord(value: unknown): Record<string, unknown> {

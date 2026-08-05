@@ -45,7 +45,7 @@ describe("trigger canvas projection", () => {
   test("uses the registered chat channel title as the Chat Trigger card label", () => {
     const chat = trigger("assistant", "graph-a", "chat");
     chat.name = "Chat";
-    chat.chat = { channel: "weixin", reply_path: "shared.final.answer", stream_updates: true };
+    chat.chat = { channel: "weixin", stream_updates: true };
 
     const nodes = projectTriggerCanvasNodes(definition, "graph-a", [chat], ["__start__"], [{
       id: "weixin",
@@ -94,7 +94,6 @@ describe("trigger canvas projection", () => {
   test("validates channel-neutral chat trigger settings", () => {
     const chat = trigger("chat", "graph-a", "chat");
     chat.chat = {
-      reply_path: "shared.final.answer",
       stream_updates: true,
       stream_node_ids: ["answer"],
       history_limit: 10,
@@ -137,7 +136,7 @@ function trigger(id: string, graphID: string, type: Trigger["type"]): Trigger {
     target: { graph_id: graphID },
     webhook: type === "webhook" ? {} : undefined,
     schedule: type === "schedule" ? { cron: "0 * * * *" } : undefined,
-    chat: type === "chat" ? { reply_path: "shared.final.answer", stream_updates: true } : undefined,
+    chat: type === "chat" ? { stream_updates: true } : undefined,
     created_at: "2026-07-29T00:00:00Z",
     updated_at: "2026-07-29T00:00:00Z",
   };

@@ -1,28 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import type { GraphDefinition } from "../../types";
+import type { GraphDefinition, RuntimeSettingsUpdate } from "../../types";
 import {
   graphAnalysisSignature,
-  graphPublishRequired,
-  graphUploadRequired,
-  graphUploadSignature,
+  graphSaveIdentity,
+  graphSaveSignature,
+  isGraphSavePending,
 } from "./graphSyncModel";
 
 describe("graph sync model", () => {
-  test("ignores object key order when comparing graph uploads", () => {
-    const first: GraphDefinition = {
-      name: "example",
-      nodes: [{ id: "input", type: "task", config: { second: 2, first: 1 } }],
-      metadata: { owner: "team", web: { x: 10, y: 20 } },
-    };
-    const second: GraphDefinition = {
-      metadata: { web: { y: 20, x: 10 }, owner: "team" },
-      nodes: [{ config: { first: 1, second: 2 }, type: "task", id: "input" }],
-      name: "example",
-    };
-
-    expect(graphUploadSignature(first, "graph", "v1")).toBe(graphUploadSignature(second, "graph", "v1"));
-  });
-
   test("excludes non-executable metadata from graph analysis signatures", () => {
     const first: GraphDefinition = {
       nodes: [{ id: "input", type: "task", config: { prompt: "hello" } }],
@@ -34,7 +19,6 @@ describe("graph sync model", () => {
     };
 
     expect(graphAnalysisSignature(first)).toBe(graphAnalysisSignature(moved));
-    expect(graphUploadSignature(first, "graph", "v1")).not.toBe(graphUploadSignature(moved, "graph", "v1"));
   });
 
   test("changes graph analysis signatures for executable graph changes", () => {
@@ -48,20 +32,33 @@ describe("graph sync model", () => {
     expect(graphAnalysisSignature(first)).not.toBe(graphAnalysisSignature(changed));
   });
 
-  test("uploads only when graph content or identity changed", () => {
-    const definition: GraphDefinition = { nodes: [{ id: "input", type: "task" }] };
-    const signature = graphUploadSignature(definition, "graph", "v1");
-    const synced = { signature, official: false };
+  test("tracks the complete server save payload", () => {
+    const definition: GraphDefinition = {
+      nodes: [{ id: "input", type: "task", config: { prompt: "hello" } }],
+    };
+    const settings: RuntimeSettingsUpdate = {
+      environment: { MODE: "test" },
+      models: [],
+      memory: { enabled: false },
+    };
+    const saved = graphSaveSignature(definition, settings, " graph ", " v1 ");
 
-    expect(graphUploadRequired(signature, synced)).toBe(false);
-    expect(graphUploadRequired(graphUploadSignature(definition, "other", "v1"), synced)).toBe(true);
-    expect(graphUploadRequired(graphUploadSignature(definition, "graph", "v2"), synced)).toBe(true);
-    expect(graphUploadRequired(graphUploadSignature({ nodes: [] }, "graph", "v1"), synced)).toBe(true);
-  });
-
-  test("publishes a matching draft once and skips an already official graph", () => {
-    const signature = graphUploadSignature({ nodes: [] }, "graph", "v1");
-    expect(graphPublishRequired(signature, { signature, official: false })).toBe(true);
-    expect(graphPublishRequired(signature, { signature, official: true })).toBe(false);
+    expect(saved).toBe(graphSaveSignature(definition, settings, "graph", "v1"));
+    expect(saved).not.toBe(graphSaveSignature(
+      { ...definition, nodes: [{ id: "input", type: "task", config: { prompt: "changed" } }] },
+      settings,
+      "graph",
+      "v1"
+    ));
+    expect(saved).not.toBe(graphSaveSignature(
+      definition,
+      { ...settings, environment: { MODE: "production" } },
+      "graph",
+      "v1"
+    ));
+    expect(graphSaveIdentity(" graph ", " v1 ")).toBe(graphSaveIdentity("graph", "v1"));
+    expect(isGraphSavePending(saved, saved)).toBe(false);
+    expect(isGraphSavePending(saved, undefined)).toBe(true);
+    expect(isGraphSavePending(saved, `${saved}-changed`)).toBe(true);
   });
 });

@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import type { RuntimeSettings } from "../../../types";
 import {
-  MODEL_API_KEY_MASK,
+  applyRuntimeSettingsUpdate,
   environmentRowsFromSettings,
   modelsFromSettings,
   nextModelID,
   normalizeEnvironmentSettings,
   normalizeModelSettings,
+  runtimeSettingsUpload,
 } from "./graphSettingsEditorModel";
 
 describe("graph settings editor model", () => {
@@ -20,13 +21,13 @@ describe("graph settings editor model", () => {
         provider: "openai",
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
-        api_key: MODEL_API_KEY_MASK,
+        api_key: "",
         api_key_configured: true,
       },
     ]);
   });
 
-  test("normalizes models while omitting the API key mask", () => {
+  test("normalizes models while omitting an unchanged configured API key", () => {
     expect(
       normalizeModelSettings([
         {
@@ -35,7 +36,7 @@ describe("graph settings editor model", () => {
           provider: "openai",
           model: " gpt-5 ",
           base_url: " https://api.example.test/v1 ",
-          api_key: MODEL_API_KEY_MASK,
+          api_key: "",
           api_key_configured: true,
         },
       ])
@@ -79,6 +80,29 @@ describe("graph settings editor model", () => {
     expect(nextModelID([])).toBe("default");
     expect(nextModelID(modelsFromSettings(graphSettings()))).toBe("model-2");
   });
+
+  test("keeps a locally entered API key until the graph upload", () => {
+    const next = applyRuntimeSettingsUpdate(graphSettings(), {
+      models: [{
+        id: "default",
+        enabled: true,
+        provider: "openai",
+        model: "gpt-5",
+        base_url: "https://api.example.test/v1",
+        api_key: "local-secret",
+      }],
+    });
+
+    expect(next.models[0].api_key).toBe("local-secret");
+    expect(runtimeSettingsUpload(next).models?.[0].api_key).toBe("local-secret");
+  });
+
+  test("rejects missing runtime settings with an explicit error", () => {
+    expect(() => applyRuntimeSettingsUpdate(undefined as unknown as RuntimeSettings, {}))
+      .toThrow("Cannot update runtime settings: runtime settings are missing.");
+    expect(() => runtimeSettingsUpload(undefined as unknown as RuntimeSettings))
+      .toThrow("Cannot upload graph: runtime settings are missing.");
+  });
 });
 
 function graphSettings(): RuntimeSettings {
@@ -88,14 +112,6 @@ function graphSettings(): RuntimeSettings {
       OPENAI_MODEL: "gpt-5",
       A_VALUE: "a",
       OPENAI_BASE_URL: "https://api.example.test/v1",
-    },
-    model: {
-      id: "default",
-      enabled: true,
-      provider: "openai",
-      model: "gpt-5",
-      base_url: "https://api.example.test/v1",
-      api_key_configured: true,
     },
     models: [
       {

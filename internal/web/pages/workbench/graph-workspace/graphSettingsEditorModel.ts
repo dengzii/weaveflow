@@ -1,7 +1,5 @@
 import type { RuntimeSettings, RuntimeSettingsUpdate } from "../../../types";
 
-export const MODEL_API_KEY_MASK = "********";
-
 export interface EditableGraphModel {
   id: string;
   enabled: boolean;
@@ -25,7 +23,7 @@ export function modelsFromSettings(settings: RuntimeSettings | null): EditableGr
     provider: model.provider || "openai",
     model: model.model ?? "",
     base_url: model.base_url ?? "",
-    api_key: model.api_key_configured ? MODEL_API_KEY_MASK : "",
+    api_key: "",
     api_key_configured: model.api_key_configured,
   }));
 }
@@ -41,12 +39,6 @@ export function nextModelID(models: EditableGraphModel[]): string {
     modelID = `model-${index}`;
   }
   return modelID;
-}
-
-export function modelAPIKeyDisplayValue(model: EditableGraphModel): string {
-  const apiKey = model.api_key.trim();
-  if (apiKey && apiKey !== MODEL_API_KEY_MASK) return MODEL_API_KEY_MASK;
-  return model.api_key_configured ? MODEL_API_KEY_MASK : "";
 }
 
 export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSettingsUpdate["models"] {
@@ -67,7 +59,7 @@ export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSet
       provider: model.provider || "openai",
       model: model.model.trim(),
       base_url: model.base_url.trim(),
-      api_key: apiKey && apiKey !== MODEL_API_KEY_MASK ? apiKey : undefined,
+      api_key: apiKey || undefined,
     };
   });
 }
@@ -93,6 +85,76 @@ export function normalizeEnvironmentSettings(rows: EditableEnvironmentVariable[]
     environment[key] = row.value;
   }
   return environment;
+}
+
+export function applyRuntimeSettingsUpdate(
+  current: RuntimeSettings,
+  update: RuntimeSettingsUpdate
+): RuntimeSettings {
+  requireRuntimeSettings(current, "Cannot update runtime settings");
+  const currentModels = new Map(current.models.map((model) => [model.id, model]));
+  const models = (update.models ?? current.models).map((model, index) => {
+    const id = model.id?.trim() || (index === 0 ? "default" : `model-${index + 1}`);
+    const previous = currentModels.get(id);
+    const apiKey = model.api_key?.trim() || previous?.api_key;
+    return {
+      id,
+      enabled: model.enabled ?? previous?.enabled ?? true,
+      provider: model.provider?.trim() || previous?.provider || "openai",
+      model: model.model !== undefined ? model.model.trim() : previous?.model ?? "",
+      base_url: model.base_url !== undefined ? model.base_url.trim() : previous?.base_url ?? "",
+      api_key_configured: Boolean(apiKey || previous?.api_key_configured),
+      api_key: apiKey,
+    };
+  });
+  return {
+    environment: update.environment ?? current.environment,
+    environment_presets: current.environment_presets,
+    models,
+    memory: {
+      enabled: update.memory?.enabled ?? current.memory.enabled,
+      directory: update.memory?.directory !== undefined
+        ? update.memory.directory.trim()
+        : current.memory.directory ?? "",
+    },
+  };
+}
+
+export function runtimeSettingsUpload(settings: RuntimeSettings): RuntimeSettingsUpdate {
+  requireRuntimeSettings(settings, "Cannot upload graph");
+  return {
+    environment: settings.environment,
+    models: settings.models.map((model) => ({
+      id: model.id,
+      enabled: model.enabled,
+      provider: model.provider,
+      model: model.model ?? "",
+      base_url: model.base_url ?? "",
+      api_key: model.api_key,
+    })),
+    memory: {
+      enabled: settings.memory.enabled,
+      directory: settings.memory.directory ?? "",
+    },
+  };
+}
+
+function requireRuntimeSettings(
+  settings: RuntimeSettings | null | undefined,
+  operation: string
+): asserts settings is RuntimeSettings {
+  if (
+    !settings ||
+    typeof settings.environment !== "object" ||
+    settings.environment === null ||
+    Array.isArray(settings.environment) ||
+    !Array.isArray(settings.models) ||
+    typeof settings.memory !== "object" ||
+    settings.memory === null ||
+    Array.isArray(settings.memory)
+  ) {
+    throw new Error(`${operation}: runtime settings are missing.`);
+  }
 }
 
 function editableEnvironment(settings: RuntimeSettings | null): Record<string, string> {
