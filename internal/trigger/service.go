@@ -32,21 +32,24 @@ const (
 )
 
 type Service struct {
-	triggerStore     TriggerStore
-	invocationStore  InvocationStore
-	chatHistoryStore ChatHistoryStore
-	resolver         RunnerResolver
-	chatRegistry     *chatchannel.Registry
-	now              func() time.Time
+	triggerStore          TriggerStore
+	invocationStore       InvocationStore
+	chatHistoryStore      ChatHistoryStore
+	chatConversationStore ChatConversationStore
+	resolver              RunnerResolver
+	chatRegistry          *chatchannel.Registry
+	now                   func() time.Time
 
-	operationMu  sync.Mutex
-	mu           sync.Mutex
-	ctx          context.Context
-	cancel       context.CancelFunc
-	schedules    map[string]*scheduleEntry
-	chatChannels map[string]*chatChannelEntry
-	activeRuns   map[string]int
-	chatLocks    map[string]*chatHistoryLock
+	operationMu    sync.Mutex
+	mu             sync.Mutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	schedules      map[string]*scheduleEntry
+	chatChannels   map[string]*chatChannelEntry
+	activeRuns     map[string]int
+	chatLocks      map[string]*chatHistoryLock
+	chatRouteLocks map[string]*chatHistoryLock
+	activeChats    map[string]map[*activeChatExecution]struct{}
 }
 
 type chatHistoryLock struct {
@@ -74,16 +77,19 @@ func NewService(store Store, resolver RunnerResolver, options ...ServiceOption) 
 		return nil, fmt.Errorf("runner resolver is required")
 	}
 	service := &Service{
-		triggerStore:     store,
-		invocationStore:  store,
-		chatHistoryStore: store,
-		resolver:         resolver,
-		chatRegistry:     chatchannel.NewDefaultRegistry(),
-		now:              time.Now,
-		schedules:        make(map[string]*scheduleEntry),
-		chatChannels:     make(map[string]*chatChannelEntry),
-		activeRuns:       make(map[string]int),
-		chatLocks:        make(map[string]*chatHistoryLock),
+		triggerStore:          store,
+		invocationStore:       store,
+		chatHistoryStore:      store,
+		chatConversationStore: store,
+		resolver:              resolver,
+		chatRegistry:          chatchannel.NewDefaultRegistry(),
+		now:                   time.Now,
+		schedules:             make(map[string]*scheduleEntry),
+		chatChannels:          make(map[string]*chatChannelEntry),
+		activeRuns:            make(map[string]int),
+		chatLocks:             make(map[string]*chatHistoryLock),
+		chatRouteLocks:        make(map[string]*chatHistoryLock),
+		activeChats:           make(map[string]map[*activeChatExecution]struct{}),
 	}
 	for _, option := range options {
 		if option == nil {
@@ -206,6 +212,7 @@ func (s *Service) ListChatHistory(ctx context.Context, filter ChatHistoryFilter)
 	}
 	filter.TriggerID = strings.TrimSpace(filter.TriggerID)
 	filter.UserID = strings.TrimSpace(filter.UserID)
+	filter.ChannelConversationID = strings.TrimSpace(filter.ChannelConversationID)
 	filter.ConversationID = strings.TrimSpace(filter.ConversationID)
 	if filter.Limit <= 0 {
 		filter.Limit = DefaultChatHistoryLimit
@@ -320,6 +327,13 @@ func (s *Service) Close() error {
 	s.schedules = make(map[string]*scheduleEntry)
 	channels := s.chatChannels
 	s.chatChannels = make(map[string]*chatChannelEntry)
+	activeChats := make([]*activeChatExecution, 0)
+	for _, executions := range s.activeChats {
+		for execution := range executions {
+			activeChats = append(activeChats, execution)
+		}
+	}
+	s.activeChats = make(map[string]map[*activeChatExecution]struct{})
 	s.mu.Unlock()
 	if cancel != nil {
 		cancel()
@@ -329,6 +343,9 @@ func (s *Service) Close() error {
 	}
 	for _, entry := range channels {
 		entry.cancel()
+	}
+	for _, execution := range activeChats {
+		execution.cancel()
 	}
 	for _, entry := range channels {
 		<-entry.done

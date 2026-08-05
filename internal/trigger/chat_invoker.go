@@ -14,8 +14,10 @@ import (
 )
 
 type ChatResult struct {
-	Run        runtime.RunRecord `json:"run"`
-	FinalReply string            `json:"final_reply,omitempty"`
+	Run            runtime.RunRecord `json:"run"`
+	ConversationID string            `json:"conversation_id,omitempty"`
+	Command        string            `json:"command,omitempty"`
+	FinalReply     string            `json:"final_reply,omitempty"`
 }
 
 func (s *Service) InvokeChat(ctx context.Context, id string, message chatchannel.InboundMessage, sink chatcap.ReplySink) (ChatResult, error) {
@@ -42,23 +44,34 @@ func (s *Service) InvokeChat(ctx context.Context, id string, message chatchannel
 	if !item.Enabled {
 		return ChatResult{}, ErrDisabled
 	}
-	channel := chatChannelID(item)
-	message = normalizeChatMessageMetadata(message, channel)
 	if message.UserID == "" {
 		return ChatResult{}, fmt.Errorf("%w: chat message user_id is required", ErrInvalidPayload)
 	}
 	if message.ConversationID == "" {
 		return ChatResult{}, fmt.Errorf("%w: chat message conversation_id is required", ErrInvalidPayload)
 	}
+	if result, handled, err := s.handleChatCommand(ctx, item, message, sink); handled {
+		return result, err
+	}
+	executionCtx, message, cleanup, err := s.prepareChatExecution(ctx, item, message)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	defer cleanup()
+	ctx = executionCtx
 	unlock := s.lockChatHistory(item.ID, message.UserID, message.ConversationID)
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return ChatResult{ConversationID: message.ConversationID}, err
+	}
 	var history []ChatHistory
 	if limit := chatHistoryLoadLimit(item.Chat); limit > 0 {
 		history, err = s.ListChatHistory(ctx, ChatHistoryFilter{
-			TriggerID:      item.ID,
-			UserID:         message.UserID,
-			ConversationID: message.ConversationID,
-			Limit:          limit,
+			TriggerID:             item.ID,
+			UserID:                message.UserID,
+			ChannelConversationID: message.ChannelConversationID,
+			ConversationID:        message.ConversationID,
+			Limit:                 limit,
 		})
 		if err != nil {
 			return ChatResult{}, fmt.Errorf("load chat history: %w", err)
@@ -86,6 +99,7 @@ func (s *Service) InvokeChat(ctx context.Context, id string, message chatchannel
 	}
 
 	result, runErr := s.invokeChatRun(ctx, item, message, history, sink, historyRecorder)
+	result.ConversationID = message.ConversationID
 	historyErr := historyRecorder.Finish(result, runErr)
 	record.UpdatedAt = s.now().UTC()
 	if result.Run.RunID != "" {
@@ -230,6 +244,9 @@ func normalizeChatMessageMetadata(message chatchannel.InboundMessage, channel st
 	}
 	if message.ConversationID != "" {
 		metadata["conversation_id"] = message.ConversationID
+	}
+	if message.ChannelConversationID != "" {
+		metadata["channel_conversation_id"] = message.ChannelConversationID
 	}
 	if message.ID != "" {
 		metadata["message_id"] = message.ID

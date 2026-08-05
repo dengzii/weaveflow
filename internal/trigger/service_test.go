@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -165,7 +168,7 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Run.RunID != "chat-run" || result.FinalReply != "final" {
+	if result.Run.RunID != "chat-run" || result.FinalReply != "final" || result.ConversationID == "" || result.ConversationID == "conversation-1" {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(replies) != 4 {
@@ -189,7 +192,7 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 	conversationID, _ := state.ReadPath(starter.initial, "scopes.chat.conversation_id")
 	userID, _ := state.ReadPath(starter.initial, "scopes.chat.user_id")
 	channel, _ := state.ReadPath(starter.initial, "scopes.chat.channel")
-	if input != "hello" || triggerID != "chat" || messageID != "message-1" || conversationID != "conversation-1" || userID != "user-1" || channel != "http" {
+	if input != "hello" || triggerID != "chat" || messageID != "message-1" || conversationID != result.ConversationID || userID != "user-1" || channel != "http" {
 		t.Fatalf("chat state = input:%#v trigger:%#v message:%#v conversation:%#v user:%#v channel:%#v", input, triggerID, messageID, conversationID, userID, channel)
 	}
 	for _, path := range []string{"shared.request.metadata", "shared.request.chat", "shared.trigger"} {
@@ -205,7 +208,7 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 		t.Fatalf("records = %#v", records)
 	}
 	history, err := service.ListChatHistory(context.Background(), ChatHistoryFilter{
-		TriggerID: "chat", UserID: "user-1", ConversationID: "conversation-1", Limit: 10,
+		TriggerID: "chat", UserID: "user-1", ChannelConversationID: "conversation-1", ConversationID: result.ConversationID, Limit: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -271,6 +274,7 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 		t.Fatal(err)
 	}
 	sink := chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil })
+	results := make(map[string]ChatResult)
 	for _, invocation := range []struct {
 		triggerID string
 		message   chatchannel.InboundMessage
@@ -282,9 +286,11 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 		{triggerID: "chat-b", message: chatchannel.InboundMessage{ID: "message-a4", UserID: "user-a", ConversationID: "conversation-a", Content: "other trigger"}},
 		{triggerID: "chat-a", message: chatchannel.InboundMessage{ID: "message-a5", UserID: "user-a", ConversationID: "conversation-b", Content: "other conversation"}},
 	} {
-		if _, err := service.InvokeChat(context.Background(), invocation.triggerID, invocation.message, sink); err != nil {
+		result, err := service.InvokeChat(context.Background(), invocation.triggerID, invocation.message, sink)
+		if err != nil {
 			t.Fatal(err)
 		}
+		results[invocation.message.ID] = result
 	}
 
 	if len(starter.initials) != 6 {
@@ -297,7 +303,7 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 	messageID, _ := state.ReadPath(starter.initials[1], "scopes.chat.message_id")
 	historyValue, _ := state.ReadPath(starter.initials[1], "scopes.chat.raw_history")
 	history, ok := historyValue.([]any)
-	if triggerID != "chat-a" || channel != "http" || userID != "user-a" || conversationID != "conversation-a" || messageID != "message-a2" || !ok || len(history) != 1 {
+	if triggerID != "chat-a" || channel != "http" || userID != "user-a" || conversationID != results["message-a2"].ConversationID || conversationID != results["message-a1"].ConversationID || messageID != "message-a2" || !ok || len(history) != 1 {
 		t.Fatalf("second chat request = trigger:%#v channel:%#v user:%#v conversation:%#v message:%#v history:%#v", triggerID, channel, userID, conversationID, messageID, historyValue)
 	}
 	turn, ok := history[0].(map[string]any)
@@ -358,7 +364,7 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 	}
 
 	records, err := service.ListChatHistory(context.Background(), ChatHistoryFilter{
-		TriggerID: "chat-a", UserID: "user-a", ConversationID: "conversation-a", Limit: 10,
+		TriggerID: "chat-a", UserID: "user-a", ChannelConversationID: "conversation-a", ConversationID: results["message-a1"].ConversationID, Limit: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -368,7 +374,7 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 		t.Fatalf("persisted chat history = %#v", records)
 	}
 	unconfiguredRecords, err := service.ListChatHistory(context.Background(), ChatHistoryFilter{
-		TriggerID: "chat-b", UserID: "user-a", ConversationID: "conversation-a", Limit: 10,
+		TriggerID: "chat-b", UserID: "user-a", ChannelConversationID: "conversation-a", ConversationID: results["message-a4"].ConversationID, Limit: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -405,7 +411,7 @@ func TestServiceInvokeChatPersistsFailedTurnAndFinishReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	var replies []chatcap.Reply
-	_, invokeErr := service.InvokeChat(context.Background(), "failed-chat", chatchannel.InboundMessage{
+	result, invokeErr := service.InvokeChat(context.Background(), "failed-chat", chatchannel.InboundMessage{
 		ID: "message-1", UserID: "user-1", ConversationID: "conversation-1", Content: "hello",
 	}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
 		replies = append(replies, reply)
@@ -425,13 +431,129 @@ func TestServiceInvokeChatPersistsFailedTurnAndFinishReply(t *testing.T) {
 		t.Fatalf("failed chat record = %#v", records)
 	}
 	history, err := service.ListChatHistory(context.Background(), ChatHistoryFilter{
-		TriggerID: "failed-chat", UserID: "user-1", ConversationID: "conversation-1", Limit: 10,
+		TriggerID: "failed-chat", UserID: "user-1", ChannelConversationID: "conversation-1", ConversationID: result.ConversationID, Limit: 10,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(history) != 1 || history[0].Status != runtime.RunStatusFailed || history[0].RunID != "failed-chat-run" || history[0].ErrorMessage != "run failed" {
 		t.Fatalf("failed chat history = %#v", history)
+	}
+}
+
+type cancelableChatStarter struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *cancelableChatStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	now := time.Now().UTC()
+	return runtime.RunRecord{
+		RunID: "canceled-chat-run", Status: runtime.RunStatusCanceled,
+		StartedAt: now, UpdatedAt: now, FinishedAt: &now,
+	}, initial, ctx.Err()
+}
+
+func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &cancelableChatStarter{started: make(chan struct{})}
+	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
+		return starter, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, 8, 4, 12, 0, 0, 123000000, time.UTC)
+	service.now = func() time.Time { return createdAt }
+	if _, err := service.Create(context.Background(), Trigger{
+		ID: "command-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	invocationDone := make(chan struct{})
+	var invocationResult ChatResult
+	var invocationErr error
+	go func() {
+		defer close(invocationDone)
+		invocationResult, invocationErr = service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
+			ID: "message-1", UserID: "user-1", ConversationID: "channel-thread", Content: "long task",
+		}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil }))
+	}()
+	select {
+	case <-starter.started:
+	case <-time.After(time.Second):
+		t.Fatal("chat invocation did not start")
+	}
+
+	var stopReplies []chatcap.Reply
+	stopResult, err := service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
+		ID: "message-stop", UserID: "user-1", ConversationID: "channel-thread", Content: "/STOP",
+	}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
+		stopReplies = append(stopReplies, reply)
+		return nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stopResult.Command != chatCommandStop || stopResult.FinalReply != "Stopped the active response." || len(stopReplies) != 1 || stopReplies[0].Kind != chatcap.ReplyFinish {
+		t.Fatalf("stop result = %#v, replies = %#v", stopResult, stopReplies)
+	}
+	select {
+	case <-invocationDone:
+	case <-time.After(time.Second):
+		t.Fatal("active chat invocation was not canceled")
+	}
+	if !errors.Is(invocationErr, context.Canceled) || invocationResult.ConversationID == "" || stopResult.ConversationID != invocationResult.ConversationID {
+		t.Fatalf("canceled invocation result = %#v, err = %v", invocationResult, invocationErr)
+	}
+
+	newResult, err := service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
+		ID: "message-new", UserID: "user-1", ConversationID: "channel-thread", Content: "/new",
+	}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if newResult.Command != chatCommandNew || newResult.ConversationID == "" || newResult.ConversationID == invocationResult.ConversationID {
+		t.Fatalf("new conversation result = %#v", newResult)
+	}
+	for _, conversationID := range []string{invocationResult.ConversationID, newResult.ConversationID} {
+		dir := store.chatConversationDir("command-chat", "user-1", "channel-thread", conversationID)
+		if _, err := os.Stat(filepath.Join(dir, "conversation.json")); err != nil {
+			t.Fatalf("conversation directory %q is missing: %v", dir, err)
+		}
+	}
+	current, err := store.CurrentChatConversation(context.Background(), ChatConversationIdentity{
+		TriggerID: "command-chat", UserID: "user-1", ChannelConversationID: "channel-thread",
+	})
+	if err != nil || current.ID != newResult.ConversationID {
+		t.Fatalf("current conversation = %#v, err = %v", current, err)
+	}
+	records, err := service.ListRecords(context.Background(), "command-chat", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Status != runtime.RunStatusCanceled {
+		t.Fatalf("command trigger records = %#v", records)
+	}
+}
+
+func TestParseChatCommand(t *testing.T) {
+	for input, expected := range map[string]string{
+		" /NEW ": chatCommandNew,
+		"/stop":  chatCommandStop,
+		"/Help":  chatCommandHelp,
+		"new":    "",
+		"/new x": "",
+	} {
+		if actual := parseChatCommand(input); actual != expected {
+			t.Fatalf("parseChatCommand(%q) = %q, want %q", input, actual, expected)
+		}
 	}
 }
 

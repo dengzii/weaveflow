@@ -39,10 +39,16 @@ type ChatHistoryStore interface {
 	ListChatHistory(context.Context, ChatHistoryFilter) ([]ChatHistory, error)
 }
 
+type ChatConversationStore interface {
+	CreateChatConversation(context.Context, ChatConversation) (ChatConversation, error)
+	CurrentChatConversation(context.Context, ChatConversationIdentity) (ChatConversation, error)
+}
+
 type Store interface {
 	TriggerStore
 	InvocationStore
 	ChatHistoryStore
+	ChatConversationStore
 }
 
 type FileStore struct {

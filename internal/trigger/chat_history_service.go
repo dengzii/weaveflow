@@ -15,14 +15,15 @@ import (
 )
 
 var persistedChatMetadataKeys = map[string]struct{}{
-	"channel":       {},
-	"message_id":    {},
-	"message_state": {},
-	"message_type":  {},
-	"request_id":    {},
-	"sender_id":     {},
-	"seq":           {},
-	"session_id":    {},
+	"channel":                 {},
+	"channel_conversation_id": {},
+	"message_id":              {},
+	"message_state":           {},
+	"message_type":            {},
+	"request_id":              {},
+	"sender_id":               {},
+	"seq":                     {},
+	"session_id":              {},
 }
 
 type chatHistoryRecorder struct {
@@ -35,12 +36,13 @@ type chatHistoryRecorder struct {
 
 func newPendingChatHistory(item Trigger, message chatchannel.InboundMessage, now time.Time) ChatHistory {
 	return ChatHistory{
-		Version:        ChatHistoryVersion,
-		TriggerID:      item.ID,
-		UserID:         message.UserID,
-		ConversationID: message.ConversationID,
-		TriggeredAt:    now,
-		Status:         runtime.RunStatusPending,
+		Version:               ChatHistoryVersion,
+		TriggerID:             item.ID,
+		UserID:                message.UserID,
+		ChannelConversationID: message.ChannelConversationID,
+		ConversationID:        message.ConversationID,
+		TriggeredAt:           now,
+		Status:                runtime.RunStatusPending,
 		TriggerMeta: ChatTriggerMeta{
 			Channel:    chatChannelID(item),
 			MessageID:  message.ID,
@@ -213,16 +215,17 @@ func chatHistoryState(records []ChatHistory) []any {
 			})
 		}
 		items = append(items, map[string]any{
-			"id":              record.ID,
-			"trigger_id":      record.TriggerID,
-			"user_id":         record.UserID,
-			"conversation_id": record.ConversationID,
-			"trigger_meta":    record.TriggerMeta,
-			"graph_id":        record.GraphID,
-			"run_id":          record.RunID,
-			"messages":        messages,
-			"final_answer":    record.FinalAnswer,
-			"triggered_at":    record.TriggeredAt.UTC().Format(time.RFC3339Nano),
+			"id":                      record.ID,
+			"trigger_id":              record.TriggerID,
+			"user_id":                 record.UserID,
+			"channel_conversation_id": record.ChannelConversationID,
+			"conversation_id":         record.ConversationID,
+			"trigger_meta":            record.TriggerMeta,
+			"graph_id":                record.GraphID,
+			"run_id":                  record.RunID,
+			"messages":                messages,
+			"final_answer":            record.FinalAnswer,
+			"triggered_at":            record.TriggeredAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
 	return items

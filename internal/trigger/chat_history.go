@@ -15,7 +15,7 @@ import (
 	"github.com/dengzii/weaveflow/runtime"
 )
 
-const ChatHistoryVersion = 1
+const ChatHistoryVersion = 2
 
 type ChatMessageDirection string
 
@@ -57,27 +57,29 @@ type ChatHistoryMessage struct {
 }
 
 type ChatHistory struct {
-	Version        int                  `json:"version"`
-	ID             int64                `json:"id"`
-	TriggerID      string               `json:"trigger_id"`
-	UserID         string               `json:"user_id"`
-	ConversationID string               `json:"conversation_id"`
-	TriggeredAt    time.Time            `json:"triggered_at"`
-	CompletedAt    *time.Time           `json:"completed_at,omitempty"`
-	Status         runtime.RunStatus    `json:"status"`
-	TriggerMeta    ChatTriggerMeta      `json:"trigger_meta"`
-	GraphID        string               `json:"graph_id"`
-	RunID          string               `json:"run_id,omitempty"`
-	Messages       []ChatHistoryMessage `json:"messages"`
-	FinalAnswer    string               `json:"final_answer,omitempty"`
-	ErrorMessage   string               `json:"error_message,omitempty"`
+	Version               int                  `json:"version"`
+	ID                    int64                `json:"id"`
+	TriggerID             string               `json:"trigger_id"`
+	UserID                string               `json:"user_id"`
+	ChannelConversationID string               `json:"channel_conversation_id"`
+	ConversationID        string               `json:"conversation_id"`
+	TriggeredAt           time.Time            `json:"triggered_at"`
+	CompletedAt           *time.Time           `json:"completed_at,omitempty"`
+	Status                runtime.RunStatus    `json:"status"`
+	TriggerMeta           ChatTriggerMeta      `json:"trigger_meta"`
+	GraphID               string               `json:"graph_id"`
+	RunID                 string               `json:"run_id,omitempty"`
+	Messages              []ChatHistoryMessage `json:"messages"`
+	FinalAnswer           string               `json:"final_answer,omitempty"`
+	ErrorMessage          string               `json:"error_message,omitempty"`
 }
 
 type ChatHistoryFilter struct {
-	TriggerID      string
-	UserID         string
-	ConversationID string
-	Limit          int
+	TriggerID             string
+	UserID                string
+	ChannelConversationID string
+	ConversationID        string
+	Limit                 int
 }
 
 func (s *FileStore) CreateChatHistory(ctx context.Context, history ChatHistory) (ChatHistory, error) {
@@ -100,7 +102,7 @@ func (s *FileStore) CreateChatHistory(ctx context.Context, history ChatHistory) 
 	if err := storeContextError(ctx); err != nil {
 		return ChatHistory{}, err
 	}
-	dir, err := s.ensureChatHistoryDir(history.TriggerID, history.UserID, history.ConversationID)
+	dir, err := s.ensureChatHistoryDir(history.TriggerID, history.UserID, history.ChannelConversationID, history.ConversationID)
 	if err != nil {
 		return ChatHistory{}, err
 	}
@@ -153,14 +155,15 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 	}
 	filter.TriggerID = strings.TrimSpace(filter.TriggerID)
 	filter.UserID = strings.TrimSpace(filter.UserID)
+	filter.ChannelConversationID = strings.TrimSpace(filter.ChannelConversationID)
 	filter.ConversationID = strings.TrimSpace(filter.ConversationID)
-	if err := validateChatHistoryIdentity(filter.TriggerID, filter.UserID, filter.ConversationID); err != nil {
+	if err := validateChatHistoryIdentity(filter.TriggerID, filter.UserID, filter.ChannelConversationID, filter.ConversationID); err != nil {
 		return nil, err
 	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	dir := s.chatHistoryDir(filter.TriggerID, filter.UserID, filter.ConversationID)
+	dir := s.chatHistoryDir(filter.TriggerID, filter.UserID, filter.ChannelConversationID, filter.ConversationID)
 	entries, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
 		return []ChatHistory{}, nil
@@ -201,7 +204,7 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 		if err := validateChatHistory(history); err != nil {
 			return nil, fmt.Errorf("decode chat history %q: %w", path, err)
 		}
-		if history.ID != id || history.TriggerID != filter.TriggerID || history.UserID != filter.UserID || history.ConversationID != filter.ConversationID {
+		if history.ID != id || history.TriggerID != filter.TriggerID || history.UserID != filter.UserID || history.ChannelConversationID != filter.ChannelConversationID || history.ConversationID != filter.ConversationID {
 			return nil, fmt.Errorf("decode chat history %q: stored identity does not match its path", path)
 		}
 		items = append(items, history)
@@ -209,8 +212,8 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 	return items, nil
 }
 
-func (s *FileStore) ensureChatHistoryDir(triggerID, userID, conversationID string) (string, error) {
-	dir := s.chatHistoryDir(triggerID, userID, conversationID)
+func (s *FileStore) ensureChatHistoryDir(triggerID, userID, channelConversationID, conversationID string) (string, error) {
+	dir := s.chatHistoryDir(triggerID, userID, channelConversationID, conversationID)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
@@ -220,18 +223,12 @@ func (s *FileStore) ensureChatHistoryDir(triggerID, userID, conversationID strin
 	return dir, nil
 }
 
-func (s *FileStore) chatHistoryDir(triggerID, userID, conversationID string) string {
-	return filepath.Join(
-		s.dir,
-		"history",
-		chatHistoryPathSegment(triggerID),
-		chatHistoryPathSegment(userID),
-		chatHistoryPathSegment(conversationID),
-	)
+func (s *FileStore) chatHistoryDir(triggerID, userID, channelConversationID, conversationID string) string {
+	return filepath.Join(s.chatConversationDir(triggerID, userID, channelConversationID, conversationID), "turns")
 }
 
 func (s *FileStore) chatHistoryPath(history ChatHistory) string {
-	return filepath.Join(s.chatHistoryDir(history.TriggerID, history.UserID, history.ConversationID), strconv.FormatInt(history.ID, 10)+".json")
+	return filepath.Join(s.chatHistoryDir(history.TriggerID, history.UserID, history.ChannelConversationID, history.ConversationID), strconv.FormatInt(history.ID, 10)+".json")
 }
 
 func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, history ChatHistory) error {
@@ -273,6 +270,7 @@ func normalizeChatHistory(history ChatHistory) ChatHistory {
 	}
 	history.TriggerID = strings.TrimSpace(history.TriggerID)
 	history.UserID = strings.TrimSpace(history.UserID)
+	history.ChannelConversationID = strings.TrimSpace(history.ChannelConversationID)
 	history.ConversationID = strings.TrimSpace(history.ConversationID)
 	history.TriggerMeta.Channel = strings.TrimSpace(history.TriggerMeta.Channel)
 	history.TriggerMeta.MessageID = strings.TrimSpace(history.TriggerMeta.MessageID)
@@ -288,7 +286,7 @@ func validateChatHistory(history ChatHistory) error {
 	if history.ID <= 0 {
 		return fmt.Errorf("invalid chat history: id must be a positive Unix millisecond timestamp")
 	}
-	if err := validateChatHistoryIdentity(history.TriggerID, history.UserID, history.ConversationID); err != nil {
+	if err := validateChatHistoryIdentity(history.TriggerID, history.UserID, history.ChannelConversationID, history.ConversationID); err != nil {
 		return err
 	}
 	if history.TriggeredAt.IsZero() {
@@ -340,12 +338,15 @@ func validateChatHistory(history ChatHistory) error {
 	return nil
 }
 
-func validateChatHistoryIdentity(triggerID, userID, conversationID string) error {
+func validateChatHistoryIdentity(triggerID, userID, channelConversationID, conversationID string) error {
 	if err := validateTriggerID(triggerID); err != nil {
 		return fmt.Errorf("invalid chat history: trigger_id: %w", err)
 	}
 	if strings.TrimSpace(userID) == "" {
 		return fmt.Errorf("invalid chat history: user_id is required")
+	}
+	if strings.TrimSpace(channelConversationID) == "" {
+		return fmt.Errorf("invalid chat history: channel_conversation_id is required")
 	}
 	if strings.TrimSpace(conversationID) == "" {
 		return fmt.Errorf("invalid chat history: conversation_id is required")
