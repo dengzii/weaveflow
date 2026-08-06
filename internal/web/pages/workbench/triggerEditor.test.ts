@@ -72,6 +72,29 @@ describe("trigger editor payload", () => {
     expect(() => buildTriggerPayload(values, null)).toThrow("cron is required");
   });
 
+  test("creates an imported schedule with its ID and input intact", () => {
+    const imported: Trigger = {
+      id: "scheduled-import",
+      type: "schedule",
+      enabled: true,
+      target: { graph_id: "graph-import" },
+      schedule: {
+        cron: "0 * * * *",
+        timezone: "UTC",
+        input: { tenant: "demo" },
+      },
+      created_at: "",
+      updated_at: "",
+    };
+    const values = triggerEditorValues(imported, imported.target!);
+
+    expect(buildTriggerPayload(values, imported, undefined, true)).toMatchObject({
+      id: "scheduled-import",
+      target: { graph_id: "graph-import" },
+      schedule: { input: { tenant: "demo" } },
+    });
+  });
+
   test("keeps an existing trigger name immutable in update payloads", () => {
     const existing = { ...webhook, name: "Webhook 3" };
     const values = triggerEditorValues(existing, { graph_id: "fallback" });

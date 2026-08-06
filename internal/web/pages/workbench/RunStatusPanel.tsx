@@ -1,4 +1,4 @@
-import { memo, startTransition, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -63,6 +63,8 @@ export function RunStatusPanel({
   runs,
   runTriggerTypes,
   selectedRunId,
+  runInspectionLoading = false,
+  runActionsDisabled = false,
   onSelectRun,
   onDeleteRun,
   steps,
@@ -76,6 +78,8 @@ export function RunStatusPanel({
   runs: RunRecord[];
   runTriggerTypes?: Partial<Record<string, TriggerType>>;
   selectedRunId?: string;
+  runInspectionLoading?: boolean;
+  runActionsDisabled?: boolean;
   onSelectRun?: (runId: string) => void;
   onDeleteRun?: (runId: string) => void;
   steps?: StepRecord[];
@@ -139,7 +143,7 @@ export function RunStatusPanel({
   );
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     checkpointContextVersionRef.current += 1;
     checkpointRequestIDsRef.current.clear();
     setSelectedKey(null);
@@ -328,6 +332,7 @@ export function RunStatusPanel({
           runs={runOptions}
           runTriggerTypes={runTriggerTypes}
           selectedRunID={selectedRunId}
+          actionsDisabled={runActionsDisabled}
           onSelectRun={onSelectRun}
           onDeleteRun={onDeleteRun}
         />
@@ -400,10 +405,12 @@ export function RunStatusPanel({
           <div className="min-h-0 flex-1">
             {panelView === "events" ? (
               <EventHistoryList
+                runID={selectedRunId ?? ""}
                 items={filteredEventItems}
                 effectiveKey={effectiveKey}
                 onSelect={setSelectedKey}
                 hasEvents={events.length > 0}
+                inspectionLoading={runInspectionLoading}
                 hasOlderEvents={hasOlderEvents}
                 loading={olderEventsLoading}
                 onLoadOlder={onLoadOlderEvents}
@@ -432,7 +439,13 @@ export function RunStatusPanel({
           </div>
           <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
             {panelView === "events" ? (
-              selectedEvent ? <RunEventDetail event={selectedEvent} /> : <EmptyDetail>Select an event</EmptyDetail>
+              selectedEvent ? (
+                <RunEventDetail event={selectedEvent} />
+              ) : runInspectionLoading ? (
+                <EmptyDetail>Loading event detail…</EmptyDetail>
+              ) : (
+                <EmptyDetail>Select an event</EmptyDetail>
+              )
             ) : stateDetailView === "diff" ? (
               deferredStateEntry?.event
                 ? <RunEventDetail event={deferredStateEntry.event} />
@@ -472,18 +485,22 @@ function cacheCheckpointDetail(
 }
 
 function EventHistoryList({
+  runID,
   items,
   effectiveKey,
   onSelect,
   hasEvents,
+  inspectionLoading,
   hasOlderEvents,
   loading,
   onLoadOlder,
 }: {
+  runID: string;
   items: EventHistoryItem[];
   effectiveKey: string | null;
   onSelect: (key: string) => void;
   hasEvents: boolean;
+  inspectionLoading: boolean;
   hasOlderEvents: boolean;
   loading: boolean;
   onLoadOlder?: () => void;
@@ -491,6 +508,11 @@ function EventHistoryList({
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(0);
+
+  useLayoutEffect(() => {
+    setScrollTop(0);
+    if (viewportRef.current) viewportRef.current.scrollTop = 0;
+  }, [runID]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -506,19 +528,6 @@ function EventHistoryList({
     return () => observer.disconnect();
   }, []);
 
-  if (items.length === 0 && !hasOlderEvents) {
-    return <div className="p-3 text-sm text-muted-foreground">{hasEvents ? "No matching events" : "No run events"}</div>;
-  }
-
-  if (items.length === 0) {
-    return (
-      <div className="h-full overflow-auto p-3 text-sm text-muted-foreground">
-        <div>{hasEvents ? "No matching events" : "No run events"}</div>
-        <LoadOlderEventsButton loading={loading} onLoad={onLoadOlder} />
-      </div>
-    );
-  }
-
   const range = fixedVirtualRange(
     items.length,
     scrollTop,
@@ -530,35 +539,52 @@ function EventHistoryList({
   return (
     <div
       ref={viewportRef}
+      data-event-history-viewport="true"
       className="h-full overflow-auto"
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
     >
-      <ul
-        className="relative"
-        style={{ height: items.length * EVENT_ROW_HEIGHT + loadControlHeight }}
-      >
-        {items.slice(range.start, range.end).map((item, index) => (
-          <EventHistoryRow
-            key={item.key}
-            item={item}
-            selected={effectiveKey === item.key}
-            onSelect={onSelect}
-            style={{
-              position: "absolute",
-              top: range.offset + index * EVENT_ROW_HEIGHT,
-              height: EVENT_ROW_HEIGHT,
-            }}
-          />
-        ))}
-        {hasOlderEvents ? (
-          <li
-            className="absolute inset-x-0 flex h-9 items-center justify-center border-t border-border"
-            style={{ top: items.length * EVENT_ROW_HEIGHT }}
-          >
-            <LoadOlderEventsButton loading={loading} onLoad={onLoadOlder} />
-          </li>
-        ) : null}
-      </ul>
+      {items.length === 0 ? (
+        <div className="p-3 text-sm text-muted-foreground">
+          {inspectionLoading ? (
+            <div className="flex items-center gap-2">
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+              Loading events…
+            </div>
+          ) : (
+            <>
+              <div>{hasEvents ? "No matching events" : "No run events"}</div>
+              {hasOlderEvents ? <LoadOlderEventsButton loading={loading} onLoad={onLoadOlder} /> : null}
+            </>
+          )}
+        </div>
+      ) : (
+        <ul
+          className="relative"
+          style={{ height: items.length * EVENT_ROW_HEIGHT + loadControlHeight }}
+        >
+          {items.slice(range.start, range.end).map((item, index) => (
+            <EventHistoryRow
+              key={item.key}
+              item={item}
+              selected={effectiveKey === item.key}
+              onSelect={onSelect}
+              style={{
+                position: "absolute",
+                top: range.offset + index * EVENT_ROW_HEIGHT,
+                height: EVENT_ROW_HEIGHT,
+              }}
+            />
+          ))}
+          {hasOlderEvents ? (
+            <li
+              className="absolute inset-x-0 flex h-9 items-center justify-center border-t border-border"
+              style={{ top: items.length * EVENT_ROW_HEIGHT }}
+            >
+              <LoadOlderEventsButton loading={loading} onLoad={onLoadOlder} />
+            </li>
+          ) : null}
+        </ul>
+      )}
     </div>
   );
 }

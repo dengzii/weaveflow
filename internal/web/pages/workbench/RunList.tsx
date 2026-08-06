@@ -12,18 +12,21 @@ import {
   X,
 } from "lucide-react";
 import { cn, formatTime } from "../../lib/utils";
-import type { RunRecord, TriggerType } from "../../types";
+import type { RunRecord, RunStatus, TriggerType } from "../../types";
+import { isActiveRunStatus } from "./workbenchRunModel";
 
 export function RunList({
   runs,
   runTriggerTypes,
   selectedRunID,
+  actionsDisabled = false,
   onSelectRun,
   onDeleteRun,
 }: {
   runs: RunRecord[];
   runTriggerTypes?: Partial<Record<string, TriggerType>>;
   selectedRunID?: string;
+  actionsDisabled?: boolean;
   onSelectRun?: (runID: string) => void;
   onDeleteRun?: (runID: string) => void;
 }) {
@@ -40,7 +43,7 @@ export function RunList({
           <ul className="divide-y divide-border">
             {runs.map((run) => {
               const active = run.run_id === selectedRunID;
-              const canDelete = Boolean(onDeleteRun) && !isRunActive(run.status);
+              const canDelete = Boolean(onDeleteRun) && !actionsDisabled && !isActiveRunStatus(run.status);
               const triggerType = runTriggerTypes?.[run.run_id];
               return (
                 <li
@@ -69,7 +72,11 @@ export function RunList({
                         if (canDelete) onDeleteRun(run.run_id);
                       }}
                       disabled={!canDelete}
-                      title={canDelete ? "Delete run" : "Stop run before deleting"}
+                      title={canDelete
+                        ? "Delete run"
+                        : actionsDisabled
+                          ? "Run operation in progress"
+                          : "Stop run before deleting"}
                       aria-label={`Delete run ${run.run_id}`}
                       className="m-1 flex h-7 w-7 items-center justify-center self-center rounded text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-35"
                     >
@@ -86,10 +93,6 @@ export function RunList({
       </div>
     </div>
   );
-}
-
-function isRunActive(status: string): boolean {
-  return status === "pending" || status === "running";
 }
 
 function RunSourceIcon({ triggerType }: { triggerType?: TriggerType }) {
@@ -120,7 +123,7 @@ function RunSourceIcon({ triggerType }: { triggerType?: TriggerType }) {
   );
 }
 
-function RunStatusIcon({ status }: { status: string }) {
+function RunStatusIcon({ status }: { status: RunStatus }) {
   let StatusIcon = Circle;
   let iconClassName = "text-muted-foreground";
   switch (status) {
@@ -132,12 +135,10 @@ function RunStatusIcon({ status }: { status: string }) {
       iconClassName = "animate-spin text-cyan-700 dark:text-cyan-300";
       break;
     case "paused":
-    case "interrupted":
       StatusIcon = Pause;
       iconClassName = "text-amber-700 dark:text-amber-300";
       break;
     case "completed":
-    case "finished":
       StatusIcon = Check;
       iconClassName = "text-emerald-700 dark:text-emerald-300";
       break;

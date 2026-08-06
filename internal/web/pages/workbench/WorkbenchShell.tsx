@@ -29,6 +29,7 @@ export function WorkbenchShell({
   definition,
   runControlMode,
   canResume,
+  runControlsDisabled,
   children,
   runStatusPanel,
   runStatusVisible,
@@ -50,6 +51,7 @@ export function WorkbenchShell({
   definition: GraphDefinition | null;
   runControlMode: RunControlMode;
   canResume: boolean;
+  runControlsDisabled: boolean;
   children: ReactNode;
   runStatusPanel?: ReactNode;
   runStatusVisible: boolean;
@@ -103,11 +105,11 @@ export function WorkbenchShell({
           ) : null}
           {tab === "graph" && runControlMode === "active" ? (
             <>
-              <Button variant="outline" size="sm" onClick={onPause} disabled={!hasRunStatus} title="Pause run">
+              <Button variant="outline" size="sm" onClick={onPause} disabled={runControlsDisabled || !hasRunStatus} title="Pause run">
                 <Pause className="h-4 w-4" />
                 Pause
               </Button>
-              <Button variant="danger" size="sm" onClick={onStop} disabled={!hasRunStatus} title="Stop run">
+              <Button variant="danger" size="sm" onClick={onStop} disabled={runControlsDisabled || !hasRunStatus} title="Stop run">
                 <Square className="h-4 w-4" />
                 Stop
               </Button>
@@ -118,7 +120,7 @@ export function WorkbenchShell({
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 Resume
               </Button>
-              <Button variant="danger" size="sm" onClick={onStop} disabled={!hasRunStatus} title="Stop run">
+              <Button variant="danger" size="sm" onClick={onStop} disabled={busy || !hasRunStatus} title="Stop run">
                 <Square className="h-4 w-4" />
                 Stop
               </Button>

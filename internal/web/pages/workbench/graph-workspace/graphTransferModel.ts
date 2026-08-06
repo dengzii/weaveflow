@@ -1,15 +1,18 @@
+import { createGraphID } from "../../../lib/graphEditor";
 import { cloneJSONValue, isPlainRecord } from "../../../lib/utils";
 import type {
   GraphDefinition,
   RuntimeEnvironmentPreset,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  Trigger,
 } from "../../../types";
 
 export const graphExportFormat = "weaveflow.graph-export";
 export const graphExportFormatVersion = "1.0";
 
-export type GraphExportContent = "graph" | "config" | "settings" | "ui";
+export type GraphExportContent = "graph" | "config" | "settings" | "triggers" | "ui";
+export type GraphExportTrigger = Omit<Trigger, "target" | "created_at" | "updated_at">;
 
 export interface GraphExportBundle {
   format: typeof graphExportFormat;
@@ -20,6 +23,7 @@ export interface GraphExportBundle {
   graph_version: string;
   definition: GraphDefinition;
   settings?: RuntimeSettingsUpdate;
+  triggers?: GraphExportTrigger[];
   ui?: {
     web: Record<string, unknown>;
   };
@@ -30,6 +34,7 @@ export interface ParsedGraphImport {
   graphID: string;
   graphVersion: string;
   settings?: RuntimeSettings;
+  triggers?: Trigger[];
   contents: GraphExportContent[];
 }
 
@@ -38,8 +43,10 @@ export function buildGraphExportBundle({
   graphID,
   graphVersion,
   runtimeSettings,
+  triggers,
   includeConfig,
   includeSettings,
+  includeTriggers,
   includeUI,
   exportedAt = new Date().toISOString(),
 }: {
@@ -47,8 +54,10 @@ export function buildGraphExportBundle({
   graphID: string;
   graphVersion: string;
   runtimeSettings: RuntimeSettings;
+  triggers: Trigger[];
   includeConfig: boolean;
   includeSettings: boolean;
+  includeTriggers: boolean;
   includeUI: boolean;
   exportedAt?: string;
 }): GraphExportBundle {
@@ -56,7 +65,9 @@ export function buildGraphExportBundle({
   const contents: GraphExportContent[] = ["graph"];
   if (includeConfig) contents.push("config");
   if (includeSettings) contents.push("settings");
+  if (includeTriggers) contents.push("triggers");
   if (includeUI) contents.push("ui");
+  const exportedTriggers = includeTriggers ? exportableTriggers(triggers) : undefined;
 
   return {
     format: graphExportFormat,
@@ -67,7 +78,52 @@ export function buildGraphExportBundle({
     graph_version: graphVersion.trim() || definition.version?.trim() || "2.0",
     definition: includeConfig ? split.definition : withoutGraphConfig(split.definition),
     settings: includeSettings ? exportableRuntimeSettings(runtimeSettings) : undefined,
-    ui: includeUI ? { web: includeConfig ? split.web : withoutUIConfig(split.web) } : undefined,
+    triggers: exportedTriggers,
+    ui: includeUI ? {
+      web: exportableGraphUI(
+        includeConfig ? split.web : withoutUIConfig(split.web),
+        exportedTriggers?.map((trigger) => trigger.id) ?? []
+      ),
+    } : undefined,
+  };
+}
+
+export function resolveGraphImportConflicts(
+  graph: ParsedGraphImport,
+  existingGraphIDs: string[],
+  existingGraphNames: string[],
+  existingTriggerIDs: string[] = [],
+  generatedGraphID = createGraphID()
+): ParsedGraphImport {
+  const usedGraphIDs = new Set(existingGraphIDs.map((value) => value.trim()).filter(Boolean));
+  const usedGraphNames = new Set(existingGraphNames.map((value) => value.trim()).filter(Boolean));
+  const sourceGraphID = graph.graphID.trim() || graph.definition.name?.trim() || "imported_graph";
+  const sourceGraphName = graph.definition.name?.trim() || sourceGraphID;
+  const graphID = usedGraphIDs.has(sourceGraphID)
+    ? nextAvailableValue(generatedGraphID.trim() || createGraphID(), usedGraphIDs, "_")
+    : sourceGraphID;
+  const graphName = nextAvailableValue(sourceGraphName, usedGraphNames, " ");
+  const usedTriggerIDs = new Set(existingTriggerIDs.map((value) => value.trim()).filter(Boolean));
+  const triggerIDMap = new Map<string, string>();
+  const triggers = graph.triggers?.map((trigger) => {
+    const triggerID = nextAvailableValue(trigger.id, usedTriggerIDs, "_");
+    usedTriggerIDs.add(triggerID);
+    triggerIDMap.set(trigger.id, triggerID);
+    return {
+      ...trigger,
+      id: triggerID,
+      target: { graph_id: graphID },
+    };
+  });
+
+  return {
+    ...graph,
+    graphID,
+    triggers,
+    definition: {
+      ...remapTriggerCanvasPositions(graph.definition, triggerIDMap),
+      name: graphName,
+    },
   };
 }
 
@@ -97,6 +153,7 @@ export function parseGraphImport(text: string): ParsedGraphImport {
   if (value.definition !== undefined) {
     const contents: GraphExportContent[] = ["graph", "config"];
     if (value.settings !== undefined) contents.push("settings");
+    if (value.triggers !== undefined) contents.push("triggers");
     if (value.ui !== undefined) contents.push("ui");
     return parseGraphEnvelope(value, contents);
   }
@@ -132,6 +189,12 @@ function parseGraphEnvelope(
     graphID: stringValue(envelope.graph_id) || stringValue(definition.name),
     graphVersion: stringValue(envelope.graph_version) || stringValue(definition.version),
     settings: envelope.settings === undefined ? undefined : parseRuntimeSettings(envelope.settings),
+    triggers: envelope.triggers === undefined
+      ? undefined
+      : parseGraphTriggers(
+          envelope.triggers,
+          stringValue(envelope.graph_id) || stringValue(definition.name)
+        ),
     contents,
   };
 }
@@ -140,7 +203,7 @@ function parseExportContents(value: unknown): GraphExportContent[] {
   if (!Array.isArray(value) || !value.includes("graph")) {
     throw new Error("Invalid graph export: contents must include graph.");
   }
-  const allowed = new Set<GraphExportContent>(["graph", "config", "settings", "ui"]);
+  const allowed = new Set<GraphExportContent>(["graph", "config", "settings", "triggers", "ui"]);
   if (!value.every((item) => typeof item === "string" && allowed.has(item as GraphExportContent))) {
     throw new Error("Invalid graph export: contents contains an unsupported value.");
   }
@@ -233,6 +296,121 @@ function exportableRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsUp
       directory: settings.memory.directory ?? "",
     },
   };
+}
+
+function exportableTriggers(triggers: Trigger[]): GraphExportTrigger[] {
+  return triggers.map((trigger) => {
+    const item: GraphExportTrigger = {
+      id: trigger.id,
+      name: trigger.name,
+      type: trigger.type,
+      enabled: false,
+      concurrency: trigger.concurrency,
+      initial_state: cloneJSONValue(trigger.initial_state),
+      webhook: trigger.webhook ? {
+        state_mappings: cloneJSONValue(trigger.webhook.state_mappings),
+      } : undefined,
+      schedule: cloneJSONValue(trigger.schedule),
+      chat: trigger.chat ? {
+        ...cloneJSONValue(trigger.chat),
+        channel_config: sanitizeSensitiveValues(trigger.chat.channel_config),
+      } : undefined,
+    };
+    return item;
+  });
+}
+
+function parseGraphTriggers(value: unknown, graphID: string): Trigger[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Invalid graph file: triggers must be an array.");
+  }
+  const usedIDs = new Set<string>();
+  return value.map((item, index) => {
+    if (!isPlainRecord(item)) {
+      throw new Error(`Invalid graph file: trigger ${index + 1} must be an object.`);
+    }
+    const id = stringValue(item.id);
+    if (!id || usedIDs.has(id)) {
+      throw new Error(`Invalid graph file: trigger ${index + 1} must have a unique id.`);
+    }
+    usedIDs.add(id);
+    const type = item.type;
+    if (type !== "webhook" && type !== "schedule" && type !== "chat") {
+      throw new Error(`Invalid graph file: trigger ${id} has an unsupported type.`);
+    }
+    const concurrency = item.concurrency;
+    if (concurrency !== undefined && concurrency !== "parallel" && concurrency !== "skip") {
+      throw new Error(`Invalid graph file: trigger ${id} has an unsupported concurrency policy.`);
+    }
+    return {
+      ...(cloneJSONValue(item) as unknown as GraphExportTrigger),
+      id,
+      type,
+      enabled: typeof item.enabled === "boolean" ? item.enabled : true,
+      concurrency: concurrency ?? "parallel",
+      target: { graph_id: graphID },
+      created_at: "",
+      updated_at: "",
+    };
+  });
+}
+
+function exportableGraphUI(web: Record<string, unknown>, triggerIDs: string[]): Record<string, unknown> {
+  const next = cloneJSONValue(web);
+  if (!isPlainRecord(next.trigger_nodes)) return next;
+  const validTriggerIDs = new Set(triggerIDs);
+  next.trigger_nodes = Object.fromEntries(
+    Object.entries(next.trigger_nodes).filter(([triggerID]) => validTriggerIDs.has(triggerID))
+  );
+  if (Object.keys(next.trigger_nodes).length === 0) delete next.trigger_nodes;
+  return next;
+}
+
+function remapTriggerCanvasPositions(
+  definition: GraphDefinition,
+  triggerIDMap: Map<string, string>
+): GraphDefinition {
+  if (triggerIDMap.size === 0 || !isPlainRecord(definition.metadata?.web)) return definition;
+  const web = cloneJSONValue(definition.metadata.web);
+  if (!isPlainRecord(web.trigger_nodes)) return definition;
+  const triggerNodes: Record<string, unknown> = {};
+  for (const [triggerID, position] of Object.entries(web.trigger_nodes)) {
+    const nextTriggerID = triggerIDMap.get(triggerID);
+    if (nextTriggerID) triggerNodes[nextTriggerID] = position;
+  }
+  if (Object.keys(triggerNodes).length > 0) web.trigger_nodes = triggerNodes;
+  else delete web.trigger_nodes;
+  return {
+    ...definition,
+    metadata: {
+      ...definition.metadata,
+      web,
+    },
+  };
+}
+
+function sanitizeSensitiveValues(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+  if (!value) return undefined;
+  const sanitized = Object.fromEntries(
+    Object.entries(value).flatMap(([key, item]) => {
+      if (isSensitiveSettingName(key) || key.toLowerCase() === "bot_id") return [];
+      if (isPlainRecord(item)) return [[key, sanitizeSensitiveValues(item)]];
+      if (Array.isArray(item)) {
+        return [[key, item.map((entry) => isPlainRecord(entry) ? sanitizeSensitiveValues(entry) : entry)]];
+      }
+      return [[key, item]];
+    })
+  );
+  return sanitized;
+}
+
+function nextAvailableValue(base: string, used: Set<string>, separator: string): string {
+  if (!used.has(base)) return base;
+  for (let index = 1; index < 1000; index += 1) {
+    const candidate = `${base}${separator}${index}`;
+    if (!used.has(candidate)) return candidate;
+  }
+  return `${base}${separator}${Date.now().toString(36)}`;
 }
 
 function withoutGraphConfig(definition: GraphDefinition): GraphDefinition {

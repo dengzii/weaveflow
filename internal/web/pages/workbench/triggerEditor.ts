@@ -85,7 +85,8 @@ export function triggerEditorValues(
 export function buildTriggerPayload(
   values: TriggerEditorValues,
   editing: Trigger | null,
-  chatSetupSessionID?: string
+  chatSetupSessionID?: string,
+  creating = !editing
 ): Record<string, unknown> {
   const graphID = triggerTargetKey(values.target);
   if (!graphID) throw new Error("graph is required");
@@ -99,7 +100,7 @@ export function buildTriggerPayload(
   };
   const initialState = buildTriggerInitialState(values.initialStateEntries);
   if (Object.keys(initialState).length > 0) input.initial_state = initialState;
-  if (!editing && values.id.trim()) input.id = values.id.trim();
+  if (creating && values.id.trim()) input.id = values.id.trim();
 
   if (values.type === "webhook") {
     const mappings = values.mappings

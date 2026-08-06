@@ -69,6 +69,8 @@ export interface RuntimeSettings {
 
 export type TriggerType = "webhook" | "schedule" | "chat";
 export type TriggerConcurrency = "parallel" | "skip";
+export type RunStatus = "pending" | "running" | "paused" | "failed" | "completed" | "canceled";
+export type StepStatus = "scheduled" | "running" | "succeeded" | "failed" | "paused";
 
 export interface TriggerTarget {
   graph_id: string;
@@ -177,7 +179,7 @@ export interface TriggerInvocation {
   trigger_id: string;
   trigger_type: TriggerType;
   target: TriggerTarget;
-  status: string;
+  status: RunStatus;
   run?: RunRecord;
   error_message?: string;
   triggered_at: string;
@@ -359,7 +361,7 @@ export interface RunRecord {
   graph_hash?: string;
   graph_snapshot_hash?: string;
   graph_session_id?: string;
-  status: string;
+  status: RunStatus;
   entry_node_id: string;
   current_node_id?: string;
   current_node_ids?: string[];
@@ -382,7 +384,7 @@ export interface StepRecord {
   run_id: string;
   node_id: string;
   node_name: string;
-  status: string;
+  status: StepStatus;
   attempt: number;
   checkpoint_before_id?: string;
   checkpoint_after_id?: string;

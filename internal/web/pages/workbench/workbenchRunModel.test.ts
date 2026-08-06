@@ -16,6 +16,7 @@ import {
   runStatusFromEvent,
   runTriggerTypesFromInvocations,
   selectedRunIDAfterDeletion,
+  upsertInspectedRun,
   upsertRunFromEvent,
 } from "./workbenchRunModel";
 
@@ -33,7 +34,8 @@ describe("workbench run model", () => {
   test("maps lifecycle events and derives run controls", () => {
     expect(runStatusFromEvent("run.paused")).toBe("paused");
     expect(runStatusFromEvent("node.finished")).toBe("");
-    expect(isTerminalRunStatus("finished")).toBe(true);
+    expect(runStatusFromEvent("run.finished")).toBe("completed");
+    expect(isTerminalRunStatus("completed")).toBe(true);
     expect(isTerminalRunStatus("running")).toBe(false);
     expect(runControlModeFromRun(null)).toBe("run");
     expect(runControlModeFromRun({ ...baseRun, status: "running" })).toBe("active");
@@ -43,7 +45,7 @@ describe("workbench run model", () => {
     );
     expect(
       canResumeRun(
-        { ...baseRun, status: "interrupted" },
+        { ...baseRun, status: "paused" },
         { run_id: "run-1", checkpoint_id: "checkpoint-2" }
       )
     ).toBe(true);
@@ -57,8 +59,8 @@ describe("workbench run model", () => {
       timestamp: "2026-01-01T00:01:00Z",
       payload: { checkpoint_id: "checkpoint-1" },
     };
-    expect(upsertRunFromEvent([baseRun], event, "finished", { id: "graph-1", version: "2.0" })[0]).toMatchObject({
-      status: "finished",
+    expect(upsertRunFromEvent([baseRun], event, "completed", { id: "graph-1", version: "2.0" })[0]).toMatchObject({
+      status: "completed",
       last_checkpoint_id: "checkpoint-1",
       finished_at: event.timestamp,
     });
@@ -103,7 +105,7 @@ describe("workbench run model", () => {
   test("keeps newer live run state when a list refresh finishes later", () => {
     const finished = {
       ...baseRun,
-      status: "finished",
+      status: "completed",
       updated_at: "2026-01-01T00:01:00Z",
       finished_at: "2026-01-01T00:01:00Z",
     };
@@ -111,6 +113,47 @@ describe("workbench run model", () => {
 
     expect(mergeRefreshedRuns([finished], [baseRun, newRun])).toEqual([finished, newRun]);
     expect(mergeRefreshedRuns([finished], [newRun])).toEqual([newRun]);
+    expect(mergeRefreshedRuns([finished, newRun], [baseRun], [baseRun])).toEqual([finished, newRun]);
+    expect(mergeRefreshedRuns([], [baseRun], [baseRun])).toEqual([]);
+  });
+
+  test("does not regress a refreshed run with an older lifecycle event", () => {
+    const completed: RunRecord = {
+      ...baseRun,
+      status: "completed",
+      updated_at: "2026-01-01T00:02:00Z",
+      finished_at: "2026-01-01T00:02:00Z",
+    };
+    const current = [completed];
+    const staleStarted: RuntimeEvent = {
+      id: "event-started",
+      run_id: completed.run_id,
+      type: "run.started",
+      timestamp: "2026-01-01T00:01:00Z",
+    };
+
+    expect(upsertRunFromEvent(current, staleStarted, "running", { id: "graph-1", version: "2.0" })).toBe(current);
+  });
+
+  test("does not regress a live run with an older inspection response", () => {
+    const completed: RunRecord = {
+      ...baseRun,
+      status: "completed",
+      updated_at: "2026-01-01T00:02:00Z",
+      finished_at: "2026-01-01T00:02:00Z",
+    };
+    const current = [completed];
+
+    expect(upsertInspectedRun(current, {
+      ...baseRun,
+      status: "running",
+      updated_at: "2026-01-01T00:01:00Z",
+    })).toBe(current);
+    expect(upsertInspectedRun(current, {
+      ...completed,
+      status: "canceled",
+      updated_at: "2026-01-01T00:03:00Z",
+    })[0]?.status).toBe("canceled");
   });
 
   test("batches live events and coalesces LLM chunks by call", () => {
@@ -242,7 +285,7 @@ describe("workbench run model", () => {
             trigger_id: "trigger-1",
             trigger_type: "chat",
             target: { graph_id: "graph-1" },
-            status: "finished",
+            status: "completed",
             run: baseRun,
             triggered_at: "2026-01-01T00:00:00Z",
             updated_at: "2026-01-01T00:00:00Z",
@@ -252,7 +295,7 @@ describe("workbench run model", () => {
             trigger_id: "trigger-2",
             trigger_type: "schedule",
             target: { graph_id: "graph-2" },
-            status: "finished",
+            status: "completed",
             run: { ...baseRun, run_id: "run-2", graph_id: "graph-2" },
             triggered_at: "2026-01-01T00:00:00Z",
             updated_at: "2026-01-01T00:00:00Z",
@@ -265,9 +308,9 @@ describe("workbench run model", () => {
 
   test("marks only the resumed run as running", () => {
     const paused = { ...baseRun, status: "paused", pause_requested: true };
-    const other = { ...baseRun, run_id: "run-2", status: "finished" };
-    expect(markRunResuming([paused, other], "run-1", "2026-01-01T00:03:00Z")).toEqual([
-      { ...paused, status: "running", pause_requested: false, updated_at: "2026-01-01T00:03:00Z" },
+    const other = { ...baseRun, run_id: "run-2", status: "completed" };
+    expect(markRunResuming([paused, other], "run-1")).toEqual([
+      { ...paused, status: "running", pause_requested: false },
       other,
     ]);
   });

@@ -3,38 +3,46 @@ package runtime
 import (
 	"context"
 	"fmt"
-	"github.com/dengzii/weaveflow/state"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
+	"github.com/dengzii/weaveflow/state"
 	"github.com/google/uuid"
 )
 
 type FileArtifactStore struct {
 	baseDir string
-	mu      sync.Mutex
+	mu      fileStoreMutex
 }
 
 func NewFileArtifactStore(baseDir string) *FileArtifactStore {
-	return &FileArtifactStore{baseDir: strings.TrimSpace(baseDir)}
+	baseDir = strings.TrimSpace(baseDir)
+	return &FileArtifactStore{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
 }
 
 func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (state.ArtifactRef, error) {
+	runID := artifact.RunID
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return state.ArtifactRef{}, err
+	}
+
+	id := artifact.ID
+	if id == "" {
+		id = uuid.NewString()
+	}
+	if err := validateRunnerStorageID("artifact ID", id); err != nil {
+		return state.ArtifactRef{}, err
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	runID := strings.TrimSpace(artifact.RunID)
-	if runID == "" {
-		return state.ArtifactRef{}, fmt.Errorf("artifact run id is required")
-	}
-
-	id := strings.TrimSpace(artifact.ID)
-	if id == "" {
-		id = uuid.NewString()
+	metadataPath := s.metadataPath(runID, id)
+	if err := ensureRunnerRecordDoesNotExist(metadataPath, "artifact", id); err != nil {
+		return state.ArtifactRef{}, err
 	}
 
 	createdAt := artifact.CreatedAt
@@ -58,16 +66,29 @@ func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (state.Ar
 		CreatedAt: createdAt,
 	}
 
-	if err := writeRunnerJSONFile(s.metadataPath(runID, id), ref); err != nil {
+	metadata, err := marshalRunnerJSONFile(ref)
+	if err != nil {
 		return state.ArtifactRef{}, err
 	}
 	if err := writeRunnerBinaryFile(ref.Location, artifact.Data); err != nil {
+		return state.ArtifactRef{}, err
+	}
+	if err := writeRunnerBinaryFile(metadataPath, metadata); err != nil {
 		return state.ArtifactRef{}, err
 	}
 	return ref, nil
 }
 
 func (s *FileArtifactStore) Load(_ context.Context, ref state.ArtifactRef) (Artifact, error) {
+	if err := validateRunnerStorageID("run ID", ref.RunID); err != nil {
+		return Artifact{}, err
+	}
+	if err := validateRunnerStorageID("artifact ID", ref.ID); err != nil {
+		return Artifact{}, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	var stored state.ArtifactRef
 	if err := readRunnerJSONFile(s.metadataPath(ref.RunID, ref.ID), &stored); err != nil {
 		if os.IsNotExist(err) {
@@ -76,10 +97,15 @@ func (s *FileArtifactStore) Load(_ context.Context, ref state.ArtifactRef) (Arti
 		return Artifact{}, err
 	}
 
-	data, err := os.ReadFile(stored.Location)
+	if stored.RunID != ref.RunID || stored.ID != ref.ID {
+		return Artifact{}, fmt.Errorf("artifact %q metadata identity mismatch", ref.ID)
+	}
+	payloadPath := s.payloadPath(ref.RunID, ref.ID)
+	data, err := os.ReadFile(payloadPath)
 	if err != nil {
 		return Artifact{}, err
 	}
+	stored.Location = payloadPath
 
 	return Artifact{
 		ID:        stored.ID,
@@ -95,6 +121,12 @@ func (s *FileArtifactStore) Load(_ context.Context, ref state.ArtifactRef) (Arti
 }
 
 func (s *FileArtifactStore) List(_ context.Context, runID string) ([]state.ArtifactRef, error) {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	dir := s.artifactsDir(runID)
 	files, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -113,6 +145,13 @@ func (s *FileArtifactStore) List(_ context.Context, runID string) ([]state.Artif
 		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &ref); err != nil {
 			return nil, err
 		}
+		if err := validateRunnerStorageID("artifact ID", ref.ID); err != nil {
+			return nil, err
+		}
+		if ref.RunID != runID || file.Name() != ref.ID+".json" {
+			return nil, fmt.Errorf("artifact %q metadata identity mismatch", ref.ID)
+		}
+		ref.Location = s.payloadPath(runID, ref.ID)
 		items = append(items, ref)
 	}
 
@@ -126,9 +165,8 @@ func (s *FileArtifactStore) List(_ context.Context, runID string) ([]state.Artif
 }
 
 func (s *FileArtifactStore) DeleteRun(_ context.Context, runID string) error {
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return ErrRunnerRecordNotFound
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()

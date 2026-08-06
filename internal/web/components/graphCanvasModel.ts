@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react";
-import type { GraphDefinition, GraphNodeSpec, StepRecord, TriggerType } from "../types";
+import type { GraphDefinition, GraphNodeSpec, StepRecord, StepStatus, TriggerType } from "../types";
 import {
   END_NODE_REF,
   START_NODE_REF,
@@ -11,7 +11,7 @@ import { analyzeVirtualGraphLoop, type VirtualGraphLoop } from "../lib/loopPrese
 export interface FlowNodeData extends Record<string, unknown> {
   label: string;
   type: string;
-  status: string;
+  status: FlowNodeStatus;
   editable: boolean;
   attempt?: number;
   highlighted?: boolean;
@@ -26,8 +26,11 @@ export interface FlowNodeData extends Record<string, unknown> {
   height?: number;
 }
 
+export type RuntimeNodeStatus = "idle" | Exclude<StepStatus, "scheduled">;
+export type FlowNodeStatus = RuntimeNodeStatus | "enabled" | "disabled";
+
 export interface RuntimeNodeState {
-  status: string;
+  status: RuntimeNodeStatus;
   attempt: number;
   at: number;
 }
@@ -71,7 +74,7 @@ export function runtimeFromSteps(steps: StepRecord[], runID?: string): Map<strin
 export function applyRuntime(
   runtime: Map<string, RuntimeNodeState>,
   nodeID: string,
-  status: string,
+  status: RuntimeNodeStatus,
   attempt: number,
   at: number
 ): boolean {
@@ -141,7 +144,7 @@ export function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeDat
   return changed ? next : nodes;
 }
 
-export function runtimeStatusFromEvent(type: string): string {
+export function runtimeStatusFromEvent(type: string): RuntimeNodeStatus | "" {
   switch (type) {
     case "nodes.started":
     case "nodes.retry":
@@ -280,17 +283,21 @@ function updateRuntimeNodeData(node: Node<FlowNodeData>, runtime: RuntimeNodeSta
   };
 }
 
-function normalizeRuntimeStatus(status: string): string {
-  const lower = status.toLowerCase();
-  if (!lower) return "idle";
-  if (lower.includes("fail") || lower.includes("error")) return "failed";
-  if (lower.includes("cancel")) return "canceled";
-  if (lower.includes("pause")) return "paused";
-  if (lower.includes("finish") || lower.includes("complete") || lower.includes("success")) return "succeeded";
-  if (lower.includes("run") || lower.includes("start") || lower.includes("pend") || lower.includes("retry")) {
-    return "running";
+function normalizeRuntimeStatus(status: StepStatus): RuntimeNodeStatus {
+  switch (status) {
+    case "scheduled":
+      return "idle";
+    case "running":
+      return "running";
+    case "succeeded":
+      return "succeeded";
+    case "failed":
+      return "failed";
+    case "paused":
+      return "paused";
+    default:
+      return "idle";
   }
-  return lower;
 }
 
 function loopBounds(

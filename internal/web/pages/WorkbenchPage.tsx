@@ -218,6 +218,7 @@ export function WorkbenchPage({
     runs,
     runTriggerTypes,
     selectedRunID,
+    runInspectionLoading,
     steps,
     checkpoints,
     displayEvents,
@@ -227,6 +228,7 @@ export function WorkbenchPage({
     humanPromptText,
     runStatusVisible,
     runBusy,
+    runLaunchPending,
     graphSwitchLocked,
     canResumeSelectedRun,
     runControlMode,
@@ -251,7 +253,9 @@ export function WorkbenchPage({
     initialStateText,
     onNotify: pushToast,
   });
-  const workbenchBusy = busy || runBusy;
+  const workbenchBusy = busy || runBusy || runLaunchPending;
+  const runControlsDisabled = runBusy || (busy && !runLaunchPending);
+  const graphSwitchDisabled = workbenchBusy || graphSwitchLocked;
 
   const refreshInitialRequirements = useCallback(async (targetDefinition?: GraphDefinition) => {
     initialRequirementsRequestRef.current?.controller.abort();
@@ -349,13 +353,18 @@ export function WorkbenchPage({
   }, [loadServerState]);
 
   const prepareGraphSwitch = useCallback(() => {
-    if (graphSwitchLocked) {
-      pushToast("warn", "Cannot switch graph while a run is active");
+    if (graphSwitchDisabled) {
+      pushToast(
+        "warn",
+        workbenchBusy
+          ? "Cannot switch graph while an operation is in progress"
+          : "Cannot switch graph while a run is active"
+      );
       return false;
     }
     resetRunState();
     return true;
-  }, [graphSwitchLocked, pushToast, resetRunState]);
+  }, [graphSwitchDisabled, pushToast, resetRunState, workbenchBusy]);
 
   useEffect(() => {
     if (!serverStateLoaded) return;
@@ -421,7 +430,10 @@ export function WorkbenchPage({
         result.graph.id,
         result.graph.version
       );
-      await startConfiguredRun(initialState);
+      await startConfiguredRun(initialState, {
+        id: result.graph.id,
+        version: result.graph.version,
+      });
     } catch (err) {
       setInitialRequirementsError(err instanceof Error ? err.message : String(err));
       notifyError(err);
@@ -514,6 +526,7 @@ export function WorkbenchPage({
       definition={definition}
       runControlMode={runControlMode}
       canResume={canResumeSelectedRun}
+      runControlsDisabled={runControlsDisabled}
       onRun={runGraph}
       onSave={() => void saveGraph()}
       onPause={() => void pauseSelectedRun()}
@@ -529,6 +542,8 @@ export function WorkbenchPage({
           runs={runs}
           runTriggerTypes={runTriggerTypes}
           selectedRunId={selectedRunID}
+          runInspectionLoading={runInspectionLoading}
+          runActionsDisabled={workbenchBusy}
           onSelectRun={selectRun}
           onDeleteRun={(runID) => void deleteRunRecord(runID)}
           steps={steps}
@@ -559,7 +574,7 @@ export function WorkbenchPage({
           graphId={graphId}
           graphVersion={graphVersion}
           serverGraphsLoaded={serverGraphsLoaded}
-          graphSwitchDisabled={graphSwitchLocked}
+          graphSwitchDisabled={graphSwitchDisabled}
           toasts={toasts}
           onGraphId={setGraphId}
           onGraphVersion={setGraphVersion}

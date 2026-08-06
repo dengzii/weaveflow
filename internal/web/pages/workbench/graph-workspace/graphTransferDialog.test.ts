@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { GraphDefinition, RuntimeSettings } from "../../../types";
+import type { GraphDefinition, RuntimeSettings, Trigger } from "../../../types";
 import { GraphTitleMenu } from "./GraphTitleMenu";
 import { GraphTransferDialog } from "./GraphTransferDialog";
 
@@ -34,6 +34,7 @@ describe("graph transfer UI", () => {
       graphID: "demo",
       graphVersion: "v1",
       runtimeSettings: runtimeSettings(),
+      triggers: graphTriggers(),
       onClose: () => undefined,
       onImport: () => true,
     }));
@@ -41,9 +42,12 @@ describe("graph transfer UI", () => {
     expect(markup).toContain(">Graph<");
     expect(markup).toContain(">Config<");
     expect(markup).toContain(">Settings<");
+    expect(markup).toContain(">Triggers<");
     expect(markup).toContain("UI information");
-    expect(markup.match(/type="checkbox"/g)).toHaveLength(4);
-    expect(markup).toContain("API keys and secret-like environment values are excluded.");
+    expect(markup.match(/type="checkbox"/g)).toHaveLength(5);
+    expect(markup).not.toContain("API keys and secrets");
+    expect(markup).not.toContain("secret-like environment values");
+    expect(markup).toContain("z-[200]");
   });
 });
 
@@ -53,6 +57,18 @@ function graphDefinition(): GraphDefinition {
     name: "demo",
     nodes: [{ id: "task", type: "task" }],
   };
+}
+
+function graphTriggers(): Trigger[] {
+  return [{
+    id: "hook",
+    type: "webhook",
+    enabled: true,
+    target: { graph_id: "demo" },
+    webhook: {},
+    created_at: "",
+    updated_at: "",
+  }];
 }
 
 function runtimeSettings(): RuntimeSettings {

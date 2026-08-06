@@ -2,6 +2,7 @@ import type {
   InitialStateRequirement,
   RunInterrupt,
   RunRecord,
+  RunStatus,
   RuntimeEvent,
   TriggerInvocation,
   TriggerType,
@@ -15,7 +16,7 @@ export interface GraphIdentity {
 
 export type RunControlMode = "run" | "active" | "resume";
 
-export function runStatusFromEvent(eventType: string): string {
+export function runStatusFromEvent(eventType: string): RunStatus | "" {
   switch (eventType) {
     case "run.created":
       return "pending";
@@ -27,7 +28,7 @@ export function runStatusFromEvent(eventType: string): string {
     case "run.canceled":
       return "canceled";
     case "run.finished":
-      return "finished";
+      return "completed";
     case "run.failed":
       return "failed";
     default:
@@ -48,7 +49,7 @@ export function canResumeRun(run: RunRecord | null, interrupt?: RunInterrupt | n
   return Boolean(run && isResumableRunStatus(run.status) && hasResumeCheckpoint(run, interrupt));
 }
 
-export function isActiveRunStatus(status: string): boolean {
+export function isActiveRunStatus(status: RunStatus): boolean {
   return status === "pending" || status === "running";
 }
 
@@ -64,18 +65,37 @@ export function runListEventAction(runs: RunRecord[], event: RuntimeEvent): RunL
   return runStatusFromEvent(event.type) ? "refresh" : "ignore";
 }
 
-export function mergeRefreshedRuns(current: RunRecord[], refreshed: RunRecord[]): RunRecord[] {
+export function mergeRefreshedRuns(
+  current: RunRecord[],
+  refreshed: RunRecord[],
+  started: RunRecord[] = current
+): RunRecord[] {
   const currentByID = new Map(current.map((run) => [run.run_id, run]));
-  return refreshed.map((run) => {
+  const startedIDs = new Set(started.map((run) => run.run_id));
+  const refreshedIDs = new Set(refreshed.map((run) => run.run_id));
+  const merged = refreshed.flatMap((run) => {
     const existing = currentByID.get(run.run_id);
-    return existing && Date.parse(existing.updated_at) > Date.parse(run.updated_at) ? existing : run;
+    if (!existing && startedIDs.has(run.run_id)) return [];
+    return [existing && Date.parse(existing.updated_at) > Date.parse(run.updated_at) ? existing : run];
   });
+  return merged.concat(
+    current.filter((run) => !startedIDs.has(run.run_id) && !refreshedIDs.has(run.run_id))
+  );
+}
+
+export function upsertInspectedRun(current: RunRecord[], inspected: RunRecord): RunRecord[] {
+  const existingIndex = current.findIndex((run) => run.run_id === inspected.run_id);
+  if (existingIndex < 0) return [...current, inspected];
+
+  const existing = current[existingIndex];
+  if (isEarlierTimestamp(inspected.updated_at, existing.updated_at)) return current;
+  return current.map((run, index) => (index === existingIndex ? inspected : run));
 }
 
 export function upsertRunFromEvent(
   runs: RunRecord[],
   event: RuntimeEvent,
-  nextStatus: string,
+  nextStatus: RunStatus | "",
   graphIdentity: GraphIdentity
 ): RunRecord[] {
   if (!event.run_id) return runs;
@@ -86,6 +106,7 @@ export function upsertRunFromEvent(
     if (run.run_id !== event.run_id) return run;
     found = true;
     if (!nextStatus && !checkpointID) return run;
+    if (isEarlierTimestamp(event.timestamp, run.updated_at)) return run;
     const status = nextStatus || run.status;
     const next = {
       ...run,
@@ -208,10 +229,10 @@ export function runTriggerTypesFromInvocations(
   return triggerTypes;
 }
 
-export function markRunResuming(runs: RunRecord[], runID: string, updatedAt: string): RunRecord[] {
+export function markRunResuming(runs: RunRecord[], runID: string): RunRecord[] {
   return runs.map((run) =>
     run.run_id === runID
-      ? { ...run, status: "running", pause_requested: false, updated_at: updatedAt }
+      ? { ...run, status: "running", pause_requested: false }
       : run
   );
 }
@@ -236,16 +257,16 @@ export function missingInitialStateRequirements(
     .map((requirement) => requirement.path);
 }
 
-export function isTerminalRunStatus(status: string): boolean {
-  return status === "finished" || status === "completed" || status === "failed" || status === "canceled";
+export function isTerminalRunStatus(status: RunStatus): boolean {
+  return status === "completed" || status === "failed" || status === "canceled";
 }
 
 function hasResumeCheckpoint(run: RunRecord, interrupt?: RunInterrupt | null): boolean {
   return Boolean(run.last_checkpoint_id || (interrupt?.run_id === run.run_id && interrupt.checkpoint_id));
 }
 
-function isResumableRunStatus(status: string): boolean {
-  return status === "paused" || status === "interrupted";
+function isResumableRunStatus(status: RunStatus): boolean {
+  return status === "paused";
 }
 
 function stringPayloadField(payload: unknown, field: string): string {
@@ -276,4 +297,10 @@ function mergeStreamingEvent(previous: RuntimeEvent, event: RuntimeEvent): Runti
 function payloadRecord(payload: unknown): Record<string, unknown> | null {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
   return payload as Record<string, unknown>;
+}
+
+function isEarlierTimestamp(candidate: string, current: string): boolean {
+  const candidateTime = Date.parse(candidate);
+  const currentTime = Date.parse(current);
+  return !Number.isNaN(candidateTime) && !Number.isNaN(currentTime) && candidateTime < currentTime;
 }

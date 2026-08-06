@@ -26,49 +26,42 @@ func (r *combinedRunReader) ListRuns(ctx context.Context, filter runtime.RunFilt
 	for _, run := range byID {
 		all = append(all, run)
 	}
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].StartedAt.Before(all[j].StartedAt)
-	})
+	sortRunsByStart(all)
 	return all, nil
 }
 
 func (r *combinedRunReader) GetRun(ctx context.Context, runID string) (runtime.RunRecord, error) {
+	_, run, err := r.readerForRun(ctx, runID)
+	return run, err
+}
+
+func (r *combinedRunReader) readerForRun(ctx context.Context, runID string) (runReader, runtime.RunRecord, error) {
 	for _, reader := range r.readers {
 		run, err := reader.GetRun(ctx, runID)
 		if err == nil {
-			return run, nil
+			return reader, run, nil
 		}
 		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
-			return runtime.RunRecord{}, err
+			return nil, runtime.RunRecord{}, err
 		}
 	}
-	return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
+	return nil, runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
 }
 
 func (r *combinedRunReader) ListSteps(ctx context.Context, runID string) ([]runtime.StepRecord, error) {
-	for _, reader := range r.readers {
-		steps, err := reader.ListSteps(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(steps) > 0 {
-			return steps, nil
-		}
+	reader, _, err := r.readerForRun(ctx, runID)
+	if err != nil {
+		return nil, err
 	}
-	return []runtime.StepRecord{}, nil
+	return reader.ListSteps(ctx, runID)
 }
 
 func (r *combinedRunReader) ListCheckpoints(ctx context.Context, runID string) ([]runtime.CheckpointRecord, error) {
-	for _, reader := range r.readers {
-		checkpoints, err := reader.ListCheckpoints(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(checkpoints) > 0 {
-			return checkpoints, nil
-		}
+	reader, _, err := r.readerForRun(ctx, runID)
+	if err != nil {
+		return nil, err
 	}
-	return []runtime.CheckpointRecord{}, nil
+	return reader.ListCheckpoints(ctx, runID)
 }
 
 func (r *combinedRunReader) LoadCheckpointState(ctx context.Context, checkpointID string) (runtime.RestoredCheckpoint, error) {
@@ -85,55 +78,35 @@ func (r *combinedRunReader) LoadCheckpointState(ctx context.Context, checkpointI
 }
 
 func (r *combinedRunReader) ListEvents(runID string) ([]runtime.Event, error) {
-	for _, reader := range r.readers {
-		events, err := reader.ListEvents(runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(events) > 0 {
-			return events, nil
-		}
+	reader, _, err := r.readerForRun(context.Background(), runID)
+	if err != nil {
+		return nil, err
 	}
-	return []runtime.Event{}, nil
+	return reader.ListEvents(runID)
 }
 
 func (r *combinedRunReader) ListEventPage(runID, cursor string, limit int) (runtime.EventPage, error) {
-	for _, reader := range r.readers {
-		page, err := reader.ListEventPage(runID, cursor, limit)
-		if err != nil {
-			return runtime.EventPage{}, err
-		}
-		if len(page.Items) > 0 || page.NextCursor != "" {
-			return page, nil
-		}
+	reader, _, err := r.readerForRun(context.Background(), runID)
+	if err != nil {
+		return runtime.EventPage{}, err
 	}
-	return runtime.EventPage{Items: []runtime.Event{}}, nil
+	return reader.ListEventPage(runID, cursor, limit)
 }
 
 func (r *combinedRunReader) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
-	for _, reader := range r.readers {
-		artifacts, err := reader.ListArtifacts(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(artifacts) > 0 {
-			return artifacts, nil
-		}
+	reader, _, err := r.readerForRun(ctx, runID)
+	if err != nil {
+		return nil, err
 	}
-	return []state.ArtifactRef{}, nil
+	return reader.ListArtifacts(ctx, runID)
 }
 
 func (r *combinedRunReader) LoadArtifact(ctx context.Context, ref state.ArtifactRef) (runtime.Artifact, error) {
-	for _, reader := range r.readers {
-		artifact, err := reader.LoadArtifact(ctx, ref)
-		if err == nil {
-			return artifact, nil
-		}
-		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
-			return runtime.Artifact{}, err
-		}
+	reader, _, err := r.readerForRun(ctx, ref.RunID)
+	if err != nil {
+		return runtime.Artifact{}, err
 	}
-	return runtime.Artifact{}, runtime.ErrRunnerRecordNotFound
+	return reader.LoadArtifact(ctx, ref)
 }
 
 func (r *graphCacheReader) ListRuns(ctx context.Context, filter runtime.RunFilter) ([]runtime.RunRecord, error) {
@@ -145,49 +118,57 @@ func (r *graphCacheReader) ListRuns(ctx context.Context, filter runtime.RunFilte
 		}
 		all = append(all, runs...)
 	}
-	sort.Slice(all, func(i, j int) bool {
-		return all[i].StartedAt.Before(all[j].StartedAt)
-	})
+	sortRunsByStart(all)
 	return all, nil
 }
 
+func sortRunsByStart(runs []runtime.RunRecord) {
+	sort.Slice(runs, func(i, j int) bool {
+		if runs[i].StartedAt.Equal(runs[j].StartedAt) {
+			return runs[i].RunID < runs[j].RunID
+		}
+		return runs[i].StartedAt.Before(runs[j].StartedAt)
+	})
+}
+
 func (r *graphCacheReader) GetRun(ctx context.Context, runID string) (runtime.RunRecord, error) {
-	for _, store := range r.executionStores {
+	_, run, err := r.locateRun(ctx, runID)
+	return run, err
+}
+
+func (r *graphCacheReader) locateRun(ctx context.Context, runID string) (int, runtime.RunRecord, error) {
+	for index, store := range r.executionStores {
 		run, err := store.GetRun(ctx, runID)
 		if err == nil {
-			return run, nil
+			return index, run, nil
 		}
 		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
-			return runtime.RunRecord{}, err
+			return -1, runtime.RunRecord{}, err
 		}
 	}
-	return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
+	return -1, runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
 }
 
 func (r *graphCacheReader) ListSteps(ctx context.Context, runID string) ([]runtime.StepRecord, error) {
-	for _, store := range r.executionStores {
-		steps, err := store.ListSteps(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(steps) > 0 {
-			return steps, nil
-		}
+	index, _, err := r.locateRun(ctx, runID)
+	if err != nil {
+		return nil, err
 	}
-	return []runtime.StepRecord{}, nil
+	if index >= len(r.executionStores) {
+		return nil, runtime.ErrRunnerRecordNotFound
+	}
+	return r.executionStores[index].ListSteps(ctx, runID)
 }
 
 func (r *graphCacheReader) ListCheckpoints(ctx context.Context, runID string) ([]runtime.CheckpointRecord, error) {
-	for _, store := range r.checkpointStores {
-		checkpoints, err := store.List(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(checkpoints) > 0 {
-			return checkpoints, nil
-		}
+	index, _, err := r.locateRun(ctx, runID)
+	if err != nil {
+		return nil, err
 	}
-	return []runtime.CheckpointRecord{}, nil
+	if index >= len(r.checkpointStores) {
+		return nil, runtime.ErrRunnerRecordNotFound
+	}
+	return r.checkpointStores[index].List(ctx, runID)
 }
 
 func (r *graphCacheReader) LoadCheckpointState(ctx context.Context, checkpointID string) (runtime.RestoredCheckpoint, error) {
@@ -219,53 +200,45 @@ func (r *graphCacheReader) LoadCheckpointState(ctx context.Context, checkpointID
 }
 
 func (r *graphCacheReader) ListEvents(runID string) ([]runtime.Event, error) {
-	for _, sink := range r.eventSinks {
-		events, err := sink.ListEvents(runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(events) > 0 {
-			return events, nil
-		}
+	index, _, err := r.locateRun(context.Background(), runID)
+	if err != nil {
+		return nil, err
 	}
-	return []runtime.Event{}, nil
+	if index >= len(r.eventSinks) {
+		return nil, runtime.ErrRunnerRecordNotFound
+	}
+	return r.eventSinks[index].ListEvents(runID)
 }
 
 func (r *graphCacheReader) ListEventPage(runID, cursor string, limit int) (runtime.EventPage, error) {
-	for _, sink := range r.eventSinks {
-		page, err := sink.ListEventPage(runID, cursor, limit)
-		if err != nil {
-			return runtime.EventPage{}, err
-		}
-		if len(page.Items) > 0 || page.NextCursor != "" {
-			return page, nil
-		}
+	index, _, err := r.locateRun(context.Background(), runID)
+	if err != nil {
+		return runtime.EventPage{}, err
 	}
-	return runtime.EventPage{Items: []runtime.Event{}}, nil
+	if index >= len(r.eventSinks) {
+		return runtime.EventPage{}, runtime.ErrRunnerRecordNotFound
+	}
+	return r.eventSinks[index].ListEventPage(runID, cursor, limit)
 }
 
 func (r *graphCacheReader) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
-	for _, store := range r.artifactStores {
-		artifacts, err := store.List(ctx, runID)
-		if err != nil {
-			return nil, err
-		}
-		if len(artifacts) > 0 {
-			return artifacts, nil
-		}
+	index, _, err := r.locateRun(ctx, runID)
+	if err != nil {
+		return nil, err
 	}
-	return []state.ArtifactRef{}, nil
+	if index >= len(r.artifactStores) {
+		return nil, runtime.ErrRunnerRecordNotFound
+	}
+	return r.artifactStores[index].List(ctx, runID)
 }
 
 func (r *graphCacheReader) LoadArtifact(ctx context.Context, ref state.ArtifactRef) (runtime.Artifact, error) {
-	for _, store := range r.artifactStores {
-		artifact, err := store.Load(ctx, ref)
-		if err == nil {
-			return artifact, nil
-		}
-		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
-			return runtime.Artifact{}, err
-		}
+	index, _, err := r.locateRun(ctx, ref.RunID)
+	if err != nil {
+		return runtime.Artifact{}, err
 	}
-	return runtime.Artifact{}, runtime.ErrRunnerRecordNotFound
+	if index >= len(r.artifactStores) {
+		return runtime.Artifact{}, runtime.ErrRunnerRecordNotFound
+	}
+	return r.artifactStores[index].Load(ctx, ref)
 }

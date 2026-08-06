@@ -43,7 +43,10 @@ import {
   GraphTransferDialog,
   type GraphTransferMode,
 } from "./graph-workspace/GraphTransferDialog";
-import type { ParsedGraphImport } from "./graph-workspace/graphTransferModel";
+import {
+  resolveGraphImportConflicts,
+  type ParsedGraphImport,
+} from "./graph-workspace/graphTransferModel";
 import { TriggerInspector } from "./graph-workspace/TriggerInspector";
 import { useCanvasSearch } from "./graph-workspace/useCanvasSearch";
 import type { GraphTriggerController, TriggerDraftSetup } from "./graph-workspace/useGraphTriggers";
@@ -170,7 +173,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     selectedTrigger,
     selectedTriggerID: selectedTriggerId,
     validTriggerIDs,
+    knownTriggerIDs,
     setSelectedTriggerID: setSelectedTriggerId,
+    stageImport: stageTriggerImport,
     createForGraph: createGraphTrigger,
     updateDraft: updateTriggerDraft,
     updateEnabled: updateTriggerEnabled,
@@ -478,19 +483,26 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setLocalStatus("run active");
       return false;
     }
-    const nextGraphID = graph.graphID || graph.definition.name || "imported_graph";
-    const nextGraphVersion = graph.graphVersion || graph.definition.version || "2.0";
-    const workspaceState = savedGraphWorkspaceState(graph.definition);
+    const resolvedGraph = resolveGraphImportConflicts(
+      graph,
+      [graphId, ...graphs.map((item) => item.graphId)],
+      [definition?.name ?? "", ...graphs.map((item) => item.definition.name ?? "")],
+      [...knownTriggerIDs, ...graphTriggers.map((trigger) => trigger.id)]
+    );
+    const nextGraphID = resolvedGraph.graphID;
+    const nextGraphVersion = resolvedGraph.graphVersion || resolvedGraph.definition.version || "2.0";
+    const workspaceState = savedGraphWorkspaceState(resolvedGraph.definition);
+    if (resolvedGraph.triggers) stageTriggerImport(nextGraphID, resolvedGraph.triggers);
     onGraphId(nextGraphID);
     onGraphVersion(nextGraphVersion);
-    onDefinitionText(stringifyJSON(graph.definition));
-    if (graph.settings) onReplaceRuntimeSettings(graph.settings);
+    onDefinitionText(stringifyJSON(resolvedGraph.definition));
+    if (resolvedGraph.settings) onReplaceRuntimeSettings(resolvedGraph.settings);
     resetActiveGraph();
     setVirtualNodeIds(workspaceState.virtualNodeIDs);
     setVirtualEdges(workspaceState.virtualEdges);
     setVirtualLoops(workspaceState.virtualLoops);
     clearSelection();
-    setLocalStatus(`imported ${graph.definition.name || nextGraphID}`);
+    setLocalStatus(`imported ${resolvedGraph.definition.name || nextGraphID}`);
     setFitViewSignal((value) => value + 1);
     return true;
   }
@@ -928,15 +940,21 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         />
       ) : null}
 
-      <GraphTransferDialog
-        mode={graphTransferMode}
-        definition={exportDefinition}
-        graphID={graphId}
-        graphVersion={graphVersion}
-        runtimeSettings={runtimeSettings}
-        onClose={() => setGraphTransferMode(null)}
-        onImport={importGraph}
-      />
+      {graphTransferMode && typeof document !== "undefined"
+        ? createPortal(
+            <GraphTransferDialog
+              mode={graphTransferMode}
+              definition={exportDefinition}
+              graphID={graphId}
+              graphVersion={graphVersion}
+              runtimeSettings={runtimeSettings}
+              triggers={graphTriggers}
+              onClose={() => setGraphTransferMode(null)}
+              onImport={importGraph}
+            />,
+            document.body
+          )
+        : null}
     </div>
   );
 });

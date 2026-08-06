@@ -763,6 +763,40 @@ func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
 	}
 }
 
+func TestServiceAllowsDisabledChatChannelWithoutCredentials(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	channels := chatchannel.NewDefaultRegistry()
+	if err := channels.Register(&lifecycleChannelFactory{}); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(
+		store,
+		RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) { return &recordingStarter{}, nil }),
+		WithChatChannels(channels),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := service.Create(context.Background(), Trigger{
+		ID: "disabled-chat", Type: TypeChat, Enabled: false, Target: Target{GraphID: "graph"},
+		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "imported"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Enabled {
+		t.Fatal("disabled chat trigger was enabled")
+	}
+
+	created.Enabled = true
+	if _, err := service.Update(context.Background(), created); err == nil {
+		t.Fatal("enabled chat trigger without credentials was accepted")
+	}
+}
+
 type recordingStarter struct {
 	initial *state.State
 	calls   int

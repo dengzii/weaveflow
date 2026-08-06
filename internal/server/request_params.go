@@ -43,14 +43,18 @@ func optionalStringQuery(c *gin.Context, name string) (string, error) {
 	return value, nil
 }
 
-func stringListQuery(c *gin.Context, name string) []string {
+func stringListQuery(c *gin.Context, name string) ([]string, error) {
+	values, exists := c.GetQueryArray(name)
+	if !exists {
+		return nil, nil
+	}
 	seen := make(map[string]struct{})
 	result := make([]string, 0)
-	for _, value := range c.QueryArray(name) {
+	for _, value := range values {
 		for _, item := range strings.Split(value, ",") {
 			item = strings.TrimSpace(item)
 			if item == "" {
-				continue
+				return nil, invalidRequestf("%s must not contain empty values", name)
 			}
 			if _, exists := seen[item]; exists {
 				continue
@@ -59,7 +63,36 @@ func stringListQuery(c *gin.Context, name string) []string {
 			result = append(result, item)
 		}
 	}
-	return result
+	return result, nil
+}
+
+func requireRecordIDPathParam(c *gin.Context, name string) (string, bool) {
+	value := c.Param(name)
+	if strings.TrimSpace(value) == "" {
+		writeError(c, 400, invalidRequestf("%s is required", name))
+		return "", false
+	}
+	if !isPortableRecordID(value) {
+		writeError(c, 400, invalidRequestf("%s must be a portable record ID", name))
+		return "", false
+	}
+	return value, true
+}
+
+func isPortableRecordID(value string) bool {
+	if value == "" || strings.TrimSpace(value) != value || value == "." || value == ".." || len(value) > 200 {
+		return false
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func positiveIntQuery(c *gin.Context, name string, defaultValue, maximum int) (int, error) {

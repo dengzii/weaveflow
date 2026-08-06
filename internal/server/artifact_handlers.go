@@ -30,12 +30,12 @@ const (
 )
 
 func (s *Server) handleListArtifacts(c *gin.Context) {
-	reader := s.resolveRunReader(c)
-	if reader == nil {
+	runID, ok := requireRecordIDPathParam(c, "run_id")
+	if !ok {
 		return
 	}
-	runID, ok := requirePathParam(c, "run_id")
-	if !ok {
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	artifacts, err := reader.ListArtifacts(c.Request.Context(), runID)
@@ -47,21 +47,21 @@ func (s *Server) handleListArtifacts(c *gin.Context) {
 }
 
 func (s *Server) handleGetArtifact(c *gin.Context) {
-	reader := s.resolveRunReader(c)
-	if reader == nil {
-		return
-	}
-	runID, ok := requirePathParam(c, "run_id")
+	runID, ok := requireRecordIDPathParam(c, "run_id")
 	if !ok {
 		return
 	}
-	artifactID, ok := requirePathParam(c, "artifact_id")
+	artifactID, ok := requireRecordIDPathParam(c, "artifact_id")
 	if !ok {
 		return
 	}
 	representation, err := artifactRepresentationFromQuery(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	reader := s.resolveRunReader(c)
+	if reader == nil {
 		return
 	}
 	artifact, err := reader.LoadArtifact(c.Request.Context(), state.ArtifactRef{RunID: runID, ID: artifactID})

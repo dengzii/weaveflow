@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,17 +22,28 @@ import (
 
 type FileExecutionStore struct {
 	baseDir string
-	mu      sync.Mutex
+	mu      fileStoreMutex
 }
 
 type FileCheckpointStore struct {
 	baseDir string
-	mu      sync.Mutex
+	mu      fileStoreMutex
 }
 
 type FileEventSink struct {
 	baseDir string
-	mu      sync.Mutex
+	mu      fileStoreMutex
+}
+
+const fileStoreMutexStripeCount = 256
+
+// A fixed stripe set prevents locks for pruned graph-session directories from accumulating forever.
+var sharedFileStoreMutexes [fileStoreMutexStripeCount]sync.Mutex
+
+type fileStoreMutex struct {
+	baseDir string
+	once    sync.Once
+	shared  *sync.Mutex
 }
 
 type CombineEventSink struct {
@@ -128,35 +140,102 @@ func (l *LoggerEventSink) PublishBatch(ctx context.Context, events []Event) erro
 }
 
 func NewFileExecutionStore(baseDir string) *FileExecutionStore {
-	return &FileExecutionStore{baseDir: strings.TrimSpace(baseDir)}
+	baseDir = strings.TrimSpace(baseDir)
+	return &FileExecutionStore{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
 }
 
 func NewFileCheckpointStore(baseDir string) *FileCheckpointStore {
-	return &FileCheckpointStore{baseDir: strings.TrimSpace(baseDir)}
+	baseDir = strings.TrimSpace(baseDir)
+	return &FileCheckpointStore{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
 }
 
 func NewFileEventSink(baseDir string) *FileEventSink {
-	return &FileEventSink{baseDir: strings.TrimSpace(baseDir)}
+	baseDir = strings.TrimSpace(baseDir)
+	return &FileEventSink{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
+}
+
+func sharedFileStoreMutex(baseDir string) *sync.Mutex {
+	key, err := filepath.Abs(baseDir)
+	if err != nil {
+		key = filepath.Clean(baseDir)
+	}
+	if goruntime.GOOS == "windows" {
+		key = strings.ToLower(key)
+	}
+	return &sharedFileStoreMutexes[fileStoreMutexIndex(key)]
+}
+
+func fileStoreMutexIndex(value string) int {
+	const (
+		fnvOffsetBasis uint32 = 2166136261
+		fnvPrime       uint32 = 16777619
+	)
+	hashValue := fnvOffsetBasis
+	for index := 0; index < len(value); index++ {
+		hashValue ^= uint32(value[index])
+		hashValue *= fnvPrime
+	}
+	return int(hashValue % fileStoreMutexStripeCount)
+}
+
+func (m *fileStoreMutex) Lock() {
+	m.once.Do(func() {
+		m.shared = sharedFileStoreMutex(m.baseDir)
+	})
+	m.shared.Lock()
+}
+
+func (m *fileStoreMutex) Unlock() {
+	m.shared.Unlock()
+}
+
+func validateRunnerStorageID(name, value string) error {
+	if value == "" || strings.TrimSpace(value) != value || value == "." || value == ".." || len(value) > 200 {
+		return fmt.Errorf("%s must be a portable record ID", name)
+	}
+	for _, character := range value {
+		if character >= 'a' && character <= 'z' ||
+			character >= 'A' && character <= 'Z' ||
+			character >= '0' && character <= '9' ||
+			character == '-' || character == '_' || character == '.' {
+			continue
+		}
+		return fmt.Errorf("%s must be a portable record ID", name)
+	}
+	return nil
 }
 
 func (s *FileExecutionStore) CreateRun(_ context.Context, run RunRecord) error {
+	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	path := s.runPath(run.RunID)
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("create run %q: already exists", run.RunID)
+	if err := ensureRunnerRecordDoesNotExist(path, "run", run.RunID); err != nil {
+		return err
 	}
 	return writeRunnerJSONFile(path, run)
 }
 
 func (s *FileExecutionStore) UpdateRun(_ context.Context, run RunRecord) error {
+	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return writeRunnerJSONFile(s.runPath(run.RunID), run)
+	path := s.runPath(run.RunID)
+	if err := ensureRunnerRecordExists(path, "run", run.RunID); err != nil {
+		return err
+	}
+	return writeRunnerJSONFile(path, run)
 }
 
 func (s *FileExecutionStore) GetRun(_ context.Context, runID string) (RunRecord, error) {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return RunRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -167,68 +246,58 @@ func (s *FileExecutionStore) GetRun(_ context.Context, runID string) (RunRecord,
 		}
 		return RunRecord{}, err
 	}
+	if run.RunID != runID {
+		return RunRecord{}, fmt.Errorf("run %q metadata identity mismatch", runID)
+	}
 	return run, nil
 }
 
 func (s *FileExecutionStore) ListRuns(_ context.Context, filter RunFilter) ([]RunRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	dir := s.runsDir()
-	files, err := os.ReadDir(dir)
-	if os.IsNotExist(err) {
-		return []RunRecord{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-
-	statusFilter := make(map[RunStatus]struct{}, len(filter.Statuses))
-	for _, status := range filter.Statuses {
-		statusFilter[status] = struct{}{}
-	}
-
-	items := make([]RunRecord, 0, len(files))
-	for _, file := range files {
-		if file.IsDir() || !strings.EqualFold(filepath.Ext(file.Name()), ".json") {
-			continue
-		}
-		var run RunRecord
-		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &run); err != nil {
-			return nil, err
-		}
-		if len(statusFilter) > 0 {
-			if _, ok := statusFilter[run.Status]; !ok {
-				continue
-			}
-		}
-		items = append(items, run)
-	}
-
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].StartedAt.Before(items[j].StartedAt)
-	})
-	return items, nil
+	return s.listRunsLocked(filter)
 }
 
 func (s *FileExecutionStore) AppendStep(_ context.Context, step StepRecord) error {
+	if err := validateRunnerStorageID("run ID", step.RunID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if err := ensureRunnerRecordExists(s.runPath(step.RunID), "run", step.RunID); err != nil {
+		return err
+	}
 	path := s.stepPath(step.RunID, step.StepID)
-	if _, err := os.Stat(path); err == nil {
-		return fmt.Errorf("append step %q: already exists", step.StepID)
+	if err := ensureRunnerRecordDoesNotExist(path, "step", step.StepID); err != nil {
+		return err
 	}
 	return writeRunnerJSONFile(path, step)
 }
 
 func (s *FileExecutionStore) UpdateStep(_ context.Context, step StepRecord) error {
+	if err := validateRunnerStorageID("run ID", step.RunID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return writeRunnerJSONFile(s.stepPath(step.RunID, step.StepID), step)
+	path := s.stepPath(step.RunID, step.StepID)
+	if err := ensureRunnerRecordExists(path, "step", step.StepID); err != nil {
+		return err
+	}
+	return writeRunnerJSONFile(path, step)
 }
 
 func (s *FileExecutionStore) GetStep(_ context.Context, stepID string) (StepRecord, error) {
+	if err := validateRunnerStorageID("step ID", stepID); err != nil {
+		return StepRecord{}, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -239,14 +308,24 @@ func (s *FileExecutionStore) GetStep(_ context.Context, stepID string) (StepReco
 	for _, run := range runs {
 		path := s.stepPath(run.RunID, stepID)
 		var step StepRecord
-		if err := readRunnerJSONFile(path, &step); err == nil {
+		err := readRunnerJSONFile(path, &step)
+		if err == nil {
+			if step.RunID != run.RunID || step.StepID != stepID {
+				return StepRecord{}, fmt.Errorf("step %q metadata identity mismatch", stepID)
+			}
 			return step, nil
+		}
+		if !os.IsNotExist(err) {
+			return StepRecord{}, err
 		}
 	}
 	return StepRecord{}, ErrRunnerRecordNotFound
 }
 
 func (s *FileExecutionStore) ListSteps(_ context.Context, runID string) ([]StepRecord, error) {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -268,6 +347,12 @@ func (s *FileExecutionStore) ListSteps(_ context.Context, runID string) ([]StepR
 		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &step); err != nil {
 			return nil, err
 		}
+		if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
+			return nil, err
+		}
+		if step.RunID != runID || file.Name() != step.StepID+".json" {
+			return nil, fmt.Errorf("step %q metadata identity mismatch", step.StepID)
+		}
 		items = append(items, step)
 	}
 
@@ -283,13 +368,11 @@ func (s *FileExecutionStore) ListSteps(_ context.Context, runID string) ([]StepR
 }
 
 func (s *FileExecutionStore) DeleteRun(_ context.Context, runID string) error {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return ErrRunnerRecordNotFound
-	}
 	if _, err := os.Stat(s.runPath(runID)); err != nil {
 		if os.IsNotExist(err) {
 			return ErrRunnerRecordNotFound
@@ -332,6 +415,12 @@ func (s *FileExecutionStore) listRunsLocked(filter RunFilter) ([]RunRecord, erro
 		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &run); err != nil {
 			return nil, err
 		}
+		if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
+			return nil, err
+		}
+		if file.Name() != run.RunID+".json" {
+			return nil, fmt.Errorf("run %q metadata identity mismatch", run.RunID)
+		}
 		if len(statusFilter) > 0 {
 			if _, ok := statusFilter[run.Status]; !ok {
 				continue
@@ -341,6 +430,9 @@ func (s *FileExecutionStore) listRunsLocked(filter RunFilter) ([]RunRecord, erro
 	}
 
 	sort.Slice(items, func(i, j int) bool {
+		if items[i].StartedAt.Equal(items[j].StartedAt) {
+			return items[i].RunID < items[j].RunID
+		}
 		return items[i].StartedAt.Before(items[j].StartedAt)
 	})
 	return items, nil
@@ -363,9 +455,19 @@ func (s *FileExecutionStore) stepsDir(runID string) string {
 }
 
 func (s *FileCheckpointStore) Save(_ context.Context, record CheckpointRecord, payload []byte) error {
+	if err := validateRunnerStorageID("run ID", record.RunID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("checkpoint ID", record.CheckpointID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	metadataPath := s.metadataPath(record.RunID, record.CheckpointID)
+	if err := ensureRunnerRecordDoesNotExist(metadataPath, "checkpoint", record.CheckpointID); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.checkpointsDir(record.RunID), 0o755); err != nil {
 		return err
 	}
@@ -373,13 +475,23 @@ func (s *FileCheckpointStore) Save(_ context.Context, record CheckpointRecord, p
 		return err
 	}
 	record.PayloadRef = s.payloadPath(record.RunID, record.CheckpointID)
-	if err := writeRunnerJSONFile(s.metadataPath(record.RunID, record.CheckpointID), record); err != nil {
+	metadata, err := marshalRunnerJSONFile(record)
+	if err != nil {
 		return err
 	}
-	return writeRunnerBinaryFile(record.PayloadRef, payload)
+	if err := writeRunnerBinaryFile(record.PayloadRef, payload); err != nil {
+		return err
+	}
+	return writeRunnerBinaryFile(metadataPath, metadata)
 }
 
 func (s *FileCheckpointStore) Load(_ context.Context, checkpointID string) (CheckpointRecord, []byte, error) {
+	if err := validateRunnerStorageID("checkpoint ID", checkpointID); err != nil {
+		return CheckpointRecord{}, nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	runDirs, err := os.ReadDir(s.baseDir)
 	if os.IsNotExist(err) {
 		return CheckpointRecord{}, nil, ErrRunnerRecordNotFound
@@ -394,19 +506,34 @@ func (s *FileCheckpointStore) Load(_ context.Context, checkpointID string) (Chec
 		}
 		metaPath := filepath.Join(s.baseDir, runDir.Name(), checkpointID+".json")
 		var record CheckpointRecord
-		if err := readRunnerJSONFile(metaPath, &record); err == nil {
-			payload, err := os.ReadFile(record.PayloadRef)
-			if err != nil {
-				return CheckpointRecord{}, nil, err
+		if err := readRunnerJSONFile(metaPath, &record); err != nil {
+			if os.IsNotExist(err) {
+				continue
 			}
-			return record, payload, nil
+			return CheckpointRecord{}, nil, err
 		}
+		if record.RunID != runDir.Name() || record.CheckpointID != checkpointID {
+			return CheckpointRecord{}, nil, fmt.Errorf("checkpoint %q metadata identity mismatch", checkpointID)
+		}
+		payloadPath := s.payloadPath(record.RunID, record.CheckpointID)
+		payload, err := os.ReadFile(payloadPath)
+		if err != nil {
+			return CheckpointRecord{}, nil, err
+		}
+		record.PayloadRef = payloadPath
+		return record, payload, nil
 	}
 
 	return CheckpointRecord{}, nil, ErrRunnerRecordNotFound
 }
 
 func (s *FileCheckpointStore) List(_ context.Context, runID string) ([]CheckpointRecord, error) {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	dir := s.checkpointsDir(runID)
 	files, err := os.ReadDir(dir)
 	if os.IsNotExist(err) {
@@ -425,6 +552,13 @@ func (s *FileCheckpointStore) List(_ context.Context, runID string) ([]Checkpoin
 		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &record); err != nil {
 			return nil, err
 		}
+		if err := validateRunnerStorageID("checkpoint ID", record.CheckpointID); err != nil {
+			return nil, err
+		}
+		if record.RunID != runID || file.Name() != record.CheckpointID+".json" {
+			return nil, fmt.Errorf("checkpoint %q metadata identity mismatch", record.CheckpointID)
+		}
+		record.PayloadRef = s.payloadPath(runID, record.CheckpointID)
 		items = append(items, record)
 	}
 
@@ -438,9 +572,8 @@ func (s *FileCheckpointStore) List(_ context.Context, runID string) ([]Checkpoin
 }
 
 func (s *FileCheckpointStore) DeleteRun(_ context.Context, runID string) error {
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return ErrRunnerRecordNotFound
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -467,14 +600,41 @@ func (s *FileEventSink) Publish(_ context.Context, event Event) error {
 	if event.Type == EventLLMReasoningChunk || event.Type == EventLLMContentChunk {
 		return nil
 	}
+	if err := validateRunnerStorageID("run ID", event.RunID); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return appendRunnerJSONLine(s.eventsPath(event.RunID), event)
 }
 
-func (s *FileEventSink) PublishBatch(ctx context.Context, events []Event) error {
+func (s *FileEventSink) PublishBatch(_ context.Context, events []Event) error {
+	type pendingEventLine struct {
+		path string
+		data []byte
+	}
+	pending := make([]pendingEventLine, 0, len(events))
 	for _, event := range events {
-		if err := s.Publish(ctx, event); err != nil {
+		if event.Type == EventLLMReasoningChunk || event.Type == EventLLMContentChunk {
+			continue
+		}
+		if err := validateRunnerStorageID("run ID", event.RunID); err != nil {
+			return err
+		}
+		data, err := marshalRunnerJSONLine(event)
+		if err != nil {
+			return err
+		}
+		pending = append(pending, pendingEventLine{path: s.eventsPath(event.RunID), data: data})
+	}
+	if len(pending) == 0 {
+		return nil
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, event := range pending {
+		if err := appendRunnerJSONLineData(event.path, event.data); err != nil {
 			return err
 		}
 	}
@@ -482,6 +642,9 @@ func (s *FileEventSink) PublishBatch(ctx context.Context, events []Event) error 
 }
 
 func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return nil, err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -505,6 +668,9 @@ func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
 			}
 			return nil, err
 		}
+		if event.RunID != runID {
+			return nil, fmt.Errorf("event %q metadata identity mismatch", event.ID)
+		}
 		items = append(items, event)
 	}
 	return items, nil
@@ -513,6 +679,9 @@ func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
 func (s *FileEventSink) ListEventPage(runID, cursor string, limit int) (EventPage, error) {
 	if limit <= 0 {
 		return EventPage{}, fmt.Errorf("event page limit must be positive")
+	}
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return EventPage{}, err
 	}
 
 	s.mu.Lock()
@@ -552,6 +721,9 @@ func (s *FileEventSink) ListEventPage(runID, cursor string, limit int) (EventPag
 		var event Event
 		if err := json.Unmarshal(line, &event); err != nil {
 			return EventPage{}, err
+		}
+		if event.RunID != runID {
+			return EventPage{}, fmt.Errorf("event %q metadata identity mismatch", event.ID)
 		}
 		items = append(items, event)
 	}
@@ -664,9 +836,8 @@ func readPreviousJSONLine(file *os.File, end int64) ([]byte, int64, error) {
 }
 
 func (s *FileEventSink) DeleteRun(_ context.Context, runID string) error {
-	runID = strings.TrimSpace(runID)
-	if runID == "" {
-		return ErrRunnerRecordNotFound
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -681,15 +852,41 @@ func (s *FileEventSink) eventsPath(runID string) string {
 }
 
 func writeRunnerJSONFile(path string, value any) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	data, err := json.MarshalIndent(value, "", "  ")
+	data, err := marshalRunnerJSONFile(value)
 	if err != nil {
 		return err
 	}
-	data = append(data, '\n')
 	return writeRunnerBinaryFile(path, data)
+}
+
+func ensureRunnerRecordDoesNotExist(path, recordType, recordID string) error {
+	_, err := os.Stat(path)
+	if err == nil {
+		return fmt.Errorf("%s %q already exists", recordType, recordID)
+	}
+	if !os.IsNotExist(err) {
+		return fmt.Errorf("inspect %s %q: %w", recordType, recordID, err)
+	}
+	return nil
+}
+
+func ensureRunnerRecordExists(path, recordType, recordID string) error {
+	_, err := os.Stat(path)
+	if err == nil {
+		return nil
+	}
+	if os.IsNotExist(err) {
+		return fmt.Errorf("%s %q: %w", recordType, recordID, ErrRunnerRecordNotFound)
+	}
+	return fmt.Errorf("inspect %s %q: %w", recordType, recordID, err)
+}
+
+func marshalRunnerJSONFile(value any) ([]byte, error) {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
 }
 
 func readRunnerJSONFile(path string, out any) error {
@@ -720,13 +917,26 @@ func writeRunnerBinaryFile(path string, data []byte) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
 	return os.Rename(tempPath, path)
 }
 
 func appendRunnerJSONLine(path string, value any) error {
+	data, err := marshalRunnerJSONLine(value)
+	if err != nil {
+		return err
+	}
+	return appendRunnerJSONLineData(path, data)
+}
+
+func marshalRunnerJSONLine(value any) ([]byte, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
+func appendRunnerJSONLineData(path string, data []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
@@ -736,11 +946,7 @@ func appendRunnerJSONLine(path string, value any) error {
 	}
 	defer f.Close()
 
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	if _, err := f.Write(append(data, '\n')); err != nil {
+	if _, err := f.Write(data); err != nil {
 		return err
 	}
 	return nil
@@ -753,7 +959,7 @@ func NewNoopExecutionStore() *NoopExecutionStore { return &NoopExecutionStore{} 
 func (*NoopExecutionStore) CreateRun(context.Context, RunRecord) error { return nil }
 func (*NoopExecutionStore) UpdateRun(context.Context, RunRecord) error { return nil }
 func (*NoopExecutionStore) GetRun(context.Context, string) (RunRecord, error) {
-	return RunRecord{}, nil
+	return RunRecord{}, ErrRunnerRecordNotFound
 }
 func (*NoopExecutionStore) ListRuns(context.Context, RunFilter) ([]RunRecord, error) {
 	return []RunRecord{}, nil
@@ -761,7 +967,7 @@ func (*NoopExecutionStore) ListRuns(context.Context, RunFilter) ([]RunRecord, er
 func (*NoopExecutionStore) AppendStep(context.Context, StepRecord) error { return nil }
 func (*NoopExecutionStore) UpdateStep(context.Context, StepRecord) error { return nil }
 func (*NoopExecutionStore) GetStep(context.Context, string) (StepRecord, error) {
-	return StepRecord{}, nil
+	return StepRecord{}, ErrRunnerRecordNotFound
 }
 func (*NoopExecutionStore) ListSteps(context.Context, string) ([]StepRecord, error) {
 	return []StepRecord{}, nil
@@ -773,7 +979,7 @@ func NewNoopCheckpointStore() *NoopCheckpointStore { return &NoopCheckpointStore
 
 func (*NoopCheckpointStore) Save(context.Context, CheckpointRecord, []byte) error { return nil }
 func (*NoopCheckpointStore) Load(context.Context, string) (CheckpointRecord, []byte, error) {
-	return CheckpointRecord{}, nil, nil
+	return CheckpointRecord{}, nil, ErrRunnerRecordNotFound
 }
 func (*NoopCheckpointStore) List(context.Context, string) ([]CheckpointRecord, error) {
 	return []CheckpointRecord{}, nil
@@ -787,7 +993,7 @@ func (*NoopArtifactStore) Save(context.Context, Artifact) (state.ArtifactRef, er
 	return state.ArtifactRef{}, nil
 }
 func (*NoopArtifactStore) Load(context.Context, state.ArtifactRef) (Artifact, error) {
-	return Artifact{}, nil
+	return Artifact{}, ErrRunnerRecordNotFound
 }
 func (*NoopArtifactStore) List(context.Context, string) ([]state.ArtifactRef, error) {
 	return []state.ArtifactRef{}, nil

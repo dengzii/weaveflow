@@ -45,15 +45,15 @@ func (s *Service) buildChatChannel(item Trigger) (chatchannel.Instance, error) {
 	if item.Type != TypeChat || item.Chat == nil {
 		return nil, nil
 	}
+	if !item.Enabled {
+		return nil, nil
+	}
 	if s.chatRegistry == nil {
 		return nil, fmt.Errorf("%w: chat channel registry is unavailable", ErrInvalidTrigger)
 	}
 	channelID := strings.TrimSpace(item.Chat.Channel)
 	if err := s.chatRegistry.ValidateConfig(channelID, item.Chat.ChannelConfig); err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrInvalidTrigger, err)
-	}
-	if !item.Enabled {
-		return nil, nil
 	}
 	instance, err := s.chatRegistry.NewInstance(channelID, chatchannel.InstanceConfig{
 		TriggerID: item.ID,

@@ -24,6 +24,7 @@ export interface GraphTriggerDraft {
   trigger: Trigger;
   values: TriggerEditorValues;
   persisted: boolean;
+  imported: boolean;
   chatSetupChannelID: string;
   chatSetupSessionID: string;
 }
@@ -38,11 +39,13 @@ export function useGraphTriggers(graphID: string) {
   const [drafts, setDrafts] = useState<GraphTriggerDraft[]>([]);
   const [hydrated, setHydrated] = useState(false);
   const [loadError, setLoadError] = useState("");
+  const [knownTriggerIDs, setKnownTriggerIDs] = useState<string[]>([]);
   const [selectedTriggerID, setSelectedTriggerID] = useState<string | null>(null);
   const [savedSignature, setSavedSignature] = useState("");
   const graphIDRef = useRef(normalizedGraphID);
   const draftsRef = useRef<GraphTriggerDraft[]>([]);
   const serverTriggersRef = useRef(new Map<string, Trigger>());
+  const pendingImportRef = useRef<{ graphID: string; triggers: Trigger[] } | null>(null);
   const requestGenerationRef = useRef(0);
   graphIDRef.current = normalizedGraphID;
 
@@ -66,8 +69,10 @@ export function useGraphTriggers(graphID: string) {
       return [];
     }
     try {
-      const items = triggersForGraph(await listTriggers(), targetGraphID);
+      const allTriggers = await listTriggers();
+      const items = triggersForGraph(allTriggers, targetGraphID);
       if (!isCurrentRequest(requestGeneration, targetGraphID)) return null;
+      setKnownTriggerIDs(uniqueTriggerIDs(allTriggers));
       const nextDrafts = items.map(serverTriggerDraft);
       serverTriggersRef.current = new Map(items.map((trigger) => [trigger.id, trigger]));
       replaceDrafts(nextDrafts);
@@ -96,6 +101,18 @@ export function useGraphTriggers(graphID: string) {
     setHydrated(false);
     setLoadError("");
     setSelectedTriggerID(null);
+    const pendingImport = pendingImportRef.current;
+    if (pendingImport?.graphID === normalizedGraphID) {
+      pendingImportRef.current = null;
+      const importedDrafts = pendingImport.triggers.map(importedTriggerDraft);
+      serverTriggersRef.current = new Map();
+      replaceDrafts(importedDrafts);
+      setSavedSignature(triggerDraftSignature([]));
+      setHydrated(true);
+      return () => {
+        requestGenerationRef.current += 1;
+      };
+    }
     void refresh();
     return () => {
       requestGenerationRef.current += 1;
@@ -130,6 +147,7 @@ export function useGraphTriggers(graphID: string) {
       trigger,
       values,
       persisted: false,
+      imported: false,
       chatSetupChannelID: "",
       chatSetupSessionID: "",
     }];
@@ -193,6 +211,16 @@ export function useGraphTriggers(graphID: string) {
     }
   }, []);
 
+  const stageImport = useCallback((targetGraphID: string, triggers: Trigger[]) => {
+    pendingImportRef.current = {
+      graphID: targetGraphID.trim(),
+      triggers: triggers.map((trigger) => ({
+        ...trigger,
+        target: { graph_id: targetGraphID.trim() },
+      })),
+    };
+  }, []);
+
   const save = useCallback(async () => {
     const targetGraphID = graphIDRef.current;
     if (!targetGraphID || !hydrated) return [];
@@ -201,11 +229,15 @@ export function useGraphTriggers(graphID: string) {
     const serverTriggers = serverTriggersRef.current;
     const payloads = currentDrafts.map((draft) => ({
       draft,
-      payload: buildTriggerPayload(
-        draft.values,
-        serverTriggers.get(draft.trigger.id) ?? null,
-        draft.chatSetupSessionID
-      ),
+      payload: (() => {
+        const serverTrigger = serverTriggers.get(draft.trigger.id);
+        return buildTriggerPayload(
+          draft.values,
+          serverTrigger ?? (draft.imported ? draft.trigger : null),
+          draft.chatSetupSessionID,
+          !serverTrigger
+        );
+      })(),
     }));
     const savedTriggers = new Map<string, Trigger>();
 
@@ -235,6 +267,10 @@ export function useGraphTriggers(graphID: string) {
         savedTriggers.get(draft.trigger.id) ?? serverTriggers.get(draft.trigger.id) ?? draft.trigger
       ));
       replaceDrafts(nextDrafts);
+      setKnownTriggerIDs((current) => uniqueTriggerIDs(
+        nextDrafts.map((draft) => draft.trigger),
+        current
+      ));
       setSavedSignature(triggerDraftSignature(nextDrafts));
       setLoadError("");
       return nextDrafts.map((draft) => draft.trigger);
@@ -257,6 +293,7 @@ export function useGraphTriggers(graphID: string) {
     drafts,
     hydrated,
     loadError,
+    knownTriggerIDs,
     isUnsaved,
     selectedDraft,
     selectedTrigger,
@@ -269,6 +306,7 @@ export function useGraphTriggers(graphID: string) {
     updateEnabled,
     remove,
     validate,
+    stageImport,
     save,
   };
 }
@@ -280,6 +318,18 @@ function serverTriggerDraft(trigger: Trigger): GraphTriggerDraft {
     trigger,
     values: triggerEditorValues(trigger, trigger.target ?? { graph_id: "" }),
     persisted: true,
+    imported: false,
+    chatSetupChannelID: "",
+    chatSetupSessionID: "",
+  };
+}
+
+function importedTriggerDraft(trigger: Trigger): GraphTriggerDraft {
+  return {
+    trigger,
+    values: triggerEditorValues(trigger, trigger.target ?? { graph_id: "" }),
+    persisted: false,
+    imported: true,
     chatSetupChannelID: "",
     chatSetupSessionID: "",
   };

@@ -219,11 +219,17 @@ func (a *EventAnalyzer) Publish(_ context.Context, event Event) error {
 	return nil
 }
 
-func (a *EventAnalyzer) PublishBatch(ctx context.Context, events []Event) error {
+func (a *EventAnalyzer) PublishBatch(_ context.Context, events []Event) error {
+	if a == nil || len(events) == 0 {
+		return nil
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.events == nil {
+		a.events = make(map[string][]Event)
+	}
 	for _, event := range events {
-		if err := a.Publish(ctx, event); err != nil {
-			return err
-		}
+		a.events[event.RunID] = append(a.events[event.RunID], cloneEvent(event))
 	}
 	return nil
 }

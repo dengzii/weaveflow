@@ -63,7 +63,11 @@ func eventFilterFromQuery(c *gin.Context) (eventFilter, error) {
 		RunID:  runID,
 		NodeID: nodeID,
 	}
-	for _, item := range stringListQuery(c, "type") {
+	types, err := stringListQuery(c, "type")
+	if err != nil {
+		return eventFilter{}, err
+	}
+	for _, item := range types {
 		if filter.Types == nil {
 			filter.Types = map[runtime.EventType]struct{}{}
 		}

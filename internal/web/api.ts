@@ -244,16 +244,16 @@ export async function startRun(initialState: unknown): Promise<RunResult> {
   });
 }
 
-export async function resumeRun(runId: string, input: unknown): Promise<RunResult> {
-  return apiFetch<RunResult>(`/runs/${encodeURIComponent(runId)}/resume`, {
+export async function resumeRun(runId: string, input: unknown, graphId?: string): Promise<RunResult> {
+  return apiFetch<RunResult>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/resume`, graphId), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ input }),
   });
 }
 
-export async function resumeCheckpoint(checkpointId: string, input: unknown): Promise<RunResult> {
-  return apiFetch<RunResult>(`/checkpoints/${encodeURIComponent(checkpointId)}/resume`, {
+export async function resumeCheckpoint(checkpointId: string, input: unknown, graphId?: string): Promise<RunResult> {
+  return apiFetch<RunResult>(appendGraphQuery(`/checkpoints/${encodeURIComponent(checkpointId)}/resume`, graphId), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ input }),
@@ -286,8 +286,8 @@ export async function getRunInspection(runId: string, graphId?: string): Promise
   };
 }
 
-export async function pauseRun(runId: string): Promise<RunRecord> {
-  return apiFetch<RunRecord>(`/runs/${encodeURIComponent(runId)}/pause`, { method: "POST" });
+export async function pauseRun(runId: string, graphId?: string): Promise<RunRecord> {
+  return apiFetch<RunRecord>(appendGraphQuery(`/runs/${encodeURIComponent(runId)}/pause`, graphId), { method: "POST" });
 }
 
 export async function cancelRun(runId: string, graphId?: string): Promise<RunRecord> {

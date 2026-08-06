@@ -400,6 +400,9 @@ func (r *graphCacheReader) deleteRun(ctx context.Context, runID string) (runtime
 			}
 			return runtime.RunRecord{}, err
 		}
+		if run.Status == runtime.RunStatusPending || run.Status == runtime.RunStatusRunning {
+			return runtime.RunRecord{}, fmt.Errorf("%w: run %q status %q must be stopped before deletion", runtime.ErrRunControlNotAllowed, runID, run.Status)
+		}
 		var checkpointStore runtime.RunDeleter
 		if index < len(r.checkpointStores) {
 			checkpointStore = r.checkpointStores[index]

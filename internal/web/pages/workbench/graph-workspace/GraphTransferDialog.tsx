@@ -9,11 +9,11 @@ import {
   LoaderCircle,
   LockKeyhole,
   Settings,
-  ShieldCheck,
+  Zap,
   X,
 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import type { GraphDefinition, RuntimeSettings } from "../../../types";
+import type { GraphDefinition, RuntimeSettings, Trigger } from "../../../types";
 import {
   buildGraphExportBundle,
   graphExportFilename,
@@ -31,6 +31,7 @@ export function GraphTransferDialog({
   graphID,
   graphVersion,
   runtimeSettings,
+  triggers,
   onClose,
   onImport,
 }: {
@@ -39,12 +40,14 @@ export function GraphTransferDialog({
   graphID: string;
   graphVersion: string;
   runtimeSettings: RuntimeSettings;
+  triggers: Trigger[];
   onClose: () => void;
   onImport: (graph: ParsedGraphImport) => boolean;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [includeConfig, setIncludeConfig] = useState(true);
   const [includeSettings, setIncludeSettings] = useState(true);
+  const [includeTriggers, setIncludeTriggers] = useState(true);
   const [includeUI, setIncludeUI] = useState(true);
   const [fileName, setFileName] = useState("");
   const [parsedImport, setParsedImport] = useState<ParsedGraphImport | null>(null);
@@ -55,6 +58,7 @@ export function GraphTransferDialog({
     if (!mode) return;
     setIncludeConfig(true);
     setIncludeSettings(true);
+    setIncludeTriggers(true);
     setIncludeUI(true);
     setFileName("");
     setParsedImport(null);
@@ -104,8 +108,10 @@ export function GraphTransferDialog({
       graphID,
       graphVersion,
       runtimeSettings,
+      triggers,
       includeConfig,
       includeSettings,
+      includeTriggers,
       includeUI,
     });
     const blob = new Blob([`${JSON.stringify(bundle, null, 2)}\n`], { type: "application/json" });
@@ -123,7 +129,7 @@ export function GraphTransferDialog({
   const title = mode === "import" ? "Import graph" : "Export graph";
   return (
     <div
-      className="fixed inset-0 z-[70] flex items-center justify-center bg-black/45 p-4"
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 p-4"
       onMouseDown={(event) => {
         if (event.target === event.currentTarget) onClose();
       }}
@@ -192,6 +198,7 @@ export function GraphTransferDialog({
                   description="Topology and state bindings"
                   checked
                   disabled
+                  required
                 />
                 <ContentOption
                   icon={Braces}
@@ -208,6 +215,13 @@ export function GraphTransferDialog({
                   onChange={setIncludeSettings}
                 />
                 <ContentOption
+                  icon={Zap}
+                  label="Triggers"
+                  description="Webhook, schedule, and chat configuration"
+                  checked={includeTriggers}
+                  onChange={setIncludeTriggers}
+                />
+                <ContentOption
                   icon={LayoutDashboard}
                   label="UI information"
                   description="Canvas layout and editor metadata"
@@ -217,12 +231,6 @@ export function GraphTransferDialog({
               </div>
             </fieldset>
 
-            {includeSettings ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <ShieldCheck className="h-4 w-4 shrink-0" />
-                API keys and secret-like environment values are excluded.
-              </div>
-            ) : null}
           </div>
         )}
 
@@ -251,6 +259,7 @@ function ContentOption({
   description,
   checked,
   disabled = false,
+  required = false,
   onChange,
 }: {
   icon: ComponentType<{ className?: string }>;
@@ -258,6 +267,7 @@ function ContentOption({
   description: string;
   checked: boolean;
   disabled?: boolean;
+  required?: boolean;
   onChange?: (checked: boolean) => void;
 }) {
   return (
@@ -280,7 +290,7 @@ function ContentOption({
         <span className="text-sm font-medium text-foreground">{label}</span>
         <span className="truncate text-xs text-muted-foreground">{description}</span>
       </span>
-      {disabled ? <LockKeyhole className="h-3.5 w-3.5 text-muted-foreground" aria-label="Required" /> : <span />}
+      {required ? <LockKeyhole className="h-3.5 w-3.5 text-muted-foreground" aria-label="Required" /> : <span />}
     </label>
   );
 }
@@ -299,6 +309,7 @@ function contentLabel(contents: ParsedGraphImport["contents"]): string {
     graph: "Graph",
     config: "Config",
     settings: "Settings",
+    triggers: "Triggers",
     ui: "UI",
   };
   return contents.map((content) => labels[content]).join(" + ");

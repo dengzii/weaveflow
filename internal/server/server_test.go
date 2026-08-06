@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -698,10 +699,7 @@ func TestListEventsPaginatesNewestFirstAndValidatesParameters(t *testing.T) {
 func TestInvalidRunStatusReturnsStructuredError(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	srv, err := New(context.Background(), Config{
-		BaseDir: t.TempDir(),
-		Runner:  &runtime.GraphRunner{},
-	})
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -724,6 +722,78 @@ func TestInvalidRunStatusReturnsStructuredError(t *testing.T) {
 	}
 }
 
+func TestListQueriesRejectEmptyValues(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	paths := []string{
+		"/runs?status=",
+		"/runs?status=running,,paused",
+		"/runtime/events/stream?type=",
+		"/runtime/events/stream?type=run.started,,run.finished",
+	}
+	for _, path := range paths {
+		response := serveHTTP(engine, http.MethodGet, path, "")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, want 400; body = %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestRunRequestsValidateBodyBeforeRunnerAvailability(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	requests := []string{
+		"/runs",
+		"/runs/safe-run/resume",
+		"/checkpoints/safe-checkpoint/resume",
+	}
+	for _, path := range requests {
+		response := serveHTTP(engine, http.MethodPost, path, `{"unknown":true}`)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("POST %s status = %d, want 400; body = %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestRunRecordPathParametersRejectUnsafeIDs(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	paths := []string{
+		"/runs/%2e%2e%5coutside",
+		"/runs/%20safe-run",
+		"/runs/safe-run%20",
+		"/checkpoints/%2e%2e%5coutside",
+		"/runs/safe-run/artifacts/%2e%2e%5coutside",
+	}
+	for _, path := range paths {
+		response := serveHTTP(engine, http.MethodGet, path, "")
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("GET %s status = %d, want 400; body = %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestPutGraphConfiguresRunnerForDebugRun(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -736,6 +806,7 @@ func TestPutGraphConfiguresRunnerForDebugRun(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -876,6 +947,7 @@ func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 
 	first := putGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -894,6 +966,7 @@ func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 	time.Sleep(time.Millisecond)
 	second := putGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -980,6 +1053,7 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1037,6 +1111,7 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1083,6 +1158,44 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 	}
 }
 
+func TestDeleteCachedActiveRunWithoutConfiguredGraphIsRejected(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	baseDir := t.TempDir()
+	srv, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("debug-graph", "v1", "hello"))
+	started := serveHTTP(engine, http.MethodPost, "/runs", `{}`)
+	result := decodeRunResultResponse(t, started, http.StatusOK)
+	active := result.Run
+	active.Status = runtime.RunStatusRunning
+	active.FinishedAt = nil
+	if err := runtime.NewFileExecutionStore(filepath.Join(uploaded.RunnerBaseDir, "execution")).UpdateRun(context.Background(), active); err != nil {
+		t.Fatalf("mark cached run active: %v", err)
+	}
+
+	cacheOnlyServer, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatalf("New cache-only server error = %v", err)
+	}
+	cacheOnlyEngine := gin.New()
+	cacheOnlyServer.RegisterRoutes(cacheOnlyEngine.Group(""))
+
+	deleted := serveHTTP(cacheOnlyEngine, http.MethodDelete, "/runs/"+active.RunID+"?graph_id=debug-graph", "")
+	if deleted.Code != http.StatusConflict {
+		t.Fatalf("DELETE cached active run status = %d, want 409; body = %s", deleted.Code, deleted.Body.String())
+	}
+	remaining := serveHTTP(cacheOnlyEngine, http.MethodGet, "/runs/"+active.RunID+"?graph_id=debug-graph", "")
+	if remaining.Code != http.StatusOK {
+		t.Fatalf("GET cached active run status = %d, want 200; body = %s", remaining.Code, remaining.Body.String())
+	}
+}
+
 func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1095,6 +1208,7 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1167,6 +1281,119 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	}
 }
 
+func TestRunResourceReadersKeepSessionOwnership(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	baseDir := t.TempDir()
+	runID := "shared-run"
+	artifactID := "second-artifact"
+
+	newSessionReader := func(name string) *graphCacheReader {
+		sessionDir := filepath.Join(baseDir, name)
+		return &graphCacheReader{
+			executionStores:  []*runtime.FileExecutionStore{runtime.NewFileExecutionStore(filepath.Join(sessionDir, "execution"))},
+			checkpointStores: []*runtime.FileCheckpointStore{runtime.NewFileCheckpointStore(filepath.Join(sessionDir, "checkpoints"))},
+			artifactStores:   []*runtime.FileArtifactStore{runtime.NewFileArtifactStore(filepath.Join(sessionDir, "artifacts"))},
+			eventSinks:       []*runtime.FileEventSink{runtime.NewFileEventSink(filepath.Join(sessionDir, "events"))},
+			codec:            state.NewJSONStateCodec(""),
+		}
+	}
+	first := newSessionReader("first")
+	second := newSessionReader("second")
+	for _, reader := range []*graphCacheReader{first, second} {
+		if err := reader.executionStores[0].CreateRun(ctx, runtime.RunRecord{RunID: runID}); err != nil {
+			t.Fatalf("create run: %v", err)
+		}
+	}
+	if err := second.executionStores[0].AppendStep(ctx, runtime.StepRecord{RunID: runID, StepID: "second-step"}); err != nil {
+		t.Fatalf("append second-session step: %v", err)
+	}
+	if err := second.checkpointStores[0].Save(ctx, runtime.CheckpointRecord{
+		RunID: runID, CheckpointID: "second-checkpoint",
+	}, nil); err != nil {
+		t.Fatalf("save second-session checkpoint: %v", err)
+	}
+	if err := second.eventSinks[0].Publish(ctx, runtime.Event{
+		RunID: runID, ID: "second-event", Type: runtime.EventRunCreated,
+	}); err != nil {
+		t.Fatalf("publish second-session event: %v", err)
+	}
+	if _, err := second.artifactStores[0].Save(ctx, runtime.Artifact{
+		RunID: runID, ID: artifactID, Data: []byte("second"),
+	}); err != nil {
+		t.Fatalf("save second-session artifact: %v", err)
+	}
+
+	aggregated := &graphCacheReader{
+		executionStores:  []*runtime.FileExecutionStore{first.executionStores[0], second.executionStores[0]},
+		checkpointStores: []*runtime.FileCheckpointStore{first.checkpointStores[0], second.checkpointStores[0]},
+		artifactStores:   []*runtime.FileArtifactStore{first.artifactStores[0], second.artifactStores[0]},
+		eventSinks:       []*runtime.FileEventSink{first.eventSinks[0], second.eventSinks[0]},
+		codec:            state.NewJSONStateCodec(""),
+	}
+	readers := map[string]runReader{
+		"graph cache": aggregated,
+		"combined":    &combinedRunReader{readers: []runReader{first, second}},
+	}
+	for name, reader := range readers {
+		t.Run(name, func(t *testing.T) {
+			steps, err := reader.ListSteps(ctx, runID)
+			if err != nil || len(steps) != 0 {
+				t.Fatalf("ListSteps() = %#v, %v; want empty owner-session result", steps, err)
+			}
+			checkpoints, err := reader.ListCheckpoints(ctx, runID)
+			if err != nil || len(checkpoints) != 0 {
+				t.Fatalf("ListCheckpoints() = %#v, %v; want empty owner-session result", checkpoints, err)
+			}
+			events, err := reader.ListEvents(runID)
+			if err != nil || len(events) != 0 {
+				t.Fatalf("ListEvents() = %#v, %v; want empty owner-session result", events, err)
+			}
+			artifacts, err := reader.ListArtifacts(ctx, runID)
+			if err != nil || len(artifacts) != 0 {
+				t.Fatalf("ListArtifacts() = %#v, %v; want empty owner-session result", artifacts, err)
+			}
+			if _, err := reader.LoadArtifact(ctx, state.ArtifactRef{RunID: runID, ID: artifactID}); !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+				t.Fatalf("LoadArtifact() error = %v, want record not found in owner session", err)
+			}
+		})
+	}
+}
+
+func TestRunReadersUseRunIDAsTimestampTieBreaker(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	newStore := func(runID string) *runtime.FileExecutionStore {
+		store := runtime.NewFileExecutionStore(filepath.Join(t.TempDir(), "execution"))
+		if err := store.CreateRun(ctx, runtime.RunRecord{RunID: runID}); err != nil {
+			t.Fatalf("create run %q: %v", runID, err)
+		}
+		return store
+	}
+
+	first := &graphCacheReader{executionStores: []*runtime.FileExecutionStore{newStore("run-b")}}
+	second := &graphCacheReader{executionStores: []*runtime.FileExecutionStore{newStore("run-a")}}
+	readers := map[string]runReader{
+		"graph cache": &graphCacheReader{executionStores: []*runtime.FileExecutionStore{
+			first.executionStores[0], second.executionStores[0],
+		}},
+		"combined": &combinedRunReader{readers: []runReader{first, second}},
+	}
+	for name, reader := range readers {
+		t.Run(name, func(t *testing.T) {
+			runs, err := reader.ListRuns(ctx, runtime.RunFilter{})
+			if err != nil {
+				t.Fatalf("ListRuns() error = %v", err)
+			}
+			if len(runs) != 2 || runs[0].RunID != "run-a" || runs[1].RunID != "run-b" {
+				t.Fatalf("ListRuns() = %#v, want run ID order for equal timestamps", runs)
+			}
+		})
+	}
+}
+
 func TestRunInspectionResourcesExposeDebugRecords(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1179,6 +1406,7 @@ func TestRunInspectionResourcesExposeDebugRecords(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1284,6 +1512,7 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "interrupt-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1437,6 +1666,7 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "interrupt-graph",
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1743,6 +1973,120 @@ func TestCancelRunUsesTriggerSessionRunner(t *testing.T) {
 	waitForSignal(t, done, "trigger run completion")
 }
 
+func TestDeleteActiveRunUsesTriggerSessionRunner(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseRun := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseRun()
+
+	graph := newRunControlTestGraph(t, started, release, true)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	runner := newDefaultRunner(graph, Config{
+		GraphID:        "trigger-graph",
+		GraphVersion:   "2.0",
+		GraphSessionID: "trigger-session",
+	}, t.TempDir())
+	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
+		graph:       graph,
+		runner:      runner,
+		baseContext: context.Background(),
+	})
+
+	run, done, err := runner.StartAsync(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("StartAsync() error = %v", err)
+	}
+	waitForSignal(t, started, "trigger run node start")
+
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	deleted := serveHTTP(
+		engine,
+		http.MethodDelete,
+		"/runs/"+run.RunID+"?graph_id=trigger-graph",
+		"",
+	)
+	if deleted.Code != http.StatusConflict {
+		t.Fatalf("DELETE active trigger run status = %d, want 409; body = %s", deleted.Code, deleted.Body.String())
+	}
+	if _, err := runner.GetRun(context.Background(), run.RunID); err != nil {
+		t.Fatalf("active trigger run was deleted: %v", err)
+	}
+
+	releaseRun()
+	waitForSignal(t, done, "trigger run completion")
+}
+
+func TestPauseAndResumeRunUseTriggerSessionRunner(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseRun := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseRun()
+
+	graph := newRunControlTestGraph(t, started, release, true)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	runner := newDefaultRunner(graph, Config{
+		GraphID:        "trigger-graph",
+		GraphVersion:   "2.0",
+		GraphSessionID: "trigger-session",
+	}, t.TempDir())
+	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
+		graph:       graph,
+		runner:      runner,
+		baseContext: context.Background(),
+	})
+
+	run, done, err := runner.StartAsync(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("StartAsync() error = %v", err)
+	}
+	waitForSignal(t, started, "trigger run node start")
+
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	pauseResponse := serveHTTP(
+		engine,
+		http.MethodPost,
+		"/runs/"+run.RunID+"/pause?graph_id=trigger-graph",
+		"",
+	)
+	pausedRun := decodeRunRecordResponse(t, pauseResponse, http.StatusOK)
+	if pausedRun.Status != runtime.RunStatusPaused {
+		t.Fatalf("pause response status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
+	}
+	waitForSignal(t, done, "paused trigger run completion")
+
+	resumeDone := serveHTTPAsync(
+		engine,
+		http.MethodPost,
+		"/runs/"+run.RunID+"/resume?graph_id=trigger-graph",
+		`{}`,
+	)
+	assertNoHTTPResponse(t, resumeDone, "resume trigger run")
+	releaseRun()
+	resumeResponse := waitForHTTPResponse(t, resumeDone, "resume trigger run")
+	resumeResult := decodeRunResultResponse(t, resumeResponse, http.StatusOK)
+	if resumeResult.Run.Status != runtime.RunStatusCompleted {
+		t.Fatalf("resume response status = %q, want %q", resumeResult.Run.Status, runtime.RunStatusCompleted)
+	}
+}
+
 func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1774,6 +2118,7 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	graphBody := `{
+		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],

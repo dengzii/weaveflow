@@ -9,26 +9,6 @@ export function isSaveShortcut(event: Pick<KeyboardEvent, "altKey" | "ctrlKey" |
   );
 }
 
-export function statusTone(status?: string): "neutral" | "ok" | "warn" | "danger" | "live" {
-  switch (status) {
-    case "completed":
-    case "finished":
-    case "succeeded":
-      return "ok";
-    case "running":
-    case "pending":
-      return "live";
-    case "paused":
-    case "interrupted":
-      return "warn";
-    case "failed":
-    case "canceled":
-      return "danger";
-    default:
-      return "neutral";
-  }
-}
-
 export function themePreferenceLabel(preference: ThemePreference): string {
   switch (preference) {
     case "light":

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { CheckpointDetail, RunRecord, RuntimeEvent } from "../../types";
+import type { CheckpointDetail, RunRecord, RunStatus, RuntimeEvent } from "../../types";
 import {
   RunStatusPanel,
   StateDetailTabs,
@@ -121,9 +121,57 @@ describe("RunStatusPanel", () => {
     expect(runIDIndex).toBeLessThan(deleteIndex);
     expect(runStatusMarkup(markup, "running")).toContain("<svg");
   });
+
+  test("disables run deletion while another run operation is in progress", () => {
+    const markup = renderToStaticMarkup(
+      createElement(RunStatusPanel, {
+        runs: [runRecord("run-completed", "completed", "2026-07-30T03:00:00Z")],
+        selectedRunId: "run-completed",
+        runActionsDisabled: true,
+        onDeleteRun: () => undefined,
+        events: [],
+        onHide: () => undefined,
+      })
+    );
+
+    expect(markup).toContain('title="Run operation in progress"');
+    expect(markup).toContain('disabled="" title="Run operation in progress" aria-label="Delete run run-completed"');
+  });
+
+  test("keeps the event scroll viewport mounted before events arrive", () => {
+    const markup = renderToStaticMarkup(
+      createElement(RunStatusPanel, {
+        runs: [runRecord("run-pending", "pending", "2026-07-30T03:00:00Z")],
+        selectedRunId: "run-pending",
+        events: [],
+        onHide: () => undefined,
+      })
+    );
+
+    expect(markup).toContain('data-event-history-viewport="true"');
+    expect(markup).toContain('class="h-full overflow-auto"');
+    expect(markup).toContain("No run events");
+  });
+
+  test("uses stable loading content while a selected run inspection is pending", () => {
+    const markup = renderToStaticMarkup(
+      createElement(RunStatusPanel, {
+        runs: [runRecord("run-loading", "running", "2026-07-30T03:00:00Z")],
+        selectedRunId: "run-loading",
+        runInspectionLoading: true,
+        events: [],
+        onHide: () => undefined,
+      })
+    );
+
+    expect(markup).toContain("Loading events…");
+    expect(markup).toContain("Loading event detail…");
+    expect(markup).not.toContain("No run events");
+    expect(markup).not.toContain("Select an event");
+  });
 });
 
-function runRecord(runID: string, status: string, startedAt: string): RunRecord {
+function runRecord(runID: string, status: RunStatus, startedAt: string): RunRecord {
   return {
     run_id: runID,
     graph_id: "graph",
@@ -184,7 +232,7 @@ function checkpointDetail(): CheckpointDetail {
   };
 }
 
-function runStatusMarkup(markup: string, status: string): string {
+function runStatusMarkup(markup: string, status: RunStatus): string {
   const start = markup.indexOf(`data-run-status="${status}"`);
   const end = markup.indexOf("</span>", start);
   return markup.slice(start, end);

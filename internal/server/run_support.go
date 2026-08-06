@@ -205,7 +205,10 @@ func decodeRunRequest(c *gin.Context, target any) error {
 }
 
 func parseRunStatuses(c *gin.Context) ([]runtime.RunStatus, error) {
-	values := stringListQuery(c, "status")
+	values, err := stringListQuery(c, "status")
+	if err != nil {
+		return nil, err
+	}
 	statuses := make([]runtime.RunStatus, 0, len(values))
 	for _, value := range values {
 		status := runtime.RunStatus(value)

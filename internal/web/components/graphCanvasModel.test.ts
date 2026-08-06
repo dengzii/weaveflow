@@ -47,7 +47,7 @@ describe("graph canvas model", () => {
   test("merges step snapshots by run, timestamp, and highest attempt", () => {
     const runtime = runtimeFromSteps(
       [
-        step({ status: "finished", attempt: 1, updated_at: "2026-01-01T00:02:00Z" }),
+        step({ status: "succeeded", attempt: 1, updated_at: "2026-01-01T00:02:00Z" }),
         step({ status: "running", attempt: 2, updated_at: "2026-01-01T00:01:00Z" }),
         step({ run_id: "run-2", status: "failed", attempt: 3 }),
       ],
@@ -58,6 +58,12 @@ describe("graph canvas model", () => {
       attempt: 2,
       at: Date.parse("2026-01-01T00:02:00Z"),
     });
+  });
+
+  test("maps only declared step statuses", () => {
+    expect(runtimeFromSteps([step({ status: "scheduled" })]).get("node-1")?.status).toBe("idle");
+    expect(runtimeFromSteps([step({ status: "pending" as StepRecord["status"] })]).get("node-1")?.status).toBe("idle");
+    expect(runtimeFromSteps([step({ status: "running" })]).get("node-1")?.status).toBe("running");
   });
 
   test("ignores stale runtime status while retaining a newer attempt", () => {
