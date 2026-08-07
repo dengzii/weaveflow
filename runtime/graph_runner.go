@@ -135,6 +135,10 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 		StartedAt:         now,
 		UpdatedAt:         now,
 	}
+	if origin, ok := RunOriginFromContext(ctx); ok {
+		originCopy := origin
+		run.Origin = &originCopy
+	}
 	if err := r.ExecutionStore.CreateRun(ctx, run); err != nil {
 		return RunRecord{}, initialState, err
 	}
@@ -376,7 +380,7 @@ func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *grap
 			return run, finalState, true, err
 		}
 		if control.checkpointID == "" {
-			if control.kind == runnerControlPause && active != nil && errors.Is(invokeErr, context.Canceled) {
+			if control.kind == runnerControlPause && active != nil && pauseControlCanceledInvoke(control, invokeErr) {
 				if active.beforeCheckpointID == "" {
 					run, finalState, err := r.failRun(ctx, execution.currentRun(), currentState, "interrupt_failed", fmt.Sprintf("pause interrupt missing before checkpoint for %q", active.step.NodeID))
 					return run, finalState, true, err
@@ -403,6 +407,16 @@ func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *grap
 		}
 	}
 	return RunRecord{}, currentState, false, nil
+}
+
+func pauseControlCanceledInvoke(control *runnerPendingControl, invokeErr error) bool {
+	if control == nil || control.kind != runnerControlPause {
+		return false
+	}
+	if errors.Is(invokeErr, context.Canceled) {
+		return true
+	}
+	return control.message == "pause requested"
 }
 
 func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input *state.State) (RunRecord, *state.State, error) {
@@ -598,7 +612,12 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 	default:
 		return fmt.Errorf("%w: run %q status %q cannot be paused", ErrRunControlNotAllowed, runID, run.Status)
 	}
+	execution := r.activeExecution(runID)
+	if execution == nil {
+		return fmt.Errorf("%w: run %q has no active execution", ErrRunControlNotAllowed, runID)
+	}
 	if run.PauseRequested {
+		execution.requestPause()
 		return nil
 	}
 	run.PauseRequested = true
@@ -610,7 +629,7 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 	if err := r.publishEvent(ctx, run, "", "", EventRunPauseRequested, nil); err != nil {
 		return err
 	}
-	r.pauseActiveExecution(runID)
+	execution.requestPause()
 	return nil
 }
 
@@ -639,8 +658,12 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	default:
 		return fmt.Errorf("%w: run %q status %q cannot be canceled", ErrRunControlNotAllowed, runID, run.Status)
 	}
+	execution := r.activeExecution(runID)
+	if execution == nil {
+		return fmt.Errorf("%w: run %q has no active execution", ErrRunControlNotAllowed, runID)
+	}
 	if run.CancelRequested {
-		r.cancelActiveExecution(runID)
+		execution.requestCancel()
 		return nil
 	}
 	run.PauseRequested = false
@@ -653,7 +676,7 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	if err := r.publishEvent(ctx, run, "", "", EventRunCancelRequested, nil); err != nil {
 		return err
 	}
-	r.cancelActiveExecution(runID)
+	execution.requestCancel()
 	return nil
 }
 
@@ -708,40 +731,47 @@ func (r *GraphRunner) unregisterActiveExecution(runID string, execution *graphRu
 	delete(r.activeExecutions, runID)
 }
 
-func (r *GraphRunner) cancelActiveExecution(runID string) {
+func (r *GraphRunner) activeExecution(runID string) *graphRunnerExecution {
 	if r == nil || strings.TrimSpace(runID) == "" {
-		return
-	}
-	r.activeMu.Lock()
-	execution := r.activeExecutions[runID]
-	r.activeMu.Unlock()
-	if execution == nil {
-		return
-	}
-	execution.requestCancel()
-}
-
-func (r *GraphRunner) hasActiveExecution(runID string) bool {
-	if r == nil || strings.TrimSpace(runID) == "" {
-		return false
+		return nil
 	}
 	r.activeMu.Lock()
 	defer r.activeMu.Unlock()
-	_, ok := r.activeExecutions[runID]
-	return ok
+	return r.activeExecutions[runID]
 }
 
-func (r *GraphRunner) pauseActiveExecution(runID string) {
-	if r == nil || strings.TrimSpace(runID) == "" {
-		return
+func (r *GraphRunner) hasActiveExecution(runID string) bool {
+	return r.activeExecution(runID) != nil
+}
+
+func (r *GraphRunner) IsRunActive(runID string) bool {
+	return r.hasActiveExecution(runID)
+}
+
+func (r *GraphRunner) ActiveRunCount() int {
+	if r == nil {
+		return 0
 	}
 	r.activeMu.Lock()
-	execution := r.activeExecutions[runID]
-	r.activeMu.Unlock()
-	if execution == nil {
-		return
+	defer r.activeMu.Unlock()
+	return len(r.activeExecutions)
+}
+
+func (r *GraphRunner) MarkRunExecutionLost(ctx context.Context, runID string) (RunRecord, error) {
+	if r == nil || r.ExecutionStore == nil {
+		return RunRecord{}, errors.New("graph runner execution store is nil")
 	}
-	execution.requestPause()
+	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if run.Status != RunStatusPending && run.Status != RunStatusRunning {
+		return run, nil
+	}
+	if r.IsRunActive(runID) {
+		return run, fmt.Errorf("%w: run %q still has an active execution", ErrRunControlNotAllowed, runID)
+	}
+	return r.persistRunFailure(ctx, run, nil, "run_execution_lost", "run execution is no longer active in this server process")
 }
 
 func isActiveDeleteRunStatus(status RunStatus) bool {
@@ -805,6 +835,8 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState *state.State) (RunRecord, *state.State, error) {
 	now := r.now()
 	run.Status = RunStatusCompleted
+	run.PauseRequested = false
+	run.CancelRequested = false
 	run.CurrentNodeID = ""
 	run.UpdatedAt = now
 	run.FinishedAt = &now
@@ -1009,23 +1041,33 @@ func pauseEventPayload(checkpointID string, stage CheckpointStage, nodeID string
 }
 
 func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, currentState *state.State, code string, message string) (RunRecord, *state.State, error) {
+	failedRun, err := r.persistRunFailure(ctx, run, currentState, code, message)
+	if err != nil {
+		return RunRecord{}, currentState, err
+	}
+	return failedRun, currentState, errors.New(message)
+}
+
+func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, currentState *state.State, code string, message string) (RunRecord, error) {
 	now := r.now()
 	run.Status = RunStatusFailed
+	run.PauseRequested = false
+	run.CancelRequested = false
 	run.ErrorCode = code
 	run.ErrorMessage = message
 	run.UpdatedAt = now
 	run.FinishedAt = &now
 	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
-		return RunRecord{}, currentState, err
+		return RunRecord{}, err
 	}
 	logger.Error("run failed", append(runLogFields(run), state.SummaryFields(currentState)...)...)
 	if err := r.publishEvent(ctx, run, "", run.CurrentNodeID, EventRunFailed, map[string]any{
 		"error_code":    code,
 		"error_message": message,
 	}); err != nil {
-		return RunRecord{}, currentState, err
+		return RunRecord{}, err
 	}
-	return run, currentState, errors.New(message)
+	return run, nil
 }
 
 func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRecord, runtime state.RuntimeState, currentState *state.State) ([]string, *breakpointSkip, error) {
@@ -1091,13 +1133,15 @@ func (r *GraphRunner) publishEvent(ctx context.Context, run RunRecord, stepID st
 		raw = bytes
 	}
 	event := Event{
-		ID:        newRunnerID(),
-		RunID:     run.RunID,
-		StepID:    stepID,
-		NodeID:    nodeID,
-		Type:      eventType,
-		Timestamp: r.now(),
-		Payload:   raw,
+		ID:             newRunnerID(),
+		GraphID:        firstNonEmpty(run.GraphID, r.graphID()),
+		GraphSessionID: firstNonEmpty(run.GraphSessionID, r.graphSessionID()),
+		RunID:          run.RunID,
+		StepID:         stepID,
+		NodeID:         nodeID,
+		Type:           eventType,
+		Timestamp:      r.now(),
+		Payload:        raw,
 	}
 	if r.EventSink != nil {
 		if err := r.EventSink.Publish(ctx, event); err != nil {

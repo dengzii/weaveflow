@@ -12,6 +12,7 @@ export function parseRuntimeEventFrame(data: string): RuntimeEvent | null {
     if (
       !isPlainRecord(parsed) ||
       typeof parsed.id !== "string" ||
+      typeof parsed.graph_id !== "string" ||
       typeof parsed.run_id !== "string" ||
       typeof parsed.type !== "string" ||
       typeof parsed.timestamp !== "string"
@@ -24,20 +25,25 @@ export function parseRuntimeEventFrame(data: string): RuntimeEvent | null {
   }
 }
 
-export function useRuntimeEventStream(onEvent: (event: RuntimeEvent) => void): RuntimeEventStreamStatus {
+export function useRuntimeEventStream(
+  graphID: string,
+  onEvent: (event: RuntimeEvent) => void
+): RuntimeEventStreamStatus {
   const [status, setStatus] = useState<RuntimeEventStreamStatus>("connecting");
   const onEventRef = useRef(onEvent);
   onEventRef.current = onEvent;
 
   useEffect(() => {
-    const streamURL = resolveBackendUrl("/runtime/events/stream");
     let source: EventSource | null = null;
     let reconnectTimer: number | null = null;
     let closed = false;
+    let cursor = "";
 
     const onMessage = (message: MessageEvent<string>) => {
       const event = parseRuntimeEventFrame(message.data);
-      if (event) onEventRef.current(event);
+      if (!event) return;
+      cursor = message.lastEventId || event.id || cursor;
+      onEventRef.current(event);
     };
 
     const closeSource = (target: EventSource) => {
@@ -54,7 +60,12 @@ export function useRuntimeEventStream(onEvent: (event: RuntimeEvent) => void): R
     const connect = () => {
       if (closed) return;
       setStatus((current) => current === "reconnecting" ? "reconnecting" : "connecting");
-      const nextSource = new EventSource(streamURL);
+      const query = new URLSearchParams();
+      if (cursor) query.set("cursor", cursor);
+      const suffix = query.size > 0 ? `?${query.toString()}` : "";
+      const nextSource = new EventSource(
+        resolveBackendUrl(`/graphs/${encodeURIComponent(graphID)}/events/stream${suffix}`)
+      );
       source = nextSource;
       nextSource.onopen = () => {
         if (!closed && source === nextSource) setStatus("connected");
@@ -81,7 +92,7 @@ export function useRuntimeEventStream(onEvent: (event: RuntimeEvent) => void): R
       if (reconnectTimer !== null) window.clearTimeout(reconnectTimer);
       if (source) closeSource(source);
     };
-  }, []);
+  }, [graphID]);
 
   return status;
 }

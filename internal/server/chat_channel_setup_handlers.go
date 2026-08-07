@@ -54,14 +54,9 @@ func (s *Server) handleStartChatChannelSetup(c *gin.Context) {
 	writeData(c, http.StatusCreated, result)
 }
 
-func (s *Server) handlePollChatChannelSetup(c *gin.Context) {
+func (s *Server) handleGetChatChannelSetup(c *gin.Context) {
 	if s == nil || s.chatSetup == nil {
 		writeError(c, http.StatusServiceUnavailable, chatchannel.ErrSetupUnavailable)
-		return
-	}
-	var payload chatSetupPollPayload
-	if err := decodeOptionalChatSetupPayload(c, &payload); err != nil {
-		writeError(c, statusForRequestError(err), err)
 		return
 	}
 	sessionID, ok := requirePathParam(c, "session_id")
@@ -77,7 +72,43 @@ func (s *Server) handlePollChatChannelSetup(c *gin.Context) {
 		sessionID,
 		channelID,
 		setupRequestOwner(c),
-		chatchannel.SetupPollInput{VerificationCode: payload.VerificationCode},
+		chatchannel.SetupPollInput{},
+	)
+	if err != nil {
+		writeError(c, statusForChatSetupError(err), err)
+		return
+	}
+	writeData(c, http.StatusOK, result)
+}
+
+func (s *Server) handleSubmitChatChannelSetupVerification(c *gin.Context) {
+	if s == nil || s.chatSetup == nil {
+		writeError(c, http.StatusServiceUnavailable, chatchannel.ErrSetupUnavailable)
+		return
+	}
+	var payload chatSetupPollPayload
+	if err := decodeOptionalChatSetupPayload(c, &payload); err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	if strings.TrimSpace(payload.VerificationCode) == "" {
+		writeError(c, http.StatusBadRequest, invalidRequestf("verification_code is required"))
+		return
+	}
+	sessionID, ok := requirePathParam(c, "session_id")
+	if !ok {
+		return
+	}
+	channelID, ok := requirePathParam(c, "channel_id")
+	if !ok {
+		return
+	}
+	result, err := s.chatSetup.Poll(
+		c.Request.Context(),
+		sessionID,
+		channelID,
+		setupRequestOwner(c),
+		chatchannel.SetupPollInput{VerificationCode: strings.TrimSpace(payload.VerificationCode)},
 	)
 	if err != nil {
 		writeError(c, statusForChatSetupError(err), err)

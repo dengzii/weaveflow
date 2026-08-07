@@ -17,20 +17,11 @@ import (
 const maxChatTriggerBodyBytes int64 = 1 << 20
 
 func (s *Server) handleChatTrigger(c *gin.Context) {
-	service := s.TriggerService()
-	if service == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return
-	}
-	triggerID, ok := requirePathParam(c, "trigger_id")
+	service, item, ok := s.scopedTrigger(c)
 	if !ok {
 		return
 	}
-	item, err := service.Get(c.Request.Context(), triggerID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
+	triggerID := item.ID
 	if item.Type != trigger.TypeChat {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("%w: trigger %q is not a chat trigger", trigger.ErrTypeMismatch, triggerID))
 		return

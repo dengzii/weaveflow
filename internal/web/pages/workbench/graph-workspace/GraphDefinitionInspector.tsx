@@ -19,6 +19,7 @@ interface GraphDefinitionInspectorProps {
   definition: GraphDefinition | null;
   definitionText: string;
   initialRequirements: InitialStateRequirements | null;
+  directInitialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
   initialStateText: string;
   runtimeSettings: RuntimeSettings | null;
@@ -33,6 +34,7 @@ export function GraphDefinitionInspector({
   definition,
   definitionText,
   initialRequirements,
+  directInitialRequirements,
   initialRequirementsError,
   initialStateText,
   runtimeSettings,
@@ -44,10 +46,14 @@ export function GraphDefinitionInspector({
 }: GraphDefinitionInspectorProps) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [jsonOpen, setJSONOpen] = useState(false);
-  const requiredInitialState = initialRequirements?.required ?? [];
+  const requiredInitialState = [
+    ...(directInitialRequirements?.required ?? []),
+    ...(directInitialRequirements?.unresolved ?? []),
+  ];
   const hasInitialStateHints = Boolean(
     initialRequirements &&
       (initialRequirements.unresolved.length > 0 ||
+        initialRequirements.provided_by_entry.length > 0 ||
         initialRequirements.provided_by_upstream.length > 0 ||
         (initialRequirements.warnings?.length ?? 0) > 0)
   );

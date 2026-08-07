@@ -204,6 +204,8 @@ export function RunStatusPanel({
     if (
       panelView !== "state" ||
       !selectedCheckpointID ||
+      !selectedGraphID ||
+      !selectedRunId ||
       selectedCheckpointDetail ||
       selectedCheckpointError ||
       checkpointRequestIDsRef.current.has(selectedCheckpointID)
@@ -212,7 +214,7 @@ export function RunStatusPanel({
     }
     const contextVersion = checkpointContextVersionRef.current;
     checkpointRequestIDsRef.current.add(selectedCheckpointID);
-    void getCheckpoint(selectedCheckpointID, selectedGraphID)
+    void getCheckpoint(selectedGraphID, selectedRunId, selectedCheckpointID)
       .then((detail) => {
         if (checkpointContextVersionRef.current !== contextVersion) return;
         startTransition(() => {
@@ -232,7 +234,7 @@ export function RunStatusPanel({
           checkpointRequestIDsRef.current.delete(selectedCheckpointID);
         }
       });
-  }, [panelView, selectedCheckpointDetail, selectedCheckpointError, selectedCheckpointID, selectedGraphID]);
+  }, [panelView, selectedCheckpointDetail, selectedCheckpointError, selectedCheckpointID, selectedGraphID, selectedRunId]);
 
   function startResizeHeight(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -823,7 +825,7 @@ function StateSnapshotSection({
 }) {
   const [open, setOpen] = useState(defaultOpen);
   const [serialization, setSerialization] = useState<{ value: unknown; text: string } | null>(null);
-  const serializedValue = serialization?.value === value ? serialization.text : null;
+  const serializedValue = serialization && serialization.value === value ? serialization.text : null;
 
   useEffect(() => {
     if (!open || serializedValue !== null) return;

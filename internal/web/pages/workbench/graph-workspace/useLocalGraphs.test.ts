@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   cacheServerGraphs,
+  hydrateServerGraph,
   readLocalGraphs,
   saveLocalGraph,
   type LocalGraph,
@@ -73,6 +74,8 @@ describe("local graphs", () => {
       graphVersion: current.graphVersion,
       definition: input.definition,
       runtimeSettings: current.runtimeSettings,
+      nodeCount: input.definition.nodes.length,
+      serverGraph: false,
       createdAt: "2026-01-01T00:00:00Z",
       updatedAt: "2026-01-01T00:00:00Z",
     };
@@ -97,14 +100,15 @@ describe("local graphs", () => {
     expect(localGraphSaveInput(empty, "")).toBeNull();
   });
 
-  test("hydrates server graphs and saves edits only in memory", () => {
+  test("loads server summaries before hydrating detail and saves edits only in memory", () => {
     const [serverGraph] = cacheServerGraphs([{
       id: "graph-1",
+      name: "workflow",
       graph_version: "2.0",
-      definition: snapshot().definition!,
-      settings: snapshot().runtimeSettings,
+      node_count: 1,
       session_count: 2,
       latest_session: "20260804T010203.000000000Z",
+      active_run_count: 0,
       updated_at: "2026-08-04T01:02:03Z",
     }]);
 
@@ -112,19 +116,37 @@ describe("local graphs", () => {
       graphId: "graph-1",
       graphVersion: "2.0",
       title: "workflow",
+      nodeCount: 1,
       updatedAt: "2026-08-04T01:02:03Z",
+    });
+    expect(serverGraph.definition).toBeUndefined();
+
+    const hydrated = hydrateServerGraph(serverGraph, {
+      graph: {
+        id: "graph-1",
+        version: "2.0",
+        graph_session_id: "20260804T010203.000000000Z",
+      },
+      definition: snapshot().definition!,
+      settings: snapshot().runtimeSettings,
+      initial_state_requirements: { required: [], provided_by_entry: [], provided_by_upstream: [], unresolved: [] },
+      latest_session: {
+        id: "20260804T010203.000000000Z",
+        created_at: "2026-08-04T01:02:03Z",
+      },
+      active: { active_run_count: 0 },
     });
 
     const saved = saveLocalGraph({
-      id: serverGraph.id,
-      graphId: serverGraph.graphId,
-      graphVersion: serverGraph.graphVersion,
-      definition: { ...serverGraph.definition, name: "edited" },
-      runtimeSettings: serverGraph.runtimeSettings,
+      id: hydrated.id,
+      graphId: hydrated.graphId,
+      graphVersion: hydrated.graphVersion,
+      definition: { ...hydrated.definition, name: "edited" },
+      runtimeSettings: hydrated.runtimeSettings,
     });
     expect(saved.title).toBe("edited");
     expect(readLocalGraphs()).toHaveLength(1);
-    expect(readLocalGraphs()[0].definition.name).toBe("edited");
+    expect(readLocalGraphs()[0].definition?.name).toBe("edited");
 
     cacheServerGraphs([]);
   });

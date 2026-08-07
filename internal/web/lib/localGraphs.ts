@@ -1,15 +1,23 @@
-import type { CachedGraphSummary, GraphDefinition, RuntimeSettings } from "../types";
+import type { CachedGraphSummary, GraphDefinition, GraphDetail, RuntimeSettings } from "../types";
 
 export interface LocalGraph {
   id: string;
   title: string;
   graphId: string;
   graphVersion: string;
-  definition: GraphDefinition;
-  runtimeSettings: RuntimeSettings;
+  definition?: GraphDefinition;
+  runtimeSettings?: RuntimeSettings;
+  nodeCount: number;
+  serverGraph: boolean;
+  latestSession?: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export type HydratedLocalGraph = LocalGraph & {
+  definition: GraphDefinition;
+  runtimeSettings: RuntimeSettings;
+};
 
 export interface SaveLocalGraphInput {
   id?: string;
@@ -27,17 +35,46 @@ export function readLocalGraphs(): LocalGraph[] {
 }
 
 export function cacheServerGraphs(graphs: CachedGraphSummary[]): LocalGraph[] {
-  cachedGraphs = graphs.map((graph) => ({
-    id: serverGraphCacheID(graph),
-    title: graph.definition.name || graph.id,
-    graphId: graph.id,
-    graphVersion: graph.graph_version,
-    definition: graph.definition,
-    runtimeSettings: graph.settings,
-    createdAt: graph.updated_at,
-    updatedAt: graph.updated_at,
-  })).sort(sortGraphs);
+  const currentByID = new Map(cachedGraphs.map((graph) => [graph.id, graph]));
+  cachedGraphs = graphs.map((graph) => {
+    const id = serverGraphCacheID(graph.id, graph.latest_session);
+    const current = currentByID.get(id);
+    return {
+      id,
+      title: graph.name || graph.id,
+      graphId: graph.id,
+      graphVersion: graph.graph_version,
+      definition: current?.definition,
+      runtimeSettings: current?.runtimeSettings,
+      nodeCount: graph.node_count,
+      serverGraph: true,
+      latestSession: graph.latest_session,
+      createdAt: graph.updated_at,
+      updatedAt: graph.updated_at,
+    };
+  }).sort(sortGraphs);
   return readLocalGraphs();
+}
+
+export function hydrateServerGraph(graph: LocalGraph, detail: GraphDetail): HydratedLocalGraph {
+  if (graph.graphId !== detail.graph.id) {
+    throw new Error(`graph detail ${detail.graph.id} does not match ${graph.graphId}`);
+  }
+  const hydrated: HydratedLocalGraph = {
+    ...graph,
+    title: detail.definition.name || detail.graph.id,
+    graphVersion: detail.graph.version,
+    definition: detail.definition,
+    runtimeSettings: detail.settings,
+    nodeCount: detail.definition.nodes.length,
+    latestSession: detail.latest_session.id,
+  };
+  cachedGraphs = cachedGraphs.map((item) => item.id === graph.id ? hydrated : item).sort(sortGraphs);
+  return hydrated;
+}
+
+export function isHydratedLocalGraph(graph: LocalGraph): graph is HydratedLocalGraph {
+  return Boolean(graph.definition && graph.runtimeSettings);
 }
 
 export function saveLocalGraph(input: SaveLocalGraphInput): LocalGraph {
@@ -51,6 +88,9 @@ export function saveLocalGraph(input: SaveLocalGraphInput): LocalGraph {
     graphVersion: input.graphVersion.trim() || input.definition.version || "2.0",
     definition: input.definition,
     runtimeSettings: input.runtimeSettings,
+    nodeCount: input.definition.nodes.length,
+    serverGraph: existing?.serverGraph ?? false,
+    latestSession: existing?.latestSession,
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -76,6 +116,6 @@ function sortGraphs(a: LocalGraph, b: LocalGraph) {
   return b.updatedAt.localeCompare(a.updatedAt);
 }
 
-function serverGraphCacheID(graph: CachedGraphSummary) {
-  return `server:${graph.id}:${graph.latest_session}`;
+function serverGraphCacheID(graphID: string, latestSession: string) {
+  return `server:${graphID}:${latestSession}`;
 }

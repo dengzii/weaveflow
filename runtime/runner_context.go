@@ -26,6 +26,7 @@ type runnerEventPublisherKey struct{}
 type runnerMetadataKey struct{}
 type runnerArtifactRecorderKey struct{}
 type runnerEventObserverKey struct{}
+type runOriginKey struct{}
 
 var ErrArtifactRecorderUnavailable = errors.New("runner artifact recorder is unavailable")
 
@@ -63,6 +64,21 @@ func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Co
 		return nil
 	}
 	return context.WithValue(ctx, runnerMetadataKey{}, metadata)
+}
+
+func WithRunOrigin(ctx context.Context, origin RunOrigin) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, runOriginKey{}, origin)
+}
+
+func RunOriginFromContext(ctx context.Context) (RunOrigin, bool) {
+	if ctx == nil {
+		return RunOrigin{}, false
+	}
+	origin, ok := ctx.Value(runOriginKey{}).(RunOrigin)
+	return origin, ok
 }
 
 // WithRunnerEventObserver attaches a synchronous, run-scoped event observer.

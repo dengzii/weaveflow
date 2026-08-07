@@ -23,6 +23,7 @@ func ProtocolsStateModuleDefinition() dsl.StateModuleDefinition {
 		Fields: []dsl.StateFieldDefinition{
 			{Path: "shared.request.input", Description: "Default graph request input.", Schema: dsl.JSONSchema{"type": "string"}},
 			{Path: "shared.request.metadata", Description: "Default graph request metadata.", Schema: dsl.JSONSchema{"type": "object"}},
+			{Path: "shared.trigger", Description: "Trigger metadata such as type, id, and payload.", Schema: dsl.JSONSchema{"type": "object"}},
 			{Path: "shared.environment", Description: "Workspace and project environment context.", Schema: dsl.JSONSchema{"type": "object"}},
 			{Path: "shared.final.answer", Description: "Default final answer output.", Schema: dsl.JSONSchema{"type": "string"}},
 		},

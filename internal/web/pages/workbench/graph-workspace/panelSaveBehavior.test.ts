@@ -39,6 +39,31 @@ describe("inspector save behavior", () => {
     expect(generalHeader).toBeGreaterThan(0);
     expect(markup.slice(Math.max(0, generalHeader - 500), generalHeader)).toContain('aria-expanded="false"');
   });
+
+  test("shows every state binding for each trigger type", () => {
+    const expectedLabels = {
+      webhook: ["Input", "Metadata", "Trigger ID", "Trigger Type"],
+      schedule: ["Input", "Metadata", "Trigger ID", "Trigger Type"],
+      chat: ["Input", "Conversation Root", "Raw History", "Trigger ID", "Channel", "User ID", "Conversation ID", "Message ID"],
+    } as const;
+
+    for (const [type, labels] of Object.entries(expectedLabels)) {
+      const values = triggerEditorValues(null, { graph_id: "graph-a" }, type as "webhook" | "schedule" | "chat");
+      values.id = `${type}-trigger`;
+      const markup = renderToStaticMarkup(createElement(TriggerEditorForm, {
+        trigger: null,
+        values,
+        persisted: false,
+        chatSetupChannelID: "",
+        chatSetupSessionID: "",
+        targetOptions: [{ key: "graph-a", label: "graph-a", target: { graph_id: "graph-a" } }],
+        onChange: () => undefined,
+      }));
+
+      expect(markup).toContain(">State Bindings</span>");
+      for (const label of labels) expect(markup).toContain(`>${label} state path</span>`);
+    }
+  });
 });
 
 function runtimeSettings(): RuntimeSettings {

@@ -66,6 +66,7 @@ describe("initial state lint", () => {
       { path: "shared.retries", type: "integer" },
       { path: "shared.enabled", type: "boolean" },
     ],
+    provided_by_entry: [],
     provided_by_upstream: [],
     unresolved: [],
   };
@@ -91,6 +92,24 @@ describe("initial state lint", () => {
     });
 
     expect(issues.filter((issue) => issue.id.startsWith("initial-state-missing-"))).toEqual([]);
+  });
+
+  test("reports unresolved producers as non-blocking warnings", () => {
+    const issues = buildGraphLintIssues({
+      definition: validSupervisorGraph,
+      initialStateText: "{}",
+      initialRequirements: {
+        required: [],
+        provided_by_entry: [],
+        provided_by_upstream: [],
+        unresolved: [{ path: "shared.request.input", nodes: ["supervisor"] }],
+      },
+    });
+
+    expect(issues).toContainEqual(expect.objectContaining({
+      id: "unresolved-shared.request.input",
+      severity: "warn",
+    }));
   });
 });
 

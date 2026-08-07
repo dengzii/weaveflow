@@ -98,7 +98,13 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	if strings.Contains(string(responseData), "persisted-key") || strings.Contains(string(responseData), "persisted-tavily-key") {
 		t.Fatalf("graph list leaked persisted API key: %s", responseData)
 	}
-	settingsResponse := graphs[0].Settings
+	restoredEngine := gin.New()
+	restored.RegisterRoutes(restoredEngine.Group(""))
+	settingsResponse := decodeGraphDetailResponse(
+		t,
+		serveHTTP(restoredEngine, http.MethodGet, "/graphs/persisted-graph", ""),
+		http.StatusOK,
+	).Settings
 	if len(settingsResponse.Models) != 2 {
 		t.Fatalf("restored model count = %d, want 2", len(settingsResponse.Models))
 	}
@@ -153,13 +159,14 @@ func TestGraphUploadRejectsModelWithoutID(t *testing.T) {
 	engine := gin.New()
 	server.RegisterRoutes(engine.Group(""))
 
-	response := serveHTTP(engine, http.MethodPut, "/graph", graphUploadBodyWithSettings(
+	_, requestBody := graphSessionRequestBodyForTest(t, graphUploadBodyWithSettings(
 		"invalid-settings",
 		"v1",
 		"invalid",
 		`{"environment":{},"models":[{"enabled":true,"provider":"openai"}],"memory":{"enabled":false}}`,
 	))
+	response := serveHTTP(engine, http.MethodPost, "/graphs/invalid-settings/sessions", requestBody)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "model id is required") {
-		t.Fatalf("PUT /graph status = %d, body = %s", response.Code, response.Body.String())
+		t.Fatalf("POST graph session status = %d, body = %s", response.Code, response.Body.String())
 	}
 }

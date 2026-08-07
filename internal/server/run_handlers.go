@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,19 @@ type runInterrupt struct {
 	Runtime                *state.RuntimeState  `json:"runtime,omitempty"`
 }
 
+type runListPage struct {
+	Items      []runtime.RunRecord `json:"items"`
+	NextCursor string              `json:"next_cursor"`
+}
+
+type runInspectionResponse struct {
+	Run         runtime.RunRecord          `json:"run"`
+	Steps       []runtime.StepRecord       `json:"steps"`
+	Checkpoints []runtime.CheckpointRecord `json:"checkpoints"`
+	Events      runtime.EventPage          `json:"events"`
+	Interrupt   *runInterrupt              `json:"interrupt,omitempty"`
+}
+
 const (
 	defaultEventPageLimit = 500
 	maximumEventPageLimit = 2000
@@ -41,25 +55,38 @@ const (
 const maxRunStateBodyBytes int64 = 8 << 20
 
 func (s *Server) handleStartRun(c *gin.Context) {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
+	sessionID, ok := requirePathParam(c, "session_id")
+	if !ok {
+		return
+	}
 	initialState, err := decodeStartRunRequest(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-	runner := s.requireRunner(c)
-	if runner == nil {
-		return
-	}
-	ctx, cancel := s.deriveRunContext(c)
-	defer cancel()
-
-	run, finalState, err := runner.Start(ctx, initialState)
-	result := s.makeRunResult(ctx, runner, run, finalState)
+	session, err := s.loadGraphSession(graphID, sessionID)
 	if err != nil {
-		writeErrorData(c, statusForError(err), err, result)
+		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, result)
+	ctx, cancel := deriveRunContextFromBase(context.Background(), session.baseContext)
+	run, done, err := session.runner.StartAsync(ctx, initialState)
+	if err != nil {
+		cancel()
+		writeError(c, statusForError(err), err)
+		return
+	}
+	go func() {
+		if done != nil {
+			<-done
+		}
+		cancel()
+	}()
+	writeData(c, http.StatusAccepted, run)
 }
 
 func (s *Server) handleResumeRun(c *gin.Context) {
@@ -72,7 +99,7 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-	runner := s.requireRunControlRunner(c)
+	runner := s.requireRunControlRunner(c, runID)
 	if runner == nil {
 		return
 	}
@@ -88,38 +115,12 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 	writeData(c, http.StatusOK, result)
 }
 
-func (s *Server) handleResumeCheckpoint(c *gin.Context) {
-	checkpointID, ok := requireRecordIDPathParam(c, "checkpoint_id")
-	if !ok {
-		return
-	}
-	input, err := decodeResumeRunRequest(c)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
-	}
-	runner := s.requireRunControlRunner(c)
-	if runner == nil {
-		return
-	}
-	ctx, cancel := s.deriveRunContext(c)
-	defer cancel()
-
-	run, finalState, err := runner.ResumeFromCheckpoint(ctx, checkpointID, input)
-	result := s.makeRunResult(ctx, runner, run, finalState)
-	if err != nil {
-		writeErrorData(c, statusForError(err), err, result)
-		return
-	}
-	writeData(c, http.StatusOK, result)
-}
-
 func (s *Server) handlePauseRun(c *gin.Context) {
 	runID, ok := requireRecordIDPathParam(c, "run_id")
 	if !ok {
 		return
 	}
-	runner := s.requireRunControlRunner(c)
+	runner := s.requireRunControlRunner(c, runID)
 	if runner == nil {
 		return
 	}
@@ -140,58 +141,97 @@ func (s *Server) handleCancelRun(c *gin.Context) {
 	if !ok {
 		return
 	}
-	graphID, err := optionalStringQuery(c, "graph_id")
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
 		return
 	}
-	runner := s.runControlRunner(graphID)
-	if runner != nil {
-		err = runner.Cancel(c.Request.Context(), runID)
-		if err == nil {
-			run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusCanceled)
-			if err != nil {
-				writeError(c, statusForError(err), err)
-				return
-			}
-			writeData(c, http.StatusOK, run)
-			return
-		}
-		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+	runner, err := s.runControlRunner(c.Request.Context(), graphID, runID)
+	if err == nil && runner != nil {
+		if err := runner.Cancel(c.Request.Context(), runID); err != nil {
 			writeError(c, statusForError(err), err)
 			return
 		}
-	}
-
-	run, err := s.cancelCachedPausedRun(c.Request.Context(), graphID, runID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
+		run, err := waitForRunStatus(c.Request.Context(), runner, runID, runtime.RunStatusCanceled)
+		if err != nil {
+			writeError(c, statusForError(err), err)
+			return
+		}
+		writeData(c, http.StatusOK, run)
 		return
 	}
-	writeData(c, http.StatusOK, run)
+	if graphID != "" {
+		if cachedRun, cachedErr := s.cancelCachedPausedRun(c.Request.Context(), graphID, runID); cachedErr == nil {
+			writeData(c, http.StatusOK, cachedRun)
+			return
+		} else if !errors.Is(cachedErr, runtime.ErrRunnerRecordNotFound) {
+			writeError(c, statusForError(cachedErr), cachedErr)
+			return
+		}
+	}
+	if err == nil {
+		err = runtime.ErrRunnerRecordNotFound
+	}
+	writeError(c, statusForError(err), err)
 }
 
-func (s *Server) runControlRunner(graphID string) *runtime.GraphRunner {
-	runner := s.currentRunner()
+func (s *Server) runControlRunner(ctx context.Context, graphID string, runID string) (*runtime.GraphRunner, error) {
 	graphID = strings.TrimSpace(graphID)
-	if runner != nil && (graphID == "" || graphID == effectiveRunnerGraphID(runner)) {
-		return runner
+	runner, run, err := s.runtime.runnerForRun(ctx, graphID, runID)
+	if err != nil {
+		return nil, err
 	}
-	if graphID == "" || s == nil || s.runtime == nil {
-		return nil
+	if runner != nil {
+		if (run.Status == runtime.RunStatusPending || run.Status == runtime.RunStatusRunning) && !runner.IsRunActive(runID) && isRunPastRegistrationGrace(run) {
+			if _, err := runner.MarkRunExecutionLost(ctx, runID); err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("%w: run %q execution is no longer active", runtime.ErrRunControlNotAllowed, runID)
+		}
+		return runner, nil
 	}
-	return s.runtime.triggerSession(graphID).runner
+	if graphID == "" {
+		return nil, runtime.ErrRunnerRecordNotFound
+	}
+	cache, err := s.openGraphCache(graphID)
+	if err != nil {
+		return nil, err
+	}
+	index, run, err := cache.locateRun(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	switch run.Status {
+	case runtime.RunStatusPending, runtime.RunStatusRunning:
+		if !isRunPastRegistrationGrace(run) {
+			return nil, fmt.Errorf("%w: run %q execution is not registered yet", runtime.ErrRunControlNotAllowed, runID)
+		}
+		if _, err := s.markCachedRunExecutionLost(ctx, cache, index, runID); err != nil {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: run %q execution is no longer active", runtime.ErrRunControlNotAllowed, runID)
+	case runtime.RunStatusPaused:
+		session, err := s.loadGraphSession(graphID, run.GraphSessionID)
+		if err != nil {
+			return nil, err
+		}
+		return session.runner, nil
+	default:
+		return nil, fmt.Errorf("%w: run %q status %q cannot be controlled", runtime.ErrRunControlNotAllowed, runID, run.Status)
+	}
 }
 
-func (s *Server) requireRunControlRunner(c *gin.Context) *runtime.GraphRunner {
-	graphID, err := optionalStringQuery(c, "graph_id")
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
+func isRunPastRegistrationGrace(run runtime.RunRecord) bool {
+	return run.StartedAt.IsZero() || !run.StartedAt.After(time.Now().Add(-runExecutionRegistrationGracePeriod))
+}
+
+func (s *Server) requireRunControlRunner(c *gin.Context, runID string) *runtime.GraphRunner {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
 		return nil
 	}
-	runner := s.runControlRunner(graphID)
-	if runner == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
+	runner, err := s.runControlRunner(c.Request.Context(), graphID, runID)
+	if err != nil {
+		writeError(c, statusForError(err), err)
 		return nil
 	}
 	return runner
@@ -202,12 +242,15 @@ func (s *Server) handleDeleteRun(c *gin.Context) {
 	if !ok {
 		return
 	}
-	graphID, err := optionalStringQuery(c, "graph_id")
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
 		return
 	}
-	runner := s.runControlRunner(graphID)
+	runner, _, err := s.runtime.runnerForRun(c.Request.Context(), graphID, runID)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
 	if runner != nil {
 		_, err = runner.DeleteRun(c.Request.Context(), runID)
 		if err == nil {
@@ -279,12 +322,45 @@ func (s *Server) handleListRuns(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, runs)
+	limit, err := positiveIntQuery(c, "limit", 100, 500)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	cursor, err := optionalStringQuery(c, "cursor")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	end := len(runs)
+	if cursor != "" {
+		end, err = strconv.Atoi(cursor)
+		if err != nil || end < 0 || end > len(runs) {
+			writeError(c, http.StatusBadRequest, invalidRequestf("cursor is invalid"))
+			return
+		}
+	}
+	start := max(0, end-limit)
+	nextCursor := ""
+	if start > 0 {
+		nextCursor = strconv.Itoa(start)
+	}
+	writeData(c, http.StatusOK, runListPage{Items: runs[start:end], NextCursor: nextCursor})
 }
 
-func (s *Server) handleGetRun(c *gin.Context) {
+func (s *Server) handleGetRunInspection(c *gin.Context) {
 	runID, ok := requireRecordIDPathParam(c, "run_id")
 	if !ok {
+		return
+	}
+	limit, err := positiveIntQuery(c, "event_limit", defaultEventPageLimit, maximumEventPageLimit)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	eventCursor, err := optionalStringQuery(c, "event_cursor")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
 		return
 	}
 	reader := s.resolveRunReader(c)
@@ -294,35 +370,6 @@ func (s *Server) handleGetRun(c *gin.Context) {
 	run, err := reader.GetRun(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
-		return
-	}
-	writeData(c, http.StatusOK, run)
-}
-
-func (s *Server) handleGetRunInterrupt(c *gin.Context) {
-	runID, ok := requireRecordIDPathParam(c, "run_id")
-	if !ok {
-		return
-	}
-	reader := s.resolveRunReader(c)
-	if reader == nil {
-		return
-	}
-	run, err := reader.GetRun(c.Request.Context(), runID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	writeData(c, http.StatusOK, s.buildRunInterrupt(c.Request.Context(), reader, run))
-}
-
-func (s *Server) handleListSteps(c *gin.Context) {
-	runID, ok := requireRecordIDPathParam(c, "run_id")
-	if !ok {
-		return
-	}
-	reader := s.resolveRunReader(c)
-	if reader == nil {
 		return
 	}
 	steps, err := reader.ListSteps(c.Request.Context(), runID)
@@ -330,27 +377,30 @@ func (s *Server) handleListSteps(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, steps)
-}
-
-func (s *Server) handleListCheckpoints(c *gin.Context) {
-	runID, ok := requireRecordIDPathParam(c, "run_id")
-	if !ok {
-		return
-	}
-	reader := s.resolveRunReader(c)
-	if reader == nil {
-		return
-	}
 	checkpoints, err := reader.ListCheckpoints(c.Request.Context(), runID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, checkpoints)
+	events, err := reader.ListEventPage(runID, eventCursor, limit)
+	if err != nil {
+		writeError(c, statusForListEventsError(err), err)
+		return
+	}
+	writeData(c, http.StatusOK, runInspectionResponse{
+		Run:         run,
+		Steps:       steps,
+		Checkpoints: checkpoints,
+		Events:      events,
+		Interrupt:   s.buildRunInterrupt(c.Request.Context(), reader, run),
+	})
 }
 
 func (s *Server) handleGetCheckpoint(c *gin.Context) {
+	runID, ok := requireRecordIDPathParam(c, "run_id")
+	if !ok {
+		return
+	}
 	checkpointID, ok := requireRecordIDPathParam(c, "checkpoint_id")
 	if !ok {
 		return
@@ -362,6 +412,10 @@ func (s *Server) handleGetCheckpoint(c *gin.Context) {
 	checkpoint, err := reader.LoadCheckpointState(c.Request.Context(), checkpointID)
 	if err != nil {
 		writeError(c, statusForError(err), err)
+		return
+	}
+	if checkpoint.Record.RunID != runID {
+		writeError(c, http.StatusNotFound, runtime.ErrRunnerRecordNotFound)
 		return
 	}
 	writeData(c, http.StatusOK, checkpoint)

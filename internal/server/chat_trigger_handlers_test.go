@@ -7,8 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -49,7 +51,7 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	buffered := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"message_id":"m1","user_id":"u1","conversation_id":"c1","content":"hello"}`))
+	request := httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"message_id":"m1","user_id":"u1","conversation_id":"c1","content":"hello"}`))
 	engine.ServeHTTP(buffered, request)
 	if buffered.Code != http.StatusOK {
 		t.Fatalf("buffered status = %d body = %s", buffered.Code, buffered.Body.String())
@@ -71,7 +73,7 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	}
 
 	streamed := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"hello"}`))
+	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"hello"}`))
 	request.Header.Set("Accept", "text/event-stream")
 	engine.ServeHTTP(streamed, request)
 	if streamed.Code != http.StatusOK || streamed.Header().Get("Content-Type") != "text/event-stream" {
@@ -84,7 +86,7 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	}
 
 	newConversation := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"/new"}`))
+	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"/new"}`))
 	engine.ServeHTTP(newConversation, request)
 	if newConversation.Code != http.StatusOK {
 		t.Fatalf("new conversation status = %d body = %s", newConversation.Code, newConversation.Body.String())
@@ -103,9 +105,101 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	}
 
 	missingIdentity := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers/chat/chat", strings.NewReader(`{"content":"hello"}`))
+	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"content":"hello"}`))
 	engine.ServeHTTP(missingIdentity, request)
 	if missingIdentity.Code != http.StatusBadRequest {
 		t.Fatalf("missing identity status = %d body = %s", missingIdentity.Code, missingIdentity.Body.String())
+	}
+}
+
+func TestChatTriggerRunControlUpdatesReplyChannel(t *testing.T) {
+	tests := []struct {
+		name     string
+		endpoint string
+		status   runtime.RunStatus
+		reply    string
+	}{
+		{name: "pause", endpoint: "pause", status: runtime.RunStatusPaused, reply: "Run paused."},
+		{name: "cancel", endpoint: "cancel", status: runtime.RunStatusCanceled, reply: "Response stopped."},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			started := make(chan struct{})
+			release := make(chan struct{})
+			defer close(release)
+			graph := newRunControlTestGraph(t, started, release, true)
+			srv, err := New(context.Background(), Config{
+				Graph:          graph,
+				BaseDir:        t.TempDir(),
+				GraphID:        "chat-control-graph",
+				GraphVersion:   "v1",
+				GraphSessionID: "chat-control-session",
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := srv.triggers.Create(context.Background(), trigger.Trigger{
+				ID:      "controlled-chat",
+				Type:    trigger.TypeChat,
+				Enabled: true,
+				Target:  trigger.Target{GraphID: "chat-control-graph"},
+				Chat:    &trigger.ChatSpec{},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			type invocationResult struct {
+				result trigger.ChatResult
+				err    error
+			}
+			invocationDone := make(chan invocationResult, 1)
+			replies := make(chan chatcap.Reply, 2)
+			go func() {
+				result, err := srv.triggers.InvokeChat(context.Background(), "controlled-chat", chatchannel.InboundMessage{
+					ID: "message-1", UserID: "user-1", ConversationID: "conversation-1", Content: "hello",
+				}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
+					replies <- reply
+					return nil
+				}))
+				invocationDone <- invocationResult{result: result, err: err}
+			}()
+
+			waitForSignal(t, started, "chat trigger run node start")
+			runID := waitForServerRunID(t, srv.Runner())
+			engine := gin.New()
+			srv.RegisterRoutes(engine.Group(""))
+			response := serveHTTP(engine, http.MethodPost, "/graphs/chat-control-graph/runs/"+runID+"/"+test.endpoint, "")
+			controlledRun := decodeRunRecordResponse(t, response, http.StatusOK)
+			if controlledRun.Status != test.status {
+				t.Fatalf("control response status = %q, want %q", controlledRun.Status, test.status)
+			}
+
+			select {
+			case invocation := <-invocationDone:
+				if invocation.err != nil {
+					t.Fatalf("InvokeChat() error = %v", invocation.err)
+				}
+				if invocation.result.Run.Status != test.status || invocation.result.FinalReply != test.reply {
+					t.Fatalf("chat invocation result = %#v", invocation.result)
+				}
+			case <-time.After(4 * time.Second):
+				t.Fatal("timed out waiting for chat invocation")
+			}
+
+			select {
+			case reply := <-replies:
+				if reply.Kind != chatcap.ReplyFinish || reply.Content != test.reply || reply.Error != "" {
+					t.Fatalf("terminal reply = %#v", reply)
+				}
+			default:
+				t.Fatal("chat channel did not receive terminal reply")
+			}
+			select {
+			case reply := <-replies:
+				t.Fatalf("unexpected additional reply = %#v", reply)
+			default:
+			}
+		})
 	}
 }

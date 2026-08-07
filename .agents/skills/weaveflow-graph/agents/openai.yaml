@@ -1,4 +1,4 @@
 interface:
   display_name: "WeaveFlow Graph"
-  short_description: "Upload, run, and debug WeaveFlow agent graphs"
-  default_prompt: "Use $weaveflow-graph to configure, upload, run, and debug one complete graph session through the WeaveFlow server API."
+  short_description: "Create sessions, run, and debug WeaveFlow graphs"
+  default_prompt: "Use $weaveflow-graph to configure a Graph, create an immutable session, run that exact session, and debug it through the Graph-scoped WeaveFlow server API."

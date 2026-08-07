@@ -253,7 +253,7 @@ export function buildGraphLintIssues({
   }
 
   for (const requirement of initialRequirements?.unresolved ?? []) {
-    issues.push(requirementIssue("unresolved", requirement, "error"));
+    issues.push(requirementIssue("unresolved", requirement, "warn"));
   }
   for (const warning of initialRequirements?.warnings ?? []) {
     issues.push(warningIssue(warning));

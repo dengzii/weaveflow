@@ -4,7 +4,6 @@ import type {
   RunRecord,
   RunStatus,
   RuntimeEvent,
-  TriggerInvocation,
   TriggerType,
 } from "../../types";
 import { hasFilledInitialStatePath } from "./graph-workspace/runInputModel";
@@ -12,6 +11,7 @@ import { hasFilledInitialStatePath } from "./graph-workspace/runInputModel";
 export interface GraphIdentity {
   id: string;
   version: string;
+  sessionID?: string;
 }
 
 export type RunControlMode = "run" | "active" | "resume";
@@ -215,15 +215,15 @@ function runtimeEventIdentity(event: RuntimeEvent): string {
   return event.id || `${event.run_id}:${event.type}:${event.timestamp}:${event.node_id ?? ""}:${event.step_id ?? ""}`;
 }
 
-export function runTriggerTypesFromInvocations(
-  invocations: TriggerInvocation[],
+export function runTriggerTypesFromRuns(
+  runs: RunRecord[],
   graphID: string
 ): Partial<Record<string, TriggerType>> {
   const triggerTypes: Partial<Record<string, TriggerType>> = {};
-  for (const invocation of invocations) {
-    const runID = invocation.run?.run_id;
-    if (invocation.target.graph_id === graphID && runID) {
-      triggerTypes[runID] = invocation.trigger_type;
+  for (const run of runs) {
+    const type = run.origin?.type;
+    if (run.graph_id === graphID && (type === "webhook" || type === "schedule" || type === "chat")) {
+      triggerTypes[run.run_id] = type;
     }
   }
   return triggerTypes;

@@ -25,6 +25,93 @@ type TriggerStore interface {
 	Get(context.Context, string) (Trigger, error)
 	List(context.Context) ([]Trigger, error)
 	Delete(context.Context, string) error
+	ReplaceGraph(context.Context, string, []Trigger) error
+}
+
+func (s *FileStore) ReplaceGraph(ctx context.Context, graphID string, items []Trigger) error {
+	if s == nil {
+		return fmt.Errorf("trigger store is nil")
+	}
+	graphID = strings.TrimSpace(graphID)
+	if graphID == "" {
+		return fmt.Errorf("graph_id is required")
+	}
+	if err := storeContextError(ctx); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return err
+	}
+	existingGraphPaths := make(map[string][]byte)
+	otherIDs := make(map[string]struct{})
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		item, err := s.getLocked(id)
+		if err != nil {
+			return err
+		}
+		path := filepath.Join(s.dir, entry.Name())
+		if item.Target.GraphID == graphID {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			existingGraphPaths[path] = data
+		} else {
+			otherIDs[item.ID] = struct{}{}
+		}
+	}
+
+	nextPaths := make(map[string]Trigger, len(items))
+	for _, item := range items {
+		if item.Target.GraphID != graphID {
+			return fmt.Errorf("trigger %q targets graph %q instead of %q", item.ID, item.Target.GraphID, graphID)
+		}
+		id, err := storeID(item.ID)
+		if err != nil {
+			return err
+		}
+		if _, exists := otherIDs[id]; exists {
+			return ErrExists
+		}
+		path := filepath.Join(s.dir, id+".json")
+		if _, exists := nextPaths[path]; exists {
+			return ErrExists
+		}
+		nextPaths[path] = item
+	}
+
+	rollback := func() {
+		for path := range nextPaths {
+			_ = os.Remove(path)
+		}
+		for path, data := range existingGraphPaths {
+			_ = os.WriteFile(path, data, 0o600)
+		}
+	}
+	for path, item := range nextPaths {
+		if err := s.writeLocked(ctx, path, item); err != nil {
+			rollback()
+			return err
+		}
+	}
+	for path := range existingGraphPaths {
+		if _, keep := nextPaths[path]; keep {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			rollback()
+			return err
+		}
+	}
+	return nil
 }
 
 type InvocationStore interface {

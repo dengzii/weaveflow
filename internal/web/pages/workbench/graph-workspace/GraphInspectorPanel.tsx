@@ -28,6 +28,7 @@ interface GraphInspectorPanelProps {
   definitionText: string;
   edgeConfigText: string;
   initialRequirements: InitialStateRequirements | null;
+  directInitialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
   initialStateText: string;
   inspectorMode: InspectorMode;
@@ -70,6 +71,7 @@ export function GraphInspectorPanel({
   definitionText,
   edgeConfigText,
   initialRequirements,
+  directInitialRequirements,
   initialRequirementsError,
   initialStateText,
   inspectorMode,
@@ -114,6 +116,7 @@ export function GraphInspectorPanel({
           definition={definition}
           definitionText={definitionText}
           initialRequirements={initialRequirements}
+          directInitialRequirements={directInitialRequirements}
           initialRequirementsError={initialRequirementsError}
           initialStateText={initialStateText}
           runtimeSettings={runtimeSettings}

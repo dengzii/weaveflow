@@ -14,7 +14,7 @@ import {
   runListEventAction,
   runControlModeFromRun,
   runStatusFromEvent,
-  runTriggerTypesFromInvocations,
+  runTriggerTypesFromRuns,
   selectedRunIDAfterDeletion,
   upsertInspectedRun,
   upsertRunFromEvent,
@@ -103,13 +103,13 @@ describe("workbench run model", () => {
   });
 
   test("keeps newer live run state when a list refresh finishes later", () => {
-    const finished = {
+    const finished: RunRecord = {
       ...baseRun,
       status: "completed",
       updated_at: "2026-01-01T00:01:00Z",
       finished_at: "2026-01-01T00:01:00Z",
     };
-    const newRun = { ...baseRun, run_id: "run-2" };
+    const newRun: RunRecord = { ...baseRun, run_id: "run-2" };
 
     expect(mergeRefreshedRuns([finished], [baseRun, newRun])).toEqual([finished, newRun]);
     expect(mergeRefreshedRuns([finished], [newRun])).toEqual([newRun]);
@@ -276,30 +276,12 @@ describe("workbench run model", () => {
     ]);
   });
 
-  test("maps Trigger invocations to runs in the current graph", () => {
+  test("maps Run origins to trigger types in the current graph", () => {
     expect(
-      runTriggerTypesFromInvocations(
+      runTriggerTypesFromRuns(
         [
-          {
-            id: "record-1",
-            trigger_id: "trigger-1",
-            trigger_type: "chat",
-            target: { graph_id: "graph-1" },
-            status: "completed",
-            run: baseRun,
-            triggered_at: "2026-01-01T00:00:00Z",
-            updated_at: "2026-01-01T00:00:00Z",
-          },
-          {
-            id: "record-2",
-            trigger_id: "trigger-2",
-            trigger_type: "schedule",
-            target: { graph_id: "graph-2" },
-            status: "completed",
-            run: { ...baseRun, run_id: "run-2", graph_id: "graph-2" },
-            triggered_at: "2026-01-01T00:00:00Z",
-            updated_at: "2026-01-01T00:00:00Z",
-          },
+          { ...baseRun, origin: { type: "chat", trigger_id: "trigger-1" } },
+          { ...baseRun, run_id: "run-2", graph_id: "graph-2", origin: { type: "schedule" } },
         ],
         "graph-1"
       )
@@ -307,8 +289,8 @@ describe("workbench run model", () => {
   });
 
   test("marks only the resumed run as running", () => {
-    const paused = { ...baseRun, status: "paused", pause_requested: true };
-    const other = { ...baseRun, run_id: "run-2", status: "completed" };
+    const paused: RunRecord = { ...baseRun, status: "paused", pause_requested: true };
+    const other: RunRecord = { ...baseRun, run_id: "run-2", status: "completed" };
     expect(markRunResuming([paused, other], "run-1")).toEqual([
       { ...paused, status: "running", pause_requested: false },
       other,

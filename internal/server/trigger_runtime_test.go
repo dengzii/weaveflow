@@ -81,8 +81,7 @@ func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 	previous := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "previous"))
 
-	failed := serveHTTP(engine, "PUT", "/graph", `{
-		"graph_id":"graph-a",
+	failed := serveHTTP(engine, "POST", "/graphs/graph-a/sessions", `{
 		"graph_version":"v2",
 		"definition":{"version":"2.0","name":"invalid","nodes":[]},
 		"settings":{"environment":{},"models":[],"memory":{"enabled":false}}

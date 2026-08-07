@@ -170,6 +170,34 @@ func TestLLMTurnWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	}
 }
 
+func TestLLMTurnContinuesAfterConversationMaxIterations(t *testing.T) {
+	t.Parallel()
+
+	root := state.Scope("llm", "conversation")
+	access := state.NewEditingAccess(state.NewState())
+	view, _ := conversationcap.Bind(access, root)
+	_ = view.SetMessages([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")})
+	_ = view.SetMaxIterations(1)
+	_ = view.SetIterationCount(1)
+
+	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "answer"}}}}}
+	ctx := core.WithModel(context.Background(), model)
+	target := NewLLMTurnNode(WithID("llm"))
+	target.ConversationPath = root
+
+	result, err := Execute(ctx, access.State(), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(model.options) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(model.options))
+	}
+	restored, _ := conversationcap.Bind(state.NewAccess(result.State), root)
+	if restored.FinalAnswer() != "answer" || restored.IterationCount() != 2 {
+		t.Fatalf("final answer = %q, iteration count = %d", restored.FinalAnswer(), restored.IterationCount())
+	}
+}
+
 func TestLLMTurnDefaultPromptMaxChars(t *testing.T) {
 	t.Parallel()
 

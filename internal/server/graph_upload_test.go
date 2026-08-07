@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/dengzii/weaveflow/internal/trigger"
+	"github.com/dengzii/weaveflow/state"
 	"github.com/gin-gonic/gin"
 )
 
@@ -89,8 +91,12 @@ func TestGraphUploadStoresSettingsInTheSameSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(graphs) != 1 || graphs[0].SessionCount != 2 || graphs[0].Settings.Environment["MODE"] != "second" {
-		t.Fatalf("cached graphs = %#v, want latest settings from two sessions", graphs)
+	if len(graphs) != 1 || graphs[0].SessionCount != 2 {
+		t.Fatalf("cached graphs = %#v, want two sessions", graphs)
+	}
+	detail := decodeGraphDetailResponse(t, serveHTTP(engine, http.MethodGet, "/graphs/graph-a", ""), http.StatusOK)
+	if detail.Settings.Environment["MODE"] != "second" {
+		t.Fatalf("graph detail settings = %#v, want MODE=second", detail.Settings)
 	}
 	resolved, err := srv.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
 	if err != nil {
@@ -144,5 +150,79 @@ func TestGraphUploadRetainsFiveLatestSessions(t *testing.T) {
 	latest := uploads[len(uploads)-1]
 	if len(graphs) != 1 || graphs[0].SessionCount != retainedGraphSessionCount || graphs[0].LatestSession != latest.Graph.GraphSessionID {
 		t.Fatalf("cached graphs = %#v, want %d sessions ending at %q", graphs, retainedGraphSessionCount, latest.Graph.GraphSessionID)
+	}
+}
+
+func TestGraphUploadRetainsActiveHistoricalSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	baseDir := t.TempDir()
+	srv, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	first := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "content-1"))
+	started := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	var done <-chan struct{}
+	defer func() {
+		if !released {
+			close(release)
+		}
+		if done != nil {
+			<-done
+		}
+	}()
+	activeGraph := newRunControlTestGraph(t, started, release, true)
+	activeRunner := newDefaultRunner(activeGraph, Config{
+		GraphID:           first.Graph.ID,
+		GraphVersion:      first.Graph.Version,
+		GraphHash:         first.Graph.GraphHash,
+		GraphSnapshotHash: first.Graph.GraphSnapshotHash,
+		GraphSessionID:    first.Graph.GraphSessionID,
+	}, first.RunnerBaseDir)
+	srv.runtime.removeSession(first.Graph.ID, first.Graph.GraphSessionID)
+	srv.runtime.installSession(graphRuntimeSession{
+		graph:       activeGraph,
+		runner:      activeRunner,
+		baseContext: context.Background(),
+	})
+	_, done, err = activeRunner.StartAsync(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitForSignal(t, started, "historical run node start")
+
+	uploads := []graphLoadResponse{first}
+	for version := 2; version <= retainedGraphSessionCount+2; version++ {
+		time.Sleep(time.Millisecond)
+		uploads = append(uploads, putGraphForHashTest(t, engine, triggerGraphUploadBody(
+			"graph-a",
+			fmt.Sprintf("v%d", version),
+			fmt.Sprintf("content-%d", version),
+		)))
+	}
+	if _, err := os.Stat(first.RunnerBaseDir); err != nil {
+		t.Fatalf("active historical session was pruned: %v", err)
+	}
+	if _, err := os.Stat(uploads[1].RunnerBaseDir); !os.IsNotExist(err) {
+		t.Fatalf("old inactive session still exists: %v", err)
+	}
+
+	close(release)
+	released = true
+	waitForSignal(t, done, "historical run completion")
+	latest := uploads[len(uploads)-1]
+	if err := srv.pruneGraphSessions("graph-a", latest.Graph.GraphSessionID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first.RunnerBaseDir); !os.IsNotExist(err) {
+		t.Fatalf("inactive historical session was not pruned: %v", err)
+	}
+	if cached := srv.runtime.session("graph-a", first.Graph.GraphSessionID); cached.runner != nil {
+		t.Fatal("pruned historical session remained in runtime manager")
 	}
 }

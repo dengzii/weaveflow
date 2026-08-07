@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
@@ -101,7 +102,14 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), TriggerService: service})
+	srv, err := New(context.Background(), Config{
+		Graph:          wfgraph.NewGraph(),
+		BaseDir:        t.TempDir(),
+		GraphID:        "graph",
+		GraphVersion:   "v1",
+		GraphSessionID: "setup-session",
+		TriggerService: service,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,14 +134,14 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 	sessionID := startResponse.Data.SessionID
 
 	verification := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/chat-channels/setup-test/setup-sessions/"+sessionID+"/poll", nil)
+	request = httptest.NewRequest(http.MethodGet, "/chat-channels/setup-test/setup-sessions/"+sessionID, nil)
 	engine.ServeHTTP(verification, request)
 	if verification.Code != http.StatusOK || !strings.Contains(verification.Body.String(), string(chatchannel.SetupStatusVerificationRequired)) {
 		t.Fatalf("verification status = %d, body = %s", verification.Code, verification.Body.String())
 	}
 
 	confirmed := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/chat-channels/setup-test/setup-sessions/"+sessionID+"/poll", strings.NewReader(`{"verification_code":"123456"}`))
+	request = httptest.NewRequest(http.MethodPost, "/chat-channels/setup-test/setup-sessions/"+sessionID+"/verification", strings.NewReader(`{"verification_code":"123456"}`))
 	engine.ServeHTTP(confirmed, request)
 	if confirmed.Code != http.StatusOK || strings.Contains(confirmed.Body.String(), "setup-secret") {
 		t.Fatalf("confirmed status = %d, body = %s", confirmed.Code, confirmed.Body.String())
@@ -143,24 +151,24 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 	}
 
 	invalidCreate := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{
-		"id":"invalid trigger id","type":"chat","enabled":false,"target":{"graph_id":"graph"},
+	request = httptest.NewRequest(http.MethodPut, "/graphs/graph/triggers", strings.NewReader(`{"triggers":[{
+		"id":"invalid trigger id","type":"chat","enabled":false,
 		"chat":{"channel":"setup-test","channel_config":{},"stream_updates":true},
 		"chat_setup_session_id":"`+sessionID+`"
-	}`))
+	}]}`))
 	engine.ServeHTTP(invalidCreate, request)
 	if invalidCreate.Code != http.StatusBadRequest || strings.Contains(invalidCreate.Body.String(), "setup-secret") {
 		t.Fatalf("invalid create status = %d, body = %s", invalidCreate.Code, invalidCreate.Body.String())
 	}
 
 	create := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{
-		"id":"setup-chat","type":"chat","enabled":false,"target":{"graph_id":"graph"},
+	request = httptest.NewRequest(http.MethodPut, "/graphs/graph/triggers", strings.NewReader(`{"triggers":[{
+		"id":"setup-chat","type":"chat","enabled":false,
 		"chat":{"channel":"setup-test","channel_config":{},"stream_updates":true},
 		"chat_setup_session_id":"`+sessionID+`"
-	}`))
+	}]}`))
 	engine.ServeHTTP(create, request)
-	if create.Code != http.StatusCreated || strings.Contains(create.Body.String(), "setup-secret") || strings.Contains(create.Body.String(), "chat_setup_session_id") {
+	if create.Code != http.StatusOK || strings.Contains(create.Body.String(), "setup-secret") || strings.Contains(create.Body.String(), "chat_setup_session_id") {
 		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
 	}
 	persisted, err := service.Get(context.Background(), "setup-chat")
@@ -172,11 +180,11 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 	}
 
 	reuse := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{
-		"id":"setup-chat-reuse","type":"chat","enabled":false,"target":{"graph_id":"graph"},
+	request = httptest.NewRequest(http.MethodPut, "/graphs/graph/triggers", strings.NewReader(`{"triggers":[{
+		"id":"setup-chat-reuse","type":"chat","enabled":false,
 		"chat":{"channel":"setup-test","channel_config":{},"stream_updates":true},
 		"chat_setup_session_id":"`+sessionID+`"
-	}`))
+	}]}`))
 	engine.ServeHTTP(reuse, request)
 	if reuse.Code != http.StatusNotFound {
 		t.Fatalf("reuse status = %d, body = %s", reuse.Code, reuse.Body.String())
@@ -200,18 +208,18 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 	}
 
 	duplicateConfirmed := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/chat-channels/setup-test/setup-sessions/"+duplicateSessionID+"/poll", strings.NewReader(`{"verification_code":"123456"}`))
+	request = httptest.NewRequest(http.MethodPost, "/chat-channels/setup-test/setup-sessions/"+duplicateSessionID+"/verification", strings.NewReader(`{"verification_code":"123456"}`))
 	engine.ServeHTTP(duplicateConfirmed, request)
 	if duplicateConfirmed.Code != http.StatusOK || !strings.Contains(duplicateConfirmed.Body.String(), `"status":"confirmed"`) || strings.Contains(duplicateConfirmed.Body.String(), "setup-secret") {
 		t.Fatalf("duplicate confirmed status = %d, body = %s", duplicateConfirmed.Code, duplicateConfirmed.Body.String())
 	}
 
 	duplicateCreate := httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPost, "/triggers", strings.NewReader(`{
-		"id":"setup-chat-duplicate","type":"chat","enabled":false,"target":{"graph_id":"graph"},
+	request = httptest.NewRequest(http.MethodPut, "/graphs/graph/triggers", strings.NewReader(`{"triggers":[{
+		"id":"setup-chat-duplicate","type":"chat","enabled":false,
 		"chat":{"channel":"setup-test","channel_config":{},"stream_updates":true},
 		"chat_setup_session_id":"`+duplicateSessionID+`"
-	}`))
+	}]}`))
 	engine.ServeHTTP(duplicateCreate, request)
 	if duplicateCreate.Code != http.StatusConflict || strings.Contains(duplicateCreate.Body.String(), "setup-secret") || strings.Contains(duplicateCreate.Body.String(), duplicateSessionID) {
 		t.Fatalf("duplicate create status = %d, body = %s", duplicateCreate.Code, duplicateCreate.Body.String())

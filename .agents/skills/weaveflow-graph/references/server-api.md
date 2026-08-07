@@ -1,13 +1,13 @@
 # Server API Reference
 
-Use this reference for the current debug server API workflow. Treat `internal/server/routes.go` and the live server as
-authoritative if the checkout has changed.
+Use this reference for the current Graph-scoped debug server API. Treat `internal/server/routes.go` and the live server
+as authoritative if the checkout has changed.
 
 ## Base URL And Response Shape
 
 The server normally listens at `http://127.0.0.1:8080`. Append the configured route prefix, if any, exactly once.
 
-All ordinary JSON endpoints return:
+Ordinary JSON responses use this envelope:
 
 ```json
 {
@@ -15,9 +15,8 @@ All ordinary JSON endpoints return:
 }
 ```
 
-Failures add `error.code` and `error.message`. A failed start or resume may still include a partial run result in`data`;
-inspect it before retrying. Exceptions to the JSON envelope are `204 No Content`, Mermaid text, SSE, and raw or
-downloaded artifacts.
+Failures include `error.code` and `error.message`; a failed resume can also include partial `data`. Exceptions are `204
+No Content`, SSE, and raw or downloaded artifacts.
 
 PowerShell discovery:
 
@@ -25,34 +24,35 @@ PowerShell discovery:
 $weaveflowBaseURL = "http://127.0.0.1:8080"
 $registry = Invoke-RestMethod "$weaveflowBaseURL/registry"
 $tools = Invoke-RestMethod "$weaveflowBaseURL/runtime/tools"
-$settings = Invoke-RestMethod "$weaveflowBaseURL/runtime/settings"
+$graphPage = Invoke-RestMethod "$weaveflowBaseURL/graphs?limit=200"
 ```
 
 Use a task-specific variable such as `$weaveflowBaseURL`; do not repurpose system variables. Do not start the server
-just because the probe fails.
+just because a probe fails.
 
-## Discovery And Graph Endpoints
+## Discovery And Graph Resources
 
-| Method | Path                                | Purpose                                                                                      |
-|--------|-------------------------------------|----------------------------------------------------------------------------------------------|
-| `GET`  | `/registry`                         | Return state modules, capabilities, node types, conditions, graph schema, and chat channels. |
-| `GET`  | `/runtime/tools`                    | Return tool IDs and function schemas available to agent nodes.                               |
-| `GET`  | `/runtime/settings`                 | Return sanitized settings for the current graph session, or server defaults when empty.      |
-| `POST` | `/graph/initial-state-requirements` | Build a candidate and return required initial state without installing it.                   |
-| `PUT`  | `/graph`                            | Install one complete definition-and-settings session for runs and triggers.                  |
-| `GET`  | `/graph`                            | Return current graph identity and hashes.                                                    |
-| `GET`  | `/graph/definition`                 | Return the normalized current definition.                                                    |
-| `GET`  | `/graph/nodes`                      | Return current resolved node specs.                                                          |
-| `GET`  | `/graph/initial-state-requirements` | Return requirements for the current graph.                                                   |
-| `GET`  | `/graph/mermaid`                    | Return current graph as plain Mermaid text.                                                  |
-| `GET`  | `/graphs`                           | Return each logical graph's latest complete definition-and-settings session.                 |
+| Method | Path                                                           | Purpose |
+|--------|----------------------------------------------------------------|---------|
+| `GET`  | `/registry`                                                    | Return state modules, capabilities, node types, conditions, Graph schema, and Chat Channels. |
+| `GET`  | `/runtime/tools`                                               | Return tool IDs and function schemas available to agent nodes. |
+| `GET`  | `/graphs?limit=&cursor=`                                       | Return lightweight logical Graph summaries as `{items,next_cursor}`. |
+| `GET`  | `/graphs/:graph_id`                                            | Return the latest complete Session detail, including definition and sanitized settings. |
+| `POST` | `/graphs/:graph_id/analysis/initial-state-requirements`        | Build a candidate and return required initial state without installing it. |
+| `POST` | `/graphs/:graph_id/sessions`                                   | Create or reuse one complete immutable execution Session. |
 
-Candidate analysis and graph upload accept the same strict envelope, with an 8 MiB limit. `settings` is required by
-`PUT /graph`; include it during candidate analysis as well so the validated request matches the intended upload:
+Graph IDs are portable path IDs containing letters, digits, `.`, `_`, or `-`. The path is the only source of Graph
+identity; do not repeat `graph_id` in the request body.
+
+Graph lists are deliberately lightweight. Fetch detail lazily for the Graph being inspected or edited. List pages use
+an opaque `next_cursor`; continue until it is empty when a complete inventory is required. `limit` defaults to 50 and
+cannot exceed 200.
+
+Candidate analysis and Session creation accept the same strict envelope, with an 8 MiB limit. `settings` is required
+for Session creation. Include it during analysis too so the validated candidate matches the intended Session:
 
 ```json
 {
-  "graph_id": "support-agent",
   "graph_version": "v1",
   "definition": {
     "version": "2.0",
@@ -70,10 +70,11 @@ Candidate analysis and graph upload accept the same strict envelope, with an 8 M
 }
 ```
 
-Unknown fields, extra JSON values, a missing definition, and invalid Graph v2 content are rejected. Build one envelope
-and send it first to candidate analysis, then to graph upload.
+Unknown fields, extra JSON values, a missing definition, and invalid Graph v2 content are rejected. Example:
 
 ```powershell
+$graphID = "support-agent"
+$escapedGraphID = [Uri]::EscapeDataString($graphID)
 $definition = Get-Content -Raw ".local/support-agent.json" | ConvertFrom-Json
 $settings = @{
   environment = @{}
@@ -89,89 +90,64 @@ $settings = @{
   )
   memory = @{ enabled = $false; directory = "" }
 }
-$envelopeObject = @{
-  graph_id = "support-agent"
+$sessionRequestObject = @{
   graph_version = "v1"
   definition = $definition
   settings = $settings
 }
-$envelope = $envelopeObject | ConvertTo-Json -Depth 100
+$sessionRequest = $sessionRequestObject | ConvertTo-Json -Depth 100
 
-Invoke-RestMethod "$weaveflowBaseURL/graph/initial-state-requirements" `
-  -Method Post -ContentType "application/json" -Body $envelope
+$requirements = Invoke-RestMethod `
+  "$weaveflowBaseURL/graphs/$escapedGraphID/analysis/initial-state-requirements" `
+  -Method Post -ContentType "application/json" -Body $sessionRequest
 
-$loaded = Invoke-RestMethod "$weaveflowBaseURL/graph" `
-  -Method Put -ContentType "application/json" -Body $envelope
+$loaded = Invoke-RestMethod "$weaveflowBaseURL/graphs/$escapedGraphID/sessions" `
+  -Method Post -ContentType "application/json" -Body $sessionRequest
 ```
 
-Check `data.graph.graph_hash`, `graph_snapshot_hash`, `graph_session_id`, `data.settings`, and `data.warnings`. A successful
-upload changes the current runner and immediately becomes the latest complete session resolved by triggers for that
-`graph_id`.
+Read `data.graph.graph_hash`, `graph_snapshot_hash`, `graph_session_id`, `data.settings`, and `data.warnings`. Creating a
+Session installs that exact runtime and immediately makes it the latest Session resolved by Triggers for the Graph. An
+identical definition, version, and settings can reuse the current Session rather than create a duplicate.
 
 ## Runtime Settings
 
-Settings belong to the immutable graph session and affect runs and triggers created from that session, not runs already
-in progress. They can only be changed by uploading a graph. The required `settings` object is strict and accepts only
-`environment`, `models`, and `memory`.
+Settings belong to an immutable Graph Session and affect runs and Triggers created from that Session, not runs already
+in progress. There is no global settings resource and no independent settings update endpoint. Read sanitized settings
+from `GET /graphs/:graph_id`.
 
-- Omit a field inside `settings` to inherit it from the current or latest complete session for the same `graph_id`, or
-  from server defaults when the graph has no session.
+The required `settings` object accepts only `environment`, `models`, and `memory`:
+
+- Omit a field inside `settings` to inherit it from the latest complete Session for the same Graph, or from Server
+  defaults when the Graph has no Session.
 - Send `environment: {}` to clear environment values managed by settings.
 - Sending `models` replaces the model list. Reconstruct every model that must remain.
-- Use model IDs in graph node `config.model_id`. The default ID is `default`.
+- Use model IDs in node `config.model_id`. The default ID is `default`.
 - Only provider `openai` is supported.
-- Enabling a model requires an API key from the request, the latest session for the same graph, or process environment.
-- GET responses never expose API keys; `api_key_configured` only reports presence.
-- Do not send response-only fields such as `environment_presets` or `api_key_configured` in an upload.
+- Enabling a model requires an API key from the request, latest same-Graph Session, settings environment, or process
+  environment.
+- GET and Session responses never expose API keys; `api_key_configured` only reports presence.
+- Do not send response-only fields such as `environment_presets` or `api_key_configured`.
 
-Example model update:
+Do not echo `$settings`, `$sessionRequestObject`, or `$sessionRequest` when any contains a key. The definition and
+settings are persisted before the Session completion manifest, so readers and Triggers ignore incomplete Sessions.
 
-```powershell
-$settings = @{
-  environment = @{}
-  models = @(
-    @{
-      id = "default"
-      enabled = $true
-      provider = "openai"
-      model = $env:OPENAI_MODEL
-      base_url = $env:OPENAI_BASE_URL
-      api_key = $env:OPENAI_API_KEY
-    }
-  )
-  memory = @{ enabled = $false; directory = "" }
-}
+## Run And Inspection Resources
 
-$envelopeObject.settings = $settings
-$loaded = Invoke-RestMethod "$weaveflowBaseURL/graph" `
-  -Method Put -ContentType "application/json" -Body ($envelopeObject | ConvertTo-Json -Depth 100)
-```
+| Method   | Path                                                                  | Purpose |
+|----------|-----------------------------------------------------------------------|---------|
+| `POST`   | `/graphs/:graph_id/sessions/:session_id/runs`                         | Start that exact Session asynchronously; return `202` with a `RunRecord`. |
+| `GET`    | `/graphs/:graph_id/runs?status=&limit=&cursor=`                       | List Graph runs as `{items,next_cursor}`. |
+| `GET`    | `/graphs/:graph_id/runs/:run_id/inspection`                           | Return Run, steps, checkpoints, one event page, and optional interrupt together. |
+| `POST`   | `/graphs/:graph_id/runs/:run_id/pause`                                | Request a safe-point pause and wait for the paused status. |
+| `POST`   | `/graphs/:graph_id/runs/:run_id/resume`                               | Resume from the Run's latest checkpoint. |
+| `POST`   | `/graphs/:graph_id/runs/:run_id/cancel`                               | Cancel an active or paused Run. |
+| `DELETE` | `/graphs/:graph_id/runs/:run_id`                                      | Delete the Run and its debug data; return `204`. |
+| `GET`    | `/graphs/:graph_id/runs/:run_id/events?limit=&cursor=`                | Read persisted events newest first as `{items,next_cursor}`. |
+| `GET`    | `/graphs/:graph_id/runs/:run_id/checkpoints/:checkpoint_id`           | Read one checkpoint after verifying it belongs to the Run. |
+| `GET`    | `/graphs/:graph_id/runs/:run_id/artifacts`                            | List artifact references. |
+| `GET`    | `/graphs/:graph_id/runs/:run_id/artifacts/:artifact_id`               | Read JSON detail; use `format=raw` or `format=download` for bytes. |
 
-Do not echo `$settings`, `$envelopeObject`, or `$envelope` when any contains a key. The definition, including node
-config, and settings are persisted together; `definition.json` and `runtime-settings.json` are written before the
-session manifest, so readers ignore incomplete sessions.
-
-## Run And Inspection Endpoints
-
-| Method   | Path                                   | Purpose                                                                      |
-|----------|----------------------------------------|------------------------------------------------------------------------------|
-| `POST`   | `/runs`                                | Synchronously run the current uploaded graph session.                        |
-| `GET`    | `/runs`                                | List current runs; add `graph_id` for persisted sessions of a logical graph. |
-| `GET`    | `/runs/:run_id`                        | Read a run record.                                                           |
-| `POST`   | `/runs/:run_id/pause`                  | Request a safe-point pause on the current runner and wait for it.            |
-| `POST`   | `/runs/:run_id/resume`                 | Resume the current runner's run from its last checkpoint.                    |
-| `POST`   | `/runs/:run_id/cancel`                 | Cancel a run; historical paused runs can use `graph_id`.                     |
-| `DELETE` | `/runs/:run_id`                        | Delete a run and associated debug data.                                      |
-| `GET`    | `/runs/:run_id/interrupt`              | Return pause, breakpoint, and resume context.                                |
-| `GET`    | `/runs/:run_id/steps`                  | Return node attempts and errors.                                             |
-| `GET`    | `/runs/:run_id/checkpoints`            | List checkpoint metadata.                                                    |
-| `GET`    | `/checkpoints/:checkpoint_id`          | Return checkpoint business and runtime state.                                |
-| `POST`   | `/checkpoints/:checkpoint_id/resume`   | Resume the current runner from a selected checkpoint.                        |
-| `GET`    | `/runs/:run_id/events`                 | Return persisted non-streaming runtime events.                               |
-| `GET`    | `/runs/:run_id/artifacts`              | List artifacts.                                                              |
-| `GET`    | `/runs/:run_id/artifacts/:artifact_id` | Read JSON detail; use `format=raw` or `format=download` for bytes.           |
-
-Start and resume bodies are also strict and limited to 8 MiB:
+Start and resume bodies are strict and limited to 8 MiB:
 
 ```json
 {
@@ -197,27 +173,75 @@ Start and resume bodies are also strict and limited to 8 MiB:
 }
 ```
 
-`POST /runs` blocks until completed, paused, failed, or canceled. Its successful `data` contains `run`, optional final
-`state`, and optional `interrupt`.
+Start returns before execution finishes:
 
-For historical reads, append `?graph_id=<run.graph_id>` to the run, step, checkpoint, event, interrupt, and artifact
-paths. This prevents a current graph switch from making an existing run appear missing.
+```powershell
+$sessionID = $loaded.data.graph.graph_session_id
+$runRequest = @{ initial_state = @{ shared = @{ request = @{ input = "Investigate the failure" } } } } |
+  ConvertTo-Json -Depth 100
+$started = Invoke-RestMethod `
+  "$weaveflowBaseURL/graphs/$escapedGraphID/sessions/$sessionID/runs" `
+  -Method Post -ContentType "application/json" -Body $runRequest
+$runID = $started.data.run_id
+$inspection = Invoke-RestMethod `
+  "$weaveflowBaseURL/graphs/$escapedGraphID/runs/$runID/inspection?event_limit=500"
+```
+
+`RunRecord.graph_id` and `graph_session_id` identify the immutable execution source. Trigger-started runs carry
+`origin.type` and `origin.trigger_id`; an absent origin means a direct start. This links Trigger-originated runs without
+a second invocation-list request.
+
+Run list pages are newest-first. The default page size is 100 and the maximum is 500. `status` accepts repeated or
+comma-separated values. Inspection uses `event_limit` (default 500, maximum 2000) and `event_cursor`. Persisted event
+pages are newest-first and use their own opaque cursor; they are independent of SSE event-ID cursors.
+
+Pause and cancel wait for a safe-point transition. Resume returns a Run result with optional final state and interrupt,
+and can block until the resumed execution completes, pauses, fails, or is canceled.
 
 ## Runtime Event Stream
 
-Subscribe with `GET /runtime/events/stream`. Filter with `run_id`, `node_id`, or repeated/comma-separated `type` values:
+Subscribe to the Graph-scoped stream:
 
 ```text
-/runtime/events/stream?run_id=<id>&type=run.failed,nodes.failed,contract.violation
+GET /graphs/:graph_id/events/stream
 ```
 
-The stream sends an immediate heartbeat and then heartbeats every 15 seconds. It is best-effort, has no replay, and can
-drop events for slow consumers. `llm.content_chunk` and `llm.reasoning_chunk` are live-only and are not persisted.
-Subscribe before the run when chunks matter, close the stream afterward, and use `/runs/:run_id/events` for durable
-history.
+Optional filters are `session_id`, `run_id`, `node_id`, and repeated or comma-separated `type`. Reconnect by supplying
+the last SSE event ID either as `Last-Event-ID` or `cursor`; when both are present they must match.
 
-## Trigger Visibility
+```text
+/graphs/support-agent/events/stream?session_id=<id>&run_id=<id>&type=run.failed,nodes.failed
+```
 
-There is no separate publication endpoint or second graph copy. Every successful `PUT /graph` creates one complete
-session used by direct runs and immediately eligible for triggers. A trigger resolves the latest complete session for
-its `graph_id`; a failed or incomplete upload does not replace that result. Uploading does not execute a run.
+The stream sends an immediate heartbeat and then heartbeats every 15 seconds. Its replay history is bounded and held
+only in the current process. A slow subscriber whose channel overflows is disconnected instead of silently dropping a
+subset of events. `llm.content_chunk` and `llm.reasoning_chunk` remain live-only and are not persisted. Reconcile live
+observation with Run inspection and persisted event pages.
+
+## Trigger Resources
+
+| Method | Path                                                          | Purpose |
+|--------|---------------------------------------------------------------|---------|
+| `GET`  | `/graphs/:graph_id/triggers`                                  | List sanitized Trigger definitions for one Graph. |
+| `PUT`  | `/graphs/:graph_id/triggers`                                  | Atomically replace the complete Trigger set for one Graph. |
+| `POST` | `/graphs/:graph_id/triggers/:trigger_id/invocations`          | Invoke Webhook or Schedule semantics; return `202` with `data.run`. |
+| `POST` | `/graphs/:graph_id/triggers/:trigger_id/webhook`              | Invoke a Webhook Trigger; return `202` with `data.run`. |
+| `POST` | `/graphs/:graph_id/triggers/:trigger_id/chat`                 | Invoke a Chat Trigger. |
+
+`PUT` accepts `{"triggers":[...]}` and is all-or-nothing. Send the complete intended Graph set, including unchanged
+Triggers. An empty array removes all Triggers for that Graph. Responses redact Webhook keys and Chat credentials.
+
+Webhook authentication uses `Authorization: Bearer <secret>`. Do not put secrets in query strings. Trigger execution
+resolves the latest complete Session for the path Graph ID; failed or incomplete Session creation never replaces it.
+
+## Chat Channel Setup
+
+| Method   | Path                                                                         | Purpose |
+|----------|------------------------------------------------------------------------------|---------|
+| `POST`   | `/chat-channels/:channel_id/setup-sessions`                                  | Start setup, optionally with `{"trigger_id":"..."}`. |
+| `GET`    | `/chat-channels/:channel_id/setup-sessions/:session_id`                      | Read setup status without submitting input. |
+| `POST`   | `/chat-channels/:channel_id/setup-sessions/:session_id/verification`         | Submit `{"verification_code":"..."}`. |
+| `DELETE` | `/chat-channels/:channel_id/setup-sessions/:session_id`                      | Cancel setup; return `204`. |
+
+When atomically replacing Triggers, pass a ready setup result as `chat_setup_session_id` on its Chat Trigger. The Server
+claims the credentials and commits them only if the complete Trigger replacement succeeds.

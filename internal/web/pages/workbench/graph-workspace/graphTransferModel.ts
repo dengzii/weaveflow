@@ -308,6 +308,7 @@ function exportableTriggers(triggers: Trigger[]): GraphExportTrigger[] {
       concurrency: trigger.concurrency,
       initial_state: cloneJSONValue(trigger.initial_state),
       webhook: trigger.webhook ? {
+        state_bindings: cloneJSONValue(trigger.webhook.state_bindings),
         state_mappings: cloneJSONValue(trigger.webhook.state_mappings),
       } : undefined,
       schedule: cloneJSONValue(trigger.schedule),

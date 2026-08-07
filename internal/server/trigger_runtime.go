@@ -41,14 +41,22 @@ func (s *Server) resolveTriggerRunner(_ context.Context, target trigger.Target) 
 	if err != nil {
 		return nil, err
 	}
-	return &triggerRunStarter{baseContext: session.baseContext, runner: session.runner}, nil
+	return &triggerRunStarter{baseContext: session.baseContext, graph: session.graph, runner: session.runner}, nil
 }
 
 // triggerRunStarter keeps graph execution and runtime settings on the same
 // immutable uploaded session.
 type triggerRunStarter struct {
 	baseContext context.Context
+	graph       *wfgraph.Graph
 	runner      trigger.RunStarter
+}
+
+func (s *triggerRunStarter) ValidateInitialState(initial *state.State) error {
+	if s == nil || s.graph == nil {
+		return fmt.Errorf("trigger graph is not configured")
+	}
+	return s.graph.ValidateInitialState(initial)
 }
 
 func (s *triggerRunStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
@@ -116,9 +124,28 @@ func (s *Server) loadTriggerSession(graphID string) (graphRuntimeSession, error)
 		}
 		return graphRuntimeSession{}, err
 	}
+	return s.loadStoredGraphSession(session, true)
+}
 
-	cached := s.runtime.triggerSession(graphID)
-	if cached.runner != nil && strings.TrimSpace(cached.runner.GraphSessionID) == session.manifest.GraphSessionID {
+func (s *Server) loadGraphSession(graphID string, sessionID string) (graphRuntimeSession, error) {
+	graphID = strings.TrimSpace(graphID)
+	sessionID = strings.TrimSpace(sessionID)
+	if cached := s.runtime.session(graphID, sessionID); cached.runner != nil {
+		return cached, nil
+	}
+	session, err := s.storedGraphSession(graphID, sessionID)
+	if err != nil {
+		return graphRuntimeSession{}, err
+	}
+	return s.loadStoredGraphSession(session, false)
+}
+
+func (s *Server) loadStoredGraphSession(session triggerGraphSession, latest bool) (graphRuntimeSession, error) {
+	graphID := session.manifest.GraphID
+	if cached := s.runtime.session(graphID, session.manifest.GraphSessionID); cached.runner != nil {
+		if latest {
+			return s.runtime.cacheTriggerSession(graphID, cached), nil
+		}
 		return cached, nil
 	}
 
@@ -171,12 +198,16 @@ func (s *Server) loadTriggerSession(graphID string) (graphRuntimeSession, error)
 	runner := newDefaultRunner(graph, cfg, session.baseDir)
 	attachEventHub(runner, s.events)
 
-	return s.runtime.cacheTriggerSession(graphID, graphRuntimeSession{
+	loaded := graphRuntimeSession{
 		graph:       graph,
 		runner:      runner,
 		baseContext: baseContext,
 		settings:    settings,
-	}), nil
+	}
+	if latest {
+		return s.runtime.cacheTriggerSession(graphID, loaded), nil
+	}
+	return s.runtime.cacheSession(loaded), nil
 }
 
 func (s *Server) latestGraphSession(graphID string) (triggerGraphSession, error) {
@@ -211,4 +242,26 @@ func (s *Server) latestGraphSession(graphID string) (triggerGraphSession, error)
 		}, nil
 	}
 	return triggerGraphSession{}, os.ErrNotExist
+}
+
+func (s *Server) storedGraphSession(graphID string, sessionID string) (triggerGraphSession, error) {
+	graphID = strings.TrimSpace(graphID)
+	sessionID = strings.TrimSpace(sessionID)
+	if graphID == "" || sessionID == "" {
+		return triggerGraphSession{}, os.ErrNotExist
+	}
+	graphDir := graphStorageDirectory(s.baseDir, graphID)
+	manifest, complete, err := readCachedGraphSession(graphDir, sessionID)
+	if err != nil {
+		return triggerGraphSession{}, err
+	}
+	if !complete || manifest.GraphID != graphID {
+		return triggerGraphSession{}, os.ErrNotExist
+	}
+	baseDir := filepath.Join(graphDir, sessionID)
+	return triggerGraphSession{
+		baseDir:        baseDir,
+		definitionPath: filepath.Join(baseDir, manifest.DefinitionPath),
+		manifest:       manifest,
+	}, nil
 }

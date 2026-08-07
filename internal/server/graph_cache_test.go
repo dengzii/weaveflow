@@ -84,7 +84,7 @@ func TestReadCachedGraphSessionRequiresCurrentManifestFields(t *testing.T) {
 	}
 }
 
-func TestListCachedGraphsPreservesOriginalGraphID(t *testing.T) {
+func TestListCachedGraphsPreservesPortableGraphID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
 	if err != nil {
@@ -92,13 +92,13 @@ func TestListCachedGraphsPreservesOriginalGraphID(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph with spaces", "v1", "hello"))
+	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph.with.dots", "v1", "hello"))
 
 	graphs, err := srv.listCachedGraphs()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(graphs) != 1 || graphs[0].ID != "graph with spaces" {
+	if len(graphs) != 1 || graphs[0].ID != "graph.with.dots" {
 		t.Fatalf("listCachedGraphs() = %#v, want original graph id", graphs)
 	}
 }
@@ -123,8 +123,8 @@ func TestListCachedGraphsIgnoresIncompleteSessions(t *testing.T) {
 	if len(graphs) != 1 || graphs[0].SessionCount != 1 || graphs[0].LatestSession != uploaded.Graph.GraphSessionID {
 		t.Fatalf("listCachedGraphs() = %#v, want only completed session %q", graphs, uploaded.Graph.GraphSessionID)
 	}
-	if graphs[0].GraphVersion != "v1" || graphs[0].Definition.Name != "graph-a" || graphs[0].UpdatedAt.IsZero() {
-		t.Fatalf("latest graph details = %#v, want uploaded graph definition", graphs[0])
+	if graphs[0].GraphVersion != "v1" || graphs[0].Name != "graph-a" || graphs[0].NodeCount != 1 || graphs[0].UpdatedAt.IsZero() {
+		t.Fatalf("latest graph summary = %#v, want uploaded graph metadata", graphs[0])
 	}
 }
 
@@ -156,15 +156,19 @@ func TestListCachedGraphsLoadsLatestDefinition(t *testing.T) {
 	if graph.SessionCount != 2 || graph.LatestSession != latest.Graph.GraphSessionID {
 		t.Fatalf("graph sessions = %#v, want latest session %q", graph, latest.Graph.GraphSessionID)
 	}
-	if graph.GraphVersion != "v2" || graph.Settings.Environment["MODE"] != "latest" {
-		t.Fatalf("graph metadata = %#v, want latest v2 settings", graph)
+	if graph.GraphVersion != "v2" || graph.Name != "graph-a" || graph.NodeCount != 1 {
+		t.Fatalf("graph summary = %#v, want latest v2 metadata", graph)
 	}
-	if len(graph.Definition.Nodes) != 1 || graph.Definition.Nodes[0].Config["content"] != "latest" {
-		t.Fatalf("graph definition = %#v, want latest content", graph.Definition)
+	detail := decodeGraphDetailResponse(t, serveHTTP(engine, http.MethodGet, "/graphs/graph-a", ""), http.StatusOK)
+	if detail.Settings.Environment["MODE"] != "latest" {
+		t.Fatalf("graph detail settings = %#v, want MODE=latest", detail.Settings)
+	}
+	if len(detail.Definition.Nodes) != 1 || detail.Definition.Nodes[0].Config["content"] != "latest" {
+		t.Fatalf("graph detail definition = %#v, want latest content", detail.Definition)
 	}
 }
 
-func TestGraphStorageSeparatesSanitizedIDCollisions(t *testing.T) {
+func TestGraphRoutesRejectNonPortableGraphIDs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
 	if err != nil {
@@ -172,31 +176,18 @@ func TestGraphStorageSeparatesSanitizedIDCollisions(t *testing.T) {
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
-	first := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph/a", "v1", "first"))
-	second := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph?a", "v1", "second"))
-	if filepath.Dir(first.RunnerBaseDir) == filepath.Dir(second.RunnerBaseDir) {
-		t.Fatalf("colliding graph IDs share storage directory %q", filepath.Dir(first.RunnerBaseDir))
-	}
-
-	graphs, err := srv.listCachedGraphs()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(graphs) != 2 || graphs[0].ID != "graph/a" || graphs[1].ID != "graph?a" {
-		t.Fatalf("listCachedGraphs() = %#v, want two isolated graph IDs", graphs)
-	}
-	for _, graph := range graphs {
-		if graph.SessionCount != 1 {
-			t.Fatalf("graph summary = %#v, want one session", graph)
+	for _, test := range []struct {
+		graphID string
+		pathID  string
+	}{
+		{graphID: "graph with spaces", pathID: "graph%20with%20spaces"},
+		{graphID: "graph?id", pathID: "graph%3Fid"},
+	} {
+		_, body := graphSessionRequestBodyForTest(t, triggerGraphUploadBody(test.graphID, "v1", "content"))
+		response := serveHTTP(engine, http.MethodPost, "/graphs/"+test.pathID+"/sessions", body)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("POST graph %q status = %d, want 400; body = %s", test.graphID, response.Code, response.Body.String())
 		}
-	}
-
-	resolved, err := srv.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph/a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID != first.Graph.GraphSessionID {
-		t.Fatalf("resolved first graph session = %q, want %q", runner.GraphSessionID, first.Graph.GraphSessionID)
 	}
 }
 
@@ -244,8 +235,14 @@ func TestGraphCacheSurfacesCorruptRunRecords(t *testing.T) {
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
-	started := decodeRunResultResponse(t, serveHTTP(engine, http.MethodPost, "/runs", `{}`), http.StatusOK)
-	runPath := filepath.Join(uploaded.RunnerBaseDir, "execution", "runs", started.Run.RunID+".json")
+	started := decodeRunRecordResponse(t, serveHTTP(
+		engine,
+		http.MethodPost,
+		"/graphs/graph-a/sessions/"+uploaded.Graph.GraphSessionID+"/runs",
+		`{}`,
+	), http.StatusAccepted)
+	waitForRunTerminalStatus(t, srv.runtime.session("graph-a", uploaded.Graph.GraphSessionID).runner, started.RunID)
+	runPath := filepath.Join(uploaded.RunnerBaseDir, "execution", "runs", started.RunID+".json")
 	if err := os.WriteFile(runPath, []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -257,8 +254,8 @@ func TestGraphCacheSurfacesCorruptRunRecords(t *testing.T) {
 	cacheEngine := gin.New()
 	cacheOnly.RegisterRoutes(cacheEngine.Group(""))
 	for _, path := range []string{
-		"/runs/" + started.Run.RunID + "?graph_id=graph-a",
-		"/runs?graph_id=graph-a",
+		"/graphs/graph-a/runs/" + started.RunID + "/inspection",
+		"/graphs/graph-a/runs",
 	} {
 		response := serveHTTP(cacheEngine, http.MethodGet, path, "")
 		if response.Code != http.StatusInternalServerError {
@@ -277,7 +274,7 @@ func TestGraphUploadDistinguishesInvalidDefinitionFromStorageFailure(t *testing.
 		}
 		engine := gin.New()
 		srv.RegisterRoutes(engine.Group(""))
-		response := serveHTTP(engine, http.MethodPut, "/graph", `{
+		response := serveHTTP(engine, http.MethodPost, "/graphs/graph-a/sessions", `{
 			"definition": {
 				"version": "2.0",
 				"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -303,7 +300,8 @@ func TestGraphUploadDistinguishesInvalidDefinitionFromStorageFailure(t *testing.
 		}
 		engine := gin.New()
 		srv.RegisterRoutes(engine.Group(""))
-		response := serveHTTP(engine, http.MethodPut, "/graph", triggerGraphUploadBody("graph-a", "v1", "hello"))
+		_, body := graphSessionRequestBodyForTest(t, triggerGraphUploadBody("graph-a", "v1", "hello"))
+		response := serveHTTP(engine, http.MethodPost, "/graphs/graph-a/sessions", body)
 		if response.Code != http.StatusInternalServerError {
 			t.Fatalf("storage failure status = %d, body = %s", response.Code, response.Body.String())
 		}

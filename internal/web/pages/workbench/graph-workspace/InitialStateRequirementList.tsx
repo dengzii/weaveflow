@@ -9,20 +9,22 @@ export function InitialStateRequirementList({
   showRequired?: boolean;
 }) {
   const required = showRequired ? (requirements?.required ?? []) : [];
-  const provided = requirements?.provided_by_upstream ?? [];
+  const providedByEntry = requirements?.provided_by_entry ?? [];
+  const providedByUpstream = requirements?.provided_by_upstream ?? [];
   const unresolved = requirements?.unresolved ?? [];
   const warnings = requirements?.warnings ?? [];
   if (!requirements) {
     return <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">Requirements unavailable</div>;
   }
-  if (required.length === 0 && provided.length === 0 && unresolved.length === 0 && warnings.length === 0) {
+  if (required.length === 0 && providedByEntry.length === 0 && providedByUpstream.length === 0 && unresolved.length === 0 && warnings.length === 0) {
     return <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">No required initial state</div>;
   }
   return (
     <div className="grid gap-2">
       {required.length > 0 ? <RequirementGroup title="Required" tone="warn" items={required} /> : null}
       {unresolved.length > 0 ? <RequirementGroup title="Unresolved" tone="danger" items={unresolved} /> : null}
-      {provided.length > 0 ? <RequirementGroup title="Provided" tone="ok" items={provided} /> : null}
+      {providedByEntry.length > 0 ? <RequirementGroup title="Provided by entry" tone="ok" items={providedByEntry} /> : null}
+      {providedByUpstream.length > 0 ? <RequirementGroup title="Provided upstream" tone="ok" items={providedByUpstream} /> : null}
       {warnings.length > 0 ? (
         <div className="rounded-md border border-border bg-muted p-2">
           <div className="mb-2 flex items-center gap-2">

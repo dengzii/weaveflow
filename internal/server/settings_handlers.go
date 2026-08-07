@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"strings"
 
@@ -12,7 +11,6 @@ import (
 	"github.com/dengzii/weaveflow/llms/openai"
 	"github.com/dengzii/weaveflow/memory"
 
-	"github.com/gin-gonic/gin"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -62,17 +60,6 @@ type graphModelSettingsRequest struct {
 type graphMemorySettingsRequest struct {
 	Enabled   *bool  `json:"enabled"`
 	Directory string `json:"directory"`
-}
-
-func (s *Server) handleGetRuntimeSettings(c *gin.Context) {
-	writeData(c, http.StatusOK, s.graphSettingsSnapshot())
-}
-
-func (s *Server) graphSettingsSnapshot() graphRuntimeSettings {
-	if s == nil || s.runtime == nil {
-		return graphSettingsResponse(graphRuntimeSettingsFromContext(context.Background(), ""))
-	}
-	return graphSettingsResponse(s.runtime.runtimeSettings())
 }
 
 func graphSettingsResponse(settings graphRuntimeSettings) graphRuntimeSettings {

@@ -1,16 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeInitialStateRequirements,
-  getGraphDefinition,
-  getGraphInfo,
-  getInitialStateRequirements,
+  createGraphSession,
+  getGraphDetail,
   getRegistry,
-  getRuntimeSettings,
   getTools,
   listGraphs,
-  setGraphDefinition,
 } from "../api";
-import { cacheServerGraphs } from "../lib/localGraphs";
+import { cacheServerGraphs, hydrateServerGraph } from "../lib/localGraphs";
 import { parseJSON, stringifyJSON } from "../lib/utils";
 import {
   defaultInitialState,
@@ -33,17 +30,20 @@ import {
 } from "./workbench/graph-workspace/graphSettingsEditorModel";
 import { missingInitialStateRequirements } from "./workbench/workbenchRunModel";
 import {
+  effectiveInitialStateRequirements,
   graphAnalysisSignature,
   graphSaveIdentity,
   graphSaveSignature,
   isGraphSavePending,
+  missingTriggerStateRequirements,
 } from "./workbench/graphSyncModel";
 import { isSaveShortcut } from "./workbench/utils";
 import { useGraphTriggers } from "./workbench/graph-workspace/useGraphTriggers";
 import type {
   GraphDefinition,
+  GraphDetail,
   GraphInfo,
-  InitialStateRequirements,
+  GraphInitialStateAnalysis,
   RegistryInfo,
   RuntimeSettings,
   RuntimeSettingsUpdate,
@@ -54,15 +54,15 @@ export { workspaceTabs };
 export type { WorkspaceTab };
 export { pendingUserInputState, userInputPromptFromInterrupt } from "./workbench/userInputModel";
 
-interface CachedInitialStateRequirements {
+interface CachedInitialStateAnalysis {
   signature: string;
-  requirements: InitialStateRequirements;
+  analysis: GraphInitialStateAnalysis;
 }
 
-interface PendingInitialStateRequirements {
+interface PendingInitialStateAnalysis {
   signature: string;
   controller: AbortController;
-  promise: Promise<InitialStateRequirements>;
+  promise: Promise<GraphInitialStateAnalysis>;
 }
 
 const emptyRuntimeSettings: RuntimeSettings = {
@@ -90,7 +90,7 @@ export function WorkbenchPage({
   const [definitionText, setDefinitionText] = useState(stringifyJSON(sampleGraph));
   const [initialStateText, setInitialStateText] = useState(stringifyJSON(defaultInitialState));
   const [graphInfo, setGraphInfo] = useState<GraphInfo | null>(null);
-  const [initialRequirements, setInitialRequirements] = useState<InitialStateRequirements | null>(null);
+  const [initialStateAnalysis, setInitialStateAnalysis] = useState<GraphInitialStateAnalysis | null>(null);
   const [registry, setRegistry] = useState<RegistryInfo | null>(null);
   const [toolDefinitions, setToolDefinitions] = useState<ToolDefinition[]>([]);
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings>(emptyRuntimeSettings);
@@ -104,8 +104,8 @@ export function WorkbenchPage({
   const [savedGraphSignatures, setSavedGraphSignatures] = useState<Record<string, string>>({});
   const [serverStateLoaded, setServerStateLoaded] = useState(false);
   const [serverGraphsLoaded, setServerGraphsLoaded] = useState(false);
-  const initialRequirementsCacheRef = useRef<CachedInitialStateRequirements | null>(null);
-  const initialRequirementsRequestRef = useRef<PendingInitialStateRequirements | null>(null);
+  const initialRequirementsCacheRef = useRef<CachedInitialStateAnalysis | null>(null);
+  const initialRequirementsRequestRef = useRef<PendingInitialStateAnalysis | null>(null);
   const toastSeqRef = useRef(0);
   const savingRef = useRef(false);
   const graphTriggers = useGraphTriggers(graphId);
@@ -117,17 +117,23 @@ export function WorkbenchPage({
       return null;
     }
   }, [definitionText]);
+  const directInitialRequirements = initialStateAnalysis?.direct ?? null;
+  const initialRequirements = useMemo(
+    () => initialStateAnalysis ? effectiveInitialStateRequirements(initialStateAnalysis) : null,
+    [initialStateAnalysis]
+  );
   const initialRequirementsSignature = useMemo(
-    () => definition ? graphAnalysisSignature(definition) : "",
-    [definition]
+    () => definition ? graphAnalysisSignature(definition, graphTriggers.triggers) : "",
+    [definition, graphTriggers.triggers]
   );
 
   const currentGraphIdentity = useMemo(
     () => ({
       id: graphId || graphInfo?.id || "graph",
       version: graphVersion || graphInfo?.version || "1.0",
+      sessionID: graphInfo?.id === graphId ? graphInfo.graph_session_id : undefined,
     }),
-    [graphId, graphInfo?.id, graphInfo?.version, graphVersion]
+    [graphId, graphInfo?.graph_session_id, graphInfo?.id, graphInfo?.version, graphVersion]
   );
   const currentGraphSaveSignature = useMemo(
     () => definition
@@ -186,22 +192,23 @@ export function WorkbenchPage({
   );
 
   const analyzeGraphDefinition = useCallback(
-    (targetDefinition: GraphDefinition): Promise<InitialStateRequirements> => {
-      const signature = graphAnalysisSignature(targetDefinition);
+    (targetDefinition: GraphDefinition): Promise<GraphInitialStateAnalysis> => {
+      const triggers = graphTriggers.analysisPayloads();
+      const signature = graphAnalysisSignature(targetDefinition, graphTriggers.triggers);
       const cached = initialRequirementsCacheRef.current;
-      if (cached?.signature === signature) return Promise.resolve(cached.requirements);
+      if (cached?.signature === signature) return Promise.resolve(cached.analysis);
 
       const pending = initialRequirementsRequestRef.current;
       if (pending?.signature === signature) return pending.promise;
       pending?.controller.abort();
 
       const controller = new AbortController();
-      const promise = analyzeInitialStateRequirements(targetDefinition, controller.signal)
-        .then((requirements) => {
+      const promise = analyzeInitialStateRequirements(graphId, targetDefinition, triggers, controller.signal)
+        .then((analysis) => {
           if (!controller.signal.aborted) {
-            initialRequirementsCacheRef.current = { signature, requirements };
+            initialRequirementsCacheRef.current = { signature, analysis };
           }
-          return requirements;
+          return analysis;
         })
         .finally(() => {
           if (initialRequirementsRequestRef.current?.controller === controller) {
@@ -211,7 +218,7 @@ export function WorkbenchPage({
       initialRequirementsRequestRef.current = { signature, controller, promise };
       return promise;
     },
-    []
+    [graphId, graphTriggers.analysisPayloads, graphTriggers.triggers]
   );
 
   const {
@@ -257,87 +264,57 @@ export function WorkbenchPage({
   const runControlsDisabled = runBusy || (busy && !runLaunchPending);
   const graphSwitchDisabled = workbenchBusy || graphSwitchLocked;
 
-  const refreshInitialRequirements = useCallback(async (targetDefinition?: GraphDefinition) => {
-    initialRequirementsRequestRef.current?.controller.abort();
-    initialRequirementsRequestRef.current = null;
-    const requirements = await getInitialStateRequirements();
-    if (targetDefinition) {
-      initialRequirementsCacheRef.current = {
-        signature: graphAnalysisSignature(targetDefinition),
-        requirements,
-      };
-    }
-    setInitialRequirements(requirements);
-    setInitialRequirementsError("");
-    return requirements;
-  }, []);
-
   const loadServerState = useCallback(async () => {
     try {
-      const [info, reg, tools, settings, graphs] = await Promise.all([
-        getGraphInfo().catch(() => null),
+      const [reg, tools, graphs] = await Promise.all([
         getRegistry().catch(() => null),
         getTools().catch(() => null),
-        getRuntimeSettings().catch(() => null),
         listGraphs().catch((err) => {
           notifyError(err);
           return [];
         }),
       ]);
-      setGraphInfo(info);
       setRegistry(reg);
       setToolDefinitions(tools?.tools ?? []);
-      cacheServerGraphs(graphs);
-      const nextSavedGraphSignatures = Object.fromEntries(
-        graphs.map((graph) => [
-          graphSaveIdentity(graph.id, graph.graph_version),
-          graphSaveSignature(
-            graph.definition,
-            runtimeSettingsUpload(graph.settings),
-            graph.id,
-            graph.graph_version
-          ),
-        ])
-      );
-      if (info) {
-        const cachedGraph = graphs.find((graph) =>
-          graph.id === info.id && graph.graph_version === info.version
-        ) ?? graphs.find((graph) => graph.id === info.id);
-        const serverDefinition = await getGraphDefinition().catch(() => null) ?? cachedGraph?.definition;
-        const serverSettings = settings ?? cachedGraph?.settings ?? emptyRuntimeSettings;
-        setGraphId(info.id);
-        setGraphVersion(info.version);
-        setRuntimeSettings(serverSettings);
-        if (serverDefinition) setDefinitionText(stringifyJSON(serverDefinition));
-        if (serverDefinition) {
-          nextSavedGraphSignatures[graphSaveIdentity(info.id, info.version)] = graphSaveSignature(
-            serverDefinition,
-            runtimeSettingsUpload(serverSettings),
-            info.id,
-            info.version
-          );
-        }
-        await refreshInitialRequirements(serverDefinition ?? undefined).catch((err) => {
-          setInitialRequirements(null);
-          setInitialRequirementsError(err instanceof Error ? err.message : String(err));
-        });
-      } else if (graphs[0]) {
-        setGraphId(graphs[0].id);
-        setGraphVersion(graphs[0].graph_version);
-        setDefinitionText(stringifyJSON(graphs[0].definition));
-        setRuntimeSettings(graphs[0].settings);
-      } else if (settings) {
-        setRuntimeSettings(settings);
+      const cachedGraphs = cacheServerGraphs(graphs);
+      const firstSummary = graphs[0];
+      let firstDetail: GraphDetail | null = null;
+      if (firstSummary) {
+        firstDetail = await getGraphDetail(firstSummary.id);
+        const cachedGraph = cachedGraphs.find((graph) => graph.graphId === firstSummary.id);
+        if (cachedGraph) hydrateServerGraph(cachedGraph, firstDetail);
+        setGraphInfo(firstDetail.graph);
+        setGraphId(firstDetail.graph.id);
+        setGraphVersion(firstDetail.graph.version);
+        setDefinitionText(stringifyJSON(firstDetail.definition));
+        setRuntimeSettings(firstDetail.settings);
+        const analysis: GraphInitialStateAnalysis = {
+          direct: firstDetail.initial_state_requirements,
+          triggers: [],
+        };
+        setInitialStateAnalysis(analysis);
+        setInitialRequirementsError("");
+        initialRequirementsCacheRef.current = {
+          signature: graphAnalysisSignature(firstDetail.definition),
+          analysis,
+        };
+      }
+      const nextSavedGraphSignatures: Record<string, string> = {};
+      if (firstDetail) {
+        nextSavedGraphSignatures[graphSaveIdentity(firstDetail.graph.id, firstDetail.graph.version)] = graphSaveSignature(
+          firstDetail.definition,
+          runtimeSettingsUpload(firstDetail.settings),
+          firstDetail.graph.id,
+          firstDetail.graph.version
+        );
       }
       setSavedGraphSignatures(nextSavedGraphSignatures);
       setServerGraphsLoaded(true);
-      const initialGraph = info ?? graphs[0];
-      const loadIdentity = initialGraph
+      const loadIdentity = firstDetail
         ? {
-            id: initialGraph.id || "graph",
-            version: "version" in initialGraph
-              ? initialGraph.version || "1.0"
-              : initialGraph.graph_version || "1.0",
+            id: firstDetail.graph.id,
+            version: firstDetail.graph.version,
+            sessionID: firstDetail.graph.graph_session_id,
           }
         : undefined;
       await refreshRuns(loadIdentity, true).catch(() => undefined);
@@ -346,7 +323,7 @@ export function WorkbenchPage({
     } finally {
       setServerStateLoaded(true);
     }
-  }, [notifyError, refreshInitialRequirements, refreshRuns]);
+  }, [notifyError, refreshRuns]);
 
   useEffect(() => {
     void loadServerState();
@@ -369,17 +346,17 @@ export function WorkbenchPage({
   useEffect(() => {
     if (!serverStateLoaded) return;
     if (!definition || validateGraph(definition, registry)) {
-      setInitialRequirements(null);
+      setInitialStateAnalysis(null);
       setInitialRequirementsError("");
       return;
     }
     const cached = initialRequirementsCacheRef.current;
     if (cached?.signature === initialRequirementsSignature) {
-      setInitialRequirements(cached.requirements);
+      setInitialStateAnalysis(cached.analysis);
       setInitialRequirementsError("");
       return;
     }
-    setInitialRequirements(null);
+    setInitialStateAnalysis(null);
     setInitialRequirementsError("");
   }, [definition, initialRequirementsSignature, registry, serverStateLoaded]);
 
@@ -396,12 +373,15 @@ export function WorkbenchPage({
         setTab("graph");
         return;
       }
-      const requirements = await analyzeGraphDefinition(definition);
-      setInitialRequirements(requirements);
+      const analysis = await analyzeGraphDefinition(definition);
+      setInitialStateAnalysis(analysis);
       setInitialRequirementsError("");
 
       const initialState = parseJSON<unknown>(initialStateText);
-      const missingInitialState = missingInitialStateRequirements(initialState, requirements.required);
+      const missingInitialState = missingInitialStateRequirements(initialState, [
+        ...analysis.direct.required,
+        ...analysis.direct.unresolved,
+      ]);
       if (missingInitialState.length > 0) {
         const preview = missingInitialState.slice(0, 4).join(", ");
         const suffix = missingInitialState.length > 4 ? ` (+${missingInitialState.length - 4} more)` : "";
@@ -409,16 +389,8 @@ export function WorkbenchPage({
         setTab("graph");
         return;
       }
-      if (requirements.unresolved.length > 0) {
-        const unresolved = requirements.unresolved.map((item) => item.path).slice(0, 4).join(", ");
-        const suffix = requirements.unresolved.length > 4 ? ` (+${requirements.unresolved.length - 4} more)` : "";
-        pushToast("error", `Unresolved state requirements: ${unresolved}${suffix}`);
-        setTab("graph");
-        return;
-      }
-
       const settings = runtimeSettingsUpload(runtimeSettings);
-      const result = await setGraphDefinition(definition, settings, graphId, graphVersion);
+      const result = await createGraphSession(graphId, definition, settings, graphVersion);
       const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
       setGraphInfo(result.graph);
       setGraphId(result.graph.id);
@@ -433,6 +405,7 @@ export function WorkbenchPage({
       await startConfiguredRun(initialState, {
         id: result.graph.id,
         version: result.graph.version,
+        sessionID: result.graph.graph_session_id,
       });
     } catch (err) {
       setInitialRequirementsError(err instanceof Error ? err.message : String(err));
@@ -452,6 +425,26 @@ export function WorkbenchPage({
     setRuntimeSettings(settings);
   }, []);
 
+  const handleGraphDetailLoaded = useCallback((detail: GraphDetail) => {
+    setGraphInfo(detail.graph);
+    const analysis: GraphInitialStateAnalysis = {
+      direct: detail.initial_state_requirements,
+      triggers: [],
+    };
+    setInitialStateAnalysis(analysis);
+    setInitialRequirementsError("");
+    initialRequirementsCacheRef.current = {
+      signature: graphAnalysisSignature(detail.definition),
+      analysis,
+    };
+    recordSavedGraph(
+      detail.definition,
+      runtimeSettingsUpload(detail.settings),
+      detail.graph.id,
+      detail.graph.version
+    );
+  }, [recordSavedGraph]);
+
   async function saveGraph() {
     if (savingRef.current) return;
     savingRef.current = true;
@@ -469,18 +462,20 @@ export function WorkbenchPage({
       }
       if (graphTriggers.isUnsaved) graphTriggers.validate();
 
-      const requirements = await analyzeGraphDefinition(definition);
-      setInitialRequirements(requirements);
+      const analysis = await analyzeGraphDefinition(definition);
+      setInitialStateAnalysis(analysis);
       setInitialRequirementsError("");
-      if (requirements.unresolved.length > 0) {
-        const unresolved = requirements.unresolved.map((item) => item.path).slice(0, 4).join(", ");
-        const suffix = requirements.unresolved.length > 4 ? ` (+${requirements.unresolved.length - 4} more)` : "";
-        pushToast("error", `Unresolved state requirements: ${unresolved}${suffix}`);
+      const missingTriggerState = missingTriggerStateRequirements(analysis);
+      if (missingTriggerState.length > 0) {
+        const first = missingTriggerState[0];
+        const preview = first.paths.slice(0, 4).join(", ");
+        const suffix = first.paths.length > 4 ? ` (+${first.paths.length - 4} more)` : "";
+        pushToast("error", `Trigger "${first.triggerID}" is missing graph state: ${preview}${suffix}`);
         return;
       }
 
       const settings = runtimeSettingsUpload(runtimeSettings);
-      const result = await setGraphDefinition(definition, settings, graphId, graphVersion);
+      const result = await createGraphSession(graphId, definition, settings, graphVersion);
       const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
       setGraphInfo(result.graph);
       setGraphId(result.graph.id);
@@ -562,6 +557,7 @@ export function WorkbenchPage({
           definitionText={definitionText}
           initialStateText={initialStateText}
           initialRequirements={initialRequirements}
+          directInitialRequirements={directInitialRequirements}
           initialRequirementsError={initialRequirementsError}
           steps={steps}
           selectedRunId={selectedRunID}
@@ -582,6 +578,7 @@ export function WorkbenchPage({
           onInitialStateText={setInitialStateText}
           onDismissToast={dismissToast}
           onGraphSwitch={prepareGraphSwitch}
+          onGraphDetailLoaded={handleGraphDetailLoaded}
         />
       ) : null}
       {tab === "settings" ? (

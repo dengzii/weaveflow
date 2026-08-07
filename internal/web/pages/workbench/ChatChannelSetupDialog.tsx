@@ -3,8 +3,9 @@ import { CheckCircle2, LoaderCircle, RefreshCw, ShieldCheck, X } from "lucide-re
 import { QRCodeSVG } from "qrcode.react";
 import {
   cancelChatChannelSetup,
-  pollChatChannelSetup,
+  getChatChannelSetup,
   startChatChannelSetup,
+  submitChatChannelSetupVerification,
 } from "../../api";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -84,7 +85,7 @@ export function ChatChannelSetupDialog({
       let current = result;
       while (active && pendingStatuses.has(current.status)) {
         try {
-          current = await pollChatChannelSetup(channel.id, current.session_id, undefined, controller.signal);
+          current = await getChatChannelSetup(channel.id, current.session_id, controller.signal);
           if (!active) return;
           setResult(current);
           if (pendingStatuses.has(current.status)) await wait(400, controller.signal);
@@ -116,7 +117,7 @@ export function ChatChannelSetupDialog({
     setError("");
     setRetryAvailable(false);
     try {
-      const next = await pollChatChannelSetup(channel.id, result.session_id, code);
+      const next = await submitChatChannelSetupVerification(channel.id, result.session_id, code);
       setVerificationCode("");
       setResult(next);
     } catch (err) {

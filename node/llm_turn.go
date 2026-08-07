@@ -143,18 +143,6 @@ func (n *LLMTurnNode) Execute(ctx core.Context, access *state.Access) error {
 	messages := conversation.Messages()
 	promptMessages := trimLLMPromptMessages(messages, n.effectivePromptMaxChars())
 
-	if conversation.IterationCount() >= conversation.MaxIterations() {
-		message := "Maximum tool iterations reached. Please simplify the question or reduce tool usage."
-		finalMessage := llms.TextParts(llms.ChatMessageTypeAI, message)
-		if err := conversation.SetMessages(append(messages, finalMessage)); err != nil {
-			return err
-		}
-		if err := conversation.SetFinalAnswer(message); err != nil {
-			return err
-		}
-		return n.writeOutput(access, message)
-	}
-
 	var toolSets []llms.Tool
 	for _, tool := range nodeTools {
 		toolSets = append(toolSets, tool.NewTool())

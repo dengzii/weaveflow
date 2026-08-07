@@ -1,8 +1,13 @@
 package graph
 
 import (
+	"fmt"
+	"sort"
+	"strings"
+
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
+	"github.com/dengzii/weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
@@ -22,10 +27,42 @@ func (g *Graph) ContractDiagnostics() []core.ContractDiagnostic {
 }
 
 func (g *Graph) InitialStateRequirements() core.InitialStateRequirements {
+	return g.InitialStateRequirementsFor(nil)
+}
+
+func (g *Graph) InitialStateRequirementsFor(provider *core.EntryStateProvider) core.InitialStateRequirements {
 	if g == nil {
 		return graphbuild.AnalyzeInitialStateRequirements(graphbuild.ContractAnalysisGraph{})
 	}
-	return graphbuild.AnalyzeInitialStateRequirements(g.contractAnalysisGraph())
+	analysis := g.contractAnalysisGraph()
+	analysis.EntryProvider = provider
+	return graphbuild.AnalyzeInitialStateRequirements(analysis)
+}
+
+// ValidateInitialState verifies that concrete invocation state satisfies every
+// required read that is not produced by the Graph itself.
+func (g *Graph) ValidateInitialState(initial *state.State) error {
+	requirements := g.InitialStateRequirements()
+	paths := make([]string, 0, len(requirements.Required)+len(requirements.Unresolved))
+	seen := make(map[string]struct{}, cap(paths))
+	for _, requirement := range append(requirements.Required, requirements.Unresolved...) {
+		pathText := strings.TrimSpace(requirement.Path)
+		if pathText == "" {
+			continue
+		}
+		if _, exists := seen[pathText]; exists {
+			continue
+		}
+		seen[pathText] = struct{}{}
+		if _, exists := state.ReadPath(initial, pathText); !exists {
+			paths = append(paths, pathText)
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	sort.Strings(paths)
+	return fmt.Errorf("graph initial state is missing required paths: %s", strings.Join(paths, ", "))
 }
 
 func (g *Graph) contractAnalysisGraph() graphbuild.ContractAnalysisGraph {

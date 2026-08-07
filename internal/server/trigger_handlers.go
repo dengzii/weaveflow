@@ -1,8 +1,6 @@
 package server
 
 import (
-	"context"
-	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -18,11 +16,10 @@ const (
 )
 
 type triggerPayload struct {
-	ID                 string                    `json:"id,omitempty"`
+	ID                 string                    `json:"id"`
 	Name               string                    `json:"name,omitempty"`
 	Type               trigger.Type              `json:"type"`
 	Enabled            *bool                     `json:"enabled,omitempty"`
-	Target             trigger.Target            `json:"target,omitempty"`
 	Concurrency        trigger.ConcurrencyPolicy `json:"concurrency,omitempty"`
 	InitialState       map[string]any            `json:"initial_state,omitempty"`
 	Webhook            *triggerWebhookPayload    `json:"webhook,omitempty"`
@@ -33,78 +30,53 @@ type triggerPayload struct {
 
 type triggerWebhookPayload struct {
 	APIKey        string                        `json:"api_key,omitempty"`
+	StateBindings *trigger.WebhookStateBindings `json:"state_bindings,omitempty"`
 	StateMappings []trigger.WebhookStateMapping `json:"state_mappings,omitempty"`
+}
+
+type triggerReplacementPayload struct {
+	Triggers []triggerPayload `json:"triggers"`
 }
 
 type triggerInvocationResponse struct {
 	Run runtime.RunRecord `json:"run"`
 }
 
-func (p triggerPayload) toTrigger(defaultEnabled bool) trigger.Trigger {
-	enabled := defaultEnabled
-	if p.Enabled != nil {
-		enabled = *p.Enabled
+func (payload triggerPayload) toTrigger(graphID string) trigger.Trigger {
+	enabled := true
+	if payload.Enabled != nil {
+		enabled = *payload.Enabled
 	}
 	var webhook *trigger.WebhookSpec
-	if p.Webhook != nil {
+	if payload.Webhook != nil {
 		webhook = &trigger.WebhookSpec{
-			APIKey:        p.Webhook.APIKey,
-			StateMappings: append([]trigger.WebhookStateMapping(nil), p.Webhook.StateMappings...),
+			APIKey:        payload.Webhook.APIKey,
+			StateBindings: payload.Webhook.StateBindings,
+			StateMappings: append([]trigger.WebhookStateMapping(nil), payload.Webhook.StateMappings...),
 		}
 	}
 	return trigger.Trigger{
-		ID:           strings.TrimSpace(p.ID),
-		Name:         strings.TrimSpace(p.Name),
-		Type:         p.Type,
+		ID:           strings.TrimSpace(payload.ID),
+		Name:         strings.TrimSpace(payload.Name),
+		Type:         payload.Type,
 		Enabled:      enabled,
-		Target:       p.Target,
-		Concurrency:  p.Concurrency,
-		InitialState: p.InitialState,
+		Target:       trigger.Target{GraphID: graphID},
+		Concurrency:  payload.Concurrency,
+		InitialState: payload.InitialState,
 		Webhook:      webhook,
-		Schedule:     p.Schedule,
-		Chat:         p.Chat,
+		Schedule:     payload.Schedule,
+		Chat:         payload.Chat,
 	}
-}
-
-func (s *Server) handleCreateTrigger(c *gin.Context) {
-	service := s.TriggerService()
-	if service == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return
-	}
-	payload, err := decodeTriggerPayload(c)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
-	}
-	item := payload.toTrigger(true)
-	if item.Target == (trigger.Target{}) {
-		item.Target = s.defaultTriggerTarget()
-	}
-	if strings.TrimSpace(payload.ChatSetupSessionID) != "" {
-		s.chatSetupSaveMu.Lock()
-		defer s.chatSetupSaveMu.Unlock()
-	}
-	releaseSetup, err := s.applyChatSetup(c.Request.Context(), setupRequestOwner(c), payload.ChatSetupSessionID, &item)
-	if err != nil {
-		writeError(c, statusForChatSetupError(err), err)
-		return
-	}
-	setupCommitted := false
-	defer func() { releaseSetup(setupCommitted) }()
-	item, err = service.Create(c.Request.Context(), item)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	setupCommitted = true
-	writeData(c, http.StatusCreated, s.publicTrigger(item))
 }
 
 func (s *Server) handleListTriggers(c *gin.Context) {
 	service := s.TriggerService()
 	if service == nil {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
+		return
+	}
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
 		return
 	}
 	items, err := service.List(c.Request.Context())
@@ -114,236 +86,171 @@ func (s *Server) handleListTriggers(c *gin.Context) {
 	}
 	result := make([]trigger.Trigger, 0, len(items))
 	for _, item := range items {
+		if item.Target.GraphID == graphID {
+			result = append(result, s.publicTrigger(item))
+		}
+	}
+	writeData(c, http.StatusOK, result)
+}
+
+func (s *Server) handleReplaceTriggers(c *gin.Context) {
+	service := s.TriggerService()
+	if service == nil {
+		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
+		return
+	}
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
+	payload, err := decodeTriggerReplacementPayload(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+
+	s.chatSetupSaveMu.Lock()
+	defer s.chatSetupSaveMu.Unlock()
+	items := make([]trigger.Trigger, 0, len(payload.Triggers))
+	releases := make([]func(bool), 0, len(payload.Triggers))
+	committed := false
+	defer func() {
+		for _, release := range releases {
+			release(committed)
+		}
+	}()
+	for _, itemPayload := range payload.Triggers {
+		item := itemPayload.toTrigger(graphID)
+		release, err := s.applyChatSetup(
+			c.Request.Context(),
+			setupRequestOwner(c),
+			itemPayload.ChatSetupSessionID,
+			&item,
+		)
+		if err != nil {
+			writeError(c, statusForChatSetupError(err), err)
+			return
+		}
+		releases = append(releases, release)
+		items = append(items, item)
+	}
+	session, err := s.loadTriggerSession(graphID)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	if err := validateGraphTriggerState(session.graph, items); err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	items, err = service.ReplaceGraph(c.Request.Context(), graphID, items)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	committed = true
+	result := make([]trigger.Trigger, 0, len(items))
+	for _, item := range items {
 		result = append(result, s.publicTrigger(item))
 	}
 	writeData(c, http.StatusOK, result)
 }
 
-func (s *Server) handleGetTrigger(c *gin.Context) {
-	service := s.TriggerService()
-	if service == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return
-	}
-	triggerID, ok := requirePathParam(c, "trigger_id")
-	if !ok {
-		return
-	}
-	item, err := service.Get(c.Request.Context(), triggerID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	writeData(c, http.StatusOK, s.publicTrigger(item))
-}
-
-func (s *Server) handleUpdateTrigger(c *gin.Context) {
-	service := s.TriggerService()
-	if service == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return
-	}
-	id, ok := requirePathParam(c, "trigger_id")
-	if !ok {
-		return
-	}
-	existing, err := service.Get(c.Request.Context(), id)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	payload, err := decodeTriggerPayload(c)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
-	}
-	item := payload.toTrigger(existing.Enabled)
-	item.ID = id
-	if item.Webhook != nil && item.Webhook.APIKey == "" && existing.Webhook != nil {
-		item.Webhook.APIKey = existing.Webhook.APIKey
-	}
-	if item.Target == (trigger.Target{}) {
-		item.Target = existing.Target
-	}
-	if strings.TrimSpace(payload.ChatSetupSessionID) != "" {
-		s.chatSetupSaveMu.Lock()
-		defer s.chatSetupSaveMu.Unlock()
-	}
-	releaseSetup, err := s.applyChatSetup(c.Request.Context(), setupRequestOwner(c), payload.ChatSetupSessionID, &item)
-	if err != nil {
-		writeError(c, statusForChatSetupError(err), err)
-		return
-	}
-	setupCommitted := false
-	defer func() { releaseSetup(setupCommitted) }()
-	item, err = service.Update(c.Request.Context(), item)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	setupCommitted = true
-	writeData(c, http.StatusOK, s.publicTrigger(item))
-}
-
-func (s *Server) handleDeleteTrigger(c *gin.Context) {
-	service := s.TriggerService()
-	if service == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return
-	}
-	triggerID, ok := requirePathParam(c, "trigger_id")
-	if !ok {
-		return
-	}
-	if err := service.Delete(c.Request.Context(), triggerID); err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	c.Status(http.StatusNoContent)
-}
-
 func (s *Server) handleCreateTriggerInvocation(c *gin.Context) {
-	service := s.TriggerService()
-	if service == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return
-	}
-	triggerID, ok := requirePathParam(c, "trigger_id")
+	service, item, ok := s.scopedTrigger(c)
 	if !ok {
-		return
-	}
-	item, err := service.Get(c.Request.Context(), triggerID)
-	if err != nil {
-		writeError(c, statusForError(err), err)
 		return
 	}
 	ctx, cancel := s.deriveRunContext(c)
 	defer cancel()
-	apiKey, err := optionalStringQuery(c, trigger.APIKeyQueryParameter)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
-	}
 
 	var (
-		run    runtime.RunRecord
-		runErr error
+		run runtime.RunRecord
+		err error
 	)
 	switch item.Type {
 	case trigger.TypeWebhook:
-		body, readErr := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodyBytes+1))
+		body, readErr := readRequestBody(c.Request.Body, maxWebhookBodyBytes)
 		if readErr != nil {
-			writeError(c, http.StatusBadRequest, readErr)
+			writeError(c, statusForRequestError(readErr), readErr)
 			return
 		}
-		if len(body) > maxWebhookBodyBytes {
-			writeError(c, http.StatusRequestEntityTooLarge, errWebhookBodyTooLarge)
-			return
-		}
-		run, runErr = service.InvokeWebhook(ctx, triggerID, body, apiKey, requestHeaders(c))
+		run, err = service.InvokeWebhook(ctx, item.ID, body, bearerToken(c), requestHeaders(c))
 	case trigger.TypeSchedule:
-		run, runErr = service.InvokeSchedule(ctx, triggerID)
+		run, err = service.InvokeSchedule(ctx, item.ID)
 	default:
-		runErr = trigger.ErrTypeMismatch
+		err = trigger.ErrTypeMismatch
 	}
-	if runErr != nil {
-		writeError(c, statusForError(runErr), runErr)
+	if err != nil {
+		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, triggerInvocationResponse{Run: run})
+	writeData(c, http.StatusAccepted, triggerInvocationResponse{Run: run})
 }
 
 func (s *Server) handleWebhookTrigger(c *gin.Context) {
-	service := s.TriggerService()
-	if service == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
+	service, item, ok := s.scopedTrigger(c)
+	if !ok {
+		return
+	}
+	if item.Type != trigger.TypeWebhook {
+		writeError(c, http.StatusBadRequest, trigger.ErrTypeMismatch)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxWebhookBodyBytes+1))
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	if len(body) > maxWebhookBodyBytes {
+		writeError(c, http.StatusRequestEntityTooLarge, errWebhookBodyTooLarge)
 		return
 	}
 	ctx, cancel := s.deriveRunContext(c)
 	defer cancel()
-
-	triggerID, ok := requirePathParam(c, "trigger_id")
-	if !ok {
-		return
-	}
-	apiKey, err := optionalStringQuery(c, trigger.APIKeyQueryParameter)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
-	}
-	run, err := service.InvokeWebhookInput(
-		ctx,
-		triggerID,
-		webhookQueryInput(c),
-		apiKey,
-		requestHeaders(c),
-	)
+	run, err := service.InvokeWebhook(ctx, item.ID, body, bearerToken(c), requestHeaders(c))
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	writeData(c, http.StatusOK, triggerInvocationResponse{Run: run})
+	writeData(c, http.StatusAccepted, triggerInvocationResponse{Run: run})
 }
 
-func webhookQueryInput(c *gin.Context) map[string]any {
-	query := c.Request.URL.Query()
-	query.Del(trigger.APIKeyQueryParameter)
-	input := make(map[string]any, len(query))
-	for key, values := range query {
-		if len(values) == 1 {
-			input[key] = values[0]
-			continue
-		}
-		input[key] = append([]string(nil), values...)
-	}
-	return input
-}
-
-func (s *Server) handleListTriggerInvocations(c *gin.Context) {
+func (s *Server) scopedTrigger(c *gin.Context) (*trigger.Service, trigger.Trigger, bool) {
 	service := s.TriggerService()
 	if service == nil {
 		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return
+		return nil, trigger.Trigger{}, false
 	}
-	triggerID := optionalPathParam(c, "trigger_id")
-	queryTriggerID, err := optionalStringQuery(c, "trigger_id")
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return nil, trigger.Trigger{}, false
 	}
-	if triggerID != "" && queryTriggerID != "" {
-		writeError(c, http.StatusBadRequest, invalidRequestf("trigger_id query is not allowed on a scoped invocation route"))
-		return
+	triggerID, ok := requirePathParam(c, "trigger_id")
+	if !ok {
+		return nil, trigger.Trigger{}, false
 	}
-	if triggerID == "" {
-		triggerID = queryTriggerID
-	}
-	limit, err := positiveIntQuery(c, "limit", trigger.DefaultRecordLimit, trigger.MaxRecordLimit)
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
-		return
-	}
-	items, err := service.ListRecords(c.Request.Context(), triggerID, limit)
-	if err != nil {
+	item, err := service.Get(c.Request.Context(), triggerID)
+	if err != nil || item.Target.GraphID != graphID {
+		if err == nil {
+			err = trigger.ErrNotFound
+		}
 		writeError(c, statusForError(err), err)
-		return
+		return nil, trigger.Trigger{}, false
 	}
-	for index := range items {
-		run, err := s.triggerRecordRun(c.Request.Context(), items[index])
-		if errors.Is(err, runtime.ErrRunnerRecordNotFound) {
-			continue
-		}
-		if err != nil {
-			writeError(c, statusForError(err), err)
-			return
-		}
-		runCopy := run
-		items[index].Run = &runCopy
-		items[index].Status = run.Status
-		items[index].ErrorMessage = run.ErrorMessage
-		items[index].UpdatedAt = run.UpdatedAt
+	return service, item, true
+}
+
+func bearerToken(c *gin.Context) string {
+	value := strings.TrimSpace(c.GetHeader("Authorization"))
+	if value == "" {
+		return ""
 	}
-	writeData(c, http.StatusOK, items)
+	parts := strings.Fields(value)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return value
+	}
+	return parts[1]
 }
 
 func requestHeaders(c *gin.Context) map[string]string {
@@ -356,37 +263,20 @@ func requestHeaders(c *gin.Context) map[string]string {
 	return headers
 }
 
-func (s *Server) triggerRecordRun(ctx context.Context, record trigger.Record) (runtime.RunRecord, error) {
-	if record.Run == nil || strings.TrimSpace(record.Run.RunID) == "" {
-		return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
-	}
-	runID := record.Run.RunID
-	if runner := s.currentRunner(); triggerTargetMatchesRunner(record.Target.GraphID, runner) {
-		run, err := runner.GetRun(ctx, runID)
-		if err == nil {
-			return run, nil
-		}
-		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
-			return runtime.RunRecord{}, err
-		}
-	}
-	reader, err := s.openGraphCache(record.Target.GraphID)
-	if err != nil {
-		return runtime.RunRecord{}, err
-	}
-	return reader.GetRun(ctx, runID)
-}
-func decodeTriggerPayload(c *gin.Context) (triggerPayload, error) {
+func decodeTriggerReplacementPayload(c *gin.Context) (triggerReplacementPayload, error) {
 	body, err := readRequestBody(c.Request.Body, maxTriggerPayloadBodyBytes)
 	if err != nil {
-		return triggerPayload{}, err
+		return triggerReplacementPayload{}, err
 	}
 	if len(strings.TrimSpace(string(body))) == 0 {
-		return triggerPayload{}, errTriggerPayloadRequired
+		return triggerReplacementPayload{}, errTriggerPayloadRequired
 	}
-	var payload triggerPayload
+	var payload triggerReplacementPayload
 	if err := decodeStrictJSON(body, &payload); err != nil {
-		return triggerPayload{}, err
+		return triggerReplacementPayload{}, err
+	}
+	if payload.Triggers == nil {
+		return triggerReplacementPayload{}, invalidRequestf("triggers is required")
 	}
 	return payload, nil
 }

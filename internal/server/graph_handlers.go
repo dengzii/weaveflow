@@ -1,13 +1,17 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
+	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 
@@ -24,16 +28,6 @@ type graphInfo struct {
 	FinishPoint       string `json:"finish_point,omitempty"`
 }
 
-type graphNodeView struct {
-	ID   string            `json:"id"`
-	Spec dsl.GraphNodeSpec `json:"spec"`
-}
-
-type graphNodesResponse struct {
-	Nodes []graphNodeView              `json:"nodes"`
-	Specs map[string]dsl.GraphNodeSpec `json:"specs"`
-}
-
 type registryResponse struct {
 	StateModules []dsl.StateModuleDefinition     `json:"state_modules"`
 	Capabilities []dsl.StateCapabilityDefinition `json:"capabilities"`
@@ -44,69 +38,21 @@ type registryResponse struct {
 	ChatChannels []chatchannel.Definition        `json:"chat_channels"`
 }
 
-func (s *Server) handleGetGraph(c *gin.Context) {
-	graph, runner := s.currentGraphRunner()
-	if graph == nil {
-		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
-		return
-	}
-	def, err := graph.Definition()
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	info := graphInfo{
-		ID:          "graph",
-		Version:     runtime.DefaultGraphVersion,
-		EntryPoint:  def.EntryPoint,
-		FinishPoint: def.FinishPoint,
-	}
-	if runner != nil {
-		info.ID = firstNonEmpty(runner.GraphID, info.ID)
-		info.Version = firstNonEmpty(runner.GraphVersion, info.Version)
-		info.GraphHash = strings.TrimSpace(runner.GraphHash)
-		info.GraphSnapshotHash = strings.TrimSpace(runner.GraphSnapshotHash)
-		info.GraphSessionID = strings.TrimSpace(runner.GraphSessionID)
-	}
-	writeData(c, http.StatusOK, info)
+type triggerInitialStateRequirements struct {
+	TriggerID    string                        `json:"trigger_id"`
+	Requirements core.InitialStateRequirements `json:"requirements"`
 }
 
-func (s *Server) handleGetGraphDefinition(c *gin.Context) {
-	def, err := s.graphDefinition()
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	writeData(c, http.StatusOK, def)
-}
-
-func (s *Server) handleGetGraphNodes(c *gin.Context) {
-	graph := s.currentGraph()
-	if graph == nil {
-		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
-		return
-	}
-	specs := graph.NodeSpecs()
-	nodes := make([]graphNodeView, 0, len(specs))
-	for _, id := range sortedGraphNodeSpecKeys(specs) {
-		nodes = append(nodes, graphNodeView{ID: id, Spec: specs[id]})
-	}
-	writeData(c, http.StatusOK, graphNodesResponse{
-		Nodes: nodes,
-		Specs: specs,
-	})
-}
-
-func (s *Server) handleGetGraphInitialStateRequirements(c *gin.Context) {
-	graph := s.currentGraph()
-	if graph == nil {
-		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
-		return
-	}
-	writeData(c, http.StatusOK, graph.InitialStateRequirements())
+type graphInitialStateAnalysis struct {
+	Direct   core.InitialStateRequirements     `json:"direct"`
+	Triggers []triggerInitialStateRequirements `json:"triggers"`
 }
 
 func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
 	req, err := bindGraphUpload(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
@@ -121,21 +67,63 @@ func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err)
 		return
 	}
-	writeData(c, http.StatusOK, graph.InitialStateRequirements())
+	analysis, err := analyzeGraphInitialState(graph, graphID, req.Triggers)
+	if err != nil {
+		writeError(c, http.StatusBadRequest, err)
+		return
+	}
+	writeData(c, http.StatusOK, analysis)
 }
 
-func (s *Server) handleGetGraphMermaid(c *gin.Context) {
-	graph := s.currentGraph()
-	if graph == nil {
-		writeError(c, http.StatusServiceUnavailable, errGraphNotConfigured)
-		return
+func analyzeGraphInitialState(graph *wfgraph.Graph, graphID string, payloads []triggerPayload) (graphInitialStateAnalysis, error) {
+	analysis := graphInitialStateAnalysis{
+		Direct:   graph.InitialStateRequirements(),
+		Triggers: make([]triggerInitialStateRequirements, 0, len(payloads)),
 	}
-	text, err := graph.DrawMermaid()
+	for _, payload := range payloads {
+		item := payload.toTrigger(graphID).Normalize(time.Now().UTC())
+		if err := item.Validate(); err != nil {
+			return graphInitialStateAnalysis{}, err
+		}
+		requirements, err := graphInitialStateRequirementsForTrigger(graph, item)
+		if err != nil {
+			return graphInitialStateAnalysis{}, err
+		}
+		analysis.Triggers = append(analysis.Triggers, triggerInitialStateRequirements{
+			TriggerID:    item.ID,
+			Requirements: requirements,
+		})
+	}
+	return analysis, nil
+}
+
+func graphInitialStateRequirementsForTrigger(graph *wfgraph.Graph, item trigger.Trigger) (core.InitialStateRequirements, error) {
+	contract, err := item.ProducedStateContract()
 	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
+		return core.InitialStateRequirements{}, fmt.Errorf("trigger %q state contract: %w", item.ID, err)
 	}
-	c.Data(http.StatusOK, "text/plain; charset=utf-8", []byte(text))
+	provider := &core.EntryStateProvider{ID: "trigger:" + item.ID, Contract: contract}
+	return graph.InitialStateRequirementsFor(provider), nil
+}
+
+func validateGraphTriggerState(graph *wfgraph.Graph, items []trigger.Trigger) error {
+	for _, item := range items {
+		requirements, err := graphInitialStateRequirementsForTrigger(graph, item)
+		if err != nil {
+			return err
+		}
+		missing := make([]string, 0, len(requirements.Required)+len(requirements.Unresolved))
+		for _, requirement := range append(requirements.Required, requirements.Unresolved...) {
+			if pathText := strings.TrimSpace(requirement.Path); pathText != "" {
+				missing = append(missing, pathText)
+			}
+		}
+		if len(missing) > 0 {
+			sort.Strings(missing)
+			return fmt.Errorf("trigger %q does not provide required graph state: %s", item.ID, strings.Join(missing, ", "))
+		}
+	}
+	return nil
 }
 
 func (s *Server) handleGetRegistry(c *gin.Context) {
@@ -185,19 +173,6 @@ func (s *Server) handleGetRegistry(c *gin.Context) {
 	})
 }
 
-func (s *Server) graphDefinition() (dsl.GraphDefinition, error) {
-	graph := s.currentGraph()
-	if graph == nil {
-		return dsl.GraphDefinition{}, errGraphNotConfigured
-	}
-	return graph.Definition()
-}
-
-func (s *Server) currentGraph() *wfgraph.Graph {
-	graph, _ := s.currentGraphRunner()
-	return graph
-}
-
 func (s *Server) currentRunner() *runtime.GraphRunner {
 	_, runner := s.currentGraphRunner()
 	return runner
@@ -210,15 +185,6 @@ func (s *Server) currentGraphRunner() (*wfgraph.Graph, *runtime.GraphRunner) {
 	session := s.runtime.currentSession()
 	graph, runner := session.graph, session.runner
 	return graph, runner
-}
-
-func sortedGraphNodeSpecKeys(input map[string]dsl.GraphNodeSpec) []string {
-	keys := make([]string, 0, len(input))
-	for key := range input {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func sortedStateModuleKeys(input map[string]dsl.StateModuleDefinition) []string {

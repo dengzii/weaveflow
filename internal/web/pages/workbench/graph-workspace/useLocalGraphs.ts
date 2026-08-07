@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
 import {
   deleteLocalGraph,
+  isHydratedLocalGraph,
   readLocalGraphs,
   saveLocalGraph,
   type LocalGraph,
@@ -67,6 +68,9 @@ export function localGraphSaveInput(
 }
 
 export function localGraphActivation(graph: LocalGraph) {
+  if (!isHydratedLocalGraph(graph)) {
+    throw new Error(`graph ${graph.graphId} detail is not loaded`);
+  }
   const workspaceState = savedGraphWorkspaceState(graph.definition);
   return {
     workspaceState,
@@ -170,6 +174,7 @@ export function useLocalGraphs({
     autoSaveHydratedRef.current = false;
     activeCacheIDRef.current = graph.id;
     setActiveCacheID(graph.id);
+    setGraphs((current) => current.map((item) => item.id === graph.id ? graph : item));
     const activation = localGraphActivation(graph);
     lastSavedSignatureRef.current = activation.signature;
     return activation;

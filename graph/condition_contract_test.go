@@ -47,6 +47,35 @@ func TestResolvedConditionValidatesRequiredBoundState(t *testing.T) {
 	}
 }
 
+func TestInitialStateRequirementsForEntryAndConcreteStateValidation(t *testing.T) {
+	t.Parallel()
+	workflow, err := NewBuilder(conditionContractRegistry(t)).Build(conditionContractDefinition(), nil)
+	if err != nil {
+		t.Fatalf("BuildGraph(): %v", err)
+	}
+	path := state.Shared("allowed")
+	requirements := workflow.InitialStateRequirementsFor(&core.EntryStateProvider{
+		ID: "trigger:chat",
+		Contract: state.NewContract(state.FieldAccess{
+			Path: path,
+			Mode: state.AccessWrite,
+		}),
+	})
+	if len(requirements.Required) != 0 || len(requirements.Unresolved) != 0 || len(requirements.ProvidedByEntry) != 1 {
+		t.Fatalf("entry requirements = %#v", requirements)
+	}
+	if provided := requirements.ProvidedByEntry[0]; provided.Path != path.String() || len(provided.Sources) != 1 || provided.Sources[0] != "trigger:chat" {
+		t.Fatalf("provided_by_entry = %#v", provided)
+	}
+
+	if err := workflow.ValidateInitialState(state.NewState()); err == nil || !strings.Contains(err.Error(), path.String()) {
+		t.Fatalf("missing concrete initial state error = %v", err)
+	}
+	if err := workflow.ValidateInitialState(state.FromShared(map[string]any{"allowed": "yes"})); err != nil {
+		t.Fatalf("valid concrete initial state rejected: %v", err)
+	}
+}
+
 func conditionContractRegistry(t *testing.T) *registry.Registry {
 	t.Helper()
 	reg := registry.NewRegistry()

@@ -1,10 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import type { GraphDefinition, RuntimeSettingsUpdate } from "../../types";
 import {
+  effectiveInitialStateRequirements,
   graphAnalysisSignature,
   graphSaveIdentity,
   graphSaveSignature,
   isGraphSavePending,
+  missingTriggerStateRequirements,
 } from "./graphSyncModel";
 
 describe("graph sync model", () => {
@@ -30,6 +32,47 @@ describe("graph sync model", () => {
     };
 
     expect(graphAnalysisSignature(first)).not.toBe(graphAnalysisSignature(changed));
+    expect(graphAnalysisSignature(first, [{ id: "hook" }])).not.toBe(graphAnalysisSignature(first, [{ id: "timer" }]));
+  });
+
+  test("treats a path as entry-provided only when every Trigger provides it", () => {
+    const requirement = { path: "shared.request.input", nodes: ["agent"], type: "string" };
+    const direct = {
+      required: [],
+      provided_by_entry: [],
+      provided_by_upstream: [],
+      unresolved: [requirement],
+    };
+    const provided = (triggerID: string) => ({
+      trigger_id: triggerID,
+      requirements: {
+        required: [],
+        provided_by_entry: [{ ...requirement, sources: [`trigger:${triggerID}`] }],
+        provided_by_upstream: [],
+        unresolved: [],
+      },
+    });
+
+    const complete = effectiveInitialStateRequirements({ direct, triggers: [provided("hook"), provided("chat")] });
+    expect(complete.unresolved).toEqual([]);
+    expect(complete.provided_by_entry).toEqual([
+      expect.objectContaining({ path: requirement.path, sources: ["trigger:hook", "trigger:chat"] }),
+    ]);
+
+    const incompleteAnalysis = {
+      direct,
+      triggers: [
+        provided("hook"),
+        {
+          trigger_id: "empty",
+          requirements: { ...direct, required: [requirement], unresolved: [] },
+        },
+      ],
+    };
+    expect(effectiveInitialStateRequirements(incompleteAnalysis).unresolved).toEqual([requirement]);
+    expect(missingTriggerStateRequirements(incompleteAnalysis)).toEqual([
+      { triggerID: "empty", paths: [requirement.path] },
+    ]);
   });
 
   test("tracks the complete server save payload", () => {

@@ -42,17 +42,18 @@ on the API server:
 go run ./cmd/server -addr :8080 -prefix /debug -cors-origins https://web.example.com
 ```
 
-The Graph workspace loads the server Graph list from `/graphs` whenever the page opens and caches graphs only in memory.
-It also supports node type palette creation from `/registry`, node/edge editing, upload to `PUT /graph`, and run debugging
-through the server API.
+The Graph workspace loads paged summaries from `/graphs`, fetches only the selected Graph detail, and caches hydrated
+graphs in memory. It also supports node type palette creation from `/registry`, node/edge editing, immutable Session
+creation through `POST /graphs/:graph_id/sessions`, exact-Session asynchronous runs, aggregate Run inspection, and
+Graph-scoped SSE replay.
 
 Graph definitions use version `2.0`. The Graph Inspector selects registered State Modules; Node and edge Condition
 Inspectors render a separate State Bindings section from each component's `state_ports`. The path picker filters module
 fields, producer outputs, and capability-compatible roots while still allowing a valid custom `shared` or `scopes`
 path. Bound capability ports show their final absolute resolved contract. The collapsible Graph JSON editor and the
 structured inspectors share one definition source, so edits stay synchronized in both directions. Missing required
-bindings, incompatible/reserved paths, unresolved producers, and parallel write conflicts are lint errors that block
-save/run.
+bindings, incompatible/reserved paths, and parallel write conflicts are lint errors. Missing producers are warnings;
+concrete Direct Run input and each Trigger entry contract are validated separately before execution or Trigger save.
 
 The Registry dialog exposes State Modules, capabilities, Node State Ports, Condition State Ports, and the generated
 Graph JSON Schema. The bottom Run panel uses resizable columns for the run list, the selected run's events, and the

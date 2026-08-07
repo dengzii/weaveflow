@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -33,7 +34,16 @@ type Target struct {
 
 type WebhookSpec struct {
 	APIKey        string                `json:"api_key,omitempty"`
+	StateBindings *WebhookStateBindings `json:"state_bindings,omitempty"`
 	StateMappings []WebhookStateMapping `json:"state_mappings,omitempty"`
+}
+
+type WebhookStateBindings struct {
+	Input       string `json:"input,omitempty"`
+	Metadata    string `json:"metadata,omitempty"`
+	TriggerID   string `json:"trigger_id,omitempty"`
+	TriggerType string `json:"trigger_type,omitempty"`
+	RawBody     string `json:"raw_body,omitempty"`
 }
 
 func (s *WebhookSpec) UnmarshalJSON(data []byte) error {
@@ -54,9 +64,17 @@ type WebhookStateMapping struct {
 }
 
 type ScheduleSpec struct {
-	Cron     string         `json:"cron"`
-	Timezone string         `json:"timezone,omitempty"`
-	Input    map[string]any `json:"input,omitempty"`
+	Cron          string                 `json:"cron"`
+	Timezone      string                 `json:"timezone,omitempty"`
+	Input         map[string]any         `json:"input,omitempty"`
+	StateBindings *ScheduleStateBindings `json:"state_bindings,omitempty"`
+}
+
+type ScheduleStateBindings struct {
+	Input       string `json:"input,omitempty"`
+	Metadata    string `json:"metadata,omitempty"`
+	TriggerID   string `json:"trigger_id,omitempty"`
+	TriggerType string `json:"trigger_type,omitempty"`
 }
 
 type ChatSpec struct {
@@ -69,6 +87,7 @@ type ChatSpec struct {
 }
 
 type ChatStateBindings struct {
+	Input          string `json:"input,omitempty"`
 	Conversation   string `json:"conversation,omitempty"`
 	RawHistory     string `json:"raw_history,omitempty"`
 	TriggerID      string `json:"trigger_id,omitempty"`
@@ -91,6 +110,141 @@ type Trigger struct {
 	Chat         *ChatSpec         `json:"chat,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 	UpdatedAt    time.Time         `json:"updated_at"`
+}
+
+// ProducedStateContract describes the state paths this Trigger writes before
+// Graph execution. It is intentionally separate from node access contracts.
+func (t Trigger) ProducedStateContract() (state.Contract, error) {
+	fields := producedInitialStateFields(t.InitialState)
+	appendTarget := func(target stateBindingTarget, fieldType string) error {
+		if strings.TrimSpace(target.path) == "" {
+			return nil
+		}
+		path, err := state.ParsePath(target.path)
+		if err != nil {
+			return fmt.Errorf("%s state path %q: %w", target.name, target.path, err)
+		}
+		effectivePath := path.String() + target.effectiveSuffix
+		path, err = state.ParsePath(effectivePath)
+		if err != nil {
+			return fmt.Errorf("%s effective state path %q: %w", target.name, effectivePath, err)
+		}
+		fields = append(fields, state.FieldAccess{
+			Path: path,
+			Mode: state.AccessWrite,
+			Type: fieldType,
+		})
+		return nil
+	}
+
+	switch t.Type {
+	case TypeWebhook:
+		if t.Webhook != nil {
+			for _, target := range webhookStateBindingTargets(t.Webhook.StateBindings) {
+				if err := appendTarget(target, requestStateBindingType(target.name)); err != nil {
+					return state.Contract{}, err
+				}
+			}
+			for _, target := range webhookStateMappingTargets(t.Webhook.StateMappings) {
+				if err := appendTarget(target, ""); err != nil {
+					return state.Contract{}, err
+				}
+			}
+		}
+	case TypeSchedule:
+		if t.Schedule != nil {
+			for _, target := range scheduleStateBindingTargets(t.Schedule.StateBindings) {
+				if err := appendTarget(target, requestStateBindingType(target.name)); err != nil {
+					return state.Contract{}, err
+				}
+			}
+		}
+	case TypeChat:
+		if t.Chat != nil {
+			for _, target := range chatStateBindingTargets(t.Chat.StateBindings) {
+				if err := appendTarget(target, chatStateBindingType(target.name)); err != nil {
+					return state.Contract{}, err
+				}
+			}
+		}
+	}
+
+	sort.SliceStable(fields, func(i, j int) bool {
+		return fields[i].Path.String() < fields[j].Path.String()
+	})
+	return state.NewContract(fields...), nil
+}
+
+func producedInitialStateFields(initial map[string]any) []state.FieldAccess {
+	fields := make([]state.FieldAccess, 0)
+	var appendValue func(string, any)
+	appendValue = func(pathText string, value any) {
+		path, err := state.ParsePath(pathText)
+		if err != nil {
+			return
+		}
+		fields = append(fields, state.FieldAccess{
+			Path: path,
+			Mode: state.AccessWrite,
+			Type: jsonStateValueType(value),
+		})
+		values, ok := value.(map[string]any)
+		if !ok {
+			return
+		}
+		for name, child := range values {
+			appendValue(path.String()+"."+name, child)
+		}
+	}
+	for _, section := range []string{state.SectionShared, state.SectionScopes} {
+		values, ok := initial[section].(map[string]any)
+		if !ok {
+			continue
+		}
+		for name, value := range values {
+			appendValue(section+"."+name, value)
+		}
+	}
+	return fields
+}
+
+func jsonStateValueType(value any) string {
+	switch value.(type) {
+	case map[string]any:
+		return "object"
+	case []any:
+		return "array"
+	case string:
+		return "string"
+	case bool:
+		return "boolean"
+	case float32, float64, int, int8, int16, int32, int64, uint, uint8, uint16, uint32, uint64, json.Number:
+		return "number"
+	default:
+		return ""
+	}
+}
+
+func requestStateBindingType(name string) string {
+	switch name {
+	case "metadata":
+		return "object"
+	case "trigger_id", "trigger_type", "raw_body":
+		return "string"
+	default:
+		return ""
+	}
+}
+
+func chatStateBindingType(name string) string {
+	switch name {
+	case "input", "trigger_id", "channel", "user_id", "conversation_id", "message_id":
+		return "string"
+	case "conversation", "raw_history":
+		return "array"
+	default:
+		return ""
+	}
 }
 
 type TriggerResult struct {
@@ -120,6 +274,7 @@ func (t Trigger) Normalize(now time.Time) Trigger {
 		t.Concurrency = ConcurrencyParallel
 	}
 	if t.Webhook != nil {
+		t.Webhook.StateBindings = normalizeWebhookStateBindings(t.Webhook.StateBindings)
 		for i := range t.Webhook.StateMappings {
 			t.Webhook.StateMappings[i].Parameter = strings.TrimSpace(t.Webhook.StateMappings[i].Parameter)
 			t.Webhook.StateMappings[i].StatePath = strings.TrimSpace(t.Webhook.StateMappings[i].StatePath)
@@ -131,6 +286,7 @@ func (t Trigger) Normalize(now time.Time) Trigger {
 	if t.Schedule != nil {
 		t.Schedule.Cron = strings.TrimSpace(t.Schedule.Cron)
 		t.Schedule.Timezone = strings.TrimSpace(t.Schedule.Timezone)
+		t.Schedule.StateBindings = normalizeScheduleStateBindings(t.Schedule.StateBindings)
 	}
 	if t.Chat != nil {
 		t.Chat.Channel = strings.TrimSpace(t.Chat.Channel)
@@ -186,6 +342,17 @@ func (t Trigger) Validate() error {
 		if err := validateWebhookStateMappings(t.Webhook.StateMappings); err != nil {
 			return fmt.Errorf("%w: %w: %v", ErrInvalidTrigger, ErrInvalidStateMapping, err)
 		}
+		bindings := webhookStateBindingTargets(t.Webhook.StateBindings)
+		if err := validateStateBindingTargets(bindings); err != nil {
+			return fmt.Errorf("%w: webhook state_bindings: %v", ErrInvalidTrigger, err)
+		}
+		destinations := append(bindings, webhookStateMappingTargets(t.Webhook.StateMappings)...)
+		if err := validateStateBindingTargets(destinations); err != nil {
+			return fmt.Errorf("%w: webhook state destinations: %v", ErrInvalidTrigger, err)
+		}
+		if err := validateInitialStateDestinations(t.InitialState, destinations); err != nil {
+			return fmt.Errorf("%w: webhook state destinations: %v", ErrInvalidTrigger, err)
+		}
 	case TypeSchedule:
 		if t.Schedule == nil || t.Schedule.Cron == "" {
 			return fmt.Errorf("%w: schedule cron is required", ErrInvalidTrigger)
@@ -194,6 +361,13 @@ func (t Trigger) Validate() error {
 			if _, err := time.LoadLocation(t.Schedule.Timezone); err != nil {
 				return fmt.Errorf("%w: schedule timezone %q is invalid: %v", ErrInvalidTrigger, t.Schedule.Timezone, err)
 			}
+		}
+		bindings := scheduleStateBindingTargets(t.Schedule.StateBindings)
+		if err := validateStateBindingTargets(bindings); err != nil {
+			return fmt.Errorf("%w: schedule state_bindings: %v", ErrInvalidTrigger, err)
+		}
+		if err := validateInitialStateDestinations(t.InitialState, bindings); err != nil {
+			return fmt.Errorf("%w: schedule state_bindings: %v", ErrInvalidTrigger, err)
 		}
 	case TypeChat:
 		if t.Chat == nil {
@@ -211,8 +385,35 @@ func (t Trigger) Validate() error {
 		if err := validateChatStateBindings(t.Chat.StateBindings); err != nil {
 			return fmt.Errorf("%w: chat state_bindings: %v", ErrInvalidTrigger, err)
 		}
+		if err := validateInitialStateDestinations(t.InitialState, chatStateBindingTargets(t.Chat.StateBindings)); err != nil {
+			return fmt.Errorf("%w: chat state_bindings: %v", ErrInvalidTrigger, err)
+		}
 	}
 	return nil
+}
+
+func normalizeWebhookStateBindings(bindings *WebhookStateBindings) *WebhookStateBindings {
+	if bindings == nil {
+		return nil
+	}
+	normalized := *bindings
+	normalizeStateBindingPaths(&normalized.Input, &normalized.Metadata, &normalized.TriggerID, &normalized.TriggerType, &normalized.RawBody)
+	if normalized == (WebhookStateBindings{}) {
+		return nil
+	}
+	return &normalized
+}
+
+func normalizeScheduleStateBindings(bindings *ScheduleStateBindings) *ScheduleStateBindings {
+	if bindings == nil {
+		return nil
+	}
+	normalized := *bindings
+	normalizeStateBindingPaths(&normalized.Input, &normalized.Metadata, &normalized.TriggerID, &normalized.TriggerType)
+	if normalized == (ScheduleStateBindings{}) {
+		return nil
+	}
+	return &normalized
 }
 
 func normalizeChatStateBindings(bindings *ChatStateBindings) *ChatStateBindings {
@@ -221,6 +422,7 @@ func normalizeChatStateBindings(bindings *ChatStateBindings) *ChatStateBindings 
 	}
 	normalized := *bindings
 	paths := []*string{
+		&normalized.Input,
 		&normalized.Conversation,
 		&normalized.RawHistory,
 		&normalized.TriggerID,
@@ -229,28 +431,64 @@ func normalizeChatStateBindings(bindings *ChatStateBindings) *ChatStateBindings 
 		&normalized.ConversationID,
 		&normalized.MessageID,
 	}
-	for _, value := range paths {
-		*value = strings.TrimSpace(*value)
-		if path, err := state.ParsePath(*value); err == nil {
-			*value = path.String()
-		}
-	}
+	normalizeStateBindingPaths(paths...)
 	if normalized == (ChatStateBindings{}) {
 		return nil
 	}
 	return &normalized
 }
 
+func normalizeStateBindingPaths(paths ...*string) {
+	for _, value := range paths {
+		*value = strings.TrimSpace(*value)
+		if path, err := state.ParsePath(*value); err == nil {
+			*value = path.String()
+		}
+	}
+}
+
 func validateChatStateBindings(bindings *ChatStateBindings) error {
+	return validateStateBindingTargets(chatStateBindingTargets(bindings))
+}
+
+type stateBindingTarget struct {
+	name            string
+	path            string
+	effectiveSuffix string
+}
+
+func webhookStateBindingTargets(bindings *WebhookStateBindings) []stateBindingTarget {
 	if bindings == nil {
 		return nil
 	}
-	values := []struct {
-		name          string
-		path          string
-		effectivePath string
-	}{
-		{name: "conversation", path: bindings.Conversation, effectivePath: chatConversationMessagesPath(bindings.Conversation)},
+	return []stateBindingTarget{
+		{name: "input", path: bindings.Input},
+		{name: "metadata", path: bindings.Metadata},
+		{name: "trigger_id", path: bindings.TriggerID},
+		{name: "trigger_type", path: bindings.TriggerType},
+		{name: "raw_body", path: bindings.RawBody},
+	}
+}
+
+func scheduleStateBindingTargets(bindings *ScheduleStateBindings) []stateBindingTarget {
+	if bindings == nil {
+		return nil
+	}
+	return []stateBindingTarget{
+		{name: "input", path: bindings.Input},
+		{name: "metadata", path: bindings.Metadata},
+		{name: "trigger_id", path: bindings.TriggerID},
+		{name: "trigger_type", path: bindings.TriggerType},
+	}
+}
+
+func chatStateBindingTargets(bindings *ChatStateBindings) []stateBindingTarget {
+	if bindings == nil {
+		return nil
+	}
+	return []stateBindingTarget{
+		{name: "input", path: bindings.Input},
+		{name: "conversation", path: bindings.Conversation, effectiveSuffix: ".messages"},
 		{name: "raw_history", path: bindings.RawHistory},
 		{name: "trigger_id", path: bindings.TriggerID},
 		{name: "channel", path: bindings.Channel},
@@ -258,6 +496,9 @@ func validateChatStateBindings(bindings *ChatStateBindings) error {
 		{name: "conversation_id", path: bindings.ConversationID},
 		{name: "message_id", path: bindings.MessageID},
 	}
+}
+
+func validateStateBindingTargets(values []stateBindingTarget) error {
 	validated := make([]struct {
 		name string
 		path string
@@ -277,13 +518,7 @@ func validateChatStateBindings(bindings *ChatStateBindings) error {
 			return fmt.Errorf("%s path section %q is not allowed", value.name, path.Section())
 		}
 		canonical := path.String()
-		effectivePath := canonical
-		if value.effectivePath != "" {
-			effectivePath = value.effectivePath
-		}
-		if statePathsOverlap(effectivePath, "shared.request.input") {
-			return fmt.Errorf("%s path %q overlaps the chat input path", value.name, canonical)
-		}
+		effectivePath := canonical + value.effectiveSuffix
 		for _, previous := range validated {
 			if statePathsOverlap(effectivePath, previous.path) {
 				return fmt.Errorf("%s path %q overlaps %s path %q", value.name, canonical, previous.name, previous.path)
@@ -295,6 +530,64 @@ func validateChatStateBindings(bindings *ChatStateBindings) error {
 		}{name: value.name, path: effectivePath})
 	}
 	return nil
+}
+
+func webhookStateMappingTargets(mappings []WebhookStateMapping) []stateBindingTarget {
+	targets := make([]stateBindingTarget, 0, len(mappings))
+	for index, mapping := range mappings {
+		targets = append(targets, stateBindingTarget{
+			name: fmt.Sprintf("state_mapping[%d]", index),
+			path: mapping.StatePath,
+		})
+	}
+	return targets
+}
+
+func validateInitialStateDestinations(initial map[string]any, destinations []stateBindingTarget) error {
+	initialPaths := initialStatePaths(initial)
+	for _, destination := range destinations {
+		if destination.path == "" {
+			continue
+		}
+		parsed, err := state.ParsePath(destination.path)
+		if err != nil {
+			continue
+		}
+		effectivePath := parsed.String() + destination.effectiveSuffix
+		for _, initialPath := range initialPaths {
+			if statePathsOverlap(effectivePath, initialPath) {
+				return fmt.Errorf("%s path %q overlaps initial_state path %q", destination.name, parsed.String(), initialPath)
+			}
+		}
+	}
+	return nil
+}
+
+func initialStatePaths(initial map[string]any) []string {
+	paths := make([]string, 0)
+	var visit func(string, any)
+	visit = func(parent string, value any) {
+		values, ok := value.(map[string]any)
+		if !ok {
+			paths = append(paths, parent)
+			return
+		}
+		if len(values) == 0 {
+			paths = append(paths, parent)
+			return
+		}
+		for name, child := range values {
+			path := parent + "." + name
+			visit(path, child)
+		}
+	}
+	for _, section := range []string{state.SectionShared, state.SectionScopes} {
+		value, exists := initial[section]
+		if exists {
+			visit(section, value)
+		}
+	}
+	return paths
 }
 
 func chatConversationMessagesPath(root string) string {
@@ -317,16 +610,8 @@ func validateInitialState(initial map[string]any) error {
 		if section != state.SectionShared && section != state.SectionScopes {
 			return fmt.Errorf("state section %q is not allowed", section)
 		}
-		values, ok := value.(map[string]any)
-		if !ok {
+		if _, ok := value.(map[string]any); !ok {
 			return fmt.Errorf("state section %q must be an object", section)
-		}
-		if section == state.SectionShared {
-			for _, reserved := range []string{"request", "trigger"} {
-				if _, exists := values[reserved]; exists {
-					return fmt.Errorf("state path %q is reserved", section+"."+reserved)
-				}
-			}
 		}
 	}
 	if _, err := json.Marshal(initial); err != nil {
@@ -368,7 +653,7 @@ func isReservedTriggerID(id string) bool {
 }
 
 func validateWebhookStateMappings(mappings []WebhookStateMapping) error {
-	targets := make(map[string]struct{}, len(mappings))
+	targets := make([]string, 0, len(mappings))
 	for index, mapping := range mappings {
 		if err := validateWebhookParameter(mapping.Parameter); err != nil {
 			return fmt.Errorf("webhook state mapping %d: %w", index+1, err)
@@ -384,14 +669,12 @@ func validateWebhookStateMappings(mappings []WebhookStateMapping) error {
 		if path.Section() != state.SectionShared && path.Section() != state.SectionScopes {
 			return fmt.Errorf("webhook state mapping %d: state section %q is reserved", index+1, path.Section())
 		}
-		if path.Section() == state.SectionShared && (segments[0] == "trigger" ||
-			(segments[0] == "request" && (len(segments) == 1 || segments[1] == "metadata"))) {
-			return fmt.Errorf("webhook state mapping %d: state path %q is reserved", index+1, path.String())
+		for _, target := range targets {
+			if statePathsOverlap(path.String(), target) {
+				return fmt.Errorf("webhook state mapping %d: state path %q overlaps %q", index+1, path.String(), target)
+			}
 		}
-		if _, exists := targets[path.String()]; exists {
-			return fmt.Errorf("webhook state mapping %d: duplicate state path %q", index+1, path.String())
-		}
-		targets[path.String()] = struct{}{}
+		targets = append(targets, path.String())
 	}
 	return nil
 }

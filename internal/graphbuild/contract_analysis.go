@@ -14,6 +14,7 @@ type ContractAnalysisGraph struct {
 	EntryPoint         string
 	EndNode            string
 	InitialStatePaths  []string
+	EntryProvider      *core.EntryStateProvider
 	Edges              map[string][]string
 	ConditionalEdges   map[string][]string
 	NodeContracts      map[string]state.Contract
@@ -73,6 +74,7 @@ func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialSt
 	predecessors := graphPredecessors(input, reachable)
 	ancestors := graphAncestors(reachable, predecessors)
 	required := map[string]*initialStateRequirementAccumulator{}
+	providedByEntry := map[string]*initialStateRequirementAccumulator{}
 	provided := map[string]*initialStateRequirementAccumulator{}
 	unresolved := map[string]*initialStateRequirementAccumulator{}
 
@@ -85,12 +87,14 @@ func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialSt
 			path := field.Path.String()
 			sources := requiredReadSources(input, nodeID, path, ancestors[nodeID])
 			switch {
-			case sources.empty():
-				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("node %q requires input path %q but no initial input or upstream writer can provide it", nodeID, path))
 			case len(sources.nodes) > 0:
 				addInitialStateRequirement(provided, path, nodeID, sources.nodes, field, "")
-			default:
+			case len(sources.entries) > 0:
+				addInitialStateRequirement(providedByEntry, path, nodeID, sources.entries, field, "")
+			case sources.runInput:
 				addInitialStateRequirement(required, path, nodeID, nil, field, "")
+			default:
+				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("node %q requires input path %q but no initial input or upstream writer can provide it", nodeID, path))
 			}
 		}
 	}
@@ -103,17 +107,20 @@ func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialSt
 			path := field.Path.String()
 			sources := requiredConditionReadSources(input, nodeID, path, ancestors[nodeID])
 			switch {
-			case sources.empty():
-				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("condition after node %q requires path %q but no initial input or upstream writer can provide it", nodeID, path))
 			case len(sources.nodes) > 0:
 				addInitialStateRequirement(provided, path, nodeID, sources.nodes, field, "")
-			default:
+			case len(sources.entries) > 0:
+				addInitialStateRequirement(providedByEntry, path, nodeID, sources.entries, field, "")
+			case sources.runInput:
 				addInitialStateRequirement(required, path, nodeID, nil, field, "")
+			default:
+				addInitialStateRequirement(unresolved, path, nodeID, nil, field, fmt.Sprintf("condition after node %q requires path %q but no initial input or upstream writer can provide it", nodeID, path))
 			}
 		}
 	}
 
 	result.Required = initialStateRequirementList(required)
+	result.ProvidedByEntry = initialStateRequirementList(providedByEntry)
 	result.ProvidedByUpstream = initialStateRequirementList(provided)
 	result.Unresolved = initialStateRequirementList(unresolved)
 	result.Warnings = contractAnalysisWarnings(input)
@@ -123,6 +130,7 @@ func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialSt
 func emptyInitialStateRequirements() core.InitialStateRequirements {
 	return core.InitialStateRequirements{
 		Required:           []core.InitialStateRequirement{},
+		ProvidedByEntry:    []core.InitialStateRequirement{},
 		ProvidedByUpstream: []core.InitialStateRequirement{},
 		Unresolved:         []core.InitialStateRequirement{},
 	}
@@ -209,18 +217,20 @@ func sortedStringSet(input map[string]struct{}) []string {
 
 type contractReadSources struct {
 	runInput bool
+	entries  []string
 	nodes    []string
 }
 
 func (s contractReadSources) empty() bool {
-	return !s.runInput && len(s.nodes) == 0
+	return !s.runInput && len(s.entries) == 0 && len(s.nodes) == 0
 }
 
 func (s contractReadSources) diagnosticLabels() []string {
-	labels := make([]string, 0, len(s.nodes)+1)
+	labels := make([]string, 0, len(s.entries)+len(s.nodes)+1)
 	if s.runInput {
 		labels = append(labels, "run_input")
 	}
+	labels = append(labels, s.entries...)
 	labels = append(labels, s.nodes...)
 	return labels
 }
@@ -628,11 +638,10 @@ func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, an
 			sources := requiredReadSources(input, nodeID, path, ancestors[nodeID])
 			if sources.empty() {
 				diagnostics = append(diagnostics, core.ContractDiagnostic{
-					Severity: core.ContractDiagnosticSeverityError,
-					Kind:     "missing_required_read",
-					NodeID:   nodeID,
-					Path:     path,
-					Message:  fmt.Sprintf("node %q requires input path %q but no initial input or upstream writer can provide it", nodeID, path),
+					Severity: core.ContractDiagnosticSeverityWarning, Kind: "missing_required_read",
+					NodeID:  nodeID,
+					Path:    path,
+					Message: fmt.Sprintf("node %q requires input path %q but no initial input or upstream writer can provide it", nodeID, path),
 				})
 				continue
 			}
@@ -660,6 +669,7 @@ func requiredReadSources(input ContractAnalysisGraph, nodeID string, path string
 			break
 		}
 	}
+	appendEntryProviderSource(input.EntryProvider, path, &sources)
 
 	if contract, ok := input.NodeContracts[nodeID]; ok && selfRuntimePathProvidesRead(nodeID, contract, path) {
 		sources.nodes = append(sources.nodes, nodeID)
@@ -696,7 +706,7 @@ func requiredConditionReadDiagnostics(input ContractAnalysisGraph, reachable []s
 			path := field.Path.String()
 			if sources := requiredConditionReadSources(input, nodeID, path, ancestors[nodeID]); sources.empty() {
 				diagnostics = append(diagnostics, core.ContractDiagnostic{
-					Severity: core.ContractDiagnosticSeverityError, Kind: "missing_condition_read", NodeID: nodeID, Path: path,
+					Severity: core.ContractDiagnosticSeverityWarning, Kind: "missing_condition_read", NodeID: nodeID, Path: path,
 					Message: fmt.Sprintf("condition after node %q requires path %q but no initial input or upstream writer can provide it", nodeID, path),
 				})
 			}
@@ -713,6 +723,7 @@ func requiredConditionReadSources(input ContractAnalysisGraph, nodeID string, pa
 			break
 		}
 	}
+	appendEntryProviderSource(input.EntryProvider, path, &sources)
 	if contract, ok := input.NodeContracts[nodeID]; ok && contractProvidesRead(contract, path) {
 		sources.nodes = append(sources.nodes, nodeID)
 	}
@@ -729,6 +740,17 @@ func requiredConditionReadSources(input ContractAnalysisGraph, nodeID string, pa
 	sort.Strings(sources.nodes)
 	sources.nodes = compactStrings(sources.nodes)
 	return sources
+}
+
+func appendEntryProviderSource(provider *core.EntryStateProvider, path string, sources *contractReadSources) {
+	if provider == nil || sources == nil || !contractProvidesRead(provider.Contract, path) {
+		return
+	}
+	sourceID := strings.TrimSpace(provider.ID)
+	if sourceID == "" {
+		sourceID = "entry"
+	}
+	sources.entries = append(sources.entries, sourceID)
 }
 
 func selfRuntimePathProvidesRead(nodeID string, contract state.Contract, path string) bool {

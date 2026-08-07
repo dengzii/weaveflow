@@ -70,6 +70,41 @@ func TestAnalyzeInitialStateRequirementsSeparatesInitialAndUpstreamPaths(t *test
 	}
 }
 
+func TestAnalyzeInitialStateRequirementsClassifiesConcreteEntryProvider(t *testing.T) {
+	t.Parallel()
+	inputPath := state.Shared("request", "input")
+	result := AnalyzeInitialStateRequirements(ContractAnalysisGraph{
+		EntryPoint: "entry",
+		EndNode:    "__end__",
+		EntryProvider: &core.EntryStateProvider{
+			ID: "trigger:hook",
+			Contract: state.NewContract(state.FieldAccess{
+				Path: inputPath,
+				Mode: state.AccessWrite,
+			}),
+		},
+		NodeContracts: map[string]state.Contract{
+			"entry": state.NewContract(state.FieldAccess{
+				Path:     inputPath,
+				Mode:     state.AccessRead,
+				Required: true,
+				Type:     "string",
+			}),
+		},
+	})
+
+	if len(result.Required) != 0 || len(result.Unresolved) != 0 {
+		t.Fatalf("requirements = %#v, want entry-provided path", result)
+	}
+	if len(result.ProvidedByEntry) != 1 {
+		t.Fatalf("provided_by_entry = %#v, want one item", result.ProvidedByEntry)
+	}
+	provided := result.ProvidedByEntry[0]
+	if provided.Path != inputPath.String() || len(provided.Sources) != 1 || provided.Sources[0] != "trigger:hook" {
+		t.Fatalf("provided_by_entry = %#v", provided)
+	}
+}
+
 func TestAnalyzeInitialStateRequirementsDistinguishesInputNodeFromRunInput(t *testing.T) {
 	t.Parallel()
 	inputPath := state.Shared("request", "input")
@@ -165,8 +200,8 @@ func TestAnalyzeContractDiagnosticsReportsMissingNodeAndConditionProducers(t *te
 
 	assertDiagnostic(t, result, "missing_required_read", "reader", missingNodePath.String())
 	assertDiagnostic(t, result, "missing_condition_read", "entry", missingConditionPath.String())
-	if err := ContractDiagnosticsError(result); err == nil {
-		t.Fatal("expected producer diagnostics to fail contract validation")
+	if err := ContractDiagnosticsError(result); err != nil {
+		t.Fatalf("missing producer warnings failed contract validation: %v", err)
 	}
 }
 

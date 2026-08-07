@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelChatChannelSetup,
-  createTrigger,
-  deleteTrigger,
   listTriggers,
-  updateTrigger,
+  replaceTriggers,
 } from "../../../api";
 import type { Trigger, TriggerType } from "../../../types";
 import {
@@ -13,7 +11,7 @@ import {
   triggerEditorValues,
   type TriggerEditorValues,
 } from "../triggerEditor";
-import { nextTriggerName, triggersForGraph, uniqueTriggerIDs } from "./graphTriggerModel";
+import { nextTriggerName, uniqueTriggerIDs } from "./graphTriggerModel";
 
 export interface CreatedGraphTrigger {
   trigger: Trigger;
@@ -69,10 +67,9 @@ export function useGraphTriggers(graphID: string) {
       return [];
     }
     try {
-      const allTriggers = await listTriggers();
-      const items = triggersForGraph(allTriggers, targetGraphID);
+      const items = await listTriggers(targetGraphID);
       if (!isCurrentRequest(requestGeneration, targetGraphID)) return null;
-      setKnownTriggerIDs(uniqueTriggerIDs(allTriggers));
+      setKnownTriggerIDs(uniqueTriggerIDs(items));
       const nextDrafts = items.map(serverTriggerDraft);
       serverTriggersRef.current = new Map(items.map((trigger) => [trigger.id, trigger]));
       replaceDrafts(nextDrafts);
@@ -201,15 +198,18 @@ export function useGraphTriggers(graphID: string) {
     return true;
   }, [replaceDrafts]);
 
-  const validate = useCallback(() => {
-    for (const draft of draftsRef.current) {
-      buildTriggerPayload(
-        draft.values,
-        serverTriggersRef.current.get(draft.trigger.id) ?? null,
-        draft.chatSetupSessionID
-      );
-    }
+  const analysisPayloads = useCallback(() => {
+    const serverTriggers = serverTriggersRef.current;
+    return draftsRef.current.map((draft) => buildTriggerPayload(
+      draft.values,
+      serverTriggers.get(draft.trigger.id) ?? (draft.imported ? draft.trigger : null),
+      draft.chatSetupSessionID
+    ));
   }, []);
+
+  const validate = useCallback(() => {
+    analysisPayloads();
+  }, [analysisPayloads]);
 
   const stageImport = useCallback((targetGraphID: string, triggers: Trigger[]) => {
     pendingImportRef.current = {
@@ -226,46 +226,17 @@ export function useGraphTriggers(graphID: string) {
     if (!targetGraphID || !hydrated) return [];
     const requestGeneration = requestGenerationRef.current;
     const currentDrafts = draftsRef.current;
-    const serverTriggers = serverTriggersRef.current;
-    const payloads = currentDrafts.map((draft) => ({
-      draft,
-      payload: (() => {
-        const serverTrigger = serverTriggers.get(draft.trigger.id);
-        return buildTriggerPayload(
-          draft.values,
-          serverTrigger ?? (draft.imported ? draft.trigger : null),
-          draft.chatSetupSessionID,
-          !serverTrigger
-        );
-      })(),
-    }));
-    const savedTriggers = new Map<string, Trigger>();
+    const payloads = analysisPayloads();
 
     try {
-      for (const { draft, payload } of payloads) {
-        const serverTrigger = serverTriggers.get(draft.trigger.id);
-        if (serverTrigger && triggerValuesSignature(draft.values) === triggerValuesSignature(triggerEditorValues(serverTrigger, serverTrigger.target ?? { graph_id: targetGraphID })) && !draft.chatSetupSessionID) {
-          savedTriggers.set(serverTrigger.id, serverTrigger);
-          continue;
-        }
-        const saved = serverTrigger
-          ? await updateTrigger(draft.trigger.id, payload)
-          : await createTrigger(payload);
-        serverTriggers.set(saved.id, saved);
-        savedTriggers.set(saved.id, saved);
-      }
-
-      const currentIDs = new Set(currentDrafts.map((draft) => draft.trigger.id));
-      for (const serverTrigger of Array.from(serverTriggers.values())) {
-        if (currentIDs.has(serverTrigger.id)) continue;
-        await deleteTrigger(serverTrigger.id);
-        serverTriggers.delete(serverTrigger.id);
-      }
+      const saved = await replaceTriggers(targetGraphID, payloads);
       if (!isCurrentRequest(requestGeneration, targetGraphID)) return [];
 
+      const savedByID = new Map(saved.map((trigger) => [trigger.id, trigger]));
       const nextDrafts = currentDrafts.map((draft) => serverTriggerDraft(
-        savedTriggers.get(draft.trigger.id) ?? serverTriggers.get(draft.trigger.id) ?? draft.trigger
+        savedByID.get(draft.trigger.id) ?? draft.trigger
       ));
+      serverTriggersRef.current = savedByID;
       replaceDrafts(nextDrafts);
       setKnownTriggerIDs((current) => uniqueTriggerIDs(
         nextDrafts.map((draft) => draft.trigger),
@@ -276,17 +247,11 @@ export function useGraphTriggers(graphID: string) {
       return nextDrafts.map((draft) => draft.trigger);
     } catch (error) {
       if (isCurrentRequest(requestGeneration, targetGraphID)) {
-        if (savedTriggers.size > 0) {
-          replaceDrafts(draftsRef.current.map((draft) => {
-            const saved = savedTriggers.get(draft.trigger.id);
-            return saved ? serverTriggerDraft(saved) : draft;
-          }));
-        }
         setLoadError(errorMessage(error));
       }
       throw error;
     }
-  }, [hydrated, isCurrentRequest, replaceDrafts]);
+  }, [analysisPayloads, hydrated, isCurrentRequest, replaceDrafts]);
 
   return {
     triggers,
@@ -306,6 +271,7 @@ export function useGraphTriggers(graphID: string) {
     updateEnabled,
     remove,
     validate,
+    analysisPayloads,
     stageImport,
     save,
   };
@@ -345,10 +311,6 @@ function triggerDraftSignature(drafts: readonly GraphTriggerDraft[]): string {
         values: draft.values,
       }))
   );
-}
-
-function triggerValuesSignature(values: TriggerEditorValues): string {
-  return JSON.stringify(values);
 }
 
 function createTriggerID(): string {

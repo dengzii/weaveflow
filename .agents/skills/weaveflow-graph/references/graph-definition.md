@@ -16,7 +16,8 @@ Construct graphs from the live registry. Do not maintain a private list of node 
     - Treat capability ports as a root binding for the capability's relative fields.
     - For `dynamic_state_ports`, validate the alias against `name_pattern`, `min_ports`, and `max_ports`.
 6. For each conditional edge, find `conditions[].type` and apply its config and state schema the same way.
-7. Validate the complete definition through `POST /graph/initial-state-requirements` before graph upload.
+7. Validate the complete definition through `POST /graphs/:graph_id/analysis/initial-state-requirements` before
+   creating a Graph Session.
 
 ## Core Shape
 
@@ -119,14 +120,16 @@ Before the run, confirm all of the following:
 - `weaveflow.protocols@1` exists in `registry.data.state_modules`.
 - `agent` exists in `registry.data.node_types` and its ports still match.
 - `calculator` exists in `runtime/tools.data.tools`.
-- `default` is enabled in `runtime/settings.data.models` and reports `api_key_configured: true`.
+- `default` is enabled in the target Graph detail's `data.settings.models` and reports
+  `api_key_configured: true`; for a new Graph, verify the intended Session settings request instead.
 - Candidate analysis identifies `shared.request.input` as required, and the planned initial state supplies it.
 
 ## Identity And Versioning
 
-The upload envelope carries `graph_id`, `graph_version`, the definition, and required graph-scoped `settings`; the
-definition may also carry `metadata.id` and `metadata.graph_version`. Prefer explicit envelope values. Upload the
-definition and settings together so node config, models, environment, and memory cannot refer to different revisions.
+The Session path carries `graph_id`; the request envelope carries `graph_version`, the definition, and required
+Graph-scoped `settings`. The definition may also carry `metadata.id` and `metadata.graph_version`, but the path remains
+the HTTP identity source. Create the definition and settings together so node config, models, environment, and memory
+cannot refer to different revisions.
 
 Record all returned identities:
 

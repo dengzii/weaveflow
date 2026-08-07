@@ -13,6 +13,7 @@ import {
   editableChatChannelSchema,
   triggerTargetKey,
   triggerTypeName,
+  type TriggerEditorStateBindings,
   type TriggerEditorValues,
   type TriggerInitialStateEntry,
   type TriggerTargetOption,
@@ -20,12 +21,22 @@ import {
 
 const emptyMapping = (): WebhookStateMapping => ({ parameter: "", state_path: "" });
 const emptyInitialStateEntry = (): TriggerInitialStateEntry => ({ path: "", value: "" });
-const chatMetadataBindingFields = [
-  { key: "chatTriggerIDStatePath", label: "Trigger ID", placeholder: "scopes.chat.trigger_id" },
-  { key: "chatChannelStatePath", label: "Channel", placeholder: "scopes.chat.channel" },
-  { key: "chatUserIDStatePath", label: "User ID", placeholder: "scopes.chat.user_id" },
-  { key: "chatConversationIDStatePath", label: "Conversation ID", placeholder: "scopes.chat.conversation_id" },
-  { key: "chatMessageIDStatePath", label: "Message ID", placeholder: "scopes.chat.message_id" },
+const requestStateBindingFields = [
+  { key: "input", label: "Input", placeholder: "shared.request.input" },
+  { key: "metadata", label: "Metadata", placeholder: "shared.request.metadata" },
+  { key: "trigger_id", label: "Trigger ID", placeholder: "shared.trigger.id" },
+  { key: "trigger_type", label: "Trigger Type", placeholder: "shared.trigger.type" },
+  { key: "raw_body", label: "Raw Body", placeholder: "shared.request.raw_body" },
+] as const;
+const chatStateBindingFields = [
+  { key: "input", label: "Input", placeholder: "shared.request.input" },
+  { key: "conversation", label: "Conversation Root", placeholder: "scopes.agent.conversation" },
+  { key: "raw_history", label: "Raw History", placeholder: "scopes.chat.raw_history" },
+  { key: "trigger_id", label: "Trigger ID", placeholder: "scopes.chat.trigger_id" },
+  { key: "channel", label: "Channel", placeholder: "scopes.chat.channel" },
+  { key: "user_id", label: "User ID", placeholder: "scopes.chat.user_id" },
+  { key: "conversation_id", label: "Conversation ID", placeholder: "scopes.chat.conversation_id" },
+  { key: "message_id", label: "Message ID", placeholder: "scopes.chat.message_id" },
 ] as const;
 
 export function TriggerEditorForm({
@@ -66,11 +77,13 @@ export function TriggerEditorForm({
   const [identityOpen, setIdentityOpen] = useState(true);
   const [messageRoutingOpen, setMessageRoutingOpen] = useState(true);
   const [conversationStateOpen, setConversationStateOpen] = useState(false);
+  const [stateBindingsOpen, setStateBindingsOpen] = useState(true);
   const [responseStreamingOpen, setResponseStreamingOpen] = useState(false);
   const [generalOpen, setGeneralOpen] = useState(false);
   const [sourceSettingsOpen, setSourceSettingsOpen] = useState(true);
   const [initialStateOpen, setInitialStateOpen] = useState(false);
   const selectedChatChannel = chatChannels.find((channel) => channel.id === values.chatChannel);
+  const activeStateBindingFields = values.type === "chat" ? chatStateBindingFields : requestStateBindingFields;
   const hasStoredChannelCredential = Boolean(persisted && trigger?.chat?.channel === values.chatChannel);
   const channelSchema = editableChatChannelSchema(
     selectedChatChannel,
@@ -135,6 +148,10 @@ export function TriggerEditorForm({
         entryIndex === index ? { ...entry, [field]: value } : entry
       )
     );
+  }
+
+  function updateStateBinding(key: keyof TriggerEditorStateBindings, value: string) {
+    change("stateBindings", { ...values.stateBindings, [key]: value });
   }
 
   return (
@@ -242,7 +259,6 @@ export function TriggerEditorForm({
           </CollapsibleInspectorBlock>
 
           <CollapsibleInspectorBlock title="Conversation State" open={conversationStateOpen} onOpenChange={setConversationStateOpen}>
-            <div className="text-[11px] text-muted-foreground">Optional conversation, audit history, and trigger metadata bindings.</div>
             <label className="grid gap-1 text-sm">
               <span className="text-xs font-medium text-muted-foreground">History rounds</span>
               <Input
@@ -255,38 +271,6 @@ export function TriggerEditorForm({
                 placeholder="Not loaded"
               />
             </label>
-            <label className="grid gap-1 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Conversation root path</span>
-              <Input
-                list={statePathSuggestions.length > 0 ? statePathListID : undefined}
-                value={values.chatConversationStatePath}
-                onChange={(event) => change("chatConversationStatePath", event.target.value)}
-                placeholder="scopes.agent.conversation"
-              />
-            </label>
-            <label className="grid gap-1 text-sm">
-              <span className="text-xs font-medium text-muted-foreground">Raw history state path</span>
-              <Input
-                list={statePathSuggestions.length > 0 ? statePathListID : undefined}
-                value={values.chatRawHistoryStatePath}
-                onChange={(event) => change("chatRawHistoryStatePath", event.target.value)}
-                placeholder="scopes.chat.raw_history"
-              />
-            </label>
-            <div className="grid gap-2 border-t border-border pt-3">
-              <div className="text-xs font-medium">Trigger metadata bindings</div>
-              {chatMetadataBindingFields.map((field) => (
-                <label key={field.key} className="grid gap-1 text-sm">
-                  <span className="text-xs font-medium text-muted-foreground">{field.label} state path</span>
-                  <Input
-                    list={statePathSuggestions.length > 0 ? statePathListID : undefined}
-                    value={values[field.key]}
-                    onChange={(event) => change(field.key, event.target.value)}
-                    placeholder={field.placeholder}
-                  />
-                </label>
-              ))}
-            </div>
           </CollapsibleInspectorBlock>
 
           <CollapsibleInspectorBlock title="Response Streaming" open={responseStreamingOpen} onOpenChange={setResponseStreamingOpen}>
@@ -414,6 +398,20 @@ export function TriggerEditorForm({
           </label>
         </CollapsibleInspectorBlock>
       ) : null}
+
+      <CollapsibleInspectorBlock title="State Bindings" open={stateBindingsOpen} onOpenChange={setStateBindingsOpen}>
+        {activeStateBindingFields.map((field) => (
+          <label key={field.key} className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">{field.label} state path</span>
+            <Input
+              list={statePathSuggestions.length > 0 ? statePathListID : undefined}
+              value={values.stateBindings[field.key] ?? ""}
+              onChange={(event) => updateStateBinding(field.key, event.target.value)}
+              placeholder={field.placeholder}
+            />
+          </label>
+        ))}
+      </CollapsibleInspectorBlock>
 
       <CollapsibleInspectorBlock
         title="Initial State"

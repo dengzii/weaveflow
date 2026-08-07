@@ -8,9 +8,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -31,13 +33,38 @@ type runReader interface {
 }
 
 type cachedGraphSummary struct {
-	ID            string               `json:"id"`
-	GraphVersion  string               `json:"graph_version"`
-	Definition    dsl.GraphDefinition  `json:"definition"`
-	Settings      graphRuntimeSettings `json:"settings"`
-	SessionCount  int                  `json:"session_count"`
-	LatestSession string               `json:"latest_session"`
-	UpdatedAt     time.Time            `json:"updated_at"`
+	ID             string    `json:"id"`
+	Name           string    `json:"name,omitempty"`
+	GraphVersion   string    `json:"graph_version"`
+	NodeCount      int       `json:"node_count"`
+	SessionCount   int       `json:"session_count"`
+	LatestSession  string    `json:"latest_session"`
+	ActiveRunCount int       `json:"active_run_count"`
+	UpdatedAt      time.Time `json:"updated_at"`
+}
+
+type graphListPage struct {
+	Items      []cachedGraphSummary `json:"items"`
+	NextCursor string               `json:"next_cursor"`
+}
+
+type graphActiveState struct {
+	ActiveRunCount int      `json:"active_run_count"`
+	SessionIDs     []string `json:"session_ids,omitempty"`
+}
+
+type graphSessionSummary struct {
+	ID        string    `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+type graphDetailResponse struct {
+	Graph                    graphInfo                     `json:"graph"`
+	Definition               dsl.GraphDefinition           `json:"definition"`
+	Settings                 graphRuntimeSettings          `json:"settings"`
+	InitialStateRequirements core.InitialStateRequirements `json:"initial_state_requirements"`
+	LatestSession            graphSessionSummary           `json:"latest_session"`
+	Active                   graphActiveState              `json:"active"`
 }
 
 type graphCacheReader struct {
@@ -52,16 +79,21 @@ type combinedRunReader struct {
 	readers []runReader
 }
 
+const runExecutionRegistrationGracePeriod = time.Second
+
 func (s *Server) resolveRunReader(c *gin.Context) runReader {
-	graphID, err := optionalStringQuery(c, "graph_id")
-	if err != nil {
-		writeError(c, statusForRequestError(err), err)
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
 		return nil
 	}
 	runner := s.currentRunner()
 	if graphID != "" {
 		cache, err := s.openGraphCache(graphID)
 		if err != nil {
+			writeError(c, statusForError(err), err)
+			return nil
+		}
+		if err := s.reconcileCachedRuns(c.Request.Context(), cache, runExecutionRegistrationGracePeriod); err != nil {
 			writeError(c, statusForError(err), err)
 			return nil
 		}
@@ -81,12 +113,76 @@ func (s *Server) resolveRunReader(c *gin.Context) runReader {
 }
 
 func (s *Server) handleListGraphs(c *gin.Context) {
+	limit, err := positiveIntQuery(c, "limit", 50, 200)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	cursor, err := pageCursorQuery(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
 	graphs, err := s.listCachedGraphs()
 	if err != nil {
 		writeError(c, http.StatusInternalServerError, err)
 		return
 	}
-	writeData(c, http.StatusOK, graphs)
+	if cursor > len(graphs) {
+		writeError(c, http.StatusBadRequest, invalidRequestf("cursor is outside the graph collection"))
+		return
+	}
+	end := min(cursor+limit, len(graphs))
+	nextCursor := ""
+	if end < len(graphs) {
+		nextCursor = strconv.Itoa(end)
+	}
+	writeData(c, http.StatusOK, graphListPage{Items: graphs[cursor:end], NextCursor: nextCursor})
+}
+
+func (s *Server) handleGetGraphDetail(c *gin.Context) {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
+	stored, err := s.latestGraphSession(graphID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(c, http.StatusNotFound, errTriggerGraphNotFound)
+			return
+		}
+		writeError(c, statusForError(err), err)
+		return
+	}
+	session, err := s.loadStoredGraphSession(stored, true)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	definition, err := session.graph.Definition()
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	writeData(c, http.StatusOK, graphDetailResponse{
+		Graph: graphInfo{
+			ID:                graphID,
+			Version:           stored.manifest.GraphVersion,
+			GraphHash:         stored.manifest.GraphHash,
+			GraphSnapshotHash: stored.manifest.GraphSnapshotHash,
+			GraphSessionID:    stored.manifest.GraphSessionID,
+			EntryPoint:        definition.EntryPoint,
+			FinishPoint:       definition.FinishPoint,
+		},
+		Definition:               definition,
+		Settings:                 graphSettingsResponse(session.settings),
+		InitialStateRequirements: session.graph.InitialStateRequirements(),
+		LatestSession: graphSessionSummary{
+			ID:        stored.manifest.GraphSessionID,
+			CreatedAt: stored.manifest.CreatedAt,
+		},
+		Active: s.runtime.graphActiveState(graphID),
+	})
 }
 
 func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
@@ -135,26 +231,12 @@ func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
 			latestAt := latestCreatedAt[manifest.GraphID]
 			if manifest.CreatedAt.After(latestAt) ||
 				(manifest.CreatedAt.Equal(latestAt) && manifest.GraphSessionID > summary.LatestSession) {
-				definitionData, err := os.ReadFile(filepath.Join(graphDir, sess.Name(), manifest.DefinitionPath))
-				if err != nil {
-					return nil, fmt.Errorf("read graph session %q definition: %w", manifest.GraphSessionID, err)
-				}
-				definition, err := dsl.DeserializeGraphDefinition(definitionData)
-				if err != nil {
-					return nil, fmt.Errorf("decode graph session %q definition: %w", manifest.GraphSessionID, err)
-				}
-				settings, found, err := loadGraphRuntimeSettings(filepath.Join(graphDir, sess.Name()))
-				if err != nil {
-					return nil, fmt.Errorf("read graph session %q settings: %w", manifest.GraphSessionID, err)
-				}
-				if !found {
-					return nil, fmt.Errorf("graph session %q settings are missing", manifest.GraphSessionID)
-				}
+				summary.Name = manifest.GraphName
 				summary.GraphVersion = manifest.GraphVersion
-				summary.Definition = definition
-				summary.Settings = graphSettingsResponse(settings)
+				summary.NodeCount = manifest.NodeCount
 				summary.LatestSession = manifest.GraphSessionID
 				summary.UpdatedAt = manifest.CreatedAt
+				summary.ActiveRunCount = s.runtime.graphActiveState(manifest.GraphID).ActiveRunCount
 				latestCreatedAt[manifest.GraphID] = manifest.CreatedAt
 			}
 		}
@@ -165,6 +247,18 @@ func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result, nil
+}
+
+func pageCursorQuery(c *gin.Context) (int, error) {
+	value, err := optionalStringQuery(c, "cursor")
+	if err != nil || value == "" {
+		return 0, err
+	}
+	cursor, err := strconv.Atoi(value)
+	if err != nil || cursor < 0 {
+		return 0, invalidRequestf("cursor is invalid")
+	}
+	return cursor, nil
 }
 
 func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
@@ -197,6 +291,57 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 		reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(base, "events")))
 	}
 	return reader, nil
+}
+
+func (s *Server) reconcileCachedRuns(ctx context.Context, reader *graphCacheReader, gracePeriod time.Duration) error {
+	if reader == nil {
+		return nil
+	}
+	cutoff := time.Now().Add(-gracePeriod)
+	for index, store := range reader.executionStores {
+		runs, err := store.ListRuns(ctx, runtime.RunFilter{Statuses: []runtime.RunStatus{
+			runtime.RunStatusPending,
+			runtime.RunStatusRunning,
+		}})
+		if err != nil {
+			return err
+		}
+		for _, run := range runs {
+			if !run.StartedAt.IsZero() && run.StartedAt.After(cutoff) {
+				continue
+			}
+			session := s.runtime.session(run.GraphID, run.GraphSessionID)
+			if session.runner != nil && session.runner.IsRunActive(run.RunID) {
+				continue
+			}
+			if _, err := s.markCachedRunExecutionLost(ctx, reader, index, run.RunID); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *Server) markCachedRunExecutionLost(ctx context.Context, reader *graphCacheReader, index int, runID string) (runtime.RunRecord, error) {
+	if reader == nil || index < 0 || index >= len(reader.executionStores) {
+		return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
+	}
+	eventSink := runtime.EventSink(nil)
+	if index < len(reader.eventSinks) {
+		eventSink = reader.eventSinks[index]
+	}
+	if s.events != nil {
+		if eventSink == nil {
+			eventSink = s.events
+		} else {
+			eventSink = runtime.NewCombineEventSink(eventSink, s.events)
+		}
+	}
+	runner := &runtime.GraphRunner{
+		ExecutionStore: reader.executionStores[index],
+		EventSink:      eventSink,
+	}
+	return runner.MarkRunExecutionLost(ctx, runID)
 }
 
 func readCachedGraphSession(graphDir string, sessionID string) (graphSessionManifest, bool, error) {
@@ -456,11 +601,13 @@ func (r *graphCacheReader) publishCachedRunEvent(ctx context.Context, index int,
 		return nil
 	}
 	return r.eventSinks[index].Publish(ctx, runtime.Event{
-		ID:        cachedRunEventID(eventType, run.RunID, at),
-		RunID:     run.RunID,
-		NodeID:    run.CurrentNodeID,
-		Type:      eventType,
-		Timestamp: at,
+		ID:             cachedRunEventID(eventType, run.RunID, at),
+		GraphID:        run.GraphID,
+		GraphSessionID: run.GraphSessionID,
+		RunID:          run.RunID,
+		NodeID:         run.CurrentNodeID,
+		Type:           eventType,
+		Timestamp:      at,
 	})
 }
 

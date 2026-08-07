@@ -22,7 +22,17 @@ func (s *Server) handleRuntimeEventStream(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-	events, unsubscribe := s.events.Subscribe(filter)
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
+	filter.GraphID = graphID
+	cursor, err := eventStreamCursor(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	events, unsubscribe := s.events.Subscribe(filter, cursor)
 	defer unsubscribe()
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
@@ -51,6 +61,10 @@ func (s *Server) handleRuntimeEventStream(c *gin.Context) {
 }
 
 func eventFilterFromQuery(c *gin.Context) (eventFilter, error) {
+	graphSessionID, err := optionalStringQuery(c, "session_id")
+	if err != nil {
+		return eventFilter{}, err
+	}
 	runID, err := optionalStringQuery(c, "run_id")
 	if err != nil {
 		return eventFilter{}, err
@@ -60,8 +74,9 @@ func eventFilterFromQuery(c *gin.Context) (eventFilter, error) {
 		return eventFilter{}, err
 	}
 	filter := eventFilter{
-		RunID:  runID,
-		NodeID: nodeID,
+		GraphSessionID: graphSessionID,
+		RunID:          runID,
+		NodeID:         nodeID,
 	}
 	types, err := stringListQuery(c, "type")
 	if err != nil {
@@ -74,6 +89,21 @@ func eventFilterFromQuery(c *gin.Context) (eventFilter, error) {
 		filter.Types[runtime.EventType(item)] = struct{}{}
 	}
 	return filter, nil
+}
+
+func eventStreamCursor(c *gin.Context) (string, error) {
+	queryCursor, err := optionalStringQuery(c, "cursor")
+	if err != nil {
+		return "", err
+	}
+	headerCursor := strings.TrimSpace(c.GetHeader("Last-Event-ID"))
+	if queryCursor != "" && headerCursor != "" && queryCursor != headerCursor {
+		return "", invalidRequestf("cursor and Last-Event-ID must match when both are provided")
+	}
+	if queryCursor != "" {
+		return queryCursor, nil
+	}
+	return headerCursor, nil
 }
 
 func writeRuntimeEventSSE(c *gin.Context, event runtime.Event) {

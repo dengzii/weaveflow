@@ -27,13 +27,14 @@ type graphUploadRequest struct {
 	GraphID      string
 	GraphVersion string
 	Settings     *graphRuntimeSettingsRequest
+	Triggers     []triggerPayload
 }
 
 type graphUploadEnvelope struct {
 	Definition   json.RawMessage              `json:"definition"`
-	GraphID      string                       `json:"graph_id"`
 	GraphVersion string                       `json:"graph_version"`
 	Settings     *graphRuntimeSettingsRequest `json:"settings"`
+	Triggers     []triggerPayload             `json:"triggers,omitempty"`
 }
 
 type graphLoadResponse struct {
@@ -46,7 +47,9 @@ type graphLoadResponse struct {
 
 type graphSessionManifest struct {
 	GraphID             string    `json:"graph_id"`
+	GraphName           string    `json:"graph_name,omitempty"`
 	GraphVersion        string    `json:"graph_version"`
+	NodeCount           int       `json:"node_count"`
 	GraphHash           string    `json:"graph_hash"`
 	GraphSnapshotHash   string    `json:"graph_snapshot_hash"`
 	GraphSessionID      string    `json:"graph_session_id"`
@@ -61,12 +64,17 @@ const (
 	retainedGraphSessionCount       = 5
 )
 
-func (s *Server) handleUpdateGraph(c *gin.Context) {
+func (s *Server) handleCreateGraphSession(c *gin.Context) {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
 	req, err := bindGraphUpload(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
+	req.GraphID = graphID
 	if req.Settings == nil {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("graph upload settings are required"))
 		return
@@ -102,9 +110,9 @@ func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
 	}
 	return graphUploadRequest{
 		Definition:   definition,
-		GraphID:      strings.TrimSpace(envelope.GraphID),
 		GraphVersion: strings.TrimSpace(envelope.GraphVersion),
 		Settings:     envelope.Settings,
+		Triggers:     envelope.Triggers,
 	}, nil
 }
 
@@ -211,7 +219,9 @@ func (s *Server) installUploadedGraph(
 	graphSessionID := graphSessionIDFromBaseDir(runnerBaseDir)
 	if err := writeGraphSessionSnapshot(runnerBaseDir, graphSessionManifest{
 		GraphID:             graphID,
+		GraphName:           strings.TrimSpace(def.Name),
 		GraphVersion:        graphVersion,
+		NodeCount:           len(def.Nodes),
 		GraphHash:           graphHash,
 		GraphSnapshotHash:   graphSnapshotHash,
 		GraphSessionID:      graphSessionID,
@@ -481,6 +491,10 @@ func (s *Server) pruneGraphSessions(graphID string, protectedSessionID string) e
 		return nil
 	}
 	protectedSessionID = strings.TrimSpace(protectedSessionID)
+	activeSessionIDs := map[string]struct{}{}
+	if s.runtime != nil {
+		activeSessionIDs = s.runtime.activeSessionIDs(graphID)
+	}
 
 	graphDir := graphStorageDirectory(s.baseDir, graphID)
 	entries, err := os.ReadDir(graphDir)
@@ -526,8 +540,14 @@ func (s *Server) pruneGraphSessions(graphID string, protectedSessionID string) e
 	})
 
 	for _, candidate := range candidates[min(retainedGraphSessionCount, len(candidates)):] {
+		if _, active := activeSessionIDs[candidate.id]; active {
+			continue
+		}
 		if err := os.RemoveAll(filepath.Join(graphDir, candidate.id)); err != nil {
 			return fmt.Errorf("remove graph session %q: %w", candidate.id, err)
+		}
+		if s.runtime != nil {
+			s.runtime.removeSession(graphID, candidate.id)
 		}
 	}
 	return nil

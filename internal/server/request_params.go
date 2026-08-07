@@ -79,6 +79,10 @@ func requireRecordIDPathParam(c *gin.Context, name string) (string, bool) {
 	return value, true
 }
 
+func requireGraphIDPathParam(c *gin.Context) (string, bool) {
+	return requireRecordIDPathParam(c, "graph_id")
+}
+
 func isPortableRecordID(value string) bool {
 	if value == "" || strings.TrimSpace(value) != value || value == "." || value == ".." || len(value) > 200 {
 		return false

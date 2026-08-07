@@ -1,9 +1,9 @@
 export interface ApiResponse<T> {
   data: T;
-  error?: ApiError;
+  error?: ApiErrorPayload;
 }
 
-export interface ApiError {
+export interface ApiErrorPayload {
   code: string;
   message: string;
 }
@@ -83,13 +83,23 @@ export interface WebhookStateMapping {
 
 export interface TriggerWebhookSpec {
   api_key?: string;
+  state_bindings?: TriggerRequestStateBindings;
   state_mappings?: WebhookStateMapping[];
+}
+
+export interface TriggerRequestStateBindings {
+  input?: string;
+  metadata?: string;
+  trigger_id?: string;
+  trigger_type?: string;
+  raw_body?: string;
 }
 
 export interface TriggerScheduleSpec {
   cron: string;
   timezone?: string;
   input?: Record<string, unknown>;
+  state_bindings?: TriggerRequestStateBindings;
 }
 
 export interface TriggerChatSpec {
@@ -102,6 +112,7 @@ export interface TriggerChatSpec {
 }
 
 export interface TriggerChatStateBindings {
+  input?: string;
   conversation?: string;
   raw_history?: string;
   trigger_id?: string;
@@ -174,18 +185,6 @@ export interface TriggerCanvasNode {
   valid: boolean;
 }
 
-export interface TriggerInvocation {
-  id: string;
-  trigger_id: string;
-  trigger_type: TriggerType;
-  target: TriggerTarget;
-  status: RunStatus;
-  run?: RunRecord;
-  error_message?: string;
-  triggered_at: string;
-  updated_at: string;
-}
-
 export interface RuntimeEnvironmentPreset {
   key: string;
   default_value: string;
@@ -233,11 +232,39 @@ export interface GraphLoadResult {
   warnings?: WarningRecord[];
 }
 
+export interface GraphSessionSummary {
+  id: string;
+  created_at: string;
+}
+
+export interface GraphDetail {
+  graph: GraphInfo;
+  definition: GraphDefinition;
+  settings: RuntimeSettings;
+  initial_state_requirements: InitialStateRequirements;
+  latest_session: GraphSessionSummary;
+  active: {
+    active_run_count: number;
+    session_ids?: string[];
+  };
+}
+
 export interface InitialStateRequirements {
   required: InitialStateRequirement[];
+  provided_by_entry: InitialStateRequirement[];
   provided_by_upstream: InitialStateRequirement[];
   unresolved: InitialStateRequirement[];
   warnings?: WarningRecord[];
+}
+
+export interface TriggerInitialStateRequirements {
+  trigger_id: string;
+  requirements: InitialStateRequirements;
+}
+
+export interface GraphInitialStateAnalysis {
+  direct: InitialStateRequirements;
+  triggers: TriggerInitialStateRequirements[];
 }
 
 export interface InitialStateRequirement {
@@ -361,6 +388,7 @@ export interface RunRecord {
   graph_hash?: string;
   graph_snapshot_hash?: string;
   graph_session_id?: string;
+  origin?: RunOrigin;
   status: RunStatus;
   entry_node_id: string;
   current_node_id?: string;
@@ -377,6 +405,11 @@ export interface RunRecord {
   started_at: string;
   updated_at: string;
   finished_at?: string;
+}
+
+export interface RunOrigin {
+  type: string;
+  trigger_id?: string;
 }
 
 export interface StepRecord {
@@ -427,6 +460,8 @@ export interface ArtifactDetail {
 
 export interface RuntimeEvent {
   id: string;
+  graph_id?: string;
+  graph_session_id?: string;
   run_id: string;
   step_id?: string;
   node_id?: string;
@@ -463,9 +498,13 @@ export interface RunInspection {
   run: RunRecord;
   steps: StepRecord[];
   checkpoints: CheckpointRecord[];
-  events: RuntimeEvent[];
-  event_cursor: string;
-  interrupt: RunInterrupt | null;
+  events: RuntimeEventPage;
+  interrupt?: RunInterrupt;
+}
+
+export interface RunListPage {
+  items: RunRecord[];
+  next_cursor: string;
 }
 
 export interface CheckpointDetail {
@@ -487,11 +526,16 @@ export interface WarningRecord {
 
 export interface CachedGraphSummary {
   id: string;
+  name?: string;
   graph_version: string;
-  definition: GraphDefinition;
-  settings: RuntimeSettings;
+  node_count: number;
   session_count: number;
   latest_session: string;
+  active_run_count: number;
   updated_at: string;
 }
 
+export interface GraphListPage {
+  items: CachedGraphSummary[];
+  next_cursor: string;
+}

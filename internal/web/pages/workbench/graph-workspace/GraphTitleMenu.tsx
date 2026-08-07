@@ -99,7 +99,7 @@ export function GraphTitleMenu({
               <div className="px-3 py-3 text-sm text-muted-foreground">No graphs.</div>
             ) : (
               graphs.map((graph) => {
-                const graphBadgeCount = graphScriptBadgeCount(graph.definition);
+                const graphBadgeCount = graph.definition ? graphScriptBadgeCount(graph.definition) : 0;
                 return (
                   <button
                     key={graph.id}
@@ -115,7 +115,7 @@ export function GraphTitleMenu({
                       <ScriptCountBadge count={graphBadgeCount} />
                     </div>
                     <div className="truncate text-xs text-muted-foreground">
-                      {graph.definition.nodes.length} nodes / {formatTime(graph.updatedAt)}
+                      {graph.nodeCount} nodes / {formatTime(graph.updatedAt)}
                     </div>
                   </button>
                 );

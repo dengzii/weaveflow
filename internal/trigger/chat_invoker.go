@@ -152,15 +152,25 @@ func (s *Service) invokeChatRun(ctx context.Context, item Trigger, message chatc
 	if err != nil {
 		return ChatResult{}, err
 	}
+	if err := validateRunnerInitialState(runner, initial); err != nil {
+		return ChatResult{}, err
+	}
 	configuredSink := newChatInvocationSink(item.Chat, sink, historyRecorder.RecordReply)
 	executionCtx := runtime.WithRunnerEventObserver(ctx, newChatLLMStreamObserver(configuredSink))
 	executionCtx = chatcap.WithReplySink(executionCtx, configuredSink)
+	executionCtx = runtime.WithRunOrigin(executionCtx, runtime.RunOrigin{
+		Type:      string(TypeChat),
+		TriggerID: item.ID,
+	})
 	run, _, runErr := runner.Start(executionCtx, initial)
 	finalReply, replySent := configuredSink.finalReply()
-	if runErr == nil && !replySent {
+	if runErr == nil && !replySent && chatRunFinishContent(run, nil) == "" {
 		runErr = ErrChatReplyMissing
 	}
-	finishErr := configuredSink.finish(context.WithoutCancel(ctx), runErr)
+	finishContent, finishErr := configuredSink.finish(context.WithoutCancel(ctx), run, runErr)
+	if finishContent != "" {
+		finalReply = finishContent
+	}
 	if runErr == nil && finishErr != nil {
 		runErr = finishErr
 	}
@@ -186,13 +196,15 @@ func chatHistoryLoadLimit(spec *ChatSpec) int {
 
 func buildChatTriggerState(item Trigger, message chatchannel.InboundMessage, history []ChatHistory) (*state.State, error) {
 	initial := state.FromMap(item.InitialState)
-	if err := state.SetPath(initial, "shared.request.input", message.Content); err != nil {
-		return nil, fmt.Errorf("initialize chat input state: %w", err)
-	}
 	if item.Chat == nil || item.Chat.StateBindings == nil {
 		return initial, nil
 	}
 	bindings := item.Chat.StateBindings
+	if bindings.Input != "" {
+		if err := state.SetPath(initial, bindings.Input, message.Content); err != nil {
+			return nil, fmt.Errorf("initialize chat input state: %w", err)
+		}
+	}
 	if bindings.Conversation != "" {
 		messages, err := chatConversationMessages(history)
 		if err != nil {

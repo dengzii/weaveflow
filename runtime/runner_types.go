@@ -95,6 +95,7 @@ type RunRecord struct {
 	GraphHash         string     `json:"graph_hash,omitempty"`
 	GraphSnapshotHash string     `json:"graph_snapshot_hash,omitempty"`
 	GraphSessionID    string     `json:"graph_session_id,omitempty"`
+	Origin            *RunOrigin `json:"origin,omitempty"`
 	Status            RunStatus  `json:"status"`
 	EntryNodeID       string     `json:"entry_node_id"`
 	CurrentNodeID     string     `json:"current_node_id,omitempty"`
@@ -111,6 +112,11 @@ type RunRecord struct {
 	StartedAt         time.Time  `json:"started_at"`
 	UpdatedAt         time.Time  `json:"updated_at"`
 	FinishedAt        *time.Time `json:"finished_at,omitempty"`
+}
+
+type RunOrigin struct {
+	Type      string `json:"type"`
+	TriggerID string `json:"trigger_id,omitempty"`
 }
 
 type StepRecord struct {
@@ -163,13 +169,15 @@ type Artifact struct {
 }
 
 type Event struct {
-	ID        string          `json:"id"`
-	RunID     string          `json:"run_id"`
-	StepID    string          `json:"step_id,omitempty"`
-	NodeID    string          `json:"node_id,omitempty"`
-	Type      EventType       `json:"type"`
-	Timestamp time.Time       `json:"timestamp"`
-	Payload   json.RawMessage `json:"payload,omitempty"`
+	ID             string          `json:"id"`
+	GraphID        string          `json:"graph_id"`
+	GraphSessionID string          `json:"graph_session_id,omitempty"`
+	RunID          string          `json:"run_id"`
+	StepID         string          `json:"step_id,omitempty"`
+	NodeID         string          `json:"node_id,omitempty"`
+	Type           EventType       `json:"type"`
+	Timestamp      time.Time       `json:"timestamp"`
+	Payload        json.RawMessage `json:"payload,omitempty"`
 }
 
 type WarningRecord struct {

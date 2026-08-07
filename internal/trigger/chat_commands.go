@@ -60,12 +60,12 @@ func (s *Service) handleChatCommand(ctx context.Context, item Trigger, message c
 		canceled := s.cancelChatExecutions(chatRouteKey(identity))
 		unlock()
 		if canceled > 0 {
-			reply = "Stopped the active response."
+			reply = "Response stopped."
 		} else {
-			reply = "No active response."
+			reply = "No response is currently running."
 		}
 	case chatCommandHelp:
-		reply = "/new - start a new conversation\n/stop - stop the active response\n/help - show available commands"
+		reply = "/new - start a new conversation\n/stop - stop the current response\n/help - show available commands"
 	}
 	if err := sink.Emit(ctx, chatcap.Reply{Kind: chatcap.ReplyFinish, Content: reply, Sequence: 1}); err != nil {
 		return result, true, err

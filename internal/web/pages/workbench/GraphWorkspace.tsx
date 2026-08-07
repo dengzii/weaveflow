@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { getGraphDetail } from "../../api";
 import {
   GraphCanvas,
   hasStoredGraphCanvasViewport,
@@ -14,11 +15,16 @@ import {
   withNodePosition,
   type NodePosition,
 } from "../../lib/graphEditor";
-import type { LocalGraph } from "../../lib/localGraphs";
+import {
+  hydrateServerGraph,
+  isHydratedLocalGraph,
+  type LocalGraph,
+} from "../../lib/localGraphs";
 import { stringifyJSON } from "../../lib/utils";
 import { detectVirtualGraphLoops, mergeVirtualGraphLoops } from "../../lib/loopPresentation";
 import type {
   GraphDefinition,
+  GraphDetail,
   GraphEdgeSpec,
   GraphNodeSpec,
   InitialStateRequirements,
@@ -99,6 +105,7 @@ interface GraphWorkspaceProps {
   definitionText: string;
   initialStateText: string;
   initialRequirements: InitialStateRequirements | null;
+  directInitialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
   steps: StepRecord[];
   selectedRunId: string;
@@ -119,6 +126,7 @@ interface GraphWorkspaceProps {
   onInitialStateText: (value: string) => void;
   onDismissToast: (id: string) => void;
   onGraphSwitch: () => boolean;
+  onGraphDetailLoaded: (detail: GraphDetail) => void;
 }
 
 export const GraphWorkspace = memo(function GraphWorkspace({
@@ -126,6 +134,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   definitionText,
   initialStateText,
   initialRequirements,
+  directInitialRequirements,
   initialRequirementsError,
   steps,
   selectedRunId,
@@ -146,6 +155,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   onInitialStateText,
   onDismissToast,
   onGraphSwitch,
+  onGraphDetailLoaded,
 }: GraphWorkspaceProps) {
   const [nodeConfigText, setNodeConfigText] = useState("{}");
   const [edgeConfigText, setEdgeConfigText] = useState("{}");
@@ -347,12 +357,13 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     autoLoadedGraphRef.current = true;
     const cachedGraph = definition
       ? graphs.find((item) =>
+          item.definition &&
           item.graphId === graphId &&
           item.graphVersion === graphVersion &&
           stringifyJSON(item.definition) === stringifyJSON(definition)
         )
       : undefined;
-    if (cachedGraph) loadCachedGraphWithoutGuard(cachedGraph);
+    if (cachedGraph) void loadCachedGraphWithoutGuard(cachedGraph);
   }, [cacheHydrated, definition, graphId, graphVersion, graphs]);
   const selectedVirtualEdge = useMemo(
     () => displayVirtualEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
@@ -446,23 +457,41 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setLocalStatus("run active");
       return;
     }
-    loadCachedGraphWithoutGuard(graph);
+    void loadCachedGraphWithoutGuard(graph);
   }
 
-  function loadCachedGraphWithoutGuard(graph: LocalGraph) {
-    const activation = activateGraph(graph);
+  async function loadCachedGraphWithoutGuard(graph: LocalGraph) {
+    let resolvedGraph = graph;
+    if (!isHydratedLocalGraph(resolvedGraph)) {
+      setLocalStatus(`loading ${graph.title}`);
+      try {
+        const detail = await getGraphDetail(graph.graphId);
+        resolvedGraph = hydrateServerGraph(graph, detail);
+        onGraphDetailLoaded(detail);
+      } catch (error) {
+        setLocalStatus(error instanceof Error ? error.message : String(error));
+        return;
+      }
+    }
+    if (!isHydratedLocalGraph(resolvedGraph)) return;
+    const activation = activateGraph(resolvedGraph);
     const savedState = activation.workspaceState;
-    onGraphId(graph.graphId);
-    onGraphVersion(graph.graphVersion);
-    onDefinitionText(stringifyJSON(graph.definition));
+    onGraphId(resolvedGraph.graphId);
+    onGraphVersion(resolvedGraph.graphVersion);
+    onDefinitionText(stringifyJSON(resolvedGraph.definition));
     onReplaceRuntimeSettings(activation.runtimeSettings);
     setVirtualNodeIds(savedState.virtualNodeIDs);
     setVirtualEdges(savedState.virtualEdges);
     setVirtualLoops(savedState.virtualLoops);
     clearSelection();
-    setLocalStatus(`loaded ${graph.title}`);
+    setLocalStatus(`loaded ${resolvedGraph.title}`);
     setGraphMenuOpen(false);
-    const viewportKey = graphCanvasViewportStorageKey(graph.graphId, graph.graphVersion, graph.id, graph.definition);
+    const viewportKey = graphCanvasViewportStorageKey(
+      resolvedGraph.graphId,
+      resolvedGraph.graphVersion,
+      resolvedGraph.id,
+      resolvedGraph.definition
+    );
     if (!hasStoredGraphCanvasViewport(viewportKey)) {
       setFitViewSignal((value) => value + 1);
     }
@@ -486,7 +515,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     const resolvedGraph = resolveGraphImportConflicts(
       graph,
       [graphId, ...graphs.map((item) => item.graphId)],
-      [definition?.name ?? "", ...graphs.map((item) => item.definition.name ?? "")],
+      [definition?.name ?? "", ...graphs.map((item) => item.definition?.name ?? item.title)],
       [...knownTriggerIDs, ...graphTriggers.map((trigger) => trigger.id)]
     );
     const nextGraphID = resolvedGraph.graphID;
@@ -883,6 +912,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         definitionText={definitionText}
         edgeConfigText={edgeConfigText}
         initialRequirements={initialRequirements}
+        directInitialRequirements={directInitialRequirements}
         initialRequirementsError={initialRequirementsError}
         initialStateText={initialStateText}
         inspectorMode={inspectorMode}

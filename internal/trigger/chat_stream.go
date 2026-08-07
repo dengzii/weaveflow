@@ -140,10 +140,32 @@ func (s *chatInvocationSink) finalReply() (string, bool) {
 	return s.lastReply, s.replySent
 }
 
-func (s *chatInvocationSink) finish(ctx context.Context, runErr error) error {
-	reply := chatcap.Reply{Kind: chatcap.ReplyFinish}
-	if runErr != nil {
+func (s *chatInvocationSink) finish(ctx context.Context, run runtime.RunRecord, runErr error) (string, error) {
+	reply := chatcap.Reply{Kind: chatcap.ReplyFinish, Content: chatRunFinishContent(run, runErr)}
+	// Channel adapters treat Error as a generic delivery failure, so known Graph
+	// stop statuses must be sent as content to replace any streamed reply.
+	if reply.Content == "" && runErr != nil {
 		reply.Error = runErr.Error()
 	}
-	return s.Emit(ctx, reply)
+	return reply.Content, s.Emit(ctx, reply)
+}
+
+func chatRunFinishContent(run runtime.RunRecord, runErr error) string {
+	switch run.Status {
+	case runtime.RunStatusFailed:
+		reason := strings.TrimSpace(run.ErrorMessage)
+		if reason == "" && runErr != nil {
+			reason = strings.TrimSpace(runErr.Error())
+		}
+		if reason == "" {
+			return "Run failed."
+		}
+		return "Run failed: " + reason
+	case runtime.RunStatusCanceled:
+		return "Response stopped."
+	case runtime.RunStatusPaused:
+		return "Run paused."
+	default:
+		return ""
+	}
 }

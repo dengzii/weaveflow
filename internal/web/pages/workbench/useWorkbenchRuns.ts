@@ -5,7 +5,6 @@ import {
   getRunInspection,
   listEvents,
   listRuns,
-  listTriggerInvocations,
   pauseRun,
   resumeRun,
   startRun,
@@ -41,7 +40,7 @@ import {
   runListEventAction,
   runControlModeFromRun,
   runStatusFromEvent,
-  runTriggerTypesFromInvocations,
+  runTriggerTypesFromRuns,
   selectedRunIDAfterDeletion,
   upsertInspectedRun,
   upsertRunFromEvent,
@@ -232,7 +231,7 @@ export function useWorkbenchRuns({
   const applyRunInspection = useCallback((inspection: RunInspection) => {
     setSteps(inspection.steps);
     setCheckpoints((current) => mergeFetchedCheckpoints(current, inspection.checkpoints));
-    replaceStoredEventPage(inspection.events, inspection.event_cursor);
+    replaceStoredEventPage(inspection.events.items, inspection.events.next_cursor);
     setRunInterrupt(inspection.interrupt ?? null);
     updateRuns((current) => upsertInspectedRun(current, inspection.run));
   }, [replaceStoredEventPage, updateRuns]);
@@ -337,10 +336,7 @@ export function useWorkbenchRuns({
     const runsAtStart = runsRef.current;
     const refreshRequest = ++runsRefreshStartedRef.current;
     try {
-      const [nextRuns, triggerInvocations] = await Promise.all([
-        listRuns(identity.id),
-        listTriggerInvocations(undefined, 500).catch(() => null),
-      ]);
+      const nextRuns = await listRuns(identity.id);
       if (
         runContextVersionRef.current !== contextVersion ||
         refreshRequest !== runsRefreshStartedRef.current
@@ -353,9 +349,7 @@ export function useWorkbenchRuns({
         runsAtStart
       );
       applyRuns(mergedRuns);
-      if (triggerInvocations) {
-        setRunTriggerTypes(runTriggerTypesFromInvocations(triggerInvocations, identity.id));
-      }
+      setRunTriggerTypes(runTriggerTypesFromRuns(mergedRuns, identity.id));
       if (!autoSelect) return;
       const currentRunID = selectedRunIDRef.current;
       const nextRunID = currentRunID && mergedRuns.some((run) => run.run_id === currentRunID)
@@ -392,7 +386,7 @@ export function useWorkbenchRuns({
     const graphID = runsRef.current.find((run) => run.run_id === runID)?.graph_id || graphIdentityRef.current.id;
     let inspection: RunInspection;
     try {
-      inspection = await getRunInspection(runID, graphID);
+      inspection = await getRunInspection(graphID, runID);
     } catch (error) {
       if (
         runContextVersionRef.current !== contextVersion ||
@@ -428,7 +422,7 @@ export function useWorkbenchRuns({
     eventPageLoadingRef.current = true;
     setOlderEventsLoading(true);
     try {
-      const page = await listEvents(runID, graphID, cursor);
+      const page = await listEvents(graphID, runID, cursor);
       if (
         runContextVersionRef.current !== contextVersion ||
         selectedRunRequestRef.current !== selectedRunRequestVersion ||
@@ -515,7 +509,7 @@ export function useWorkbenchRuns({
       void refreshSelectedRun(event.run_id).catch(reportError);
     }
   }, [enqueueLiveEvent, refreshSelectedRun, reportError, requestEventRunRefresh, updateRuns, updateSelectedRunID]);
-  const streamStatus = useRuntimeEventStream(handleRuntimeEvent);
+  const streamStatus = useRuntimeEventStream(graphIdentity.id, handleRuntimeEvent);
 
   useEffect(() => {
     if (streamStatus !== "connected") return;
@@ -556,22 +550,23 @@ export function useWorkbenchRuns({
     clearSelectedRunInspection();
     setRunStatusVisible(true);
     try {
-      const result = await startRun(initialState);
+      if (!identity.sessionID) throw new Error(`graph ${identity.id} has no configured session`);
+      const run = await startRun(identity.id, identity.sessionID, initialState);
       if (runContextVersionRef.current !== runContextVersion) return;
       launchPendingRef.current = false;
       launchRunIDRef.current = "";
       setRunLaunchPending(false);
       if (userRunSelectionVersionRef.current === userSelectionVersion) {
-        updateSelectedRunID(result.run.run_id);
-        setRunInterrupt(result.interrupt ?? null);
+        updateSelectedRunID(run.run_id);
+        setRunInterrupt(null);
       }
       await refreshRuns(identity);
       if (runContextVersionRef.current !== runContextVersion) return;
-      if (isRunSelectionCurrent(result.run.run_id)) {
-        await refreshSelectedRun(result.run.run_id);
+      if (isRunSelectionCurrent(run.run_id)) {
+        await refreshSelectedRun(run.run_id);
       }
       if (runContextVersionRef.current !== runContextVersion) return;
-      onNotify("info", `Run ${result.run.status}: ${result.run.run_id}`);
+      onNotify("info", `Run ${run.status}: ${run.run_id}`);
     } catch (error) {
       if (runContextVersionRef.current !== runContextVersion) return;
       launchPendingRef.current = false;
@@ -588,8 +583,8 @@ export function useWorkbenchRuns({
     const selected = runsRef.current.find((run) => run.run_id === runID) ?? null;
     try {
       const run = await (kind === "pause"
-        ? pauseRun(runID, selected?.graph_id || graphIdentityRef.current.id)
-        : cancelRun(runID, selected?.graph_id || graphIdentityRef.current.id));
+        ? pauseRun(selected?.graph_id || graphIdentityRef.current.id, runID)
+        : cancelRun(selected?.graph_id || graphIdentityRef.current.id, runID));
       if (runContextVersionRef.current !== runContextVersion) return;
       updateRuns((current) => upsertInspectedRun(current, run));
       await refreshRuns(graphIdentityRef.current);
@@ -626,7 +621,7 @@ export function useWorkbenchRuns({
 
     const runContextVersion = runContextVersionRef.current;
     try {
-      await deleteRun(runID, target.graph_id || graphIdentityRef.current.id);
+      await deleteRun(target.graph_id || graphIdentityRef.current.id, runID);
       if (runContextVersionRef.current !== runContextVersion) return;
       const remainingRuns = runsRef.current.filter((run) => run.run_id !== runID);
       const currentRunID = selectedRunIDRef.current;
@@ -684,7 +679,7 @@ export function useWorkbenchRuns({
       const input = parseJSON<unknown>(initialStateText);
       updateRuns((current) => markRunResuming(current, runID));
       setRunInterrupt(null);
-      const result = await resumeRun(runID, input, identity.id);
+      const result = await resumeRun(identity.id, runID, input);
       if (runContextVersionRef.current !== runContextVersion) return;
       updateRuns((current) => upsertInspectedRun(current, result.run));
       if (isRunSelectionCurrent(result.run.run_id)) {
@@ -726,9 +721,9 @@ export function useWorkbenchRuns({
     try {
       updateRuns((current) => markRunResuming(current, prompt.runID));
       const result = await resumeRun(
+        identity.id,
         prompt.runID,
-        pendingUserInputState(prompt.statePath, text),
-        identity.id
+        pendingUserInputState(prompt.statePath, text)
       );
       if (runContextVersionRef.current !== runContextVersion) return;
       updateRuns((current) => upsertInspectedRun(current, result.run));

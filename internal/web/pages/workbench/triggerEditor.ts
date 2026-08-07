@@ -1,11 +1,10 @@
 import type {
-  CachedGraphSummary,
   ChatChannelDefinition,
   GraphDefinition,
-  GraphInfo,
   Trigger,
   TriggerChatStateBindings,
   TriggerConcurrency,
+  TriggerRequestStateBindings,
   TriggerTarget,
   TriggerType,
   WebhookStateMapping,
@@ -26,6 +25,7 @@ export interface TriggerEditorValues {
   concurrency: TriggerConcurrency;
   target: TriggerTarget;
   initialStateEntries: TriggerInitialStateEntry[];
+  stateBindings: TriggerEditorStateBindings;
   apiKey: string;
   mappings: WebhookStateMapping[];
   cron: string;
@@ -35,14 +35,9 @@ export interface TriggerEditorValues {
   chatChannel: string;
   chatChannelConfig: Record<string, unknown>;
   chatHistoryLimit: string;
-  chatConversationStatePath: string;
-  chatRawHistoryStatePath: string;
-  chatTriggerIDStatePath: string;
-  chatChannelStatePath: string;
-  chatUserIDStatePath: string;
-  chatConversationIDStatePath: string;
-  chatMessageIDStatePath: string;
 }
+
+export interface TriggerEditorStateBindings extends TriggerRequestStateBindings, TriggerChatStateBindings {}
 
 export interface TriggerInitialStateEntry {
   path: string;
@@ -63,6 +58,7 @@ export function triggerEditorValues(
     concurrency: trigger?.concurrency ?? "parallel",
     target: trigger?.target ?? fallbackTarget,
     initialStateEntries: triggerInitialStateEntries(trigger?.initial_state),
+    stateBindings: trigger ? triggerStateBindings(trigger) : defaultTriggerStateBindings(type),
     apiKey: "",
     mappings: (trigger?.webhook?.state_mappings ?? []).map((mapping) => ({ ...mapping })),
     cron: trigger?.schedule?.cron ?? "*/5 * * * *",
@@ -72,35 +68,27 @@ export function triggerEditorValues(
     chatChannel: trigger?.chat?.channel ?? "http",
     chatChannelConfig: cloneRecord(trigger?.chat?.channel_config),
     chatHistoryLimit: trigger?.chat?.history_limit ? String(trigger.chat.history_limit) : "",
-    chatConversationStatePath: trigger?.chat?.state_bindings?.conversation ?? "",
-    chatRawHistoryStatePath: trigger?.chat?.state_bindings?.raw_history ?? "",
-    chatTriggerIDStatePath: trigger?.chat?.state_bindings?.trigger_id ?? "",
-    chatChannelStatePath: trigger?.chat?.state_bindings?.channel ?? "",
-    chatUserIDStatePath: trigger?.chat?.state_bindings?.user_id ?? "",
-    chatConversationIDStatePath: trigger?.chat?.state_bindings?.conversation_id ?? "",
-    chatMessageIDStatePath: trigger?.chat?.state_bindings?.message_id ?? "",
   };
 }
 
 export function buildTriggerPayload(
   values: TriggerEditorValues,
   editing: Trigger | null,
-  chatSetupSessionID?: string,
-  creating = !editing
+  chatSetupSessionID?: string
 ): Record<string, unknown> {
   const graphID = triggerTargetKey(values.target);
   if (!graphID) throw new Error("graph is required");
 
   const input: Record<string, unknown> = {
-    name: editing ? (editing.name?.trim() || triggerTypeName(editing.type)) : values.name.trim(),
+    id: values.id.trim(),
+    name: values.name.trim() || triggerTypeName(values.type),
     type: values.type,
     enabled: values.enabled,
     concurrency: values.concurrency,
-    target: { graph_id: graphID },
   };
   const initialState = buildTriggerInitialState(values.initialStateEntries);
   if (Object.keys(initialState).length > 0) input.initial_state = initialState;
-  if (creating && values.id.trim()) input.id = values.id.trim();
+  if (!values.id.trim()) throw new Error("trigger id is required");
 
   if (values.type === "webhook") {
     const mappings = values.mappings
@@ -112,17 +100,37 @@ export function buildTriggerPayload(
     if (mappings.some((mapping) => !mapping.parameter || !mapping.state_path)) {
       throw new Error("each webhook mapping requires both a parameter and state path");
     }
+    mappings.forEach((mapping, index) => {
+      mapping.state_path = normalizeTriggerStatePath(mapping.state_path, `webhook mapping ${index + 1}`);
+    });
+    const stateBindings = buildTriggerStateBindings("webhook", values.stateBindings);
+    validateStateDestinationOverlaps([
+      ...stateBindingDestinations("webhook", stateBindings),
+      ...mappings.map((mapping, index) => ({
+        label: `webhook mapping ${index + 1}`,
+        path: mapping.state_path,
+        effectivePath: mapping.state_path,
+      })),
+      ...initialStateDestinations(values.initialStateEntries),
+    ]);
     input.webhook = {
       api_key: values.apiKey || undefined,
+      state_bindings: Object.keys(stateBindings).length > 0 ? stateBindings : undefined,
       state_mappings: mappings,
     };
   } else if (values.type === "schedule") {
     const cron = values.cron.trim();
     if (!cron) throw new Error("cron is required");
+    const stateBindings = buildTriggerStateBindings("schedule", values.stateBindings);
+    validateStateDestinationOverlaps([
+      ...stateBindingDestinations("schedule", stateBindings),
+      ...initialStateDestinations(values.initialStateEntries),
+    ]);
     input.schedule = {
       cron,
       timezone: values.timezone.trim() || undefined,
       input: editing?.schedule?.input,
+      state_bindings: Object.keys(stateBindings).length > 0 ? stateBindings : undefined,
     };
   } else {
     const streamNodeIDs = Array.from(new Set(
@@ -136,7 +144,11 @@ export function buildTriggerPayload(
     };
     const historyLimit = parseChatHistoryLimit(values.chatHistoryLimit);
     if (historyLimit > 0) chat.history_limit = historyLimit;
-    const stateBindings = buildChatStateBindings(values);
+    const stateBindings = buildTriggerStateBindings("chat", values.stateBindings);
+    validateStateDestinationOverlaps([
+      ...stateBindingDestinations("chat", stateBindings),
+      ...initialStateDestinations(values.initialStateEntries),
+    ]);
     if (Object.keys(stateBindings).length > 0) chat.state_bindings = stateBindings;
     input.chat = chat;
     if (chatSetupSessionID?.trim()) input.chat_setup_session_id = chatSetupSessionID.trim();
@@ -170,35 +182,32 @@ export function triggerDraftFromEditorValues(
   };
 
   if (values.type === "webhook") {
+    const stateBindings = draftStateBindings("webhook", values.stateBindings);
     trigger.webhook = {
       api_key: values.apiKey || undefined,
       state_mappings: values.mappings.map((mapping) => ({ ...mapping })),
+      ...(Object.keys(stateBindings).length > 0 ? { state_bindings: stateBindings } : {}),
     };
   } else if (values.type === "schedule") {
+    const stateBindings = draftStateBindings("schedule", values.stateBindings);
     trigger.schedule = {
       cron: values.cron,
       timezone: values.timezone,
       input: current?.schedule?.input,
+      ...(Object.keys(stateBindings).length > 0 ? { state_bindings: stateBindings } : {}),
     };
   } else {
     const historyLimit = /^\d+$/.test(values.chatHistoryLimit.trim())
       ? Number(values.chatHistoryLimit.trim())
       : undefined;
+    const stateBindings = draftStateBindings("chat", values.stateBindings);
     trigger.chat = {
       channel: values.chatChannel,
       channel_config: cloneRecord(values.chatChannelConfig),
       stream_updates: values.streamUpdates,
       stream_node_ids: values.streamNodeIDs.split(/[\s,]+/).map((value) => value.trim()).filter(Boolean),
       history_limit: historyLimit,
-      state_bindings: {
-        conversation: values.chatConversationStatePath,
-        raw_history: values.chatRawHistoryStatePath,
-        trigger_id: values.chatTriggerIDStatePath,
-        channel: values.chatChannelStatePath,
-        user_id: values.chatUserIDStatePath,
-        conversation_id: values.chatConversationIDStatePath,
-        message_id: values.chatMessageIDStatePath,
-      },
+      ...(Object.keys(stateBindings).length > 0 ? { state_bindings: stateBindings } : {}),
     };
   }
   return trigger;
@@ -223,36 +232,115 @@ function parseChatHistoryLimit(value: string): number {
   return limit;
 }
 
-function buildChatStateBindings(values: TriggerEditorValues): TriggerChatStateBindings {
-  const fields: Array<{ key: keyof TriggerChatStateBindings; label: string; value: string; conversation?: boolean }> = [
-    { key: "conversation", label: "conversation", value: values.chatConversationStatePath, conversation: true },
-    { key: "raw_history", label: "raw history", value: values.chatRawHistoryStatePath },
-    { key: "trigger_id", label: "trigger ID", value: values.chatTriggerIDStatePath },
-    { key: "channel", label: "channel", value: values.chatChannelStatePath },
-    { key: "user_id", label: "user ID", value: values.chatUserIDStatePath },
-    { key: "conversation_id", label: "conversation ID", value: values.chatConversationIDStatePath },
-    { key: "message_id", label: "message ID", value: values.chatMessageIDStatePath },
-  ];
-  const bindings: TriggerChatStateBindings = {};
-  const configured: Array<{ label: string; path: string }> = [];
-  for (const field of fields) {
-    const path = normalizeChatStatePath(field.value, field.label);
-    if (!path) continue;
-    const effectivePath = field.conversation ? `${path}.messages` : path;
-    if (statePathsOverlap(effectivePath, "shared.request.input")) {
-      throw new Error(`${field.label} state path ${path} overlaps the chat input path`);
-    }
-    const previous = configured.find((entry) => statePathsOverlap(effectivePath, entry.path));
-    if (previous) {
-      throw new Error(`${field.label} state path ${path} overlaps ${previous.label} state path ${previous.path}`);
-    }
-    bindings[field.key] = path;
-    configured.push({ label: field.label, path: effectivePath });
+interface StateBindingField {
+  key: keyof TriggerEditorStateBindings;
+  label: string;
+  conversation?: boolean;
+}
+
+interface StateDestination {
+  label: string;
+  path: string;
+  effectivePath: string;
+}
+
+const requestStateBindingFields: StateBindingField[] = [
+  { key: "input", label: "input" },
+  { key: "metadata", label: "metadata" },
+  { key: "trigger_id", label: "trigger ID" },
+  { key: "trigger_type", label: "trigger type" },
+  { key: "raw_body", label: "raw body" },
+];
+
+const chatStateBindingFields: StateBindingField[] = [
+  { key: "input", label: "input" },
+  { key: "conversation", label: "conversation", conversation: true },
+  { key: "raw_history", label: "raw history" },
+  { key: "trigger_id", label: "trigger ID" },
+  { key: "channel", label: "channel" },
+  { key: "user_id", label: "user ID" },
+  { key: "conversation_id", label: "conversation ID" },
+  { key: "message_id", label: "message ID" },
+];
+
+function triggerStateBindings(trigger: Trigger): TriggerEditorStateBindings {
+  if (trigger.type === "webhook") return { ...(trigger.webhook?.state_bindings ?? {}) };
+  if (trigger.type === "schedule") return { ...(trigger.schedule?.state_bindings ?? {}) };
+  return { ...(trigger.chat?.state_bindings ?? {}) };
+}
+
+function defaultTriggerStateBindings(type: TriggerType): TriggerEditorStateBindings {
+  if (type === "chat") return { input: "shared.request.input" };
+  return {
+    input: "shared.request.input",
+    metadata: "shared.request.metadata",
+    trigger_id: "shared.trigger.id",
+    trigger_type: "shared.trigger.type",
+  };
+}
+
+function stateBindingFields(type: TriggerType): StateBindingField[] {
+  return type === "chat" ? chatStateBindingFields : requestStateBindingFields;
+}
+
+function buildTriggerStateBindings(
+  type: TriggerType,
+  source: TriggerEditorStateBindings
+): TriggerEditorStateBindings {
+  const bindings: TriggerEditorStateBindings = {};
+  for (const field of stateBindingFields(type)) {
+    const path = normalizeTriggerStatePath(source[field.key] ?? "", field.label);
+    if (path) bindings[field.key] = path;
   }
   return bindings;
 }
 
-function normalizeChatStatePath(value: string, label: string): string {
+function draftStateBindings(type: TriggerType, source: TriggerEditorStateBindings): TriggerEditorStateBindings {
+  const bindings: TriggerEditorStateBindings = {};
+  for (const field of stateBindingFields(type)) {
+    const path = source[field.key]?.trim();
+    if (path) bindings[field.key] = path;
+  }
+  return bindings;
+}
+
+function stateBindingDestinations(
+  type: TriggerType,
+  bindings: TriggerEditorStateBindings
+): StateDestination[] {
+  return stateBindingFields(type).flatMap((field) => {
+    const path = bindings[field.key];
+    if (!path) return [];
+    return [{
+      label: field.label,
+      path,
+      effectivePath: field.conversation ? `${path}.messages` : path,
+    }];
+  });
+}
+
+function initialStateDestinations(entries: TriggerInitialStateEntry[]): StateDestination[] {
+  return entries.flatMap((entry) => {
+    if (!entry.path.trim() && !entry.value) return [];
+    const path = normalizeInitialStatePath(entry.path);
+    return [{ label: "initial state", path, effectivePath: path }];
+  });
+}
+
+function validateStateDestinationOverlaps(destinations: StateDestination[]) {
+  const configured: StateDestination[] = [];
+  for (const destination of destinations) {
+    const previous = configured.find((entry) => statePathsOverlap(destination.effectivePath, entry.effectivePath));
+    if (previous) {
+      throw new Error(
+        `${destination.label} state path ${destination.path} overlaps ${previous.label} state path ${previous.path}`
+      );
+    }
+    configured.push(destination);
+  }
+}
+
+function normalizeTriggerStatePath(value: string, label: string): string {
   const trimmed = value.trim();
   if (!trimmed) return "";
   const segments = trimmed.split(".").map((segment) => segment.trim());
@@ -338,47 +426,14 @@ function cloneJSONValue(value: unknown): unknown {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
-export function chatTriggerURL(triggerID: string): string {
-  return resolveBackendUrl(`/triggers/${encodeURIComponent(triggerID)}/chat`);
+export function webhookTriggerURL(graphID: string, triggerID: string): string {
+  return resolveBackendUrl(
+    `/graphs/${encodeURIComponent(graphID)}/triggers/${encodeURIComponent(triggerID)}/webhook`
+  );
 }
 
-export function webhookTriggerURLs(triggerID: string): { post: string; get: string } {
-  const encodedID = encodeURIComponent(triggerID);
-  return {
-		post: withAPIKeyPlaceholder(resolveBackendUrl(`/triggers/${encodedID}/invocations`)),
-    get: withAPIKeyPlaceholder(resolveBackendUrl(`/triggers/${encodedID}/webhook`)),
-  };
-}
-
-function withAPIKeyPlaceholder(value: string): string {
-  const url = new URL(value);
-  url.searchParams.set("api_key", "YOUR_API_KEY");
-  return url.toString();
-}
-
-export function buildTriggerTargetOptions(
-  current: GraphInfo | null,
-  cached: CachedGraphSummary[],
-  preserved: TriggerTarget
-): TriggerTargetOption[] {
-  const result: TriggerTargetOption[] = [];
-  const keys = new Set<string>();
-  const add = (label: string, target: TriggerTarget) => {
-    const key = triggerTargetKey(target);
-    if (!key || keys.has(key)) return;
-    keys.add(key);
-    result.push({ key, label, target });
-  };
-  if (current) add(`${current.id} (current)`, { graph_id: current.id });
-  for (const graph of Array.isArray(cached) ? cached : []) {
-    if (graph.latest_session) add(graph.id, { graph_id: graph.id });
-  }
-  if (triggerTargetKey(preserved)) add(preserved.graph_id, preserved);
-  return result;
-}
-
-export function defaultTriggerTarget(current: GraphInfo | null, cached: CachedGraphSummary[]): TriggerTarget {
-  return buildTriggerTargetOptions(current, cached, { graph_id: "" })[0]?.target ?? { graph_id: "" };
+export function webhookCurlCommand(url: string): string {
+  return `curl -X POST "${url}" -H "Content-Type: application/json" -d "{}"`;
 }
 
 export function triggerTargetKey(target?: TriggerTarget): string {
@@ -431,9 +486,6 @@ function normalizeInitialStatePath(value: string): string {
   }
   if (segments[0] !== "shared" && segments[0] !== "scopes") {
     throw new Error(`initial state section ${segments[0]} is not allowed`);
-  }
-  if (segments[0] === "shared" && (segments[1] === "request" || segments[1] === "trigger")) {
-    throw new Error(`initial state path ${segments.slice(0, 2).join(".")} is reserved`);
   }
   return segments.join(".");
 }

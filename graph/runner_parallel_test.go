@@ -1214,6 +1214,59 @@ func TestRunnerExternalPauseCancelsActiveNodeAtBeforeCheckpoint(t *testing.T) {
 	}
 }
 
+func TestRunnerExternalPauseAcceptsCustomCancellationError(t *testing.T) {
+	t.Parallel()
+
+	started := make(chan string, 1)
+	graph := NewGraph()
+	mustAddNode(t, graph, "work", func(ctx context.Context, access *state.Access) error {
+		started <- "work"
+		<-ctx.Done()
+		return errors.New("request cancelled")
+	})
+	if err := graph.SetEntryPoint("work"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := graph.SetFinishPoint("work"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+
+	baseDir := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(baseDir)
+	runner := NewGraphRunner(
+		graph,
+		executionStore,
+		fruntime.NewFileCheckpointStore(baseDir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(baseDir),
+	)
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, err := runner.Start(context.Background(), state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: err}
+	}()
+
+	waitForBranchStarts(t, started, 1)
+	runID := waitForRunID(t, executionStore)
+	if err := runner.Pause(context.Background(), runID); err != nil {
+		t.Fatalf("pause run: %v", err)
+	}
+
+	result := waitForRunnerResult(t, done)
+	if result.err != nil {
+		t.Fatalf("runner start returned error: %v", result.err)
+	}
+	if result.run.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", result.run.Status)
+	}
+	if result.run.PauseRequested || result.run.CancelRequested {
+		t.Fatalf("paused run retained control flags: %#v", result.run)
+	}
+	if result.run.ErrorCode != "" || result.run.ErrorMessage != "" {
+		t.Fatalf("paused run retained failure: %#v", result.run)
+	}
+}
+
 func TestRunnerExternalPauseAfterNodeStopsBeforeNextSequentialNode(t *testing.T) {
 	t.Parallel()
 

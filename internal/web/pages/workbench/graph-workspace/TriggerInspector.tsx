@@ -1,7 +1,7 @@
 import { Clock3, MessageCircle, Webhook, Zap } from "lucide-react";
 import type { ChatChannelDefinition, Trigger } from "../../../types";
 import { TriggerEditorForm } from "../TriggerEditorForm";
-import { triggerTypeName, webhookTriggerURLs, type TriggerEditorValues } from "../triggerEditor";
+import { triggerTypeName, webhookCurlCommand, webhookTriggerURL, type TriggerEditorValues } from "../triggerEditor";
 import type { TriggerDraftSetup } from "./useGraphTriggers";
 import { PanelHeader } from "./shared";
 
@@ -29,7 +29,7 @@ export function TriggerInspector({
   const Icon = trigger?.type === "webhook" ? Webhook : trigger?.type === "schedule" ? Clock3 : trigger?.type === "chat" ? MessageCircle : Zap;
   const title = trigger ? (trigger.name?.trim() || triggerTypeName(trigger.type)) : "Trigger";
   const target = { graph_id: graphID };
-  const webhookURLs = trigger ? webhookTriggerURLs(trigger.id) : null;
+  const webhookURL = trigger ? webhookTriggerURL(graphID, trigger.id) : "";
 
   return (
     <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel pb-[45vh] [overflow-wrap:anywhere]">
@@ -61,9 +61,11 @@ export function TriggerInspector({
         onChange={onChange}
       />
       {trigger?.type === "webhook" ? (
-        <div className="grid gap-1 border-t border-border p-3 text-xs text-muted-foreground">
-          <code className="break-all">POST {webhookURLs?.post}</code>
-          <code className="break-all">GET {webhookURLs?.get}</code>
+        <div className="grid gap-2 border-t border-border p-3 text-xs text-muted-foreground">
+          <div className="font-medium">Test command</div>
+          <code className="block break-all rounded border border-border bg-muted/40 p-2 font-mono text-[11px] text-foreground">
+            {webhookCurlCommand(webhookURL)}
+          </code>
         </div>
       ) : null}
     </section>

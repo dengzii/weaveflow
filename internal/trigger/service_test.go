@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,6 +143,7 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 			StreamUpdates: true,
 			StreamNodeIDs: []string{"answer"},
 			StateBindings: &ChatStateBindings{
+				Input:          "shared.request.input",
 				TriggerID:      "scopes.chat.trigger_id",
 				Channel:        "scopes.chat.channel",
 				UserID:         "scopes.chat.user_id",
@@ -309,6 +312,7 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 		Chat: &ChatSpec{
 			HistoryLimit: 1,
 			StateBindings: &ChatStateBindings{
+				Input:          "shared.request.input",
 				Conversation:   "scopes.agent.conversation",
 				RawHistory:     "scopes.chat.raw_history",
 				TriggerID:      "scopes.chat.trigger_id",
@@ -322,7 +326,8 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 		t.Fatal(err)
 	}
 	if _, err := service.Create(context.Background(), Trigger{
-		ID: "chat-b", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{},
+		ID: "chat-b", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"},
+		Chat: &ChatSpec{StateBindings: &ChatStateBindings{Input: "shared.request.input"}},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -439,10 +444,13 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 
 type failingChatStarter struct{}
 
-func (failingChatStarter) Start(_ context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+func (failingChatStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
 	now := time.Date(2026, 7, 31, 11, 0, 0, 0, time.UTC)
+	if err := chatcap.EmitReply(ctx, chatcap.Reply{Kind: chatcap.ReplyUpdate, Content: "partial"}); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
 	return runtime.RunRecord{
-		RunID: "failed-chat-run", Status: runtime.RunStatusFailed, ErrorMessage: "run failed",
+		RunID: "failed-chat-run", Status: runtime.RunStatusFailed, ErrorMessage: "model provider unavailable",
 		StartedAt: now, UpdatedAt: now, FinishedAt: &now,
 	}, initial, errors.New("run failed")
 }
@@ -459,7 +467,7 @@ func TestServiceInvokeChatPersistsFailedTurnAndFinishReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := service.Create(context.Background(), Trigger{
-		ID: "failed-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{},
+		ID: "failed-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{StreamUpdates: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -473,14 +481,19 @@ func TestServiceInvokeChatPersistsFailedTurnAndFinishReply(t *testing.T) {
 	if invokeErr == nil || invokeErr.Error() != "run failed" {
 		t.Fatalf("InvokeChat() error = %v", invokeErr)
 	}
-	if len(replies) != 1 || replies[0].Kind != chatcap.ReplyFinish || replies[0].Error != "run failed" {
+	if result.FinalReply != "Run failed: model provider unavailable" {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(replies) != 2 || replies[0].Kind != chatcap.ReplyUpdate || replies[0].Content != "partial" ||
+		replies[1].Kind != chatcap.ReplyFinish || replies[1].Content != "Run failed: model provider unavailable" || replies[1].Error != "" {
 		t.Fatalf("failure replies = %#v", replies)
 	}
 	records, err := service.ListRecords(context.Background(), "failed-chat", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 1 || records[0].Status != runtime.RunStatusFailed || records[0].Run == nil || records[0].Run.RunID != "failed-chat-run" {
+	if len(records) != 1 || records[0].Status != runtime.RunStatusFailed || records[0].ErrorMessage != "run failed" ||
+		records[0].Run == nil || records[0].Run.RunID != "failed-chat-run" {
 		t.Fatalf("failed chat record = %#v", records)
 	}
 	history, err := service.ListChatHistory(context.Background(), ChatHistoryFilter{
@@ -489,8 +502,33 @@ func TestServiceInvokeChatPersistsFailedTurnAndFinishReply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(history) != 1 || history[0].Status != runtime.RunStatusFailed || history[0].RunID != "failed-chat-run" || history[0].ErrorMessage != "run failed" {
+	if len(history) != 1 || history[0].Status != runtime.RunStatusFailed || history[0].RunID != "failed-chat-run" ||
+		history[0].ErrorMessage != "run failed" || history[0].FinalAnswer != "Run failed: model provider unavailable" ||
+		len(history[0].Messages) != 2 || history[0].Messages[1].Content != "Run failed: model provider unavailable" || history[0].Messages[1].Kind != ChatMessageFinal {
 		t.Fatalf("failed chat history = %#v", history)
+	}
+}
+
+func TestChatRunFinishContentDescribesTerminalStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		run    runtime.RunRecord
+		runErr error
+		want   string
+	}{
+		{name: "failed with run reason", run: runtime.RunRecord{Status: runtime.RunStatusFailed, ErrorMessage: "node failed"}, runErr: errors.New("fallback failure"), want: "Run failed: node failed"},
+		{name: "failed with returned error", run: runtime.RunRecord{Status: runtime.RunStatusFailed}, runErr: errors.New("fallback failure"), want: "Run failed: fallback failure"},
+		{name: "failed without reason", run: runtime.RunRecord{Status: runtime.RunStatusFailed}, want: "Run failed."},
+		{name: "canceled", run: runtime.RunRecord{Status: runtime.RunStatusCanceled}, runErr: context.Canceled, want: "Response stopped."},
+		{name: "paused", run: runtime.RunRecord{Status: runtime.RunStatusPaused}, want: "Run paused."},
+		{name: "completed", run: runtime.RunRecord{Status: runtime.RunStatusCompleted}, want: ""},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := chatRunFinishContent(test.run, test.runErr); got != test.want {
+				t.Fatalf("chatRunFinishContent() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }
 
@@ -500,6 +538,9 @@ type cancelableChatStarter struct {
 }
 
 func (s *cancelableChatStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+	if err := chatcap.EmitReply(ctx, chatcap.Reply{Kind: chatcap.ReplyUpdate, Content: "working"}); err != nil {
+		return runtime.RunRecord{}, initial, err
+	}
 	s.once.Do(func() { close(s.started) })
 	<-ctx.Done()
 	now := time.Now().UTC()
@@ -524,7 +565,7 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 	createdAt := time.Date(2026, 8, 4, 12, 0, 0, 123000000, time.UTC)
 	service.now = func() time.Time { return createdAt }
 	if _, err := service.Create(context.Background(), Trigger{
-		ID: "command-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{},
+		ID: "command-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{StreamUpdates: true},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -532,11 +573,15 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 	invocationDone := make(chan struct{})
 	var invocationResult ChatResult
 	var invocationErr error
+	var invocationReplies []chatcap.Reply
 	go func() {
 		defer close(invocationDone)
 		invocationResult, invocationErr = service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
 			ID: "message-1", UserID: "user-1", ConversationID: "channel-thread", Content: "long task",
-		}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil }))
+		}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
+			invocationReplies = append(invocationReplies, reply)
+			return nil
+		}))
 	}()
 	select {
 	case <-starter.started:
@@ -554,7 +599,7 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stopResult.Command != chatCommandStop || stopResult.FinalReply != "Stopped the active response." || len(stopReplies) != 1 || stopReplies[0].Kind != chatcap.ReplyFinish {
+	if stopResult.Command != chatCommandStop || stopResult.FinalReply != "Response stopped." || len(stopReplies) != 1 || stopReplies[0].Kind != chatcap.ReplyFinish {
 		t.Fatalf("stop result = %#v, replies = %#v", stopResult, stopReplies)
 	}
 	select {
@@ -562,8 +607,13 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("active chat invocation was not canceled")
 	}
-	if !errors.Is(invocationErr, context.Canceled) || invocationResult.ConversationID == "" || stopResult.ConversationID != invocationResult.ConversationID {
+	if !errors.Is(invocationErr, context.Canceled) || invocationResult.ConversationID == "" ||
+		stopResult.ConversationID != invocationResult.ConversationID || invocationResult.FinalReply != "Response stopped." {
 		t.Fatalf("canceled invocation result = %#v, err = %v", invocationResult, invocationErr)
+	}
+	if len(invocationReplies) != 2 || invocationReplies[0].Kind != chatcap.ReplyUpdate || invocationReplies[0].Content != "working" ||
+		invocationReplies[1].Kind != chatcap.ReplyFinish || invocationReplies[1].Content != "Response stopped." || invocationReplies[1].Error != "" {
+		t.Fatalf("canceled invocation replies = %#v", invocationReplies)
 	}
 
 	newResult, err := service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
@@ -593,6 +643,17 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 	}
 	if len(records) != 1 || records[0].Status != runtime.RunStatusCanceled {
 		t.Fatalf("command trigger records = %#v", records)
+	}
+	history, err := service.ListChatHistory(context.Background(), ChatHistoryFilter{
+		TriggerID: "command-chat", UserID: "user-1", ChannelConversationID: "channel-thread", ConversationID: invocationResult.ConversationID, Limit: 10,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Status != runtime.RunStatusCanceled || history[0].ErrorMessage != context.Canceled.Error() ||
+		history[0].FinalAnswer != "Response stopped." || len(history[0].Messages) != 2 ||
+		history[0].Messages[1].Content != "Response stopped." || history[0].Messages[1].Kind != ChatMessageFinal {
+		t.Fatalf("canceled chat history = %#v", history)
 	}
 }
 
@@ -763,6 +824,103 @@ func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
 	}
 }
 
+func TestServiceReplaceGraphIsAtomicAndUpdatesLiveChannels(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	factory := &lifecycleChannelFactory{started: make(chan map[string]any, 2), stopped: make(chan struct{}, 2)}
+	channels := chatchannel.NewDefaultRegistry()
+	if err := channels.Register(factory); err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(
+		store,
+		RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) { return &recordingStarter{}, nil }),
+		WithChatChannels(channels),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.ReplaceGraph(context.Background(), "graph-a", []Trigger{{
+		ID: "chat", Type: TypeChat, Enabled: true,
+		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "first", "secret": "stored-secret"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.ReplaceGraph(context.Background(), "graph-b", []Trigger{{
+		ID: "other", Type: TypeWebhook, Enabled: true, Webhook: &WebhookSpec{},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = service.Close() }()
+	select {
+	case config := <-factory.started:
+		if config["name"] != "first" || config["secret"] != "stored-secret" {
+			t.Fatalf("initial channel config = %#v", config)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial chat channel did not start")
+	}
+
+	replaced, err := service.ReplaceGraph(context.Background(), "graph-a", []Trigger{{
+		ID: "chat", Type: TypeChat, Enabled: true,
+		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "second"}},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := replaced[0].Chat.ChannelConfig["secret"]; got != "stored-secret" {
+		t.Fatalf("preserved channel secret = %#v, want stored-secret", got)
+	}
+	select {
+	case <-factory.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("replaced chat channel did not stop")
+	}
+	select {
+	case config := <-factory.started:
+		if config["name"] != "second" || config["secret"] != "stored-secret" {
+			t.Fatalf("replaced channel config = %#v", config)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("replacement chat channel did not start")
+	}
+
+	if _, err := service.ReplaceGraph(context.Background(), "graph-a", []Trigger{{
+		ID: "other", Type: TypeWebhook, Enabled: true, Webhook: &WebhookSpec{},
+	}}); !errors.Is(err, ErrExists) {
+		t.Fatalf("cross-graph replacement error = %v, want ErrExists", err)
+	}
+	items, err := service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("triggers after failed replacement = %#v, want two unchanged items", items)
+	}
+
+	if _, err := service.ReplaceGraph(context.Background(), "graph-a", nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-factory.stopped:
+	case <-time.After(time.Second):
+		t.Fatal("removed chat channel did not stop")
+	}
+	items, err = service.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].ID != "other" || items[0].Target.GraphID != "graph-b" {
+		t.Fatalf("remaining triggers = %#v, want graph-b trigger", items)
+	}
+}
+
 func TestServiceAllowsDisabledChatChannelWithoutCredentials(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {
@@ -808,6 +966,55 @@ func (r *recordingStarter) Start(_ context.Context, initial *state.State) (runti
 	return runtime.RunRecord{RunID: "run-1", Status: runtime.RunStatusCompleted}, initial, nil
 }
 
+type rejectingInitialStateStarter struct {
+	calls       int
+	validations int
+}
+
+func (r *rejectingInitialStateStarter) ValidateInitialState(*state.State) error {
+	r.validations++
+	return errors.New("missing shared.required")
+}
+
+func (r *rejectingInitialStateStarter) Start(_ context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+	r.calls++
+	return runtime.RunRecord{}, initial, nil
+}
+
+func TestServiceValidatesTriggerStateBeforeStartingNormalAndChatRuns(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &rejectingInitialStateStarter{}
+	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
+		return starter, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range []Trigger{
+		{ID: "hook", Type: TypeWebhook, Enabled: true, Target: Target{GraphID: "graph"}, Webhook: &WebhookSpec{}},
+		{ID: "chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"}, Chat: &ChatSpec{}},
+	} {
+		if _, err := service.Create(context.Background(), item); err != nil {
+			t.Fatalf("create %s trigger: %v", item.Type, err)
+		}
+	}
+
+	if _, err := service.InvokeWebhook(context.Background(), "hook", []byte(`{}`), "", nil); err == nil || !strings.Contains(err.Error(), "validate trigger initial state") {
+		t.Fatalf("webhook preflight error = %v", err)
+	}
+	if _, err := service.InvokeChat(context.Background(), "chat", chatchannel.InboundMessage{
+		ID: "message", UserID: "user", ConversationID: "channel-conversation", Content: "hello",
+	}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil })); err == nil || !strings.Contains(err.Error(), "validate trigger initial state") {
+		t.Fatalf("chat preflight error = %v", err)
+	}
+	if starter.validations != 2 || starter.calls != 0 {
+		t.Fatalf("validations = %d, starts = %d, want 2 validations before zero starts", starter.validations, starter.calls)
+	}
+}
+
 type asyncRecordingStarter struct {
 	recordingStarter
 	done <-chan struct{}
@@ -842,6 +1049,12 @@ func TestServiceInvokeWebhookBuildsStateAndChecksAPIKey(t *testing.T) {
 		},
 		Webhook: &WebhookSpec{
 			APIKey: "secret",
+			StateBindings: &WebhookStateBindings{
+				Input:       "scopes.webhook.input",
+				Metadata:    "scopes.webhook.metadata",
+				TriggerID:   "scopes.webhook.trigger_id",
+				TriggerType: "scopes.webhook.trigger_type",
+			},
 			StateMappings: []WebhookStateMapping{
 				{Parameter: "message", StatePath: "shared.webhook.message"},
 			},
@@ -862,7 +1075,7 @@ func TestServiceInvokeWebhookBuildsStateAndChecksAPIKey(t *testing.T) {
 	if run.RunID != "run-1" || starter.calls != 1 {
 		t.Fatalf("run = %#v, calls = %d", run, starter.calls)
 	}
-	input, ok := state.ReadPath(starter.initial, "shared.request.input")
+	input, ok := state.ReadPath(starter.initial, "scopes.webhook.input")
 	if !ok {
 		t.Fatal("webhook input is missing")
 	}
@@ -882,11 +1095,15 @@ func TestServiceInvokeWebhookBuildsStateAndChecksAPIKey(t *testing.T) {
 	if !ok || agentMode != "review" {
 		t.Fatalf("trigger initial scoped state = %#v", agentMode)
 	}
-	triggerID, ok := state.ReadPath(starter.initial, "shared.trigger.id")
+	triggerID, ok := state.ReadPath(starter.initial, "scopes.webhook.trigger_id")
 	if !ok || triggerID != "webhook-1" {
 		t.Fatalf("trigger id = %#v", triggerID)
 	}
-	metadataValue, ok := state.ReadPath(starter.initial, "shared.request.metadata")
+	triggerType, ok := state.ReadPath(starter.initial, "scopes.webhook.trigger_type")
+	if !ok || triggerType != "webhook" {
+		t.Fatalf("trigger type = %#v", triggerType)
+	}
+	metadataValue, ok := state.ReadPath(starter.initial, "scopes.webhook.metadata")
 	if !ok {
 		t.Fatal("webhook metadata is missing")
 	}
@@ -905,8 +1122,6 @@ func TestTriggerRejectsInvalidInitialState(t *testing.T) {
 	tests := []map[string]any{
 		{"runtime": map[string]any{"run_id": "spoofed"}},
 		{"shared": "not-an-object"},
-		{"shared": map[string]any{"request": map[string]any{"input": "spoofed"}}},
-		{"shared": map[string]any{"trigger": map[string]any{"id": "spoofed"}}},
 	}
 	for _, initialState := range tests {
 		item := Trigger{
@@ -925,16 +1140,151 @@ func TestTriggerRejectsInvalidInitialState(t *testing.T) {
 	}
 }
 
+func TestTriggerProducedStateContractCoversInvocationWrites(t *testing.T) {
+	tests := []struct {
+		name     string
+		trigger  Trigger
+		expected map[string]string
+	}{
+		{
+			name: "webhook",
+			trigger: Trigger{
+				Type: TypeWebhook,
+				InitialState: map[string]any{"shared": map[string]any{
+					"tenant": map[string]any{"id": "tenant-1"},
+				}},
+				Webhook: &WebhookSpec{
+					StateBindings: &WebhookStateBindings{
+						Input: "shared.request.input", Metadata: "shared.request.metadata",
+						TriggerID: "shared.trigger.id", TriggerType: "shared.trigger.type", RawBody: "shared.request.raw",
+					},
+					StateMappings: []WebhookStateMapping{{Parameter: "user.id", StatePath: "scopes.hook.user_id"}},
+				},
+			},
+			expected: map[string]string{
+				"shared.tenant": "object", "shared.tenant.id": "string",
+				"shared.request.input": "", "shared.request.metadata": "object", "shared.request.raw": "string",
+				"shared.trigger.id": "string", "shared.trigger.type": "string", "scopes.hook.user_id": "",
+			},
+		},
+		{
+			name: "schedule",
+			trigger: Trigger{Type: TypeSchedule, Schedule: &ScheduleSpec{StateBindings: &ScheduleStateBindings{
+				Input: "scopes.timer.input", Metadata: "scopes.timer.metadata",
+				TriggerID: "scopes.timer.trigger_id", TriggerType: "scopes.timer.trigger_type",
+			}}},
+			expected: map[string]string{
+				"scopes.timer.input": "", "scopes.timer.metadata": "object",
+				"scopes.timer.trigger_id": "string", "scopes.timer.trigger_type": "string",
+			},
+		},
+		{
+			name: "chat",
+			trigger: Trigger{Type: TypeChat, Chat: &ChatSpec{StateBindings: &ChatStateBindings{
+				Input: "scopes.chat.input", Conversation: "scopes.chat.conversation", RawHistory: "scopes.chat.raw_history",
+				TriggerID: "scopes.chat.trigger_id", Channel: "scopes.chat.channel", UserID: "scopes.chat.user_id",
+				ConversationID: "scopes.chat.conversation_id", MessageID: "scopes.chat.message_id",
+			}}},
+			expected: map[string]string{
+				"scopes.chat.input": "string", "scopes.chat.conversation.messages": "array", "scopes.chat.raw_history": "array",
+				"scopes.chat.trigger_id": "string", "scopes.chat.channel": "string", "scopes.chat.user_id": "string",
+				"scopes.chat.conversation_id": "string", "scopes.chat.message_id": "string",
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			contract, err := test.trigger.ProducedStateContract()
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual := make(map[string]string, len(contract.Fields))
+			for _, field := range contract.Fields {
+				if field.Mode != state.AccessWrite {
+					t.Fatalf("field %q mode = %q, want write", field.Path.String(), field.Mode)
+				}
+				actual[field.Path.String()] = field.Type
+			}
+			if !reflect.DeepEqual(actual, test.expected) {
+				t.Fatalf("produced fields = %#v, want %#v", actual, test.expected)
+			}
+		})
+	}
+}
+
+func TestTriggerRejectsOverlappingStateDestinations(t *testing.T) {
+	tests := []Trigger{
+		{
+			ID: "webhook", Type: TypeWebhook, Concurrency: ConcurrencyParallel, Target: Target{GraphID: "graph-1"},
+			Webhook: &WebhookSpec{
+				StateBindings: &WebhookStateBindings{Input: "shared.request.input"},
+				StateMappings: []WebhookStateMapping{{Parameter: "user", StatePath: "shared.request.input.user"}},
+			},
+		},
+		{
+			ID: "schedule", Type: TypeSchedule, Concurrency: ConcurrencyParallel, Target: Target{GraphID: "graph-1"},
+			InitialState: map[string]any{"shared": map[string]any{"request": map[string]any{"input": "configured"}}},
+			Schedule: &ScheduleSpec{
+				Cron:          "0 * * * *",
+				StateBindings: &ScheduleStateBindings{Input: "shared.request.input"},
+			},
+		},
+		{
+			ID: "chat", Type: TypeChat, Concurrency: ConcurrencyParallel, Target: Target{GraphID: "graph-1"},
+			InitialState: map[string]any{"shared": map[string]any{"chat": map[string]any{"message": "configured"}}},
+			Chat: &ChatSpec{
+				Channel:       "http",
+				StateBindings: &ChatStateBindings{Input: "shared.chat.message"},
+			},
+		},
+	}
+	for _, item := range tests {
+		if err := item.Validate(); err == nil {
+			t.Fatalf("overlapping %s trigger state destinations were accepted", item.Type)
+		} else if !errors.Is(err, ErrInvalidTrigger) {
+			t.Fatalf("overlap error = %v", err)
+		}
+	}
+
+	unbound := Trigger{
+		ID: "unbound", Type: TypeWebhook, Concurrency: ConcurrencyParallel, Target: Target{GraphID: "graph-1"},
+		InitialState: map[string]any{"shared": map[string]any{
+			"request": map[string]any{"input": "explicit"},
+			"trigger": map[string]any{"id": "explicit"},
+		}},
+		Webhook: &WebhookSpec{},
+	}
+	if err := unbound.Validate(); err != nil {
+		t.Fatalf("unbound initial state destinations were rejected: %v", err)
+	}
+
+	siblings := Trigger{
+		ID: "siblings", Type: TypeSchedule, Concurrency: ConcurrencyParallel, Target: Target{GraphID: "graph-1"},
+		InitialState: map[string]any{"shared": map[string]any{
+			"request": map[string]any{"metadata": map[string]any{"source": "explicit"}},
+		}},
+		Schedule: &ScheduleSpec{
+			Cron:          "0 * * * *",
+			StateBindings: &ScheduleStateBindings{Input: "shared.request.input"},
+		},
+	}
+	if err := siblings.Validate(); err != nil {
+		t.Fatalf("sibling state destinations were rejected: %v", err)
+	}
+}
+
 func TestTriggerRejectsInvalidWebhookStateMappings(t *testing.T) {
 	tests := [][]WebhookStateMapping{
 		{{Parameter: "", StatePath: "shared.input"}},
 		{{Parameter: "input", StatePath: "runtime.input"}},
-		{{Parameter: "input", StatePath: "shared.trigger.id"}},
-		{{Parameter: "input", StatePath: "shared.request"}},
-		{{Parameter: "input", StatePath: "shared.request.metadata.source"}},
 		{
 			{Parameter: "first", StatePath: "shared.input"},
 			{Parameter: "second", StatePath: "shared.input"},
+		},
+		{
+			{Parameter: "first", StatePath: "shared.input"},
+			{Parameter: "second", StatePath: "shared.input.value"},
 		},
 	}
 	for _, mappings := range tests {
@@ -963,9 +1313,7 @@ func TestTriggerRejectsInvalidChatStateBindings(t *testing.T) {
 		{name: "history limit above maximum", historyLimit: MaxRecordLimit + 1},
 		{name: "invalid section", bindings: &ChatStateBindings{RawHistory: "runtime.chat.history"}},
 		{name: "section without field", bindings: &ChatStateBindings{RawHistory: "shared"}},
-		{name: "input path", bindings: &ChatStateBindings{UserID: "shared.request.input"}},
-		{name: "input parent", bindings: &ChatStateBindings{TriggerID: "shared.request"}},
-		{name: "input child", bindings: &ChatStateBindings{MessageID: "shared.request.input.message_id"}},
+		{name: "input child", bindings: &ChatStateBindings{Input: "shared.request.input", UserID: "shared.request.input.user_id"}},
 		{name: "duplicate bindings", bindings: &ChatStateBindings{TriggerID: "scopes.chat.id", MessageID: "scopes.chat.id"}},
 		{name: "overlapping bindings", bindings: &ChatStateBindings{RawHistory: "scopes.chat", UserID: "scopes.chat.user_id"}},
 		{name: "conversation messages overlap", bindings: &ChatStateBindings{Conversation: "scopes.chat", UserID: "scopes.chat.messages.user_id"}},
@@ -996,18 +1344,62 @@ func TestTriggerNormalizesChatStateBindings(t *testing.T) {
 	now := time.Now().UTC()
 	item := Trigger{
 		Chat: &ChatSpec{StateBindings: &ChatStateBindings{
+			Input:        " shared . request . input ",
 			Conversation: " scopes . agent . conversation ",
 			RawHistory:   " shared . chat . history ",
 			TriggerID:    "  ",
 		}},
 	}.Normalize(now)
-	if item.Chat.StateBindings == nil || item.Chat.StateBindings.Conversation != "scopes.agent.conversation" || item.Chat.StateBindings.RawHistory != "shared.chat.history" {
+	if item.Chat.StateBindings == nil || item.Chat.StateBindings.Input != "shared.request.input" || item.Chat.StateBindings.Conversation != "scopes.agent.conversation" || item.Chat.StateBindings.RawHistory != "shared.chat.history" {
 		t.Fatalf("normalized chat state bindings = %#v", item.Chat.StateBindings)
 	}
 
 	empty := Trigger{Chat: &ChatSpec{StateBindings: &ChatStateBindings{RawHistory: "  "}}}.Normalize(now)
 	if empty.Chat.StateBindings != nil {
 		t.Fatalf("empty chat state bindings = %#v", empty.Chat.StateBindings)
+	}
+}
+
+func TestTriggerStateBuildersUseOnlyConfiguredBindings(t *testing.T) {
+	webhookState, err := buildTriggerState(Trigger{
+		ID: "hook", Type: TypeWebhook,
+		Webhook: &WebhookSpec{StateBindings: &WebhookStateBindings{Input: "scopes.hook.input"}},
+	}, map[string]any{"message": "hello"}, map[string]any{"trace": "trace-1"}, "webhook", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input, ok := state.ReadPath(webhookState, "scopes.hook.input"); !ok || input.(map[string]any)["message"] != "hello" {
+		t.Fatalf("configured webhook input = %#v", input)
+	}
+	for _, path := range []string{"shared.request.input", "shared.request.metadata", "shared.trigger"} {
+		if value, ok := state.ReadPath(webhookState, path); ok {
+			t.Fatalf("unconfigured webhook state %q = %#v", path, value)
+		}
+	}
+
+	chatState, err := buildChatTriggerState(Trigger{
+		ID: "chat", Type: TypeChat,
+		Chat: &ChatSpec{StateBindings: &ChatStateBindings{TriggerID: "scopes.chat.trigger_id"}},
+	}, chatchannel.InboundMessage{Content: "wait for user input"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.ReadPath(chatState, "shared.request.input"); ok {
+		t.Fatal("chat input was injected without an input binding")
+	}
+	if triggerID, ok := state.ReadPath(chatState, "scopes.chat.trigger_id"); !ok || triggerID != "chat" {
+		t.Fatalf("configured chat trigger id = %#v", triggerID)
+	}
+
+	configuredChatState, err := buildChatTriggerState(Trigger{
+		ID: "chat", Type: TypeChat,
+		Chat: &ChatSpec{StateBindings: &ChatStateBindings{Input: "scopes.chat.input"}},
+	}, chatchannel.InboundMessage{Content: "hello"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if input, ok := state.ReadPath(configuredChatState, "scopes.chat.input"); !ok || input != "hello" {
+		t.Fatalf("configured chat input = %#v", input)
 	}
 }
 
@@ -1069,7 +1461,16 @@ func TestServiceInvokeScheduleAndValidatesCron(t *testing.T) {
 		InitialState: map[string]any{
 			"shared": map[string]any{"schedule": map[string]any{"attempt": float64(2)}},
 		},
-		Schedule: &ScheduleSpec{Cron: "0 12 * * *", Input: map[string]any{"source": "timer"}},
+		Schedule: &ScheduleSpec{
+			Cron:  "0 12 * * *",
+			Input: map[string]any{"source": "timer"},
+			StateBindings: &ScheduleStateBindings{
+				Input:       "scopes.schedule.input",
+				Metadata:    "scopes.schedule.metadata",
+				TriggerID:   "scopes.schedule.trigger_id",
+				TriggerType: "scopes.schedule.trigger_type",
+			},
+		},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1081,7 +1482,7 @@ func TestServiceInvokeScheduleAndValidatesCron(t *testing.T) {
 	if run.RunID != "run-1" {
 		t.Fatalf("run id = %q", run.RunID)
 	}
-	input, ok := state.ReadPath(starter.initial, "shared.request.input")
+	input, ok := state.ReadPath(starter.initial, "scopes.schedule.input")
 	if !ok || input.(map[string]any)["source"] != "timer" {
 		t.Fatalf("schedule input = %#v", input)
 	}
