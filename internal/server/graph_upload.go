@@ -383,8 +383,12 @@ func graphRuntimeSettingsHash(settings graphRuntimeSettings) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return graphRuntimeSettingsDataHash(data), nil
+}
+
+func graphRuntimeSettingsDataHash(data []byte) string {
 	hash := sha256.Sum256(data)
-	return fmt.Sprintf("%x", hash[:]), nil
+	return fmt.Sprintf("%x", hash[:])
 }
 
 func writeGraphSessionFile(path string, data []byte) error {

@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/dengzii/weaveflow/llms/openai"
 )
 
 const (
@@ -21,12 +23,14 @@ type graphRuntimeSettingsFile struct {
 }
 
 type graphModelSettingsFile struct {
-	ID       string `json:"id"`
-	Enabled  bool   `json:"enabled"`
-	Provider string `json:"provider"`
-	Model    string `json:"model,omitempty"`
-	BaseURL  string `json:"base_url,omitempty"`
-	APIKey   string `json:"api_key,omitempty"`
+	ID        string         `json:"id"`
+	Enabled   bool           `json:"enabled"`
+	Provider  string         `json:"provider"`
+	APIFormat string         `json:"api_format,omitempty"`
+	Model     string         `json:"model,omitempty"`
+	BaseURL   string         `json:"base_url,omitempty"`
+	ExtraBody map[string]any `json:"extra_body,omitempty"`
+	APIKey    string         `json:"api_key,omitempty"`
 }
 
 func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error) {
@@ -55,8 +59,12 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model id %q is duplicated", modelID)
 		}
 		seenModelIDs[modelID] = struct{}{}
-		if strings.TrimSpace(model.Provider) != "openai" {
-			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model %q provider must be openai", modelID)
+		if !openai.IsSupportedProvider(openai.Provider(strings.TrimSpace(model.Provider))) {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model %q has unsupported provider %q", modelID, model.Provider)
+		}
+		apiFormat := firstNonEmpty(model.APIFormat, string(openai.APIFormatChatCompletions))
+		if !openai.IsSupportedAPIFormat(openai.APIFormat(apiFormat)) {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model %q has unsupported API format %q", modelID, apiFormat)
 		}
 	}
 	settings := graphRuntimeSettings{
@@ -69,8 +77,10 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 			ID:               model.ID,
 			Enabled:          model.Enabled,
 			Provider:         model.Provider,
+			APIFormat:        model.APIFormat,
 			Model:            model.Model,
 			BaseURL:          model.BaseURL,
+			ExtraBody:        cloneGraphModelExtraBody(model.ExtraBody),
 			APIKeyConfigured: strings.TrimSpace(model.APIKey) != "",
 			APIKey:           strings.TrimSpace(model.APIKey),
 		})
@@ -100,12 +110,14 @@ func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
 	}
 	for _, model := range settings.Models {
 		stored.Models = append(stored.Models, graphModelSettingsFile{
-			ID:       model.ID,
-			Enabled:  model.Enabled,
-			Provider: model.Provider,
-			Model:    model.Model,
-			BaseURL:  model.BaseURL,
-			APIKey:   strings.TrimSpace(model.APIKey),
+			ID:        model.ID,
+			Enabled:   model.Enabled,
+			Provider:  model.Provider,
+			APIFormat: model.APIFormat,
+			Model:     model.Model,
+			BaseURL:   model.BaseURL,
+			ExtraBody: cloneGraphModelExtraBody(model.ExtraBody),
+			APIKey:    strings.TrimSpace(model.APIKey),
 		})
 	}
 	data, err := json.MarshalIndent(stored, "", "  ")

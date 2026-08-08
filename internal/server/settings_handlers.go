@@ -28,13 +28,15 @@ type graphEnvironmentPreset struct {
 }
 
 type graphModelSettings struct {
-	ID               string `json:"id,omitempty"`
-	Enabled          bool   `json:"enabled"`
-	Provider         string `json:"provider"`
-	Model            string `json:"model,omitempty"`
-	BaseURL          string `json:"base_url,omitempty"`
-	APIKeyConfigured bool   `json:"api_key_configured"`
-	APIKey           string `json:"-"`
+	ID               string         `json:"id,omitempty"`
+	Enabled          bool           `json:"enabled"`
+	Provider         string         `json:"provider"`
+	APIFormat        string         `json:"api_format"`
+	Model            string         `json:"model,omitempty"`
+	BaseURL          string         `json:"base_url,omitempty"`
+	ExtraBody        map[string]any `json:"extra_body,omitempty"`
+	APIKeyConfigured bool           `json:"api_key_configured"`
+	APIKey           string         `json:"-"`
 }
 
 type graphMemorySettings struct {
@@ -49,12 +51,14 @@ type graphRuntimeSettingsRequest struct {
 }
 
 type graphModelSettingsRequest struct {
-	ID       string `json:"id"`
-	Enabled  *bool  `json:"enabled"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	BaseURL  string `json:"base_url"`
-	APIKey   string `json:"api_key"`
+	ID        string         `json:"id"`
+	Enabled   *bool          `json:"enabled"`
+	Provider  string         `json:"provider"`
+	APIFormat string         `json:"api_format"`
+	Model     string         `json:"model"`
+	BaseURL   string         `json:"base_url"`
+	ExtraBody map[string]any `json:"extra_body"`
+	APIKey    string         `json:"api_key"`
 }
 
 type graphMemorySettingsRequest struct {
@@ -132,7 +136,8 @@ func graphModelSettingsFromContext(ctx context.Context) []graphModelSettings {
 		model := graphModelSettings{
 			ID:               strings.TrimSpace(id),
 			Enabled:          models[id] != nil,
-			Provider:         "openai",
+			Provider:         string(openai.ProviderOpenAI),
+			APIFormat:        string(openai.APIFormatChatCompletions),
 			APIKeyConfigured: strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "",
 		}
 		if model.ID == core.DefaultModelID {
@@ -167,6 +172,9 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings, apiKey strin
 			openai.WithToken(modelAPIKey),
 			openai.WithModel(modelSettings.Model),
 			openai.WithBaseURL(modelSettings.BaseURL),
+			openai.WithProvider(openai.Provider(modelSettings.Provider)),
+			openai.WithAPIFormat(openai.APIFormat(modelSettings.APIFormat)),
+			openai.WithExtraBody(modelSettings.ExtraBody),
 		)
 		if err != nil {
 			return nil, fmt.Errorf("configure model %q: %w", modelSettings.ID, err)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 
 	"github.com/gin-gonic/gin"
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
@@ -43,9 +45,11 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 			{
 				"id": "fast",
 				"enabled": true,
-				"provider": "openai",
+				"provider": "mistral",
+				"api_format": "chat_completions",
 				"model": "gpt-fast",
-				"base_url": "http://127.0.0.1:9999/v1"
+				"base_url": "http://127.0.0.1:9999/v1",
+				"extra_body": {"safe_prompt": true}
 			}
 		],
 		"memory": {"enabled": true}
@@ -55,7 +59,7 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 		"environment": {"WEAVEFLOW_PERSISTED_SETTING": "saved"},
 		"models": [
 			{"id":"default","enabled":true,"provider":"openai","model":"gpt-persisted","base_url":"http://127.0.0.1:9999/v1"},
-			{"id":"fast","enabled":true,"provider":"openai","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1"}
+			{"id":"fast","enabled":true,"provider":"mistral","api_format":"chat_completions","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1","extra_body":{"safe_prompt":true}}
 		],
 		"memory": {"enabled": true}
 	}`
@@ -114,6 +118,9 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	if settingsResponse.Models[1].ID != "fast" || settingsResponse.Models[1].Model != "gpt-fast" {
 		t.Fatalf("restored fast model = %#v", settingsResponse.Models[1])
 	}
+	if settingsResponse.Models[1].Provider != "mistral" || settingsResponse.Models[1].APIFormat != "chat_completions" || settingsResponse.Models[1].ExtraBody["safe_prompt"] != true {
+		t.Fatalf("restored fast provider settings = %#v", settingsResponse.Models[1])
+	}
 	if !settingsResponse.Models[0].APIKeyConfigured || !settingsResponse.Models[1].APIKeyConfigured {
 		t.Fatalf("restored API key flags = %#v", settingsResponse.Models)
 	}
@@ -134,6 +141,65 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	}
 	if got := coreCtx.Environment()["TAVILY_API_KEY"]; got != "persisted-tavily-key" {
 		t.Fatalf("restored TAVILY_API_KEY = %q, want persisted-tavily-key", got)
+	}
+}
+
+func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var captured map[string]any
+	providerServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"model":"deepseek-chat",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`))
+	}))
+	defer providerServer.Close()
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	runtimeContext, err := srv.buildRuntimeContext(graphRuntimeSettings{
+		Models: []graphModelSettings{{
+			ID:        core.DefaultModelID,
+			Enabled:   true,
+			Provider:  "deepseek",
+			APIFormat: "chat_completions",
+			Model:     "deepseek-chat",
+			BaseURL:   providerServer.URL + "/v1",
+			ExtraBody: map[string]any{"custom_option": "enabled"},
+		}},
+	}, "test-key")
+	if err != nil {
+		t.Fatalf("build runtime context: %v", err)
+	}
+	model := core.NewContext(runtimeContext).Model()
+	if model == nil {
+		t.Fatal("runtime model is nil")
+	}
+	_, err = model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
+		llms.WithMaxTokens(64),
+		llms.WithThinkingMode(llms.ThinkingModeHigh),
+	)
+	if err != nil {
+		t.Fatalf("generate content: %v", err)
+	}
+	if captured["max_tokens"] != float64(64) || captured["custom_option"] != "enabled" {
+		t.Fatalf("provider request = %#v", captured)
+	}
+	thinking, _ := captured["thinking"].(map[string]any)
+	if thinking["type"] != "enabled" {
+		t.Fatalf("provider thinking = %#v", thinking)
 	}
 }
 

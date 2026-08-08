@@ -410,24 +410,21 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 	} else if err != nil {
 		return graphSessionManifest{}, false, err
 	}
-	if _, err := os.Stat(filepath.Join(baseDir, settingsName)); os.IsNotExist(err) {
+	settingsData, err := os.ReadFile(filepath.Join(baseDir, settingsName))
+	if os.IsNotExist(err) {
 		return graphSessionManifest{}, false, nil
-	} else if err != nil {
-		return graphSessionManifest{}, false, err
 	}
-	settings, found, err := loadGraphRuntimeSettings(baseDir)
 	if err != nil {
 		return graphSessionManifest{}, false, err
 	}
-	if !found {
-		return graphSessionManifest{}, false, nil
-	}
-	settingsHash, err := graphRuntimeSettingsHash(settings)
-	if err != nil {
-		return graphSessionManifest{}, false, err
-	}
+	settingsHash := graphRuntimeSettingsDataHash(settingsData)
 	if settingsHash != manifest.RuntimeSettingsHash {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q runtime settings hash mismatch", sessionID)
+	}
+	if _, found, err := loadGraphRuntimeSettings(baseDir); err != nil {
+		return graphSessionManifest{}, false, err
+	} else if !found {
+		return graphSessionManifest{}, false, nil
 	}
 	return manifest, true, nil
 }

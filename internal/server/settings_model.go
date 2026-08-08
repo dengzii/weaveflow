@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms/openai"
 )
 
 func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeSettingsRequest) (string, bool, error) {
@@ -106,11 +107,20 @@ func graphModelSettingsFromRequest(
 		model.Enabled = true
 	}
 	model.Provider = firstNonEmpty(req.Provider, model.Provider, "openai")
-	if strings.TrimSpace(model.Provider) != "openai" {
+	model.Provider = strings.ToLower(strings.TrimSpace(model.Provider))
+	if !openai.IsSupportedProvider(openai.Provider(model.Provider)) {
 		return graphModelSettings{}, "", false, fmt.Errorf("unsupported model provider %q", model.Provider)
+	}
+	model.APIFormat = firstNonEmpty(req.APIFormat, model.APIFormat, string(openai.APIFormatChatCompletions))
+	model.APIFormat = strings.ToLower(strings.TrimSpace(model.APIFormat))
+	if !openai.IsSupportedAPIFormat(openai.APIFormat(model.APIFormat)) {
+		return graphModelSettings{}, "", false, fmt.Errorf("unsupported model API format %q", model.APIFormat)
 	}
 	model.Model = strings.TrimSpace(req.Model)
 	model.BaseURL = strings.TrimSpace(req.BaseURL)
+	if req.ExtraBody != nil {
+		model.ExtraBody = cloneGraphModelExtraBody(req.ExtraBody)
+	}
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey != "" {
 		model.APIKey = apiKey
@@ -216,9 +226,12 @@ func sanitizedGraphModelList(models []graphModelSettings) []graphModelSettings {
 func sanitizeGraphModelSettings(model graphModelSettings) graphModelSettings {
 	model.ID = strings.TrimSpace(model.ID)
 	model.Provider = firstNonEmpty(model.Provider, "openai")
-	model.Provider = strings.TrimSpace(model.Provider)
+	model.Provider = strings.ToLower(strings.TrimSpace(model.Provider))
+	model.APIFormat = firstNonEmpty(model.APIFormat, string(openai.APIFormatChatCompletions))
+	model.APIFormat = strings.ToLower(strings.TrimSpace(model.APIFormat))
 	model.Model = strings.TrimSpace(model.Model)
 	model.BaseURL = strings.TrimSpace(model.BaseURL)
+	model.ExtraBody = cloneGraphModelExtraBody(model.ExtraBody)
 	model.APIKey = strings.TrimSpace(model.APIKey)
 	return model
 }
@@ -239,7 +252,11 @@ func firstGraphModelAPIKey(settings graphRuntimeSettings) string {
 
 func defaultGraphModelSettings(models []graphModelSettings) graphModelSettings {
 	if len(models) == 0 {
-		return graphModelSettings{ID: core.DefaultModelID, Provider: "openai"}
+		return graphModelSettings{
+			ID:        core.DefaultModelID,
+			Provider:  string(openai.ProviderOpenAI),
+			APIFormat: string(openai.APIFormatChatCompletions),
+		}
 	}
 	for _, model := range models {
 		if model.ID == core.DefaultModelID {
@@ -247,6 +264,17 @@ func defaultGraphModelSettings(models []graphModelSettings) graphModelSettings {
 		}
 	}
 	return models[0]
+}
+
+func cloneGraphModelExtraBody(extraBody map[string]any) map[string]any {
+	if len(extraBody) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(extraBody))
+	for key, value := range extraBody {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func sortModelIDs(ids []string) {

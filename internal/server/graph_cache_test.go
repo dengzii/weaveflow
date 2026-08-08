@@ -84,6 +84,73 @@ func TestReadCachedGraphSessionRequiresCurrentManifestFields(t *testing.T) {
 	}
 }
 
+func TestReadCachedGraphSessionHashesStoredSettingsBytes(t *testing.T) {
+	t.Parallel()
+
+	graphDirectory := t.TempDir()
+	sessionID := "20260807T102510.733454600Z"
+	sessionDirectory := filepath.Join(graphDirectory, sessionID)
+	if err := os.MkdirAll(sessionDirectory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDirectory, "definition.json"), []byte(`{}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	settingsData := []byte(`{
+  "version": 1,
+  "environment": {},
+  "models": [
+    {
+      "id": "default",
+      "enabled": true,
+      "provider": "openai"
+    }
+  ],
+  "memory": {
+    "enabled": false
+  }
+}
+`)
+	settingsPath := filepath.Join(sessionDirectory, graphRuntimeSettingsFileName)
+	if err := os.WriteFile(settingsPath, settingsData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := graphSessionManifest{
+		GraphID:             "graph-a",
+		GraphVersion:        "v1",
+		GraphHash:           "hash",
+		GraphSnapshotHash:   "snapshot-hash",
+		GraphSessionID:      sessionID,
+		DefinitionPath:      "definition.json",
+		SettingsPath:        graphRuntimeSettingsFileName,
+		RuntimeSettingsHash: graphRuntimeSettingsDataHash(settingsData),
+		CreatedAt:           time.Date(2026, 8, 7, 10, 25, 10, 0, time.UTC),
+	}
+	manifestData, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sessionDirectory, "graph.json"), manifestData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, complete, err := readCachedGraphSession(graphDirectory, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !complete || loaded.GraphSessionID != sessionID {
+		t.Fatalf("readCachedGraphSession() = %#v, %t, want complete session %q", loaded, complete, sessionID)
+	}
+
+	if err := os.WriteFile(settingsPath, append(settingsData, '\n'), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = readCachedGraphSession(graphDirectory, sessionID)
+	if err == nil || !strings.Contains(err.Error(), "runtime settings hash mismatch") {
+		t.Fatalf("readCachedGraphSession() error = %v, want runtime settings hash mismatch", err)
+	}
+}
+
 func TestListCachedGraphsPreservesPortableGraphID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
