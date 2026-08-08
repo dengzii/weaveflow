@@ -72,6 +72,25 @@ func TestFileRuntimeStoresRejectUnsafeRecordIDs(t *testing.T) {
 	}
 }
 
+func TestFileRuntimeStoresHonorCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	dir := t.TempDir()
+
+	if _, err := NewFileExecutionStore(dir).GetRun(ctx, "run"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetRun() error = %v, want context canceled", err)
+	}
+	if _, err := NewFileCheckpointStore(dir).List(ctx, "run"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("checkpoint List() error = %v, want context canceled", err)
+	}
+	if _, err := NewFileArtifactStore(dir).List(ctx, "run"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("artifact List() error = %v, want context canceled", err)
+	}
+	if err := NewFileEventSink(dir).Publish(ctx, Event{RunID: "run", Type: EventRunStarted}); !errors.Is(err, context.Canceled) {
+		t.Fatalf("event Publish() error = %v, want context canceled", err)
+	}
+}
+
 func TestFileRuntimeStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
 	t.Parallel()
 

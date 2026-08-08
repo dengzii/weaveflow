@@ -16,6 +16,8 @@ import (
 
 type scheduledNodeExecutor func(context.Context, string, *state.State) (*state.State, error)
 
+const maxConfiguredRetries = 100
+
 type scheduledRunnable struct {
 	graph        *Graph
 	patches      *compilePatchCollector
@@ -41,6 +43,9 @@ func (runnable *scheduledRunnable) Invoke(ctx context.Context, initialState *sta
 }
 
 func (runnable *scheduledRunnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if runnable != nil && runnable.tracer != nil {
 		graphSpan := runnable.tracer.StartSpan(ctx, langgraph.TraceEventGraphStart, "graph")
 		graphSpan.State = initialState
@@ -96,7 +101,7 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 		}
 
 		results, nodeErrors := runnable.executeNodes(ctx, currentNodes, currentState)
-		mergedState, err := runnable.graph.mergeCompiledStates(currentState, results, runnable.patches)
+		mergedState, err := runnable.graph.mergeCompiledStates(ctx, currentState, results, runnable.patches)
 		if err != nil {
 			mergeErr := fmt.Errorf("state merge failed: %w", err)
 			runnable.notifyChainError(ctx, config, runID, mergeErr)
@@ -105,7 +110,10 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 		currentState = mergedState
 
 		if interrupt := firstNodeInterrupt(currentNodes, nodeErrors); interrupt != nil {
-			runnable.notifyGraphStep(ctx, config, currentNodes, currentState)
+			if err := runnable.notifyGraphStep(ctx, config, currentNodes, currentState); err != nil {
+				runnable.notifyChainError(ctx, config, runID, err)
+				return currentState, err
+			}
 			return currentState, &langgraph.GraphInterrupt{
 				Node:           interrupt.Node,
 				State:          currentState,
@@ -128,7 +136,10 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 		if err := fruntime.StoreGraphSchedule(currentState, currentNodes, sortedNodeIDSet(pendingFanIn)); err != nil {
 			return currentState, err
 		}
-		runnable.notifyGraphStep(ctx, config, nodesRan, currentState)
+		if err := runnable.notifyGraphStep(ctx, config, nodesRan, currentState); err != nil {
+			runnable.notifyChainError(ctx, config, runID, err)
+			return currentState, err
+		}
 
 		if interruptedNode := configuredInterruptNode(nodesRan, config, false); interruptedNode != "" {
 			return currentState, &langgraph.GraphInterrupt{
@@ -234,6 +245,9 @@ func (runnable *scheduledRunnable) retryable(err error) bool {
 		return false
 	}
 	for _, pattern := range runnable.graph.retryPolicy.RetryableErrors {
+		if strings.TrimSpace(pattern) == "" {
+			continue
+		}
 		if strings.Contains(err.Error(), pattern) {
 			return true
 		}
@@ -242,11 +256,22 @@ func (runnable *scheduledRunnable) retryable(err error) bool {
 }
 
 func retryDelay(strategy langgraph.BackoffStrategy, attempt int) time.Duration {
+	const maxRetryDelay = 30 * time.Second
+	if attempt < 0 {
+		return time.Second
+	}
 	switch strategy {
 	case langgraph.ExponentialBackoff:
-		return time.Second * time.Duration(1<<attempt)
+		if attempt >= 5 {
+			return maxRetryDelay
+		}
+		return time.Second * time.Duration(1<<uint(attempt))
 	case langgraph.LinearBackoff:
-		return time.Second * time.Duration(attempt+1)
+		delay := time.Second * time.Duration(attempt+1)
+		if delay > maxRetryDelay {
+			return maxRetryDelay
+		}
+		return delay
 	default:
 		return time.Second
 	}
@@ -331,9 +356,9 @@ func (runnable *scheduledRunnable) isJoinNode(nodeID string) bool {
 	return ok
 }
 
-func (runnable *scheduledRunnable) notifyGraphStep(ctx context.Context, config *langgraph.Config, nodesRan []string, currentState *state.State) {
+func (runnable *scheduledRunnable) notifyGraphStep(ctx context.Context, config *langgraph.Config, nodesRan []string, currentState *state.State) error {
 	if config == nil {
-		return
+		return nil
 	}
 	stepNodeID := ""
 	if len(nodesRan) == 1 {
@@ -342,10 +367,19 @@ func (runnable *scheduledRunnable) notifyGraphStep(ctx context.Context, config *
 		stepNodeID = fmt.Sprintf("step:%v", nodesRan)
 	}
 	for _, callback := range config.Callbacks {
+		if graphStepCallback, ok := callback.(interface {
+			OnGraphStepWithError(context.Context, string, any) error
+		}); ok {
+			if err := graphStepCallback.OnGraphStepWithError(ctx, stepNodeID, currentState); err != nil {
+				return err
+			}
+			continue
+		}
 		if graphCallback, ok := callback.(langgraph.GraphCallbackHandler); ok {
 			graphCallback.OnGraphStep(ctx, stepNodeID, currentState)
 		}
 	}
+	return nil
 }
 
 func (runnable *scheduledRunnable) notifyChainStart(ctx context.Context, config *langgraph.Config, runID string, currentState *state.State) {

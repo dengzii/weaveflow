@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -45,6 +46,7 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
+	registry              *registry.Registry
 	nodes                 map[string]core.Node
 	nodeSpecs             map[string]dsl.GraphNodeSpec
 	nodeContracts         map[string]state.Contract
@@ -52,6 +54,7 @@ type Graph struct {
 	stateBindingSemantics []dsl.StateBindingSemantic
 	initialStatePaths     []string
 	contractDiagnostics   []core.ContractDiagnostic
+	nodeContractErrors    map[string]error
 	defaultEdges          map[string][]string
 	conditionalEdges      map[string][]conditionalEdge
 	edgeSpecs             []dsl.GraphEdgeSpec
@@ -63,6 +66,7 @@ type Graph struct {
 	entryPoint            string
 	finishPoint           string
 	retryPolicy           *langgraph.RetryPolicy
+	contractDiagnosticsMu sync.RWMutex
 }
 
 func NewGraph() *Graph {
@@ -147,13 +151,6 @@ func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
 }
 
 func (g *Graph) WriteToFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
-	if err != nil {
-		return err
-	}
-	defer func() {
-		_ = f.Close()
-	}()
 	def, err := g.Definition()
 	if err != nil {
 		return err
@@ -162,8 +159,20 @@ func (g *Graph) WriteToFile(path string) error {
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(string(bytes))
-	return err
+	temp, err := os.CreateTemp(filepath.Dir(path), ".graph-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() { _ = os.Remove(tempPath) }()
+	if _, err := temp.Write(bytes); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }
 
 func (g *Graph) DrawMermaid() (string, error) {
@@ -238,7 +247,10 @@ func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
 		return nil
 	}
 	spec := g.nodeSpecs[nodeID]
-	reg := builtin.NewDefaultRegistry()
+	reg := g.registry
+	if reg == nil {
+		reg = builtin.NewDefaultRegistry()
+	}
 	if _, registered := reg.NodeTypes[spec.Type]; registered {
 		def := dsl.GraphDefinition{
 			Version:      dsl.GraphDefinitionVersion,
@@ -313,7 +325,21 @@ func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) {
 	if len(spec.Config) > 0 {
 		spec.Config = config.CloneMap(spec.Config)
 	}
+	if g.nodeSpecs == nil {
+		g.nodeSpecs = map[string]dsl.GraphNodeSpec{}
+	}
 	g.nodeSpecs[id] = spec
+	if targetNode, ok := g.nodes[id]; ok {
+		delete(g.nodeContracts, id)
+		if err := g.attachNodeContract(id, targetNode); err != nil {
+			if g.nodeContractErrors == nil {
+				g.nodeContractErrors = map[string]error{}
+			}
+			g.nodeContractErrors[id] = err
+			return
+		}
+		delete(g.nodeContractErrors, id)
+	}
 }
 
 func (g *Graph) SetEntryPoint(ref string) error {
@@ -427,7 +453,10 @@ func (g *Graph) resolveDefaultConditionContract(spec dsl.GraphConditionSpec) (st
 	if g == nil || strings.TrimSpace(spec.Type) == "" {
 		return state.Contract{}, false, nil
 	}
-	reg := builtin.NewDefaultRegistry()
+	reg := g.registry
+	if reg == nil {
+		reg = builtin.NewDefaultRegistry()
+	}
 	if _, ok := reg.Conditions[spec.Type]; !ok {
 		return state.Contract{}, false, nil
 	}
@@ -464,10 +493,38 @@ func (g *Graph) appendConditionContract(from string, contract state.Contract) {
 }
 
 func (g *Graph) SetRetryPolicy(policy *langgraph.RetryPolicy) {
-	g.retryPolicy = policy
+	if g == nil {
+		return
+	}
+	if policy == nil {
+		g.retryPolicy = nil
+		return
+	}
+	copyPolicy := *policy
+	copyPolicy.RetryableErrors = append([]string(nil), policy.RetryableErrors...)
+	g.retryPolicy = &copyPolicy
 }
 
 func (g *Graph) Validate() error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+	if g.retryPolicy != nil {
+		if g.retryPolicy.MaxRetries < 0 {
+			return fmt.Errorf("retry policy max retries must be non-negative")
+		}
+		if g.retryPolicy.MaxRetries > maxConfiguredRetries {
+			return fmt.Errorf("retry policy max retries must be <= %d", maxConfiguredRetries)
+		}
+	}
+	if len(g.nodeContractErrors) > 0 {
+		keys := make([]string, 0, len(g.nodeContractErrors))
+		for nodeID := range g.nodeContractErrors {
+			keys = append(keys, nodeID)
+		}
+		sort.Strings(keys)
+		return fmt.Errorf("node %q contract resolution failed: %w", keys[0], g.nodeContractErrors[keys[0]])
+	}
 	if len(g.nodes) == 0 {
 		return fmt.Errorf("graph has no nodes")
 	}
@@ -529,14 +586,19 @@ func (g *Graph) Validate() error {
 		return err
 	}
 
-	if len(g.nodeContracts) > 0 {
-		g.contractDiagnostics = graphbuild.AnalyzeContractDiagnostics(g.contractAnalysisGraph())
-		if err := graphbuild.ContractDiagnosticsError(g.contractDiagnostics); err != nil {
+	var diagnostics []core.ContractDiagnostic
+	if len(g.nodeContracts) > 0 || len(g.conditionContracts) > 0 {
+		diagnostics = graphbuild.AnalyzeContractDiagnostics(g.contractAnalysisGraph())
+		if err := graphbuild.ContractDiagnosticsError(diagnostics); err != nil {
+			g.contractDiagnosticsMu.Lock()
+			g.contractDiagnostics = diagnostics
+			g.contractDiagnosticsMu.Unlock()
 			return err
 		}
-	} else {
-		g.contractDiagnostics = nil
 	}
+	g.contractDiagnosticsMu.Lock()
+	g.contractDiagnostics = diagnostics
+	g.contractDiagnosticsMu.Unlock()
 
 	return nil
 }
@@ -904,11 +966,11 @@ func (g *Graph) configureStateMerger(compiled *langgraph.StateGraph[*state.State
 		return
 	}
 	compiled.SetStateMerger(func(ctx context.Context, current *state.State, newStates []*state.State) (*state.State, error) {
-		return g.mergeCompiledStates(current, newStates, patches)
+		return g.mergeCompiledStates(ctx, current, newStates, patches)
 	})
 }
 
-func (g *Graph) mergeCompiledStates(current *state.State, newStates []*state.State, patches *compilePatchCollector) (*state.State, error) {
+func (g *Graph) mergeCompiledStates(ctx context.Context, current *state.State, newStates []*state.State, patches *compilePatchCollector) (*state.State, error) {
 	if len(newStates) == 0 {
 		if current == nil {
 			return state.NewState(), nil
@@ -931,7 +993,9 @@ func (g *Graph) mergeCompiledStates(current *state.State, newStates []*state.Sta
 	if len(branches) != len(newStates) {
 		return nil, fmt.Errorf("parallel state merge requires branch patches: collected %d for %d branch states", len(branches), len(newStates))
 	}
-	patches.notifyParallelWave(current, branches)
+	if err := patches.notifyParallelWave(ctx, current, branches); err != nil {
+		return nil, err
+	}
 	return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{
 		Contracts: g.nodeContracts,
 	})
@@ -1105,6 +1169,9 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 }
 
 func (g *Graph) Run(ctx context.Context, initialState *state.State) (*state.State, error) {
+	if g == nil {
+		return initialState, fmt.Errorf("graph is nil")
+	}
 	runnable, err := g.Compile()
 	if err != nil {
 		return initialState, err
@@ -1349,21 +1416,21 @@ func recordFailedBranchPatch(c *compilePatchCollector, base *state.State, nodeID
 	c.record(base, nodeID, state.Patch{})
 }
 
-func (c *compilePatchCollector) notifyParallelWave(base *state.State, branches []state.BranchPatch) {
+func (c *compilePatchCollector) notifyParallelWave(ctx context.Context, base *state.State, branches []state.BranchPatch) error {
 	if c == nil || base == nil || len(branches) <= 1 {
-		return
+		return nil
 	}
 	c.mu.Lock()
 	recorder := c.wave
 	c.mu.Unlock()
 	if recorder == nil {
-		return
+		return nil
 	}
 	nodeIDs := make([]string, 0, len(branches))
 	for _, branch := range branches {
 		nodeIDs = append(nodeIDs, branch.NodeID)
 	}
-	recorder.OnParallelWave(base, nodeIDs)
+	return recorder.OnParallelWave(ctx, base, nodeIDs)
 }
 
 func (c *compilePatchCollector) setWaveRecorder(recorder fruntime.ParallelWaveRecorder) {
@@ -1401,6 +1468,15 @@ func (c *compilePatchCollector) consume(base *state.State) []state.BranchPatch {
 }
 
 func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*state.State, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil {
+		return initialState, fmt.Errorf("runnable is nil")
+	}
+	if r.scheduled == nil && r.runnable == nil {
+		return initialState, fmt.Errorf("runnable is not initialized")
+	}
 	if r.scheduled != nil {
 		return r.scheduled.Invoke(ctx, initialState)
 	}
@@ -1408,6 +1484,15 @@ func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*stat
 }
 
 func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil {
+		return initialState, fmt.Errorf("runnable is nil")
+	}
+	if r.scheduled == nil && r.runnable == nil {
+		return initialState, fmt.Errorf("runnable is not initialized")
+	}
 	if r.scheduled != nil {
 		return r.scheduled.InvokeWithConfig(ctx, initialState, config)
 	}
@@ -1415,33 +1500,61 @@ func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.Sta
 }
 
 func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan langgraph.StreamEvent[*state.State] {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if r == nil {
+		events := make(chan langgraph.StreamEvent[*state.State], 1)
+		events <- langgraph.StreamEvent[*state.State]{State: initialState, Error: fmt.Errorf("runnable is nil")}
+		close(events)
+		return events
+	}
+	if r.scheduled == nil && r.runnable == nil {
+		events := make(chan langgraph.StreamEvent[*state.State], 1)
+		events <- langgraph.StreamEvent[*state.State]{State: initialState, Error: fmt.Errorf("runnable is not initialized")}
+		close(events)
+		return events
+	}
 	if r.scheduled != nil {
 		events := make(chan langgraph.StreamEvent[*state.State], 100)
+		if ctx == nil {
+			ctx = context.Background()
+		}
 		go func() {
 			defer close(events)
-			events <- langgraph.StreamEvent[*state.State]{
+			send := func(event langgraph.StreamEvent[*state.State]) bool {
+				select {
+				case events <- event:
+					return true
+				case <-ctx.Done():
+					return false
+				}
+			}
+			if !send(langgraph.StreamEvent[*state.State]{
 				Timestamp: time.Now(),
 				Event:     langgraph.EventChainStart,
 				State:     initialState,
+			}) {
+				return
 			}
 			scheduled := *r.scheduled
 			scheduled.observeNode = func(_ context.Context, event langgraph.NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
-				events <- langgraph.StreamEvent[*state.State]{
+				send(langgraph.StreamEvent[*state.State]{
 					Timestamp: time.Now(),
 					NodeName:  nodeID,
 					Event:     event,
 					State:     currentState,
 					Error:     err,
 					Duration:  duration,
-				}
+				})
 			}
 			finalState, err := scheduled.Invoke(ctx, initialState)
-			events <- langgraph.StreamEvent[*state.State]{
+			send(langgraph.StreamEvent[*state.State]{
 				Timestamp: time.Now(),
 				Event:     langgraph.EventChainEnd,
 				State:     finalState,
 				Error:     err,
-			}
+			})
 		}()
 		return events
 	}
@@ -1449,26 +1562,44 @@ func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan
 }
 
 func (r *Runnable) SetTracer(tracer *langgraph.Tracer) {
-	r.runnable.SetTracer(tracer)
+	if r == nil {
+		return
+	}
+	if r.runnable != nil {
+		r.runnable.SetTracer(tracer)
+	}
 	if r.scheduled != nil {
 		r.scheduled.tracer = tracer
 	}
 }
 
 func (r *Runnable) WithTracer(tracer *langgraph.Tracer) *Runnable {
+	if r == nil {
+		return nil
+	}
 	var scheduled *scheduledRunnable
 	if r.scheduled != nil {
 		copyRunnable := *r.scheduled
 		copyRunnable.tracer = tracer
 		scheduled = &copyRunnable
 	}
-	return &Runnable{runnable: r.runnable.WithTracer(tracer), scheduled: scheduled}
+	var underlying *langgraph.ListenableRunnable[*state.State]
+	if r.runnable != nil {
+		underlying = r.runnable.WithTracer(tracer)
+	}
+	return &Runnable{runnable: underlying, scheduled: scheduled}
 }
 
 func (r *Runnable) GetTracer() *langgraph.Tracer {
+	if r == nil || r.runnable == nil {
+		return nil
+	}
 	return r.runnable.GetTracer()
 }
 
 func (r *Runnable) Underlying() *langgraph.ListenableRunnable[*state.State] {
+	if r == nil {
+		return nil
+	}
 	return r.runnable
 }

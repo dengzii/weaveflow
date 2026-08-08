@@ -21,7 +21,7 @@ type BranchPatchRecorder interface {
 }
 
 type ParallelWaveRecorder interface {
-	OnParallelWave(base *state.State, nodeIDs []string)
+	OnParallelWave(ctx context.Context, base *state.State, nodeIDs []string) error
 }
 
 type BranchPatchRecorderSetter interface {

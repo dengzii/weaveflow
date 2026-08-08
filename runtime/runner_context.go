@@ -54,7 +54,13 @@ type RunnerMetadata struct {
 
 func WithRunnerEventPublisher(ctx context.Context, publisher func(EventType, any) error) context.Context {
 	if publisher == nil {
+		if ctx == nil {
+			return context.Background()
+		}
 		return ctx
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	return context.WithValue(ctx, runnerEventPublisherKey{}, runnerEventPublisher(publisher))
 }

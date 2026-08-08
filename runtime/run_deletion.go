@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -35,6 +36,7 @@ func (coordinator *RunDeletionCoordinator) DeleteRun(ctx context.Context, runID 
 	if coordinator == nil || coordinator.executionStore == nil {
 		return fmt.Errorf("run deletion execution store is required")
 	}
+	ctx = normalizeRunnerContext(ctx)
 	runID = strings.TrimSpace(runID)
 	if runID == "" {
 		return ErrRunnerRecordNotFound
@@ -52,7 +54,7 @@ func (coordinator *RunDeletionCoordinator) DeleteRun(ctx context.Context, runID 
 		if target.store == nil {
 			continue
 		}
-		if err := target.store.DeleteRun(ctx, runID); err != nil {
+		if err := target.store.DeleteRun(ctx, runID); err != nil && !errors.Is(err, ErrRunnerRecordNotFound) {
 			return fmt.Errorf("delete run %q from %s store: %w", runID, target.name, err)
 		}
 	}

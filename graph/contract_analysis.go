@@ -13,7 +13,12 @@ import (
 )
 
 func (g *Graph) ContractDiagnostics() []core.ContractDiagnostic {
-	if g == nil || len(g.contractDiagnostics) == 0 {
+	if g == nil {
+		return nil
+	}
+	g.contractDiagnosticsMu.RLock()
+	defer g.contractDiagnosticsMu.RUnlock()
+	if len(g.contractDiagnostics) == 0 {
 		return nil
 	}
 	cloned := make([]core.ContractDiagnostic, len(g.contractDiagnostics))

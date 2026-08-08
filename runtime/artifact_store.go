@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -23,7 +24,10 @@ func NewFileArtifactStore(baseDir string) *FileArtifactStore {
 	return &FileArtifactStore{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
 }
 
-func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (state.ArtifactRef, error) {
+func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return state.ArtifactRef{}, err
+	}
 	runID := artifact.RunID
 	if err := validateRunnerStorageID("run ID", runID); err != nil {
 		return state.ArtifactRef{}, err
@@ -74,12 +78,18 @@ func (s *FileArtifactStore) Save(_ context.Context, artifact Artifact) (state.Ar
 		return state.ArtifactRef{}, err
 	}
 	if err := writeRunnerBinaryFile(metadataPath, metadata); err != nil {
+		if cleanupErr := os.Remove(ref.Location); cleanupErr != nil && !os.IsNotExist(cleanupErr) {
+			return state.ArtifactRef{}, errors.Join(err, fmt.Errorf("cleanup artifact payload: %w", cleanupErr))
+		}
 		return state.ArtifactRef{}, err
 	}
 	return ref, nil
 }
 
-func (s *FileArtifactStore) Load(_ context.Context, ref state.ArtifactRef) (Artifact, error) {
+func (s *FileArtifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Artifact, error) {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return Artifact{}, err
+	}
 	if err := validateRunnerStorageID("run ID", ref.RunID); err != nil {
 		return Artifact{}, err
 	}
@@ -120,7 +130,10 @@ func (s *FileArtifactStore) Load(_ context.Context, ref state.ArtifactRef) (Arti
 	}, nil
 }
 
-func (s *FileArtifactStore) List(_ context.Context, runID string) ([]state.ArtifactRef, error) {
+func (s *FileArtifactStore) List(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return nil, err
+	}
 	if err := validateRunnerStorageID("run ID", runID); err != nil {
 		return nil, err
 	}
@@ -164,7 +177,10 @@ func (s *FileArtifactStore) List(_ context.Context, runID string) ([]state.Artif
 	return items, nil
 }
 
-func (s *FileArtifactStore) DeleteRun(_ context.Context, runID string) error {
+func (s *FileArtifactStore) DeleteRun(ctx context.Context, runID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
 	if err := validateRunnerStorageID("run ID", runID); err != nil {
 		return err
 	}

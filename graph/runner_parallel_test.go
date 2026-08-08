@@ -1163,6 +1163,49 @@ func TestRunnerExternalPauseAfterSingleNodeDoesNotComplete(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsConcurrentResumeOfSameRun(t *testing.T) {
+	t.Parallel()
+
+	g, started, release := newControlledSingleNodeRunnerGraph(t)
+	dir := t.TempDir()
+	runner := NewGraphRunner(
+		g,
+		fruntime.NewFileExecutionStore(dir),
+		fruntime.NewFileCheckpointStore(dir),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(dir),
+	)
+	runner.Breakpoints = []fruntime.Breakpoint{{
+		ID:      "bp-before-work",
+		NodeID:  "work",
+		Stage:   string(fruntime.CheckpointBeforeNode),
+		Enabled: true,
+	}}
+	pausedRun, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil || pausedRun.Status != fruntime.RunStatusPaused {
+		t.Fatalf("initial run = %#v, err=%v; want paused", pausedRun, err)
+	}
+
+	firstDone := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, resumeErr := runner.Resume(context.Background(), pausedRun.RunID, nil)
+		firstDone <- runnerResult{run: run, state: finalState, err: resumeErr}
+	}()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for resumed node")
+	}
+	if _, _, err := runner.Resume(context.Background(), pausedRun.RunID, nil); !errors.Is(err, fruntime.ErrRunControlNotAllowed) {
+		t.Fatalf("concurrent Resume() error = %v, want ErrRunControlNotAllowed", err)
+	}
+	close(release)
+	resumed := waitForRunnerResult(t, firstDone)
+	if resumed.err != nil || resumed.run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("first resume = %#v, err=%v; want completed", resumed.run, resumed.err)
+	}
+}
+
 func TestRunnerExternalPauseCancelsActiveNodeAtBeforeCheckpoint(t *testing.T) {
 	t.Parallel()
 

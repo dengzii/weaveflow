@@ -22,6 +22,9 @@ type NodeInfo struct {
 }
 
 func (n *NodeInfo) Name() string {
+	if n == nil {
+		return ""
+	}
 	if n.NodeName == "" {
 		return n.NodeID
 	}
@@ -29,13 +32,16 @@ func (n *NodeInfo) Name() string {
 }
 
 func (n *NodeInfo) ID() string {
-	if n.NodeID == "" {
-		panic("NodeID is empty " + n.Name())
+	if n == nil {
+		return ""
 	}
 	return n.NodeID
 }
 
 func (n *NodeInfo) Description() string {
+	if n == nil {
+		return ""
+	}
 	return n.NodeDescription
 }
 
@@ -87,10 +93,16 @@ func ApplyNodeOptions(base *NodeBase, options []NodeOption) {
 }
 
 func (b *NodeBase) Validate() error {
+	if b == nil {
+		return fmt.Errorf("node base is nil")
+	}
 	return b.Spec.Validate()
 }
 
 func (b *NodeBase) ID() string {
+	if b == nil {
+		return ""
+	}
 	return b.Spec.ID
 }
 
@@ -105,6 +117,9 @@ func (b *NodeBase) SetID(id string) {
 }
 
 func (b *NodeBase) Name() string {
+	if b == nil {
+		return ""
+	}
 	if b.Spec.Name != "" {
 		return b.Spec.Name
 	}
@@ -112,6 +127,9 @@ func (b *NodeBase) Name() string {
 }
 
 func (b *NodeBase) Description() string {
+	if b == nil {
+		return ""
+	}
 	return b.Spec.Description
 }
 
@@ -153,6 +171,9 @@ func ExecuteNode(ctx context.Context, base *state.State, node Node) (ExecutionRe
 func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, options NodeExecutionOptions) (ExecutionResult, error) {
 	if node == nil {
 		return ExecutionResult{}, fmt.Errorf("node node is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if err := ctx.Err(); err != nil {
 		return ExecutionResult{}, err

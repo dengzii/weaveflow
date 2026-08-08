@@ -67,7 +67,7 @@ func WithTools(ctx context.Context, available map[string]Tool) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, toolsKey{}, available)
+	return context.WithValue(ctx, toolsKey{}, cloneTools(available))
 }
 
 func WithMemory(ctx context.Context, manager memory.Manager) context.Context {
@@ -118,7 +118,7 @@ func ModelsFromContext(ctx context.Context) map[string]llms.Model {
 		return nil
 	}
 	models, _ := ctx.Value(modelsKey{}).(map[string]llms.Model)
-	return models
+	return cloneModels(models)
 }
 
 func ToolsFromContext(ctx context.Context) map[string]Tool {
@@ -126,7 +126,7 @@ func ToolsFromContext(ctx context.Context) map[string]Tool {
 		return nil
 	}
 	available, _ := ctx.Value(toolsKey{}).(map[string]Tool)
-	return available
+	return cloneTools(available)
 }
 
 func MemoryFromContext(ctx context.Context) memory.Manager {
@@ -142,16 +142,40 @@ func EnvironmentFromContext(ctx context.Context) map[string]string {
 		return nil
 	}
 	environment, _ := ctx.Value(environmentKey{}).(map[string]string)
-	return environment
+	return cloneEnvironment(environment)
 }
 
 func EnvironmentVariableFromContext(ctx context.Context, name string) string {
 	return EnvironmentFromContext(ctx)[strings.TrimSpace(name)]
 }
 
-func (c Context) Deadline() (time.Time, bool) { return c.Context.Deadline() }
-func (c Context) Done() <-chan struct{}       { return c.Context.Done() }
-func (c Context) Err() error                  { return c.Context.Err() }
+func (c Context) Deadline() (time.Time, bool) {
+	if c.Context == nil {
+		return time.Time{}, false
+	}
+	return c.Context.Deadline()
+}
+
+func (c Context) Done() <-chan struct{} {
+	if c.Context == nil {
+		return nil
+	}
+	return c.Context.Done()
+}
+
+func (c Context) Err() error {
+	if c.Context == nil {
+		return nil
+	}
+	return c.Context.Err()
+}
+
+func (c Context) Value(key any) any {
+	if c.Context == nil {
+		return nil
+	}
+	return c.Context.Value(key)
+}
 
 func (c Context) Model(ids ...string) llms.Model {
 	if len(ids) > 0 {
@@ -185,7 +209,7 @@ func FilterTools(available map[string]Tool, ids []string) map[string]Tool {
 		return nil
 	}
 	if len(ids) == 0 {
-		return available
+		return cloneTools(available)
 	}
 	filtered := make(map[string]Tool, len(ids))
 	for _, id := range ids {
@@ -198,6 +222,24 @@ func FilterTools(available map[string]Tool, ids []string) map[string]Tool {
 		}
 	}
 	return filtered
+}
+
+func cloneTools(input map[string]Tool) map[string]Tool {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]Tool, len(input))
+	for key, tool := range input {
+		id := strings.TrimSpace(key)
+		if id == "" {
+			continue
+		}
+		out[id] = tool
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func cloneModels(input map[string]llms.Model) map[string]llms.Model {

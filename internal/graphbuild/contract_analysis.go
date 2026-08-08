@@ -22,7 +22,7 @@ type ContractAnalysisGraph struct {
 }
 
 func AnalyzeContractDiagnostics(input ContractAnalysisGraph) []core.ContractDiagnostic {
-	if len(input.NodeContracts) == 0 || input.EntryPoint == "" {
+	if (len(input.NodeContracts) == 0 && len(input.ConditionContracts) == 0) || input.EntryPoint == "" {
 		return nil
 	}
 
@@ -62,7 +62,7 @@ func AnalyzeContractDiagnostics(input ContractAnalysisGraph) []core.ContractDiag
 
 func AnalyzeInitialStateRequirements(input ContractAnalysisGraph) core.InitialStateRequirements {
 	result := emptyInitialStateRequirements()
-	if len(input.NodeContracts) == 0 || input.EntryPoint == "" {
+	if (len(input.NodeContracts) == 0 && len(input.ConditionContracts) == 0) || input.EntryPoint == "" {
 		return result
 	}
 

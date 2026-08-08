@@ -79,6 +79,38 @@ func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
 	}
 }
 
+func TestSetNodeSpecRefreshesBuiltinStateContract(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph()
+	input := node.NewUserInputNode(node.WithID("input"))
+	if err := workflow.AddNode(input); err != nil {
+		t.Fatalf("add input: %v", err)
+	}
+	workflow.SetNodeSpec(dsl.GraphNodeSpec{
+		ID:   "input",
+		Type: node.NodeTypeUserInput,
+		State: map[string]dsl.StateBinding{
+			"value": {Path: "shared.first"},
+		},
+	})
+	first := workflow.nodeContracts["input"]
+	workflow.SetNodeSpec(dsl.GraphNodeSpec{
+		ID:   "input",
+		Type: node.NodeTypeUserInput,
+		State: map[string]dsl.StateBinding{
+			"value": {Path: "shared.second"},
+		},
+	})
+	second := workflow.nodeContracts["input"]
+	if len(first.Fields) == 0 || len(second.Fields) == 0 || first.Fields[0].Path.String() == second.Fields[0].Path.String() {
+		t.Fatalf("node contract was not refreshed: first=%#v second=%#v", first, second)
+	}
+	if len(second.Fields) == 0 || second.Fields[0].Path.String() != "shared.second" {
+		t.Fatalf("refreshed contract = %#v, want shared.second", second)
+	}
+}
+
 func TestUserInputEntryProvidesAgentTaskWhenNodeIDIsInput(t *testing.T) {
 	t.Parallel()
 	definition := dsl.GraphDefinition{
