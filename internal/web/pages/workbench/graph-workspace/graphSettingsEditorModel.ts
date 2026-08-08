@@ -4,8 +4,10 @@ export interface EditableGraphModel {
   id: string;
   enabled: boolean;
   provider: string;
+  api_format: string;
   model: string;
   base_url: string;
+  extra_body: string;
   api_key: string;
   api_key_configured: boolean;
 }
@@ -21,8 +23,12 @@ export function modelsFromSettings(settings: RuntimeSettings | null): EditableGr
     id: model.id || (index === 0 ? "default" : `model-${index + 1}`),
     enabled: model.enabled,
     provider: model.provider || "openai",
+    api_format: model.api_format || "chat_completions",
     model: model.model ?? "",
     base_url: model.base_url ?? "",
+    extra_body: model.extra_body && Object.keys(model.extra_body).length > 0
+      ? JSON.stringify(model.extra_body, null, 2)
+      : "",
     api_key: "",
     api_key_configured: model.api_key_configured,
   }));
@@ -56,9 +62,11 @@ export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSet
     return {
       id: modelID,
       enabled: model.enabled,
-      provider: model.provider || "openai",
+      provider: model.provider.trim().toLowerCase() || "openai",
+      api_format: model.api_format.trim().toLowerCase() || "chat_completions",
       model: model.model.trim(),
       base_url: model.base_url.trim(),
+      extra_body: parseModelExtraBody(model.extra_body, index),
       api_key: apiKey || undefined,
     };
   });
@@ -101,8 +109,10 @@ export function applyRuntimeSettingsUpdate(
       id,
       enabled: model.enabled ?? previous?.enabled ?? true,
       provider: model.provider?.trim() || previous?.provider || "openai",
+      api_format: model.api_format?.trim() || previous?.api_format || "chat_completions",
       model: model.model !== undefined ? model.model.trim() : previous?.model ?? "",
       base_url: model.base_url !== undefined ? model.base_url.trim() : previous?.base_url ?? "",
+      extra_body: model.extra_body ?? previous?.extra_body,
       api_key_configured: Boolean(apiKey || previous?.api_key_configured),
       api_key: apiKey,
     };
@@ -128,8 +138,10 @@ export function runtimeSettingsUpload(settings: RuntimeSettings): RuntimeSetting
       id: model.id,
       enabled: model.enabled,
       provider: model.provider,
+      api_format: model.api_format || "chat_completions",
       model: model.model ?? "",
       base_url: model.base_url ?? "",
+      extra_body: model.extra_body,
       api_key: model.api_key,
     })),
     memory: {
@@ -137,6 +149,22 @@ export function runtimeSettingsUpload(settings: RuntimeSettings): RuntimeSetting
       directory: settings.memory.directory ?? "",
     },
   };
+}
+
+function parseModelExtraBody(value: string, index: number): Record<string, unknown> | undefined {
+  const input = value.trim();
+  if (!input) return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(input);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(`Model ${index + 1} extra body must be valid JSON: ${message}`);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw new Error(`Model ${index + 1} extra body must be a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 function requireRuntimeSettings(

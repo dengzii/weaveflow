@@ -195,8 +195,10 @@ export interface RuntimeModelSettings {
   id: string;
   enabled: boolean;
   provider: string;
+  api_format?: string;
   model?: string;
   base_url?: string;
+  extra_body?: Record<string, unknown>;
   api_key_configured: boolean;
   api_key?: string;
 }
@@ -219,8 +221,10 @@ export interface RuntimeModelSettingsUpdate {
   id?: string;
   enabled?: boolean;
   provider?: string;
+  api_format?: string;
   model?: string;
   base_url?: string;
+  extra_body?: Record<string, unknown>;
   api_key?: string;
 }
 

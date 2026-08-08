@@ -19,8 +19,10 @@ describe("graph settings editor model", () => {
         id: "default",
         enabled: true,
         provider: "openai",
+        api_format: "chat_completions",
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
+        extra_body: "",
         api_key: "",
         api_key_configured: true,
       },
@@ -34,8 +36,10 @@ describe("graph settings editor model", () => {
           id: " default ",
           enabled: true,
           provider: "openai",
+          api_format: "responses",
           model: " gpt-5 ",
           base_url: " https://api.example.test/v1 ",
+          extra_body: "{\"include\":[\"reasoning.encrypted_content\"]}",
           api_key: "",
           api_key_configured: true,
         },
@@ -45,8 +49,10 @@ describe("graph settings editor model", () => {
         id: "default",
         enabled: true,
         provider: "openai",
+        api_format: "responses",
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
+        extra_body: { include: ["reasoning.encrypted_content"] },
         api_key: undefined,
       },
     ]);
@@ -57,8 +63,10 @@ describe("graph settings editor model", () => {
       id: "default",
       enabled: true,
       provider: "openai",
+      api_format: "chat_completions",
       model: "gpt-5",
       base_url: "",
+      extra_body: "",
       api_key: "",
       api_key_configured: false,
     };
@@ -87,6 +95,7 @@ describe("graph settings editor model", () => {
         id: "default",
         enabled: true,
         provider: "openai",
+        api_format: "chat_completions",
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
         api_key: "local-secret",
@@ -103,6 +112,14 @@ describe("graph settings editor model", () => {
     expect(() => runtimeSettingsUpload(undefined as unknown as RuntimeSettings))
       .toThrow("Cannot upload graph: runtime settings are missing.");
   });
+
+  test("rejects malformed or non-object model extra body", () => {
+    const model = modelsFromSettings(graphSettings())[0];
+    expect(() => normalizeModelSettings([{ ...model, extra_body: "{" }]))
+      .toThrow("extra body must be valid JSON");
+    expect(() => normalizeModelSettings([{ ...model, extra_body: "[]" }]))
+      .toThrow("extra body must be a JSON object");
+  });
 });
 
 function graphSettings(): RuntimeSettings {
@@ -118,6 +135,7 @@ function graphSettings(): RuntimeSettings {
         id: "default",
         enabled: true,
         provider: "openai",
+        api_format: "chat_completions",
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
         api_key_configured: true,

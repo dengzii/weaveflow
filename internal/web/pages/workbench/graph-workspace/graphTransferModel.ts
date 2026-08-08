@@ -248,8 +248,10 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
       id,
       enabled: typeof item.enabled === "boolean" ? item.enabled : true,
       provider: stringValue(item.provider) || "openai",
+      api_format: stringValue(item.api_format) || "chat_completions",
       model: stringValue(item.model),
       base_url: stringValue(item.base_url),
+      extra_body: isPlainRecord(item.extra_body) ? cloneJSONValue(item.extra_body) : undefined,
       api_key_configured: Boolean(apiKey || item.api_key_configured === true),
       api_key: apiKey || undefined,
     };
@@ -288,8 +290,10 @@ function exportableRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsUp
       id: model.id,
       enabled: model.enabled,
       provider: model.provider,
+      api_format: model.api_format || "chat_completions",
       model: model.model ?? "",
       base_url: model.base_url ?? "",
+      extra_body: model.extra_body ? cloneJSONValue(model.extra_body) : undefined,
     })),
     memory: {
       enabled: settings.memory.enabled,

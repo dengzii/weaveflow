@@ -3,6 +3,7 @@ import { Plus, Trash2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input, SensitiveInput } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
+import { Textarea } from "../../../components/ui/textarea";
 import type { RuntimeSettings, RuntimeSettingsUpdate } from "../../../types";
 import { Field } from "./shared";
 import {
@@ -59,8 +60,10 @@ export function RuntimeSettingsEditor({
         id: nextModelID(models),
         enabled: true,
         provider: "openai",
+        api_format: "chat_completions",
         model: "",
         base_url: "",
+        extra_body: "",
         api_key: "",
         api_key_configured: false,
       },
@@ -191,6 +194,19 @@ export function RuntimeSettingsEditor({
                   <Field label="Provider">
                     <Select value={model.provider} onChange={(event) => updateModel(index, { provider: event.target.value })}>
                       <option value="openai">OpenAI</option>
+                      <option value="azure">Azure OpenAI</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="gemini">Gemini</option>
+                      <option value="vllm">vLLM</option>
+                      <option value="mistral">Mistral</option>
+                      <option value="xai">xAI</option>
+                      <option value="openrouter">OpenRouter</option>
+                    </Select>
+                  </Field>
+                  <Field label="API format">
+                    <Select value={model.api_format} onChange={(event) => updateModel(index, { api_format: event.target.value })}>
+                      <option value="chat_completions">Chat Completions</option>
+                      <option value="responses">Responses</option>
                     </Select>
                   </Field>
                   <Field label="Model name">
@@ -204,6 +220,14 @@ export function RuntimeSettingsEditor({
                       value={model.api_key}
                       configured={model.api_key_configured}
                       onValueChange={(value) => updateModel(index, { api_key: value })}
+                    />
+                  </Field>
+                  <Field label="Extra body (JSON)" className="sm:col-span-2">
+                    <Textarea
+                      value={model.extra_body}
+                      onChange={(event) => updateModel(index, { extra_body: event.target.value })}
+                      placeholder={'{\n  "top_k": 40\n}'}
+                      className="min-h-24 font-mono text-xs"
                     />
                   </Field>
                 </div>
