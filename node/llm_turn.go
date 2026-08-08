@@ -17,7 +17,11 @@ import (
 	"github.com/tmc/langchaingo/llms"
 )
 
-const defaultLLMTurnPromptMaxChars = 200000
+const (
+	defaultLLMTurnPromptMaxChars = 200000
+	defaultReasoningEffort       = "auto"
+	reasoningEffortOptions       = "auto, none, minimal, low, medium, high, xhigh, or max"
+)
 
 type LLMTurnNode struct {
 	Base
@@ -25,6 +29,7 @@ type LLMTurnNode struct {
 	ToolIDs          []string
 	SystemPrompt     string
 	PromptMaxChars   int
+	ReasoningEffort  string
 	ConversationPath state.Path
 	OutputPath       state.Path
 }
@@ -35,6 +40,7 @@ func NewLLMTurnNode(options ...NodeOption) *LLMTurnNode {
 			Name:        NodeTypeLLMTurn,
 			Description: "Run one LLM inference turn against a bound conversation.",
 		}),
+		ReasoningEffort: defaultReasoningEffort,
 	}
 	applyNodeOptions(&node.Base, options)
 	ApplyDefaultStatePaths(node)
@@ -51,13 +57,17 @@ func (n *LLMTurnNode) Validate() error {
 	if n.ConversationPath.Empty() {
 		return fmt.Errorf("llm turn node %q requires conversation path", n.ID())
 	}
+	if !isReasoningEffort(n.effectiveReasoningEffort()) {
+		return fmt.Errorf("llm turn node %q reasoning_effort must be one of %s", n.ID(), reasoningEffortOptions)
+	}
 	return nil
 }
 
 func (n *LLMTurnNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	conf := map[string]any{
-		"tool_ids":      n.ToolIDs,
-		"system_prompt": n.SystemPrompt,
+		"tool_ids":         n.ToolIDs,
+		"system_prompt":    n.SystemPrompt,
+		"reasoning_effort": n.effectiveReasoningEffort(),
 	}
 	if strings.TrimSpace(n.ModelID) != "" {
 		conf["model_id"] = n.ModelID
@@ -90,6 +100,7 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 					"prompt_max_chars": dsl.JSONSchema{
 						"type": "integer", "minimum": 1, "default": defaultLLMTurnPromptMaxChars,
 					},
+					"reasoning_effort": reasoningEffortSchema(),
 				},
 				"additionalProperties": false,
 			},
@@ -116,6 +127,12 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 			llmTurnNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			llmTurnNode.SystemPrompt = config.String(spec.Config, "system_prompt")
 			llmTurnNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			if reasoningEffort := strings.TrimSpace(config.String(spec.Config, "reasoning_effort")); reasoningEffort != "" {
+				if !isReasoningEffort(reasoningEffort) {
+					return nil, fmt.Errorf("build llm turn node %q: reasoning_effort must be one of %s", spec.ID, reasoningEffortOptions)
+				}
+				llmTurnNode.ReasoningEffort = reasoningEffort
+			}
 			llmTurnNode.ConversationPath = conversationPath
 			llmTurnNode.OutputPath = optionalResolvedPath(resolved, "output")
 			return llmTurnNode, nil
@@ -155,7 +172,7 @@ func (n *LLMTurnNode) Execute(ctx core.Context, access *state.Access) error {
 		ctx,
 		promptMessages,
 		llms.WithTools(toolSets),
-		llms.WithThinkingMode(llms.ThinkingModeHigh),
+		llms.WithThinkingMode(llms.ThinkingMode(n.effectiveReasoningEffort())),
 	)
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.error", map[string]any{"error": err.Error()})
@@ -239,4 +256,30 @@ func (n *LLMTurnNode) effectivePromptMaxChars() int {
 		return defaultLLMTurnPromptMaxChars
 	}
 	return n.PromptMaxChars
+}
+
+func (n *LLMTurnNode) effectiveReasoningEffort() string {
+	if n == nil || strings.TrimSpace(n.ReasoningEffort) == "" {
+		return defaultReasoningEffort
+	}
+	return strings.TrimSpace(n.ReasoningEffort)
+}
+
+func reasoningEffortSchema() dsl.JSONSchema {
+	return dsl.JSONSchema{
+		"type":        "string",
+		"title":       "Reasoning Effort",
+		"description": "Controls model reasoning effort when the selected model supports it.",
+		"enum":        []string{"auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"},
+		"default":     defaultReasoningEffort,
+	}
+}
+
+func isReasoningEffort(value string) bool {
+	switch value {
+	case "auto", "none", "minimal", "low", "medium", "high", "xhigh", "max":
+		return true
+	default:
+		return false
+	}
 }

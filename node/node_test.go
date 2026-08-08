@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
 	langgraph "github.com/smallnest/langgraphgo/graph"
@@ -154,6 +156,7 @@ func TestLLMTurnWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	target := NewLLMTurnNode(WithID("llm"))
 	target.ConversationPath = root
 	target.OutputPath = output
+	target.ReasoningEffort = "low"
 	result, err := Execute(ctx, initial, target)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -161,6 +164,13 @@ func TestLLMTurnWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	answer, _ := state.ReadPath(result.State, output.String())
 	if answer != "answer" {
 		t.Fatalf("output = %#v", answer)
+	}
+	if len(model.options) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(model.options))
+	}
+	thinkingConfig := llms.GetThinkingConfig(&model.options[0])
+	if thinkingConfig == nil || thinkingConfig.Mode != llms.ThinkingModeLow {
+		t.Fatalf("thinking config = %#v, want low reasoning effort", thinkingConfig)
 	}
 	if _, ok := state.ReadPath(result.State, "shared.execution"); ok {
 		t.Fatal("generic LLM touched plan execution state")
@@ -208,6 +218,13 @@ func TestLLMTurnDefaultPromptMaxChars(t *testing.T) {
 	promptSchema := properties["prompt_max_chars"].(dsl.JSONSchema)
 	if got := promptSchema["default"]; got != 200000 {
 		t.Fatalf("prompt_max_chars schema default = %#v, want 200000", got)
+	}
+	reasoningSchema := properties["reasoning_effort"].(dsl.JSONSchema)
+	if got := reasoningSchema["default"]; got != defaultReasoningEffort {
+		t.Fatalf("reasoning_effort schema default = %#v, want %q", got, defaultReasoningEffort)
+	}
+	if got := reasoningSchema["enum"]; !reflect.DeepEqual(got, []string{"auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"}) {
+		t.Fatalf("reasoning_effort enum = %#v", got)
 	}
 }
 
@@ -276,6 +293,7 @@ func TestTextGenerationUsesRawPromptAndWritesOutput(t *testing.T) {
 	target.MaxTokens = 32
 	target.Temperature = 0.2
 	target.StopWords = []string{"END"}
+	target.ReasoningEffort = "medium"
 
 	result, err := Execute(core.WithModel(context.Background(), model), access.State(), target)
 	if err != nil {
@@ -298,6 +316,10 @@ func TestTextGenerationUsesRawPromptAndWritesOutput(t *testing.T) {
 	if options.MaxTokens != 32 || options.Temperature != 0.2 || len(options.StopWords) != 1 || options.StopWords[0] != "END" {
 		t.Fatalf("completion options = %#v", options)
 	}
+	thinkingConfig := llms.GetThinkingConfig(&options)
+	if thinkingConfig == nil || thinkingConfig.Mode != llms.ThinkingModeMedium {
+		t.Fatalf("thinking config = %#v, want medium reasoning effort", thinkingConfig)
+	}
 }
 
 func TestTextGenerationDefaultsAndSchema(t *testing.T) {
@@ -313,14 +335,74 @@ func TestTextGenerationDefaultsAndSchema(t *testing.T) {
 	if target.Temperature != defaultTextGenerationTemperature {
 		t.Fatalf("temperature = %v, want %v", target.Temperature, defaultTextGenerationTemperature)
 	}
+	if target.ReasoningEffort != defaultReasoningEffort {
+		t.Fatalf("reasoning effort = %q, want %q", target.ReasoningEffort, defaultReasoningEffort)
+	}
 	definition := TextGenerationNodeTypeDefinition()
 	properties := definition.NodeTypeSchema.ConfigSchema["properties"].(dsl.JSONSchema)
 	temperatureSchema := properties["temperature"].(dsl.JSONSchema)
 	if got := temperatureSchema["default"]; got != defaultTextGenerationTemperature {
 		t.Fatalf("temperature schema default = %#v", got)
 	}
+	reasoningSchema := properties["reasoning_effort"].(dsl.JSONSchema)
+	if got := reasoningSchema["default"]; got != defaultReasoningEffort {
+		t.Fatalf("reasoning_effort schema default = %#v, want %q", got, defaultReasoningEffort)
+	}
 	if len(definition.StatePorts) != 2 || definition.StatePorts[0].Name != "prompt" || definition.StatePorts[0].DefaultPath != "shared.text_generation.prompt" || definition.StatePorts[1].DefaultPath != "shared.text_generation.result" {
 		t.Fatalf("state ports = %#v", definition.StatePorts)
+	}
+}
+
+func TestReasoningEffortValidation(t *testing.T) {
+	t.Parallel()
+
+	llmTurn := NewLLMTurnNode(WithID("llm"))
+	llmTurn.ReasoningEffort = "extreme"
+	if err := llmTurn.Validate(); err == nil || !strings.Contains(err.Error(), "reasoning_effort") {
+		t.Fatalf("llm turn validation error = %v, want reasoning_effort error", err)
+	}
+
+	textGeneration := NewTextGenerationNode(WithID("text_generation"))
+	textGeneration.ReasoningEffort = "extreme"
+	if err := textGeneration.Validate(); err == nil || !strings.Contains(err.Error(), "reasoning_effort") {
+		t.Fatalf("text generation validation error = %v, want reasoning_effort error", err)
+	}
+}
+
+func TestReasoningEffortBuildsFromGraphConfig(t *testing.T) {
+	t.Parallel()
+
+	llmTurnNode, err := LLMTurnNodeTypeDefinition().Build(&registry.BuildContext{}, registry.ResolvedNodeSpec{
+		Spec: dsl.GraphNodeSpec{
+			ID:     "llm",
+			Config: map[string]any{"reasoning_effort": "max"},
+		},
+		State: map[string]registry.ResolvedStateBinding{
+			"conversation": {Path: state.Scope("llm", "conversation")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build llm turn: %v", err)
+	}
+	if got := llmTurnNode.(*LLMTurnNode).ReasoningEffort; got != "max" {
+		t.Fatalf("llm turn reasoning effort = %q, want max", got)
+	}
+
+	textGenerationNode, err := TextGenerationNodeTypeDefinition().Build(&registry.BuildContext{}, registry.ResolvedNodeSpec{
+		Spec: dsl.GraphNodeSpec{
+			ID:     "text_generation",
+			Config: map[string]any{"reasoning_effort": "none"},
+		},
+		State: map[string]registry.ResolvedStateBinding{
+			"prompt": {Path: state.Shared("text_generation", "prompt")},
+			"output": {Path: state.Shared("text_generation", "result")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build text generation: %v", err)
+	}
+	if got := textGenerationNode.(*TextGenerationNode).ReasoningEffort; got != "none" {
+		t.Fatalf("text generation reasoning effort = %q, want none", got)
 	}
 }
 

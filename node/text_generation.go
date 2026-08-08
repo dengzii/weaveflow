@@ -19,12 +19,13 @@ const defaultTextGenerationTemperature = 1.0
 
 type TextGenerationNode struct {
 	Base
-	ModelID     string
-	MaxTokens   int
-	Temperature float64
-	StopWords   []string
-	PromptPath  state.Path
-	OutputPath  state.Path
+	ModelID         string
+	MaxTokens       int
+	Temperature     float64
+	StopWords       []string
+	ReasoningEffort string
+	PromptPath      state.Path
+	OutputPath      state.Path
 }
 
 func NewTextGenerationNode(options ...NodeOption) *TextGenerationNode {
@@ -33,7 +34,8 @@ func NewTextGenerationNode(options ...NodeOption) *TextGenerationNode {
 			Name:        NodeTypeTextGeneration,
 			Description: "Generate text from a raw prompt without conversation messages.",
 		}),
-		Temperature: defaultTextGenerationTemperature,
+		Temperature:     defaultTextGenerationTemperature,
+		ReasoningEffort: defaultReasoningEffort,
 	}
 	applyNodeOptions(&node.Base, options)
 	ApplyDefaultStatePaths(node)
@@ -56,13 +58,17 @@ func (n *TextGenerationNode) Validate() error {
 	if n.Temperature < 0 || n.Temperature > 2 {
 		return fmt.Errorf("text generation node %q temperature must be between 0 and 2", n.ID())
 	}
+	if !isReasoningEffort(n.effectiveReasoningEffort()) {
+		return fmt.Errorf("text generation node %q reasoning_effort must be one of %s", n.ID(), reasoningEffortOptions)
+	}
 	return nil
 }
 
 func (n *TextGenerationNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	conf := map[string]any{
-		"temperature": n.Temperature,
-		"stop":        n.StopWords,
+		"temperature":      n.Temperature,
+		"stop":             n.StopWords,
+		"reasoning_effort": n.effectiveReasoningEffort(),
 	}
 	if strings.TrimSpace(n.ModelID) != "" {
 		conf["model_id"] = n.ModelID
@@ -95,6 +101,7 @@ func TextGenerationNodeTypeDefinition() registry.NodeTypeDefinition {
 					"stop": dsl.JSONSchema{
 						"type": "array", "title": "Stop Sequences", "items": dsl.JSONSchema{"type": "string"},
 					},
+					"reasoning_effort": reasoningEffortSchema(),
 				},
 				"additionalProperties": false,
 			},
@@ -119,6 +126,12 @@ func TextGenerationNodeTypeDefinition() registry.NodeTypeDefinition {
 			applyNodeMetadata(&target.Base, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			target.StopWords = config.StringSlice(spec.Config, "stop")
+			if reasoningEffort := strings.TrimSpace(config.String(spec.Config, "reasoning_effort")); reasoningEffort != "" {
+				if !isReasoningEffort(reasoningEffort) {
+					return nil, fmt.Errorf("build text generation node %q: reasoning_effort must be one of %s", spec.ID, reasoningEffortOptions)
+				}
+				target.ReasoningEffort = reasoningEffort
+			}
 			target.PromptPath = promptPath
 			target.OutputPath = outputPath
 			if value, ok := config.Int(spec.Config, "max_tokens"); ok {
@@ -159,7 +172,10 @@ func (n *TextGenerationNode) Execute(ctx core.Context, access *state.Access) err
 		"prompt":      prompt,
 		"prompt_path": n.PromptPath.String(),
 	})
-	callOptions := []llms.CallOption{llms.WithTemperature(n.Temperature)}
+	callOptions := []llms.CallOption{
+		llms.WithTemperature(n.Temperature),
+		llms.WithThinkingMode(llms.ThinkingMode(n.effectiveReasoningEffort())),
+	}
 	if n.MaxTokens > 0 {
 		callOptions = append(callOptions, llms.WithMaxTokens(n.MaxTokens))
 	}
@@ -180,6 +196,13 @@ func (n *TextGenerationNode) Execute(ctx core.Context, access *state.Access) err
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "text_generation.response", payload)
 	}
 	return state.Replace(access, state.NewRef[string](n.OutputPath), response.Choices[0].Content)
+}
+
+func (n *TextGenerationNode) effectiveReasoningEffort() string {
+	if n == nil || strings.TrimSpace(n.ReasoningEffort) == "" {
+		return defaultReasoningEffort
+	}
+	return strings.TrimSpace(n.ReasoningEffort)
 }
 
 func (n *TextGenerationNode) Contract() state.Contract {
