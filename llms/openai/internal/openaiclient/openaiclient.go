@@ -2,8 +2,10 @@ package openaiclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -20,7 +22,10 @@ type errorMessage struct {
 	Error struct {
 		Message string `json:"message"`
 		Type    string `json:"type"`
+		Code    any    `json:"code"`
 	} `json:"error"`
+	Message string `json:"message"`
+	Detail  any    `json:"detail"`
 }
 
 type APIType string
@@ -39,6 +44,9 @@ type Client struct {
 	organization string
 	apiType      APIType
 	httpClient   Doer
+	Provider     string
+	ExtraBody    map[string]any
+	ExtraHeaders map[string]string
 
 	EmbeddingModel      string
 	EmbeddingDimensions int
@@ -67,7 +75,7 @@ type Doer interface {
 // New returns a new OpenAI client.
 func New(token string, model string, baseURL string, organization string,
 	apiType APIType, apiVersion string, httpClient Doer, embeddingModel string,
-	responseFormat *ResponseFormat,
+	responseFormat *ResponseFormat, provider string, extraBody map[string]any, extraHeaders map[string]string,
 	opts ...Option,
 ) (*Client, error) {
 	c := &Client{
@@ -80,6 +88,9 @@ func New(token string, model string, baseURL string, organization string,
 		apiVersion:     apiVersion,
 		httpClient:     httpClient,
 		ResponseFormat: responseFormat,
+		Provider:       provider,
+		ExtraBody:      cloneAnyMap(extraBody),
+		ExtraHeaders:   cloneStringMap(extraHeaders),
 	}
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL
@@ -194,15 +205,26 @@ func (c *Client) setHeaders(req *http.Request) {
 	if c.organization != "" {
 		req.Header.Set("OpenAI-Organization", c.organization)
 	}
+	for name, value := range c.ExtraHeaders {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			req.Header.Set(name, value)
+		}
+	}
 }
 
 func (c *Client) buildURL(suffix string, model string) string {
-	if IsAzure(c.apiType) {
+	if IsAzure(c.apiType) && !c.isAzureV1() {
 		return c.buildAzureURL(suffix, model)
 	}
 
 	// open ai implement:
 	return fmt.Sprintf("%s%s", c.baseURL, suffix)
+}
+
+func (c *Client) isAzureV1() bool {
+	baseURL := strings.ToLower(strings.TrimRight(c.baseURL, "/"))
+	return strings.HasSuffix(baseURL, "/openai/v1")
 }
 
 func (c *Client) buildAzureURL(suffix string, model string) string {
@@ -247,4 +269,78 @@ func sanitizeHTTPError(err error) error {
 
 	// Return original error if it's not a sensitive type
 	return err
+}
+
+func decodeHTTPStatusError(statusCode int, body io.Reader) error {
+	message := fmt.Sprintf("API returned unexpected status code: %d", statusCode)
+	payload, err := io.ReadAll(io.LimitReader(body, 1<<20))
+	if err != nil || len(payload) == 0 {
+		return errors.New(message)
+	}
+
+	var response errorMessage
+	if err := json.Unmarshal(payload, &response); err == nil {
+		providerMessage := strings.TrimSpace(response.Error.Message)
+		if providerMessage == "" {
+			providerMessage = strings.TrimSpace(response.Message)
+		}
+		if providerMessage == "" && response.Detail != nil {
+			if detail, ok := response.Detail.(string); ok {
+				providerMessage = strings.TrimSpace(detail)
+			} else if encoded, marshalErr := json.Marshal(response.Detail); marshalErr == nil {
+				providerMessage = string(encoded)
+			}
+		}
+		if providerMessage != "" {
+			return fmt.Errorf("%s: %s", message, providerMessage)
+		}
+	}
+
+	plainText := strings.TrimSpace(string(payload))
+	if len(plainText) > 512 {
+		plainText = plainText[:512]
+	}
+	if plainText == "" {
+		return errors.New(message)
+	}
+	return fmt.Errorf("%s: %s", message, plainText)
+}
+
+func mergeExtraBodyFields(payload []byte, extraBody map[string]any, requestName string) ([]byte, error) {
+	if len(extraBody) == 0 {
+		return payload, nil
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return nil, err
+	}
+	for key, value := range extraBody {
+		if _, exists := fields[key]; exists {
+			return nil, fmt.Errorf("extra body field %q conflicts with %s", key, requestName)
+		}
+		fields[key] = value
+	}
+	return json.Marshal(fields)
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
 }

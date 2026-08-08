@@ -4,23 +4,31 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"net/http"
 )
 
 // CompletionRequest is a request to the legacy text completions endpoint.
 type CompletionRequest struct {
-	Model            string   `json:"model"`
-	Prompt           string   `json:"prompt"`
-	MaxTokens        int      `json:"max_tokens,omitempty"`
-	Temperature      float64  `json:"temperature"`
-	TopP             float64  `json:"top_p,omitempty"`
-	N                int      `json:"n,omitempty"`
-	StopWords        []string `json:"stop,omitempty"`
-	FrequencyPenalty float64  `json:"frequency_penalty,omitempty"`
-	PresencePenalty  float64  `json:"presence_penalty,omitempty"`
-	Seed             int      `json:"seed,omitempty"`
+	Model            string         `json:"model"`
+	Prompt           string         `json:"prompt"`
+	MaxTokens        int            `json:"max_tokens,omitempty"`
+	Temperature      float64        `json:"temperature"`
+	TopP             float64        `json:"top_p,omitempty"`
+	N                int            `json:"n,omitempty"`
+	StopWords        []string       `json:"stop,omitempty"`
+	FrequencyPenalty float64        `json:"frequency_penalty,omitempty"`
+	PresencePenalty  float64        `json:"presence_penalty,omitempty"`
+	Seed             int            `json:"seed,omitempty"`
+	ExtraBody        map[string]any `json:"-"`
+}
+
+func (r CompletionRequest) MarshalJSON() ([]byte, error) {
+	type Alias CompletionRequest
+	payload, err := json.Marshal(Alias(r))
+	if err != nil {
+		return nil, err
+	}
+	return mergeExtraBodyFields(payload, r.ExtraBody, "completion request")
 }
 
 type CompletionChoice struct {
@@ -62,12 +70,7 @@ func (c *Client) createCompletion(ctx context.Context, payload *CompletionReques
 	defer response.Body.Close()
 
 	if response.StatusCode != http.StatusOK {
-		message := fmt.Sprintf("API returned unexpected status code: %d", response.StatusCode)
-		var errorResponse errorMessage
-		if err := json.NewDecoder(response.Body).Decode(&errorResponse); err != nil {
-			return nil, errors.New(message)
-		}
-		return nil, fmt.Errorf("%s: %s", message, errorResponse.Error.Message)
+		return nil, decodeHTTPStatusError(response.StatusCode, response.Body)
 	}
 
 	var result CompletionResponse

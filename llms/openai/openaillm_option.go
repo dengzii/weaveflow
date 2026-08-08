@@ -22,7 +22,27 @@ const (
 )
 
 const (
-	DefaultAPIVersion = "2023-05-15"
+	DefaultAPIVersion = "2024-10-21"
+)
+
+type Provider string
+
+const (
+	ProviderOpenAI     Provider = "openai"
+	ProviderAzure      Provider = "azure"
+	ProviderDeepSeek   Provider = "deepseek"
+	ProviderGemini     Provider = "gemini"
+	ProviderVLLM       Provider = "vllm"
+	ProviderMistral    Provider = "mistral"
+	ProviderXAI        Provider = "xai"
+	ProviderOpenRouter Provider = "openrouter"
+)
+
+type APIFormat string
+
+const (
+	APIFormatChatCompletions APIFormat = "chat_completions"
+	APIFormatResponses       APIFormat = "responses"
 )
 
 type options struct {
@@ -31,7 +51,11 @@ type options struct {
 	baseURL      string
 	organization string
 	apiType      APIType
+	provider     Provider
+	apiFormat    APIFormat
 	httpClient   openaiclient.Doer
+	extraBody    map[string]any
+	extraHeaders map[string]string
 
 	responseFormat *ResponseFormat
 
@@ -117,6 +141,48 @@ func WithAPIType(apiType APIType) Option {
 	}
 }
 
+func WithProvider(provider Provider) Option {
+	return func(opts *options) {
+		opts.provider = provider
+	}
+}
+
+func IsSupportedProvider(provider Provider) bool {
+	switch provider {
+	case ProviderOpenAI, ProviderAzure, ProviderDeepSeek, ProviderGemini, ProviderVLLM, ProviderMistral, ProviderXAI, ProviderOpenRouter:
+		return true
+	default:
+		return false
+	}
+}
+
+func WithAPIFormat(apiFormat APIFormat) Option {
+	return func(opts *options) {
+		opts.apiFormat = apiFormat
+	}
+}
+
+func IsSupportedAPIFormat(apiFormat APIFormat) bool {
+	switch apiFormat {
+	case APIFormatChatCompletions, APIFormatResponses:
+		return true
+	default:
+		return false
+	}
+}
+
+func WithExtraBody(extraBody map[string]any) Option {
+	return func(opts *options) {
+		opts.extraBody = cloneAnyMap(extraBody)
+	}
+}
+
+func WithExtraHeaders(extraHeaders map[string]string) Option {
+	return func(opts *options) {
+		opts.extraHeaders = cloneStringMap(extraHeaders)
+	}
+}
+
 // WithAPIVersion passes the api version to the client. If not set, the default value
 // is DefaultAPIVersion.
 func WithAPIVersion(apiVersion string) Option {
@@ -145,4 +211,26 @@ func WithResponseFormat(responseFormat *ResponseFormat) Option {
 	return func(opts *options) {
 		opts.responseFormat = responseFormat
 	}
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneStringMap(input map[string]string) map[string]string {
+	if len(input) == 0 {
+		return nil
+	}
+	cloned := make(map[string]string, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
 }

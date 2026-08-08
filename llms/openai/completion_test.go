@@ -83,3 +83,111 @@ func TestGenerateCompletionUsesTextCompletionsEndpoint(t *testing.T) {
 		t.Fatalf("total tokens = %#v, want 5", got)
 	}
 }
+
+func TestGenerateCompletionWithReasoningUsesChatEndpoint(t *testing.T) {
+	t.Parallel()
+
+	var captured map[string]any
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		capturedPath = request.URL.Path
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"model":"gpt-5-test",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"completed"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	model, err := New(
+		WithToken("test-token"),
+		WithModel("gpt-5-test"),
+		WithBaseURL(server.URL+"/v1"),
+		WithHTTPClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	response, err := model.GenerateCompletion(
+		context.Background(),
+		"reason about this",
+		llms.WithThinkingMode(llms.ThinkingModeHigh),
+	)
+	if err != nil {
+		t.Fatalf("generate completion: %v", err)
+	}
+
+	if capturedPath != "/v1/chat/completions" {
+		t.Fatalf("request path = %q, want /v1/chat/completions", capturedPath)
+	}
+	if captured["reasoning_effort"] != "high" {
+		t.Fatalf("reasoning effort = %#v, want high", captured["reasoning_effort"])
+	}
+	if _, exists := captured["prompt"]; exists {
+		t.Fatalf("chat request unexpectedly contains prompt: %#v", captured)
+	}
+	if response == nil || len(response.Choices) != 1 || response.Choices[0].Content != "completed" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestGenerateContentSendsReasoningEffort(t *testing.T) {
+	t.Parallel()
+
+	type capturedRequest struct {
+		ReasoningEffort string `json:"reasoning_effort"`
+	}
+	var captured capturedRequest
+	var capturedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		capturedPath = request.URL.Path
+		if err := json.NewDecoder(request.Body).Decode(&captured); err != nil {
+			http.Error(writer, err.Error(), http.StatusBadRequest)
+			return
+		}
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"model":"gpt-5-test",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	model, err := New(
+		WithToken("test-token"),
+		WithModel("gpt-5-test"),
+		WithBaseURL(server.URL+"/v1"),
+		WithHTTPClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	response, err := model.GenerateContent(
+		context.Background(),
+		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
+		llms.WithThinkingMode(llms.ThinkingModeMedium),
+	)
+	if err != nil {
+		t.Fatalf("generate content: %v", err)
+	}
+
+	if capturedPath != "/v1/chat/completions" {
+		t.Fatalf("request path = %q, want /v1/chat/completions", capturedPath)
+	}
+	if captured.ReasoningEffort != "medium" {
+		t.Fatalf("reasoning effort = %q, want medium", captured.ReasoningEffort)
+	}
+	if response == nil || len(response.Choices) != 1 || response.Choices[0].Content != "answer" {
+		t.Fatalf("response = %#v", response)
+	}
+}

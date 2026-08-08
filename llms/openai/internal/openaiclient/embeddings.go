@@ -38,13 +38,16 @@ func (c *Client) createEmbedding(ctx context.Context, payload *embeddingPayload)
 	if c.baseURL == "" {
 		c.baseURL = defaultBaseURL
 	}
+	if IsAzure(c.apiType) && !c.isAzureV1() && c.EmbeddingModel == "" {
+		return nil, errors.New("Azure embedding deployment is required")
+	}
 
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return nil, fmt.Errorf("marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.buildURL("/embeddings", c.EmbeddingModel), bytes.NewReader(payloadBytes))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.buildURL("/embeddings", payload.Model), bytes.NewReader(payloadBytes))
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
@@ -57,16 +60,7 @@ func (c *Client) createEmbedding(ctx context.Context, payload *embeddingPayload)
 	defer r.Body.Close()
 
 	if r.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("API returned unexpected status code: %d", r.StatusCode)
-
-		// No need to check the error here: if it fails, we'll just return the
-		// status code.
-		var errResp errorMessage
-		if err := json.NewDecoder(r.Body).Decode(&errResp); err != nil {
-			return nil, errors.New(msg)
-		}
-
-		return nil, fmt.Errorf("%s: %s", msg, errResp.Error.Message)
+		return nil, decodeHTTPStatusError(r.StatusCode, r.Body)
 	}
 
 	var response embeddingResponsePayload

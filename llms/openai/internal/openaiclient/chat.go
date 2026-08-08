@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/tmc/langchaingo/llms"
@@ -31,15 +32,17 @@ type StreamOptions struct {
 type ChatRequest struct {
 	Model               string         `json:"model"`
 	Messages            []*ChatMessage `json:"messages"`
-	Temperature         float64        `json:"temperature"`
-	TopP                float64        `json:"top_p,omitempty"`
-	MaxCompletionTokens int            `json:"max_completion_tokens,omitempty"`
+	Temperature         *float64       `json:"temperature,omitempty"`
+	TopP                *float64       `json:"top_p,omitempty"`
+	MaxTokens           *int           `json:"max_tokens,omitempty"`
+	MaxCompletionTokens *int           `json:"max_completion_tokens,omitempty"`
 	N                   int            `json:"n,omitempty"`
 	StopWords           []string       `json:"stop,omitempty"`
 	Stream              bool           `json:"stream,omitempty"`
-	FrequencyPenalty    float64        `json:"frequency_penalty,omitempty"`
-	PresencePenalty     float64        `json:"presence_penalty,omitempty"`
-	Seed                int            `json:"seed,omitempty"`
+	FrequencyPenalty    *float64       `json:"frequency_penalty,omitempty"`
+	PresencePenalty     *float64       `json:"presence_penalty,omitempty"`
+	Seed                *int           `json:"seed,omitempty"`
+	RandomSeed          *int           `json:"random_seed,omitempty"`
 
 	// ResponseFormat is the format of the response.
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
@@ -56,14 +59,19 @@ type ChatRequest struct {
 	Tools []Tool `json:"tools,omitempty"`
 	// This can be either a string or a ToolChoice object.
 	// If it is a string, it should be one of 'none', or 'auto', otherwise it should be a ToolChoice object specifying a specific tool to use.
-	ToolChoice any `json:"tool_choice,omitempty"`
+	ToolChoice        any   `json:"tool_choice,omitempty"`
+	ParallelToolCalls *bool `json:"parallel_tool_calls,omitempty"`
 
 	// Options for streaming response. Only set this when you set stream: true.
 	StreamOptions *StreamOptions `json:"stream_options,omitempty"`
 
-	// ReasoningEffort controls thinking effort for reasoning models (o1, o3, GPT-5).
-	// Valid values: "minimal" (GPT-5 only), "low", "medium", "high"
-	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// ReasoningEffort controls thinking effort for reasoning models.
+	ReasoningEffort  string `json:"reasoning_effort,omitempty"`
+	ServiceTier      string `json:"service_tier,omitempty"`
+	Store            *bool  `json:"store,omitempty"`
+	Verbosity        string `json:"verbosity,omitempty"`
+	PromptCacheKey   string `json:"prompt_cache_key,omitempty"`
+	SafetyIdentifier string `json:"safety_identifier,omitempty"`
 
 	// StreamingFunc is a function to be called for each chunk of a streaming response.
 	// Return an error to stop streaming early.
@@ -74,53 +82,17 @@ type ChatRequest struct {
 	StreamingReasoningFunc func(ctx context.Context, reasoningChunk, chunk []byte) error `json:"-"`
 
 	// Metadata allows you to specify additional information that will be passed to the model.
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+	ExtraBody map[string]any `json:"-"`
 }
 
-// Also omits temperature for reasoning models (GPT-5, o1, o3) that only accept default temperature.
 func (r ChatRequest) MarshalJSON() ([]byte, error) {
 	type Alias ChatRequest
-	aux := struct {
-		*Alias
-		MaxCompletionTokens *int     `json:"max_completion_tokens,omitempty"`
-		Temperature         *float64 `json:"temperature,omitempty"`
-	}{
-		Alias: (*Alias)(&r),
+	payload, err := json.Marshal(Alias(r))
+	if err != nil {
+		return nil, err
 	}
-
-	// Handle temperature for reasoning models
-	if isReasoningModel(r.Model) {
-		// Reasoning models (GPT-5, o1, o3) only accept temperature=1 (default)
-		// Omit temperature field to let API use its default value
-		aux.Temperature = nil
-	} else {
-		// For regular models, always send temperature
-		aux.Temperature = &r.Temperature
-	}
-
-	if r.MaxCompletionTokens > 0 {
-		aux.MaxCompletionTokens = &r.MaxCompletionTokens
-	}
-
-	return json.Marshal(&aux)
-}
-
-// isReasoningModel returns true if the model is a reasoning model that has temperature constraints.
-// Reasoning models (GPT-5, o1, o3) only accept temperature=1 and reject other values.
-func isReasoningModel(model string) bool {
-	// o1 series: o1-preview, o1-mini
-	if strings.HasPrefix(model, "o1-") {
-		return true
-	}
-	// o3 series: o3, o3-mini (note: "o3" without suffix is also valid)
-	if model == "o3" || strings.HasPrefix(model, "o3-") {
-		return true
-	}
-	// GPT-5 series (when released)
-	if strings.HasPrefix(model, "gpt-5") {
-		return true
-	}
-	return false
+	return mergeExtraBodyFields(payload, r.ExtraBody, "chat request")
 }
 
 // ToolType is the type of a tool.
@@ -150,6 +122,7 @@ type ToolFunction struct {
 
 // ToolCall is a call to a tool.
 type ToolCall struct {
+	Index    *int         `json:"index,omitempty"`
 	ID       string       `json:"id,omitempty"`
 	Type     ToolType     `json:"type"`
 	Function ToolFunction `json:"function,omitempty"`
@@ -376,7 +349,7 @@ type StreamedChatResponsePayload struct {
 	Model   string  `json:"model,omitempty"`
 	Object  string  `json:"object,omitempty"`
 	Choices []struct {
-		Index float64 `json:"index,omitempty"`
+		Index int `json:"index,omitempty"`
 		Delta struct {
 			Role    string `json:"role,omitempty"`
 			Content string `json:"content,omitempty"`
@@ -391,8 +364,9 @@ type StreamedChatResponsePayload struct {
 	// An optional field that will only be present when you set stream_options: {"include_usage": true} in your request.
 	// When present, it contains a null value except for the last chunk which contains the token usage statistics
 	// for the entire request.
-	Usage *Usage `json:"usage,omitempty"`
-	Error error  `json:"-"` // use for error handling only
+	Usage       *Usage         `json:"usage,omitempty"`
+	APIError    *ResponseError `json:"error,omitempty"`
+	StreamError error          `json:"-"`
 }
 
 // FunctionDefinition is a definition of a function that can be called by the model.
@@ -444,16 +418,7 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 	defer r.Body.Close()
 
 	if r.StatusCode != http.StatusOK {
-		msg := fmt.Sprintf("API returned unexpected status code: %d", r.StatusCode)
-
-		// No need to check the error here: if it fails, we'll just return the
-		// status code.
-		var errResp errorMessage
-		if err := json.NewDecoder(r.Body).Decode(&errResp); err != nil {
-			return nil, errors.New(msg)
-		}
-
-		return nil, fmt.Errorf("%s: %s", msg, errResp.Error.Message)
+		return nil, decodeHTTPStatusError(r.StatusCode, r.Body)
 	}
 	if payload.StreamingFunc != nil || payload.StreamingReasoningFunc != nil {
 		return parseStreamingChatResponse(ctx, r, payload)
@@ -467,6 +432,7 @@ func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *
 	error,
 ) { //nolint:cyclop,lll
 	scanner := bufio.NewScanner(r.Body)
+	scanner.Buffer(make([]byte, 64*1024), 16*1024*1024)
 	responseChan := make(chan StreamedChatResponsePayload)
 
 	// Create a context that can be cancelled to stop the goroutine
@@ -509,9 +475,23 @@ func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *
 			var streamPayload StreamedChatResponsePayload
 			err := json.NewDecoder(bytes.NewReader([]byte(data))).Decode(&streamPayload)
 			if err != nil {
-				// Skip non-JSON data values that some providers might send
-				// This could happen if the data field contains non-JSON content
-				continue
+				if len(data) > 256 {
+					data = data[:256]
+				}
+				select {
+				case <-readerCtx.Done():
+					return
+				case responseChan <- StreamedChatResponsePayload{StreamError: fmt.Errorf("decode streaming response %q: %w", data, err)}:
+				}
+				return
+			}
+			if streamPayload.APIError != nil {
+				select {
+				case <-readerCtx.Done():
+					return
+				case responseChan <- streamPayload:
+				}
+				return
 			}
 
 			// Non-blocking send with context check
@@ -525,7 +505,7 @@ func parseStreamingChatResponse(ctx context.Context, r *http.Response, payload *
 			select {
 			case <-readerCtx.Done():
 				return
-			case responseChan <- StreamedChatResponsePayload{Error: fmt.Errorf("error reading streaming response: %w", err)}:
+			case responseChan <- StreamedChatResponsePayload{StreamError: fmt.Errorf("error reading streaming response: %w", err)}:
 			}
 			return
 		}
@@ -539,15 +519,30 @@ func combineStreamingChatResponse(
 	payload *ChatRequest,
 	responseChan chan StreamedChatResponsePayload,
 ) (*ChatCompletionResponse, error) {
-	response := ChatCompletionResponse{
-		Choices: []*ChatCompletionChoice{
-			{},
-		},
-	}
+	response := ChatCompletionResponse{}
+	choicesByIndex := map[int]*ChatCompletionChoice{}
 
 	for streamResponse := range responseChan {
-		if streamResponse.Error != nil {
-			return nil, streamResponse.Error
+		if streamResponse.StreamError != nil {
+			return nil, streamResponse.StreamError
+		}
+		if streamResponse.APIError != nil {
+			return nil, fmt.Errorf("streaming API error %v: %s", streamResponse.APIError.Code, streamResponse.APIError.Message)
+		}
+		if streamResponse.ID != "" {
+			response.ID = streamResponse.ID
+		}
+		if streamResponse.Model != "" {
+			response.Model = streamResponse.Model
+		}
+		if streamResponse.Object != "" {
+			response.Object = streamResponse.Object
+		}
+		if streamResponse.Created != 0 {
+			response.Created = int64(streamResponse.Created)
+		}
+		if streamResponse.SystemFingerprint != "" {
+			response.SystemFingerprint = streamResponse.SystemFingerprint
 		}
 
 		if streamResponse.Usage != nil {
@@ -565,31 +560,48 @@ func combineStreamingChatResponse(
 		if len(streamResponse.Choices) == 0 {
 			continue
 		}
-		choice := streamResponse.Choices[0]
-		chunk := []byte(choice.Delta.Content)
-		reasoningChunk := []byte(choice.Delta.ReasoningContent) // TODO: not sure if there will be any reasoning related to function call later, so just pass it here
-		response.Choices[0].Message.Content += choice.Delta.Content
-		response.Choices[0].FinishReason = choice.FinishReason
-		response.Choices[0].Message.ReasoningContent += choice.Delta.ReasoningContent
-
-		if len(choice.Delta.ToolCalls) > 0 {
-			chunk, response.Choices[0].Message.ToolCalls = updateToolCalls(response.Choices[0].Message.ToolCalls,
-				choice.Delta.ToolCalls)
-		}
-
-		if payload.StreamingFunc != nil {
-			err := payload.StreamingFunc(ctx, chunk)
-			if err != nil {
-				return nil, fmt.Errorf("streaming func returned an error: %w", err)
+		for _, choice := range streamResponse.Choices {
+			choiceIndex := choice.Index
+			combined := choicesByIndex[choiceIndex]
+			if combined == nil {
+				combined = &ChatCompletionChoice{Index: choiceIndex}
+				choicesByIndex[choiceIndex] = combined
 			}
-		}
-		if payload.StreamingReasoningFunc != nil {
-			err := payload.StreamingReasoningFunc(ctx, reasoningChunk, chunk)
-			if err != nil {
-				return nil, fmt.Errorf("streaming reasoning func returned an error: %w", err)
+			chunk := []byte(choice.Delta.Content)
+			reasoningChunk := []byte(choice.Delta.ReasoningContent)
+			combined.Message.Content += choice.Delta.Content
+			combined.Message.ReasoningContent += choice.Delta.ReasoningContent
+			if choice.Delta.Role != "" {
+				combined.Message.Role = choice.Delta.Role
+			}
+			if choice.FinishReason != "" {
+				combined.FinishReason = choice.FinishReason
+			}
+			if len(choice.Delta.ToolCalls) > 0 {
+				chunk, combined.Message.ToolCalls = updateToolCalls(combined.Message.ToolCalls, choice.Delta.ToolCalls)
+			}
+			if choiceIndex != 0 {
+				continue
+			}
+			if payload.StreamingFunc != nil {
+				if err := payload.StreamingFunc(ctx, chunk); err != nil {
+					return nil, fmt.Errorf("streaming func returned an error: %w", err)
+				}
+			}
+			if payload.StreamingReasoningFunc != nil {
+				if err := payload.StreamingReasoningFunc(ctx, reasoningChunk, chunk); err != nil {
+					return nil, fmt.Errorf("streaming reasoning func returned an error: %w", err)
+				}
 			}
 		}
 	}
+	response.Choices = make([]*ChatCompletionChoice, 0, len(choicesByIndex))
+	for _, choice := range choicesByIndex {
+		response.Choices = append(response.Choices, choice)
+	}
+	sort.Slice(response.Choices, func(left, right int) bool {
+		return response.Choices[left].Index < response.Choices[right].Index
+	})
 	return &response, nil
 }
 
@@ -597,20 +609,35 @@ func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 	if len(delta) == 0 {
 		return []byte{}, tools
 	}
-	for _, t := range delta {
-		// if we have arguments append to the last Tool call
-		if t.Type == `` && t.Function.Arguments != `` {
-			lindex := len(tools) - 1
-			if lindex < 0 {
-				continue
-			}
-
-			tools[lindex].Function.Arguments += t.Function.Arguments
+	for _, toolDelta := range delta {
+		if toolDelta == nil {
 			continue
 		}
-
-		// Otherwise, this is a new tool call, append that to the stack
-		tools = append(tools, *t)
+		toolIndex := len(tools) - 1
+		if toolDelta.Index != nil {
+			toolIndex = *toolDelta.Index
+		} else if toolDelta.ID != "" || toolDelta.Type != "" || toolDelta.Function.Name != "" {
+			toolIndex = len(tools)
+		}
+		if toolIndex < 0 {
+			continue
+		}
+		for len(tools) <= toolIndex {
+			tools = append(tools, ToolCall{})
+		}
+		target := &tools[toolIndex]
+		index := toolIndex
+		target.Index = &index
+		if toolDelta.ID != "" {
+			target.ID = toolDelta.ID
+		}
+		if toolDelta.Type != "" {
+			target.Type = toolDelta.Type
+		}
+		if toolDelta.Function.Name != "" {
+			target.Function.Name = toolDelta.Function.Name
+		}
+		target.Function.Arguments += toolDelta.Function.Arguments
 	}
 
 	chunk, _ := json.Marshal(delta) // nolint:errchkjson
@@ -620,26 +647,5 @@ func updateToolCalls(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
 
 // StreamingChatResponseTools is a helper function to append tool calls to the stack.
 func StreamingChatResponseTools(tools []ToolCall, delta []*ToolCall) ([]byte, []ToolCall) {
-	if len(delta) == 0 {
-		return []byte{}, tools
-	}
-	for _, t := range delta {
-		// if we have arguments append to the last Tool call
-		if t.Type == `` && t.Function.Arguments != `` {
-			lindex := len(tools) - 1
-			if lindex < 0 {
-				continue
-			}
-
-			tools[lindex].Function.Arguments += t.Function.Arguments
-			continue
-		}
-
-		// Otherwise, this is a new tool call, append that to the stack
-		tools = append(tools, *t)
-	}
-
-	chunk, _ := json.Marshal(delta) // nolint:errchkjson
-
-	return chunk, tools
+	return updateToolCalls(tools, delta)
 }
