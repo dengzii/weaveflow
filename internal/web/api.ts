@@ -9,11 +9,9 @@ import type {
   GraphDefinition,
   GraphDetail,
   GraphInitialStateAnalysis,
-  GraphListPage,
   GraphLoadResult,
   RegistryInfo,
   RunInspection,
-  RunListPage,
   RunRecord,
   RunResult,
   RuntimeEventPage,
@@ -22,6 +20,18 @@ import type {
   ToolsInfo,
   Trigger,
 } from "./types";
+import {
+  validateGraphDetail,
+  validateGraphListPage,
+  validateGraphLoadResult,
+  validateRegistryInfo,
+  validateRunInspection,
+  validateRunListPage,
+  validateRunRecord,
+  validateRunResult,
+  validateRuntimeEventPage,
+  validateToolsInfo,
+} from "./apiValidation";
 import { resolveBackendUrl } from "./lib/backend";
 
 export class ApiError extends Error {
@@ -62,22 +72,6 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
   return readResponse<T>(response);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function requireRuntimeSettings(value: unknown, source: string): RuntimeSettings {
-  if (
-    !isRecord(value) ||
-    !isRecord(value.environment) ||
-    !Array.isArray(value.models) ||
-    !isRecord(value.memory)
-  ) {
-    throw new Error(`invalid ${source}: runtime settings are missing`);
-  }
-  return value as unknown as RuntimeSettings;
-}
-
 function graphPath(graphID: string): string {
   return `/graphs/${encodeURIComponent(graphID)}`;
 }
@@ -92,7 +86,10 @@ export async function listGraphs(): Promise<CachedGraphSummary[]> {
   do {
     const query = new URLSearchParams({ limit: "200" });
     if (cursor) query.set("cursor", cursor);
-    const page = await apiFetch<GraphListPage>(`/graphs?${query.toString()}`);
+    const page = validateGraphListPage(
+      await apiFetch<unknown>(`/graphs?${query.toString()}`),
+      "GET /graphs response"
+    );
     items.push(...page.items);
     cursor = page.next_cursor;
   } while (cursor);
@@ -100,11 +97,8 @@ export async function listGraphs(): Promise<CachedGraphSummary[]> {
 }
 
 export async function getGraphDetail(graphID: string): Promise<GraphDetail> {
-  const detail = await apiFetch<GraphDetail>(graphPath(graphID));
-  return {
-    ...detail,
-    settings: requireRuntimeSettings(detail.settings, `GET ${graphPath(graphID)} response`),
-  };
+  const path = graphPath(graphID);
+  return validateGraphDetail(await apiFetch<unknown>(path), `GET ${path} response`);
 }
 
 export async function analyzeInitialStateRequirements(
@@ -127,7 +121,8 @@ export async function createGraphSession(
   settings: RuntimeSettingsUpdate,
   graphVersion?: string
 ): Promise<GraphLoadResult> {
-  const result = await apiFetch<GraphLoadResult>(`${graphPath(graphID)}/sessions`, {
+  const path = `${graphPath(graphID)}/sessions`;
+  const result = await apiFetch<unknown>(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -136,21 +131,15 @@ export async function createGraphSession(
       settings,
     }),
   });
-  if (!isRecord(result.graph) || !isRecord(result.definition)) {
-    throw new Error("invalid graph session response: graph result is missing");
-  }
-  return {
-    ...result,
-    settings: requireRuntimeSettings(result.settings, "graph session response"),
-  };
+  return validateGraphLoadResult(result, `POST ${path} response`);
 }
 
 export async function getRegistry(): Promise<RegistryInfo> {
-  return apiFetch<RegistryInfo>("/registry");
+  return validateRegistryInfo(await apiFetch<unknown>("/registry"), "GET /registry response");
 }
 
 export async function getTools(): Promise<ToolsInfo> {
-  return apiFetch<ToolsInfo>("/runtime/tools");
+  return validateToolsInfo(await apiFetch<unknown>("/runtime/tools"), "GET /runtime/tools response");
 }
 
 export async function startChatChannelSetup(channelID: string, triggerID?: string): Promise<ChatChannelSetupResult> {
@@ -221,7 +210,10 @@ export async function listRuns(graphID: string): Promise<RunRecord[]> {
   do {
     const query = new URLSearchParams({ limit: "500" });
     if (cursor) query.set("cursor", cursor);
-    const page = await apiFetch<RunListPage>(`${graphPath(graphID)}/runs?${query.toString()}`);
+    const page = validateRunListPage(
+      await apiFetch<unknown>(`${graphPath(graphID)}/runs?${query.toString()}`),
+      `GET ${graphPath(graphID)}/runs response`
+    );
     items = [...page.items, ...items];
     cursor = page.next_cursor;
   } while (cursor);
@@ -229,19 +221,21 @@ export async function listRuns(graphID: string): Promise<RunRecord[]> {
 }
 
 export async function startRun(graphID: string, sessionID: string, initialState: unknown): Promise<RunRecord> {
-  return apiFetch<RunRecord>(`${graphPath(graphID)}/sessions/${encodeURIComponent(sessionID)}/runs`, {
+  const path = `${graphPath(graphID)}/sessions/${encodeURIComponent(sessionID)}/runs`;
+  return validateRunRecord(await apiFetch<unknown>(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ initial_state: initialState }),
-  });
+  }), `POST ${path} response`);
 }
 
 export async function resumeRun(graphID: string, runID: string, input: unknown): Promise<RunResult> {
-  return apiFetch<RunResult>(`${runPath(graphID, runID)}/resume`, {
+  const path = `${runPath(graphID, runID)}/resume`;
+  return validateRunResult(await apiFetch<unknown>(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ input }),
-  });
+  }), `POST ${path} response`);
 }
 
 export async function getRunInspection(
@@ -251,15 +245,18 @@ export async function getRunInspection(
 ): Promise<RunInspection> {
   const query = new URLSearchParams({ event_limit: "500" });
   if (eventCursor) query.set("event_cursor", eventCursor);
-  return apiFetch<RunInspection>(`${runPath(graphID, runID)}/inspection?${query.toString()}`);
+  const path = `${runPath(graphID, runID)}/inspection?${query.toString()}`;
+  return validateRunInspection(await apiFetch<unknown>(path), `GET ${path} response`);
 }
 
 export async function pauseRun(graphID: string, runID: string): Promise<RunRecord> {
-  return apiFetch<RunRecord>(`${runPath(graphID, runID)}/pause`, { method: "POST" });
+  const path = `${runPath(graphID, runID)}/pause`;
+  return validateRunRecord(await apiFetch<unknown>(path, { method: "POST" }), `POST ${path} response`);
 }
 
 export async function cancelRun(graphID: string, runID: string): Promise<RunRecord> {
-  return apiFetch<RunRecord>(`${runPath(graphID, runID)}/cancel`, { method: "POST" });
+  const path = `${runPath(graphID, runID)}/cancel`;
+  return validateRunRecord(await apiFetch<unknown>(path, { method: "POST" }), `POST ${path} response`);
 }
 
 export async function deleteRun(graphID: string, runID: string): Promise<void> {
@@ -294,5 +291,6 @@ export async function listEvents(
 ): Promise<RuntimeEventPage> {
   const query = new URLSearchParams({ limit: String(limit) });
   if (cursor) query.set("cursor", cursor);
-  return apiFetch<RuntimeEventPage>(`${runPath(graphID, runID)}/events?${query.toString()}`);
+  const path = `${runPath(graphID, runID)}/events?${query.toString()}`;
+  return validateRuntimeEventPage(await apiFetch<unknown>(path), `GET ${path} response`);
 }

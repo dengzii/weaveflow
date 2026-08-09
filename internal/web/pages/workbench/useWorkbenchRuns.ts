@@ -28,6 +28,12 @@ import {
   type UserInputPrompt,
 } from "./userInputModel";
 import {
+  checkpointRecordFromEvent,
+  mergeFetchedCheckpoints,
+  rememberRunInspection,
+  upsertCheckpoint,
+} from "./runInspectionModel";
+import {
   canResumeRun,
   isActiveRunStatus,
   isTerminalRunStatus,
@@ -50,19 +56,8 @@ import {
 
 const RUN_STATUS_VISIBLE_STORAGE_KEY = "weaveflow.workbench.runStatus.visible";
 const LIVE_EVENT_FLUSH_INTERVAL_MS = 80;
-const MAX_CACHED_RUN_INSPECTIONS = 6;
 
 type RunNotificationTone = "info" | "warn" | "error";
-
-function rememberRunInspection(cache: Map<string, RunInspection>, inspection: RunInspection): void {
-  cache.delete(inspection.run.run_id);
-  cache.set(inspection.run.run_id, inspection);
-  while (cache.size > MAX_CACHED_RUN_INSPECTIONS) {
-    const oldestRunID = cache.keys().next().value;
-    if (typeof oldestRunID !== "string") break;
-    cache.delete(oldestRunID);
-  }
-}
 
 interface UseWorkbenchRunsOptions {
   graphIdentity: GraphIdentity;
@@ -405,7 +400,7 @@ export function useWorkbenchRuns({
     ) {
       return;
     }
-    rememberRunInspection(runInspectionCacheRef.current, inspection);
+    runInspectionCacheRef.current = rememberRunInspection(runInspectionCacheRef.current, inspection);
     applyRunInspection(inspection);
     setRunInspectionLoading(false);
   }, [applyRunInspection, clearSelectedRunInspection]);
@@ -795,54 +790,6 @@ export function useWorkbenchRuns({
     submitUserInputPrompt,
     dismissUserInputPrompt,
   };
-}
-
-function checkpointRecordFromEvent(event: RuntimeEvent): CheckpointRecord | null {
-  if (event.type !== "checkpoint.created" || !event.run_id || !isRecord(event.payload)) return null;
-  const checkpointID = stringField(event.payload, "checkpoint_id");
-  const stage = stringField(event.payload, "stage");
-  if (!checkpointID || !stage) return null;
-  return {
-    checkpoint_id: checkpointID,
-    run_id: event.run_id,
-    step_id: event.step_id ?? "",
-    node_id: event.node_id ?? "",
-    stage,
-    state_codec: "",
-    state_version: "",
-    created_at: event.timestamp,
-  };
-}
-
-function upsertCheckpoint(current: CheckpointRecord[], checkpoint: CheckpointRecord): CheckpointRecord[] {
-  const existingIndex = current.findIndex((item) => item.checkpoint_id === checkpoint.checkpoint_id);
-  const next = existingIndex >= 0
-    ? current.map((item, index) => (index === existingIndex ? { ...checkpoint, ...item } : item))
-    : [...current, checkpoint];
-  return next.sort((left, right) => Date.parse(left.created_at) - Date.parse(right.created_at));
-}
-
-function mergeFetchedCheckpoints(
-  current: CheckpointRecord[],
-  fetched: CheckpointRecord[]
-): CheckpointRecord[] {
-  const checkpointsByID = new Map(current.map((checkpoint) => [checkpoint.checkpoint_id, checkpoint]));
-  for (const checkpoint of fetched) {
-    const existing = checkpointsByID.get(checkpoint.checkpoint_id);
-    checkpointsByID.set(checkpoint.checkpoint_id, existing ? { ...existing, ...checkpoint } : checkpoint);
-  }
-  return [...checkpointsByID.values()].sort(
-    (left, right) => Date.parse(left.created_at) - Date.parse(right.created_at)
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
-
-function stringField(record: Record<string, unknown>, field: string): string {
-  const value = record[field];
-  return typeof value === "string" ? value.trim() : "";
 }
 
 function readStoredRunStatusVisible(): boolean {

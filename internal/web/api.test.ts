@@ -131,6 +131,14 @@ describe("server API client", () => {
       expect(error).toMatchObject({ status: 409, code: "trigger_exists", message: "trigger already exists" });
     }
   });
+
+  test("rejects malformed successful responses before they reach callers", async () => {
+    globalThis.fetch = (async () => jsonResponse({ items: [{}], next_cursor: "" })) as typeof fetch;
+
+    await expect(listRuns("graph-a")).rejects.toThrow(
+      "invalid API response at GET /graphs/graph-a/runs response.items[0].run_id"
+    );
+  });
 });
 
 function jsonResponse(data: unknown, status = 200, error?: { code: string; message: string }): Response {
