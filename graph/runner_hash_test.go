@@ -16,7 +16,7 @@ import (
 )
 
 func TestNewGraphRunnerPopulatesGraphHashes(t *testing.T) {
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "input", func(context.Context, *state.Access) error {
 		return nil
 	})
@@ -41,18 +41,18 @@ func TestNewGraphRunnerPopulatesGraphHashes(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		g,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
 		state.NewJSONStateCodec(""),
 		fruntime.NewFileEventSink(dir),
 	)
-	if runner.GraphHash != graphHash {
-		t.Fatalf("runner graph hash = %q, want %q", runner.GraphHash, graphHash)
+	if runner.GraphHash() != graphHash {
+		t.Fatalf("runner graph hash = %q, want %q", runner.GraphHash(), graphHash)
 	}
-	if runner.GraphSnapshotHash != graphSnapshotHash {
-		t.Fatalf("runner graph snapshot hash = %q, want %q", runner.GraphSnapshotHash, graphSnapshotHash)
+	if runner.GraphSnapshotHash() != graphSnapshotHash {
+		t.Fatalf("runner graph snapshot hash = %q, want %q", runner.GraphSnapshotHash(), graphSnapshotHash)
 	}
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
@@ -68,7 +68,7 @@ func TestNewGraphRunnerPopulatesGraphHashes(t *testing.T) {
 }
 
 func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "input", func(context.Context, *state.Access) error { return nil })
 	if err := g.SetEntryPoint("input"); err != nil {
 		t.Fatalf("set entry point: %v", err)
@@ -78,7 +78,7 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		g,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
@@ -92,7 +92,7 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	if run.LastCheckpointID == "" {
 		t.Fatal("run has no checkpoint")
 	}
-	runner.GraphHash = "sha256:changed"
+	runner = mustNewGraphRunner(t, g, runner.ExecutionStore(), runner.CheckpointStore(), state.NewJSONStateCodec(""), runner.EventSink(), fruntime.WithGraphMetadata("", "", "sha256:changed", runner.GraphSnapshotHash(), runner.GraphSessionID()))
 
 	if _, _, err := runner.Resume(context.Background(), run.RunID, nil); err == nil || !strings.Contains(err.Error(), "graph hash mismatch") {
 		t.Fatalf("Resume() error = %v, want graph hash mismatch", err)
@@ -103,7 +103,7 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 }
 
 func TestGraphRunnerReportsJSONIncompatibleCheckpointState(t *testing.T) {
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "input", func(_ context.Context, access *state.Access) error {
 		return access.SetAny(state.Shared("invalid"), func() {})
 	})
@@ -114,7 +114,7 @@ func TestGraphRunnerReportsJSONIncompatibleCheckpointState(t *testing.T) {
 		t.Fatalf("set finish point: %v", err)
 	}
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		g,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
@@ -237,12 +237,12 @@ func builtCapabilityGraphHash(t *testing.T, capabilityID string) string {
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		g,
 		fruntime.NewFileExecutionStore(t.TempDir()),
 		fruntime.NewNoopCheckpointStore(),
 		state.NewJSONStateCodec(""),
 		fruntime.NoopEventSink{},
 	)
-	return runner.GraphHash
+	return runner.GraphHash()
 }

@@ -61,11 +61,11 @@ func TestRegisterStateModuleValidatesAndIndexesMetadata(t *testing.T) {
 	if err := reg.RegisterStateModule(module); err != nil {
 		t.Fatalf("register module: %v", err)
 	}
-	if _, ok := reg.StateModules[StateModuleKey("test", "1")]; !ok {
-		t.Fatalf("module not indexed: %#v", reg.StateModules)
+	if _, ok := reg.FindStateModule("test", "1"); !ok {
+		t.Fatalf("module not indexed: %#v", reg.StateModuleDefinitions())
 	}
-	if _, ok := reg.Capabilities["test.object.v1"]; !ok {
-		t.Fatalf("capability not indexed: %#v", reg.Capabilities)
+	if _, ok := reg.FindCapability("test.object.v1"); !ok {
+		t.Fatalf("capability not indexed: %#v", reg.CapabilityDefinitions())
 	}
 	if _, ok := reg.StateFieldDefinitions()["shared.input"]; !ok {
 		t.Fatal("field path not indexed")
@@ -128,11 +128,12 @@ func TestRegisterNodeTypeValidatesPortsAndBuilder(t *testing.T) {
 	if err := reg.RegisterNodeType(def); err != nil {
 		t.Fatalf("register node type: %v", err)
 	}
-	if len(reg.NodeTypes["custom"].StatePorts) != 1 {
-		t.Fatalf("state ports not normalized: %#v", reg.NodeTypes["custom"])
+	stored, ok := reg.FindNodeType("custom")
+	if !ok || len(stored.StatePorts) != 1 {
+		t.Fatalf("state ports not normalized: %#v", stored)
 	}
-	if reg.NodeTypes["custom"].StatePorts[0].Name != "input" || reg.NodeTypes["custom"].NodeTypeSchema.StatePorts[0].Name != "input" {
-		t.Fatalf("state port normalization was not retained: %#v", reg.NodeTypes["custom"])
+	if stored.StatePorts[0].Name != "input" || stored.NodeTypeSchema.StatePorts[0].Name != "input" {
+		t.Fatalf("state port normalization was not retained: %#v", stored)
 	}
 }
 
@@ -152,7 +153,7 @@ func TestRegisterNodeTypeInGroupCreatesAndAppends(t *testing.T) {
 	if err := reg.RegisterNodeTypeInGroup("Models", definition("text_generation")); err != nil {
 		t.Fatalf("register second grouped node type: %v", err)
 	}
-	group, ok := reg.NodeGroups["Models"]
+	group, ok := reg.FindNodeGroup("Models")
 	if !ok {
 		t.Fatal("node group was not created")
 	}
@@ -165,8 +166,9 @@ func TestRegisterNodeTypeInGroupCreatesAndAppends(t *testing.T) {
 	cloned.NodeTypes[0] = "changed"
 	groups["Models"] = cloned
 	delete(groups, "Models")
-	if reg.NodeGroups["Models"].NodeTypes[0] != "llm_turn" {
-		t.Fatalf("node group getter exposed mutable data: %#v", reg.NodeGroups["Models"])
+	storedGroup, _ := reg.FindNodeGroup("Models")
+	if storedGroup.NodeTypes[0] != "llm_turn" {
+		t.Fatalf("node group getter exposed mutable data: %#v", storedGroup)
 	}
 }
 
@@ -180,8 +182,8 @@ func TestRegisterNodeTypeInGroupRejectsEmptyGroup(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "group") {
 		t.Fatalf("expected group error, got %v", err)
 	}
-	if len(reg.NodeTypes) != 0 || len(reg.NodeGroups) != 0 {
-		t.Fatalf("invalid grouped registration changed registry: nodes=%#v groups=%#v", reg.NodeTypes, reg.NodeGroups)
+	if len(reg.NodeTypeDefinitions()) != 0 || len(reg.NodeGroupDefinitions()) != 0 {
+		t.Fatalf("invalid grouped registration changed registry: nodes=%#v groups=%#v", reg.NodeTypeDefinitions(), reg.NodeGroupDefinitions())
 	}
 }
 
@@ -197,8 +199,9 @@ func TestRegisterConditionValidatesPortsAndResolver(t *testing.T) {
 	if err := reg.RegisterCondition(def); err != nil {
 		t.Fatalf("register condition: %v", err)
 	}
-	if len(reg.Conditions["custom"].StatePorts) != 1 {
-		t.Fatalf("state ports not normalized: %#v", reg.Conditions["custom"])
+	storedCondition, ok := reg.FindCondition("custom")
+	if !ok || len(storedCondition.StatePorts) != 1 {
+		t.Fatalf("state ports not normalized: %#v", storedCondition)
 	}
 }
 
@@ -215,7 +218,8 @@ func TestRegisterNodeTypeValidatesAndClonesDynamicStatePorts(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register dynamic node type: %v", err)
 	}
-	stored := reg.NodeTypes["dynamic"].DynamicStatePorts
+	definition, _ := reg.FindNodeType("dynamic")
+	stored := definition.DynamicStatePorts
 	if stored == nil || stored.NamePattern != "[A-Za-z_][A-Za-z0-9_]*" || stored.MinPorts != 1 || stored.MaxPorts != 4 {
 		t.Fatalf("dynamic state ports = %#v", stored)
 	}
@@ -306,11 +310,17 @@ func TestRegistryMetadataGettersReturnClones(t *testing.T) {
 	module.Capabilities[0].Fields[0].Schema["type"] = "boolean"
 	modules[StateModuleKey("test", "1")] = module
 	delete(modules, StateModuleKey("test", "1"))
-	if len(reg.StateModules) != 1 {
+	if len(reg.StateModuleDefinitions()) != 1 {
 		t.Fatal("module getter exposed mutable map")
 	}
-	stored := reg.StateModules[StateModuleKey("test", "1")]
+	stored, _ := reg.FindStateModule("test", "1")
 	if stored.Fields[0].Schema["type"] != "string" || stored.Capabilities[0].Schema["type"] != "object" || stored.Capabilities[0].Fields[0].Schema["type"] != "string" {
 		t.Fatalf("module getter exposed nested schema metadata: %#v", stored)
+	}
+	stored.Fields[0].Schema["type"] = "number"
+	stored.Capabilities[0].Fields[0].Schema["type"] = "boolean"
+	fresh, _ := reg.FindStateModule("test", "1")
+	if fresh.Fields[0].Schema["type"] != "string" || fresh.Capabilities[0].Fields[0].Schema["type"] != "string" {
+		t.Fatalf("module lookup exposed nested schema metadata: %#v", fresh)
 	}
 }

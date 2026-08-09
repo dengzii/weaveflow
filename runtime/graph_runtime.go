@@ -92,8 +92,8 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState *s
 		completed:      map[string]*runnerCompletedStep{},
 		waves:          map[*state.State]string{},
 		nodeLocks:      map[string]*sync.Mutex{},
-		contractPolicy: runner.contractPolicy(),
-		nodeContracts:  runner.NodeContracts,
+		contractPolicy: runner.effectiveContractPolicy(),
+		nodeContracts:  cloneContracts(runner.nodeContracts),
 		cancelInvoke:   cancelInvoke,
 	}
 }
@@ -116,7 +116,7 @@ func (e *graphRunnerExecution) persistScheduledRun(ctx context.Context, step Ste
 	return e.persistRun(ctx, func(run *RunRecord) {
 		run.CurrentNodeID = step.NodeID
 		run.LastStepID = step.StepID
-		run.UpdatedAt = e.runner.now()
+		run.UpdatedAt = e.runner.currentTime()
 	})
 }
 
@@ -130,7 +130,7 @@ func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunR
 	e.mu.Lock()
 	run := e.run
 	e.mu.Unlock()
-	latestRun, err := e.runner.ExecutionStore.GetRun(ctx, run.RunID)
+	latestRun, err := e.runner.executionStore.GetRun(ctx, run.RunID)
 	if err != nil {
 		return RunRecord{}, err
 	}
@@ -147,7 +147,7 @@ func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunR
 		run.CancelRequested = run.CancelRequested || e.run.CancelRequested
 		e.mu.Unlock()
 
-		if err := e.runner.ExecutionStore.UpdateRun(ctx, run); err != nil {
+		if err := e.runner.executionStore.UpdateRun(ctx, run); err != nil {
 			return RunRecord{}, err
 		}
 
@@ -188,7 +188,7 @@ func (e *graphRunnerExecution) persistControlRequest(ctx context.Context, kind r
 	e.mu.Lock()
 	run := e.run
 	e.mu.Unlock()
-	latestRun, err := e.runner.ExecutionStore.GetRun(ctx, run.RunID)
+	latestRun, err := e.runner.executionStore.GetRun(ctx, run.RunID)
 	if err != nil {
 		return RunRecord{}, err
 	}
@@ -205,8 +205,8 @@ func (e *graphRunnerExecution) persistControlRequest(ctx context.Context, kind r
 	default:
 		return RunRecord{}, fmt.Errorf("unsupported runner control %q", kind)
 	}
-	run.UpdatedAt = e.runner.now()
-	if err := e.runner.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	run.UpdatedAt = e.runner.currentTime()
+	if err := e.runner.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, err
 	}
 	e.mu.Lock()
@@ -392,7 +392,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 	e.mu.Lock()
 	run := e.run
 	e.mu.Unlock()
-	latestRun, err := e.runner.ExecutionStore.GetRun(ctx, run.RunID)
+	latestRun, err := e.runner.executionStore.GetRun(ctx, run.RunID)
 	if err != nil {
 		e.runPersistMu.Unlock()
 		return core.NewContext(ctx), err
@@ -428,21 +428,21 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 			NodeID:    nodeID,
 			NodeName:  e.runner.nodeName(nodeID),
 			Status:    StepStatusScheduled,
-			StartedAt: e.runner.now(),
-			UpdatedAt: e.runner.now(),
+			StartedAt: e.runner.currentTime(),
+			UpdatedAt: e.runner.currentTime(),
 			Attempt:   1,
 		}
-		if err := e.runner.ExecutionStore.AppendStep(ctx, step); err != nil {
+		if err := e.runner.executionStore.AppendStep(ctx, step); err != nil {
 			return core.NewContext(ctx), err
 		}
 		failScheduledStep := func(cause error) error {
-			now := e.runner.now()
+			now := e.runner.currentTime()
 			step.Status = StepStatusFailed
 			step.ErrorCode = "step_setup_failed"
 			step.ErrorMessage = cause.Error()
 			step.FinishedAt = &now
 			step.UpdatedAt = now
-			updateErr := e.runner.ExecutionStore.UpdateStep(context.WithoutCancel(normalizeRunnerContext(ctx)), step)
+			updateErr := e.runner.executionStore.UpdateStep(context.WithoutCancel(normalizeRunnerContext(ctx)), step)
 			return errors.Join(cause, updateErr)
 		}
 
@@ -458,8 +458,8 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 
 		step.CheckpointBeforeID = beforeID
 		step.Status = StepStatusRunning
-		step.UpdatedAt = e.runner.now()
-		if err := e.runner.ExecutionStore.UpdateStep(ctx, step); err != nil {
+		step.UpdatedAt = e.runner.currentTime()
+		if err := e.runner.executionStore.UpdateStep(ctx, step); err != nil {
 			return core.NewContext(ctx), failScheduledStep(err)
 		}
 
@@ -595,7 +595,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, c
 		return err
 	}
 
-	latestRun, err := e.runner.ExecutionStore.GetRun(ctx, barrierRun.RunID)
+	latestRun, err := e.runner.executionStore.GetRun(ctx, barrierRun.RunID)
 	if err != nil {
 		return err
 	}
@@ -608,7 +608,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, c
 		run.CurrentStepIDs = nil
 		run.NextNodeIDs = append([]string(nil), nextNodeIDs...)
 		run.ParallelWaveID = ""
-		run.UpdatedAt = e.runner.now()
+		run.UpdatedAt = e.runner.currentTime()
 	})
 	if err != nil {
 		return err
@@ -671,14 +671,14 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 	e.mu.Unlock()
 
 	for _, step := range steps {
-		if err := e.runner.ExecutionStore.UpdateStep(ctx, step); err != nil {
+		if err := e.runner.executionStore.UpdateStep(ctx, step); err != nil {
 			return err
 		}
 	}
 	if _, err := e.persistRun(ctx, func(run *RunRecord) {
 		run.ParallelWaveID = waveID
 		run.CurrentNodeIDs = append([]string(nil), nodeIDs...)
-		run.UpdatedAt = e.runner.now()
+		run.UpdatedAt = e.runner.currentTime()
 	}); err != nil {
 		return err
 	}
@@ -784,13 +784,13 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 		return err
 	}
 
-	now := e.runner.now()
+	now := e.runner.currentTime()
 	step.Attempt = attempts
 	step.Status = StepStatusSucceeded
 	step.CheckpointAfterID = afterID
 	step.FinishedAt = &now
 	step.UpdatedAt = now
-	if err := e.runner.ExecutionStore.UpdateStep(ctx, step); err != nil {
+	if err := e.runner.executionStore.UpdateStep(ctx, step); err != nil {
 		return err
 	}
 	e.mu.Lock()
@@ -807,7 +807,7 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 
 	run, err = e.persistRun(ctx, func(persistedRun *RunRecord) {
 		persistedRun.LastCheckpointID = afterID
-		persistedRun.UpdatedAt = e.runner.now()
+		persistedRun.UpdatedAt = e.runner.currentTime()
 	})
 	if err != nil {
 		return err
@@ -941,14 +941,14 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 			continue
 		}
 		attempts := item.attempts
-		now := e.runner.now()
+		now := e.runner.currentTime()
 		step.Attempt = attempts
 		step.Status = StepStatusFailed
 		step.ErrorCode = "node_failed"
 		step.ErrorMessage = err.Error()
 		step.FinishedAt = &now
 		step.UpdatedAt = now
-		if updateErr := e.runner.ExecutionStore.UpdateStep(ctx, step); updateErr != nil {
+		if updateErr := e.runner.executionStore.UpdateStep(ctx, step); updateErr != nil {
 			return updateErr
 		}
 		logger.Error("nodes failed", append(stepLogFields(step), zap.Error(err))...)
@@ -986,13 +986,13 @@ func (e *graphRunnerExecution) finalizeCanceledSteps(ctx context.Context) error 
 		if step.Status == StepStatusSucceeded || step.Status == StepStatusPaused {
 			continue
 		}
-		now := e.runner.now()
+		now := e.runner.currentTime()
 		step.Status = StepStatusFailed
 		step.ErrorCode = "run_canceled"
 		step.ErrorMessage = "run canceled"
 		step.FinishedAt = &now
 		step.UpdatedAt = now
-		if err := e.runner.ExecutionStore.UpdateStep(e.controlPersistenceContext(ctx), step); err != nil {
+		if err := e.runner.executionStore.UpdateStep(e.controlPersistenceContext(ctx), step); err != nil {
 			finalizeErr = errors.Join(finalizeErr, err)
 			continue
 		}
@@ -1140,7 +1140,7 @@ func (e *graphRunnerExecution) afterInterruptNodes() ([]string, error) {
 	if graph == nil {
 		return nil, errors.New("graph runner graph is nil")
 	}
-	return graph.AfterInterruptNodes(e.runner.Breakpoints)
+	return graph.AfterInterruptNodes(e.runner.breakpoints)
 }
 
 func (e *graphRunnerExecution) markNodeInterrupt(nodeID string, message string) {

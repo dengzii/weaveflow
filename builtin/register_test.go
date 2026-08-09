@@ -5,14 +5,14 @@ import "testing"
 func TestDefaultRegistryExposesModulesCapabilitiesAndStatePorts(t *testing.T) {
 	t.Parallel()
 	reg := NewDefaultRegistry()
-	module, ok := reg.StateModules[ProtocolsModuleName+"@"+ProtocolsModuleVersion]
+	module, ok := reg.FindStateModule(ProtocolsModuleName, ProtocolsModuleVersion)
 	if !ok {
-		t.Fatalf("protocol module is missing: %#v", reg.StateModules)
+		t.Fatalf("protocol module is missing: %#v", reg.StateModuleDefinitions())
 	}
 	if len(module.Capabilities) != 4 {
 		t.Fatalf("protocol capabilities = %#v", module.Capabilities)
 	}
-	for nodeType, definition := range reg.NodeTypes {
+	for nodeType, definition := range reg.NodeTypeDefinitions() {
 		if len(definition.StatePorts) == 0 {
 			t.Fatalf("node type %q declares no state ports", nodeType)
 		}
@@ -20,7 +20,7 @@ func TestDefaultRegistryExposesModulesCapabilitiesAndStatePorts(t *testing.T) {
 			t.Fatalf("node type %q schema ports do not match build ports", nodeType)
 		}
 	}
-	for conditionType, definition := range reg.Conditions {
+	for conditionType, definition := range reg.ConditionDefinitions() {
 		if len(definition.StatePorts) == 0 && definition.DynamicStatePorts == nil {
 			t.Fatalf("condition %q declares no state ports", conditionType)
 		}

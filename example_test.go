@@ -14,9 +14,9 @@ import (
 
 func ExampleRegistry_RegisterNodeType() {
 	reg := weaveflow.NewDefaultRegistry()
-	_ = reg.RegisterNodeType(weaveflow.NodeTypeDefinition{
+	_ = reg.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{Type: "set_answer", StatePorts: []dsl.StatePortDefinition{{Name: "output", Required: true, Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeReplace}}},
-		Build: func(_ *weaveflow.BuildContext, resolved registry.ResolvedNodeSpec) (node.Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (node.Node, error) {
 			spec := resolved.Spec
 			value, _ := spec.Config["value"].(string)
 			output := resolved.State["output"].Path
@@ -26,22 +26,22 @@ func ExampleRegistry_RegisterNodeType() {
 		},
 	})
 
-	graph, _ := weaveflow.BuildGraph(reg, weaveflow.GraphDefinition{
-		Version: "2.0", StateModules: []weaveflow.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
-		Nodes: []weaveflow.GraphNodeSpec{{
+	graph, _ := weaveflow.BuildGraph(reg, dsl.GraphDefinition{
+		Version: "2.0", StateModules: []dsl.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
+		Nodes: []dsl.GraphNodeSpec{{
 			ID:     "answer",
 			Type:   "set_answer",
 			Config: map[string]any{"value": "done"},
 			State:  map[string]dsl.StateBinding{"output": {Path: "shared.answer"}},
 		}},
 		EntryPoint: "answer",
-		Edges: []weaveflow.GraphEdgeSpec{{
+		Edges: []dsl.GraphEdgeSpec{{
 			From: "answer",
 			To:   weaveflow.EndNodeRef,
 		}},
 	})
 	runner, _ := weaveflow.NewRunner(graph)
-	_, finalState, _ := runner.Start(context.Background(), weaveflow.NewState())
+	_, finalState, _ := runner.Start(context.Background(), state.NewState())
 	answer, _ := state.NewAccess(finalState).ReadAny(state.Shared("answer"))
 	fmt.Println(answer)
 
@@ -51,9 +51,9 @@ func ExampleRegistry_RegisterNodeType() {
 
 func ExampleRegistry_RegisterCondition() {
 	reg := weaveflow.NewDefaultRegistry()
-	_ = reg.RegisterNodeType(weaveflow.NodeTypeDefinition{
+	_ = reg.RegisterNodeType(registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{Type: "set_flag", StatePorts: []dsl.StatePortDefinition{{Name: "output", Required: true, Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeReplace}}},
-		Build: func(_ *weaveflow.BuildContext, resolved registry.ResolvedNodeSpec) (node.Node, error) {
+		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (node.Node, error) {
 			spec := resolved.Spec
 			output := resolved.State["output"].Path
 			value := spec.Config["value"]
@@ -62,32 +62,32 @@ func ExampleRegistry_RegisterCondition() {
 			}), nil
 		},
 	})
-	_ = reg.RegisterCondition(weaveflow.ConditionDefinition{
+	_ = reg.RegisterCondition(registry.ConditionDefinition{
 		ConditionSchema: dsl.ConditionSchema{Type: "shared_equals", StatePorts: []dsl.StatePortDefinition{{Name: "value", Required: true, Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace}}},
-		Resolve: func(resolved registry.ResolvedConditionSpec) (weaveflow.EdgeCondition, error) {
+		Resolve: func(resolved registry.ResolvedConditionSpec) (registry.EdgeCondition, error) {
 			spec := resolved.Spec
 			path := resolved.State["value"].Path
 			want := spec.Config["value"]
-			return weaveflow.NewEdgeCondition(spec, func(_ context.Context, current *state.State) bool {
+			return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) bool {
 				got, ok := state.NewAccess(current).ReadAny(path)
 				return ok && got == want
 			}), nil
 		},
 	})
 
-	graph, _ := weaveflow.BuildGraph(reg, weaveflow.GraphDefinition{
-		Version: "2.0", StateModules: []weaveflow.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
-		Nodes: []weaveflow.GraphNodeSpec{
+	graph, _ := weaveflow.BuildGraph(reg, dsl.GraphDefinition{
+		Version: "2.0", StateModules: []dsl.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
+		Nodes: []dsl.GraphNodeSpec{
 			{ID: "start", Type: "set_flag", Config: map[string]any{"value": "yes"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.route"}}},
 			{ID: "yes", Type: "set_flag", Config: map[string]any{"value": "matched"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.answer"}}},
 			{ID: "fallback", Type: "set_flag", Config: map[string]any{"value": "fallback"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.answer"}}},
 		},
 		EntryPoint: "start",
-		Edges: []weaveflow.GraphEdgeSpec{
+		Edges: []dsl.GraphEdgeSpec{
 			{
 				From:      "start",
 				To:        "yes",
-				Condition: &weaveflow.GraphConditionSpec{Type: "shared_equals", Config: map[string]any{"value": "yes"}, State: map[string]dsl.StateBinding{"value": {Path: "shared.route"}}},
+				Condition: &dsl.GraphConditionSpec{Type: "shared_equals", Config: map[string]any{"value": "yes"}, State: map[string]dsl.StateBinding{"value": {Path: "shared.route"}}},
 			},
 			{From: "start", To: "fallback"},
 			{From: "yes", To: weaveflow.EndNodeRef},
@@ -95,7 +95,7 @@ func ExampleRegistry_RegisterCondition() {
 		},
 	})
 	runner, _ := weaveflow.NewRunner(graph)
-	_, finalState, _ := runner.Start(context.Background(), weaveflow.NewState())
+	_, finalState, _ := runner.Start(context.Background(), state.NewState())
 	answer, _ := state.NewAccess(finalState).ReadAny(state.Shared("answer"))
 	fmt.Println(answer)
 

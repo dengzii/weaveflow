@@ -191,8 +191,8 @@ func (s *Server) configureGraph(req graphUploadRequest) (graphLoadResponse, erro
 	currentGraph := current.graph
 	currentRunner := current.runner
 	if graphUploadMatchesSession(current, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash) {
-		runnerBaseDir := s.uploadedGraphBaseDir(graphID, currentRunner.GraphSessionID)
-		if err := s.pruneGraphSessions(graphID, currentRunner.GraphSessionID); err != nil {
+		runnerBaseDir := s.uploadedGraphBaseDir(graphID, currentRunner.GraphSessionID())
+		if err := s.pruneGraphSessions(graphID, currentRunner.GraphSessionID()); err != nil {
 			return graphLoadResponse{}, err
 		}
 		if currentGraph == nil {
@@ -246,8 +246,10 @@ func (s *Server) installUploadedGraph(
 	cfg.GraphHash = graphHash
 	cfg.GraphSnapshotHash = graphSnapshotHash
 	cfg.GraphSessionID = graphSessionID
-	runner := newDefaultRunner(graph, cfg, runnerBaseDir)
-	attachEventHub(runner, s.events)
+	runner, err := newDefaultRunner(graph, cfg, runnerBaseDir, s.events)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
 
 	s.runtime.installSession(graphRuntimeSession{
 		graph:       graph,
@@ -269,7 +271,7 @@ func (s *Server) installUploadedGraph(
 		Definition:    def,
 		RunnerBaseDir: runnerBaseDir,
 		Settings:      graphSettingsResponse(settings),
-		Warnings:      runner.StartupWarnings,
+		Warnings:      runner.StartupWarnings(),
 	}, nil
 }
 
@@ -290,9 +292,9 @@ func graphUploadMatchesSession(
 		return false
 	}
 	return effectiveRunnerGraphID(runner) == strings.TrimSpace(graphID) &&
-		firstNonEmpty(runner.GraphVersion, runtime.DefaultGraphVersion) == strings.TrimSpace(graphVersion) &&
-		strings.TrimSpace(runner.GraphHash) == strings.TrimSpace(graphHash) &&
-		strings.TrimSpace(runner.GraphSnapshotHash) == strings.TrimSpace(graphSnapshotHash)
+		firstNonEmpty(runner.GraphVersion(), runtime.DefaultGraphVersion) == strings.TrimSpace(graphVersion) &&
+		strings.TrimSpace(runner.GraphHash()) == strings.TrimSpace(graphHash) &&
+		strings.TrimSpace(runner.GraphSnapshotHash()) == strings.TrimSpace(graphSnapshotHash)
 }
 
 func graphResponse(
@@ -311,17 +313,17 @@ func graphResponse(
 	return graphLoadResponse{
 		Graph: graphInfo{
 			ID:                effectiveRunnerGraphID(runner),
-			Version:           firstNonEmpty(runner.GraphVersion, runtime.DefaultGraphVersion),
-			GraphHash:         strings.TrimSpace(runner.GraphHash),
-			GraphSnapshotHash: strings.TrimSpace(runner.GraphSnapshotHash),
-			GraphSessionID:    strings.TrimSpace(runner.GraphSessionID),
+			Version:           firstNonEmpty(runner.GraphVersion(), runtime.DefaultGraphVersion),
+			GraphHash:         strings.TrimSpace(runner.GraphHash()),
+			GraphSnapshotHash: strings.TrimSpace(runner.GraphSnapshotHash()),
+			GraphSessionID:    strings.TrimSpace(runner.GraphSessionID()),
 			EntryPoint:        def.EntryPoint,
 			FinishPoint:       def.FinishPoint,
 		},
 		Definition:    def,
 		RunnerBaseDir: runnerBaseDir,
 		Settings:      graphSettingsResponse(settings),
-		Warnings:      runner.StartupWarnings,
+		Warnings:      runner.StartupWarnings(),
 	}, nil
 }
 

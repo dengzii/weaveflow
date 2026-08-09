@@ -19,23 +19,23 @@ import (
 
 type GraphRunner struct {
 	graph              RunnerGraph
-	ExecutionStore     ExecutionStore
-	CheckpointStore    CheckpointStore
-	ArtifactStore      ArtifactStore
-	RunDeleter         RunDeleter
-	Codec              state.StateCodec
-	EventSink          EventSink
-	GraphID            string
-	GraphVersion       string
-	GraphHash          string
-	GraphSnapshotHash  string
-	GraphSessionID     string
-	Breakpoints        []Breakpoint
-	ContractValidation core.ContractValidationMode
-	ContractPolicy     ContractPolicy
-	StartupWarnings    []WarningRecord
-	NodeContracts      map[string]state.Contract
-	Now                func() time.Time
+	executionStore     ExecutionStore
+	checkpointStore    CheckpointStore
+	artifactStore      ArtifactStore
+	runDeleter         RunDeleter
+	codec              state.StateCodec
+	eventSink          EventSink
+	graphID            string
+	graphVersion       string
+	graphHash          string
+	graphSnapshotHash  string
+	graphSessionID     string
+	breakpoints        []Breakpoint
+	contractValidation core.ContractValidationMode
+	contractPolicy     ContractPolicy
+	startupWarnings    []WarningRecord
+	nodeContracts      map[string]state.Contract
+	now                func() time.Time
 	activeMu           sync.Mutex
 	activeExecutions   map[string]*graphRunnerExecution
 	executionClaims    map[string]struct{}
@@ -48,22 +48,262 @@ func normalizeRunnerContext(ctx context.Context) context.Context {
 	return ctx
 }
 
-func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec state.StateCodec, eventSink EventSink) *GraphRunner {
+type GraphRunnerOption func(*graphRunnerConfig) error
+
+type graphRunnerConfig struct {
+	artifactStore      ArtifactStore
+	runDeleter         RunDeleter
+	graphID            string
+	graphVersion       string
+	graphHash          string
+	graphSnapshotHash  string
+	graphSessionID     string
+	breakpoints        []Breakpoint
+	contractValidation core.ContractValidationMode
+	contractPolicy     ContractPolicy
+	startupWarnings    []WarningRecord
+	nodeContracts      map[string]state.Contract
+	now                func() time.Time
+}
+
+func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec state.StateCodec, eventSink EventSink, options ...GraphRunnerOption) (*GraphRunner, error) {
+	if graph == nil {
+		return nil, fmt.Errorf("graph is required")
+	}
+	if executionStore == nil {
+		return nil, fmt.Errorf("execution store is required")
+	}
+	if checkpointStore == nil {
+		return nil, fmt.Errorf("checkpoint store is required")
+	}
 	if codec == nil {
-		codec = state.NewJSONStateCodec("")
+		return nil, fmt.Errorf("state codec is required")
 	}
 	if eventSink == nil {
-		eventSink = NoopEventSink{}
+		return nil, fmt.Errorf("event sink is required")
+	}
+	cfg := graphRunnerConfig{
+		contractValidation: core.ContractValidationStrict,
+		artifactStore:      NewNoopArtifactStore(),
+		now:                time.Now,
+	}
+	for _, option := range options {
+		if option == nil {
+			continue
+		}
+		if err := option(&cfg); err != nil {
+			return nil, err
+		}
+	}
+	if cfg.artifactStore == nil {
+		return nil, fmt.Errorf("artifact store is required")
+	}
+	if cfg.now == nil {
+		return nil, fmt.Errorf("now function is required")
 	}
 	return &GraphRunner{
-		graph:           graph,
-		ExecutionStore:  executionStore,
-		CheckpointStore: checkpointStore,
-		ArtifactStore:   NewNoopArtifactStore(),
-		Codec:           codec,
-		EventSink:       eventSink,
-		Now:             time.Now,
+		graph:              graph,
+		executionStore:     executionStore,
+		checkpointStore:    checkpointStore,
+		artifactStore:      cfg.artifactStore,
+		runDeleter:         cfg.runDeleter,
+		codec:              codec,
+		eventSink:          eventSink,
+		graphID:            strings.TrimSpace(cfg.graphID),
+		graphVersion:       strings.TrimSpace(cfg.graphVersion),
+		graphHash:          strings.TrimSpace(cfg.graphHash),
+		graphSnapshotHash:  strings.TrimSpace(cfg.graphSnapshotHash),
+		graphSessionID:     strings.TrimSpace(cfg.graphSessionID),
+		breakpoints:        cloneBreakpoints(cfg.breakpoints),
+		contractValidation: cfg.contractValidation,
+		contractPolicy:     cfg.contractPolicy,
+		startupWarnings:    cloneWarnings(cfg.startupWarnings),
+		nodeContracts:      cloneContracts(cfg.nodeContracts),
+		now:                cfg.now,
+		activeExecutions:   make(map[string]*graphRunnerExecution),
+		executionClaims:    make(map[string]struct{}),
+	}, nil
+}
+
+func WithArtifactStore(store ArtifactStore) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		if store == nil {
+			return fmt.Errorf("artifact store is required")
+		}
+		cfg.artifactStore = store
+		return nil
 	}
+}
+
+func WithRunDeleter(deleter RunDeleter) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error { cfg.runDeleter = deleter; return nil }
+}
+
+func WithGraphMetadata(id, version, graphHash, snapshotHash, sessionID string) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		if value := strings.TrimSpace(id); value != "" {
+			cfg.graphID = value
+		}
+		if value := strings.TrimSpace(version); value != "" {
+			cfg.graphVersion = value
+		}
+		if value := strings.TrimSpace(graphHash); value != "" {
+			cfg.graphHash = value
+		}
+		if value := strings.TrimSpace(snapshotHash); value != "" {
+			cfg.graphSnapshotHash = value
+		}
+		if value := strings.TrimSpace(sessionID); value != "" {
+			cfg.graphSessionID = value
+		}
+		return nil
+	}
+}
+
+func WithBreakpoints(breakpoints ...Breakpoint) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		cfg.breakpoints = append([]Breakpoint(nil), breakpoints...)
+		return nil
+	}
+}
+
+func WithContractValidation(mode core.ContractValidationMode) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error { cfg.contractValidation = mode; return nil }
+}
+
+func WithContractPolicy(policy ContractPolicy) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error { cfg.contractPolicy = policy; return nil }
+}
+
+func WithStartupWarnings(warnings []WarningRecord) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		cfg.startupWarnings = append([]WarningRecord(nil), warnings...)
+		return nil
+	}
+}
+
+func WithNodeContracts(contracts map[string]state.Contract) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error { cfg.nodeContracts = cloneContracts(contracts); return nil }
+}
+
+func WithNow(now func() time.Time) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		if now == nil {
+			return fmt.Errorf("now function is required")
+		}
+		cfg.now = now
+		return nil
+	}
+}
+
+func cloneBreakpoints(items []Breakpoint) []Breakpoint { return append([]Breakpoint(nil), items...) }
+
+func cloneWarnings(items []WarningRecord) []WarningRecord {
+	if len(items) == 0 {
+		return nil
+	}
+	cloned := make([]WarningRecord, len(items))
+	for index, item := range items {
+		cloned[index] = item
+		cloned[index].Sources = append([]string(nil), item.Sources...)
+	}
+	return cloned
+}
+
+func cloneContracts(items map[string]state.Contract) map[string]state.Contract {
+	if len(items) == 0 {
+		return nil
+	}
+	cloned := make(map[string]state.Contract, len(items))
+	for key, item := range items {
+		cloned[key] = item.Clone()
+	}
+	return cloned
+}
+
+func (r *GraphRunner) ExecutionStore() ExecutionStore {
+	if r == nil {
+		return nil
+	}
+	return r.executionStore
+}
+func (r *GraphRunner) CheckpointStore() CheckpointStore {
+	if r == nil {
+		return nil
+	}
+	return r.checkpointStore
+}
+func (r *GraphRunner) ArtifactStore() ArtifactStore {
+	if r == nil {
+		return nil
+	}
+	return r.artifactStore
+}
+func (r *GraphRunner) EventSink() EventSink {
+	if r == nil {
+		return nil
+	}
+	return r.eventSink
+}
+func (r *GraphRunner) GraphID() string {
+	if r == nil {
+		return ""
+	}
+	return r.graphID
+}
+func (r *GraphRunner) GraphVersion() string {
+	if r == nil {
+		return ""
+	}
+	return r.graphVersion
+}
+func (r *GraphRunner) GraphHash() string {
+	if r == nil {
+		return ""
+	}
+	return r.graphHash
+}
+func (r *GraphRunner) GraphSnapshotHash() string {
+	if r == nil {
+		return ""
+	}
+	return r.graphSnapshotHash
+}
+func (r *GraphRunner) GraphSessionID() string {
+	if r == nil {
+		return ""
+	}
+	return r.graphSessionID
+}
+func (r *GraphRunner) Breakpoints() []Breakpoint {
+	if r == nil {
+		return nil
+	}
+	return cloneBreakpoints(r.breakpoints)
+}
+func (r *GraphRunner) ContractValidation() core.ContractValidationMode {
+	if r == nil {
+		return core.ContractValidationOff
+	}
+	return r.contractValidation
+}
+func (r *GraphRunner) ContractPolicy() ContractPolicy {
+	if r == nil {
+		return ContractPolicy{}
+	}
+	return r.contractPolicy
+}
+func (r *GraphRunner) StartupWarnings() []WarningRecord {
+	if r == nil {
+		return nil
+	}
+	return cloneWarnings(r.startupWarnings)
+}
+func (r *GraphRunner) NodeContracts() map[string]state.Contract {
+	if r == nil {
+		return nil
+	}
+	return cloneContracts(r.nodeContracts)
 }
 
 func (r *GraphRunner) Start(ctx context.Context, initialState *state.State) (RunRecord, *state.State, error) {
@@ -124,15 +364,15 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 		initialState = state.NewState()
 	}
 
-	now := r.now()
+	now := r.currentTime()
 	entryPoint := r.entryPointID()
 	run := RunRecord{
 		RunID:             newRunnerID(),
-		GraphID:           r.graphID(),
-		GraphVersion:      r.graphVersion(),
-		GraphHash:         r.graphHash(),
-		GraphSnapshotHash: r.graphSnapshotHash(),
-		GraphSessionID:    r.graphSessionID(),
+		GraphID:           r.resolvedGraphID(),
+		GraphVersion:      r.resolvedGraphVersion(),
+		GraphHash:         r.resolvedGraphHash(),
+		GraphSnapshotHash: r.resolvedGraphSnapshotHash(),
+		GraphSessionID:    r.resolvedGraphSessionID(),
 		Status:            RunStatusPending,
 		EntryNodeID:       entryPoint,
 		StartedAt:         now,
@@ -142,7 +382,7 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 		originCopy := origin
 		run.Origin = &originCopy
 	}
-	if err := r.ExecutionStore.CreateRun(ctx, run); err != nil {
+	if err := r.executionStore.CreateRun(ctx, run); err != nil {
 		return RunRecord{}, initialState, err
 	}
 	payload := map[string]any{
@@ -163,8 +403,8 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 
 	run.Status = RunStatusRunning
 	run.CurrentNodeID = run.EntryNodeID
-	run.UpdatedAt = r.now()
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	run.UpdatedAt = r.currentTime()
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, initialState, r.abortStartedRun(ctx, run, "run_start_persistence_failed", err)
 	}
 	if err := r.publishEvent(ctx, run, "", "", EventRunStarted, nil); err != nil {
@@ -193,7 +433,7 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string, input *state.Sta
 	}
 	defer r.releaseExecutionClaim(runID)
 
-	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	run, err := r.executionStore.GetRun(ctx, runID)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -251,7 +491,7 @@ func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID str
 	}
 	defer r.releaseExecutionClaim(checkpoint.Record.RunID)
 
-	run, err := r.ExecutionStore.GetRun(ctx, checkpoint.Record.RunID)
+	run, err := r.executionStore.GetRun(ctx, checkpoint.Record.RunID)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -355,7 +595,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	}
 	fields := append(runLogFields(run),
 		zap.Strings("start_nodes", startNodes),
-		zap.Int("breakpoint_count", len(r.Breakpoints)),
+		zap.Int("breakpoint_count", len(r.breakpoints)),
 		zap.Int("interrupt_after_count", len(afterNodes)),
 		zap.Int("artifact_count", len(artifacts)),
 	)
@@ -465,11 +705,11 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		run.LastStepID = checkpoint.Runtime.CurrentStepID
 	}
 	if len(startNodes) == 1 && startNodes[0] == langgraph.END {
-		now := r.now()
+		now := r.currentTime()
 		run.Status = RunStatusCompleted
 		run.UpdatedAt = now
 		run.FinishedAt = &now
-		if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+		if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 			return RunRecord{}, nil, err
 		}
 		logger.Info("resume resolved to completed run", append(runLogFields(run), state.SummaryFields(checkpoint.Business)...)...)
@@ -481,8 +721,8 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 			run.CurrentNodeID = startNodes[0]
 		}
 	}
-	run.UpdatedAt = r.now()
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	run.UpdatedAt = r.currentTime()
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, nil, err
 	}
 	if err := r.publishEvent(ctx, run, "", "", EventRunResumed, map[string]any{
@@ -521,64 +761,64 @@ func (r *GraphRunner) continueRun(ctx context.Context, run RunRecord, checkpoint
 }
 
 func (r *GraphRunner) GetRun(ctx context.Context, runID string) (RunRecord, error) {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return RunRecord{}, errors.New("graph runner execution store is nil")
 	}
-	return r.ExecutionStore.GetRun(normalizeRunnerContext(ctx), runID)
+	return r.executionStore.GetRun(normalizeRunnerContext(ctx), runID)
 }
 
 func (r *GraphRunner) ListRuns(ctx context.Context, filter RunFilter) ([]RunRecord, error) {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return nil, errors.New("graph runner execution store is nil")
 	}
-	return r.ExecutionStore.ListRuns(normalizeRunnerContext(ctx), filter)
+	return r.executionStore.ListRuns(normalizeRunnerContext(ctx), filter)
 }
 
 func (r *GraphRunner) ListSteps(ctx context.Context, runID string) ([]StepRecord, error) {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return nil, errors.New("graph runner execution store is nil")
 	}
-	return r.ExecutionStore.ListSteps(normalizeRunnerContext(ctx), runID)
+	return r.executionStore.ListSteps(normalizeRunnerContext(ctx), runID)
 }
 
 func (r *GraphRunner) ListCheckpoints(ctx context.Context, runID string) ([]CheckpointRecord, error) {
-	if r == nil || r.CheckpointStore == nil {
+	if r == nil || r.checkpointStore == nil {
 		return nil, errors.New("graph runner checkpoint store is nil")
 	}
-	return r.CheckpointStore.List(normalizeRunnerContext(ctx), runID)
+	return r.checkpointStore.List(normalizeRunnerContext(ctx), runID)
 }
 
 func (r *GraphRunner) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
-	if r == nil || r.ArtifactStore == nil {
+	if r == nil || r.artifactStore == nil {
 		return nil, errors.New("graph runner artifact store is nil")
 	}
-	return r.ArtifactStore.List(normalizeRunnerContext(ctx), runID)
+	return r.artifactStore.List(normalizeRunnerContext(ctx), runID)
 }
 
 func (r *GraphRunner) LoadArtifact(ctx context.Context, ref state.ArtifactRef) (Artifact, error) {
-	if r == nil || r.ArtifactStore == nil {
+	if r == nil || r.artifactStore == nil {
 		return Artifact{}, errors.New("graph runner artifact store is nil")
 	}
-	return r.ArtifactStore.Load(normalizeRunnerContext(ctx), ref)
+	return r.artifactStore.Load(normalizeRunnerContext(ctx), ref)
 }
 
 func (r *GraphRunner) LoadCheckpointState(ctx context.Context, checkpointID string) (RestoredCheckpoint, error) {
 	if r == nil {
 		return RestoredCheckpoint{}, errors.New("graph runner is nil")
 	}
-	if r.CheckpointStore == nil {
+	if r.checkpointStore == nil {
 		return RestoredCheckpoint{}, errors.New("graph runner checkpoint store is nil")
 	}
-	if r.Codec == nil {
+	if r.codec == nil {
 		return RestoredCheckpoint{}, errors.New("graph runner state codec is nil")
 	}
 
-	record, payload, err := r.CheckpointStore.Load(normalizeRunnerContext(ctx), checkpointID)
+	record, payload, err := r.checkpointStore.Load(normalizeRunnerContext(ctx), checkpointID)
 	if err != nil {
 		return RestoredCheckpoint{}, err
 	}
 
-	snapshot, err := r.Codec.Decode(payload)
+	snapshot, err := r.codec.Decode(payload)
 	if err != nil {
 		return RestoredCheckpoint{}, err
 	}
@@ -601,10 +841,10 @@ func (r *GraphRunner) LoadCheckpointState(ctx context.Context, checkpointID stri
 }
 
 func (r *GraphRunner) ListEvents(runID string) ([]Event, error) {
-	if r == nil || r.EventSink == nil {
+	if r == nil || r.eventSink == nil {
 		return nil, errors.New("graph runner event sink is nil")
 	}
-	reader, ok := r.EventSink.(EventReader)
+	reader, ok := r.eventSink.(EventReader)
 	if !ok {
 		return nil, errors.New("graph runner event sink does not support listing events")
 	}
@@ -612,10 +852,10 @@ func (r *GraphRunner) ListEvents(runID string) ([]Event, error) {
 }
 
 func (r *GraphRunner) ListEventPage(runID, cursor string, limit int) (EventPage, error) {
-	if r == nil || r.EventSink == nil {
+	if r == nil || r.eventSink == nil {
 		return EventPage{}, errors.New("graph runner event sink is nil")
 	}
-	if reader, ok := r.EventSink.(EventPageReader); ok {
+	if reader, ok := r.eventSink.(EventPageReader); ok {
 		return reader.ListEventPage(runID, cursor, limit)
 	}
 	events, err := r.ListEvents(runID)
@@ -626,13 +866,13 @@ func (r *GraphRunner) ListEventPage(runID, cursor string, limit int) (EventPage,
 }
 
 func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return errors.New("graph runner execution store is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	run, err := r.executionStore.GetRun(ctx, runID)
 	if err != nil {
 		return err
 	}
@@ -672,13 +912,13 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 }
 
 func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return errors.New("graph runner execution store is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	run, err := r.executionStore.GetRun(ctx, runID)
 	if err != nil {
 		return err
 	}
@@ -688,8 +928,8 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	case RunStatusPaused:
 		run.PauseRequested = false
 		run.CancelRequested = true
-		run.UpdatedAt = r.now()
-		if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+		run.UpdatedAt = r.currentTime()
+		if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 			return err
 		}
 		logger.Info("cancel requested", runLogFields(run)...)
@@ -739,17 +979,17 @@ func (r *GraphRunner) DeleteRun(ctx context.Context, runID string) (RunRecord, e
 	if runID == "" {
 		return RunRecord{}, ErrRunnerRecordNotFound
 	}
-	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	run, err := r.executionStore.GetRun(ctx, runID)
 	if err != nil {
 		return RunRecord{}, err
 	}
 	if isActiveDeleteRunStatus(run.Status) || r.hasExecutionClaim(runID) {
 		return RunRecord{}, fmt.Errorf("%w: run %q status %q must be stopped before deletion", ErrRunControlNotAllowed, runID, run.Status)
 	}
-	if r.RunDeleter == nil {
+	if r.runDeleter == nil {
 		return RunRecord{}, fmt.Errorf("run deletion is not configured")
 	}
-	if err := r.RunDeleter.DeleteRun(ctx, runID); err != nil {
+	if err := r.runDeleter.DeleteRun(ctx, runID); err != nil {
 		return RunRecord{}, err
 	}
 	return run, nil
@@ -807,7 +1047,7 @@ func (r *GraphRunner) claimExecution(runID string) error {
 
 func (r *GraphRunner) persistReservedControlRequest(ctx context.Context, runID string, kind runnerControlKind) (RunRecord, error) {
 	ctx = normalizeRunnerContext(ctx)
-	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	run, err := r.executionStore.GetRun(ctx, runID)
 	if err != nil {
 		return RunRecord{}, err
 	}
@@ -823,8 +1063,8 @@ func (r *GraphRunner) persistReservedControlRequest(ctx context.Context, runID s
 	default:
 		return RunRecord{}, fmt.Errorf("unsupported runner control %q", kind)
 	}
-	run.UpdatedAt = r.now()
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	run.UpdatedAt = r.currentTime()
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, err
 	}
 	return run, nil
@@ -894,11 +1134,11 @@ func (r *GraphRunner) ActiveRunCount() int {
 }
 
 func (r *GraphRunner) MarkRunExecutionLost(ctx context.Context, runID string) (RunRecord, error) {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return RunRecord{}, errors.New("graph runner execution store is nil")
 	}
 	ctx = normalizeRunnerContext(ctx)
-	run, err := r.ExecutionStore.GetRun(ctx, runID)
+	run, err := r.executionStore.GetRun(ctx, runID)
 	if err != nil {
 		return RunRecord{}, err
 	}
@@ -957,7 +1197,7 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 	if hit := r.matchBreakpoint(interrupt.Node, string(CheckpointAfterNode), nil); hit != nil {
 		completed := execution.consumeLastCompleted(interrupt.Node)
 		if completed == nil {
-			return r.failRun(ctx, run, currentState, "interrupt_failed", fmt.Sprintf("after-nodes interrupt missing completed step for %q", interrupt.Node))
+			return r.failRun(ctx, run, currentState, "interrupt_failed", fmt.Sprintf("after-node interrupt missing completed step for %q", interrupt.Node))
 		}
 		return r.pauseRun(ctx, run, currentState, completed.step, completed.afterCheckpointID, hit, "")
 	}
@@ -970,14 +1210,14 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 }
 
 func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState *state.State) (RunRecord, *state.State, error) {
-	now := r.now()
+	now := r.currentTime()
 	run.Status = RunStatusCompleted
 	run.PauseRequested = false
 	run.CancelRequested = false
 	run.CurrentNodeID = ""
 	run.UpdatedAt = now
 	run.FinishedAt = &now
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, finalState, err
 	}
 	logger.Info("run completed", append(runLogFields(run), state.SummaryFields(finalState)...)...)
@@ -988,13 +1228,13 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState
 }
 
 func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, currentState *state.State) (RunRecord, *state.State, error) {
-	now := r.now()
+	now := r.currentTime()
 	run.Status = RunStatusCanceled
 	run.PauseRequested = false
 	run.CancelRequested = false
 	run.UpdatedAt = now
 	run.FinishedAt = &now
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, currentState, err
 	}
 	logger.Info("run canceled", append(runLogFields(run), state.SummaryFields(currentState)...)...)
@@ -1023,9 +1263,9 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 	if err != nil {
 		return "", fmt.Errorf("encode checkpoint state: %w", err)
 	}
-	snapshot.Version = r.Codec.Version()
+	snapshot.Version = r.codec.Version()
 
-	payload, err := r.Codec.Encode(snapshot)
+	payload, err := r.codec.Encode(snapshot)
 	if err != nil {
 		return "", fmt.Errorf("encode checkpoint state: %w", err)
 	}
@@ -1036,11 +1276,11 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 		StepID:       step.StepID,
 		NodeID:       nodeID,
 		Stage:        stage,
-		StateCodec:   r.Codec.Name(),
-		StateVersion: r.Codec.Version(),
-		CreatedAt:    r.now(),
+		StateCodec:   r.codec.Name(),
+		StateVersion: r.codec.Version(),
+		CreatedAt:    r.currentTime(),
 	}
-	if err := r.CheckpointStore.Save(ctx, record, payload); err != nil {
+	if err := r.checkpointStore.Save(ctx, record, payload); err != nil {
 		return "", err
 	}
 	fields := append(checkpointLogFields(record),
@@ -1073,7 +1313,7 @@ func (r *GraphRunner) computeStateDiff(before, after *state.State) ([]state.Stat
 	if err != nil {
 		return nil, err
 	}
-	return r.Codec.Diff(beforeSnapshot, afterSnapshot)
+	return r.codec.Diff(beforeSnapshot, afterSnapshot)
 }
 
 func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord, step StepRecord, changes []state.StateChange) error {
@@ -1092,7 +1332,7 @@ func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord
 }
 
 func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState *state.State, step StepRecord, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
-	now := r.now()
+	now := r.currentTime()
 	originalStep := step
 	run.Status = RunStatusPaused
 	run.PauseRequested = false
@@ -1101,11 +1341,11 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState 
 	run.FinishedAt = nil
 	step.Status = StepStatusPaused
 	step.UpdatedAt = now
-	if err := r.ExecutionStore.UpdateStep(ctx, step); err != nil {
+	if err := r.executionStore.UpdateStep(ctx, step); err != nil {
 		return RunRecord{}, currentState, err
 	}
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
-		rollbackErr := r.ExecutionStore.UpdateStep(context.WithoutCancel(normalizeRunnerContext(ctx)), originalStep)
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
+		rollbackErr := r.executionStore.UpdateStep(context.WithoutCancel(normalizeRunnerContext(ctx)), originalStep)
 		return RunRecord{}, currentState, errors.Join(err, rollbackErr)
 	}
 	fields := append(runLogFields(run), stepLogFields(step)...)
@@ -1129,13 +1369,13 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState 
 }
 
 func (r *GraphRunner) pauseRunAtCheckpoint(ctx context.Context, run RunRecord, currentState *state.State, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
-	now := r.now()
+	now := r.currentTime()
 	run.Status = RunStatusPaused
 	run.PauseRequested = false
 	run.LastCheckpointID = checkpointID
 	run.UpdatedAt = now
 	run.FinishedAt = nil
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, currentState, err
 	}
 	fields := append(runLogFields(run), state.SummaryFields(currentState)...)
@@ -1188,7 +1428,7 @@ func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, currentState *
 }
 
 func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, currentState *state.State, code string, message string) (RunRecord, error) {
-	now := r.now()
+	now := r.currentTime()
 	run.Status = RunStatusFailed
 	run.PauseRequested = false
 	run.CancelRequested = false
@@ -1196,7 +1436,7 @@ func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, curr
 	run.ErrorMessage = message
 	run.UpdatedAt = now
 	run.FinishedAt = &now
-	if err := r.ExecutionStore.UpdateRun(ctx, run); err != nil {
+	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
 		return RunRecord{}, err
 	}
 	logger.Error("run failed", append(runLogFields(run), state.SummaryFields(currentState)...)...)
@@ -1210,10 +1450,10 @@ func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, curr
 }
 
 func (r *GraphRunner) failAsyncExecution(ctx context.Context, run RunRecord, currentState *state.State, code, message string) {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return
 	}
-	latest, err := r.ExecutionStore.GetRun(ctx, run.RunID)
+	latest, err := r.executionStore.GetRun(ctx, run.RunID)
 	if err != nil || !isActiveDeleteRunStatus(latest.Status) {
 		return
 	}
@@ -1221,11 +1461,11 @@ func (r *GraphRunner) failAsyncExecution(ctx context.Context, run RunRecord, cur
 }
 
 func (r *GraphRunner) abortStartedRun(ctx context.Context, run RunRecord, code string, cause error) error {
-	if r == nil || r.ExecutionStore == nil {
+	if r == nil || r.executionStore == nil {
 		return cause
 	}
 	failureCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
-	now := r.now()
+	now := r.currentTime()
 	run.Status = RunStatusFailed
 	run.PauseRequested = false
 	run.CancelRequested = false
@@ -1233,7 +1473,7 @@ func (r *GraphRunner) abortStartedRun(ctx context.Context, run RunRecord, code s
 	run.ErrorMessage = cause.Error()
 	run.UpdatedAt = now
 	run.FinishedAt = &now
-	updateErr := r.ExecutionStore.UpdateRun(failureCtx, run)
+	updateErr := r.executionStore.UpdateRun(failureCtx, run)
 	publishErr := r.publishEvent(failureCtx, run, "", run.CurrentNodeID, EventRunFailed, map[string]any{
 		"error_code":    code,
 		"error_message": cause.Error(),
@@ -1277,7 +1517,7 @@ func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpo
 		skip.Consumed = true
 		return nil
 	}
-	for _, breakpoint := range r.Breakpoints {
+	for _, breakpoint := range r.breakpoints {
 		if !breakpoint.Enabled {
 			continue
 		}
@@ -1288,7 +1528,7 @@ func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpo
 			BreakpointID: breakpoint.ID,
 			NodeID:       breakpoint.NodeID,
 			Stage:        breakpoint.Stage,
-			HitAt:        r.now(),
+			HitAt:        r.currentTime(),
 		}
 	}
 	return nil
@@ -1305,17 +1545,17 @@ func (r *GraphRunner) publishEvent(ctx context.Context, run RunRecord, stepID st
 	}
 	event := Event{
 		ID:             newRunnerID(),
-		GraphID:        firstNonEmpty(run.GraphID, r.graphID()),
-		GraphSessionID: firstNonEmpty(run.GraphSessionID, r.graphSessionID()),
+		GraphID:        firstNonEmpty(run.GraphID, r.resolvedGraphID()),
+		GraphSessionID: firstNonEmpty(run.GraphSessionID, r.resolvedGraphSessionID()),
 		RunID:          run.RunID,
 		StepID:         stepID,
 		NodeID:         nodeID,
 		Type:           eventType,
-		Timestamp:      r.now(),
+		Timestamp:      r.currentTime(),
 		Payload:        raw,
 	}
-	if r.EventSink != nil {
-		if err := r.EventSink.Publish(ctx, event); err != nil {
+	if r.eventSink != nil {
+		if err := r.eventSink.Publish(ctx, event); err != nil {
 			return err
 		}
 	}
@@ -1333,26 +1573,26 @@ func (r *GraphRunner) validate() error {
 	if err := graph.Validate(); err != nil {
 		return err
 	}
-	if r.ExecutionStore == nil {
+	if r.executionStore == nil {
 		return errors.New("graph runner execution store is nil")
 	}
-	if r.CheckpointStore == nil {
+	if r.checkpointStore == nil {
 		return errors.New("graph runner checkpoint store is nil")
 	}
-	if r.Codec == nil {
+	if r.codec == nil {
 		return errors.New("graph runner state codec is nil")
 	}
-	if r.EventSink == nil {
+	if r.eventSink == nil {
 		return errors.New("graph runner event sink is nil")
 	}
 	return nil
 }
 
 func (r *GraphRunner) publishStartupWarnings(ctx context.Context, run RunRecord) error {
-	if r == nil || len(r.StartupWarnings) == 0 {
+	if r == nil || len(r.startupWarnings) == 0 {
 		return nil
 	}
-	for _, warning := range r.StartupWarnings {
+	for _, warning := range r.startupWarnings {
 		if strings.TrimSpace(warning.Message) == "" {
 			continue
 		}
@@ -1381,7 +1621,7 @@ func (r *GraphRunner) publishStartupWarnings(ctx context.Context, run RunRecord)
 }
 
 func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
-	if r == nil || r.ArtifactStore == nil {
+	if r == nil || r.artifactStore == nil {
 		return state.ArtifactRef{}, ErrArtifactRecorderUnavailable
 	}
 
@@ -1396,13 +1636,13 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (st
 		artifact.NodeID = metadata.NodeID
 	}
 	if artifact.CreatedAt.IsZero() {
-		artifact.CreatedAt = r.now()
+		artifact.CreatedAt = r.currentTime()
 	}
 	if artifact.ID == "" {
 		artifact.ID = newRunnerID()
 	}
 
-	ref, err := r.ArtifactStore.Save(ctx, artifact)
+	ref, err := r.artifactStore.Save(ctx, artifact)
 	if err != nil {
 		return state.ArtifactRef{}, err
 	}
@@ -1425,15 +1665,15 @@ func (r *GraphRunner) validateRestoredCheckpoint(checkpoint RestoredCheckpoint) 
 	if codecName == "" {
 		return fmt.Errorf("checkpoint %q state codec is required", record.CheckpointID)
 	}
-	if codecName != r.Codec.Name() {
-		return fmt.Errorf("checkpoint %q uses state codec %q, runner configured for %q", record.CheckpointID, codecName, r.Codec.Name())
+	if codecName != r.codec.Name() {
+		return fmt.Errorf("checkpoint %q uses state codec %q, runner configured for %q", record.CheckpointID, codecName, r.codec.Name())
 	}
 	version := strings.TrimSpace(record.StateVersion)
 	if version == "" {
 		return fmt.Errorf("checkpoint %q state version is required", record.CheckpointID)
 	}
-	if version != r.Codec.Version() {
-		return fmt.Errorf("checkpoint %q uses state version %q, runner configured for %q", record.CheckpointID, version, r.Codec.Version())
+	if version != r.codec.Version() {
+		return fmt.Errorf("checkpoint %q uses state version %q, runner configured for %q", record.CheckpointID, version, r.codec.Version())
 	}
 	if checkpoint.Snapshot.Version == "" {
 		return fmt.Errorf("checkpoint %q snapshot version is required", record.CheckpointID)
@@ -1453,26 +1693,26 @@ func (r *GraphRunner) validateRestoredCheckpoint(checkpoint RestoredCheckpoint) 
 	return nil
 }
 
-func (r *GraphRunner) graphID() string {
-	if text := strings.TrimSpace(r.GraphID); text != "" {
+func (r *GraphRunner) resolvedGraphID() string {
+	if text := strings.TrimSpace(r.graphID); text != "" {
 		return text
 	}
 	return "graph"
 }
 
-func (r *GraphRunner) graphVersion() string {
-	if text := strings.TrimSpace(r.GraphVersion); text != "" {
+func (r *GraphRunner) resolvedGraphVersion() string {
+	if text := strings.TrimSpace(r.graphVersion); text != "" {
 		return text
 	}
 	return DefaultGraphVersion
 }
 
-func (r *GraphRunner) graphHash() string {
-	return strings.TrimSpace(r.GraphHash)
+func (r *GraphRunner) resolvedGraphHash() string {
+	return strings.TrimSpace(r.graphHash)
 }
 
 func (r *GraphRunner) validateRunGraphHash(run RunRecord) error {
-	expected := r.graphHash()
+	expected := r.resolvedGraphHash()
 	if expected == "" {
 		return nil
 	}
@@ -1483,12 +1723,12 @@ func (r *GraphRunner) validateRunGraphHash(run RunRecord) error {
 	return fmt.Errorf("resume run %q: graph hash mismatch: run uses %q, runner uses %q", run.RunID, actual, expected)
 }
 
-func (r *GraphRunner) graphSnapshotHash() string {
-	return strings.TrimSpace(r.GraphSnapshotHash)
+func (r *GraphRunner) resolvedGraphSnapshotHash() string {
+	return strings.TrimSpace(r.graphSnapshotHash)
 }
 
-func (r *GraphRunner) graphSessionID() string {
-	return strings.TrimSpace(r.GraphSessionID)
+func (r *GraphRunner) resolvedGraphSessionID() string {
+	return strings.TrimSpace(r.graphSessionID)
 }
 
 func (r *GraphRunner) nodeName(nodeID string) string {
@@ -1514,16 +1754,16 @@ func (r *GraphRunner) runnerGraph() RunnerGraph {
 	return r.graph
 }
 
-func (r *GraphRunner) contractPolicy() ContractPolicy {
+func (r *GraphRunner) effectiveContractPolicy() ContractPolicy {
 	if r == nil {
 		return ContractPolicyForMode(core.ContractValidationOff)
 	}
-	return r.ContractPolicy.Effective(r.ContractValidation)
+	return r.contractPolicy.Effective(r.contractValidation)
 }
 
-func (r *GraphRunner) now() time.Time {
-	if r != nil && r.Now != nil {
-		return r.Now()
+func (r *GraphRunner) currentTime() time.Time {
+	if r != nil && r.now != nil {
+		return r.now()
 	}
 	return time.Now()
 }

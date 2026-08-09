@@ -47,16 +47,14 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		t.Fatalf("BuildGraph(): %v", err)
 	}
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		workflow,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
 		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
-	runner.Breakpoints = []fruntime.Breakpoint{{
-		ID: "after-input", NodeID: "input", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
-	}}
+		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
+			ID: "after-input", NodeID: "input", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
+		}))
 	model := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("final answer")}}
 	ctx := core.WithModels(context.Background(), map[string]llms.Model{"writer": model})
 	run, _, err := runner.Start(ctx, state.FromShared(map[string]any{

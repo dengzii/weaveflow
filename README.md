@@ -122,7 +122,7 @@ The example:
 ```go
 model, err := openai.New()
 if err != nil {
-return err
+	return err
 }
 g := weaveflow.NewGraph()
 
@@ -150,7 +150,7 @@ _ = g.AddNode(tool)
 
 _ = g.AddEdge(input.ID(), message.ID())
 _ = g.AddEdge(message.ID(), llm.ID())
-_ = g.AddConditionalEdge(llm.ID(), tool.ID(), weaveflow.ConversationHasToolCalls(conversationPath))
+_ = g.AddConditionalEdge(llm.ID(), tool.ID(), builtin.ConversationHasToolCalls(conversationPath))
 _ = g.AddEdge(tool.ID(), llm.ID())
 _ = g.AddEdge(llm.ID(), weaveflow.EndNodeRef)
 
@@ -158,7 +158,7 @@ _ = g.SetEntryPoint(input.ID())
 
 runner, err := weaveflow.NewRunner(g)
 if err != nil {
-return err
+	return err
 }
 ctx := core.WithModel(context.Background(), model)
 ctx = core.WithTools(ctx, map[string]core.Tool{"calculator": tools.NewCalculator()})
@@ -166,8 +166,10 @@ initialState := state.FromShared(map[string]any{
     "request": map[string]any{"input": "What is 125 * 48?"},
 })
 _, finalState, err := runner.Start(ctx, initialState)
-
 ```
+
+The root package provides high-level graph and runner assembly. Definitions, registry metadata, runtime records, state,
+context helpers, built-in conditions, nodes, and tools remain owned by their respective domain packages.
 
 ## Graph Definition v2 State Bindings
 
@@ -258,18 +260,18 @@ same contracts, and each bound edge condition evaluates against its own projecte
 Load a graph definition from disk:
 
 ```go
-graph, err := weaveflow.LoadGraphFromFile("graph.json")
+workflow, err := weaveflow.LoadGraphFromFile("graph.json")
 ```
 
 Use explicit build settings when the DSL references custom node types,
 conditions, graph resolvers, or instance-bound config:
 
 ```go
-registry := weaveflow.NewDefaultRegistry()
-graph, err := weaveflow.LoadGraphFromFile(
-"graph.json",
-weaveflow.WithRegistry(registry),
-weaveflow.WithBuildContext(&weaveflow.BuildContext{}),
+reg := weaveflow.NewDefaultRegistry()
+workflow, err := weaveflow.LoadGraphFromFile(
+	"graph.json",
+	weaveflow.WithRegistry(reg),
+	weaveflow.WithBuildContext(&registry.BuildContext{}),
 )
 ```
 
@@ -277,10 +279,10 @@ For persisted local runs, construct the runner in one call:
 
 ```go
 runner, err := weaveflow.NewLocalRunner(
-graph,
-".local/instance",
-weaveflow.WithGraphID("agent"),
-weaveflow.WithGraphVersion("v1"),
+	workflow,
+	".local/instance",
+	weaveflow.WithGraphID("agent"),
+	weaveflow.WithGraphVersion("v1"),
 )
 ```
 

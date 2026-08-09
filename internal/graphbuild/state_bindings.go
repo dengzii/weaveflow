@@ -45,7 +45,7 @@ func ResolveGraphBindings(def dsl.GraphDefinition, reg *registry.Registry) (Reso
 		InitialStatePaths:          sortedFieldPaths(resolver.fields),
 	}
 	for _, spec := range def.Nodes {
-		definition, ok := reg.NodeTypes[spec.Type]
+		definition, ok := reg.FindNodeType(spec.Type)
 		if !ok {
 			return ResolvedGraphBindings{}, fmt.Errorf("node type %q is not registered", spec.Type)
 		}
@@ -61,7 +61,7 @@ func ResolveGraphBindings(def dsl.GraphDefinition, reg *registry.Registry) (Reso
 		if edge.Condition == nil {
 			continue
 		}
-		definition, ok := reg.Conditions[edge.Condition.Type]
+		definition, ok := reg.FindCondition(edge.Condition.Type)
 		if !ok {
 			return ResolvedGraphBindings{}, fmt.Errorf("condition %q is not registered", edge.Condition.Type)
 		}
@@ -141,7 +141,7 @@ func newBindingResolver(def dsl.GraphDefinition, reg *registry.Registry) (*bindi
 	}
 	for _, ref := range def.StateModules {
 		key := registry.StateModuleKey(ref.Name, ref.Version)
-		module, ok := reg.StateModules[key]
+		module, ok := reg.FindStateModule(ref.Name, ref.Version)
 		if !ok {
 			return nil, fmt.Errorf("state module %q version %q is not registered", ref.Name, ref.Version)
 		}
@@ -250,7 +250,7 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 		} else {
 			capability, ok := r.capabilities[resolved.Capability]
 			if !ok {
-				if _, registered := r.registry.Capabilities[resolved.Capability]; registered {
+				if _, registered := r.registry.FindCapability(resolved.Capability); registered {
 					return nil, state.Contract{}, fmt.Errorf("%s state port %q capability %q belongs to an unreferenced state module", component, port.Name, resolved.Capability)
 				}
 				return nil, state.Contract{}, fmt.Errorf("%s state port %q capability %q is not registered", component, port.Name, resolved.Capability)

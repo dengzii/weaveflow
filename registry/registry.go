@@ -1,3 +1,4 @@
+// Package registry stores validated node, condition, capability, and state module definitions.
 package registry
 
 import (
@@ -7,23 +8,22 @@ import (
 )
 
 type Registry struct {
-	StateModules map[string]dsl.StateModuleDefinition     `json:"state_modules"`
-	Capabilities map[string]dsl.StateCapabilityDefinition `json:"capabilities"`
-	NodeTypes    map[string]NodeTypeDefinition            `json:"node_types"`
-	NodeGroups   map[string]NodeGroup                     `json:"node_groups"`
-	Conditions   map[string]ConditionDefinition           `json:"conditions"`
-
+	stateModules      map[string]dsl.StateModuleDefinition
+	capabilities      map[string]dsl.StateCapabilityDefinition
+	nodeTypes         map[string]NodeTypeDefinition
+	nodeGroups        map[string]NodeGroup
+	conditions        map[string]ConditionDefinition
 	stateFields       map[string]dsl.StateFieldDefinition
 	capabilityModules map[string]string
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		StateModules:      map[string]dsl.StateModuleDefinition{},
-		Capabilities:      map[string]dsl.StateCapabilityDefinition{},
-		NodeTypes:         map[string]NodeTypeDefinition{},
-		NodeGroups:        map[string]NodeGroup{},
-		Conditions:        map[string]ConditionDefinition{},
+		stateModules:      map[string]dsl.StateModuleDefinition{},
+		capabilities:      map[string]dsl.StateCapabilityDefinition{},
+		nodeTypes:         map[string]NodeTypeDefinition{},
+		nodeGroups:        map[string]NodeGroup{},
+		conditions:        map[string]ConditionDefinition{},
 		stateFields:       map[string]dsl.StateFieldDefinition{},
 		capabilityModules: map[string]string{},
 	}
@@ -34,11 +34,11 @@ func StateModuleKey(name, version string) string {
 }
 
 func (r *Registry) StateModuleDefinitions() map[string]dsl.StateModuleDefinition {
-	if r == nil || len(r.StateModules) == 0 {
+	if r == nil || len(r.stateModules) == 0 {
 		return map[string]dsl.StateModuleDefinition{}
 	}
-	out := make(map[string]dsl.StateModuleDefinition, len(r.StateModules))
-	for key, def := range r.StateModules {
+	out := make(map[string]dsl.StateModuleDefinition, len(r.stateModules))
+	for key, def := range r.stateModules {
 		out[key] = cloneStateModuleDefinition(def)
 	}
 	return out
@@ -56,11 +56,11 @@ func (r *Registry) StateFieldDefinitions() map[string]dsl.StateFieldDefinition {
 }
 
 func (r *Registry) CapabilityDefinitions() map[string]dsl.StateCapabilityDefinition {
-	if r == nil || len(r.Capabilities) == 0 {
+	if r == nil || len(r.capabilities) == 0 {
 		return map[string]dsl.StateCapabilityDefinition{}
 	}
-	out := make(map[string]dsl.StateCapabilityDefinition, len(r.Capabilities))
-	for key, def := range r.Capabilities {
+	out := make(map[string]dsl.StateCapabilityDefinition, len(r.capabilities))
+	for key, def := range r.capabilities {
 		out[key] = cloneCapabilityDefinition(def)
 	}
 	return out
@@ -75,48 +75,88 @@ func (r *Registry) CapabilityModule(id string) (string, bool) {
 }
 
 func (r *Registry) NodeTypeDefinitions() map[string]NodeTypeDefinition {
-	if r == nil || len(r.NodeTypes) == 0 {
+	if r == nil || len(r.nodeTypes) == 0 {
 		return map[string]NodeTypeDefinition{}
 	}
-	out := make(map[string]NodeTypeDefinition, len(r.NodeTypes))
-	for key, def := range r.NodeTypes {
+	out := make(map[string]NodeTypeDefinition, len(r.nodeTypes))
+	for key, def := range r.nodeTypes {
 		out[key] = cloneNodeTypeDefinition(def)
 	}
 	return out
 }
 
 func (r *Registry) NodeGroupDefinitions() map[string]NodeGroup {
-	if r == nil || len(r.NodeGroups) == 0 {
+	if r == nil || len(r.nodeGroups) == 0 {
 		return map[string]NodeGroup{}
 	}
-	out := make(map[string]NodeGroup, len(r.NodeGroups))
-	for key, group := range r.NodeGroups {
+	out := make(map[string]NodeGroup, len(r.nodeGroups))
+	for key, group := range r.nodeGroups {
 		out[key] = cloneNodeGroup(group)
 	}
 	return out
 }
 
 func (r *Registry) ConditionDefinitions() map[string]ConditionDefinition {
-	if r == nil || len(r.Conditions) == 0 {
+	if r == nil || len(r.conditions) == 0 {
 		return map[string]ConditionDefinition{}
 	}
-	out := make(map[string]ConditionDefinition, len(r.Conditions))
-	for key, def := range r.Conditions {
+	out := make(map[string]ConditionDefinition, len(r.conditions))
+	for key, def := range r.conditions {
 		out[key] = cloneConditionDefinition(def)
 	}
 	return out
 }
 
 func (r *Registry) JSONSchema() dsl.JSONSchema {
-	nodeTypes := make(map[string]dsl.NodeTypeSchema, len(r.NodeTypes))
-	for key, def := range r.NodeTypes {
+	nodeTypes := make(map[string]dsl.NodeTypeSchema, len(r.nodeTypes))
+	for key, def := range r.nodeTypes {
 		nodeTypes[key] = def.NodeTypeSchema
 	}
-	conditions := make(map[string]dsl.ConditionSchema, len(r.Conditions))
-	for key, def := range r.Conditions {
+	conditions := make(map[string]dsl.ConditionSchema, len(r.conditions))
+	for key, def := range r.conditions {
 		conditions[key] = def.ConditionSchema
 	}
-	return dsl.BuildGraphDefinitionSchema(r.StateModules, nodeTypes, conditions)
+	return dsl.BuildGraphDefinitionSchema(r.stateModules, nodeTypes, conditions)
+}
+
+func (r *Registry) FindStateModule(name, version string) (dsl.StateModuleDefinition, bool) {
+	if r == nil {
+		return dsl.StateModuleDefinition{}, false
+	}
+	definition, ok := r.stateModules[StateModuleKey(name, version)]
+	return cloneStateModuleDefinition(definition), ok
+}
+
+func (r *Registry) FindCapability(id string) (dsl.StateCapabilityDefinition, bool) {
+	if r == nil {
+		return dsl.StateCapabilityDefinition{}, false
+	}
+	definition, ok := r.capabilities[strings.TrimSpace(id)]
+	return cloneCapabilityDefinition(definition), ok
+}
+
+func (r *Registry) FindNodeType(nodeType string) (NodeTypeDefinition, bool) {
+	if r == nil {
+		return NodeTypeDefinition{}, false
+	}
+	definition, ok := r.nodeTypes[strings.TrimSpace(nodeType)]
+	return cloneNodeTypeDefinition(definition), ok
+}
+
+func (r *Registry) FindNodeGroup(name string) (NodeGroup, bool) {
+	if r == nil {
+		return NodeGroup{}, false
+	}
+	group, ok := r.nodeGroups[strings.TrimSpace(name)]
+	return cloneNodeGroup(group), ok
+}
+
+func (r *Registry) FindCondition(conditionType string) (ConditionDefinition, bool) {
+	if r == nil {
+		return ConditionDefinition{}, false
+	}
+	definition, ok := r.conditions[strings.TrimSpace(conditionType)]
+	return cloneConditionDefinition(definition), ok
 }
 
 func cloneStateModuleDefinition(def dsl.StateModuleDefinition) dsl.StateModuleDefinition {

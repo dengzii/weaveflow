@@ -1,6 +1,7 @@
 package dsl
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -42,5 +43,28 @@ func TestRuntimeDefinitionsRejectUnknownFields(t *testing.T) {
 	}
 	if _, err := DeserializeRunRequest([]byte(`{"version":"1.0","instance_id":"local","legacy":true}`)); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("DeserializeRunRequest() error = %v", err)
+	}
+}
+
+func TestRunRequestBreakpointJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+	payload := []byte(`{"version":"1.0","instance_id":"local","debug":{"breakpoints":[{"id":"approval","node_id":"review","stage":"after_node","enabled":false}]}}`)
+	request, err := DeserializeRunRequest(payload)
+	if err != nil {
+		t.Fatalf("DeserializeRunRequest() error = %v", err)
+	}
+	if request.Debug == nil || len(request.Debug.Breakpoints) != 1 {
+		t.Fatalf("debug breakpoints = %#v", request.Debug)
+	}
+	breakpoint := request.Debug.Breakpoints[0]
+	if breakpoint.ID != "approval" || breakpoint.NodeID != "review" || breakpoint.Stage != DebugBreakpointAfterNode || breakpoint.Enabled == nil || *breakpoint.Enabled {
+		t.Fatalf("breakpoint = %#v", breakpoint)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("json.Marshal() error = %v", err)
+	}
+	if !strings.Contains(string(encoded), `"breakpoints":[{"id":"approval","node_id":"review","stage":"after_node","enabled":false}]`) {
+		t.Fatalf("encoded request = %s", encoded)
 	}
 }

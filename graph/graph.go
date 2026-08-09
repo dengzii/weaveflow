@@ -1,13 +1,10 @@
+// Package graph builds, validates, compiles, and executes graph topology.
 package graph
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -54,7 +51,6 @@ type Graph struct {
 	stateBindingSemantics []dsl.StateBindingSemantic
 	initialStatePaths     []string
 	contractDiagnostics   []core.ContractDiagnostic
-	nodeContractErrors    map[string]error
 	defaultEdges          map[string][]string
 	conditionalEdges      map[string][]conditionalEdge
 	edgeSpecs             []dsl.GraphEdgeSpec
@@ -69,13 +65,14 @@ type Graph struct {
 	contractDiagnosticsMu sync.RWMutex
 }
 
-func NewGraph() *Graph {
+func NewGraph(reg *registry.Registry) *Graph {
 	protocolModule := builtin.ProtocolsStateModuleDefinition()
 	initialStatePaths := make([]string, 0, len(protocolModule.Fields))
 	for _, field := range protocolModule.Fields {
 		initialStatePaths = append(initialStatePaths, field.Path)
 	}
 	return &Graph{
+		registry:          reg,
 		nodes:             map[string]core.Node{},
 		nodeSpecs:         map[string]dsl.GraphNodeSpec{},
 		defaultEdges:      map[string][]string{},
@@ -85,124 +82,23 @@ func NewGraph() *Graph {
 	}
 }
 
-func (g *Graph) setDefinitionMetadata(def dsl.GraphDefinition) {
-	if g == nil {
-		return
-	}
-	g.version = strings.TrimSpace(def.Version)
-	g.name = strings.TrimSpace(def.Name)
-	g.description = strings.TrimSpace(def.Description)
-	g.stateModules = append([]dsl.StateModuleRef(nil), def.StateModules...)
-	if len(def.Metadata) > 0 {
-		g.metadata = config.CloneMap(def.Metadata)
-	} else {
-		g.metadata = nil
-	}
-}
-
-func (g *Graph) setStateBindingSemantics(bindings []dsl.StateBindingSemantic) {
-	if g == nil || len(bindings) == 0 {
-		if g != nil {
-			g.stateBindingSemantics = nil
-		}
-		return
-	}
-	g.stateBindingSemantics = append([]dsl.StateBindingSemantic(nil), bindings...)
-}
-
-func (g *Graph) SemanticHash() (string, error) {
-	if g == nil {
-		return "", fmt.Errorf("graph is nil")
-	}
-	def, err := g.Definition()
-	if err != nil {
-		return "", err
-	}
-	bindings := g.stateBindingSemantics
-	if len(bindings) == 0 {
-		if resolved, resolveErr := graphbuild.ResolveGraphBindings(def, builtin.NewDefaultRegistry()); resolveErr == nil {
-			bindings = graphbuild.StateBindingSemantics(resolved)
-		}
-	}
-	return dsl.SemanticGraphHashWithStateBindings(def, bindings)
-}
-
-func (g *Graph) SnapshotHash() (string, error) {
-	if g == nil {
-		return "", fmt.Errorf("graph is nil")
-	}
-	def, err := g.Definition()
-	if err != nil {
-		return "", err
-	}
-	return dsl.SnapshotGraphHash(def)
-}
-
-func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return dsl.GraphDefinition{}, err
-	}
-	def, err := dsl.DeserializeGraphDefinition(data)
-	if err != nil {
-		return dsl.GraphDefinition{}, fmt.Errorf("load graph definition from %q: %w", path, err)
-	}
-	return def, nil
-}
-
-func (g *Graph) WriteToFile(path string) error {
-	def, err := g.Definition()
-	if err != nil {
-		return err
-	}
-	bytes, err := def.Serialize()
-	if err != nil {
-		return err
-	}
-	temp, err := os.CreateTemp(filepath.Dir(path), ".graph-*")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer func() { _ = os.Remove(tempPath) }()
-	if _, err := temp.Write(bytes); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tempPath, path)
-}
-
-func (g *Graph) DrawMermaid() (string, error) {
-	graph := langgraph.NewStateGraph[*state.State]()
-	err := g.buildStateGraph(graph, func(nodeID string, node core.Node) {})
-	if err != nil {
-		return "", err
-	}
-	exporter := langgraph.NewExporter(graph)
-	return exporter.DrawMermaid(), nil
-
-}
-
 func (g *Graph) AddNode(targetNode core.Node) error {
 	if targetNode == nil {
-		return fmt.Errorf("nodes is nil")
+		return fmt.Errorf("node is nil")
 	}
 
 	id := strings.TrimSpace(targetNode.ID())
 	if id == "" {
 		setter, ok := targetNode.(interface{ SetID(string) })
 		if !ok {
-			return fmt.Errorf("nodes id is empty and node does not support automatic id assignment")
+			return fmt.Errorf("node id is empty and node does not support automatic id assignment")
 		}
 		id = g.allocateNodeID(targetNode)
 		setter.SetID(id)
 		node.ApplyDefaultStatePaths(targetNode)
 	}
 	if _, exists := g.nodes[id]; exists {
-		return fmt.Errorf("nodes id %q already exists", id)
+		return fmt.Errorf("node id %q already exists", id)
 	}
 
 	g.nodes[id] = targetNode
@@ -220,7 +116,6 @@ func (g *Graph) AddNode(targetNode core.Node) error {
 		}
 		g.nodeSpecs[id] = spec
 	} else {
-		// this is a nodes that doesn't provide a spec, should we add a default spec? or throw an error?
 		name := strings.TrimSpace(targetNode.Name())
 		if name == "" {
 			name = id
@@ -248,28 +143,27 @@ func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
 	}
 	spec := g.nodeSpecs[nodeID]
 	reg := g.registry
-	if reg == nil {
-		reg = builtin.NewDefaultRegistry()
-	}
-	if _, registered := reg.NodeTypes[spec.Type]; registered {
-		def := dsl.GraphDefinition{
-			Version:      dsl.GraphDefinitionVersion,
-			StateModules: append([]dsl.StateModuleRef(nil), g.stateModules...),
-			Nodes:        []dsl.GraphNodeSpec{spec},
+	if reg != nil {
+		if _, registered := reg.FindNodeType(spec.Type); registered {
+			def := dsl.GraphDefinition{
+				Version:      dsl.GraphDefinitionVersion,
+				StateModules: append([]dsl.StateModuleRef(nil), g.stateModules...),
+				Nodes:        []dsl.GraphNodeSpec{spec},
+			}
+			resolved, err := graphbuild.ResolveGraphBindings(def, reg)
+			if err != nil {
+				return err
+			}
+			contract, ok := resolved.NodeContracts[nodeID]
+			if !ok {
+				return fmt.Errorf("node %q has no resolved state contract", nodeID)
+			}
+			if g.nodeContracts == nil {
+				g.nodeContracts = map[string]state.Contract{}
+			}
+			g.nodeContracts[nodeID] = contract.Clone()
+			return nil
 		}
-		resolved, err := graphbuild.ResolveGraphBindings(def, reg)
-		if err != nil {
-			return err
-		}
-		contract, ok := resolved.NodeContracts[nodeID]
-		if !ok {
-			return fmt.Errorf("node %q has no resolved state contract", nodeID)
-		}
-		if g.nodeContracts == nil {
-			g.nodeContracts = map[string]state.Contract{}
-		}
-		g.nodeContracts[nodeID] = contract.Clone()
-		return nil
 	}
 
 	contract, err := core.ContractFor(targetNode)
@@ -314,13 +208,17 @@ func graphDefaultNodeID(targetNode core.Node) string {
 	return "node"
 }
 
-func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) {
+func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) error {
 	if g == nil {
-		return
+		return fmt.Errorf("graph is nil")
 	}
 	id := strings.TrimSpace(spec.ID)
 	if id == "" {
-		return
+		return fmt.Errorf("node spec id is required")
+	}
+	targetNode, ok := g.nodes[id]
+	if !ok {
+		return fmt.Errorf("node %q not found", id)
 	}
 	if len(spec.Config) > 0 {
 		spec.Config = config.CloneMap(spec.Config)
@@ -328,18 +226,24 @@ func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) {
 	if g.nodeSpecs == nil {
 		g.nodeSpecs = map[string]dsl.GraphNodeSpec{}
 	}
+	previousSpec, hadPreviousSpec := g.nodeSpecs[id]
+	previousContract, hadPreviousContract := g.nodeContracts[id]
 	g.nodeSpecs[id] = spec
-	if targetNode, ok := g.nodes[id]; ok {
-		delete(g.nodeContracts, id)
-		if err := g.attachNodeContract(id, targetNode); err != nil {
-			if g.nodeContractErrors == nil {
-				g.nodeContractErrors = map[string]error{}
-			}
-			g.nodeContractErrors[id] = err
-			return
+	delete(g.nodeContracts, id)
+	if err := g.attachNodeContract(id, targetNode); err != nil {
+		if hadPreviousSpec {
+			g.nodeSpecs[id] = previousSpec
+		} else {
+			delete(g.nodeSpecs, id)
 		}
-		delete(g.nodeContractErrors, id)
+		if hadPreviousContract {
+			g.nodeContracts[id] = previousContract
+		} else {
+			delete(g.nodeContracts, id)
+		}
+		return fmt.Errorf("node %q contract resolution failed: %w", id, err)
 	}
+	return nil
 }
 
 func (g *Graph) SetEntryPoint(ref string) error {
@@ -455,9 +359,9 @@ func (g *Graph) resolveDefaultConditionContract(spec dsl.GraphConditionSpec) (st
 	}
 	reg := g.registry
 	if reg == nil {
-		reg = builtin.NewDefaultRegistry()
+		return state.Contract{}, false, nil
 	}
-	if _, ok := reg.Conditions[spec.Type]; !ok {
+	if _, ok := reg.FindCondition(spec.Type); !ok {
 		return state.Contract{}, false, nil
 	}
 	def := dsl.GraphDefinition{
@@ -503,680 +407,6 @@ func (g *Graph) SetRetryPolicy(policy *langgraph.RetryPolicy) {
 	copyPolicy := *policy
 	copyPolicy.RetryableErrors = append([]string(nil), policy.RetryableErrors...)
 	g.retryPolicy = &copyPolicy
-}
-
-func (g *Graph) Validate() error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
-	}
-	if g.retryPolicy != nil {
-		if g.retryPolicy.MaxRetries < 0 {
-			return fmt.Errorf("retry policy max retries must be non-negative")
-		}
-		if g.retryPolicy.MaxRetries > maxConfiguredRetries {
-			return fmt.Errorf("retry policy max retries must be <= %d", maxConfiguredRetries)
-		}
-	}
-	if len(g.nodeContractErrors) > 0 {
-		keys := make([]string, 0, len(g.nodeContractErrors))
-		for nodeID := range g.nodeContractErrors {
-			keys = append(keys, nodeID)
-		}
-		sort.Strings(keys)
-		return fmt.Errorf("node %q contract resolution failed: %w", keys[0], g.nodeContractErrors[keys[0]])
-	}
-	if len(g.nodes) == 0 {
-		return fmt.Errorf("graph has no nodes")
-	}
-	if g.entryPoint == "" {
-		return fmt.Errorf("entry point is not set")
-	}
-	if _, ok := g.nodes[g.entryPoint]; !ok {
-		return fmt.Errorf("entry point %q not found", g.entryPoint)
-	}
-	if g.finishPoint != "" {
-		if _, ok := g.nodes[g.finishPoint]; !ok {
-			return fmt.Errorf("finish point %q not found", g.finishPoint)
-		}
-	}
-
-	for from, targets := range g.defaultEdges {
-		if _, ok := g.nodes[from]; !ok {
-			return fmt.Errorf("edge source %q not found", from)
-		}
-		seenTargets := map[string]struct{}{}
-		for _, to := range targets {
-			if _, exists := seenTargets[to]; exists {
-				return fmt.Errorf("default edge %q -> %q is duplicated", from, g.serializeNodeRef(to))
-			}
-			seenTargets[to] = struct{}{}
-			if to != langgraph.END {
-				if _, ok := g.nodes[to]; !ok {
-					return fmt.Errorf("edge target %q not found", to)
-				}
-			}
-		}
-	}
-
-	for from := range g.conditionalEdges {
-		if len(g.defaultEdges[from]) > 1 {
-			return fmt.Errorf("nodes %q cannot combine conditional edges with multiple default fallback edges", from)
-		}
-		if len(g.defaultEdges[from]) == 0 && from != g.finishPoint {
-			return fmt.Errorf("nodes %q has conditional edges but no default fallback edge", from)
-		}
-	}
-
-	for from, edges := range g.conditionalEdges {
-		if _, ok := g.nodes[from]; !ok {
-			return fmt.Errorf("conditional edge source %q not found", from)
-		}
-		for _, edge := range edges {
-			if err := edge.condition.Validate(); err != nil {
-				return fmt.Errorf("conditional edge from %q to %q: %w", from, edge.to, err)
-			}
-			if edge.to != langgraph.END {
-				if _, ok := g.nodes[edge.to]; !ok {
-					return fmt.Errorf("conditional edge target %q not found", edge.to)
-				}
-			}
-		}
-	}
-	if err := g.validateTopology(); err != nil {
-		return err
-	}
-
-	var diagnostics []core.ContractDiagnostic
-	if len(g.nodeContracts) > 0 || len(g.conditionContracts) > 0 {
-		diagnostics = graphbuild.AnalyzeContractDiagnostics(g.contractAnalysisGraph())
-		if err := graphbuild.ContractDiagnosticsError(diagnostics); err != nil {
-			g.contractDiagnosticsMu.Lock()
-			g.contractDiagnostics = diagnostics
-			g.contractDiagnosticsMu.Unlock()
-			return err
-		}
-	}
-	g.contractDiagnosticsMu.Lock()
-	g.contractDiagnostics = diagnostics
-	g.contractDiagnosticsMu.Unlock()
-
-	return nil
-}
-
-func (g *Graph) validateTopology() error {
-	reachable := g.reachableNodes()
-	for _, nodeID := range g.sortedNodeIDs() {
-		if _, ok := reachable[nodeID]; !ok {
-			return fmt.Errorf("nodes %q is unreachable from entry point %q", nodeID, g.entryPoint)
-		}
-	}
-
-	if g.finishPoint != "" {
-		if len(g.defaultEdges[g.finishPoint]) > 0 || len(g.conditionalEdges[g.finishPoint]) > 0 {
-			return fmt.Errorf("finish point %q cannot have outgoing edges", g.finishPoint)
-		}
-	}
-
-	for _, nodeID := range g.sortedNodeIDs() {
-		if _, ok := reachable[nodeID]; !ok {
-			continue
-		}
-		defaultTargets := g.defaultEdges[nodeID]
-		conditionalTargets := g.conditionalEdges[nodeID]
-		if nodeID == g.finishPoint {
-			continue
-		}
-		if len(defaultTargets) == 0 && len(conditionalTargets) == 0 {
-			return fmt.Errorf("nodes %q has no outgoing edge", nodeID)
-		}
-	}
-	terminalReachable := g.terminalReachableNodes()
-	for _, nodeID := range g.sortedNodeIDs() {
-		if _, ok := reachable[nodeID]; !ok {
-			continue
-		}
-		if _, ok := terminalReachable[nodeID]; !ok {
-			return fmt.Errorf("nodes %q cannot reach graph end", nodeID)
-		}
-	}
-	return nil
-}
-
-func (g *Graph) sortedNodeIDs() []string {
-	if g == nil || len(g.nodes) == 0 {
-		return nil
-	}
-	ids := make([]string, 0, len(g.nodes))
-	for nodeID := range g.nodes {
-		ids = append(ids, nodeID)
-	}
-	sort.Strings(ids)
-	return ids
-}
-
-func (g *Graph) reachableNodes() map[string]struct{} {
-	reachable := map[string]struct{}{}
-	if g == nil || g.entryPoint == "" {
-		return reachable
-	}
-
-	queue := []string{g.entryPoint}
-	for len(queue) > 0 {
-		nodeID := queue[0]
-		queue = queue[1:]
-		if _, seen := reachable[nodeID]; seen {
-			continue
-		}
-		reachable[nodeID] = struct{}{}
-
-		targets := append([]string(nil), g.defaultEdges[nodeID]...)
-		for _, edge := range g.conditionalEdges[nodeID] {
-			targets = append(targets, edge.to)
-		}
-		for _, target := range targets {
-			if target == langgraph.END {
-				continue
-			}
-			if _, exists := g.nodes[target]; !exists {
-				continue
-			}
-			if _, seen := reachable[target]; !seen {
-				queue = append(queue, target)
-			}
-		}
-	}
-	return reachable
-}
-
-func (g *Graph) terminalReachableNodes() map[string]struct{} {
-	reachable := map[string]struct{}{}
-	if g == nil {
-		return reachable
-	}
-
-	reverseEdges := map[string][]string{}
-	queue := []string{}
-	addTerminal := func(nodeID string) {
-		if nodeID == "" || nodeID == langgraph.END {
-			return
-		}
-		if _, exists := g.nodes[nodeID]; !exists {
-			return
-		}
-		if _, seen := reachable[nodeID]; seen {
-			return
-		}
-		reachable[nodeID] = struct{}{}
-		queue = append(queue, nodeID)
-	}
-
-	addTerminal(g.finishPoint)
-	for from, targets := range g.defaultEdges {
-		for _, target := range targets {
-			if target == langgraph.END {
-				addTerminal(from)
-				continue
-			}
-			reverseEdges[target] = append(reverseEdges[target], from)
-		}
-	}
-	for from, edges := range g.conditionalEdges {
-		for _, edge := range edges {
-			if edge.to == langgraph.END {
-				addTerminal(from)
-				continue
-			}
-			reverseEdges[edge.to] = append(reverseEdges[edge.to], from)
-		}
-	}
-
-	for len(queue) > 0 {
-		nodeID := queue[0]
-		queue = queue[1:]
-		for _, predecessor := range reverseEdges[nodeID] {
-			if _, seen := reachable[predecessor]; seen {
-				continue
-			}
-			reachable[predecessor] = struct{}{}
-			queue = append(queue, predecessor)
-		}
-	}
-	return reachable
-}
-
-func (g *Graph) Compile() (*Runnable, error) {
-	compiled := langgraph.NewListenableStateGraph[*state.State]()
-	patches, err := g.compileStateGraph(graphCompileTemplate{
-		stateGraph: compiled.StateGraph,
-		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
-			nodeDef := node
-			compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, state *state.State) (*state.State, error) {
-				return g.executePatchNode(ctx, nodeID, nodeDef, state, patches)
-			})
-		},
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	runnable, err := compiled.CompileListenable()
-	if err != nil {
-		return nil, err
-	}
-
-	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
-		targetNode := compiled.GetListenableNode(nodeID)
-		if targetNode == nil {
-			return currentState, fmt.Errorf("node %q is not compiled", nodeID)
-		}
-		return targetNode.Execute(ctx, currentState)
-	})
-	return &Runnable{runnable: runnable, scheduled: scheduled}, nil
-}
-
-func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (_ *state.State, resultErr error) {
-	defer func() {
-		if resultErr != nil {
-			recordFailedBranchPatch(patches, currentState, nodeID, resultErr)
-		}
-	}()
-	if targetNode == nil {
-		return currentState, fmt.Errorf("node %q is nil", nodeID)
-	}
-	resolvedContract, err := core.ContractFor(targetNode)
-	if err != nil {
-		return currentState, err
-	}
-	hasResolvedContract := false
-	if g != nil && len(g.nodeContracts) > 0 {
-		if nodeContract, ok := g.nodeContracts[nodeID]; ok {
-			resolvedContract = nodeContract.Clone()
-			hasResolvedContract = true
-		}
-	}
-	contract := &resolvedContract
-	var readIssues []state.ValidationIssue
-	var writeIssues []state.ValidationIssue
-	result, err := core.ExecuteNodeWithOptions(ctx, currentState, targetNode, core.NodeExecutionOptions{
-		Contract:               contract,
-		EnforceInputProjection: hasResolvedContract,
-		ValidateRequiredReads:  hasResolvedContract,
-		ValidateWrites:         hasResolvedContract || len(contract.Fields) > 0 || contract.WildcardWrite,
-		ApplyPatchToInput:      hasResolvedContract,
-		OnRequiredReadIssues: func(issues []state.ValidationIssue) {
-			readIssues = append([]state.ValidationIssue(nil), issues...)
-		},
-		OnWriteIssues: func(issues []state.ValidationIssue) {
-			writeIssues = append([]state.ValidationIssue(nil), issues...)
-		},
-	})
-	if err != nil {
-		if len(readIssues) > 0 || len(writeIssues) > 0 {
-			return currentState, fmt.Errorf("node %q state contract violation: %w", nodeID, err)
-		}
-		return currentState, err
-	}
-
-	if patches != nil {
-		patches.record(currentState, nodeID, result.Patch)
-	}
-	return result.State, nil
-}
-
-func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[*state.State], error) {
-	patches, err := g.runnerPatchCollector(execution)
-	if err != nil {
-		return nil, err
-	}
-
-	compiled := langgraph.NewStateGraph[*state.State]()
-	if _, err := g.compileStateGraph(graphCompileTemplate{
-		stateGraph: compiled,
-		patches:    patches,
-		addNode: func(nodeID string, node core.Node, patches *compilePatchCollector) {
-			nodeDef := node
-			compiled.AddNode(nodeID, node.Description(), func(ctx context.Context, currentState *state.State) (*state.State, error) {
-				next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, currentState)
-				if err != nil {
-					recordFailedBranchPatch(patches, currentState, nodeID, err)
-				} else if !patches.hasPatch(currentState, nodeID) {
-					patches.record(currentState, nodeID, stateDiffPatch(currentState, next))
-				}
-				return next, err
-			})
-		},
-	}); err != nil {
-		return nil, err
-	}
-
-	return compiled.Compile()
-}
-
-func (g *Graph) compileRunnableForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
-	patches, err := g.runnerPatchCollector(execution)
-	if err != nil {
-		return nil, err
-	}
-
-	return newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
-		nodeDef := g.nodes[nodeID]
-		next, err := execution.ExecuteNode(ctx, nodeID, nodeDef, currentState)
-		if err != nil {
-			recordFailedBranchPatch(patches, currentState, nodeID, err)
-		} else if !patches.hasPatch(currentState, nodeID) {
-			patches.record(currentState, nodeID, stateDiffPatch(currentState, next))
-		}
-		return next, err
-	}), nil
-}
-
-func (g *Graph) runnerPatchCollector(execution fruntime.RunnerExecution) (*compilePatchCollector, error) {
-	if err := g.Validate(); err != nil {
-		return nil, err
-	}
-	if execution == nil {
-		return nil, fmt.Errorf("runner execution is nil")
-	}
-
-	patches := newCompilePatchCollector(g.compileBranchOrders())
-	if setter, ok := execution.(fruntime.BranchPatchRecorderSetter); ok {
-		setter.SetBranchPatchRecorder(patches)
-	}
-	if recorder, ok := execution.(fruntime.ParallelWaveRecorder); ok {
-		patches.setWaveRecorder(recorder)
-	}
-	return patches, nil
-}
-
-type graphCompileTemplate struct {
-	stateGraph *langgraph.StateGraph[*state.State]
-	patches    *compilePatchCollector
-	addNode    func(nodeID string, node core.Node, patches *compilePatchCollector)
-}
-
-func (g *Graph) compileStateGraph(template graphCompileTemplate) (*compilePatchCollector, error) {
-	if template.stateGraph == nil {
-		return nil, fmt.Errorf("compiled graph is nil")
-	}
-	if template.addNode == nil {
-		return nil, fmt.Errorf("add nodes callback is nil")
-	}
-	patches := template.patches
-	if patches == nil {
-		patches = newCompilePatchCollector(g.compileBranchOrders())
-	}
-	if err := g.buildStateGraph(template.stateGraph, func(nodeID string, node core.Node) {
-		template.addNode(nodeID, node, patches)
-	}); err != nil {
-		return nil, err
-	}
-	g.configureStateMerger(template.stateGraph, patches)
-	return patches, nil
-}
-
-func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node core.Node)) error {
-	if err := g.Validate(); err != nil {
-		return err
-	}
-	return g.configureStateGraph(compiled, addNode)
-}
-
-func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node core.Node)) error {
-	if compiled == nil {
-		return fmt.Errorf("compiled graph is nil")
-	}
-	if addNode == nil {
-		return fmt.Errorf("add nodes callback is nil")
-	}
-	if g.retryPolicy != nil {
-		compiled.SetRetryPolicy(g.retryPolicy)
-	}
-
-	for nodeID, n := range g.nodes {
-		addNode(nodeID, n)
-	}
-
-	for from, conditional := range g.conditionalEdges {
-		compiled.AddConditionalEdge(from, g.conditionalEdgeResolver(from, conditional))
-	}
-
-	for from, targets := range g.defaultEdges {
-		if _, hasConditional := g.conditionalEdges[from]; hasConditional {
-			continue
-		}
-		for _, to := range targets {
-			compiled.AddEdge(from, to)
-		}
-	}
-
-	if g.finishPoint != "" {
-		if _, hasConditional := g.conditionalEdges[g.finishPoint]; !hasConditional {
-			if len(g.defaultEdges[g.finishPoint]) == 0 {
-				compiled.AddEdge(g.finishPoint, langgraph.END)
-			}
-		}
-	}
-
-	compiled.SetEntryPoint(g.entryPoint)
-	return nil
-}
-
-func (g *Graph) configureStateMerger(compiled *langgraph.StateGraph[*state.State], patches *compilePatchCollector) {
-	if compiled == nil {
-		return
-	}
-	compiled.SetStateMerger(func(ctx context.Context, current *state.State, newStates []*state.State) (*state.State, error) {
-		return g.mergeCompiledStates(ctx, current, newStates, patches)
-	})
-}
-
-func (g *Graph) mergeCompiledStates(ctx context.Context, current *state.State, newStates []*state.State, patches *compilePatchCollector) (*state.State, error) {
-	if len(newStates) == 0 {
-		if current == nil {
-			return state.NewState(), nil
-		}
-		return current, nil
-	}
-	if len(newStates) == 1 {
-		if patches != nil {
-			_ = patches.consume(current)
-		}
-		if newStates[0] == nil {
-			return current, nil
-		}
-		return newStates[0], nil
-	}
-	if patches == nil {
-		return nil, fmt.Errorf("parallel state merge requires branch patches")
-	}
-	branches := patches.consume(current)
-	if len(branches) != len(newStates) {
-		return nil, fmt.Errorf("parallel state merge requires branch patches: collected %d for %d branch states", len(branches), len(newStates))
-	}
-	if err := patches.notifyParallelWave(ctx, current, branches); err != nil {
-		return nil, err
-	}
-	return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{
-		Contracts: g.nodeContracts,
-	})
-}
-
-func (g *Graph) compileBranchOrders() map[string]int {
-	if g == nil {
-		return nil
-	}
-	orders := map[string]int{}
-	nextOrder := 0
-	for _, edge := range g.edgeSpecs {
-		if edge.Condition != nil {
-			continue
-		}
-		target := strings.TrimSpace(edge.To)
-		if target == EndNodeRef {
-			target = langgraph.END
-		}
-		if _, exists := orders[target]; exists {
-			continue
-		}
-		orders[target] = nextOrder
-		nextOrder++
-	}
-	return orders
-}
-
-func (g *Graph) isParallelBranchTarget(nodeID string) bool {
-	if g == nil || strings.TrimSpace(nodeID) == "" {
-		return false
-	}
-	for from, targets := range g.defaultEdges {
-		if len(targets) <= 1 {
-			continue
-		}
-		if len(g.conditionalEdges[from]) > 0 {
-			continue
-		}
-		for _, target := range targets {
-			if target == nodeID {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func stateDiffPatch(before, after *state.State) state.Patch {
-	beforeFlat := flattenStateForPatch(before)
-	afterFlat := flattenStateForPatch(after)
-	paths := make([]string, 0, len(beforeFlat)+len(afterFlat))
-	seen := map[string]struct{}{}
-	for path := range beforeFlat {
-		seen[path] = struct{}{}
-		paths = append(paths, path)
-	}
-	for path := range afterFlat {
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-
-	ops := make([]state.PatchOp, 0, len(paths))
-	for _, path := range paths {
-		beforeValue, beforeOK := beforeFlat[path]
-		afterValue, afterOK := afterFlat[path]
-		if beforeOK && afterOK && jsonValuesEqual(beforeValue, afterValue) {
-			continue
-		}
-		parsed, err := state.ParsePath(path)
-		if err != nil {
-			continue
-		}
-		if !afterOK {
-			ops = append(ops, state.PatchOp{Kind: state.OpDelete, Path: parsed})
-			continue
-		}
-		ops = append(ops, state.PatchOp{Kind: state.OpSet, Path: parsed, Value: afterValue})
-	}
-	return state.NewPatch(ops...)
-}
-
-func flattenStateForPatch(current *state.State) map[string]any {
-	out := map[string]any{}
-	if current == nil {
-		return out
-	}
-	for section, value := range current.Export() {
-		flattenStateValueForPatch(out, section, value)
-	}
-	return out
-}
-
-func flattenStateValueForPatch(out map[string]any, path string, value any) {
-	mapped, ok := value.(map[string]any)
-	if !ok || len(mapped) == 0 {
-		out[path] = value
-		return
-	}
-	for key, item := range mapped {
-		flattenStateValueForPatch(out, path+"."+key, item)
-	}
-}
-
-func jsonValuesEqual(left, right any) bool {
-	leftBytes, leftErr := json.Marshal(left)
-	rightBytes, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && string(leftBytes) == string(rightBytes)
-}
-
-func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEdge) func(ctx context.Context, state *state.State) string {
-	return func(ctx context.Context, state *state.State) string {
-		next, err := g.resolveNextNodes(ctx, from, state)
-		if err == nil && len(next) == 1 {
-			return next[0]
-		}
-		return ""
-	}
-}
-
-func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, currentState *state.State) ([]string, error) {
-	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
-	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	currentNodeID = strings.TrimSpace(currentNodeID)
-	if currentNodeID == "" {
-		return nil, fmt.Errorf("nodes id is empty")
-	}
-	if currentNodeID != langgraph.END {
-		if _, ok := g.nodes[currentNodeID]; !ok {
-			return nil, fmt.Errorf("nodes id %q not found", currentNodeID)
-		}
-	}
-
-	if conditional := g.conditionalEdges[currentNodeID]; len(conditional) > 0 {
-		for _, edge := range conditional {
-			conditionState := currentState
-			if edge.resolved {
-				if issues := state.ValidateRequiredReads(currentState, edge.contract); len(issues) > 0 {
-					return nil, fmt.Errorf("condition %q on edge %q -> %q state contract violation: %s", edge.condition.Spec.Type, currentNodeID, g.serializeNodeRef(edge.to), issues[0].Message)
-				}
-				conditionState = state.ProjectStateByContract(currentState, edge.contract)
-			}
-			if edge.condition.Match(ctx, conditionState) {
-				return []string{edge.to}, nil
-			}
-		}
-		if targets := g.defaultEdges[currentNodeID]; len(targets) > 0 {
-			return []string{targets[0]}, nil
-		}
-		if currentNodeID == g.finishPoint {
-			return []string{langgraph.END}, nil
-		}
-		return nil, fmt.Errorf("nodes %q produced no matching conditional edge", currentNodeID)
-	}
-
-	if targets := g.defaultEdges[currentNodeID]; len(targets) > 0 {
-		return append([]string(nil), targets...), nil
-	}
-	if currentNodeID == g.finishPoint {
-		return []string{langgraph.END}, nil
-	}
-	return nil, fmt.Errorf("nodes %q has no outgoing edge", currentNodeID)
-}
-
-func (g *Graph) Run(ctx context.Context, initialState *state.State) (*state.State, error) {
-	if g == nil {
-		return initialState, fmt.Errorf("graph is nil")
-	}
-	runnable, err := g.Compile()
-	if err != nil {
-		return initialState, err
-	}
-	return runnable.Invoke(ctx, initialState)
 }
 
 func (g *Graph) setInitialStatePaths(paths []string) {
@@ -1231,12 +461,12 @@ func (g *Graph) NodeSpecs() map[string]dsl.GraphNodeSpec {
 func (g *Graph) resolveNodeID(ref string) (string, error) {
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
-		return "", fmt.Errorf("nodes id is empty")
+		return "", fmt.Errorf("node id is empty")
 	}
 	if _, ok := g.nodes[ref]; ok {
 		return ref, nil
 	}
-	return "", fmt.Errorf("nodes id %q not found", ref)
+	return "", fmt.Errorf("node id %q not found", ref)
 }
 
 func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
@@ -1248,109 +478,6 @@ func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
 		return langgraph.END, nil
 	}
 	return g.resolveNodeID(ref)
-}
-
-func (g *Graph) Definition() (dsl.GraphDefinition, error) {
-	if err := g.Validate(); err != nil {
-		return dsl.GraphDefinition{}, err
-	}
-
-	nodeIDs := make([]string, 0, len(g.nodes))
-	for nodeID := range g.nodes {
-		nodeIDs = append(nodeIDs, nodeID)
-	}
-	sort.Slice(nodeIDs, func(i, j int) bool {
-		left := g.nodeSpecs[nodeIDs[i]]
-		right := g.nodeSpecs[nodeIDs[j]]
-		if left.ID == right.ID {
-			return left.Name < right.Name
-		}
-		return left.ID < right.ID
-	})
-
-	nodeList := make([]dsl.GraphNodeSpec, 0, len(nodeIDs))
-	for _, nodeID := range nodeIDs {
-		spec := g.nodeSpecs[nodeID]
-		if spec.Type == "" {
-			return dsl.GraphDefinition{}, fmt.Errorf("nodes %q is not serializable: missing registered type", nodeID)
-		}
-		if len(spec.Config) > 0 {
-			spec.Config = config.CloneMap(spec.Config)
-		}
-		if len(spec.State) > 0 {
-			clonedState := make(map[string]dsl.StateBinding, len(spec.State))
-			for key, binding := range spec.State {
-				clonedState[key] = binding
-			}
-			spec.State = clonedState
-		}
-		nodeList = append(nodeList, spec)
-	}
-
-	edges := make([]dsl.GraphEdgeSpec, len(g.edgeSpecs))
-	for i, edge := range g.edgeSpecs {
-		edges[i] = edge
-		if edge.Condition != nil && len(edge.Condition.Config) > 0 {
-			copyCondition := *edge.Condition
-			copyCondition.Config = config.CloneMap(edge.Condition.Config)
-			edges[i].Condition = &copyCondition
-		}
-		if edge.Condition != nil && len(edge.Condition.State) > 0 {
-			copyCondition := *edges[i].Condition
-			copyCondition.State = make(map[string]dsl.StateBinding, len(edge.Condition.State))
-			for key, binding := range edge.Condition.State {
-				copyCondition.State[key] = binding
-			}
-			edges[i].Condition = &copyCondition
-		}
-	}
-
-	version := g.version
-	if version == "" {
-		version = dsl.GraphDefinitionVersion
-	}
-	stateModules := append([]dsl.StateModuleRef(nil), g.stateModules...)
-	var metadata map[string]any
-	if len(g.metadata) > 0 {
-		metadata = config.CloneMap(g.metadata)
-	}
-
-	return dsl.GraphDefinition{
-		Version:      version,
-		Name:         g.name,
-		Description:  g.description,
-		StateModules: stateModules,
-		EntryPoint:   g.serializeNodeRef(g.entryPoint),
-		FinishPoint:  g.serializeNodeRef(g.finishPoint),
-		Nodes:        nodeList,
-		Edges:        edges,
-		Metadata:     metadata,
-	}, nil
-}
-
-func (g *Graph) serializeNodeRef(nodeID string) string {
-	if nodeID == "" {
-		return ""
-	}
-	if nodeID == langgraph.END {
-		return EndNodeRef
-	}
-	return nodeID
-}
-
-func (g *Graph) nodeDisplayName(nodeID string) string {
-	if nodeID == "" {
-		return ""
-	}
-	if spec, ok := g.nodeSpecs[nodeID]; ok {
-		if name := strings.TrimSpace(spec.Name); name != "" {
-			return name
-		}
-		if id := strings.TrimSpace(spec.ID); id != "" {
-			return id
-		}
-	}
-	return nodeID
 }
 
 type Runnable struct {

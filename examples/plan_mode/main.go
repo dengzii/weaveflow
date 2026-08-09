@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow"
+	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
+	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/llms/openai"
 	"github.com/dengzii/weaveflow/node"
 	plannode "github.com/dengzii/weaveflow/node/plan"
@@ -45,7 +47,7 @@ func main() {
 	printPlanResult(finalState)
 }
 
-func newPlanGraph() (*weaveflow.Graph, error) {
+func newPlanGraph() (*wfgraph.Graph, error) {
 	graph := weaveflow.NewGraph()
 
 	generator := plannode.NewPlanGeneratorNode(node.WithID("generate_plan"))
@@ -94,7 +96,7 @@ func newPlanGraph() (*weaveflow.Graph, error) {
 	if err := graph.AddEdge(step.ID(), synthesis.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(execute.ID(), executeTools.ID(), weaveflow.ConversationHasToolCalls(planConversationPath)); err != nil {
+	if err := graph.AddConditionalEdge(execute.ID(), executeTools.ID(), builtin.ConversationHasToolCalls(planConversationPath)); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(execute.ID(), review.ID()); err != nil {

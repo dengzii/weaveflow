@@ -11,7 +11,7 @@ import (
 
 func TestAddNodeAppliesSubpackageDefaultsAfterAutomaticID(t *testing.T) {
 	t.Parallel()
-	target := NewGraph()
+	target := NewGraph(nil)
 	firstPlanStep := plannode.NewPlanStepNode()
 	secondPlanStep := plannode.NewPlanStepNode()
 	worker := supervisornode.NewSupervisorWorkerNode()

@@ -102,8 +102,8 @@ func TestGraphUploadStoresSettingsInTheSameSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID != second.Graph.GraphSessionID {
-		t.Fatalf("trigger runner session = %q, want %q", runner.GraphSessionID, second.Graph.GraphSessionID)
+	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID() != second.Graph.GraphSessionID {
+		t.Fatalf("trigger runner session = %q, want %q", runner.GraphSessionID(), second.Graph.GraphSessionID)
 	}
 }
 
@@ -177,13 +177,13 @@ func TestGraphUploadRetainsActiveHistoricalSession(t *testing.T) {
 		}
 	}()
 	activeGraph := newRunControlTestGraph(t, started, release, true)
-	activeRunner := newDefaultRunner(activeGraph, Config{
+	activeRunner := mustNewDefaultRunner(t, activeGraph, Config{
 		GraphID:           first.Graph.ID,
 		GraphVersion:      first.Graph.Version,
 		GraphHash:         first.Graph.GraphHash,
 		GraphSnapshotHash: first.Graph.GraphSnapshotHash,
 		GraphSessionID:    first.Graph.GraphSessionID,
-	}, first.RunnerBaseDir)
+	}, first.RunnerBaseDir, nil)
 	srv.runtime.removeSession(first.Graph.ID, first.Graph.GraphSessionID)
 	srv.runtime.installSession(graphRuntimeSession{
 		graph:       activeGraph,

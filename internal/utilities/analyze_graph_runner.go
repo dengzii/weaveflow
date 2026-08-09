@@ -272,7 +272,7 @@ func (a *AnalyzeGraphRunner) executionStore() fruntime.ExecutionStore {
 		return a.ExecutionStore
 	}
 	if a.Runner != nil {
-		return a.Runner.ExecutionStore
+		return a.Runner.ExecutionStore()
 	}
 	return nil
 }
@@ -285,7 +285,7 @@ func (a *AnalyzeGraphRunner) checkpointStore() fruntime.CheckpointStore {
 		return a.CheckpointStore
 	}
 	if a.Runner != nil {
-		return a.Runner.CheckpointStore
+		return a.Runner.CheckpointStore()
 	}
 	return nil
 }
@@ -298,7 +298,7 @@ func (a *AnalyzeGraphRunner) artifactStore() fruntime.ArtifactStore {
 		return a.ArtifactStore
 	}
 	if a.Runner != nil {
-		return a.Runner.ArtifactStore
+		return a.Runner.ArtifactStore()
 	}
 	return nil
 }
@@ -310,10 +310,10 @@ func (a *AnalyzeGraphRunner) eventReader() fruntime.EventReader {
 	if a.EventReader != nil {
 		return a.EventReader
 	}
-	if a.Runner == nil || a.Runner.EventSink == nil {
+	if a.Runner == nil || a.Runner.EventSink() == nil {
 		return nil
 	}
-	reader, _ := a.Runner.EventSink.(fruntime.EventReader)
+	reader, _ := a.Runner.EventSink().(fruntime.EventReader)
 	return reader
 }
 

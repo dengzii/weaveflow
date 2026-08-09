@@ -26,7 +26,7 @@ func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
 	llm.ConversationPath = conversationPath
 	llm.OutputPath = state.Shared("final", "answer")
 
-	workflow := NewGraph()
+	workflow := NewGraph(builtin.NewDefaultRegistry())
 	if err := workflow.AddNode(input); err != nil {
 		t.Fatalf("add input: %v", err)
 	}
@@ -53,15 +53,15 @@ func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		workflow,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
 		state.NewJSONStateCodec(""),
 		fruntime.NewFileEventSink(dir),
 	)
-	if runner.ContractValidation != core.ContractValidationStrict {
-		t.Fatalf("contract validation = %q, want strict", runner.ContractValidation)
+	if runner.ContractValidation() != core.ContractValidationStrict {
+		t.Fatalf("contract validation = %q, want strict", runner.ContractValidation())
 	}
 	model := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("done")}}
 	run, result, err := runner.Start(core.WithModels(context.Background(), map[string]llms.Model{"direct": model}), state.FromShared(map[string]any{
@@ -82,32 +82,53 @@ func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
 func TestSetNodeSpecRefreshesBuiltinStateContract(t *testing.T) {
 	t.Parallel()
 
-	workflow := NewGraph()
+	workflow := NewGraph(builtin.NewDefaultRegistry())
 	input := node.NewUserInputNode(node.WithID("input"))
 	if err := workflow.AddNode(input); err != nil {
 		t.Fatalf("add input: %v", err)
 	}
-	workflow.SetNodeSpec(dsl.GraphNodeSpec{
+	if err := workflow.SetNodeSpec(dsl.GraphNodeSpec{
 		ID:   "input",
 		Type: node.NodeTypeUserInput,
 		State: map[string]dsl.StateBinding{
 			"value": {Path: "shared.first"},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("set first node spec: %v", err)
+	}
 	first := workflow.nodeContracts["input"]
-	workflow.SetNodeSpec(dsl.GraphNodeSpec{
+	if err := workflow.SetNodeSpec(dsl.GraphNodeSpec{
 		ID:   "input",
 		Type: node.NodeTypeUserInput,
 		State: map[string]dsl.StateBinding{
 			"value": {Path: "shared.second"},
 		},
-	})
+	}); err != nil {
+		t.Fatalf("set second node spec: %v", err)
+	}
 	second := workflow.nodeContracts["input"]
 	if len(first.Fields) == 0 || len(second.Fields) == 0 || first.Fields[0].Path.String() == second.Fields[0].Path.String() {
 		t.Fatalf("node contract was not refreshed: first=%#v second=%#v", first, second)
 	}
 	if len(second.Fields) == 0 || second.Fields[0].Path.String() != "shared.second" {
 		t.Fatalf("refreshed contract = %#v, want shared.second", second)
+	}
+	previousSpec := workflow.nodeSpecs["input"]
+	if err := workflow.SetNodeSpec(dsl.GraphNodeSpec{
+		ID:   "input",
+		Type: node.NodeTypeUserInput,
+		State: map[string]dsl.StateBinding{
+			"unknown": {Path: "shared.invalid"},
+		},
+	}); err == nil {
+		t.Fatal("expected invalid binding error")
+	}
+	if got := workflow.nodeSpecs["input"]; got.State["value"].Path != previousSpec.State["value"].Path {
+		t.Fatalf("node spec was not rolled back: %#v", got)
+	}
+	rolledBack := workflow.nodeContracts["input"]
+	if len(rolledBack.Fields) == 0 || rolledBack.Fields[0].Path.String() != "shared.second" {
+		t.Fatalf("node contract was not rolled back: %#v", rolledBack)
 	}
 }
 

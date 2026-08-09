@@ -1,9 +1,9 @@
-// Package weaveflow is the public facade for common graph construction,
-// graph loading, runner setup, and runtime inspection APIs.
+// Package weaveflow provides high-level graph construction, loading, and
+// runner assembly. Domain types and lower-level operations remain owned by
+// their respective core, dsl, graph, registry, runtime, and state packages.
 package weaveflow
 
 import (
-	"context"
 	"fmt"
 	"path/filepath"
 	"time"
@@ -12,416 +12,52 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/graph"
-	"github.com/dengzii/weaveflow/memory"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-
-	"github.com/tmc/langchaingo/llms"
-	"go.uber.org/zap"
 )
 
 const EndNodeRef = graph.EndNodeRef
 
-type (
-	BuildContext  = registry.BuildContext
-	Graph         = graph.Graph
-	Runnable      = graph.Runnable
-	Context       = core.Context
-	Tool          = core.Tool
-	ToolHandler   = core.ToolHandler
-	MemoryManager = memory.Manager
-
-	GraphDefinition           = dsl.GraphDefinition
-	GraphInstanceConfig       = dsl.GraphInstanceConfig
-	GraphNodeSpec             = dsl.GraphNodeSpec
-	GraphEdgeSpec             = dsl.GraphEdgeSpec
-	GraphConditionSpec        = dsl.GraphConditionSpec
-	StateFieldDefinition      = dsl.StateFieldDefinition
-	StateModuleDefinition     = dsl.StateModuleDefinition
-	StateModuleRef            = dsl.StateModuleRef
-	StateCapabilityDefinition = dsl.StateCapabilityDefinition
-	StatePortDefinition       = dsl.StatePortDefinition
-	StateBinding              = dsl.StateBinding
-	StateContract             = dsl.StateContract
-	GraphResolver             = registry.GraphResolver
-	Registry                  = registry.Registry
-	NodeGroup                 = registry.NodeGroup
-	NodeTypeDefinition        = registry.NodeTypeDefinition
-	ConditionDefinition       = registry.ConditionDefinition
-	EdgeCondition             = registry.EdgeCondition
-	EdgeConditionMatcher      = registry.EdgeConditionMatcher
-	GraphRunner               = runtime.GraphRunner
-	ExecutionStore            = runtime.ExecutionStore
-	CheckpointStore           = runtime.CheckpointStore
-	EventSink                 = runtime.EventSink
-	EventReader               = runtime.EventReader
-	EventObserver             = runtime.EventObserver
-	EventObserverFunc         = runtime.EventObserverFunc
-	ArtifactStore             = runtime.ArtifactStore
-	FileExecutionStore        = runtime.FileExecutionStore
-	FileCheckpointStore       = runtime.FileCheckpointStore
-	FileEventSink             = runtime.FileEventSink
-	FileArtifactStore         = runtime.FileArtifactStore
-	NoopExecutionStore        = runtime.NoopExecutionStore
-	NoopCheckpointStore       = runtime.NoopCheckpointStore
-	NoopArtifactStore         = runtime.NoopArtifactStore
-	NoopEventSink             = runtime.NoopEventSink
-	RunStatus                 = runtime.RunStatus
-	StepStatus                = runtime.StepStatus
-	CheckpointStage           = runtime.CheckpointStage
-	EventType                 = runtime.EventType
-	RunRecord                 = runtime.RunRecord
-	StepRecord                = runtime.StepRecord
-	CheckpointRecord          = runtime.CheckpointRecord
-	RestoredCheckpoint        = runtime.RestoredCheckpoint
-	Artifact                  = runtime.Artifact
-	Event                     = runtime.Event
-	WarningRecord             = runtime.WarningRecord
-	RunFilter                 = runtime.RunFilter
-	Breakpoint                = runtime.Breakpoint
-	BreakpointHit             = state.BreakpointHit
-	RunnerMetadata            = runtime.RunnerMetadata
-	ContractPolicy            = runtime.ContractPolicy
-	ContractValidationMode    = core.ContractValidationMode
-	ToolCallMetadata          = core.ToolCallMetadata
-	State                     = state.State
-	Path                      = state.Path
-	StateCodec                = state.StateCodec
-	ArtifactRef               = state.ArtifactRef
-	RuntimeState              = state.RuntimeState
-
-	Expression                = builtin.Expression
-	ExpressionConditionConfig = builtin.ExpressionConditionConfig
-)
-
-//goland:noinspection ALL
-const (
-	RunStatusPending   = runtime.RunStatusPending
-	RunStatusRunning   = runtime.RunStatusRunning
-	RunStatusPaused    = runtime.RunStatusPaused
-	RunStatusFailed    = runtime.RunStatusFailed
-	RunStatusCompleted = runtime.RunStatusCompleted
-	RunStatusCanceled  = runtime.RunStatusCanceled
-
-	StepStatusScheduled = runtime.StepStatusScheduled
-	StepStatusRunning   = runtime.StepStatusRunning
-	StepStatusSucceeded = runtime.StepStatusSucceeded
-	StepStatusFailed    = runtime.StepStatusFailed
-	StepStatusPaused    = runtime.StepStatusPaused
-
-	CheckpointBeforeNode        = runtime.CheckpointBeforeNode
-	CheckpointAfterNode         = runtime.CheckpointAfterNode
-	CheckpointAfterParallelWave = runtime.CheckpointAfterParallelWave
-
-	EventRunCreated         = runtime.EventRunCreated
-	EventRunStarted         = runtime.EventRunStarted
-	EventRunPauseRequested  = runtime.EventRunPauseRequested
-	EventRunPaused          = runtime.EventRunPaused
-	EventRunResumed         = runtime.EventRunResumed
-	EventRunCancelRequested = runtime.EventRunCancelRequested
-	EventRunCanceled        = runtime.EventRunCanceled
-	EventRunFinished        = runtime.EventRunFinished
-	EventRunFailed          = runtime.EventRunFailed
-	EventNodeStarted        = runtime.EventNodeStarted
-	EventNodeFinished       = runtime.EventNodeFinished
-	EventNodeFailed         = runtime.EventNodeFailed
-	EventNodeRetry          = runtime.EventNodeRetry
-	EventNodeCustom         = runtime.EventNodeCustom
-	EventLLMReasoningChunk  = runtime.EventLLMReasoningChunk
-	EventLLMContentChunk    = runtime.EventLLMContentChunk
-	EventLLMReasoning       = runtime.EventLLMReasoning
-	EventLLMContent         = runtime.EventLLMContent
-	EventLLMFunctionCall    = runtime.EventLLMFunctionCall
-	EventLLMUsage           = runtime.EventLLMUsage
-	EventLLMCall            = runtime.EventLLMCall
-	EventToolStarted        = runtime.EventToolStarted
-	EventToolCalled         = runtime.EventToolCalled
-	EventToolReturned       = runtime.EventToolReturned
-	EventToolFailed         = runtime.EventToolFailed
-	EventSubgraphStarted    = runtime.EventSubgraphStarted
-	EventSubgraphFinished   = runtime.EventSubgraphFinished
-	EventSubgraphFailed     = runtime.EventSubgraphFailed
-	EventCheckpointCreated  = runtime.EventCheckpointCreated
-	EventArtifactCreated    = runtime.EventArtifactCreated
-	EventBreakpointHit      = runtime.EventBreakpointHit
-	EventStateChanged       = runtime.EventStateChanged
-	EventContractViolation  = runtime.EventContractViolation
-	EventWarning            = runtime.EventWarning
-
-	ContractValidationOff    = core.ContractValidationOff
-	ContractValidationWarn   = core.ContractValidationWarn
-	ContractValidationStrict = core.ContractValidationStrict
-
-	OperationEqual      = builtin.OperationEqual
-	OperationNotEqual   = builtin.OperationNotEqual
-	OperationContains   = builtin.OperationContains
-	OperationNotContain = builtin.OperationNotContain
-
-	ExpressionMatchAll = builtin.ExpressionMatchAll
-	ExpressionMatchAny = builtin.ExpressionMatchAny
-
-	LogicAnd = builtin.LogicAnd
-	LogicOr  = builtin.LogicOr
-	LogicNot = builtin.LogicNot
-)
-
-var ErrRunnerRecordNotFound = runtime.ErrRunnerRecordNotFound
-
-func NewGraph() *Graph { return graph.NewGraph() }
-
-func NewState() *State { return state.NewState() }
-
-func NewContext(ctx context.Context) Context {
-	return core.NewContext(ctx)
+func NewGraph() *graph.Graph {
+	return graph.NewGraph(NewDefaultRegistry())
 }
 
-func NewTool(function *llms.FunctionDefinition, handler ToolHandler) Tool {
-	return core.NewTool(function, handler)
-}
-
-func NewJSONStateCodec(version string) StateCodec {
-	return state.NewJSONStateCodec(version)
-}
-
-func NewDefaultRegistry() *Registry {
+func NewDefaultRegistry() *registry.Registry {
 	return builtin.NewDefaultRegistry()
 }
 
-func NewEdgeCondition(spec GraphConditionSpec, match EdgeConditionMatcher) EdgeCondition {
-	return registry.NewEdgeCondition(spec, match)
-}
-
-func ConversationHasToolCalls(path Path) EdgeCondition {
-	return builtin.ConversationHasToolCalls(path)
-}
-
-func ConversationHasFinalAnswer(path Path) EdgeCondition {
-	return builtin.ConversationHasFinalAnswer(path)
-}
-
-func ExpressionConditions(path Path, config ExpressionConditionConfig) (EdgeCondition, error) {
-	return builtin.ExpressionConditions(path, config)
-}
-
-func ParseExpressionConditionConfig(configMap map[string]any) (ExpressionConditionConfig, error) {
-	return builtin.ParseExpressionConditionConfig(configMap)
-}
-
-func LoadGraphDefinitionFile(path string) (GraphDefinition, error) {
-	return graph.LoadGraphDefinitionFile(path)
-}
-
-func BuildGraph(reg *Registry, def GraphDefinition, options ...LoadGraphOption) (*Graph, error) {
-	cfg := defaultLoadGraphConfig()
-	cfg.registry = reg
-	cfg.definition = def
-	cfg.hasDefinition = true
-	if err := cfg.apply(options); err != nil {
+func BuildGraph(reg *registry.Registry, definition dsl.GraphDefinition, options ...LoadGraphOption) (*graph.Graph, error) {
+	config := defaultLoadGraphConfig()
+	config.registry = reg
+	config.definition = definition
+	config.hasDefinition = true
+	if err := config.apply(options); err != nil {
 		return nil, err
 	}
-	return cfg.build()
+	return config.build()
 }
 
-func BuildGraphInstance(reg *Registry, def GraphDefinition, instance GraphInstanceConfig, ctx *BuildContext) (*Graph, error) {
-	return graph.NewBuilder(reg).BuildInstance(def, instance, ctx)
+func BuildGraphInstance(reg *registry.Registry, definition dsl.GraphDefinition, instance dsl.GraphInstanceConfig, buildContext *registry.BuildContext) (*graph.Graph, error) {
+	if reg == nil {
+		return nil, fmt.Errorf("registry is required")
+	}
+	return graph.NewBuilder(reg).BuildInstance(definition, instance, buildContext)
 }
 
-func LoadGraphFromFile(path string, options ...LoadGraphOption) (*Graph, error) {
-	def, err := LoadGraphDefinitionFile(path)
+func LoadGraphFromFile(path string, options ...LoadGraphOption) (*graph.Graph, error) {
+	definition, err := graph.LoadGraphDefinitionFile(path)
 	if err != nil {
 		return nil, err
 	}
-	cfg := defaultLoadGraphConfig()
-	cfg.definition = def
-	cfg.hasDefinition = true
-	if err := cfg.apply(options); err != nil {
+	config := defaultLoadGraphConfig()
+	config.definition = definition
+	config.hasDefinition = true
+	if err := config.apply(options); err != nil {
 		return nil, err
 	}
-	return cfg.build()
+	return config.build()
 }
-
-func NewGraphRunner(g *Graph, es ExecutionStore, cs CheckpointStore, codec StateCodec, sink EventSink) *GraphRunner {
-	runner := graph.NewGraphRunner(g, es, cs, codec, sink)
-	if runner.ArtifactStore == nil {
-		runner.ArtifactStore = NewNoopArtifactStore()
-	}
-	return runner
-}
-
-func NewRunner(g *Graph, options ...RunnerOption) (*GraphRunner, error) {
-	cfg := defaultRunnerConfig()
-	if err := cfg.apply(options); err != nil {
-		return nil, err
-	}
-	return cfg.build(g)
-}
-
-func NewLocalRunner(g *Graph, baseDir string, options ...RunnerOption) (*GraphRunner, error) {
-	cfg := defaultRunnerConfig()
-	cfg.executionStore = NewFileExecutionStore(baseDir)
-	cfg.checkpointStore = NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
-	cfg.eventSink = NewFileEventSink(filepath.Join(baseDir, "events"))
-	cfg.artifactStore = NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
-	if err := cfg.apply(options); err != nil {
-		return nil, err
-	}
-	return cfg.build(g)
-}
-
-func NewInMemoryRunner(g *Graph, options ...RunnerOption) (*GraphRunner, error) {
-	cfg := defaultRunnerConfig()
-	cfg.executionStore = NewNoopExecutionStore()
-	cfg.checkpointStore = NewNoopCheckpointStore()
-	cfg.eventSink = NewNoopEventSink()
-	cfg.artifactStore = NewNoopArtifactStore()
-	if err := cfg.apply(options); err != nil {
-		return nil, err
-	}
-	return cfg.build(g)
-}
-
-func NewFileExecutionStore(baseDir string) *FileExecutionStore {
-	return runtime.NewFileExecutionStore(baseDir)
-}
-
-func NewFileCheckpointStore(baseDir string) *FileCheckpointStore {
-	return runtime.NewFileCheckpointStore(baseDir)
-}
-
-func NewFileEventSink(baseDir string) *FileEventSink {
-	return runtime.NewFileEventSink(baseDir)
-}
-
-func NewFileArtifactStore(baseDir string) *FileArtifactStore {
-	return runtime.NewFileArtifactStore(baseDir)
-}
-
-func NewNoopExecutionStore() *NoopExecutionStore {
-	return runtime.NewNoopExecutionStore()
-}
-
-func NewNoopCheckpointStore() *NoopCheckpointStore {
-	return runtime.NewNoopCheckpointStore()
-}
-
-func NewNoopArtifactStore() *NoopArtifactStore {
-	return runtime.NewNoopArtifactStore()
-}
-
-func NewNoopEventSink() EventSink {
-	return runtime.NoopEventSink{}
-}
-
-func NewCombineEventSink(sinks ...EventSink) EventSink {
-	return runtime.NewCombineEventSink(sinks...)
-}
-
-func NewLoggerEventSink(logger *zap.Logger) EventSink {
-	return runtime.NewLoggerEventSink(logger)
-}
-
-func ContractPolicyForMode(mode ContractValidationMode) ContractPolicy {
-	return runtime.ContractPolicyForMode(mode)
-}
-
-func IsStreamingEvent(event EventType) bool {
-	return runtime.IsStreamingEvent(event)
-}
-
-func WithRunnerEventPublisher(ctx context.Context, publisher func(EventType, any) error) context.Context {
-	return runtime.WithRunnerEventPublisher(ctx, publisher)
-}
-
-func WithRunnerEventObserver(ctx context.Context, observer EventObserver) context.Context {
-	return runtime.WithRunnerEventObserver(ctx, observer)
-}
-
-func RunnerEventObserverFromContext(ctx context.Context) EventObserver {
-	return runtime.RunnerEventObserverFromContext(ctx)
-}
-
-func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Context {
-	return runtime.WithRunnerMetadata(ctx, metadata)
-}
-
-func WithRunnerArtifactRecorder(ctx context.Context, recorder func(context.Context, Artifact) (ArtifactRef, error)) context.Context {
-	return runtime.WithRunnerArtifactRecorder(ctx, recorder)
-}
-
-func WithModel(ctx context.Context, model llms.Model) context.Context {
-	return core.WithModel(ctx, model)
-}
-
-func WithModels(ctx context.Context, models map[string]llms.Model) context.Context {
-	return core.WithModels(ctx, models)
-}
-
-func ModelFromContext(ctx context.Context) llms.Model {
-	return core.ModelFromContext(ctx)
-}
-
-func ModelByIDFromContext(ctx context.Context, id string) llms.Model {
-	return core.ModelByIDFromContext(ctx, id)
-}
-
-func ModelsFromContext(ctx context.Context) map[string]llms.Model {
-	return core.ModelsFromContext(ctx)
-}
-
-func WithTools(ctx context.Context, available map[string]Tool) context.Context {
-	return core.WithTools(ctx, available)
-}
-
-func ToolsFromContext(ctx context.Context) map[string]Tool {
-	return core.ToolsFromContext(ctx)
-}
-
-func WithMemory(ctx context.Context, manager MemoryManager) context.Context {
-	return core.WithMemory(ctx, manager)
-}
-
-func MemoryFromContext(ctx context.Context) MemoryManager {
-	return core.MemoryFromContext(ctx)
-}
-
-func WithToolCallMetadata(ctx context.Context, metadata ToolCallMetadata) context.Context {
-	return core.WithToolCallMetadata(ctx, metadata)
-}
-
-func ToolCallMetadataFromContext(ctx context.Context) (ToolCallMetadata, bool) {
-	return core.ToolCallMetadataFromContext(ctx)
-}
-
-func DecodeToolInput(arguments string) string {
-	return core.DecodeToolInput(arguments)
-}
-
-func FindTool(available map[string]Tool, name string) (Tool, bool) {
-	return core.FindTool(available, name)
-}
-
-func PublishRunnerContextEvent(ctx context.Context, eventType EventType, payload any) error {
-	return runtime.PublishRunnerContextEvent(ctx, eventType, payload)
-}
-
-func SaveArtifact(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
-	return runtime.SaveArtifact(ctx, artifact)
-}
-
-func SaveJSONArtifact(ctx context.Context, artifactType string, payload any) (ArtifactRef, error) {
-	return runtime.SaveJSONArtifact(ctx, artifactType, payload)
-}
-
-func SaveArtifactBestEffort(ctx context.Context, artifact Artifact) (ArtifactRef, error) {
-	return runtime.SaveArtifactBestEffort(ctx, artifact)
-}
-
-func SaveJSONArtifactBestEffort(ctx context.Context, artifactType string, payload any) (ArtifactRef, error) {
-	return runtime.SaveJSONArtifactBestEffort(ctx, artifactType, payload)
-}
-
-func SetLogger(l *zap.Logger) { runtime.SetLogger(l) }
 
 type LoadGraphOption interface {
 	applyLoadGraphOption(*loadGraphConfig) error
@@ -429,92 +65,126 @@ type LoadGraphOption interface {
 
 type loadGraphOptionFunc func(*loadGraphConfig) error
 
-func (f loadGraphOptionFunc) applyLoadGraphOption(cfg *loadGraphConfig) error {
-	return f(cfg)
+func (option loadGraphOptionFunc) applyLoadGraphOption(config *loadGraphConfig) error {
+	return option(config)
 }
 
-func WithRegistry(reg *Registry) LoadGraphOption {
-	return loadGraphOptionFunc(func(cfg *loadGraphConfig) error {
+func WithRegistry(reg *registry.Registry) LoadGraphOption {
+	return loadGraphOptionFunc(func(config *loadGraphConfig) error {
 		if reg == nil {
-			return fmt.Errorf("registry is nil")
+			return fmt.Errorf("registry is required")
 		}
-		cfg.registry = reg
+		config.registry = reg
 		return nil
 	})
 }
 
-func WithBuildContext(ctx *BuildContext) LoadGraphOption {
-	return loadGraphOptionFunc(func(cfg *loadGraphConfig) error {
-		if ctx == nil {
-			cfg.buildContext = &BuildContext{}
+func WithBuildContext(buildContext *registry.BuildContext) LoadGraphOption {
+	return loadGraphOptionFunc(func(config *loadGraphConfig) error {
+		if buildContext == nil {
+			config.buildContext = &registry.BuildContext{}
 			return nil
 		}
-		cfg.buildContext = ctx.Clone()
+		config.buildContext = buildContext.Clone()
 		return nil
 	})
 }
 
-func WithGraphResolver(resolver GraphResolver) LoadGraphOption {
-	return loadGraphOptionFunc(func(cfg *loadGraphConfig) error {
-		cfg.buildContext.GraphResolver = resolver
+func WithGraphResolver(resolver registry.GraphResolver) LoadGraphOption {
+	return loadGraphOptionFunc(func(config *loadGraphConfig) error {
+		config.ensureBuildContext()
+		config.buildContext.GraphResolver = resolver
 		return nil
 	})
 }
 
-func WithInstanceConfig(config GraphInstanceConfig) LoadGraphOption {
-	return loadGraphOptionFunc(func(cfg *loadGraphConfig) error {
-		cfg.instanceConfig = &config
+func WithInstanceConfig(instance dsl.GraphInstanceConfig) LoadGraphOption {
+	return loadGraphOptionFunc(func(config *loadGraphConfig) error {
+		cloned := instance
+		config.instanceConfig = &cloned
 		return nil
 	})
 }
 
 type loadGraphConfig struct {
-	registry       *Registry
-	buildContext   *BuildContext
-	definition     GraphDefinition
+	registry       *registry.Registry
+	buildContext   *registry.BuildContext
+	definition     dsl.GraphDefinition
 	hasDefinition  bool
-	instanceConfig *GraphInstanceConfig
+	instanceConfig *dsl.GraphInstanceConfig
 }
 
 func defaultLoadGraphConfig() loadGraphConfig {
 	return loadGraphConfig{
 		registry:     NewDefaultRegistry(),
-		buildContext: &BuildContext{},
+		buildContext: &registry.BuildContext{},
 	}
 }
 
-func (cfg *loadGraphConfig) apply(options []LoadGraphOption) error {
-	if cfg.buildContext == nil {
-		cfg.buildContext = &BuildContext{}
-	}
+func (config *loadGraphConfig) apply(options []LoadGraphOption) error {
+	config.ensureBuildContext()
 	for _, option := range options {
 		if option == nil {
 			continue
 		}
-		if err := option.applyLoadGraphOption(cfg); err != nil {
+		if err := option.applyLoadGraphOption(config); err != nil {
 			return err
 		}
-		if cfg.buildContext == nil {
-			cfg.buildContext = &BuildContext{}
-		}
+		config.ensureBuildContext()
 	}
 	return nil
 }
 
-func (cfg *loadGraphConfig) build() (*Graph, error) {
-	if cfg.registry == nil {
-		return nil, fmt.Errorf("registry is nil")
+func (config *loadGraphConfig) ensureBuildContext() {
+	if config.buildContext == nil {
+		config.buildContext = &registry.BuildContext{}
 	}
-	if !cfg.hasDefinition {
+}
+
+func (config *loadGraphConfig) build() (*graph.Graph, error) {
+	if config.registry == nil {
+		return nil, fmt.Errorf("registry is required")
+	}
+	if !config.hasDefinition {
 		return nil, fmt.Errorf("graph definition is required")
 	}
-	if cfg.buildContext == nil {
-		cfg.buildContext = &BuildContext{}
+	config.ensureBuildContext()
+	builder := graph.NewBuilder(config.registry)
+	if config.instanceConfig != nil {
+		return builder.BuildInstance(config.definition, *config.instanceConfig, config.buildContext)
 	}
-	if cfg.instanceConfig != nil {
-		return graph.NewBuilder(cfg.registry).BuildInstance(cfg.definition, *cfg.instanceConfig, cfg.buildContext)
+	return builder.Build(config.definition, config.buildContext)
+}
+
+func NewRunner(target *graph.Graph, options ...RunnerOption) (*runtime.GraphRunner, error) {
+	config := defaultRunnerConfig()
+	if err := config.apply(options); err != nil {
+		return nil, err
 	}
-	return graph.NewBuilder(cfg.registry).Build(cfg.definition, cfg.buildContext)
+	return config.build(target)
+}
+
+func NewLocalRunner(target *graph.Graph, baseDir string, options ...RunnerOption) (*runtime.GraphRunner, error) {
+	if baseDir == "" {
+		return nil, fmt.Errorf("runner base directory is required")
+	}
+	config := defaultRunnerConfig()
+	config.executionStore = runtime.NewFileExecutionStore(baseDir)
+	config.checkpointStore = runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
+	config.eventSink = runtime.NewFileEventSink(filepath.Join(baseDir, "events"))
+	config.artifactStore = runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
+	if err := config.apply(options); err != nil {
+		return nil, err
+	}
+	return config.build(target)
+}
+
+func NewInMemoryRunner(target *graph.Graph, options ...RunnerOption) (*runtime.GraphRunner, error) {
+	config := defaultRunnerConfig()
+	if err := config.apply(options); err != nil {
+		return nil, err
+	}
+	return config.build(target)
 }
 
 type RunnerOption interface {
@@ -523,170 +193,171 @@ type RunnerOption interface {
 
 type runnerOptionFunc func(*runnerConfig) error
 
-func (f runnerOptionFunc) applyRunnerOption(cfg *runnerConfig) error {
-	return f(cfg)
+func (option runnerOptionFunc) applyRunnerOption(config *runnerConfig) error {
+	return option(config)
 }
 
-func WithExecutionStore(store ExecutionStore) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
+func WithExecutionStore(store runtime.ExecutionStore) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
 		if store == nil {
-			return fmt.Errorf("execution store is nil")
+			return fmt.Errorf("execution store is required")
 		}
-		cfg.executionStore = store
+		config.executionStore = store
 		return nil
 	})
 }
 
-func WithCheckpointStore(store CheckpointStore) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
+func WithCheckpointStore(store runtime.CheckpointStore) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
 		if store == nil {
-			return fmt.Errorf("checkpoint store is nil")
+			return fmt.Errorf("checkpoint store is required")
 		}
-		cfg.checkpointStore = store
+		config.checkpointStore = store
 		return nil
 	})
 }
 
-func WithEventSink(sink EventSink) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
+func WithEventSink(sink runtime.EventSink) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
 		if sink == nil {
-			return fmt.Errorf("event sink is nil")
+			return fmt.Errorf("event sink is required")
 		}
-		cfg.eventSink = sink
+		config.eventSink = sink
 		return nil
 	})
 }
 
-func WithArtifactStore(store ArtifactStore) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
+func WithArtifactStore(store runtime.ArtifactStore) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
 		if store == nil {
-			return fmt.Errorf("artifact store is nil")
+			return fmt.Errorf("artifact store is required")
 		}
-		cfg.artifactStore = store
+		config.artifactStore = store
 		return nil
 	})
 }
 
-func WithStateCodec(codec StateCodec) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
+func WithStateCodec(codec state.StateCodec) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
 		if codec == nil {
-			return fmt.Errorf("state codec is nil")
+			return fmt.Errorf("state codec is required")
 		}
-		cfg.codec = codec
+		config.codec = codec
 		return nil
 	})
 }
 
 func WithGraphID(id string) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
-		cfg.graphID = id
+	return runnerOptionFunc(func(config *runnerConfig) error {
+		config.graphID = id
 		return nil
 	})
 }
 
 func WithGraphVersion(version string) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
-		cfg.graphVersion = version
+	return runnerOptionFunc(func(config *runnerConfig) error {
+		config.graphVersion = version
 		return nil
 	})
 }
 
-func WithBreakpoints(breakpoints ...Breakpoint) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
-		cfg.breakpoints = append([]Breakpoint(nil), breakpoints...)
+func WithBreakpoints(breakpoints ...runtime.Breakpoint) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
+		config.breakpoints = append([]runtime.Breakpoint(nil), breakpoints...)
 		return nil
 	})
 }
 
-func WithContractValidation(mode ContractValidationMode) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
-		cfg.contractValidation = mode
+func WithContractValidation(mode core.ContractValidationMode) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
+		config.contractValidation = mode
 		return nil
 	})
 }
 
-func WithContractPolicy(policy ContractPolicy) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
-		cfg.contractPolicy = policy
+func WithContractPolicy(policy runtime.ContractPolicy) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
+		config.contractPolicy = policy
 		return nil
 	})
 }
 
 func WithNow(now func() time.Time) RunnerOption {
-	return runnerOptionFunc(func(cfg *runnerConfig) error {
+	return runnerOptionFunc(func(config *runnerConfig) error {
 		if now == nil {
-			return fmt.Errorf("now function is nil")
+			return fmt.Errorf("now function is required")
 		}
-		cfg.now = now
+		config.now = now
 		return nil
 	})
 }
 
 type runnerConfig struct {
-	executionStore     ExecutionStore
-	checkpointStore    CheckpointStore
-	eventSink          EventSink
-	artifactStore      ArtifactStore
-	codec              StateCodec
+	executionStore     runtime.ExecutionStore
+	checkpointStore    runtime.CheckpointStore
+	eventSink          runtime.EventSink
+	artifactStore      runtime.ArtifactStore
+	codec              state.StateCodec
 	graphID            string
 	graphVersion       string
-	breakpoints        []Breakpoint
-	contractValidation ContractValidationMode
-	contractPolicy     ContractPolicy
+	breakpoints        []runtime.Breakpoint
+	contractValidation core.ContractValidationMode
+	contractPolicy     runtime.ContractPolicy
 	now                func() time.Time
 }
 
 func defaultRunnerConfig() runnerConfig {
+	executionStore := runtime.NewMemoryExecutionStore()
+	checkpointStore := runtime.NewMemoryCheckpointStore()
+	eventSink := runtime.NewMemoryEventSink()
+	artifactStore := runtime.NewMemoryArtifactStore()
 	return runnerConfig{
-		executionStore:     NewNoopExecutionStore(),
-		checkpointStore:    NewNoopCheckpointStore(),
-		eventSink:          NewNoopEventSink(),
-		artifactStore:      NewNoopArtifactStore(),
-		codec:              NewJSONStateCodec(""),
-		contractValidation: ContractValidationStrict,
+		executionStore:     executionStore,
+		checkpointStore:    checkpointStore,
+		eventSink:          eventSink,
+		artifactStore:      artifactStore,
+		codec:              state.NewJSONStateCodec(""),
+		contractValidation: core.ContractValidationStrict,
 	}
 }
 
-func (cfg *runnerConfig) apply(options []RunnerOption) error {
+func (config *runnerConfig) apply(options []RunnerOption) error {
 	for _, option := range options {
 		if option == nil {
 			continue
 		}
-		if err := option.applyRunnerOption(cfg); err != nil {
+		if err := option.applyRunnerOption(config); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (cfg *runnerConfig) build(g *Graph) (*GraphRunner, error) {
-	if g == nil {
-		return nil, fmt.Errorf("graph is nil")
+func (config *runnerConfig) build(target *graph.Graph) (*runtime.GraphRunner, error) {
+	if target == nil {
+		return nil, fmt.Errorf("graph is required")
 	}
-	if cfg.executionStore == nil {
-		return nil, fmt.Errorf("execution store is nil")
+	options := []runtime.GraphRunnerOption{
+		runtime.WithArtifactStore(config.artifactStore),
+		runtime.WithRunDeleter(config.runDeleter()),
+		runtime.WithGraphMetadata(config.graphID, config.graphVersion, "", "", ""),
+		runtime.WithBreakpoints(config.breakpoints...),
+		runtime.WithContractValidation(config.contractValidation),
+		runtime.WithContractPolicy(config.contractPolicy),
 	}
-	if cfg.checkpointStore == nil {
-		return nil, fmt.Errorf("checkpoint store is nil")
+	if config.now != nil {
+		options = append(options, runtime.WithNow(config.now))
 	}
-	if cfg.eventSink == nil {
-		cfg.eventSink = NewNoopEventSink()
+	return graph.NewGraphRunner(target, config.executionStore, config.checkpointStore, config.codec, config.eventSink, options...)
+}
+
+func (config *runnerConfig) runDeleter() runtime.RunDeleter {
+	executionStore, ok := config.executionStore.(runtime.RunDeleter)
+	if !ok {
+		return nil
 	}
-	if cfg.artifactStore == nil {
-		cfg.artifactStore = NewNoopArtifactStore()
-	}
-	if cfg.codec == nil {
-		cfg.codec = NewJSONStateCodec("")
-	}
-	runner := NewGraphRunner(g, cfg.executionStore, cfg.checkpointStore, cfg.codec, cfg.eventSink)
-	runner.ArtifactStore = cfg.artifactStore
-	runner.GraphID = cfg.graphID
-	runner.GraphVersion = cfg.graphVersion
-	runner.Breakpoints = append([]Breakpoint(nil), cfg.breakpoints...)
-	runner.ContractValidation = cfg.contractValidation
-	runner.ContractPolicy = cfg.contractPolicy
-	if cfg.now != nil {
-		runner.Now = cfg.now
-	}
-	return runner, nil
+	checkpointStore, _ := config.checkpointStore.(runtime.RunDeleter)
+	eventSink, _ := config.eventSink.(runtime.RunDeleter)
+	artifactStore, _ := config.artifactStore.(runtime.RunDeleter)
+	return runtime.NewRunDeletionCoordinator(executionStore, checkpointStore, eventSink, artifactStore)
 }

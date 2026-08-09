@@ -287,8 +287,8 @@ func TestGraphStorageSupportsWindowsReservedGraphID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID != uploaded.Graph.GraphSessionID {
-		t.Fatalf("resolved reserved graph session = %q, want %q", runner.GraphSessionID, uploaded.Graph.GraphSessionID)
+	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID() != uploaded.Graph.GraphSessionID {
+		t.Fatalf("resolved reserved graph session = %q, want %q", runner.GraphSessionID(), uploaded.Graph.GraphSessionID)
 	}
 }
 

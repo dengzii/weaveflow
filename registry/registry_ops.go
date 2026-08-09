@@ -19,7 +19,7 @@ func (r *Registry) RegisterStateModule(def dsl.StateModuleDefinition) error {
 		return fmt.Errorf("state module name and version are required")
 	}
 	key := StateModuleKey(def.Name, def.Version)
-	if _, exists := r.StateModules[key]; exists {
+	if _, exists := r.stateModules[key]; exists {
 		return fmt.Errorf("state module %q version %q is already registered", def.Name, def.Version)
 	}
 
@@ -60,7 +60,7 @@ func (r *Registry) RegisterStateModule(def dsl.StateModuleDefinition) error {
 		if _, duplicate := capabilityIDs[capability.ID]; duplicate {
 			return fmt.Errorf("state module %q capability %q is duplicated", key, capability.ID)
 		}
-		if _, exists := r.Capabilities[capability.ID]; exists {
+		if _, exists := r.capabilities[capability.ID]; exists {
 			return fmt.Errorf("state capability %q is already registered", capability.ID)
 		}
 		capabilityIDs[capability.ID] = struct{}{}
@@ -70,12 +70,12 @@ func (r *Registry) RegisterStateModule(def dsl.StateModuleDefinition) error {
 	}
 
 	cloned := cloneStateModuleDefinition(def)
-	r.StateModules[key] = cloned
+	r.stateModules[key] = cloned
 	for _, field := range cloned.Fields {
 		r.stateFields[field.Path] = field
 	}
 	for _, capability := range cloned.Capabilities {
-		r.Capabilities[capability.ID] = cloneCapabilityDefinition(capability)
+		r.capabilities[capability.ID] = cloneCapabilityDefinition(capability)
 		r.capabilityModules[capability.ID] = key
 	}
 	return nil
@@ -168,18 +168,18 @@ func (r *Registry) registerNodeType(group string, def NodeTypeDefinition) error 
 		return fmt.Errorf("node type %q: %w", def.Type, err)
 	}
 	def.NodeTypeSchema.StatePorts = append([]dsl.StatePortDefinition(nil), def.StatePorts...)
-	if _, exists := r.NodeTypes[def.Type]; exists {
+	if _, exists := r.nodeTypes[def.Type]; exists {
 		return fmt.Errorf("node type %q is already registered", def.Type)
 	}
-	r.NodeTypes[def.Type] = cloneNodeTypeDefinition(def)
+	r.nodeTypes[def.Type] = cloneNodeTypeDefinition(def)
 	if group != "" {
-		if r.NodeGroups == nil {
-			r.NodeGroups = map[string]NodeGroup{}
+		if r.nodeGroups == nil {
+			r.nodeGroups = map[string]NodeGroup{}
 		}
-		nodeGroup := r.NodeGroups[group]
+		nodeGroup := r.nodeGroups[group]
 		nodeGroup.Name = group
 		nodeGroup.NodeTypes = append(nodeGroup.NodeTypes, def.Type)
-		r.NodeGroups[group] = nodeGroup
+		r.nodeGroups[group] = nodeGroup
 	}
 	return nil
 }
@@ -207,10 +207,10 @@ func (r *Registry) RegisterCondition(def ConditionDefinition) error {
 		return fmt.Errorf("condition %q: %w", def.Type, err)
 	}
 	def.ConditionSchema.StatePorts = append([]dsl.StatePortDefinition(nil), def.StatePorts...)
-	if _, exists := r.Conditions[def.Type]; exists {
+	if _, exists := r.conditions[def.Type]; exists {
 		return fmt.Errorf("condition %q is already registered", def.Type)
 	}
-	r.Conditions[def.Type] = cloneConditionDefinition(def)
+	r.conditions[def.Type] = cloneConditionDefinition(def)
 	return nil
 }
 
@@ -338,7 +338,7 @@ func (r *Registry) ResolveCondition(spec ResolvedConditionSpec) (EdgeCondition, 
 	if spec.Spec.Type == "" {
 		return EdgeCondition{}, fmt.Errorf("condition type is required")
 	}
-	conditionDef, ok := r.Conditions[spec.Spec.Type]
+	conditionDef, ok := r.conditions[spec.Spec.Type]
 	if !ok {
 		return EdgeCondition{}, fmt.Errorf("condition %q is not registered", spec.Spec.Type)
 	}

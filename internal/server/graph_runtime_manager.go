@@ -131,7 +131,7 @@ func (manager *graphRuntimeManager) cacheTriggerSession(graphID string, session 
 	defer manager.mu.Unlock()
 	resolved := manager.rememberSessionLocked(session)
 	if existing := manager.triggerSessions[graphID]; existing.runner != nil &&
-		strings.TrimSpace(existing.runner.GraphSessionID) == strings.TrimSpace(resolved.runner.GraphSessionID) {
+		strings.TrimSpace(existing.runner.GraphSessionID()) == strings.TrimSpace(resolved.runner.GraphSessionID()) {
 		return existing
 	}
 	manager.triggerSessions[graphID] = resolved
@@ -250,7 +250,7 @@ func (manager *graphRuntimeManager) removeSession(graphID string, sessionID stri
 	defer manager.mu.Unlock()
 	delete(manager.sessions, key)
 	if latest := manager.triggerSessions[key.graphID]; latest.runner != nil &&
-		strings.TrimSpace(latest.runner.GraphSessionID) == key.sessionID {
+		strings.TrimSpace(latest.runner.GraphSessionID()) == key.sessionID {
 		delete(manager.triggerSessions, key.graphID)
 	}
 }
@@ -261,7 +261,7 @@ func (manager *graphRuntimeManager) rememberSessionLocked(session graphRuntimeSe
 	}
 	key := graphRuntimeSessionKey{
 		graphID:   effectiveRunnerGraphID(session.runner),
-		sessionID: strings.TrimSpace(session.runner.GraphSessionID),
+		sessionID: strings.TrimSpace(session.runner.GraphSessionID()),
 	}
 	if existing := manager.sessions[key]; existing.runner != nil {
 		return existing

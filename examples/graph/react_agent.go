@@ -4,7 +4,10 @@ import (
 	"path/filepath"
 
 	"github.com/dengzii/weaveflow"
+	"github.com/dengzii/weaveflow/builtin"
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
+	"github.com/dengzii/weaveflow/core"
+	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/memory"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
@@ -32,8 +35,8 @@ func newReActAgentInitialState() *state.State {
 	return access.State()
 }
 
-func newReActAgentTools() map[string]weaveflow.Tool {
-	return map[string]weaveflow.Tool{
+func newReActAgentTools() map[string]core.Tool {
+	return map[string]core.Tool{
 		"current_time": tools.NewCurrentTime(),
 		"calculator":   tools.NewCalculator(),
 		//"web_search":   tools.NewWebSearch(),
@@ -53,7 +56,7 @@ func newReActAgentMemory() memory.Manager {
 	})
 }
 
-func newReActAgentGraph() *weaveflow.Graph {
+func newReActAgentGraph() *wfgraph.Graph {
 	graph := weaveflow.NewGraph()
 
 	userInput := node.NewUserInputNode()
@@ -80,7 +83,7 @@ func newReActAgentGraph() *weaveflow.Graph {
 	tryPanic(graph.AddEdge(userInput.ID(), message.ID()))
 	tryPanic(graph.AddEdge(message.ID(), llm.ID()))
 
-	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), weaveflow.ConversationHasToolCalls(reactAgentConversationPath))
+	err := graph.AddConditionalEdge(llm.ID(), toolCall.ID(), builtin.ConversationHasToolCalls(reactAgentConversationPath))
 	tryPanic(err)
 
 	err = graph.AddEdge(toolCall.ID(), llm.ID())

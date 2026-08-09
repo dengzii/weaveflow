@@ -75,7 +75,7 @@ func PopulateGraph(
 		return fmt.Errorf("registry is nil")
 	}
 	for _, nodeSpec := range def.Nodes {
-		nodeDef, ok := reg.NodeTypes[nodeSpec.Type]
+		nodeDef, ok := reg.FindNodeType(nodeSpec.Type)
 		if !ok {
 			return fmt.Errorf("nodes type %q is not registered", nodeSpec.Type)
 		}
@@ -90,8 +90,10 @@ func PopulateGraph(
 		if err := target.AddNode(node); err != nil {
 			return err
 		}
-		if specTarget, ok := target.(interface{ SetNodeSpec(dsl.GraphNodeSpec) }); ok {
-			specTarget.SetNodeSpec(nodeSpec)
+		if specTarget, ok := target.(interface{ SetNodeSpec(dsl.GraphNodeSpec) error }); ok {
+			if err := specTarget.SetNodeSpec(nodeSpec); err != nil {
+				return err
+			}
 		}
 	}
 	for edgeIndex, edge := range def.Edges {

@@ -32,7 +32,7 @@ func TestWithRunnerEventServicesWrapsModelAndTools(t *testing.T) {
 	t.Parallel()
 
 	sink := &captureEventSink{}
-	runner := &GraphRunner{EventSink: sink}
+	runner := &GraphRunner{eventSink: sink}
 	var llmEvents []EventType
 	ctx := WithRunnerEventPublisher(context.Background(), func(eventType EventType, _ any) error {
 		llmEvents = append(llmEvents, eventType)

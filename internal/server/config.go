@@ -22,7 +22,6 @@ import (
 
 type Config struct {
 	Graph    *wfgraph.Graph
-	Runner   *runtime.GraphRunner
 	Registry *wfregistry.Registry
 
 	BaseDir string
@@ -77,11 +76,14 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	cfg.BaseDir = baseDir
 
 	hub := NewEventHub(cfg.EventBuffer)
-	runner := cfg.Runner
-	if runner == nil && cfg.Graph != nil {
-		runner = newDefaultRunner(cfg.Graph, cfg, baseDir)
+	var runner *runtime.GraphRunner
+	if cfg.Graph != nil {
+		var runnerErr error
+		runner, runnerErr = newDefaultRunner(cfg.Graph, cfg, baseDir, hub)
+		if runnerErr != nil {
+			return nil, runnerErr
+		}
 	}
-	attachEventHub(runner, hub)
 
 	reg := cfg.Registry
 	if reg == nil {
@@ -141,7 +143,7 @@ func ensureBaseDir(baseDir string) (string, error) {
 	return baseDir, nil
 }
 
-func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string) *runtime.GraphRunner {
+func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *EventHub) (*runtime.GraphRunner, error) {
 	usesDefaultRunStores := cfg.ExecutionStore == nil &&
 		cfg.CheckpointStore == nil &&
 		cfg.ArtifactStore == nil &&
@@ -172,50 +174,29 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string) *runtime
 		eventSink = store
 		defaultEventDeleter = store
 	}
-
-	runner := wfgraph.NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink)
-	runner.ArtifactStore = cfg.ArtifactStore
+	if hub != nil {
+		eventSink = runtime.NewCombineEventSink(eventSink, hub)
+	}
 	var defaultArtifactDeleter runtime.RunDeleter
-	if runner.ArtifactStore == nil {
+	artifactStore := cfg.ArtifactStore
+	if artifactStore == nil {
 		store := runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
-		runner.ArtifactStore = store
+		artifactStore = store
 		defaultArtifactDeleter = store
 	}
-	runner.RunDeleter = cfg.RunDeleter
-	if runner.RunDeleter == nil && usesDefaultRunStores {
-		runner.RunDeleter = runtime.NewRunDeletionCoordinator(
+	runDeleter := cfg.RunDeleter
+	if runDeleter == nil && usesDefaultRunStores {
+		runDeleter = runtime.NewRunDeletionCoordinator(
 			defaultExecutionDeleter,
 			defaultCheckpointDeleter,
 			defaultEventDeleter,
 			defaultArtifactDeleter,
 		)
 	}
-	runner.GraphID = strings.TrimSpace(cfg.GraphID)
-	runner.GraphVersion = strings.TrimSpace(cfg.GraphVersion)
-	if graphHash := strings.TrimSpace(cfg.GraphHash); graphHash != "" {
-		runner.GraphHash = graphHash
-	}
-	if graphSnapshotHash := strings.TrimSpace(cfg.GraphSnapshotHash); graphSnapshotHash != "" {
-		runner.GraphSnapshotHash = graphSnapshotHash
-	}
-	if graphSessionID := strings.TrimSpace(cfg.GraphSessionID); graphSessionID != "" {
-		runner.GraphSessionID = graphSessionID
-	}
-	return runner
-}
-
-func attachEventHub(runner *runtime.GraphRunner, hub *EventHub) {
-	if runner == nil || hub == nil {
-		return
-	}
-	if runner.EventSink == nil {
-		runner.EventSink = hub
-		return
-	}
-	if runner.EventSink == hub {
-		return
-	}
-	runner.EventSink = runtime.NewCombineEventSink(runner.EventSink, hub)
+	runner, err := wfgraph.NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink,
+		runtime.WithArtifactStore(artifactStore), runtime.WithRunDeleter(runDeleter),
+		runtime.WithGraphMetadata(cfg.GraphID, cfg.GraphVersion, cfg.GraphHash, cfg.GraphSnapshotHash, cfg.GraphSessionID))
+	return runner, err
 }
 
 func (s *Server) BaseDir() string {

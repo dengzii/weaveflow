@@ -22,8 +22,8 @@ func TestGraphRunnerPublishEventNotifiesSynchronousObserverAfterSink(t *testing.
 		return observerErr
 	}))
 	runner := &GraphRunner{
-		EventSink: sink,
-		Now:       func() time.Time { return time.Unix(123, 0).UTC() },
+		eventSink: sink,
+		now:       func() time.Time { return time.Unix(123, 0).UTC() },
 	}
 
 	err := runner.publishEvent(ctx, RunRecord{RunID: "run-1"}, "step-1", "node-1", EventLLMContentChunk, map[string]any{"text": "hello"})

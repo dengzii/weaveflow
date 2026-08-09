@@ -148,14 +148,16 @@ func (s *Server) handleGetRegistry(c *gin.Context) {
 		nodeGroups = append(nodeGroups, nodeGroupsByName[key])
 	}
 
-	nodeTypes := make([]dsl.NodeTypeSchema, 0, len(s.registry.NodeTypes))
-	for _, key := range sortedNodeTypeKeys(s.registry.NodeTypes) {
-		nodeTypes = append(nodeTypes, s.registry.NodeTypes[key].NodeTypeSchema)
+	nodeTypeDefinitions := s.registry.NodeTypeDefinitions()
+	nodeTypes := make([]dsl.NodeTypeSchema, 0, len(nodeTypeDefinitions))
+	for _, key := range sortedNodeTypeKeys(nodeTypeDefinitions) {
+		nodeTypes = append(nodeTypes, nodeTypeDefinitions[key].NodeTypeSchema)
 	}
 
-	conditions := make([]dsl.ConditionSchema, 0, len(s.registry.Conditions))
-	for _, key := range sortedConditionKeys(s.registry.Conditions) {
-		conditions = append(conditions, s.registry.Conditions[key].ConditionSchema)
+	conditionDefinitions := s.registry.ConditionDefinitions()
+	conditions := make([]dsl.ConditionSchema, 0, len(conditionDefinitions))
+	for _, key := range sortedConditionKeys(conditionDefinitions) {
+		conditions = append(conditions, conditionDefinitions[key].ConditionSchema)
 	}
 	var chatChannels []chatchannel.Definition
 	if s.chatChannels != nil {

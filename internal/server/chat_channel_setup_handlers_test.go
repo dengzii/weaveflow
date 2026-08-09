@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
@@ -103,7 +102,7 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	srv, err := New(context.Background(), Config{
-		Graph:          wfgraph.NewGraph(),
+		Graph:          newMinimalTestGraph(t),
 		BaseDir:        t.TempDir(),
 		GraphID:        "graph",
 		GraphVersion:   "v1",

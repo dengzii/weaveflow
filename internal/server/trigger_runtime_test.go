@@ -42,8 +42,8 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID != first.Graph.GraphSessionID {
-		t.Fatalf("resolved first graph session = %q, want %q", runner.GraphSessionID, first.Graph.GraphSessionID)
+	if runner := resolvedGraphRunner(t, resolved); runner.GraphSessionID() != first.Graph.GraphSessionID {
+		t.Fatalf("resolved first graph session = %q, want %q", runner.GraphSessionID(), first.Graph.GraphSessionID)
 	}
 	second := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "second"))
 
@@ -56,8 +56,8 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := resolvedGraphRunner(t, resolved)
-	if runner.GraphVersion != "v2" || runner.GraphSessionID != second.Graph.GraphSessionID {
-		t.Fatalf("resolved graph = version %q session %q, want version v2 session %q", runner.GraphVersion, runner.GraphSessionID, second.Graph.GraphSessionID)
+	if runner.GraphVersion() != "v2" || runner.GraphSessionID() != second.Graph.GraphSessionID {
+		t.Fatalf("resolved graph = version %q session %q, want version v2 session %q", runner.GraphVersion(), runner.GraphSessionID(), second.Graph.GraphSessionID)
 	}
 
 	third := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "third"))
@@ -66,8 +66,8 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner = resolvedGraphRunner(t, resolved)
-	if runner.GraphVersion != "v3" || runner.GraphSessionID != third.Graph.GraphSessionID {
-		t.Fatalf("resolved graph after upload = version %q session %q, want version v3 session %q", runner.GraphVersion, runner.GraphSessionID, third.Graph.GraphSessionID)
+	if runner.GraphVersion() != "v3" || runner.GraphSessionID() != third.Graph.GraphSessionID {
+		t.Fatalf("resolved graph after upload = version %q session %q, want version v3 session %q", runner.GraphVersion(), runner.GraphSessionID(), third.Graph.GraphSessionID)
 	}
 }
 
@@ -95,8 +95,8 @@ func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := resolvedGraphRunner(t, resolved)
-	if runner.GraphSessionID != previous.Graph.GraphSessionID {
-		t.Fatalf("session after failed upload = %q, want %q", runner.GraphSessionID, previous.Graph.GraphSessionID)
+	if runner.GraphSessionID() != previous.Graph.GraphSessionID {
+		t.Fatalf("session after failed upload = %q, want %q", runner.GraphSessionID(), previous.Graph.GraphSessionID)
 	}
 }
 

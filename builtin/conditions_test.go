@@ -18,7 +18,10 @@ import (
 func TestPlanStatusConditionUsesResolvedBinding(t *testing.T) {
 	t.Parallel()
 	path := state.Scope("planner", "state")
-	definition := NewDefaultRegistry().Conditions[plannode.ConditionTypePlanStatusEquals]
+	definition, ok := NewDefaultRegistry().FindCondition(plannode.ConditionTypePlanStatusEquals)
+	if !ok {
+		t.Fatal("plan status condition is not registered")
+	}
 	condition, err := definition.Resolve(registry.ResolvedConditionSpec{
 		Spec:  dsl.GraphConditionSpec{Type: plannode.ConditionTypePlanStatusEquals, Config: map[string]any{"status": plannode.PlanStatusExecuting}},
 		State: map[string]registry.ResolvedStateBinding{"plan": {Path: path}},
@@ -36,7 +39,10 @@ func TestPlanStatusConditionUsesResolvedBinding(t *testing.T) {
 func TestSupervisorRouteConditionUsesResolvedBinding(t *testing.T) {
 	t.Parallel()
 	path := state.Scope("team", "supervisor")
-	definition := NewDefaultRegistry().Conditions[supervisornode.ConditionTypeSupervisorRouteEquals]
+	definition, ok := NewDefaultRegistry().FindCondition(supervisornode.ConditionTypeSupervisorRouteEquals)
+	if !ok {
+		t.Fatal("supervisor route condition is not registered")
+	}
 	condition, err := definition.Resolve(registry.ResolvedConditionSpec{
 		Spec:  dsl.GraphConditionSpec{Type: supervisornode.ConditionTypeSupervisorRouteEquals, Config: map[string]any{"worker_id": "researcher"}},
 		State: map[string]registry.ResolvedStateBinding{"supervisor": {Path: path}},
@@ -133,7 +139,10 @@ func TestStateExpressionRejectsInvalidOrStaticNonBooleanExpression(t *testing.T)
 
 func TestStateExpressionConditionDefinitionUsesDynamicPorts(t *testing.T) {
 	t.Parallel()
-	definition := NewDefaultRegistry().Conditions[ConditionTypeStateExpression]
+	definition, ok := NewDefaultRegistry().FindCondition(ConditionTypeStateExpression)
+	if !ok {
+		t.Fatal("state expression condition is not registered")
+	}
 	if definition.DynamicStatePorts == nil || definition.DynamicStatePorts.MinPorts != 1 {
 		t.Fatalf("dynamic state ports = %#v", definition.DynamicStatePorts)
 	}

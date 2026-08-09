@@ -210,7 +210,7 @@ func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) error 
 
 func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-chan struct{}, respectContext bool) *wfgraph.Graph {
 	t.Helper()
-	graph := wfgraph.NewGraph()
+	graph := wfgraph.NewGraph(nil)
 	var startOnce sync.Once
 	err := graph.AddNode(node.NewFuncNode(node.Spec{ID: "work", Name: "work"}, func(ctx core.Context, access *state.Access) error {
 		startOnce.Do(func() {
@@ -229,6 +229,9 @@ func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-cha
 	}))
 	if err != nil {
 		t.Fatalf("add work node: %v", err)
+	}
+	if err := graph.SetNodeSpec(dsl.GraphNodeSpec{ID: "work", Type: "test", Name: "work"}); err != nil {
+		t.Fatalf("set work node spec: %v", err)
 	}
 	if err := graph.SetEntryPoint("work"); err != nil {
 		t.Fatalf("set entry point: %v", err)
@@ -547,11 +550,7 @@ func TestRuntimeSettingsContextEnvironmentOverridesProcess(t *testing.T) {
 
 func TestNewPreservesExistingSinkAndBroadcasts(t *testing.T) {
 	sink := &recordingEventSink{}
-	runner := &runtime.GraphRunner{EventSink: sink}
-	srv, err := New(context.Background(), Config{Runner: runner, EventBuffer: 1})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	srv, runner := mustNewEventTestServer(t, sink, 1)
 
 	events, unsubscribe := srv.EventHub().Subscribe(eventFilter{
 		RunID: "run-1",
@@ -568,7 +567,7 @@ func TestNewPreservesExistingSinkAndBroadcasts(t *testing.T) {
 		Type:      runtime.EventNodeStarted,
 		Timestamp: time.Now(),
 	}
-	if err := runner.EventSink.Publish(context.Background(), event); err != nil {
+	if err := runner.EventSink().Publish(context.Background(), event); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
@@ -594,11 +593,7 @@ func TestRegisterRoutesMountsOnRouterGroup(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	sink := &recordingEventSink{}
-	runner := &runtime.GraphRunner{EventSink: sink}
-	srv, err := New(context.Background(), Config{Runner: runner})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	srv, runner := mustNewEventTestServer(t, sink, 0)
 
 	event := runtime.Event{
 		ID:        "event-1",
@@ -606,7 +601,7 @@ func TestRegisterRoutesMountsOnRouterGroup(t *testing.T) {
 		Type:      runtime.EventRunStarted,
 		Timestamp: time.Now(),
 	}
-	if err := runner.EventSink.Publish(context.Background(), event); err != nil {
+	if err := runner.EventSink().Publish(context.Background(), event); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
 
@@ -640,11 +635,7 @@ func TestListEventsPaginatesNewestFirstAndValidatesParameters(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	sink := &recordingEventSink{}
-	runner := &runtime.GraphRunner{EventSink: sink}
-	srv, err := New(context.Background(), Config{Runner: runner})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
-	}
+	srv, _ := mustNewEventTestServer(t, sink, 0)
 	for index := 0; index < 501; index++ {
 		if err := sink.Publish(context.Background(), runtime.Event{
 			ID:    fmt.Sprintf("event-%03d", index),
@@ -968,13 +959,15 @@ func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 func TestConfiguredGraphExposesComputedHashes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
-	g := wfgraph.NewGraph()
+	g := wfgraph.NewGraph(nil)
 	if err := g.AddNode(node.NewFuncNode(node.Spec{ID: "input", Name: "input"}, func(core.Context, *state.Access) error {
 		return nil
 	})); err != nil {
 		t.Fatalf("add node: %v", err)
 	}
-	g.SetNodeSpec(dsl.GraphNodeSpec{ID: "input", Type: "test", Name: "input"})
+	if err := g.SetNodeSpec(dsl.GraphNodeSpec{ID: "input", Type: "test", Name: "input"}); err != nil {
+		t.Fatalf("set node spec: %v", err)
+	}
 	if err := g.SetEntryPoint("input"); err != nil {
 		t.Fatalf("set entry point: %v", err)
 	}
@@ -989,10 +982,10 @@ func TestConfiguredGraphExposesComputedHashes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	if srv.Runner().GraphHash == "" {
+	if srv.Runner().GraphHash() == "" {
 		t.Fatal("configured graph hash is empty")
 	}
-	if srv.Runner().GraphSnapshotHash == "" {
+	if srv.Runner().GraphSnapshotHash() == "" {
 		t.Fatal("configured graph snapshot hash is empty")
 	}
 }
@@ -1797,11 +1790,11 @@ func TestCancelRunUsesTriggerSessionRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	runner := newDefaultRunner(graph, Config{
+	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
 		GraphVersion:   "2.0",
 		GraphSessionID: "trigger-session",
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
 		graph:       graph,
 		runner:      runner,
@@ -1848,11 +1841,11 @@ func TestDeleteActiveRunUsesTriggerSessionRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	runner := newDefaultRunner(graph, Config{
+	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
 		GraphVersion:   "2.0",
 		GraphSessionID: "trigger-session",
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
 		graph:       graph,
 		runner:      runner,
@@ -1900,11 +1893,11 @@ func TestPauseAndResumeRunUseTriggerSessionRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
-	runner := newDefaultRunner(graph, Config{
+	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
 		GraphVersion:   "2.0",
 		GraphSessionID: "trigger-session",
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
 		graph:       graph,
 		runner:      runner,
@@ -1969,7 +1962,7 @@ func TestPauseRunMarksLostExecutionFailed(t *testing.T) {
 		StartedAt:       startedAt,
 		UpdatedAt:       startedAt,
 	}
-	if err := runner.ExecutionStore.CreateRun(context.Background(), run); err != nil {
+	if err := runner.ExecutionStore().CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
 	events, unsubscribe := srv.EventHub().Subscribe(eventFilter{RunID: run.RunID})
@@ -2013,12 +2006,11 @@ func TestPauseRunUsesOwningHistoricalSession(t *testing.T) {
 	release := make(chan struct{})
 	defer close(release)
 	firstGraph := newRunControlTestGraph(t, started, release, true)
-	firstRunner := newDefaultRunner(firstGraph, Config{
+	firstRunner := mustNewDefaultRunner(t, firstGraph, Config{
 		GraphID:        "historical-graph",
 		GraphVersion:   "v1",
 		GraphSessionID: "session-1",
-	}, t.TempDir())
-	attachEventHub(firstRunner, srv.EventHub())
+	}, t.TempDir(), srv.EventHub())
 	srv.runtime.installSession(graphRuntimeSession{
 		graph:       firstGraph,
 		runner:      firstRunner,
@@ -2032,11 +2024,11 @@ func TestPauseRunUsesOwningHistoricalSession(t *testing.T) {
 	waitForSignal(t, started, "historical run node start")
 
 	secondGraph := newRunControlTestGraph(t, make(chan struct{}), make(chan struct{}), true)
-	secondRunner := newDefaultRunner(secondGraph, Config{
+	secondRunner := mustNewDefaultRunner(t, secondGraph, Config{
 		GraphID:        "historical-graph",
 		GraphVersion:   "v2",
 		GraphSessionID: "session-2",
-	}, t.TempDir())
+	}, t.TempDir(), nil)
 	srv.runtime.installSession(graphRuntimeSession{
 		graph:       secondGraph,
 		runner:      secondRunner,

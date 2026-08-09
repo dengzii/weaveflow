@@ -9,7 +9,9 @@ import (
 
 	"github.com/dengzii/weaveflow"
 	"github.com/dengzii/weaveflow/core"
+	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/llms/openai"
+	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
@@ -18,7 +20,7 @@ import (
 
 func main() {
 	logger, _ := zap.NewDevelopment()
-	weaveflow.SetLogger(logger)
+	runtime.SetLogger(logger)
 
 	ctx := newReActAgentContext()
 
@@ -56,7 +58,7 @@ func resumeFromCheckpoint(ctx context.Context) {
 	tryPanic(state.SetPath(currentState, reactAgentPendingInputPath.String(), "24+5*8-2=? 现在是几点."))
 
 	baseDir := ".local/instance"
-	graph, err := weaveflow.LoadGraphFromFile(filepath.Join(baseDir, "graph.json"), weaveflow.WithBuildContext(&weaveflow.BuildContext{}))
+	graph, err := weaveflow.LoadGraphFromFile(filepath.Join(baseDir, "graph.json"), weaveflow.WithBuildContext(&registry.BuildContext{}))
 	tryPanic(err)
 
 	runner := newExampleRunner(baseDir, graph)
@@ -80,7 +82,7 @@ func tryPanic(error interface{}) {
 	}
 }
 
-func newExampleRunner(baseDir string, graph *weaveflow.Graph) *runtime.GraphRunner {
+func newExampleRunner(baseDir string, graph *wfgraph.Graph) *runtime.GraphRunner {
 	log, err := zap.NewDevelopment()
 	tryPanic(err)
 

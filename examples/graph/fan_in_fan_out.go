@@ -11,6 +11,7 @@ import (
 	"github.com/dengzii/weaveflow"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -31,13 +32,14 @@ func main() {
 	must(os.MkdirAll(baseDir, 0o755))
 	must(graph.WriteToFile(filepath.Join(baseDir, "graph.json")))
 
-	runner := weaveflow.NewGraphRunner(
+	runner, err := wfgraph.NewGraphRunner(
 		graph,
 		runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
 		runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),
 		state.NewJSONStateCodec(""),
 		runtime.NewFileEventSink(filepath.Join(baseDir, "events")),
 	)
+	must(err)
 	run, _, err := runner.Start(ctx, state.NewState())
 	must(err)
 
@@ -48,7 +50,7 @@ func main() {
 	printResult(resumedState)
 }
 
-func newFanInFanOutGraph() *weaveflow.Graph {
+func newFanInFanOutGraph() *wfgraph.Graph {
 	g := weaveflow.NewGraph()
 	addFuncNode(g, "router", func(ctx context.Context, access *state.Access) error {
 		return nil
@@ -74,11 +76,11 @@ func newFanInFanOutGraph() *weaveflow.Graph {
 	return g
 }
 
-func addFuncNode(g *weaveflow.Graph, id string, fn func(context.Context, *state.Access) error) {
+func addFuncNode(g *wfgraph.Graph, id string, fn func(context.Context, *state.Access) error) {
 	must(g.AddNode(node.NewFuncNode(node.Spec{ID: id, Name: id}, func(ctx core.Context, access *state.Access) error {
 		return fn(ctx, access)
 	})))
-	g.SetNodeSpec(dsl.GraphNodeSpec{ID: id, Type: "example", Name: id})
+	must(g.SetNodeSpec(dsl.GraphNodeSpec{ID: id, Type: "example", Name: id}))
 }
 
 func findBarrierCheckpoint(ctx context.Context, runner *runtime.GraphRunner, runID string) string {

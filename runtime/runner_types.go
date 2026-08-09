@@ -1,3 +1,4 @@
+// Package runtime manages runs, checkpoints, events, artifacts, and control transitions.
 package runtime
 
 import (
@@ -9,10 +10,10 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-// Runtime records, stores, and control primitives live in the runtime package.
-// The root weaveflow package re-exports this surface through its public facade.
 var (
+	// ErrRunnerRecordNotFound reports that a persisted runtime record does not exist.
 	ErrRunnerRecordNotFound = errors.New("runner record not found")
+	// ErrRunControlNotAllowed reports that a run cannot accept the requested transition.
 	ErrRunControlNotAllowed = errors.New("run control not allowed")
 )
 

@@ -11,18 +11,28 @@ import (
 	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
-func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec state.StateCodec, eventSink fruntime.EventSink) *fruntime.GraphRunner {
-	runner := fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink)
-	if graph != nil {
-		runner.NodeContracts = cloneNodeContracts(graph.nodeContracts)
-		if len(graph.nodeContracts) > 0 {
-			runner.ContractValidation = core.ContractValidationStrict
-		}
-		runner.StartupWarnings = buildRunnerWarnings(graph.ContractDiagnostics())
-		runner.GraphHash, _ = graph.SemanticHash()
-		runner.GraphSnapshotHash, _ = graph.SnapshotHash()
+func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec state.StateCodec, eventSink fruntime.EventSink, options ...fruntime.GraphRunnerOption) (*fruntime.GraphRunner, error) {
+	if graph == nil {
+		return nil, fmt.Errorf("graph is required")
 	}
-	return runner
+	graphHash, err := graph.SemanticHash()
+	if err != nil {
+		return nil, fmt.Errorf("compute graph semantic hash: %w", err)
+	}
+	snapshotHash, err := graph.SnapshotHash()
+	if err != nil {
+		return nil, fmt.Errorf("compute graph snapshot hash: %w", err)
+	}
+	baseOptions := []fruntime.GraphRunnerOption{
+		fruntime.WithNodeContracts(cloneNodeContracts(graph.nodeContracts)),
+		fruntime.WithStartupWarnings(buildRunnerWarnings(graph.ContractDiagnostics())),
+		fruntime.WithGraphMetadata("", "", graphHash, snapshotHash, ""),
+	}
+	if len(graph.nodeContracts) > 0 {
+		baseOptions = append(baseOptions, fruntime.WithContractValidation(core.ContractValidationStrict))
+	}
+	baseOptions = append(baseOptions, options...)
+	return fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink, baseOptions...)
 }
 
 func cloneNodeContracts(contracts map[string]state.Contract) map[string]state.Contract {
@@ -88,7 +98,7 @@ func (g *graphRunnerGraph) ResolveNextNode(ctx context.Context, currentNodeID st
 		return "", err
 	}
 	if len(next) != 1 {
-		return "", fmt.Errorf("nodes %q resolved %d next nodes; use ResolveNextNodes for fan-out", currentNodeID, len(next))
+		return "", fmt.Errorf("node %q resolved %d next nodes; use ResolveNextNodes for fan-out", currentNodeID, len(next))
 	}
 	return next[0], nil
 }
@@ -125,7 +135,7 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 		}
 		nodeID, err := g.graph.resolveNodeID(breakpoint.NodeID)
 		if err != nil {
-			return nil, fmt.Errorf("resolve after-nodes breakpoint %q: %w", breakpoint.NodeID, err)
+			return nil, fmt.Errorf("resolve after-node breakpoint %q: %w", breakpoint.NodeID, err)
 		}
 		if g.graph.isParallelBranchTarget(nodeID) {
 			return nil, fmt.Errorf("after_node breakpoint for parallel branch node %q is not supported; use before_node or resume from after_parallel_wave", nodeID)

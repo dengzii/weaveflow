@@ -204,7 +204,7 @@ func TestResolveNextNodesConditionalMatchingFallbackAndErrors(t *testing.T) {
 func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 	t.Parallel()
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
 		return nil
 	})
@@ -245,7 +245,7 @@ func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		g,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
@@ -270,7 +270,7 @@ func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 func TestGraphRunAndRunnerStartContractWriteBehaviorAgree(t *testing.T) {
 	t.Parallel()
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "writer", func(ctx context.Context, access *state.Access) error {
 		return access.SetAny(state.Shared("forbidden"), true)
 	})
@@ -292,16 +292,14 @@ func TestGraphRunAndRunnerStartContractWriteBehaviorAgree(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		g,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
 		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
-	runner.ContractPolicy = fruntime.ContractPolicy{
-		EnforceWrites: true,
-	}
+		fruntime.NewFileEventSink(dir), fruntime.WithContractPolicy(fruntime.ContractPolicy{
+			EnforceWrites: true,
+		}))
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil || !strings.Contains(err.Error(), "undeclared path") {
 		t.Fatalf("expected GraphRunner.Start contract violation, got %v", err)
@@ -314,7 +312,7 @@ func TestGraphRunAndRunnerStartContractWriteBehaviorAgree(t *testing.T) {
 func TestResolvedContractsProjectNodeInputAndPreserveUnboundState(t *testing.T) {
 	t.Parallel()
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "worker", func(_ context.Context, access *state.Access) error {
 		if _, ok := access.ReadAny(state.Shared("secret")); ok {
 			return fmt.Errorf("unbound secret was visible")
@@ -353,15 +351,15 @@ func TestResolvedContractsProjectNodeInputAndPreserveUnboundState(t *testing.T) 
 	}
 
 	dir := t.TempDir()
-	runner := NewGraphRunner(
+	runner := mustNewGraphRunner(t,
 		g,
 		fruntime.NewFileExecutionStore(dir),
 		fruntime.NewFileCheckpointStore(dir),
 		state.NewJSONStateCodec(""),
 		fruntime.NewFileEventSink(dir),
 	)
-	if runner.ContractValidation != core.ContractValidationStrict {
-		t.Fatalf("runner contract validation = %q, want strict", runner.ContractValidation)
+	if runner.ContractValidation() != core.ContractValidationStrict {
+		t.Fatalf("runner contract validation = %q, want strict", runner.ContractValidation())
 	}
 	_, runnerState, err := runner.Start(context.Background(), initial)
 	if err != nil {
@@ -459,7 +457,7 @@ func TestGraphRejectsUnreachableNode(t *testing.T) {
 func TestGraphRejectsReachableDeadEnd(t *testing.T) {
 	t.Parallel()
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "entry", func(ctx context.Context, access *state.Access) error {
 		return nil
 	})
@@ -480,7 +478,7 @@ func TestGraphRejectsReachableDeadEnd(t *testing.T) {
 func TestGraphRejectsReachableCycleWithoutEnd(t *testing.T) {
 	t.Parallel()
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "a", func(ctx context.Context, access *state.Access) error {
 		return nil
 	})
@@ -532,7 +530,7 @@ func TestFanOutFanInCompile(t *testing.T) {
 		calls = append(calls, id)
 	}
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
 		record("router")
 		return nil
@@ -595,7 +593,7 @@ func TestFanOutFanInWaitsForUnevenBranches(t *testing.T) {
 	t.Parallel()
 
 	var collectorCalls atomic.Int32
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
 		return nil
 	})
@@ -679,7 +677,7 @@ func TestFanInDoesNotWaitForInactiveConditionalPredecessor(t *testing.T) {
 	t.Parallel()
 
 	var collectorCalls atomic.Int32
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
 		return nil
 	})
@@ -735,7 +733,7 @@ func TestFanInDoesNotWaitForInactiveConditionalPredecessor(t *testing.T) {
 func TestFanOutFanInCompileRejectsParallelMergeConflict(t *testing.T) {
 	t.Parallel()
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
 		return nil
 	})
@@ -770,7 +768,7 @@ func TestFanOutFanInCompileRejectsParallelMergeConflict(t *testing.T) {
 func TestFanOutFanInCompileSurfacesOriginalBranchFailure(t *testing.T) {
 	t.Parallel()
 
-	g := NewGraph()
+	g := NewGraph(nil)
 	mustAddNode(t, g, "router", func(context.Context, *state.Access) error {
 		return nil
 	})
@@ -805,7 +803,7 @@ func TestFanOutFanInCompileSurfacesOriginalBranchFailure(t *testing.T) {
 
 func newTestGraph(t *testing.T, ids ...string) *Graph {
 	t.Helper()
-	g := NewGraph()
+	g := NewGraph(nil)
 	for _, id := range ids {
 		mustAddNode(t, g, id, func(ctx context.Context, access *state.Access) error {
 			return nil
@@ -830,5 +828,7 @@ func mustAddNode(t *testing.T, g *Graph, id string, fn func(context.Context, *st
 	if err != nil {
 		t.Fatalf("add node %q: %v", id, err)
 	}
-	g.SetNodeSpec(dsl.GraphNodeSpec{ID: id, Type: "test", Name: id})
+	if err := g.SetNodeSpec(dsl.GraphNodeSpec{ID: id, Type: "test", Name: id}); err != nil {
+		t.Fatalf("set node spec: %v", err)
+	}
 }

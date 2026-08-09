@@ -337,11 +337,11 @@ func (s *Server) markCachedRunExecutionLost(ctx context.Context, reader *graphCa
 			eventSink = runtime.NewCombineEventSink(eventSink, s.events)
 		}
 	}
-	runner := &runtime.GraphRunner{
-		ExecutionStore: reader.executionStores[index],
-		EventSink:      eventSink,
+	control, err := runtime.NewRunControlService(reader.executionStores[index], eventSink, nil)
+	if err != nil {
+		return runtime.RunRecord{}, err
 	}
-	return runner.MarkRunExecutionLost(ctx, runID)
+	return control.MarkRunExecutionLost(ctx, runID)
 }
 
 func readCachedGraphSession(graphDir string, sessionID string) (graphSessionManifest, bool, error) {
@@ -437,7 +437,7 @@ func effectiveRunnerGraphID(runner *runtime.GraphRunner) string {
 	if runner == nil {
 		return ""
 	}
-	if id := strings.TrimSpace(runner.GraphID); id != "" {
+	if id := strings.TrimSpace(runner.GraphID()); id != "" {
 		return id
 	}
 	return "graph"
@@ -459,7 +459,7 @@ func (s *Server) cancelCachedPausedRun(ctx context.Context, graphID string, runI
 		return runtime.RunRecord{}, err
 	}
 	for _, reader := range readers {
-		run, err := reader.cancelPausedRun(ctx, runID)
+		run, err := reader.cancelPausedRun(ctx, runID, s.events)
 		if err == nil {
 			return run, nil
 		}
@@ -512,7 +512,7 @@ func (s *Server) cachedGraphReaders(graphID string) ([]*graphCacheReader, error)
 	return readers, nil
 }
 
-func (r *graphCacheReader) cancelPausedRun(ctx context.Context, runID string) (runtime.RunRecord, error) {
+func (r *graphCacheReader) cancelPausedRun(ctx context.Context, runID string, extraSink runtime.EventSink) (runtime.RunRecord, error) {
 	for index, store := range r.executionStores {
 		run, err := store.GetRun(ctx, runID)
 		if err != nil {
@@ -525,7 +525,22 @@ func (r *graphCacheReader) cancelPausedRun(ctx context.Context, runID string) (r
 		case runtime.RunStatusCanceled:
 			return run, nil
 		case runtime.RunStatusPaused:
-			return r.cancelPausedRunInStore(ctx, index, store, run)
+			eventSink := runtime.EventSink(nil)
+			if index < len(r.eventSinks) {
+				eventSink = r.eventSinks[index]
+			}
+			if extraSink != nil {
+				if eventSink == nil {
+					eventSink = extraSink
+				} else {
+					eventSink = runtime.NewCombineEventSink(eventSink, extraSink)
+				}
+			}
+			control, err := runtime.NewRunControlService(store, eventSink, nil)
+			if err != nil {
+				return runtime.RunRecord{}, err
+			}
+			return control.CancelPausedRun(ctx, runID)
 		default:
 			return runtime.RunRecord{}, fmt.Errorf("%w: run %q status %q cannot be canceled without an active runner", runtime.ErrRunControlNotAllowed, runID, run.Status)
 		}
@@ -535,16 +550,6 @@ func (r *graphCacheReader) cancelPausedRun(ctx context.Context, runID string) (r
 
 func (r *graphCacheReader) deleteRun(ctx context.Context, runID string) (runtime.RunRecord, error) {
 	for index, store := range r.executionStores {
-		run, err := store.GetRun(ctx, runID)
-		if err != nil {
-			if errors.Is(err, runtime.ErrRunnerRecordNotFound) {
-				continue
-			}
-			return runtime.RunRecord{}, err
-		}
-		if run.Status == runtime.RunStatusPending || run.Status == runtime.RunStatusRunning {
-			return runtime.RunRecord{}, fmt.Errorf("%w: run %q status %q must be stopped before deletion", runtime.ErrRunControlNotAllowed, runID, run.Status)
-		}
 		var checkpointStore runtime.RunDeleter
 		if index < len(r.checkpointStores) {
 			checkpointStore = r.checkpointStores[index]
@@ -554,60 +559,21 @@ func (r *graphCacheReader) deleteRun(ctx context.Context, runID string) (runtime
 			artifactStore = r.artifactStores[index]
 		}
 		var eventStore runtime.RunDeleter
+		var eventSink runtime.EventSink
 		if index < len(r.eventSinks) {
 			eventStore = r.eventSinks[index]
+			eventSink = r.eventSinks[index]
 		}
 		deleter := runtime.NewRunDeletionCoordinator(store, checkpointStore, eventStore, artifactStore)
-		if err := deleter.DeleteRun(ctx, runID); err != nil {
+		control, err := runtime.NewRunControlService(store, eventSink, deleter)
+		if err != nil {
 			return runtime.RunRecord{}, err
 		}
-		return run, nil
+		run, err := control.DeleteRun(ctx, runID)
+		if errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			continue
+		}
+		return run, err
 	}
 	return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
-}
-func (r *graphCacheReader) cancelPausedRunInStore(ctx context.Context, index int, store *runtime.FileExecutionStore, run runtime.RunRecord) (runtime.RunRecord, error) {
-	now := time.Now().UTC()
-
-	requested := run
-	requested.PauseRequested = false
-	requested.CancelRequested = true
-	requested.UpdatedAt = now
-	if err := store.UpdateRun(ctx, requested); err != nil {
-		return runtime.RunRecord{}, err
-	}
-	if err := r.publishCachedRunEvent(ctx, index, requested, runtime.EventRunCancelRequested, now); err != nil {
-		return runtime.RunRecord{}, err
-	}
-
-	canceled := requested
-	canceled.Status = runtime.RunStatusCanceled
-	canceled.CancelRequested = false
-	canceled.UpdatedAt = now
-	canceled.FinishedAt = &now
-	if err := store.UpdateRun(ctx, canceled); err != nil {
-		return runtime.RunRecord{}, err
-	}
-	if err := r.publishCachedRunEvent(ctx, index, canceled, runtime.EventRunCanceled, now); err != nil {
-		return runtime.RunRecord{}, err
-	}
-	return canceled, nil
-}
-
-func (r *graphCacheReader) publishCachedRunEvent(ctx context.Context, index int, run runtime.RunRecord, eventType runtime.EventType, at time.Time) error {
-	if index < 0 || index >= len(r.eventSinks) || r.eventSinks[index] == nil {
-		return nil
-	}
-	return r.eventSinks[index].Publish(ctx, runtime.Event{
-		ID:             cachedRunEventID(eventType, run.RunID, at),
-		GraphID:        run.GraphID,
-		GraphSessionID: run.GraphSessionID,
-		RunID:          run.RunID,
-		NodeID:         run.CurrentNodeID,
-		Type:           eventType,
-		Timestamp:      at,
-	})
-}
-
-func cachedRunEventID(eventType runtime.EventType, runID string, at time.Time) string {
-	return fmt.Sprintf("server-%s-%s-%d", eventType, runID, at.UnixNano())
 }
