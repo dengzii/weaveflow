@@ -1,3 +1,4 @@
+// Package execution provides state-bound execution tracking capabilities.
 package execution
 
 import (

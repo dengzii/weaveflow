@@ -1,3 +1,4 @@
+// Package core defines shared node, tool, execution, and contract primitives.
 package core
 
 type ContractValidationMode string

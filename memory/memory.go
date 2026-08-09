@@ -1,3 +1,4 @@
+// Package memory provides local memory storage, indexing, and retrieval.
 package memory
 
 import (

@@ -1,3 +1,4 @@
+// Package parts defines reusable content-part helpers for LLM messages.
 package parts
 
 import "github.com/tmc/langchaingo/llms"

@@ -1,3 +1,4 @@
+// Package builtin wires WeaveFlow's default registry, protocols, and edge conditions.
 package builtin
 
 import (

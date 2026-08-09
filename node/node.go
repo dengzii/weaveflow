@@ -1,3 +1,4 @@
+// Package node provides reusable graph node implementations and construction options.
 package node
 
 import "github.com/dengzii/weaveflow/core"

@@ -1,3 +1,4 @@
+// Package conversation provides state-bound conversation capabilities.
 package conversation
 
 import (

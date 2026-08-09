@@ -1,3 +1,4 @@
+// Package plan provides state-bound planning capabilities.
 package plan
 
 import (

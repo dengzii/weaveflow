@@ -1,3 +1,4 @@
+// Package dsl defines serializable Graph Definition v2 data transfer objects.
 package dsl
 
 import (
@@ -222,13 +223,13 @@ func (d GraphDefinition) Validate() error {
 	nodeIDs := map[string]struct{}{}
 	for _, node := range def.Nodes {
 		if node.ID == "" {
-			return fmt.Errorf("graph nodes id is required")
+			return fmt.Errorf("graph node id is required")
 		}
 		if node.Type == "" {
-			return fmt.Errorf("graph nodes %q type is required", node.ID)
+			return fmt.Errorf("graph node %q type is required", node.ID)
 		}
 		if _, exists := nodeIDs[node.ID]; exists {
-			return fmt.Errorf("graph nodes id %q is duplicated", node.ID)
+			return fmt.Errorf("graph node id %q is duplicated", node.ID)
 		}
 		nodeIDs[node.ID] = struct{}{}
 	}

@@ -1,3 +1,4 @@
+// Package supervisor provides state-bound supervisor capabilities.
 package supervisor
 
 import (

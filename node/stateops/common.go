@@ -1,3 +1,4 @@
+// Package stateops provides graph nodes for declarative state mutations.
 package stateops
 
 import (

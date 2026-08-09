@@ -1,3 +1,4 @@
+// Package plan provides planning, review, and synthesis graph nodes.
 package plan
 
 import (

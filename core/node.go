@@ -139,7 +139,7 @@ type ContractProvider interface {
 
 func ContractFor(node Node) (state.Contract, error) {
 	if node == nil {
-		return state.Contract{}, fmt.Errorf("node node is nil")
+		return state.Contract{}, fmt.Errorf("node is nil")
 	}
 	if provider, ok := node.(ContractProvider); ok {
 		return provider.Contract().Clone(), nil
@@ -170,7 +170,7 @@ func ExecuteNode(ctx context.Context, base *state.State, node Node) (ExecutionRe
 
 func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, options NodeExecutionOptions) (ExecutionResult, error) {
 	if node == nil {
-		return ExecutionResult{}, fmt.Errorf("node node is nil")
+		return ExecutionResult{}, fmt.Errorf("node is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()

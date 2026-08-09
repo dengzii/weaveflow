@@ -1,3 +1,4 @@
+// Package state provides structured graph state, paths, contracts, patches, and snapshots.
 package state
 
 import (

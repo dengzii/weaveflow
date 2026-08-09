@@ -1,3 +1,4 @@
+// Package tools provides bundled tool implementations for agent workflows.
 package tools
 
 import (

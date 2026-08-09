@@ -1,3 +1,4 @@
+// Package chat provides state-bound chat response capabilities.
 package chat
 
 import (

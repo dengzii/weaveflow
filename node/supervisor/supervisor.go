@@ -1,3 +1,4 @@
+// Package supervisor provides routing and synthesis nodes for supervisor workflows.
 package supervisor
 
 import (
