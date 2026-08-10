@@ -163,6 +163,7 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings, apiKey strin
 		ctx = core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
 	}
 	models := map[string]llms.Model{}
+	modelConfigs := map[string]core.ModelConfig{}
 	for _, modelSettings := range enabledGraphModels(settings) {
 		modelAPIKey := firstNonEmpty(modelSettings.APIKey, apiKey, os.Getenv("OPENAI_API_KEY"))
 		if modelAPIKey == "" {
@@ -180,11 +181,21 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings, apiKey strin
 			return nil, fmt.Errorf("configure model %q: %w", modelSettings.ID, err)
 		}
 		models[modelSettings.ID] = model
+		modelConfigs[modelSettings.ID] = core.ModelConfig{
+			ID:        modelSettings.ID,
+			Provider:  modelSettings.Provider,
+			APIFormat: modelSettings.APIFormat,
+			Model:     modelSettings.Model,
+			BaseURL:   modelSettings.BaseURL,
+			ExtraBody: modelSettings.ExtraBody,
+			APIKey:    modelAPIKey,
+		}
 	}
 	if len(models) > 0 {
 		ctx = core.WithModels(ctx, models)
 	}
-	return ctx, nil
+	ctx = core.WithModelConfigs(ctx, modelConfigs)
+	return applyRuntimeContextDecorators(ctx, s.cfg.RuntimeContextDecorators), nil
 }
 
 func enabledGraphModels(settings graphRuntimeSettings) []graphModelSettings {

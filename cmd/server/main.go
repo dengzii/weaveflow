@@ -13,6 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/server"
+	codexnode "github.com/dengzii/weaveflow/node/agents/codex"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/tools"
 
@@ -33,6 +34,15 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
+	codexConfig, err := codexnode.RunnerConfigFromEnvironment()
+	if err != nil {
+		log.Fatal(err)
+	}
+	codexRunner, err := codexnode.NewProcessRunner(codexConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	var graph *wfgraph.Graph
 	if strings.TrimSpace(*graphPath) != "" {
 		loaded, err := wfgraph.NewBuilder(builtin.NewDefaultRegistry()).BuildFile(*graphPath, &wfregistry.BuildContext{})
@@ -47,6 +57,11 @@ func main() {
 	srv, err := server.New(ctx, server.Config{
 		Graph:   graph,
 		BaseDir: *dataDir,
+		RuntimeContextDecorators: []server.RuntimeContextDecorator{
+			func(ctx context.Context) context.Context {
+				return codexnode.WithRunner(ctx, codexRunner)
+			},
+		},
 	})
 	if err != nil {
 		log.Fatal(err)

@@ -15,12 +15,23 @@ const DefaultModelID = "default"
 
 type modelKey struct{}
 type modelsKey struct{}
+type modelConfigsKey struct{}
 type toolsKey struct{}
 type memoryKey struct{}
 type environmentKey struct{}
 
 type Context struct {
 	context.Context
+}
+
+type ModelConfig struct {
+	ID        string
+	Provider  string
+	APIFormat string
+	Model     string
+	BaseURL   string
+	ExtraBody map[string]any
+	APIKey    string
 }
 
 func NewContext(ctx context.Context) Context {
@@ -61,6 +72,13 @@ func WithModels(ctx context.Context, available map[string]llms.Model) context.Co
 	}
 	models := cloneModels(available)
 	return context.WithValue(context.WithValue(ctx, modelsKey{}, models), modelKey{}, defaultModel(models))
+}
+
+func WithModelConfigs(ctx context.Context, available map[string]ModelConfig) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, modelConfigsKey{}, cloneModelConfigs(available))
 }
 
 func WithTools(ctx context.Context, available map[string]Tool) context.Context {
@@ -119,6 +137,35 @@ func ModelsFromContext(ctx context.Context) map[string]llms.Model {
 	}
 	models, _ := ctx.Value(modelsKey{}).(map[string]llms.Model)
 	return cloneModels(models)
+}
+
+func ModelConfigByIDFromContext(ctx context.Context, id string) (ModelConfig, bool) {
+	configs := ModelConfigsFromContext(ctx)
+	id = strings.TrimSpace(id)
+	if id != "" {
+		config, ok := configs[id]
+		return config, ok
+	}
+	if config, ok := configs[DefaultModelID]; ok {
+		return config, true
+	}
+	keys := make([]string, 0, len(configs))
+	for key := range configs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) == 0 {
+		return ModelConfig{}, false
+	}
+	return configs[keys[0]], true
+}
+
+func ModelConfigsFromContext(ctx context.Context) map[string]ModelConfig {
+	if ctx == nil {
+		return nil
+	}
+	configs, _ := ctx.Value(modelConfigsKey{}).(map[string]ModelConfig)
+	return cloneModelConfigs(configs)
 }
 
 func ToolsFromContext(ctx context.Context) map[string]Tool {
@@ -188,6 +235,17 @@ func (c Context) Models() map[string]llms.Model {
 	return ModelsFromContext(c)
 }
 
+func (c Context) ModelConfig(ids ...string) (ModelConfig, bool) {
+	if len(ids) > 0 {
+		return ModelConfigByIDFromContext(c, ids[0])
+	}
+	return ModelConfigByIDFromContext(c, "")
+}
+
+func (c Context) ModelConfigs() map[string]ModelConfig {
+	return ModelConfigsFromContext(c)
+}
+
 func (c Context) Tools() map[string]Tool {
 	return ToolsFromContext(c)
 }
@@ -253,6 +311,37 @@ func cloneModels(input map[string]llms.Model) map[string]llms.Model {
 			continue
 		}
 		out[id] = model
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func cloneModelConfigs(input map[string]ModelConfig) map[string]ModelConfig {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]ModelConfig, len(input))
+	for key, config := range input {
+		id := strings.TrimSpace(key)
+		if id == "" {
+			continue
+		}
+		config.ID = id
+		config.Provider = strings.TrimSpace(config.Provider)
+		config.APIFormat = strings.TrimSpace(config.APIFormat)
+		config.Model = strings.TrimSpace(config.Model)
+		config.BaseURL = strings.TrimSpace(config.BaseURL)
+		config.APIKey = strings.TrimSpace(config.APIKey)
+		if len(config.ExtraBody) > 0 {
+			extraBody := make(map[string]any, len(config.ExtraBody))
+			for field, value := range config.ExtraBody {
+				extraBody[field] = value
+			}
+			config.ExtraBody = extraBody
+		}
+		out[id] = config
 	}
 	if len(out) == 0 {
 		return nil

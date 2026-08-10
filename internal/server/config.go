@@ -20,11 +20,15 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
+type RuntimeContextDecorator func(context.Context) context.Context
+
 type Config struct {
 	Graph    *wfgraph.Graph
 	Registry *wfregistry.Registry
 
 	BaseDir string
+
+	RuntimeContextDecorators []RuntimeContextDecorator
 
 	ExecutionStore  runtime.ExecutionStore
 	CheckpointStore runtime.CheckpointStore
@@ -89,7 +93,8 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	if reg == nil {
 		reg = builtin.NewDefaultRegistry()
 	}
-
+	cfg.RuntimeContextDecorators = append([]RuntimeContextDecorator(nil), cfg.RuntimeContextDecorators...)
+	ctx = applyRuntimeContextDecorators(ctx, cfg.RuntimeContextDecorators)
 	initialSettings := graphRuntimeSettingsFromContext(ctx, baseDir)
 	ctx = core.WithEnvironment(ctx, initialSettings.Environment)
 	srv := &Server{
@@ -131,6 +136,18 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	srv.chatChannels = triggerService.ChatChannels()
 	srv.chatSetup = newChatSetupManager(srv.chatChannels)
 	return srv, nil
+}
+
+func applyRuntimeContextDecorators(ctx context.Context, decorators []RuntimeContextDecorator) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	for _, decorate := range decorators {
+		if decorate != nil {
+			ctx = decorate(ctx)
+		}
+	}
+	return ctx
 }
 
 func ensureBaseDir(baseDir string) (string, error) {

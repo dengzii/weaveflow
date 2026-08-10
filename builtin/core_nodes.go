@@ -4,6 +4,7 @@ import (
 	"fmt"
 
 	"github.com/dengzii/weaveflow/node"
+	agentsnode "github.com/dengzii/weaveflow/node/agents"
 	plannode "github.com/dengzii/weaveflow/node/plan"
 	supervisornode "github.com/dengzii/weaveflow/node/supervisor"
 	"github.com/dengzii/weaveflow/registry"
@@ -14,6 +15,9 @@ func RegisterCoreNodeTypes(r *registry.Registry) error {
 		return fmt.Errorf("registry is nil")
 	}
 	if err := node.RegisterCoreNodeTypes(r); err != nil {
+		return err
+	}
+	if err := agentsnode.RegisterNodeTypes(r); err != nil {
 		return err
 	}
 	if err := plannode.RegisterNodeTypes(r); err != nil {
