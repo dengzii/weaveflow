@@ -63,14 +63,8 @@ func (s *triggerRunStarter) Start(ctx context.Context, initial *state.State) (ru
 	if s == nil || s.runner == nil {
 		return runtime.RunRecord{}, nil, fmt.Errorf("trigger runner is not configured")
 	}
-	runCtx, cancel := deriveRunContextFromBase(ctx, s.baseContext)
+	runCtx, cancel := deriveTriggerRunContext(ctx, s.baseContext)
 	defer cancel()
-	if sink := chatcap.ReplySinkFromContext(ctx); sink != nil {
-		runCtx = chatcap.WithReplySink(runCtx, sink)
-	}
-	if observer := runtime.RunnerEventObserverFromContext(ctx); observer != nil {
-		runCtx = runtime.WithRunnerEventObserver(runCtx, observer)
-	}
 	return s.runner.Start(runCtx, initial)
 }
 
@@ -85,13 +79,7 @@ func (s *triggerRunStarter) StartAsync(ctx context.Context, initial *state.State
 		close(done)
 		return run, done, err
 	}
-	runCtx, cancel := deriveRunContextFromBase(ctx, s.baseContext)
-	if sink := chatcap.ReplySinkFromContext(ctx); sink != nil {
-		runCtx = chatcap.WithReplySink(runCtx, sink)
-	}
-	if observer := runtime.RunnerEventObserverFromContext(ctx); observer != nil {
-		runCtx = runtime.WithRunnerEventObserver(runCtx, observer)
-	}
+	runCtx, cancel := deriveTriggerRunContext(ctx, s.baseContext)
 	run, innerDone, err := asyncRunner.StartAsync(runCtx, initial)
 	if err != nil {
 		cancel()
@@ -106,6 +94,20 @@ func (s *triggerRunStarter) StartAsync(ctx context.Context, initial *state.State
 		close(done)
 	}()
 	return run, done, nil
+}
+
+func deriveTriggerRunContext(parent, base context.Context) (context.Context, context.CancelFunc) {
+	runCtx, cancel := deriveRunContextFromBase(parent, base)
+	if sink := chatcap.ReplySinkFromContext(parent); sink != nil {
+		runCtx = chatcap.WithReplySink(runCtx, sink)
+	}
+	if observer := runtime.RunnerEventObserverFromContext(parent); observer != nil {
+		runCtx = runtime.WithRunnerEventObserver(runCtx, observer)
+	}
+	if origin, ok := runtime.RunOriginFromContext(parent); ok {
+		runCtx = runtime.WithRunOrigin(runCtx, origin)
+	}
+	return runCtx, cancel
 }
 
 func triggerTargetMatchesRunner(graphID string, runner *runtime.GraphRunner) bool {

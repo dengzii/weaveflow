@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -100,6 +102,61 @@ func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 	}
 }
 
+func TestTriggerRunOriginIsReturnedByRunList(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("origin-graph", "v1", "origin"))
+
+	replaced := serveHTTP(engine, http.MethodPut, "/graphs/origin-graph/triggers", `{"triggers":[{
+		"id":"hook","type":"webhook","enabled":true,"webhook":{}
+	}]}`)
+	if replaced.Code != http.StatusOK {
+		t.Fatalf("replace triggers status = %d, body = %s", replaced.Code, replaced.Body.String())
+	}
+
+	invoked := serveHTTP(engine, http.MethodPost, "/graphs/origin-graph/triggers/hook/invocations", `{}`)
+	if invoked.Code != http.StatusAccepted {
+		t.Fatalf("invoke trigger status = %d, body = %s", invoked.Code, invoked.Body.String())
+	}
+	var invocationEnvelope struct {
+		Data triggerInvocationResponse `json:"data"`
+	}
+	if err := json.Unmarshal(invoked.Body.Bytes(), &invocationEnvelope); err != nil {
+		t.Fatalf("decode trigger invocation: %v", err)
+	}
+	runID := invocationEnvelope.Data.Run.RunID
+	if runID == "" {
+		t.Fatal("trigger invocation run id is empty")
+	}
+
+	listed := serveHTTP(engine, http.MethodGet, "/graphs/origin-graph/runs", "")
+	if listed.Code != http.StatusOK {
+		t.Fatalf("list runs status = %d, body = %s", listed.Code, listed.Body.String())
+	}
+	var listEnvelope struct {
+		Data runListPage `json:"data"`
+	}
+	if err := json.Unmarshal(listed.Body.Bytes(), &listEnvelope); err != nil {
+		t.Fatalf("decode run list: %v", err)
+	}
+	for _, run := range listEnvelope.Data.Items {
+		if run.RunID != runID {
+			continue
+		}
+		if run.Origin == nil || run.Origin.Type != "webhook" || run.Origin.TriggerID != "hook" {
+			t.Fatalf("listed run origin = %#v, want webhook trigger hook", run.Origin)
+		}
+		waitForRunTerminalStatus(t, srv.runtime.session("origin-graph", uploaded.Graph.GraphSessionID).runner, runID)
+		return
+	}
+	t.Fatalf("trigger run %q was not returned by run list", runID)
+}
+
 func TestTriggerRunStarterUsesSessionRuntimeContext(t *testing.T) {
 	sessionModel := &triggerRuntimeTestModel{id: "session"}
 	starter := &triggerTestStarter{}
@@ -143,6 +200,42 @@ func TestTriggerRunStarterPreservesRuntimeEventObserver(t *testing.T) {
 	}
 	if runtime.RunnerEventObserverFromContext(starter.ctx) == nil {
 		t.Fatal("runtime event observer was dropped while deriving the runtime context")
+	}
+}
+
+func TestTriggerRunStarterPreservesRunOrigin(t *testing.T) {
+	origin := runtime.RunOrigin{Type: "webhook", TriggerID: "hook"}
+
+	t.Run("sync", func(t *testing.T) {
+		starter := &triggerTestStarter{}
+		wrapped := &triggerRunStarter{baseContext: context.Background(), runner: starter}
+		ctx := runtime.WithRunOrigin(context.Background(), origin)
+
+		if _, _, err := wrapped.Start(ctx, state.NewState()); err != nil {
+			t.Fatal(err)
+		}
+		assertTriggerRunOrigin(t, starter.ctx, origin)
+	})
+
+	t.Run("async", func(t *testing.T) {
+		starter := &triggerTestStarter{}
+		wrapped := &triggerRunStarter{baseContext: context.Background(), runner: starter}
+		ctx := runtime.WithRunOrigin(context.Background(), origin)
+
+		if _, done, err := wrapped.StartAsync(ctx, state.NewState()); err != nil {
+			t.Fatal(err)
+		} else {
+			waitForSignal(t, done, "trigger run completion")
+		}
+		assertTriggerRunOrigin(t, starter.ctx, origin)
+	})
+}
+
+func assertTriggerRunOrigin(t *testing.T, ctx context.Context, want runtime.RunOrigin) {
+	t.Helper()
+	got, ok := runtime.RunOriginFromContext(ctx)
+	if !ok || got != want {
+		t.Fatalf("trigger run origin = %#v, present = %t, want %#v", got, ok, want)
 	}
 }
 
