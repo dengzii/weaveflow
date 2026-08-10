@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
@@ -273,6 +274,7 @@ type callbackBody struct {
 	MessageID   string `json:"msgid"`
 	MessageType string `json:"msgtype"`
 	ChatID      string `json:"chatid"`
+	ChatType    string `json:"chattype"`
 	From        struct {
 		UserID string `json:"userid"`
 	} `json:"from"`
@@ -722,7 +724,7 @@ func (channel *Channel) handleMessageCallback(ctx context.Context, writer frameW
 		ID:             body.MessageID,
 		UserID:         body.From.UserID,
 		ConversationID: firstNonEmpty(body.ChatID, body.From.UserID, body.MessageID),
-		Content:        body.Text.Content,
+		Content:        normalizeInboundText(body.Text.Content, body.ChatType),
 		Metadata: map[string]any{
 			"channel":      ChannelID,
 			"request_id":   frame.Headers.RequestID,
@@ -736,6 +738,26 @@ func (channel *Channel) handleMessageCallback(ctx context.Context, writer frameW
 	}
 	channel.logger.Info("WeCom message handled", "message_id", body.MessageID)
 	return nil
+}
+
+func normalizeInboundText(content, chatType string) string {
+	if !strings.EqualFold(strings.TrimSpace(chatType), "group") {
+		return content
+	}
+	trimmed := strings.TrimLeftFunc(content, unicode.IsSpace)
+	if !strings.HasPrefix(trimmed, "@") {
+		return content
+	}
+	separatorIndex := strings.IndexFunc(trimmed, func(character rune) bool {
+		return character > unicode.MaxASCII && unicode.IsSpace(character)
+	})
+	if separatorIndex < 0 {
+		separatorIndex = strings.IndexFunc(trimmed, unicode.IsSpace)
+	}
+	if separatorIndex < 0 {
+		return ""
+	}
+	return strings.TrimSpace(trimmed[separatorIndex:])
 }
 
 func (channel *Channel) handleEventCallback(ctx context.Context, writer frameWriter, frame incomingFrame) error {

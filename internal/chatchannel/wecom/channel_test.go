@@ -50,8 +50,8 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 		if err := conn.WriteJSON(map[string]any{
 			"cmd": "aibot_msg_callback", "headers": map[string]string{"req_id": "callback-request"},
 			"body": map[string]any{
-				"msgid": "message-1", "msgtype": "text", "chatid": "group-1",
-				"from": map[string]string{"userid": "user-1"}, "text": map[string]string{"content": "hello"},
+				"msgid": "message-1", "msgtype": "text", "chatid": "group-1", "chattype": "group",
+				"from": map[string]string{"userid": "user-1"}, "text": map[string]string{"content": "@RobotA /new"},
 			},
 		}); err != nil {
 			results <- serverResult{err: err}
@@ -75,7 +75,7 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 	defer server.Close()
 
 	handler := chatchannel.HandlerFunc(func(ctx context.Context, message chatchannel.InboundMessage, sink chatcap.ReplySink) error {
-		if message.Content != "hello" || message.UserID != "user-1" || message.ConversationID != "group-1" ||
+		if message.Content != "/new" || message.UserID != "user-1" || message.ConversationID != "group-1" ||
 			message.Metadata["channel"] != ChannelID || message.Metadata["sender_id"] != "user-1" {
 			return fmt.Errorf("unexpected message: %#v", message)
 		}
@@ -149,6 +149,25 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("channel did not stop")
+	}
+}
+
+func TestNormalizeInboundTextStripsOnlyGroupBotMention(t *testing.T) {
+	for name, testCase := range map[string]struct {
+		content  string
+		chatType string
+		expected string
+	}{
+		"group command":          {content: "@RobotA /new", chatType: "group", expected: "/new"},
+		"group unicode spacing":  {content: " @Robot A\u2005/stop ", chatType: "group", expected: "/stop"},
+		"group without mention":  {content: "/help", chatType: "group", expected: "/help"},
+		"single mention content": {content: "@RobotA /new", chatType: "single", expected: "@RobotA /new"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if actual := normalizeInboundText(testCase.content, testCase.chatType); actual != testCase.expected {
+				t.Fatalf("normalizeInboundText(%q, %q) = %q, want %q", testCase.content, testCase.chatType, actual, testCase.expected)
+			}
+		})
 	}
 }
 
