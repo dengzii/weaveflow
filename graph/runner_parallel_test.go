@@ -1157,6 +1157,89 @@ func TestRunnerExternalPauseAfterSingleNodeDoesNotComplete(t *testing.T) {
 	}
 }
 
+func TestRunnerAfterNodePausePreservesSucceededStepAndResumeEmitsLifecycle(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "work", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("done"), true)
+	})
+	if err := workflow.SetEntryPoint("work"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := workflow.SetFinishPoint("work"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+
+	directory := t.TempDir()
+	executionStore := fruntime.NewFileExecutionStore(directory)
+	runner := mustNewGraphRunner(t,
+		workflow,
+		executionStore,
+		fruntime.NewFileCheckpointStore(directory),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(directory),
+		fruntime.WithBreakpoints(fruntime.Breakpoint{
+			ID:      "after-work",
+			NodeID:  "work",
+			Stage:   string(fruntime.CheckpointAfterNode),
+			Enabled: true,
+		}),
+	)
+
+	pausedRun, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if pausedRun.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", pausedRun.Status)
+	}
+	steps, err := runner.ListSteps(context.Background(), pausedRun.RunID)
+	if err != nil {
+		t.Fatalf("list paused steps: %v", err)
+	}
+	if len(steps) != 1 || steps[0].Status != fruntime.StepStatusSucceeded {
+		t.Fatalf("paused steps = %#v, want succeeded work step", steps)
+	}
+
+	pausedRun.CurrentNodeIDs = []string{"work"}
+	pausedRun.CurrentStepIDs = []string{steps[0].StepID}
+	pausedRun.NextNodeIDs = []string{EndNodeRef}
+	pausedRun.ParallelWaveID = "stale-wave"
+	if err := executionStore.UpdateRun(context.Background(), pausedRun); err != nil {
+		t.Fatalf("seed stale execution pointers: %v", err)
+	}
+
+	resumedRun, _, err := runner.Resume(context.Background(), pausedRun.RunID, nil)
+	if err != nil {
+		t.Fatalf("resume paused run: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want completed", resumedRun.Status)
+	}
+	if resumedRun.CurrentNodeID != "" || len(resumedRun.CurrentNodeIDs) != 0 || len(resumedRun.CurrentStepIDs) != 0 || len(resumedRun.NextNodeIDs) != 0 || resumedRun.ParallelWaveID != "" {
+		t.Fatalf("completed run retained execution pointers: %#v", resumedRun)
+	}
+
+	events, err := runner.ListEvents(pausedRun.RunID)
+	if err != nil {
+		t.Fatalf("list resumed events: %v", err)
+	}
+	resumedIndex := -1
+	finishedIndex := -1
+	for index, event := range events {
+		switch event.Type {
+		case fruntime.EventRunResumed:
+			resumedIndex = index
+		case fruntime.EventRunFinished:
+			finishedIndex = index
+		}
+	}
+	if resumedIndex < 0 || finishedIndex <= resumedIndex {
+		t.Fatalf("resume lifecycle order invalid: resumed=%d finished=%d events=%#v", resumedIndex, finishedIndex, events)
+	}
+}
+
 func TestRunnerRejectsConcurrentResumeOfSameRun(t *testing.T) {
 	t.Parallel()
 
@@ -1385,6 +1468,29 @@ func TestRunnerExternalCancelAfterSingleNodeDoesNotComplete(t *testing.T) {
 	}
 	if res.run.Status != fruntime.RunStatusCanceled {
 		t.Fatalf("run status = %q, want canceled", res.run.Status)
+	}
+	steps, err := runner.ListSteps(context.Background(), res.run.RunID)
+	if err != nil {
+		t.Fatalf("list canceled steps: %v", err)
+	}
+	if len(steps) != 1 || steps[0].Status != fruntime.StepStatusCanceled {
+		t.Fatalf("canceled steps = %#v, want canceled work step", steps)
+	}
+	events, err := runner.ListEvents(res.run.RunID)
+	if err != nil {
+		t.Fatalf("list canceled events: %v", err)
+	}
+	var canceledNodeEvents int
+	for _, event := range events {
+		if event.Type == fruntime.EventNodeFailed {
+			t.Fatalf("canceled run emitted nodes.failed: %#v", event)
+		}
+		if event.Type == fruntime.EventNodeCanceled {
+			canceledNodeEvents++
+		}
+	}
+	if canceledNodeEvents != 1 {
+		t.Fatalf("nodes.canceled count = %d, want 1; events=%#v", canceledNodeEvents, events)
 	}
 }
 

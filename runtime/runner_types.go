@@ -36,6 +36,7 @@ const (
 	StepStatusSucceeded StepStatus = "succeeded"
 	StepStatusFailed    StepStatus = "failed"
 	StepStatusPaused    StepStatus = "paused"
+	StepStatusCanceled  StepStatus = "canceled"
 )
 
 type CheckpointStage string
@@ -61,6 +62,7 @@ const (
 	EventNodeStarted        EventType = "nodes.started"
 	EventNodeFinished       EventType = "nodes.finished"
 	EventNodeFailed         EventType = "nodes.failed"
+	EventNodeCanceled       EventType = "nodes.canceled"
 	EventNodeRetry          EventType = "nodes.retry"
 	EventNodeCustom         EventType = "nodes.custom"
 	EventLLMReasoningChunk  EventType = "llm.reasoning_chunk"

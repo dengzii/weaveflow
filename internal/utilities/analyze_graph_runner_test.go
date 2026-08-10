@@ -187,6 +187,20 @@ func TestAnalyzeLatestRunUsesMostRecentlyUpdatedRun(t *testing.T) {
 	}
 }
 
+func TestAnalyzeGraphRunnerCountsCanceledSteps(t *testing.T) {
+	t.Parallel()
+
+	steps := []fruntime.StepRecord{{NodeID: "work", Status: fruntime.StepStatusCanceled, Attempt: 1}}
+	stats := buildGraphRunStats(steps, 0, 0, nil, nil)
+	nodes := buildNodeRunStats(steps, nil)
+	if stats.CanceledStepCount != 1 || stats.FailedStepCount != 0 {
+		t.Fatalf("run stats = %#v", stats)
+	}
+	if len(nodes) != 1 || nodes[0].Canceled != 1 || nodes[0].Failed != 0 {
+		t.Fatalf("node stats = %#v", nodes)
+	}
+}
+
 func eventWithPayload(t *testing.T, eventType fruntime.EventType, payload any) fruntime.Event {
 	t.Helper()
 	raw, err := json.Marshal(payload)

@@ -55,6 +55,7 @@ type EventNodeUsage struct {
 	Started                int                `json:"started"`
 	Finished               int                `json:"finished"`
 	Failed                 int                `json:"failed"`
+	Canceled               int                `json:"canceled"`
 	RetryCount             int                `json:"retry_count"`
 	AttemptCount           int                `json:"attempt_count"`
 	Duration               time.Duration      `json:"duration"`
@@ -384,6 +385,8 @@ func (b *eventAnalysisBuilder) applyEvent(analysis *EventRunAnalysis, event Even
 		b.applyNodeFinished(node, event)
 	case EventNodeFailed:
 		b.applyNodeFailed(analysis, node, event)
+	case EventNodeCanceled:
+		b.applyNodeCanceled(node, event)
 	case EventNodeRetry:
 		b.applyNodeRetry(node, event)
 	case EventLLMCall, EventLLMUsage:
@@ -505,6 +508,17 @@ func (b *eventAnalysisBuilder) applyNodeFailed(analysis *EventRunAnalysis, node 
 		b.finishNodeStep(node, event)
 	}
 	b.appendError(analysis, event)
+}
+
+func (b *eventAnalysisBuilder) applyNodeCanceled(node *EventNodeUsage, event Event) {
+	if node == nil {
+		return
+	}
+	node.Canceled++
+	if attempt := payloadInt(event.Payload, "attempt"); attempt > node.AttemptCount {
+		node.AttemptCount = attempt
+	}
+	b.finishNodeStep(node, event)
 }
 
 func (b *eventAnalysisBuilder) applyNodeRetry(node *EventNodeUsage, event Event) {
@@ -782,7 +796,6 @@ func applyRunLifecycle(analysis *EventRunAnalysis, event Event) {
 		}
 	case EventRunPaused:
 		analysis.Status = RunStatusPaused
-		analysis.FinishedAt = event.Timestamp
 	case EventRunFinished:
 		analysis.Status = RunStatusCompleted
 		analysis.FinishedAt = event.Timestamp

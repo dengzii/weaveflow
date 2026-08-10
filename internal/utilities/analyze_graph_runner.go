@@ -54,6 +54,7 @@ type GraphRunStats struct {
 	AttemptCount           int                `json:"attempt_count"`
 	SucceededStepCount     int                `json:"succeeded_step_count"`
 	FailedStepCount        int                `json:"failed_step_count"`
+	CanceledStepCount      int                `json:"canceled_step_count"`
 	PausedStepCount        int                `json:"paused_step_count"`
 	RunningStepCount       int                `json:"running_step_count"`
 	ScheduledStepCount     int                `json:"scheduled_step_count"`
@@ -123,6 +124,7 @@ type GraphNodeRunStats struct {
 	AttemptCount     int                 `json:"attempt_count"`
 	Succeeded        int                 `json:"succeeded"`
 	Failed           int                 `json:"failed"`
+	Canceled         int                 `json:"canceled"`
 	Paused           int                 `json:"paused"`
 	Running          int                 `json:"running"`
 	Scheduled        int                 `json:"scheduled"`
@@ -370,6 +372,8 @@ func buildGraphRunStats(steps []fruntime.StepRecord, checkpointCount int, artifa
 			stats.SucceededStepCount++
 		case fruntime.StepStatusFailed:
 			stats.FailedStepCount++
+		case fruntime.StepStatusCanceled:
+			stats.CanceledStepCount++
 		case fruntime.StepStatusPaused:
 			stats.PausedStepCount++
 		case fruntime.StepStatusRunning:
@@ -404,6 +408,8 @@ func buildNodeRunStats(steps []fruntime.StepRecord, events []fruntime.Event) []G
 			stats.Succeeded++
 		case fruntime.StepStatusFailed:
 			stats.Failed++
+		case fruntime.StepStatusCanceled:
+			stats.Canceled++
 		case fruntime.StepStatusPaused:
 			stats.Paused++
 		case fruntime.StepStatusRunning:

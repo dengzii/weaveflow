@@ -937,7 +937,7 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 
 	for _, item := range items {
 		step := item.step
-		if step.Status == StepStatusSucceeded || step.Status == StepStatusPaused {
+		if step.Status == StepStatusSucceeded || step.Status == StepStatusPaused || step.Status == StepStatusCanceled {
 			continue
 		}
 		attempts := item.attempts
@@ -983,11 +983,13 @@ func (e *graphRunnerExecution) finalizeCanceledSteps(ctx context.Context) error 
 	var finalizeErr error
 	for _, item := range items {
 		step := item.step
-		if step.Status == StepStatusSucceeded || step.Status == StepStatusPaused {
+		if step.Status == StepStatusSucceeded || step.Status == StepStatusPaused || step.Status == StepStatusCanceled {
 			continue
 		}
+		attempts := item.attempts
 		now := e.runner.currentTime()
-		step.Status = StepStatusFailed
+		step.Attempt = attempts
+		step.Status = StepStatusCanceled
 		step.ErrorCode = "run_canceled"
 		step.ErrorMessage = "run canceled"
 		step.FinishedAt = &now
@@ -996,9 +998,10 @@ func (e *graphRunnerExecution) finalizeCanceledSteps(ctx context.Context) error 
 			finalizeErr = errors.Join(finalizeErr, err)
 			continue
 		}
-		if err := e.runner.publishEvent(e.controlPersistenceContext(ctx), run, step.StepID, step.NodeID, EventNodeFailed, map[string]any{
+		if err := e.runner.publishEvent(e.controlPersistenceContext(ctx), run, step.StepID, step.NodeID, EventNodeCanceled, map[string]any{
+			"attempt":    attempts,
 			"error_code": "run_canceled",
-			"canceled":   true,
+			"message":    "run canceled",
 		}); err != nil {
 			finalizeErr = errors.Join(finalizeErr, err)
 		}

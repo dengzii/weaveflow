@@ -144,6 +144,9 @@ func (p *PrettyEventLogging) printEvent(e fruntime.Event) {
 	case fruntime.EventNodeFailed:
 		p.printf("%s %s %s\n", p.dim(ts), p.red("✗"), p.nodeName(e.NodeID))
 
+	case fruntime.EventNodeCanceled:
+		p.printf("%s %s %s\n", p.dim(ts), p.yellow("■"), p.nodeName(e.NodeID))
+
 	case fruntime.EventNodeRetry:
 		var payload map[string]any
 		_ = json.Unmarshal(e.Payload, &payload)

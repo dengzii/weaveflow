@@ -704,22 +704,15 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 	if checkpoint.Runtime.CurrentStepID != "" {
 		run.LastStepID = checkpoint.Runtime.CurrentStepID
 	}
-	if len(startNodes) == 1 && startNodes[0] == langgraph.END {
-		now := r.currentTime()
-		run.Status = RunStatusCompleted
-		run.UpdatedAt = now
-		run.FinishedAt = &now
-		if err := r.executionStore.UpdateRun(ctx, run); err != nil {
-			return RunRecord{}, nil, err
-		}
-		logger.Info("resume resolved to completed run", append(runLogFields(run), state.SummaryFields(checkpoint.Business)...)...)
-		return run, checkpoint.Business, nil
-	}
+	resolvedToEnd := len(startNodes) == 1 && startNodes[0] == langgraph.END
 	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
 	if checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "" {
 		if len(startNodes) > 0 {
 			run.CurrentNodeID = startNodes[0]
 		}
+	}
+	if resolvedToEnd {
+		clearRunExecutionPointers(&run)
 	}
 	run.UpdatedAt = r.currentTime()
 	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
@@ -731,6 +724,10 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		"node_ids":      startNodes,
 	}); err != nil {
 		return RunRecord{}, nil, err
+	}
+	if resolvedToEnd {
+		logger.Info("resume resolved to completed run", append(runLogFields(run), state.SummaryFields(checkpoint.Business)...)...)
+		return r.completeRun(ctx, run, checkpoint.Business)
 	}
 
 	fields := append(runLogFields(run),
@@ -1214,7 +1211,7 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState
 	run.Status = RunStatusCompleted
 	run.PauseRequested = false
 	run.CancelRequested = false
-	run.CurrentNodeID = ""
+	clearRunExecutionPointers(&run)
 	run.UpdatedAt = now
 	run.FinishedAt = &now
 	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
@@ -1225,6 +1222,14 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState
 		return run, finalState, err
 	}
 	return run, finalState, nil
+}
+
+func clearRunExecutionPointers(run *RunRecord) {
+	run.CurrentNodeID = ""
+	run.CurrentNodeIDs = nil
+	run.CurrentStepIDs = nil
+	run.NextNodeIDs = nil
+	run.ParallelWaveID = ""
 }
 
 func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, currentState *state.State) (RunRecord, *state.State, error) {
@@ -1334,18 +1339,25 @@ func (r *GraphRunner) publishStateDiffChanges(ctx context.Context, run RunRecord
 func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState *state.State, step StepRecord, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
 	now := r.currentTime()
 	originalStep := step
+	stage := pauseCheckpointStage(step, checkpointID)
 	run.Status = RunStatusPaused
 	run.PauseRequested = false
 	run.LastCheckpointID = checkpointID
 	run.UpdatedAt = now
 	run.FinishedAt = nil
-	step.Status = StepStatusPaused
-	step.UpdatedAt = now
-	if err := r.executionStore.UpdateStep(ctx, step); err != nil {
-		return RunRecord{}, currentState, err
+	stepUpdated := stage != CheckpointAfterNode
+	if stepUpdated {
+		step.Status = StepStatusPaused
+		step.UpdatedAt = now
+		if err := r.executionStore.UpdateStep(ctx, step); err != nil {
+			return RunRecord{}, currentState, err
+		}
 	}
 	if err := r.executionStore.UpdateRun(ctx, run); err != nil {
-		rollbackErr := r.executionStore.UpdateStep(context.WithoutCancel(normalizeRunnerContext(ctx)), originalStep)
+		var rollbackErr error
+		if stepUpdated {
+			rollbackErr = r.executionStore.UpdateStep(context.WithoutCancel(normalizeRunnerContext(ctx)), originalStep)
+		}
 		return RunRecord{}, currentState, errors.Join(err, rollbackErr)
 	}
 	fields := append(runLogFields(run), stepLogFields(step)...)
@@ -1362,7 +1374,7 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState 
 			return RunRecord{}, currentState, err
 		}
 	}
-	if err := r.publishEvent(ctx, run, step.StepID, step.NodeID, EventRunPaused, pauseEventPayload(checkpointID, pauseCheckpointStage(step, checkpointID), step.NodeID, message, hit)); err != nil {
+	if err := r.publishEvent(ctx, run, step.StepID, step.NodeID, EventRunPaused, pauseEventPayload(checkpointID, stage, step.NodeID, message, hit)); err != nil {
 		return RunRecord{}, currentState, err
 	}
 	return run, currentState, nil
