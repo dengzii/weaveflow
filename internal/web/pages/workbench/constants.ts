@@ -52,6 +52,7 @@ export const runtimeEventTypes = [
   "nodes.started",
   "nodes.finished",
   "nodes.failed",
+  "nodes.canceled",
   "nodes.retry",
   "nodes.custom",
   "llm.reasoning_chunk",

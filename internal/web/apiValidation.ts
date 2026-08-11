@@ -20,7 +20,7 @@ import type {
 } from "./types";
 
 const RUN_STATUSES = new Set(["pending", "running", "paused", "failed", "completed", "canceled"]);
-const STEP_STATUSES = new Set(["scheduled", "running", "succeeded", "failed", "paused"]);
+const STEP_STATUSES = new Set(["scheduled", "running", "succeeded", "failed", "paused", "canceled"]);
 
 export function validateGraphListPage(value: unknown, source: string): GraphListPage {
   const page = requireRecord(value, source);

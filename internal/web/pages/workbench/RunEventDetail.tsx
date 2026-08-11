@@ -143,6 +143,11 @@ function eventPayloadFields(event: RuntimeEvent, payload: Record<string, unknown
       add("Attempt", payload.attempt);
       add("Error", payload.error, { multiline: true });
       break;
+    case "nodes.canceled":
+      add("Attempt", payload.attempt);
+      add("Error code", payload.error_code);
+      add("Message", payload.message, { multiline: true });
+      break;
     case "llm.call":
       add("Model", payload.model);
       add("Stop reason", payload.stop_reason);

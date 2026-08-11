@@ -29,6 +29,8 @@ describe("API response validation", () => {
     expect(validateRunRecord(runRecord(), "run")).toEqual(runRecord());
     expect(validateRunResult({ run: runRecord(), state: {} }, "run result")).toMatchObject({ run: runRecord() });
     expect(validateRunInspection(runInspection(), "inspection")).toEqual(runInspection());
+    expect(validateRunInspection({ ...runInspection(), steps: [canceledStep()] }, "inspection").steps[0]?.status)
+      .toBe("canceled");
   });
 
   test("accepts runtime event, Registry, and Tool responses", () => {
@@ -120,5 +122,18 @@ function runInspection() {
     steps: [],
     checkpoints: [],
     events: { items: [], next_cursor: "" },
+  };
+}
+
+function canceledStep() {
+  return {
+    step_id: "step-1",
+    run_id: "run-1",
+    node_id: "start",
+    node_name: "Start",
+    status: "canceled",
+    attempt: 1,
+    started_at: timestamp,
+    updated_at: timestamp,
   };
 }

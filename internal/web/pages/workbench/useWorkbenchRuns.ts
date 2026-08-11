@@ -308,9 +308,14 @@ export function useWorkbenchRuns({
     clearSelectedRunInspection();
   }, [clearLiveEvents, clearSelectedRunInspection, updateRuns, updateSelectedRunID]);
 
-  const maybeOpenUserInputPrompt = useCallback((interrupt?: RunInterrupt | null) => {
-    const prompt = userInputPromptFromInterrupt(interrupt, definition);
-    if (!prompt) return;
+  const syncUserInputPrompt = useCallback((interrupt: RunInterrupt | null, run: RunRecord | null) => {
+    const prompt = userInputPromptFromInterrupt(interrupt, definition, run);
+    if (!prompt) {
+      humanPromptCheckpointRef.current = "";
+      setHumanPrompt(null);
+      setHumanPromptText("");
+      return;
+    }
     if (ignoredHumanInterruptsRef.current.has(prompt.checkpointID)) return;
     if (humanPromptCheckpointRef.current === prompt.checkpointID) return;
     humanPromptCheckpointRef.current = prompt.checkpointID;
@@ -318,10 +323,10 @@ export function useWorkbenchRuns({
     setHumanPromptText("");
   }, [definition]);
 
-  // The pause event can arrive before detail state, so prompt discovery also follows interrupt updates.
+  // The pause event can arrive before detail state, so prompt discovery follows both run and interrupt updates.
   useEffect(() => {
-    maybeOpenUserInputPrompt(runInterrupt);
-  }, [maybeOpenUserInputPrompt, runInterrupt]);
+    syncUserInputPrompt(runInterrupt, selectedRun);
+  }, [runInterrupt, selectedRun, syncUserInputPrompt]);
 
   const refreshRuns = useCallback(async (
     identity: GraphIdentity = graphIdentityRef.current,
@@ -653,7 +658,8 @@ export function useWorkbenchRuns({
   const resumeSelectedRun = useCallback(async () => {
     const runID = selectedRunIDRef.current;
     if (!runID) return;
-    const prompt = userInputPromptFromInterrupt(runInterrupt, definition);
+    const selected = runsRef.current.find((run) => run.run_id === runID) ?? null;
+    const prompt = userInputPromptFromInterrupt(runInterrupt, definition, selected);
     if (prompt) {
       humanPromptCheckpointRef.current = prompt.checkpointID;
       setHumanPrompt(prompt);
@@ -665,7 +671,6 @@ export function useWorkbenchRuns({
     if (!beginRunOperation()) return;
 
     const runContextVersion = runContextVersionRef.current;
-    const selected = runsRef.current.find((run) => run.run_id === runID) ?? null;
     const identity = {
       id: selected?.graph_id || graphIdentityRef.current.id,
       version: selected?.graph_version || graphIdentityRef.current.version,

@@ -182,7 +182,7 @@ describe("v2 graph editor defaults", () => {
     });
   });
 
-  test("recognizes bound user input pauses and builds the resume patch", () => {
+  test("recognizes bound user input only for paused runs and builds the resume patch", () => {
     const definition: GraphDefinition = {
       version: "2.0",
       state_modules: [{ name: "weaveflow.protocols", version: "1" }],
@@ -195,12 +195,16 @@ describe("v2 graph editor defaults", () => {
         },
       }],
     };
-    const prompt = userInputPromptFromInterrupt({
+    const interrupt = {
       run_id: "run-1",
       checkpoint_id: "checkpoint-1",
       node_id: "input",
       message: "waiting for input",
-    }, definition);
+    };
+    const prompt = userInputPromptFromInterrupt(interrupt, definition, {
+      run_id: "run-1",
+      status: "paused",
+    });
     expect(prompt).toEqual({
       runID: "run-1",
       checkpointID: "checkpoint-1",
@@ -211,6 +215,14 @@ describe("v2 graph editor defaults", () => {
     expect(pendingUserInputState(prompt?.statePath ?? "", "hello")).toEqual({
       scopes: { agent: { pending_input: "hello" } },
     });
+    expect(userInputPromptFromInterrupt(interrupt, definition, {
+      run_id: "run-1",
+      status: "canceled",
+    })).toBeNull();
+    expect(userInputPromptFromInterrupt(interrupt, definition, {
+      run_id: "run-2",
+      status: "paused",
+    })).toBeNull();
     expect(pendingUserInputState("scopes.__proto__.value", "unsafe")).toEqual({});
   });
 

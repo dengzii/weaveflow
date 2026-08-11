@@ -156,6 +156,23 @@ describe("workbench run model", () => {
     })[0]?.status).toBe("canceled");
   });
 
+  test("accepts older authoritative records when lifecycle status matches", () => {
+    const projected: RunRecord = {
+      ...baseRun,
+      status: "paused",
+      updated_at: "2026-01-01T00:02:00Z",
+    };
+    const authoritative: RunRecord = {
+      ...projected,
+      current_node_id: "review",
+      last_checkpoint_id: "checkpoint-1",
+      updated_at: "2026-01-01T00:01:00Z",
+    };
+
+    expect(upsertInspectedRun([projected], authoritative)).toEqual([authoritative]);
+    expect(mergeRefreshedRuns([projected], [authoritative])).toEqual([authoritative]);
+  });
+
   test("batches live events and coalesces LLM chunks by call", () => {
     const first: RuntimeEvent = {
       id: "chunk-1",

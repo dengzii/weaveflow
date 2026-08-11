@@ -76,7 +76,7 @@ export function mergeRefreshedRuns(
   const merged = refreshed.flatMap((run) => {
     const existing = currentByID.get(run.run_id);
     if (!existing && startedIDs.has(run.run_id)) return [];
-    return [existing && Date.parse(existing.updated_at) > Date.parse(run.updated_at) ? existing : run];
+    return [existing && shouldKeepCurrentRun(existing, run) ? existing : run];
   });
   return merged.concat(
     current.filter((run) => !startedIDs.has(run.run_id) && !refreshedIDs.has(run.run_id))
@@ -88,8 +88,12 @@ export function upsertInspectedRun(current: RunRecord[], inspected: RunRecord): 
   if (existingIndex < 0) return [...current, inspected];
 
   const existing = current[existingIndex];
-  if (isEarlierTimestamp(inspected.updated_at, existing.updated_at)) return current;
+  if (shouldKeepCurrentRun(existing, inspected)) return current;
   return current.map((run, index) => (index === existingIndex ? inspected : run));
+}
+
+function shouldKeepCurrentRun(current: RunRecord, authoritative: RunRecord): boolean {
+  return current.status !== authoritative.status && isEarlierTimestamp(authoritative.updated_at, current.updated_at);
 }
 
 export function upsertRunFromEvent(

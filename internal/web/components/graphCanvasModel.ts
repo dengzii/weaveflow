@@ -153,6 +153,8 @@ export function runtimeStatusFromEvent(type: string): RuntimeNodeStatus | "" {
       return "succeeded";
     case "nodes.failed":
       return "failed";
+    case "nodes.canceled":
+      return "canceled";
     default:
       return "";
   }
@@ -295,6 +297,8 @@ function normalizeRuntimeStatus(status: StepStatus): RuntimeNodeStatus {
       return "failed";
     case "paused":
       return "paused";
+    case "canceled":
+      return "canceled";
     default:
       return "idle";
   }

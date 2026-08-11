@@ -70,7 +70,7 @@ export interface RuntimeSettings {
 export type TriggerType = "webhook" | "schedule" | "chat";
 export type TriggerConcurrency = "parallel" | "skip";
 export type RunStatus = "pending" | "running" | "paused" | "failed" | "completed" | "canceled";
-export type StepStatus = "scheduled" | "running" | "succeeded" | "failed" | "paused";
+export type StepStatus = "scheduled" | "running" | "succeeded" | "failed" | "paused" | "canceled";
 
 export interface TriggerTarget {
   graph_id: string;

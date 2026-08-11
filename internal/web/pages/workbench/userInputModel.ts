@@ -1,4 +1,4 @@
-import type { GraphDefinition, RunInterrupt } from "../../types";
+import type { GraphDefinition, RunInterrupt, RunStatus } from "../../types";
 import { parseStatePath } from "./graph-workspace/runInputModel";
 
 export interface UserInputPrompt {
@@ -11,9 +11,12 @@ export interface UserInputPrompt {
 
 export function userInputPromptFromInterrupt(
   interrupt: RunInterrupt | null | undefined,
-  definition: GraphDefinition | null
+  definition: GraphDefinition | null,
+  run: { run_id: string; status: RunStatus } | null | undefined
 ): UserInputPrompt | null {
+  if (!run || run.status !== "paused") return null;
   if (!interrupt?.run_id || !interrupt.checkpoint_id || !interrupt.node_id || !definition) return null;
+  if (interrupt.run_id !== run.run_id) return null;
   const node = definition.nodes.find((item) => item.id === interrupt.node_id);
   if (node?.type !== "user_input") return null;
   const statePath = node.state?.pending_input?.path.trim() ?? "";

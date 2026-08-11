@@ -64,6 +64,7 @@ describe("graph canvas model", () => {
     expect(runtimeFromSteps([step({ status: "scheduled" })]).get("node-1")?.status).toBe("idle");
     expect(runtimeFromSteps([step({ status: "pending" as StepRecord["status"] })]).get("node-1")?.status).toBe("idle");
     expect(runtimeFromSteps([step({ status: "running" })]).get("node-1")?.status).toBe("running");
+    expect(runtimeFromSteps([step({ status: "canceled" })]).get("node-1")?.status).toBe("canceled");
   });
 
   test("ignores stale runtime status while retaining a newer attempt", () => {
@@ -112,6 +113,7 @@ describe("graph canvas model", () => {
     expect(isVirtualEndNodeID(`${END_NODE_REF}:2`)).toBe(true);
     expect(virtualNodeSpec(`${START_NODE_REF}:2`)).toMatchObject({ name: "Start 2", type: "start" });
     expect(runtimeStatusFromEvent("nodes.retry")).toBe("running");
+    expect(runtimeStatusFromEvent("nodes.canceled")).toBe("canceled");
     expect(runtimeStatusFromEvent("run.finished")).toBe("");
   });
 });
