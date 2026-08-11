@@ -300,9 +300,9 @@ func runCodexProcess(ctx context.Context, config resolvedCodexRun, request RunRe
 		stderrResult <- read
 	}()
 
-	waitErr := command.Wait()
 	outputRead := <-stdoutResult
 	stderrRead := <-stderrResult
+	waitErr := command.Wait()
 	result.Duration = time.Since(startedAt)
 	if command.ProcessState != nil {
 		result.ExitCode = command.ProcessState.ExitCode()

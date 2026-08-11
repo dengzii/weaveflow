@@ -8,6 +8,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/dengzii/weaveflow/core"
 )
@@ -44,6 +45,24 @@ func TestProcessRunnerExecutesJSONLProtocol(t *testing.T) {
 	}
 	if len(chunks) != 1 || chunks[0].ModelID != "test" || chunks[0].ThreadID != "helper-thread" {
 		t.Fatalf("chunks = %#v", chunks)
+	}
+}
+
+func TestProcessRunnerWaitsForJSONLReaderBeforeClosingPipe(t *testing.T) {
+	runner, ctx := newHelperProcessRunner(t, nil, nil)
+	result, err := runner.Run(ctx, RunRequest{
+		ModelID: "test",
+		Prompt:  "slow reader",
+		OnChunk: func(Chunk) error {
+			time.Sleep(100 * time.Millisecond)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "slow reader" || result.ExitCode != 0 {
+		t.Fatalf("result = %#v", result)
 	}
 }
 
