@@ -14,6 +14,7 @@ import type {
   ChatChannelSetupAccount,
   ChatChannelSetupResult,
 } from "../../types";
+import { WorkbenchDialogOverlay } from "./shared";
 
 const pendingStatuses = new Set(["waiting", "scanned"]);
 
@@ -140,12 +141,7 @@ export function ChatChannelSetupDialog({
   const terminalFailure = status === "expired" || status === "failed" || retryAvailable;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
+    <WorkbenchDialogOverlay onDismiss={onClose}>
       <div className="w-[min(440px,100%)] overflow-hidden rounded-md border border-border bg-panel shadow-xl">
         <div className="flex h-14 items-center gap-3 border-b border-border px-4">
           <ShieldCheck className="h-4 w-4 text-muted-foreground" />
@@ -215,7 +211,7 @@ export function ChatChannelSetupDialog({
           <Button onClick={onClose}>{status === "confirmed" ? "Done" : "Close"}</Button>
         </div>
       </div>
-    </div>
+    </WorkbenchDialogOverlay>
   );
 }
 

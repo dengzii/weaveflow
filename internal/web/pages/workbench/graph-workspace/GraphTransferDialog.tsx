@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import type { GraphDefinition, RuntimeSettings, Trigger } from "../../../types";
+import { WorkbenchDialogOverlay } from "../shared";
 import {
   buildGraphExportBundle,
   graphExportFilename,
@@ -128,12 +129,7 @@ export function GraphTransferDialog({
 
   const title = mode === "import" ? "Import graph" : "Export graph";
   return (
-    <div
-      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/45 p-4"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
+    <WorkbenchDialogOverlay onDismiss={onClose}>
       <div
         role="dialog"
         aria-modal="true"
@@ -249,7 +245,7 @@ export function GraphTransferDialog({
           )}
         </div>
       </div>
-    </div>
+    </WorkbenchDialogOverlay>
   );
 }
 

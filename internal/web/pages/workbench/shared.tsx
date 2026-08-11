@@ -1,5 +1,37 @@
 import type { ComponentType, ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { cn } from "../../lib/utils";
+
+export const workbenchOverlayLayerClass = {
+  popover: "z-[100]",
+  dialog: "z-[200]",
+} as const;
+
+export function WorkbenchOverlayPortal({ children }: { children: ReactNode }) {
+  if (typeof document === "undefined") return children;
+  return createPortal(children, document.body);
+}
+
+export function WorkbenchDialogOverlay({
+  children,
+  onDismiss,
+}: {
+  children: ReactNode;
+  onDismiss?: () => void;
+}) {
+  return (
+    <WorkbenchOverlayPortal>
+      <div
+        className={`fixed inset-0 ${workbenchOverlayLayerClass.dialog} flex items-center justify-center bg-black/45 p-4`}
+        onMouseDown={(event) => {
+          if (event.target === event.currentTarget) onDismiss?.();
+        }}
+      >
+        {children}
+      </div>
+    </WorkbenchOverlayPortal>
+  );
+}
 
 export function PanelHeader({
   icon: Icon,

@@ -970,21 +970,18 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         />
       ) : null}
 
-      {graphTransferMode && typeof document !== "undefined"
-        ? createPortal(
-            <GraphTransferDialog
-              mode={graphTransferMode}
-              definition={exportDefinition}
-              graphID={graphId}
-              graphVersion={graphVersion}
-              runtimeSettings={runtimeSettings}
-              triggers={graphTriggers}
-              onClose={() => setGraphTransferMode(null)}
-              onImport={importGraph}
-            />,
-            document.body
-          )
-        : null}
+      {graphTransferMode ? (
+        <GraphTransferDialog
+          mode={graphTransferMode}
+          definition={exportDefinition}
+          graphID={graphId}
+          graphVersion={graphVersion}
+          runtimeSettings={runtimeSettings}
+          triggers={graphTriggers}
+          onClose={() => setGraphTransferMode(null)}
+          onImport={importGraph}
+        />
+      ) : null}
     </div>
   );
 });

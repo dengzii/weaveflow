@@ -12,6 +12,7 @@ import type {
   StateModuleDefinition,
   ToolDefinition,
 } from "../../types";
+import { WorkbenchDialogOverlay } from "./shared";
 
 type RegistrySectionKey = "nodes" | "tools" | "conditions" | "modules" | "capabilities" | "schema";
 
@@ -145,12 +146,7 @@ export function RegistryDialog({
   if (!open) return null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/45 p-4"
-      onMouseDown={(event) => {
-        if (event.target === event.currentTarget) onClose();
-      }}
-    >
+    <WorkbenchDialogOverlay onDismiss={onClose}>
       <div className="flex h-[min(760px,92vh)] w-[min(1120px,96vw)] min-w-0 flex-col rounded-md border border-border bg-panel shadow-xl">
         <div className="flex h-14 shrink-0 items-center gap-3 border-b border-border px-4">
           <div className="flex min-w-0 items-center gap-2">
@@ -199,7 +195,7 @@ export function RegistryDialog({
           </section>
         </div>
       </div>
-    </div>
+    </WorkbenchDialogOverlay>
   );
 }
 

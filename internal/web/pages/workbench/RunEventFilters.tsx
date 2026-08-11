@@ -5,6 +5,7 @@ import { Filter, Search, X } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { cn } from "../../lib/utils";
+import { workbenchOverlayLayerClass } from "./shared";
 import { toggleFilterValue } from "./runStatusModel";
 import type { EventFilterMode } from "./runStatusModel";
 
@@ -215,7 +216,8 @@ const EventFilterPopover = forwardRef<HTMLDivElement, {
     <div
       ref={ref}
       className={cn(
-        "fixed z-[100] overflow-hidden rounded-md border border-border bg-panel shadow-lg",
+        "fixed overflow-hidden rounded-md border border-border bg-panel shadow-lg",
+        workbenchOverlayLayerClass.popover,
         position.anchor === "above" ? "origin-bottom" : "origin-top"
       )}
       style={style}
