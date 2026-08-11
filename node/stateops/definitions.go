@@ -164,6 +164,7 @@ func StateTransformNodeTypeDefinition() registry.NodeTypeDefinition {
 			DynamicStatePorts: &dsl.DynamicStatePortDefinition{
 				Description:   "JSON value exposed to CEL as inputs.<alias>.",
 				NamePattern:   stateexpr.InputAliasPattern,
+				Required:      true,
 				Schema:        anyJSONSchema(),
 				Mode:          dsl.StateAccessRead,
 				MergeStrategy: dsl.StateMergeReplace,

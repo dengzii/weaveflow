@@ -98,6 +98,64 @@ func TestGraphV2DynamicTransformAndStateExpressionCondition(t *testing.T) {
 	}
 }
 
+func TestGraphV2StateExpressionTreatsMissingInputAsOptionalNonMatch(t *testing.T) {
+	t.Parallel()
+	definition := dsl.GraphDefinition{
+		Version:      dsl.GraphDefinitionVersion,
+		Name:         "optional-state-expression",
+		StateModules: protocolModuleRefs(),
+		EntryPoint:   "start",
+		Nodes: []dsl.GraphNodeSpec{
+			{
+				ID: "start", Type: node.NodeTypeStateSet,
+				Config: map[string]any{"value": true},
+				State:  map[string]dsl.StateBinding{"target": binding("shared.started")},
+			},
+			{
+				ID: "matched", Type: node.NodeTypeStateSet,
+				Config: map[string]any{"value": true},
+				State:  map[string]dsl.StateBinding{"target": binding("shared.matched")},
+			},
+			{
+				ID: "fallback", Type: node.NodeTypeStateSet,
+				Config: map[string]any{"value": true},
+				State:  map[string]dsl.StateBinding{"target": binding("shared.fallback")},
+			},
+		},
+		Edges: []dsl.GraphEdgeSpec{
+			{
+				From: "start", To: "matched",
+				Condition: &dsl.GraphConditionSpec{
+					Type:   builtin.ConditionTypeStateExpression,
+					Config: map[string]any{"expression": `inputs.trigger != "webhook"`},
+					State:  map[string]dsl.StateBinding{"trigger": binding("shared.trigger.type")},
+				},
+			},
+			{From: "start", To: "fallback"},
+			{From: "matched", To: dsl.EndNodeRef},
+			{From: "fallback", To: dsl.EndNodeRef},
+		},
+	}
+
+	workflow, err := NewBuilder(builtin.NewDefaultRegistry()).Build(definition, &registry.BuildContext{})
+	if err != nil {
+		t.Fatalf("BuildGraph(): %v", err)
+	}
+	if requirements := workflow.InitialStateRequirements(); len(requirements.Required) != 0 || len(requirements.Unresolved) != 0 {
+		t.Fatalf("initial state requirements = %#v", requirements)
+	}
+	result, err := workflow.Run(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Run(): %v", err)
+	}
+	if _, exists := state.ReadPath(result, "shared.matched"); exists {
+		t.Fatal("missing optional condition input unexpectedly matched")
+	}
+	if fallback, _ := state.ReadPath(result, "shared.fallback"); fallback != true {
+		t.Fatalf("shared.fallback = %#v, want true", fallback)
+	}
+}
+
 func TestGraphV2DynamicBindingsChangeSemanticHash(t *testing.T) {
 	t.Parallel()
 	left, err := NewBuilder(builtin.NewDefaultRegistry()).Build(dynamicStateExpressionDefinition("shared.cart.price"), &registry.BuildContext{})

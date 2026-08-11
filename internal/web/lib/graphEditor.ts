@@ -213,7 +213,7 @@ export function dynamicStatePortForName(
   return {
     name,
     description: dynamic.description,
-    required: true,
+    required: Boolean(dynamic.required),
     schema: dynamic.schema,
     mode: dynamic.mode,
     merge_strategy: dynamic.merge_strategy,

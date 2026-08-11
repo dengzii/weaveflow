@@ -234,6 +234,8 @@ func TestResolveGraphBindingsExpandsDynamicStatePorts(t *testing.T) {
 	}
 	if got := resolved.NodeContracts["dynamic"].Fields; len(got) != 3 || got[1].Path.String() != "shared.alpha" || got[2].Path.String() != "shared.zeta" {
 		t.Fatalf("dynamic contract fields = %#v", got)
+	} else if got[1].Required || got[2].Required {
+		t.Fatalf("optional dynamic reads became required: %#v", got)
 	}
 }
 

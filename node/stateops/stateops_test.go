@@ -327,7 +327,7 @@ func TestStateOperationDefinitionsDeclareStrictPorts(t *testing.T) {
 		}
 		if definition.Type == NodeTypeStateTransform {
 			dynamic := definition.DynamicStatePorts
-			if dynamic == nil || dynamic.Mode != dsl.StateAccessRead || dynamic.MergeStrategy != dsl.StateMergeReplace {
+			if dynamic == nil || !dynamic.Required || dynamic.Mode != dsl.StateAccessRead || dynamic.MergeStrategy != dsl.StateMergeReplace {
 				t.Fatalf("state_transform dynamic ports = %#v", dynamic)
 			}
 		}

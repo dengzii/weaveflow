@@ -143,7 +143,7 @@ func TestStateExpressionConditionDefinitionUsesDynamicPorts(t *testing.T) {
 	if !ok {
 		t.Fatal("state expression condition is not registered")
 	}
-	if definition.DynamicStatePorts == nil || definition.DynamicStatePorts.MinPorts != 1 {
+	if definition.DynamicStatePorts == nil || definition.DynamicStatePorts.MinPorts != 1 || definition.DynamicStatePorts.Required {
 		t.Fatalf("dynamic state ports = %#v", definition.DynamicStatePorts)
 	}
 	condition, err := definition.Resolve(registry.ResolvedConditionSpec{

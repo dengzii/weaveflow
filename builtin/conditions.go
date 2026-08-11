@@ -86,6 +86,7 @@ func stateExpressionConditionDefinition() registry.ConditionDefinition {
 				Description:   "JSON value exposed to CEL as inputs.<alias>.",
 				NamePattern:   stateexpr.InputAliasPattern,
 				MinPorts:      1,
+				Required:      false,
 				Schema:        dsl.JSONSchema{"title": "Any JSON value"},
 				Mode:          dsl.StateAccessRead,
 				MergeStrategy: dsl.StateMergeReplace,

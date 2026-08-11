@@ -187,7 +187,7 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 			portDefinitions[name] = dsl.StatePortDefinition{
 				Name:          name,
 				Description:   dynamic.Description,
-				Required:      true,
+				Required:      dynamic.Required,
 				Schema:        dynamic.Schema,
 				Mode:          dynamic.Mode,
 				MergeStrategy: dynamic.MergeStrategy,

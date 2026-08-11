@@ -103,7 +103,8 @@ describe("v2 graph editor defaults", () => {
     expect(nextDynamicStatePortName({ input: { path: "" } }, [{ name: "input" }], dynamic)).toBe("input_2");
     expect(matchesDynamicStatePortName("price", dynamic)).toBe(true);
     expect(matchesDynamicStatePortName("not-valid", dynamic)).toBe(false);
-    expect(dynamicStatePortForName("price", dynamic)).toMatchObject({ name: "price", required: true, mode: "read" });
+    expect(dynamicStatePortForName("price", dynamic)).toMatchObject({ name: "price", required: false, mode: "read" });
+    expect(dynamicStatePortForName("price", { ...dynamic, required: true })).toMatchObject({ name: "price", required: true, mode: "read" });
   });
 
   test("creates state operation nodes with explicit bindings and JSON null config", () => {

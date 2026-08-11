@@ -362,6 +362,7 @@ export interface DynamicStatePortDefinition {
   name_pattern: string;
   min_ports?: number;
   max_ports?: number;
+  required?: boolean;
   schema: Record<string, unknown>;
   mode: StateAccessMode;
   merge_strategy: StateMergeStrategy;

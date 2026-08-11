@@ -56,6 +56,7 @@ type DynamicStatePortDefinition struct {
 	NamePattern   string             `json:"name_pattern"`
 	MinPorts      int                `json:"min_ports,omitempty"`
 	MaxPorts      int                `json:"max_ports,omitempty"`
+	Required      bool               `json:"required,omitempty"`
 	Schema        JSONSchema         `json:"schema"`
 	Mode          StateAccessMode    `json:"mode"`
 	MergeStrategy StateMergeStrategy `json:"merge_strategy"`
