@@ -10,7 +10,6 @@ import (
 	"time"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
-	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -156,7 +155,7 @@ func TestChatTriggerRunControlUpdatesReplyChannel(t *testing.T) {
 			invocationDone := make(chan invocationResult, 1)
 			replies := make(chan chatcap.Reply, 2)
 			go func() {
-				result, err := srv.triggers.InvokeChat(context.Background(), "controlled-chat", chatchannel.InboundMessage{
+				result, err := srv.triggers.InvokeChat(context.Background(), "controlled-chat", chatcap.InboundMessage{
 					ID: "message-1", UserID: "user-1", ConversationID: "conversation-1", Content: "hello",
 				}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
 					replies <- reply

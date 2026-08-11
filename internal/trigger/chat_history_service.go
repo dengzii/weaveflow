@@ -9,7 +9,6 @@ import (
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/capability/conversation"
-	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/tmc/langchaingo/llms"
 )
@@ -34,7 +33,7 @@ type chatHistoryRecorder struct {
 	ctx     context.Context
 }
 
-func newPendingChatHistory(item Trigger, message chatchannel.InboundMessage, now time.Time) ChatHistory {
+func newPendingChatHistory(item Trigger, message chatcap.InboundMessage, now time.Time) ChatHistory {
 	return ChatHistory{
 		Version:               ChatHistoryVersion,
 		TriggerID:             item.ID,

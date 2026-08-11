@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
-	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/google/uuid"
@@ -20,7 +19,7 @@ type ChatResult struct {
 	FinalReply     string            `json:"final_reply,omitempty"`
 }
 
-func (s *Service) InvokeChat(ctx context.Context, id string, message chatchannel.InboundMessage, sink chatcap.ReplySink) (ChatResult, error) {
+func (s *Service) InvokeChat(ctx context.Context, id string, message chatcap.InboundMessage, sink chatcap.ReplySink) (ChatResult, error) {
 	if s == nil {
 		return ChatResult{}, fmt.Errorf("trigger service is nil")
 	}
@@ -122,7 +121,7 @@ func (s *Service) InvokeChat(ctx context.Context, id string, message chatchannel
 	return result, errors.Join(runErr, historyErr, recordErr)
 }
 
-func (s *Service) invokeChatRun(ctx context.Context, item Trigger, message chatchannel.InboundMessage, history []ChatHistory, sink chatcap.ReplySink, historyRecorder *chatHistoryRecorder) (ChatResult, error) {
+func (s *Service) invokeChatRun(ctx context.Context, item Trigger, message chatcap.InboundMessage, history []ChatHistory, sink chatcap.ReplySink, historyRecorder *chatHistoryRecorder) (ChatResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -194,7 +193,7 @@ func chatHistoryLoadLimit(spec *ChatSpec) int {
 	return spec.HistoryLimit
 }
 
-func buildChatTriggerState(item Trigger, message chatchannel.InboundMessage, history []ChatHistory) (*state.State, error) {
+func buildChatTriggerState(item Trigger, message chatcap.InboundMessage, history []ChatHistory) (*state.State, error) {
 	initial := state.FromMap(item.InitialState)
 	if item.Chat == nil || item.Chat.StateBindings == nil {
 		return initial, nil
@@ -243,7 +242,7 @@ func buildChatTriggerState(item Trigger, message chatchannel.InboundMessage, his
 	return initial, nil
 }
 
-func normalizeChatMessageMetadata(message chatchannel.InboundMessage, channel string) chatchannel.InboundMessage {
+func normalizeChatMessageMetadata(message chatcap.InboundMessage, channel string) chatcap.InboundMessage {
 	metadata := make(map[string]any, len(message.Metadata)+4)
 	for key, value := range message.Metadata {
 		metadata[key] = value

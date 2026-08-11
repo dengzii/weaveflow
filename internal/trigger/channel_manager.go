@@ -58,7 +58,7 @@ func (s *Service) buildChatChannel(item Trigger) (chatchannel.Instance, error) {
 	instance, err := s.chatRegistry.NewInstance(channelID, chatchannel.InstanceConfig{
 		TriggerID: item.ID,
 		Config:    item.Chat.ChannelConfig,
-		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatchannel.InboundMessage, sink chatcap.ReplySink) error {
+		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatcap.InboundMessage, sink chatcap.ReplySink) error {
 			_, err := s.InvokeChat(ctx, item.ID, message, sink)
 			return err
 		}),

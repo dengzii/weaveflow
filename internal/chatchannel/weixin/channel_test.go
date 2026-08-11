@@ -31,7 +31,7 @@ func TestRegisterWithCursorDirectoryUsesManagedCursorPath(t *testing.T) {
 	}
 	instance, err := channels.NewInstance(ChannelID, chatchannel.InstanceConfig{
 		TriggerID: "team/chat:primary",
-		Handler:   chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error { return nil }),
+		Handler:   chatchannel.HandlerFunc(func(context.Context, chatcap.InboundMessage, chatcap.ReplySink) error { return nil }),
 		Config:    map[string]any{"bot_token": "token"},
 	})
 	if err != nil {
@@ -162,7 +162,7 @@ func TestChannelPollsAndSendsWithOfficialHeadersAndCursor(t *testing.T) {
 
 	instance, err := (Factory{Logger: discardLogger(), HTTPClient: server.Client()}).New(chatchannel.InstanceConfig{
 		TriggerID: "chat-a",
-		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatchannel.InboundMessage, sink chatcap.ReplySink) error {
+		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatcap.InboundMessage, sink chatcap.ReplySink) error {
 			if message.ID != "12345" || message.UserID != "user-a" || message.ConversationID != "user-a" || message.Content != "hello" {
 				t.Errorf("message = %#v", message)
 			}
@@ -320,7 +320,7 @@ func TestChannelStartsTypingBeforeGraphAndCachesTicket(t *testing.T) {
 		wechatUIN:       randomWeChatUIN(),
 		typingKeepalive: time.Hour,
 	}
-	channel.handler = chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error {
+	channel.handler = chatchannel.HandlerFunc(func(context.Context, chatcap.InboundMessage, chatcap.ReplySink) error {
 		mu.Lock()
 		events = append(events, "graph")
 		mu.Unlock()
@@ -372,7 +372,7 @@ func TestHandleMessagesAllowsStopWhilePreviousMessageIsRunning(t *testing.T) {
 		wechatUIN:       randomWeChatUIN(),
 		typingKeepalive: time.Hour,
 	}
-	channel.handler = chatchannel.HandlerFunc(func(_ context.Context, message chatchannel.InboundMessage, _ chatcap.ReplySink) error {
+	channel.handler = chatchannel.HandlerFunc(func(_ context.Context, message chatcap.InboundMessage, _ chatcap.ReplySink) error {
 		switch message.Content {
 		case "long task":
 			close(firstStarted)
@@ -447,7 +447,7 @@ func TestChannelKeepsTypingActiveWhileGraphRuns(t *testing.T) {
 		wechatUIN:       randomWeChatUIN(),
 		typingKeepalive: 10 * time.Millisecond,
 	}
-	channel.handler = chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error {
+	channel.handler = chatchannel.HandlerFunc(func(context.Context, chatcap.InboundMessage, chatcap.ReplySink) error {
 		for index := range 2 {
 			select {
 			case status := <-typingStatuses:
@@ -520,7 +520,7 @@ func TestChannelSendsUnsupportedAndFailureMessages(t *testing.T) {
 		config: Config{BotToken: "token", BaseURL: server.URL, UnsupportedMessage: "unsupported", FailureMessage: "failed"},
 		client: server.Client(),
 		logger: discardLogger(),
-		handler: chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error {
+		handler: chatchannel.HandlerFunc(func(context.Context, chatcap.InboundMessage, chatcap.ReplySink) error {
 			return errors.New("graph failed")
 		}),
 		wechatUIN: randomWeChatUIN(),
@@ -564,7 +564,7 @@ func TestChannelRunsGraphWhenTypingIsUnavailable(t *testing.T) {
 		config: Config{BotToken: "token", BaseURL: server.URL},
 		client: server.Client(),
 		logger: discardLogger(),
-		handler: chatchannel.HandlerFunc(func(ctx context.Context, _ chatchannel.InboundMessage, sink chatcap.ReplySink) error {
+		handler: chatchannel.HandlerFunc(func(ctx context.Context, _ chatcap.InboundMessage, sink chatcap.ReplySink) error {
 			handlerCalled = true
 			return sink.Emit(ctx, chatcap.Reply{Kind: chatcap.ReplyFinish, Content: "reply"})
 		}),
@@ -627,7 +627,7 @@ func TestChannelStopsOnInvalidToken(t *testing.T) {
 
 	instance, err := (Factory{HTTPClient: server.Client()}).New(chatchannel.InstanceConfig{
 		TriggerID: "invalid-token",
-		Handler:   chatchannel.HandlerFunc(func(context.Context, chatchannel.InboundMessage, chatcap.ReplySink) error { return nil }),
+		Handler:   chatchannel.HandlerFunc(func(context.Context, chatcap.InboundMessage, chatcap.ReplySink) error { return nil }),
 		Config:    map[string]any{"bot_token": "token", "base_url": server.URL, "cursor_file": filepathForTest(t)},
 	})
 	if err != nil {

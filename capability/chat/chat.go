@@ -1,10 +1,42 @@
-// Package chat provides state-bound chat response capabilities.
+// Package chat defines the channel-neutral chat reply protocol.
+//
+// Graph nodes, trigger orchestration, and delivery adapters share
+// InboundMessage, Reply, and ReplySink through this package. Concrete sinks
+// remain owned by the server and channel packages, while the current sink is
+// carried through execution context so the runtime itself stays independent
+// of chat delivery.
 package chat
 
 import (
 	"context"
 	"errors"
+	"strings"
 )
+
+type InboundMessage struct {
+	ID                    string         `json:"message_id,omitempty"`
+	UserID                string         `json:"user_id,omitempty"`
+	ConversationID        string         `json:"conversation_id,omitempty"`
+	ChannelConversationID string         `json:"-"`
+	Content               string         `json:"content"`
+	Metadata              map[string]any `json:"metadata,omitempty"`
+}
+
+func (message InboundMessage) Normalize() InboundMessage {
+	message.ID = strings.TrimSpace(message.ID)
+	message.UserID = strings.TrimSpace(message.UserID)
+	message.ConversationID = strings.TrimSpace(message.ConversationID)
+	message.ChannelConversationID = strings.TrimSpace(message.ChannelConversationID)
+	message.Content = strings.TrimSpace(message.Content)
+	return message
+}
+
+func (message InboundMessage) Validate() error {
+	if strings.TrimSpace(message.Content) == "" {
+		return errors.New("chat message content is required")
+	}
+	return nil
+}
 
 type ReplyKind string
 

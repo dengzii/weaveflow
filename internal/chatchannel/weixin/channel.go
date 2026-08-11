@@ -408,7 +408,7 @@ func (channel *Channel) handleMessage(ctx context.Context, incoming weixinMessag
 	if typing != nil {
 		defer typing.stop(ctx)
 	}
-	message := chatchannel.InboundMessage{
+	message := chatcap.InboundMessage{
 		ID:             messageID,
 		UserID:         recipient,
 		ConversationID: firstNonEmpty(recipient, incoming.SessionID, messageID),

@@ -155,7 +155,7 @@ func TestServiceInvokeChatStreamsAndSendsMultipleReplies(t *testing.T) {
 		t.Fatal(err)
 	}
 	var replies []chatcap.Reply
-	result, err := service.InvokeChat(context.Background(), "chat", chatchannel.InboundMessage{
+	result, err := service.InvokeChat(context.Background(), "chat", chatcap.InboundMessage{
 		ID:             "message-1",
 		UserID:         "user-1",
 		ConversationID: "conversation-1",
@@ -244,7 +244,7 @@ func TestServiceInvokeChatRejectsCompletedRunWithoutReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	var replies []chatcap.Reply
-	result, invokeErr := service.InvokeChat(context.Background(), "no-reply", chatchannel.InboundMessage{
+	result, invokeErr := service.InvokeChat(context.Background(), "no-reply", chatcap.InboundMessage{
 		ID: "message-1", UserID: "user-1", ConversationID: "conversation-1", Content: "hello",
 	}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
 		replies = append(replies, reply)
@@ -335,14 +335,14 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 	results := make(map[string]ChatResult)
 	for _, invocation := range []struct {
 		triggerID string
-		message   chatchannel.InboundMessage
+		message   chatcap.InboundMessage
 	}{
-		{triggerID: "chat-a", message: chatchannel.InboundMessage{ID: "message-a1", UserID: "user-a", ConversationID: "conversation-a", Content: "first"}},
-		{triggerID: "chat-a", message: chatchannel.InboundMessage{ID: "message-a2", UserID: "user-a", ConversationID: "conversation-a", Content: "second"}},
-		{triggerID: "chat-a", message: chatchannel.InboundMessage{ID: "message-a3", UserID: "user-a", ConversationID: "conversation-a", Content: "third"}},
-		{triggerID: "chat-a", message: chatchannel.InboundMessage{ID: "message-b1", UserID: "user-b", ConversationID: "conversation-b", Content: "other user"}},
-		{triggerID: "chat-b", message: chatchannel.InboundMessage{ID: "message-a4", UserID: "user-a", ConversationID: "conversation-a", Content: "other trigger"}},
-		{triggerID: "chat-a", message: chatchannel.InboundMessage{ID: "message-a5", UserID: "user-a", ConversationID: "conversation-b", Content: "other conversation"}},
+		{triggerID: "chat-a", message: chatcap.InboundMessage{ID: "message-a1", UserID: "user-a", ConversationID: "conversation-a", Content: "first"}},
+		{triggerID: "chat-a", message: chatcap.InboundMessage{ID: "message-a2", UserID: "user-a", ConversationID: "conversation-a", Content: "second"}},
+		{triggerID: "chat-a", message: chatcap.InboundMessage{ID: "message-a3", UserID: "user-a", ConversationID: "conversation-a", Content: "third"}},
+		{triggerID: "chat-a", message: chatcap.InboundMessage{ID: "message-b1", UserID: "user-b", ConversationID: "conversation-b", Content: "other user"}},
+		{triggerID: "chat-b", message: chatcap.InboundMessage{ID: "message-a4", UserID: "user-a", ConversationID: "conversation-a", Content: "other trigger"}},
+		{triggerID: "chat-a", message: chatcap.InboundMessage{ID: "message-a5", UserID: "user-a", ConversationID: "conversation-b", Content: "other conversation"}},
 	} {
 		result, err := service.InvokeChat(context.Background(), invocation.triggerID, invocation.message, sink)
 		if err != nil {
@@ -472,7 +472,7 @@ func TestServiceInvokeChatPersistsFailedTurnAndFinishReply(t *testing.T) {
 		t.Fatal(err)
 	}
 	var replies []chatcap.Reply
-	result, invokeErr := service.InvokeChat(context.Background(), "failed-chat", chatchannel.InboundMessage{
+	result, invokeErr := service.InvokeChat(context.Background(), "failed-chat", chatcap.InboundMessage{
 		ID: "message-1", UserID: "user-1", ConversationID: "conversation-1", Content: "hello",
 	}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
 		replies = append(replies, reply)
@@ -576,7 +576,7 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 	var invocationReplies []chatcap.Reply
 	go func() {
 		defer close(invocationDone)
-		invocationResult, invocationErr = service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
+		invocationResult, invocationErr = service.InvokeChat(context.Background(), "command-chat", chatcap.InboundMessage{
 			ID: "message-1", UserID: "user-1", ConversationID: "channel-thread", Content: "long task",
 		}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
 			invocationReplies = append(invocationReplies, reply)
@@ -590,7 +590,7 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 	}
 
 	var stopReplies []chatcap.Reply
-	stopResult, err := service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
+	stopResult, err := service.InvokeChat(context.Background(), "command-chat", chatcap.InboundMessage{
 		ID: "message-stop", UserID: "user-1", ConversationID: "channel-thread", Content: "/STOP",
 	}, chatcap.ReplySinkFunc(func(_ context.Context, reply chatcap.Reply) error {
 		stopReplies = append(stopReplies, reply)
@@ -616,7 +616,7 @@ func TestServiceChatCommandsCreateConversationAndStopActiveRun(t *testing.T) {
 		t.Fatalf("canceled invocation replies = %#v", invocationReplies)
 	}
 
-	newResult, err := service.InvokeChat(context.Background(), "command-chat", chatchannel.InboundMessage{
+	newResult, err := service.InvokeChat(context.Background(), "command-chat", chatcap.InboundMessage{
 		ID: "message-new", UserID: "user-1", ConversationID: "channel-thread", Content: "/new",
 	}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil }))
 	if err != nil {
@@ -1005,7 +1005,7 @@ func TestServiceValidatesTriggerStateBeforeStartingNormalAndChatRuns(t *testing.
 	if _, err := service.InvokeWebhook(context.Background(), "hook", []byte(`{}`), "", nil); err == nil || !strings.Contains(err.Error(), "validate trigger initial state") {
 		t.Fatalf("webhook preflight error = %v", err)
 	}
-	if _, err := service.InvokeChat(context.Background(), "chat", chatchannel.InboundMessage{
+	if _, err := service.InvokeChat(context.Background(), "chat", chatcap.InboundMessage{
 		ID: "message", UserID: "user", ConversationID: "channel-conversation", Content: "hello",
 	}, chatcap.ReplySinkFunc(func(context.Context, chatcap.Reply) error { return nil })); err == nil || !strings.Contains(err.Error(), "validate trigger initial state") {
 		t.Fatalf("chat preflight error = %v", err)
@@ -1380,7 +1380,7 @@ func TestTriggerStateBuildersUseOnlyConfiguredBindings(t *testing.T) {
 	chatState, err := buildChatTriggerState(Trigger{
 		ID: "chat", Type: TypeChat,
 		Chat: &ChatSpec{StateBindings: &ChatStateBindings{TriggerID: "scopes.chat.trigger_id"}},
-	}, chatchannel.InboundMessage{Content: "wait for user input"}, nil)
+	}, chatcap.InboundMessage{Content: "wait for user input"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1394,7 +1394,7 @@ func TestTriggerStateBuildersUseOnlyConfiguredBindings(t *testing.T) {
 	configuredChatState, err := buildChatTriggerState(Trigger{
 		ID: "chat", Type: TypeChat,
 		Chat: &ChatSpec{StateBindings: &ChatStateBindings{Input: "scopes.chat.input"}},
-	}, chatchannel.InboundMessage{Content: "hello"}, nil)
+	}, chatcap.InboundMessage{Content: "hello"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

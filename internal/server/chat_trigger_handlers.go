@@ -2,14 +2,13 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
-	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 )
@@ -52,39 +51,45 @@ func (s *Server) handleChatTrigger(c *gin.Context) {
 	writeData(c, http.StatusOK, response)
 }
 
-func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context, service *trigger.Service, triggerID string, message chatchannel.InboundMessage) {
+func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context, service *trigger.Service, triggerID string, message chatcap.InboundMessage) {
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeader(http.StatusOK)
-	_, _ = fmt.Fprint(c.Writer, ": ready\n\n")
-	c.Writer.Flush()
+	if err := writeSSEComment(c.Writer, "ready"); err != nil {
+		slog.Debug("chat event stream closed", "trigger_id", triggerID, "reason", sseCloseReason(err), "stage", "ready", "error", err)
+		return
+	}
 
 	sink := &sseChatReplySink{writer: c.Writer}
 	result, err := service.InvokeChat(ctx, triggerID, message, sink)
 	if err != nil {
-		writeChatSSEEvent(c.Writer, "error", map[string]any{"error": err.Error(), "result": result})
+		if writeErr := writeChatSSEEvent(c.Writer, "error", map[string]any{"error": err.Error(), "result": result}); writeErr != nil {
+			slog.Debug("chat event stream closed", "trigger_id", triggerID, "reason", sseCloseReason(writeErr), "stage", "error", "error", writeErr)
+		}
 		return
 	}
-	writeChatSSEEvent(c.Writer, "result", result)
+	if err := writeChatSSEEvent(c.Writer, "result", result); err != nil {
+		slog.Debug("chat event stream closed", "trigger_id", triggerID, "reason", sseCloseReason(err), "stage", "result", "error", err)
+	}
 }
 
-func decodeChatMessage(c *gin.Context) (chatchannel.InboundMessage, error) {
+func decodeChatMessage(c *gin.Context) (chatcap.InboundMessage, error) {
 	body, err := readRequestBody(c.Request.Body, maxChatTriggerBodyBytes)
 	if err != nil {
-		return chatchannel.InboundMessage{}, err
+		return chatcap.InboundMessage{}, err
 	}
 	if len(strings.TrimSpace(string(body))) == 0 {
-		return chatchannel.InboundMessage{}, fmt.Errorf("chat message is required")
+		return chatcap.InboundMessage{}, fmt.Errorf("chat message is required")
 	}
-	var message chatchannel.InboundMessage
+	var message chatcap.InboundMessage
 	if err := decodeStrictJSON(body, &message); err != nil {
-		return chatchannel.InboundMessage{}, err
+		return chatcap.InboundMessage{}, err
 	}
 	message = message.Normalize()
 	if err := message.Validate(); err != nil {
-		return chatchannel.InboundMessage{}, err
+		return chatcap.InboundMessage{}, err
 	}
 	return message, nil
 }
@@ -120,15 +125,5 @@ func (s *sseChatReplySink) Emit(_ context.Context, reply chatcap.Reply) error {
 }
 
 func writeChatSSEEvent(writer http.ResponseWriter, event string, value any) error {
-	data, err := json.Marshal(value)
-	if err != nil {
-		return err
-	}
-	if _, err := fmt.Fprintf(writer, "event: %s\ndata: %s\n\n", sanitizeSSEField(event), data); err != nil {
-		return err
-	}
-	if flusher, ok := writer.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return nil
+	return writeSSEJSON(writer, event, "", value)
 }

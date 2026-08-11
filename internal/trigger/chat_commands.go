@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
-	"github.com/dengzii/weaveflow/internal/chatchannel"
 )
 
 const (
@@ -20,7 +19,7 @@ type activeChatExecution struct {
 	cancel context.CancelFunc
 }
 
-func (s *Service) handleChatCommand(ctx context.Context, item Trigger, message chatchannel.InboundMessage, sink chatcap.ReplySink) (ChatResult, bool, error) {
+func (s *Service) handleChatCommand(ctx context.Context, item Trigger, message chatcap.InboundMessage, sink chatcap.ReplySink) (ChatResult, bool, error) {
 	command := parseChatCommand(message.Content)
 	if command == "" {
 		return ChatResult{}, false, nil
@@ -84,7 +83,7 @@ func parseChatCommand(content string) string {
 	}
 }
 
-func (s *Service) prepareChatExecution(ctx context.Context, item Trigger, message chatchannel.InboundMessage) (context.Context, chatchannel.InboundMessage, func(), error) {
+func (s *Service) prepareChatExecution(ctx context.Context, item Trigger, message chatcap.InboundMessage) (context.Context, chatcap.InboundMessage, func(), error) {
 	identity := ChatConversationIdentity{
 		TriggerID:             item.ID,
 		UserID:                message.UserID,
@@ -102,7 +101,7 @@ func (s *Service) prepareChatExecution(ctx context.Context, item Trigger, messag
 	}
 	if err != nil {
 		unlockRoute()
-		return nil, chatchannel.InboundMessage{}, nil, fmt.Errorf("resolve chat conversation: %w", err)
+		return nil, chatcap.InboundMessage{}, nil, fmt.Errorf("resolve chat conversation: %w", err)
 	}
 
 	executionCtx, cancel := context.WithCancel(ctx)

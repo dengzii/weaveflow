@@ -720,7 +720,7 @@ func (channel *Channel) handleMessageCallback(ctx context.Context, writer frameW
 	}
 	invocationCtx, cancel := context.WithTimeout(ctx, chatInvocationTimeout)
 	defer cancel()
-	message := chatchannel.InboundMessage{
+	message := chatcap.InboundMessage{
 		ID:             body.MessageID,
 		UserID:         body.From.UserID,
 		ConversationID: firstNonEmpty(body.ChatID, body.From.UserID, body.MessageID),
