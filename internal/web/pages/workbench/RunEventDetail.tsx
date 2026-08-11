@@ -1,7 +1,7 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
-import { cn, formatTimeMs, stringifyJSON } from "../../lib/utils";
+import { cn, formatDateTimeMs, stringifyJSON } from "../../lib/utils";
 import type { RuntimeEvent } from "../../types";
 import { eventTone } from "./runStatusModel";
 import { StatusText } from "./shared";
@@ -17,7 +17,9 @@ export function RunEventDetail({ event }: { event: RuntimeEvent }) {
       <div className="flex flex-wrap items-center gap-2">
         <StatusText tone={eventTone(event.type)}>{event.type}</StatusText>
         <span className="font-mono text-muted-foreground">{event.node_id || event.run_id}</span>
-        <span className="ml-auto text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
+        <span className="ml-auto tabular-nums text-muted-foreground" title={event.timestamp}>
+          {formatDateTimeMs(event.timestamp)}
+        </span>
       </div>
       <DetailRow label="Run" value={event.run_id} />
       {event.step_id ? <DetailRow label="Step" value={event.step_id} /> : null}

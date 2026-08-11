@@ -12,11 +12,18 @@ export function formatTime(value?: string) {
   return formatClockTime(date);
 }
 
-export function formatTimeMs(value?: string) {
+export function formatDateTime(value?: string) {
   if (!value) return "";
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return value;
-  return `${formatClockTime(date)}.${padNumber(date.getMilliseconds(), 3)}`;
+  return `${formatCalendarDate(date)} ${formatClockTime(date)}`;
+}
+
+export function formatDateTimeMs(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${formatCalendarDate(date)} ${formatClockTime(date)}.${padNumber(date.getMilliseconds(), 3)}`;
 }
 
 export function stringifyJSON(value: unknown) {
@@ -47,6 +54,13 @@ function formatClockTime(date: Date): string {
     padNumber(date.getMinutes(), 2),
     padNumber(date.getSeconds(), 2),
   ].join(":");
+}
+
+function formatCalendarDate(date: Date): string {
+  return [
+    padNumber(date.getMonth() + 1, 2),
+    padNumber(date.getDate(), 2),
+  ].join("-");
 }
 
 function padNumber(value: number, width: number): string {

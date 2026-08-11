@@ -13,7 +13,7 @@ import {
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { getCheckpoint } from "../../api";
-import { cn, formatTimeMs, stringifyJSON } from "../../lib/utils";
+import { cn, formatDateTimeMs, stringifyJSON } from "../../lib/utils";
 import type {
   CheckpointDetail,
   CheckpointRecord,
@@ -618,7 +618,7 @@ const EventHistoryRow = memo(function EventHistoryRow({
         type="button"
         onClick={() => onSelect(key)}
         className={cn(
-          "grid h-7 w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] items-center gap-2 px-3 text-left text-xs hover:bg-accent/40",
+          "grid h-7 w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_8rem] items-center gap-2 px-3 text-left text-xs hover:bg-accent/40",
           selected && "bg-accent text-accent-foreground"
         )}
       >
@@ -640,7 +640,9 @@ const EventHistoryRow = memo(function EventHistoryRow({
             </span>
           </>
         )}
-        <span className="truncate text-right text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
+        <span className="truncate text-right tabular-nums text-muted-foreground" title={event.timestamp}>
+          {formatDateTimeMs(event.timestamp)}
+        </span>
       </button>
     </li>
   );
@@ -687,7 +689,7 @@ const StateHistoryRow = memo(function StateHistoryRow({
         type="button"
         onClick={() => onSelect(entry.key)}
         className={cn(
-          "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_5.75rem] gap-x-2 gap-y-1 px-3 py-1.5 text-left text-xs hover:bg-accent/40",
+          "grid w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_8rem] gap-x-2 gap-y-1 px-3 py-1.5 text-left text-xs hover:bg-accent/40",
           selected && "bg-accent text-accent-foreground"
         )}
       >
@@ -697,7 +699,9 @@ const StateHistoryRow = memo(function StateHistoryRow({
         <span className="min-w-0 truncate text-muted-foreground">
           {stateHistoryLabel(entry)}
         </span>
-        <span className="truncate text-right text-muted-foreground">{formatTimeMs(entry.timestamp)}</span>
+        <span className="truncate text-right tabular-nums text-muted-foreground" title={entry.timestamp}>
+          {formatDateTimeMs(entry.timestamp)}
+        </span>
         <span className="col-span-3 flex min-w-0 flex-wrap gap-1">
           {entry.changes.slice(0, 4).map((change, index) => (
             <span
@@ -795,7 +799,7 @@ export const StateSnapshotDetail = memo(function StateSnapshotDetail({ detail }:
         {detail.record.step_id ? <SnapshotMetaRow label="Step" value={detail.record.step_id} /> : null}
         {detail.record.node_id ? <SnapshotMetaRow label="Node" value={detail.record.node_id} /> : null}
         {version ? <SnapshotMetaRow label="Version" value={version} /> : null}
-        <SnapshotMetaRow label="Created" value={formatTimeMs(detail.record.created_at)} />
+        <SnapshotMetaRow label="Created" value={formatDateTimeMs(detail.record.created_at)} />
       </div>
       <StateSnapshotSection title="shared" value={snapshot.shared ?? {}} defaultOpen />
       <StateSnapshotSection title="scopes" value={snapshot.scopes ?? {}} defaultOpen />

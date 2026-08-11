@@ -1,4 +1,4 @@
-import { formatTimeMs, stringifyJSON } from "../../lib/utils";
+import { formatDateTimeMs, stringifyJSON } from "../../lib/utils";
 import type { RuntimeEvent } from "../../types";
 import { StatusText } from "./shared";
 
@@ -15,7 +15,9 @@ export function EventList({ events, wide = false }: { events: RuntimeEvent[]; wi
               {event.type}
             </StatusText>
             <span className="truncate text-xs text-muted-foreground">{event.node_id || event.run_id}</span>
-            <span className="ml-auto text-xs text-muted-foreground">{formatTimeMs(event.timestamp)}</span>
+            <span className="ml-auto shrink-0 tabular-nums text-xs text-muted-foreground" title={event.timestamp}>
+              {formatDateTimeMs(event.timestamp)}
+            </span>
           </div>
           {wide && event.payload ? (
             <pre className="mt-2 max-h-48 overflow-auto rounded bg-muted p-2 text-xs">{stringifyJSON(event.payload)}</pre>

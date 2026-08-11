@@ -11,7 +11,7 @@ import {
   Webhook,
   X,
 } from "lucide-react";
-import { cn, formatTime } from "../../lib/utils";
+import { cn, formatDateTime } from "../../lib/utils";
 import type { RunRecord, RunStatus, TriggerType } from "../../types";
 import { isActiveRunStatus } from "./workbenchRunModel";
 
@@ -62,7 +62,9 @@ export function RunList({
                       <span className="min-w-0 flex-1 truncate font-mono" title={run.run_id}>
                         {run.run_id}
                       </span>
-                      <span className="shrink-0 text-muted-foreground">{formatTime(run.started_at)}</span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground" title={run.started_at}>
+                        {formatDateTime(run.started_at)}
+                      </span>
                     </div>
                   </button>
                   {onDeleteRun ? (
