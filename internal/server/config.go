@@ -252,8 +252,15 @@ func (s *Server) Start(ctx context.Context) error {
 }
 
 func (s *Server) Close() error {
-	if s == nil || s.triggers == nil {
+	if s == nil {
 		return nil
 	}
-	return s.triggers.Close()
+	var err error
+	if s.triggers != nil {
+		err = s.triggers.Close()
+	}
+	if s.events != nil {
+		s.events.Close()
+	}
+	return err
 }

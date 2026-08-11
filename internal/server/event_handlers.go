@@ -1,8 +1,7 @@
 package server
 
 import (
-	"encoding/json"
-	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -32,15 +31,33 @@ func (s *Server) handleRuntimeEventStream(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-	events, unsubscribe := s.events.Subscribe(filter, cursor)
-	defer unsubscribe()
+	subscription := s.events.Subscribe(filter, cursor)
+	defer subscription.Unsubscribe()
 
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("X-Accel-Buffering", "no")
 	c.Writer.WriteHeader(http.StatusOK)
-	writeSSEHeartbeat(c)
+	if subscription.Replay.Gap {
+		gap := runtimeEventStreamGap{
+			Type:              "stream.gap",
+			GraphID:           graphID,
+			RequestedCursor:   subscription.Replay.RequestedCursor,
+			OldestEventID:     subscription.Replay.OldestEventID,
+			ResumeCursor:      subscription.Replay.ResumeCursor,
+			Reason:            subscription.Replay.Reason,
+			RecoverableEvents: "persistent_only",
+		}
+		if err := writeSSEJSON(c.Writer, "", "", gap); err != nil {
+			logRuntimeEventStreamClose(graphID, filter, subscription.SubscriberID, sseCloseReason(err), "", "", err)
+			return
+		}
+	}
+	if err := writeSSEHeartbeat(c.Writer); err != nil {
+		logRuntimeEventStreamClose(graphID, filter, subscription.SubscriberID, sseCloseReason(err), "", "", err)
+		return
+	}
 
 	ticker := time.NewTicker(15 * time.Second)
 	defer ticker.Stop()
@@ -48,16 +65,38 @@ func (s *Server) handleRuntimeEventStream(c *gin.Context) {
 	for {
 		select {
 		case <-c.Request.Context().Done():
+			logRuntimeEventStreamClose(graphID, filter, subscription.SubscriberID, "request_context_canceled", "", "", c.Request.Context().Err())
 			return
-		case event, ok := <-events:
+		case closeState, ok := <-subscription.Closed:
+			if ok && closeState.Reason != "unsubscribed" {
+				logRuntimeEventStreamClose(graphID, filter, subscription.SubscriberID, closeState.Reason, "", "", nil)
+			}
+			return
+		case event, ok := <-subscription.Events:
 			if !ok {
 				return
 			}
-			writeRuntimeEventSSE(c, event)
+			if err := writeRuntimeEventSSE(c.Writer, event); err != nil {
+				logRuntimeEventStreamClose(graphID, filter, subscription.SubscriberID, sseCloseReason(err), event.ID, string(event.Type), err)
+				return
+			}
 		case <-ticker.C:
-			writeSSEHeartbeat(c)
+			if err := writeSSEHeartbeat(c.Writer); err != nil {
+				logRuntimeEventStreamClose(graphID, filter, subscription.SubscriberID, sseCloseReason(err), "", "", err)
+				return
+			}
 		}
 	}
+}
+
+type runtimeEventStreamGap struct {
+	Type              string `json:"type"`
+	GraphID           string `json:"graph_id"`
+	RequestedCursor   string `json:"requested_cursor"`
+	OldestEventID     string `json:"oldest_event_id,omitempty"`
+	ResumeCursor      string `json:"resume_cursor,omitempty"`
+	Reason            string `json:"reason"`
+	RecoverableEvents string `json:"recoverable_events"`
 }
 
 func eventFilterFromQuery(c *gin.Context) (eventFilter, error) {
@@ -106,28 +145,36 @@ func eventStreamCursor(c *gin.Context) (string, error) {
 	return headerCursor, nil
 }
 
-func writeRuntimeEventSSE(c *gin.Context, event runtime.Event) {
-	data, err := json.Marshal(event)
-	if err != nil {
-		return
-	}
-	if event.ID != "" {
-		_, _ = fmt.Fprintf(c.Writer, "id: %s\n", sanitizeSSEField(event.ID))
-	}
-	if event.Type != "" {
-		_, _ = fmt.Fprintf(c.Writer, "event: %s\n", sanitizeSSEField(string(event.Type)))
-	}
-	_, _ = fmt.Fprintf(c.Writer, "data: %s\n\n", data)
-	c.Writer.Flush()
+func writeRuntimeEventSSE(writer http.ResponseWriter, event runtime.Event) error {
+	return writeSSEJSON(writer, "", event.ID, event)
 }
 
-func writeSSEHeartbeat(c *gin.Context) {
-	_, _ = fmt.Fprint(c.Writer, ": heartbeat\n\n")
-	c.Writer.Flush()
+func writeSSEHeartbeat(writer http.ResponseWriter) error {
+	return writeSSEComment(writer, "heartbeat")
 }
 
 func sanitizeSSEField(value string) string {
 	value = strings.ReplaceAll(value, "\r", "")
 	value = strings.ReplaceAll(value, "\n", "")
 	return value
+}
+
+func logRuntimeEventStreamClose(graphID string, filter eventFilter, subscriberID int, reason, eventID, eventType string, err error) {
+	attributes := []any{
+		"graph_id", graphID,
+		"graph_session_id", filter.GraphSessionID,
+		"run_id", filter.RunID,
+		"subscriber_id", subscriberID,
+		"reason", reason,
+	}
+	if eventID != "" {
+		attributes = append(attributes, "event_id", eventID)
+	}
+	if eventType != "" {
+		attributes = append(attributes, "event_type", eventType)
+	}
+	if err != nil {
+		attributes = append(attributes, "error", err)
+	}
+	slog.Debug("runtime event stream closed", attributes...)
 }

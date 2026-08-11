@@ -24,6 +24,7 @@ func withRunnerEventContext(ctx context.Context, runner *GraphRunner, runID, ste
 	}
 	ctx = core.WithTools(ctx, wrapToolCallEventTools(coreCtx.Tools(), runner, runID, stepID, nodeID))
 	ctx = core.WithMemory(ctx, coreCtx.Memory())
+	ctx = withRunnerEventFailureReporter(ctx, runner.recordBestEffortEventFailure)
 	return core.NewContext(ctx)
 }
 
@@ -58,7 +59,7 @@ func wrapToolCallEventTool(key string, tool core.Tool, runner *GraphRunner, runI
 			arguments = input
 		}
 
-		_ = runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolCalled, map[string]any{
+		runner.publishBestEffortEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolCalled, map[string]any{
 			"tool_call_id": metadata.ToolCallID,
 			"name":         name,
 			"arguments":    arguments,
@@ -73,7 +74,7 @@ func wrapToolCallEventTool(key string, tool core.Tool, runner *GraphRunner, runI
 
 		result, err := original(ctx, input)
 		if err != nil {
-			_ = runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolFailed, map[string]any{
+			runner.publishBestEffortEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolFailed, map[string]any{
 				"tool_call_id": metadata.ToolCallID,
 				"name":         name,
 				"error":        err.Error(),
@@ -86,7 +87,7 @@ func wrapToolCallEventTool(key string, tool core.Tool, runner *GraphRunner, runI
 			return result, err
 		}
 
-		_ = runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolReturned, map[string]any{
+		runner.publishBestEffortEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolReturned, map[string]any{
 			"tool_call_id": metadata.ToolCallID,
 			"name":         name,
 			"content":      result,
@@ -161,17 +162,17 @@ func publishLLMResponseEvents(ctx context.Context, model llms.Model, callID stri
 	}
 	choice := response.Choices[0]
 	if strings.TrimSpace(choice.ReasoningContent) != "" {
-		_ = PublishRunnerContextEvent(ctx, EventLLMReasoning, llmTextEventPayload(callID, choice.ReasoningContent))
+		publishRunnerContextEventBestEffort(ctx, EventLLMReasoning, llmTextEventPayload(callID, choice.ReasoningContent))
 	}
 	if strings.TrimSpace(choice.Content) != "" {
-		_ = PublishRunnerContextEvent(ctx, EventLLMContent, llmTextEventPayload(callID, choice.Content))
+		publishRunnerContextEventBestEffort(ctx, EventLLMContent, llmTextEventPayload(callID, choice.Content))
 	}
 	for _, toolCall := range choice.ToolCalls {
 		if toolCall.FunctionCall != nil {
-			_ = PublishRunnerContextEvent(ctx, EventLLMFunctionCall, toolCall.FunctionCall)
+			publishRunnerContextEventBestEffort(ctx, EventLLMFunctionCall, toolCall.FunctionCall)
 		}
 	}
-	_ = PublishRunnerContextEvent(ctx, EventLLMCall, buildLLMCallStatsPayload(model, callID, choice))
+	publishRunnerContextEventBestEffort(ctx, EventLLMCall, buildLLMCallStatsPayload(model, callID, choice))
 }
 
 func llmTextEventPayload(callID, text string) map[string]any {

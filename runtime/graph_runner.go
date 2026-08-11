@@ -36,6 +36,8 @@ type GraphRunner struct {
 	startupWarnings    []WarningRecord
 	nodeContracts      map[string]state.Contract
 	now                func() time.Time
+	eventDiagnosticsMu sync.Mutex
+	eventDiagnostics   EventPublicationDiagnostics
 	activeMu           sync.Mutex
 	activeExecutions   map[string]*graphRunnerExecution
 	executionClaims    map[string]struct{}
@@ -120,8 +122,11 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 		startupWarnings:    cloneWarnings(cfg.startupWarnings),
 		nodeContracts:      cloneContracts(cfg.nodeContracts),
 		now:                cfg.now,
-		activeExecutions:   make(map[string]*graphRunnerExecution),
-		executionClaims:    make(map[string]struct{}),
+		eventDiagnostics: EventPublicationDiagnostics{
+			BestEffortFailures: map[EventType]EventPublicationFailure{},
+		},
+		activeExecutions: make(map[string]*graphRunnerExecution),
+		executionClaims:  make(map[string]struct{}),
 	}, nil
 }
 
@@ -1661,7 +1666,7 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (st
 	fields := append(artifactLogFields(ref), zap.Int("bytes", len(artifact.Data)))
 	logger.Debug("artifact recorded", fields...)
 	if artifact.RunID != "" {
-		_ = r.publishEvent(ctx, RunRecord{RunID: artifact.RunID}, artifact.StepID, artifact.NodeID, EventArtifactCreated, map[string]any{
+		r.publishBestEffortEvent(ctx, RunRecord{RunID: artifact.RunID}, artifact.StepID, artifact.NodeID, EventArtifactCreated, map[string]any{
 			"artifact_id": ref.ID,
 			"type":        ref.Type,
 			"mime_type":   ref.MIMEType,

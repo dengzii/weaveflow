@@ -8,6 +8,7 @@ import (
 )
 
 type runnerEventPublisher func(eventType EventType, payload any) error
+type runnerEventFailureReporter func(eventType EventType, err error)
 type runnerArtifactRecorder func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
 
 // EventObserver synchronously observes fully populated events from one run.
@@ -23,6 +24,7 @@ func (f EventObserverFunc) Observe(ctx context.Context, event Event) error {
 }
 
 type runnerEventPublisherKey struct{}
+type runnerEventFailureReporterKey struct{}
 type runnerMetadataKey struct{}
 type runnerArtifactRecorderKey struct{}
 type runnerEventObserverKey struct{}
@@ -63,6 +65,16 @@ func WithRunnerEventPublisher(ctx context.Context, publisher func(EventType, any
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, runnerEventPublisherKey{}, runnerEventPublisher(publisher))
+}
+
+func withRunnerEventFailureReporter(ctx context.Context, reporter runnerEventFailureReporter) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if reporter == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, runnerEventFailureReporterKey{}, reporter)
 }
 
 func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Context {
@@ -135,6 +147,15 @@ func PublishRunnerContextEvent(ctx context.Context, eventType EventType, payload
 		return nil
 	}
 	return publisher(eventType, payload)
+}
+
+func publishRunnerContextEventBestEffort(ctx context.Context, eventType EventType, payload any) {
+	if err := PublishRunnerContextEvent(ctx, eventType, payload); err != nil {
+		reporter, _ := ctx.Value(runnerEventFailureReporterKey{}).(runnerEventFailureReporter)
+		if reporter != nil {
+			reporter(eventType, err)
+		}
+	}
 }
 
 func HasRunnerEventPublisher(ctx context.Context) bool {

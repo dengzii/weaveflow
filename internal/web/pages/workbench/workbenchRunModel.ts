@@ -60,9 +60,35 @@ export function matchesGraphIdentity(run: RunRecord, identity: GraphIdentity): b
 export type RunListEventAction = "ignore" | "refresh" | "update";
 
 export function runListEventAction(runs: RunRecord[], event: RuntimeEvent): RunListEventAction {
+  return runListEventActionForKnownRun(
+    runs.some((run) => run.run_id === event.run_id),
+    event
+  );
+}
+
+export function runListEventActionForKnownRun(
+  knownRun: boolean,
+  event: RuntimeEvent
+): RunListEventAction {
   if (!event.run_id) return "ignore";
-  if (runs.some((run) => run.run_id === event.run_id)) return "update";
+  if (knownRun) return "update";
   return runStatusFromEvent(event.type) ? "refresh" : "ignore";
+}
+
+export function partitionLaunchRuntimeEvents(
+  events: RuntimeEvent[],
+  runID: string
+): { matched: RuntimeEvent[]; unmatched: RuntimeEvent[] } {
+  const matched: RuntimeEvent[] = [];
+  const unmatched: RuntimeEvent[] = [];
+  for (const event of events) {
+    (event.run_id === runID ? matched : unmatched).push(event);
+  }
+  return { matched, unmatched };
+}
+
+export function shouldProjectRuntimeEventToRun(event: RuntimeEvent): boolean {
+  return Boolean(runStatusFromEvent(event.type) || stringPayloadField(event.payload, "checkpoint_id"));
 }
 
 export function mergeRefreshedRuns(
@@ -156,7 +182,7 @@ export function mergeLiveRuntimeEvents(
 ): RuntimeEvent[] {
   if (incoming.length === 0) return current;
 
-  const chronological = [...current].reverse().concat(incoming);
+  const chronological = dedupeRuntimeEvents([...current].reverse().concat(incoming));
   const retained = retainRunID
     ? chronological.filter((event) => !event.run_id || event.run_id === retainRunID)
     : chronological;
@@ -186,6 +212,12 @@ export function mergeLiveRuntimeEvents(
 }
 
 export const MAX_LIVE_RUNTIME_EVENTS = 5000;
+const MAX_MERGED_RUNTIME_EVENT_IDS = 10_000;
+const mergedRuntimeEventIDs = Symbol("mergedRuntimeEventIDs");
+
+type IndexedRuntimeEvent = RuntimeEvent & {
+  [mergedRuntimeEventIDs]?: string[];
+};
 
 export function mergeStoredRuntimeEvents(
   current: RuntimeEvent[],
@@ -288,6 +320,8 @@ function streamingEventKey(event: RuntimeEvent): string {
 
 function mergeStreamingEvent(previous: RuntimeEvent, event: RuntimeEvent): RuntimeEvent {
   const payload = payloadRecord(event.payload) ?? {};
+  const mergedIDs = [...new Set([...runtimeEventIDs(previous), ...runtimeEventIDs(event)])]
+    .slice(-MAX_MERGED_RUNTIME_EVENT_IDS);
   return {
     ...event,
     id: previous.id || event.id,
@@ -295,7 +329,23 @@ function mergeStreamingEvent(previous: RuntimeEvent, event: RuntimeEvent): Runti
       ...payload,
       text: stringPayloadField(previous.payload, "text") + stringPayloadField(event.payload, "text"),
     },
+    [mergedRuntimeEventIDs]: mergedIDs,
   };
+}
+
+function dedupeRuntimeEvents(events: RuntimeEvent[]): RuntimeEvent[] {
+  const seen = new Set<string>();
+  return events.filter((event) => {
+    const identities = runtimeEventIDs(event);
+    if (identities.some((identity) => seen.has(identity))) return false;
+    for (const identity of identities) seen.add(identity);
+    return true;
+  });
+}
+
+function runtimeEventIDs(event: RuntimeEvent): string[] {
+  const mergedIDs = (event as IndexedRuntimeEvent)[mergedRuntimeEventIDs];
+  return mergedIDs && mergedIDs.length > 0 ? mergedIDs : [runtimeEventIdentity(event)];
 }
 
 function payloadRecord(payload: unknown): Record<string, unknown> | null {

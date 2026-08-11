@@ -912,7 +912,7 @@ func (e *graphRunnerExecution) reportContractViolationsWithRun(ctx context.Conte
 			zap.String("message", v.Message),
 		)
 	}
-	_ = e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventContractViolation, map[string]any{
+	e.runner.publishBestEffortEvent(ctx, run, step.StepID, step.NodeID, EventContractViolation, map[string]any{
 		"violations": violations,
 	})
 }

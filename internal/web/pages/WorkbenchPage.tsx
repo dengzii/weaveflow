@@ -249,6 +249,8 @@ export function WorkbenchPage({
     canResumeSelectedRun,
     runControlMode,
     streamStatus,
+    streamDiagnostics,
+    reconnectEventStream,
     setHumanPromptText,
     selectRun,
     loadOlderEvents,
@@ -524,6 +526,8 @@ export function WorkbenchPage({
     <WorkbenchShell
       tab={tab}
       streamStatus={streamStatus}
+      streamDiagnostics={streamDiagnostics}
+      onReconnectEventStream={reconnectEventStream}
       busy={workbenchBusy}
       saving={saving}
       unsaved={graphUnsaved}

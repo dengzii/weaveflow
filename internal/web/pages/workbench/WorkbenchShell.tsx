@@ -17,12 +17,28 @@ import { getBackendBaseUrl } from "../../lib/backend";
 import type { GraphDefinition } from "../../types";
 import type { WorkspaceTab } from "./constants";
 
-type StreamStatus = "connecting" | "connected" | "reconnecting" | "closed";
+type StreamStatus = "connecting" | "connected" | "reconnecting" | "gap" | "failed" | "closed";
+interface StreamDiagnostics {
+  lastEventID: string;
+  retryAttempt: number;
+  retryDelayMS: number;
+  lastErrorKind: string;
+  lastError: string;
+  receivedEvents: number;
+  discardedFrames: number;
+  receivedEventsPerSecond: number;
+  discardedFramesPerSecond: number;
+  selectedEventsPerSecond: number;
+  unselectedEventsPerSecond: number;
+  selectedEventRatio: number;
+  handlingDurationMS: number;
+}
 type RunControlMode = "run" | "active" | "resume";
 
 export function WorkbenchShell({
   tab,
   streamStatus,
+  streamDiagnostics,
   busy,
   saving,
   unsaved,
@@ -40,11 +56,13 @@ export function WorkbenchShell({
   onStop,
   onResume,
   onShowRegistry,
+  onReconnectEventStream,
   onToggleRunStatus,
   onTabChange,
 }: {
   tab: WorkspaceTab;
   streamStatus: StreamStatus;
+  streamDiagnostics: StreamDiagnostics;
   busy: boolean;
   saving: boolean;
   unsaved: boolean;
@@ -62,6 +80,7 @@ export function WorkbenchShell({
   onStop: () => void;
   onResume: () => void;
   onShowRegistry: () => void;
+  onReconnectEventStream: () => void;
   onToggleRunStatus: () => void;
   onTabChange: (tab: WorkspaceTab) => void;
 }) {
@@ -137,9 +156,28 @@ export function WorkbenchShell({
           </Button>
         </header>
 
-        {streamStatus === "reconnecting" || streamStatus === "closed" ? (
+        {streamStatus === "gap" ? (
           <div className="border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200">
-            Runtime event stream disconnected. Reconnecting automatically.
+            Runtime event history has a gap. Persistent run data was refreshed; live-only LLM chunks may be incomplete.
+          </div>
+        ) : streamStatus === "failed" ? (
+          <div className="flex items-center gap-3 border-b border-destructive/30 bg-destructive/10 px-4 py-2 text-sm text-destructive">
+            <span className="min-w-0 flex-1">
+              Runtime event stream unavailable. {streamErrorSummary(streamDiagnostics)}
+            </span>
+            <Button variant="outline" size="sm" className="shrink-0" onClick={onReconnectEventStream}>
+              Retry now
+            </Button>
+          </div>
+        ) : streamStatus === "reconnecting" || streamStatus === "closed" ? (
+          <div className="flex items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200">
+            <span className="min-w-0 flex-1">
+              Runtime event stream disconnected. {streamErrorSummary(streamDiagnostics)}
+              {streamStatus === "reconnecting" ? ` ${retryBackoffSummary(streamDiagnostics.retryDelayMS)}` : ""}
+            </span>
+            <Button variant="outline" size="sm" className="shrink-0" onClick={onReconnectEventStream}>
+              Retry now
+            </Button>
           </div>
         ) : null}
 
@@ -150,8 +188,8 @@ export function WorkbenchShell({
         <footer className="flex h-9 items-center gap-3 border-t border-border bg-muted/40 px-4 text-xs text-muted-foreground">
           <div
             className="flex min-w-0 items-center gap-1.5"
-            title={`${streamStatusLabel(streamStatus)}: ${backendBaseUrl}`}
-            aria-label={`${streamStatusLabel(streamStatus)}: ${backendBaseUrl}`}
+            title={streamDiagnosticsTitle(streamStatus, streamDiagnostics, backendBaseUrl)}
+            aria-label={streamDiagnosticsTitle(streamStatus, streamDiagnostics, backendBaseUrl)}
           >
             <span className={cn("h-2 w-2 shrink-0 rounded-full", streamStatusDotClass(streamStatus))} aria-hidden="true" />
             <span className="truncate">{backendBaseUrl}</span>
@@ -182,6 +220,10 @@ function streamStatusLabel(status: StreamStatus): string {
       return "Server connecting";
     case "reconnecting":
       return "Server reconnecting";
+    case "gap":
+      return "Server event gap";
+    case "failed":
+      return "Server stream failed";
     case "closed":
       return "Server disconnected";
   }
@@ -193,10 +235,49 @@ function streamStatusDotClass(status: StreamStatus): string {
       return "bg-emerald-600 dark:bg-emerald-300";
     case "connecting":
     case "reconnecting":
+    case "gap":
       return "bg-amber-600 dark:bg-amber-300";
+    case "failed":
     case "closed":
       return "bg-destructive";
   }
+}
+
+function streamDiagnosticsTitle(
+  status: StreamStatus,
+  diagnostics: StreamDiagnostics,
+  backendBaseUrl: string
+): string {
+  const handledEvents = diagnostics.selectedEventsPerSecond + diagnostics.unselectedEventsPerSecond;
+  const averageDuration = handledEvents > 0 ? diagnostics.handlingDurationMS / handledEvents : 0;
+  const lines = [
+    `${streamStatusLabel(status)}: ${backendBaseUrl}`,
+    `Last event: ${diagnostics.lastEventID || "none"}`,
+    `Received/discarded total: ${diagnostics.receivedEvents}/${diagnostics.discardedFrames}`,
+    `Received/discarded per second: ${diagnostics.receivedEventsPerSecond}/${diagnostics.discardedFramesPerSecond}`,
+    `Selected/unselected per second: ${diagnostics.selectedEventsPerSecond}/${diagnostics.unselectedEventsPerSecond}`,
+    `Selected ratio: ${(diagnostics.selectedEventRatio * 100).toFixed(1)}%`,
+    `Average handling: ${averageDuration.toFixed(3)} ms`,
+  ];
+  if (diagnostics.lastErrorKind || diagnostics.lastError) {
+    lines.splice(2, 0, `Last error: ${streamErrorSummary(diagnostics)}`);
+  }
+  return lines.join("\n");
+}
+
+function streamErrorSummary(diagnostics: StreamDiagnostics): string {
+  const kind = diagnostics.lastErrorKind.replaceAll("_", " ");
+  if (kind && diagnostics.lastError) return `${kind}: ${diagnostics.lastError}.`;
+  if (diagnostics.lastError) return `${diagnostics.lastError}.`;
+  if (kind) return `${kind}.`;
+  return "Connection is not available.";
+}
+
+function retryBackoffSummary(delayMS: number): string {
+  if (delayMS <= 0) return "Reconnecting now.";
+  const seconds = delayMS / 1_000;
+  const displaySeconds = seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString();
+  return `Automatic retry backoff: ${displaySeconds} s.`;
 }
 
 function NavButton({

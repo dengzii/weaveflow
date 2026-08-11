@@ -552,13 +552,13 @@ func TestNewPreservesExistingSinkAndBroadcasts(t *testing.T) {
 	sink := &recordingEventSink{}
 	srv, runner := mustNewEventTestServer(t, sink, 1)
 
-	events, unsubscribe := srv.EventHub().Subscribe(eventFilter{
+	subscription := srv.EventHub().Subscribe(eventFilter{
 		RunID: "run-1",
 		Types: map[runtime.EventType]struct{}{
 			runtime.EventNodeStarted: {},
 		},
-	})
-	defer unsubscribe()
+	}, "")
+	defer subscription.Unsubscribe()
 
 	event := runtime.Event{
 		ID:        "event-1",
@@ -572,7 +572,7 @@ func TestNewPreservesExistingSinkAndBroadcasts(t *testing.T) {
 	}
 
 	select {
-	case got := <-events:
+	case got := <-subscription.Events:
 		if got.ID != event.ID {
 			t.Fatalf("broadcast event id = %q, want %q", got.ID, event.ID)
 		}
@@ -1965,8 +1965,8 @@ func TestPauseRunMarksLostExecutionFailed(t *testing.T) {
 	if err := runner.ExecutionStore().CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("CreateRun() error = %v", err)
 	}
-	events, unsubscribe := srv.EventHub().Subscribe(eventFilter{RunID: run.RunID})
-	defer unsubscribe()
+	subscription := srv.EventHub().Subscribe(eventFilter{RunID: run.RunID}, "")
+	defer subscription.Unsubscribe()
 
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
@@ -1986,7 +1986,7 @@ func TestPauseRunMarksLostExecutionFailed(t *testing.T) {
 		t.Fatalf("lost run retained non-terminal state: %#v", failed)
 	}
 	select {
-	case event := <-events:
+	case event := <-subscription.Events:
 		if event.Type != runtime.EventRunFailed {
 			t.Fatalf("event type = %q, want %q", event.Type, runtime.EventRunFailed)
 		}
@@ -2084,8 +2084,8 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() after restart error = %v", err)
 	}
-	events, unsubscribe := restarted.EventHub().Subscribe(eventFilter{RunID: started.RunID})
-	defer unsubscribe()
+	subscription := restarted.EventHub().Subscribe(eventFilter{RunID: started.RunID}, "")
+	defer subscription.Unsubscribe()
 	restartedEngine := gin.New()
 	restarted.RegisterRoutes(restartedEngine.Group(""))
 	response := serveHTTP(restartedEngine, http.MethodGet, "/graphs/orphan-graph/runs", "")
@@ -2109,7 +2109,7 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 		t.Fatalf("reconciled run retained non-terminal state: %#v", failed)
 	}
 	select {
-	case event := <-events:
+	case event := <-subscription.Events:
 		if event.Type != runtime.EventRunFailed {
 			t.Fatalf("event type = %q, want %q", event.Type, runtime.EventRunFailed)
 		}

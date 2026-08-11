@@ -9,7 +9,7 @@ import {
   resumeRun,
   startRun,
 } from "../../api";
-import { emitRuntimeEvent } from "../../lib/runtimeEvents";
+import { emitRuntimeEvents } from "../../lib/runtimeEvents";
 import { parseJSON } from "../../lib/utils";
 import type {
   CheckpointRecord,
@@ -21,7 +21,12 @@ import type {
   StepRecord,
   TriggerType,
 } from "../../types";
-import { useRuntimeEventStream } from "./useRuntimeEventStream";
+import {
+  useRuntimeEventStream,
+  type RuntimeEventStreamDiagnostics,
+  type RuntimeEventStreamGap,
+  type RuntimeEventStreamStatus,
+} from "./useRuntimeEventStream";
 import {
   pendingUserInputState,
   userInputPromptFromInterrupt,
@@ -36,18 +41,19 @@ import {
 import {
   canResumeRun,
   isActiveRunStatus,
-  isTerminalRunStatus,
   markRunResuming,
   matchesGraphIdentity,
   mergeLiveRuntimeEvents,
   mergeRefreshedRuns,
   mergeStoredRuntimeEvents,
+  partitionLaunchRuntimeEvents,
   reconcileRunEvents,
-  runListEventAction,
+  runListEventActionForKnownRun,
   runControlModeFromRun,
   runStatusFromEvent,
   runTriggerTypesFromRuns,
   selectedRunIDAfterDeletion,
+  shouldProjectRuntimeEventToRun,
   upsertInspectedRun,
   upsertRunFromEvent,
   type GraphIdentity,
@@ -56,6 +62,15 @@ import {
 
 const RUN_STATUS_VISIBLE_STORAGE_KEY = "weaveflow.workbench.runStatus.visible";
 const LIVE_EVENT_FLUSH_INTERVAL_MS = 80;
+
+export function isCurrentRunLaunch(
+  runContextVersion: number,
+  launchGeneration: number,
+  currentRunContextVersion: number,
+  currentLaunchGeneration: number
+): boolean {
+  return runContextVersion === currentRunContextVersion && launchGeneration === currentLaunchGeneration;
+}
 
 type RunNotificationTone = "info" | "warn" | "error";
 
@@ -84,7 +99,14 @@ interface WorkbenchRunsController {
   graphSwitchLocked: boolean;
   canResumeSelectedRun: boolean;
   runControlMode: RunControlMode;
-  streamStatus: ReturnType<typeof useRuntimeEventStream>;
+  streamStatus: RuntimeEventStreamStatus;
+  streamDiagnostics: RuntimeEventStreamDiagnostics & {
+    selectedEventsPerSecond: number;
+    unselectedEventsPerSecond: number;
+    selectedEventRatio: number;
+    handlingDurationMS: number;
+  };
+  reconnectEventStream: () => void;
   setHumanPromptText: (value: string) => void;
   selectRun: (runID: string) => void;
   loadOlderEvents: () => Promise<void>;
@@ -123,13 +145,22 @@ export function useWorkbenchRuns({
   const [runStatusVisible, setRunStatusVisible] = useState(readStoredRunStatusVisible);
   const [runBusy, setRunBusy] = useState(false);
   const [runLaunchPending, setRunLaunchPending] = useState(false);
+  const [eventHandlingMetrics, setEventHandlingMetrics] = useState({
+    selectedEventsPerSecond: 0,
+    unselectedEventsPerSecond: 0,
+    selectedEventRatio: 0,
+    handlingDurationMS: 0,
+  });
   const runsRef = useRef<RunRecord[]>([]);
+  const runsByIDRef = useRef<Map<string, RunRecord>>(new Map());
   const runsRefreshStartedRef = useRef(0);
   const runBusyRef = useRef(false);
   const selectedRunIDRef = useRef("");
   const userRunSelectionVersionRef = useRef(0);
   const launchPendingRef = useRef(false);
   const launchRunIDRef = useRef("");
+  const launchGenerationRef = useRef(0);
+  const launchBufferedEventsRef = useRef<RuntimeEvent[]>([]);
   const graphIdentityRef = useRef(graphIdentity);
   const graphRunsRefreshStartedRef = useRef(false);
   const runContextVersionRef = useRef(0);
@@ -145,6 +176,14 @@ export function useWorkbenchRuns({
   const eventRunRefreshRequestedRef = useRef(false);
   const eventRunRefreshRunningRef = useRef(false);
   const runInspectionCacheRef = useRef<Map<string, RunInspection>>(new Map());
+  const processedEventIDsRef = useRef<Set<string>>(new Set());
+  const processedEventIDOrderRef = useRef<string[]>([]);
+  const pendingEventHandlingMetricsRef = useRef({
+    selectedEvents: 0,
+    unselectedEvents: 0,
+    handlingDurationMS: 0,
+  });
+  const eventHandlingMetricsTimerRef = useRef<number | null>(null);
 
   const discardPendingLiveEvents = useCallback(() => {
     pendingLiveEventsRef.current = [];
@@ -154,9 +193,57 @@ export function useWorkbenchRuns({
     }
   }, []);
 
+  const flushEventHandlingMetrics = useCallback(() => {
+    eventHandlingMetricsTimerRef.current = null;
+    const pending = pendingEventHandlingMetricsRef.current;
+    pendingEventHandlingMetricsRef.current = {
+      selectedEvents: 0,
+      unselectedEvents: 0,
+      handlingDurationMS: 0,
+    };
+    const totalEvents = pending.selectedEvents + pending.unselectedEvents;
+    setEventHandlingMetrics({
+      selectedEventsPerSecond: pending.selectedEvents,
+      unselectedEventsPerSecond: pending.unselectedEvents,
+      selectedEventRatio: totalEvents > 0 ? pending.selectedEvents / totalEvents : 0,
+      handlingDurationMS: pending.handlingDurationMS,
+    });
+  }, []);
+
+  const recordEventHandling = useCallback((selected: boolean, durationMS: number) => {
+    if (selected) {
+      pendingEventHandlingMetricsRef.current.selectedEvents += 1;
+    } else {
+      pendingEventHandlingMetricsRef.current.unselectedEvents += 1;
+    }
+    pendingEventHandlingMetricsRef.current.handlingDurationMS += durationMS;
+    if (eventHandlingMetricsTimerRef.current !== null) return;
+    eventHandlingMetricsTimerRef.current = window.setTimeout(flushEventHandlingMetrics, 1_000);
+  }, [flushEventHandlingMetrics]);
+
+  const clearEventHandlingMetrics = useCallback(() => {
+    if (eventHandlingMetricsTimerRef.current !== null) {
+      window.clearTimeout(eventHandlingMetricsTimerRef.current);
+      eventHandlingMetricsTimerRef.current = null;
+    }
+    pendingEventHandlingMetricsRef.current = {
+      selectedEvents: 0,
+      unselectedEvents: 0,
+      handlingDurationMS: 0,
+    };
+    setEventHandlingMetrics({
+      selectedEventsPerSecond: 0,
+      unselectedEventsPerSecond: 0,
+      selectedEventRatio: 0,
+      handlingDurationMS: 0,
+    });
+  }, []);
+
   const clearLiveEvents = useCallback(() => {
     liveEventsVersionRef.current += 1;
     discardPendingLiveEvents();
+    processedEventIDsRef.current.clear();
+    processedEventIDOrderRef.current = [];
     setLiveEvents([]);
   }, [discardPendingLiveEvents]);
 
@@ -168,6 +255,7 @@ export function useWorkbenchRuns({
     const contextVersion = runContextVersionRef.current;
     const liveEventsVersion = liveEventsVersionRef.current;
     const retainRunID = incoming.at(-1)?.run_id || selectedRunIDRef.current || launchRunIDRef.current;
+    emitRuntimeEvents(incoming);
     startTransition(() => {
       setLiveEvents((current) =>
         runContextVersionRef.current === contextVersion && liveEventsVersionRef.current === liveEventsVersion
@@ -213,6 +301,7 @@ export function useWorkbenchRuns({
   const applyRuns = useCallback((nextRuns: RunRecord[] | ((current: RunRecord[]) => RunRecord[])) => {
     const next = typeof nextRuns === "function" ? nextRuns(runsRef.current) : nextRuns;
     runsRef.current = next;
+    runsByIDRef.current = new Map(next.map((run) => [run.run_id, run]));
     setRuns(next);
   }, []);
 
@@ -289,13 +378,20 @@ export function useWorkbenchRuns({
     writeStoredRunStatusVisible(runStatusVisible);
   }, [runStatusVisible]);
 
-  useEffect(() => discardPendingLiveEvents, [discardPendingLiveEvents]);
+  useEffect(() => () => {
+    discardPendingLiveEvents();
+    if (eventHandlingMetricsTimerRef.current !== null) {
+      window.clearTimeout(eventHandlingMetricsTimerRef.current);
+    }
+  }, [discardPendingLiveEvents]);
 
   const resetRunState = useCallback(() => {
     runContextVersionRef.current += 1;
+    launchGenerationRef.current += 1;
     runBusyRef.current = false;
     launchPendingRef.current = false;
     launchRunIDRef.current = "";
+    launchBufferedEventsRef.current = [];
     ignoredHumanInterruptsRef.current.clear();
     runInspectionCacheRef.current.clear();
     setRunLaunchPending(false);
@@ -304,9 +400,10 @@ export function useWorkbenchRuns({
     updateRuns([]);
     updateSelectedRunID("");
     clearLiveEvents();
+    clearEventHandlingMetrics();
     setRunTriggerTypes({});
     clearSelectedRunInspection();
-  }, [clearLiveEvents, clearSelectedRunInspection, updateRuns, updateSelectedRunID]);
+  }, [clearEventHandlingMetrics, clearLiveEvents, clearSelectedRunInspection, updateRuns, updateSelectedRunID]);
 
   const syncUserInputPrompt = useCallback((interrupt: RunInterrupt | null, run: RunRecord | null) => {
     const prompt = userInputPromptFromInterrupt(interrupt, definition, run);
@@ -383,7 +480,7 @@ export function useWorkbenchRuns({
       setRunInspectionLoading(false);
       return;
     }
-    const graphID = runsRef.current.find((run) => run.run_id === runID)?.graph_id || graphIdentityRef.current.id;
+    const graphID = runsByIDRef.current.get(runID)?.graph_id || graphIdentityRef.current.id;
     let inspection: RunInspection;
     try {
       inspection = await getRunInspection(graphID, runID);
@@ -418,7 +515,7 @@ export function useWorkbenchRuns({
     const contextVersion = runContextVersionRef.current;
     const selectedRunRequestVersion = selectedRunRequestRef.current;
     const pageRequestVersion = ++eventPageRequestRef.current;
-    const graphID = runsRef.current.find((run) => run.run_id === runID)?.graph_id || graphIdentityRef.current.id;
+    const graphID = runsByIDRef.current.get(runID)?.graph_id || graphIdentityRef.current.id;
     eventPageLoadingRef.current = true;
     setOlderEventsLoading(true);
     try {
@@ -465,51 +562,76 @@ export function useWorkbenchRuns({
     })();
   }, [refreshRuns, reportError]);
 
+  const trackRuntimeEvent = useCallback((event: RuntimeEvent) => {
+    if (event.id && processedEventIDsRef.current.has(event.id)) return;
+    if (event.id) {
+      processedEventIDsRef.current.add(event.id);
+      processedEventIDOrderRef.current.push(event.id);
+      if (processedEventIDOrderRef.current.length > 10_000) {
+        const expired = processedEventIDOrderRef.current.splice(0, 1_000);
+        for (const eventID of expired) processedEventIDsRef.current.delete(eventID);
+      }
+    }
+
+    enqueueLiveEvent(event);
+    const checkpoint = checkpointRecordFromEvent(event);
+    if (checkpoint) {
+      setCheckpoints((current) => upsertCheckpoint(current, checkpoint));
+    }
+    if (event.run_id && event.type === "run.paused") {
+      void refreshSelectedRun(event.run_id).catch(reportError);
+    }
+  }, [enqueueLiveEvent, refreshSelectedRun, reportError]);
+
   const handleRuntimeEvent = useCallback((event: RuntimeEvent) => {
-    const listAction = runListEventAction(runsRef.current, event);
+    const startedAt = performance.now();
+    const listAction = runListEventActionForKnownRun(runsByIDRef.current.has(event.run_id), event);
     const nextStatus = runStatusFromEvent(event.type);
-    if (listAction === "update") {
+    if (listAction === "update" && shouldProjectRuntimeEventToRun(event)) {
       updateRuns((current) => upsertRunFromEvent(current, event, nextStatus, graphIdentityRef.current));
     } else if (listAction === "refresh") {
       requestEventRunRefresh();
     }
 
     const selectedRun = selectedRunIDRef.current;
-    const launchRun = launchRunIDRef.current;
-    const launchMatches = launchPendingRef.current && (!launchRun || event.run_id === launchRun);
-    const shouldTrack = !event.run_id || (selectedRun ? event.run_id === selectedRun : launchMatches);
-    if (!shouldTrack) return;
-
-    emitRuntimeEvent(event);
-    enqueueLiveEvent(event);
-    const checkpoint = checkpointRecordFromEvent(event);
-    if (checkpoint) {
-      setCheckpoints((current) => upsertCheckpoint(current, checkpoint));
-    }
-    if (event.run_id && listAction !== "update") {
-      updateRuns((current) => upsertRunFromEvent(current, event, nextStatus, graphIdentityRef.current));
-    }
-    if (
-      event.run_id &&
-      launchPendingRef.current &&
-      (event.type === "run.created" || !launchRunIDRef.current)
-    ) {
-      launchRunIDRef.current = event.run_id;
-      if (!selectedRunIDRef.current) {
-        updateSelectedRunID(event.run_id);
-        setRunStatusVisible(true);
+    if (launchPendingRef.current && !launchRunIDRef.current) {
+      launchBufferedEventsRef.current.push(event);
+      if (launchBufferedEventsRef.current.length > 5_000) {
+        launchBufferedEventsRef.current.splice(0, launchBufferedEventsRef.current.length - 5_000);
       }
+      recordEventHandling(false, performance.now() - startedAt);
+      return;
     }
-    if (event.run_id && event.run_id === launchRunIDRef.current && nextStatus && isTerminalRunStatus(nextStatus)) {
-      launchPendingRef.current = false;
-      launchRunIDRef.current = "";
-      setRunLaunchPending(false);
+    if (!event.run_id || event.run_id !== selectedRun) {
+      recordEventHandling(false, performance.now() - startedAt);
+      return;
     }
-    if (event.run_id && event.type === "run.paused") {
-      void refreshSelectedRun(event.run_id).catch(reportError);
-    }
-  }, [enqueueLiveEvent, refreshSelectedRun, reportError, requestEventRunRefresh, updateRuns, updateSelectedRunID]);
-  const streamStatus = useRuntimeEventStream(graphIdentity.id, handleRuntimeEvent);
+
+    trackRuntimeEvent(event);
+    recordEventHandling(true, performance.now() - startedAt);
+  }, [recordEventHandling, requestEventRunRefresh, trackRuntimeEvent, updateRuns]);
+
+  const handleRuntimeEventGap = useCallback((gap: RuntimeEventStreamGap) => {
+    const contextVersion = runContextVersionRef.current;
+    void (async () => {
+      try {
+        await refreshRuns(graphIdentityRef.current, false);
+        if (runContextVersionRef.current !== contextVersion) return;
+        const runID = selectedRunIDRef.current;
+        if (runID) await refreshSelectedRun(runID);
+        if (runContextVersionRef.current !== contextVersion) return;
+        onNotify(
+          "warn",
+          `Runtime event gap (${gap.reason}); persistent run data was reconciled. Live LLM chunks may be incomplete.`
+        );
+      } catch (error) {
+        if (runContextVersionRef.current === contextVersion) reportError(error);
+      }
+    })();
+  }, [onNotify, refreshRuns, refreshSelectedRun, reportError]);
+
+  const stream = useRuntimeEventStream(graphIdentity.id, handleRuntimeEvent, handleRuntimeEventGap);
+  const streamStatus = stream.status;
 
   useEffect(() => {
     if (streamStatus !== "connected") return;
@@ -541,40 +663,81 @@ export function useWorkbenchRuns({
     const userSelectionVersion = userRunSelectionVersionRef.current;
     graphIdentityRef.current = identity;
     const runContextVersion = ++runContextVersionRef.current;
+    const launchGeneration = ++launchGenerationRef.current;
     launchPendingRef.current = true;
     launchRunIDRef.current = "";
+    launchBufferedEventsRef.current = [];
     setRunLaunchPending(true);
     updateSelectedRunID("");
     clearLiveEvents();
+    clearEventHandlingMetrics();
     ignoredHumanInterruptsRef.current.clear();
     clearSelectedRunInspection();
     setRunStatusVisible(true);
     try {
       if (!identity.sessionID) throw new Error(`graph ${identity.id} has no configured session`);
       const run = await startRun(identity.id, identity.sessionID, initialState);
-      if (runContextVersionRef.current !== runContextVersion) return;
+      if (!isCurrentRunLaunch(
+        runContextVersion,
+        launchGeneration,
+        runContextVersionRef.current,
+        launchGenerationRef.current
+      )) {
+        return;
+      }
+      launchRunIDRef.current = run.run_id;
       launchPendingRef.current = false;
-      launchRunIDRef.current = "";
       setRunLaunchPending(false);
       if (userRunSelectionVersionRef.current === userSelectionVersion) {
         updateSelectedRunID(run.run_id);
         setRunInterrupt(null);
       }
+      const bufferedEvents = partitionLaunchRuntimeEvents(
+        launchBufferedEventsRef.current,
+        run.run_id
+      );
+      launchBufferedEventsRef.current = [];
+      if (selectedRunIDRef.current === run.run_id) {
+        for (const event of bufferedEvents.matched) trackRuntimeEvent(event);
+      }
+      launchRunIDRef.current = "";
       await refreshRuns(identity);
-      if (runContextVersionRef.current !== runContextVersion) return;
+      if (!isCurrentRunLaunch(
+        runContextVersion,
+        launchGeneration,
+        runContextVersionRef.current,
+        launchGenerationRef.current
+      )) {
+        return;
+      }
       if (isRunSelectionCurrent(run.run_id)) {
         await refreshSelectedRun(run.run_id);
       }
-      if (runContextVersionRef.current !== runContextVersion) return;
+      if (!isCurrentRunLaunch(
+        runContextVersion,
+        launchGeneration,
+        runContextVersionRef.current,
+        launchGenerationRef.current
+      )) {
+        return;
+      }
       onNotify("info", `Run ${run.status}: ${run.run_id}`);
     } catch (error) {
-      if (runContextVersionRef.current !== runContextVersion) return;
+      if (!isCurrentRunLaunch(
+        runContextVersion,
+        launchGeneration,
+        runContextVersionRef.current,
+        launchGenerationRef.current
+      )) {
+        return;
+      }
       launchPendingRef.current = false;
       launchRunIDRef.current = "";
+      launchBufferedEventsRef.current = [];
       setRunLaunchPending(false);
       reportError(error);
     }
-  }, [clearLiveEvents, clearSelectedRunInspection, isRunSelectionCurrent, onNotify, refreshRuns, refreshSelectedRun, reportError, updateSelectedRunID]);
+  }, [clearEventHandlingMetrics, clearLiveEvents, clearSelectedRunInspection, isRunSelectionCurrent, onNotify, refreshRuns, refreshSelectedRun, reportError, trackRuntimeEvent, updateSelectedRunID]);
 
   const controlSelectedRun = useCallback(async (kind: "pause" | "cancel") => {
     const runID = selectedRunIDRef.current;
@@ -780,6 +943,11 @@ export function useWorkbenchRuns({
     canResumeSelectedRun,
     runControlMode,
     streamStatus,
+    streamDiagnostics: {
+      ...stream.diagnostics,
+      ...eventHandlingMetrics,
+    },
+    reconnectEventStream: stream.reconnect,
     setHumanPromptText,
     selectRun,
     loadOlderEvents,

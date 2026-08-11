@@ -10,12 +10,14 @@ import {
   mergeRefreshedRuns,
   mergeStoredRuntimeEvents,
   missingInitialStateRequirements,
+  partitionLaunchRuntimeEvents,
   reconcileRunEvents,
   runListEventAction,
   runControlModeFromRun,
   runStatusFromEvent,
   runTriggerTypesFromRuns,
   selectedRunIDAfterDeletion,
+  shouldProjectRuntimeEventToRun,
   upsertInspectedRun,
   upsertRunFromEvent,
 } from "./workbenchRunModel";
@@ -214,6 +216,65 @@ describe("workbench run model", () => {
     );
     expect(continued).toHaveLength(2);
     expect(continued[0]).toMatchObject({ id: "chunk-1", payload: { text: "hello!" } });
+
+    const replayed = mergeLiveRuntimeEvents(continued, [second], "run-1");
+    expect(replayed).toHaveLength(2);
+    expect(replayed[0]).toMatchObject({ id: "chunk-1", payload: { text: "hello!" } });
+  });
+
+  test("deduplicates ordinary live event ids", () => {
+    const event = runtimeEventWithID("duplicate");
+    expect(mergeLiveRuntimeEvents([event], [{ ...event }], "run-1")).toEqual([event]);
+  });
+
+  test("routes interleaved launch events only by the HTTP run id", () => {
+    const otherStarted = { ...runtimeEventWithID("other-started"), run_id: "run-other", type: "run.started" };
+    const launchedChunk = {
+      ...runtimeEventWithID("launch-chunk"),
+      run_id: "run-launched",
+      type: "llm.content_chunk",
+      payload: { call_id: "call-1", text: "ready" },
+    };
+    const otherFinished = { ...runtimeEventWithID("other-finished"), run_id: "run-other", type: "run.finished" };
+    const launchedFinished = { ...runtimeEventWithID("launch-finished"), run_id: "run-launched", type: "run.finished" };
+
+    expect(partitionLaunchRuntimeEvents(
+      [otherStarted, launchedChunk, otherFinished, launchedFinished],
+      "run-launched"
+    )).toEqual({
+      matched: [launchedChunk, launchedFinished],
+      unmatched: [otherStarted, otherFinished],
+    });
+  });
+
+  test("keeps an asynchronous launch response authoritative", async () => {
+    const buffered: RuntimeEvent[] = [];
+    let resolveRunID: ((runID: string) => void) | undefined;
+    const response = new Promise<string>((resolveResponse) => {
+      resolveRunID = resolveResponse;
+    });
+    buffered.push({ ...runtimeEventWithID("other-created"), run_id: "run-other", type: "run.created" });
+    await Promise.resolve();
+    buffered.push({ ...runtimeEventWithID("launched-finished"), run_id: "run-launched", type: "run.finished" });
+    buffered.push({ ...runtimeEventWithID("other-finished"), run_id: "run-other", type: "run.finished" });
+    resolveRunID?.("run-launched");
+
+    const runID = await response;
+    const routed = partitionLaunchRuntimeEvents(buffered, runID);
+    expect(routed.matched.map((event) => event.id)).toEqual(["launched-finished"]);
+    expect(routed.unmatched.map((event) => event.id)).toEqual(["other-created", "other-finished"]);
+  });
+
+  test("quickly rejects unselected chunks from run projection", () => {
+    expect(shouldProjectRuntimeEventToRun({
+      ...runtimeEventWithID("chunk"),
+      type: "llm.content_chunk",
+      payload: { call_id: "call", text: "token" },
+    })).toBe(false);
+    expect(shouldProjectRuntimeEventToRun({
+      ...runtimeEventWithID("checkpoint"),
+      payload: { checkpoint_id: "checkpoint-1" },
+    })).toBe(true);
   });
 
   test("caps live events after preserving streaming chunk coalescing", () => {

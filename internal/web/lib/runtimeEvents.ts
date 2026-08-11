@@ -1,15 +1,20 @@
 import type { RuntimeEvent } from "../types";
 
-const runtimeEventName = "weaveflow:runtime-event";
+const runtimeEventBatchName = "weaveflow:runtime-event-batch";
 
-export function emitRuntimeEvent(event: RuntimeEvent) {
-  window.dispatchEvent(new CustomEvent<RuntimeEvent>(runtimeEventName, { detail: event }));
+export function emitRuntimeEvents(events: RuntimeEvent[]) {
+  if (events.length === 0) return;
+  window.dispatchEvent(new CustomEvent<RuntimeEvent[]>(runtimeEventBatchName, { detail: events }));
 }
 
 export function subscribeRuntimeEvents(handler: (event: RuntimeEvent) => void): () => void {
-  const listener = (event: Event) => {
-    handler((event as CustomEvent<RuntimeEvent>).detail);
+  const batchListener = (event: Event) => {
+    for (const runtimeEvent of (event as CustomEvent<RuntimeEvent[]>).detail) {
+      handler(runtimeEvent);
+    }
   };
-  window.addEventListener(runtimeEventName, listener);
-  return () => window.removeEventListener(runtimeEventName, listener);
+  window.addEventListener(runtimeEventBatchName, batchListener);
+  return () => {
+    window.removeEventListener(runtimeEventBatchName, batchListener);
+  };
 }
