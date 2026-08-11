@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 import {
   cacheServerGraphs,
   hydrateServerGraph,
+  preferredServerGraph,
+  readRememberedGraphID,
   readLocalGraphs,
+  rememberGraphID,
   saveLocalGraph,
   type LocalGraph,
 } from "../../../lib/localGraphs";
@@ -42,6 +45,40 @@ function snapshot(): LocalGraphWorkspaceSnapshot {
 }
 
 describe("local graphs", () => {
+  test("remembers a selected graph and prefers it when the server still lists it", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+    };
+    const graphs = [
+      {
+        id: "graph-1",
+        graph_version: "2.0",
+        node_count: 1,
+        session_count: 1,
+        latest_session: "session-1",
+        active_run_count: 0,
+        updated_at: "2026-08-04T01:02:03Z",
+      },
+      {
+        id: "graph-2",
+        graph_version: "2.0",
+        node_count: 2,
+        session_count: 1,
+        latest_session: "session-2",
+        active_run_count: 0,
+        updated_at: "2026-08-04T02:03:04Z",
+      },
+    ];
+
+    rememberGraphID(" graph-2 ", storage);
+
+    expect(readRememberedGraphID(storage)).toBe("graph-2");
+    expect(preferredServerGraph(graphs, readRememberedGraphID(storage))?.id).toBe("graph-2");
+    expect(preferredServerGraph(graphs, "missing")?.id).toBe("graph-1");
+  });
+
   test("builds a save input with canvas metadata and only valid Trigger positions", () => {
     const input = localGraphSaveInput(snapshot(), "cache-1");
 

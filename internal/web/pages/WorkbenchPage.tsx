@@ -7,7 +7,12 @@ import {
   getTools,
   listGraphs,
 } from "../api";
-import { cacheServerGraphs, hydrateServerGraph } from "../lib/localGraphs";
+import {
+  cacheServerGraphs,
+  hydrateServerGraph,
+  preferredServerGraph,
+  rememberGraphID,
+} from "../lib/localGraphs";
 import { parseJSON, stringifyJSON } from "../lib/utils";
 import {
   defaultInitialState,
@@ -109,6 +114,10 @@ export function WorkbenchPage({
   const toastSeqRef = useRef(0);
   const savingRef = useRef(false);
   const graphTriggers = useGraphTriggers(graphId);
+  const changeGraphID = useCallback((value: string) => {
+    setGraphId(value);
+    rememberGraphID(value);
+  }, []);
 
   const definition = useMemo(() => {
     try {
@@ -277,44 +286,44 @@ export function WorkbenchPage({
       setRegistry(reg);
       setToolDefinitions(tools?.tools ?? []);
       const cachedGraphs = cacheServerGraphs(graphs);
-      const firstSummary = graphs[0];
-      let firstDetail: GraphDetail | null = null;
-      if (firstSummary) {
-        firstDetail = await getGraphDetail(firstSummary.id);
-        const cachedGraph = cachedGraphs.find((graph) => graph.graphId === firstSummary.id);
-        if (cachedGraph) hydrateServerGraph(cachedGraph, firstDetail);
-        setGraphInfo(firstDetail.graph);
-        setGraphId(firstDetail.graph.id);
-        setGraphVersion(firstDetail.graph.version);
-        setDefinitionText(stringifyJSON(firstDetail.definition));
-        setRuntimeSettings(firstDetail.settings);
+      const selectedSummary = preferredServerGraph(graphs);
+      let selectedDetail: GraphDetail | null = null;
+      if (selectedSummary) {
+        selectedDetail = await getGraphDetail(selectedSummary.id);
+        const cachedGraph = cachedGraphs.find((graph) => graph.graphId === selectedSummary.id);
+        if (cachedGraph) hydrateServerGraph(cachedGraph, selectedDetail);
+        setGraphInfo(selectedDetail.graph);
+        changeGraphID(selectedDetail.graph.id);
+        setGraphVersion(selectedDetail.graph.version);
+        setDefinitionText(stringifyJSON(selectedDetail.definition));
+        setRuntimeSettings(selectedDetail.settings);
         const analysis: GraphInitialStateAnalysis = {
-          direct: firstDetail.initial_state_requirements,
+          direct: selectedDetail.initial_state_requirements,
           triggers: [],
         };
         setInitialStateAnalysis(analysis);
         setInitialRequirementsError("");
         initialRequirementsCacheRef.current = {
-          signature: graphAnalysisSignature(firstDetail.definition),
+          signature: graphAnalysisSignature(selectedDetail.definition),
           analysis,
         };
       }
       const nextSavedGraphSignatures: Record<string, string> = {};
-      if (firstDetail) {
-        nextSavedGraphSignatures[graphSaveIdentity(firstDetail.graph.id, firstDetail.graph.version)] = graphSaveSignature(
-          firstDetail.definition,
-          runtimeSettingsUpload(firstDetail.settings),
-          firstDetail.graph.id,
-          firstDetail.graph.version
+      if (selectedDetail) {
+        nextSavedGraphSignatures[graphSaveIdentity(selectedDetail.graph.id, selectedDetail.graph.version)] = graphSaveSignature(
+          selectedDetail.definition,
+          runtimeSettingsUpload(selectedDetail.settings),
+          selectedDetail.graph.id,
+          selectedDetail.graph.version
         );
       }
       setSavedGraphSignatures(nextSavedGraphSignatures);
       setServerGraphsLoaded(true);
-      const loadIdentity = firstDetail
+      const loadIdentity = selectedDetail
         ? {
-            id: firstDetail.graph.id,
-            version: firstDetail.graph.version,
-            sessionID: firstDetail.graph.graph_session_id,
+            id: selectedDetail.graph.id,
+            version: selectedDetail.graph.version,
+            sessionID: selectedDetail.graph.graph_session_id,
           }
         : undefined;
       await refreshRuns(loadIdentity, true).catch(() => undefined);
@@ -323,7 +332,7 @@ export function WorkbenchPage({
     } finally {
       setServerStateLoaded(true);
     }
-  }, [notifyError, refreshRuns]);
+  }, [changeGraphID, notifyError, refreshRuns]);
 
   useEffect(() => {
     void loadServerState();
@@ -393,7 +402,7 @@ export function WorkbenchPage({
       const result = await createGraphSession(graphId, definition, settings, graphVersion);
       const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
       setGraphInfo(result.graph);
-      setGraphId(result.graph.id);
+      changeGraphID(result.graph.id);
       setGraphVersion(result.graph.version);
       setRuntimeSettings(nextRuntimeSettings);
       recordSavedGraph(
@@ -478,7 +487,7 @@ export function WorkbenchPage({
       const result = await createGraphSession(graphId, definition, settings, graphVersion);
       const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
       setGraphInfo(result.graph);
-      setGraphId(result.graph.id);
+      changeGraphID(result.graph.id);
       setGraphVersion(result.graph.version);
       setRuntimeSettings(nextRuntimeSettings);
       recordSavedGraph(
@@ -572,7 +581,7 @@ export function WorkbenchPage({
           serverGraphsLoaded={serverGraphsLoaded}
           graphSwitchDisabled={graphSwitchDisabled}
           toasts={toasts}
-          onGraphId={setGraphId}
+          onGraphId={changeGraphID}
           onGraphVersion={setGraphVersion}
           onDefinitionText={setDefinitionText}
           onInitialStateText={setInitialStateText}

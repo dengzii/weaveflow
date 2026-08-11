@@ -29,6 +29,36 @@ export interface SaveLocalGraphInput {
 }
 
 let cachedGraphs: LocalGraph[] = [];
+const selectedGraphIDStorageKey = "weaveflow:web:selected-graph-id:v1";
+
+interface GraphSelectionStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export function readRememberedGraphID(storage: GraphSelectionStorage | null = browserStorage()): string {
+  if (!storage) return "";
+  try {
+    return storage.getItem(selectedGraphIDStorageKey)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function rememberGraphID(graphID: string, storage: GraphSelectionStorage | null = browserStorage()): void {
+  const normalized = graphID.trim();
+  if (!storage || !normalized) return;
+  try {
+    storage.setItem(selectedGraphIDStorageKey, normalized);
+  } catch {}
+}
+
+export function preferredServerGraph(
+  graphs: CachedGraphSummary[],
+  rememberedGraphID = readRememberedGraphID()
+): CachedGraphSummary | undefined {
+  return graphs.find((graph) => graph.id === rememberedGraphID) ?? graphs[0];
+}
 
 export function readLocalGraphs(): LocalGraph[] {
   return [...cachedGraphs].sort(sortGraphs);
@@ -118,4 +148,8 @@ function sortGraphs(a: LocalGraph, b: LocalGraph) {
 
 function serverGraphCacheID(graphID: string, latestSession: string) {
   return `server:${graphID}:${latestSession}`;
+}
+
+function browserStorage(): GraphSelectionStorage | null {
+  return typeof window === "undefined" ? null : window.localStorage;
 }
