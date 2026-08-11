@@ -1,11 +1,9 @@
 import dagre from "dagre";
 import { graphEdgeId, withNodePositions, type NodePosition } from "../../../lib/graphEditor";
 import { analyzeVirtualGraphLoop } from "../../../lib/loopPresentation";
+import { graphNodeHeight, graphNodeWidth } from "../../../components/graphCanvasModel";
 import type { VirtualGraphEdge, VirtualGraphLoop } from "../../../components/GraphCanvas";
 import type { GraphDefinition } from "../../../types";
-
-const nodeWidth = 190;
-const nodeHeight = 76;
 
 export function autoLayoutGraph(
   definition: GraphDefinition,
@@ -27,16 +25,16 @@ export function autoLayoutGraph(
   const ids = new Set<string>();
   for (const id of virtualNodeIds) {
     ids.add(id);
-    graph.setNode(id, { width: nodeWidth, height: nodeHeight });
+    graph.setNode(id, { width: graphNodeWidth, height: graphNodeHeight });
   }
   for (const node of definition.nodes) {
     ids.add(node.id);
-    graph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+    graph.setNode(node.id, { width: graphNodeWidth, height: graphNodeHeight });
   }
   for (const loop of virtualLoops) {
     if (loop.nodeIds.length > 0) continue;
     ids.add(loop.id);
-    graph.setNode(loop.id, { width: nodeWidth + 60, height: nodeHeight + 74 });
+    graph.setNode(loop.id, { width: graphNodeWidth + 60, height: graphNodeHeight + 74 });
   }
 
   for (const edge of virtualEdges) {
@@ -57,8 +55,8 @@ export function autoLayoutGraph(
     const node = graph.node(id) as { x?: number; y?: number } | undefined;
     if (!node || typeof node.x !== "number" || typeof node.y !== "number") continue;
     positions.set(id, {
-      x: Math.round(node.x - nodeWidth / 2),
-      y: Math.round(node.y - nodeHeight / 2),
+      x: Math.round(node.x - graphNodeWidth / 2),
+      y: Math.round(node.y - graphNodeHeight / 2),
     });
   }
 

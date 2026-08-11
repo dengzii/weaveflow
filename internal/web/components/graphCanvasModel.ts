@@ -44,8 +44,8 @@ export interface VirtualLoopLayout {
   height: number;
 }
 
-export const graphNodeWidth = 190;
-export const graphNodeHeight = 76;
+export const graphNodeWidth = 176;
+export const graphNodeHeight = 68;
 export const minGraphLoopWidth = 250;
 export const minGraphLoopHeight = 150;
 export const triggerTargetHandleID = "trigger-input";

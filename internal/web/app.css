@@ -192,12 +192,13 @@
 }
 
 .debug-node {
-  width: 190px;
-  min-height: 76px;
+  width: 176px;
+  height: 68px;
+  min-height: 68px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--panel);
-  padding: 12px;
+  padding: 8px 10px;
   box-shadow: var(--node-shadow);
 }
 
@@ -221,7 +222,13 @@
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
+  gap: 6px;
+}
+
+.debug-node-label {
+  color: var(--foreground);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .debug-node-meta {
@@ -229,10 +236,10 @@
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 8px;
-  margin-top: 6px;
+  gap: 6px;
+  margin-top: 4px;
   color: var(--muted-foreground);
-  font-size: 12px;
+  font-size: 11px;
 }
 
 .debug-node-meta-main,
@@ -318,10 +325,11 @@
 }
 
 .debug-node-virtual-trigger {
-  width: 190px;
-  min-height: 70px;
+  width: 176px;
+  height: 68px;
+  min-height: 68px;
   background: color-mix(in srgb, var(--panel) 82%, var(--muted));
-  padding: 11px 12px;
+  padding: 8px 10px;
 }
 
 .debug-node-trigger-invalid {

@@ -50,7 +50,9 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
           aria-label={`Execution status: ${status}`}
           title={`Execution status: ${status}`}
         />
-        <div className="min-w-0 flex-1 truncate text-sm font-semibold">{data.label}</div>
+        <div className="debug-node-label min-w-0 flex-1 truncate" title={data.label}>
+          {data.label}
+        </div>
       </div>
       <div className="debug-node-meta">
         <span className="debug-node-meta-main">
@@ -76,7 +78,9 @@ export function GraphTriggerNode({ data, selected }: { data: FlowNodeData; selec
     <div className={className}>
       <div className="debug-node-header">
         <TriggerIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 flex-1 truncate text-sm font-semibold">{data.label}</div>
+        <div className="debug-node-label min-w-0 flex-1 truncate" title={data.label}>
+          {data.label}
+        </div>
         {!valid ? <span className="debug-node-status-dot" title="Invalid configuration" /> : null}
       </div>
       <div className="debug-node-meta">
