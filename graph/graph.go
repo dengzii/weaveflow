@@ -19,11 +19,46 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"
 )
 
-const EndNodeRef = "__end__"
+const (
+	EndNodeRef = dsl.EndNodeRef
+	endNodeID  = "END"
+)
+
+type BackoffStrategy string
+
+const (
+	FixedBackoff       BackoffStrategy = "fixed"
+	LinearBackoff      BackoffStrategy = "linear"
+	ExponentialBackoff BackoffStrategy = "exponential"
+)
+
+type RetryPolicy struct {
+	MaxRetries      int
+	BackoffStrategy BackoffStrategy
+	RetryableErrors []string
+}
+
+type NodeEvent string
+
+const (
+	EventChainStart   NodeEvent = "chain_start"
+	EventChainEnd     NodeEvent = "chain_end"
+	EventNodeStart    NodeEvent = "start"
+	EventNodeComplete NodeEvent = "complete"
+	EventNodeError    NodeEvent = "error"
+)
+
+type StreamEvent struct {
+	Timestamp time.Time
+	NodeName  string
+	Event     NodeEvent
+	State     *state.State
+	Error     error
+	Duration  time.Duration
+}
 
 type conditionalEdge struct {
 	to        string
@@ -36,7 +71,7 @@ func SetLogger(l *zap.Logger) {
 	fruntime.SetLogger(l)
 }
 
-// Graph is a thin WeaveFlow wrapper around langgraphgo's typed graph.
+// Graph owns WeaveFlow topology, state contracts, and scheduler configuration.
 // It centralizes project-level conventions such as:
 // - registering nodes via Node
 // - resolving nodes refs by ID
@@ -61,7 +96,7 @@ type Graph struct {
 	metadata              map[string]any
 	entryPoint            string
 	finishPoint           string
-	retryPolicy           *langgraph.RetryPolicy
+	retryPolicy           *RetryPolicy
 	contractDiagnosticsMu sync.RWMutex
 }
 
@@ -396,7 +431,7 @@ func (g *Graph) appendConditionContract(from string, contract state.Contract) {
 	g.conditionContracts[from] = combined
 }
 
-func (g *Graph) SetRetryPolicy(policy *langgraph.RetryPolicy) {
+func (g *Graph) SetRetryPolicy(policy *RetryPolicy) {
 	if g == nil {
 		return
 	}
@@ -474,14 +509,13 @@ func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
 	if ref == "" {
 		return "", fmt.Errorf("edge target is empty")
 	}
-	if ref == langgraph.END || ref == EndNodeRef {
-		return langgraph.END, nil
+	if ref == EndNodeRef {
+		return endNodeID, nil
 	}
 	return g.resolveNodeID(ref)
 }
 
 type Runnable struct {
-	runnable  *langgraph.ListenableRunnable[*state.State]
 	scheduled *scheduledRunnable
 }
 
@@ -535,8 +569,8 @@ func recordFailedBranchPatch(c *compilePatchCollector, base *state.State, nodeID
 	if c == nil || base == nil || err == nil {
 		return
 	}
-	var nodeInterrupt *langgraph.NodeInterrupt
-	var graphInterrupt *langgraph.GraphInterrupt
+	var nodeInterrupt *core.NodeInterrupt
+	var graphInterrupt *fruntime.GraphInterrupt
 	if (errors.As(err, &nodeInterrupt) || errors.As(err, &graphInterrupt)) && c.hasPatch(base, nodeID) {
 		return
 	}
@@ -601,132 +635,68 @@ func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*stat
 	if r == nil {
 		return initialState, fmt.Errorf("runnable is nil")
 	}
-	if r.scheduled == nil && r.runnable == nil {
+	if r.scheduled == nil {
 		return initialState, fmt.Errorf("runnable is not initialized")
 	}
-	if r.scheduled != nil {
-		return r.scheduled.Invoke(ctx, initialState)
-	}
-	return r.runnable.Invoke(ctx, initialState)
+	return r.scheduled.Invoke(ctx, initialState)
 }
 
-func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error) {
+func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config fruntime.SchedulerConfig) (*state.State, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if r == nil {
 		return initialState, fmt.Errorf("runnable is nil")
 	}
-	if r.scheduled == nil && r.runnable == nil {
+	if r.scheduled == nil {
 		return initialState, fmt.Errorf("runnable is not initialized")
 	}
-	if r.scheduled != nil {
-		return r.scheduled.InvokeWithConfig(ctx, initialState, config)
-	}
-	return r.runnable.InvokeWithConfig(ctx, initialState, config)
+	return r.scheduled.InvokeWithConfig(ctx, initialState, config)
 }
 
-func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan langgraph.StreamEvent[*state.State] {
+func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan StreamEvent {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if r == nil {
-		events := make(chan langgraph.StreamEvent[*state.State], 1)
-		events <- langgraph.StreamEvent[*state.State]{State: initialState, Error: fmt.Errorf("runnable is nil")}
+		events := make(chan StreamEvent, 1)
+		events <- StreamEvent{State: initialState, Error: fmt.Errorf("runnable is nil")}
 		close(events)
 		return events
 	}
-	if r.scheduled == nil && r.runnable == nil {
-		events := make(chan langgraph.StreamEvent[*state.State], 1)
-		events <- langgraph.StreamEvent[*state.State]{State: initialState, Error: fmt.Errorf("runnable is not initialized")}
+	if r.scheduled == nil {
+		events := make(chan StreamEvent, 1)
+		events <- StreamEvent{State: initialState, Error: fmt.Errorf("runnable is not initialized")}
 		close(events)
 		return events
 	}
-	if r.scheduled != nil {
-		events := make(chan langgraph.StreamEvent[*state.State], 100)
-		if ctx == nil {
-			ctx = context.Background()
+	events := make(chan StreamEvent, 100)
+	go func() {
+		defer close(events)
+		send := func(event StreamEvent) bool {
+			select {
+			case events <- event:
+				return true
+			case <-ctx.Done():
+				return false
+			}
 		}
-		go func() {
-			defer close(events)
-			send := func(event langgraph.StreamEvent[*state.State]) bool {
-				select {
-				case events <- event:
-					return true
-				case <-ctx.Done():
-					return false
-				}
-			}
-			if !send(langgraph.StreamEvent[*state.State]{
+		if !send(StreamEvent{Timestamp: time.Now(), Event: EventChainStart, State: initialState}) {
+			return
+		}
+		scheduled := *r.scheduled
+		scheduled.observeNode = func(_ context.Context, event NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
+			send(StreamEvent{
 				Timestamp: time.Now(),
-				Event:     langgraph.EventChainStart,
-				State:     initialState,
-			}) {
-				return
-			}
-			scheduled := *r.scheduled
-			scheduled.observeNode = func(_ context.Context, event langgraph.NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
-				send(langgraph.StreamEvent[*state.State]{
-					Timestamp: time.Now(),
-					NodeName:  nodeID,
-					Event:     event,
-					State:     currentState,
-					Error:     err,
-					Duration:  duration,
-				})
-			}
-			finalState, err := scheduled.Invoke(ctx, initialState)
-			send(langgraph.StreamEvent[*state.State]{
-				Timestamp: time.Now(),
-				Event:     langgraph.EventChainEnd,
-				State:     finalState,
+				NodeName:  nodeID,
+				Event:     event,
+				State:     currentState,
 				Error:     err,
+				Duration:  duration,
 			})
-		}()
-		return events
-	}
-	return r.runnable.Stream(ctx, initialState)
-}
-
-func (r *Runnable) SetTracer(tracer *langgraph.Tracer) {
-	if r == nil {
-		return
-	}
-	if r.runnable != nil {
-		r.runnable.SetTracer(tracer)
-	}
-	if r.scheduled != nil {
-		r.scheduled.tracer = tracer
-	}
-}
-
-func (r *Runnable) WithTracer(tracer *langgraph.Tracer) *Runnable {
-	if r == nil {
-		return nil
-	}
-	var scheduled *scheduledRunnable
-	if r.scheduled != nil {
-		copyRunnable := *r.scheduled
-		copyRunnable.tracer = tracer
-		scheduled = &copyRunnable
-	}
-	var underlying *langgraph.ListenableRunnable[*state.State]
-	if r.runnable != nil {
-		underlying = r.runnable.WithTracer(tracer)
-	}
-	return &Runnable{runnable: underlying, scheduled: scheduled}
-}
-
-func (r *Runnable) GetTracer() *langgraph.Tracer {
-	if r == nil || r.runnable == nil {
-		return nil
-	}
-	return r.runnable.GetTracer()
-}
-
-func (r *Runnable) Underlying() *langgraph.ListenableRunnable[*state.State] {
-	if r == nil {
-		return nil
-	}
-	return r.runnable
+		}
+		finalState, err := scheduled.Invoke(ctx, initialState)
+		send(StreamEvent{Timestamp: time.Now(), Event: EventChainEnd, State: finalState, Error: err})
+	}()
+	return events
 }

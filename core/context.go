@@ -6,8 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/dengzii/weaveflow/memory"
-
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -17,7 +15,6 @@ type modelKey struct{}
 type modelsKey struct{}
 type modelConfigsKey struct{}
 type toolsKey struct{}
-type memoryKey struct{}
 type environmentKey struct{}
 
 type Context struct {
@@ -86,13 +83,6 @@ func WithTools(ctx context.Context, available map[string]Tool) context.Context {
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, toolsKey{}, cloneTools(available))
-}
-
-func WithMemory(ctx context.Context, manager memory.Manager) context.Context {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	return context.WithValue(ctx, memoryKey{}, manager)
 }
 
 func WithEnvironment(ctx context.Context, environment map[string]string) context.Context {
@@ -176,14 +166,6 @@ func ToolsFromContext(ctx context.Context) map[string]Tool {
 	return cloneTools(available)
 }
 
-func MemoryFromContext(ctx context.Context) memory.Manager {
-	if ctx == nil {
-		return nil
-	}
-	manager, _ := ctx.Value(memoryKey{}).(memory.Manager)
-	return manager
-}
-
 func EnvironmentFromContext(ctx context.Context) map[string]string {
 	if ctx == nil {
 		return nil
@@ -248,10 +230,6 @@ func (c Context) ModelConfigs() map[string]ModelConfig {
 
 func (c Context) Tools() map[string]Tool {
 	return ToolsFromContext(c)
-}
-
-func (c Context) Memory() memory.Manager {
-	return MemoryFromContext(c)
 }
 
 func (c Context) Environment() map[string]string {

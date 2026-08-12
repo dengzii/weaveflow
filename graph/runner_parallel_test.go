@@ -13,7 +13,6 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func TestRunnerParallelFanOutFanInRecordsBranchSteps(t *testing.T) {
@@ -1626,9 +1625,9 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 		bCalls int
 	)
 	g := NewGraph(nil)
-	g.SetRetryPolicy(&langgraph.RetryPolicy{
+	g.SetRetryPolicy(&RetryPolicy{
 		MaxRetries:      1,
-		BackoffStrategy: langgraph.FixedBackoff,
+		BackoffStrategy: FixedBackoff,
 		RetryableErrors: []string{"temporary"},
 	})
 	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {

@@ -9,7 +9,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
-	basenode "github.com/dengzii/weaveflow/node"
+	agentnode "github.com/dengzii/weaveflow/node/agents/agent"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -188,15 +188,13 @@ func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) e
 	if err != nil {
 		return err
 	}
-	agent := basenode.NewAgentNode(core.WithID(n.ID() + "_agent"))
-	agent.ModelID = n.ModelID
-	agent.ToolIDs = append([]string(nil), n.ToolIDs...)
-	agent.SystemPrompt = n.effectiveSystemPrompt()
-	agent.MaxIterations = n.effectiveMaxIterations()
-	agent.PromptMaxChars = n.PromptMaxChars
-	agent.Parallel = n.Parallel
-	agent.ToolName = n.WorkerID
-	agent.ToolDescription = n.Role
+	workerAgent := agentnode.NewNode(core.WithID(n.ID() + "_agent"))
+	workerAgent.ModelID = n.ModelID
+	workerAgent.ToolIDs = append([]string(nil), n.ToolIDs...)
+	workerAgent.SystemPrompt = n.effectiveSystemPrompt()
+	workerAgent.MaxIterations = n.effectiveMaxIterations()
+	workerAgent.PromptMaxChars = n.PromptMaxChars
+	workerAgent.Parallel = n.Parallel
 	if err := conversation.SetMessages(nil); err != nil {
 		return err
 	}
@@ -206,13 +204,13 @@ func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) e
 	if err := conversation.ResetIteration(); err != nil {
 		return err
 	}
-	if err := conversation.SetMaxIterations(agent.MaxIterations); err != nil {
+	if err := conversation.SetMaxIterations(workerAgent.MaxIterations); err != nil {
 		return err
 	}
-	if err := agent.SeedConversation(conversation, task); err != nil {
+	if err := workerAgent.SeedConversation(conversation, task); err != nil {
 		return err
 	}
-	if err := agent.RunLoop(ctx, conversation); err != nil {
+	if err := workerAgent.RunLoop(ctx, conversation); err != nil {
 		return fmt.Errorf("supervisor worker %q: %w", n.WorkerID, err)
 	}
 	result := conversation.FinalAnswer()

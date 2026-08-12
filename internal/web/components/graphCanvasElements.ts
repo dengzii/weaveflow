@@ -222,7 +222,7 @@ export function buildGraphCanvasElements({
       } : undefined,
       labelBgPadding: showLabel && condition ? [7, 4] : undefined,
       labelBgBorderRadius: showLabel && condition ? 5 : undefined,
-      animated: showLabel && condition,
+      animated: false,
       selected,
       reconnectable: false,
       interactionWidth: 24,

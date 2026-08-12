@@ -6,8 +6,6 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
-
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func (g *Graph) Validate() error {
@@ -47,7 +45,7 @@ func (g *Graph) Validate() error {
 				return fmt.Errorf("default edge %q -> %q is duplicated", from, g.serializeNodeRef(to))
 			}
 			seenTargets[to] = struct{}{}
-			if to != langgraph.END {
+			if to != endNodeID {
 				if _, ok := g.nodes[to]; !ok {
 					return fmt.Errorf("edge target %q not found", to)
 				}
@@ -72,7 +70,7 @@ func (g *Graph) Validate() error {
 			if err := edge.condition.Validate(); err != nil {
 				return fmt.Errorf("conditional edge from %q to %q: %w", from, edge.to, err)
 			}
-			if edge.to != langgraph.END {
+			if edge.to != endNodeID {
 				if _, ok := g.nodes[edge.to]; !ok {
 					return fmt.Errorf("conditional edge target %q not found", edge.to)
 				}
@@ -159,7 +157,7 @@ func (g *Graph) reachableNodes() map[string]struct{} {
 			targets = append(targets, edge.to)
 		}
 		for _, target := range targets {
-			if target == langgraph.END {
+			if target == endNodeID {
 				continue
 			}
 			if _, exists := g.nodes[target]; !exists {
@@ -181,7 +179,7 @@ func (g *Graph) terminalReachableNodes() map[string]struct{} {
 	reverseEdges := map[string][]string{}
 	queue := []string{}
 	addTerminal := func(nodeID string) {
-		if nodeID == "" || nodeID == langgraph.END {
+		if nodeID == "" || nodeID == endNodeID {
 			return
 		}
 		if _, exists := g.nodes[nodeID]; !exists {
@@ -196,7 +194,7 @@ func (g *Graph) terminalReachableNodes() map[string]struct{} {
 	addTerminal(g.finishPoint)
 	for from, targets := range g.defaultEdges {
 		for _, target := range targets {
-			if target == langgraph.END {
+			if target == endNodeID {
 				addTerminal(from)
 				continue
 			}
@@ -205,7 +203,7 @@ func (g *Graph) terminalReachableNodes() map[string]struct{} {
 	}
 	for from, edges := range g.conditionalEdges {
 		for _, edge := range edges {
-			if edge.to == langgraph.END {
+			if edge.to == endNodeID {
 				addTerminal(from)
 				continue
 			}

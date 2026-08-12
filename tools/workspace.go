@@ -3,8 +3,10 @@ package tools
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
@@ -28,13 +30,21 @@ func toolWorkspaceDir(ctx context.Context) (string, error) {
 }
 
 func resolveToolPath(ctx context.Context, path string) (workspace string, target string, relative string, err error) {
-	if strings.TrimSpace(path) == "" {
+	path = strings.TrimSpace(path)
+	if path == "" {
 		return "", "", "", errors.New("tool path is required")
 	}
 
 	workspace, err = toolWorkspaceDir(ctx)
 	if err != nil {
 		return "", "", "", err
+	}
+
+	if !filepath.IsAbs(path) {
+		path, err = normalizeToolPathForOS(path, runtime.GOOS)
+		if err != nil {
+			return "", "", "", err
+		}
 	}
 
 	cleanPath := filepath.Clean(path)
@@ -60,6 +70,24 @@ func resolveToolPath(ctx context.Context, path string) (workspace string, target
 	}
 
 	return filepath.ToSlash(workspace), target, filepath.ToSlash(relative), nil
+}
+
+func normalizeToolPathForOS(path string, goos string) (string, error) {
+	if goos != "windows" || !strings.HasPrefix(path, "/") {
+		return path, nil
+	}
+	if len(path) >= 2 && isASCIILetter(path[1]) && (len(path) == 2 || path[2] == '/') {
+		drivePath := strings.ToUpper(path[1:2]) + `:\`
+		if len(path) > 2 {
+			drivePath += strings.ReplaceAll(path[3:], "/", `\`)
+		}
+		return drivePath, nil
+	}
+	return "", fmt.Errorf("unsupported Unix-style absolute path %q on Windows; use a workspace-relative path or a native Windows absolute path", path)
+}
+
+func isASCIILetter(value byte) bool {
+	return value >= 'a' && value <= 'z' || value >= 'A' && value <= 'Z'
 }
 
 func skipToolWorkspaceCheckEnabled(ctx context.Context) bool {

@@ -6,19 +6,7 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/state"
-
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
-
-func (g *Graph) conditionalEdgeResolver(from string, conditional []conditionalEdge) func(context.Context, *state.State) string {
-	return func(ctx context.Context, currentState *state.State) string {
-		next, err := g.resolveNextNodes(ctx, from, currentState)
-		if err == nil && len(next) == 1 {
-			return next[0]
-		}
-		return ""
-	}
-}
 
 func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, currentState *state.State) ([]string, error) {
 	if g == nil {
@@ -31,7 +19,7 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 	if currentNodeID == "" {
 		return nil, fmt.Errorf("node id is empty")
 	}
-	if currentNodeID != langgraph.END {
+	if currentNodeID != endNodeID {
 		if _, ok := g.nodes[currentNodeID]; !ok {
 			return nil, fmt.Errorf("node id %q not found", currentNodeID)
 		}
@@ -53,7 +41,7 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 			return []string{targets[0]}, nil
 		}
 		if currentNodeID == g.finishPoint {
-			return []string{langgraph.END}, nil
+			return []string{endNodeID}, nil
 		}
 		return nil, fmt.Errorf("node %q produced no matching conditional edge", currentNodeID)
 	}
@@ -61,7 +49,7 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 		return append([]string(nil), targets...), nil
 	}
 	if currentNodeID == g.finishPoint {
-		return []string{langgraph.END}, nil
+		return []string{endNodeID}, nil
 	}
 	return nil, fmt.Errorf("node %q has no outgoing edge", currentNodeID)
 }

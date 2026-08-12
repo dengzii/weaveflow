@@ -15,6 +15,18 @@ type Node interface {
 	Execute(ctx Context, access *state.Access) error
 }
 
+type NodeInterrupt struct {
+	NodeID string
+	Value  any
+}
+
+func (interrupt *NodeInterrupt) Error() string {
+	if interrupt == nil {
+		return "node interrupted"
+	}
+	return fmt.Sprintf("interrupt at node %s: %v", interrupt.NodeID, interrupt.Value)
+}
+
 type NodeInfo struct {
 	NodeID          string `json:"id" yaml:"id"`
 	NodeName        string `json:"name" yaml:"name"`

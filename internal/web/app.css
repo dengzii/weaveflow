@@ -152,6 +152,33 @@
   border-radius: 4px;
 }
 
+.debug-flow-editable .react-flow__pane.selection {
+  cursor: crosshair;
+}
+
+.debug-flow-editable .react-flow__node.draggable,
+.debug-flow-editable .react-flow__nodesselection-rect,
+.debug-flow-editable .debug-loop-title {
+  cursor: grab;
+}
+
+.debug-flow-editable .react-flow__node.draggable.dragging,
+.debug-flow-editable .react-flow__nodesselection-rect:active,
+.debug-flow-editable .debug-loop-title:active,
+.debug-flow .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
+.debug-flow-locked .react-flow__pane,
+.debug-flow-locked .react-flow__node,
+.debug-flow-locked .debug-loop-title {
+  cursor: default;
+}
+
+.debug-flow-locked .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
 .debug-flow .react-flow__controls {
   overflow: hidden;
   border: 1px solid var(--border);
@@ -187,8 +214,31 @@
   border-bottom: none;
 }
 
-.debug-flow .react-flow__minimap-mask {
-  fill: var(--flow-minimap-mask);
+.debug-flow .debug-flow-minimap {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 88%, var(--flow-edge-selected));
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--control-shadow);
+  opacity: 0.9;
+  transition: border-color 120ms ease, opacity 120ms ease, box-shadow 120ms ease;
+}
+
+.debug-flow .debug-flow-minimap:hover {
+  border-color: color-mix(in srgb, var(--flow-edge-selected) 52%, var(--border));
+  opacity: 1;
+}
+
+.debug-flow .debug-flow-minimap .react-flow__minimap-svg {
+  cursor: grab;
+}
+
+.debug-flow .debug-flow-minimap .react-flow__minimap-svg:active {
+  cursor: grabbing;
+}
+
+.debug-flow .debug-flow-minimap .react-flow__minimap-node {
+  vector-effect: non-scaling-stroke;
 }
 
 .debug-node {

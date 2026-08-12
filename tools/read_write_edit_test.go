@@ -144,3 +144,31 @@ func TestReadWriteEditRejectPathEscape(t *testing.T) {
 		t.Fatal("expected edit path escape error")
 	}
 }
+
+func TestNormalizeToolPathForWindowsConvertsGitBashDrivePath(t *testing.T) {
+	path, err := normalizeToolPathForOS("/e/dev/data_hub/agent/README.md", "windows")
+	if err != nil {
+		t.Fatalf("normalizeToolPathForOS: %v", err)
+	}
+	if path != `E:\dev\data_hub\agent\README.md` {
+		t.Fatalf("unexpected normalized path %q", path)
+	}
+}
+
+func TestNormalizeToolPathForWindowsRejectsForeignUnixPath(t *testing.T) {
+	_, err := normalizeToolPathForOS("/data/home/agent/README.md", "windows")
+	if err == nil || !strings.Contains(err.Error(), "workspace-relative path") {
+		t.Fatalf("unexpected error %v", err)
+	}
+}
+
+func TestNormalizeToolPathLeavesUnixPathUnchangedOnUnix(t *testing.T) {
+	const path = "/data/home/agent/README.md"
+	got, err := normalizeToolPathForOS(path, "linux")
+	if err != nil {
+		t.Fatalf("normalizeToolPathForOS: %v", err)
+	}
+	if got != path {
+		t.Fatalf("unexpected normalized path %q", got)
+	}
+}

@@ -24,7 +24,6 @@ func NewRead() Tool {
 			Name: "read",
 			Description: "Reads a file from the local filesystem.\n" +
 				"Usage:\n" +
-				"- The file_path parameter should be an absolute path.\n" +
 				"- By default, it reads up to 2000 lines from the beginning of the file.\n" +
 				"- You can optionally specify a line offset and limit for long files.\n" +
 				"- Results are returned using cat -n format, with line numbers starting at 1.",
@@ -33,7 +32,7 @@ func NewRead() Tool {
 				"properties": map[string]any{
 					"file_path": map[string]any{
 						"type":        "string",
-						"description": "The absolute path to the file to read",
+						"description": "File to read.",
 					},
 					"offset": map[string]any{
 						"type":        "integer",

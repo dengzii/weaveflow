@@ -12,6 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
+	agentnode "github.com/dengzii/weaveflow/node/agents/agent"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
@@ -30,7 +31,7 @@ func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 		FinishPoint:  "writer",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "researcher", Type: node.NodeTypeAgent,
+				ID: "researcher", Type: agentnode.NodeType,
 				Config: map[string]any{"model_id": "research", "max_iterations": 2},
 				State: map[string]dsl.StateBinding{
 					"task":         binding("shared.request.input"),
@@ -39,7 +40,7 @@ func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 				},
 			},
 			{
-				ID: "writer", Type: node.NodeTypeAgent,
+				ID: "writer", Type: agentnode.NodeType,
 				Config: map[string]any{"model_id": "writer", "max_iterations": 2},
 				State: map[string]dsl.StateBinding{
 					"task":         binding("shared.handoff.research"),
@@ -85,7 +86,7 @@ func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 		FinishPoint:  "writer",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "researcher", Type: node.NodeTypeAgent,
+				ID: "researcher", Type: agentnode.NodeType,
 				Config: map[string]any{"model_id": "research", "max_iterations": 2},
 				State: map[string]dsl.StateBinding{
 					"task":         binding("shared.request.input"),
@@ -94,7 +95,7 @@ func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 				},
 			},
 			{
-				ID: "writer", Type: node.NodeTypeAgent,
+				ID: "writer", Type: agentnode.NodeType,
 				Config: map[string]any{"model_id": "writer", "max_iterations": 2},
 				State: map[string]dsl.StateBinding{
 					"task":         binding("shared.handoff.research"),

@@ -140,7 +140,7 @@ describe("graph canvas elements", () => {
     expect(unselected).toMatchObject({
       id: edgeID,
       label: "status = ready",
-      animated: true,
+      animated: false,
       selected: false,
       style: { stroke: "#8b5cf6", strokeWidth: 1.4 },
     });

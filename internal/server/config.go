@@ -95,7 +95,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	}
 	cfg.RuntimeContextDecorators = append([]RuntimeContextDecorator(nil), cfg.RuntimeContextDecorators...)
 	ctx = applyRuntimeContextDecorators(ctx, cfg.RuntimeContextDecorators)
-	initialSettings := graphRuntimeSettingsFromContext(ctx, baseDir)
+	initialSettings := graphRuntimeSettingsFromContext(ctx)
 	ctx = core.WithEnvironment(ctx, initialSettings.Environment)
 	srv := &Server{
 		runtime:  newGraphRuntimeManager(ctx, initialSettings, cfg.Graph, runner),

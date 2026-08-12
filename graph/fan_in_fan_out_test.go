@@ -15,7 +15,6 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func TestGraphAllowsMultipleDefaultEdges(t *testing.T) {
@@ -653,7 +652,7 @@ func TestFanOutFanInWaitsForUnevenBranches(t *testing.T) {
 	}
 	var streamedState *state.State
 	for event := range runnable.Stream(context.Background(), state.NewState()) {
-		if event.Event != langgraph.EventChainEnd {
+		if event.Event != EventChainEnd {
 			continue
 		}
 		if event.Error != nil {

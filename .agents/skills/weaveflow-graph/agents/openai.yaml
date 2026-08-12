@@ -1,4 +1,4 @@
 interface:
   display_name: "WeaveFlow Graph"
-  short_description: "Create sessions, run, and debug WeaveFlow graphs"
-  default_prompt: "Use $weaveflow-graph to configure a Graph, create an immutable session, run that exact session, and debug it through the Graph-scoped WeaveFlow server API."
+  short_description: "Configure, trigger, run, and debug WeaveFlow graphs"
+  default_prompt: "Use $weaveflow-graph to discover the live registry, configure a Graph and its Session settings or Triggers, run the exact immutable Session, and debug it through the Graph-scoped WeaveFlow server API."

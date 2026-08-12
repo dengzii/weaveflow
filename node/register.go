@@ -32,7 +32,6 @@ func RegisterCoreNodeTypes(r *registry.Registry) error {
 		{NodeGroupModelTools, LLMTurnNodeTypeDefinition()},
 		{NodeGroupModelTools, TextGenerationNodeTypeDefinition()},
 		{NodeGroupModelTools, ToolExecutionNodeTypeDefinition()},
-		{NodeGroupAgents, AgentNodeTypeDefinition()},
 		{NodeGroupInputContext, EnvironmentContextNodeTypeDefinition()},
 		{NodeGroupAgents, ExploreAgentNodeTypeDefinition()},
 		{NodeGroupOutput, ChatReplyNodeTypeDefinition()},

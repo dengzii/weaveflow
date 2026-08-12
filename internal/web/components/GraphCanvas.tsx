@@ -50,6 +50,11 @@ export { hasStoredGraphCanvasViewport } from "./graphCanvasViewport";
 export type { VirtualGraphLoop } from "../lib/loopPresentation";
 export type { VirtualGraphEdge } from "./graphCanvasElements";
 
+export interface GraphCanvasPositionChanges {
+  nodePositions: Map<string, NodePosition>;
+  triggerPositions: Map<string, NodePosition>;
+}
+
 const graphCanvasNodeTypes = {
   debugNode: GraphNode,
   debugLoop: GraphLoopNode,
@@ -80,8 +85,7 @@ export function GraphCanvas({
   onSelectEdge,
   onSelectLoop,
   onSelectTrigger,
-  onNodePositionChange,
-  onTriggerPositionChange,
+  onPositionChanges,
   onConnectNodes,
   onCreateNodeAt,
   onNodeContextMenu,
@@ -113,8 +117,7 @@ export function GraphCanvas({
   onSelectEdge?: (edgeId: string | null) => void;
   onSelectLoop?: (groupId: string | null) => void;
   onSelectTrigger?: (triggerId: string | null) => void;
-  onNodePositionChange?: (nodeId: string, position: NodePosition) => void;
-  onTriggerPositionChange?: (triggerId: string, position: NodePosition) => void;
+  onPositionChanges?: (changes: GraphCanvasPositionChanges) => void;
   onConnectNodes?: (source: string, target: string) => void;
   onCreateNodeAt?: (position: NodePosition, screenPosition: NodePosition) => void;
   onNodeContextMenu?: (nodeId: string, screenPosition: NodePosition) => void;
@@ -149,8 +152,7 @@ export function GraphCanvas({
         onSelectEdge={onSelectEdge}
         onSelectLoop={onSelectLoop}
         onSelectTrigger={onSelectTrigger}
-        onNodePositionChange={onNodePositionChange}
-        onTriggerPositionChange={onTriggerPositionChange}
+        onPositionChanges={onPositionChanges}
         onConnectNodes={onConnectNodes}
         onCreateNodeAt={onCreateNodeAt}
         onNodeContextMenu={onNodeContextMenu}
@@ -187,8 +189,7 @@ function GraphCanvasInner({
   onSelectEdge,
   onSelectLoop,
   onSelectTrigger,
-  onNodePositionChange,
-  onTriggerPositionChange,
+  onPositionChanges,
   onConnectNodes,
   onCreateNodeAt,
   onNodeContextMenu,
@@ -220,8 +221,7 @@ function GraphCanvasInner({
   onSelectEdge?: (edgeId: string | null) => void;
   onSelectLoop?: (groupId: string | null) => void;
   onSelectTrigger?: (triggerId: string | null) => void;
-  onNodePositionChange?: (nodeId: string, position: NodePosition) => void;
-  onTriggerPositionChange?: (triggerId: string, position: NodePosition) => void;
+  onPositionChanges?: (changes: GraphCanvasPositionChanges) => void;
   onConnectNodes?: (source: string, target: string) => void;
   onCreateNodeAt?: (position: NodePosition, screenPosition: NodePosition) => void;
   onNodeContextMenu?: (nodeId: string, screenPosition: NodePosition) => void;
@@ -239,6 +239,7 @@ function GraphCanvasInner({
   const flowWrapperRef = useRef<HTMLDivElement | null>(null);
   const restoredViewportKeyRef = useRef("");
   const suppressViewportPersistUntilRef = useRef(0);
+  const retainedDraggedNodeIDsRef = useRef<Set<string> | null>(null);
   const nodesRef = useRef<Node<FlowNodeData>[]>([]);
   const edgesRef = useRef<Edge[]>([]);
   const runtimeRef = useRef<Map<string, RuntimeNodeState>>(new Map());
@@ -338,7 +339,11 @@ function GraphCanvasInner({
 
   useLayoutEffect(() => {
     const elements = buildCanvasElements();
-    setNodes(elements.nodes);
+    const retainedNodeIDs = retainedDraggedNodeIDsRef.current;
+    retainedDraggedNodeIDsRef.current = null;
+    setNodes(retainedNodeIDs
+      ? elements.nodes.map((node) => ({ ...node, selected: retainedNodeIDs.has(node.id) }))
+      : elements.nodes);
     setEdges(elements.edges);
   }, [buildCanvasElements, setEdges, setNodes]);
 
@@ -557,7 +562,7 @@ function GraphCanvasInner({
             })
           );
         }}
-        onNodeDragStop={(_, node) => {
+        onNodeDragStop={(_, node, draggedNodes) => {
           const drag = loopDragRef.current;
           if (drag && node.data.virtualKind === "loop" && drag.groupId === node.id) {
             const dx = node.position.x - drag.startPosition.x;
@@ -568,22 +573,41 @@ function GraphCanvasInner({
             }
             return;
           }
-          if (node.data.virtualKind === "trigger") {
-            onTriggerPositionChange?.(String(node.data.triggerID || ""), node.position);
-            return;
+          const movedNodes = draggedNodes.length > 0 ? draggedNodes : [node];
+          const changes = positionChangesForNodes(movedNodes);
+          if (onPositionChanges && (changes.nodePositions.size > 0 || changes.triggerPositions.size > 0)) {
+            retainedDraggedNodeIDsRef.current = new Set(movedNodes.map((movedNode) => movedNode.id));
+            onPositionChanges(changes);
           }
-          onNodePositionChange?.(node.id, node.position);
         }}
         minZoom={minGraphCanvasZoom}
         maxZoom={maxGraphCanvasZoom}
+        panOnDrag={[1]}
+        selectionOnDrag={interactive}
         nodesDraggable={isInteractive}
         nodesConnectable={isInteractive}
         elementsSelectable={interactive}
         edgesReconnectable={false}
         proOptions={{ hideAttribution: true }}
-        className="debug-flow"
+        className={`debug-flow ${isInteractive ? "debug-flow-editable" : "debug-flow-locked"}`}
       >
-        <MiniMap pannable zoomable position="bottom-right" className="!rounded-md !border !border-border !bg-panel" />
+        <MiniMap<Node<FlowNodeData>>
+          pannable
+          zoomable
+          position="bottom-right"
+          ariaLabel="Graph overview"
+          className="debug-flow-minimap"
+          style={{ width: 220, height: 150 }}
+          bgColor="var(--panel)"
+          maskColor="var(--flow-minimap-mask)"
+          maskStrokeColor="var(--flow-edge-selected)"
+          maskStrokeWidth={1.5}
+          nodeColor={miniMapNodeColor}
+          nodeStrokeColor={miniMapNodeStrokeColor}
+          nodeStrokeWidth={2}
+          nodeBorderRadius={4}
+          offsetScale={8}
+        />
         <GraphCanvasControls
           interactive={interactive}
           canAutoLayout={Boolean(definition)}
@@ -644,4 +668,46 @@ function flowEdgeSelectionId(edge: Edge): string {
     ? edge.data.selectionId
     : undefined;
   return typeof selectionId === "string" ? selectionId : edge.id;
+}
+
+function positionChangesForNodes(nodes: Node<FlowNodeData>[]): GraphCanvasPositionChanges {
+  const nodePositions = new Map<string, NodePosition>();
+  const triggerPositions = new Map<string, NodePosition>();
+  for (const node of nodes) {
+    if (node.data.virtualKind === "loop") continue;
+    if (node.data.virtualKind === "trigger") {
+      const triggerID = String(node.data.triggerID || "");
+      if (triggerID) triggerPositions.set(triggerID, node.position);
+      continue;
+    }
+    nodePositions.set(node.id, node.position);
+  }
+  return { nodePositions, triggerPositions };
+}
+
+function miniMapNodeColor(node: Node<FlowNodeData>): string {
+  if (node.selected) return "var(--flow-edge-selected)";
+  if (node.data.virtualKind === "loop") {
+    return "color-mix(in srgb, var(--flow-edge-selected) 9%, transparent)";
+  }
+  if (node.data.virtualKind === "trigger") return "#8b5cf6";
+  if (node.data.virtualKind === "start") return "var(--flow-edge-entry)";
+  if (node.data.virtualKind === "end") return "var(--flow-edge-finish)";
+  switch (node.data.status) {
+    case "running":
+      return "var(--status-live-text)";
+    case "succeeded":
+      return "var(--status-ok-text)";
+    case "failed":
+      return "var(--status-danger-text)";
+    case "paused":
+      return "var(--status-warn-text)";
+    default:
+      return "var(--muted-foreground)";
+  }
+}
+
+function miniMapNodeStrokeColor(node: Node<FlowNodeData>): string {
+  if (node.selected || node.data.virtualKind === "loop") return "var(--flow-edge-selected)";
+  return "var(--panel)";
 }

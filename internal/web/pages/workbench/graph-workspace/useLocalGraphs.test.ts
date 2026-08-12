@@ -35,7 +35,6 @@ function snapshot(): LocalGraphWorkspaceSnapshot {
     runtimeSettings: {
       environment: { MODE: "test" },
       models: [],
-      memory: { enabled: false },
     },
     virtualNodeIDs: ["__start__", "__end__"],
     virtualEdges: [{ id: "entry", from: "__start__", to: "task", kind: "entry" }],

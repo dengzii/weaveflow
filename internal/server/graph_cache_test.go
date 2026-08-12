@@ -97,7 +97,7 @@ func TestReadCachedGraphSessionHashesStoredSettingsBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	settingsData := []byte(`{
-  "version": 1,
+  "version": 2,
   "environment": {},
   "models": [
     {
@@ -105,10 +105,7 @@ func TestReadCachedGraphSessionHashesStoredSettingsBytes(t *testing.T) {
       "enabled": true,
       "provider": "openai"
     }
-  ],
-  "memory": {
-    "enabled": false
-  }
+  ]
 }
 `)
 	settingsPath := filepath.Join(sessionDirectory, graphRuntimeSettingsFileName)
@@ -209,7 +206,7 @@ func TestListCachedGraphsLoadsLatestDefinition(t *testing.T) {
 		"graph-a",
 		"v2",
 		"latest",
-		`{"environment":{"MODE":"latest"},"models":[],"memory":{"enabled":false}}`,
+		`{"environment":{"MODE":"latest"},"models":[]}`,
 	))
 
 	graphs, err := srv.listCachedGraphs()
@@ -349,7 +346,7 @@ func TestGraphUploadDistinguishesInvalidDefinitionFromStorageFailure(t *testing.
 				"finish_point": "missing",
 				"nodes": [{"id":"missing","type":"not_registered","state":{}}]
 			},
-			"settings": {"environment":{},"models":[],"memory":{"enabled":false}}
+			"settings": {"environment":{},"models":[]}
 		}`)
 		if response.Code != http.StatusBadRequest {
 			t.Fatalf("invalid graph status = %d, body = %s", response.Code, response.Body.String())

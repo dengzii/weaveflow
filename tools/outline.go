@@ -87,7 +87,7 @@ func NewOutline() Tool {
 				"properties": map[string]any{
 					"file_path": map[string]any{
 						"type":        "string",
-						"description": "Path to a source file (not a directory).",
+						"description": "Source file to inspect.",
 					},
 					"grouped": map[string]any{
 						"type":        "boolean",

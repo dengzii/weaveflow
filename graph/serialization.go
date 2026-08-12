@@ -7,13 +7,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
-	"github.com/dengzii/weaveflow/state"
-
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func (g *Graph) setDefinitionMetadata(def dsl.GraphDefinition) {
@@ -109,12 +105,39 @@ func (g *Graph) WriteToFile(path string) error {
 }
 
 func (g *Graph) DrawMermaid() (string, error) {
-	compiled := langgraph.NewStateGraph[*state.State]()
-	if err := g.buildStateGraph(compiled, func(string, core.Node) {}); err != nil {
+	if err := g.Validate(); err != nil {
 		return "", err
 	}
-	exporter := langgraph.NewExporter(compiled)
-	return exporter.DrawMermaid(), nil
+	var builder strings.Builder
+	builder.WriteString("flowchart TD\n")
+	builder.WriteString(fmt.Sprintf("    %s[[\"%s\"]]\n", g.entryPoint, g.entryPoint))
+	builder.WriteString(fmt.Sprintf("    START --> %s\n", g.entryPoint))
+	builder.WriteString("    START([\"START\"])\n")
+	builder.WriteString("    style START fill:#90EE90\n")
+	for _, nodeID := range g.sortedNodeIDs() {
+		if nodeID == g.entryPoint {
+			continue
+		}
+		builder.WriteString(fmt.Sprintf("    %s[\"%s\"]\n", nodeID, nodeID))
+	}
+	builder.WriteString("    END([\"END\"])\n")
+	builder.WriteString("    style END fill:#FFB6C1\n")
+	for _, edge := range g.edgeSpecs {
+		target := edge.To
+		if target == EndNodeRef {
+			target = "END"
+		}
+		if edge.Condition != nil {
+			builder.WriteString(fmt.Sprintf("    %s -.-> %s\n", edge.From, target))
+			continue
+		}
+		builder.WriteString(fmt.Sprintf("    %s --> %s\n", edge.From, target))
+	}
+	if g.finishPoint != "" && len(g.defaultEdges[g.finishPoint]) == 0 && len(g.conditionalEdges[g.finishPoint]) == 0 {
+		builder.WriteString(fmt.Sprintf("    %s --> END\n", g.finishPoint))
+	}
+	builder.WriteString(fmt.Sprintf("    style %s fill:#87CEEB\n", g.entryPoint))
+	return builder.String(), nil
 }
 
 func (g *Graph) Definition() (dsl.GraphDefinition, error) {
@@ -199,7 +222,7 @@ func (g *Graph) serializeNodeRef(nodeID string) string {
 	if nodeID == "" {
 		return ""
 	}
-	if nodeID == langgraph.END {
+	if nodeID == endNodeID {
 		return EndNodeRef
 	}
 	return nodeID

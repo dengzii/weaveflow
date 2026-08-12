@@ -8,6 +8,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
+	agentnode "github.com/dengzii/weaveflow/node/agents/agent"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
@@ -143,7 +144,7 @@ func TestUserInputEntryProvidesAgentTaskWhenNodeIDIsInput(t *testing.T) {
 			{ID: "input", Type: node.NodeTypeUserInput, State: map[string]dsl.StateBinding{
 				"value": {Path: "shared.request.input"}, "pending_input": {Path: "shared.request.pending_input"},
 			}},
-			{ID: "agent", Type: node.NodeTypeAgent, State: map[string]dsl.StateBinding{
+			{ID: "agent", Type: agentnode.NodeType, State: map[string]dsl.StateBinding{
 				"task": {Path: "shared.request.input"}, "conversation": {Path: "scopes.agent.conversation"}, "result": {Path: "shared.final.answer"},
 			}},
 		},

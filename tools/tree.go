@@ -52,7 +52,7 @@ func NewTree() Tool {
 				"properties": map[string]any{
 					"path": map[string]any{
 						"type":        "string",
-						"description": "Root path to walk. Defaults to workspace root.",
+						"description": "Root to walk. Defaults to workspace root.",
 					},
 					"max_depth": map[string]any{
 						"type":             "integer",

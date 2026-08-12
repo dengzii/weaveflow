@@ -173,7 +173,6 @@ function validateRuntimeSettings(value: unknown, source: string): RuntimeSetting
   const settings = requireRecord(value, source);
   requireRecord(settings.environment, `${source}.environment`);
   requireArray(settings.models, `${source}.models`);
-  requireRecord(settings.memory, `${source}.memory`);
   return value as RuntimeSettings;
 }
 

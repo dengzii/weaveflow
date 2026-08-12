@@ -7,8 +7,6 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec state.StateCodec, eventSink fruntime.EventSink, options ...fruntime.GraphRunnerOption) (*fruntime.GraphRunner, error) {
@@ -71,18 +69,11 @@ func (g *graphRunnerGraph) EntryPointID() string {
 	return g.graph.entryPoint
 }
 
-func (g *graphRunnerGraph) CompileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[*state.State], error) {
+func (g *graphRunnerGraph) CompileForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}
 	return g.graph.compileForRunner(execution)
-}
-
-func (g *graphRunnerGraph) CompileRunnableForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
-	if g == nil || g.graph == nil {
-		return nil, fmt.Errorf("graph runner graph is nil")
-	}
-	return g.graph.compileRunnableForRunner(execution)
 }
 
 func (g *graphRunnerGraph) ResolveNodeID(nodeID string) (string, error) {

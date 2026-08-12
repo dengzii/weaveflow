@@ -70,7 +70,6 @@ function runtimeSettings(): RuntimeSettings {
   return {
     environment: {},
     models: [],
-    memory: { enabled: false },
   };
 }
 

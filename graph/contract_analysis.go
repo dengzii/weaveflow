@@ -8,8 +8,6 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
 	"github.com/dengzii/weaveflow/state"
-
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func (g *Graph) ContractDiagnostics() []core.ContractDiagnostic {
@@ -91,7 +89,7 @@ func (g *Graph) contractAnalysisGraph() graphbuild.ContractAnalysisGraph {
 
 	return graphbuild.ContractAnalysisGraph{
 		EntryPoint:         g.entryPoint,
-		EndNode:            langgraph.END,
+		EndNode:            endNodeID,
 		InitialStatePaths:  append([]string(nil), g.initialStatePaths...),
 		Edges:              defaultEdges,
 		ConditionalEdges:   conditionalEdges,

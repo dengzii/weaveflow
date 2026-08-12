@@ -71,7 +71,7 @@ func NewGlob() Tool {
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "The directory to search in. If not specified, the current working directory will be used.",
+						"description": "Directory to search. Defaults to workspace root.",
 					},
 				},
 				"required":             []string{"pattern"},

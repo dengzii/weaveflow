@@ -51,8 +51,7 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 				"base_url": "http://127.0.0.1:9999/v1",
 				"extra_body": {"safe_prompt": true}
 			}
-		],
-		"memory": {"enabled": true}
+		]
 	}`
 	uploaded := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("persisted-graph", "v1", "persisted", settings))
 	repeatedSettings := `{
@@ -60,8 +59,7 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 		"models": [
 			{"id":"default","enabled":true,"provider":"openai","model":"gpt-persisted","base_url":"http://127.0.0.1:9999/v1"},
 			{"id":"fast","enabled":true,"provider":"mistral","api_format":"chat_completions","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1","extra_body":{"safe_prompt":true}}
-		],
-		"memory": {"enabled": true}
+		]
 	}`
 	repeated := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("persisted-graph", "v1", "persisted", repeatedSettings))
 	if repeated.Graph.GraphSessionID != uploaded.Graph.GraphSessionID {
@@ -126,9 +124,6 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	}
 	if settingsResponse.Environment["WEAVEFLOW_PERSISTED_SETTING"] != "saved" {
 		t.Fatalf("restored environment = %#v", settingsResponse.Environment)
-	}
-	if !settingsResponse.Memory.Enabled {
-		t.Fatalf("restored memory settings = %#v", settingsResponse.Memory)
 	}
 	restoredSession, err := restored.loadTriggerSession("persisted-graph")
 	if err != nil {
@@ -205,7 +200,7 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 
 func TestLoadGraphRuntimeSettingsRejectsModelWithoutID(t *testing.T) {
 	baseDir := t.TempDir()
-	data := []byte(`{"version":1,"environment":{},"models":[{"enabled":true,"provider":"openai"}],"memory":{"enabled":false}}`)
+	data := []byte(`{"version":2,"environment":{},"models":[{"enabled":true,"provider":"openai"}]}`)
 	if err := os.WriteFile(graphRuntimeSettingsPath(baseDir), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +224,7 @@ func TestGraphUploadRejectsModelWithoutID(t *testing.T) {
 		"invalid-settings",
 		"v1",
 		"invalid",
-		`{"environment":{},"models":[{"enabled":true,"provider":"openai"}],"memory":{"enabled":false}}`,
+		`{"environment":{},"models":[{"enabled":true,"provider":"openai"}]}`,
 	))
 	response := serveHTTP(engine, http.MethodPost, "/graphs/invalid-settings/sessions", requestBody)
 	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "model id is required") {

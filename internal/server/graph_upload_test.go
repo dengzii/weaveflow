@@ -60,7 +60,7 @@ func TestGraphUploadStoresSettingsInTheSameSession(t *testing.T) {
 		"graph-a",
 		"v1",
 		"hello",
-		`{"environment":{"MODE":"second"},"models":[],"memory":{"enabled":false}}`,
+		`{"environment":{"MODE":"second"},"models":[]}`,
 	))
 	if second.Graph.GraphSessionID == first.Graph.GraphSessionID {
 		t.Fatalf("settings change reused session %q", second.Graph.GraphSessionID)

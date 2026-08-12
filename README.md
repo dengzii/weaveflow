@@ -6,7 +6,7 @@
 WeaveFlow is a graph-based runtime for building, executing, and inspecting LLM agents in Go.
 
 It combines a declarative graph DSL, a deterministic execution engine, checkpointed state, and a reusable node library
-for common agent behaviors such as model calls, tool use, planning, memory, routing, and human approval. The project is
+for common agent behaviors such as model calls, tool use, planning, routing, and human approval. The project is
 designed for local-first development: runs are persisted, resumable, and replayable.
 
 ## Why WeaveFlow
@@ -27,7 +27,7 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 - Declarative Graph Definition v2 with explicit State Module dependencies and path bindings.
 - Deterministic runtime with execution stores, checkpoint stores, and event sinks.
 - State Ports and capability contracts that validate node/condition read-write behavior at build time.
-- Built-in nodes for LLM calls, tool execution, planning, replanning, verification, routing, memory, iteration, and
+- Built-in nodes for LLM calls, tool execution, planning, replanning, verification, routing, iteration, and
   approval gates.
 - Artifact persistence for debugging and replay.
 - OpenAI-compatible model adapter and local `llama.cpp` integration.
@@ -48,9 +48,9 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 | `builtin/`         | Built-in conditions, helpers, and default registry wiring for advanced use.               |
 | `tools/`           | Bundled tool implementations.                                                             |
 | `llms/openai/`     | OpenAI-compatible LLM adapter.                                                            |
-| `memory/`          | Memory manager, repositories, and retrieval helpers.                                      |
 | `cmd/server/`      | Graph debugging server entrypoint.                                                        |
 | `internal/server/` | Server API implementation for graph upload, runs, events, checkpoints, and artifacts.     |
+| `internal/memory/` | Internal, currently unassembled memory storage and retrieval implementation.               |
 | `internal/web/`    | Debug web UI for editing graphs and inspecting runs.                                      |
 
 ## Getting Started
@@ -311,8 +311,8 @@ To preload a graph definition, including the ready-to-edit supervisor example:
 go run ./cmd/server -addr :8080 -data .local/server -graph examples/supervisor_mode/graph.json
 ```
 
-If `OPENAI_API_KEY` is set, model-backed nodes are enabled. The server also wires local memory and the bundled `read`,
-`write`, `edit`, `glob`, `grep`, `calculator`, `current_time`, and `web_fetch` tools into the runtime context.
+If `OPENAI_API_KEY` is set, model-backed nodes are enabled. The server also wires the bundled `read`, `write`, `edit`,
+`glob`, `grep`, `calculator`, `current_time`, and `web_fetch` tools into the runtime context.
 
 The API routes are mounted at the root by default. Use `-prefix /debug` to mount them under a path prefix.
 

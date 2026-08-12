@@ -39,7 +39,7 @@ func NewEdit() Tool {
 				"properties": map[string]any{
 					"file_path": map[string]any{
 						"type":        "string",
-						"description": "The absolute path to the file to modify",
+						"description": "File to modify.",
 					},
 					"old_string": map[string]any{
 						"type":        "string",

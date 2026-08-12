@@ -64,7 +64,6 @@ export interface RuntimeSettings {
   environment: Record<string, string>;
   environment_presets?: RuntimeEnvironmentPreset[];
   models: RuntimeModelSettings[];
-  memory: RuntimeMemorySettings;
 }
 
 export type TriggerType = "webhook" | "schedule" | "chat";
@@ -203,18 +202,9 @@ export interface RuntimeModelSettings {
   api_key?: string;
 }
 
-export interface RuntimeMemorySettings {
-  enabled: boolean;
-  directory?: string;
-}
-
 export interface RuntimeSettingsUpdate {
   environment?: Record<string, string>;
   models?: RuntimeModelSettingsUpdate[];
-  memory?: {
-    enabled?: boolean;
-    directory?: string;
-  };
 }
 
 export interface RuntimeModelSettingsUpdate {

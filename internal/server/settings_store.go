@@ -12,14 +12,13 @@ import (
 
 const (
 	graphRuntimeSettingsFileName = "runtime-settings.json"
-	graphRuntimeSettingsVersion  = 1
+	graphRuntimeSettingsVersion  = 2
 )
 
 type graphRuntimeSettingsFile struct {
 	Version     int                      `json:"version"`
 	Environment map[string]string        `json:"environment"`
 	Models      []graphModelSettingsFile `json:"models"`
-	Memory      graphMemorySettings      `json:"memory"`
 }
 
 type graphModelSettingsFile struct {
@@ -69,7 +68,6 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 	}
 	settings := graphRuntimeSettings{
 		Environment: stored.Environment,
-		Memory:      stored.Memory,
 		Models:      make([]graphModelSettings, 0, len(stored.Models)),
 	}
 	for _, model := range stored.Models {
@@ -106,7 +104,6 @@ func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
 		Version:     graphRuntimeSettingsVersion,
 		Environment: settings.Environment,
 		Models:      make([]graphModelSettingsFile, 0, len(settings.Models)),
-		Memory:      settings.Memory,
 	}
 	for _, model := range settings.Models {
 		stored.Models = append(stored.Models, graphModelSettingsFile{

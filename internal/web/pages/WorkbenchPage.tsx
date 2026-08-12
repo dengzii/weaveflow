@@ -73,7 +73,6 @@ interface PendingInitialStateAnalysis {
 const emptyRuntimeSettings: RuntimeSettings = {
   environment: {},
   models: [],
-  memory: { enabled: false },
 };
 
 export function WorkbenchPage({

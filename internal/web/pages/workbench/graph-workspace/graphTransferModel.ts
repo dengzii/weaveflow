@@ -226,7 +226,7 @@ function requireGraphDefinition(value: unknown): GraphDefinition {
 }
 
 function parseRuntimeSettings(value: unknown): RuntimeSettings {
-  if (!isPlainRecord(value) || !isPlainRecord(value.environment) || !Array.isArray(value.models) || !isPlainRecord(value.memory)) {
+  if (!isPlainRecord(value) || !isPlainRecord(value.environment) || !Array.isArray(value.models)) {
     throw new Error("Invalid graph file: runtime settings are incomplete.");
   }
 
@@ -262,10 +262,6 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
     environment,
     environment_presets: environmentPresets.length > 0 ? environmentPresets : undefined,
     models,
-    memory: {
-      enabled: typeof value.memory.enabled === "boolean" ? value.memory.enabled : false,
-      directory: stringValue(value.memory.directory) || undefined,
-    },
   };
 }
 
@@ -295,10 +291,6 @@ function exportableRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsUp
       base_url: model.base_url ?? "",
       extra_body: model.extra_body ? cloneJSONValue(model.extra_body) : undefined,
     })),
-    memory: {
-      enabled: settings.memory.enabled,
-      directory: settings.memory.directory ?? "",
-    },
   };
 }
 

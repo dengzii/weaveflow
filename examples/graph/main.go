@@ -37,7 +37,6 @@ func newReActAgentContext() core.Context {
 
 	ctx := context.Background()
 	ctx = core.WithModel(ctx, model)
-	ctx = core.WithMemory(ctx, newReActAgentMemory())
 	ctx = core.WithTools(ctx, newReActAgentTools())
 	return core.NewContext(ctx)
 }

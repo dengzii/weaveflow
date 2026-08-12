@@ -27,7 +27,6 @@ import (
 	"github.com/dengzii/weaveflow/state"
 
 	"github.com/gin-gonic/gin"
-	langgraph "github.com/smallnest/langgraphgo/graph"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -205,7 +204,7 @@ func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) error 
 	if value, ok := access.ReadAny(n.resumePath); ok && value == "ok" {
 		return nil
 	}
-	return &langgraph.NodeInterrupt{Node: n.ID(), Value: "waiting for resume input"}
+	return &core.NodeInterrupt{NodeID: n.ID(), Value: "waiting for resume input"}
 }
 
 func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-chan struct{}, respectContext bool) *wfgraph.Graph {
@@ -380,8 +379,7 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 				"model": "gpt-fast",
 				"base_url": "http://127.0.0.1:9999/v1"
 			}
-		],
-		"memory": {"enabled": true}
+		]
 	}`
 	uploaded := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", settings))
 
@@ -396,9 +394,6 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	}
 	if !uploaded.Settings.Models[0].APIKeyConfigured || !uploaded.Settings.Models[1].APIKeyConfigured {
 		t.Fatalf("api key configured flags = %#v", uploaded.Settings.Models)
-	}
-	if !uploaded.Settings.Memory.Enabled || uploaded.Settings.Memory.Directory == "" {
-		t.Fatalf("memory settings = %#v", uploaded.Settings.Memory)
 	}
 	if uploaded.Settings.Environment["WEAVEFLOW_TEST_FLAG"] != "enabled" {
 		t.Fatalf("environment = %#v", uploaded.Settings.Environment)
@@ -430,9 +425,6 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	if coreCtx.Model("fast") == nil {
 		t.Fatalf("runtime context fast model is nil")
 	}
-	if coreCtx.Memory() == nil {
-		t.Fatalf("runtime context memory is nil")
-	}
 	if _, ok := coreCtx.Tools()["alpha"]; !ok {
 		t.Fatalf("runtime context tools = %#v, want alpha preserved", coreCtx.Tools())
 	}
@@ -445,8 +437,7 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 		"models": [
 			{"id":"default","enabled":true,"provider":"openai","model":"gpt-test","base_url":"http://127.0.0.1:9999/v1"},
 			{"id":"fast","enabled":true,"provider":"openai","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1"}
-		],
-		"memory": {"enabled": true}
+		]
 	}`
 	second := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", withoutVisibleEnvironment))
 	if second.Graph.GraphSessionID == uploaded.Graph.GraphSessionID {
@@ -511,7 +502,7 @@ func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 		t.Setenv(key, value)
 	}
 
-	settings := graphRuntimeSettingsFromContext(context.Background(), "")
+	settings := graphRuntimeSettingsFromContext(context.Background())
 	for key, value := range expected {
 		if settings.Environment[key] != value {
 			t.Fatalf("%s = %q, want %q", key, settings.Environment[key], value)
@@ -542,7 +533,7 @@ func TestRuntimeSettingsContextEnvironmentOverridesProcess(t *testing.T) {
 	t.Setenv("TAVILY_API_KEY", "process-key")
 	ctx := core.WithEnvironment(context.Background(), map[string]string{"TAVILY_API_KEY": "context-key"})
 
-	settings := graphRuntimeSettingsFromContext(ctx, "")
+	settings := graphRuntimeSettingsFromContext(ctx)
 	if got := settings.Environment["TAVILY_API_KEY"]; got != "context-key" {
 		t.Fatalf("TAVILY_API_KEY = %q, want context-key", got)
 	}
@@ -799,7 +790,7 @@ func TestCreateGraphSessionConfiguresRunnerForDebugRun(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -909,7 +900,7 @@ func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 
 	first := putGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -928,7 +919,7 @@ func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 	time.Sleep(time.Millisecond)
 	second := putGraphForHashTest(t, engine, `{
 		"graph_id": "debug-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1002,7 +993,7 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1057,7 +1048,7 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1150,7 +1141,7 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1327,7 +1318,7 @@ func TestRunInspectionResourcesExposeDebugRecords(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "debug-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1414,7 +1405,7 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "interrupt-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1536,7 +1527,7 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "interrupt-graph",
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -2156,7 +2147,7 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	graphBody := `{
-		"settings": {"environment": {}, "models": [], "memory": {"enabled": false}},
+		"settings": {"environment": {}, "models": []},
 		"triggers": [
 			{"id":"hook","type":"webhook","enabled":true,"webhook":{"state_bindings":{"input":"shared.request.input"}}},
 			{"id":"empty","type":"webhook","enabled":true,"webhook":{}}

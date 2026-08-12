@@ -173,5 +173,5 @@ function run(runID: string) {
 }
 
 function runtimeSettings() {
-  return { environment: {}, models: [], memory: { enabled: false } };
+  return { environment: {}, models: [] };
 }

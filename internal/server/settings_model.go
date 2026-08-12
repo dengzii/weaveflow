@@ -2,7 +2,6 @@ package server
 
 import (
 	"fmt"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -51,12 +50,6 @@ func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeS
 	}
 	syncGraphModelEnvironment(settings)
 
-	if req.Memory != nil {
-		if req.Memory.Enabled != nil {
-			settings.Memory.Enabled = *req.Memory.Enabled
-		}
-		settings.Memory.Directory = strings.TrimSpace(req.Memory.Directory)
-	}
 	return apiKey, apiKeyProvided, nil
 }
 
@@ -180,7 +173,6 @@ func normalizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings
 	if settings.Models == nil {
 		settings.Models = []graphModelSettings{}
 	}
-	settings.Memory.Directory = strings.TrimSpace(settings.Memory.Directory)
 	return settings
 }
 
@@ -287,11 +279,4 @@ func sortModelIDs(ids []string) {
 		}
 		return ids[i] < ids[j]
 	})
-}
-
-func defaultMemoryDirectory(baseDir string) string {
-	if strings.TrimSpace(baseDir) == "" {
-		return ""
-	}
-	return filepath.Join(baseDir, "memory")
 }

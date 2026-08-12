@@ -16,7 +16,6 @@ const (
 	NodeTypeLLMTurn             = "llm_turn"
 	NodeTypeTextGeneration      = "text_generation"
 	NodeTypeToolExecution       = "tool_execution"
-	NodeTypeAgent               = "agent"
 	NodeTypeEnvironmentContext  = "environment_context"
 	NodeTypeExploreAgent        = "explore_agent"
 	NodeTypeChatReply           = "chat_reply"
@@ -36,7 +35,6 @@ var (
 	_ dsl.GraphNodeSpecProvider = (*LLMTurnNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*TextGenerationNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ToolExecutionNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*AgentNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*EnvironmentContextNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ExploreAgentNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ChatReplyNode)(nil)
@@ -161,10 +159,6 @@ func ApplyDefaultStatePaths(node Node) {
 		setShared(&typed.OutputPath, "text_generation", "result")
 	case *ToolExecutionNode:
 		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeToolExecution), "conversation")
-	case *AgentNode:
-		setShared(&typed.TaskPath, "request", "input")
-		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeAgent), "conversation")
-		setShared(&typed.ResultPath, "final", "answer")
 	case *ExploreAgentNode:
 		setShared(&typed.TaskPath, "request", "input")
 		setScope(&typed.ParentConversationPath, defaultNodeOwner(typed, NodeTypeExploreAgent), "parent_conversation")

@@ -1,14 +1,11 @@
 package main
 
 import (
-	"path/filepath"
-
 	"github.com/dengzii/weaveflow"
 	"github.com/dengzii/weaveflow/builtin"
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
-	"github.com/dengzii/weaveflow/memory"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/tools"
@@ -46,14 +43,6 @@ func newReActAgentTools() map[string]core.Tool {
 		"grep":      tools.NewGrep(),
 		"web_fetch": tools.NewWebFetch(),
 	}
-}
-
-func newReActAgentMemory() memory.Manager {
-	repo := memory.NewFileMemoryRepository(filepath.Join(".local", "instance"))
-	return memory.New(&memory.Options{
-		Repository: repo,
-		Retriever:  memory.NewBM25Retriever(repo, nil),
-	})
 }
 
 func newReActAgentGraph() *wfgraph.Graph {

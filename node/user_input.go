@@ -9,8 +9,6 @@ import (
 	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
-
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 type UserInputNode struct {
@@ -114,7 +112,7 @@ func (n *UserInputNode) Execute(_ core.Context, access *state.Access) error {
 			return nil
 		}
 	}
-	return &langgraph.NodeInterrupt{Node: n.ID(), Value: n.Prompt}
+	return &core.NodeInterrupt{NodeID: n.ID(), Value: n.Prompt}
 }
 
 func (n *UserInputNode) consumePendingInput(access *state.Access) (string, bool, error) {

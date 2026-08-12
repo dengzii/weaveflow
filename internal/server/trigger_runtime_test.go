@@ -86,7 +86,7 @@ func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 	failed := serveHTTP(engine, "POST", "/graphs/graph-a/sessions", `{
 		"graph_version":"v2",
 		"definition":{"version":"2.0","name":"invalid","nodes":[]},
-		"settings":{"environment":{},"models":[],"memory":{"enabled":false}}
+		"settings":{"environment":{},"models":[]}
 	}`)
 	if failed.Code != 400 {
 		t.Fatalf("failed upload status = %d, body = %s", failed.Code, failed.Body.String())
@@ -307,7 +307,7 @@ func triggerGraphUploadBody(graphID, graphVersion, content string) string {
 		graphID,
 		graphVersion,
 		content,
-		`{"environment":{},"models":[],"memory":{"enabled":false}}`,
+		`{"environment":{},"models":[]}`,
 	)
 }
 

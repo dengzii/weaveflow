@@ -23,8 +23,6 @@ export function RuntimeSettingsEditor({
   onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
 }) {
   const [models, setModels] = useState<EditableGraphModel[]>([]);
-  const [memoryEnabled, setMemoryEnabled] = useState(false);
-  const [memoryDirectory, setMemoryDirectory] = useState("");
   const [environmentRows, setEnvironmentRows] = useState<EditableEnvironmentVariable[]>([]);
   const [environmentPresetKey, setEnvironmentPresetKey] = useState("");
   const [newEnvironmentKey, setNewEnvironmentKey] = useState("");
@@ -38,8 +36,6 @@ export function RuntimeSettingsEditor({
       return;
     }
     setModels(modelsFromSettings(settings));
-    setMemoryEnabled(settings?.memory.enabled ?? false);
-    setMemoryDirectory(settings?.memory.directory ?? "");
     setEnvironmentRows(environmentRowsFromSettings(settings));
     setEnvironmentPresetKey("");
     setNewEnvironmentKey("");
@@ -50,7 +46,7 @@ export function RuntimeSettingsEditor({
   function updateModel(index: number, update: Partial<EditableGraphModel>) {
     const nextModels = models.map((model, modelIndex) => (modelIndex === index ? { ...model, ...update } : model));
     setModels(nextModels);
-    publish(nextModels, memoryEnabled, memoryDirectory, environmentRows);
+    publish(nextModels, environmentRows);
   }
 
   function addModel() {
@@ -69,19 +65,19 @@ export function RuntimeSettingsEditor({
       },
     ];
     setModels(nextModels);
-    publish(nextModels, memoryEnabled, memoryDirectory, environmentRows);
+    publish(nextModels, environmentRows);
   }
 
   function updateEnvironment(index: number, update: Partial<EditableEnvironmentVariable>) {
     const nextRows = environmentRows.map((row, rowIndex) => (rowIndex === index ? { ...row, ...update } : row));
     setEnvironmentRows(nextRows);
-    publish(models, memoryEnabled, memoryDirectory, nextRows);
+    publish(models, nextRows);
   }
 
   function removeEnvironment(index: number) {
     const nextRows = environmentRows.filter((_, rowIndex) => rowIndex !== index);
     setEnvironmentRows(nextRows);
-    publish(models, memoryEnabled, memoryDirectory, nextRows);
+    publish(models, nextRows);
   }
 
   function addEnvironmentPreset() {
@@ -90,7 +86,7 @@ export function RuntimeSettingsEditor({
     const nextRows = [...environmentRows, { key: preset.key, value: preset.default_value }];
     setEnvironmentRows(nextRows);
     setEnvironmentPresetKey("");
-    publish(models, memoryEnabled, memoryDirectory, nextRows);
+    publish(models, nextRows);
   }
 
   function addEnvironment() {
@@ -107,19 +103,17 @@ export function RuntimeSettingsEditor({
     setEnvironmentRows(nextRows);
     setNewEnvironmentKey("");
     setNewEnvironmentValue("");
-    publish(models, memoryEnabled, memoryDirectory, nextRows);
+    publish(models, nextRows);
   }
 
   function removeModel(index: number) {
     const nextModels = models.filter((_, modelIndex) => modelIndex !== index);
     setModels(nextModels);
-    publish(nextModels, memoryEnabled, memoryDirectory, environmentRows);
+    publish(nextModels, environmentRows);
   }
 
   function publish(
     nextModels: EditableGraphModel[],
-    nextMemoryEnabled: boolean,
-    nextMemoryDirectory: string,
     nextEnvironmentRows: EditableEnvironmentVariable[]
   ) {
     let environment: Record<string, string>;
@@ -137,10 +131,6 @@ export function RuntimeSettingsEditor({
       const next = onChangeRuntimeSettings({
         environment,
         models: modelUpdates,
-        memory: {
-          enabled: nextMemoryEnabled,
-          directory: nextMemoryDirectory.trim(),
-        },
       });
       locallyAppliedSettingsRef.current = next;
     } catch (err) {
@@ -235,32 +225,6 @@ export function RuntimeSettingsEditor({
             ))}
           </div>
         )}
-      </div>
-
-      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
-        <label className="flex min-h-8 items-center gap-2 text-sm">
-          <input
-            type="checkbox"
-            checked={memoryEnabled}
-            onChange={(event) => {
-              const enabled = event.target.checked;
-              setMemoryEnabled(enabled);
-              publish(models, enabled, memoryDirectory, environmentRows);
-            }}
-            className="h-4 w-4"
-          />
-          <span>Memory</span>
-        </label>
-        <Field label="Directory">
-          <Input
-            value={memoryDirectory}
-            onChange={(event) => {
-              const directory = event.target.value;
-              setMemoryDirectory(directory);
-              publish(models, memoryEnabled, directory, environmentRows);
-            }}
-          />
-        </Field>
       </div>
 
       <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">

@@ -11,7 +11,7 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/llms/openai"
-	"github.com/dengzii/weaveflow/node"
+	agentnode "github.com/dengzii/weaveflow/node/agents/agent"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
@@ -55,7 +55,7 @@ func twoAgentDefinition() dsl.GraphDefinition {
 		FinishPoint:  "writer",
 		Nodes: []dsl.GraphNodeSpec{
 			{
-				ID: "researcher", Type: node.NodeTypeAgent,
+				ID: "researcher", Type: agentnode.NodeType,
 				Config: map[string]any{
 					"model_id":      "research",
 					"system_prompt": "Research the task and return factual notes for another agent.",
@@ -67,7 +67,7 @@ func twoAgentDefinition() dsl.GraphDefinition {
 				},
 			},
 			{
-				ID: "writer", Type: node.NodeTypeAgent,
+				ID: "writer", Type: agentnode.NodeType,
 				Config: map[string]any{
 					"model_id":      "writer",
 					"system_prompt": "Turn the research notes into a concise final response.",

@@ -4,6 +4,7 @@ import { getGraphDetail } from "../../api";
 import {
   GraphCanvas,
   hasStoredGraphCanvasViewport,
+  type GraphCanvasPositionChanges,
   type VirtualGraphEdge,
   type VirtualGraphLoop,
 } from "../../components/GraphCanvas";
@@ -11,8 +12,9 @@ import {
   createGraphDefinition,
   createGraphID,
   graphEdgeId,
+  graphNodePositions,
   updateGraphNode,
-  withNodePosition,
+  withNodePositions,
   type NodePosition,
 } from "../../lib/graphEditor";
 import {
@@ -716,13 +718,20 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     setContextMenu({ kind: "trigger", triggerId, enabled: trigger.enabled, screen });
   }
 
-  function moveNode(nodeID: string, position: NodePosition) {
-    updateDefinition((current) => withNodePosition(current, nodeID, position));
-  }
-
-  function moveTrigger(triggerID: string, position: NodePosition) {
-    if (!definition) return;
-    setDefinition(withTriggerCanvasPosition(definition, triggerID, position, graphTriggers.map((trigger) => trigger.id)));
+  function moveCanvasNodes(changes: GraphCanvasPositionChanges) {
+    const triggerIDs = graphTriggers.map((trigger) => trigger.id);
+    updateDefinition((current) => {
+      let next = current;
+      if (changes.nodePositions.size > 0) {
+        const positions = graphNodePositions(next);
+        for (const [nodeID, position] of changes.nodePositions) positions.set(nodeID, position);
+        next = withNodePositions(next, positions);
+      }
+      for (const [triggerID, position] of changes.triggerPositions) {
+        next = withTriggerCanvasPosition(next, triggerID, position, triggerIDs);
+      }
+      return next;
+    });
   }
 
   async function createTriggerAt(type: TriggerType, position: NodePosition) {
@@ -858,8 +867,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           onSelectEdge={setSelectedEdgeId}
           onSelectLoop={setSelectedLoopId}
           onSelectTrigger={selectTrigger}
-          onNodePositionChange={moveNode}
-          onTriggerPositionChange={moveTrigger}
+          onPositionChanges={moveCanvasNodes}
           onAutoLayout={applyAutoLayout}
           onConnectNodes={connectNodes}
           onCreateNodeAt={openCreateMenu}

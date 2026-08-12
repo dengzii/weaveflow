@@ -86,9 +86,6 @@ func CloneGraphInstanceConfig(cfg dsl.GraphInstanceConfig) dsl.GraphInstanceConf
 			cloned.Secrets[key] = value
 		}
 	}
-	if len(cfg.Memory) > 0 {
-		cloned.Memory = config.CloneMap(cfg.Memory)
-	}
 	if len(cfg.Metadata) > 0 {
 		cloned.Metadata = config.CloneMap(cfg.Metadata)
 	}

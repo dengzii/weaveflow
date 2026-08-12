@@ -10,35 +10,21 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 func (g *Graph) Compile() (*Runnable, error) {
-	compiled := langgraph.NewListenableStateGraph[*state.State]()
-	patches, err := g.compileStateGraph(graphCompileTemplate{
-		stateGraph: compiled.StateGraph,
-		addNode: func(nodeID string, targetNode core.Node, patches *compilePatchCollector) {
-			compiled.AddNode(nodeID, targetNode.Description(), func(ctx context.Context, currentState *state.State) (*state.State, error) {
-				return g.executePatchNode(ctx, nodeID, targetNode, currentState, patches)
-			})
-		},
-	})
-	if err != nil {
+	if err := g.Validate(); err != nil {
 		return nil, err
 	}
-	runnable, err := compiled.CompileListenable()
-	if err != nil {
-		return nil, err
-	}
+	patches := newCompilePatchCollector(g.compileBranchOrders())
 	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
-		targetNode := compiled.GetListenableNode(nodeID)
+		targetNode := g.nodes[nodeID]
 		if targetNode == nil {
 			return currentState, fmt.Errorf("node %q is not compiled", nodeID)
 		}
-		return targetNode.Execute(ctx, currentState)
+		return g.executePatchNode(ctx, nodeID, targetNode, currentState, patches)
 	})
-	return &Runnable{runnable: runnable, scheduled: scheduled}, nil
+	return &Runnable{scheduled: scheduled}, nil
 }
 
 func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (_ *state.State, resultErr error) {
@@ -89,33 +75,7 @@ func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode 
 	return result.State, nil
 }
 
-func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (*langgraph.StateRunnable[*state.State], error) {
-	patches, err := g.runnerPatchCollector(execution)
-	if err != nil {
-		return nil, err
-	}
-	compiled := langgraph.NewStateGraph[*state.State]()
-	if _, err := g.compileStateGraph(graphCompileTemplate{
-		stateGraph: compiled,
-		patches:    patches,
-		addNode: func(nodeID string, targetNode core.Node, patches *compilePatchCollector) {
-			compiled.AddNode(nodeID, targetNode.Description(), func(ctx context.Context, currentState *state.State) (*state.State, error) {
-				next, err := execution.ExecuteNode(ctx, nodeID, targetNode, currentState)
-				if err != nil {
-					recordFailedBranchPatch(patches, currentState, nodeID, err)
-				} else if !patches.hasPatch(currentState, nodeID) {
-					patches.record(currentState, nodeID, stateDiffPatch(currentState, next))
-				}
-				return next, err
-			})
-		},
-	}); err != nil {
-		return nil, err
-	}
-	return compiled.Compile()
-}
-
-func (g *Graph) compileRunnableForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
+func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
 	patches, err := g.runnerPatchCollector(execution)
 	if err != nil {
 		return nil, err
@@ -147,81 +107,6 @@ func (g *Graph) runnerPatchCollector(execution fruntime.RunnerExecution) (*compi
 		patches.setWaveRecorder(recorder)
 	}
 	return patches, nil
-}
-
-type graphCompileTemplate struct {
-	stateGraph *langgraph.StateGraph[*state.State]
-	patches    *compilePatchCollector
-	addNode    func(nodeID string, node core.Node, patches *compilePatchCollector)
-}
-
-func (g *Graph) compileStateGraph(template graphCompileTemplate) (*compilePatchCollector, error) {
-	if template.stateGraph == nil {
-		return nil, fmt.Errorf("compiled graph is nil")
-	}
-	if template.addNode == nil {
-		return nil, fmt.Errorf("add node callback is nil")
-	}
-	patches := template.patches
-	if patches == nil {
-		patches = newCompilePatchCollector(g.compileBranchOrders())
-	}
-	if err := g.buildStateGraph(template.stateGraph, func(nodeID string, targetNode core.Node) {
-		template.addNode(nodeID, targetNode, patches)
-	}); err != nil {
-		return nil, err
-	}
-	g.configureStateMerger(template.stateGraph, patches)
-	return patches, nil
-}
-
-func (g *Graph) buildStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node core.Node)) error {
-	if err := g.Validate(); err != nil {
-		return err
-	}
-	return g.configureStateGraph(compiled, addNode)
-}
-
-func (g *Graph) configureStateGraph(compiled *langgraph.StateGraph[*state.State], addNode func(nodeID string, node core.Node)) error {
-	if compiled == nil {
-		return fmt.Errorf("compiled graph is nil")
-	}
-	if addNode == nil {
-		return fmt.Errorf("add node callback is nil")
-	}
-	if g.retryPolicy != nil {
-		compiled.SetRetryPolicy(g.retryPolicy)
-	}
-	for nodeID, targetNode := range g.nodes {
-		addNode(nodeID, targetNode)
-	}
-	for from, conditional := range g.conditionalEdges {
-		compiled.AddConditionalEdge(from, g.conditionalEdgeResolver(from, conditional))
-	}
-	for from, targets := range g.defaultEdges {
-		if _, hasConditional := g.conditionalEdges[from]; hasConditional {
-			continue
-		}
-		for _, to := range targets {
-			compiled.AddEdge(from, to)
-		}
-	}
-	if g.finishPoint != "" {
-		if _, hasConditional := g.conditionalEdges[g.finishPoint]; !hasConditional && len(g.defaultEdges[g.finishPoint]) == 0 {
-			compiled.AddEdge(g.finishPoint, langgraph.END)
-		}
-	}
-	compiled.SetEntryPoint(g.entryPoint)
-	return nil
-}
-
-func (g *Graph) configureStateMerger(compiled *langgraph.StateGraph[*state.State], patches *compilePatchCollector) {
-	if compiled == nil {
-		return
-	}
-	compiled.SetStateMerger(func(ctx context.Context, current *state.State, newStates []*state.State) (*state.State, error) {
-		return g.mergeCompiledStates(ctx, current, newStates, patches)
-	})
 }
 
 func (g *Graph) mergeCompiledStates(ctx context.Context, current *state.State, newStates []*state.State, patches *compilePatchCollector) (*state.State, error) {
@@ -265,7 +150,7 @@ func (g *Graph) compileBranchOrders() map[string]int {
 		}
 		target := strings.TrimSpace(edge.To)
 		if target == EndNodeRef {
-			target = langgraph.END
+			target = endNodeID
 		}
 		if _, exists := orders[target]; exists {
 			continue

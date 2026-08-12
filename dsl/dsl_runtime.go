@@ -62,7 +62,6 @@ type GraphInstanceConfig struct {
 	Description  string                             `json:"description,omitempty"`
 	NodeConfigs  map[string]GraphNodeInstanceConfig `json:"node_configs,omitempty"`
 	Secrets      map[string]SecretRef               `json:"secrets,omitempty"`
-	Memory       map[string]any                     `json:"memory,omitempty"`
 	Metadata     map[string]any                     `json:"metadata,omitempty"`
 }
 

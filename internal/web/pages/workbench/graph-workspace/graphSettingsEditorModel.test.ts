@@ -141,6 +141,5 @@ function graphSettings(): RuntimeSettings {
         api_key_configured: true,
       },
     ],
-    memory: { enabled: false },
   };
 }

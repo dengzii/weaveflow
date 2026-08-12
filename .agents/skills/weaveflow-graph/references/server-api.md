@@ -3,6 +3,17 @@
 Use this reference for the current Graph-scoped debug server API. Treat `internal/server/routes.go` and the live server
 as authoritative if the checkout has changed.
 
+## Contents
+
+- [Base URL And Response Shape](#base-url-and-response-shape)
+- [Discovery And Graph Resources](#discovery-and-graph-resources)
+- [Session Retention And Trigger Visibility](#session-retention-and-trigger-visibility)
+- [Runtime Settings](#runtime-settings)
+- [Run And Inspection Resources](#run-and-inspection-resources)
+- [Runtime Event Stream](#runtime-event-stream)
+- [Trigger Resources](#trigger-resources)
+- [Chat Channel Setup](#chat-channel-setup)
+
 ## Base URL And Response Shape
 
 The server normally listens at `http://127.0.0.1:8080`. Append the configured route prefix, if any, exactly once.
@@ -41,15 +52,17 @@ just because a probe fails.
 | `POST` | `/graphs/:graph_id/analysis/initial-state-requirements`        | Build a candidate and return required initial state without installing it. |
 | `POST` | `/graphs/:graph_id/sessions`                                   | Create or reuse one complete immutable execution Session. |
 
-Graph IDs are portable path IDs containing letters, digits, `.`, `_`, or `-`. The path is the only source of Graph
-identity; do not repeat `graph_id` in the request body.
+Graph IDs are portable path IDs of at most 200 characters containing only letters, digits, `.`, `_`, or `-`; `.` and
+`..` are invalid IDs. The path is the only source of Graph identity; do not repeat `graph_id` in the request body.
 
 Graph lists are deliberately lightweight. Fetch detail lazily for the Graph being inspected or edited. List pages use
 an opaque `next_cursor`; continue until it is empty when a complete inventory is required. `limit` defaults to 50 and
 cannot exceed 200.
 
-Candidate analysis and Session creation accept the same strict envelope, with an 8 MiB limit. `settings` is required
-for Session creation. Include it during analysis too so the validated candidate matches the intended Session:
+Candidate analysis and Session creation accept the same strict Graph upload envelope, with an 8 MiB limit. `settings`
+is required for Session creation but optional during analysis. Analysis decodes the settings shape but does not apply or
+validate model providers, credentials, or runtime availability; it builds the Graph and evaluates direct
+and optional Trigger initial-state requirements. Do not treat successful analysis as settings validation:
 
 ```json
 {
@@ -61,11 +74,7 @@ for Session creation. Include it during analysis too so the validated candidate 
   },
   "settings": {
     "environment": {},
-    "models": [],
-    "memory": {
-      "enabled": false,
-      "directory": ""
-    }
+    "models": []
   }
 }
 ```
@@ -83,12 +92,13 @@ $settings = @{
       id = "default"
       enabled = $true
       provider = "openai"
+      api_format = "chat_completions"
       model = $env:OPENAI_MODEL
       base_url = $env:OPENAI_BASE_URL
+      extra_body = @{}
       api_key = $env:OPENAI_API_KEY
     }
   )
-  memory = @{ enabled = $false; directory = "" }
 }
 $sessionRequestObject = @{
   graph_version = "v1"
@@ -109,20 +119,39 @@ Read `data.graph.graph_hash`, `graph_snapshot_hash`, `graph_session_id`, `data.s
 Session installs that exact runtime and immediately makes it the latest Session resolved by Triggers for the Graph. An
 identical definition, version, and settings can reuse the current Session rather than create a duplicate.
 
+Only candidate analysis consumes an optional top-level `triggers` array to evaluate Trigger-provided initial state.
+Session creation does not install that array. Replace the Graph's actual Trigger set through
+`PUT /graphs/:graph_id/triggers` after analysis and Session creation.
+
+## Session Retention And Trigger Visibility
+
+The Server retains the latest five complete Sessions for each Graph. Older active Sessions are protected even when they
+fall outside that set, then become eligible for pruning after their Runs stop. Pruning removes the Session directory,
+including its persisted Runs, events, checkpoints, and artifacts. Avoid repeated exploratory uploads when historical
+diagnostics or resume capability must be preserved.
+
+Every successful Session creation is immediately available to Triggers for that Graph ID. There is no separate publish
+step. Failed or incomplete Session creation does not replace the latest complete Session.
+
 ## Runtime Settings
 
 Settings belong to an immutable Graph Session and affect runs and Triggers created from that Session, not runs already
 in progress. There is no global settings resource and no independent settings update endpoint. Read sanitized settings
 from `GET /graphs/:graph_id`.
 
-The required `settings` object accepts only `environment`, `models`, and `memory`:
+The required `settings` object accepts only `environment` and `models`:
 
 - Omit a field inside `settings` to inherit it from the latest complete Session for the same Graph, or from Server
   defaults when the Graph has no Session.
-- Send `environment: {}` to clear environment values managed by settings.
+- Send `environment: {}` to clear non-secret environment values managed by settings. Secret-named values from the
+  previous Session are retained, and `OPENAI_MODEL` plus `OPENAI_BASE_URL` are synchronized from the default model.
 - Sending `models` replaces the model list. Reconstruct every model that must remain.
 - Use model IDs in node `config.model_id`. The default ID is `default`.
-- Only provider `openai` is supported.
+- Supported providers are `openai`, `azure`, `deepseek`, `gemini`, `vllm`, `mistral`, `xai`, and `openrouter`.
+- Supported `api_format` values are `chat_completions` and `responses`; the default is `chat_completions`.
+- Use `extra_body` for provider-specific JSON fields that must accompany model requests.
+- A `codex` node is stricter than ordinary model-backed nodes: its selected model must use provider `openai` and
+  `api_format: responses`.
 - Enabling a model requires an API key from the request, latest same-Graph Session, settings environment, or process
   environment.
 - GET and Session responses never expose API keys; `api_key_configured` only reports presence.
@@ -130,6 +159,9 @@ The required `settings` object accepts only `environment`, `models`, and `memory
 
 Do not echo `$settings`, `$sessionRequestObject`, or `$sessionRequest` when any contains a key. The definition and
 settings are persisted before the Session completion manifest, so readers and Triggers ignore incomplete Sessions.
+Model API keys and secret-named environment values are stored in plaintext inside the Session's
+`runtime-settings.json`; the Server requests file mode `0600` where supported and redacts those values from API
+responses. Treat Session creation as credential persistence, not only an HTTP configuration call.
 
 ## Run And Inspection Resources
 

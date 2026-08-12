@@ -23,7 +23,6 @@ func withRunnerEventContext(ctx context.Context, runner *GraphRunner, runID, ste
 		ctx = core.WithModel(ctx, wrapLlm(coreCtx.Model()))
 	}
 	ctx = core.WithTools(ctx, wrapToolCallEventTools(coreCtx.Tools(), runner, runID, stepID, nodeID))
-	ctx = core.WithMemory(ctx, coreCtx.Memory())
 	ctx = withRunnerEventFailureReporter(ctx, runner.recordBestEffortEventFailure)
 	return core.NewContext(ctx)
 }

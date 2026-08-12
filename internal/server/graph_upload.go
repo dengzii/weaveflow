@@ -175,9 +175,6 @@ func (s *Server) configureGraph(req graphUploadRequest) (graphLoadResponse, erro
 		apiKey = firstNonEmpty(firstGraphModelAPIKey(nextSettings), nextSettings.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
 	}
 	markGraphModelAPIKeys(&nextSettings, apiKey)
-	if nextSettings.Memory.Enabled && strings.TrimSpace(nextSettings.Memory.Directory) == "" {
-		nextSettings.Memory.Directory = defaultMemoryDirectory(s.baseDir)
-	}
 	baseContext, err := s.buildRuntimeContext(nextSettings, apiKey)
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)

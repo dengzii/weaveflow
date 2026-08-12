@@ -4,13 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/dengzii/weaveflow/core"
-	"github.com/dengzii/weaveflow/state"
 	"sort"
 	"strings"
 	"sync"
 
-	langgraph "github.com/smallnest/langgraphgo/graph"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
 	"go.uber.org/zap"
 )
 
@@ -259,7 +258,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 		ApplyPatchToInput: hasContract && policy.EnforceProjection,
 	})
 	if invokeErr != nil {
-		var interrupt *langgraph.NodeInterrupt
+		var interrupt *core.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
 			e.markNodeInterrupt(nodeID, fmt.Sprint(interrupt.Value))
 		}
@@ -415,7 +414,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 			zap.String("node_id", nodeID),
 		)
 		e.recordBranchPatch(currentState, nodeID, state.Patch{})
-		return core.NewContext(ctx), &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlCancel)}
+		return core.NewContext(ctx), &core.NodeInterrupt{NodeID: nodeID, Value: string(runnerControlCancel)}
 	}
 
 	active := e.active[nodeID]
@@ -491,7 +490,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 			e.mu.Unlock()
 			e.recordBranchPatch(currentState, nodeID, state.Patch{})
 			logger.Info("pause interrupt requested", stepLogFields(logStep)...)
-			return core.NewContext(ctx), &langgraph.NodeInterrupt{Node: nodeID, Value: string(runnerControlPause)}
+			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: nodeID, Value: string(runnerControlPause)}
 		}
 		if hit := e.runner.matchBreakpoint(step.NodeID, string(CheckpointBeforeNode), e.skip); hit != nil {
 			active.beforeInterrupted = true
@@ -503,7 +502,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 				zap.String("breakpoint_stage", hit.Stage),
 			)
 			logger.Info("breakpoint hit before nodes", fields...)
-			return core.NewContext(ctx), &langgraph.NodeInterrupt{Node: nodeID, Value: hit}
+			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: nodeID, Value: hit}
 		}
 		e.mu.Unlock()
 
@@ -634,11 +633,11 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, c
 	}
 	e.mu.Unlock()
 	if control != nil {
-		return &langgraph.GraphInterrupt{
-			Node:           parallelBarrierNodeID,
-			State:          currentState,
-			InterruptValue: string(control.kind),
-			NextNodes:      append([]string(nil), nextNodeIDs...),
+		return &GraphInterrupt{
+			NodeID:      parallelBarrierNodeID,
+			State:       currentState,
+			Value:       string(control.kind),
+			NextNodeIDs: append([]string(nil), nextNodeIDs...),
 		}
 	}
 	return nil
@@ -851,10 +850,10 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 	}
 	e.mu.Unlock()
 	if control != nil {
-		return &langgraph.GraphInterrupt{
-			Node:           control.nodeID,
-			State:          currentState,
-			InterruptValue: string(control.kind),
+		return &GraphInterrupt{
+			NodeID: control.nodeID,
+			State:  currentState,
+			Value:  string(control.kind),
 		}
 	}
 	return nil
@@ -1172,30 +1171,6 @@ func (e *graphRunnerExecution) firstActiveStepLocked(nodeID string) *runnerActiv
 		return active
 	}
 	return nil
-}
-
-type runnerGraphCallbacks struct {
-	langgraph.NoOpCallbackHandler
-	execution *graphRunnerExecution
-}
-
-func (c *runnerGraphCallbacks) OnGraphStep(ctx context.Context, stepNodeID string, value any) {
-	_ = c.OnGraphStepWithError(ctx, stepNodeID, value)
-}
-
-func (c *runnerGraphCallbacks) OnGraphStepWithError(ctx context.Context, stepNodeID string, value any) error {
-	if c == nil || c.execution == nil {
-		return nil
-	}
-	typed, ok := value.(*state.State)
-	if !ok {
-		return nil
-	}
-	err := c.execution.OnGraphStep(ctx, stepNodeID, typed)
-	if err != nil {
-		c.execution.recordCallbackError(err)
-	}
-	return err
 }
 
 func (e *graphRunnerExecution) recordCallbackError(err error) {

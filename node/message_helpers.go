@@ -23,6 +23,11 @@ func extractText(message llms.MessageContent) string {
 	return strings.Join(texts, "\n")
 }
 
+// ExtractText returns the text content of a message, separated by newlines.
+func ExtractText(message llms.MessageContent) string {
+	return extractText(message)
+}
+
 func cloneMessages(messages []llms.MessageContent) []llms.MessageContent {
 	if len(messages) == 0 {
 		return nil
@@ -229,6 +234,11 @@ func trimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.
 	return result
 }
 
+// TrimLLMPromptMessages trims a conversation to the configured prompt character limit.
+func TrimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.MessageContent {
+	return trimLLMPromptMessages(messages, maxChars)
+}
+
 func splitLeadingSystemMessages(messages []llms.MessageContent) ([]llms.MessageContent, []llms.MessageContent) {
 	index := 0
 	for index < len(messages) && messages[index].Role == llms.ChatMessageTypeSystem {
@@ -295,6 +305,12 @@ type llmResponseArtifactChoice struct {
 	Usage            map[string]any  `json:"usage,omitempty"`
 }
 
+// LLMResponseArtifact is the common redacted representation of an LLM response.
+type LLMResponseArtifact = llmResponseArtifact
+
+// LLMResponseArtifactChoice is one redacted response choice.
+type LLMResponseArtifactChoice = llmResponseArtifactChoice
+
 func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, conversationPath string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
 	serializedMessages, err := conversationcap.SerializeMessages(messages)
 	if err != nil {
@@ -342,6 +358,11 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 		payload.Choices = append(payload.Choices, item)
 	}
 	return payload
+}
+
+// BuildLLMResponseArtifact converts an LLM response into the common redacted artifact payload.
+func BuildLLMResponseArtifact(response *llms.ContentResponse) LLMResponseArtifact {
+	return buildLLMResponseArtifact(response)
 }
 
 func redactToolCalls(toolCalls []llms.ToolCall) []llms.ToolCall {

@@ -276,7 +276,7 @@ func TestTriggerReplacementValidatesEachEntryProvider(t *testing.T) {
 			"finish_point":"input",
 			"nodes":[{"id":"input","type":"requires_input","state":{"input":{"path":"shared.request.input"}}}]
 		},
-		"settings":{"environment":{},"models":[],"memory":{"enabled":false}}
+		"settings":{"environment":{},"models":[]}
 	}`)
 
 	missing := serveHTTP(engine, http.MethodPut, "/graphs/required-graph/triggers", `{"triggers":[

@@ -85,7 +85,7 @@ function graphDefinition() {
 }
 
 function runtimeSettings() {
-  return { environment: {}, models: [], memory: { enabled: false } };
+  return { environment: {}, models: [] };
 }
 
 function graphDetail() {

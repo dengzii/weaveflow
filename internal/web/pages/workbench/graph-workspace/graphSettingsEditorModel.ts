@@ -121,12 +121,6 @@ export function applyRuntimeSettingsUpdate(
     environment: update.environment ?? current.environment,
     environment_presets: current.environment_presets,
     models,
-    memory: {
-      enabled: update.memory?.enabled ?? current.memory.enabled,
-      directory: update.memory?.directory !== undefined
-        ? update.memory.directory.trim()
-        : current.memory.directory ?? "",
-    },
   };
 }
 
@@ -144,10 +138,6 @@ export function runtimeSettingsUpload(settings: RuntimeSettings): RuntimeSetting
       extra_body: model.extra_body,
       api_key: model.api_key,
     })),
-    memory: {
-      enabled: settings.memory.enabled,
-      directory: settings.memory.directory ?? "",
-    },
   };
 }
 
@@ -176,10 +166,7 @@ function requireRuntimeSettings(
     typeof settings.environment !== "object" ||
     settings.environment === null ||
     Array.isArray(settings.environment) ||
-    !Array.isArray(settings.models) ||
-    typeof settings.memory !== "object" ||
-    settings.memory === null ||
-    Array.isArray(settings.memory)
+    !Array.isArray(settings.models)
   ) {
     throw new Error(`${operation}: runtime settings are missing.`);
   }

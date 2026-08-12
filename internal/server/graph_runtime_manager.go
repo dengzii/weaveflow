@@ -97,7 +97,7 @@ func (manager *graphRuntimeManager) runtimeContext() context.Context {
 
 func (manager *graphRuntimeManager) runtimeSettings() graphRuntimeSettings {
 	if manager == nil {
-		return graphRuntimeSettingsFromContext(context.Background(), "")
+		return graphRuntimeSettingsFromContext(context.Background())
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()
@@ -106,7 +106,7 @@ func (manager *graphRuntimeManager) runtimeSettings() graphRuntimeSettings {
 
 func (manager *graphRuntimeManager) defaults() (graphRuntimeSettings, context.Context) {
 	if manager == nil {
-		return graphRuntimeSettingsFromContext(context.Background(), ""), context.Background()
+		return graphRuntimeSettingsFromContext(context.Background()), context.Background()
 	}
 	manager.mu.RLock()
 	defer manager.mu.RUnlock()

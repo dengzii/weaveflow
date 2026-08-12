@@ -13,6 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/internal/server"
+	claudenode "github.com/dengzii/weaveflow/node/agents/claude"
 	codexnode "github.com/dengzii/weaveflow/node/agents/codex"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/tools"
@@ -34,6 +35,14 @@ func main() {
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})))
 
+	claudeConfig, err := claudenode.RunnerConfigFromEnvironment()
+	if err != nil {
+		log.Fatal(err)
+	}
+	claudeRunner, err := claudenode.NewProcessRunner(claudeConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
 	codexConfig, err := codexnode.RunnerConfigFromEnvironment()
 	if err != nil {
 		log.Fatal(err)
@@ -58,6 +67,9 @@ func main() {
 		Graph:   graph,
 		BaseDir: *dataDir,
 		RuntimeContextDecorators: []server.RuntimeContextDecorator{
+			func(ctx context.Context) context.Context {
+				return claudenode.WithRunner(ctx, claudeRunner)
+			},
 			func(ctx context.Context) context.Context {
 				return codexnode.WithRunner(ctx, codexRunner)
 			},

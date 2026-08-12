@@ -180,6 +180,11 @@ func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.Messa
 	}
 }
 
+// ExecuteToolCallMessage executes a tool call and returns its conversation message.
+func ExecuteToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {
+	return executeToolCallMessage(ctx, toolCall)
+}
+
 func toolCallName(toolCall llms.ToolCall) string {
 	if toolCall.FunctionCall == nil {
 		return ""

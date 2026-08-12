@@ -82,7 +82,6 @@ describe("graph sync model", () => {
     const settings: RuntimeSettingsUpdate = {
       environment: { MODE: "test" },
       models: [],
-      memory: { enabled: false },
     };
     const saved = graphSaveSignature(definition, settings, " graph ", " v1 ");
 

@@ -13,7 +13,6 @@ import (
 	"github.com/dengzii/weaveflow/state"
 
 	"github.com/google/uuid"
-	langgraph "github.com/smallnest/langgraphgo/graph"
 	"go.uber.org/zap"
 )
 
@@ -571,13 +570,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	execution := newGraphRunnerExecution(r, run, currentState, artifacts, skip, cancelInvoke)
 	r.registerActiveExecution(run.RunID, execution)
 	defer r.unregisterActiveExecution(run.RunID, execution)
-	var runnable RunnerRunnable
-	var err error
-	if compiler, ok := r.runnerGraph().(RunnerRunnableCompiler); ok {
-		runnable, err = compiler.CompileRunnableForRunner(execution)
-	} else {
-		runnable, err = r.runnerGraph().CompileForRunner(execution)
-	}
+	runnable, err := r.runnerGraph().CompileForRunner(execution)
 	if err != nil {
 		return r.failRun(ctx, run, currentState, "compile_failed", err.Error())
 	}
@@ -587,16 +580,19 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 		return r.failRun(ctx, run, currentState, "config_failed", err.Error())
 	}
 
-	config := &langgraph.Config{
-		Callbacks: []langgraph.CallbackHandler{
-			&runnerGraphCallbacks{execution: execution},
-		},
+	config := SchedulerConfig{}
+	config.StepObserver = func(ctx context.Context, stepNodeID string, currentState *state.State) error {
+		err := execution.OnGraphStep(ctx, stepNodeID, currentState)
+		if err != nil {
+			execution.recordCallbackError(err)
+		}
+		return err
 	}
 	if len(startNodes) > 0 {
-		config.ResumeFrom = append([]string(nil), startNodes...)
+		config.StartNodeIDs = append([]string(nil), startNodes...)
 	}
 	if len(afterNodes) > 0 {
-		config.InterruptAfter = afterNodes
+		config.InterruptAfterNodeIDs = afterNodes
 	}
 	fields := append(runLogFields(run),
 		zap.Strings("start_nodes", startNodes),
@@ -628,7 +624,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 		return r.completeRun(ctx, execution.currentRun(), finalState)
 	}
 
-	var interrupt *langgraph.GraphInterrupt
+	var interrupt *GraphInterrupt
 	if errors.As(invokeErr, &interrupt) {
 		return r.handleInterrupt(ctx, execution, finalState, interrupt)
 	}
@@ -709,7 +705,7 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 	if checkpoint.Runtime.CurrentStepID != "" {
 		run.LastStepID = checkpoint.Runtime.CurrentStepID
 	}
-	resolvedToEnd := len(startNodes) == 1 && startNodes[0] == langgraph.END
+	resolvedToEnd := len(startNodes) == 1 && startNodes[0] == EndNodeID
 	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
 	if checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "" {
 		if len(startNodes) > 0 {
@@ -1162,10 +1158,10 @@ func isActiveDeleteRunStatus(status RunStatus) bool {
 	}
 }
 
-func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, interrupt *langgraph.GraphInterrupt) (RunRecord, *state.State, error) {
+func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, interrupt *GraphInterrupt) (RunRecord, *state.State, error) {
 	run := execution.currentRun()
 	fields := append(runLogFields(run),
-		zap.String("interrupt_node_id", interrupt.Node),
+		zap.String("interrupt_node_id", interrupt.NodeID),
 		zap.String("interrupt_reason", interrupt.Error()),
 	)
 	fields = append(fields, state.SummaryFields(currentState)...)
@@ -1196,15 +1192,15 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 		}
 	}
 
-	if hit := r.matchBreakpoint(interrupt.Node, string(CheckpointAfterNode), nil); hit != nil {
-		completed := execution.consumeLastCompleted(interrupt.Node)
+	if hit := r.matchBreakpoint(interrupt.NodeID, string(CheckpointAfterNode), nil); hit != nil {
+		completed := execution.consumeLastCompleted(interrupt.NodeID)
 		if completed == nil {
-			return r.failRun(ctx, run, currentState, "interrupt_failed", fmt.Sprintf("after-node interrupt missing completed step for %q", interrupt.Node))
+			return r.failRun(ctx, run, currentState, "interrupt_failed", fmt.Sprintf("after-node interrupt missing completed step for %q", interrupt.NodeID))
 		}
 		return r.pauseRun(ctx, run, currentState, completed.step, completed.afterCheckpointID, hit, "")
 	}
 
-	if completed := execution.consumeLastCompleted(interrupt.Node); completed != nil {
+	if completed := execution.consumeLastCompleted(interrupt.NodeID); completed != nil {
 		return r.pauseRun(ctx, run, currentState, completed.step, completed.afterCheckpointID, nil, interrupt.Error())
 	}
 

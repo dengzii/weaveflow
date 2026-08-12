@@ -14,7 +14,6 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
-	langgraph "github.com/smallnest/langgraphgo/graph"
 	"github.com/tmc/langchaingo/llms"
 )
 
@@ -50,7 +49,7 @@ func TestUserInputInterruptsAndConsumesPendingInput(t *testing.T) {
 	target.PendingInputPath = pendingInputPath
 
 	_, err := Execute(context.Background(), state.NewState(), target)
-	var interrupt *langgraph.NodeInterrupt
+	var interrupt *core.NodeInterrupt
 	if !errors.As(err, &interrupt) {
 		t.Fatalf("execute error = %v, want node interrupt", err)
 	}
@@ -442,30 +441,6 @@ func TestToolExecutionUsesSameExplicitConversationRoot(t *testing.T) {
 	messages := updated.Messages()
 	if len(messages) != 2 || messages[1].Role != llms.ChatMessageTypeTool {
 		t.Fatalf("messages = %#v", messages)
-	}
-}
-
-func TestAgentUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
-	t.Parallel()
-	taskPath := state.Shared("request")
-	conversationPath := state.Scope("researcher", "conversation")
-	resultPath := state.Shared("handoff", "research")
-	target := NewAgentNode(WithID("researcher"))
-	target.TaskPath = taskPath
-	target.ConversationPath = conversationPath
-	target.ResultPath = resultPath
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "research result"}}}}}
-	result, err := Execute(core.WithModel(context.Background(), model), state.FromShared(map[string]any{"request": "research this"}), target)
-	if err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	value, _ := state.ReadPath(result.State, resultPath.String())
-	if value != "research result" {
-		t.Fatalf("result = %#v", value)
-	}
-	view, _ := conversationcap.Bind(state.NewAccess(result.State), conversationPath)
-	if len(view.Messages()) != 2 {
-		t.Fatalf("conversation = %#v", view.Messages())
 	}
 }
 

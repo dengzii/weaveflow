@@ -9,7 +9,6 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/llms/openai"
-	"github.com/dengzii/weaveflow/memory"
 
 	"github.com/tmc/langchaingo/llms"
 )
@@ -18,7 +17,6 @@ type graphRuntimeSettings struct {
 	Environment        map[string]string        `json:"environment"`
 	EnvironmentPresets []graphEnvironmentPreset `json:"environment_presets"`
 	Models             []graphModelSettings     `json:"models"`
-	Memory             graphMemorySettings      `json:"memory"`
 }
 
 type graphEnvironmentPreset struct {
@@ -39,15 +37,9 @@ type graphModelSettings struct {
 	APIKey           string         `json:"-"`
 }
 
-type graphMemorySettings struct {
-	Enabled   bool   `json:"enabled"`
-	Directory string `json:"directory,omitempty"`
-}
-
 type graphRuntimeSettingsRequest struct {
 	Environment map[string]string           `json:"environment"`
 	Models      []graphModelSettingsRequest `json:"models"`
-	Memory      *graphMemorySettingsRequest `json:"memory"`
 }
 
 type graphModelSettingsRequest struct {
@@ -61,11 +53,6 @@ type graphModelSettingsRequest struct {
 	APIKey    string         `json:"api_key"`
 }
 
-type graphMemorySettingsRequest struct {
-	Enabled   *bool  `json:"enabled"`
-	Directory string `json:"directory"`
-}
-
 func graphSettingsResponse(settings graphRuntimeSettings) graphRuntimeSettings {
 	settings = sanitizedGraphSettings(settings)
 	settings.EnvironmentPresets = graphEnvironmentPresets()
@@ -74,7 +61,7 @@ func graphSettingsResponse(settings graphRuntimeSettings) graphRuntimeSettings {
 
 func (s *Server) runtimeSettingsForGraph(graphID string) (graphRuntimeSettings, error) {
 	if s == nil || s.runtime == nil {
-		return graphRuntimeSettingsFromContext(context.Background(), ""), nil
+		return graphRuntimeSettingsFromContext(context.Background()), nil
 	}
 	current := s.runtime.currentSession()
 	if current.runner != nil && effectiveRunnerGraphID(current.runner) == strings.TrimSpace(graphID) {
@@ -98,7 +85,7 @@ func (s *Server) runtimeSettingsForGraph(graphID string) (graphRuntimeSettings, 
 	return settings, nil
 }
 
-func graphRuntimeSettingsFromContext(ctx context.Context, baseDir string) graphRuntimeSettings {
+func graphRuntimeSettingsFromContext(ctx context.Context) graphRuntimeSettings {
 	environment := currentGraphEnvironment()
 	for key, value := range core.EnvironmentFromContext(ctx) {
 		environment[key] = value
@@ -106,10 +93,6 @@ func graphRuntimeSettingsFromContext(ctx context.Context, baseDir string) graphR
 	settings := graphRuntimeSettings{
 		Environment:        environment,
 		EnvironmentPresets: graphEnvironmentPresets(),
-		Memory: graphMemorySettings{
-			Enabled:   core.MemoryFromContext(ctx) != nil,
-			Directory: defaultMemoryDirectory(baseDir),
-		},
 	}
 	settings.Models = graphModelSettingsFromContext(ctx)
 	return normalizedGraphSettings(settings)
@@ -153,14 +136,6 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings, apiKey strin
 	ctx := core.WithEnvironment(context.Background(), settings.Environment)
 	if tools := s.currentToolSet(); len(tools) > 0 {
 		ctx = core.WithTools(ctx, tools)
-	}
-	if settings.Memory.Enabled {
-		dir := strings.TrimSpace(settings.Memory.Directory)
-		if dir == "" {
-			dir = defaultMemoryDirectory(s.baseDir)
-		}
-		repo := memory.NewFileMemoryRepository(dir)
-		ctx = core.WithMemory(ctx, memory.New(&memory.Options{Repository: repo, Retriever: memory.NewBM25Retriever(repo, nil)}))
 	}
 	models := map[string]llms.Model{}
 	modelConfigs := map[string]core.ModelConfig{}

@@ -2,6 +2,15 @@
 
 Construct graphs from the live registry. Do not maintain a private list of node or condition schemas.
 
+## Contents
+
+- [Discovery Algorithm](#discovery-algorithm)
+- [Core Shape](#core-shape)
+- [Model-Backed Nodes](#model-backed-nodes)
+- [Minimal Agent Example](#minimal-agent-example)
+- [Identity And Versioning](#identity-and-versioning)
+- [Repository Examples And Truth Sources](#repository-examples-and-truth-sources)
+
 ## Discovery Algorithm
 
 1. Read `GET /registry` and unwrap `data`.
@@ -49,9 +58,21 @@ Enforce these invariants:
 - Use `__end__` only as an edge target.
 - Do not repeat the same `from`/`to` edge pair.
 - Use multiple ordinary outgoing edges for fan-out. Use registered conditions for branch selection.
+- Give a node with conditional outgoing edges exactly one ordinary default fallback edge.
+- Do not add outgoing edges to `finish_point`, and ensure every node is reachable from `entry_point`.
 - Keep runtime state paths in `state` bindings. Never put legacy input or output paths in `config`.
 - Keep node behavior options such as `model_id`, prompts, tool IDs, and iteration limits in `config` only when allowed
   by that node's schema.
+
+## Model-Backed Nodes
+
+Treat the registry's node schema and the Graph Session's model settings as separate validation surfaces. The registry
+defines whether a node accepts `config.model_id`; the Session settings define whether that ID is enabled and how it is
+served. Candidate initial-state analysis does not validate the selected model configuration.
+
+Ordinary LLM-backed nodes can use any provider and API format supported by the Server. A `codex` node has an additional
+runtime constraint that the selected model use provider `openai` and `api_format: responses`. Verify this combination
+before creating or running a Session because the node's JSON schema cannot express the cross-resource constraint.
 
 ## Minimal Agent Example
 
@@ -128,7 +149,7 @@ Before the run, confirm all of the following:
 
 The Session path carries `graph_id`; the request envelope carries `graph_version`, the definition, and required
 Graph-scoped `settings`. The definition may also carry `metadata.id` and `metadata.graph_version`, but the path remains
-the HTTP identity source. Create the definition and settings together so node config, models, environment, and memory
+the HTTP identity source. Create the definition and settings together so node config, models, and environment
 cannot refer to different revisions.
 
 Record all returned identities:
@@ -152,4 +173,5 @@ Use these only after checking the live registry:
 - `examples/state_operations/graph.json` for explicit state operations, dynamic state inputs, and CEL-backed conditions.
 - `docs/graph-agent-workflow-patterns.md` for larger workflow patterns.
 - `dsl/dsl.go`, `dsl/node_spec.go`, and `dsl/registry_schema.go` for Graph v2 serialization and schema generation.
-- `node/agent.go` and other node definition files for implementation-specific behavior.
+- `node/agents/agent/node.go`, `node/agents/codex/node.go`, and other node definition files for implementation-specific
+  behavior.

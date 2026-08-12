@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dengzii/weaveflow/core"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	langgraph "github.com/smallnest/langgraphgo/graph"
 )
 
 type scheduledNodeExecutor func(context.Context, string, *state.State) (*state.State, error)
@@ -22,8 +22,7 @@ type scheduledRunnable struct {
 	graph        *Graph
 	patches      *compilePatchCollector
 	executeNode  scheduledNodeExecutor
-	observeNode  func(context.Context, langgraph.NodeEvent, string, *state.State, error, time.Duration)
-	tracer       *langgraph.Tracer
+	observeNode  func(context.Context, NodeEvent, string, *state.State, error, time.Duration)
 	joinNodes    map[string]struct{}
 	reachability map[string]map[string]bool
 }
@@ -39,24 +38,17 @@ func newScheduledRunnable(targetGraph *Graph, patches *compilePatchCollector, ex
 }
 
 func (runnable *scheduledRunnable) Invoke(ctx context.Context, initialState *state.State) (*state.State, error) {
-	return runnable.InvokeWithConfig(ctx, initialState, nil)
+	return runnable.InvokeWithConfig(ctx, initialState, fruntime.SchedulerConfig{})
 }
 
-func (runnable *scheduledRunnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error) {
+func (runnable *scheduledRunnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config fruntime.SchedulerConfig) (*state.State, error) {
 	if ctx == nil {
 		ctx = context.Background()
-	}
-	if runnable != nil && runnable.tracer != nil {
-		graphSpan := runnable.tracer.StartSpan(ctx, langgraph.TraceEventGraphStart, "graph")
-		graphSpan.State = initialState
-		finalState, err := runnable.invokeWithConfig(ctx, initialState, config)
-		runnable.tracer.EndSpan(ctx, graphSpan, finalState, err)
-		return finalState, err
 	}
 	return runnable.invokeWithConfig(ctx, initialState, config)
 }
 
-func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initialState *state.State, config *langgraph.Config) (*state.State, error) {
+func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initialState *state.State, config fruntime.SchedulerConfig) (*state.State, error) {
 	if runnable == nil || runnable.graph == nil {
 		return nil, fmt.Errorf("scheduled graph is nil")
 	}
@@ -66,35 +58,22 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if config != nil {
-		ctx = langgraph.WithConfig(ctx, config)
-		if config.ResumeValue != nil {
-			ctx = langgraph.WithResumeValue(ctx, config.ResumeValue)
-		}
-	}
-
 	currentState := state.NewState()
 	if initialState != nil {
 		currentState = initialState.Clone()
 	}
 	currentNodes := []string{runnable.graph.entryPoint}
-	if config != nil && len(config.ResumeFrom) > 0 {
-		currentNodes = append([]string(nil), config.ResumeFrom...)
+	if len(config.StartNodeIDs) > 0 {
+		currentNodes = append([]string(nil), config.StartNodeIDs...)
 	}
 	_, restoredPending, _ := fruntime.LoadGraphSchedule(currentState)
 	pendingFanIn := nodeIDSet(restoredPending)
 	currentNodes, pendingFanIn = runnable.resumeSchedule(currentNodes, pendingFanIn)
 
-	runID := fmt.Sprintf("graph-%d", time.Now().UnixNano())
-	runnable.notifyChainStart(ctx, config, runID, currentState)
-
 	for {
 		currentNodes = activeNodeIDs(currentNodes)
 		if len(currentNodes) == 0 {
 			break
-		}
-		if interruptedNode := configuredInterruptNode(currentNodes, config, true); interruptedNode != "" {
-			return currentState, &langgraph.GraphInterrupt{Node: interruptedNode, State: currentState}
 		}
 		if err := fruntime.StoreGraphSchedule(currentState, nil, sortedNodeIDSet(pendingFanIn)); err != nil {
 			return currentState, err
@@ -104,32 +83,28 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 		mergedState, err := runnable.graph.mergeCompiledStates(ctx, currentState, results, runnable.patches)
 		if err != nil {
 			mergeErr := fmt.Errorf("state merge failed: %w", err)
-			runnable.notifyChainError(ctx, config, runID, mergeErr)
 			return currentState, mergeErr
 		}
 		currentState = mergedState
 
 		if interrupt := firstNodeInterrupt(currentNodes, nodeErrors); interrupt != nil {
 			if err := runnable.notifyGraphStep(ctx, config, currentNodes, currentState); err != nil {
-				runnable.notifyChainError(ctx, config, runID, err)
 				return currentState, err
 			}
-			return currentState, &langgraph.GraphInterrupt{
-				Node:           interrupt.Node,
-				State:          currentState,
-				InterruptValue: interrupt.Value,
-				NextNodes:      []string{interrupt.Node},
+			return currentState, &fruntime.GraphInterrupt{
+				NodeID:      interrupt.NodeID,
+				State:       currentState,
+				Value:       interrupt.Value,
+				NextNodeIDs: []string{interrupt.NodeID},
 			}
 		}
 		if nodeErr := firstError(nodeErrors); nodeErr != nil {
-			runnable.notifyChainError(ctx, config, runID, nodeErr)
 			return currentState, nodeErr
 		}
 
 		nodesRan := append([]string(nil), currentNodes...)
 		nextNodes, err := runnable.resolveNextNodes(ctx, nodesRan, currentState)
 		if err != nil {
-			runnable.notifyChainError(ctx, config, runID, err)
 			return currentState, err
 		}
 		currentNodes, pendingFanIn = runnable.scheduleNext(nextNodes, pendingFanIn)
@@ -137,15 +112,14 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 			return currentState, err
 		}
 		if err := runnable.notifyGraphStep(ctx, config, nodesRan, currentState); err != nil {
-			runnable.notifyChainError(ctx, config, runID, err)
 			return currentState, err
 		}
 
 		if interruptedNode := configuredInterruptNode(nodesRan, config, false); interruptedNode != "" {
-			return currentState, &langgraph.GraphInterrupt{
-				Node:      interruptedNode,
-				State:     currentState,
-				NextNodes: append([]string(nil), currentNodes...),
+			return currentState, &fruntime.GraphInterrupt{
+				NodeID:      interruptedNode,
+				State:       currentState,
+				NextNodeIDs: append([]string(nil), currentNodes...),
 			}
 		}
 	}
@@ -153,7 +127,6 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	if err := fruntime.ClearGraphSchedule(currentState); err != nil {
 		return currentState, err
 	}
-	runnable.notifyChainEnd(ctx, config, runID, currentState)
 	return currentState, nil
 }
 
@@ -168,20 +141,12 @@ func (runnable *scheduledRunnable) executeNodes(ctx context.Context, nodeIDs []s
 		go func() {
 			defer waitGroup.Done()
 			startedAt := time.Now()
-			var nodeSpan *langgraph.TraceSpan
-			if runnable.tracer != nil {
-				nodeSpan = runnable.tracer.StartSpan(ctx, langgraph.TraceEventNodeStart, targetNodeID)
-				nodeSpan.State = currentState
-			}
-			runnable.notifyNode(ctx, langgraph.NodeEventStart, targetNodeID, currentState, nil, 0)
+			runnable.notifyNode(ctx, EventNodeStart, targetNodeID, currentState, nil, 0)
 			defer func() {
 				if recovered := recover(); recovered != nil {
 					results[resultIndex] = currentState
 					nodeErrors[resultIndex] = fmt.Errorf("panic in node %s: %v", targetNodeID, recovered)
-					runnable.notifyNode(ctx, langgraph.NodeEventError, targetNodeID, currentState, nodeErrors[resultIndex], time.Since(startedAt))
-					if nodeSpan != nil {
-						runnable.tracer.EndSpan(ctx, nodeSpan, currentState, nodeErrors[resultIndex])
-					}
+					runnable.notifyNode(ctx, EventNodeError, targetNodeID, currentState, nodeErrors[resultIndex], time.Since(startedAt))
 				}
 			}()
 			result, err := runnable.executeNodeWithRetry(ctx, targetNodeID, currentState)
@@ -191,23 +156,17 @@ func (runnable *scheduledRunnable) executeNodes(ctx context.Context, nodeIDs []s
 			results[resultIndex] = result
 			if err != nil {
 				nodeErrors[resultIndex] = fmt.Errorf("error in node %s: %w", targetNodeID, err)
-				runnable.notifyNode(ctx, langgraph.NodeEventError, targetNodeID, result, nodeErrors[resultIndex], time.Since(startedAt))
-				if nodeSpan != nil {
-					runnable.tracer.EndSpan(ctx, nodeSpan, result, nodeErrors[resultIndex])
-				}
+				runnable.notifyNode(ctx, EventNodeError, targetNodeID, result, nodeErrors[resultIndex], time.Since(startedAt))
 				return
 			}
-			runnable.notifyNode(ctx, langgraph.NodeEventComplete, targetNodeID, result, nil, time.Since(startedAt))
-			if nodeSpan != nil {
-				runnable.tracer.EndSpan(ctx, nodeSpan, result, nil)
-			}
+			runnable.notifyNode(ctx, EventNodeComplete, targetNodeID, result, nil, time.Since(startedAt))
 		}()
 	}
 	waitGroup.Wait()
 	return results, nodeErrors
 }
 
-func (runnable *scheduledRunnable) notifyNode(ctx context.Context, event langgraph.NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
+func (runnable *scheduledRunnable) notifyNode(ctx context.Context, event NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
 	if runnable.observeNode != nil {
 		runnable.observeNode(ctx, event, nodeID, currentState, err, duration)
 	}
@@ -225,8 +184,8 @@ func (runnable *scheduledRunnable) executeNodeWithRetry(ctx context.Context, nod
 		if lastErr == nil {
 			return lastResult, nil
 		}
-		var nodeInterrupt *langgraph.NodeInterrupt
-		var graphInterrupt *langgraph.GraphInterrupt
+		var nodeInterrupt *core.NodeInterrupt
+		var graphInterrupt *fruntime.GraphInterrupt
 		if errors.As(lastErr, &nodeInterrupt) || errors.As(lastErr, &graphInterrupt) || !runnable.retryable(lastErr) || attempt == maxAttempts-1 {
 			return lastResult, lastErr
 		}
@@ -255,18 +214,18 @@ func (runnable *scheduledRunnable) retryable(err error) bool {
 	return false
 }
 
-func retryDelay(strategy langgraph.BackoffStrategy, attempt int) time.Duration {
+func retryDelay(strategy BackoffStrategy, attempt int) time.Duration {
 	const maxRetryDelay = 30 * time.Second
 	if attempt < 0 {
 		return time.Second
 	}
 	switch strategy {
-	case langgraph.ExponentialBackoff:
+	case ExponentialBackoff:
 		if attempt >= 5 {
 			return maxRetryDelay
 		}
 		return time.Second * time.Duration(1<<uint(attempt))
-	case langgraph.LinearBackoff:
+	case LinearBackoff:
 		delay := time.Second * time.Duration(attempt+1)
 		if delay > maxRetryDelay {
 			return maxRetryDelay
@@ -345,7 +304,7 @@ func (runnable *scheduledRunnable) hasUpstreamBlocker(fanInNodeID string, ready,
 }
 
 func (runnable *scheduledRunnable) isStrictUpstream(nodeID, targetNodeID string) bool {
-	if nodeID == "" || nodeID == langgraph.END || nodeID == targetNodeID {
+	if nodeID == "" || nodeID == endNodeID || nodeID == targetNodeID {
 		return false
 	}
 	return runnable.reachability[nodeID][targetNodeID] && !runnable.reachability[targetNodeID][nodeID]
@@ -356,8 +315,8 @@ func (runnable *scheduledRunnable) isJoinNode(nodeID string) bool {
 	return ok
 }
 
-func (runnable *scheduledRunnable) notifyGraphStep(ctx context.Context, config *langgraph.Config, nodesRan []string, currentState *state.State) error {
-	if config == nil {
+func (runnable *scheduledRunnable) notifyGraphStep(ctx context.Context, config fruntime.SchedulerConfig, nodesRan []string, currentState *state.State) error {
+	if config.StepObserver == nil {
 		return nil
 	}
 	stepNodeID := ""
@@ -366,55 +325,17 @@ func (runnable *scheduledRunnable) notifyGraphStep(ctx context.Context, config *
 	} else if len(nodesRan) > 1 {
 		stepNodeID = fmt.Sprintf("step:%v", nodesRan)
 	}
-	for _, callback := range config.Callbacks {
-		if graphStepCallback, ok := callback.(interface {
-			OnGraphStepWithError(context.Context, string, any) error
-		}); ok {
-			if err := graphStepCallback.OnGraphStepWithError(ctx, stepNodeID, currentState); err != nil {
-				return err
-			}
-			continue
-		}
-		if graphCallback, ok := callback.(langgraph.GraphCallbackHandler); ok {
-			graphCallback.OnGraphStep(ctx, stepNodeID, currentState)
-		}
+	if err := config.StepObserver(ctx, stepNodeID, currentState); err != nil {
+		return &fruntime.GraphStepError{Err: err}
 	}
 	return nil
-}
-
-func (runnable *scheduledRunnable) notifyChainStart(ctx context.Context, config *langgraph.Config, runID string, currentState *state.State) {
-	if config == nil {
-		return
-	}
-	serialized := map[string]any{"name": "graph", "type": "chain"}
-	for _, callback := range config.Callbacks {
-		callback.OnChainStart(ctx, serialized, currentState.Export(), runID, nil, config.Tags, config.Metadata)
-	}
-}
-
-func (runnable *scheduledRunnable) notifyChainEnd(ctx context.Context, config *langgraph.Config, runID string, currentState *state.State) {
-	if config == nil {
-		return
-	}
-	for _, callback := range config.Callbacks {
-		callback.OnChainEnd(ctx, currentState.Export(), runID)
-	}
-}
-
-func (runnable *scheduledRunnable) notifyChainError(ctx context.Context, config *langgraph.Config, runID string, err error) {
-	if config == nil {
-		return
-	}
-	for _, callback := range config.Callbacks {
-		callback.OnChainError(ctx, err, runID)
-	}
 }
 
 func (g *Graph) compileJoinNodes() map[string]struct{} {
 	incoming := map[string]map[string]struct{}{}
 	for fromNodeID, targets := range g.defaultEdges {
 		for _, targetNodeID := range targets {
-			if targetNodeID == langgraph.END {
+			if targetNodeID == endNodeID {
 				continue
 			}
 			if incoming[targetNodeID] == nil {
@@ -425,7 +346,7 @@ func (g *Graph) compileJoinNodes() map[string]struct{} {
 	}
 	for fromNodeID, edges := range g.conditionalEdges {
 		for _, edge := range edges {
-			if edge.to == langgraph.END {
+			if edge.to == endNodeID {
 				continue
 			}
 			if incoming[edge.to] == nil {
@@ -452,7 +373,7 @@ func (g *Graph) compileReachability() map[string]map[string]bool {
 			currentNodeID := queue[0]
 			queue = queue[1:]
 			for _, targetNodeID := range g.outgoingNodeIDs(currentNodeID) {
-				if targetNodeID == langgraph.END || reachable[targetNodeID] {
+				if targetNodeID == endNodeID || reachable[targetNodeID] {
 					continue
 				}
 				reachable[targetNodeID] = true
@@ -472,12 +393,12 @@ func (g *Graph) outgoingNodeIDs(nodeID string) []string {
 	return targets
 }
 
-func firstNodeInterrupt(nodeIDs []string, nodeErrors []error) *langgraph.NodeInterrupt {
+func firstNodeInterrupt(nodeIDs []string, nodeErrors []error) *core.NodeInterrupt {
 	for index, nodeErr := range nodeErrors {
-		var interrupt *langgraph.NodeInterrupt
+		var interrupt *core.NodeInterrupt
 		if errors.As(nodeErr, &interrupt) {
-			if interrupt.Node == "" && index < len(nodeIDs) {
-				interrupt.Node = nodeIDs[index]
+			if interrupt.NodeID == "" && index < len(nodeIDs) {
+				interrupt.NodeID = nodeIDs[index]
 			}
 			return interrupt
 		}
@@ -494,16 +415,12 @@ func firstError(errorsList []error) error {
 	return nil
 }
 
-func configuredInterruptNode(nodeIDs []string, config *langgraph.Config, before bool) string {
-	if config == nil {
+func configuredInterruptNode(nodeIDs []string, config fruntime.SchedulerConfig, before bool) string {
+	if before {
 		return ""
 	}
-	configured := config.InterruptAfter
-	if before {
-		configured = config.InterruptBefore
-	}
 	for _, nodeID := range nodeIDs {
-		for _, configuredNodeID := range configured {
+		for _, configuredNodeID := range config.InterruptAfterNodeIDs {
 			if nodeID == configuredNodeID {
 				return nodeID
 			}
@@ -515,7 +432,7 @@ func configuredInterruptNode(nodeIDs []string, config *langgraph.Config, before 
 func activeNodeIDs(nodeIDs []string) []string {
 	active := map[string]struct{}{}
 	for _, nodeID := range nodeIDs {
-		if nodeID != "" && nodeID != langgraph.END {
+		if nodeID != "" && nodeID != endNodeID {
 			active[nodeID] = struct{}{}
 		}
 	}

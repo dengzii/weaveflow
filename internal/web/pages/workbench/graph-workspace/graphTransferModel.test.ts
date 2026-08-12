@@ -290,6 +290,5 @@ function runtimeSettings(): RuntimeSettings {
       api_key_configured: true,
       api_key: "local-secret",
     }],
-    memory: { enabled: true, directory: ".local/memory" },
   };
 }

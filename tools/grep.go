@@ -78,7 +78,7 @@ func NewGrep() Tool {
 					},
 					"path": map[string]any{
 						"type":        "string",
-						"description": "File or directory to search in. Defaults to current working directory.",
+						"description": "Directory to search. Defaults to workspace root.",
 					},
 					"glob": map[string]any{
 						"type":        "string",
