@@ -6,7 +6,9 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
@@ -441,6 +443,72 @@ func TestToolExecutionUsesSameExplicitConversationRoot(t *testing.T) {
 	messages := updated.Messages()
 	if len(messages) != 2 || messages[1].Role != llms.ChatMessageTypeTool {
 		t.Fatalf("messages = %#v", messages)
+	}
+}
+
+func TestToolExecutionHonorsGraphToolConcurrencyLimiter(t *testing.T) {
+	root := state.Scope("loop", "conversation")
+	access := state.NewEditingAccess(state.NewState())
+	view, _ := conversationcap.Bind(access, root)
+	_ = view.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
+		llms.ToolCall{ID: "first", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: `{}`}},
+		llms.ToolCall{ID: "second", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: `{}`}},
+	}}})
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var active atomic.Int32
+	var maximumActive atomic.Int32
+	tool := core.NewTool(&llms.FunctionDefinition{Name: "blocked"}, func(context.Context, string) (string, error) {
+		current := active.Add(1)
+		for {
+			maximum := maximumActive.Load()
+			if current <= maximum || maximumActive.CompareAndSwap(maximum, current) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-release
+		active.Add(-1)
+		return "ok", nil
+	})
+	target := NewToolExecutionNode(WithID("tools"))
+	target.ConversationPath = root
+	target.Parallel = true
+	ctx := core.WithTools(context.Background(), map[string]core.Tool{"blocked": tool})
+	ctx = core.WithToolConcurrencyLimiter(ctx, core.NewConcurrencyLimiter(1), nil)
+	done := make(chan error, 1)
+	go func() {
+		_, err := Execute(ctx, access.State(), target)
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first tool call did not start")
+	}
+	select {
+	case <-started:
+		t.Fatal("second tool call bypassed concurrency limit")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("second tool call did not start after capacity was released")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tool execution did not complete")
+	}
+	if maximumActive.Load() != 1 {
+		t.Fatalf("maximum active tool calls = %d, want 1", maximumActive.Load())
 	}
 }
 

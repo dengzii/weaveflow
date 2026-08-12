@@ -8,7 +8,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-type EdgeConditionMatcher func(context.Context, *state.State) bool
+type EdgeConditionMatcher func(context.Context, *state.State) (bool, error)
 
 type EdgeCondition struct {
 	Spec  dsl.GraphConditionSpec

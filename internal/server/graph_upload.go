@@ -243,7 +243,7 @@ func (s *Server) installUploadedGraph(
 	cfg.GraphHash = graphHash
 	cfg.GraphSnapshotHash = graphSnapshotHash
 	cfg.GraphSessionID = graphSessionID
-	runner, err := newDefaultRunner(graph, cfg, runnerBaseDir, s.events)
+	runner, err := newDefaultRunner(graph, cfg, s.graphHistoryBaseDir(graphID), s.events)
 	if err != nil {
 		return graphLoadResponse{}, err
 	}
@@ -329,6 +329,13 @@ func (s *Server) uploadedGraphBaseDir(graphID string, graphSessionID string) str
 		return ""
 	}
 	return filepath.Join(s.baseDir, "graphs", graphStorageKey(graphID), strings.TrimSpace(graphSessionID))
+}
+
+func (s *Server) graphHistoryBaseDir(graphID string) string {
+	if s == nil || strings.TrimSpace(s.baseDir) == "" {
+		return ""
+	}
+	return filepath.Join(graphStorageDirectory(s.baseDir, graphID), "history")
 }
 
 func (s *Server) nextUploadedGraphBaseDir(graphID string) string {
@@ -498,6 +505,13 @@ func (s *Server) pruneGraphSessions(graphID string, protectedSessionID string) e
 	if s.runtime != nil {
 		activeSessionIDs = s.runtime.activeSessionIDs(graphID)
 	}
+	resumableSessionIDs, err := s.resumableRunSessionIDs(graphID)
+	if err != nil {
+		return err
+	}
+	for sessionID := range resumableSessionIDs {
+		activeSessionIDs[sessionID] = struct{}{}
+	}
 
 	graphDir := graphStorageDirectory(s.baseDir, graphID)
 	entries, err := os.ReadDir(graphDir)
@@ -554,4 +568,42 @@ func (s *Server) pruneGraphSessions(graphID string, protectedSessionID string) e
 		}
 	}
 	return nil
+}
+
+func (s *Server) resumableRunSessionIDs(graphID string) (map[string]struct{}, error) {
+	result := make(map[string]struct{})
+	graphDir := graphStorageDirectory(s.baseDir, graphID)
+	if strings.TrimSpace(graphDir) == "" {
+		return result, nil
+	}
+	storeDirs := []string{filepath.Join(graphDir, "history")}
+	entries, err := os.ReadDir(graphDir)
+	if os.IsNotExist(err) {
+		return result, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scan graph sessions for resumable runs: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() && entry.Name() != "history" {
+			storeDirs = append(storeDirs, filepath.Join(graphDir, entry.Name()))
+		}
+	}
+	for _, storeDir := range storeDirs {
+		store := runtime.NewFileExecutionStore(filepath.Join(storeDir, "execution"))
+		runs, listErr := store.ListRuns(context.Background(), runtime.RunFilter{Statuses: []runtime.RunStatus{
+			runtime.RunStatusPending,
+			runtime.RunStatusRunning,
+			runtime.RunStatusPaused,
+		}})
+		if listErr != nil {
+			return nil, fmt.Errorf("scan resumable runs in %q: %w", storeDir, listErr)
+		}
+		for _, run := range runs {
+			if sessionID := strings.TrimSpace(run.GraphSessionID); sessionID != "" {
+				result[sessionID] = struct{}{}
+			}
+		}
+	}
+	return result, nil
 }

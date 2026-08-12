@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -150,6 +151,60 @@ func TestGraphUploadRetainsFiveLatestSessions(t *testing.T) {
 	latest := uploads[len(uploads)-1]
 	if len(graphs) != 1 || graphs[0].SessionCount != retainedGraphSessionCount || graphs[0].LatestSession != latest.Graph.GraphSessionID {
 		t.Fatalf("cached graphs = %#v, want %d sessions ending at %q", graphs, retainedGraphSessionCount, latest.Graph.GraphSessionID)
+	}
+}
+
+func TestGraphSessionPruningPreservesCompletedRunHistory(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	baseDir := t.TempDir()
+	srv, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	first := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "content-1"))
+	started := startGraphRunForTest(t, engine, first, `{}`)
+	waitForRunTerminalStatus(t, srv.runtime.session("graph-a", first.Graph.GraphSessionID).runner, started.RunID)
+
+	for version := 2; version <= retainedGraphSessionCount+2; version++ {
+		time.Sleep(time.Millisecond)
+		putGraphForHashTest(t, engine, triggerGraphUploadBody(
+			"graph-a",
+			fmt.Sprintf("v%d", version),
+			fmt.Sprintf("content-%d", version),
+		))
+	}
+	if _, err := os.Stat(first.RunnerBaseDir); !os.IsNotExist(err) {
+		t.Fatalf("old graph session snapshot still exists: %v", err)
+	}
+
+	restarted, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartedEngine := gin.New()
+	restarted.RegisterRoutes(restartedEngine.Group(""))
+	inspection := serveHTTP(restartedEngine, http.MethodGet, "/graphs/graph-a/runs/"+started.RunID+"/inspection", "")
+	if inspection.Code != http.StatusOK {
+		t.Fatalf("completed run history was removed with graph session: status=%d body=%s", inspection.Code, inspection.Body.String())
+	}
+}
+
+func TestGraphSessionPruningReturnsCorruptRunScanError(t *testing.T) {
+	baseDir := t.TempDir()
+	srv := &Server{baseDir: baseDir}
+	graphDir := graphStorageDirectory(baseDir, "graph-a")
+	runsDir := filepath.Join(graphDir, "history", "execution", "runs")
+	if err := os.MkdirAll(runsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(runsDir, "broken.json"), []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.pruneGraphSessions("graph-a", ""); err == nil || !strings.Contains(err.Error(), "scan resumable runs") {
+		t.Fatalf("prune error = %v", err)
 	}
 }
 

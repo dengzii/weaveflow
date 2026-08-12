@@ -80,7 +80,7 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.R
 	if err != nil {
 		return nil, err
 	}
-	return newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
+	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
 		targetNode := g.nodes[nodeID]
 		next, err := execution.ExecuteNode(ctx, nodeID, targetNode, currentState)
 		if err != nil {
@@ -89,7 +89,9 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.R
 			patches.record(currentState, nodeID, stateDiffPatch(currentState, next))
 		}
 		return next, err
-	}), nil
+	})
+	scheduled.prepareNode = execution.PrepareNode
+	return scheduled, nil
 }
 
 func (g *Graph) runnerPatchCollector(execution fruntime.RunnerExecution) (*compilePatchCollector, error) {

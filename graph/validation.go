@@ -12,12 +12,12 @@ func (g *Graph) Validate() error {
 	if g == nil {
 		return fmt.Errorf("graph is nil")
 	}
-	if g.retryPolicy != nil {
-		if g.retryPolicy.MaxRetries < 0 {
-			return fmt.Errorf("retry policy max retries must be non-negative")
-		}
-		if g.retryPolicy.MaxRetries > maxConfiguredRetries {
-			return fmt.Errorf("retry policy max retries must be <= %d", maxConfiguredRetries)
+	if err := g.executionPolicy.Validate(); err != nil {
+		return err
+	}
+	for nodeID, policy := range g.nodePolicies {
+		if err := policy.Validate(); err != nil {
+			return fmt.Errorf("node %q execution policy: %w", nodeID, err)
 		}
 	}
 	if len(g.nodes) == 0 {

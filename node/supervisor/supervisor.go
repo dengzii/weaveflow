@@ -383,9 +383,9 @@ func SupervisorRouteEquals(supervisorPath state.Path, workerID string) registry.
 		Type:   ConditionTypeSupervisorRouteEquals,
 		Config: map[string]any{"worker_id": workerID},
 		State:  map[string]dsl.StateBinding{"supervisor": {Path: supervisorPath.String()}},
-	}, func(_ context.Context, current *state.State) bool {
+	}, func(_ context.Context, current *state.State) (bool, error) {
 		value, ok := state.ReadPath(current, supervisorPath.MustChild(supervisorcap.FieldRoute).String())
-		return ok && strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), workerID)
+		return ok && strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), workerID), nil
 	})
 }
 

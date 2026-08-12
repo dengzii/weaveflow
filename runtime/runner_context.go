@@ -29,6 +29,7 @@ type runnerMetadataKey struct{}
 type runnerArtifactRecorderKey struct{}
 type runnerEventObserverKey struct{}
 type runOriginKey struct{}
+type graphExecutionBudgetProviderKey struct{}
 
 var ErrArtifactRecorderUnavailable = errors.New("runner artifact recorder is unavailable")
 
@@ -172,6 +173,27 @@ func RunnerMetadataFromContext(ctx context.Context) (RunnerMetadata, bool) {
 	}
 	metadata, ok := ctx.Value(runnerMetadataKey{}).(RunnerMetadata)
 	return metadata, ok
+}
+
+func WithGraphExecutionBudgetProvider(ctx context.Context, provider func() GraphExecutionBudget) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if provider == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, graphExecutionBudgetProviderKey{}, provider)
+}
+
+func GraphExecutionBudgetFromContext(ctx context.Context) (GraphExecutionBudget, bool) {
+	if ctx == nil {
+		return GraphExecutionBudget{}, false
+	}
+	provider, ok := ctx.Value(graphExecutionBudgetProviderKey{}).(func() GraphExecutionBudget)
+	if !ok || provider == nil {
+		return GraphExecutionBudget{}, false
+	}
+	return provider(), true
 }
 
 func SaveArtifact(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {

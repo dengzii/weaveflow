@@ -124,14 +124,29 @@ func (t *ToolExecutionNode) Execute(ctx core.Context, access *state.Access) erro
 
 	toolMessages := make([]llms.MessageContent, len(toolCalls))
 	if t.Parallel {
-		var wg sync.WaitGroup
-		wg.Add(len(toolCalls))
-		for index, toolCall := range toolCalls {
-			go func(index int, toolCall llms.ToolCall) {
-				defer wg.Done()
-				toolMessages[index] = executeToolCallMessage(ctx, toolCall)
-			}(index, toolCall)
+		type toolTask struct {
+			index int
+			call  llms.ToolCall
 		}
+		workerCount := len(toolCalls)
+		if limit := core.ToolExecutionConcurrencyLimit(ctx); limit > 0 {
+			workerCount = min(workerCount, limit)
+		}
+		tasks := make(chan toolTask)
+		var wg sync.WaitGroup
+		wg.Add(workerCount)
+		for range workerCount {
+			go func() {
+				defer wg.Done()
+				for task := range tasks {
+					toolMessages[task.index] = executeToolCallMessage(ctx, task.call)
+				}
+			}()
+		}
+		for index, toolCall := range toolCalls {
+			tasks <- toolTask{index: index, call: toolCall}
+		}
+		close(tasks)
 		wg.Wait()
 	} else {
 		for index, toolCall := range toolCalls {
@@ -159,7 +174,12 @@ func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (string, error) {
 		Name:       name,
 		Arguments:  arguments,
 	})
-	return tool.Handler(callCtx, core.DecodeToolInput(arguments))
+	executionCtx, release, err := core.AcquireToolExecution(callCtx, tool.ExecutionMode)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	return tool.Handler(executionCtx, core.DecodeToolInput(arguments))
 }
 
 func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {

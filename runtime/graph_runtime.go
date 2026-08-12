@@ -221,11 +221,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 	nodeLock := e.lockForNode(nodeID)
 	nodeLock.Lock()
 	defer nodeLock.Unlock()
-
-	nodeCtx, err := e.beforeNode(ctx, nodeID, currentState)
-	if err != nil {
-		return currentState, err
-	}
+	nodeCtx := core.NewContext(ctx)
 
 	contract, hasContract := e.nodeContracts[nodeID]
 	policy := e.contractPolicy
@@ -294,6 +290,11 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, e
 		return currentState, err
 	}
 	return mergedState, nil
+}
+
+func (e *graphRunnerExecution) PrepareNode(ctx context.Context, nodeID string, currentState *state.State) (context.Context, error) {
+	nodeCtx, err := e.beforeNode(ctx, nodeID, currentState)
+	return nodeCtx, err
 }
 
 func contractOption(contract state.Contract, ok bool) *state.Contract {
@@ -513,13 +514,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 		}
 		logger.Info("nodes started", append(stepLogFields(logStep), state.SummaryFields(currentState)...)...)
 	} else {
-		attempt := active.attempts
 		e.mu.Unlock()
-		if err := e.runner.publishEvent(ctx, RunRecord{RunID: run.RunID}, step.StepID, step.NodeID, EventNodeRetry, map[string]any{
-			"attempt": attempt - 1,
-		}); err != nil {
-			return core.NewContext(ctx), err
-		}
 		logger.Warn("nodes retrying", stepLogFields(logStep)...)
 	}
 
@@ -545,6 +540,35 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 		return ref, nil
 	})
 	return withRunnerEventContext(nodeCtx, e.runner, runID, stepID, nodeID), nil
+}
+
+func (e *graphRunnerExecution) OnSchedulerEvent(ctx context.Context, event SchedulerEvent) error {
+	if e == nil {
+		return nil
+	}
+	run := e.currentRun()
+	eventType := EventWarning
+	switch event.Type {
+	case SchedulerEventLimitExceeded:
+		eventType = EventRunLimitExceeded
+	case SchedulerEventRetryScheduled:
+		eventType = EventNodeRetry
+	case SchedulerEventConditionFailed:
+		eventType = EventConditionFailed
+	case SchedulerEventBackpressure:
+		eventType = EventRunBackpressure
+	}
+	stepID := ""
+	if active := e.firstActiveStep(event.NodeID); active != nil {
+		stepID = active.step.StepID
+	}
+	return e.runner.publishEvent(context.WithoutCancel(normalizeRunnerContext(ctx)), run, stepID, event.NodeID, eventType, event.Payload)
+}
+
+func (e *graphRunnerExecution) firstActiveStep(nodeID string) *runnerActiveStep {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.firstActiveStepLocked(nodeID)
 }
 
 func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, currentState *state.State) error {
@@ -1067,12 +1091,13 @@ func (e *graphRunnerExecution) requestCancel() {
 	e.run.PauseRequested = false
 	e.run.CancelRequested = true
 	nodeID := e.run.CurrentNodeID
-	if e.pending == nil && (nodeID == "" || !e.runner.runnerGraph().IsParallelBranchTarget(nodeID)) {
+	interruptInvoke := nodeID == "" || !e.runner.runnerGraph().IsParallelBranchTarget(nodeID)
+	if e.pending == nil && interruptInvoke {
 		e.pending = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID}
 	}
 	cancel := e.cancelInvoke
 	e.mu.Unlock()
-	if cancel != nil {
+	if interruptInvoke && cancel != nil {
 		cancel()
 	}
 }

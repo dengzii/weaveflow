@@ -142,18 +142,17 @@ func StateExpression(paths map[string]state.Path, expression string) (registry.E
 	sort.Strings(names)
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 		Type: ConditionTypeStateExpression, Config: map[string]any{"expression": strings.TrimSpace(expression)}, State: bindings,
-	}, func(ctx context.Context, current *state.State) bool {
+	}, func(ctx context.Context, current *state.State) (bool, error) {
 		access := state.NewAccess(current)
 		inputs := make(map[string]any, len(names))
 		for _, name := range names {
 			value, ok := access.ReadAny(paths[name])
 			if !ok {
-				return false
+				return false, nil
 			}
 			inputs[name] = value
 		}
-		matched, err := program.EvalBool(ctx, inputs)
-		return err == nil && matched
+		return program.EvalBool(ctx, inputs)
 	}), nil
 }
 
@@ -337,36 +336,36 @@ func expressionConditionsConditionDefinition() registry.ConditionDefinition {
 
 func ConversationHasToolCalls(conversationPath state.Path) registry.EdgeCondition {
 	spec := dsl.GraphConditionSpec{Type: ConditionTypeConversationHasToolCalls, State: map[string]dsl.StateBinding{"conversation": {Path: conversationPath.String()}}}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) bool {
+	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (bool, error) {
 		conversation, err := conversationcap.Bind(state.NewAccess(current), conversationPath)
 		if err != nil {
-			return false
+			return false, err
 		}
 		messages := conversation.Messages()
 		if len(messages) == 0 {
-			return false
+			return false, nil
 		}
 		lastMessage := messages[len(messages)-1]
 		if lastMessage.Role != llms.ChatMessageTypeAI {
-			return false
+			return false, nil
 		}
 		for _, part := range lastMessage.Parts {
 			if _, ok := part.(llms.ToolCall); ok {
-				return true
+				return true, nil
 			}
 		}
-		return false
+		return false, nil
 	})
 }
 
 func ConversationHasFinalAnswer(conversationPath state.Path) registry.EdgeCondition {
 	spec := dsl.GraphConditionSpec{Type: ConditionTypeConversationHasFinalAnswer, State: map[string]dsl.StateBinding{"conversation": {Path: conversationPath.String()}}}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) bool {
+	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (bool, error) {
 		conversation, err := conversationcap.Bind(state.NewAccess(current), conversationPath)
 		if err != nil {
-			return false
+			return false, err
 		}
-		return conversation.FinalAnswer() != ""
+		return conversation.FinalAnswer() != "", nil
 	})
 }
 
@@ -416,26 +415,26 @@ func ExpressionConditions(rootPath state.Path, config ExpressionConditionConfig)
 		Type:   ConditionTypeExpressionConditions,
 		Config: config.Map(),
 		State:  map[string]dsl.StateBinding{"state": {Path: rootPath.String()}},
-	}, func(_ context.Context, current *state.State) bool {
+	}, func(_ context.Context, current *state.State) (bool, error) {
 		root, ok := state.NewAccess(current).ReadAny(rootPath)
 		if !ok {
-			return false
+			return false, fmt.Errorf("condition state is missing at %q", rootPath)
 		}
 		switch matchMode {
 		case ExpressionMatchAny:
 			for _, expression := range expressions {
 				if matchExpression(root, expression) {
-					return true
+					return true, nil
 				}
 			}
-			return false
+			return false, nil
 		default:
 			for _, expression := range expressions {
 				if !matchExpression(root, expression) {
-					return false
+					return false, nil
 				}
 			}
-			return true
+			return true, nil
 		}
 	}), nil
 }

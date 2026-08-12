@@ -68,9 +68,9 @@ func ExampleRegistry_RegisterCondition() {
 			spec := resolved.Spec
 			path := resolved.State["value"].Path
 			want := spec.Config["value"]
-			return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) bool {
+			return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (bool, error) {
 				got, ok := state.NewAccess(current).ReadAny(path)
-				return ok && got == want
+				return ok && got == want, nil
 			}), nil
 		},
 	})

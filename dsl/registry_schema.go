@@ -27,6 +27,7 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 		"required":             []string{"path"},
 		"additionalProperties": false,
 	}
+	executionPolicySchema := nodeExecutionPolicyJSONSchema()
 	nodeVariants := make([]any, 0, len(nodeTypes))
 	for _, key := range sortedNodeTypeSchemaKeys(nodeTypes) {
 		nodeDef := nodeTypes[key]
@@ -59,6 +60,7 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 				"description": JSONSchema{"type": "string"},
 				"config":      nodeDef.ConfigSchema,
 				"state":       stateSchema,
+				"policy":      executionPolicySchema,
 			},
 			"required":             requiredProperties,
 			"additionalProperties": false,
@@ -91,6 +93,7 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 		conditionVariants = append(conditionVariants, JSONSchema{
 			"type": "object",
 			"properties": JSONSchema{
+				"id":     JSONSchema{"type": "string"},
 				"type":   JSONSchema{"const": conditionDef.Type},
 				"config": conditionDef.ConfigSchema,
 				"state":  stateSchema,
@@ -128,6 +131,7 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 				"type":  "array",
 				"items": JSONSchema{"oneOf": nodeVariants},
 			},
+			"policy": graphExecutionPolicyJSONSchema(executionPolicySchema),
 			"edges": JSONSchema{
 				"type":        "array",
 				"description": "Graph edges. Multiple ordinary edges with the same from node express fan-out; repeated from/to pairs are invalid. Conditional edges remain single-target branch selections.",
@@ -145,6 +149,55 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 			"metadata": JSONSchema{"type": "object"},
 		},
 		"required": []string{"version", "state_modules", "nodes"},
+	}
+}
+
+func nodeExecutionPolicyJSONSchema() JSONSchema {
+	retry := JSONSchema{
+		"type": "object",
+		"properties": JSONSchema{
+			"max_attempts":                JSONSchema{"type": "integer", "minimum": 1},
+			"initial_interval":            JSONSchema{"type": "string"},
+			"max_interval":                JSONSchema{"type": "string"},
+			"backoff_multiplier":          JSONSchema{"type": "number", "minimum": 1},
+			"jitter":                      JSONSchema{"type": "number", "minimum": 0, "maximum": 1},
+			"retryable_error_classes":     JSONSchema{"type": "array", "items": JSONSchema{"type": "string"}},
+			"non_retryable_error_classes": JSONSchema{"type": "array", "items": JSONSchema{"type": "string"}},
+		},
+		"additionalProperties": false,
+	}
+	return JSONSchema{
+		"type": "object",
+		"properties": JSONSchema{
+			"timeout":         JSONSchema{"type": "string"},
+			"max_concurrency": JSONSchema{"type": "integer", "minimum": 1},
+			"retry":           retry,
+		},
+		"additionalProperties": false,
+	}
+}
+
+func graphExecutionPolicyJSONSchema(execution JSONSchema) JSONSchema {
+	return JSONSchema{
+		"type": "object",
+		"properties": JSONSchema{
+			"limits": JSONSchema{
+				"type": "object",
+				"properties": JSONSchema{
+					"max_super_steps":      JSONSchema{"type": "integer", "minimum": 1},
+					"max_node_executions":  JSONSchema{"type": "integer", "minimum": 1},
+					"max_fan_out":          JSONSchema{"type": "integer", "minimum": 1},
+					"max_concurrent_runs":  JSONSchema{"type": "integer", "minimum": 1},
+					"max_concurrent_nodes": JSONSchema{"type": "integer", "minimum": 1},
+					"max_concurrent_tools": JSONSchema{"type": "integer", "minimum": 1},
+					"max_state_bytes":      JSONSchema{"type": "integer", "minimum": 1},
+					"max_wall_time":        JSONSchema{"type": "string"},
+				},
+				"additionalProperties": false,
+			},
+			"node_defaults": execution,
+		},
+		"additionalProperties": false,
 	}
 }
 

@@ -31,7 +31,7 @@ func TestPlanStatusConditionUsesResolvedBinding(t *testing.T) {
 	}
 	current := state.NewState()
 	_ = state.SetPath(current, path.MustChild("status").String(), plannode.PlanStatusExecuting)
-	if !condition.Match(context.Background(), current) {
+	if !mustMatchCondition(t, condition, current) {
 		t.Fatal("expected status match")
 	}
 }
@@ -52,7 +52,7 @@ func TestSupervisorRouteConditionUsesResolvedBinding(t *testing.T) {
 	}
 	current := state.NewState()
 	_ = state.SetPath(current, path.MustChild(supervisornode.SupervisorFieldRoute).String(), "researcher")
-	if !condition.Match(context.Background(), current) {
+	if !mustMatchCondition(t, condition, current) {
 		t.Fatal("expected route match")
 	}
 }
@@ -65,7 +65,7 @@ func TestConversationToolCallConditionUsesBoundRoot(t *testing.T) {
 	_ = view.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
 		llms.ToolCall{ID: "call", Type: "function", FunctionCall: &llms.FunctionCall{Name: "tool"}},
 	}}})
-	if !ConversationHasToolCalls(path).Match(context.Background(), access.State()) {
+	if !mustMatchCondition(t, ConversationHasToolCalls(path), access.State()) {
 		t.Fatal("expected tool call match")
 	}
 }
@@ -78,7 +78,7 @@ func TestExpressionConditionEvaluatesRelativeToBinding(t *testing.T) {
 		t.Fatalf("condition: %v", err)
 	}
 	current := state.FromShared(map[string]any{"ticket": map[string]any{"status": "open"}})
-	if !condition.Match(context.Background(), current) {
+	if !mustMatchCondition(t, condition, current) {
 		t.Fatal("expected expression match")
 	}
 }
@@ -94,13 +94,13 @@ func TestStateExpressionCombinesBoundInputs(t *testing.T) {
 	matching := state.FromShared(map[string]any{
 		"cart": map[string]any{"price": 25, "quantity": 4}, "user": map[string]any{"vip": true},
 	})
-	if !condition.Match(context.Background(), matching) {
+	if !mustMatchCondition(t, condition, matching) {
 		t.Fatal("expected state expression match")
 	}
 	nonMatching := state.FromShared(map[string]any{
 		"cart": map[string]any{"price": 10, "quantity": 4}, "user": map[string]any{"vip": true},
 	})
-	if condition.Match(context.Background(), nonMatching) {
+	if mustMatchCondition(t, condition, nonMatching) {
 		t.Fatal("unexpected state expression match")
 	}
 }
@@ -112,7 +112,7 @@ func TestStateExpressionFailsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StateExpression(): %v", err)
 		}
-		if condition.Match(context.Background(), state.NewState()) {
+		if mustMatchCondition(t, condition, state.NewState()) {
 			t.Fatal("missing input must not match")
 		}
 	})
@@ -121,8 +121,8 @@ func TestStateExpressionFailsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StateExpression(): %v", err)
 		}
-		if condition.Match(context.Background(), state.FromShared(map[string]any{"value": "yes"})) {
-			t.Fatal("non-boolean result must not match")
+		if _, err := condition.Match(context.Background(), state.FromShared(map[string]any{"value": "yes"})); err == nil {
+			t.Fatal("non-boolean result must return an error")
 		}
 	})
 }
@@ -153,7 +153,16 @@ func TestStateExpressionConditionDefinitionUsesDynamicPorts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Resolve(): %v", err)
 	}
-	if !condition.Match(context.Background(), state.FromShared(map[string]any{"ready": true})) {
+	if !mustMatchCondition(t, condition, state.FromShared(map[string]any{"ready": true})) {
 		t.Fatal("expected resolved condition match")
 	}
+}
+
+func mustMatchCondition(t *testing.T, condition registry.EdgeCondition, current *state.State) bool {
+	t.Helper()
+	matched, err := condition.Match(context.Background(), current)
+	if err != nil {
+		t.Fatalf("condition match: %v", err)
+	}
+	return matched
 }

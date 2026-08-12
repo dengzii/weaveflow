@@ -46,6 +46,9 @@ func (builder *Builder) build(def dsl.GraphDefinition, instance *dsl.GraphInstan
 
 	graph := NewGraph(builder.registry)
 	graph.setDefinitionMetadata(def)
+	if err := graph.applyDefinitionExecutionPolicy(def); err != nil {
+		return nil, err
+	}
 	bindings, err := graphbuild.ResolveGraphBindings(def, builder.registry)
 	if err != nil {
 		return nil, err

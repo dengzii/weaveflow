@@ -2,11 +2,14 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
+	"math/rand/v2"
 	"sort"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/dengzii/weaveflow/core"
@@ -15,16 +18,26 @@ import (
 )
 
 type scheduledNodeExecutor func(context.Context, string, *state.State) (*state.State, error)
-
-const maxConfiguredRetries = 100
+type scheduledNodePreparer func(context.Context, string, *state.State) (context.Context, error)
 
 type scheduledRunnable struct {
 	graph        *Graph
 	patches      *compilePatchCollector
+	prepareNode  scheduledNodePreparer
 	executeNode  scheduledNodeExecutor
 	observeNode  func(context.Context, NodeEvent, string, *state.State, error, time.Duration)
 	joinNodes    map[string]struct{}
 	reachability map[string]map[string]bool
+}
+
+type executionBudget struct {
+	maxNodeExecutions int64
+	nodeExecutions    atomic.Int64
+	superSteps        atomic.Int64
+	parentContext     context.Context
+	maxWallTime       time.Duration
+	elapsedWallTime   time.Duration
+	startedAt         time.Time
 }
 
 func newScheduledRunnable(targetGraph *Graph, patches *compilePatchCollector, executeNode scheduledNodeExecutor) *scheduledRunnable {
@@ -58,10 +71,32 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	policy := runnable.graph.executionPolicy
+	releaseRun, err := runnable.acquireConcurrency(ctx, config, runnable.graph.runLimiter, "run", "")
+	if err != nil {
+		return initialState, err
+	}
+	defer releaseRun()
 	currentState := state.NewState()
 	if initialState != nil {
 		currentState = initialState.Clone()
 	}
+	restoredBudget, _ := fruntime.LoadGraphExecutionBudget(currentState)
+	remainingWallTime := policy.Limits.MaxWallTime - restoredBudget.ElapsedWallTime
+	if remainingWallTime <= 0 {
+		limitErr := core.NewExecutionError(core.ErrorTimeout, "graph wall-time limit exceeded", nil, map[string]any{
+			"limit":  policy.Limits.MaxWallTime.String(),
+			"actual": restoredBudget.ElapsedWallTime.String(),
+			"kind":   "wall_time",
+		})
+		return currentState, runnable.notifyLimitExceeded(ctx, config, "", limitErr)
+	}
+	parentCtx := ctx
+	ctx, cancel := context.WithTimeout(parentCtx, remainingWallTime)
+	defer cancel()
+	ctx = core.WithToolConcurrencyLimiter(ctx, runnable.graph.toolLimiter, func(limit int) {
+		_ = runnable.notifyBackpressure(context.WithoutCancel(ctx), config, "tool", "", limit)
+	})
 	currentNodes := []string{runnable.graph.entryPoint}
 	if len(config.StartNodeIDs) > 0 {
 		currentNodes = append([]string(nil), config.StartNodeIDs...)
@@ -69,23 +104,74 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	_, restoredPending, _ := fruntime.LoadGraphSchedule(currentState)
 	pendingFanIn := nodeIDSet(restoredPending)
 	currentNodes, pendingFanIn = runnable.resumeSchedule(currentNodes, pendingFanIn)
+	budget := &executionBudget{
+		maxNodeExecutions: int64(policy.Limits.MaxNodeExecutions),
+		parentContext:     parentCtx,
+		maxWallTime:       policy.Limits.MaxWallTime,
+		elapsedWallTime:   restoredBudget.ElapsedWallTime,
+		startedAt:         time.Now(),
+	}
+	budget.nodeExecutions.Store(restoredBudget.NodeExecutions)
+	budget.superSteps.Store(restoredBudget.SuperSteps)
+	if err := runnable.storeExecutionBudget(currentState, budget); err != nil {
+		return currentState, err
+	}
+	if err := runnable.validateStateSize(ctx, config, currentState); err != nil {
+		return currentState, err
+	}
 
 	for {
+		if err := ctx.Err(); err != nil {
+			if parentCtx.Err() != nil {
+				return currentState, parentCtx.Err()
+			}
+			limitErr := core.NewExecutionError(core.ErrorTimeout, "graph wall-time limit exceeded", err, map[string]any{
+				"limit": policy.Limits.MaxWallTime.String(),
+				"kind":  "wall_time",
+			})
+			return currentState, runnable.notifyLimitExceeded(ctx, config, "", limitErr)
+		}
 		currentNodes = activeNodeIDs(currentNodes)
 		if len(currentNodes) == 0 {
 			break
 		}
+		superSteps := budget.superSteps.Add(1)
+		if superSteps > int64(policy.Limits.MaxSuperSteps) {
+			limitErr := core.NewExecutionError(core.ErrorResourceExhausted, "graph super-step limit exceeded", nil, map[string]any{
+				"limit":  policy.Limits.MaxSuperSteps,
+				"actual": superSteps,
+				"kind":   "super_steps",
+			})
+			return currentState, runnable.notifyLimitExceeded(ctx, config, "", limitErr)
+		}
+		if len(currentNodes) > policy.Limits.MaxFanOut {
+			limitErr := core.NewExecutionError(core.ErrorResourceExhausted, "graph fan-out limit exceeded", nil, map[string]any{
+				"limit":  policy.Limits.MaxFanOut,
+				"actual": len(currentNodes),
+				"kind":   "fan_out",
+			})
+			return currentState, runnable.notifyLimitExceeded(ctx, config, "", limitErr)
+		}
 		if err := fruntime.StoreGraphSchedule(currentState, nil, sortedNodeIDSet(pendingFanIn)); err != nil {
 			return currentState, err
 		}
+		if err := runnable.storeExecutionBudget(currentState, budget); err != nil {
+			return currentState, err
+		}
 
-		results, nodeErrors := runnable.executeNodes(ctx, currentNodes, currentState)
+		results, nodeErrors := runnable.executeNodes(ctx, config, budget, currentNodes, currentState)
 		mergedState, err := runnable.graph.mergeCompiledStates(ctx, currentState, results, runnable.patches)
 		if err != nil {
 			mergeErr := fmt.Errorf("state merge failed: %w", err)
 			return currentState, mergeErr
 		}
 		currentState = mergedState
+		if err := runnable.storeExecutionBudget(currentState, budget); err != nil {
+			return currentState, err
+		}
+		if err := runnable.validateStateSize(ctx, config, currentState); err != nil {
+			return currentState, err
+		}
 
 		if interrupt := firstNodeInterrupt(currentNodes, nodeErrors); interrupt != nil {
 			if err := runnable.notifyGraphStep(ctx, config, currentNodes, currentState); err != nil {
@@ -105,6 +191,11 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 		nodesRan := append([]string(nil), currentNodes...)
 		nextNodes, err := runnable.resolveNextNodes(ctx, nodesRan, currentState)
 		if err != nil {
+			if event := conditionSchedulerEvent(err); event != nil {
+				if notifyErr := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, *event); notifyErr != nil {
+					return currentState, errors.Join(err, notifyErr)
+				}
+			}
 			return currentState, err
 		}
 		currentNodes, pendingFanIn = runnable.scheduleNext(nextNodes, pendingFanIn)
@@ -130,38 +221,52 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	return currentState, nil
 }
 
-func (runnable *scheduledRunnable) executeNodes(ctx context.Context, nodeIDs []string, currentState *state.State) ([]*state.State, []error) {
+func (runnable *scheduledRunnable) executeNodes(ctx context.Context, config fruntime.SchedulerConfig, budget *executionBudget, nodeIDs []string, currentState *state.State) ([]*state.State, []error) {
 	results := make([]*state.State, len(nodeIDs))
 	nodeErrors := make([]error, len(nodeIDs))
+	type nodeTask struct {
+		index  int
+		nodeID string
+	}
+	tasks := make(chan nodeTask, len(nodeIDs))
 	var waitGroup sync.WaitGroup
-	waitGroup.Add(len(nodeIDs))
-	for index, nodeID := range nodeIDs {
-		resultIndex := index
-		targetNodeID := nodeID
+	workerCount := min(len(nodeIDs), runnable.graph.executionPolicy.Limits.MaxConcurrentNodes)
+	waitGroup.Add(workerCount)
+	for range workerCount {
 		go func() {
 			defer waitGroup.Done()
-			startedAt := time.Now()
-			runnable.notifyNode(ctx, EventNodeStart, targetNodeID, currentState, nil, 0)
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					results[resultIndex] = currentState
-					nodeErrors[resultIndex] = fmt.Errorf("panic in node %s: %v", targetNodeID, recovered)
-					runnable.notifyNode(ctx, EventNodeError, targetNodeID, currentState, nodeErrors[resultIndex], time.Since(startedAt))
-				}
-			}()
-			result, err := runnable.executeNodeWithRetry(ctx, targetNodeID, currentState)
-			if result == nil {
-				result = currentState
+			for task := range tasks {
+				func() {
+					startedAt := time.Now()
+					runnable.notifyNode(ctx, EventNodeStart, task.nodeID, currentState, nil, 0)
+					defer func() {
+						if recovered := recover(); recovered != nil {
+							results[task.index] = currentState
+							nodeErrors[task.index] = fmt.Errorf("panic in node %s: %v", task.nodeID, recovered)
+							recordFailedBranchPatch(runnable.patches, currentState, task.nodeID, nodeErrors[task.index])
+							runnable.notifyNode(ctx, EventNodeError, task.nodeID, currentState, nodeErrors[task.index], time.Since(startedAt))
+						}
+					}()
+					result, err := runnable.executeNodeWithRetry(ctx, config, budget, task.nodeID, currentState)
+					if result == nil {
+						result = currentState
+					}
+					results[task.index] = result
+					if err != nil {
+						nodeErrors[task.index] = fmt.Errorf("error in node %s: %w", task.nodeID, err)
+						recordFailedBranchPatch(runnable.patches, currentState, task.nodeID, nodeErrors[task.index])
+						runnable.notifyNode(ctx, EventNodeError, task.nodeID, result, nodeErrors[task.index], time.Since(startedAt))
+						return
+					}
+					runnable.notifyNode(ctx, EventNodeComplete, task.nodeID, result, nil, time.Since(startedAt))
+				}()
 			}
-			results[resultIndex] = result
-			if err != nil {
-				nodeErrors[resultIndex] = fmt.Errorf("error in node %s: %w", targetNodeID, err)
-				runnable.notifyNode(ctx, EventNodeError, targetNodeID, result, nodeErrors[resultIndex], time.Since(startedAt))
-				return
-			}
-			runnable.notifyNode(ctx, EventNodeComplete, targetNodeID, result, nil, time.Since(startedAt))
 		}()
 	}
+	for index, nodeID := range nodeIDs {
+		tasks <- nodeTask{index: index, nodeID: nodeID}
+	}
+	close(tasks)
 	waitGroup.Wait()
 	return results, nodeErrors
 }
@@ -172,68 +277,272 @@ func (runnable *scheduledRunnable) notifyNode(ctx context.Context, event NodeEve
 	}
 }
 
-func (runnable *scheduledRunnable) executeNodeWithRetry(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
-	maxAttempts := 1
-	if runnable.graph.retryPolicy != nil {
-		maxAttempts += runnable.graph.retryPolicy.MaxRetries
-	}
+func (runnable *scheduledRunnable) executeNodeWithRetry(ctx context.Context, config fruntime.SchedulerConfig, budget *executionBudget, nodeID string, currentState *state.State) (*state.State, error) {
+	policy := runnable.graph.nodeExecutionPolicy(nodeID)
 	var lastResult *state.State
 	var lastErr error
-	for attempt := 0; attempt < maxAttempts; attempt++ {
-		lastResult, lastErr = runnable.executeNode(ctx, nodeID, currentState)
+	var timedOutAttempt <-chan attemptResult
+	for attempt := 1; attempt <= policy.Retry.MaxAttempts; attempt++ {
+		if timedOutAttempt != nil {
+			select {
+			case <-timedOutAttempt:
+				timedOutAttempt = nil
+			case <-ctx.Done():
+				if budget.parentContext != nil && budget.parentContext.Err() != nil {
+					completed := <-timedOutAttempt
+					if completed.state != nil {
+						lastResult = completed.state
+					}
+				}
+				return lastResult, runnable.executionContextError(ctx, config, budget, nodeID)
+			}
+		}
+		lastErr = nil
+		executionCtx := fruntime.WithGraphExecutionBudgetProvider(ctx, budget.snapshot)
+		if runnable.prepareNode != nil {
+			var err error
+			executionCtx, err = runnable.prepareNode(executionCtx, nodeID, currentState)
+			if err != nil {
+				lastErr = err
+			}
+		}
+		if lastErr == nil {
+			if err := budget.claimNodeExecution(); err != nil {
+				return lastResult, runnable.notifyLimitExceeded(ctx, config, nodeID, err)
+			}
+			releaseGraphNode, err := runnable.acquireConcurrency(executionCtx, config, runnable.graph.nodeLimiter, "graph_node", nodeID)
+			if err != nil {
+				return lastResult, err
+			}
+			releaseNode, err := runnable.acquireConcurrency(executionCtx, config, runnable.graph.nodeLimiters[nodeID], "node", nodeID)
+			if err != nil {
+				releaseGraphNode()
+				return lastResult, err
+			}
+			attemptCtx, cancel := context.WithTimeout(executionCtx, policy.Timeout)
+			result := make(chan attemptResult, 1)
+			go func() {
+				completed := attemptResult{state: currentState}
+				defer func() {
+					if recovered := recover(); recovered != nil {
+						completed.err = fmt.Errorf("panic in node %s: %v", nodeID, recovered)
+					}
+					releaseNode()
+					releaseGraphNode()
+					result <- completed
+				}()
+				completed.state, completed.err = runnable.executeNode(attemptCtx, nodeID, currentState)
+			}()
+			select {
+			case completed := <-result:
+				lastResult, lastErr = completed.state, completed.err
+				cancel()
+			case <-attemptCtx.Done():
+				if ctx.Err() != nil {
+					cancel()
+					if budget.parentContext != nil && budget.parentContext.Err() != nil {
+						completed := <-result
+						if completed.state != nil {
+							lastResult = completed.state
+						}
+					}
+					return lastResult, runnable.executionContextError(ctx, config, budget, nodeID)
+				}
+				lastErr = core.NewExecutionError(core.ErrorTimeout, fmt.Sprintf("node %q timed out after %s", nodeID, policy.Timeout), attemptCtx.Err(), map[string]any{
+					"node_id": nodeID,
+					"timeout": policy.Timeout.String(),
+				})
+				timedOutAttempt = result
+				cancel()
+			}
+		}
 		if lastErr == nil {
 			return lastResult, nil
 		}
 		var nodeInterrupt *core.NodeInterrupt
 		var graphInterrupt *fruntime.GraphInterrupt
-		if errors.As(lastErr, &nodeInterrupt) || errors.As(lastErr, &graphInterrupt) || !runnable.retryable(lastErr) || attempt == maxAttempts-1 {
+		if errors.As(lastErr, &nodeInterrupt) || errors.As(lastErr, &graphInterrupt) || !retryable(policy.Retry, lastErr) || attempt == policy.Retry.MaxAttempts {
 			return lastResult, lastErr
 		}
-		delay := retryDelay(runnable.graph.retryPolicy.BackoffStrategy, attempt)
+		delay := retryDelay(policy.Retry, attempt)
+		if err := runnable.notifySchedulerEvent(ctx, config, fruntime.SchedulerEvent{
+			Type:   fruntime.SchedulerEventRetryScheduled,
+			NodeID: nodeID,
+			Payload: map[string]any{
+				"attempt":      attempt,
+				"next_attempt": attempt + 1,
+				"delay":        delay.String(),
+				"error_class":  core.ClassifyError(lastErr),
+				"error":        lastErr.Error(),
+			},
+		}); err != nil {
+			return lastResult, err
+		}
+		timer := time.NewTimer(delay)
 		select {
-		case <-time.After(delay):
+		case <-timer.C:
 		case <-ctx.Done():
+			timer.Stop()
 			return lastResult, ctx.Err()
 		}
 	}
 	return lastResult, lastErr
 }
 
-func (runnable *scheduledRunnable) retryable(err error) bool {
-	if runnable.graph.retryPolicy == nil || err == nil {
+type attemptResult struct {
+	state *state.State
+	err   error
+}
+
+func (runnable *scheduledRunnable) executionContextError(ctx context.Context, config fruntime.SchedulerConfig, budget *executionBudget, nodeID string) error {
+	if budget != nil && budget.parentContext != nil && budget.parentContext.Err() == nil {
+		limitErr := core.NewExecutionError(core.ErrorTimeout, "graph wall-time limit exceeded", ctx.Err(), map[string]any{
+			"limit": budget.maxWallTime.String(),
+			"kind":  "wall_time",
+		})
+		return runnable.notifyLimitExceeded(context.WithoutCancel(ctx), config, nodeID, limitErr)
+	}
+	return ctx.Err()
+}
+
+func retryable(policy fruntime.RetryPolicy, err error) bool {
+	if err == nil {
 		return false
 	}
-	for _, pattern := range runnable.graph.retryPolicy.RetryableErrors {
-		if strings.TrimSpace(pattern) == "" {
-			continue
+	class := core.ClassifyError(err)
+	for _, blocked := range policy.NonRetryableErrorClasses {
+		if class == blocked {
+			return false
 		}
-		if strings.Contains(err.Error(), pattern) {
+	}
+	for _, allowed := range policy.RetryableErrorClasses {
+		if class == allowed {
 			return true
 		}
 	}
 	return false
 }
 
-func retryDelay(strategy BackoffStrategy, attempt int) time.Duration {
-	const maxRetryDelay = 30 * time.Second
-	if attempt < 0 {
-		return time.Second
+func retryDelay(policy fruntime.RetryPolicy, attempt int) time.Duration {
+	base := float64(policy.InitialInterval)
+	if base <= 0 {
+		return 0
 	}
-	switch strategy {
-	case ExponentialBackoff:
-		if attempt >= 5 {
-			return maxRetryDelay
-		}
-		return time.Second * time.Duration(1<<uint(attempt))
-	case LinearBackoff:
-		delay := time.Second * time.Duration(attempt+1)
-		if delay > maxRetryDelay {
-			return maxRetryDelay
-		}
-		return delay
-	default:
-		return time.Second
+	delay := base * math.Pow(policy.BackoffMultiplier, float64(max(attempt-1, 0)))
+	if maxInterval := float64(policy.MaxInterval); maxInterval > 0 && delay > maxInterval {
+		delay = maxInterval
 	}
+	if policy.Jitter > 0 {
+		factor := 1 + ((rand.Float64()*2)-1)*policy.Jitter
+		delay *= factor
+	}
+	if delay < 0 {
+		return 0
+	}
+	return time.Duration(delay)
+}
+
+func (budget *executionBudget) claimNodeExecution() error {
+	if budget == nil || budget.maxNodeExecutions <= 0 {
+		return nil
+	}
+	actual := budget.nodeExecutions.Add(1)
+	if actual <= budget.maxNodeExecutions {
+		return nil
+	}
+	return core.NewExecutionError(core.ErrorResourceExhausted, "graph node execution limit exceeded", nil, map[string]any{
+		"limit":  budget.maxNodeExecutions,
+		"actual": actual,
+		"kind":   "node_executions",
+	})
+}
+
+func (budget *executionBudget) snapshot() fruntime.GraphExecutionBudget {
+	if budget == nil {
+		return fruntime.GraphExecutionBudget{}
+	}
+	elapsedWallTime := budget.elapsedWallTime
+	if !budget.startedAt.IsZero() {
+		elapsedWallTime += time.Since(budget.startedAt)
+	}
+	return fruntime.GraphExecutionBudget{
+		SuperSteps:      budget.superSteps.Load(),
+		NodeExecutions:  budget.nodeExecutions.Load(),
+		ElapsedWallTime: elapsedWallTime,
+	}
+}
+
+func (runnable *scheduledRunnable) storeExecutionBudget(currentState *state.State, budget *executionBudget) error {
+	if err := fruntime.StoreGraphExecutionBudget(currentState, budget.snapshot()); err != nil {
+		return fmt.Errorf("store graph execution budget: %w", err)
+	}
+	return nil
+}
+
+func (runnable *scheduledRunnable) validateStateSize(ctx context.Context, config fruntime.SchedulerConfig, currentState *state.State) error {
+	data, err := json.Marshal(currentState)
+	if err != nil {
+		return fmt.Errorf("measure graph state size: %w", err)
+	}
+	limit := runnable.graph.executionPolicy.Limits.MaxStateBytes
+	if int64(len(data)) <= limit {
+		return nil
+	}
+	limitErr := core.NewExecutionError(core.ErrorResourceExhausted, "graph state size limit exceeded", nil, map[string]any{
+		"limit":  limit,
+		"actual": len(data),
+		"kind":   "state_bytes",
+	})
+	return runnable.notifyLimitExceeded(ctx, config, "", limitErr)
+}
+
+func (runnable *scheduledRunnable) notifyLimitExceeded(ctx context.Context, config fruntime.SchedulerConfig, nodeID string, limitErr error) error {
+	payload := map[string]any{
+		"error":       limitErr.Error(),
+		"error_class": core.ClassifyError(limitErr),
+	}
+	var executionErr core.ExecutionError
+	if errors.As(limitErr, &executionErr) {
+		for key, value := range executionErr.Details() {
+			payload[key] = value
+		}
+	}
+	if err := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, fruntime.SchedulerEvent{
+		Type:    fruntime.SchedulerEventLimitExceeded,
+		NodeID:  nodeID,
+		Payload: payload,
+	}); err != nil {
+		return errors.Join(limitErr, err)
+	}
+	return limitErr
+}
+
+func (runnable *scheduledRunnable) notifySchedulerEvent(ctx context.Context, config fruntime.SchedulerConfig, event fruntime.SchedulerEvent) error {
+	if config.EventObserver == nil {
+		return nil
+	}
+	return config.EventObserver(ctx, event)
+}
+
+func (runnable *scheduledRunnable) acquireConcurrency(ctx context.Context, config fruntime.SchedulerConfig, limiter *core.ConcurrencyLimiter, scope, nodeID string) (func(), error) {
+	if release, ok := limiter.TryAcquire(); ok {
+		return release, nil
+	}
+	if err := runnable.notifyBackpressure(context.WithoutCancel(ctx), config, scope, nodeID, limiter.Limit()); err != nil {
+		return nil, err
+	}
+	return limiter.Acquire(ctx)
+}
+
+func (runnable *scheduledRunnable) notifyBackpressure(ctx context.Context, config fruntime.SchedulerConfig, scope, nodeID string, limit int) error {
+	return runnable.notifySchedulerEvent(ctx, config, fruntime.SchedulerEvent{
+		Type:   fruntime.SchedulerEventBackpressure,
+		NodeID: nodeID,
+		Payload: map[string]any{
+			"scope": scope,
+			"limit": limit,
+		},
+	})
 }
 
 func (runnable *scheduledRunnable) resolveNextNodes(ctx context.Context, currentNodes []string, currentState *state.State) ([]string, error) {

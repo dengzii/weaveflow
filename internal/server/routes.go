@@ -18,6 +18,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 func (s *Server) registerGraphRoutes(group *gin.RouterGroup) {
 	group.GET("/graphs", s.handleListGraphs)
 	group.GET("/graphs/:graph_id", s.handleGetGraphDetail)
+	group.GET("/graphs/:graph_id/retention-audit", s.handleGetRetentionAudit)
 	group.POST("/graphs/:graph_id/sessions", s.handleCreateGraphSession)
 	group.POST("/graphs/:graph_id/analysis/initial-state-requirements", s.handleAnalyzeGraphInitialStateRequirements)
 }

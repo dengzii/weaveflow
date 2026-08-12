@@ -113,10 +113,10 @@ func conditionContractRegistry(t *testing.T) *registry.Registry {
 			}},
 		},
 		Resolve: func(resolved registry.ResolvedConditionSpec) (registry.EdgeCondition, error) {
-			return registry.NewEdgeCondition(resolved.Spec, func(_ context.Context, current *state.State) bool {
+			return registry.NewEdgeCondition(resolved.Spec, func(_ context.Context, current *state.State) (bool, error) {
 				allowed, _ := state.ReadPath(current, "shared.allowed")
 				_, secretVisible := state.ReadPath(current, "shared.secret")
-				return allowed == "yes" && !secretVisible
+				return allowed == "yes" && !secretVisible, nil
 			}), nil
 		},
 	}); err != nil {

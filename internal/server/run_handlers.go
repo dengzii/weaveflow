@@ -283,7 +283,7 @@ func waitForRunStatus(ctx context.Context, runner *runtime.GraphRunner, runID st
 		if err != nil {
 			return runtime.RunRecord{}, err
 		}
-		if run.Status == target {
+		if run.Status == target && !runner.IsRunActive(runID) {
 			return run, nil
 		}
 		if isTerminalRunStatus(run.Status) {

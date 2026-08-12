@@ -10,9 +10,17 @@ import (
 
 type ToolHandler func(ctx context.Context, input string) (string, error)
 
+type ToolExecutionMode string
+
+const (
+	ToolExecutionLeaf      ToolExecutionMode = "leaf"
+	ToolExecutionComposite ToolExecutionMode = "composite"
+)
+
 type Tool struct {
-	Function *llms.FunctionDefinition
-	Handler  ToolHandler
+	Function      *llms.FunctionDefinition
+	Handler       ToolHandler
+	ExecutionMode ToolExecutionMode
 }
 
 func NewTool(function *llms.FunctionDefinition, handler ToolHandler) Tool {

@@ -27,20 +27,6 @@ const (
 	endNodeID  = "END"
 )
 
-type BackoffStrategy string
-
-const (
-	FixedBackoff       BackoffStrategy = "fixed"
-	LinearBackoff      BackoffStrategy = "linear"
-	ExponentialBackoff BackoffStrategy = "exponential"
-)
-
-type RetryPolicy struct {
-	MaxRetries      int
-	BackoffStrategy BackoffStrategy
-	RetryableErrors []string
-}
-
 type NodeEvent string
 
 const (
@@ -78,26 +64,32 @@ func SetLogger(l *zap.Logger) {
 // - copy-on-write nodes invocation
 // - serializable conditional edges
 type Graph struct {
-	registry              *registry.Registry
-	nodes                 map[string]core.Node
-	nodeSpecs             map[string]dsl.GraphNodeSpec
-	nodeContracts         map[string]state.Contract
-	conditionContracts    map[string]state.Contract
-	stateBindingSemantics []dsl.StateBindingSemantic
-	initialStatePaths     []string
-	contractDiagnostics   []core.ContractDiagnostic
-	defaultEdges          map[string][]string
-	conditionalEdges      map[string][]conditionalEdge
-	edgeSpecs             []dsl.GraphEdgeSpec
-	version               string
-	name                  string
-	description           string
-	stateModules          []dsl.StateModuleRef
-	metadata              map[string]any
-	entryPoint            string
-	finishPoint           string
-	retryPolicy           *RetryPolicy
-	contractDiagnosticsMu sync.RWMutex
+	registry                *registry.Registry
+	nodes                   map[string]core.Node
+	nodeSpecs               map[string]dsl.GraphNodeSpec
+	nodeContracts           map[string]state.Contract
+	conditionContracts      map[string]state.Contract
+	stateBindingSemantics   []dsl.StateBindingSemantic
+	initialStatePaths       []string
+	contractDiagnostics     []core.ContractDiagnostic
+	defaultEdges            map[string][]string
+	conditionalEdges        map[string][]conditionalEdge
+	edgeSpecs               []dsl.GraphEdgeSpec
+	version                 string
+	name                    string
+	description             string
+	stateModules            []dsl.StateModuleRef
+	metadata                map[string]any
+	entryPoint              string
+	finishPoint             string
+	executionPolicy         fruntime.GraphExecutionPolicy
+	executionPolicyExplicit bool
+	nodePolicies            map[string]fruntime.ExecutionPolicy
+	runLimiter              *core.ConcurrencyLimiter
+	nodeLimiter             *core.ConcurrencyLimiter
+	toolLimiter             *core.ConcurrencyLimiter
+	nodeLimiters            map[string]*core.ConcurrencyLimiter
+	contractDiagnosticsMu   sync.RWMutex
 }
 
 func NewGraph(reg *registry.Registry) *Graph {
@@ -106,7 +98,7 @@ func NewGraph(reg *registry.Registry) *Graph {
 	for _, field := range protocolModule.Fields {
 		initialStatePaths = append(initialStatePaths, field.Path)
 	}
-	return &Graph{
+	graph := &Graph{
 		registry:          reg,
 		nodes:             map[string]core.Node{},
 		nodeSpecs:         map[string]dsl.GraphNodeSpec{},
@@ -115,6 +107,8 @@ func NewGraph(reg *registry.Registry) *Graph {
 		stateModules:      []dsl.StateModuleRef{{Name: builtin.ProtocolsModuleName, Version: builtin.ProtocolsModuleVersion}},
 		initialStatePaths: initialStatePaths,
 	}
+	_ = graph.setExecutionPolicy(fruntime.DefaultGraphExecutionPolicy(), false)
+	return graph
 }
 
 func (g *Graph) AddNode(targetNode core.Node) error {
@@ -166,6 +160,7 @@ func (g *Graph) AddNode(targetNode core.Node) error {
 		delete(g.nodeSpecs, id)
 		return err
 	}
+	g.nodeLimiters[id] = core.NewConcurrencyLimiter(g.nodeExecutionPolicy(id).MaxConcurrency)
 	return nil
 }
 
@@ -258,11 +253,20 @@ func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) error {
 	if len(spec.Config) > 0 {
 		spec.Config = config.CloneMap(spec.Config)
 	}
+	var parsedPolicy *fruntime.ExecutionPolicy
+	if spec.Policy != nil {
+		policy, err := executionPolicyFromDSL(spec.Policy, g.executionPolicy.NodeDefaults)
+		if err != nil {
+			return fmt.Errorf("node %q execution policy: %w", id, err)
+		}
+		parsedPolicy = &policy
+	}
 	if g.nodeSpecs == nil {
 		g.nodeSpecs = map[string]dsl.GraphNodeSpec{}
 	}
 	previousSpec, hadPreviousSpec := g.nodeSpecs[id]
 	previousContract, hadPreviousContract := g.nodeContracts[id]
+	previousPolicy, hadPreviousPolicy := g.nodePolicies[id]
 	g.nodeSpecs[id] = spec
 	delete(g.nodeContracts, id)
 	if err := g.attachNodeContract(id, targetNode); err != nil {
@@ -276,8 +280,22 @@ func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) error {
 		} else {
 			delete(g.nodeContracts, id)
 		}
+		if hadPreviousPolicy {
+			g.nodePolicies[id] = previousPolicy
+		} else {
+			delete(g.nodePolicies, id)
+		}
 		return fmt.Errorf("node %q contract resolution failed: %w", id, err)
 	}
+	if parsedPolicy != nil {
+		if g.nodePolicies == nil {
+			g.nodePolicies = map[string]fruntime.ExecutionPolicy{}
+		}
+		g.nodePolicies[id] = *parsedPolicy
+	} else {
+		delete(g.nodePolicies, id)
+	}
+	g.nodeLimiters[id] = core.NewConcurrencyLimiter(g.nodeExecutionPolicy(id).MaxConcurrency)
 	return nil
 }
 
@@ -429,19 +447,6 @@ func (g *Graph) appendConditionContract(from string, contract state.Contract) {
 	combined.WildcardRead = combined.WildcardRead || contract.WildcardRead
 	combined.WildcardWrite = combined.WildcardWrite || contract.WildcardWrite
 	g.conditionContracts[from] = combined
-}
-
-func (g *Graph) SetRetryPolicy(policy *RetryPolicy) {
-	if g == nil {
-		return
-	}
-	if policy == nil {
-		g.retryPolicy = nil
-		return
-	}
-	copyPolicy := *policy
-	copyPolicy.RetryableErrors = append([]string(nil), policy.RetryableErrors...)
-	g.retryPolicy = &copyPolicy
 }
 
 func (g *Graph) setInitialStatePaths(paths []string) {

@@ -80,6 +80,18 @@ func (r *combinedRunReader) LoadCheckpointState(ctx context.Context, checkpointI
 func (r *combinedRunReader) ListEvents(runID string) ([]runtime.Event, error) {
 	reader, _, err := r.readerForRun(context.Background(), runID)
 	if err != nil {
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			return nil, err
+		}
+		for _, candidate := range r.readers {
+			events, listErr := candidate.ListEvents(runID)
+			if listErr == nil && len(events) > 0 {
+				return events, nil
+			}
+			if listErr != nil && !errors.Is(listErr, runtime.ErrRunnerRecordNotFound) {
+				return nil, listErr
+			}
+		}
 		return nil, err
 	}
 	return reader.ListEvents(runID)
@@ -88,6 +100,18 @@ func (r *combinedRunReader) ListEvents(runID string) ([]runtime.Event, error) {
 func (r *combinedRunReader) ListEventPage(runID, cursor string, limit int) (runtime.EventPage, error) {
 	reader, _, err := r.readerForRun(context.Background(), runID)
 	if err != nil {
+		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+			return runtime.EventPage{}, err
+		}
+		for _, candidate := range r.readers {
+			page, listErr := candidate.ListEventPage(runID, cursor, limit)
+			if listErr == nil && (len(page.Items) > 0 || page.NextCursor != "") {
+				return page, nil
+			}
+			if listErr != nil && !errors.Is(listErr, runtime.ErrRunnerRecordNotFound) {
+				return runtime.EventPage{}, listErr
+			}
+		}
 		return runtime.EventPage{}, err
 	}
 	return reader.ListEventPage(runID, cursor, limit)

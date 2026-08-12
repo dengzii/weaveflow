@@ -65,6 +65,7 @@ type GraphNodeSpecProvider interface {
 }
 
 type GraphConditionSpec struct {
+	ID     string                  `json:"id,omitempty"`
 	Type   string                  `json:"type"`
 	Config map[string]any          `json:"config,omitempty"`
 	State  map[string]StateBinding `json:"state,omitempty"`
@@ -81,18 +82,20 @@ type GraphEdgeSpec struct {
 }
 
 type GraphDefinition struct {
-	Version      string           `json:"version"`
-	Name         string           `json:"name,omitempty"`
-	Description  string           `json:"description,omitempty"`
-	StateModules []StateModuleRef `json:"state_modules"`
-	EntryPoint   string           `json:"entry_point,omitempty"`
-	FinishPoint  string           `json:"finish_point,omitempty"`
-	Nodes        []GraphNodeSpec  `json:"nodes"`
-	Edges        []GraphEdgeSpec  `json:"edges,omitempty"`
-	Metadata     map[string]any   `json:"metadata,omitempty"`
+	Version      string                `json:"version"`
+	Name         string                `json:"name,omitempty"`
+	Description  string                `json:"description,omitempty"`
+	StateModules []StateModuleRef      `json:"state_modules"`
+	EntryPoint   string                `json:"entry_point,omitempty"`
+	FinishPoint  string                `json:"finish_point,omitempty"`
+	Nodes        []GraphNodeSpec       `json:"nodes"`
+	Edges        []GraphEdgeSpec       `json:"edges,omitempty"`
+	Policy       *GraphExecutionPolicy `json:"policy,omitempty"`
+	Metadata     map[string]any        `json:"metadata,omitempty"`
 }
 
 func NormalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
+	spec.ID = strings.TrimSpace(spec.ID)
 	spec.Type = strings.TrimSpace(spec.Type)
 	if len(spec.Config) == 0 {
 		spec.Config = nil
@@ -185,6 +188,14 @@ func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 			}
 			def.Nodes[i].State = bindings
 		}
+		if def.Nodes[i].Policy != nil {
+			policy := *def.Nodes[i].Policy
+			def.Nodes[i].Policy = &policy
+		}
+	}
+	if def.Policy != nil {
+		policy := *def.Policy
+		def.Policy = &policy
 	}
 	for i := range def.Edges {
 		def.Edges[i].From = strings.TrimSpace(def.Edges[i].From)

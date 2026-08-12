@@ -22,6 +22,9 @@ type GraphRunner struct {
 	checkpointStore    CheckpointStore
 	artifactStore      ArtifactStore
 	runDeleter         RunDeleter
+	retentionPolicy    RunRetentionPolicy
+	retentionAudit     RetentionAuditSink
+	retentionMu        sync.Mutex
 	codec              state.StateCodec
 	eventSink          EventSink
 	graphID            string
@@ -54,6 +57,8 @@ type GraphRunnerOption func(*graphRunnerConfig) error
 type graphRunnerConfig struct {
 	artifactStore      ArtifactStore
 	runDeleter         RunDeleter
+	retentionPolicy    RunRetentionPolicy
+	retentionAudit     RetentionAuditSink
 	graphID            string
 	graphVersion       string
 	graphHash          string
@@ -102,12 +107,20 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 	if cfg.now == nil {
 		return nil, fmt.Errorf("now function is required")
 	}
+	if err := validateRunRetentionPolicy(cfg.retentionPolicy); err != nil {
+		return nil, err
+	}
+	if (cfg.retentionPolicy.MaxRuns > 0 || cfg.retentionPolicy.MaxAge > 0) && (cfg.runDeleter == nil || cfg.retentionAudit == nil) {
+		return nil, fmt.Errorf("run retention requires a run deleter and audit sink")
+	}
 	return &GraphRunner{
 		graph:              graph,
 		executionStore:     executionStore,
 		checkpointStore:    checkpointStore,
 		artifactStore:      cfg.artifactStore,
 		runDeleter:         cfg.runDeleter,
+		retentionPolicy:    cfg.retentionPolicy,
+		retentionAudit:     cfg.retentionAudit,
 		codec:              codec,
 		eventSink:          eventSink,
 		graphID:            strings.TrimSpace(cfg.graphID),
@@ -141,6 +154,17 @@ func WithArtifactStore(store ArtifactStore) GraphRunnerOption {
 
 func WithRunDeleter(deleter RunDeleter) GraphRunnerOption {
 	return func(cfg *graphRunnerConfig) error { cfg.runDeleter = deleter; return nil }
+}
+
+func WithRunRetention(policy RunRetentionPolicy, audit RetentionAuditSink) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		if err := validateRunRetentionPolicy(policy); err != nil {
+			return err
+		}
+		cfg.retentionPolicy = policy
+		cfg.retentionAudit = audit
+		return nil
+	}
 }
 
 func WithGraphMetadata(id, version, graphHash, snapshotHash, sessionID string) GraphRunnerOption {
@@ -341,8 +365,8 @@ func (r *GraphRunner) StartAsync(ctx context.Context, initialState *state.State)
 
 	done := make(chan struct{})
 	go func() {
-		defer close(done)
 		defer r.releaseExecutionClaim(run.RunID)
+		defer close(done)
 		defer func() {
 			if recovered := recover(); recovered != nil {
 				r.failAsyncExecution(context.WithoutCancel(ctx), run, initialState, "async_execution_panic", fmt.Sprintf("panic: %v", recovered))
@@ -530,6 +554,9 @@ func (r *GraphRunner) latestCheckpointedRun(ctx context.Context, predicate func(
 	var candidate *RunRecord
 	for i := range runs {
 		run := runs[i]
+		if sessionID := r.resolvedGraphSessionID(); sessionID != "" && strings.TrimSpace(run.GraphSessionID) != sessionID {
+			continue
+		}
 		if run.LastCheckpointID == "" {
 			continue
 		}
@@ -588,6 +615,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 		}
 		return err
 	}
+	config.EventObserver = execution.OnSchedulerEvent
 	if len(startNodes) > 0 {
 		config.StartNodeIDs = append([]string(nil), startNodes...)
 	}
@@ -632,7 +660,11 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	if err := execution.finalizeFailure(ctx, invokeErr); err != nil {
 		return RunRecord{}, finalState, err
 	}
-	return r.failRun(ctx, execution.currentRun(), finalState, "node_failed", invokeErr.Error())
+	errorCode := string(core.ClassifyError(invokeErr))
+	if errorCode == string(core.ErrorUnknown) {
+		errorCode = "node_failed"
+	}
+	return r.failRun(ctx, execution.currentRun(), finalState, errorCode, invokeErr.Error())
 }
 
 func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, invokeErr error) (RunRecord, *state.State, bool, error) {
@@ -651,7 +683,13 @@ func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *grap
 					run, finalState, err := r.failRun(ctx, execution.currentRun(), currentState, "interrupt_failed", fmt.Sprintf("pause interrupt missing before checkpoint for %q", active.step.NodeID))
 					return run, finalState, true, err
 				}
-				run, finalState, err := r.pauseRun(ctx, execution.currentRun(), currentState, active.step, active.beforeCheckpointID, control.hit, control.message)
+				checkpointID, checkpointErr := r.saveCheckpoint(ctx, execution.currentRun(), active.step, active.step.NodeID, CheckpointBeforeNode, currentState, active.attempts, control.hit, execution.snapshotArtifacts())
+				if checkpointErr != nil {
+					run, finalState, err := r.failRun(ctx, execution.currentRun(), currentState, "interrupt_failed", fmt.Sprintf("refresh pause checkpoint for %q: %v", active.step.NodeID, checkpointErr))
+					return run, finalState, true, err
+				}
+				active.step.CheckpointBeforeID = checkpointID
+				run, finalState, err := r.pauseRun(ctx, execution.currentRun(), currentState, active.step, checkpointID, control.hit, control.message)
 				return run, finalState, true, err
 			}
 			execution.restorePendingControl(control)
@@ -1119,7 +1157,7 @@ func (r *GraphRunner) hasExecutionClaim(runID string) bool {
 }
 
 func (r *GraphRunner) IsRunActive(runID string) bool {
-	return r.hasActiveExecution(runID)
+	return r.hasExecutionClaim(runID)
 }
 
 func (r *GraphRunner) ActiveRunCount() int {
@@ -1222,6 +1260,9 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState
 	if err := r.publishEvent(ctx, run, run.LastStepID, "", EventRunFinished, nil); err != nil {
 		return run, finalState, err
 	}
+	if err := r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), run.RunID); err != nil {
+		return run, finalState, err
+	}
 	return run, finalState, nil
 }
 
@@ -1247,11 +1288,21 @@ func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, currentState
 	if err := r.publishEvent(ctx, run, "", run.CurrentNodeID, EventRunCanceled, nil); err != nil {
 		return RunRecord{}, currentState, err
 	}
+	if err := r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), run.RunID); err != nil {
+		return run, currentState, err
+	}
 	return run, currentState, nil
 }
 
 func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step StepRecord, nodeID string, stage CheckpointStage, currentState *state.State, attempts int, hit *state.BreakpointHit, artifacts []state.ArtifactRef) (string, error) {
-	snapshot, err := state.SnapshotFromStateWithRuntime(currentState, state.RuntimeState{
+	checkpointState := currentState
+	if budget, ok := GraphExecutionBudgetFromContext(ctx); ok {
+		checkpointState = currentState.Clone()
+		if err := StoreGraphExecutionBudget(checkpointState, budget); err != nil {
+			return "", fmt.Errorf("store graph execution budget: %w", err)
+		}
+	}
+	snapshot, err := state.SnapshotFromStateWithRuntime(checkpointState, state.RuntimeState{
 		RunID:           run.RunID,
 		CurrentStepID:   step.StepID,
 		CurrentNodeID:   nodeID,
@@ -1459,7 +1510,47 @@ func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, curr
 	}); err != nil {
 		return run, err
 	}
+	if err := r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), run.RunID); err != nil {
+		return run, err
+	}
 	return run, nil
+}
+
+func (r *GraphRunner) applyRunRetention(ctx context.Context, protectedRunID string) error {
+	if r == nil || r.runDeleter == nil || r.retentionAudit == nil || (r.retentionPolicy.MaxRuns <= 0 && r.retentionPolicy.MaxAge <= 0) {
+		return nil
+	}
+	r.retentionMu.Lock()
+	defer r.retentionMu.Unlock()
+	runs, err := r.executionStore.ListRuns(ctx, RunFilter{})
+	if err != nil {
+		return fmt.Errorf("list runs for retention: %w", err)
+	}
+	byID := make(map[string]RunRecord, len(runs))
+	for _, run := range runs {
+		byID[run.RunID] = run
+	}
+	for runID, reason := range retentionCandidates(runs, r.retentionPolicy, r.currentTime()) {
+		if runID == protectedRunID || r.IsRunActive(runID) {
+			continue
+		}
+		run := byID[runID]
+		if err := r.retentionAudit.RecordRetention(ctx, RetentionAuditRecord{
+			RunID:          runID,
+			GraphID:        run.GraphID,
+			GraphSessionID: run.GraphSessionID,
+			Action:         "delete_intent",
+			Reason:         reason,
+			Policy:         r.retentionPolicy,
+			RecordedAt:     r.currentTime(),
+		}); err != nil {
+			return fmt.Errorf("audit retained run %q: %w", runID, err)
+		}
+		if err := r.runDeleter.DeleteRun(ctx, runID); err != nil {
+			return fmt.Errorf("retain run %q: %w", runID, err)
+		}
+	}
+	return nil
 }
 
 func (r *GraphRunner) failAsyncExecution(ctx context.Context, run RunRecord, currentState *state.State, code, message string) {
@@ -1725,6 +1816,11 @@ func (r *GraphRunner) resolvedGraphHash() string {
 }
 
 func (r *GraphRunner) validateRunGraphHash(run RunRecord) error {
+	expectedSessionID := r.resolvedGraphSessionID()
+	actualSessionID := strings.TrimSpace(run.GraphSessionID)
+	if expectedSessionID != "" && actualSessionID != expectedSessionID {
+		return fmt.Errorf("resume run %q: graph session mismatch: run uses %q, runner uses %q", run.RunID, actualSessionID, expectedSessionID)
+	}
 	expected := r.resolvedGraphHash()
 	if expected == "" {
 		return nil

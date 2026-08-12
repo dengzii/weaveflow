@@ -55,6 +55,7 @@ func NewTool(config ToolConfig) (core.Tool, error) {
 				"additionalProperties": false,
 			},
 		},
+		ExecutionMode: core.ToolExecutionComposite,
 		Handler: func(ctx context.Context, input string) (string, error) {
 			task, err := decodeAgentToolInput(input)
 			if err != nil {

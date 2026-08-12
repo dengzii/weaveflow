@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
@@ -427,9 +428,9 @@ func TestRunnerResumeFromAfterNodeUsesActualConditionalRouting(t *testing.T) {
 	if err := g.SetEntryPoint("router"); err != nil {
 		t.Fatalf("set entry: %v", err)
 	}
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (bool, error) {
 		value, ok := state.NewAccess(current).ReadAny(state.Shared("route"))
-		return ok && value == "right"
+		return ok && value == "right", nil
 	})
 	if err := g.AddConditionalEdge("router", "right", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -571,9 +572,9 @@ func TestRunnerParallelBarrierNextNodeIDsUseActualConditionalRouting(t *testing.
 		t.Fatalf("set entry: %v", err)
 	}
 	conditionFor := func(branchID string) registry.EdgeCondition {
-		return registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) bool {
+		return registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (bool, error) {
 			value, ok := state.NewAccess(current).ReadAny(state.Scope(branchID, "route"))
-			return ok && value == "right"
+			return ok && value == "right", nil
 		})
 	}
 	for _, edge := range [][2]string{
@@ -1625,11 +1626,14 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 		bCalls int
 	)
 	g := NewGraph(nil)
-	g.SetRetryPolicy(&RetryPolicy{
-		MaxRetries:      1,
-		BackoffStrategy: FixedBackoff,
-		RetryableErrors: []string{"temporary"},
-	})
+	policy := g.ExecutionPolicy()
+	policy.NodeDefaults.Retry.MaxAttempts = 2
+	policy.NodeDefaults.Retry.InitialInterval = time.Millisecond
+	policy.NodeDefaults.Retry.MaxInterval = time.Millisecond
+	policy.NodeDefaults.Retry.Jitter = 0
+	if err := g.SetExecutionPolicy(policy); err != nil {
+		t.Fatalf("set execution policy: %v", err)
+	}
 	mustAddNode(t, g, "router", func(ctx context.Context, access *state.Access) error {
 		return nil
 	})
@@ -1644,7 +1648,7 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 		defer mu.Unlock()
 		bCalls++
 		if bCalls == 1 {
-			return errors.New("temporary b failure")
+			return core.NewExecutionError(core.ErrorUnavailable, "temporary b failure", nil, nil)
 		}
 		return access.AppendAny(state.Shared("branches"), "b")
 	})

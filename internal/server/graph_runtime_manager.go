@@ -190,6 +190,9 @@ func (manager *graphRuntimeManager) runnerForRun(ctx context.Context, graphID st
 	for _, runner := range candidates {
 		run, err := runner.GetRun(ctx, runID)
 		if err == nil {
+			if sessionID := strings.TrimSpace(run.GraphSessionID); sessionID != "" && sessionID != strings.TrimSpace(runner.GraphSessionID()) {
+				continue
+			}
 			return runner, run, nil
 		}
 		if !errors.Is(err, runtime.ErrRunnerRecordNotFound) {

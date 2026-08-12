@@ -177,14 +177,29 @@ func (runtime agentRuntime) executeToolCalls(ctx core.Context, conversation *con
 
 	toolMessages := make([]llms.MessageContent, len(toolCalls))
 	if runtime.config.Parallel && len(toolCalls) > 1 {
-		var waitGroup sync.WaitGroup
-		waitGroup.Add(len(toolCalls))
-		for index, toolCall := range toolCalls {
-			go func(index int, toolCall llms.ToolCall) {
-				defer waitGroup.Done()
-				toolMessages[index] = basenode.ExecuteToolCallMessage(ctx, toolCall)
-			}(index, toolCall)
+		type toolTask struct {
+			index int
+			call  llms.ToolCall
 		}
+		workerCount := len(toolCalls)
+		if limit := core.ToolExecutionConcurrencyLimit(ctx); limit > 0 {
+			workerCount = min(workerCount, limit)
+		}
+		tasks := make(chan toolTask)
+		var waitGroup sync.WaitGroup
+		waitGroup.Add(workerCount)
+		for range workerCount {
+			go func() {
+				defer waitGroup.Done()
+				for task := range tasks {
+					toolMessages[task.index] = basenode.ExecuteToolCallMessage(ctx, task.call)
+				}
+			}()
+		}
+		for index, toolCall := range toolCalls {
+			tasks <- toolTask{index: index, call: toolCall}
+		}
+		close(tasks)
 		waitGroup.Wait()
 	} else {
 		for index, toolCall := range toolCalls {

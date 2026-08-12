@@ -62,13 +62,13 @@ func PlanStatusEquals(planPath state.Path, status string) registry.EdgeCondition
 		Type:   ConditionTypePlanStatusEquals,
 		Config: map[string]any{"status": status},
 		State:  map[string]dsl.StateBinding{"plan": {Path: planPath.String()}},
-	}, func(_ context.Context, current *state.State) bool {
+	}, func(_ context.Context, current *state.State) (bool, error) {
 		value, ok := state.ReadPath(current, planPath.MustChild(plancap.FieldStatus).String())
 		if !ok {
-			return false
+			return false, nil
 		}
 		actual, _ := value.(string)
-		return strings.EqualFold(strings.TrimSpace(actual), status)
+		return strings.EqualFold(strings.TrimSpace(actual), status), nil
 	})
 }
 

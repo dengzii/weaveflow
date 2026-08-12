@@ -1108,7 +1108,7 @@ func TestDeleteCachedActiveRunWithoutConfiguredGraphIsRejected(t *testing.T) {
 	active = waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, active.RunID)
 	active.Status = runtime.RunStatusRunning
 	active.FinishedAt = nil
-	if err := runtime.NewFileExecutionStore(filepath.Join(uploaded.RunnerBaseDir, "execution")).UpdateRun(context.Background(), active); err != nil {
+	if err := runtime.NewFileExecutionStore(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "execution")).UpdateRun(context.Background(), active); err != nil {
 		t.Fatalf("mark cached run active: %v", err)
 	}
 
@@ -2058,7 +2058,7 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	started := startGraphRunForTest(t, engine, uploaded, `{}`)
 	started = waitForRunTerminalStatus(t, srv.runtime.session("orphan-graph", uploaded.Graph.GraphSessionID).runner, started.RunID)
 
-	executionStore := runtime.NewFileExecutionStore(filepath.Join(uploaded.RunnerBaseDir, "execution"))
+	executionStore := runtime.NewFileExecutionStore(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "execution"))
 	started.Status = runtime.RunStatusRunning
 	started.PauseRequested = true
 	started.CancelRequested = true
@@ -2107,7 +2107,7 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for reconciled run.failed event")
 	}
-	persistedEvents, err := runtime.NewFileEventSink(filepath.Join(uploaded.RunnerBaseDir, "events")).ListEvents(started.RunID)
+	persistedEvents, err := runtime.NewFileEventSink(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "events")).ListEvents(started.RunID)
 	if err != nil {
 		t.Fatalf("ListEvents() error = %v", err)
 	}

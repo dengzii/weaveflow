@@ -227,6 +227,9 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 	if err := node.Execute(NewContext(ctx), access); err != nil {
 		return ExecutionResult{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		return ExecutionResult{}, err
+	}
 	patch := access.Patch()
 	if options.ValidateWrites {
 		if issues := state.ValidatePatchByContract(patch, contract); len(issues) > 0 {

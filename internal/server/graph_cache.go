@@ -67,6 +67,20 @@ type graphDetailResponse struct {
 	Active                   graphActiveState              `json:"active"`
 }
 
+func (s *Server) handleGetRetentionAudit(c *gin.Context) {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
+	audit := runtime.NewFileRetentionAuditSink(filepath.Join(s.graphHistoryBaseDir(graphID), "retention-audit.jsonl"))
+	records, err := audit.List()
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	writeData(c, http.StatusOK, records)
+}
+
 type graphCacheReader struct {
 	executionStores  []*runtime.FileExecutionStore
 	checkpointStores []*runtime.FileCheckpointStore
@@ -266,6 +280,11 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 		codec: state.NewJSONStateCodec(""),
 	}
 	graphDir := graphStorageDirectory(s.baseDir, graphID)
+	historyDir := filepath.Join(graphDir, "history")
+	reader.executionStores = append(reader.executionStores, runtime.NewFileExecutionStore(filepath.Join(historyDir, "execution")))
+	reader.checkpointStores = append(reader.checkpointStores, runtime.NewFileCheckpointStore(filepath.Join(historyDir, "checkpoints")))
+	reader.artifactStores = append(reader.artifactStores, runtime.NewFileArtifactStore(filepath.Join(historyDir, "artifacts")))
+	reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(historyDir, "events")))
 	sessions, err := os.ReadDir(graphDir)
 	if os.IsNotExist(err) {
 		return reader, nil
@@ -274,7 +293,7 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 		return nil, err
 	}
 	for _, sess := range sessions {
-		if !sess.IsDir() {
+		if !sess.IsDir() || sess.Name() == "history" {
 			continue
 		}
 		manifest, complete, err := readCachedGraphSession(graphDir, sess.Name())

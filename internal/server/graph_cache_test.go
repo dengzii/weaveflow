@@ -306,7 +306,7 @@ func TestGraphCacheSurfacesCorruptRunRecords(t *testing.T) {
 		`{}`,
 	), http.StatusAccepted)
 	waitForRunTerminalStatus(t, srv.runtime.session("graph-a", uploaded.Graph.GraphSessionID).runner, started.RunID)
-	runPath := filepath.Join(uploaded.RunnerBaseDir, "execution", "runs", started.RunID+".json")
+	runPath := filepath.Join(srv.graphHistoryBaseDir("graph-a"), "execution", "runs", started.RunID+".json")
 	if err := os.WriteFile(runPath, []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}

@@ -10,4 +10,5 @@ type GraphNodeSpec struct {
 	Description string                  `json:"description,omitempty"`
 	Config      map[string]any          `json:"config,omitempty"`
 	State       map[string]StateBinding `json:"state"`
+	Policy      *ExecutionPolicy        `json:"policy,omitempty"`
 }

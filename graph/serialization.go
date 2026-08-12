@@ -197,7 +197,7 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 	if len(g.metadata) > 0 {
 		metadata = config.CloneMap(g.metadata)
 	}
-	return dsl.GraphDefinition{
+	definition := dsl.GraphDefinition{
 		Version:      version,
 		Name:         g.name,
 		Description:  g.description,
@@ -207,7 +207,11 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 		Nodes:        nodes,
 		Edges:        edges,
 		Metadata:     metadata,
-	}, nil
+	}
+	if g.executionPolicyExplicit {
+		definition.Policy = graphExecutionPolicyToDSL(g.executionPolicy)
+	}
+	return definition, nil
 }
 
 func cloneStateBindings(bindings map[string]dsl.StateBinding) map[string]dsl.StateBinding {

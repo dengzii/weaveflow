@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
@@ -35,6 +36,8 @@ type Config struct {
 	ArtifactStore   runtime.ArtifactStore
 	EventSink       runtime.EventSink
 	RunDeleter      runtime.RunDeleter
+	RunRetention    *runtime.RunRetentionPolicy
+	RetentionAudit  runtime.RetentionAuditSink
 	Codec           state.StateCodec
 
 	GraphID           string
@@ -210,10 +213,33 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 			defaultArtifactDeleter,
 		)
 	}
+	retentionPolicy := effectiveRunRetention(cfg.RunRetention, runDeleter != nil)
+	var retentionAudit runtime.RetentionAuditSink
+	if retentionPolicy.MaxRuns > 0 || retentionPolicy.MaxAge > 0 {
+		retentionAudit = effectiveRetentionAudit(cfg.RetentionAudit, baseDir)
+	}
 	runner, err := wfgraph.NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink,
 		runtime.WithArtifactStore(artifactStore), runtime.WithRunDeleter(runDeleter),
+		runtime.WithRunRetention(retentionPolicy, retentionAudit),
 		runtime.WithGraphMetadata(cfg.GraphID, cfg.GraphVersion, cfg.GraphHash, cfg.GraphSnapshotHash, cfg.GraphSessionID))
 	return runner, err
+}
+
+func effectiveRunRetention(policy *runtime.RunRetentionPolicy, deletionConfigured bool) runtime.RunRetentionPolicy {
+	if policy != nil {
+		return *policy
+	}
+	if !deletionConfigured {
+		return runtime.RunRetentionPolicy{}
+	}
+	return runtime.RunRetentionPolicy{MaxRuns: 1000, MaxAge: 30 * 24 * time.Hour}
+}
+
+func effectiveRetentionAudit(audit runtime.RetentionAuditSink, baseDir string) runtime.RetentionAuditSink {
+	if audit != nil {
+		return audit
+	}
+	return runtime.NewFileRetentionAuditSink(filepath.Join(baseDir, "retention-audit.jsonl"))
 }
 
 func (s *Server) BaseDir() string {

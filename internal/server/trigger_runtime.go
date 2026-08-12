@@ -197,7 +197,7 @@ func (s *Server) loadStoredGraphSession(session triggerGraphSession, latest bool
 	cfg.GraphHash = graphHash
 	cfg.GraphSnapshotHash = graphSnapshotHash
 	cfg.GraphSessionID = session.manifest.GraphSessionID
-	runner, err := newDefaultRunner(graph, cfg, session.baseDir, s.events)
+	runner, err := newDefaultRunner(graph, cfg, s.graphHistoryBaseDir(graphID), s.events)
 	if err != nil {
 		return graphRuntimeSession{}, err
 	}

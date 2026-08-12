@@ -17,6 +17,7 @@ export interface GraphDefinition {
   finish_point?: string;
   nodes: GraphNodeSpec[];
   edges?: GraphEdgeSpec[];
+  policy?: GraphExecutionPolicy;
   metadata?: Record<string, unknown>;
 }
 
@@ -27,6 +28,7 @@ export interface GraphNodeSpec {
   description?: string;
   config?: Record<string, unknown>;
   state?: Record<string, StateBinding>;
+  policy?: NodeExecutionPolicy;
 }
 
 export interface GraphEdgeSpec {
@@ -36,9 +38,42 @@ export interface GraphEdgeSpec {
 }
 
 export interface GraphConditionSpec {
+  id?: string;
   type: string;
   config?: Record<string, unknown>;
   state?: Record<string, StateBinding>;
+}
+
+export interface RetryPolicy {
+  max_attempts?: number;
+  initial_interval?: string;
+  max_interval?: string;
+  backoff_multiplier?: number;
+  jitter?: number;
+  retryable_error_classes?: string[];
+  non_retryable_error_classes?: string[];
+}
+
+export interface NodeExecutionPolicy {
+  timeout?: string;
+  max_concurrency?: number;
+  retry?: RetryPolicy;
+}
+
+export interface GraphLimits {
+  max_super_steps?: number;
+  max_node_executions?: number;
+  max_fan_out?: number;
+  max_concurrent_runs?: number;
+  max_concurrent_nodes?: number;
+  max_concurrent_tools?: number;
+  max_state_bytes?: number;
+  max_wall_time?: string;
+}
+
+export interface GraphExecutionPolicy {
+  limits?: GraphLimits;
+  node_defaults?: NodeExecutionPolicy;
 }
 
 export interface StateModuleRef {
