@@ -97,7 +97,11 @@ func UserInputNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *UserInputNode) Execute(_ core.Context, access *state.Access) error {
+func (n *UserInputNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *UserInputNode) execute(_ core.Context, access *state.Access) error {
 	if pending, ok, err := n.consumePendingInput(access); err != nil {
 		return err
 	} else if ok {

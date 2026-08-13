@@ -166,7 +166,11 @@ func SupervisorWorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *SupervisorWorkerNode) execute(ctx core.Context, access *state.Access) error {
 	if err := n.Validate(); err != nil {
 		return err
 	}

@@ -14,7 +14,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const defaultSupervisorSynthesisSystemPrompt = `You synthesize the final user-facing answer for a supervised team.
@@ -111,7 +111,11 @@ func SupervisorSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *SupervisorSynthesisNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *SupervisorSynthesisNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *SupervisorSynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("supervisor synthesis node: model %q not available", effectiveModelID(n.ModelID))
@@ -134,7 +138,12 @@ func (n *SupervisorSynthesisNode) Execute(ctx core.Context, access *state.Access
 	if serialized, serializeErr := conversationcap.SerializeMessages(messages); serializeErr == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "supervisor.synthesis.prompt", map[string]any{"messages": serialized})
 	}
-	response, err := model.GenerateContent(ctx, messages, llms.WithThinkingMode(llms.ThinkingModeHigh))
+	response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+		ModelID:  effectiveModelID(n.ModelID),
+		Mode:     llms.ModelModeChat,
+		Messages: messages,
+		Thinking: llms.ThinkingModeHigh,
+	})
 	if err != nil {
 		return err
 	}

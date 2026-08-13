@@ -2,13 +2,13 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type writeRequest struct {
@@ -20,9 +20,9 @@ type writeResponse struct {
 	Action       string `json:"action"`
 	Path         string `json:"path"`
 	Workspace    string `json:"workspace"`
-	Exists       bool   `json:"exists,omitempty"`
-	Size         int64  `json:"size,omitempty"`
-	BytesWritten int    `json:"bytes_written,omitempty"`
+	Exists       bool   `json:"exists"`
+	Size         int64  `json:"size"`
+	BytesWritten int    `json:"bytes_written"`
 }
 
 func NewWrite() Tool {
@@ -33,6 +33,14 @@ func NewWrite() Tool {
 				"Usage:\n" +
 				"- This tool overwrites the existing file if there is one at the provided path.\n" +
 				"- Prefer Edit for modifying existing files when replacing text is enough.",
+			OutputSchema: objectOutputSchema(map[string]any{
+				"action":        map[string]any{"type": "string"},
+				"path":          map[string]any{"type": "string"},
+				"workspace":     map[string]any{"type": "string"},
+				"exists":        map[string]any{"type": "boolean"},
+				"size":          map[string]any{"type": "integer"},
+				"bytes_written": map[string]any{"type": "integer"},
+			}, "action", "path", "workspace", "exists", "size", "bytes_written"),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -49,33 +57,35 @@ func NewWrite() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: writeTool,
+		Handler:     writeTool,
+		Permissions: []string{"filesystem.write"},
+		Approval:    core.ToolApprovalRequired,
 	}
 }
 
-func writeTool(ctx context.Context, input string) (string, error) {
+func writeTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req writeRequest
-	if err := decodeToolRequest(input, "write", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("write input: %w", err)
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {
-		return "", fmt.Errorf("file_path is required")
+		return llms.ToolResult{}, fmt.Errorf("file_path is required")
 	}
 
 	workspace, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if err := os.WriteFile(target, []byte(req.Content), 0o644); err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	resp := writeResponse{
 		Action:       "write",
@@ -85,9 +95,5 @@ func writeTool(ctx context.Context, input string) (string, error) {
 		Size:         info.Size(),
 		BytesWritten: len(req.Content),
 	}
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return structuredToolResult(call, resp)
 }

@@ -12,7 +12,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const defaultTextGenerationTemperature = 1.0
@@ -151,14 +151,14 @@ func TextGenerationNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *TextGenerationNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *TextGenerationNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *TextGenerationNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("text generation node: model %q not available", effectiveModelID(n.ModelID))
-	}
-	completionModel, ok := model.(core.CompletionModel)
-	if !ok {
-		return fmt.Errorf("text generation node: model %q does not support text generation", effectiveModelID(n.ModelID))
 	}
 	prompt, err := state.Get(access, state.NewRef[string](n.PromptPath).Required())
 	if err != nil {
@@ -172,17 +172,16 @@ func (n *TextGenerationNode) Execute(ctx core.Context, access *state.Access) err
 		"prompt":      prompt,
 		"prompt_path": n.PromptPath.String(),
 	})
-	callOptions := []llms.CallOption{
-		llms.WithTemperature(n.Temperature),
-		llms.WithThinkingMode(llms.ThinkingMode(n.effectiveReasoningEffort())),
-	}
-	if n.MaxTokens > 0 {
-		callOptions = append(callOptions, llms.WithMaxTokens(n.MaxTokens))
-	}
-	if len(n.StopWords) > 0 {
-		callOptions = append(callOptions, llms.WithStopWords(n.StopWords))
-	}
-	response, err := completionModel.GenerateCompletion(ctx, prompt, callOptions...)
+	temperature := n.Temperature
+	response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+		ModelID:     effectiveModelID(n.ModelID),
+		Mode:        llms.ModelModeCompletion,
+		Prompt:      prompt,
+		MaxTokens:   n.MaxTokens,
+		Temperature: &temperature,
+		StopWords:   append([]string(nil), n.StopWords...),
+		Thinking:    llms.ThinkingMode(n.effectiveReasoningEffort()),
+	})
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "text_generation.error", map[string]any{"error": err.Error()})
 		return err

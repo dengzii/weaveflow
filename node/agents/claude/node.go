@@ -128,7 +128,11 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (node *Node) Execute(ctx core.Context, access *state.Access) error {
+func (node *Node) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, node.execute(ctx, access)
+}
+
+func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	prompt, err := state.Get(access, state.NewRef[string](node.PromptPath).Required())
 	if err != nil {
 		return fmt.Errorf("Claude node %q prompt: %w", node.ID(), err)

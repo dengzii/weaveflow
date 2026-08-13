@@ -6,12 +6,8 @@
 //
 // # Token Limits
 //
-// For setting token limits, use openai.WithMaxCompletionTokens(). The adapter
-// sends max_completion_tokens, max_tokens, or max_output_tokens according to
-// the configured provider and API format.
+// Set ModelRequest.MaxTokens to let the adapter select max_completion_tokens,
+// max_tokens, or max_output_tokens for the configured provider and API format.
 //
-//	// Recommended for clarity:
-//	llm.GenerateContent(ctx, messages,
-//	    openai.WithMaxCompletionTokens(100),
-//	)
+//	llm.Generate(ctx, llms.ModelRequest{Messages: messages, MaxTokens: 100})
 package openai

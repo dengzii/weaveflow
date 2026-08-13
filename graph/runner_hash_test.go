@@ -97,7 +97,21 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	if _, _, err := runner.Resume(context.Background(), run.RunID, nil); err == nil || !strings.Contains(err.Error(), "graph hash mismatch") {
 		t.Fatalf("Resume() error = %v, want graph hash mismatch", err)
 	}
-	if _, _, err := runner.ResumeFromCheckpoint(context.Background(), run.LastCheckpointID, nil); err == nil || !strings.Contains(err.Error(), "graph hash mismatch") {
+	checkpoints, err := runner.ListCheckpoints(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints() error = %v", err)
+	}
+	checkpointID := ""
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage != fruntime.CheckpointFinal {
+			checkpointID = checkpoint.CheckpointID
+			break
+		}
+	}
+	if checkpointID == "" {
+		t.Fatal("run has no resumable checkpoint")
+	}
+	if _, _, err := runner.ResumeFromCheckpoint(context.Background(), checkpointID, nil); err == nil || !strings.Contains(err.Error(), "graph hash mismatch") {
 		t.Fatalf("ResumeFromCheckpoint() error = %v, want graph hash mismatch", err)
 	}
 }
@@ -123,7 +137,7 @@ func TestGraphRunnerReportsJSONIncompatibleCheckpointState(t *testing.T) {
 	)
 
 	_, _, err := runner.Start(context.Background(), state.NewState())
-	if err == nil || !strings.Contains(err.Error(), "encode checkpoint state") || !strings.Contains(err.Error(), "unsupported type: func()") {
+	if err == nil || !strings.Contains(err.Error(), "encode shared state") || !strings.Contains(err.Error(), "unsupported type: func()") {
 		t.Fatalf("Start() error = %v, want explicit JSON checkpoint error", err)
 	}
 }
@@ -157,7 +171,7 @@ func TestBuiltGraphHashPreservesCustomRegistrySemantics(t *testing.T) {
 			Contract: dsl.RelativeStateContract{Fields: []dsl.RelativeStateFieldRef{{Path: "messages", Mode: dsl.StateAccessRead}}},
 		}}},
 		Build: func(_ *registry.BuildContext, spec registry.ResolvedNodeSpec) (core.Node, error) {
-			return node.NewFuncNode(node.Spec{ID: spec.Spec.ID}, func(core.Context, *state.Access) error { return nil }), nil
+			return node.NewFuncNode(node.Spec{ID: spec.Spec.ID}, func(core.Context, *state.Access) (core.NodeResult, error) { return core.Success(), nil }), nil
 		},
 	}); err != nil {
 		t.Fatalf("register node: %v", err)
@@ -219,7 +233,7 @@ func builtCapabilityGraphHash(t *testing.T, capabilityID string) string {
 			Contract: dsl.RelativeStateContract{Fields: []dsl.RelativeStateFieldRef{{Path: "value", Mode: dsl.StateAccessRead}}},
 		}}},
 		Build: func(_ *registry.BuildContext, spec registry.ResolvedNodeSpec) (core.Node, error) {
-			return node.NewFuncNode(node.Spec{ID: spec.Spec.ID}, func(core.Context, *state.Access) error { return nil }), nil
+			return node.NewFuncNode(node.Spec{ID: spec.Spec.ID}, func(core.Context, *state.Access) (core.NodeResult, error) { return core.Success(), nil }), nil
 		},
 	}); err != nil {
 		t.Fatalf("register node: %v", err)
@@ -237,12 +251,7 @@ func builtCapabilityGraphHash(t *testing.T, capabilityID string) string {
 	if err != nil {
 		t.Fatalf("build graph: %v", err)
 	}
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(t.TempDir()),
-		fruntime.NewNoopCheckpointStore(),
-		state.NewJSONStateCodec(""),
-		fruntime.NoopEventSink{},
-	)
+	runtimeStore := fruntime.NewMemoryRuntimeStore()
+	runner := mustNewGraphRunner(t, g, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore)
 	return runner.GraphHash()
 }

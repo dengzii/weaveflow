@@ -4,20 +4,14 @@ import (
 	"context"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 )
 
-type CallMetadata = core.ToolCallMetadata
+type Call = llms.ToolCall
+type Result = llms.ToolResult
 
-func WithCallMetadata(ctx context.Context, metadata CallMetadata) context.Context {
-	return core.WithToolCallMetadata(ctx, metadata)
-}
-
-func CallMetadataFromContext(ctx context.Context) (CallMetadata, bool) {
-	return core.ToolCallMetadataFromContext(ctx)
-}
-
-func DecodeInput(arguments string) string {
-	return core.DecodeToolInput(arguments)
+func Execute(ctx context.Context, tool Tool, call Call) (Result, error) {
+	return core.ExecuteTool(ctx, tool, call)
 }
 
 func FindAvailable(available map[string]Tool, name string) (Tool, bool) {

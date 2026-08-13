@@ -10,28 +10,32 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const tavilyAPIKeyEnvironment = "TAVILY_API_KEY"
 
-func webSearchTool(ctx context.Context, input string) (string, error) {
+func webSearchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	search, err := tavilySearchFromContext(ctx)
 	if err != nil {
-		return "", fmt.Errorf("web_search unavailable: %w", err)
+		return llms.ToolResult{}, fmt.Errorf("web_search unavailable: %w", err)
 	}
 
 	var request struct {
 		Query string `json:"query"`
 	}
-	if err := decodeToolRequest(input, "web_search", &request); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &request); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("web_search input: %w", err)
 	}
 	request.Query = strings.TrimSpace(request.Query)
 	if request.Query == "" {
-		return "", fmt.Errorf("query is required")
+		return llms.ToolResult{}, fmt.Errorf("query is required")
 	}
-	return search.Call(ctx, request.Query)
+	content, err := search.Call(ctx, request.Query)
+	if err != nil {
+		return llms.ToolResult{}, err
+	}
+	return textToolResult(call, content), nil
 }
 
 type tavilySearch struct {
@@ -93,6 +97,7 @@ func NewWebSearch() Tool {
 				"- Provides up-to-date information for current events and recent data\n" +
 				"- Returns search result information including links and snippets\n" +
 				"- Use this tool for accessing information beyond model knowledge",
+			OutputSchema: textOutputSchema(),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -106,6 +111,7 @@ func NewWebSearch() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: webSearchTool,
+		Handler:     webSearchTool,
+		Permissions: []string{"network.search"},
 	}
 }

@@ -11,7 +11,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -140,9 +140,9 @@ type ResponseFormatJSONSchemaProperty struct {
 }
 
 type ResponseFormatJSONSchema struct {
-	Name   string                            `json:"name"`
-	Strict bool                              `json:"strict"`
-	Schema *ResponseFormatJSONSchemaProperty `json:"schema"`
+	Name   string `json:"name"`
+	Strict bool   `json:"strict"`
+	Schema any    `json:"schema"`
 }
 
 // ResponseFormat is the format of the response.

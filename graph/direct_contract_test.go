@@ -12,7 +12,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
@@ -64,7 +64,7 @@ func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
 	if runner.ContractValidation() != core.ContractValidationStrict {
 		t.Fatalf("contract validation = %q, want strict", runner.ContractValidation())
 	}
-	model := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("done")}}
+	model := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("done")}}
 	run, result, err := runner.Start(core.WithModels(context.Background(), map[string]llms.Model{"direct": model}), state.FromShared(map[string]any{
 		"request": map[string]any{"input": "hello"},
 	}))

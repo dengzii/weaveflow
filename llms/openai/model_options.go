@@ -2,8 +2,6 @@ package openai
 
 import (
 	"github.com/dengzii/weaveflow/llms/openai/internal/openaiclient"
-
-	"github.com/tmc/langchaingo/callbacks"
 )
 
 const (
@@ -63,8 +61,6 @@ type options struct {
 	apiVersion          string
 	embeddingModel      string
 	embeddingDimensions int
-
-	callbackHandler callbacks.Handler
 }
 
 // Option is a functional option for the OpenAI client.
@@ -196,13 +192,6 @@ func WithAPIVersion(apiVersion string) Option {
 func WithHTTPClient(client openaiclient.Doer) Option {
 	return func(opts *options) {
 		opts.httpClient = client
-	}
-}
-
-// WithCallback allows setting a custom Callback Handler.
-func WithCallback(callbackHandler callbacks.Handler) Option {
-	return func(opts *options) {
-		opts.callbackHandler = callbackHandler
 	}
 }
 

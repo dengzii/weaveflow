@@ -15,7 +15,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -162,7 +162,11 @@ func ExploreAgentNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *ExploreAgentNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *ExploreAgentNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *ExploreAgentNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model()
 	if model == nil {
 		return errors.New("explore agent node: model service not available")
@@ -194,9 +198,9 @@ func (n *ExploreAgentNode) Execute(ctx core.Context, access *state.Access) error
 	}
 
 	nodeTools := ctx.FilterTools(n.effectiveToolIDs())
-	toolSets := make([]llms.Tool, 0, len(nodeTools))
+	toolSets := make([]llms.ToolDefinition, 0, len(nodeTools))
 	for _, tool := range nodeTools {
-		toolSets = append(toolSets, tool.NewTool())
+		toolSets = append(toolSets, tool.Definition())
 	}
 
 	maxIter := n.effectiveMaxIterations()
@@ -209,12 +213,17 @@ func (n *ExploreAgentNode) Execute(ctx core.Context, access *state.Access) error
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.prompt", payload)
 		}
 
-		resp, err := model.GenerateContent(
+		temperature := 0.0
+		resp, err := core.GenerateModel(
 			ctx,
-			messages,
-			llms.WithTools(toolSets),
-			llms.WithThinkingMode(llms.ThinkingModeNone),
-			llms.WithTemperature(0),
+			model,
+			llms.ModelRequest{
+				Mode:        llms.ModelModeChat,
+				Messages:    messages,
+				Tools:       toolSets,
+				Thinking:    llms.ThinkingModeNone,
+				Temperature: &temperature,
+			},
 		)
 		if err != nil {
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "explore_agent.error", map[string]any{
@@ -333,7 +342,7 @@ func (n *ExploreAgentNode) clampToolMessage(message llms.MessageContent) llms.Me
 		return message
 	}
 	for i, part := range message.Parts {
-		typed, ok := part.(llms.ToolCallResponse)
+		typed, ok := part.(llms.ToolResult)
 		if !ok {
 			continue
 		}
@@ -445,16 +454,21 @@ func summarizeExploration(ctx context.Context, model llms.Model, transcript []ll
 		return "", errors.New("explore agent summarizer: transcript is empty")
 	}
 
-	resp, err := model.GenerateContent(
+	temperature := 0.0
+	resp, err := core.GenerateModel(
 		ctx,
-		[]llms.MessageContent{
-			llms.TextParts(llms.ChatMessageTypeSystem, exploreSummarizerSystemPrompt),
-			llms.TextParts(
-				llms.ChatMessageTypeHuman,
-				"Summarize this codebase exploration for the user.\n\n"+body,
-			),
+		model,
+		llms.ModelRequest{
+			Mode: llms.ModelModeChat,
+			Messages: []llms.MessageContent{
+				llms.TextParts(llms.ChatMessageTypeSystem, exploreSummarizerSystemPrompt),
+				llms.TextParts(
+					llms.ChatMessageTypeHuman,
+					"Summarize this codebase exploration for the user.\n\n"+body,
+				),
+			},
+			Temperature: &temperature,
 		},
-		llms.WithTemperature(0),
 	)
 	if err != nil {
 		return "", err

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const DefaultModelID = "default"
@@ -29,6 +29,7 @@ type ModelConfig struct {
 	BaseURL   string
 	ExtraBody map[string]any
 	APIKey    string
+	Pricing   llms.ModelPricing
 }
 
 func NewContext(ctx context.Context) Context {

@@ -12,7 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type ToolExecutionNode struct {
@@ -94,7 +94,11 @@ func ToolExecutionNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (t *ToolExecutionNode) Execute(ctx core.Context, access *state.Access) error {
+func (t *ToolExecutionNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, t.execute(ctx, access)
+}
+
+func (t *ToolExecutionNode) execute(ctx core.Context, access *state.Access) error {
 	if ctx.Tools() == nil {
 		return errors.New("tool execution node: tools not available")
 	}
@@ -156,46 +160,35 @@ func (t *ToolExecutionNode) Execute(ctx core.Context, access *state.Access) erro
 	return conversation.SetMessages(append(messages, toolMessages...))
 }
 
-func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (string, error) {
+func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (llms.ToolResult, error) {
 	if toolCall.FunctionCall == nil {
-		return "", errors.New("tool call has no function payload")
+		return llms.ToolResult{}, errors.New("tool call has no function payload")
 	}
 	name := toolCall.FunctionCall.Name
 	tool, ok := core.FindTool(ctx.Tools(), name)
 	if !ok {
-		return "", fmt.Errorf("tool %q not found", name)
+		return llms.ToolResult{}, fmt.Errorf("tool %q not found", name)
 	}
 	if tool.Handler == nil {
-		return "", fmt.Errorf("tool handler %q not found", name)
+		return llms.ToolResult{}, fmt.Errorf("tool handler %q not found", name)
 	}
-	arguments := toolCall.FunctionCall.Arguments
-	callCtx := core.WithToolCallMetadata(ctx, core.ToolCallMetadata{
-		ToolCallID: toolCall.ID,
-		Name:       name,
-		Arguments:  arguments,
-	})
-	executionCtx, release, err := core.AcquireToolExecution(callCtx, tool.ExecutionMode)
-	if err != nil {
-		return "", err
-	}
-	defer release()
-	return tool.Handler(executionCtx, core.DecodeToolInput(arguments))
+	return core.ExecuteTool(ctx, tool, toolCall)
 }
 
 func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {
 	name := toolCallName(toolCall)
 	result, err := executeToolCall(ctx, toolCall)
 	if err != nil {
-		result = "tool execution failed: " + err.Error()
+		result.ToolCallID = toolCall.ID
+		result.Name = name
+		result.IsError = true
+		result.ErrorCode = string(core.ClassifyError(err))
+		result.ErrorMessage = err.Error()
 	}
 	return llms.MessageContent{
 		Role: llms.ChatMessageTypeTool,
 		Parts: []llms.ContentPart{
-			llms.ToolCallResponse{
-				ToolCallID: toolCall.ID,
-				Name:       name,
-				Content:    result,
-			},
+			result,
 		},
 	}
 }

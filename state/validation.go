@@ -1,11 +1,72 @@
 package state
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+	"strings"
+)
 
 type ValidationIssue struct {
 	Path    string `json:"path,omitempty"`
 	Kind    string `json:"kind"`
 	Message string `json:"message"`
+}
+
+type ValidationError struct {
+	Boundary string            `json:"boundary"`
+	Issues   []ValidationIssue `json:"issues"`
+}
+
+func NewValidationError(boundary string, issues []ValidationIssue) *ValidationError {
+	if len(issues) == 0 {
+		return nil
+	}
+	cloned := append([]ValidationIssue(nil), issues...)
+	sortValidationIssues(cloned)
+	return &ValidationError{Boundary: strings.TrimSpace(boundary), Issues: cloned}
+}
+
+func (validationErr *ValidationError) Error() string {
+	if validationErr == nil || len(validationErr.Issues) == 0 {
+		return "state validation failed"
+	}
+	prefix := "state validation failed"
+	if validationErr.Boundary != "" {
+		prefix = validationErr.Boundary + " state validation failed"
+	}
+	first := validationErr.Issues[0]
+	if first.Path != "" {
+		return fmt.Sprintf("%s at %q: %s", prefix, first.Path, first.Message)
+	}
+	return fmt.Sprintf("%s: %s", prefix, first.Message)
+}
+
+func ValidateStateBySchemas(currentState *State, schemas map[string]JSONSchema) []ValidationIssue {
+	if len(schemas) == 0 {
+		return nil
+	}
+	issues := make([]ValidationIssue, 0)
+	if currentState == nil {
+		currentState = NewState()
+	}
+	paths := make([]string, 0, len(schemas))
+	for path := range schemas {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for _, pathText := range paths {
+		path, err := ParsePath(pathText)
+		if err != nil {
+			issues = append(issues, ValidationIssue{Path: pathText, Kind: "invalid_schema_path", Message: err.Error()})
+			continue
+		}
+		value, exists := currentState.read(path)
+		if !exists {
+			continue
+		}
+		issues = append(issues, ValidateJSONSchemaValue(value, schemas[pathText], pathText)...)
+	}
+	return issues
 }
 
 func ValidateContract(contract Contract) []ValidationIssue {
@@ -32,6 +93,13 @@ func ValidateContract(contract Contract) []ValidationIssue {
 				Message: fmt.Sprintf("invalid merge strategy %q", field.Merge),
 			})
 		}
+		if err := ValidateJSONSchemaDefinition(field.Schema); err != nil {
+			issues = append(issues, ValidationIssue{
+				Path:    path,
+				Kind:    "invalid_json_schema",
+				Message: fmt.Sprintf("invalid JSON Schema at %q: %v", path, err),
+			})
+		}
 	}
 	return issues
 }
@@ -42,10 +110,15 @@ func ValidateRequiredReads(state *State, contract Contract) []ValidationIssue {
 		state = NewState()
 	}
 	for _, field := range contract.Fields {
-		if !field.Required || !isReadMode(field.Mode) || field.Path.Empty() {
+		if !isReadMode(field.Mode) || field.Path.Empty() {
 			continue
 		}
-		if _, ok := state.read(field.Path); ok {
+		value, ok := state.read(field.Path)
+		if ok {
+			issues = append(issues, ValidateJSONSchemaValue(value, field.Schema, field.Path.String())...)
+			continue
+		}
+		if !field.Required {
 			continue
 		}
 		issues = append(issues, ValidationIssue{
@@ -144,7 +217,96 @@ func ValidatePatchByContract(patch Patch, contract Contract) []ValidationIssue {
 			Message: fmt.Sprintf("patch must write required path %q", field.Path.String()),
 		})
 	}
+
 	return issues
+}
+
+func ValidatePatchResultByContract(base *State, patch Patch, contract Contract) []ValidationIssue {
+	issues := ValidatePatchByContract(patch, contract)
+	resultState, err := patch.Apply(base)
+	if err != nil {
+		issues = append(issues, ValidationIssue{Kind: "patch_apply_failed", Message: err.Error()})
+		sortValidationIssues(issues)
+		return issues
+	}
+	writtenPaths := make(map[string]struct{})
+	for _, op := range patch.Ops() {
+		if !op.Path.Empty() {
+			writtenPaths[op.Path.String()] = struct{}{}
+		}
+	}
+	for _, field := range contract.Fields {
+		if !isWriteMode(field.Mode) || field.Path.Empty() || len(field.Schema) == 0 {
+			continue
+		}
+		if !pathAffectedByWrites(field.Path, writtenPaths) {
+			continue
+		}
+		value, exists := resultState.read(field.Path)
+		if !exists {
+			if field.Required {
+				issues = append(issues, ValidationIssue{
+					Path:    field.Path.String(),
+					Kind:    "missing_required_write_value",
+					Message: fmt.Sprintf("required write path %q is missing after patch", field.Path.String()),
+				})
+			}
+			continue
+		}
+		issues = append(issues, ValidateJSONSchemaValue(value, field.Schema, field.Path.String())...)
+	}
+	sortValidationIssues(issues)
+	return issues
+}
+
+func ValidateInputPatchByContract(base *State, patch Patch, contract Contract) []ValidationIssue {
+	issues := ValidatePatch(patch)
+	readPaths := contract.ReadPaths()
+	if !contract.WildcardRead {
+		for _, op := range patch.Ops() {
+			if op.Path.Empty() || pathAllowedByAny(op.Path, readPaths) {
+				continue
+			}
+			issues = append(issues, ValidationIssue{
+				Path:    op.Path.String(),
+				Kind:    "input_not_allowed",
+				Message: fmt.Sprintf("input patch writes unreadable path %q", op.Path.String()),
+			})
+		}
+	}
+	inputState, err := patch.Apply(base)
+	if err != nil {
+		issues = append(issues, ValidationIssue{Kind: "input_patch_apply_failed", Message: err.Error()})
+	} else {
+		issues = append(issues, ValidateRequiredReads(inputState, contract)...)
+	}
+	sortValidationIssues(issues)
+	return issues
+}
+
+func pathAffectedByWrites(path Path, writtenPaths map[string]struct{}) bool {
+	for writtenPathText := range writtenPaths {
+		writtenPath, err := ParsePath(writtenPathText)
+		if err != nil {
+			continue
+		}
+		if pathWithin(path, writtenPath) || pathWithin(writtenPath, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func sortValidationIssues(issues []ValidationIssue) {
+	sort.SliceStable(issues, func(leftIndex, rightIndex int) bool {
+		if issues[leftIndex].Path != issues[rightIndex].Path {
+			return issues[leftIndex].Path < issues[rightIndex].Path
+		}
+		if issues[leftIndex].Kind != issues[rightIndex].Kind {
+			return issues[leftIndex].Kind < issues[rightIndex].Kind
+		}
+		return issues[leftIndex].Message < issues[rightIndex].Message
+	})
 }
 
 func validAccessMode(mode AccessMode) bool {

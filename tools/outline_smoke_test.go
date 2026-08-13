@@ -10,10 +10,11 @@ func TestOutlineSmoke_Go(t *testing.T) {
 	t.Setenv(toolSkipWorkspaceCheckEnv, "true")
 
 	tool := NewOutline()
-	out, err := tool.Handler(context.Background(), `{"file_path":"outline.go"}`)
+	result, err := tool.Handler(context.Background(), toolCallForTest("outline", `{"file_path":"outline.go"}`))
 	if err != nil {
 		t.Fatalf("outline.go: %v", err)
 	}
+	out := result.Content
 	checks := []string{"func NewOutline", "func outlineTool", "struct outlineEntry", "func formatGoFunc"}
 	for _, want := range checks {
 		if !strings.Contains(out, want) {

@@ -55,7 +55,7 @@ func TestClaudeNodeExecutesRunnerAndWritesOutput(t *testing.T) {
 		return nil
 	})
 	ctx = WithRunner(ctx, runner)
-	if err := built.Execute(core.NewContext(ctx), access); err != nil {
+	if _, err := built.Execute(core.NewContext(ctx), access); err != nil {
 		t.Fatal(err)
 	}
 	output, err := state.Get(access, state.NewRef[string](state.Shared("review", "result")))
@@ -86,7 +86,7 @@ func TestClaudeNodeFailureDoesNotWriteOutput(t *testing.T) {
 		return nil
 	})
 	ctx = WithRunner(ctx, runner)
-	if err := built.Execute(core.NewContext(ctx), access); err == nil {
+	if _, err := built.Execute(core.NewContext(ctx), access); err == nil {
 		t.Fatal("expected execution error")
 	}
 	if _, ok := state.Read(access, state.NewRef[string](state.Shared("review", "result"))); ok {

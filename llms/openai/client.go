@@ -3,12 +3,11 @@ package openai
 import (
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"strings"
 
 	"github.com/dengzii/weaveflow/llms/openai/internal/openaiclient"
-
-	"github.com/tmc/langchaingo/httputil"
 )
 
 var (
@@ -30,7 +29,7 @@ func newClient(opts ...Option) (*options, *openaiclient.Client, error) {
 		apiType:      APIType(openaiclient.APITypeOpenAI),
 		provider:     ProviderOpenAI,
 		apiFormat:    APIFormatChatCompletions,
-		httpClient:   httputil.DefaultClient,
+		httpClient:   http.DefaultClient,
 	}
 
 	for _, opt := range opts {

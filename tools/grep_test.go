@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -35,13 +34,13 @@ func setupGrepWorkspace(t *testing.T) string {
 
 func runGrep(t *testing.T, req string) grepResponse {
 	t.Helper()
-	out, err := grepTool(context.Background(), req)
+	result, err := grepTool(context.Background(), toolCallForTest("grep", req))
 	if err != nil {
 		t.Fatalf("grepTool: %v", err)
 	}
-	var resp grepResponse
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	resp, ok := result.Value.(grepResponse)
+	if !ok {
+		t.Fatalf("grep result value = %#v", result.Value)
 	}
 	return resp
 }
@@ -139,7 +138,7 @@ func TestParseGrepRequestRejectsLegacyFields(t *testing.T) {
 		`{"pattern":"value","-C":2}`,
 		`{"pattern":"value","head_limit":10}`,
 	} {
-		if _, err := parseGrepRequest(input); err == nil {
+		if _, err := parseGrepRequest(toolCallForTest("grep", input)); err == nil {
 			t.Fatalf("parseGrepRequest(%s) succeeded", input)
 		}
 	}
@@ -188,14 +187,14 @@ func TestGrepMaxResultsCap(t *testing.T) {
 
 func TestGrepRejectsPathEscape(t *testing.T) {
 	setupGrepWorkspace(t)
-	if _, err := grepTool(context.Background(), `{"pattern":"x","path":"../etc"}`); err == nil {
+	if _, err := grepTool(context.Background(), toolCallForTest("grep", `{"pattern":"x","path":"../etc"}`)); err == nil {
 		t.Fatalf("expected error for path escape")
 	}
 }
 
 func TestGrepInvalidRegex(t *testing.T) {
 	setupGrepWorkspace(t)
-	if _, err := grepTool(context.Background(), `{"pattern":"["}`); err == nil {
+	if _, err := grepTool(context.Background(), toolCallForTest("grep", `{"pattern":"["}`)); err == nil {
 		t.Fatalf("expected error for invalid regex")
 	}
 }

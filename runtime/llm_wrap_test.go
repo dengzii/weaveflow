@@ -6,62 +6,40 @@ import (
 	"testing"
 
 	"github.com/dengzii/weaveflow/core"
-
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type testLLM struct {
-	response *llms.ContentResponse
+	response *llms.ModelResponse
 	err      error
+}
+
+func (model *testLLM) Generate(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+	return model.response, model.err
 }
 
 type streamingTestLLM struct {
 	chunks []string
 }
 
-func (m *streamingTestLLM) GenerateContent(ctx context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	callOptions := &llms.CallOptions{}
-	for _, option := range options {
-		option(callOptions)
-	}
-	for _, chunk := range m.chunks {
-		if err := callOptions.StreamingReasoningFunc(ctx, nil, []byte(chunk)); err != nil {
-			return nil, err
+func (model *streamingTestLLM) Generate(ctx context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
+	for _, chunk := range model.chunks {
+		if request.Stream != nil {
+			if err := request.Stream(ctx, llms.ModelStreamEvent{Type: llms.ModelStreamContent, Text: chunk}); err != nil {
+				return nil, err
+			}
 		}
 	}
-	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "hello world"}}}, nil
+	return &llms.ModelResponse{Choices: []*llms.ModelChoice{{Content: "hello world"}}}, nil
 }
 
-func (m *streamingTestLLM) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", nil
-}
-
-func (t *testLLM) GenerateContent(_ context.Context, _ []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-	return t.response, t.err
-}
-
-func (t *testLLM) Call(_ context.Context, _ string, _ ...llms.CallOption) (string, error) {
-	return "", t.err
-}
-
-func (t *testLLM) GenerateCompletion(_ context.Context, _ string, _ ...llms.CallOption) (*llms.ContentResponse, error) {
-	return t.response, t.err
-}
-
-func TestWrapLlmGenerateContentPublishesFinalReasoningAndContentEvents(t *testing.T) {
+func TestModelObserverPublishesFinalReasoningAndContentEvents(t *testing.T) {
 	t.Parallel()
 
-	model := wrapLlm(&testLLM{
-		response: &llms.ContentResponse{
-			Choices: []*llms.ContentChoice{
-				{
-					ReasoningContent: "reasoning text",
-					Content:          "final answer",
-				},
-			},
-		},
-	})
-
+	model := &testLLM{response: &llms.ModelResponse{Choices: []*llms.ModelChoice{{
+		ReasoningContent: "reasoning text",
+		Content:          "final answer",
+	}}}}
 	type publishedEvent struct {
 		typ     EventType
 		payload json.RawMessage
@@ -75,68 +53,64 @@ func TestWrapLlmGenerateContentPublishesFinalReasoningAndContentEvents(t *testin
 		events = append(events, publishedEvent{typ: eventType, payload: data})
 		return nil
 	})
+	ctx = core.WithModelCallObserver(ctx, modelCallEventObserver(&GraphRunner{}, "run-1", "step-1", "node-1"))
 
-	_, err := model.GenerateContent(ctx, []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeHuman, "hello"),
+	_, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")},
 	})
 	if err != nil {
-		t.Fatalf("GenerateContent() error = %v", err)
+		t.Fatalf("GenerateModel() error = %v", err)
 	}
 
 	if len(events) != 3 {
 		t.Fatalf("published events len = %d, want 3", len(events))
 	}
-	if events[0].typ != EventLLMReasoning {
-		t.Fatalf("events[0].typ = %q, want %q", events[0].typ, EventLLMReasoning)
+	if events[0].typ != EventLLMReasoning || events[1].typ != EventLLMContent || events[2].typ != EventLLMCall {
+		t.Fatalf("event types = [%q %q %q]", events[0].typ, events[1].typ, events[2].typ)
 	}
-	if events[1].typ != EventLLMContent {
-		t.Fatalf("events[1].typ = %q, want %q", events[1].typ, EventLLMContent)
-	}
-	if events[2].typ != EventLLMCall {
-		t.Fatalf("events[2].typ = %q, want %q", events[2].typ, EventLLMCall)
-	}
-
 	var reasoningPayload map[string]string
 	if err := json.Unmarshal(events[0].payload, &reasoningPayload); err != nil {
 		t.Fatalf("unmarshal reasoning payload: %v", err)
 	}
 	if reasoningPayload["text"] != "reasoning text" {
-		t.Fatalf("reasoning payload text = %q, want %q", reasoningPayload["text"], "reasoning text")
+		t.Fatalf("reasoning payload = %#v", reasoningPayload)
 	}
-
 	var contentPayload map[string]string
 	if err := json.Unmarshal(events[1].payload, &contentPayload); err != nil {
 		t.Fatalf("unmarshal content payload: %v", err)
 	}
 	if contentPayload["text"] != "final answer" {
-		t.Fatalf("content payload text = %q, want %q", contentPayload["text"], "final answer")
+		t.Fatalf("content payload = %#v", contentPayload)
 	}
 }
 
-func TestWrapLlmGenerateCompletionPublishesContentAndUsageEvents(t *testing.T) {
+func TestModelObserverPublishesCompletionUsage(t *testing.T) {
 	t.Parallel()
 
-	model := wrapLlm(&testLLM{response: &llms.ContentResponse{Choices: []*llms.ContentChoice{{
-		Content: "completion text",
-		GenerationInfo: map[string]any{
-			"PromptTokens":     4,
-			"CompletionTokens": 3,
-			"TotalTokens":      7,
-		},
-	}}}})
-	completionModel, ok := model.(core.CompletionModel)
-	if !ok {
-		t.Fatalf("wrapped model type = %T, want core.CompletionModel", model)
-	}
-
+	model := &testLLM{response: &llms.ModelResponse{
+		Choices: []*llms.ModelChoice{{Content: "completion text"}},
+		Usage:   llms.ModelUsage{InputTokens: 4, OutputTokens: 3, TotalTokens: 7},
+	}}
+	var events []map[string]any
 	var eventTypes []EventType
-	ctx := WithRunnerEventPublisher(context.Background(), func(eventType EventType, _ any) error {
+	ctx := WithRunnerEventPublisher(context.Background(), func(eventType EventType, payload any) error {
+		data, err := json.Marshal(payload)
+		if err != nil {
+			return err
+		}
+		decoded := map[string]any{}
+		if err := json.Unmarshal(data, &decoded); err != nil {
+			return err
+		}
 		eventTypes = append(eventTypes, eventType)
+		events = append(events, decoded)
 		return nil
 	})
-	response, err := completionModel.GenerateCompletion(ctx, "prompt")
+	ctx = core.WithModelCallObserver(ctx, modelCallEventObserver(&GraphRunner{}, "run-1", "step-1", "node-1"))
+	response, err := core.GenerateModel(ctx, model, llms.ModelRequest{Mode: llms.ModelModeCompletion, Prompt: "prompt"})
 	if err != nil {
-		t.Fatalf("GenerateCompletion() error = %v", err)
+		t.Fatalf("GenerateModel() error = %v", err)
 	}
 	if response.Choices[0].Content != "completion text" {
 		t.Fatalf("response = %#v", response)
@@ -144,12 +118,15 @@ func TestWrapLlmGenerateCompletionPublishesContentAndUsageEvents(t *testing.T) {
 	if len(eventTypes) != 2 || eventTypes[0] != EventLLMContent || eventTypes[1] != EventLLMCall {
 		t.Fatalf("event types = %#v", eventTypes)
 	}
+	if events[1]["prompt_tokens"] != float64(4) || events[1]["completion_tokens"] != float64(3) || events[1]["total_tokens"] != float64(7) {
+		t.Fatalf("usage event = %#v", events[1])
+	}
 }
 
-func TestWrapLlmContentChunksCarryStableCallIDAndPreserveWhitespace(t *testing.T) {
+func TestModelObserverContentChunksCarryStableCallIDAndPreserveWhitespace(t *testing.T) {
 	t.Parallel()
 
-	model := wrapLlm(&streamingTestLLM{chunks: []string{"hello", " ", "world"}})
+	model := &streamingTestLLM{chunks: []string{"hello", " ", "world"}}
 	type publishedEvent struct {
 		typ     EventType
 		payload map[string]any
@@ -167,8 +144,11 @@ func TestWrapLlmContentChunksCarryStableCallIDAndPreserveWhitespace(t *testing.T
 		events = append(events, publishedEvent{typ: eventType, payload: decoded})
 		return nil
 	})
-
-	if _, err := model.GenerateContent(ctx, []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")}); err != nil {
+	ctx = core.WithModelCallObserver(ctx, modelCallEventObserver(&GraphRunner{}, "run-1", "step-1", "node-1"))
+	if _, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "hello")},
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(events) != 5 {

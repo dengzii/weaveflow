@@ -3,7 +3,6 @@ package tools
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -14,7 +13,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -69,6 +68,41 @@ func NewGrep() Tool {
 				"- ALWAYS use Grep for search tasks. NEVER invoke grep or rg as a Bash command.\n" +
 				"- Supports regex syntax and filtering files with glob or type parameters.\n" +
 				"- Output modes: content shows matching lines, files_with_matches shows only file paths, count shows match counts.",
+			OutputSchema: objectOutputSchema(map[string]any{
+				"pattern":     map[string]any{"type": "string"},
+				"root":        map[string]any{"type": "string"},
+				"workspace":   map[string]any{"type": "string"},
+				"output_mode": map[string]any{"type": "string"},
+				"matches": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path": map[string]any{"type": "string"},
+							"line": map[string]any{"type": "integer"},
+							"col":  map[string]any{"type": "integer"},
+							"text": map[string]any{"type": "string"},
+						},
+						"required":             []string{"path", "line", "col", "text"},
+						"additionalProperties": false,
+					},
+				},
+				"paths": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+				"counts": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path":  map[string]any{"type": "string"},
+							"count": map[string]any{"type": "integer"},
+						},
+						"required":             []string{"path", "count"},
+						"additionalProperties": false,
+					},
+				},
+				"truncated":     map[string]any{"type": "boolean"},
+				"scanned_files": map[string]any{"type": "integer"},
+			}, "pattern", "root", "workspace", "matches", "scanned_files"),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -114,14 +148,15 @@ func NewGrep() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: grepTool,
+		Handler:     grepTool,
+		Permissions: []string{"filesystem.read"},
 	}
 }
 
-func grepTool(ctx context.Context, input string) (string, error) {
-	req, err := parseGrepRequest(input)
+func grepTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+	req, err := parseGrepRequest(call)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 
 	pattern := req.Pattern
@@ -130,7 +165,7 @@ func grepTool(ctx context.Context, input string) (string, error) {
 	}
 	re, err := regexp.Compile(pattern)
 	if err != nil {
-		return "", fmt.Errorf("invalid regex: %w", err)
+		return llms.ToolResult{}, fmt.Errorf("invalid regex: %w", err)
 	}
 
 	root := req.Path
@@ -139,14 +174,14 @@ func grepTool(ctx context.Context, input string) (string, error) {
 	}
 	workspace, target, relRoot, err := resolveToolPath(ctx, root)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if !info.IsDir() {
-		return "", errors.New("grep root must be a directory")
+		return llms.ToolResult{}, errors.New("grep root must be a directory")
 	}
 
 	limit := normalizeGrepLimit(req.MaxResults)
@@ -192,7 +227,7 @@ func grepTool(ctx context.Context, input string) (string, error) {
 		return nil
 	})
 	if walkErr != nil {
-		return "", walkErr
+		return llms.ToolResult{}, walkErr
 	}
 
 	sort.SliceStable(matches, func(i, j int) bool {
@@ -208,6 +243,7 @@ func grepTool(ctx context.Context, input string) (string, error) {
 		Root:       relRoot,
 		Workspace:  workspace,
 		OutputMode: outputMode,
+		Matches:    []grepMatch{},
 		Truncated:  truncated,
 		Scanned:    scanned,
 	}
@@ -220,16 +256,12 @@ func grepTool(ctx context.Context, input string) (string, error) {
 		resp.Matches = limitGrepMatches(matches, limit)
 	}
 
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return structuredToolResult(call, resp)
 }
 
-func parseGrepRequest(input string) (grepRequest, error) {
+func parseGrepRequest(call llms.ToolCall) (grepRequest, error) {
 	var req grepRequest
-	if err := decodeToolRequest(input, "grep", &req); err != nil {
+	if err := decodeToolArguments(call, &req); err != nil {
 		return grepRequest{}, err
 	}
 	req.Pattern = strings.TrimSpace(req.Pattern)

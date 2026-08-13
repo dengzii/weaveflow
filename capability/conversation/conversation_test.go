@@ -1,11 +1,12 @@
 package conversation
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func TestViewBindsArbitraryRootsAndKeepsConversationsIsolated(t *testing.T) {
@@ -80,7 +81,7 @@ func TestViewDecodesMessagesAfterJSONSnapshotRoundTripAtArbitraryRoot(t *testing
 			Role: llms.ChatMessageTypeAI,
 			Parts: []llms.ContentPart{llms.ToolCall{
 				ID: "call-1", Type: "function",
-				FunctionCall: &llms.FunctionCall{Name: "search", Arguments: `{"q":"facts"}`},
+				FunctionCall: &llms.FunctionCall{Name: "search", Arguments: json.RawMessage(`{"q":"facts"}`)},
 			}},
 		},
 	}

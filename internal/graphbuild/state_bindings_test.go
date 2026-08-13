@@ -505,4 +505,6 @@ type bindingTestNode struct {
 	core.NodeInfo
 }
 
-func (n *bindingTestNode) Execute(core.Context, *state.Access) error { return nil }
+func (n *bindingTestNode) Execute(core.Context, *state.Access) (core.NodeResult, error) {
+	return core.Success(), nil
+}

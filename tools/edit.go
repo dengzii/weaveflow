@@ -2,13 +2,13 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
 	"unicode/utf8"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type editRequest struct {
@@ -34,6 +34,13 @@ func NewEdit() Tool {
 				"Usage:\n" +
 				"- The edit fails if old_string is not unique and replace_all is false.\n" +
 				"- Use replace_all to change every instance of old_string.",
+			OutputSchema: objectOutputSchema(map[string]any{
+				"action":       map[string]any{"type": "string"},
+				"path":         map[string]any{"type": "string"},
+				"workspace":    map[string]any{"type": "string"},
+				"replacements": map[string]any{"type": "integer"},
+				"size":         map[string]any{"type": "integer"},
+			}, "action", "path", "workspace", "replacements", "size"),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -59,45 +66,47 @@ func NewEdit() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: editTool,
+		Handler:     editTool,
+		Permissions: []string{"filesystem.write"},
+		Approval:    core.ToolApprovalRequired,
 	}
 }
 
-func editTool(ctx context.Context, input string) (string, error) {
+func editTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req editRequest
-	if err := decodeToolRequest(input, "edit", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("edit input: %w", err)
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {
-		return "", fmt.Errorf("file_path is required")
+		return llms.ToolResult{}, fmt.Errorf("file_path is required")
 	}
 	if req.OldString == "" {
-		return "", fmt.Errorf("old_string is required")
+		return llms.ToolResult{}, fmt.Errorf("old_string is required")
 	}
 	if req.OldString == req.NewString {
-		return "", fmt.Errorf("new_string must be different from old_string")
+		return llms.ToolResult{}, fmt.Errorf("new_string must be different from old_string")
 	}
 
 	workspace, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	data, err := os.ReadFile(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if !utf8.Valid(data) {
-		return "", fmt.Errorf("file is not a UTF-8 text file")
+		return llms.ToolResult{}, fmt.Errorf("file is not a UTF-8 text file")
 	}
 
 	content := string(data)
 	count := strings.Count(content, req.OldString)
 	if count == 0 {
-		return "", fmt.Errorf("old_string not found")
+		return llms.ToolResult{}, fmt.Errorf("old_string not found")
 	}
 	if count > 1 && !req.ReplaceAll {
-		return "", fmt.Errorf("old_string is not unique; found %d occurrences", count)
+		return llms.ToolResult{}, fmt.Errorf("old_string is not unique; found %d occurrences", count)
 	}
 
 	replaceCount := 1
@@ -106,11 +115,11 @@ func editTool(ctx context.Context, input string) (string, error) {
 	}
 	updated := strings.Replace(content, req.OldString, req.NewString, replaceCount)
 	if err := os.WriteFile(target, []byte(updated), 0o644); err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	resp := editResponse{
 		Action:       "edit",
@@ -122,9 +131,5 @@ func editTool(ctx context.Context, input string) (string, error) {
 	if !req.ReplaceAll {
 		resp.Replacements = 1
 	}
-	data, err = json.Marshal(resp)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return structuredToolResult(call, resp)
 }

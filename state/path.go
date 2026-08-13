@@ -124,6 +124,22 @@ func (p Path) MarshalJSON() ([]byte, error) {
 	return json.Marshal(p.String())
 }
 
+func (p *Path) UnmarshalJSON(data []byte) error {
+	if p == nil {
+		return fmt.Errorf("state path target is nil")
+	}
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		return err
+	}
+	parsed, err := ParsePath(text)
+	if err != nil {
+		return err
+	}
+	*p = parsed
+	return nil
+}
+
 // Child appends segments to an existing path and validates them.
 func (p Path) Child(segments ...string) (Path, error) {
 	all := append(p.Segments(), segments...)

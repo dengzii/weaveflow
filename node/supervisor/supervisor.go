@@ -17,7 +17,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -235,7 +235,11 @@ func SupervisorNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *SupervisorNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *SupervisorNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *SupervisorNode) execute(ctx core.Context, access *state.Access) error {
 	if err := n.Validate(); err != nil {
 		return err
 	}
@@ -301,8 +305,16 @@ func (n *SupervisorNode) selectRoute(ctx core.Context, objective string, history
 				"attempt": attempt, "turn_count": turnCount, "messages": serialized,
 			})
 		}
-		response, err := ctx.Model(n.ModelID).GenerateContent(ctx, messages, llms.WithThinkingMode(llms.ThinkingModeHigh))
-		if err != nil {
+		response, err := core.GenerateModel(ctx, ctx.Model(n.ModelID), llms.ModelRequest{
+			ModelID:        effectiveModelID(n.ModelID),
+			Mode:           llms.ModelModeChat,
+			Messages:       messages,
+			Thinking:       llms.ThinkingModeHigh,
+			ResponseName:   "supervisor_route",
+			ResponseSchema: supervisorRouteSchema(n.Members),
+			StrictResponse: true,
+		})
+		if err != nil && (response == nil || len(response.Choices) == 0 || response.Choices[0] == nil) {
 			return supervisorRouteOutput{}, err
 		}
 		if response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
@@ -313,6 +325,9 @@ func (n *SupervisorNode) selectRoute(ctx core.Context, objective string, history
 				"attempt": attempt, "turn_count": turnCount, "content": content,
 			})
 			route, parseErr := parseSupervisorRoute(content, n.Members)
+			if err != nil {
+				parseErr = err
+			}
 			if parseErr == nil {
 				return route, nil
 			}
@@ -444,6 +459,26 @@ func parseSupervisorRoute(content string, members []SupervisorMember) (superviso
 		return supervisorRouteOutput{}, fmt.Errorf("task is required when routing to worker %q", output.NextWorker)
 	}
 	return output, nil
+}
+
+func supervisorRouteSchema(members []SupervisorMember) state.JSONSchema {
+	routes := make([]any, 0, len(members)+1)
+	for _, member := range members {
+		if memberID := strings.TrimSpace(member.ID); memberID != "" {
+			routes = append(routes, memberID)
+		}
+	}
+	routes = append(routes, SupervisorRouteFinish)
+	return state.JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"next_worker": map[string]any{"type": "string", "enum": routes},
+			"task":        map[string]any{"type": "string"},
+			"reason":      map[string]any{"type": "string"},
+		},
+		"required":             []string{"next_worker", "task", "reason"},
+		"additionalProperties": false,
+	}
 }
 
 func canonicalSupervisorRoute(route string, members []SupervisorMember) string {

@@ -15,11 +15,14 @@ type toolsResponse struct {
 }
 
 type toolDefinition struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Parameters  any    `json:"parameters,omitempty"`
-	Strict      bool   `json:"strict,omitempty"`
+	ID           string                `json:"id"`
+	Name         string                `json:"name"`
+	Description  string                `json:"description,omitempty"`
+	Parameters   any                   `json:"parameters,omitempty"`
+	OutputSchema any                   `json:"output_schema,omitempty"`
+	Strict       bool                  `json:"strict,omitempty"`
+	Permissions  []string              `json:"permissions"`
+	Approval     core.ToolApprovalMode `json:"approval"`
 }
 
 func (s *Server) handleListRuntimeTools(c *gin.Context) {
@@ -31,6 +34,7 @@ func (s *Server) handleListRuntimeTools(c *gin.Context) {
 		name := strings.TrimSpace(id)
 		var description string
 		var parameters any
+		var outputSchema any
 		var strict bool
 		if tool.Function != nil {
 			if functionName := strings.TrimSpace(tool.Function.Name); functionName != "" {
@@ -38,14 +42,18 @@ func (s *Server) handleListRuntimeTools(c *gin.Context) {
 			}
 			description = tool.Function.Description
 			parameters = tool.Function.Parameters
+			outputSchema = tool.Function.OutputSchema
 			strict = tool.Function.Strict
 		}
 		definitions = append(definitions, toolDefinition{
-			ID:          id,
-			Name:        name,
-			Description: description,
-			Parameters:  parameters,
-			Strict:      strict,
+			ID:           id,
+			Name:         name,
+			Description:  description,
+			Parameters:   parameters,
+			OutputSchema: outputSchema,
+			Strict:       strict,
+			Permissions:  append([]string(nil), tool.Permissions...),
+			Approval:     tool.Approval,
 		})
 	}
 

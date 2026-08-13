@@ -60,14 +60,20 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 	}
 
 	ref := state.ArtifactRef{
-		ID:        id,
-		RunID:     runID,
-		StepID:    strings.TrimSpace(artifact.StepID),
-		NodeID:    strings.TrimSpace(artifact.NodeID),
-		Type:      strings.TrimSpace(artifact.Type),
-		MIMEType:  mimeType,
-		Location:  s.payloadPath(runID, id),
-		CreatedAt: createdAt,
+		ID:           id,
+		RunID:        runID,
+		StepID:       strings.TrimSpace(artifact.StepID),
+		NodeID:       strings.TrimSpace(artifact.NodeID),
+		ParentRunID:  strings.TrimSpace(artifact.ParentRunID),
+		ParentStepID: strings.TrimSpace(artifact.ParentStepID),
+		ParentTaskID: strings.TrimSpace(artifact.ParentTaskID),
+		RootRunID:    strings.TrimSpace(artifact.RootRunID),
+		RunPath:      append([]string(nil), artifact.RunPath...),
+		Namespace:    strings.Trim(strings.TrimSpace(artifact.Namespace), "/"),
+		Type:         strings.TrimSpace(artifact.Type),
+		MIMEType:     mimeType,
+		Location:     s.payloadPath(runID, id),
+		CreatedAt:    createdAt,
 	}
 
 	metadata, err := marshalRunnerJSONFile(ref)
@@ -118,15 +124,21 @@ func (s *FileArtifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Ar
 	stored.Location = payloadPath
 
 	return Artifact{
-		ID:        stored.ID,
-		RunID:     stored.RunID,
-		StepID:    stored.StepID,
-		NodeID:    stored.NodeID,
-		Type:      stored.Type,
-		MIMEType:  stored.MIMEType,
-		Location:  stored.Location,
-		CreatedAt: stored.CreatedAt,
-		Data:      data,
+		ID:           stored.ID,
+		RunID:        stored.RunID,
+		StepID:       stored.StepID,
+		NodeID:       stored.NodeID,
+		ParentRunID:  stored.ParentRunID,
+		ParentStepID: stored.ParentStepID,
+		ParentTaskID: stored.ParentTaskID,
+		RootRunID:    stored.RootRunID,
+		RunPath:      append([]string(nil), stored.RunPath...),
+		Namespace:    stored.Namespace,
+		Type:         stored.Type,
+		MIMEType:     stored.MIMEType,
+		Location:     stored.Location,
+		CreatedAt:    stored.CreatedAt,
+		Data:         data,
 	}, nil
 }
 

@@ -1,6 +1,7 @@
 package state
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 )
@@ -21,15 +22,35 @@ const (
 
 // PatchOp is one state mutation recorded by an Editor.
 type PatchOp struct {
-	Kind  PatchOpKind
-	Path  Path
-	Value any
+	Kind  PatchOpKind `json:"kind"`
+	Path  Path        `json:"path"`
+	Value any         `json:"value,omitempty"`
 }
 
 // Patch is an ordered list of state mutations. It is immutable from callers'
 // perspective: constructors and readers clone operation values.
 type Patch struct {
 	ops []PatchOp
+}
+
+func (p Patch) MarshalJSON() ([]byte, error) {
+	return json.Marshal(p.Ops())
+}
+
+func (p *Patch) UnmarshalJSON(data []byte) error {
+	if p == nil {
+		return fmt.Errorf("state patch target is nil")
+	}
+	var operations []PatchOp
+	if err := json.Unmarshal(data, &operations); err != nil {
+		return err
+	}
+	patch := NewPatch(operations...)
+	if issues := ValidatePatch(patch); len(issues) > 0 {
+		return fmt.Errorf("invalid state patch: %s", issues[0].Message)
+	}
+	*p = patch
+	return nil
 }
 
 // NewPatch constructs a patch from cloned operations.

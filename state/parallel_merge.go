@@ -11,6 +11,7 @@ import (
 // Order must be stable for the graph wave. The merger uses Order, NodeID, then
 // input order to make append and merge application deterministic.
 type BranchPatch struct {
+	TaskID string
 	NodeID string
 	Order  int
 	Patch  Patch
@@ -18,6 +19,7 @@ type BranchPatch struct {
 
 type ParallelMergeOptions struct {
 	Contracts map[string]Contract
+	Schemas   map[string]JSONSchema
 }
 
 // MergeParallelPatches applies fan-in branch patches to a shared base state in
@@ -43,10 +45,53 @@ func MergeParallelPatches(base *State, branches []BranchPatch, options ParallelM
 	for _, entry := range entries {
 		ops = append(ops, entry.op)
 	}
-	return NewPatch(ops...).Apply(target)
+	merged, err := NewPatch(ops...).Apply(target)
+	if err != nil {
+		return nil, err
+	}
+	issues := validateParallelMergeResult(merged, entries, options)
+	if len(issues) > 0 {
+		return nil, NewValidationError("parallel output", issues)
+	}
+	return merged, nil
+}
+
+func validateParallelMergeResult(merged *State, entries []parallelPatchEntry, options ParallelMergeOptions) []ValidationIssue {
+	issues := ValidateStateBySchemas(merged, options.Schemas)
+	writtenPaths := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if !entry.op.Path.Empty() {
+			writtenPaths[entry.op.Path.String()] = struct{}{}
+		}
+	}
+	validated := map[string]struct{}{}
+	for _, contract := range options.Contracts {
+		for _, field := range contract.Fields {
+			pathText := field.Path.String()
+			if !isWriteMode(field.Mode) || field.Path.Empty() || len(field.Schema) == 0 || !pathAffectedByWrites(field.Path, writtenPaths) {
+				continue
+			}
+			key := pathText + "\x00" + schemaCacheKey(field.Schema)
+			if _, exists := validated[key]; exists {
+				continue
+			}
+			validated[key] = struct{}{}
+			value, exists := merged.read(field.Path)
+			if !exists {
+				if field.Required {
+					issues = append(issues, ValidationIssue{Path: pathText, Kind: "missing_required_write_value", Message: fmt.Sprintf("required write path %q is missing after parallel merge", pathText)})
+				}
+				continue
+			}
+			issues = append(issues, ValidateJSONSchemaValue(value, field.Schema, pathText)...)
+		}
+	}
+	sortValidationIssues(issues)
+	return issues
 }
 
 type parallelPatchEntry struct {
+	taskID     string
 	nodeID     string
 	branchOrd  int
 	branchIdx  int
@@ -69,6 +114,7 @@ func normalizeBranchPatchEntries(branches []BranchPatch, contracts map[string]Co
 		for opIdx, op := range branch.Patch.Ops() {
 			merge, known := mergeStrategyForPath(contracts[branch.NodeID], op.Path)
 			entries = append(entries, parallelPatchEntry{
+				taskID:     branch.TaskID,
 				nodeID:     branch.NodeID,
 				branchOrd:  branch.Order,
 				branchIdx:  branchIdx,
@@ -281,8 +327,15 @@ func dottedPathWithin(path, parent string) bool {
 func parallelConflictError(left, right parallelPatchEntry, reason string) error {
 	return fmt.Errorf("parallel state merge conflict at %q between branches %q and %q: %s",
 		left.op.Path.String(),
-		left.nodeID,
-		right.nodeID,
+		firstNonEmptyTaskID(left.taskID, left.nodeID),
+		firstNonEmptyTaskID(right.taskID, right.nodeID),
 		reason,
 	)
+}
+
+func firstNonEmptyTaskID(taskID, nodeID string) string {
+	if taskID != "" {
+		return taskID
+	}
+	return nodeID
 }

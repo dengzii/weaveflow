@@ -125,18 +125,25 @@ func TestRunnerParallelFanOutFanInRecordsBranchSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list checkpoints: %v", err)
 	}
-	if len(checkpoints) != len(steps)*2+1 {
-		t.Fatalf("expected before/after checkpoint per step plus barrier, got checkpoints=%d steps=%d", len(checkpoints), len(steps))
+	if len(checkpoints) < len(steps)*2+2 {
+		t.Fatalf("expected before/after checkpoint per step, wave checkpoints, and final checkpoint; got checkpoints=%d steps=%d", len(checkpoints), len(steps))
 	}
 	var barrier fruntime.CheckpointRecord
 	for _, checkpoint := range checkpoints {
-		if checkpoint.Stage == fruntime.CheckpointAfterParallelWave {
+		if checkpoint.Stage != fruntime.CheckpointAfterWave {
+			continue
+		}
+		restored, loadErr := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
+		if loadErr != nil {
+			t.Fatalf("load barrier checkpoint: %v", loadErr)
+		}
+		if len(restored.Runtime.NextNodeIDs) == 1 && restored.Runtime.NextNodeIDs[0] == "collector" {
 			barrier = checkpoint
 			break
 		}
 	}
 	if barrier.CheckpointID == "" {
-		t.Fatalf("missing after_parallel_wave checkpoint: %#v", checkpoints)
+		t.Fatalf("missing after_wave checkpoint: %#v", checkpoints)
 	}
 	restored, err := runner.LoadCheckpointState(context.Background(), barrier.CheckpointID)
 	if err != nil {
@@ -234,7 +241,7 @@ func TestRunnerParallelFanInWaitsForUnevenBranches(t *testing.T) {
 	}
 	barrierID := ""
 	for _, checkpoint := range checkpoints {
-		if checkpoint.Stage != fruntime.CheckpointAfterParallelWave {
+		if checkpoint.Stage != fruntime.CheckpointAfterWave {
 			continue
 		}
 		restored, err := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
@@ -247,9 +254,9 @@ func TestRunnerParallelFanInWaitsForUnevenBranches(t *testing.T) {
 		if strings.Join(restored.Runtime.NextNodeIDs, ",") != "slow_tail" {
 			t.Fatalf("uneven barrier next nodes = %#v, want [slow_tail]", restored.Runtime.NextNodeIDs)
 		}
-		_, pending, ok := fruntime.LoadGraphSchedule(restored.Business)
-		if !ok || strings.Join(pending, ",") != "collector" {
-			t.Fatalf("uneven barrier pending fan-in = %#v ok=%v, want [collector]", pending, ok)
+		schedule, ok := fruntime.LoadGraphSchedule(restored.Business)
+		if !ok || strings.Join(schedule.PendingFanInNodes, ",") != "collector" {
+			t.Fatalf("uneven barrier pending fan-in = %#v ok=%v, want [collector]", schedule.PendingFanInNodes, ok)
 		}
 		barrierID = checkpoint.CheckpointID
 		break
@@ -329,7 +336,7 @@ func TestRunnerParallelResumeFromBarrierContinuesToCollector(t *testing.T) {
 	}
 	var barrierID string
 	for _, checkpoint := range checkpoints {
-		if checkpoint.Stage == fruntime.CheckpointAfterParallelWave {
+		if checkpoint.Stage == fruntime.CheckpointAfterWave {
 			barrierID = checkpoint.CheckpointID
 			break
 		}
@@ -537,15 +544,37 @@ func TestRunnerParallelFanOutToEndLeavesLastCheckpointAtBarrier(t *testing.T) {
 		t.Fatalf("expected merged branches, got %#v ok=%v", branches, ok)
 	}
 
+	checkpoints, err := runner.ListCheckpoints(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("list checkpoints: %v", err)
+	}
+	var terminalBarrierID string
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage != fruntime.CheckpointAfterWave {
+			continue
+		}
+		barrier, loadErr := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
+		if loadErr != nil {
+			t.Fatalf("load barrier checkpoint: %v", loadErr)
+		}
+		if len(barrier.Runtime.NextNodeIDs) == 1 && barrier.Runtime.NextNodeIDs[0] == "END" {
+			terminalBarrierID = checkpoint.CheckpointID
+			break
+		}
+	}
+	if terminalBarrierID == "" {
+		t.Fatalf("missing terminal after-wave checkpoint: %#v", checkpoints)
+	}
+
 	restored, err := runner.LoadCheckpointState(context.Background(), run.LastCheckpointID)
 	if err != nil {
 		t.Fatalf("load last checkpoint: %v", err)
 	}
-	if restored.Record.Stage != fruntime.CheckpointAfterParallelWave {
-		t.Fatalf("last checkpoint stage = %q, want after_parallel_wave", restored.Record.Stage)
+	if restored.Record.Stage != fruntime.CheckpointFinal {
+		t.Fatalf("last checkpoint stage = %q, want final", restored.Record.Stage)
 	}
-	if len(restored.Runtime.NextNodeIDs) != 1 || restored.Runtime.NextNodeIDs[0] != "END" {
-		t.Fatalf("barrier next nodes = %#v, want [END]", restored.Runtime.NextNodeIDs)
+	if len(restored.Runtime.NextNodeIDs) != 0 {
+		t.Fatalf("final checkpoint next nodes = %#v, want none", restored.Runtime.NextNodeIDs)
 	}
 }
 
@@ -619,7 +648,7 @@ func TestRunnerParallelBarrierNextNodeIDsUseActualConditionalRouting(t *testing.
 	}
 	var barrierID string
 	for _, checkpoint := range checkpoints {
-		if checkpoint.Stage != fruntime.CheckpointAfterParallelWave {
+		if checkpoint.Stage != fruntime.CheckpointAfterWave {
 			continue
 		}
 		restored, err := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
@@ -703,18 +732,14 @@ func TestRunnerParallelBarrierNextNodeIDsAreStable(t *testing.T) {
 		t.Fatalf("list checkpoints: %v", err)
 	}
 	for _, checkpoint := range checkpoints {
-		if checkpoint.Stage != fruntime.CheckpointAfterParallelWave {
+		if checkpoint.Stage != fruntime.CheckpointAfterWave {
 			continue
 		}
 		restored, err := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
 		if err != nil {
 			t.Fatalf("load barrier checkpoint: %v", err)
 		}
-		if len(restored.Runtime.NextNodeIDs) == 2 {
-			got := restored.Runtime.NextNodeIDs[0] + "," + restored.Runtime.NextNodeIDs[1]
-			if got != "collector_a,collector_b" {
-				t.Fatalf("barrier next nodes = %#v, want [collector_a collector_b]", restored.Runtime.NextNodeIDs)
-			}
+		if len(restored.Runtime.NextNodeIDs) == 2 && restored.Runtime.NextNodeIDs[0] == "collector_a" && restored.Runtime.NextNodeIDs[1] == "collector_b" {
 			return
 		}
 	}
@@ -802,12 +827,17 @@ func TestRunnerParallelBarrierCheckpointFailureFailsRun(t *testing.T) {
 	}
 
 	dir := t.TempDir()
+	store, err := fruntime.NewFileRuntimeStore(dir)
+	if err != nil {
+		t.Fatalf("new runtime store: %v", err)
+	}
 	runner := mustNewGraphRunner(t,
 		g,
-		fruntime.NewFileExecutionStore(dir),
-		failBarrierCheckpointStore{inner: fruntime.NewFileCheckpointStore(dir)},
+		store,
+		store,
 		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
+		store,
+		fruntime.WithRuntimeTransactionStore(failBarrierTransactionStore{inner: store}),
 	)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
@@ -1049,8 +1079,8 @@ func TestRunnerParallelExternalPauseStopsAtBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load last checkpoint: %v", err)
 	}
-	if restored.Record.Stage != fruntime.CheckpointAfterParallelWave {
-		t.Fatalf("last checkpoint stage = %q, want after_parallel_wave", restored.Record.Stage)
+	if restored.Record.Stage != fruntime.CheckpointAfterWave {
+		t.Fatalf("last checkpoint stage = %q, want after_wave", restored.Record.Stage)
 	}
 	if len(restored.Runtime.NextNodeIDs) != 1 || restored.Runtime.NextNodeIDs[0] != "collector" {
 		t.Fatalf("barrier next nodes = %#v, want [collector]", restored.Runtime.NextNodeIDs)
@@ -1113,8 +1143,8 @@ func TestRunnerParallelExternalCancelStopsAtBarrier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load last checkpoint: %v", err)
 	}
-	if restored.Record.Stage != fruntime.CheckpointAfterParallelWave {
-		t.Fatalf("last checkpoint stage = %q, want after_parallel_wave", restored.Record.Stage)
+	if restored.Record.Stage != fruntime.CheckpointAfterWave {
+		t.Fatalf("last checkpoint stage = %q, want after_wave", restored.Record.Stage)
 	}
 }
 
@@ -1206,7 +1236,7 @@ func TestRunnerAfterNodePausePreservesSucceededStepAndResumeEmitsLifecycle(t *te
 	pausedRun.CurrentStepIDs = []string{steps[0].StepID}
 	pausedRun.NextNodeIDs = []string{EndNodeRef}
 	pausedRun.ParallelWaveID = "stale-wave"
-	if err := executionStore.UpdateRun(context.Background(), pausedRun); err != nil {
+	if _, err := executionStore.CompareAndSwapRun(context.Background(), pausedRun.Revision, pausedRun); err != nil {
 		t.Fatalf("seed stale execution pointers: %v", err)
 	}
 
@@ -1697,8 +1727,8 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 	}
 }
 
-type failBarrierCheckpointStore struct {
-	inner fruntime.CheckpointStore
+type failBarrierTransactionStore struct {
+	inner fruntime.RuntimeTransactionStore
 }
 
 type runnerResult struct {
@@ -1707,19 +1737,13 @@ type runnerResult struct {
 	err   error
 }
 
-func (s failBarrierCheckpointStore) Save(ctx context.Context, record fruntime.CheckpointRecord, payload []byte) error {
-	if record.Stage == fruntime.CheckpointAfterParallelWave {
-		return errors.New("barrier checkpoint failed")
+func (store failBarrierTransactionStore) Commit(ctx context.Context, commit fruntime.RuntimeCommit) (fruntime.RuntimeCommitResult, error) {
+	for _, checkpoint := range commit.Checkpoints {
+		if checkpoint.Record.Stage == fruntime.CheckpointAfterWave {
+			return fruntime.RuntimeCommitResult{}, errors.New("barrier checkpoint failed")
+		}
 	}
-	return s.inner.Save(ctx, record, payload)
-}
-
-func (s failBarrierCheckpointStore) Load(ctx context.Context, checkpointID string) (fruntime.CheckpointRecord, []byte, error) {
-	return s.inner.Load(ctx, checkpointID)
-}
-
-func (s failBarrierCheckpointStore) List(ctx context.Context, runID string) ([]fruntime.CheckpointRecord, error) {
-	return s.inner.List(ctx, runID)
+	return store.inner.Commit(ctx, commit)
 }
 
 func newControlledParallelRunnerGraph(t *testing.T) (*Graph, chan string, chan struct{}, *int32) {

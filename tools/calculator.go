@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type calculatorRequest struct {
@@ -20,8 +20,9 @@ type calculatorRequest struct {
 func NewCalculator() Tool {
 	return Tool{
 		Function: &llms.FunctionDefinition{
-			Name:        "calculator",
-			Description: "Evaluate a basic arithmetic expression such as 12*(3+4) or 18/6+7.",
+			Name:         "calculator",
+			Description:  "Evaluate a basic arithmetic expression such as 12*(3+4) or 18/6+7.",
+			OutputSchema: textOutputSchema(),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -38,30 +39,30 @@ func NewCalculator() Tool {
 	}
 }
 
-func calculatorTool(_ context.Context, input string) (string, error) {
+func calculatorTool(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req calculatorRequest
-	if err := decodeToolRequest(input, "calculator", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("calculator input: %w", err)
 	}
 	expression := strings.TrimSpace(req.Expression)
 	if expression == "" {
-		return "", errors.New("expression is required")
+		return llms.ToolResult{}, errors.New("expression is required")
 	}
 
 	tree, err := parser.ParseExpr(expression)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 
 	value, err := evalArithmeticExpr(tree)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 
 	if value == float64(int64(value)) {
-		return strconv.FormatInt(int64(value), 10), nil
+		return textToolResult(call, strconv.FormatInt(int64(value), 10)), nil
 	}
-	return strconv.FormatFloat(value, 'f', -1, 64), nil
+	return textToolResult(call, strconv.FormatFloat(value, 'f', -1, 64)), nil
 }
 func evalArithmeticExpr(expr ast.Expr) (float64, error) {
 	switch typed := expr.(type) {

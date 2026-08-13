@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -11,10 +12,9 @@ import (
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 	basenode "github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 func TestNodeUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
@@ -26,7 +26,7 @@ func TestNodeUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
 	target.TaskPath = taskPath
 	target.ConversationPath = conversationPath
 	target.ResultPath = resultPath
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "research result"}}}}}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "research result"}}}}}
 	result, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{"request": "research this"}), target)
 	if err != nil {
 		t.Fatalf("execute: %v", err)
@@ -44,7 +44,7 @@ func TestNodeUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
 func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
 	t.Parallel()
 
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "research result"}}}}}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "research result"}}}}}
 	tool, err := NewTool(ToolConfig{
 		Name:        "research_agent",
 		Description: "Delegate research to a specialist.",
@@ -62,15 +62,15 @@ func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
 	ctx := core.WithTools(core.WithModel(context.Background(), model), map[string]core.Tool{
 		"unconfigured": core.NewTool(&llms.FunctionDefinition{Name: "unconfigured"}, nil),
 	})
-	result, err := tool.Handler(ctx, `{"task":"research this"}`)
+	result, err := tool.Handler(ctx, toolCall("research_agent", `{"task":"research this"}`))
 	if err != nil {
 		t.Fatalf("execute agent tool: %v", err)
 	}
-	if result != "research result" {
-		t.Fatalf("result = %q, want research result", result)
+	if result.Content != "research result" || result.Value != "research result" {
+		t.Fatalf("result = %#v, want research result", result)
 	}
-	if len(model.options) != 1 || len(model.options[0].Tools) != 0 {
-		t.Fatalf("injected tools = %#v, want none", model.options[0].Tools)
+	if len(model.requests) != 1 || len(model.requests[0].Tools) != 0 {
+		t.Fatalf("injected tools = %#v, want none", model.requests[0].Tools)
 	}
 }
 
@@ -99,25 +99,25 @@ func TestToolRejectsUnsafeConfiguration(t *testing.T) {
 func TestToolRestrictsInternalTools(t *testing.T) {
 	t.Parallel()
 
-	model := &scriptedModel{responses: []*llms.ContentResponse{
-		{Choices: []*llms.ContentChoice{{ToolCalls: []llms.ToolCall{{
+	model := &scriptedModel{responses: []*llms.ModelResponse{
+		{Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{{
 			ID:   "call",
 			Type: "function",
 			FunctionCall: &llms.FunctionCall{
 				Name:      "other",
-				Arguments: `{}`,
+				Arguments: json.RawMessage(`{}`),
 			},
 		}}}}},
-		{Choices: []*llms.ContentChoice{{Content: "finished"}}},
+		{Choices: []*llms.ModelChoice{{Content: "finished"}}},
 	}}
 	otherCalled := false
 	availableTools := map[string]core.Tool{
-		"allowed": core.NewTool(&llms.FunctionDefinition{Name: "allowed"}, func(context.Context, string) (string, error) {
-			return "allowed", nil
+		"allowed": core.NewTool(&llms.FunctionDefinition{Name: "allowed"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+			return llms.ToolResult{ToolCallID: call.ID, Content: "allowed"}, nil
 		}),
-		"other": core.NewTool(&llms.FunctionDefinition{Name: "other"}, func(context.Context, string) (string, error) {
+		"other": core.NewTool(&llms.FunctionDefinition{Name: "other"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 			otherCalled = true
-			return "other", nil
+			return llms.ToolResult{ToolCallID: call.ID, Content: "other"}, nil
 		}),
 	}
 	tool, err := NewTool(ToolConfig{
@@ -129,25 +129,25 @@ func TestToolRestrictsInternalTools(t *testing.T) {
 		t.Fatalf("new agent tool: %v", err)
 	}
 	ctx := core.WithTools(core.WithModel(context.Background(), model), availableTools)
-	result, err := tool.Handler(ctx, `{"task":"do work"}`)
+	result, err := tool.Handler(ctx, toolCall("worker", `{"task":"do work"}`))
 	if err != nil {
 		t.Fatalf("execute agent tool: %v", err)
 	}
-	if result != "finished" {
-		t.Fatalf("result = %q, want finished", result)
+	if result.Content != "finished" || result.Value != "finished" {
+		t.Fatalf("result = %#v, want finished", result)
 	}
 	if otherCalled {
 		t.Fatal("agent tool executed a tool outside its allowlist")
 	}
-	if len(model.options) == 0 || len(model.options[0].Tools) != 1 || model.options[0].Tools[0].Function.Name != "allowed" {
-		t.Fatalf("injected tools = %#v", model.options[0].Tools)
+	if len(model.requests) == 0 || len(model.requests[0].Tools) != 1 || model.requests[0].Tools[0].Function.Name != "allowed" {
+		t.Fatalf("injected tools = %#v", model.requests[0].Tools)
 	}
 }
 
 func TestToolRequiresConfiguredToolsAtRuntime(t *testing.T) {
 	t.Parallel()
 
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "unused"}}}}}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "unused"}}}}}
 	tool, err := NewTool(ToolConfig{
 		Name:        "worker",
 		Description: "Delegate work.",
@@ -156,7 +156,7 @@ func TestToolRequiresConfiguredToolsAtRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new agent tool: %v", err)
 	}
-	_, err = tool.Handler(core.WithModel(context.Background(), model), `{"task":"do work"}`)
+	_, err = tool.Handler(core.WithModel(context.Background(), model), toolCall("worker", `{"task":"do work"}`))
 	if err == nil || !strings.Contains(err.Error(), `configured tool "missing" is not available`) {
 		t.Fatalf("execute error = %v", err)
 	}
@@ -166,18 +166,18 @@ func TestToolRequiresConfiguredToolsAtRuntime(t *testing.T) {
 }
 
 func TestToolReusesSingleConcurrencySlotForInternalCalls(t *testing.T) {
-	model := &scriptedModel{responses: []*llms.ContentResponse{
-		{Choices: []*llms.ContentChoice{{ToolCalls: []llms.ToolCall{
-			{ID: "first", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: `{}`}},
-			{ID: "second", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: `{}`}},
+	model := &scriptedModel{responses: []*llms.ModelResponse{
+		{Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{
+			{ID: "first", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: json.RawMessage(`{}`)}},
+			{ID: "second", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: json.RawMessage(`{}`)}},
 		}}}},
-		{Choices: []*llms.ContentChoice{{Content: "finished"}}},
+		{Choices: []*llms.ModelChoice{{Content: "finished"}}},
 	}}
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var active atomic.Int32
 	var maximumActive atomic.Int32
-	blocked := core.NewTool(&llms.FunctionDefinition{Name: "blocked"}, func(context.Context, string) (string, error) {
+	blocked := core.NewTool(&llms.FunctionDefinition{Name: "blocked"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 		current := active.Add(1)
 		for {
 			maximum := maximumActive.Load()
@@ -188,7 +188,7 @@ func TestToolReusesSingleConcurrencySlotForInternalCalls(t *testing.T) {
 		started <- struct{}{}
 		<-release
 		active.Add(-1)
-		return "ok", nil
+		return llms.ToolResult{ToolCallID: call.ID, Content: "ok"}, nil
 	})
 	worker, err := NewTool(ToolConfig{
 		Name:        "worker",
@@ -213,7 +213,7 @@ func TestToolReusesSingleConcurrencySlotForInternalCalls(t *testing.T) {
 			Type: "function",
 			FunctionCall: &llms.FunctionCall{
 				Name:      "worker",
-				Arguments: `{"task":"do work"}`,
+				Arguments: json.RawMessage(`{"task":"do work"}`),
 			},
 		})
 	}()
@@ -239,7 +239,7 @@ func TestToolReusesSingleConcurrencySlotForInternalCalls(t *testing.T) {
 		if len(message.Parts) != 1 {
 			t.Fatalf("tool response = %#v", message)
 		}
-		response, ok := message.Parts[0].(llms.ToolCallResponse)
+		response, ok := message.Parts[0].(llms.ToolResult)
 		if !ok || response.Content != "finished" {
 			t.Fatalf("tool response = %#v, want finished", message.Parts[0])
 		}
@@ -253,30 +253,35 @@ func TestToolReusesSingleConcurrencySlotForInternalCalls(t *testing.T) {
 
 type scriptedModel struct {
 	mu        sync.Mutex
-	responses []*llms.ContentResponse
+	responses []*llms.ModelResponse
 	calls     [][]llms.MessageContent
-	options   []llms.CallOptions
+	requests  []llms.ModelRequest
 }
 
-func (model *scriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+func (model *scriptedModel) Generate(_ context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
 	model.mu.Lock()
 	defer model.mu.Unlock()
 	if len(model.responses) == 0 {
 		return nil, errors.New("scripted model exhausted")
 	}
-	callOptions := llms.CallOptions{}
-	for _, option := range options {
-		option(&callOptions)
-	}
-	model.calls = append(model.calls, cloneMessages(messages))
-	model.options = append(model.options, callOptions)
+	request.Messages = cloneMessages(request.Messages)
+	request.Tools = append([]llms.ToolDefinition(nil), request.Tools...)
+	model.calls = append(model.calls, cloneMessages(request.Messages))
+	model.requests = append(model.requests, request)
 	response := model.responses[0]
 	model.responses = model.responses[1:]
 	return response, nil
 }
 
-func (model *scriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", errors.New("scripted model Call is not supported")
+func toolCall(name, arguments string) llms.ToolCall {
+	return llms.ToolCall{
+		ID:   "test-call",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      name,
+			Arguments: json.RawMessage(arguments),
+		},
+	}
 }
 
 func cloneMessages(messages []llms.MessageContent) []llms.MessageContent {

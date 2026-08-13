@@ -2,10 +2,12 @@ package server
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/llms/openai"
 )
 
@@ -43,6 +45,12 @@ func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeS
 		}
 	} else {
 		applyEnvironmentModelDefaults(settings)
+	}
+	if req.ToolPermissions != nil {
+		settings.ToolPermissions = normalizedToolPermissions(req.ToolPermissions)
+	}
+	if req.ToolApprovals != nil {
+		settings.ToolApprovals = normalizedToolApprovals(req.ToolApprovals)
 	}
 	if value, ok := req.Environment["OPENAI_API_KEY"]; ok {
 		apiKey = strings.TrimSpace(value)
@@ -114,6 +122,11 @@ func graphModelSettingsFromRequest(
 	if req.ExtraBody != nil {
 		model.ExtraBody = cloneGraphModelExtraBody(req.ExtraBody)
 	}
+	pricing, err := normalizeModelPricing(req.Pricing)
+	if err != nil {
+		return graphModelSettings{}, "", false, fmt.Errorf("model %q pricing: %w", modelID, err)
+	}
+	model.Pricing = pricing
 	apiKey := strings.TrimSpace(req.APIKey)
 	if apiKey != "" {
 		model.APIKey = apiKey
@@ -173,7 +186,40 @@ func normalizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings
 	if settings.Models == nil {
 		settings.Models = []graphModelSettings{}
 	}
+	settings.ToolPermissions = normalizedToolPermissions(settings.ToolPermissions)
+	settings.ToolApprovals = normalizedToolApprovals(settings.ToolApprovals)
 	return settings
+}
+
+func normalizedToolPermissions(permissions []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(permissions))
+	for _, permission := range permissions {
+		permission = strings.ToLower(strings.TrimSpace(permission))
+		if permission == "" {
+			continue
+		}
+		if _, ok := seen[permission]; ok {
+			continue
+		}
+		seen[permission] = struct{}{}
+		out = append(out, permission)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func normalizedToolApprovals(approvals map[string]bool) map[string]bool {
+	if len(approvals) == 0 {
+		return map[string]bool{}
+	}
+	out := make(map[string]bool, len(approvals))
+	for name, approved := range approvals {
+		if name = strings.ToLower(strings.TrimSpace(name)); name != "" {
+			out[name] = approved
+		}
+	}
+	return out
 }
 
 func sanitizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings {
@@ -225,7 +271,29 @@ func sanitizeGraphModelSettings(model graphModelSettings) graphModelSettings {
 	model.BaseURL = strings.TrimSpace(model.BaseURL)
 	model.ExtraBody = cloneGraphModelExtraBody(model.ExtraBody)
 	model.APIKey = strings.TrimSpace(model.APIKey)
+	model.Pricing.Currency = strings.ToUpper(strings.TrimSpace(model.Pricing.Currency))
 	return model
+}
+
+func normalizeModelPricing(pricing llms.ModelPricing) (llms.ModelPricing, error) {
+	rates := []struct {
+		name  string
+		value float64
+	}{
+		{name: "input_per_million", value: pricing.InputPerMillion},
+		{name: "cached_input_per_million", value: pricing.CachedInputPerMillion},
+		{name: "output_per_million", value: pricing.OutputPerMillion},
+	}
+	for _, rate := range rates {
+		if math.IsNaN(rate.value) || math.IsInf(rate.value, 0) || rate.value < 0 {
+			return llms.ModelPricing{}, fmt.Errorf("%s must be a finite non-negative number", rate.name)
+		}
+	}
+	pricing.Currency = strings.ToUpper(strings.TrimSpace(pricing.Currency))
+	if !pricing.IsZero() && pricing.Currency == "" {
+		pricing.Currency = "USD"
+	}
+	return pricing, nil
 }
 
 func firstGraphModelAPIKey(settings graphRuntimeSettings) string {

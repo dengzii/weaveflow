@@ -21,13 +21,13 @@ import (
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/node"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tmc/langchaingo/llms"
 )
 
 type contractTestNode struct {
@@ -102,8 +102,8 @@ func newContractTestNode(spec dsl.GraphNodeSpec) *contractTestNode {
 	}
 }
 
-func (n *contractTestNode) Execute(core.Context, *state.Access) error {
-	return nil
+func (n *contractTestNode) Execute(core.Context, *state.Access) (core.NodeResult, error) {
+	return core.Success(), nil
 }
 
 type interruptTestNode struct {
@@ -200,18 +200,18 @@ func newInterruptTestNode(spec dsl.GraphNodeSpec, resumePath state.Path) *interr
 	}
 }
 
-func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) error {
+func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) (core.NodeResult, error) {
 	if value, ok := access.ReadAny(n.resumePath); ok && value == "ok" {
-		return nil
+		return core.Success(), nil
 	}
-	return &core.NodeInterrupt{NodeID: n.ID(), Value: "waiting for resume input"}
+	return core.NodeResult{}, &core.NodeInterrupt{NodeID: n.ID(), Value: "waiting for resume input"}
 }
 
 func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-chan struct{}, respectContext bool) *wfgraph.Graph {
 	t.Helper()
 	graph := wfgraph.NewGraph(nil)
 	var startOnce sync.Once
-	err := graph.AddNode(node.NewFuncNode(node.Spec{ID: "work", Name: "work"}, func(ctx core.Context, access *state.Access) error {
+	err := graph.AddNode(node.NewFuncNode(node.Spec{ID: "work", Name: "work"}, func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 		startOnce.Do(func() {
 			close(started)
 		})
@@ -219,12 +219,12 @@ func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-cha
 			select {
 			case <-release:
 			case <-ctx.Done():
-				return ctx.Err()
+				return core.NodeResult{}, ctx.Err()
 			}
 		} else {
 			<-release
 		}
-		return access.SetAny(state.Shared("done"), true)
+		return core.Success(), access.SetAny(state.Shared("done"), true)
 	}))
 	if err != nil {
 		t.Fatalf("add work node: %v", err)
@@ -626,9 +626,9 @@ func TestListEventsPaginatesNewestFirstAndValidatesParameters(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	sink := &recordingEventSink{}
-	srv, _ := mustNewEventTestServer(t, sink, 0)
+	srv, runner := mustNewEventTestServer(t, sink, 0)
 	for index := 0; index < 501; index++ {
-		if err := sink.Publish(context.Background(), runtime.Event{
+		if err := runner.EventSink().Publish(context.Background(), runtime.Event{
 			ID:    fmt.Sprintf("event-%03d", index),
 			RunID: "run-1",
 			Type:  runtime.EventRunStarted,
@@ -951,8 +951,8 @@ func TestConfiguredGraphExposesComputedHashes(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	g := wfgraph.NewGraph(nil)
-	if err := g.AddNode(node.NewFuncNode(node.Spec{ID: "input", Name: "input"}, func(core.Context, *state.Access) error {
-		return nil
+	if err := g.AddNode(node.NewFuncNode(node.Spec{ID: "input", Name: "input"}, func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
 	})); err != nil {
 		t.Fatalf("add node: %v", err)
 	}
@@ -1108,7 +1108,7 @@ func TestDeleteCachedActiveRunWithoutConfiguredGraphIsRejected(t *testing.T) {
 	active = waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, active.RunID)
 	active.Status = runtime.RunStatusRunning
 	active.FinishedAt = nil
-	if err := runtime.NewFileExecutionStore(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "execution")).UpdateRun(context.Background(), active); err != nil {
+	if _, err := runtime.NewFileExecutionStore(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "execution")).CompareAndSwapRun(context.Background(), active.Revision, active); err != nil {
 		t.Fatalf("mark cached run active: %v", err)
 	}
 
@@ -2067,8 +2067,8 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	started.StartedAt = time.Now().Add(-time.Minute)
 	started.UpdatedAt = started.StartedAt
 	started.FinishedAt = nil
-	if err := executionStore.UpdateRun(context.Background(), started); err != nil {
-		t.Fatalf("UpdateRun() error = %v", err)
+	if _, err := executionStore.CompareAndSwapRun(context.Background(), started.Revision, started); err != nil {
+		t.Fatalf("CompareAndSwapRun() error = %v", err)
 	}
 
 	restarted, err := New(context.Background(), Config{BaseDir: baseDir})

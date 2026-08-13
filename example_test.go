@@ -20,8 +20,8 @@ func ExampleRegistry_RegisterNodeType() {
 			spec := resolved.Spec
 			value, _ := spec.Config["value"].(string)
 			output := resolved.State["output"].Path
-			return node.NewFuncNode(node.Spec{ID: spec.ID}, func(_ core.Context, access *state.Access) error {
-				return access.SetAny(output, value)
+			return node.NewFuncNode(node.Spec{ID: spec.ID}, func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+				return core.Success(), access.SetAny(output, value)
 			}), nil
 		},
 	})
@@ -57,8 +57,8 @@ func ExampleRegistry_RegisterCondition() {
 			spec := resolved.Spec
 			output := resolved.State["output"].Path
 			value := spec.Config["value"]
-			return node.NewFuncNode(node.Spec{ID: spec.ID}, func(_ core.Context, access *state.Access) error {
-				return access.SetAny(output, value)
+			return node.NewFuncNode(node.Spec{ID: spec.ID}, func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+				return core.Success(), access.SetAny(output, value)
 			}), nil
 		},
 	})

@@ -11,7 +11,7 @@ import (
 
 	"github.com/dengzii/weaveflow/llms/openai"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func LLMTurnExample() {

@@ -77,8 +77,8 @@ func newFanInFanOutGraph() *wfgraph.Graph {
 }
 
 func addFuncNode(g *wfgraph.Graph, id string, fn func(context.Context, *state.Access) error) {
-	must(g.AddNode(node.NewFuncNode(node.Spec{ID: id, Name: id}, func(ctx core.Context, access *state.Access) error {
-		return fn(ctx, access)
+	must(g.AddNode(node.NewFuncNode(node.Spec{ID: id, Name: id}, func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+		return core.Success(), fn(ctx, access)
 	})))
 	must(g.SetNodeSpec(dsl.GraphNodeSpec{ID: id, Type: "example", Name: id}))
 }
@@ -87,7 +87,7 @@ func findBarrierCheckpoint(ctx context.Context, runner *runtime.GraphRunner, run
 	checkpoints, err := runner.ListCheckpoints(ctx, runID)
 	must(err)
 	for _, checkpoint := range checkpoints {
-		if checkpoint.Stage == runtime.CheckpointAfterParallelWave {
+		if checkpoint.Stage == runtime.CheckpointAfterWave {
 			return checkpoint.CheckpointID
 		}
 	}

@@ -7,7 +7,7 @@ import (
 
 	"github.com/dengzii/weaveflow/llms/parts"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type Message struct {
@@ -28,6 +28,10 @@ type MessagePart struct {
 	Arguments    string `json:"arguments,omitempty"`
 	Name         string `json:"name,omitempty"`
 	Content      string `json:"content,omitempty"`
+	Value        any    `json:"value,omitempty"`
+	IsError      bool   `json:"is_error,omitempty"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }
 
 func SerializeMessages(messages []llms.MessageContent) ([]Message, error) {
@@ -129,15 +133,19 @@ func serializeMessagePart(part llms.ContentPart) (MessagePart, error) {
 		}
 		if typed.FunctionCall != nil {
 			part.FunctionName = typed.FunctionCall.Name
-			part.Arguments = typed.FunctionCall.Arguments
+			part.Arguments = string(typed.FunctionCall.Arguments)
 		}
 		return part, nil
-	case llms.ToolCallResponse:
+	case llms.ToolResult:
 		return MessagePart{
-			Kind:       "tool_response",
-			ToolCallID: typed.ToolCallID,
-			Name:       typed.Name,
-			Content:    typed.Content,
+			Kind:         "tool_result",
+			ToolCallID:   typed.ToolCallID,
+			Name:         typed.Name,
+			Content:      typed.Content,
+			Value:        typed.Value,
+			IsError:      typed.IsError,
+			ErrorCode:    typed.ErrorCode,
+			ErrorMessage: typed.ErrorMessage,
 		}, nil
 	default:
 		return MessagePart{}, fmt.Errorf("unsupported message part type %T", part)
@@ -161,14 +169,18 @@ func deserializeMessagePart(part MessagePart) (llms.ContentPart, error) {
 	case "tool_call":
 		toolCall := llms.ToolCall{ID: part.ToolCallID, Type: part.ToolType}
 		if part.FunctionName != "" {
-			toolCall.FunctionCall = &llms.FunctionCall{Name: part.FunctionName, Arguments: part.Arguments}
+			toolCall.FunctionCall = &llms.FunctionCall{Name: part.FunctionName, Arguments: json.RawMessage(part.Arguments)}
 		}
 		return toolCall, nil
-	case "tool_response":
-		return llms.ToolCallResponse{
-			ToolCallID: part.ToolCallID,
-			Name:       part.Name,
-			Content:    part.Content,
+	case "tool_result":
+		return llms.ToolResult{
+			ToolCallID:   part.ToolCallID,
+			Name:         part.Name,
+			Content:      part.Content,
+			Value:        part.Value,
+			IsError:      part.IsError,
+			ErrorCode:    part.ErrorCode,
+			ErrorMessage: part.ErrorMessage,
 		}, nil
 	default:
 		return nil, fmt.Errorf("unsupported conversation message part kind %q", part.Kind)

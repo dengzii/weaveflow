@@ -1,12 +1,15 @@
 package graph
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
 	"github.com/dengzii/weaveflow/registry"
+	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
 )
 
 type Builder struct {
@@ -42,7 +45,7 @@ func (builder *Builder) build(def dsl.GraphDefinition, instance *dsl.GraphInstan
 	if err != nil {
 		return nil, err
 	}
-	ctx.SubgraphBuilder = builder.makeSubgraphBuilder(ctx, buildPath)
+	ctx.ChildRunBuilder = builder.makeChildRunBuilder(ctx, buildPath)
 
 	graph := NewGraph(builder.registry)
 	graph.setDefinitionMetadata(def)
@@ -54,6 +57,7 @@ func (builder *Builder) build(def dsl.GraphDefinition, instance *dsl.GraphInstan
 		return nil, err
 	}
 	graph.setInitialStatePaths(bindings.InitialStatePaths)
+	graph.setStateSchemas(bindings.StateSchemas)
 	graph.setNodeContracts(bindings.NodeContracts)
 	graph.setConditionContracts(bindings.ConditionContractsBySource)
 	graph.setStateBindingSemantics(graphbuild.StateBindingSemantics(bindings))
@@ -69,8 +73,8 @@ func (builder *Builder) build(def dsl.GraphDefinition, instance *dsl.GraphInstan
 	return graph, nil
 }
 
-func (builder *Builder) makeSubgraphBuilder(parentCtx *registry.BuildContext, buildPath []string) registry.SubgraphBuilder {
-	return func(graphRef string) (registry.SubgraphRunner, error) {
+func (builder *Builder) makeChildRunBuilder(parentCtx *registry.BuildContext, buildPath []string) registry.ChildRunBuilder {
+	return func(graphRef string) (registry.ChildRunRunner, error) {
 		graphRef = strings.TrimSpace(graphRef)
 		if graphRef == "" {
 			return nil, fmt.Errorf("graph_ref is required")
@@ -88,10 +92,24 @@ func (builder *Builder) makeSubgraphBuilder(parentCtx *registry.BuildContext, bu
 		subgraphCtx := parentCtx.Clone()
 		subgraphCtx.InstanceConfig = nil
 		nextPath := append(append([]string(nil), buildPath...), graphRef)
-		graph, err := builder.build(def, nil, subgraphCtx, nextPath)
+		childGraph, err := builder.build(def, nil, subgraphCtx, nextPath)
 		if err != nil {
 			return nil, fmt.Errorf("build graph %q: %w", graphRef, err)
 		}
-		return graph.Run, nil
+		return func(ctx context.Context, request fruntime.ChildRunRequest, input *state.State) (fruntime.ChildRunResult, error) {
+			parentRunner, ok := fruntime.GraphRunnerFromContext(ctx)
+			if !ok {
+				return fruntime.ChildRunResult{}, fmt.Errorf("child run %q requires a parent graph runner", graphRef)
+			}
+			childRunner, err := NewGraphRunner(childGraph, parentRunner.ExecutionStore(), parentRunner.CheckpointStore(), parentRunner.StateCodec(), parentRunner.EventSink(),
+				fruntime.WithArtifactStore(parentRunner.ArtifactStore()),
+				fruntime.WithRuntimeTransactionStore(parentRunner.TransactionStore()),
+				fruntime.WithGraphMetadata(childGraph.name, childGraph.version, "", "", parentRunner.GraphSessionID()),
+			)
+			if err != nil {
+				return fruntime.ChildRunResult{}, err
+			}
+			return childRunner.RunChild(ctx, request, input)
+		}, nil
 	}
 }

@@ -39,7 +39,11 @@ func (n *StateSetNode) Validate() error {
 	return nil
 }
 
-func (n *StateSetNode) Execute(_ core.Context, access *state.Access) error {
+func (n *StateSetNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *StateSetNode) execute(_ core.Context, access *state.Access) error {
 	value, _, err := normalizeJSON(n.Value)
 	if err != nil {
 		return fmt.Errorf("%s node %q config value: %w", NodeTypeStateSet, n.ID(), err)
@@ -85,7 +89,11 @@ func (n *StateCopyNode) Validate() error {
 	return validatePathPair(&n.NodeBase, NodeTypeStateCopy, "source", n.SourcePath, "target", n.TargetPath)
 }
 
-func (n *StateCopyNode) Execute(_ core.Context, access *state.Access) error {
+func (n *StateCopyNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *StateCopyNode) execute(_ core.Context, access *state.Access) error {
 	value, err := readRequired(access, n.SourcePath, NodeTypeStateCopy, n.ID(), "source")
 	if err != nil {
 		return err
@@ -130,7 +138,11 @@ func (n *StateDeleteNode) Validate() error {
 	return validatePath(&n.NodeBase, NodeTypeStateDelete, "target", n.TargetPath)
 }
 
-func (n *StateDeleteNode) Execute(_ core.Context, access *state.Access) error {
+func (n *StateDeleteNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *StateDeleteNode) execute(_ core.Context, access *state.Access) error {
 	if err := access.Delete(n.TargetPath); err != nil {
 		return fmt.Errorf("%s node %q: %w", NodeTypeStateDelete, n.ID(), err)
 	}
@@ -174,7 +186,11 @@ func (n *StateMergeNode) Validate() error {
 	return nil
 }
 
-func (n *StateMergeNode) Execute(_ core.Context, access *state.Access) error {
+func (n *StateMergeNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *StateMergeNode) execute(_ core.Context, access *state.Access) error {
 	value, err := readRequired(access, n.SourcePath, NodeTypeStateMerge, n.ID(), "source")
 	if err != nil {
 		return err
@@ -230,7 +246,11 @@ func (n *StateAppendNode) Validate() error {
 	return nil
 }
 
-func (n *StateAppendNode) Execute(_ core.Context, access *state.Access) error {
+func (n *StateAppendNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *StateAppendNode) execute(_ core.Context, access *state.Access) error {
 	value, err := readRequired(access, n.SourcePath, NodeTypeStateAppend, n.ID(), "source")
 	if err != nil {
 		return err

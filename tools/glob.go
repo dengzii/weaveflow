@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -62,6 +61,25 @@ func NewGlob() Tool {
 				"- Supports glob patterns like \"**/*.js\" or \"src/**/*.ts\"\n" +
 				"- Returns matching file paths sorted by modification time\n" +
 				"- Use this tool when you need to find files by name patterns",
+			OutputSchema: objectOutputSchema(map[string]any{
+				"pattern":   map[string]any{"type": "string"},
+				"root":      map[string]any{"type": "string"},
+				"workspace": map[string]any{"type": "string"},
+				"paths": map[string]any{
+					"type": "array",
+					"items": map[string]any{
+						"type": "object",
+						"properties": map[string]any{
+							"path": map[string]any{"type": "string"},
+							"size": map[string]any{"type": "integer"},
+						},
+						"required":             []string{"path", "size"},
+						"additionalProperties": false,
+					},
+				},
+				"truncated":     map[string]any{"type": "boolean"},
+				"scanned_files": map[string]any{"type": "integer"},
+			}, "pattern", "root", "workspace", "paths", "scanned_files"),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -73,19 +91,25 @@ func NewGlob() Tool {
 						"type":        "string",
 						"description": "Directory to search. Defaults to workspace root.",
 					},
+					"max_results": map[string]any{
+						"type":             "integer",
+						"exclusiveMinimum": 0,
+						"description":      "Maximum number of matching paths. Defaults to 200, capped at 500.",
+					},
 				},
 				"required":             []string{"pattern"},
 				"additionalProperties": false,
 			},
 		},
-		Handler: globTool,
+		Handler:     globTool,
+		Permissions: []string{"filesystem.read"},
 	}
 }
 
-func globTool(ctx context.Context, input string) (string, error) {
-	req, err := parseGlobRequest(input)
+func globTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+	req, err := parseGlobRequest(call)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 
 	root := req.Path
@@ -94,14 +118,14 @@ func globTool(ctx context.Context, input string) (string, error) {
 	}
 	workspace, target, relRoot, err := resolveToolPath(ctx, root)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if !info.IsDir() {
-		return "", errors.New("glob root must be a directory")
+		return llms.ToolResult{}, errors.New("glob root must be a directory")
 	}
 
 	limit := normalizeGlobLimit(req.MaxResults)
@@ -154,7 +178,7 @@ func globTool(ctx context.Context, input string) (string, error) {
 		return nil
 	})
 	if walkErr != nil {
-		return "", walkErr
+		return llms.ToolResult{}, walkErr
 	}
 
 	sort.SliceStable(matched, func(i, j int) bool {
@@ -168,23 +192,20 @@ func globTool(ctx context.Context, input string) (string, error) {
 		paths[i] = globMatch{Path: item.Path, Size: item.Size}
 	}
 
-	data, err := json.Marshal(globResponse{
+	response := globResponse{
 		Pattern:   req.Pattern,
 		Root:      relRoot,
 		Workspace: workspace,
 		Paths:     paths,
 		Truncated: truncated,
 		Scanned:   scanned,
-	})
-	if err != nil {
-		return "", err
 	}
-	return string(data), nil
+	return structuredToolResult(call, response)
 }
 
-func parseGlobRequest(input string) (globRequest, error) {
+func parseGlobRequest(call llms.ToolCall) (globRequest, error) {
 	var req globRequest
-	if err := decodeToolRequest(input, "glob", &req); err != nil {
+	if err := decodeToolArguments(call, &req); err != nil {
 		return globRequest{}, err
 	}
 	req.Pattern = strings.TrimSpace(req.Pattern)

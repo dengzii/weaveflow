@@ -230,20 +230,31 @@ func (s *FileExecutionStore) CreateRun(ctx context.Context, run RunRecord) error
 	return writeRunnerJSONFile(path, run)
 }
 
-func (s *FileExecutionStore) UpdateRun(ctx context.Context, run RunRecord) error {
+func (s *FileExecutionStore) CompareAndSwapRun(ctx context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error) {
 	if err := fileStoreContextErr(ctx); err != nil {
-		return err
+		return RunRecord{}, err
 	}
 	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
-		return err
+		return RunRecord{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path := s.runPath(run.RunID)
 	if err := ensureRunnerRecordExists(path, "run", run.RunID); err != nil {
-		return err
+		return RunRecord{}, err
 	}
-	return writeRunnerJSONFile(path, run)
+	var existing RunRecord
+	if err := readRunnerJSONFile(path, &existing); err != nil {
+		return RunRecord{}, err
+	}
+	if existing.Revision != expectedRevision || run.Revision != expectedRevision {
+		return RunRecord{}, &RunRevisionConflictError{RunID: run.RunID, Expected: expectedRevision, Actual: existing.Revision}
+	}
+	run.Revision = expectedRevision + 1
+	if err := writeRunnerJSONFile(path, run); err != nil {
+		return RunRecord{}, err
+	}
+	return run, nil
 }
 
 func (s *FileExecutionStore) GetRun(ctx context.Context, runID string) (RunRecord, error) {
@@ -460,6 +471,18 @@ func (s *FileExecutionStore) listRunsLocked(filter RunFilter) ([]RunRecord, erro
 			if _, ok := statusFilter[run.Status]; !ok {
 				continue
 			}
+		}
+		if filter.ParentRunID != "" && run.ParentRunID != filter.ParentRunID {
+			continue
+		}
+		if filter.ParentTaskID != "" && run.ParentTaskID != filter.ParentTaskID {
+			continue
+		}
+		if filter.RootRunID != "" && run.RootRunID != filter.RootRunID {
+			continue
+		}
+		if filter.Namespace != "" && run.Namespace != filter.Namespace {
+			continue
 		}
 		items = append(items, run)
 	}
@@ -1019,7 +1042,10 @@ type NoopExecutionStore struct{}
 func NewNoopExecutionStore() *NoopExecutionStore { return &NoopExecutionStore{} }
 
 func (*NoopExecutionStore) CreateRun(context.Context, RunRecord) error { return nil }
-func (*NoopExecutionStore) UpdateRun(context.Context, RunRecord) error { return nil }
+func (*NoopExecutionStore) CompareAndSwapRun(_ context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error) {
+	run.Revision = expectedRevision + 1
+	return run, nil
+}
 func (*NoopExecutionStore) GetRun(context.Context, string) (RunRecord, error) {
 	return RunRecord{}, ErrRunnerRecordNotFound
 }

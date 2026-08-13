@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,7 +9,7 @@ import (
 	"time"
 
 	"github.com/PuerkitoBio/goquery"
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -40,6 +39,13 @@ func NewWebFetch() Tool {
 			Name: "web_fetch",
 			Description: "Fetches content from a specified URL and returns readable text content. " +
 				"HTML is converted to plain text. Use this tool when you need to retrieve and analyze web content.",
+			OutputSchema: objectOutputSchema(map[string]any{
+				"url":       map[string]any{"type": "string"},
+				"status":    map[string]any{"type": "integer"},
+				"title":     map[string]any{"type": "string"},
+				"content":   map[string]any{"type": "string"},
+				"truncated": map[string]any{"type": "boolean"},
+			}, "url", "status", "content"),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -66,22 +72,23 @@ func NewWebFetch() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: webFetchTool,
+		Handler:     webFetchTool,
+		Permissions: []string{"network.http"},
 	}
 }
 
-func webFetchTool(_ context.Context, input string) (string, error) {
+func webFetchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req webFetchRequest
-	if err := decodeToolRequest(input, "web_fetch", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("web_fetch input: %w", err)
 	}
 	req.URL = strings.TrimSpace(req.URL)
 	if req.URL == "" {
-		return "", fmt.Errorf("url is required")
+		return llms.ToolResult{}, fmt.Errorf("url is required")
 	}
 	req.Description = strings.TrimSpace(req.Description)
 	if req.Description == "" {
-		return "", fmt.Errorf("description is required")
+		return llms.ToolResult{}, fmt.Errorf("description is required")
 	}
 	if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
 		req.URL = "https://" + req.URL
@@ -90,22 +97,22 @@ func webFetchTool(_ context.Context, input string) (string, error) {
 	limit := normalizeFetchLimit(req.MaxBytes)
 
 	client := &http.Client{Timeout: fetchTimeout}
-	httpReq, err := http.NewRequest("GET", req.URL, nil)
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
 	if err != nil {
-		return "", fmt.Errorf("invalid url: %w", err)
+		return llms.ToolResult{}, fmt.Errorf("invalid url: %w", err)
 	}
 	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; WeaveFlow/1.0)")
 	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7")
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
-		return "", fmt.Errorf("fetch failed: %w", err)
+		return llms.ToolResult{}, fmt.Errorf("fetch failed: %w", err)
 	}
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxFetchLimit+1024)))
 	if err != nil {
-		return "", fmt.Errorf("reading response: %w", err)
+		return llms.ToolResult{}, fmt.Errorf("reading response: %w", err)
 	}
 
 	contentType := resp.Header.Get("Content-Type")
@@ -134,11 +141,7 @@ func webFetchTool(_ context.Context, input string) (string, error) {
 		Truncated: truncated,
 	}
 
-	data, err := json.Marshal(result)
-	if err != nil {
-		return "", err
-	}
-	return string(data), nil
+	return structuredToolResult(call, result)
 }
 
 func htmlToText(raw []byte) (title string, text string, err error) {

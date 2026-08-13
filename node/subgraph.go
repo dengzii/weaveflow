@@ -1,8 +1,8 @@
 package node
 
 import (
-	"context"
 	"fmt"
+	"strings"
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
@@ -12,14 +12,12 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-type SubgraphInvoker func(context.Context, *state.State) (*state.State, error)
-
 type SubgraphNode struct {
 	Base
-	GraphRef       string
-	InputPath      state.Path
-	OutputPath     state.Path
-	InvokeSubgraph SubgraphInvoker
+	GraphRef   string
+	InputPath  state.Path
+	OutputPath state.Path
+	RunChild   registry.ChildRunRunner
 }
 
 func NewSubgraphNode(options ...NodeOption) *SubgraphNode {
@@ -71,10 +69,10 @@ func SubgraphNodeTypeDefinition() registry.NodeTypeDefinition {
 			if graphRef == "" {
 				return nil, fmt.Errorf("build subgraph node %q: graph_ref is required", spec.ID)
 			}
-			if ctx == nil || ctx.SubgraphBuilder == nil {
-				return nil, fmt.Errorf("build subgraph node %q: subgraph builder is required", spec.ID)
+			if ctx == nil || ctx.ChildRunBuilder == nil {
+				return nil, fmt.Errorf("build subgraph node %q: child run builder is required", spec.ID)
 			}
-			runner, err := ctx.SubgraphBuilder(graphRef)
+			runner, err := ctx.ChildRunBuilder(graphRef)
 			if err != nil {
 				return nil, fmt.Errorf("build subgraph node %q: %w", spec.ID, err)
 			}
@@ -91,15 +89,19 @@ func SubgraphNodeTypeDefinition() registry.NodeTypeDefinition {
 			target.GraphRef = graphRef
 			target.InputPath = inputPath
 			target.OutputPath = outputPath
-			target.InvokeSubgraph = SubgraphInvoker(runner)
+			target.RunChild = runner
 			return target, nil
 		},
 	}
 }
 
-func (n *SubgraphNode) Execute(ctx core.Context, access *state.Access) error {
-	if n.InvokeSubgraph == nil {
-		return fmt.Errorf("subgraph node %q has no invoker for graph_ref %q", n.ID(), n.GraphRef)
+func (n *SubgraphNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *SubgraphNode) execute(ctx core.Context, access *state.Access) error {
+	if n.RunChild == nil {
+		return fmt.Errorf("subgraph node %q has no child runner for graph_ref %q", n.ID(), n.GraphRef)
 	}
 	raw, ok := access.ReadAny(n.InputPath)
 	if !ok {
@@ -113,14 +115,28 @@ func (n *SubgraphNode) Execute(ctx core.Context, access *state.Access) error {
 		input = map[string]any{state.SectionShared: input}
 	}
 	subgraphInput := state.FromMap(input)
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphStarted, map[string]any{"graph_ref": n.GraphRef})
-	result, err := n.InvokeSubgraph(ctx, subgraphInput)
+	metadata, _ := fruntime.RunnerMetadataFromContext(ctx)
+	request := fruntime.ChildRunRequest{
+		ParentRunID: metadata.RunID, ParentStepID: metadata.StepID, ParentTaskID: metadata.TaskID,
+		GraphRef: n.GraphRef, Namespace: strings.Trim(metadata.Namespace+"/"+n.ID()+":"+metadata.TaskID, "/"),
+	}
+	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphStarted, request)
+	childResult, err := n.RunChild(ctx, request, subgraphInput)
 	if err != nil {
-		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphFailed, map[string]any{"graph_ref": n.GraphRef, "error": err.Error()})
+		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphFailed, map[string]any{"graph_ref": n.GraphRef, "error": err.Error(), "parent_run_id": request.ParentRunID})
 		return err
 	}
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphFinished, map[string]any{"graph_ref": n.GraphRef})
-	return access.SetAny(n.OutputPath, result.Export())
+	if childResult.Interrupted {
+		return &core.NodeInterrupt{NodeID: n.ID(), Value: fruntime.ChildRunInterrupt{
+			RunID: childResult.Run.RunID, CheckpointID: childResult.Run.LastCheckpointID,
+			Namespace: childResult.Run.Namespace, Status: string(childResult.Run.Status),
+		}}
+	}
+	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventSubgraphFinished, map[string]any{"graph_ref": n.GraphRef, "child_run_id": childResult.Run.RunID, "namespace": childResult.Run.Namespace})
+	if childResult.State == nil {
+		return fmt.Errorf("subgraph node %q child run %q returned nil state", n.ID(), childResult.Run.RunID)
+	}
+	return access.SetAny(n.OutputPath, childResult.State.Export())
 }
 
 func (n *SubgraphNode) Contract() state.Contract {

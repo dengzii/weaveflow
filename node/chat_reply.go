@@ -89,7 +89,11 @@ func ChatReplyNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *ChatReplyNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *ChatReplyNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *ChatReplyNode) execute(ctx core.Context, access *state.Access) error {
 	content := strings.TrimSpace(n.Content)
 	if content == "" {
 		raw, exists := access.ReadAny(n.InputPath)

@@ -66,7 +66,11 @@ func (n *StateTransformNode) Validate() error {
 	return nil
 }
 
-func (n *StateTransformNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *StateTransformNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *StateTransformNode) execute(ctx core.Context, access *state.Access) error {
 	inputs := make(map[string]any, len(n.InputPaths))
 	for _, name := range sortedInputNames(n.InputPaths) {
 		value, err := readRequired(access, n.InputPaths[name], NodeTypeStateTransform, n.ID(), name)

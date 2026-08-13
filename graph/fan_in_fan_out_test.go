@@ -821,8 +821,8 @@ func newTestGraph(t *testing.T, ids ...string) *Graph {
 
 func mustAddNode(t *testing.T, g *Graph, id string, fn func(context.Context, *state.Access) error) {
 	t.Helper()
-	err := g.AddNode(node.NewFuncNode(node.Spec{ID: id, Name: id}, func(ctx core.Context, access *state.Access) error {
-		return fn(ctx, access)
+	err := g.AddNode(node.NewFuncNode(node.Spec{ID: id, Name: id}, func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+		return core.Success(), fn(ctx, access)
 	}))
 	if err != nil {
 		t.Fatalf("add node %q: %v", id, err)

@@ -7,7 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
+	"github.com/dengzii/weaveflow/state"
 )
 
 func TestProviderSpecificChatRequestFields(t *testing.T) {
@@ -16,16 +17,13 @@ func TestProviderSpecificChatRequestFields(t *testing.T) {
 	tests := []struct {
 		name     string
 		provider Provider
-		options  []llms.CallOption
+		request  llms.ModelRequest
 		assert   func(*testing.T, map[string]any)
 	}{
 		{
 			name:     "openai sampling",
 			provider: ProviderOpenAI,
-			options: []llms.CallOption{
-				llms.WithMaxTokens(48),
-				llms.WithTopP(0.8),
-			},
+			request:  llms.ModelRequest{MaxTokens: 48, TopP: float64Pointer(0.8)},
 			assert: func(t *testing.T, request map[string]any) {
 				t.Helper()
 				if request["max_completion_tokens"] != float64(48) || request["top_p"] != 0.8 {
@@ -39,10 +37,7 @@ func TestProviderSpecificChatRequestFields(t *testing.T) {
 		{
 			name:     "deepseek thinking",
 			provider: ProviderDeepSeek,
-			options: []llms.CallOption{
-				llms.WithMaxTokens(64),
-				llms.WithThinkingMode(llms.ThinkingModeHigh),
-			},
+			request:  llms.ModelRequest{MaxTokens: 64, Thinking: llms.ThinkingModeHigh},
 			assert: func(t *testing.T, request map[string]any) {
 				t.Helper()
 				if request["max_tokens"] != float64(64) {
@@ -60,10 +55,7 @@ func TestProviderSpecificChatRequestFields(t *testing.T) {
 		{
 			name:     "mistral random seed",
 			provider: ProviderMistral,
-			options: []llms.CallOption{
-				llms.WithMaxTokens(32),
-				llms.WithSeed(7),
-			},
+			request:  llms.ModelRequest{MaxTokens: 32, Seed: intPointer(7)},
 			assert: func(t *testing.T, request map[string]any) {
 				t.Helper()
 				if request["max_tokens"] != float64(32) || request["random_seed"] != float64(7) {
@@ -77,9 +69,7 @@ func TestProviderSpecificChatRequestFields(t *testing.T) {
 		{
 			name:     "openrouter reasoning",
 			provider: ProviderOpenRouter,
-			options: []llms.CallOption{
-				llms.WithThinkingMode(llms.ThinkingModeMedium),
-			},
+			request:  llms.ModelRequest{Thinking: llms.ThinkingModeMedium},
 			assert: func(t *testing.T, request map[string]any) {
 				t.Helper()
 				reasoning, _ := request["reasoning"].(map[string]any)
@@ -109,11 +99,10 @@ func TestProviderSpecificChatRequestFields(t *testing.T) {
 			if err != nil {
 				t.Fatalf("new model: %v", err)
 			}
-			if _, err := model.GenerateContent(
-				context.Background(),
-				[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
-				test.options...,
-			); err != nil {
+			request := test.request
+			request.Mode = llms.ModelModeChat
+			request.Messages = []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")}
+			if _, err := model.Generate(context.Background(), request); err != nil {
 				t.Fatalf("generate content: %v", err)
 			}
 			test.assert(t, captured)
@@ -149,10 +138,10 @@ func TestAzureProviderUsesV1URLAndAPIKeyHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new model: %v", err)
 	}
-	if _, err := model.GenerateContent(
-		context.Background(),
-		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
-	); err != nil {
+	if _, err := model.Generate(context.Background(), llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
+	}); err != nil {
 		t.Fatalf("generate content: %v", err)
 	}
 	if capturedPath != "/openai/v1/chat/completions" || capturedAPIKey != "azure-key" {
@@ -194,48 +183,50 @@ func TestResponsesRequestAndResultMapping(t *testing.T) {
 		WithAPIFormat(APIFormatResponses),
 		WithBaseURL(server.URL+"/v1"),
 		WithExtraHeaders(map[string]string{"X-Provider-Option": "enabled"}),
-		WithResponseFormat(&ResponseFormat{
-			Type: "json_schema",
-			JSONSchema: &ResponseFormatJSONSchema{
-				Name:   "answer",
-				Strict: true,
-				Schema: &ResponseFormatJSONSchemaProperty{Type: "object"},
-			},
-		}),
 		WithHTTPClient(server.Client()),
 	)
 	if err != nil {
 		t.Fatalf("new model: %v", err)
 	}
 	var streamed string
-	response, err := model.GenerateContent(
-		context.Background(),
-		[]llms.MessageContent{
+	parallelToolCalls := true
+	store := false
+	request := llms.ModelRequest{
+		Mode: llms.ModelModeChat,
+		Messages: []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, "follow policy"),
 			llms.TextParts(llms.ChatMessageTypeHuman, "question"),
 		},
-		llms.WithMaxTokens(128),
-		llms.WithThinkingMode(llms.ThinkingModeHigh),
-		llms.WithTools([]llms.Tool{{
+		MaxTokens:      128,
+		Thinking:       llms.ThinkingModeHigh,
+		ResponseName:   "answer",
+		ResponseSchema: state.JSONSchema{"type": "object"},
+		StrictResponse: true,
+		Tools: []llms.ToolDefinition{{
 			Type: "function",
 			Function: &llms.FunctionDefinition{
 				Name:       "lookup",
-				Parameters: map[string]any{"type": "object"},
+				Parameters: state.JSONSchema{"type": "object"},
 				Strict:     true,
 			},
-		}}),
-		WithParallelToolCalls(true),
-		WithServiceTier("priority"),
-		WithStore(false),
-		WithVerbosity("low"),
-		WithPromptCacheKey("cache-key"),
-		WithSafetyIdentifier("user-1"),
-		WithRequestExtraBody(map[string]any{"include": []any{"reasoning.encrypted_content"}}),
-		llms.WithStreamingFunc(func(_ context.Context, chunk []byte) error {
-			streamed += string(chunk)
+		}},
+		Stream: func(_ context.Context, event llms.ModelStreamEvent) error {
+			if event.Type == llms.ModelStreamContent {
+				streamed += event.Text
+			}
 			return nil
-		}),
-	)
+		},
+	}
+	ApplyRequestOptions(&request, RequestOptions{
+		ParallelToolCalls: &parallelToolCalls,
+		ServiceTier:       "priority",
+		Store:             &store,
+		Verbosity:         "low",
+		PromptCacheKey:    "cache-key",
+		SafetyIdentifier:  "user-1",
+		ExtraBody:         map[string]any{"include": []any{"reasoning.encrypted_content"}},
+	})
+	response, err := model.Generate(context.Background(), request)
 	if err != nil {
 		t.Fatalf("generate content: %v", err)
 	}
@@ -278,10 +269,14 @@ func TestResponsesRequestAndResultMapping(t *testing.T) {
 	if len(choice.ToolCalls) != 1 || choice.ToolCalls[0].ID != "call_1" {
 		t.Fatalf("tool calls = %#v", choice.ToolCalls)
 	}
-	if choice.GenerationInfo["PromptCachedTokens"] != 4 {
-		t.Fatalf("generation info = %#v", choice.GenerationInfo)
+	if response.Usage.CachedInputTokens != 4 || response.Usage.ReasoningTokens != 3 {
+		t.Fatalf("usage = %#v", response.Usage)
 	}
 }
+
+func float64Pointer(value float64) *float64 { return &value }
+
+func intPointer(value int) *int { return &value }
 
 func newChatTestServer(t *testing.T, captured *map[string]any) *httptest.Server {
 	t.Helper()

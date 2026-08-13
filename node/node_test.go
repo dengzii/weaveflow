@@ -2,6 +2,7 @@ package node
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"reflect"
 	"strings"
@@ -13,10 +14,9 @@ import (
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 func TestUserInputRequiresResumePath(t *testing.T) {
@@ -152,7 +152,7 @@ func TestLLMTurnWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	_ = view.SetMaxIterations(3)
 	initial = access.State()
 
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "answer"}}}}}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "answer"}}}}}
 	ctx := core.WithModel(context.Background(), model)
 	target := NewLLMTurnNode(WithID("llm"))
 	target.ConversationPath = root
@@ -166,12 +166,11 @@ func TestLLMTurnWritesConversationAndOptionalOutputOnly(t *testing.T) {
 	if answer != "answer" {
 		t.Fatalf("output = %#v", answer)
 	}
-	if len(model.options) != 1 {
-		t.Fatalf("model calls = %d, want 1", len(model.options))
+	if len(model.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(model.requests))
 	}
-	thinkingConfig := llms.GetThinkingConfig(&model.options[0])
-	if thinkingConfig == nil || thinkingConfig.Mode != llms.ThinkingModeLow {
-		t.Fatalf("thinking config = %#v, want low reasoning effort", thinkingConfig)
+	if model.requests[0].Thinking != llms.ThinkingModeLow {
+		t.Fatalf("thinking = %q, want low", model.requests[0].Thinking)
 	}
 	if _, ok := state.ReadPath(result.State, "shared.execution"); ok {
 		t.Fatal("generic LLM touched plan execution state")
@@ -191,7 +190,7 @@ func TestLLMTurnContinuesAfterConversationMaxIterations(t *testing.T) {
 	_ = view.SetMaxIterations(1)
 	_ = view.SetIterationCount(1)
 
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "answer"}}}}}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "answer"}}}}}
 	ctx := core.WithModel(context.Background(), model)
 	target := NewLLMTurnNode(WithID("llm"))
 	target.ConversationPath = root
@@ -200,8 +199,8 @@ func TestLLMTurnContinuesAfterConversationMaxIterations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if len(model.options) != 1 {
-		t.Fatalf("model calls = %d, want 1", len(model.options))
+	if len(model.requests) != 1 {
+		t.Fatalf("model calls = %d, want 1", len(model.requests))
 	}
 	restored, _ := conversationcap.Bind(state.NewAccess(result.State), root)
 	if restored.FinalAnswer() != "answer" || restored.IterationCount() != 2 {
@@ -249,7 +248,7 @@ func TestLLMTurnOnlyInjectsConfiguredTools(t *testing.T) {
 			_ = view.SetMessages([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")})
 			_ = view.SetMaxIterations(3)
 
-			model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: "answer"}}}}}
+			model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "answer"}}}}}
 			availableTools := map[string]core.Tool{
 				"echo":  core.NewTool(&llms.FunctionDefinition{Name: "echo"}, nil),
 				"other": core.NewTool(&llms.FunctionDefinition{Name: "other"}, nil),
@@ -262,11 +261,11 @@ func TestLLMTurnOnlyInjectsConfiguredTools(t *testing.T) {
 			if _, err := Execute(ctx, access.State(), target); err != nil {
 				t.Fatalf("execute: %v", err)
 			}
-			if len(model.options) != 1 {
-				t.Fatalf("model calls = %d, want 1", len(model.options))
+			if len(model.requests) != 1 {
+				t.Fatalf("model calls = %d, want 1", len(model.requests))
 			}
-			gotToolIDs := make([]string, 0, len(model.options[0].Tools))
-			for _, tool := range model.options[0].Tools {
+			gotToolIDs := make([]string, 0, len(model.requests[0].Tools))
+			for _, tool := range model.requests[0].Tools {
 				if tool.Function != nil {
 					gotToolIDs = append(gotToolIDs, tool.Function.Name)
 				}
@@ -287,7 +286,7 @@ func TestTextGenerationUsesRawPromptAndWritesOutput(t *testing.T) {
 	if err := access.SetAny(promptPath, "complete this"); err != nil {
 		t.Fatalf("set prompt: %v", err)
 	}
-	model := &scriptedModel{responses: []*llms.ContentResponse{{Choices: []*llms.ContentChoice{{Content: " result"}}}}}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: " result"}}}}}
 	target := NewTextGenerationNode(WithID("text_generation"))
 	target.PromptPath = promptPath
 	target.OutputPath = outputPath
@@ -304,22 +303,18 @@ func TestTextGenerationUsesRawPromptAndWritesOutput(t *testing.T) {
 	if value != " result" {
 		t.Fatalf("output = %#v", value)
 	}
-	if len(model.completionPrompts) != 1 || model.completionPrompts[0] != "complete this" {
-		t.Fatalf("completion prompts = %#v", model.completionPrompts)
+	if len(model.requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(model.requests))
 	}
-	if len(model.calls) != 0 {
-		t.Fatalf("chat calls = %d, want 0", len(model.calls))
+	request := model.requests[0]
+	if request.Mode != llms.ModelModeCompletion || request.Prompt != "complete this" {
+		t.Fatalf("completion request = %#v", request)
 	}
-	if len(model.completionOptions) != 1 {
-		t.Fatalf("completion options = %d, want 1", len(model.completionOptions))
+	if request.MaxTokens != 32 || request.Temperature == nil || *request.Temperature != 0.2 || len(request.StopWords) != 1 || request.StopWords[0] != "END" {
+		t.Fatalf("completion options = %#v", request)
 	}
-	options := model.completionOptions[0]
-	if options.MaxTokens != 32 || options.Temperature != 0.2 || len(options.StopWords) != 1 || options.StopWords[0] != "END" {
-		t.Fatalf("completion options = %#v", options)
-	}
-	thinkingConfig := llms.GetThinkingConfig(&options)
-	if thinkingConfig == nil || thinkingConfig.Mode != llms.ThinkingModeMedium {
-		t.Fatalf("thinking config = %#v, want medium reasoning effort", thinkingConfig)
+	if request.Thinking != llms.ThinkingModeMedium {
+		t.Fatalf("thinking = %q, want medium", request.Thinking)
 	}
 }
 
@@ -428,10 +423,12 @@ func TestToolExecutionUsesSameExplicitConversationRoot(t *testing.T) {
 	access := state.NewEditingAccess(initial)
 	view, _ := conversationcap.Bind(access, root)
 	_ = view.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
-		llms.ToolCall{ID: "call", Type: "function", FunctionCall: &llms.FunctionCall{Name: "echo", Arguments: `{"value":"ok"}`}},
+		llms.ToolCall{ID: "call", Type: "function", FunctionCall: &llms.FunctionCall{Name: "echo", Arguments: json.RawMessage(`{"value":"ok"}`)}},
 	}}})
 	initial = access.State()
-	tool := core.NewTool(&llms.FunctionDefinition{Name: "echo"}, func(context.Context, string) (string, error) { return "ok", nil })
+	tool := core.NewTool(&llms.FunctionDefinition{Name: "echo"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+		return llms.ToolResult{ToolCallID: call.ID, Content: "ok"}, nil
+	})
 	target := NewToolExecutionNode(WithID("tools"))
 	target.ConversationPath = root
 	ctx := core.WithTools(context.Background(), map[string]core.Tool{"echo": tool})
@@ -451,15 +448,15 @@ func TestToolExecutionHonorsGraphToolConcurrencyLimiter(t *testing.T) {
 	access := state.NewEditingAccess(state.NewState())
 	view, _ := conversationcap.Bind(access, root)
 	_ = view.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeAI, Parts: []llms.ContentPart{
-		llms.ToolCall{ID: "first", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: `{}`}},
-		llms.ToolCall{ID: "second", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: `{}`}},
+		llms.ToolCall{ID: "first", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: json.RawMessage(`{}`)}},
+		llms.ToolCall{ID: "second", Type: "function", FunctionCall: &llms.FunctionCall{Name: "blocked", Arguments: json.RawMessage(`{}`)}},
 	}}})
 
 	started := make(chan struct{}, 2)
 	release := make(chan struct{})
 	var active atomic.Int32
 	var maximumActive atomic.Int32
-	tool := core.NewTool(&llms.FunctionDefinition{Name: "blocked"}, func(context.Context, string) (string, error) {
+	tool := core.NewTool(&llms.FunctionDefinition{Name: "blocked"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 		current := active.Add(1)
 		for {
 			maximum := maximumActive.Load()
@@ -470,7 +467,7 @@ func TestToolExecutionHonorsGraphToolConcurrencyLimiter(t *testing.T) {
 		started <- struct{}{}
 		<-release
 		active.Add(-1)
-		return "ok", nil
+		return llms.ToolResult{ToolCallID: call.ID, Content: "ok"}, nil
 	})
 	target := NewToolExecutionNode(WithID("tools"))
 	target.ConversationPath = root
@@ -513,47 +510,21 @@ func TestToolExecutionHonorsGraphToolConcurrencyLimiter(t *testing.T) {
 }
 
 type scriptedModel struct {
-	mu                sync.Mutex
-	responses         []*llms.ContentResponse
-	calls             [][]llms.MessageContent
-	options           []llms.CallOptions
-	completionPrompts []string
-	completionOptions []llms.CallOptions
+	mu        sync.Mutex
+	responses []*llms.ModelResponse
+	requests  []llms.ModelRequest
 }
 
-func (m *scriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *scriptedModel) Generate(_ context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.responses) == 0 {
 		return nil, errors.New("scripted model exhausted")
 	}
-	callOptions := llms.CallOptions{}
-	for _, option := range options {
-		option(&callOptions)
-	}
-	m.calls = append(m.calls, cloneMessages(messages))
-	m.options = append(m.options, callOptions)
-	response := m.responses[0]
-	m.responses = m.responses[1:]
-	return response, nil
-}
-
-func (m *scriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", errors.New("scripted model Call is not supported")
-}
-
-func (m *scriptedModel) GenerateCompletion(_ context.Context, prompt string, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if len(m.responses) == 0 {
-		return nil, errors.New("scripted model exhausted")
-	}
-	callOptions := llms.CallOptions{}
-	for _, option := range options {
-		option(&callOptions)
-	}
-	m.completionPrompts = append(m.completionPrompts, prompt)
-	m.completionOptions = append(m.completionOptions, callOptions)
+	request.Messages = cloneMessages(request.Messages)
+	request.Tools = append([]llms.ToolDefinition(nil), request.Tools...)
+	request.StopWords = append([]string(nil), request.StopWords...)
+	m.requests = append(m.requests, request)
 	response := m.responses[0]
 	m.responses = m.responses[1:]
 	return response, nil
@@ -561,10 +532,9 @@ func (m *scriptedModel) GenerateCompletion(_ context.Context, prompt string, opt
 
 type chatOnlyModel struct{}
 
-func (chatOnlyModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
+func (chatOnlyModel) Generate(_ context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
+	if request.Mode == llms.ModelModeCompletion {
+		return nil, errors.New("model does not support text generation")
+	}
 	return nil, errors.New("not implemented")
-}
-
-func (chatOnlyModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", errors.New("not implemented")
 }

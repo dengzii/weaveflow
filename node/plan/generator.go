@@ -14,7 +14,7 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -181,7 +181,11 @@ func PlanGeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanGeneratorNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *PlanGeneratorNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("plan generator node: model %q not available", effectiveModelID(n.ModelID))
@@ -227,14 +231,20 @@ func (n *PlanGeneratorNode) Execute(ctx core.Context, access *state.Access) erro
 	if err != nil {
 		return fmt.Errorf("plan generator node: encode prompt: %w", err)
 	}
-	response, err := model.GenerateContent(ctx, []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
-		llms.TextParts(llms.ChatMessageTypeHuman, "Create the execution plan from this JSON payload:\n\n"+string(prompt)),
-	},
-		llms.WithJSONMode(),
-		llms.WithThinkingMode(llms.ThinkingModeNone),
-		llms.WithTemperature(0.2),
-	)
+	temperature := 0.2
+	response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+		ModelID: effectiveModelID(n.ModelID),
+		Mode:    llms.ModelModeChat,
+		Messages: []llms.MessageContent{
+			llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
+			llms.TextParts(llms.ChatMessageTypeHuman, "Create the execution plan from this JSON payload:\n\n"+string(prompt)),
+		},
+		Thinking:       llms.ThinkingModeNone,
+		Temperature:    &temperature,
+		ResponseName:   "execution_plan",
+		ResponseSchema: planModelOutputSchema(),
+		StrictResponse: true,
+	})
 	if err != nil {
 		return fmt.Errorf("plan generator node: generate plan: %w", err)
 	}

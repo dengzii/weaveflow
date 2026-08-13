@@ -82,11 +82,12 @@ func (s *Server) handleGetRetentionAudit(c *gin.Context) {
 }
 
 type graphCacheReader struct {
-	executionStores  []*runtime.FileExecutionStore
-	checkpointStores []*runtime.FileCheckpointStore
-	artifactStores   []*runtime.FileArtifactStore
-	eventSinks       []*runtime.FileEventSink
-	codec            state.StateCodec
+	executionStores   []*runtime.FileExecutionStore
+	checkpointStores  []*runtime.FileCheckpointStore
+	artifactStores    []*runtime.FileArtifactStore
+	eventSinks        []*runtime.FileEventSink
+	transactionStores []*runtime.FileRuntimeStore
+	codec             state.StateCodec
 }
 
 type combinedRunReader struct {
@@ -281,10 +282,15 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 	}
 	graphDir := graphStorageDirectory(s.baseDir, graphID)
 	historyDir := filepath.Join(graphDir, "history")
+	historyRuntimeStore, err := runtime.NewFileRuntimeStore(historyDir)
+	if err != nil {
+		return nil, err
+	}
 	reader.executionStores = append(reader.executionStores, runtime.NewFileExecutionStore(filepath.Join(historyDir, "execution")))
 	reader.checkpointStores = append(reader.checkpointStores, runtime.NewFileCheckpointStore(filepath.Join(historyDir, "checkpoints")))
 	reader.artifactStores = append(reader.artifactStores, runtime.NewFileArtifactStore(filepath.Join(historyDir, "artifacts")))
 	reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(historyDir, "events")))
+	reader.transactionStores = append(reader.transactionStores, historyRuntimeStore)
 	sessions, err := os.ReadDir(graphDir)
 	if os.IsNotExist(err) {
 		return reader, nil
@@ -304,10 +310,15 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 			continue
 		}
 		base := filepath.Join(graphDir, sess.Name())
+		transactionStore, err := runtime.NewFileRuntimeStore(base)
+		if err != nil {
+			return nil, err
+		}
 		reader.executionStores = append(reader.executionStores, runtime.NewFileExecutionStore(filepath.Join(base, "execution")))
 		reader.checkpointStores = append(reader.checkpointStores, runtime.NewFileCheckpointStore(filepath.Join(base, "checkpoints")))
 		reader.artifactStores = append(reader.artifactStores, runtime.NewFileArtifactStore(filepath.Join(base, "artifacts")))
 		reader.eventSinks = append(reader.eventSinks, runtime.NewFileEventSink(filepath.Join(base, "events")))
+		reader.transactionStores = append(reader.transactionStores, transactionStore)
 	}
 	return reader, nil
 }
@@ -345,18 +356,14 @@ func (s *Server) markCachedRunExecutionLost(ctx context.Context, reader *graphCa
 	if reader == nil || index < 0 || index >= len(reader.executionStores) {
 		return runtime.RunRecord{}, runtime.ErrRunnerRecordNotFound
 	}
+	if index >= len(reader.transactionStores) {
+		return runtime.RunRecord{}, fmt.Errorf("runtime transaction store %d is missing", index)
+	}
 	eventSink := runtime.EventSink(nil)
-	if index < len(reader.eventSinks) {
-		eventSink = reader.eventSinks[index]
-	}
 	if s.events != nil {
-		if eventSink == nil {
-			eventSink = s.events
-		} else {
-			eventSink = runtime.NewCombineEventSink(eventSink, s.events)
-		}
+		eventSink = s.events
 	}
-	control, err := runtime.NewRunControlService(reader.executionStores[index], eventSink, nil)
+	control, err := runtime.NewRunControlService(reader.executionStores[index], reader.transactionStores[index], eventSink, nil)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
@@ -544,18 +551,10 @@ func (r *graphCacheReader) cancelPausedRun(ctx context.Context, runID string, ex
 		case runtime.RunStatusCanceled:
 			return run, nil
 		case runtime.RunStatusPaused:
-			eventSink := runtime.EventSink(nil)
-			if index < len(r.eventSinks) {
-				eventSink = r.eventSinks[index]
+			if index >= len(r.transactionStores) {
+				return runtime.RunRecord{}, fmt.Errorf("runtime transaction store %d is missing", index)
 			}
-			if extraSink != nil {
-				if eventSink == nil {
-					eventSink = extraSink
-				} else {
-					eventSink = runtime.NewCombineEventSink(eventSink, extraSink)
-				}
-			}
-			control, err := runtime.NewRunControlService(store, eventSink, nil)
+			control, err := runtime.NewRunControlService(store, r.transactionStores[index], extraSink, nil)
 			if err != nil {
 				return runtime.RunRecord{}, err
 			}
@@ -584,7 +583,10 @@ func (r *graphCacheReader) deleteRun(ctx context.Context, runID string) (runtime
 			eventSink = r.eventSinks[index]
 		}
 		deleter := runtime.NewRunDeletionCoordinator(store, checkpointStore, eventStore, artifactStore)
-		control, err := runtime.NewRunControlService(store, eventSink, deleter)
+		if index >= len(r.transactionStores) {
+			return runtime.RunRecord{}, fmt.Errorf("runtime transaction store %d is missing", index)
+		}
+		control, err := runtime.NewRunControlService(store, r.transactionStores[index], eventSink, deleter)
 		if err != nil {
 			return runtime.RunRecord{}, err
 		}

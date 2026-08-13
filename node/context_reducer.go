@@ -13,7 +13,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -124,7 +124,11 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *ContextReducerNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *ContextReducerNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *ContextReducerNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model()
 	if model == nil {
 		return errors.New("context reducer: model service not available")
@@ -187,16 +191,21 @@ func (n *ContextReducerNode) reduceMessages(ctx context.Context, model llms.Mode
 		return "", errors.New("context reducer transcript is empty")
 	}
 
-	resp, err := model.GenerateContent(
+	temperature := 0.0
+	resp, err := core.GenerateModel(
 		ctx,
-		[]llms.MessageContent{
-			llms.TextParts(llms.ChatMessageTypeSystem, contextReducerSystemPrompt),
-			llms.TextParts(
-				llms.ChatMessageTypeHuman,
-				"Summarize the following earlier conversation for future turns.\n\n"+transcript,
-			),
+		model,
+		llms.ModelRequest{
+			Mode: llms.ModelModeChat,
+			Messages: []llms.MessageContent{
+				llms.TextParts(llms.ChatMessageTypeSystem, contextReducerSystemPrompt),
+				llms.TextParts(
+					llms.ChatMessageTypeHuman,
+					"Summarize the following earlier conversation for future turns.\n\n"+transcript,
+				),
+			},
+			Temperature: &temperature,
 		},
-		llms.WithTemperature(0),
 	)
 	if err != nil {
 		return "", err

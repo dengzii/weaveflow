@@ -133,7 +133,35 @@ func (r *GraphRunner) publishBestEffortEvent(
 	eventType EventType,
 	payload any,
 ) {
-	if err := r.publishEvent(ctx, run, stepID, nodeID, eventType, payload); err != nil {
+	metadata, _ := RunnerMetadataFromContext(ctx)
+	if run.RunID == "" {
+		run.RunID = metadata.RunID
+	}
+	if run.ParentRunID == "" {
+		run.ParentRunID = metadata.ParentRunID
+	}
+	if run.ParentStepID == "" {
+		run.ParentStepID = metadata.ParentStepID
+	}
+	if run.ParentTaskID == "" {
+		run.ParentTaskID = metadata.ParentTaskID
+	}
+	if run.RootRunID == "" {
+		run.RootRunID = metadata.RootRunID
+	}
+	if len(run.RunPath) == 0 {
+		run.RunPath = append([]string(nil), metadata.RunPath...)
+	}
+	if run.Namespace == "" {
+		run.Namespace = metadata.Namespace
+	}
+	if stepID == "" {
+		stepID = metadata.StepID
+	}
+	if nodeID == "" {
+		nodeID = metadata.NodeID
+	}
+	if err := r.publishEventWithTask(ctx, run, stepID, metadata.TaskID, nodeID, eventType, payload); err != nil {
 		r.recordBestEffortEventFailure(eventType, err)
 	}
 }

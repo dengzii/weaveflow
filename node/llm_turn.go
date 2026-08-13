@@ -14,7 +14,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -140,7 +140,11 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *LLMTurnNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *LLMTurnNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("llm turn node: model %q not available", effectiveModelID(n.ModelID))
@@ -160,19 +164,24 @@ func (n *LLMTurnNode) Execute(ctx core.Context, access *state.Access) error {
 	messages := conversation.Messages()
 	promptMessages := trimLLMPromptMessages(messages, n.effectivePromptMaxChars())
 
-	var toolSets []llms.Tool
+	var toolSets []llms.ToolDefinition
 	for _, tool := range nodeTools {
-		toolSets = append(toolSets, tool.NewTool())
+		toolSets = append(toolSets, tool.Definition())
 	}
 	if payload, err := buildLLMPromptArtifact(promptMessages, toolSets, n.ConversationPath.String(), conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.prompt", payload)
 	}
 
-	resp, err := model.GenerateContent(
+	resp, err := core.GenerateModel(
 		ctx,
-		promptMessages,
-		llms.WithTools(toolSets),
-		llms.WithThinkingMode(llms.ThinkingMode(n.effectiveReasoningEffort())),
+		model,
+		llms.ModelRequest{
+			ModelID:  effectiveModelID(n.ModelID),
+			Mode:     llms.ModelModeChat,
+			Messages: promptMessages,
+			Tools:    toolSets,
+			Thinking: llms.ThinkingMode(n.effectiveReasoningEffort()),
+		},
 	)
 	if err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.error", map[string]any{"error": err.Error()})

@@ -45,7 +45,11 @@ func (n *SetFinalAnswerNode) Validate() error {
 	return nil
 }
 
-func (n *SetFinalAnswerNode) Execute(_ core.Context, access *state.Access) error {
+func (n *SetFinalAnswerNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *SetFinalAnswerNode) execute(_ core.Context, access *state.Access) error {
 	answer := n.Answer
 	if n.FromRequest {
 		value, err := state.Get(access, state.NewRef[string](n.InputPath))

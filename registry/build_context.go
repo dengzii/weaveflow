@@ -5,17 +5,18 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
 
-type SubgraphRunner func(context.Context, *state.State) (*state.State, error)
+type ChildRunRunner func(context.Context, fruntime.ChildRunRequest, *state.State) (fruntime.ChildRunResult, error)
 
-type SubgraphBuilder func(graphRef string) (SubgraphRunner, error)
+type ChildRunBuilder func(graphRef string) (ChildRunRunner, error)
 
 type BuildContext struct {
 	InstanceConfig       *dsl.GraphInstanceConfig
 	GraphResolver        GraphResolver
-	SubgraphBuilder      SubgraphBuilder
+	ChildRunBuilder      ChildRunBuilder
 	OnContractDiagnostic func(core.ContractDiagnostic)
 }
 
@@ -44,7 +45,7 @@ func (ctx *BuildContext) Clone() *BuildContext {
 	return &BuildContext{
 		InstanceConfig:       ctx.InstanceConfig,
 		GraphResolver:        ctx.GraphResolver,
-		SubgraphBuilder:      ctx.SubgraphBuilder,
+		ChildRunBuilder:      ctx.ChildRunBuilder,
 		OnContractDiagnostic: ctx.OnContractDiagnostic,
 	}
 }

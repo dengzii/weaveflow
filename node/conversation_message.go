@@ -11,7 +11,7 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type ConversationMessageNode struct {
@@ -103,7 +103,11 @@ func ConversationMessageNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *ConversationMessageNode) Execute(_ core.Context, access *state.Access) error {
+func (n *ConversationMessageNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *ConversationMessageNode) execute(_ core.Context, access *state.Access) error {
 	content := strings.TrimSpace(n.Content)
 	if content == "" {
 		raw, exists := access.ReadAny(n.InputPath)

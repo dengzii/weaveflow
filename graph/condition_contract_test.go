@@ -97,8 +97,8 @@ func conditionContractRegistry(t *testing.T) *registry.Registry {
 			}},
 		},
 		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
-			return node.NewFuncNode(node.Spec{ID: resolved.Spec.ID}, func(core.Context, *state.Access) error {
-				return nil
+			return node.NewFuncNode(node.Spec{ID: resolved.Spec.ID}, func(core.Context, *state.Access) (core.NodeResult, error) {
+				return core.Success(), nil
 			}), nil
 		},
 	}); err != nil {

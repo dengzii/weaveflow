@@ -2,17 +2,15 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"strings"
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type agentToolInput struct {
@@ -54,34 +52,40 @@ func NewTool(config ToolConfig) (core.Tool, error) {
 				"required":             []string{"task"},
 				"additionalProperties": false,
 			},
+			OutputSchema: state.JSONSchema{"type": "string"},
 		},
 		ExecutionMode: core.ToolExecutionComposite,
-		Handler: func(ctx context.Context, input string) (string, error) {
-			task, err := decodeAgentToolInput(input)
-			if err != nil {
-				return "", err
+		Handler: func(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+			var input agentToolInput
+			if err := core.DecodeToolArguments(call, &input); err != nil {
+				return llms.ToolResult{}, err
+			}
+			task := strings.TrimSpace(input.Task)
+			if task == "" {
+				return llms.ToolResult{}, errors.New("agent tool: task is required")
 			}
 
 			coreCtx := core.NewContext(ctx)
 			if coreCtx.Model(normalized.Agent.ModelID) == nil {
-				return "", fmt.Errorf("agent tool: model %q not available", effectiveModelID(normalized.Agent.ModelID))
+				return llms.ToolResult{}, fmt.Errorf("agent tool: model %q not available", effectiveModelID(normalized.Agent.ModelID))
 			}
 
 			access := state.NewEditingAccess(state.NewState())
 			conversation, err := conversationcap.Bind(access, state.Shared("agent_tool", "conversation"))
 			if err != nil {
-				return "", err
+				return llms.ToolResult{}, err
 			}
 			if err := conversation.SetMaxIterations(runner.effectiveMaxIterations(conversation)); err != nil {
-				return "", err
+				return llms.ToolResult{}, err
 			}
 			if err := runner.seedConversation(conversation, task); err != nil {
-				return "", err
+				return llms.ToolResult{}, err
 			}
 			if err := runner.runLoop(coreCtx, conversation); err != nil {
-				return "", err
+				return llms.ToolResult{}, err
 			}
-			return conversation.FinalAnswer(), nil
+			answer := conversation.FinalAnswer()
+			return llms.ToolResult{Content: answer, Value: answer}, nil
 		},
 	}
 	return tool, nil
@@ -122,24 +126,4 @@ func normalizeToolConfig(config ToolConfig) (ToolConfig, error) {
 	}
 	config.Agent.ToolIDs = toolIDs
 	return config, nil
-}
-
-func decodeAgentToolInput(input string) (string, error) {
-	decoder := json.NewDecoder(strings.NewReader(strings.TrimSpace(input)))
-	decoder.DisallowUnknownFields()
-	var payload agentToolInput
-	if err := decoder.Decode(&payload); err != nil {
-		return "", fmt.Errorf("agent tool input must be valid JSON: %w", err)
-	}
-	if err := decoder.Decode(&struct{}{}); err != io.EOF {
-		if err == nil {
-			return "", errors.New("agent tool input contains multiple JSON values")
-		}
-		return "", fmt.Errorf("agent tool input must contain one JSON value: %w", err)
-	}
-	task := strings.TrimSpace(payload.Task)
-	if task == "" {
-		return "", errors.New("agent tool: task is required")
-	}
-	return task, nil
 }

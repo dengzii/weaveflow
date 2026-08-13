@@ -9,8 +9,8 @@ import (
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/capability/conversation"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/runtime"
-	"github.com/tmc/langchaingo/llms"
 )
 
 var persistedChatMetadataKeys = map[string]struct{}{

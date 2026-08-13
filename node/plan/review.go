@@ -92,7 +92,11 @@ func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanReviewNode) Execute(_ core.Context, access *state.Access) error {
+func (n *PlanReviewNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *PlanReviewNode) execute(_ core.Context, access *state.Access) error {
 	planner, err := plancap.Bind(access, n.PlanPath)
 	if err != nil {
 		return err

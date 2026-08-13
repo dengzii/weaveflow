@@ -17,6 +17,7 @@ type ResolvedGraphBindings struct {
 	NodeContracts              map[string]state.Contract
 	ConditionContracts         map[int]state.Contract
 	ConditionContractsBySource map[string]state.Contract
+	StateSchemas               map[string]state.JSONSchema
 	InitialStatePaths          []string
 }
 
@@ -42,6 +43,7 @@ func ResolveGraphBindings(def dsl.GraphDefinition, reg *registry.Registry) (Reso
 		NodeContracts:              make(map[string]state.Contract, len(def.Nodes)),
 		ConditionContracts:         map[int]state.Contract{},
 		ConditionContractsBySource: map[string]state.Contract{},
+		StateSchemas:               cloneStateSchemas(resolver.fields),
 		InitialStatePaths:          sortedFieldPaths(resolver.fields),
 	}
 	for _, spec := range def.Nodes {
@@ -236,12 +238,17 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 
 		resolved := registry.ResolvedStateBinding{Path: path, Capability: strings.TrimSpace(port.Capability)}
 		if resolved.Capability == "" {
+			fieldSchema := port.Schema.Clone()
+			if moduleField, ok := r.fields[path.String()]; ok && len(moduleField.Schema) > 0 {
+				fieldSchema = moduleField.Schema.Clone()
+			}
 			resolved.Contract = state.NewContract(state.FieldAccess{
 				Path:        path,
 				Mode:        state.AccessMode(port.Mode),
 				Required:    port.Required && canRead(port.Mode),
 				Merge:       effectiveMerge(state.MergeStrategy(port.MergeStrategy)),
 				Type:        schemaType(port.Schema),
+				Schema:      state.JSONSchema(fieldSchema),
 				Description: port.Description,
 			})
 			if field, ok := r.fields[path.String()]; ok && !schemasCompatible(field.Schema, port.Schema) {
@@ -338,6 +345,7 @@ func expandCapabilityContract(root state.Path, capability dsl.StateCapabilityDef
 			Required:    reference.Required && canRead(reference.Mode),
 			Merge:       state.MergeStrategy(field.MergeStrategy),
 			Type:        schemaType(field.Schema),
+			Schema:      state.JSONSchema(field.Schema.Clone()),
 			Description: description,
 		})
 	}
@@ -369,6 +377,11 @@ func mergeContracts(left, right state.Contract) (state.Contract, error) {
 		existing.Required = existing.Required || field.Required
 		if existing.Type == "" {
 			existing.Type = field.Type
+		}
+		if len(existing.Schema) == 0 {
+			existing.Schema = field.Schema.Clone()
+		} else if len(field.Schema) > 0 && !schemasCompatible(dsl.JSONSchema(existing.Schema), dsl.JSONSchema(field.Schema)) {
+			return state.Contract{}, fmt.Errorf("state path %q has incompatible schemas", key)
 		}
 		existing.Merge = effectiveMerge(existing.Merge)
 		result.Fields[index] = existing
@@ -415,4 +428,15 @@ func sortedFieldPaths(fields map[string]dsl.StateFieldDefinition) []string {
 	}
 	sort.Strings(paths)
 	return paths
+}
+
+func cloneStateSchemas(fields map[string]dsl.StateFieldDefinition) map[string]state.JSONSchema {
+	if len(fields) == 0 {
+		return nil
+	}
+	schemas := make(map[string]state.JSONSchema, len(fields))
+	for path, field := range fields {
+		schemas[path] = state.JSONSchema(field.Schema.Clone())
+	}
+	return schemas
 }

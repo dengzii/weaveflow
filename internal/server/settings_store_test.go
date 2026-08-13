@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,9 +11,9 @@ import (
 	"testing"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 
 	"github.com/gin-gonic/gin"
-	"github.com/tmc/langchaingo/llms"
 )
 
 func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
@@ -139,6 +140,120 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	}
 }
 
+func TestGraphRuntimeSettingsRebuildsModelPricingAndToolGovernance(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	providerServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id":"chatcmpl-settings",
+			"object":"chat.completion",
+			"model":"priced-model",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}],
+			"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":150}
+		}`))
+	}))
+	defer providerServer.Close()
+
+	handled := 0
+	tool := core.Tool{
+		Function:    &llms.FunctionDefinition{Name: "write_file"},
+		Permissions: []string{"filesystem.write"},
+		Approval:    core.ToolApprovalRequired,
+		Handler: func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+			handled++
+			return llms.ToolResult{ToolCallID: call.ID, Content: "written"}, nil
+		},
+	}
+	srv, err := New(context.Background(), Config{
+		BaseDir: t.TempDir(),
+		RuntimeContextDecorators: []RuntimeContextDecorator{
+			func(ctx context.Context) context.Context {
+				return core.WithTools(ctx, map[string]core.Tool{"write_file": tool})
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	wantSettings := graphRuntimeSettings{
+		Environment: map[string]string{"WEAVEFLOW_SETTINGS_TEST": "persisted"},
+		Models: []graphModelSettings{{
+			ID:       core.DefaultModelID,
+			Enabled:  true,
+			Provider: "openai",
+			Model:    "priced-model",
+			BaseURL:  providerServer.URL + "/v1",
+			Pricing: llms.ModelPricing{
+				Currency:         "usd",
+				InputPerMillion:  2,
+				OutputPerMillion: 4,
+			},
+		}},
+		ToolPermissions: []string{"filesystem.write"},
+		ToolApprovals:   map[string]bool{"write_file": true},
+	}
+	if err := persistGraphRuntimeSettings(srv.baseDir, wantSettings); err != nil {
+		t.Fatalf("persistGraphRuntimeSettings() error = %v", err)
+	}
+	gotSettings, found, err := loadGraphRuntimeSettings(srv.baseDir)
+	if err != nil {
+		t.Fatalf("loadGraphRuntimeSettings() error = %v", err)
+	}
+	if !found {
+		t.Fatal("loadGraphRuntimeSettings() did not find persisted settings")
+	}
+	if gotSettings.Models[0].Pricing != (llms.ModelPricing{
+		Currency:         "USD",
+		InputPerMillion:  2,
+		OutputPerMillion: 4,
+	}) {
+		t.Fatalf("persisted pricing = %#v", gotSettings.Models[0].Pricing)
+	}
+	if strings.Join(gotSettings.ToolPermissions, ",") != "filesystem.write" || !gotSettings.ToolApprovals["write_file"] {
+		t.Fatalf("persisted tool governance = permissions=%#v approvals=%#v", gotSettings.ToolPermissions, gotSettings.ToolApprovals)
+	}
+
+	runtimeContext, err := srv.buildRuntimeContext(gotSettings, "test-key")
+	if err != nil {
+		t.Fatalf("buildRuntimeContext() error = %v", err)
+	}
+	permissions, configured := core.ToolPermissionsFromContext(runtimeContext)
+	if !configured || strings.Join(permissions, ",") != "filesystem.write" {
+		t.Fatalf("rebuilt tool permissions = %#v, configured=%v", permissions, configured)
+	}
+	model := core.NewContext(runtimeContext).Model()
+	if model == nil {
+		t.Fatal("rebuilt model is nil")
+	}
+	response, err := core.GenerateModel(runtimeContext, model, llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
+	})
+	if err != nil {
+		t.Fatalf("GenerateModel() error = %v", err)
+	}
+	if response.Cost == nil || response.Cost.Currency != "USD" || math.Abs(response.Cost.Total-0.0004) > 1e-12 {
+		t.Fatalf("rebuilt model cost = %#v", response.Cost)
+	}
+
+	rebuiltTool, ok := core.ToolsFromContext(runtimeContext)["write_file"]
+	if !ok {
+		t.Fatal("rebuilt tool is missing")
+	}
+	result, err := core.ExecuteTool(runtimeContext, rebuiltTool, llms.ToolCall{
+		ID:   "settings-call",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{}`),
+		},
+	})
+	if err != nil || result.Content != "written" || handled != 1 {
+		t.Fatalf("rebuilt tool execution = result=%#v err=%v handled=%d", result, err, handled)
+	}
+}
+
 func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	var captured map[string]any
@@ -180,12 +295,12 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 	if model == nil {
 		t.Fatal("runtime model is nil")
 	}
-	_, err = model.GenerateContent(
-		context.Background(),
-		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
-		llms.WithMaxTokens(64),
-		llms.WithThinkingMode(llms.ThinkingModeHigh),
-	)
+	_, err = core.GenerateModel(runtimeContext, model, llms.ModelRequest{
+		Mode:      llms.ModelModeChat,
+		Messages:  []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
+		MaxTokens: 64,
+		Thinking:  llms.ThinkingModeHigh,
+	})
 	if err != nil {
 		t.Fatalf("generate content: %v", err)
 	}
@@ -200,7 +315,7 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 
 func TestLoadGraphRuntimeSettingsRejectsModelWithoutID(t *testing.T) {
 	baseDir := t.TempDir()
-	data := []byte(`{"version":2,"environment":{},"models":[{"enabled":true,"provider":"openai"}]}`)
+	data := []byte(`{"version":3,"environment":{},"models":[{"enabled":true,"provider":"openai"}],"tool_permissions":[],"tool_approvals":{}}`)
 	if err := os.WriteFile(graphRuntimeSettingsPath(baseDir), data, 0o600); err != nil {
 		t.Fatal(err)
 	}

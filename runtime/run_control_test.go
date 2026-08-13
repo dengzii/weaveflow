@@ -29,13 +29,12 @@ func (s *runControlEventSink) PublishBatch(ctx context.Context, events []Event) 
 	return nil
 }
 
-type failingUpdateExecutionStore struct {
-	ExecutionStore
+type failingRuntimeTransactionStore struct {
 	err error
 }
 
-func (s failingUpdateExecutionStore) UpdateRun(context.Context, RunRecord) error {
-	return s.err
+func (s failingRuntimeTransactionStore) Commit(context.Context, RuntimeCommit) (RuntimeCommitResult, error) {
+	return RuntimeCommitResult{}, s.err
 }
 
 type runControlRecordingDeleter struct {
@@ -48,14 +47,14 @@ func (deleter *runControlRecordingDeleter) DeleteRun(_ context.Context, runID st
 }
 
 func TestRunControlServiceCancelsPausedRunAndPublishesOrderedEvents(t *testing.T) {
-	store := NewFileExecutionStore(t.TempDir())
+	store := NewMemoryRuntimeStore()
 	startedAt := time.Date(2026, 8, 9, 12, 0, 0, 0, time.UTC)
 	run := RunRecord{RunID: "run-1", GraphID: "graph-1", GraphSessionID: "session-1", CurrentNodeID: "node-1", Status: RunStatusPaused, PauseRequested: true, UpdatedAt: startedAt}
 	if err := store.CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
 	sink := &runControlEventSink{}
-	control, err := NewRunControlService(store, sink, nil)
+	control, err := NewRunControlService(store, store, sink, nil)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -91,13 +90,13 @@ func TestRunControlServiceCancelsPausedRunAndPublishesOrderedEvents(t *testing.T
 }
 
 func TestRunControlServiceMarksLostExecutionFailed(t *testing.T) {
-	store := NewFileExecutionStore(t.TempDir())
+	store := NewMemoryRuntimeStore()
 	run := RunRecord{RunID: "run-1", GraphID: "graph-1", Status: RunStatusRunning}
 	if err := store.CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
 	sink := &runControlEventSink{}
-	control, err := NewRunControlService(store, sink, nil)
+	control, err := NewRunControlService(store, store, sink, nil)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -115,13 +114,13 @@ func TestRunControlServiceMarksLostExecutionFailed(t *testing.T) {
 }
 
 func TestRunControlServiceNormalizesRunIDBeforeDeletion(t *testing.T) {
-	store := NewMemoryExecutionStore()
+	store := NewMemoryRuntimeStore()
 	run := RunRecord{RunID: "run-1", Status: RunStatusCompleted}
 	if err := store.CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
 	deleter := &runControlRecordingDeleter{}
-	control, err := NewRunControlService(store, nil, deleter)
+	control, err := NewRunControlService(store, store, nil, deleter)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
@@ -136,13 +135,13 @@ func TestRunControlServiceNormalizesRunIDBeforeDeletion(t *testing.T) {
 }
 
 func TestRunControlServiceReportsStoreAndEventFailures(t *testing.T) {
-	baseStore := NewFileExecutionStore(t.TempDir())
+	baseStore := NewMemoryRuntimeStore()
 	run := RunRecord{RunID: "run-1", Status: RunStatusPaused}
 	if err := baseStore.CreateRun(context.Background(), run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
 	storeErr := errors.New("store write failed")
-	control, err := NewRunControlService(failingUpdateExecutionStore{ExecutionStore: baseStore, err: storeErr}, &runControlEventSink{}, nil)
+	control, err := NewRunControlService(baseStore, failingRuntimeTransactionStore{err: storeErr}, &runControlEventSink{}, nil)
 	if err != nil {
 		t.Fatalf("new store failure service: %v", err)
 	}
@@ -151,7 +150,7 @@ func TestRunControlServiceReportsStoreAndEventFailures(t *testing.T) {
 	}
 
 	eventErr := errors.New("event publish failed")
-	control, err = NewRunControlService(baseStore, &runControlEventSink{err: eventErr}, nil)
+	control, err = NewRunControlService(baseStore, baseStore, &runControlEventSink{err: eventErr}, nil)
 	if err != nil {
 		t.Fatalf("new event failure service: %v", err)
 	}
@@ -162,7 +161,60 @@ func TestRunControlServiceReportsStoreAndEventFailures(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get persisted run: %v", err)
 	}
-	if persisted.Status != RunStatusPaused || !persisted.CancelRequested {
+	if persisted.Status != RunStatusCanceled || persisted.CancelRequested {
 		t.Fatalf("persisted event-failure state = %#v", persisted)
+	}
+	events, err := baseStore.ListEvents(run.RunID)
+	if err != nil {
+		t.Fatalf("list persisted events: %v", err)
+	}
+	if len(events) != 2 || events[0].Type != EventRunCancelRequested || events[1].Type != EventRunCanceled {
+		t.Fatalf("persisted event-failure events = %#v", events)
+	}
+}
+
+func TestRunControlServiceCancelPausedRunCascadesThroughPersistedChildren(t *testing.T) {
+	store := NewMemoryRuntimeStore()
+	runs := []RunRecord{
+		{RunID: "parent", Status: RunStatusPaused, ChildRunIDs: []string{"child"}},
+		{RunID: "child", ParentRunID: "parent", Status: RunStatusPaused, ChildRunIDs: []string{"grandchild"}},
+		{RunID: "grandchild", ParentRunID: "child", Status: RunStatusPaused},
+	}
+	for _, run := range runs {
+		if err := store.CreateRun(context.Background(), run); err != nil {
+			t.Fatalf("create run %q: %v", run.RunID, err)
+		}
+	}
+	sink := &runControlEventSink{}
+	control, err := NewRunControlService(store, store, sink, nil)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	canceled, err := control.CancelPausedRun(context.Background(), "parent")
+	if err != nil {
+		t.Fatalf("cancel parent: %v", err)
+	}
+	if canceled.Status != RunStatusCanceled {
+		t.Fatalf("parent status = %q, want canceled", canceled.Status)
+	}
+	for _, runID := range []string{"parent", "child", "grandchild"} {
+		persisted, err := store.GetRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("get run %q: %v", runID, err)
+		}
+		if persisted.Status != RunStatusCanceled {
+			t.Fatalf("run %q status = %q, want canceled", runID, persisted.Status)
+		}
+	}
+	wantRunIDs := []string{"grandchild", "grandchild", "child", "child", "parent", "parent"}
+	wantTypes := []EventType{EventRunCancelRequested, EventRunCanceled, EventRunCancelRequested, EventRunCanceled, EventRunCancelRequested, EventRunCanceled}
+	if len(sink.events) != len(wantTypes) {
+		t.Fatalf("events = %#v", sink.events)
+	}
+	for index, event := range sink.events {
+		if event.RunID != wantRunIDs[index] || event.Type != wantTypes[index] {
+			t.Fatalf("event %d = %#v, want run %q type %q", index, event, wantRunIDs[index], wantTypes[index])
+		}
 	}
 }

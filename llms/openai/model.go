@@ -7,21 +7,17 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/llms/openai/internal/openaiclient"
-	"github.com/dengzii/weaveflow/llms/parts"
-
-	"github.com/tmc/langchaingo/callbacks"
-	"github.com/tmc/langchaingo/llms"
 )
 
 type ChatMessage = openaiclient.ChatMessage
 
 type LLM struct {
-	CallbacksHandler callbacks.Handler
-	client           *openaiclient.Client
-	model            string
-	provider         Provider
-	apiFormat        APIFormat
+	client    *openaiclient.Client
+	model     string
+	provider  Provider
+	apiFormat APIFormat
 }
 
 const (
@@ -53,11 +49,10 @@ func New(opts ...Option) (*LLM, error) {
 		return nil, fmt.Errorf("Azure Responses API requires a base URL ending in /openai/v1")
 	}
 	return &LLM{
-		client:           c,
-		CallbacksHandler: opt.callbackHandler,
-		model:            c.Model,
-		provider:         opt.provider,
-		apiFormat:        opt.apiFormat,
+		client:    c,
+		model:     c.Model,
+		provider:  opt.provider,
+		apiFormat: opt.apiFormat,
 	}, err
 }
 
@@ -65,96 +60,89 @@ func (o *LLM) Name() string {
 	return o.client.Model
 }
 
-// Call requests a completion for the given prompt.
-func (o *LLM) Call(ctx context.Context, prompt string, options ...llms.CallOption) (string, error) {
-	return llms.GenerateFromSinglePrompt(ctx, o, prompt, options...)
+func (o *LLM) Generate(ctx context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
+	switch request.Mode {
+	case "", llms.ModelModeChat:
+		if o.apiFormat == APIFormatResponses {
+			return o.generateResponse(ctx, request)
+		}
+		return o.generateChat(ctx, request)
+	case llms.ModelModeCompletion:
+		return o.generateCompletion(ctx, request)
+	default:
+		return nil, fmt.Errorf("OpenAI model request mode %q is unsupported", request.Mode)
+	}
 }
 
-// GenerateCompletion requests a raw text completion without applying chat message templates.
-func (o *LLM) GenerateCompletion(ctx context.Context, prompt string, options ...llms.CallOption) (*llms.ContentResponse, error) {
-	messages := []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, prompt)}
-	opts := llms.CallOptions{}
-	for _, option := range options {
-		option(&opts)
+func (o *LLM) generateCompletion(ctx context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
+	if len(request.Tools) > 0 || request.ToolChoice != nil {
+		return nil, fmt.Errorf("tools are unsupported for text completions")
 	}
-	if err := validateCompletionCallOptions(opts); err != nil {
-		return nil, err
+	if len(request.ResponseSchema) > 0 {
+		return nil, fmt.Errorf("structured output is unsupported for text completions")
 	}
-	if thinkingConfig := llms.GetThinkingConfig(&opts); thinkingConfig != nil && thinkingConfig.Mode != "" && thinkingConfig.Mode != llms.ThinkingModeAuto {
-		return o.GenerateContent(ctx, messages, options...)
+	if o.apiFormat == APIFormatResponses || request.Thinking != "" && request.Thinking != llms.ThinkingModeAuto {
+		request.Mode = llms.ModelModeChat
+		request.Messages = []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, request.Prompt)}
+		request.Prompt = ""
+		if o.apiFormat == APIFormatResponses {
+			return o.generateResponse(ctx, request)
+		}
+		return o.generateChat(ctx, request)
 	}
-	if o.apiFormat == APIFormatResponses {
-		return o.GenerateContent(ctx, messages, options...)
-	}
-	if o.CallbacksHandler != nil {
-		o.CallbacksHandler.HandleLLMGenerateContentStart(ctx, messages)
-	}
-	requestOptions := requestOptionsFrom(&opts)
-
+	requestOptions := requestOptionsFrom(request)
 	result, err := o.client.CreateCompletion(ctx, &openaiclient.CompletionRequest{
-		Model:            opts.Model,
-		Prompt:           prompt,
-		MaxTokens:        opts.MaxTokens,
-		Temperature:      opts.Temperature,
-		TopP:             opts.TopP,
-		N:                opts.N,
-		StopWords:        opts.StopWords,
-		FrequencyPenalty: opts.FrequencyPenalty,
-		PresencePenalty:  opts.PresencePenalty,
-		Seed:             opts.Seed,
+		Model:            request.Model,
+		Prompt:           request.Prompt,
+		MaxTokens:        request.MaxTokens,
+		Temperature:      float64Value(request.Temperature),
+		TopP:             float64Value(request.TopP),
+		N:                request.CandidateCount,
+		StopWords:        request.StopWords,
+		FrequencyPenalty: float64Value(request.FrequencyPenalty),
+		PresencePenalty:  float64Value(request.PresencePenalty),
+		Seed:             intValue(request.Seed),
 		ExtraBody:        mergeExtraBody(o.client.ExtraBody, requestOptions.ExtraBody),
 	})
 	if err != nil {
-		return nil, err
+		return nil, MapError(err)
 	}
-
-	choices := make([]*llms.ContentChoice, len(result.Choices))
+	choices := make([]*llms.ModelChoice, len(result.Choices))
 	for index, choice := range result.Choices {
-		choices[index] = &llms.ContentChoice{
-			Content:    choice.Text,
-			StopReason: choice.FinishReason,
-			GenerationInfo: map[string]any{
-				"CompletionTokens": result.Usage.CompletionTokens,
-				"PromptTokens":     result.Usage.PromptTokens,
-				"TotalTokens":      result.Usage.TotalTokens,
-			},
-		}
+		choices[index] = &llms.ModelChoice{Content: choice.Text, StopReason: choice.FinishReason}
 	}
-	response := &llms.ContentResponse{Choices: choices}
-	if o.CallbacksHandler != nil {
-		o.CallbacksHandler.HandleLLMGenerateContentEnd(ctx, response)
+	effectiveModel := request.Model
+	if effectiveModel == "" {
+		effectiveModel = o.model
+	}
+	response := &llms.ModelResponse{
+		Model:   effectiveModel,
+		Choices: choices,
+		Usage: llms.ModelUsage{
+			InputTokens:  result.Usage.PromptTokens,
+			OutputTokens: result.Usage.CompletionTokens,
+			TotalTokens:  result.Usage.TotalTokens,
+		},
+	}
+	if request.Stream != nil && len(choices) > 0 && choices[0] != nil && choices[0].Content != "" {
+		if err := request.Stream(ctx, llms.ModelStreamEvent{CallID: request.CallID, Model: response.Model, Type: llms.ModelStreamContent, Text: choices[0].Content}); err != nil {
+			return nil, fmt.Errorf("model stream handler: %w", err)
+		}
 	}
 	return response, nil
 }
 
-// GenerateContent implements the Model interface.
-func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) { //nolint: lll, cyclop, funlen
-	if o.CallbacksHandler != nil {
-		o.CallbacksHandler.HandleLLMGenerateContentStart(ctx, messages)
-	}
-
-	opts := llms.CallOptions{}
-	for _, opt := range options {
-		opt(&opts)
-	}
-	if err := validateCallOptions(opts); err != nil {
-		return nil, err
-	}
-	if o.apiFormat == APIFormatResponses {
-		return o.generateResponse(ctx, messages, opts)
-	}
-
-	// Determine the effective model for this request (don't mutate o.model to avoid races)
-	effectiveModel := opts.Model
+func (o *LLM) generateChat(ctx context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) { //nolint:cyclop,funlen
+	effectiveModel := request.Model
 	if effectiveModel == "" {
 		effectiveModel = o.model
 	}
 
-	requestOptions := requestOptionsFrom(&opts)
+	requestOptions := requestOptionsFrom(request)
 	useDeveloperRole := requestOptions.DeveloperRole || usesDeveloperRole(o.provider, effectiveModel)
 
-	chatMsgs := make([]*ChatMessage, 0, len(messages))
-	for _, mc := range messages {
+	chatMsgs := make([]*ChatMessage, 0, len(request.Messages))
+	for _, mc := range request.Messages {
 		msg := &ChatMessage{MultiContent: mc.Parts}
 		switch mc.Role {
 		case llms.ChatMessageTypeSystem:
@@ -173,16 +161,16 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 			msg.Role = RoleTool
 			// Here we extract tool calls from the message and populate the ToolCalls field.
 
-			// parse mc.Parts (which should have one entry of type ToolCallResponse) and populate msg.Content and msg.ToolCallID
+			// Tool messages carry exactly one typed result linked to the originating call.
 			if len(mc.Parts) != 1 {
 				return nil, fmt.Errorf("expected exactly one part for role %v, got %v", mc.Role, len(mc.Parts))
 			}
 			switch p := mc.Parts[0].(type) {
-			case llms.ToolCallResponse:
+			case llms.ToolResult:
 				msg.ToolCallID = p.ToolCallID
-				msg.Content = p.Content
+				msg.Content = llms.ToolResultText(p)
 			default:
-				return nil, fmt.Errorf("expected part of type ToolCallResponse for role %v, got %T", mc.Role, mc.Parts[0])
+				return nil, fmt.Errorf("expected part of type ToolResult for role %v, got %T", mc.Role, mc.Parts[0])
 			}
 
 		default:
@@ -202,34 +190,28 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		chatMsgs = append(chatMsgs, msg)
 	}
 	// Filter out internal metadata that shouldn't be sent to API
-	apiMetadata := make(map[string]any)
-	if opts.Metadata != nil {
-		for k, v := range opts.Metadata {
-			if k == "thinking_config" || k == requestOptionsMetadataKey {
-				continue
-			}
-			apiMetadata[k] = v
-		}
+	apiMetadata := make(map[string]any, len(request.Metadata))
+	for key, value := range request.Metadata {
+		apiMetadata[key] = value
 	}
 	// Only include metadata if there are actual values to send
 	if len(apiMetadata) == 0 {
 		apiMetadata = nil
 	}
 
-	configuredReasoningEffort := reasoningEffort(opts)
+	configuredReasoningEffort := reasoningEffort(request)
 	reasoningEffort, providerExtraBody := providerReasoningOptions(o.provider, configuredReasoningEffort)
 	extraBody := mergeExtraBody(providerExtraBody, o.client.ExtraBody, requestOptions.ExtraBody)
 	req := &openaiclient.ChatRequest{
-		Model:                  opts.Model,
-		StopWords:              opts.StopWords,
+		Model:                  request.Model,
+		StopWords:              request.StopWords,
 		Messages:               chatMsgs,
-		StreamingFunc:          opts.StreamingFunc,
-		StreamingReasoningFunc: opts.StreamingReasoningFunc,
-		N:                      opts.N,
-		FrequencyPenalty:       optionalFloat64(opts.FrequencyPenalty),
-		PresencePenalty:        optionalFloat64(opts.PresencePenalty),
+		StreamingReasoningFunc: modelStreamHandler(request),
+		N:                      request.CandidateCount,
+		FrequencyPenalty:       request.FrequencyPenalty,
+		PresencePenalty:        request.PresencePenalty,
 		ReasoningEffort:        reasoningEffort,
-		ToolChoice:             opts.ToolChoice,
+		ToolChoice:             request.ToolChoice,
 		Metadata:               apiMetadata,
 		ParallelToolCalls:      requestOptions.ParallelToolCalls,
 		ServiceTier:            strings.TrimSpace(requestOptions.ServiceTier),
@@ -240,32 +222,25 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 		ExtraBody:              extraBody,
 	}
 	if !omitSamplingParameters(o.provider, effectiveModel, configuredReasoningEffort) {
-		if requestOptions.Temperature != nil {
-			req.Temperature = requestOptions.Temperature
-		} else {
-			req.Temperature = optionalFloat64(opts.Temperature)
-		}
-		req.TopP = optionalFloat64(opts.TopP)
+		req.Temperature = request.Temperature
+		req.TopP = request.TopP
 	}
-	if opts.MaxTokens > 0 {
+	if request.MaxTokens > 0 {
 		if usesMaxTokens(o.provider) {
-			req.MaxTokens = &opts.MaxTokens
+			req.MaxTokens = &request.MaxTokens
 		} else {
-			req.MaxCompletionTokens = &opts.MaxTokens
+			req.MaxCompletionTokens = &request.MaxTokens
 		}
 	}
-	if opts.Seed != 0 {
+	if request.Seed != nil {
 		if o.provider == ProviderMistral {
-			req.RandomSeed = &opts.Seed
+			req.RandomSeed = request.Seed
 		} else {
-			req.Seed = &opts.Seed
+			req.Seed = request.Seed
 		}
-	}
-	if opts.JSONMode {
-		req.ResponseFormat = ResponseFormatJSON
 	}
 
-	for _, tool := range opts.Tools {
+	for _, tool := range request.Tools {
 		t, err := toolFromTool(tool)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert llms tool to openai tool: %w", err)
@@ -274,39 +249,37 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 	}
 
 	// if o.client.ResponseFormat is set, use it for the request
-	if o.client.ResponseFormat != nil {
+	if len(request.ResponseSchema) > 0 {
+		name := strings.TrimSpace(request.ResponseName)
+		if name == "" {
+			name = "response"
+		}
+		req.ResponseFormat = &ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &ResponseFormatJSONSchema{
+				Name:   name,
+				Strict: request.StrictResponse,
+				Schema: request.ResponseSchema,
+			},
+		}
+	} else if o.client.ResponseFormat != nil {
 		req.ResponseFormat = o.client.ResponseFormat
 	}
 
 	result, err := o.client.CreateChat(ctx, req)
 	if err != nil {
-		return nil, err
+		return nil, MapError(err)
 	}
 	if len(result.Choices) == 0 {
 		return nil, ErrEmptyResponse
 	}
 
-	choices := make([]*llms.ContentChoice, len(result.Choices))
+	choices := make([]*llms.ModelChoice, len(result.Choices))
 	for i, c := range result.Choices {
-		choices[i] = &llms.ContentChoice{
+		choices[i] = &llms.ModelChoice{
 			Content:          c.Message.Content,
 			ReasoningContent: c.Message.ReasoningContent,
 			StopReason:       fmt.Sprint(c.FinishReason),
-			GenerationInfo: map[string]any{
-				"CompletionTokens":  result.Usage.CompletionTokens,
-				"PromptTokens":      result.Usage.PromptTokens,
-				"TotalTokens":       result.Usage.TotalTokens,
-				"ReasoningTokens":   result.Usage.CompletionTokensDetails.ReasoningTokens,
-				"PromptAudioTokens": result.Usage.PromptTokensDetails.AudioTokens,
-				// Provider-neutral usage fields.
-				"ThinkingContent":                    c.Message.ReasoningContent,                           // Standardized field
-				"ThinkingTokens":                     result.Usage.CompletionTokensDetails.ReasoningTokens, // Standardized field
-				"PromptCachedTokens":                 result.Usage.PromptTokensDetails.CachedTokens,
-				"CompletionAudioTokens":              result.Usage.CompletionTokensDetails.AudioTokens,
-				"CompletionReasoningTokens":          result.Usage.CompletionTokensDetails.ReasoningTokens,
-				"CompletionAcceptedPredictionTokens": result.Usage.CompletionTokensDetails.AcceptedPredictionTokens,
-				"CompletionRejectedPredictionTokens": result.Usage.CompletionTokensDetails.RejectedPredictionTokens,
-			},
 		}
 
 		for _, tool := range c.Message.ToolCalls {
@@ -315,76 +288,91 @@ func (o *LLM) GenerateContent(ctx context.Context, messages []llms.MessageConten
 				Type: string(tool.Type),
 				FunctionCall: &llms.FunctionCall{
 					Name:      tool.Function.Name,
-					Arguments: tool.Function.Arguments,
+					Arguments: rawArguments(tool.Function.Arguments),
 				},
 			})
 		}
 	}
-	response := &llms.ContentResponse{Choices: choices}
-	if o.CallbacksHandler != nil {
-		o.CallbacksHandler.HandleLLMGenerateContentEnd(ctx, response)
-	}
-	return response, nil
+	return &llms.ModelResponse{
+		ID:      result.ID,
+		Model:   firstNonEmpty(result.Model, effectiveModel),
+		Choices: choices,
+		Usage: llms.ModelUsage{
+			InputTokens:       result.Usage.PromptTokens,
+			OutputTokens:      result.Usage.CompletionTokens,
+			TotalTokens:       result.Usage.TotalTokens,
+			CachedInputTokens: result.Usage.PromptTokensDetails.CachedTokens,
+			ReasoningTokens:   result.Usage.CompletionTokensDetails.ReasoningTokens,
+		},
+	}, nil
 }
 
-func validateCallOptions(opts llms.CallOptions) error {
-	if len(opts.Functions) > 0 {
-		return fmt.Errorf("legacy functions are unsupported; use tools")
+func modelStreamHandler(request llms.ModelRequest) func(context.Context, []byte, []byte) error {
+	if request.Stream == nil {
+		return nil
 	}
-	if opts.FunctionCallBehavior != "" {
-		return fmt.Errorf("legacy function_call is unsupported; use tool_choice")
+	return func(ctx context.Context, reasoningChunk, contentChunk []byte) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if text := string(reasoningChunk); text != "" {
+			if err := request.Stream(ctx, llms.ModelStreamEvent{CallID: request.CallID, Model: request.Model, Type: llms.ModelStreamReasoning, Text: text}); err != nil {
+				return err
+			}
+		}
+		if text := string(contentChunk); text != "" && !strings.HasPrefix(strings.TrimSpace(text), "[{") {
+			if err := request.Stream(ctx, llms.ModelStreamEvent{CallID: request.CallID, Model: request.Model, Type: llms.ModelStreamContent, Text: text}); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	return nil
 }
 
 func (o *LLM) generateResponse(
 	ctx context.Context,
-	messages []llms.MessageContent,
-	opts llms.CallOptions,
-) (*llms.ContentResponse, error) {
-	if opts.N > 1 {
+	modelRequest llms.ModelRequest,
+) (*llms.ModelResponse, error) {
+	if modelRequest.CandidateCount > 1 {
 		return nil, fmt.Errorf("Responses API does not support multiple choices")
 	}
-	if len(opts.StopWords) > 0 {
+	if len(modelRequest.StopWords) > 0 {
 		return nil, fmt.Errorf("Responses API does not support stop sequences")
 	}
-	if opts.Seed != 0 {
+	if modelRequest.Seed != nil {
 		return nil, fmt.Errorf("Responses API does not support seed")
 	}
-	if opts.FrequencyPenalty != 0 || opts.PresencePenalty != 0 {
+	if modelRequest.FrequencyPenalty != nil || modelRequest.PresencePenalty != nil {
 		return nil, fmt.Errorf("Responses API does not support frequency or presence penalties")
 	}
 
-	effectiveModel := opts.Model
+	effectiveModel := modelRequest.Model
 	if effectiveModel == "" {
 		effectiveModel = o.model
 	}
-	requestOptions := requestOptionsFrom(&opts)
+	requestOptions := requestOptionsFrom(modelRequest)
 	inputs, err := responseInputsFromMessages(
-		messages,
+		modelRequest.Messages,
 		requestOptions.DeveloperRole || usesDeveloperRole(o.provider, effectiveModel),
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	apiMetadata := make(map[string]any)
-	for key, value := range opts.Metadata {
-		if key == "thinking_config" || key == requestOptionsMetadataKey {
-			continue
-		}
+	apiMetadata := make(map[string]any, len(modelRequest.Metadata))
+	for key, value := range modelRequest.Metadata {
 		apiMetadata[key] = value
 	}
 	if len(apiMetadata) == 0 {
 		apiMetadata = nil
 	}
 
-	configuredReasoningEffort := reasoningEffort(opts)
+	configuredReasoningEffort := reasoningEffort(modelRequest)
 	reasoningEffort, providerExtraBody := providerReasoningOptions(o.provider, configuredReasoningEffort)
-	request := &openaiclient.ResponseRequest{
+	providerRequest := &openaiclient.ResponseRequest{
 		Model:             effectiveModel,
 		Input:             inputs,
-		ToolChoice:        responseToolChoice(opts.ToolChoice),
+		ToolChoice:        responseToolChoice(modelRequest.ToolChoice),
 		ParallelToolCalls: requestOptions.ParallelToolCalls,
 		ServiceTier:       strings.TrimSpace(requestOptions.ServiceTier),
 		Store:             requestOptions.Store,
@@ -394,53 +382,74 @@ func (o *LLM) generateResponse(
 		ExtraBody:         mergeExtraBody(providerExtraBody, o.client.ExtraBody, requestOptions.ExtraBody),
 	}
 	if reasoningEffort != "" {
-		request.Reasoning = &openaiclient.ResponseReasoning{Effort: reasoningEffort}
+		providerRequest.Reasoning = &openaiclient.ResponseReasoning{Effort: reasoningEffort}
 	}
 	if !omitSamplingParameters(o.provider, effectiveModel, configuredReasoningEffort) {
-		if requestOptions.Temperature != nil {
-			request.Temperature = requestOptions.Temperature
-		} else {
-			request.Temperature = optionalFloat64(opts.Temperature)
-		}
-		request.TopP = optionalFloat64(opts.TopP)
+		providerRequest.Temperature = modelRequest.Temperature
+		providerRequest.TopP = modelRequest.TopP
 	}
-	if opts.MaxTokens > 0 {
-		request.MaxOutputTokens = &opts.MaxTokens
+	if modelRequest.MaxTokens > 0 {
+		providerRequest.MaxOutputTokens = &modelRequest.MaxTokens
 	}
 
-	for _, tool := range opts.Tools {
+	for _, tool := range modelRequest.Tools {
 		responseTool, err := responseToolFromTool(tool)
 		if err != nil {
 			return nil, err
 		}
-		request.Tools = append(request.Tools, responseTool)
+		providerRequest.Tools = append(providerRequest.Tools, responseTool)
 	}
-	textConfig := responseTextConfig(o.client.ResponseFormat, opts.JSONMode, requestOptions.Verbosity)
+	responseFormat := o.client.ResponseFormat
+	if len(modelRequest.ResponseSchema) > 0 {
+		name := strings.TrimSpace(modelRequest.ResponseName)
+		if name == "" {
+			name = "response"
+		}
+		responseFormat = &ResponseFormat{
+			Type: "json_schema",
+			JSONSchema: &ResponseFormatJSONSchema{
+				Name:   name,
+				Strict: modelRequest.StrictResponse,
+				Schema: modelRequest.ResponseSchema,
+			},
+		}
+	}
+	textConfig := responseTextConfig(responseFormat, requestOptions.Verbosity)
 	if textConfig != nil {
-		request.Text = textConfig
+		providerRequest.Text = textConfig
 	}
 
-	result, err := o.client.CreateResponse(ctx, request)
+	result, err := o.client.CreateResponse(ctx, providerRequest)
 	if err != nil {
-		return nil, err
+		return nil, MapError(err)
 	}
 	choice, err := contentChoiceFromResponse(result)
 	if err != nil {
 		return nil, err
 	}
-	response := &llms.ContentResponse{Choices: []*llms.ContentChoice{choice}}
-	if opts.StreamingFunc != nil && choice.Content != "" {
-		if err := opts.StreamingFunc(ctx, []byte(choice.Content)); err != nil {
-			return nil, fmt.Errorf("streaming func returned an error: %w", err)
-		}
+	response := &llms.ModelResponse{
+		ID:      result.ID,
+		Model:   firstNonEmpty(result.Model, effectiveModel),
+		Choices: []*llms.ModelChoice{choice},
+		Usage: llms.ModelUsage{
+			InputTokens:       result.Usage.InputTokens,
+			OutputTokens:      result.Usage.OutputTokens,
+			TotalTokens:       result.Usage.TotalTokens,
+			CachedInputTokens: result.Usage.InputTokensDetails.CachedTokens,
+			ReasoningTokens:   result.Usage.OutputTokensDetails.ReasoningTokens,
+		},
 	}
-	if opts.StreamingReasoningFunc != nil && (choice.ReasoningContent != "" || choice.Content != "") {
-		if err := opts.StreamingReasoningFunc(ctx, []byte(choice.ReasoningContent), []byte(choice.Content)); err != nil {
-			return nil, fmt.Errorf("streaming reasoning func returned an error: %w", err)
+	if modelRequest.Stream != nil {
+		if choice.ReasoningContent != "" {
+			if err := modelRequest.Stream(ctx, llms.ModelStreamEvent{CallID: modelRequest.CallID, Model: response.Model, Type: llms.ModelStreamReasoning, Text: choice.ReasoningContent}); err != nil {
+				return nil, fmt.Errorf("model stream handler: %w", err)
+			}
 		}
-	}
-	if o.CallbacksHandler != nil {
-		o.CallbacksHandler.HandleLLMGenerateContentEnd(ctx, response)
+		if choice.Content != "" {
+			if err := modelRequest.Stream(ctx, llms.ModelStreamEvent{CallID: modelRequest.CallID, Model: response.Model, Type: llms.ModelStreamContent, Text: choice.Content}); err != nil {
+				return nil, fmt.Errorf("model stream handler: %w", err)
+			}
+		}
 	}
 	return response, nil
 }
@@ -452,11 +461,11 @@ func responseInputsFromMessages(messages []llms.MessageContent, useDeveloperRole
 			if len(message.Parts) != 1 {
 				return nil, fmt.Errorf("expected exactly one part for role %v, got %v", message.Role, len(message.Parts))
 			}
-			toolResponse, ok := message.Parts[0].(llms.ToolCallResponse)
+			toolResponse, ok := message.Parts[0].(llms.ToolResult)
 			if !ok {
-				return nil, fmt.Errorf("expected part of type ToolCallResponse for role %v, got %T", message.Role, message.Parts[0])
+				return nil, fmt.Errorf("expected part of type ToolResult for role %v, got %T", message.Role, message.Parts[0])
 			}
-			output := toolResponse.Content
+			output := llms.ToolResultText(toolResponse)
 			inputs = append(inputs, openaiclient.ResponseInputItem{
 				Type:   "function_call_output",
 				CallID: toolResponse.ToolCallID,
@@ -517,7 +526,7 @@ func responseInputsFromMessages(messages []llms.MessageContent, useDeveloperRole
 				Status:    "completed",
 				CallID:    toolCall.ID,
 				Name:      toolCall.FunctionCall.Name,
-				Arguments: toolCall.FunctionCall.Arguments,
+				Arguments: string(toolCall.FunctionCall.Arguments),
 			})
 		}
 	}
@@ -540,7 +549,7 @@ func responseRole(role llms.ChatMessageType, useDeveloperRole bool) (string, err
 	}
 }
 
-func responseToolFromTool(tool llms.Tool) (openaiclient.ResponseTool, error) {
+func responseToolFromTool(tool llms.ToolDefinition) (openaiclient.ResponseTool, error) {
 	if tool.Type != string(openaiclient.ToolTypeFunction) || tool.Function == nil {
 		return openaiclient.ResponseTool{}, fmt.Errorf("Responses API tool type %q is unsupported", tool.Type)
 	}
@@ -578,7 +587,6 @@ func responseToolChoice(toolChoice any) any {
 
 func responseTextConfig(
 	responseFormat *openaiclient.ResponseFormat,
-	jsonMode bool,
 	verbosity string,
 ) *openaiclient.ResponseTextConfig {
 	config := &openaiclient.ResponseTextConfig{Verbosity: strings.TrimSpace(verbosity)}
@@ -590,8 +598,6 @@ func responseTextConfig(
 			format.Schema = responseFormat.JSONSchema.Schema
 		}
 		config.Format = format
-	} else if jsonMode {
-		config.Format = &openaiclient.ResponseTextFormat{Type: "json_object"}
 	}
 	if config.Format == nil && config.Verbosity == "" {
 		return nil
@@ -599,7 +605,7 @@ func responseTextConfig(
 	return config
 }
 
-func contentChoiceFromResponse(response *openaiclient.Response) (*llms.ContentChoice, error) {
+func contentChoiceFromResponse(response *openaiclient.Response) (*llms.ModelChoice, error) {
 	if response == nil {
 		return nil, ErrEmptyResponse
 	}
@@ -623,7 +629,7 @@ func contentChoiceFromResponse(response *openaiclient.Response) (*llms.ContentCh
 				Type: string(openaiclient.ToolTypeFunction),
 				FunctionCall: &llms.FunctionCall{
 					Name:      output.Name,
-					Arguments: output.Arguments,
+					Arguments: rawArguments(output.Arguments),
 				},
 			})
 		case "reasoning":
@@ -652,43 +658,19 @@ func contentChoiceFromResponse(response *openaiclient.Response) (*llms.ContentCh
 	} else if response.Status != "" && response.Status != "completed" {
 		stopReason = response.Status
 	}
-	return &llms.ContentChoice{
+	return &llms.ModelChoice{
 		Content:          content.String(),
 		ReasoningContent: reasoning.String(),
 		StopReason:       stopReason,
 		ToolCalls:        toolCalls,
-		GenerationInfo: map[string]any{
-			"CompletionTokens":          response.Usage.OutputTokens,
-			"PromptTokens":              response.Usage.InputTokens,
-			"TotalTokens":               response.Usage.TotalTokens,
-			"ReasoningTokens":           response.Usage.OutputTokensDetails.ReasoningTokens,
-			"ThinkingContent":           reasoning.String(),
-			"ThinkingTokens":            response.Usage.OutputTokensDetails.ReasoningTokens,
-			"PromptCachedTokens":        response.Usage.InputTokensDetails.CachedTokens,
-			"CompletionReasoningTokens": response.Usage.OutputTokensDetails.ReasoningTokens,
-		},
 	}, nil
 }
 
-func validateCompletionCallOptions(opts llms.CallOptions) error {
-	if err := validateCallOptions(opts); err != nil {
-		return err
-	}
-	if len(opts.Tools) > 0 || opts.ToolChoice != nil {
-		return fmt.Errorf("tools are unsupported for text completions")
-	}
-	if opts.JSONMode {
-		return fmt.Errorf("JSON mode is unsupported for text completions")
-	}
-	return nil
-}
-
-func reasoningEffort(opts llms.CallOptions) string {
-	config := llms.GetThinkingConfig(&opts)
-	if config == nil || config.Mode == "" || config.Mode == llms.ThinkingModeAuto {
+func reasoningEffort(request llms.ModelRequest) string {
+	if request.Thinking == "" || request.Thinking == llms.ThinkingModeAuto {
 		return ""
 	}
-	return string(config.Mode)
+	return string(request.Thinking)
 }
 
 func providerReasoningOptions(provider Provider, effort string) (string, map[string]any) {
@@ -803,7 +785,7 @@ func extractReasoningParts(in []llms.ContentPart) ([]llms.ContentPart, string) {
 	kept := in
 	hasReasoning := false
 	for _, p := range in {
-		if _, ok := p.(parts.ReasoningPart); ok {
+		if _, ok := p.(llms.ReasoningContent); ok {
 			hasReasoning = true
 			break
 		}
@@ -813,7 +795,7 @@ func extractReasoningParts(in []llms.ContentPart) ([]llms.ContentPart, string) {
 	}
 	kept = make([]llms.ContentPart, 0, len(in))
 	for _, p := range in {
-		if rp, ok := p.(parts.ReasoningPart); ok {
+		if rp, ok := p.(llms.ReasoningContent); ok {
 			if reasoning.Len() > 0 {
 				reasoning.WriteString("\n")
 			}
@@ -844,8 +826,8 @@ func ExtractToolParts(msg *ChatMessage) ([]llms.ContentPart, []llms.ToolCall) {
 	return content, toolCalls
 }
 
-// toolFromTool converts an llms.Tool to a Tool.
-func toolFromTool(t llms.Tool) (openaiclient.Tool, error) {
+// toolFromTool converts a model tool definition to an OpenAI tool.
+func toolFromTool(t llms.ToolDefinition) (openaiclient.Tool, error) {
 	tool := openaiclient.Tool{
 		Type: openaiclient.ToolType(t.Type),
 	}
@@ -879,7 +861,38 @@ func toolCallFromToolCall(tc llms.ToolCall) openaiclient.ToolCall {
 		Type: openaiclient.ToolType(tc.Type),
 		Function: openaiclient.ToolFunction{
 			Name:      tc.FunctionCall.Name,
-			Arguments: tc.FunctionCall.Arguments,
+			Arguments: string(tc.FunctionCall.Arguments),
 		},
 	}
+}
+
+func rawArguments(arguments string) json.RawMessage {
+	arguments = strings.TrimSpace(arguments)
+	if arguments == "" || !json.Valid([]byte(arguments)) {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(arguments)
+}
+
+func float64Value(value *float64) float64 {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func intValue(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }

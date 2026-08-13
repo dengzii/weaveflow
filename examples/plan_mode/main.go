@@ -18,7 +18,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/tools"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const defaultObjective = "Calculate 125 * 48 and briefly explain how the result was verified."

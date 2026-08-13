@@ -12,7 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const NodeType = "agent"
@@ -173,7 +173,11 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (node *Node) Execute(ctx core.Context, access *state.Access) error {
+func (node *Node) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, node.execute(ctx, access)
+}
+
+func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	if ctx.Model(node.ModelID) == nil {
 		return fmt.Errorf("agent node: model %q not available", effectiveModelID(node.ModelID))
 	}
@@ -245,7 +249,7 @@ type responseArtifact struct {
 	Choices       []basenode.LLMResponseArtifactChoice `json:"choices,omitempty"`
 }
 
-func buildPromptArtifact(identity executionIdentity, messages []llms.MessageContent, tools []llms.Tool, iteration, maxIterations int) (promptArtifact, error) {
+func buildPromptArtifact(identity executionIdentity, messages []llms.MessageContent, tools []llms.ToolDefinition, iteration, maxIterations int) (promptArtifact, error) {
 	serialized, err := conversationcap.SerializeMessages(messages)
 	if err != nil {
 		return promptArtifact{}, err
@@ -267,7 +271,7 @@ func buildPromptArtifact(identity executionIdentity, messages []llms.MessageCont
 	return payload, nil
 }
 
-func buildResponseArtifact(identity executionIdentity, response *llms.ContentResponse, iteration int) responseArtifact {
+func buildResponseArtifact(identity executionIdentity, response *llms.ModelResponse, iteration int) responseArtifact {
 	if response == nil {
 		return responseArtifact{}
 	}

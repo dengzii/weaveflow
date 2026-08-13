@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/dengzii/weaveflow/state"
@@ -15,7 +16,24 @@ var (
 	ErrRunnerRecordNotFound = errors.New("runner record not found")
 	// ErrRunControlNotAllowed reports that a run cannot accept the requested transition.
 	ErrRunControlNotAllowed = errors.New("run control not allowed")
+	// ErrRunRevisionConflict reports a failed compare-and-swap transition.
+	ErrRunRevisionConflict = errors.New("run revision conflict")
 )
+
+type RunRevisionConflictError struct {
+	RunID    string
+	Expected uint64
+	Actual   uint64
+}
+
+func (conflict *RunRevisionConflictError) Error() string {
+	if conflict == nil {
+		return ErrRunRevisionConflict.Error()
+	}
+	return fmt.Sprintf("%s for run %q: expected %d, actual %d", ErrRunRevisionConflict, conflict.RunID, conflict.Expected, conflict.Actual)
+}
+
+func (*RunRevisionConflictError) Unwrap() error { return ErrRunRevisionConflict }
 
 type RunStatus string
 
@@ -42,9 +60,10 @@ const (
 type CheckpointStage string
 
 const (
-	CheckpointBeforeNode        CheckpointStage = "before_node"
-	CheckpointAfterNode         CheckpointStage = "after_node"
-	CheckpointAfterParallelWave CheckpointStage = "after_parallel_wave"
+	CheckpointBeforeNode CheckpointStage = "before_node"
+	CheckpointAfterNode  CheckpointStage = "after_node"
+	CheckpointAfterWave  CheckpointStage = "after_wave"
+	CheckpointFinal      CheckpointStage = "final"
 )
 
 type EventType string
@@ -77,6 +96,9 @@ const (
 	EventLLMCall            EventType = "llm.call"
 	EventToolStarted        EventType = "tool.started"
 	EventToolCalled         EventType = "tool.called"
+	EventToolApprovalNeeded EventType = "tool.approval_needed"
+	EventToolApproved       EventType = "tool.approved"
+	EventToolDenied         EventType = "tool.denied"
 	EventToolReturned       EventType = "tool.returned"
 	EventToolFailed         EventType = "tool.failed"
 	EventSubgraphStarted    EventType = "subgraph.started"
@@ -96,6 +118,15 @@ func IsStreamingEvent(event EventType) bool {
 
 type RunRecord struct {
 	RunID             string     `json:"run_id"`
+	Revision          uint64     `json:"revision"`
+	ParentRunID       string     `json:"parent_run_id,omitempty"`
+	ParentStepID      string     `json:"parent_step_id,omitempty"`
+	ParentTaskID      string     `json:"parent_task_id,omitempty"`
+	RootRunID         string     `json:"root_run_id"`
+	RunPath           []string   `json:"run_path"`
+	Namespace         string     `json:"namespace"`
+	ChildRunIDs       []string   `json:"child_run_ids,omitempty"`
+	ReturnValue       any        `json:"return_value,omitempty"`
 	GraphID           string     `json:"graph_id"`
 	GraphVersion      string     `json:"graph_version"`
 	GraphHash         string     `json:"graph_hash,omitempty"`
@@ -125,9 +156,39 @@ type RunOrigin struct {
 	TriggerID string `json:"trigger_id,omitempty"`
 }
 
+type ChildRunRequest struct {
+	ParentRunID  string `json:"parent_run_id"`
+	ParentStepID string `json:"parent_step_id"`
+	ParentTaskID string `json:"parent_task_id"`
+	GraphRef     string `json:"graph_ref"`
+	Namespace    string `json:"namespace,omitempty"`
+}
+
+type ChildRunResult struct {
+	Run         RunRecord    `json:"run"`
+	State       *state.State `json:"-"`
+	ReturnValue any          `json:"return_value,omitempty"`
+	Interrupted bool         `json:"interrupted,omitempty"`
+	Resumed     bool         `json:"resumed,omitempty"`
+}
+
+type ChildRunInterrupt struct {
+	RunID        string `json:"run_id"`
+	CheckpointID string `json:"checkpoint_id,omitempty"`
+	Namespace    string `json:"namespace"`
+	Status       string `json:"status"`
+}
+
 type StepRecord struct {
 	StepID             string     `json:"step_id"`
 	RunID              string     `json:"run_id"`
+	TaskID             string     `json:"task_id"`
+	ParentRunID        string     `json:"parent_run_id,omitempty"`
+	ParentStepID       string     `json:"parent_step_id,omitempty"`
+	ParentTaskID       string     `json:"parent_task_id,omitempty"`
+	RootRunID          string     `json:"root_run_id,omitempty"`
+	RunPath            []string   `json:"run_path,omitempty"`
+	Namespace          string     `json:"namespace,omitempty"`
 	NodeID             string     `json:"node_id"`
 	NodeName           string     `json:"node_name"`
 	WaveID             string     `json:"wave_id,omitempty"`
@@ -146,6 +207,13 @@ type CheckpointRecord struct {
 	CheckpointID string          `json:"checkpoint_id"`
 	RunID        string          `json:"run_id"`
 	StepID       string          `json:"step_id"`
+	TaskID       string          `json:"task_id,omitempty"`
+	ParentRunID  string          `json:"parent_run_id,omitempty"`
+	ParentStepID string          `json:"parent_step_id,omitempty"`
+	ParentTaskID string          `json:"parent_task_id,omitempty"`
+	RootRunID    string          `json:"root_run_id,omitempty"`
+	RunPath      []string        `json:"run_path,omitempty"`
+	Namespace    string          `json:"namespace,omitempty"`
 	NodeID       string          `json:"node_id"`
 	Stage        CheckpointStage `json:"stage"`
 	StateCodec   string          `json:"state_codec"`
@@ -163,15 +231,21 @@ type RestoredCheckpoint struct {
 }
 
 type Artifact struct {
-	ID        string    `json:"id,omitempty"`
-	RunID     string    `json:"run_id,omitempty"`
-	StepID    string    `json:"step_id,omitempty"`
-	NodeID    string    `json:"node_id,omitempty"`
-	Type      string    `json:"type,omitempty"`
-	MIMEType  string    `json:"mime_type,omitempty"`
-	Location  string    `json:"location,omitempty"`
-	CreatedAt time.Time `json:"created_at,omitempty"`
-	Data      []byte    `json:"-"`
+	ID           string    `json:"id,omitempty"`
+	RunID        string    `json:"run_id,omitempty"`
+	StepID       string    `json:"step_id,omitempty"`
+	NodeID       string    `json:"node_id,omitempty"`
+	ParentRunID  string    `json:"parent_run_id,omitempty"`
+	ParentStepID string    `json:"parent_step_id,omitempty"`
+	ParentTaskID string    `json:"parent_task_id,omitempty"`
+	RootRunID    string    `json:"root_run_id,omitempty"`
+	RunPath      []string  `json:"run_path,omitempty"`
+	Namespace    string    `json:"namespace,omitempty"`
+	Type         string    `json:"type,omitempty"`
+	MIMEType     string    `json:"mime_type,omitempty"`
+	Location     string    `json:"location,omitempty"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
+	Data         []byte    `json:"-"`
 }
 
 type Event struct {
@@ -179,7 +253,14 @@ type Event struct {
 	GraphID        string          `json:"graph_id"`
 	GraphSessionID string          `json:"graph_session_id,omitempty"`
 	RunID          string          `json:"run_id"`
+	ParentRunID    string          `json:"parent_run_id,omitempty"`
+	ParentStepID   string          `json:"parent_step_id,omitempty"`
+	ParentTaskID   string          `json:"parent_task_id,omitempty"`
+	RootRunID      string          `json:"root_run_id,omitempty"`
+	RunPath        []string        `json:"run_path,omitempty"`
+	Namespace      string          `json:"namespace,omitempty"`
 	StepID         string          `json:"step_id,omitempty"`
+	TaskID         string          `json:"task_id,omitempty"`
 	NodeID         string          `json:"node_id,omitempty"`
 	Type           EventType       `json:"type"`
 	Timestamp      time.Time       `json:"timestamp"`
@@ -196,7 +277,11 @@ type WarningRecord struct {
 }
 
 type RunFilter struct {
-	Statuses []RunStatus
+	Statuses     []RunStatus
+	ParentRunID  string
+	ParentTaskID string
+	RootRunID    string
+	Namespace    string
 }
 
 type Breakpoint struct {
@@ -208,13 +293,20 @@ type Breakpoint struct {
 
 type ExecutionStore interface {
 	CreateRun(ctx context.Context, run RunRecord) error
-	UpdateRun(ctx context.Context, run RunRecord) error
+	CompareAndSwapRun(ctx context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error)
 	GetRun(ctx context.Context, runID string) (RunRecord, error)
 	ListRuns(ctx context.Context, filter RunFilter) ([]RunRecord, error)
 	AppendStep(ctx context.Context, step StepRecord) error
 	UpdateStep(ctx context.Context, step StepRecord) error
 	GetStep(ctx context.Context, stepID string) (StepRecord, error)
 	ListSteps(ctx context.Context, runID string) ([]StepRecord, error)
+}
+
+func compareAndSwapRun(ctx context.Context, store ExecutionStore, run RunRecord) (RunRecord, error) {
+	if store == nil {
+		return RunRecord{}, errors.New("execution store is nil")
+	}
+	return store.CompareAndSwapRun(ctx, run.Revision, run)
 }
 
 type CheckpointStore interface {

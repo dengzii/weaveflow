@@ -336,8 +336,8 @@ func TestFileExecutionStoreEnforcesCreateAndUpdateBoundaries(t *testing.T) {
 	run := RunRecord{RunID: "run"}
 	step := StepRecord{RunID: run.RunID, StepID: "step"}
 
-	if err := store.UpdateRun(ctx, run); !errors.Is(err, ErrRunnerRecordNotFound) {
-		t.Fatalf("UpdateRun() error = %v, want record not found", err)
+	if _, err := store.CompareAndSwapRun(ctx, run.Revision, run); !errors.Is(err, ErrRunnerRecordNotFound) {
+		t.Fatalf("CompareAndSwapRun() error = %v, want record not found", err)
 	}
 	if err := store.AppendStep(ctx, step); !errors.Is(err, ErrRunnerRecordNotFound) {
 		t.Fatalf("AppendStep() without run error = %v, want record not found", err)
@@ -357,8 +357,8 @@ func TestFileExecutionStoreEnforcesCreateAndUpdateBoundaries(t *testing.T) {
 	if err := store.AppendStep(ctx, step); err == nil {
 		t.Fatal("duplicate AppendStep() error = nil")
 	}
-	if err := store.UpdateRun(ctx, run); err != nil {
-		t.Fatalf("UpdateRun() existing record error = %v", err)
+	if _, err := store.CompareAndSwapRun(ctx, run.Revision, run); err != nil {
+		t.Fatalf("CompareAndSwapRun() existing record error = %v", err)
 	}
 	if err := store.UpdateStep(ctx, step); err != nil {
 		t.Fatalf("UpdateStep() existing record error = %v", err)

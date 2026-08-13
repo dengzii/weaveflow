@@ -16,9 +16,9 @@ import (
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
-	"github.com/tmc/langchaingo/llms"
 )
 
 type chatRecordingStarter struct {

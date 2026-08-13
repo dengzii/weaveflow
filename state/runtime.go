@@ -34,6 +34,7 @@ type RestoredStateSnapshot struct {
 type RuntimeState struct {
 	RunID           string         `json:"run_id,omitempty"`
 	CurrentStepID   string         `json:"current_step_id,omitempty"`
+	CurrentTaskID   string         `json:"current_task_id,omitempty"`
 	CurrentNodeID   string         `json:"current_node_id,omitempty"`
 	CurrentNodeIDs  []string       `json:"current_node_ids,omitempty"`
 	CurrentStepIDs  []string       `json:"current_step_ids,omitempty"`
@@ -48,14 +49,20 @@ type RuntimeState struct {
 }
 
 type ArtifactRef struct {
-	ID        string    `json:"id"`
-	RunID     string    `json:"run_id,omitempty"`
-	StepID    string    `json:"step_id,omitempty"`
-	NodeID    string    `json:"node_id,omitempty"`
-	Type      string    `json:"type,omitempty"`
-	MIMEType  string    `json:"mime_type,omitempty"`
-	Location  string    `json:"location,omitempty"`
-	CreatedAt time.Time `json:"created_at,omitempty"`
+	ID           string    `json:"id"`
+	RunID        string    `json:"run_id,omitempty"`
+	StepID       string    `json:"step_id,omitempty"`
+	NodeID       string    `json:"node_id,omitempty"`
+	ParentRunID  string    `json:"parent_run_id,omitempty"`
+	ParentStepID string    `json:"parent_step_id,omitempty"`
+	ParentTaskID string    `json:"parent_task_id,omitempty"`
+	RootRunID    string    `json:"root_run_id,omitempty"`
+	RunPath      []string  `json:"run_path,omitempty"`
+	Namespace    string    `json:"namespace,omitempty"`
+	Type         string    `json:"type,omitempty"`
+	MIMEType     string    `json:"mime_type,omitempty"`
+	Location     string    `json:"location,omitempty"`
+	CreatedAt    time.Time `json:"created_at,omitempty"`
 }
 
 const runtimeArtifactsKey = "artifacts"
@@ -142,6 +149,9 @@ func CloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {
 	}
 	cloned := make([]ArtifactRef, len(artifacts))
 	copy(cloned, artifacts)
+	for index := range cloned {
+		cloned[index].RunPath = append([]string(nil), artifacts[index].RunPath...)
+	}
 	return cloned
 }
 

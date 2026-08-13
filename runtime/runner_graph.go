@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -15,17 +16,17 @@ const (
 )
 
 type RunnerExecution interface {
-	PrepareNode(ctx context.Context, nodeID string, state *state.State) (context.Context, error)
-	ExecuteNode(ctx context.Context, nodeID string, executor core.Node, state *state.State) (*state.State, error)
-	OnGraphStep(ctx context.Context, stepNodeID string, state *state.State) error
+	PrepareNode(ctx context.Context, task GraphTask, state *state.State) (context.Context, error)
+	ExecuteNode(ctx context.Context, task GraphTask, executor core.Node, base *state.State, input *state.State) (core.ExecutionResult, error)
+	OnGraphStep(ctx context.Context, completed []GraphTask, state *state.State) error
 }
 
 type BranchPatchRecorder interface {
-	RecordBranchPatch(base *state.State, nodeID string, patch state.Patch)
+	RecordBranchPatch(base *state.State, task GraphTask, patch state.Patch)
 }
 
 type ParallelWaveRecorder interface {
-	OnParallelWave(ctx context.Context, base *state.State, nodeIDs []string) error
+	OnParallelWave(ctx context.Context, base *state.State, tasks []GraphTask) error
 }
 
 type BranchPatchRecorderSetter interface {
@@ -33,10 +34,56 @@ type BranchPatchRecorderSetter interface {
 }
 
 type SchedulerConfig struct {
-	StartNodeIDs          []string
+	StartTasks            []GraphTask
 	InterruptAfterNodeIDs []string
-	StepObserver          func(context.Context, string, *state.State) error
+	StepObserver          func(context.Context, []GraphTask, *state.State) error
 	EventObserver         func(context.Context, SchedulerEvent) error
+}
+
+type GraphTask struct {
+	TaskID           string      `json:"task_id"`
+	NodeID           string      `json:"node_id"`
+	Input            state.Patch `json:"input,omitempty"`
+	CorrelationKey   string      `json:"correlation_key,omitempty"`
+	OrderKey         string      `json:"order_key,omitempty"`
+	Order            int         `json:"order"`
+	Dynamic          bool        `json:"dynamic,omitempty"`
+	ParallelWaveSize int         `json:"parallel_wave_size,omitempty"`
+}
+
+type GraphSchedule struct {
+	CurrentTasks      []GraphTask `json:"current_tasks,omitempty"`
+	NextTasks         []GraphTask `json:"next_tasks,omitempty"`
+	PendingFanInNodes []string    `json:"pending_fan_in_nodes,omitempty"`
+}
+
+func NewStaticGraphTask(nodeID string, order int) GraphTask {
+	return GraphTask{TaskID: nodeID, NodeID: nodeID, Order: order}
+}
+
+func GraphTaskNodeIDs(tasks []GraphTask) []string {
+	if len(tasks) == 0 {
+		return nil
+	}
+	nodeIDs := make([]string, 0, len(tasks))
+	for _, task := range tasks {
+		if task.NodeID != "" {
+			nodeIDs = append(nodeIDs, task.NodeID)
+		}
+	}
+	return nodeIDs
+}
+
+func CloneGraphTasks(tasks []GraphTask) []GraphTask {
+	if len(tasks) == 0 {
+		return nil
+	}
+	cloned := make([]GraphTask, len(tasks))
+	for index, task := range tasks {
+		cloned[index] = task
+		cloned[index].Input = state.NewPatch(task.Input.Ops()...)
+	}
+	return cloned
 }
 
 type SchedulerEventType string
@@ -71,10 +118,12 @@ type RunnerGraph interface {
 }
 
 type GraphInterrupt struct {
-	NodeID      string
-	State       *state.State
-	Value       any
-	NextNodeIDs []string
+	NodeID          string
+	TaskID          string
+	State           *state.State
+	Value           any
+	NextTasks       []GraphTask
+	CheckpointStage CheckpointStage
 }
 
 func (interrupt *GraphInterrupt) Error() string {
@@ -106,13 +155,16 @@ func (graphErr *GraphStepError) Unwrap() error {
 }
 
 const graphSchedulerNamespace = "graph_scheduler"
+const graphResultNamespace = "graph_result"
 
 var (
 	graphSchedulerPendingPath = state.Internal(graphSchedulerNamespace, "pending_fan_in_nodes")
-	graphSchedulerNextPath    = state.Internal(graphSchedulerNamespace, "next_nodes")
+	graphSchedulerCurrentPath = state.Internal(graphSchedulerNamespace, "current_tasks")
+	graphSchedulerNextPath    = state.Internal(graphSchedulerNamespace, "next_tasks")
 	graphSchedulerStepsPath   = state.Internal(graphSchedulerNamespace, "super_steps")
 	graphSchedulerNodesPath   = state.Internal(graphSchedulerNamespace, "node_executions")
 	graphSchedulerElapsedPath = state.Internal(graphSchedulerNamespace, "elapsed_wall_time_ns")
+	graphReturnValuePath      = state.Internal(graphResultNamespace, "return_value")
 )
 
 type GraphExecutionBudget struct {
@@ -121,31 +173,46 @@ type GraphExecutionBudget struct {
 	ElapsedWallTime time.Duration
 }
 
-func StoreGraphSchedule(currentState *state.State, nextNodeIDs, pendingFanInNodeIDs []string) error {
+func StoreGraphSchedule(currentState *state.State, schedule GraphSchedule) error {
 	if currentState == nil {
 		return nil
 	}
-	if len(nextNodeIDs) == 0 {
-		if err := state.DeletePath(currentState, graphSchedulerNextPath.String()); err != nil {
+	for _, item := range []struct {
+		path  state.Path
+		tasks []GraphTask
+	}{
+		{path: graphSchedulerCurrentPath, tasks: schedule.CurrentTasks},
+		{path: graphSchedulerNextPath, tasks: schedule.NextTasks},
+	} {
+		if len(item.tasks) == 0 {
+			if err := state.DeletePath(currentState, item.path.String()); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := state.SetPath(currentState, item.path.String(), CloneGraphTasks(item.tasks)); err != nil {
 			return err
 		}
-	} else if err := state.SetPath(currentState, graphSchedulerNextPath.String(), append([]string(nil), nextNodeIDs...)); err != nil {
-		return err
 	}
-	if len(pendingFanInNodeIDs) == 0 {
+	if len(schedule.PendingFanInNodes) == 0 {
 		return state.DeletePath(currentState, graphSchedulerPendingPath.String())
 	}
-	return state.SetPath(currentState, graphSchedulerPendingPath.String(), append([]string(nil), pendingFanInNodeIDs...))
+	return state.SetPath(currentState, graphSchedulerPendingPath.String(), append([]string(nil), schedule.PendingFanInNodes...))
 }
 
-func LoadGraphSchedule(currentState *state.State) (nextNodeIDs, pendingFanInNodeIDs []string, ok bool) {
+func LoadGraphSchedule(currentState *state.State) (GraphSchedule, bool) {
 	if currentState == nil {
-		return nil, nil, false
+		return GraphSchedule{}, false
 	}
 	access := state.NewAccess(currentState)
+	currentValue, currentOK := access.ReadAny(graphSchedulerCurrentPath)
 	nextValue, nextOK := access.ReadAny(graphSchedulerNextPath)
 	pendingValue, pendingOK := access.ReadAny(graphSchedulerPendingPath)
-	return graphScheduleNodeIDs(nextValue), graphScheduleNodeIDs(pendingValue), nextOK || pendingOK
+	return GraphSchedule{
+		CurrentTasks:      graphScheduleTasks(currentValue),
+		NextTasks:         graphScheduleTasks(nextValue),
+		PendingFanInNodes: graphScheduleNodeIDs(pendingValue),
+	}, currentOK || nextOK || pendingOK
 }
 
 func StoreGraphExecutionBudget(currentState *state.State, budget GraphExecutionBudget) error {
@@ -189,6 +256,27 @@ func ClearGraphSchedule(currentState *state.State) error {
 	return state.DeletePath(currentState, state.Internal(graphSchedulerNamespace).String())
 }
 
+func StoreGraphReturnValue(currentState *state.State, value any) error {
+	if currentState == nil {
+		return nil
+	}
+	return state.SetPath(currentState, graphReturnValuePath.String(), value)
+}
+
+func LoadGraphReturnValue(currentState *state.State) (any, bool) {
+	if currentState == nil {
+		return nil, false
+	}
+	return state.ReadPath(currentState, graphReturnValuePath.String())
+}
+
+func ClearGraphReturnValue(currentState *state.State) error {
+	if currentState == nil {
+		return nil
+	}
+	return state.DeletePath(currentState, state.Internal(graphResultNamespace).String())
+}
+
 func graphScheduleNodeIDs(value any) []string {
 	switch typed := value.(type) {
 	case []string:
@@ -204,6 +292,28 @@ func graphScheduleNodeIDs(value any) []string {
 	default:
 		return nil
 	}
+}
+
+func graphScheduleTasks(value any) []GraphTask {
+	if value == nil {
+		return nil
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var tasks []GraphTask
+	if err := json.Unmarshal(payload, &tasks); err != nil {
+		return nil
+	}
+	valid := tasks[:0]
+	for _, task := range tasks {
+		if task.TaskID == "" || task.NodeID == "" {
+			continue
+		}
+		valid = append(valid, task)
+	}
+	return CloneGraphTasks(valid)
 }
 
 func graphSchedulerInt64(value any) int64 {

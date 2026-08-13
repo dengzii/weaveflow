@@ -283,10 +283,11 @@ func waitForRunStatus(ctx context.Context, runner *runtime.GraphRunner, runID st
 		if err != nil {
 			return runtime.RunRecord{}, err
 		}
-		if run.Status == target && !runner.IsRunActive(runID) {
-			return run, nil
-		}
-		if isTerminalRunStatus(run.Status) {
+		if run.Status == target {
+			if !runner.IsRunActive(runID) {
+				return run, nil
+			}
+		} else if isTerminalRunStatus(run.Status) {
 			return run, fmt.Errorf("%w: run %q reached status %q before %q", runtime.ErrRunControlNotAllowed, runID, run.Status, target)
 		}
 
@@ -317,7 +318,30 @@ func (s *Server) handleListRuns(c *gin.Context) {
 	if reader == nil {
 		return
 	}
-	runs, err := reader.ListRuns(c.Request.Context(), runtime.RunFilter{Statuses: statuses})
+	parentRunID, err := optionalStringQuery(c, "parent_run_id")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	parentTaskID, err := optionalStringQuery(c, "parent_task_id")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	rootRunID, err := optionalStringQuery(c, "root_run_id")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	namespace, err := optionalStringQuery(c, "namespace")
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	runs, err := reader.ListRuns(c.Request.Context(), runtime.RunFilter{
+		Statuses: statuses, ParentRunID: parentRunID, ParentTaskID: parentTaskID,
+		RootRunID: rootRunID, Namespace: namespace,
+	})
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return

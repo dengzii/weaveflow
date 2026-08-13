@@ -7,7 +7,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-type ExecuteFunc func(ctx core.Context, access *state.Access) error
+type ExecuteFunc func(ctx core.Context, access *state.Access) (core.NodeResult, error)
 
 type FuncNode struct {
 	Base
@@ -21,12 +21,12 @@ func NewFuncNode(spec Spec, fn ExecuteFunc) *FuncNode {
 	}
 }
 
-func (n *FuncNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *FuncNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	if n == nil {
-		return fmt.Errorf("node func node is nil")
+		return core.NodeResult{}, fmt.Errorf("node func node is nil")
 	}
 	if n.Fn == nil {
-		return fmt.Errorf("node func node %q execute function is nil", n.ID())
+		return core.NodeResult{}, fmt.Errorf("node func node %q execute function is nil", n.ID())
 	}
 	return n.Fn(ctx, access)
 }

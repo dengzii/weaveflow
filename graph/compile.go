@@ -17,40 +17,49 @@ func (g *Graph) Compile() (*Runnable, error) {
 		return nil, err
 	}
 	patches := newCompilePatchCollector(g.compileBranchOrders())
-	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
-		targetNode := g.nodes[nodeID]
+	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, task fruntime.GraphTask, currentState *state.State) (core.ExecutionResult, error) {
+		targetNode := g.nodes[task.NodeID]
 		if targetNode == nil {
-			return currentState, fmt.Errorf("node %q is not compiled", nodeID)
+			return core.ExecutionResult{}, fmt.Errorf("node %q is not compiled", task.NodeID)
 		}
-		return g.executePatchNode(ctx, nodeID, targetNode, currentState, patches)
+		return g.executePatchNode(ctx, task, targetNode, currentState, patches)
 	})
-	return &Runnable{scheduled: scheduled}, nil
+	return &Runnable{scheduled: scheduled, stateSchemas: cloneStateSchemas(g.stateSchemas)}, nil
 }
 
-func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (_ *state.State, resultErr error) {
+func (g *Graph) executePatchNode(ctx context.Context, task fruntime.GraphTask, targetNode core.Node, currentState *state.State, patches *compilePatchCollector) (_ core.ExecutionResult, resultErr error) {
 	defer func() {
 		if resultErr != nil {
-			recordFailedBranchPatch(patches, currentState, nodeID, resultErr)
+			recordFailedBranchPatch(patches, currentState, task, resultErr)
 		}
 	}()
 	if targetNode == nil {
-		return currentState, fmt.Errorf("node %q is nil", nodeID)
+		return core.ExecutionResult{}, fmt.Errorf("node %q is nil", task.NodeID)
 	}
 	resolvedContract, err := core.ContractFor(targetNode)
 	if err != nil {
-		return currentState, err
+		return core.ExecutionResult{}, err
 	}
 	hasResolvedContract := false
 	if g != nil && len(g.nodeContracts) > 0 {
-		if nodeContract, ok := g.nodeContracts[nodeID]; ok {
+		if nodeContract, ok := g.nodeContracts[task.NodeID]; ok {
 			resolvedContract = nodeContract.Clone()
 			hasResolvedContract = true
 		}
 	}
+	if task.Dynamic && hasResolvedContract {
+		if issues := state.ValidateInputPatchByContract(currentState, task.Input, resolvedContract); len(issues) > 0 {
+			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
+		}
+	}
+	inputState, err := task.Input.Apply(currentState)
+	if err != nil {
+		return core.ExecutionResult{}, fmt.Errorf("apply input for task %q: %w", task.TaskID, err)
+	}
 	contract := &resolvedContract
 	var readIssues []state.ValidationIssue
 	var writeIssues []state.ValidationIssue
-	result, err := core.ExecuteNodeWithOptions(ctx, currentState, targetNode, core.NodeExecutionOptions{
+	result, err := core.ExecuteNodeWithOptions(ctx, inputState, targetNode, core.NodeExecutionOptions{
 		Contract:               contract,
 		EnforceInputProjection: hasResolvedContract,
 		ValidateRequiredReads:  hasResolvedContract,
@@ -65,14 +74,14 @@ func (g *Graph) executePatchNode(ctx context.Context, nodeID string, targetNode 
 	})
 	if err != nil {
 		if len(readIssues) > 0 || len(writeIssues) > 0 {
-			return currentState, fmt.Errorf("node %q state contract violation: %w", nodeID, err)
+			return core.ExecutionResult{}, fmt.Errorf("node %q state contract violation: %w", task.NodeID, err)
 		}
-		return currentState, err
+		return core.ExecutionResult{}, err
 	}
 	if patches != nil {
-		patches.record(currentState, nodeID, result.Patch)
+		patches.record(currentState, task, result.Patch)
 	}
-	return result.State, nil
+	return result, nil
 }
 
 func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
@@ -80,15 +89,20 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.R
 	if err != nil {
 		return nil, err
 	}
-	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, nodeID string, currentState *state.State) (*state.State, error) {
-		targetNode := g.nodes[nodeID]
-		next, err := execution.ExecuteNode(ctx, nodeID, targetNode, currentState)
+	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, task fruntime.GraphTask, currentState *state.State) (core.ExecutionResult, error) {
+		targetNode := g.nodes[task.NodeID]
+		inputState, err := task.Input.Apply(currentState)
 		if err != nil {
-			recordFailedBranchPatch(patches, currentState, nodeID, err)
-		} else if !patches.hasPatch(currentState, nodeID) {
-			patches.record(currentState, nodeID, stateDiffPatch(currentState, next))
+			recordFailedBranchPatch(patches, currentState, task, err)
+			return core.ExecutionResult{}, fmt.Errorf("apply input for task %q: %w", task.TaskID, err)
 		}
-		return next, err
+		result, err := execution.ExecuteNode(ctx, task, targetNode, currentState, inputState)
+		if err != nil {
+			recordFailedBranchPatch(patches, currentState, task, err)
+		} else if !patches.hasPatch(currentState, task.TaskID) {
+			patches.record(currentState, task, result.Patch)
+		}
+		return result, err
 	})
 	scheduled.prepareNode = execution.PrepareNode
 	return scheduled, nil
@@ -111,33 +125,24 @@ func (g *Graph) runnerPatchCollector(execution fruntime.RunnerExecution) (*compi
 	return patches, nil
 }
 
-func (g *Graph) mergeCompiledStates(ctx context.Context, current *state.State, newStates []*state.State, patches *compilePatchCollector) (*state.State, error) {
-	if len(newStates) == 0 {
+func (g *Graph) mergeCompiledResults(ctx context.Context, current *state.State, results []core.ExecutionResult, patches *compilePatchCollector) (*state.State, error) {
+	if len(results) == 0 {
 		if current == nil {
 			return state.NewState(), nil
 		}
 		return current, nil
 	}
-	if len(newStates) == 1 {
-		if patches != nil {
-			_ = patches.consume(current)
-		}
-		if newStates[0] == nil {
-			return current, nil
-		}
-		return newStates[0], nil
-	}
 	if patches == nil {
-		return nil, fmt.Errorf("parallel state merge requires branch patches")
+		return nil, fmt.Errorf("state merge requires branch patches")
 	}
 	branches := patches.consume(current)
-	if len(branches) != len(newStates) {
-		return nil, fmt.Errorf("parallel state merge requires branch patches: collected %d for %d branch states", len(branches), len(newStates))
+	if len(branches) != len(results) {
+		return nil, fmt.Errorf("state merge requires branch patches: collected %d for %d task results", len(branches), len(results))
 	}
 	if err := patches.notifyParallelWave(ctx, current, branches); err != nil {
 		return nil, err
 	}
-	return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{Contracts: g.nodeContracts})
+	return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{Contracts: g.nodeContracts, Schemas: g.stateSchemas})
 }
 
 func (g *Graph) compileBranchOrders() map[string]int {

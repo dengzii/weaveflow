@@ -1,7 +1,9 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -40,21 +42,26 @@ func (store *MemoryExecutionStore) CreateRun(ctx context.Context, run RunRecord)
 	return nil
 }
 
-func (store *MemoryExecutionStore) UpdateRun(ctx context.Context, run RunRecord) error {
+func (store *MemoryExecutionStore) CompareAndSwapRun(ctx context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error) {
 	if err := fileStoreContextErr(ctx); err != nil {
-		return err
+		return RunRecord{}, err
 	}
 	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
-		return err
+		return RunRecord{}, err
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.ensureInitialized()
-	if _, exists := store.runs[run.RunID]; !exists {
-		return ErrRunnerRecordNotFound
+	existing, exists := store.runs[run.RunID]
+	if !exists {
+		return RunRecord{}, ErrRunnerRecordNotFound
 	}
+	if existing.Revision != expectedRevision || run.Revision != expectedRevision {
+		return RunRecord{}, &RunRevisionConflictError{RunID: run.RunID, Expected: expectedRevision, Actual: existing.Revision}
+	}
+	run.Revision = expectedRevision + 1
 	store.runs[run.RunID] = cloneRunRecord(run)
-	return nil
+	return cloneRunRecord(run), nil
 }
 
 func (store *MemoryExecutionStore) GetRun(ctx context.Context, runID string) (RunRecord, error) {
@@ -89,6 +96,18 @@ func (store *MemoryExecutionStore) ListRuns(ctx context.Context, filter RunFilte
 			if _, included := statuses[run.Status]; !included {
 				continue
 			}
+		}
+		if filter.ParentRunID != "" && run.ParentRunID != filter.ParentRunID {
+			continue
+		}
+		if filter.ParentTaskID != "" && run.ParentTaskID != filter.ParentTaskID {
+			continue
+		}
+		if filter.RootRunID != "" && run.RootRunID != filter.RootRunID {
+			continue
+		}
+		if filter.Namespace != "" && run.Namespace != filter.Namespace {
+			continue
 		}
 		runs = append(runs, cloneRunRecord(run))
 	}
@@ -496,12 +515,17 @@ func memoryArtifactKey(runID, artifactID string) string {
 func artifactRef(artifact Artifact) state.ArtifactRef {
 	return state.ArtifactRef{
 		ID: artifact.ID, RunID: artifact.RunID, StepID: artifact.StepID, NodeID: artifact.NodeID,
+		ParentRunID: artifact.ParentRunID, ParentStepID: artifact.ParentStepID, ParentTaskID: artifact.ParentTaskID,
+		RootRunID: artifact.RootRunID, RunPath: append([]string(nil), artifact.RunPath...), Namespace: artifact.Namespace,
 		Type: artifact.Type, MIMEType: artifact.MIMEType, Location: artifact.Location, CreatedAt: artifact.CreatedAt,
 	}
 }
 
 func cloneRunRecord(run RunRecord) RunRecord {
 	cloned := run
+	cloned.RunPath = append([]string(nil), run.RunPath...)
+	cloned.ChildRunIDs = append([]string(nil), run.ChildRunIDs...)
+	cloned.ReturnValue = cloneRunValue(run.ReturnValue)
 	cloned.CurrentNodeIDs = append([]string(nil), run.CurrentNodeIDs...)
 	cloned.CurrentStepIDs = append([]string(nil), run.CurrentStepIDs...)
 	cloned.NextNodeIDs = append([]string(nil), run.NextNodeIDs...)
@@ -516,8 +540,26 @@ func cloneRunRecord(run RunRecord) RunRecord {
 	return cloned
 }
 
+func cloneRunValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return value
+	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var cloned any
+	if err := decoder.Decode(&cloned); err != nil {
+		return value
+	}
+	return cloned
+}
+
 func cloneStepRecord(step StepRecord) StepRecord {
 	cloned := step
+	cloned.RunPath = append([]string(nil), step.RunPath...)
 	if step.FinishedAt != nil {
 		finishedAt := *step.FinishedAt
 		cloned.FinishedAt = &finishedAt
@@ -527,6 +569,7 @@ func cloneStepRecord(step StepRecord) StepRecord {
 
 func cloneArtifact(artifact Artifact) Artifact {
 	cloned := artifact
+	cloned.RunPath = append([]string(nil), artifact.RunPath...)
 	cloned.Data = append([]byte(nil), artifact.Data...)
 	return cloned
 }

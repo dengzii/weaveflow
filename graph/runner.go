@@ -23,6 +23,7 @@ func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkp
 	}
 	baseOptions := []fruntime.GraphRunnerOption{
 		fruntime.WithNodeContracts(cloneNodeContracts(graph.nodeContracts)),
+		fruntime.WithStateSchemas(cloneStateSchemas(graph.stateSchemas)),
 		fruntime.WithStartupWarnings(buildRunnerWarnings(graph.ContractDiagnostics())),
 		fruntime.WithGraphMetadata("", "", graphHash, snapshotHash, ""),
 	}
@@ -129,7 +130,7 @@ func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint
 			return nil, fmt.Errorf("resolve after-node breakpoint %q: %w", breakpoint.NodeID, err)
 		}
 		if g.graph.isParallelBranchTarget(nodeID) {
-			return nil, fmt.Errorf("after_node breakpoint for parallel branch node %q is not supported; use before_node or resume from after_parallel_wave", nodeID)
+			return nil, fmt.Errorf("after_node breakpoint for parallel branch node %q is not supported; use before_node or resume from after_wave", nodeID)
 		}
 		nodes = append(nodes, nodeID)
 	}

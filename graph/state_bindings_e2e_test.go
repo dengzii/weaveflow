@@ -14,15 +14,16 @@ import (
 	"github.com/dengzii/weaveflow/node"
 	agentnode "github.com/dengzii/weaveflow/node/agents/agent"
 	"github.com/dengzii/weaveflow/registry"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("research result")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("final answer")}}
+	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
+	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
 		Name:         "two-agent-handoff",
@@ -75,8 +76,8 @@ func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 
 func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("research result")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("final answer")}}
+	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
+	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
 	conversationPath := "shared.team_conversation"
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
@@ -141,8 +142,8 @@ func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 
 func TestGraphV2MultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("first output")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("second output")}}
+	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
+	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
 		Name:         "isolated-multi-llm",
@@ -211,8 +212,8 @@ func TestGraphV2MultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testin
 
 func TestGraphV2MultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("first output")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("second output")}}
+	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
+	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
 	conversationPath := "shared.conversation"
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
@@ -293,22 +294,22 @@ func TestGraphV2MultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
 
 func TestGraphV2LLMTurnToolExecutionAndConditionShareConversationBinding(t *testing.T) {
 	t.Parallel()
-	model := &graphScriptedModel{responses: []*llms.ContentResponse{
+	model := &graphScriptedModel{responses: []*llms.ModelResponse{
 		{
-			Choices: []*llms.ContentChoice{{ToolCalls: []llms.ToolCall{{
+			Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{{
 				ID: "call-1", Type: "function",
-				FunctionCall: &llms.FunctionCall{Name: "echo", Arguments: `{"value":"ok"}`},
+				FunctionCall: &llms.FunctionCall{Name: "echo", Arguments: []byte(`{"value":"ok"}`)},
 			}}}},
 		},
 		contentResponse("tool loop complete"),
 	}}
 	var toolMu sync.Mutex
 	toolCalls := 0
-	echo := core.NewTool(&llms.FunctionDefinition{Name: "echo"}, func(context.Context, string) (string, error) {
+	echo := core.NewTool(&llms.FunctionDefinition{Name: "echo"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 		toolMu.Lock()
 		toolCalls++
 		toolMu.Unlock()
-		return "ok", nil
+		return llms.ToolResult{ToolCallID: call.ID, Name: "echo", Content: "ok"}, nil
 	})
 	conversationPath := "shared.agent_thread"
 	def := dsl.GraphDefinition{
@@ -452,11 +453,19 @@ func TestGraphV2SubgraphUsesExplicitInputAndOutputBindings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}
-	result, err := workflow.Run(context.Background(), state.FromShared(map[string]any{
+	runtimeStore := fruntime.NewMemoryRuntimeStore()
+	artifactStore := fruntime.NewMemoryArtifactStore()
+	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore,
+		fruntime.WithArtifactStore(artifactStore),
+	)
+	run, result, err := runner.Start(context.Background(), state.FromShared(map[string]any{
 		"child_payload": map[string]any{"value": "isolated"},
 	}))
 	if err != nil {
-		t.Fatalf("Run(): %v", err)
+		t.Fatalf("Start(): %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("parent run status = %q, want completed", run.Status)
 	}
 	if _, ok := state.ReadPath(result, "shared.answer"); ok {
 		t.Fatal("child shared.answer leaked into the parent root")
@@ -472,6 +481,71 @@ func TestGraphV2SubgraphUsesExplicitInputAndOutputBindings(t *testing.T) {
 	shared, ok := exported[state.SectionShared].(map[string]any)
 	if !ok || shared["answer"] != "isolated:child" {
 		t.Fatalf("subgraph shared output = %#v", exported[state.SectionShared])
+	}
+	if run.RootRunID != run.RunID || len(run.RunPath) != 1 || run.RunPath[0] != run.RunID || run.Namespace != run.RunID {
+		t.Fatalf("parent lineage = root %q path %#v namespace %q", run.RootRunID, run.RunPath, run.Namespace)
+	}
+	if len(run.ChildRunIDs) != 1 {
+		t.Fatalf("parent child runs = %#v, want one", run.ChildRunIDs)
+	}
+	childRun, err := runner.GetRun(context.Background(), run.ChildRunIDs[0])
+	if err != nil {
+		t.Fatalf("GetRun(child): %v", err)
+	}
+	wantNamespace := run.Namespace + "/child:child"
+	if childRun.ParentRunID != run.RunID || childRun.ParentTaskID != "child" || childRun.RootRunID != run.RunID || childRun.Namespace != wantNamespace {
+		t.Fatalf("child lineage = %#v", childRun)
+	}
+	if childRun.ParentStepID == "" || len(childRun.RunPath) != 2 || childRun.RunPath[0] != run.RunID || childRun.RunPath[1] != childRun.RunID {
+		t.Fatalf("child path = parent step %q path %#v", childRun.ParentStepID, childRun.RunPath)
+	}
+
+	steps, err := runner.ListSteps(context.Background(), childRun.RunID)
+	if err != nil {
+		t.Fatalf("ListSteps(child): %v", err)
+	}
+	if len(steps) != 1 || steps[0].ParentRunID != run.RunID || steps[0].RootRunID != run.RunID || steps[0].Namespace != wantNamespace {
+		t.Fatalf("child steps = %#v", steps)
+	}
+	checkpoints, err := runner.ListCheckpoints(context.Background(), childRun.RunID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints(child): %v", err)
+	}
+	if len(checkpoints) < 3 {
+		t.Fatalf("child checkpoints = %#v, want before/after/final", checkpoints)
+	}
+	for _, checkpoint := range checkpoints {
+		if checkpoint.ParentRunID != run.RunID || checkpoint.RootRunID != run.RunID || checkpoint.Namespace != wantNamespace {
+			t.Fatalf("child checkpoint lineage = %#v", checkpoint)
+		}
+	}
+	events, err := runner.ListEvents(childRun.RunID)
+	if err != nil {
+		t.Fatalf("ListEvents(child): %v", err)
+	}
+	foundCustomEvent := false
+	for _, event := range events {
+		if event.ParentRunID != run.RunID || event.RootRunID != run.RunID || event.Namespace != wantNamespace {
+			t.Fatalf("child event lineage = %#v", event)
+		}
+		foundCustomEvent = foundCustomEvent || event.Type == fruntime.EventNodeCustom
+	}
+	if !foundCustomEvent {
+		t.Fatalf("child events missing custom NodeResult event: %#v", events)
+	}
+	artifacts, err := artifactStore.List(context.Background(), childRun.RunID)
+	if err != nil {
+		t.Fatalf("ListArtifacts(child): %v", err)
+	}
+	foundCustomArtifact := false
+	for _, artifact := range artifacts {
+		if artifact.ParentRunID != run.RunID || artifact.RootRunID != run.RunID || artifact.Namespace != wantNamespace {
+			t.Fatalf("child artifact lineage = %#v", artifact)
+		}
+		foundCustomArtifact = foundCustomArtifact || artifact.Type == "test.child"
+	}
+	if !foundCustomArtifact {
+		t.Fatalf("child artifacts missing NodeResult artifact: %#v", artifacts)
 	}
 }
 
@@ -507,13 +581,13 @@ func binding(path string) dsl.StateBinding {
 	return dsl.StateBinding{Path: path}
 }
 
-func contentResponse(content string) *llms.ContentResponse {
-	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: content}}}
+func contentResponse(content string) *llms.ModelResponse {
+	return &llms.ModelResponse{Choices: []*llms.ModelChoice{{Content: content}}}
 }
 
 type graphScriptedModel struct {
 	mu        sync.Mutex
-	responses []*llms.ContentResponse
+	responses []*llms.ModelResponse
 	calls     [][]llms.MessageContent
 }
 
@@ -523,28 +597,30 @@ type graphCopyNode struct {
 	output state.Path
 }
 
-func (n *graphCopyNode) Execute(_ core.Context, access *state.Access) error {
+func (n *graphCopyNode) Execute(_ core.Context, access *state.Access) (core.NodeResult, error) {
 	value, err := state.Get(access, state.NewRef[string](n.input))
 	if err != nil {
-		return err
+		return core.NodeResult{}, err
 	}
-	return state.Replace(access, state.NewRef[string](n.output), value+":child")
+	if err := state.Replace(access, state.NewRef[string](n.output), value+":child"); err != nil {
+		return core.NodeResult{}, err
+	}
+	return core.NodeResult{
+		Events:    []core.EventDraft{{Type: string(fruntime.EventNodeCustom), Payload: map[string]any{"value": value}}},
+		Artifacts: []core.ArtifactDraft{{Type: "test.child", MIMEType: "text/plain", Data: []byte(value)}},
+	}, nil
 }
 
-func (m *graphScriptedModel) GenerateContent(_ context.Context, messages []llms.MessageContent, _ ...llms.CallOption) (*llms.ContentResponse, error) {
+func (m *graphScriptedModel) Generate(_ context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.responses) == 0 {
 		return nil, errors.New("scripted model exhausted")
 	}
-	m.calls = append(m.calls, cloneGraphMessages(messages))
+	m.calls = append(m.calls, cloneGraphMessages(request.Messages))
 	response := m.responses[0]
 	m.responses = m.responses[1:]
 	return response, nil
-}
-
-func (m *graphScriptedModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", errors.New("scripted model Call is not supported")
 }
 
 func (m *graphScriptedModel) Calls() [][]llms.MessageContent {

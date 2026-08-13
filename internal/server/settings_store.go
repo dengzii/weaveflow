@@ -7,29 +7,33 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/llms/openai"
 )
 
 const (
 	graphRuntimeSettingsFileName = "runtime-settings.json"
-	graphRuntimeSettingsVersion  = 2
+	graphRuntimeSettingsVersion  = 3
 )
 
 type graphRuntimeSettingsFile struct {
-	Version     int                      `json:"version"`
-	Environment map[string]string        `json:"environment"`
-	Models      []graphModelSettingsFile `json:"models"`
+	Version         int                      `json:"version"`
+	Environment     map[string]string        `json:"environment"`
+	Models          []graphModelSettingsFile `json:"models"`
+	ToolPermissions []string                 `json:"tool_permissions"`
+	ToolApprovals   map[string]bool          `json:"tool_approvals"`
 }
 
 type graphModelSettingsFile struct {
-	ID        string         `json:"id"`
-	Enabled   bool           `json:"enabled"`
-	Provider  string         `json:"provider"`
-	APIFormat string         `json:"api_format,omitempty"`
-	Model     string         `json:"model,omitempty"`
-	BaseURL   string         `json:"base_url,omitempty"`
-	ExtraBody map[string]any `json:"extra_body,omitempty"`
-	APIKey    string         `json:"api_key,omitempty"`
+	ID        string            `json:"id"`
+	Enabled   bool              `json:"enabled"`
+	Provider  string            `json:"provider"`
+	APIFormat string            `json:"api_format,omitempty"`
+	Model     string            `json:"model,omitempty"`
+	BaseURL   string            `json:"base_url,omitempty"`
+	ExtraBody map[string]any    `json:"extra_body,omitempty"`
+	APIKey    string            `json:"api_key,omitempty"`
+	Pricing   llms.ModelPricing `json:"pricing,omitempty"`
 }
 
 func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error) {
@@ -65,10 +69,17 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 		if !openai.IsSupportedAPIFormat(openai.APIFormat(apiFormat)) {
 			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model %q has unsupported API format %q", modelID, apiFormat)
 		}
+		pricing, err := normalizeModelPricing(model.Pricing)
+		if err != nil {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings model %q pricing: %w", modelID, err)
+		}
+		stored.Models[index].Pricing = pricing
 	}
 	settings := graphRuntimeSettings{
-		Environment: stored.Environment,
-		Models:      make([]graphModelSettings, 0, len(stored.Models)),
+		Environment:     stored.Environment,
+		Models:          make([]graphModelSettings, 0, len(stored.Models)),
+		ToolPermissions: stored.ToolPermissions,
+		ToolApprovals:   stored.ToolApprovals,
 	}
 	for _, model := range stored.Models {
 		settings.Models = append(settings.Models, graphModelSettings{
@@ -81,6 +92,7 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 			ExtraBody:        cloneGraphModelExtraBody(model.ExtraBody),
 			APIKeyConfigured: strings.TrimSpace(model.APIKey) != "",
 			APIKey:           strings.TrimSpace(model.APIKey),
+			Pricing:          model.Pricing,
 		})
 	}
 	markGraphModelAPIKeys(&settings, firstGraphModelAPIKey(settings))
@@ -101,9 +113,11 @@ func persistGraphRuntimeSettings(baseDir string, settings graphRuntimeSettings) 
 func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
 	settings = normalizedGraphSettings(settings)
 	stored := graphRuntimeSettingsFile{
-		Version:     graphRuntimeSettingsVersion,
-		Environment: settings.Environment,
-		Models:      make([]graphModelSettingsFile, 0, len(settings.Models)),
+		Version:         graphRuntimeSettingsVersion,
+		Environment:     settings.Environment,
+		Models:          make([]graphModelSettingsFile, 0, len(settings.Models)),
+		ToolPermissions: settings.ToolPermissions,
+		ToolApprovals:   settings.ToolApprovals,
 	}
 	for _, model := range settings.Models {
 		stored.Models = append(stored.Models, graphModelSettingsFile{
@@ -115,6 +129,7 @@ func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
 			BaseURL:   model.BaseURL,
 			ExtraBody: cloneGraphModelExtraBody(model.ExtraBody),
 			APIKey:    strings.TrimSpace(model.APIKey),
+			Pricing:   model.Pricing,
 		})
 	}
 	data, err := json.MarshalIndent(stored, "", "  ")

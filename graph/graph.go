@@ -71,6 +71,7 @@ type Graph struct {
 	conditionContracts      map[string]state.Contract
 	stateBindingSemantics   []dsl.StateBindingSemantic
 	initialStatePaths       []string
+	stateSchemas            map[string]state.JSONSchema
 	contractDiagnostics     []core.ContractDiagnostic
 	defaultEdges            map[string][]string
 	conditionalEdges        map[string][]conditionalEdge
@@ -95,8 +96,10 @@ type Graph struct {
 func NewGraph(reg *registry.Registry) *Graph {
 	protocolModule := builtin.ProtocolsStateModuleDefinition()
 	initialStatePaths := make([]string, 0, len(protocolModule.Fields))
+	stateSchemas := make(map[string]state.JSONSchema, len(protocolModule.Fields))
 	for _, field := range protocolModule.Fields {
 		initialStatePaths = append(initialStatePaths, field.Path)
+		stateSchemas[field.Path] = state.JSONSchema(field.Schema.Clone())
 	}
 	graph := &Graph{
 		registry:          reg,
@@ -106,6 +109,7 @@ func NewGraph(reg *registry.Registry) *Graph {
 		conditionalEdges:  map[string][]conditionalEdge{},
 		stateModules:      []dsl.StateModuleRef{{Name: builtin.ProtocolsModuleName, Version: builtin.ProtocolsModuleVersion}},
 		initialStatePaths: initialStatePaths,
+		stateSchemas:      stateSchemas,
 	}
 	_ = graph.setExecutionPolicy(fruntime.DefaultGraphExecutionPolicy(), false)
 	return graph
@@ -460,6 +464,27 @@ func (g *Graph) setInitialStatePaths(paths []string) {
 	g.initialStatePaths = append([]string(nil), paths...)
 }
 
+func (g *Graph) setStateSchemas(schemas map[string]state.JSONSchema) {
+	if g == nil || len(schemas) == 0 {
+		if g != nil {
+			g.stateSchemas = nil
+		}
+		return
+	}
+	g.stateSchemas = cloneStateSchemas(schemas)
+}
+
+func cloneStateSchemas(schemas map[string]state.JSONSchema) map[string]state.JSONSchema {
+	if len(schemas) == 0 {
+		return nil
+	}
+	cloned := make(map[string]state.JSONSchema, len(schemas))
+	for path, schema := range schemas {
+		cloned[path] = schema.Clone()
+	}
+	return cloned
+}
+
 func (g *Graph) setNodeContracts(contracts map[string]state.Contract) {
 	if g == nil {
 		return
@@ -521,7 +546,8 @@ func (g *Graph) resolveEdgeTarget(ref string) (string, error) {
 }
 
 type Runnable struct {
-	scheduled *scheduledRunnable
+	scheduled    *scheduledRunnable
+	stateSchemas map[string]state.JSONSchema
 }
 
 type compilePatchCollector struct {
@@ -541,24 +567,29 @@ func newCompilePatchCollector(orders map[string]int) *compilePatchCollector {
 	}
 }
 
-func (c *compilePatchCollector) record(base *state.State, nodeID string, patch state.Patch) {
+func (c *compilePatchCollector) record(base *state.State, task fruntime.GraphTask, patch state.Patch) {
 	if c == nil || base == nil {
 		return
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	order, ok := c.orders[nodeID]
-	if !ok {
-		order = len(c.orders)
-		c.orders[nodeID] = order
+	order := task.Order
+	if !task.Dynamic {
+		var ok bool
+		order, ok = c.orders[task.NodeID]
+		if !ok {
+			order = len(c.orders)
+			c.orders[task.NodeID] = order
+		}
 	}
 	branch := state.BranchPatch{
-		NodeID: nodeID,
+		TaskID: task.TaskID,
+		NodeID: task.NodeID,
 		Order:  order,
 		Patch:  patch,
 	}
 	for i := range c.patches[base] {
-		if c.patches[base][i].NodeID == nodeID {
+		if c.patches[base][i].TaskID == task.TaskID {
 			c.patches[base][i] = branch
 			return
 		}
@@ -566,20 +597,20 @@ func (c *compilePatchCollector) record(base *state.State, nodeID string, patch s
 	c.patches[base] = append(c.patches[base], branch)
 }
 
-func (c *compilePatchCollector) RecordBranchPatch(base *state.State, nodeID string, patch state.Patch) {
-	c.record(base, nodeID, patch)
+func (c *compilePatchCollector) RecordBranchPatch(base *state.State, task fruntime.GraphTask, patch state.Patch) {
+	c.record(base, task, patch)
 }
 
-func recordFailedBranchPatch(c *compilePatchCollector, base *state.State, nodeID string, err error) {
+func recordFailedBranchPatch(c *compilePatchCollector, base *state.State, task fruntime.GraphTask, err error) {
 	if c == nil || base == nil || err == nil {
 		return
 	}
 	var nodeInterrupt *core.NodeInterrupt
 	var graphInterrupt *fruntime.GraphInterrupt
-	if (errors.As(err, &nodeInterrupt) || errors.As(err, &graphInterrupt)) && c.hasPatch(base, nodeID) {
+	if (errors.As(err, &nodeInterrupt) || errors.As(err, &graphInterrupt)) && c.hasPatch(base, task.TaskID) {
 		return
 	}
-	c.record(base, nodeID, state.Patch{})
+	c.record(base, task, state.Patch{})
 }
 
 func (c *compilePatchCollector) notifyParallelWave(ctx context.Context, base *state.State, branches []state.BranchPatch) error {
@@ -592,11 +623,11 @@ func (c *compilePatchCollector) notifyParallelWave(ctx context.Context, base *st
 	if recorder == nil {
 		return nil
 	}
-	nodeIDs := make([]string, 0, len(branches))
+	tasks := make([]fruntime.GraphTask, 0, len(branches))
 	for _, branch := range branches {
-		nodeIDs = append(nodeIDs, branch.NodeID)
+		tasks = append(tasks, fruntime.GraphTask{TaskID: branch.TaskID, NodeID: branch.NodeID, Order: branch.Order})
 	}
-	return recorder.OnParallelWave(ctx, base, nodeIDs)
+	return recorder.OnParallelWave(ctx, base, tasks)
 }
 
 func (c *compilePatchCollector) setWaveRecorder(recorder fruntime.ParallelWaveRecorder) {
@@ -608,14 +639,14 @@ func (c *compilePatchCollector) setWaveRecorder(recorder fruntime.ParallelWaveRe
 	c.wave = recorder
 }
 
-func (c *compilePatchCollector) hasPatch(base *state.State, nodeID string) bool {
+func (c *compilePatchCollector) hasPatch(base *state.State, taskID string) bool {
 	if c == nil || base == nil {
 		return false
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	for _, branch := range c.patches[base] {
-		if branch.NodeID == nodeID {
+		if branch.TaskID == taskID {
 			return true
 		}
 	}
@@ -643,7 +674,17 @@ func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*stat
 	if r.scheduled == nil {
 		return initialState, fmt.Errorf("runnable is not initialized")
 	}
-	return r.scheduled.Invoke(ctx, initialState)
+	if issues := state.ValidateStateBySchemas(initialState, r.stateSchemas); len(issues) > 0 {
+		return initialState, state.NewValidationError("entry", issues)
+	}
+	result, err := r.scheduled.Invoke(ctx, initialState)
+	if err != nil {
+		return result, err
+	}
+	if issues := state.ValidateStateBySchemas(result, r.stateSchemas); len(issues) > 0 {
+		return result, state.NewValidationError("output", issues)
+	}
+	return result, nil
 }
 
 func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config fruntime.SchedulerConfig) (*state.State, error) {
@@ -656,7 +697,17 @@ func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.Sta
 	if r.scheduled == nil {
 		return initialState, fmt.Errorf("runnable is not initialized")
 	}
-	return r.scheduled.InvokeWithConfig(ctx, initialState, config)
+	if issues := state.ValidateStateBySchemas(initialState, r.stateSchemas); len(issues) > 0 {
+		return initialState, state.NewValidationError("entry", issues)
+	}
+	result, err := r.scheduled.InvokeWithConfig(ctx, initialState, config)
+	if err != nil {
+		return result, err
+	}
+	if issues := state.ValidateStateBySchemas(result, r.stateSchemas); len(issues) > 0 {
+		return result, state.NewValidationError("output", issues)
+	}
+	return result, nil
 }
 
 func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan StreamEvent {
@@ -689,6 +740,10 @@ func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan
 		if !send(StreamEvent{Timestamp: time.Now(), Event: EventChainStart, State: initialState}) {
 			return
 		}
+		if issues := state.ValidateStateBySchemas(initialState, r.stateSchemas); len(issues) > 0 {
+			send(StreamEvent{Timestamp: time.Now(), Event: EventChainEnd, State: initialState, Error: state.NewValidationError("entry", issues)})
+			return
+		}
 		scheduled := *r.scheduled
 		scheduled.observeNode = func(_ context.Context, event NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
 			send(StreamEvent{
@@ -701,6 +756,11 @@ func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan
 			})
 		}
 		finalState, err := scheduled.Invoke(ctx, initialState)
+		if err == nil {
+			if issues := state.ValidateStateBySchemas(finalState, r.stateSchemas); len(issues) > 0 {
+				err = state.NewValidationError("output", issues)
+			}
+		}
 		send(StreamEvent{Timestamp: time.Now(), Event: EventChainEnd, State: finalState, Error: err})
 	}()
 	return events

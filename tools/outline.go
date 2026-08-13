@@ -14,7 +14,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const outlineMaxLineLen = 160
@@ -82,6 +82,7 @@ func NewOutline() Tool {
 				"Go uses AST (precise, includes methods nested under their receiver, const/var groups). " +
 				"Pattern matching covers: py, js/ts/tsx/jsx/mjs/cjs/vue/svelte, dart, java, kt, rs, rb, swift, c/cpp/h/hpp, " +
 				"php, lua, scala, zig, sh/bash, sql, ex/exs, html.",
+			OutputSchema: textOutputSchema(),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -98,35 +99,36 @@ func NewOutline() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: outlineTool,
+		Handler:     outlineTool,
+		Permissions: []string{"filesystem.read"},
 	}
 }
 
-func outlineTool(ctx context.Context, input string) (string, error) {
+func outlineTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req outlineRequest
-	if err := decodeToolRequest(input, "outline", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("outline input: %w", err)
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {
-		return "", fmt.Errorf("file_path is required")
+		return llms.ToolResult{}, fmt.Errorf("file_path is required")
 	}
 
 	_, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("path is a directory; outline accepts files only")
+		return llms.ToolResult{}, fmt.Errorf("path is a directory; outline accepts files only")
 	}
 
 	data, err := os.ReadFile(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 
 	ext := strings.ToLower(filepath.Ext(target))
@@ -139,7 +141,7 @@ func outlineTool(ctx context.Context, input string) (string, error) {
 		entries = outlineRegex(data, ext)
 	}
 
-	return formatOutline(relativePath, lang, data, entries, req.Grouped), nil
+	return textToolResult(call, formatOutline(relativePath, lang, data, entries, req.Grouped)), nil
 }
 
 type outlineEntry struct {

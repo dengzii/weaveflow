@@ -8,7 +8,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -47,6 +47,7 @@ func NewTree() Tool {
 				"(defaults: project root, max_depth=3, max_entries=500). Skips VCS " +
 				"metadata, node_modules, vendor, build/dist/target, IDE caches, etc. " +
 				"Use this once for project overview instead of calling glob multiple times.",
+			OutputSchema: textOutputSchema(),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -68,14 +69,15 @@ func NewTree() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: treeTool,
+		Handler:     treeTool,
+		Permissions: []string{"filesystem.read"},
 	}
 }
 
-func treeTool(ctx context.Context, input string) (string, error) {
+func treeTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req treeRequest
-	if err := decodeToolRequest(input, "tree", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("tree input: %w", err)
 	}
 	if strings.TrimSpace(req.Path) == "" {
 		req.Path = "."
@@ -85,14 +87,14 @@ func treeTool(ctx context.Context, input string) (string, error) {
 
 	_, target, relativePath, err := resolveToolPath(ctx, req.Path)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if !info.IsDir() {
-		return "", fmt.Errorf("tree path must be a directory")
+		return llms.ToolResult{}, fmt.Errorf("tree path must be a directory")
 	}
 
 	var b strings.Builder
@@ -104,12 +106,12 @@ func treeTool(ctx context.Context, input string) (string, error) {
 	emitted := 0
 	truncated := false
 	if err := walkTree(target, "", 0, depth, maxEntries, &emitted, &truncated, &b); err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if truncated {
 		fmt.Fprintf(&b, "[truncated: %d entries cap reached; raise max_entries or narrow path]\n", maxEntries)
 	}
-	return b.String(), nil
+	return textToolResult(call, b.String()), nil
 }
 
 func walkTree(root string, indent string, depth int, maxDepth int, maxEntries int, emitted *int, truncated *bool, b *strings.Builder) error {

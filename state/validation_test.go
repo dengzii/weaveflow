@@ -68,6 +68,44 @@ func TestValidateRequiredReads(t *testing.T) {
 	}
 }
 
+func TestValidateJSONSchemaValueReportsNestedObjectAndArrayPath(t *testing.T) {
+	t.Parallel()
+
+	schema := JSONSchema{
+		"type":     "object",
+		"required": []string{"items"},
+		"properties": map[string]any{
+			"items": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type":     "object",
+					"required": []string{"name"},
+					"properties": map[string]any{
+						"name": map[string]any{"type": "string"},
+					},
+				},
+			},
+		},
+	}
+	value := map[string]any{
+		"items": []any{
+			map[string]any{"name": "valid"},
+			map[string]any{"name": 42},
+		},
+	}
+
+	issues := ValidateJSONSchemaValue(value, schema, "shared.payload")
+	if len(issues) != 1 {
+		t.Fatalf("issues = %#v, want one nested diagnostic", issues)
+	}
+	if issues[0].Path != "shared.payload.items.1.name" {
+		t.Fatalf("issue path = %q, want nested array item path", issues[0].Path)
+	}
+	if issues[0].Kind == "" || issues[0].Message == "" {
+		t.Fatalf("issue lacks structured diagnostic: %#v", issues[0])
+	}
+}
+
 func TestProjectStateByContractSelectsReadablePaths(t *testing.T) {
 	t.Parallel()
 

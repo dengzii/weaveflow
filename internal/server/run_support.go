@@ -113,8 +113,8 @@ func interruptMessage(checkpoint runtime.RestoredCheckpoint) string {
 		return fmt.Sprintf("run paused before node %q", nodeID)
 	case runtime.CheckpointAfterNode:
 		return fmt.Sprintf("run paused after node %q", nodeID)
-	case runtime.CheckpointAfterParallelWave:
-		return "run paused after parallel wave"
+	case runtime.CheckpointAfterWave:
+		return "run paused after wave"
 	default:
 		return "run paused"
 	}

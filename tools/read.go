@@ -7,7 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const defaultReadLines = 2000
@@ -27,6 +27,7 @@ func NewRead() Tool {
 				"- By default, it reads up to 2000 lines from the beginning of the file.\n" +
 				"- You can optionally specify a line offset and limit for long files.\n" +
 				"- Results are returned using cat -n format, with line numbers starting at 1.",
+			OutputSchema: textOutputSchema(),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -49,41 +50,42 @@ func NewRead() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: readTool,
+		Handler:     readTool,
+		Permissions: []string{"filesystem.read"},
 	}
 }
 
-func readTool(ctx context.Context, input string) (string, error) {
+func readTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req readRequest
-	if err := decodeToolRequest(input, "read", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("read input: %w", err)
 	}
 	req.FilePath = strings.TrimSpace(req.FilePath)
 	if req.FilePath == "" {
-		return "", fmt.Errorf("file_path is required")
+		return llms.ToolResult{}, fmt.Errorf("file_path is required")
 	}
 
 	_, target, relativePath, err := resolveToolPath(ctx, req.FilePath)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	info, err := os.Stat(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if info.IsDir() {
-		return "", fmt.Errorf("path is a directory")
+		return llms.ToolResult{}, fmt.Errorf("path is a directory")
 	}
 
 	data, err := os.ReadFile(target)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if !utf8.Valid(data) {
-		return "", fmt.Errorf("file is not a UTF-8 text file")
+		return llms.ToolResult{}, fmt.Errorf("file is not a UTF-8 text file")
 	}
 
-	return formatReadLines(relativePath, string(data), req.Offset, req.Limit), nil
+	return textToolResult(call, formatReadLines(relativePath, string(data), req.Offset, req.Limit)), nil
 }
 
 func formatReadLines(path string, content string, offset int, limit int) string {

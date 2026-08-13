@@ -124,7 +124,11 @@ func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *EnvironmentContextNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *EnvironmentContextNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *EnvironmentContextNode) execute(ctx core.Context, access *state.Access) error {
 	payload := n.collect(ctx)
 	if err := access.SetAny(n.EnvironmentPath, payload); err != nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "environment.context.error", map[string]any{"error": err.Error()})

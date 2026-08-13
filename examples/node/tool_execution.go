@@ -2,14 +2,15 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/tools"
-
-	"github.com/tmc/langchaingo/llms"
 )
 
 func ToolExecutionExample() {
@@ -36,14 +37,14 @@ func ToolExecutionExample() {
 					ID: "call_001",
 					FunctionCall: &llms.FunctionCall{
 						Name:      "calculator",
-						Arguments: `{"expression":"42 * 58"}`,
+						Arguments: json.RawMessage(`{"expression":"42 * 58"}`),
 					},
 				},
 				llms.ToolCall{
 					ID: "call_002",
 					FunctionCall: &llms.FunctionCall{
 						Name:      "current_time",
-						Arguments: `{}`,
+						Arguments: json.RawMessage(`{}`),
 					},
 				},
 			},
@@ -82,8 +83,8 @@ func describeMessage(msg llms.MessageContent) string {
 			if p.FunctionCall != nil {
 				return fmt.Sprintf("[tool_call] %s(%s)", p.FunctionCall.Name, p.FunctionCall.Arguments)
 			}
-		case llms.ToolCallResponse:
-			return fmt.Sprintf("[tool_result] %s → %s", p.Name, p.Content)
+		case llms.ToolResult:
+			return fmt.Sprintf("[tool_result] %s -> %s", p.Name, p.Content)
 		}
 	}
 	return ""

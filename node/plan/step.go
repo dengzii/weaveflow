@@ -13,7 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const defaultPlanStepMaxIterations = 4
@@ -133,7 +133,11 @@ func PlanStepNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanStepNode) Execute(_ core.Context, access *state.Access) error {
+func (n *PlanStepNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *PlanStepNode) execute(_ core.Context, access *state.Access) error {
 	planner, err := plancap.Bind(access, n.PlanPath)
 	if err != nil {
 		return err

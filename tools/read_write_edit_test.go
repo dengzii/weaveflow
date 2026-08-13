@@ -2,7 +2,6 @@ package tools
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -23,10 +22,11 @@ func TestReadToolReturnsNumberedLines(t *testing.T) {
 		t.Fatalf("write seed: %v", err)
 	}
 
-	out, err := readTool(context.Background(), `{"file_path":"notes.txt","offset":1,"limit":1}`)
+	result, err := readTool(context.Background(), toolCallForTest("read", `{"file_path":"notes.txt","offset":1,"limit":1}`))
 	if err != nil {
 		t.Fatalf("readTool: %v", err)
 	}
+	out := result.Content
 	if !strings.Contains(out, "2\ttwo") {
 		t.Fatalf("expected numbered second line, got:\n%s", out)
 	}
@@ -36,7 +36,7 @@ func TestReadToolReturnsNumberedLines(t *testing.T) {
 }
 
 func TestReadToolRejectsRemovedPagesParameter(t *testing.T) {
-	_, err := readTool(context.Background(), `{"file_path":"ignored","pages":"1"}`)
+	_, err := readTool(context.Background(), toolCallForTest("read", `{"file_path":"ignored","pages":"1"}`))
 	if err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("read pages parameter error = %v", err)
 	}
@@ -46,13 +46,13 @@ func TestWriteToolOverwritesFile(t *testing.T) {
 	root := setupReadWriteEditWorkspace(t)
 	path := filepath.Join(root, "notes.txt")
 
-	out, err := writeTool(context.Background(), `{"file_path":"notes.txt","content":"new content"}`)
+	result, err := writeTool(context.Background(), toolCallForTest("write", `{"file_path":"notes.txt","content":"new content"}`))
 	if err != nil {
 		t.Fatalf("writeTool: %v", err)
 	}
-	var resp writeResponse
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	resp, ok := result.Value.(writeResponse)
+	if !ok {
+		t.Fatalf("write result value = %#v", result.Value)
 	}
 	if resp.Path != "notes.txt" || resp.BytesWritten != len("new content") {
 		t.Fatalf("unexpected response: %#v", resp)
@@ -73,13 +73,13 @@ func TestEditToolReplacesUniqueString(t *testing.T) {
 		t.Fatalf("write seed: %v", err)
 	}
 
-	out, err := editTool(context.Background(), `{"file_path":"notes.txt","old_string":"world","new_string":"weaveflow"}`)
+	result, err := editTool(context.Background(), toolCallForTest("edit", `{"file_path":"notes.txt","old_string":"world","new_string":"weaveflow"}`))
 	if err != nil {
 		t.Fatalf("editTool: %v", err)
 	}
-	var resp editResponse
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	resp, ok := result.Value.(editResponse)
+	if !ok {
+		t.Fatalf("edit result value = %#v", result.Value)
 	}
 	if resp.Replacements != 1 {
 		t.Fatalf("expected one replacement, got %#v", resp)
@@ -100,7 +100,7 @@ func TestEditToolRejectsAmbiguousStringWithoutReplaceAll(t *testing.T) {
 		t.Fatalf("write seed: %v", err)
 	}
 
-	if _, err := editTool(context.Background(), `{"file_path":"notes.txt","old_string":"x","new_string":"y"}`); err == nil {
+	if _, err := editTool(context.Background(), toolCallForTest("edit", `{"file_path":"notes.txt","old_string":"x","new_string":"y"}`)); err == nil {
 		t.Fatal("expected ambiguity error")
 	}
 }
@@ -112,13 +112,13 @@ func TestEditToolReplaceAll(t *testing.T) {
 		t.Fatalf("write seed: %v", err)
 	}
 
-	out, err := editTool(context.Background(), `{"file_path":"notes.txt","old_string":"x","new_string":"y","replace_all":true}`)
+	result, err := editTool(context.Background(), toolCallForTest("edit", `{"file_path":"notes.txt","old_string":"x","new_string":"y","replace_all":true}`))
 	if err != nil {
 		t.Fatalf("editTool: %v", err)
 	}
-	var resp editResponse
-	if err := json.Unmarshal([]byte(out), &resp); err != nil {
-		t.Fatalf("unmarshal: %v", err)
+	resp, ok := result.Value.(editResponse)
+	if !ok {
+		t.Fatalf("edit result value = %#v", result.Value)
 	}
 	if resp.Replacements != 3 {
 		t.Fatalf("expected three replacements, got %#v", resp)
@@ -134,13 +134,13 @@ func TestEditToolReplaceAll(t *testing.T) {
 
 func TestReadWriteEditRejectPathEscape(t *testing.T) {
 	setupReadWriteEditWorkspace(t)
-	if _, err := readTool(context.Background(), `{"file_path":"../outside.txt"}`); err == nil {
+	if _, err := readTool(context.Background(), toolCallForTest("read", `{"file_path":"../outside.txt"}`)); err == nil {
 		t.Fatal("expected read path escape error")
 	}
-	if _, err := writeTool(context.Background(), `{"file_path":"../outside.txt","content":"x"}`); err == nil {
+	if _, err := writeTool(context.Background(), toolCallForTest("write", `{"file_path":"../outside.txt","content":"x"}`)); err == nil {
 		t.Fatal("expected write path escape error")
 	}
-	if _, err := editTool(context.Background(), `{"file_path":"../outside.txt","old_string":"x","new_string":"y"}`); err == nil {
+	if _, err := editTool(context.Background(), toolCallForTest("edit", `{"file_path":"../outside.txt","old_string":"x","new_string":"y"}`)); err == nil {
 		t.Fatal("expected edit path escape error")
 	}
 }

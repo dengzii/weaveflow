@@ -10,7 +10,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 	"github.com/dengzii/weaveflow/tools"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (

@@ -12,7 +12,53 @@ type Node interface {
 	ID() string
 	Name() string
 	Description() string
-	Execute(ctx Context, access *state.Access) error
+	Execute(ctx Context, access *state.Access) (NodeResult, error)
+}
+
+type NodeRef string
+
+type NodeResult struct {
+	Patch     state.Patch
+	Command   Command
+	Events    []EventDraft
+	Artifacts []ArtifactDraft
+}
+
+type Command struct {
+	Goto    []NodeRef
+	Send    []Send
+	Suspend *SuspendRequest
+	Return  *ReturnCommand
+}
+
+type Send struct {
+	Target         NodeRef
+	Input          state.Patch
+	CorrelationKey string
+	OrderKey       string
+}
+
+type SuspendRequest struct {
+	Value any
+}
+
+type ReturnCommand struct {
+	Value any
+}
+
+type EventDraft struct {
+	Type    string
+	Payload any
+}
+
+type ArtifactDraft struct {
+	Type     string
+	MIMEType string
+	Data     []byte
+}
+
+func Success() NodeResult {
+	return NodeResult{}
 }
 
 type NodeInterrupt struct {
@@ -163,6 +209,7 @@ type ExecutionResult struct {
 	State    *state.State
 	Patch    state.Patch
 	Contract state.Contract
+	Node     NodeResult
 }
 
 type NodeExecutionOptions struct {
@@ -224,32 +271,42 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 	}
 
 	access := state.NewEditingAccess(inputState)
-	if err := node.Execute(NewContext(ctx), access); err != nil {
+	nodeResult, err := node.Execute(NewContext(ctx), access)
+	if err != nil {
 		return ExecutionResult{}, err
 	}
 	if err := ctx.Err(); err != nil {
 		return ExecutionResult{}, err
 	}
-	patch := access.Patch()
+	accessPatch := access.Patch()
+	if !nodeResult.Patch.Empty() && !accessPatch.Empty() {
+		return ExecutionResult{}, fmt.Errorf("node %q returned a patch after mutating state access", node.ID())
+	}
+	patch := nodeResult.Patch
+	if patch.Empty() {
+		patch = accessPatch
+	}
+	nodeResult.Patch = patch
 	if options.ValidateWrites {
-		if issues := state.ValidatePatchByContract(patch, contract); len(issues) > 0 {
+		if issues := state.ValidatePatchResultByContract(inputState, patch, contract); len(issues) > 0 {
 			if options.OnWriteIssues != nil {
 				options.OnWriteIssues(issues)
 			}
-			return ExecutionResult{}, fmt.Errorf("%s", issues[0].Message)
+			return ExecutionResult{}, state.NewValidationError("node output", issues)
 		}
 	}
-	resultState := access.State()
+	patchBase := inputState
 	if options.ApplyPatchToInput {
-		merged, err := patch.Apply(base)
-		if err != nil {
-			return ExecutionResult{}, err
-		}
-		resultState = merged
+		patchBase = base
+	}
+	resultState, err := patch.Apply(patchBase)
+	if err != nil {
+		return ExecutionResult{}, err
 	}
 	return ExecutionResult{
 		State:    resultState,
 		Patch:    patch,
 		Contract: contract,
+		Node:     nodeResult,
 	}, nil
 }

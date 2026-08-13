@@ -33,6 +33,7 @@ type FieldAccess struct {
 	Required    bool
 	Merge       MergeStrategy
 	Type        string
+	Schema      JSONSchema
 	Description string
 }
 
@@ -74,7 +75,10 @@ func cloneFieldAccess(fields []FieldAccess) []FieldAccess {
 		return nil
 	}
 	cloned := make([]FieldAccess, len(fields))
-	copy(cloned, fields)
+	for index, field := range fields {
+		cloned[index] = field
+		cloned[index].Schema = field.Schema.Clone()
+	}
 	return cloned
 }
 

@@ -80,16 +80,18 @@ type EventLLMUsageStats struct {
 	PromptCachedTokens int                           `json:"prompt_cached_tokens"`
 	ReasoningChars     int                           `json:"reasoning_chars"`
 	ContentChars       int                           `json:"content_chars"`
+	CostByCurrency     map[string]float64            `json:"cost_by_currency,omitempty"`
 	ByModel            map[string]EventLLMModelUsage `json:"by_model,omitempty"`
 }
 
 type EventLLMModelUsage struct {
-	Calls              int `json:"calls"`
-	PromptTokens       int `json:"prompt_tokens"`
-	CompletionTokens   int `json:"completion_tokens"`
-	TotalTokens        int `json:"total_tokens"`
-	ReasoningTokens    int `json:"reasoning_tokens"`
-	PromptCachedTokens int `json:"prompt_cached_tokens"`
+	Calls              int                `json:"calls"`
+	PromptTokens       int                `json:"prompt_tokens"`
+	CompletionTokens   int                `json:"completion_tokens"`
+	TotalTokens        int                `json:"total_tokens"`
+	ReasoningTokens    int                `json:"reasoning_tokens"`
+	PromptCachedTokens int                `json:"prompt_cached_tokens"`
+	CostByCurrency     map[string]float64 `json:"cost_by_currency,omitempty"`
 }
 
 type EventToolUsage struct {
@@ -407,7 +409,7 @@ func (b *eventAnalysisBuilder) applyEvent(analysis *EventRunAnalysis, event Even
 		if node != nil {
 			node.LLM.ContentChars += chars
 		}
-	case EventToolCalled, EventToolStarted:
+	case EventToolCalled:
 		b.applyToolCalled(analysis, node, event)
 	case EventToolReturned:
 		b.applyToolFinished(analysis, node, event, "returned")
@@ -836,6 +838,11 @@ func llmUsageFromPayload(payload json.RawMessage) EventLLMUsageStats {
 		ReasoningTokens:    payloadInt(payload, "reasoning_tokens"),
 		PromptCachedTokens: payloadInt(payload, "prompt_cached_tokens"),
 	}
+	if currency := strings.ToUpper(payloadString(payload, "cost_currency")); currency != "" {
+		if total := payloadFloat(payload, "cost_total"); total != 0 {
+			usage.CostByCurrency = map[string]float64{currency: total}
+		}
+	}
 	model := payloadString(payload, "model")
 	if model != "" {
 		usage.ByModel = map[string]EventLLMModelUsage{
@@ -846,6 +853,7 @@ func llmUsageFromPayload(payload json.RawMessage) EventLLMUsageStats {
 				TotalTokens:        usage.TotalTokens,
 				ReasoningTokens:    usage.ReasoningTokens,
 				PromptCachedTokens: usage.PromptCachedTokens,
+				CostByCurrency:     cloneCurrencyCosts(usage.CostByCurrency),
 			},
 		}
 	}
@@ -861,6 +869,7 @@ func mergeLLMUsage(dst *EventLLMUsageStats, src EventLLMUsageStats) {
 	dst.PromptCachedTokens += src.PromptCachedTokens
 	dst.ReasoningChars += src.ReasoningChars
 	dst.ContentChars += src.ContentChars
+	mergeCurrencyCosts(&dst.CostByCurrency, src.CostByCurrency)
 	if len(src.ByModel) == 0 {
 		return
 	}
@@ -875,8 +884,32 @@ func mergeLLMUsage(dst *EventLLMUsageStats, src EventLLMUsageStats) {
 		current.TotalTokens += usage.TotalTokens
 		current.ReasoningTokens += usage.ReasoningTokens
 		current.PromptCachedTokens += usage.PromptCachedTokens
+		mergeCurrencyCosts(&current.CostByCurrency, usage.CostByCurrency)
 		dst.ByModel[model] = current
 	}
+}
+
+func mergeCurrencyCosts(target *map[string]float64, source map[string]float64) {
+	if len(source) == 0 {
+		return
+	}
+	if *target == nil {
+		*target = make(map[string]float64, len(source))
+	}
+	for currency, total := range source {
+		(*target)[currency] += total
+	}
+}
+
+func cloneCurrencyCosts(source map[string]float64) map[string]float64 {
+	if len(source) == 0 {
+		return nil
+	}
+	cloned := make(map[string]float64, len(source))
+	for currency, total := range source {
+		cloned[currency] = total
+	}
+	return cloned
 }
 
 func incrementToolCalled(usage *EventToolUsage, name string) {
@@ -1023,6 +1056,7 @@ func cloneEvents(events []Event) []Event {
 }
 
 func cloneEvent(event Event) Event {
+	event.RunPath = append([]string(nil), event.RunPath...)
 	event.Payload = cloneRawMessage(event.Payload)
 	return event
 }
@@ -1048,6 +1082,24 @@ func payloadInt(payload json.RawMessage, key string) int {
 		return 0
 	}
 	return intFromAny(fields[key])
+}
+
+func payloadFloat(payload json.RawMessage, key string) float64 {
+	var fields map[string]any
+	if err := json.Unmarshal(payload, &fields); err != nil {
+		return 0
+	}
+	switch number := fields[key].(type) {
+	case float64:
+		return number
+	case float32:
+		return float64(number)
+	case json.Number:
+		value, _ := number.Float64()
+		return value
+	default:
+		return float64(intFromAny(number))
+	}
 }
 
 func payloadArrayCount(payload json.RawMessage, key string) int {

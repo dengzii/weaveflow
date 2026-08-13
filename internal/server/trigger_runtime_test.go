@@ -11,22 +11,18 @@ import (
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/internal/trigger"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/gin-gonic/gin"
-	"github.com/tmc/langchaingo/llms"
 )
 
 type triggerRuntimeTestModel struct {
 	id string
 }
 
-func (*triggerRuntimeTestModel) GenerateContent(context.Context, []llms.MessageContent, ...llms.CallOption) (*llms.ContentResponse, error) {
-	return &llms.ContentResponse{}, nil
-}
-
-func (*triggerRuntimeTestModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
-	return "", nil
+func (*triggerRuntimeTestModel) Generate(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+	return &llms.ModelResponse{}, nil
 }
 
 func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {

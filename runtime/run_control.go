@@ -12,24 +12,29 @@ import (
 // RunControlService applies control transitions to persisted runs when no
 // in-process GraphRunner owns the execution.
 type RunControlService struct {
-	executionStore ExecutionStore
-	eventSink      EventSink
-	runDeleter     RunDeleter
-	now            func() time.Time
+	executionStore   ExecutionStore
+	transactionStore RuntimeTransactionStore
+	eventSink        EventSink
+	runDeleter       RunDeleter
+	now              func() time.Time
 }
 
-func NewRunControlService(executionStore ExecutionStore, eventSink EventSink, runDeleter RunDeleter) (*RunControlService, error) {
+func NewRunControlService(executionStore ExecutionStore, transactionStore RuntimeTransactionStore, eventSink EventSink, runDeleter RunDeleter) (*RunControlService, error) {
 	if executionStore == nil {
 		return nil, fmt.Errorf("execution store is required")
+	}
+	if transactionStore == nil {
+		return nil, fmt.Errorf("runtime transaction store is required")
 	}
 	if eventSink == nil {
 		eventSink = NoopEventSink{}
 	}
 	return &RunControlService{
-		executionStore: executionStore,
-		eventSink:      eventSink,
-		runDeleter:     runDeleter,
-		now:            time.Now,
+		executionStore:   executionStore,
+		transactionStore: transactionStore,
+		eventSink:        eventSink,
+		runDeleter:       runDeleter,
+		now:              time.Now,
 	}, nil
 }
 
@@ -67,14 +72,22 @@ func (s *RunControlService) MarkRunExecutionLost(ctx context.Context, runID stri
 	run.ErrorMessage = "run execution is no longer active in this server process"
 	run.UpdatedAt = now
 	run.FinishedAt = &now
-	if err := s.executionStore.UpdateRun(ctx, run); err != nil {
-		return RunRecord{}, err
-	}
-	if err := s.publish(ctx, run, EventRunFailed, map[string]any{
+	failedEvent, err := s.buildEvent(run, EventRunFailed, map[string]any{
 		"error_code":    run.ErrorCode,
 		"error_message": run.ErrorMessage,
-	}); err != nil {
-		return run, err
+	})
+	if err != nil {
+		return RunRecord{}, err
+	}
+	commitResult, err := s.commit(ctx, RuntimeCommit{
+		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+		Events: []Event{failedEvent},
+	})
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if commitResult.Run != nil {
+		run = *commitResult.Run
 	}
 	return run, nil
 }
@@ -85,36 +98,74 @@ func (s *RunControlService) CancelPausedRun(ctx context.Context, runID string) (
 	}
 	ctx = normalizeRunnerContext(ctx)
 	runID = strings.TrimSpace(runID)
+	return s.cancelPausedRun(ctx, runID, "", true, make(map[string]runCancelVisit))
+}
+
+type runCancelVisit struct {
+	run      RunRecord
+	visiting bool
+	done     bool
+}
+
+func (s *RunControlService) cancelPausedRun(ctx context.Context, runID, expectedParentRunID string, root bool, visits map[string]runCancelVisit) (RunRecord, error) {
+	if visit := visits[runID]; visit.visiting {
+		return RunRecord{}, fmt.Errorf("child run lineage cycle includes %q", runID)
+	} else if visit.done {
+		return visit.run, nil
+	}
 	run, err := s.executionStore.GetRun(ctx, runID)
 	if err != nil {
 		return RunRecord{}, err
 	}
+	if expectedParentRunID != "" && run.ParentRunID != expectedParentRunID {
+		return RunRecord{}, fmt.Errorf("child run %q parent is %q, want %q", run.RunID, run.ParentRunID, expectedParentRunID)
+	}
+	visits[runID] = runCancelVisit{run: run, visiting: true}
+	for _, childRunID := range run.ChildRunIDs {
+		childRunID = strings.TrimSpace(childRunID)
+		if childRunID == "" {
+			return RunRecord{}, fmt.Errorf("run %q has an empty child run ID", run.RunID)
+		}
+		if _, err := s.cancelPausedRun(ctx, childRunID, run.RunID, false, visits); err != nil {
+			return RunRecord{}, fmt.Errorf("cancel child run %q of %q: %w", childRunID, run.RunID, err)
+		}
+	}
 	if run.Status == RunStatusCanceled {
+		visits[runID] = runCancelVisit{run: run, done: true}
 		return run, nil
 	}
 	if run.Status != RunStatusPaused {
+		if !root && (run.Status == RunStatusCompleted || run.Status == RunStatusFailed) {
+			visits[runID] = runCancelVisit{run: run, done: true}
+			return run, nil
+		}
 		return RunRecord{}, fmt.Errorf("%w: run %q status %q cannot be canceled without an active runner", ErrRunControlNotAllowed, runID, run.Status)
 	}
 	now := s.now()
 	run.PauseRequested = false
-	run.CancelRequested = true
-	run.UpdatedAt = now
-	if err := s.executionStore.UpdateRun(ctx, run); err != nil {
-		return RunRecord{}, err
-	}
-	if err := s.publish(ctx, run, EventRunCancelRequested, nil); err != nil {
-		return RunRecord{}, err
-	}
 	run.Status = RunStatusCanceled
 	run.CancelRequested = false
 	run.UpdatedAt = now
 	run.FinishedAt = &now
-	if err := s.executionStore.UpdateRun(ctx, run); err != nil {
+	requestedEvent, err := s.buildEvent(run, EventRunCancelRequested, nil)
+	if err != nil {
 		return RunRecord{}, err
 	}
-	if err := s.publish(ctx, run, EventRunCanceled, nil); err != nil {
-		return run, err
+	canceledEvent, err := s.buildEvent(run, EventRunCanceled, nil)
+	if err != nil {
+		return RunRecord{}, err
 	}
+	commitResult, err := s.commit(ctx, RuntimeCommit{
+		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+		Events: []Event{requestedEvent, canceledEvent},
+	})
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if commitResult.Run != nil {
+		run = *commitResult.Run
+	}
+	visits[runID] = runCancelVisit{run: run, done: true}
 	return run, nil
 }
 
@@ -147,18 +198,27 @@ func (s *RunControlService) validate() error {
 	if s.executionStore == nil {
 		return errors.New("run control execution store is nil")
 	}
+	if s.transactionStore == nil {
+		return errors.New("run control runtime transaction store is nil")
+	}
 	if s.now == nil {
 		return errors.New("run control now function is nil")
 	}
 	return nil
 }
 
-func (s *RunControlService) publish(ctx context.Context, run RunRecord, eventType EventType, payload any) error {
+func (s *RunControlService) buildEvent(run RunRecord, eventType EventType, payload any) (Event, error) {
 	event := Event{
 		ID:             newRunnerID(),
 		GraphID:        run.GraphID,
 		GraphSessionID: run.GraphSessionID,
 		RunID:          run.RunID,
+		ParentRunID:    run.ParentRunID,
+		ParentStepID:   run.ParentStepID,
+		ParentTaskID:   run.ParentTaskID,
+		RootRunID:      run.RootRunID,
+		RunPath:        append([]string(nil), run.RunPath...),
+		Namespace:      run.Namespace,
 		NodeID:         run.CurrentNodeID,
 		Type:           eventType,
 		Timestamp:      s.now(),
@@ -166,9 +226,25 @@ func (s *RunControlService) publish(ctx context.Context, run RunRecord, eventTyp
 	if payload != nil {
 		encoded, err := json.Marshal(payload)
 		if err != nil {
-			return err
+			return Event{}, err
 		}
 		event.Payload = encoded
 	}
-	return s.eventSink.Publish(ctx, event)
+	return event, nil
+}
+
+func (s *RunControlService) commit(ctx context.Context, commit RuntimeCommit) (RuntimeCommitResult, error) {
+	result, err := s.transactionStore.Commit(ctx, commit)
+	if err != nil {
+		return RuntimeCommitResult{}, err
+	}
+	if err := publishCommittedEventObservers(ctx, s.eventSink, s.transactionStore, commit.Events); err != nil {
+		return result, err
+	}
+	for _, event := range commit.Events {
+		if err := observeRunnerContextEvent(ctx, event); err != nil {
+			return result, err
+		}
+	}
+	return result, nil
 }

@@ -14,7 +14,7 @@ import (
 	basenode "github.com/dengzii/weaveflow/node"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 type executionIdentity struct {
@@ -54,14 +54,14 @@ func (runtime agentRuntime) runLoop(ctx core.Context, conversation *conversation
 	}
 	ctx = core.NewContext(core.WithTools(ctx, selectedTools))
 
-	toolSets := make([]llms.Tool, 0, len(selectedTools))
+	toolSets := make([]llms.ToolDefinition, 0, len(selectedTools))
 	toolIDs := make([]string, 0, len(selectedTools))
 	for toolID := range selectedTools {
 		toolIDs = append(toolIDs, toolID)
 	}
 	sort.Strings(toolIDs)
 	for _, toolID := range toolIDs {
-		toolSets = append(toolSets, selectedTools[toolID].NewTool())
+		toolSets = append(toolSets, selectedTools[toolID].Definition())
 	}
 
 	maxIterations := runtime.effectiveMaxIterations(conversation)
@@ -87,10 +87,13 @@ func (runtime agentRuntime) runLoop(ctx core.Context, conversation *conversation
 			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "agent.llm.prompt", payload)
 		}
 
-		response, err := model.GenerateContent(ctx, promptMessages,
-			llms.WithTools(toolSets),
-			llms.WithThinkingMode(llms.ThinkingModeHigh),
-		)
+		response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+			ModelID:  effectiveModelID(runtime.config.ModelID),
+			Mode:     llms.ModelModeChat,
+			Messages: promptMessages,
+			Tools:    toolSets,
+			Thinking: llms.ThinkingModeHigh,
+		})
 		if err != nil {
 			runtime.saveErrorArtifact(ctx, iteration, err)
 			return err

@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func TestGenerateCompletionUsesTextCompletionsEndpoint(t *testing.T) {
@@ -50,13 +50,14 @@ func TestGenerateCompletionUsesTextCompletionsEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new model: %v", err)
 	}
-	response, err := model.GenerateCompletion(
-		context.Background(),
-		"func add(a, b int) int {",
-		llms.WithMaxTokens(64),
-		llms.WithTemperature(0.25),
-		llms.WithStopWords([]string{"\n\n"}),
-	)
+	temperature := 0.25
+	response, err := model.Generate(context.Background(), llms.ModelRequest{
+		Mode:        llms.ModelModeCompletion,
+		Prompt:      "func add(a, b int) int {",
+		MaxTokens:   64,
+		Temperature: &temperature,
+		StopWords:   []string{"\n\n"},
+	})
 	if err != nil {
 		t.Fatalf("generate completion: %v", err)
 	}
@@ -79,8 +80,8 @@ func TestGenerateCompletionUsesTextCompletionsEndpoint(t *testing.T) {
 	if response == nil || len(response.Choices) != 1 || response.Choices[0].Content != " completed" {
 		t.Fatalf("response = %#v", response)
 	}
-	if got := response.Choices[0].GenerationInfo["TotalTokens"]; got != 5 {
-		t.Fatalf("total tokens = %#v, want 5", got)
+	if response.Usage.TotalTokens != 5 {
+		t.Fatalf("total tokens = %d, want 5", response.Usage.TotalTokens)
 	}
 }
 
@@ -115,11 +116,11 @@ func TestGenerateCompletionWithReasoningUsesChatEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new model: %v", err)
 	}
-	response, err := model.GenerateCompletion(
-		context.Background(),
-		"reason about this",
-		llms.WithThinkingMode(llms.ThinkingModeHigh),
-	)
+	response, err := model.Generate(context.Background(), llms.ModelRequest{
+		Mode:     llms.ModelModeCompletion,
+		Prompt:   "reason about this",
+		Thinking: llms.ThinkingModeHigh,
+	})
 	if err != nil {
 		t.Fatalf("generate completion: %v", err)
 	}
@@ -172,11 +173,11 @@ func TestGenerateContentSendsReasoningEffort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new model: %v", err)
 	}
-	response, err := model.GenerateContent(
-		context.Background(),
-		[]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
-		llms.WithThinkingMode(llms.ThinkingModeMedium),
-	)
+	response, err := model.Generate(context.Background(), llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
+		Thinking: llms.ThinkingModeMedium,
+	})
 	if err != nil {
 		t.Fatalf("generate content: %v", err)
 	}

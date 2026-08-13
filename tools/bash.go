@@ -17,7 +17,7 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const (
@@ -61,6 +61,16 @@ func NewBash() Tool {
 		Function: &llms.FunctionDefinition{
 			Name:        "bash",
 			Description: "Execute a shell command and return the output. Commands run in a sandboxed workspace directory. Use with caution as it can modify files.",
+			OutputSchema: objectOutputSchema(map[string]any{
+				"command":     map[string]any{"type": "string"},
+				"shell":       map[string]any{"type": "string"},
+				"exit_code":   map[string]any{"type": "integer"},
+				"stdout":      map[string]any{"type": "string"},
+				"stderr":      map[string]any{"type": "string"},
+				"truncated":   map[string]any{"type": "boolean"},
+				"timed_out":   map[string]any{"type": "boolean"},
+				"working_dir": map[string]any{"type": "string"},
+			}, "command", "exit_code", "stdout", "stderr"),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -95,47 +105,49 @@ func NewBash() Tool {
 				"additionalProperties": false,
 			},
 		},
-		Handler: bashTool,
+		Handler:     bashTool,
+		Permissions: []string{"process.execute"},
+		Approval:    core.ToolApprovalRequired,
 	}
 }
 
-func bashTool(ctx context.Context, input string) (string, error) {
+func bashTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
 	var req bashRequest
-	if err := decodeToolRequest(input, "bash", &req); err != nil {
-		return "", err
+	if err := decodeToolArguments(call, &req); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("bash input: %w", err)
 	}
 
 	command := strings.TrimSpace(req.Command)
 	if command == "" {
-		return "", errors.New("command is required")
+		return llms.ToolResult{}, errors.New("command is required")
 	}
 	req.Description = strings.TrimSpace(req.Description)
 	if req.Description == "" {
-		return "", errors.New("description is required")
+		return llms.ToolResult{}, errors.New("description is required")
 	}
 
 	if err := validateBashCommand(ctx, command); err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	if req.RunInBackground {
-		return "", errors.New("run_in_background is not supported by this Bash tool")
+		return llms.ToolResult{}, errors.New("run_in_background is not supported by this Bash tool")
 	}
 
 	timeout, err := normalizeBashTimeout(ctx, req.Timeout)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 	workingDir, err := toolWorkspaceDir(ctx)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 
 	result, err := executeBashCommand(ctx, command, workingDir, timeout, req.Shell)
 	if err != nil {
-		return "", err
+		return llms.ToolResult{}, err
 	}
 
-	return formatBashResponse(result), nil
+	return structuredToolResultWithContent(call, *result, formatBashResponse(result)), nil
 }
 
 func executeBashCommand(ctx context.Context, command, workingDir string, timeout time.Duration, requestedShell string) (*bashResponse, error) {

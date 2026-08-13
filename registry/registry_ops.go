@@ -40,6 +40,9 @@ func (r *Registry) RegisterStateModule(def dsl.StateModuleDefinition) error {
 		if len(field.Schema) == 0 {
 			return fmt.Errorf("state module %q field %q schema is required", key, field.Path)
 		}
+		if err := state.ValidateJSONSchemaDefinition(state.JSONSchema(field.Schema)); err != nil {
+			return fmt.Errorf("state module %q field %q schema: %w", key, field.Path, err)
+		}
 		field.Path = path.String()
 		if _, duplicate := fieldPaths[field.Path]; duplicate {
 			return fmt.Errorf("state module %q field path %q is duplicated", key, field.Path)
@@ -82,6 +85,9 @@ func (r *Registry) RegisterStateModule(def dsl.StateModuleDefinition) error {
 }
 
 func validateCapabilityFields(def dsl.StateCapabilityDefinition) error {
+	if err := state.ValidateJSONSchemaDefinition(state.JSONSchema(def.Schema)); err != nil {
+		return fmt.Errorf("schema: %w", err)
+	}
 	if schemaType(def.Schema) != "object" {
 		return fmt.Errorf("schema type must be object")
 	}
@@ -99,6 +105,9 @@ func validateCapabilityFields(def dsl.StateCapabilityDefinition) error {
 		seen[field.Name] = struct{}{}
 		if len(field.Schema) == 0 {
 			return fmt.Errorf("field %q schema is required", field.Name)
+		}
+		if err := state.ValidateJSONSchemaDefinition(state.JSONSchema(field.Schema)); err != nil {
+			return fmt.Errorf("field %q schema: %w", field.Name, err)
 		}
 		if !validMergeStrategy(field.MergeStrategy) {
 			return fmt.Errorf("field %q has invalid merge strategy %q", field.Name, field.MergeStrategy)
@@ -243,6 +252,9 @@ func validateStatePorts(ports []dsl.StatePortDefinition) error {
 			if len(port.Schema) == 0 {
 				return fmt.Errorf("primitive state port %q requires schema", port.Name)
 			}
+			if err := state.ValidateJSONSchemaDefinition(state.JSONSchema(port.Schema)); err != nil {
+				return fmt.Errorf("primitive state port %q schema: %w", port.Name, err)
+			}
 			if !validAccessMode(port.Mode) {
 				return fmt.Errorf("primitive state port %q has invalid mode %q", port.Name, port.Mode)
 			}
@@ -302,6 +314,9 @@ func validateDynamicStatePorts(def *dsl.DynamicStatePortDefinition) error {
 	}
 	if len(def.Schema) == 0 {
 		return fmt.Errorf("dynamic state ports require schema")
+	}
+	if err := state.ValidateJSONSchemaDefinition(state.JSONSchema(def.Schema)); err != nil {
+		return fmt.Errorf("dynamic state port schema: %w", err)
 	}
 	if def.Mode != dsl.StateAccessRead {
 		return fmt.Errorf("dynamic state ports only support read mode")

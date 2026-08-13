@@ -30,6 +30,9 @@ type runnerArtifactRecorderKey struct{}
 type runnerEventObserverKey struct{}
 type runOriginKey struct{}
 type graphExecutionBudgetProviderKey struct{}
+type graphRunnerKey struct{}
+type childRunLineageKey struct{}
+type childRunControllerKey struct{}
 
 var ErrArtifactRecorderUnavailable = errors.New("runner artifact recorder is unavailable")
 
@@ -49,10 +52,32 @@ type EventPageReader interface {
 }
 
 type RunnerMetadata struct {
-	RunID   string `json:"run_id,omitempty"`
-	StepID  string `json:"step_id,omitempty"`
-	NodeID  string `json:"node_id,omitempty"`
-	Attempt int    `json:"attempt,omitempty"`
+	RunID        string   `json:"run_id,omitempty"`
+	StepID       string   `json:"step_id,omitempty"`
+	TaskID       string   `json:"task_id,omitempty"`
+	NodeID       string   `json:"node_id,omitempty"`
+	ParentRunID  string   `json:"parent_run_id,omitempty"`
+	ParentStepID string   `json:"parent_step_id,omitempty"`
+	ParentTaskID string   `json:"parent_task_id,omitempty"`
+	RootRunID    string   `json:"root_run_id,omitempty"`
+	RunPath      []string `json:"run_path,omitempty"`
+	Namespace    string   `json:"namespace,omitempty"`
+	Attempt      int      `json:"attempt,omitempty"`
+}
+
+type ChildRunLineage struct {
+	ParentRunID   string
+	ParentStepID  string
+	ParentTaskID  string
+	RootRunID     string
+	ParentRunPath []string
+	Namespace     string
+}
+
+type ChildRunController interface {
+	RegisterChildRun(taskID string, runner *GraphRunner, runID string)
+	UnregisterChildRun(taskID, runID string)
+	LinkChildRun(ctx context.Context, parentRunID, childRunID string) error
 }
 
 func WithRunnerEventPublisher(ctx context.Context, publisher func(EventType, any) error) context.Context {
@@ -83,6 +108,56 @@ func WithRunnerMetadata(ctx context.Context, metadata RunnerMetadata) context.Co
 		return nil
 	}
 	return context.WithValue(ctx, runnerMetadataKey{}, metadata)
+}
+
+func WithGraphRunner(ctx context.Context, runner *GraphRunner) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, graphRunnerKey{}, runner)
+}
+
+func GraphRunnerFromContext(ctx context.Context) (*GraphRunner, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	runner, ok := ctx.Value(graphRunnerKey{}).(*GraphRunner)
+	return runner, ok && runner != nil
+}
+
+func WithChildRunLineage(ctx context.Context, lineage ChildRunLineage) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lineage.ParentRunPath = append([]string(nil), lineage.ParentRunPath...)
+	return context.WithValue(ctx, childRunLineageKey{}, lineage)
+}
+
+func ChildRunLineageFromContext(ctx context.Context) (ChildRunLineage, bool) {
+	if ctx == nil {
+		return ChildRunLineage{}, false
+	}
+	lineage, ok := ctx.Value(childRunLineageKey{}).(ChildRunLineage)
+	lineage.ParentRunPath = append([]string(nil), lineage.ParentRunPath...)
+	return lineage, ok
+}
+
+func WithChildRunController(ctx context.Context, controller ChildRunController) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if controller == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, childRunControllerKey{}, controller)
+}
+
+func ChildRunControllerFromContext(ctx context.Context) (ChildRunController, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	controller, ok := ctx.Value(childRunControllerKey{}).(ChildRunController)
+	return controller, ok && controller != nil
 }
 
 func WithRunOrigin(ctx context.Context, origin RunOrigin) context.Context {
@@ -172,6 +247,7 @@ func RunnerMetadataFromContext(ctx context.Context) (RunnerMetadata, bool) {
 		return RunnerMetadata{}, false
 	}
 	metadata, ok := ctx.Value(runnerMetadataKey{}).(RunnerMetadata)
+	metadata.RunPath = append([]string(nil), metadata.RunPath...)
 	return metadata, ok
 }
 

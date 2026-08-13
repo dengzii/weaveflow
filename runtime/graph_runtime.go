@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
@@ -32,8 +33,20 @@ const (
 	runnerControlCancel runnerControlKind = "cancel"
 )
 
+func controlRequestEventType(kind runnerControlKind) (EventType, error) {
+	switch kind {
+	case runnerControlPause:
+		return EventRunPauseRequested, nil
+	case runnerControlCancel:
+		return EventRunCancelRequested, nil
+	default:
+		return "", fmt.Errorf("unsupported runner control %q", kind)
+	}
+}
+
 type runnerPendingControl struct {
 	kind         runnerControlKind
+	taskID       string
 	nodeID       string
 	checkpointID string
 	message      string
@@ -42,6 +55,7 @@ type runnerPendingControl struct {
 
 type runnerActiveStep struct {
 	step               StepRecord
+	task               GraphTask
 	attempts           int
 	beforeCheckpointID string
 	beforeInterrupted  bool
@@ -52,7 +66,18 @@ type runnerCompletedStep struct {
 	afterCheckpointID string
 }
 
-const parallelBarrierNodeID = "__parallel_barrier__"
+type runnerStepTransition struct {
+	writes []StepWrite
+	events []Event
+	steps  []StepRecord
+}
+
+type runnerChildRun struct {
+	runner *GraphRunner
+	runID  string
+}
+
+const waveCheckpointNodeID = "__wave__"
 
 type graphRunnerExecution struct {
 	runner         *GraphRunner
@@ -63,6 +88,7 @@ type graphRunnerExecution struct {
 	active         map[string]*runnerActiveStep
 	lastCompleted  *runnerCompletedStep
 	completed      map[string]*runnerCompletedStep
+	children       map[string]map[string]runnerChildRun
 	waves          map[*state.State]string
 	pending        *runnerPendingControl
 	contractPolicy ContractPolicy
@@ -89,6 +115,7 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState *s
 		artifacts:      state.CloneArtifactRefs(initialArtifacts),
 		active:         map[string]*runnerActiveStep{},
 		completed:      map[string]*runnerCompletedStep{},
+		children:       map[string]map[string]runnerChildRun{},
 		waves:          map[*state.State]string{},
 		nodeLocks:      map[string]*sync.Mutex{},
 		contractPolicy: runner.effectiveContractPolicy(),
@@ -97,26 +124,18 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState *s
 	}
 }
 
-func (e *graphRunnerExecution) lockForNode(nodeID string) *sync.Mutex {
+func (e *graphRunnerExecution) lockForTask(taskID string) *sync.Mutex {
 	e.nodeMu.Lock()
 	defer e.nodeMu.Unlock()
 	if e.nodeLocks == nil {
 		e.nodeLocks = map[string]*sync.Mutex{}
 	}
-	if lock := e.nodeLocks[nodeID]; lock != nil {
+	if lock := e.nodeLocks[taskID]; lock != nil {
 		return lock
 	}
 	lock := &sync.Mutex{}
-	e.nodeLocks[nodeID] = lock
+	e.nodeLocks[taskID] = lock
 	return lock
-}
-
-func (e *graphRunnerExecution) persistScheduledRun(ctx context.Context, step StepRecord) (RunRecord, error) {
-	return e.persistRun(ctx, func(run *RunRecord) {
-		run.CurrentNodeID = step.NodeID
-		run.LastStepID = step.StepID
-		run.UpdatedAt = e.runner.currentTime()
-	})
 }
 
 func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunRecord)) (RunRecord, error) {
@@ -126,28 +145,30 @@ func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunR
 	e.runPersistMu.Lock()
 	defer e.runPersistMu.Unlock()
 
-	e.mu.Lock()
-	run := e.run
-	e.mu.Unlock()
-	latestRun, err := e.runner.executionStore.GetRun(ctx, run.RunID)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	latestRun.PauseRequested = latestRun.PauseRequested || run.PauseRequested
-	latestRun.CancelRequested = latestRun.CancelRequested || run.CancelRequested
-	run = latestRun
-	if update != nil {
-		update(&run)
-	}
-
 	for {
 		e.mu.Lock()
-		run.PauseRequested = run.PauseRequested || e.run.PauseRequested
-		run.CancelRequested = run.CancelRequested || e.run.CancelRequested
+		localRun := e.run
 		e.mu.Unlock()
-
-		if err := e.runner.executionStore.UpdateRun(ctx, run); err != nil {
+		run, err := e.runner.executionStore.GetRun(ctx, localRun.RunID)
+		if err != nil {
 			return RunRecord{}, err
+		}
+		run.PauseRequested = run.PauseRequested || localRun.PauseRequested
+		run.CancelRequested = run.CancelRequested || localRun.CancelRequested
+		if update != nil {
+			update(&run)
+		}
+		commitResult, err := e.runner.commitRuntime(ctx, RuntimeCommit{
+			Run: &RunWrite{Mode: RunWriteUpdate, Run: run},
+		})
+		if errors.Is(err, ErrRunRevisionConflict) {
+			continue
+		}
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
 		}
 
 		e.mu.Lock()
@@ -205,8 +226,23 @@ func (e *graphRunnerExecution) persistControlRequest(ctx context.Context, kind r
 		return RunRecord{}, fmt.Errorf("unsupported runner control %q", kind)
 	}
 	run.UpdatedAt = e.runner.currentTime()
-	if err := e.runner.executionStore.UpdateRun(ctx, run); err != nil {
+	eventType, err := controlRequestEventType(kind)
+	if err != nil {
 		return RunRecord{}, err
+	}
+	event, err := e.runner.buildEvent(run, "", "", "", eventType, nil)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	commitResult, err := e.runner.commitRuntime(ctx, RuntimeCommit{
+		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+		Events: []Event{event},
+	})
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if commitResult.Run != nil {
+		run = *commitResult.Run
 	}
 	e.mu.Lock()
 	e.run = run
@@ -214,86 +250,127 @@ func (e *graphRunnerExecution) persistControlRequest(ctx context.Context, kind r
 	return run, nil
 }
 
-func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, nodeID string, executor core.Node, currentState *state.State) (*state.State, error) {
+func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, executor core.Node, baseState *state.State, inputState *state.State) (core.ExecutionResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	nodeLock := e.lockForNode(nodeID)
-	nodeLock.Lock()
-	defer nodeLock.Unlock()
+	taskLock := e.lockForTask(task.TaskID)
+	taskLock.Lock()
+	defer taskLock.Unlock()
 	nodeCtx := core.NewContext(ctx)
 
-	contract, hasContract := e.nodeContracts[nodeID]
+	contract, hasContract := e.nodeContracts[task.NodeID]
 	policy := e.contractPolicy
-	inputState := currentState.Clone()
+	if task.Dynamic && hasContract {
+		if issues := state.ValidateInputPatchByContract(baseState, task.Input, contract); len(issues) > 0 {
+			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
+		}
+	}
+	executionInput := inputState.Clone()
 	if hasContract && policy.Enabled() {
 		validateInputs := policy.Mode != core.ContractValidationOff || policy.EnforceProjection
 		if validateInputs {
-			if issues := state.ValidateRequiredReads(currentState, contract); len(issues) > 0 {
-				violations := issuesToContractViolations(nodeID, issues)
-				e.reportContractViolations(nodeCtx, nodeID, violations)
+			if issues := state.ValidateRequiredReads(inputState, contract); len(issues) > 0 {
+				violations := issuesToContractViolations(task.NodeID, issues)
+				e.reportContractViolations(nodeCtx, task.TaskID, violations)
 				if policy.Mode == core.ContractValidationStrict {
-					return currentState, fmt.Errorf("%s", violations[0].Message)
+					return core.ExecutionResult{}, state.NewValidationError("node input", issues)
 				}
 			}
 		}
 		if policy.EnforceProjection {
-			inputState = state.ProjectStateByContract(currentState, contract)
+			executionInput = state.ProjectStateByContract(inputState, contract)
 		}
 		if policy.RecordArtifacts {
-			e.recordContractStateArtifact(nodeCtx, nodeID, contractInputViewArtifactType, contract, inputState)
+			e.recordContractStateArtifact(nodeCtx, task.NodeID, contractInputViewArtifactType, contract, executionInput)
 		}
 	}
 
 	if executor == nil {
-		return currentState, fmt.Errorf("node %q is not executable", nodeID)
+		return core.ExecutionResult{}, fmt.Errorf("node %q is not executable", task.NodeID)
 	}
-	result, invokeErr := core.ExecuteNodeWithOptions(nodeCtx, currentState, executor, core.NodeExecutionOptions{
+	result, invokeErr := core.ExecuteNodeWithOptions(nodeCtx, inputState, executor, core.NodeExecutionOptions{
 		Contract:          contractOption(contract, hasContract),
-		InputState:        inputState,
+		InputState:        executionInput,
 		ApplyPatchToInput: hasContract && policy.EnforceProjection,
 	})
 	if invokeErr != nil {
 		var interrupt *core.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
-			e.markNodeInterrupt(nodeID, fmt.Sprint(interrupt.Value))
+			e.markNodeInterrupt(task, fmt.Sprint(interrupt.Value))
 		}
-		return currentState, invokeErr
+		return core.ExecutionResult{}, invokeErr
 	}
 	if hasContract && policy.RecordArtifacts {
-		patchView, err := result.Patch.Apply(inputState)
+		patchView, err := result.Patch.Apply(executionInput)
 		if err != nil {
-			return currentState, err
+			return core.ExecutionResult{}, err
 		}
-		e.recordContractStateArtifact(nodeCtx, nodeID, contractOutputPatchArtifactType, contract, patchView)
+		e.recordContractStateArtifact(nodeCtx, task.NodeID, contractOutputPatchArtifactType, contract, patchView)
 	}
 
 	patch := result.Patch
-	e.recordBranchPatch(currentState, nodeID, patch)
+	e.recordBranchPatch(baseState, task, patch)
 	if hasContract && policy.Enabled() {
 		validateWrites := policy.Mode != core.ContractValidationOff || policy.EnforceWrites
 		if validateWrites {
-			if issues := state.ValidatePatchByContract(patch, contract); len(issues) > 0 {
-				violations := issuesToContractViolations(nodeID, issues)
-				e.reportContractViolations(nodeCtx, nodeID, violations)
+			if issues := state.ValidatePatchResultByContract(inputState, patch, contract); len(issues) > 0 {
+				violations := issuesToContractViolations(task.NodeID, issues)
+				e.reportContractViolations(nodeCtx, task.TaskID, violations)
 				if policy.EnforceWrites || policy.Mode == core.ContractValidationStrict {
-					return currentState, fmt.Errorf("%s", violations[0].Message)
+					return core.ExecutionResult{}, state.NewValidationError("node output", issues)
 				}
 			}
 		}
 	}
 	mergedState := result.State
 	if hasContract && policy.RecordArtifacts {
-		e.recordContractStateArtifact(nodeCtx, nodeID, contractMergedStateArtifactType, contract, mergedState)
+		e.recordContractStateArtifact(nodeCtx, task.NodeID, contractMergedStateArtifactType, contract, mergedState)
 	}
-	if err := e.afterNode(ctx, nodeID, currentState, mergedState); err != nil {
-		return currentState, err
+	if err := validateNodeResultDrafts(result.Node); err != nil {
+		return core.ExecutionResult{}, err
 	}
-	return mergedState, nil
+	if err := e.recordNodeResultArtifacts(nodeCtx, result.Node.Artifacts); err != nil {
+		return core.ExecutionResult{}, err
+	}
+	if err := e.afterNode(ctx, task, baseState, mergedState, result.Node.Events); err != nil {
+		return core.ExecutionResult{}, err
+	}
+	return result, nil
 }
 
-func (e *graphRunnerExecution) PrepareNode(ctx context.Context, nodeID string, currentState *state.State) (context.Context, error) {
-	nodeCtx, err := e.beforeNode(ctx, nodeID, currentState)
+func validateNodeResultDrafts(result core.NodeResult) error {
+	for _, draft := range result.Events {
+		if strings.TrimSpace(draft.Type) == "" {
+			return fmt.Errorf("node result event type is required")
+		}
+		if _, err := json.Marshal(draft.Payload); err != nil {
+			return fmt.Errorf("encode node result event %q payload: %w", draft.Type, err)
+		}
+	}
+	for _, draft := range result.Artifacts {
+		if strings.TrimSpace(draft.Type) == "" {
+			return fmt.Errorf("node result artifact type is required")
+		}
+	}
+	return nil
+}
+
+func (e *graphRunnerExecution) recordNodeResultArtifacts(ctx context.Context, drafts []core.ArtifactDraft) error {
+	for _, draft := range drafts {
+		if _, err := SaveArtifact(ctx, Artifact{
+			Type:     strings.TrimSpace(draft.Type),
+			MIMEType: strings.TrimSpace(draft.MIMEType),
+			Data:     append([]byte(nil), draft.Data...),
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *graphRunnerExecution) PrepareNode(ctx context.Context, task GraphTask, currentState *state.State) (context.Context, error) {
+	nodeCtx, err := e.beforeNode(ctx, task, currentState)
 	return nodeCtx, err
 }
 
@@ -379,7 +456,7 @@ func contractArtifactStage(artifactType string) string {
 	}
 }
 
-func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, currentState *state.State) (core.Context, error) {
+func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, currentState *state.State) (core.Context, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -408,129 +485,194 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, nodeID string, cu
 	e.mu.Lock()
 	if e.run.CancelRequested {
 		runID := e.run.RunID
-		e.pending = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID}
+		e.pending = &runnerPendingControl{kind: runnerControlCancel, taskID: task.TaskID, nodeID: task.NodeID}
 		e.mu.Unlock()
 		logger.Info("cancel interrupt requested",
 			zap.String("run_id", runID),
-			zap.String("node_id", nodeID),
+			zap.String("task_id", task.TaskID),
+			zap.String("node_id", task.NodeID),
 		)
-		e.recordBranchPatch(currentState, nodeID, state.Patch{})
-		return core.NewContext(ctx), &core.NodeInterrupt{NodeID: nodeID, Value: string(runnerControlCancel)}
+		e.recordBranchPatch(currentState, task, state.Patch{})
+		return core.NewContext(ctx), &core.NodeInterrupt{NodeID: task.NodeID, Value: string(runnerControlCancel)}
 	}
 
-	active := e.active[nodeID]
+	active := e.active[task.TaskID]
 	runID := e.run.RunID
 	e.mu.Unlock()
-	if active == nil || active.step.NodeID != nodeID {
-		step := StepRecord{
-			StepID:    newRunnerID(),
-			RunID:     runID,
-			NodeID:    nodeID,
-			NodeName:  e.runner.nodeName(nodeID),
-			Status:    StepStatusScheduled,
-			StartedAt: e.runner.currentTime(),
-			UpdatedAt: e.runner.currentTime(),
-			Attempt:   1,
-		}
-		if err := e.runner.executionStore.AppendStep(ctx, step); err != nil {
+	if active == nil || active.step.TaskID != task.TaskID {
+		checkpointState := currentState.Clone()
+		schedule, _ := LoadGraphSchedule(currentState)
+		if err := StoreGraphSchedule(checkpointState, GraphSchedule{
+			CurrentTasks:      []GraphTask{task},
+			NextTasks:         schedule.NextTasks,
+			PendingFanInNodes: schedule.PendingFanInNodes,
+		}); err != nil {
 			return core.NewContext(ctx), err
 		}
-		failScheduledStep := func(cause error) error {
-			now := e.runner.currentTime()
-			step.Status = StepStatusFailed
-			step.ErrorCode = "step_setup_failed"
-			step.ErrorMessage = cause.Error()
-			step.FinishedAt = &now
-			step.UpdatedAt = now
-			updateErr := e.runner.executionStore.UpdateStep(context.WithoutCancel(normalizeRunnerContext(ctx)), step)
-			return errors.Join(cause, updateErr)
-		}
 
-		run, err := e.persistScheduledRun(ctx, step)
-		if err != nil {
-			return core.NewContext(ctx), failScheduledStep(err)
-		}
+		stepID := newRunnerID()
+		startedAt := e.runner.currentTime()
+		var setupHit *state.BreakpointHit
+		var skipBreakpoint bool
+		e.runPersistMu.Lock()
+		for {
+			e.mu.Lock()
+			localRun := e.run
+			e.mu.Unlock()
+			run, err = e.runner.executionStore.GetRun(ctx, localRun.RunID)
+			if err != nil {
+				e.runPersistMu.Unlock()
+				return core.NewContext(ctx), err
+			}
+			run.PauseRequested = run.PauseRequested || localRun.PauseRequested
+			run.CancelRequested = run.CancelRequested || localRun.CancelRequested
+			if run.CancelRequested {
+				e.mu.Lock()
+				e.run = run
+				e.pending = &runnerPendingControl{kind: runnerControlCancel, taskID: task.TaskID, nodeID: task.NodeID}
+				e.mu.Unlock()
+				e.runPersistMu.Unlock()
+				logger.Info("cancel interrupt requested",
+					zap.String("run_id", run.RunID),
+					zap.String("task_id", task.TaskID),
+					zap.String("node_id", task.NodeID),
+				)
+				e.recordBranchPatch(currentState, task, state.Patch{})
+				return core.NewContext(ctx), &core.NodeInterrupt{NodeID: task.NodeID, Value: string(runnerControlCancel)}
+			}
 
-		beforeID, err := e.runner.saveCheckpoint(ctx, run, step, nodeID, CheckpointBeforeNode, currentState, 0, nil, e.snapshotArtifacts())
-		if err != nil {
-			return core.NewContext(ctx), failScheduledStep(err)
-		}
+			step := StepRecord{
+				StepID:      stepID,
+				RunID:       runID,
+				TaskID:      task.TaskID,
+				ParentRunID: run.ParentRunID, ParentStepID: run.ParentStepID, ParentTaskID: run.ParentTaskID,
+				RootRunID: run.RootRunID,
+				RunPath:   append([]string(nil), run.RunPath...),
+				Namespace: run.Namespace,
+				NodeID:    task.NodeID,
+				NodeName:  e.runner.nodeName(task.NodeID),
+				Status:    StepStatusRunning,
+				StartedAt: startedAt,
+				UpdatedAt: e.runner.currentTime(),
+				Attempt:   1,
+			}
+			run.CurrentNodeID = step.NodeID
+			run.LastStepID = step.StepID
+			run.UpdatedAt = e.runner.currentTime()
 
-		step.CheckpointBeforeID = beforeID
-		step.Status = StepStatusRunning
-		step.UpdatedAt = e.runner.currentTime()
-		if err := e.runner.executionStore.UpdateStep(ctx, step); err != nil {
-			return core.NewContext(ctx), failScheduledStep(err)
+			setupHit = nil
+			skipBreakpoint = false
+			if !run.PauseRequested {
+				setupHit, skipBreakpoint = e.runner.previewBreakpoint(step.NodeID, string(CheckpointBeforeNode), e.skip)
+			}
+			checkpointWrite, checkpointEvent, buildErr := e.runner.buildCheckpointWrite(ctx, run, step, task.NodeID, CheckpointBeforeNode, checkpointState, 0, setupHit, e.snapshotArtifacts())
+			if buildErr != nil {
+				e.runPersistMu.Unlock()
+				return core.NewContext(ctx), buildErr
+			}
+			step.CheckpointBeforeID = checkpointWrite.Record.CheckpointID
+			events := []Event{checkpointEvent}
+			if !run.PauseRequested && setupHit == nil {
+				startedEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeStarted, map[string]any{
+					"node_name": step.NodeName,
+				})
+				if buildErr != nil {
+					e.runPersistMu.Unlock()
+					return core.NewContext(ctx), buildErr
+				}
+				events = append(events, startedEvent)
+			}
+			commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+				Run:         &RunWrite{Mode: RunWriteUpdate, Run: run},
+				Steps:       []StepWrite{{Mode: StepWriteAppend, Step: step}},
+				Checkpoints: []CheckpointWrite{checkpointWrite},
+				Events:      events,
+			})
+			if errors.Is(commitErr, ErrRunRevisionConflict) {
+				continue
+			}
+			if commitErr != nil {
+				e.runPersistMu.Unlock()
+				return core.NewContext(ctx), commitErr
+			}
+			if commitResult.Run != nil {
+				run = *commitResult.Run
+			}
+			active = &runnerActiveStep{
+				step:               step,
+				task:               task,
+				attempts:           1,
+				beforeCheckpointID: step.CheckpointBeforeID,
+				beforeInterrupted:  run.PauseRequested || setupHit != nil,
+			}
+			e.mu.Lock()
+			e.run = run
+			e.active[task.TaskID] = active
+			if skipBreakpoint && e.skip != nil {
+				e.skip.Consumed = true
+			}
+			switch {
+			case run.PauseRequested:
+				e.pending = &runnerPendingControl{kind: runnerControlPause, taskID: task.TaskID, nodeID: task.NodeID}
+			case setupHit != nil:
+				e.pending = &runnerPendingControl{kind: runnerControlPause, taskID: task.TaskID, nodeID: task.NodeID, hit: setupHit}
+			}
+			e.mu.Unlock()
+			break
 		}
-
-		active = &runnerActiveStep{
-			step:               step,
-			beforeCheckpointID: beforeID,
+		e.runPersistMu.Unlock()
+		logger.Debug("nodes scheduled", stepLogFields(active.step)...)
+		if run.PauseRequested {
+			e.recordBranchPatch(currentState, task, state.Patch{})
+			logger.Info("pause interrupt requested", stepLogFields(active.step)...)
+			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: task.NodeID, Value: string(runnerControlPause)}
 		}
+		if setupHit != nil {
+			e.recordBranchPatch(currentState, task, state.Patch{})
+			fields := append(stepLogFields(active.step),
+				zap.String("breakpoint_id", setupHit.BreakpointID),
+				zap.String("breakpoint_stage", setupHit.Stage),
+			)
+			logger.Info("breakpoint hit before nodes", fields...)
+			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: task.NodeID, Value: setupHit}
+		}
+		logger.Info("nodes started", append(stepLogFields(active.step), state.SummaryFields(currentState)...)...)
+	} else {
 		e.mu.Lock()
-		e.active[nodeID] = active
+		if active.attempts == 0 {
+			active.attempts = 1
+		} else {
+			active.attempts++
+		}
 		e.mu.Unlock()
-		logger.Debug("nodes scheduled", stepLogFields(step)...)
+		logStep := active.step
+		logStep.Attempt = active.attempts
+		logger.Warn("nodes retrying", stepLogFields(logStep)...)
 	}
 
 	e.mu.Lock()
-	if active.attempts == 0 {
-		active.attempts = 1
-	} else {
-		active.attempts++
-	}
 	step := active.step
 	logStep := step
 	logStep.Attempt = active.attempts
 	run = e.run
-
-	if active.attempts == 1 {
-		if run.PauseRequested {
-			active.beforeInterrupted = true
-			e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID}
-			e.mu.Unlock()
-			e.recordBranchPatch(currentState, nodeID, state.Patch{})
-			logger.Info("pause interrupt requested", stepLogFields(logStep)...)
-			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: nodeID, Value: string(runnerControlPause)}
-		}
-		if hit := e.runner.matchBreakpoint(step.NodeID, string(CheckpointBeforeNode), e.skip); hit != nil {
-			active.beforeInterrupted = true
-			e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, hit: hit}
-			e.mu.Unlock()
-			e.recordBranchPatch(currentState, nodeID, state.Patch{})
-			fields := append(stepLogFields(logStep),
-				zap.String("breakpoint_id", hit.BreakpointID),
-				zap.String("breakpoint_stage", hit.Stage),
-			)
-			logger.Info("breakpoint hit before nodes", fields...)
-			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: nodeID, Value: hit}
-		}
-		e.mu.Unlock()
-
-		if err := e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeStarted, map[string]any{
-			"node_name": step.NodeName,
-		}); err != nil {
-			return core.NewContext(ctx), err
-		}
-		logger.Info("nodes started", append(stepLogFields(logStep), state.SummaryFields(currentState)...)...)
-	} else {
-		e.mu.Unlock()
-		logger.Warn("nodes retrying", stepLogFields(logStep)...)
-	}
+	e.mu.Unlock()
 
 	stepID := step.StepID
-	nodeID = step.NodeID
+	nodeID := step.NodeID
+	taskID := step.TaskID
 	runID = run.RunID
 	attempt := logStep.Attempt
 	nodeCtx := WithRunnerEventPublisher(ctx, func(eventType EventType, payload any) error {
-		return e.runner.publishEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, eventType, payload)
+		return e.runner.publishEventWithTask(ctx, run, stepID, taskID, nodeID, eventType, payload)
 	})
 	nodeCtx = WithRunnerMetadata(nodeCtx, RunnerMetadata{
-		RunID:   runID,
-		StepID:  stepID,
-		NodeID:  nodeID,
+		RunID: runID, StepID: stepID, TaskID: taskID, NodeID: nodeID,
+		ParentRunID: run.ParentRunID, ParentStepID: run.ParentStepID, ParentTaskID: run.ParentTaskID,
+		RootRunID: run.RootRunID, RunPath: append([]string(nil), run.RunPath...), Namespace: run.Namespace,
 		Attempt: attempt,
 	})
+	nodeCtx = WithGraphRunner(nodeCtx, e.runner)
+	nodeCtx = WithChildRunController(nodeCtx, e)
 	nodeCtx = WithRunnerArtifactRecorder(nodeCtx, func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
 		ref, err := e.runner.recordArtifact(ctx, artifact)
 		if err != nil {
@@ -565,89 +707,123 @@ func (e *graphRunnerExecution) OnSchedulerEvent(ctx context.Context, event Sched
 	return e.runner.publishEvent(context.WithoutCancel(normalizeRunnerContext(ctx)), run, stepID, event.NodeID, eventType, event.Payload)
 }
 
-func (e *graphRunnerExecution) firstActiveStep(nodeID string) *runnerActiveStep {
+func (e *graphRunnerExecution) firstActiveStep(identifier string) *runnerActiveStep {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	return e.firstActiveStepLocked(nodeID)
+	return e.firstActiveStepLocked(identifier)
 }
 
-func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, currentState *state.State) error {
+func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, completedTasks []GraphTask, currentState *state.State) error {
+	if e == nil || len(completedTasks) == 0 || currentState == nil {
+		return nil
+	}
 	ctx = e.controlPersistenceContext(ctx)
-	branchNodeIDs := parseParallelStepNodeIDs(nodeID)
-	if len(branchNodeIDs) <= 1 {
-		return nil
-	}
-
 	e.mu.Lock()
-	if e.pending != nil {
-		e.mu.Unlock()
-		return nil
+	if e.pending != nil && e.pending.taskID != "" {
+		if active := e.active[e.pending.taskID]; active != nil && active.beforeInterrupted {
+			e.mu.Unlock()
+			return nil
+		}
 	}
+	steps := make([]StepRecord, 0, len(completedTasks))
+	stepIDs := make([]string, 0, len(completedTasks))
+	for _, task := range completedTasks {
+		completed := e.completed[task.TaskID]
+		if completed == nil {
+			e.mu.Unlock()
+			return fmt.Errorf("wave checkpoint missing completed task %q for node %q", task.TaskID, task.NodeID)
+		}
+		steps = append(steps, completed.step)
+		stepIDs = append(stepIDs, completed.step.StepID)
+	}
+	waveID := e.waveIDForTasksLocked(completedTasks)
+	for index := range steps {
+		steps[index].WaveID = waveID
+	}
+	nodeIDs := GraphTaskNodeIDs(completedTasks)
+	schedule, _ := LoadGraphSchedule(currentState)
+	nextTasks := CloneGraphTasks(schedule.NextTasks)
+	nextNodeIDs := GraphTaskNodeIDs(nextTasks)
 	e.mu.Unlock()
 
-	nextNodeIDs, _, hasSchedule := LoadGraphSchedule(currentState)
-	if !hasSchedule || len(nextNodeIDs) == 0 {
-		var err error
-		nextNodeIDs, err = e.resolveNextNodesForWave(ctx, currentState, branchNodeIDs)
+	checkpointState := currentState.Clone()
+	if err := StoreGraphSchedule(checkpointState, GraphSchedule{
+		NextTasks:         nextTasks,
+		PendingFanInNodes: append([]string(nil), schedule.PendingFanInNodes...),
+	}); err != nil {
+		return err
+	}
+
+	e.runPersistMu.Lock()
+	defer e.runPersistMu.Unlock()
+	var barrierRun RunRecord
+	var barrierID string
+	for {
+		e.mu.Lock()
+		localRun := e.run
+		e.mu.Unlock()
+		latestRun, err := e.runner.executionStore.GetRun(ctx, localRun.RunID)
 		if err != nil {
 			return err
 		}
-	}
-
-	e.mu.Lock()
-	run := e.run
-	stepIDs := make([]string, 0, len(branchNodeIDs))
-	for _, branchNodeID := range branchNodeIDs {
-		completed := e.completed[branchNodeID]
-		if completed == nil {
-			e.mu.Unlock()
-			return fmt.Errorf("parallel wave barrier missing completed branch step for %q", branchNodeID)
+		latestRun.PauseRequested = latestRun.PauseRequested || localRun.PauseRequested
+		latestRun.CancelRequested = latestRun.CancelRequested || localRun.CancelRequested
+		checkpointRun := latestRun
+		checkpointRun.CurrentNodeIDs = append([]string(nil), nodeIDs...)
+		checkpointRun.CurrentStepIDs = append([]string(nil), stepIDs...)
+		checkpointRun.NextNodeIDs = append([]string(nil), nextNodeIDs...)
+		checkpointRun.ParallelWaveID = waveID
+		checkpointWrite, checkpointEvent, buildErr := e.runner.buildCheckpointWrite(ctx, checkpointRun, StepRecord{}, waveCheckpointNodeID, CheckpointAfterWave, checkpointState, 0, nil, e.snapshotArtifacts())
+		if buildErr != nil {
+			return buildErr
 		}
-		stepIDs = append(stepIDs, completed.step.StepID)
-	}
-	waveID := e.waveIDForNodesLocked(branchNodeIDs)
-	barrierRun := run
-	barrierRun.CurrentNodeIDs = append([]string(nil), branchNodeIDs...)
-	barrierRun.CurrentStepIDs = append([]string(nil), stepIDs...)
-	barrierRun.NextNodeIDs = append([]string(nil), nextNodeIDs...)
-	barrierRun.ParallelWaveID = waveID
-	e.mu.Unlock()
-
-	barrierID, err := e.runner.saveCheckpoint(ctx, barrierRun, StepRecord{}, parallelBarrierNodeID, CheckpointAfterParallelWave, currentState, 0, nil, e.snapshotArtifacts())
-	if err != nil {
-		return err
-	}
-
-	latestRun, err := e.runner.executionStore.GetRun(ctx, barrierRun.RunID)
-	if err != nil {
-		return err
-	}
-	barrierRun.PauseRequested = latestRun.PauseRequested
-	barrierRun.CancelRequested = latestRun.CancelRequested
-
-	barrierRun, err = e.persistRun(ctx, func(run *RunRecord) {
-		run.LastCheckpointID = barrierID
-		run.CurrentNodeIDs = nil
-		run.CurrentStepIDs = nil
-		run.NextNodeIDs = append([]string(nil), nextNodeIDs...)
-		run.ParallelWaveID = ""
-		run.UpdatedAt = e.runner.currentTime()
-	})
-	if err != nil {
-		return err
+		barrierID = checkpointWrite.Record.CheckpointID
+		barrierRun = latestRun
+		barrierRun.LastCheckpointID = barrierID
+		barrierRun.CurrentNodeIDs = nil
+		barrierRun.CurrentStepIDs = nil
+		barrierRun.NextNodeIDs = append([]string(nil), nextNodeIDs...)
+		barrierRun.ParallelWaveID = ""
+		barrierRun.UpdatedAt = e.runner.currentTime()
+		stepWrites := make([]StepWrite, 0, len(steps))
+		for _, step := range steps {
+			stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: step})
+		}
+		commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+			Run:         &RunWrite{Mode: RunWriteUpdate, Run: barrierRun},
+			Steps:       stepWrites,
+			Checkpoints: []CheckpointWrite{checkpointWrite},
+			Events:      []Event{checkpointEvent},
+		})
+		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			continue
+		}
+		if commitErr != nil {
+			return commitErr
+		}
+		if commitResult.Run != nil {
+			barrierRun = *commitResult.Run
+		}
+		break
 	}
 
 	e.mu.Lock()
-	e.lastState = currentState.Clone()
-	for _, branchNodeID := range branchNodeIDs {
-		delete(e.completed, branchNodeID)
+	e.run = barrierRun
+	e.lastState = checkpointState.Clone()
+	for _, step := range steps {
+		if completed := e.completed[step.TaskID]; completed != nil && completed.step.StepID == step.StepID {
+			completed.step = step
+		}
+		if e.lastCompleted != nil && e.lastCompleted.step.StepID == step.StepID {
+			e.lastCompleted.step = step
+		}
 	}
 	var control *runnerPendingControl
 	switch {
 	case barrierRun.CancelRequested:
-		control = &runnerPendingControl{kind: runnerControlCancel, nodeID: parallelBarrierNodeID, checkpointID: barrierID}
+		control = &runnerPendingControl{kind: runnerControlCancel, nodeID: waveCheckpointNodeID, checkpointID: barrierID}
 	case barrierRun.PauseRequested:
-		control = &runnerPendingControl{kind: runnerControlPause, nodeID: parallelBarrierNodeID, checkpointID: barrierID}
+		control = &runnerPendingControl{kind: runnerControlPause, nodeID: waveCheckpointNodeID, checkpointID: barrierID}
 	}
 	if control != nil {
 		e.pending = control
@@ -658,17 +834,17 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, nodeID string, c
 	e.mu.Unlock()
 	if control != nil {
 		return &GraphInterrupt{
-			NodeID:      parallelBarrierNodeID,
-			State:       currentState,
-			Value:       string(control.kind),
-			NextNodeIDs: append([]string(nil), nextNodeIDs...),
+			NodeID:    waveCheckpointNodeID,
+			State:     checkpointState,
+			Value:     string(control.kind),
+			NextTasks: nextTasks,
 		}
 	}
 	return nil
 }
 
-func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.State, nodeIDs []string) error {
-	if e == nil || base == nil || len(nodeIDs) <= 1 {
+func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.State, tasks []GraphTask) error {
+	if e == nil || base == nil || len(tasks) <= 1 {
 		return nil
 	}
 	if ctx == nil {
@@ -681,9 +857,9 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 		waveID = newRunnerID()
 		e.waves[base] = waveID
 	}
-	steps := make([]StepRecord, 0, len(nodeIDs))
-	for _, nodeID := range nodeIDs {
-		completed := e.completed[nodeID]
+	steps := make([]StepRecord, 0, len(tasks))
+	for _, task := range tasks {
+		completed := e.completed[task.TaskID]
 		if completed == nil {
 			continue
 		}
@@ -693,65 +869,53 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 	}
 	e.mu.Unlock()
 
-	for _, step := range steps {
-		if err := e.runner.executionStore.UpdateStep(ctx, step); err != nil {
+	e.runPersistMu.Lock()
+	var run RunRecord
+	for {
+		e.mu.Lock()
+		localRun := e.run
+		e.mu.Unlock()
+		var err error
+		run, err = e.runner.executionStore.GetRun(ctx, localRun.RunID)
+		if err != nil {
+			e.runPersistMu.Unlock()
 			return err
 		}
-	}
-	if _, err := e.persistRun(ctx, func(run *RunRecord) {
+		run.PauseRequested = run.PauseRequested || localRun.PauseRequested
+		run.CancelRequested = run.CancelRequested || localRun.CancelRequested
 		run.ParallelWaveID = waveID
-		run.CurrentNodeIDs = append([]string(nil), nodeIDs...)
+		run.CurrentNodeIDs = GraphTaskNodeIDs(tasks)
 		run.UpdatedAt = e.runner.currentTime()
-	}); err != nil {
-		return err
+		stepWrites := make([]StepWrite, 0, len(steps))
+		for _, step := range steps {
+			stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: step})
+		}
+		commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+			Run:   &RunWrite{Mode: RunWriteUpdate, Run: run},
+			Steps: stepWrites,
+		})
+		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			continue
+		}
+		if commitErr != nil {
+			e.runPersistMu.Unlock()
+			return commitErr
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
+		break
 	}
+	e.runPersistMu.Unlock()
 	e.mu.Lock()
+	e.run = run
 	for _, step := range steps {
-		if completed := e.completed[step.NodeID]; completed != nil && completed.step.StepID == step.StepID {
+		if completed := e.completed[step.TaskID]; completed != nil && completed.step.StepID == step.StepID {
 			completed.step = step
 		}
 	}
 	e.mu.Unlock()
 	return nil
-}
-
-func parseParallelStepNodeIDs(stepNodeID string) []string {
-	stepNodeID = strings.TrimSpace(stepNodeID)
-	if !strings.HasPrefix(stepNodeID, "step:[") || !strings.HasSuffix(stepNodeID, "]") {
-		return nil
-	}
-	inner := strings.TrimSuffix(strings.TrimPrefix(stepNodeID, "step:["), "]")
-	fields := strings.Fields(inner)
-	if len(fields) <= 1 {
-		return nil
-	}
-	out := append([]string(nil), fields...)
-	sort.Strings(out)
-	return out
-}
-
-func (e *graphRunnerExecution) resolveNextNodesForWave(ctx context.Context, currentState *state.State, branchNodeIDs []string) ([]string, error) {
-	graph := e.runner.runnerGraph()
-	if graph == nil {
-		return nil, errors.New("graph runner graph is nil")
-	}
-	seen := map[string]struct{}{}
-	nextNodeIDs := make([]string, 0)
-	for _, branchNodeID := range branchNodeIDs {
-		targets, err := graph.ResolveNextNodes(ctx, branchNodeID, currentState)
-		if err != nil {
-			return nil, err
-		}
-		for _, target := range targets {
-			if _, ok := seen[target]; ok {
-				continue
-			}
-			seen[target] = struct{}{}
-			nextNodeIDs = append(nextNodeIDs, target)
-		}
-	}
-	sort.Strings(nextNodeIDs)
-	return nextNodeIDs, nil
 }
 
 func (e *graphRunnerExecution) SetBranchPatchRecorder(recorder BranchPatchRecorder) {
@@ -760,26 +924,26 @@ func (e *graphRunnerExecution) SetBranchPatchRecorder(recorder BranchPatchRecord
 	e.patchRecorder = recorder
 }
 
-func (e *graphRunnerExecution) recordBranchPatch(base *state.State, nodeID string, patch state.Patch) {
+func (e *graphRunnerExecution) recordBranchPatch(base *state.State, task GraphTask, patch state.Patch) {
 	e.mu.Lock()
 	recorder := e.patchRecorder
 	e.mu.Unlock()
 	if recorder != nil {
-		recorder.RecordBranchPatch(base, nodeID, patch)
+		recorder.RecordBranchPatch(base, task, patch)
 	}
 }
 
-func (e *graphRunnerExecution) recordBranchPatchLocked(base *state.State, nodeID string, patch state.Patch) {
+func (e *graphRunnerExecution) recordBranchPatchLocked(base *state.State, task GraphTask, patch state.Patch) {
 	if e == nil || e.patchRecorder == nil {
 		return
 	}
-	e.patchRecorder.RecordBranchPatch(base, nodeID, patch)
+	e.patchRecorder.RecordBranchPatch(base, task, patch)
 }
 
-func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, beforeState *state.State, currentState *state.State) error {
+func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, beforeState *state.State, currentState *state.State, eventDrafts []core.EventDraft) error {
 	ctx = e.controlPersistenceContext(ctx)
 	e.mu.Lock()
-	active := e.active[nodeID]
+	active := e.active[task.TaskID]
 	if active == nil {
 		e.mu.Unlock()
 		return nil
@@ -791,49 +955,78 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 
 	step := active.step
 	attempts := active.attempts
-	run := e.run
 	before := beforeState.Clone()
 	e.mu.Unlock()
-
-	afterID, err := e.runner.saveCheckpoint(ctx, run, step, nodeID, CheckpointAfterNode, currentState, attempts, nil, e.snapshotArtifacts())
-	if err != nil {
-		return err
-	}
 	changes, err := e.runner.computeStateDiff(before, currentState)
 	if err != nil {
 		return err
 	}
-	if err := e.runner.publishStateDiffChanges(ctx, run, step, changes); err != nil {
-		return err
-	}
 
-	now := e.runner.currentTime()
-	step.Attempt = attempts
-	step.Status = StepStatusSucceeded
-	step.CheckpointAfterID = afterID
-	step.FinishedAt = &now
-	step.UpdatedAt = now
-	if err := e.runner.executionStore.UpdateStep(ctx, step); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	if activeStep := e.active[nodeID]; activeStep != nil && activeStep.step.StepID == step.StepID {
-		activeStep.step = step
-	}
-	e.mu.Unlock()
+	e.runPersistMu.Lock()
+	defer e.runPersistMu.Unlock()
+	var run RunRecord
+	var afterID string
+	for {
+		e.mu.Lock()
+		localRun := e.run
+		e.mu.Unlock()
+		run, err = e.runner.executionStore.GetRun(ctx, localRun.RunID)
+		if err != nil {
+			return err
+		}
+		run.PauseRequested = run.PauseRequested || localRun.PauseRequested
+		run.CancelRequested = run.CancelRequested || localRun.CancelRequested
 
-	if err := e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeFinished, map[string]any{
-		"attempt": attempts,
-	}); err != nil {
-		return err
-	}
+		checkpointWrite, checkpointEvent, buildErr := e.runner.buildCheckpointWrite(ctx, run, step, task.NodeID, CheckpointAfterNode, currentState, attempts, nil, e.snapshotArtifacts())
+		if buildErr != nil {
+			return buildErr
+		}
+		afterID = checkpointWrite.Record.CheckpointID
+		now := e.runner.currentTime()
+		step.Attempt = attempts
+		step.Status = StepStatusSucceeded
+		step.CheckpointAfterID = afterID
+		step.FinishedAt = &now
+		step.UpdatedAt = now
+		run.LastCheckpointID = afterID
+		run.UpdatedAt = now
 
-	run, err = e.persistRun(ctx, func(persistedRun *RunRecord) {
-		persistedRun.LastCheckpointID = afterID
-		persistedRun.UpdatedAt = e.runner.currentTime()
-	})
-	if err != nil {
-		return err
+		events := []Event{checkpointEvent}
+		if len(changes) > 0 {
+			stateEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventStateChanged, map[string]any{"changes": changes})
+			if buildErr != nil {
+				return buildErr
+			}
+			events = append(events, stateEvent)
+		}
+		for _, draft := range eventDrafts {
+			draftEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventType(strings.TrimSpace(draft.Type)), draft.Payload)
+			if buildErr != nil {
+				return buildErr
+			}
+			events = append(events, draftEvent)
+		}
+		finishedEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeFinished, map[string]any{"attempt": attempts})
+		if buildErr != nil {
+			return buildErr
+		}
+		events = append(events, finishedEvent)
+		commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+			Run:         &RunWrite{Mode: RunWriteUpdate, Run: run},
+			Steps:       []StepWrite{{Mode: StepWriteUpdate, Step: step}},
+			Checkpoints: []CheckpointWrite{checkpointWrite},
+			Events:      events,
+		})
+		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			continue
+		}
+		if commitErr != nil {
+			return commitErr
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
+		break
 	}
 	fields := append(stepLogFields(step),
 		zap.String("checkpoint_after_id", afterID),
@@ -842,44 +1035,21 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, nodeID string, bef
 	logger.Info("nodes completed", fields...)
 
 	e.mu.Lock()
+	e.run = run
 	e.lastState = currentState.Clone()
 	e.lastCompleted = &runnerCompletedStep{
 		step:              step,
 		afterCheckpointID: afterID,
 	}
-	e.completed[nodeID] = &runnerCompletedStep{
+	e.completed[task.TaskID] = &runnerCompletedStep{
 		step:              step,
 		afterCheckpointID: afterID,
 	}
-	delete(e.active, nodeID)
-	if e.pending != nil && e.pending.nodeID == nodeID {
+	delete(e.active, task.TaskID)
+	if e.pending != nil && e.pending.taskID == task.TaskID {
 		e.pending = nil
 	}
-	var control *runnerPendingControl
-	if !e.runner.runnerGraph().IsParallelBranchTarget(nodeID) {
-		switch {
-		case run.CancelRequested:
-			control = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID, checkpointID: afterID}
-			e.pending = control
-			if e.cancelInvoke != nil {
-				e.cancelInvoke()
-			}
-		case run.PauseRequested:
-			control = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, checkpointID: afterID}
-			e.pending = control
-			if e.cancelInvoke != nil {
-				e.cancelInvoke()
-			}
-		}
-	}
 	e.mu.Unlock()
-	if control != nil {
-		return &GraphInterrupt{
-			NodeID: control.nodeID,
-			State:  currentState,
-			Value:  string(control.kind),
-		}
-	}
 	return nil
 }
 
@@ -903,20 +1073,20 @@ func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunReco
 	return nil
 }
 
-func (e *graphRunnerExecution) waveIDForNodesLocked(nodeIDs []string) string {
-	for _, nodeID := range nodeIDs {
-		if completed := e.completed[nodeID]; completed != nil && completed.step.WaveID != "" {
+func (e *graphRunnerExecution) waveIDForTasksLocked(tasks []GraphTask) string {
+	for _, task := range tasks {
+		if completed := e.completed[task.TaskID]; completed != nil && completed.step.WaveID != "" {
 			return completed.step.WaveID
 		}
 	}
 	return newRunnerID()
 }
 
-func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, nodeID string, violations []core.ContractViolation) {
+func (e *graphRunnerExecution) reportContractViolations(ctx context.Context, taskID string, violations []core.ContractViolation) {
 	e.mu.Lock()
 	run := e.run
 	var step StepRecord
-	if active := e.active[nodeID]; active != nil {
+	if active := e.active[taskID]; active != nil {
 		step = active.step
 	}
 	e.mu.Unlock()
@@ -940,24 +1110,13 @@ func (e *graphRunnerExecution) reportContractViolationsWithRun(ctx context.Conte
 	})
 }
 
-func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) error {
-	e.mu.Lock()
-	if len(e.active) == 0 {
-		e.mu.Unlock()
-		return nil
+func (e *graphRunnerExecution) prepareFailedSteps(err error) (runnerStepTransition, error) {
+	run, items := e.consumeActiveSteps()
+	transition := runnerStepTransition{
+		writes: make([]StepWrite, 0, len(items)),
+		events: make([]Event, 0, len(items)),
+		steps:  make([]StepRecord, 0, len(items)),
 	}
-	items := make([]runnerActiveStep, 0, len(e.active))
-	for nodeID, active := range e.active {
-		if active == nil {
-			continue
-		}
-		items = append(items, *active)
-		delete(e.active, nodeID)
-	}
-	run := e.run
-	e.pending = nil
-	e.mu.Unlock()
-
 	for _, item := range items {
 		step := item.step
 		if step.Status == StepStatusSucceeded || step.Status == StepStatusPaused || step.Status == StepStatusCanceled {
@@ -971,39 +1130,30 @@ func (e *graphRunnerExecution) finalizeFailure(ctx context.Context, err error) e
 		step.ErrorMessage = err.Error()
 		step.FinishedAt = &now
 		step.UpdatedAt = now
-		if updateErr := e.runner.executionStore.UpdateStep(ctx, step); updateErr != nil {
-			return updateErr
-		}
-		logger.Error("nodes failed", append(stepLogFields(step), zap.Error(err))...)
-
-		if publishErr := e.runner.publishEvent(ctx, run, step.StepID, step.NodeID, EventNodeFailed, map[string]any{
+		failedEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeFailed, map[string]any{
 			"error":   err.Error(),
 			"attempt": attempts,
-		}); publishErr != nil {
-			return publishErr
+		})
+		if buildErr != nil {
+			return runnerStepTransition{}, buildErr
 		}
+		transition.writes = append(transition.writes, StepWrite{Mode: StepWriteUpdate, Step: step})
+		transition.events = append(transition.events, failedEvent)
+		transition.steps = append(transition.steps, step)
 	}
-	return nil
+	return transition, nil
 }
 
-func (e *graphRunnerExecution) finalizeCanceledSteps(ctx context.Context) error {
+func (e *graphRunnerExecution) prepareCanceledSteps() (runnerStepTransition, error) {
 	if e == nil {
-		return nil
+		return runnerStepTransition{}, nil
 	}
-	e.mu.Lock()
-	items := make([]runnerActiveStep, 0, len(e.active))
-	for nodeID, active := range e.active {
-		if active == nil {
-			continue
-		}
-		items = append(items, *active)
-		delete(e.active, nodeID)
+	run, items := e.consumeActiveSteps()
+	transition := runnerStepTransition{
+		writes: make([]StepWrite, 0, len(items)),
+		events: make([]Event, 0, len(items)),
+		steps:  make([]StepRecord, 0, len(items)),
 	}
-	run := e.run
-	e.pending = nil
-	e.mu.Unlock()
-
-	var finalizeErr error
 	for _, item := range items {
 		step := item.step
 		if step.Status == StepStatusSucceeded || step.Status == StepStatusPaused || step.Status == StepStatusCanceled {
@@ -1017,19 +1167,42 @@ func (e *graphRunnerExecution) finalizeCanceledSteps(ctx context.Context) error 
 		step.ErrorMessage = "run canceled"
 		step.FinishedAt = &now
 		step.UpdatedAt = now
-		if err := e.runner.executionStore.UpdateStep(e.controlPersistenceContext(ctx), step); err != nil {
-			finalizeErr = errors.Join(finalizeErr, err)
-			continue
-		}
-		if err := e.runner.publishEvent(e.controlPersistenceContext(ctx), run, step.StepID, step.NodeID, EventNodeCanceled, map[string]any{
+		canceledEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeCanceled, map[string]any{
 			"attempt":    attempts,
 			"error_code": "run_canceled",
 			"message":    "run canceled",
-		}); err != nil {
-			finalizeErr = errors.Join(finalizeErr, err)
+		})
+		if buildErr != nil {
+			return runnerStepTransition{}, buildErr
 		}
+		transition.writes = append(transition.writes, StepWrite{Mode: StepWriteUpdate, Step: step})
+		transition.events = append(transition.events, canceledEvent)
+		transition.steps = append(transition.steps, step)
 	}
-	return finalizeErr
+	return transition, nil
+}
+
+func (e *graphRunnerExecution) consumeActiveSteps() (RunRecord, []runnerActiveStep) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	items := make([]runnerActiveStep, 0, len(e.active))
+	for taskID, active := range e.active {
+		if active == nil {
+			continue
+		}
+		items = append(items, *active)
+		delete(e.active, taskID)
+	}
+	e.pending = nil
+	sort.Slice(items, func(leftIndex, rightIndex int) bool {
+		left := items[leftIndex].step
+		right := items[rightIndex].step
+		if left.TaskID == right.TaskID {
+			return left.StepID < right.StepID
+		}
+		return left.TaskID < right.TaskID
+	})
+	return e.run, items
 }
 
 func (e *graphRunnerExecution) currentRun() RunRecord {
@@ -1058,7 +1231,10 @@ func (e *graphRunnerExecution) consumePendingControl() (*runnerPendingControl, *
 	e.pending = nil
 
 	var activeCopy *runnerActiveStep
-	if control.nodeID != "" {
+	if control.taskID != "" {
+		activeCopy = e.firstActiveStepLocked(control.taskID)
+	}
+	if activeCopy == nil && control.nodeID != "" {
 		activeCopy = e.firstActiveStepLocked(control.nodeID)
 	}
 	if activeCopy == nil {
@@ -1090,13 +1266,26 @@ func (e *graphRunnerExecution) requestCancel() {
 	e.mu.Lock()
 	e.run.PauseRequested = false
 	e.run.CancelRequested = true
+	taskID := ""
 	nodeID := e.run.CurrentNodeID
-	interruptInvoke := nodeID == "" || !e.runner.runnerGraph().IsParallelBranchTarget(nodeID)
-	if e.pending == nil && interruptInvoke {
-		e.pending = &runnerPendingControl{kind: runnerControlCancel, nodeID: nodeID}
+	for activeTaskID, active := range e.active {
+		if active == nil {
+			continue
+		}
+		taskID = activeTaskID
+		nodeID = active.step.NodeID
+		break
 	}
+	interruptInvoke := len(e.active) <= 1
+	if e.pending == nil && interruptInvoke {
+		e.pending = &runnerPendingControl{kind: runnerControlCancel, taskID: taskID, nodeID: nodeID}
+	}
+	children := e.childRunsLocked()
 	cancel := e.cancelInvoke
 	e.mu.Unlock()
+	for _, child := range children {
+		_ = child.runner.Cancel(context.Background(), child.runID)
+	}
 	if interruptInvoke && cancel != nil {
 		cancel()
 	}
@@ -1112,39 +1301,121 @@ func (e *graphRunnerExecution) requestPause() {
 		e.mu.Unlock()
 		return
 	}
-	var (
-		nodeID string
-		cancel context.CancelFunc
-	)
+	var cancel context.CancelFunc
 	if len(e.active) == 1 {
-		for id := range e.active {
-			nodeID = id
-		}
-		if nodeID != "" && !e.runner.runnerGraph().IsParallelBranchTarget(nodeID) {
+		for taskID, active := range e.active {
+			if active == nil {
+				continue
+			}
 			if e.pending == nil {
-				e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, message: "pause requested"}
+				e.pending = &runnerPendingControl{kind: runnerControlPause, taskID: taskID, nodeID: active.step.NodeID, message: "pause requested"}
 			}
 			cancel = e.cancelInvoke
 		}
 	}
+	children := e.childRunsLocked()
 	e.mu.Unlock()
+	for _, child := range children {
+		_ = child.runner.Pause(context.Background(), child.runID)
+	}
 	if cancel != nil {
 		cancel()
 	}
 }
 
-func (e *graphRunnerExecution) consumeLastCompleted(nodeID string) *runnerCompletedStep {
+func (e *graphRunnerExecution) RegisterChildRun(taskID string, runner *GraphRunner, runID string) {
+	if e == nil || runner == nil || strings.TrimSpace(taskID) == "" || strings.TrimSpace(runID) == "" {
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if e.lastCompleted == nil {
+	if e.children == nil {
+		e.children = map[string]map[string]runnerChildRun{}
+	}
+	if e.children[taskID] == nil {
+		e.children[taskID] = map[string]runnerChildRun{}
+	}
+	e.children[taskID][runID] = runnerChildRun{runner: runner, runID: runID}
+}
+
+func (e *graphRunnerExecution) UnregisterChildRun(taskID, runID string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	children := e.children[taskID]
+	delete(children, runID)
+	if len(children) == 0 {
+		delete(e.children, taskID)
+	}
+}
+
+func (e *graphRunnerExecution) LinkChildRun(ctx context.Context, parentRunID, childRunID string) error {
+	if e == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(childRunID) == "" {
+		return fmt.Errorf("parent and child run IDs are required")
+	}
+	e.mu.Lock()
+	actualParentRunID := e.run.RunID
+	e.mu.Unlock()
+	if actualParentRunID != parentRunID {
+		return fmt.Errorf("child run parent mismatch: execution=%q request=%q", actualParentRunID, parentRunID)
+	}
+	_, err := e.persistRun(ctx, func(run *RunRecord) {
+		for _, existingID := range run.ChildRunIDs {
+			if existingID == childRunID {
+				return
+			}
+		}
+		run.ChildRunIDs = append(run.ChildRunIDs, childRunID)
+		run.UpdatedAt = e.runner.currentTime()
+	})
+	return err
+}
+
+func (e *graphRunnerExecution) childRunsLocked() []runnerChildRun {
+	children := make([]runnerChildRun, 0)
+	for _, byRunID := range e.children {
+		for _, child := range byRunID {
+			children = append(children, child)
+		}
+	}
+	return children
+}
+
+func (e *graphRunnerExecution) consumeLastCompleted(identifier string) *runnerCompletedStep {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var completed *runnerCompletedStep
+	completedTaskID := ""
+	if identifier != "" {
+		if item := e.completed[identifier]; item != nil {
+			completed = item
+			completedTaskID = identifier
+		} else {
+			for taskID, item := range e.completed {
+				if item != nil && item.step.NodeID == identifier {
+					completed = item
+					completedTaskID = taskID
+					break
+				}
+			}
+		}
+	} else {
+		completed = e.lastCompleted
+		if completed != nil {
+			completedTaskID = completed.step.TaskID
+		}
+	}
+	if completed == nil {
 		return nil
 	}
-	if nodeID != "" && e.lastCompleted.step.NodeID != nodeID {
-		return nil
+	copyCompleted := *completed
+	delete(e.completed, completedTaskID)
+	if e.lastCompleted != nil && e.lastCompleted.step.StepID == completed.step.StepID {
+		e.lastCompleted = nil
 	}
-	completed := *e.lastCompleted
-	e.lastCompleted = nil
-	return &completed
+	return &copyCompleted
 }
 
 func (e *graphRunnerExecution) appendArtifact(ref state.ArtifactRef) {
@@ -1170,27 +1441,35 @@ func (e *graphRunnerExecution) afterInterruptNodes() ([]string, error) {
 	return graph.AfterInterruptNodes(e.runner.breakpoints)
 }
 
-func (e *graphRunnerExecution) markNodeInterrupt(nodeID string, message string) {
+func (e *graphRunnerExecution) markNodeInterrupt(task GraphTask, message string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	active := e.active[nodeID]
+	active := e.active[task.TaskID]
 	if active == nil {
 		return
 	}
 	/// make sure the nodes resume at the same nodes after restart
 	active.beforeInterrupted = true
-	e.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: nodeID, message: message}
+	e.pending = &runnerPendingControl{kind: runnerControlPause, taskID: task.TaskID, nodeID: task.NodeID, message: message}
 	logStep := active.step
 	logStep.Attempt = active.attempts
 	logger.Info("nodes interrupt captured", stepLogFields(logStep)...)
 }
 
-func (e *graphRunnerExecution) firstActiveStepLocked(nodeID string) *runnerActiveStep {
+func (e *graphRunnerExecution) firstActiveStepLocked(identifier string) *runnerActiveStep {
 	if e == nil || len(e.active) == 0 {
 		return nil
 	}
-	if nodeID != "" {
-		return e.active[nodeID]
+	if identifier != "" {
+		if active := e.active[identifier]; active != nil {
+			return active
+		}
+		for _, active := range e.active {
+			if active != nil && active.step.NodeID == identifier {
+				return active
+			}
+		}
+		return nil
 	}
 	for _, active := range e.active {
 		return active

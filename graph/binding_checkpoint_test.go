@@ -12,7 +12,7 @@ import (
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
@@ -55,7 +55,7 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
 			ID: "after-input", NodeID: "input", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
 		}))
-	model := &graphScriptedModel{responses: []*llms.ContentResponse{contentResponse("final answer")}}
+	model := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
 	ctx := core.WithModels(context.Background(), map[string]llms.Model{"writer": model})
 	run, _, err := runner.Start(ctx, state.FromShared(map[string]any{
 		"request": map[string]any{"input": "draft the answer"},

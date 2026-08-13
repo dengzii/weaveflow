@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"runtime"
 	"strings"
@@ -9,13 +10,15 @@ import (
 	"time"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func TestBashToolAutoShellExecutesCommand(t *testing.T) {
-	out, err := NewBash().Handler(context.Background(), `{"command":"echo hello","description":"Print a greeting","shell":"auto","timeout":5000}`)
+	result, err := NewBash().Handler(context.Background(), toolCallForTest("bash", `{"command":"echo hello","description":"Print a greeting","shell":"auto","timeout":5000}`))
 	if err != nil {
 		t.Fatalf("bash tool: %v", err)
 	}
+	out := result.Content
 	if !strings.Contains(out, "exit_code: 0") {
 		t.Fatalf("expected successful exit, got:\n%s", out)
 	}
@@ -32,9 +35,9 @@ func TestBashToolAutoShellExecutesCommand(t *testing.T) {
 	}
 }
 
-func TestBashToolRejectsRawInput(t *testing.T) {
-	if _, err := NewBash().Handler(context.Background(), "echo hello"); err == nil {
-		t.Fatal("raw Bash input was accepted")
+func TestBashToolRejectsInvalidArguments(t *testing.T) {
+	if _, err := NewBash().Handler(context.Background(), toolCallForTest("bash", "echo hello")); err == nil {
+		t.Fatal("invalid Bash arguments were accepted")
 	}
 }
 
@@ -43,17 +46,18 @@ func TestBashToolUsesConfiguredWorkspace(t *testing.T) {
 	t.Setenv(toolWorkspaceEnv, t.TempDir())
 	ctx := core.WithEnvironment(context.Background(), map[string]string{toolWorkspaceEnv: root})
 
-	out, err := NewBash().Handler(ctx, `{"command":"echo hello","description":"Print a greeting","shell":"auto"}`)
+	result, err := NewBash().Handler(ctx, toolCallForTest("bash", `{"command":"echo hello","description":"Print a greeting","shell":"auto"}`))
 	if err != nil {
 		t.Fatalf("bash tool: %v", err)
 	}
+	out := result.Content
 	if !strings.Contains(out, "working_dir: "+root) {
 		t.Fatalf("expected configured working directory, got: %s", out)
 	}
 }
 
 func TestBashToolRejectsUnsupportedShell(t *testing.T) {
-	_, err := NewBash().Handler(context.Background(), `{"command":"echo hello","description":"Print a greeting","shell":"fish"}`)
+	_, err := NewBash().Handler(context.Background(), toolCallForTest("bash", `{"command":"echo hello","description":"Print a greeting","shell":"fish"}`))
 	if err == nil {
 		t.Fatal("expected unsupported shell error")
 	}
@@ -63,12 +67,23 @@ func TestBashToolRejectsUnsupportedShell(t *testing.T) {
 }
 
 func TestBashToolRejectsBackgroundMode(t *testing.T) {
-	_, err := NewBash().Handler(context.Background(), `{"command":"echo hello","description":"Print a greeting","run_in_background":true}`)
+	_, err := NewBash().Handler(context.Background(), toolCallForTest("bash", `{"command":"echo hello","description":"Print a greeting","run_in_background":true}`))
 	if err == nil {
 		t.Fatal("expected background mode error")
 	}
 	if !strings.Contains(err.Error(), "run_in_background") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func toolCallForTest(name string, arguments string) llms.ToolCall {
+	return llms.ToolCall{
+		ID:   "test-call",
+		Type: "function",
+		FunctionCall: &llms.FunctionCall{
+			Name:      name,
+			Arguments: json.RawMessage(arguments),
+		},
 	}
 }
 

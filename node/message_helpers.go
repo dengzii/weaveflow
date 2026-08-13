@@ -7,7 +7,7 @@ import (
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/llms/parts"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 func extractText(message llms.MessageContent) string {
@@ -107,7 +107,7 @@ func reducerMessageText(message llms.MessageContent) string {
 			arguments := ""
 			if typed.FunctionCall != nil {
 				name = strings.TrimSpace(typed.FunctionCall.Name)
-				arguments = strings.TrimSpace(typed.FunctionCall.Arguments)
+				arguments = strings.TrimSpace(string(typed.FunctionCall.Arguments))
 			}
 			item := "tool_call"
 			if name != "" {
@@ -117,13 +117,16 @@ func reducerMessageText(message llms.MessageContent) string {
 				item += " " + arguments
 			}
 			texts = append(texts, item)
-		case llms.ToolCallResponse:
+		case llms.ToolResult:
 			item := "tool_result"
 			if name := strings.TrimSpace(typed.Name); name != "" {
 				item += " " + name
 			}
-			if content := strings.TrimSpace(typed.Content); content != "" {
+			if content := strings.TrimSpace(llms.ToolResultText(typed)); content != "" {
 				item += " " + content
+			}
+			if typed.IsError && typed.ErrorMessage != "" {
+				item += " error=" + strings.TrimSpace(typed.ErrorMessage)
 			}
 			texts = append(texts, item)
 		}
@@ -164,7 +167,7 @@ func messageHasToolCalls(message llms.MessageContent) bool {
 
 func messageHasToolResponses(message llms.MessageContent) bool {
 	for _, part := range message.Parts {
-		if _, ok := part.(llms.ToolCallResponse); ok {
+		if _, ok := part.(llms.ToolResult); ok {
 			return true
 		}
 	}
@@ -267,12 +270,13 @@ func promptMessageCharCount(message llms.MessageContent) int {
 			total += 16
 			if typed.FunctionCall != nil {
 				total += len([]rune(strings.TrimSpace(typed.FunctionCall.Name)))
-				total += len([]rune(strings.TrimSpace(typed.FunctionCall.Arguments)))
+				total += len([]rune(strings.TrimSpace(string(typed.FunctionCall.Arguments))))
 			}
-		case llms.ToolCallResponse:
+		case llms.ToolResult:
 			total += 16
 			total += len([]rune(strings.TrimSpace(typed.Name)))
-			total += len([]rune(strings.TrimSpace(typed.Content)))
+			total += len([]rune(strings.TrimSpace(llms.ToolResultText(typed))))
+			total += len([]rune(strings.TrimSpace(typed.ErrorMessage)))
 		default:
 			total += len([]rune(strings.TrimSpace(fmt.Sprint(typed))))
 		}
@@ -302,7 +306,8 @@ type llmResponseArtifactChoice struct {
 	StopReason       string          `json:"stop_reason,omitempty"`
 	ToolCalls        []llms.ToolCall `json:"tool_calls,omitempty"`
 	ReasoningContent string          `json:"reasoning_content,omitempty"`
-	Usage            map[string]any  `json:"usage,omitempty"`
+	Usage            llms.ModelUsage `json:"usage,omitempty"`
+	Cost             *llms.ModelCost `json:"cost,omitempty"`
 }
 
 // LLMResponseArtifact is the common redacted representation of an LLM response.
@@ -311,7 +316,7 @@ type LLMResponseArtifact = llmResponseArtifact
 // LLMResponseArtifactChoice is one redacted response choice.
 type LLMResponseArtifactChoice = llmResponseArtifactChoice
 
-func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, conversationPath string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
+func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.ToolDefinition, conversationPath string, iterationCount int, maxIterations int) (llmPromptArtifact, error) {
 	serializedMessages, err := conversationcap.SerializeMessages(messages)
 	if err != nil {
 		return llmPromptArtifact{}, err
@@ -335,7 +340,7 @@ func buildLLMPromptArtifact(messages []llms.MessageContent, tools []llms.Tool, c
 	return payload, nil
 }
 
-func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
+func buildLLMResponseArtifact(resp *llms.ModelResponse) llmResponseArtifact {
 	if resp == nil || len(resp.Choices) == 0 {
 		return llmResponseArtifact{}
 	}
@@ -351,6 +356,8 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 			Content:          choice.Content,
 			StopReason:       choice.StopReason,
 			ReasoningContent: choice.ReasoningContent,
+			Usage:            resp.Usage,
+			Cost:             resp.Cost,
 		}
 		if len(choice.ToolCalls) > 0 {
 			item.ToolCalls = redactToolCalls(choice.ToolCalls)
@@ -361,7 +368,7 @@ func buildLLMResponseArtifact(resp *llms.ContentResponse) llmResponseArtifact {
 }
 
 // BuildLLMResponseArtifact converts an LLM response into the common redacted artifact payload.
-func BuildLLMResponseArtifact(response *llms.ContentResponse) LLMResponseArtifact {
+func BuildLLMResponseArtifact(response *llms.ModelResponse) LLMResponseArtifact {
 	return buildLLMResponseArtifact(response)
 }
 

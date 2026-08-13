@@ -12,7 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 
-	"github.com/tmc/langchaingo/llms"
+	"github.com/dengzii/weaveflow/llms"
 )
 
 const defaultPlanSynthesisSystemPrompt = `Synthesize the final user-facing answer from the objective and plan step results.
@@ -111,7 +111,11 @@ func PlanSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanSynthesisNode) Execute(ctx core.Context, access *state.Access) error {
+func (n *PlanSynthesisNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+	return core.NodeResult{}, n.execute(ctx, access)
+}
+
+func (n *PlanSynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("plan synthesis node: model %q not available", effectiveModelID(n.ModelID))
@@ -127,13 +131,17 @@ func (n *PlanSynthesisNode) Execute(ctx core.Context, access *state.Access) erro
 		return errors.New("plan synthesis node: objective is empty")
 	}
 
-	response, err := model.GenerateContent(ctx, []llms.MessageContent{
-		llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
-		llms.TextParts(llms.ChatMessageTypeHuman, buildPlanSynthesisPrompt(objective, planString(plan[planFieldSummary]), steps)),
-	},
-		llms.WithThinkingMode(llms.ThinkingModeLow),
-		llms.WithTemperature(0.2),
-	)
+	temperature := 0.2
+	response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+		ModelID: effectiveModelID(n.ModelID),
+		Mode:    llms.ModelModeChat,
+		Messages: []llms.MessageContent{
+			llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
+			llms.TextParts(llms.ChatMessageTypeHuman, buildPlanSynthesisPrompt(objective, planString(plan[planFieldSummary]), steps)),
+		},
+		Thinking:    llms.ThinkingModeLow,
+		Temperature: &temperature,
+	})
 	if err != nil {
 		return fmt.Errorf("plan synthesis node: synthesize answer: %w", err)
 	}

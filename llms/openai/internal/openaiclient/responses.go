@@ -72,10 +72,10 @@ type ResponseTextConfig struct {
 }
 
 type ResponseTextFormat struct {
-	Type   string                            `json:"type"`
-	Name   string                            `json:"name,omitempty"`
-	Strict bool                              `json:"strict,omitempty"`
-	Schema *ResponseFormatJSONSchemaProperty `json:"schema,omitempty"`
+	Type   string `json:"type"`
+	Name   string `json:"name,omitempty"`
+	Strict bool   `json:"strict,omitempty"`
+	Schema any    `json:"schema,omitempty"`
 }
 
 type Response struct {

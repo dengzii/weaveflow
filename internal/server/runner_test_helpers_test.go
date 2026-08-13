@@ -36,10 +36,17 @@ func newMinimalTestGraph(t *testing.T) *wfgraph.Graph {
 
 func mustNewEventTestServer(t *testing.T, sink runtime.EventSink, eventBuffer int) (*Server, *runtime.GraphRunner) {
 	t.Helper()
+	runtimeStore := runtime.NewMemoryRuntimeStore()
+	eventSink := runtime.EventSink(runtimeStore)
+	if sink != nil {
+		eventSink = runtime.NewCombineEventSink(runtimeStore, sink)
+	}
 	server, err := New(context.Background(), Config{
-		Graph:       newMinimalTestGraph(t),
-		EventSink:   sink,
-		EventBuffer: eventBuffer,
+		Graph:           newMinimalTestGraph(t),
+		ExecutionStore:  runtimeStore,
+		CheckpointStore: runtimeStore,
+		EventSink:       eventSink,
+		EventBuffer:     eventBuffer,
 	})
 	if err != nil {
 		t.Fatalf("New() error: %v", err)

@@ -56,6 +56,31 @@ type planModelOutput struct {
 	Steps   []plancap.Step `json:"steps"`
 }
 
+func planModelOutputSchema() state.JSONSchema {
+	return state.JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"summary": map[string]any{"type": "string"},
+			"steps": map[string]any{
+				"type": "array",
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":          map[string]any{"type": "string"},
+						"title":       map[string]any{"type": "string"},
+						"description": map[string]any{"type": "string"},
+						"tool_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+					},
+					"required":             []string{"id", "title", "description", "tool_ids"},
+					"additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"summary", "steps"},
+		"additionalProperties": false,
+	}
+}
+
 func PlanStatusEquals(planPath state.Path, status string) registry.EdgeCondition {
 	status = strings.ToLower(strings.TrimSpace(status))
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
