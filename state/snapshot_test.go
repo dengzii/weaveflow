@@ -34,7 +34,7 @@ func TestJSONStateCodecRoundTripsJSONShapeWithoutDomainReconstruction(t *testing
 	if err != nil {
 		t.Fatalf("decode snapshot: %v", err)
 	}
-	restored, err := StateFromSnapshot(decoded)
+	restored, err := FromSnapshot(decoded)
 	if err != nil {
 		t.Fatalf("state from snapshot: %v", err)
 	}
@@ -68,10 +68,10 @@ func TestJSONStateCodecRoundTripsJSONShapeWithoutDomainReconstruction(t *testing
 func TestJSONStateCodecRejectsMissingMismatchedAndUnknownVersions(t *testing.T) {
 	t.Parallel()
 	codec := NewJSONStateCodec("")
-	if _, err := codec.Encode(StateSnapshot{}); err == nil {
+	if _, err := codec.Encode(Snapshot{}); err == nil {
 		t.Fatal("Encode() accepted a snapshot without version")
 	}
-	if _, err := codec.Encode(StateSnapshot{Version: "state-v1"}); err == nil {
+	if _, err := codec.Encode(Snapshot{Version: "state-v1"}); err == nil {
 		t.Fatal("Encode() accepted a mismatched snapshot version")
 	}
 	for _, data := range []string{

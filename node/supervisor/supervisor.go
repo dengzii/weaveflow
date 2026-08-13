@@ -56,31 +56,31 @@ When the objective is fully addressed, choose __finish__.
 Return JSON only: {"next_worker":"<worker id or __finish__>","task":"<specific delegated task>","reason":"<brief reason>"}.
 The task must be self-contained and should tell the worker what result to return.`
 
-type SupervisorMember struct {
+type Member struct {
 	ID          string `json:"id"`
 	Name        string `json:"name,omitempty"`
 	Description string `json:"description"`
 }
 
-type SupervisorNode struct {
+type Node struct {
 	core.NodeBase
 	ModelID        string
 	SystemPrompt   string
-	Members        []SupervisorMember
+	Members        []Member
 	MaxTurns       int
 	RouteAttempts  int
 	ObjectivePath  state.Path
 	SupervisorPath state.Path
 }
 
-type supervisorRouteOutput struct {
+type routeOutput struct {
 	NextWorker string `json:"next_worker"`
 	Task       string `json:"task"`
 	Reason     string `json:"reason"`
 }
 
-func NewSupervisorNode(options ...core.NodeOption) *SupervisorNode {
-	target := &SupervisorNode{
+func NewNode(options ...core.NodeOption) *Node {
+	target := &Node{
 		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypeSupervisor,
 			Description: "Route work among specialist workers until the objective is ready for final synthesis.",
@@ -94,7 +94,7 @@ func NewSupervisorNode(options ...core.NodeOption) *SupervisorNode {
 	return target
 }
 
-func (n *SupervisorNode) Validate() error {
+func (n *Node) Validate() error {
 	if n == nil {
 		return fmt.Errorf("supervisor node is nil")
 	}
@@ -134,7 +134,7 @@ func (n *SupervisorNode) Validate() error {
 	return nil
 }
 
-func (n *SupervisorNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (n *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 	members := make([]map[string]any, 0, len(n.Members))
 	for _, member := range n.Members {
 		member = normalizeSupervisorMember(member)
@@ -153,7 +153,7 @@ func (n *SupervisorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	}, map[string]state.Path{"objective": n.ObjectivePath, "supervisor": n.SupervisorPath})
 }
 
-func SupervisorNodeTypeDefinition() registry.NodeTypeDefinition {
+func NodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypeSupervisor,
@@ -208,7 +208,7 @@ func SupervisorNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewSupervisorNode(core.WithID(spec.ID))
+			target := NewNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
@@ -235,11 +235,11 @@ func SupervisorNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *SupervisorNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *Node) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	return core.NodeResult{}, n.execute(ctx, access)
 }
 
-func (n *SupervisorNode) execute(ctx core.Context, access *state.Access) error {
+func (n *Node) execute(ctx core.Context, access *state.Access) error {
 	if err := n.Validate(); err != nil {
 		return err
 	}
@@ -247,11 +247,11 @@ func (n *SupervisorNode) execute(ctx core.Context, access *state.Access) error {
 	if model == nil {
 		return fmt.Errorf("supervisor node: model %q not available", effectiveModelID(n.ModelID))
 	}
-	supervisor, err := supervisorcap.Bind(access, n.SupervisorPath)
+	supervisorView, err := supervisorcap.Bind(access, n.SupervisorPath)
 	if err != nil {
 		return err
 	}
-	objective := strings.TrimSpace(supervisorString(supervisor.Value(), SupervisorFieldObjective))
+	objective := strings.TrimSpace(stringValue(supervisorView.Value(), SupervisorFieldObjective))
 	if objective == "" {
 		objectiveInput, requestErr := state.Get(access, state.NewRef[string](n.ObjectivePath))
 		if requestErr != nil {
@@ -261,25 +261,25 @@ func (n *SupervisorNode) execute(ctx core.Context, access *state.Access) error {
 		if objective == "" {
 			return fmt.Errorf("supervisor node %q requires shared.request.input or shared.supervisor.objective", n.ID())
 		}
-		if err := supervisor.SetField(SupervisorFieldObjective, objective); err != nil {
+		if err := supervisorView.SetField(SupervisorFieldObjective, objective); err != nil {
 			return err
 		}
 	}
 
-	current := supervisor.Value()
-	turnCount := supervisorInt(current, SupervisorFieldTurnCount)
+	current := supervisorView.Value()
+	turnCount := intValue(current, SupervisorFieldTurnCount)
 	maxTurns := n.effectiveMaxTurns()
-	if err := supervisor.SetField(SupervisorFieldMaxTurns, maxTurns); err != nil {
+	if err := supervisorView.SetField(SupervisorFieldMaxTurns, maxTurns); err != nil {
 		return err
 	}
 	if turnCount >= maxTurns {
-		return n.setRoute(ctx, supervisor, supervisorRouteOutput{
+		return n.setRoute(ctx, supervisorView, routeOutput{
 			NextWorker: SupervisorRouteFinish,
 			Reason:     fmt.Sprintf("maximum delegation count %d reached", maxTurns),
 		}, turnCount)
 	}
 
-	history := supervisorHistoryFromValue(current[SupervisorFieldHistory])
+	history := historyFromValue(current[SupervisorFieldHistory])
 	route, err := n.selectRoute(ctx, objective, history, turnCount, maxTurns)
 	if err != nil {
 		return err
@@ -287,10 +287,10 @@ func (n *SupervisorNode) execute(ctx core.Context, access *state.Access) error {
 	if !strings.EqualFold(route.NextWorker, SupervisorRouteFinish) {
 		turnCount++
 	}
-	return n.setRoute(ctx, supervisor, route, turnCount)
+	return n.setRoute(ctx, supervisorView, route, turnCount)
 }
 
-func (n *SupervisorNode) selectRoute(ctx core.Context, objective string, history []supervisorcap.Turn, turnCount, maxTurns int) (supervisorRouteOutput, error) {
+func (n *Node) selectRoute(ctx core.Context, objective string, history []supervisorcap.Turn, turnCount, maxTurns int) (routeOutput, error) {
 	membersJSON, _ := json.MarshalIndent(n.normalizedMembers(), "", "  ")
 	historyJSON, _ := json.MarshalIndent(history, "", "  ")
 	humanPrompt := fmt.Sprintf("Objective:\n%s\n\nAvailable workers:\n%s\n\nCompleted delegations (%d/%d):\n%s", objective, membersJSON, turnCount, maxTurns, historyJSON)
@@ -311,11 +311,11 @@ func (n *SupervisorNode) selectRoute(ctx core.Context, objective string, history
 			Messages:       messages,
 			Thinking:       llms.ThinkingModeHigh,
 			ResponseName:   "supervisor_route",
-			ResponseSchema: supervisorRouteSchema(n.Members),
+			ResponseSchema: routeSchema(n.Members),
 			StrictResponse: true,
 		})
 		if err != nil && (response == nil || len(response.Choices) == 0 || response.Choices[0] == nil) {
-			return supervisorRouteOutput{}, err
+			return routeOutput{}, err
 		}
 		if response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
 			lastErr = fmt.Errorf("llm returned no choices")
@@ -338,17 +338,17 @@ func (n *SupervisorNode) selectRoute(ctx core.Context, objective string, history
 			)
 		}
 	}
-	return supervisorRouteOutput{}, fmt.Errorf("supervisor node %q could not select a valid route after %d attempts: %w", n.ID(), n.effectiveRouteAttempts(), lastErr)
+	return routeOutput{}, fmt.Errorf("supervisor node %q could not select a valid route after %d attempts: %w", n.ID(), n.effectiveRouteAttempts(), lastErr)
 }
 
-func (n *SupervisorNode) setRoute(ctx context.Context, supervisor *supervisorcap.View, route supervisorRouteOutput, turnCount int) error {
+func (n *Node) setRoute(ctx context.Context, supervisorView *supervisorcap.View, route routeOutput, turnCount int) error {
 	route.NextWorker = canonicalSupervisorRoute(route.NextWorker, n.Members)
 	status := SupervisorStatusDelegating
 	if route.NextWorker == SupervisorRouteFinish {
 		status = SupervisorStatusFinalizing
 		route.Task = ""
 	}
-	if err := supervisor.Merge(map[string]any{
+	if err := supervisorView.Merge(map[string]any{
 		SupervisorFieldRoute:     route.NextWorker,
 		SupervisorFieldTask:      strings.TrimSpace(route.Task),
 		SupervisorFieldReason:    strings.TrimSpace(route.Reason),
@@ -363,36 +363,36 @@ func (n *SupervisorNode) setRoute(ctx context.Context, supervisor *supervisorcap
 	return nil
 }
 
-func (n *SupervisorNode) normalizedMembers() []SupervisorMember {
-	members := make([]SupervisorMember, 0, len(n.Members))
+func (n *Node) normalizedMembers() []Member {
+	members := make([]Member, 0, len(n.Members))
 	for _, member := range n.Members {
 		members = append(members, normalizeSupervisorMember(member))
 	}
 	return members
 }
 
-func (n *SupervisorNode) effectiveSystemPrompt() string {
+func (n *Node) effectiveSystemPrompt() string {
 	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
 		return defaultSupervisorSystemPrompt
 	}
 	return strings.TrimSpace(n.SystemPrompt)
 }
 
-func (n *SupervisorNode) effectiveMaxTurns() int {
+func (n *Node) effectiveMaxTurns() int {
 	if n == nil || n.MaxTurns <= 0 {
 		return defaultSupervisorMaxTurns
 	}
 	return n.MaxTurns
 }
 
-func (n *SupervisorNode) effectiveRouteAttempts() int {
+func (n *Node) effectiveRouteAttempts() int {
 	if n == nil || n.RouteAttempts <= 0 {
 		return defaultSupervisorRouteAttempts
 	}
 	return n.RouteAttempts
 }
 
-func SupervisorRouteEquals(supervisorPath state.Path, workerID string) registry.EdgeCondition {
+func RouteEquals(supervisorPath state.Path, workerID string) registry.EdgeCondition {
 	workerID = strings.TrimSpace(workerID)
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 		Type:   ConditionTypeSupervisorRouteEquals,
@@ -404,7 +404,7 @@ func SupervisorRouteEquals(supervisorPath state.Path, workerID string) registry.
 	})
 }
 
-func parseSupervisorMembers(raw any) ([]SupervisorMember, error) {
+func parseSupervisorMembers(raw any) ([]Member, error) {
 	var values []any
 	switch typed := raw.(type) {
 	case nil:
@@ -416,8 +416,8 @@ func parseSupervisorMembers(raw any) ([]SupervisorMember, error) {
 		for index := range typed {
 			values[index] = typed[index]
 		}
-	case []SupervisorMember:
-		members := make([]SupervisorMember, len(typed))
+	case []Member:
+		members := make([]Member, len(typed))
 		for index, member := range typed {
 			members[index] = normalizeSupervisorMember(member)
 		}
@@ -425,13 +425,13 @@ func parseSupervisorMembers(raw any) ([]SupervisorMember, error) {
 	default:
 		return nil, fmt.Errorf("members must be an array")
 	}
-	members := make([]SupervisorMember, 0, len(values))
+	members := make([]Member, 0, len(values))
 	for index, rawMember := range values {
 		mapped, ok := rawMember.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("member %d must be an object", index)
 		}
-		member := normalizeSupervisorMember(SupervisorMember{
+		member := normalizeSupervisorMember(Member{
 			ID: config.String(mapped, "id"), Name: config.String(mapped, "name"), Description: config.String(mapped, "description"),
 		})
 		members = append(members, member)
@@ -439,29 +439,29 @@ func parseSupervisorMembers(raw any) ([]SupervisorMember, error) {
 	return members, nil
 }
 
-func parseSupervisorRoute(content string, members []SupervisorMember) (supervisorRouteOutput, error) {
+func parseSupervisorRoute(content string, members []Member) (routeOutput, error) {
 	content = stripSupervisorJSONFence(content)
-	var output supervisorRouteOutput
+	var output routeOutput
 	if err := json.Unmarshal([]byte(content), &output); err != nil {
 		start := strings.Index(content, "{")
 		end := strings.LastIndex(content, "}")
 		if start < 0 || end <= start || json.Unmarshal([]byte(content[start:end+1]), &output) != nil {
-			return supervisorRouteOutput{}, fmt.Errorf("route must be valid JSON")
+			return routeOutput{}, fmt.Errorf("route must be valid JSON")
 		}
 	}
 	output.NextWorker = canonicalSupervisorRoute(output.NextWorker, members)
 	output.Task = strings.TrimSpace(output.Task)
 	output.Reason = strings.TrimSpace(output.Reason)
 	if output.NextWorker == "" {
-		return supervisorRouteOutput{}, fmt.Errorf("next_worker must name an available worker or %s", SupervisorRouteFinish)
+		return routeOutput{}, fmt.Errorf("next_worker must name an available worker or %s", SupervisorRouteFinish)
 	}
 	if output.NextWorker != SupervisorRouteFinish && output.Task == "" {
-		return supervisorRouteOutput{}, fmt.Errorf("task is required when routing to worker %q", output.NextWorker)
+		return routeOutput{}, fmt.Errorf("task is required when routing to worker %q", output.NextWorker)
 	}
 	return output, nil
 }
 
-func supervisorRouteSchema(members []SupervisorMember) state.JSONSchema {
+func routeSchema(members []Member) state.JSONSchema {
 	routes := make([]any, 0, len(members)+1)
 	for _, member := range members {
 		if memberID := strings.TrimSpace(member.ID); memberID != "" {
@@ -481,7 +481,7 @@ func supervisorRouteSchema(members []SupervisorMember) state.JSONSchema {
 	}
 }
 
-func canonicalSupervisorRoute(route string, members []SupervisorMember) string {
+func canonicalSupervisorRoute(route string, members []Member) string {
 	route = strings.TrimSpace(route)
 	switch strings.ToLower(route) {
 	case "finish", "done", "end", "__end__", SupervisorRouteFinish:
@@ -496,7 +496,7 @@ func canonicalSupervisorRoute(route string, members []SupervisorMember) string {
 	return ""
 }
 
-func normalizeSupervisorMember(member SupervisorMember) SupervisorMember {
+func normalizeSupervisorMember(member Member) Member {
 	member.ID = strings.TrimSpace(member.ID)
 	member.Name = strings.TrimSpace(member.Name)
 	member.Description = strings.TrimSpace(member.Description)
@@ -521,15 +521,15 @@ func stripSupervisorJSONFence(content string) string {
 	return strings.TrimSpace(strings.Join(lines, "\n"))
 }
 
-func supervisorHistoryFromValue(raw any) []supervisorcap.Turn {
+func historyFromValue(raw any) []supervisorcap.Turn {
 	return supervisorcap.DecodeHistory(raw)
 }
 
-func supervisorTurnMaps(turns []supervisorcap.Turn) []map[string]any {
+func turnMaps(turns []supervisorcap.Turn) []map[string]any {
 	return supervisorcap.EncodeHistory(turns)
 }
 
-func supervisorString(values map[string]any, key string) string {
+func stringValue(values map[string]any, key string) string {
 	if values == nil {
 		return ""
 	}
@@ -540,7 +540,7 @@ func supervisorString(values map[string]any, key string) string {
 	return strings.TrimSpace(fmt.Sprint(value))
 }
 
-func supervisorInt(values map[string]any, key string) int {
+func intValue(values map[string]any, key string) int {
 	if values == nil {
 		return 0
 	}

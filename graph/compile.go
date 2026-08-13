@@ -2,9 +2,7 @@ package graph
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
@@ -183,69 +181,4 @@ func (g *Graph) isParallelBranchTarget(nodeID string) bool {
 		}
 	}
 	return false
-}
-
-func stateDiffPatch(before, after *state.State) state.Patch {
-	beforeFlat := flattenStateForPatch(before)
-	afterFlat := flattenStateForPatch(after)
-	paths := make([]string, 0, len(beforeFlat)+len(afterFlat))
-	seen := map[string]struct{}{}
-	for path := range beforeFlat {
-		seen[path] = struct{}{}
-		paths = append(paths, path)
-	}
-	for path := range afterFlat {
-		if _, ok := seen[path]; ok {
-			continue
-		}
-		seen[path] = struct{}{}
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	ops := make([]state.PatchOp, 0, len(paths))
-	for _, path := range paths {
-		beforeValue, beforeOK := beforeFlat[path]
-		afterValue, afterOK := afterFlat[path]
-		if beforeOK && afterOK && jsonValuesEqual(beforeValue, afterValue) {
-			continue
-		}
-		parsed, err := state.ParsePath(path)
-		if err != nil {
-			continue
-		}
-		if !afterOK {
-			ops = append(ops, state.PatchOp{Kind: state.OpDelete, Path: parsed})
-			continue
-		}
-		ops = append(ops, state.PatchOp{Kind: state.OpSet, Path: parsed, Value: afterValue})
-	}
-	return state.NewPatch(ops...)
-}
-
-func flattenStateForPatch(current *state.State) map[string]any {
-	out := map[string]any{}
-	if current == nil {
-		return out
-	}
-	for section, value := range current.Export() {
-		flattenStateValueForPatch(out, section, value)
-	}
-	return out
-}
-
-func flattenStateValueForPatch(out map[string]any, path string, value any) {
-	mapped, ok := value.(map[string]any)
-	if !ok || len(mapped) == 0 {
-		out[path] = value
-		return
-	}
-	for key, item := range mapped {
-		flattenStateValueForPatch(out, path+"."+key, item)
-	}
-}
-
-func jsonValuesEqual(left, right any) bool {
-	leftBytes, leftErr := json.Marshal(left)
-	rightBytes, rightErr := json.Marshal(right)
-	return leftErr == nil && rightErr == nil && string(leftBytes) == string(rightBytes)
 }

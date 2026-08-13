@@ -16,16 +16,16 @@ type BreakpointHit struct {
 	HitAt        time.Time `json:"hit_at"`
 }
 
-type StateCodec interface {
+type Codec interface {
 	Name() string
 	Version() string
-	Encode(snapshot StateSnapshot) ([]byte, error)
-	Decode(data []byte) (StateSnapshot, error)
-	Diff(before, after StateSnapshot) ([]StateChange, error)
+	Encode(snapshot Snapshot) ([]byte, error)
+	Decode(data []byte) (Snapshot, error)
+	Diff(before, after Snapshot) ([]Change, error)
 }
 
 type RestoredStateSnapshot struct {
-	Snapshot  StateSnapshot `json:"snapshot"`
+	Snapshot  Snapshot      `json:"snapshot"`
 	Business  *State        `json:"business"`
 	Runtime   RuntimeState  `json:"runtime"`
 	Artifacts []ArtifactRef `json:"artifacts,omitempty"`
@@ -67,14 +67,14 @@ type ArtifactRef struct {
 
 const runtimeArtifactsKey = "artifacts"
 
-func SnapshotFromStateWithRuntime(state *State, runtime RuntimeState, artifacts []ArtifactRef) (StateSnapshot, error) {
-	snapshot, err := SnapshotFromState(state)
+func SnapshotFromStateWithRuntime(current *State, runtime RuntimeState, artifacts []ArtifactRef) (Snapshot, error) {
+	snapshot, err := SnapshotFromState(current)
 	if err != nil {
-		return StateSnapshot{}, err
+		return Snapshot{}, err
 	}
 	runtimeMap, err := runtimeStateToMap(runtime)
 	if err != nil {
-		return StateSnapshot{}, err
+		return Snapshot{}, err
 	}
 	if len(artifacts) > 0 {
 		runtimeMap[runtimeArtifactsKey] = CloneArtifactRefs(artifacts)
@@ -83,8 +83,8 @@ func SnapshotFromStateWithRuntime(state *State, runtime RuntimeState, artifacts 
 	return snapshot, nil
 }
 
-func RestoreStateSnapshot(snapshot StateSnapshot) (RestoredStateSnapshot, error) {
-	state, err := StateFromSnapshot(snapshot)
+func RestoreStateSnapshot(snapshot Snapshot) (RestoredStateSnapshot, error) {
+	restored, err := FromSnapshot(snapshot)
 	if err != nil {
 		return RestoredStateSnapshot{}, err
 	}
@@ -94,7 +94,7 @@ func RestoreStateSnapshot(snapshot StateSnapshot) (RestoredStateSnapshot, error)
 	}
 	return RestoredStateSnapshot{
 		Snapshot:  snapshot,
-		Business:  state,
+		Business:  restored,
 		Runtime:   runtimeState,
 		Artifacts: artifacts,
 	}, nil
@@ -120,26 +120,26 @@ func PrepareContinuationState(base *State, input *State) (*State, error) {
 	return MergeResumeInput(base, input)
 }
 
-func SummaryFields(state *State) []zap.Field {
+func SummaryFields(current *State) []zap.Field {
 	return []zap.Field{
-		zap.Int("state_keys", CountKeys(state)),
-		zap.Int("state_scopes", CountScopes(state)),
+		zap.Int("state_keys", CountKeys(current)),
+		zap.Int("state_scopes", CountScopes(current)),
 	}
 }
 
-func CountKeys(state *State) int {
-	if state == nil {
+func CountKeys(current *State) int {
+	if current == nil {
 		return 0
 	}
-	shared, _ := state.root[SectionShared].(map[string]any)
+	shared, _ := current.root[SectionShared].(map[string]any)
 	return len(shared)
 }
 
-func CountScopes(state *State) int {
-	if state == nil {
+func CountScopes(current *State) int {
+	if current == nil {
 		return 0
 	}
-	scopes, _ := state.root[SectionScopes].(map[string]any)
+	scopes, _ := current.root[SectionScopes].(map[string]any)
 	return len(scopes)
 }
 
@@ -155,36 +155,36 @@ func CloneArtifactRefs(artifacts []ArtifactRef) []ArtifactRef {
 	return cloned
 }
 
-func ReadPath(state *State, path string) (any, bool) {
+func ReadPath(current *State, path string) (any, bool) {
 	parsed, err := ParsePath(path)
 	if err != nil {
 		return nil, false
 	}
-	return state.read(parsed)
+	return current.read(parsed)
 }
 
-func SetPath(state *State, path string, value any) error {
+func SetPath(current *State, path string, value any) error {
 	parsed, err := ParsePath(path)
 	if err != nil {
 		return err
 	}
-	return state.set(parsed, value)
+	return current.set(parsed, value)
 }
 
-func DeletePath(state *State, path string) error {
+func DeletePath(current *State, path string) error {
 	parsed, err := ParsePath(path)
 	if err != nil {
 		return err
 	}
-	return state.delete(parsed)
+	return current.delete(parsed)
 }
 
-func MergePath(state *State, path string, value map[string]any) error {
+func MergePath(current *State, path string, value map[string]any) error {
 	parsed, err := ParsePath(path)
 	if err != nil {
 		return err
 	}
-	return state.merge(parsed, value)
+	return current.merge(parsed, value)
 }
 
 func ResolveStateValue(root any, segments []string) (any, bool) {

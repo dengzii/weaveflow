@@ -69,7 +69,7 @@ type Options struct {
 
 func New(options *Options) Manager {
 	normalized := normalizeOptions(options)
-	return &memoryManager{
+	return &manager{
 		options: normalized,
 		repo:    normalized.Repository,
 	}

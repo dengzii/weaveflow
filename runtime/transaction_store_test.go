@@ -11,24 +11,24 @@ import (
 	"testing"
 )
 
-type runtimeCommitReader interface {
-	RuntimeTransactionStore
+type commitReader interface {
+	TransactionStore
 	GetRun(context.Context, string) (RunRecord, error)
 	ListEvents(string) ([]Event, error)
 }
 
 type recordingRuntimeTransactionStore struct {
-	commits []RuntimeCommit
+	commits []Commit
 }
 
-func (store *recordingRuntimeTransactionStore) Commit(_ context.Context, commit RuntimeCommit) (RuntimeCommitResult, error) {
+func (store *recordingRuntimeTransactionStore) Commit(_ context.Context, commit Commit) (CommitResult, error) {
 	store.commits = append(store.commits, commit)
 	if commit.Run == nil {
-		return RuntimeCommitResult{}, nil
+		return CommitResult{}, nil
 	}
 	run := commit.Run.Run
 	run.Revision++
-	return RuntimeCommitResult{Run: &run}, nil
+	return CommitResult{Run: &run}, nil
 }
 
 func TestMemoryRuntimeStoreCommitRejectsStaleRunRevision(t *testing.T) {
@@ -43,7 +43,7 @@ func TestMemoryRuntimeStoreCommitRejectsStaleRunRevision(t *testing.T) {
 
 	firstUpdate := original
 	firstUpdate.Status = RunStatusRunning
-	firstResult, err := runtimeStore.Commit(ctx, RuntimeCommit{Run: &RunWrite{Mode: RunWriteUpdate, Run: firstUpdate}})
+	firstResult, err := runtimeStore.Commit(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: firstUpdate}})
 	if err != nil {
 		t.Fatalf("first Commit(): %v", err)
 	}
@@ -53,7 +53,7 @@ func TestMemoryRuntimeStoreCommitRejectsStaleRunRevision(t *testing.T) {
 
 	staleUpdate := original
 	staleUpdate.Status = RunStatusCompleted
-	if _, err := runtimeStore.Commit(ctx, RuntimeCommit{Run: &RunWrite{Mode: RunWriteUpdate, Run: staleUpdate}}); !errors.Is(err, ErrRunRevisionConflict) {
+	if _, err := runtimeStore.Commit(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: staleUpdate}}); !errors.Is(err, ErrRunRevisionConflict) {
 		t.Fatalf("stale Commit() error = %v, want revision conflict", err)
 	}
 	persisted, err := runtimeStore.GetRun(ctx, original.RunID)
@@ -70,10 +70,10 @@ func TestRuntimeStoreCommitCreatesRunWithEventsAtomically(t *testing.T) {
 
 	testCases := []struct {
 		name string
-		new  func(*testing.T) runtimeCommitReader
+		new  func(*testing.T) commitReader
 	}{
-		{name: "memory", new: func(*testing.T) runtimeCommitReader { return NewMemoryRuntimeStore() }},
-		{name: "file", new: func(t *testing.T) runtimeCommitReader {
+		{name: "memory", new: func(*testing.T) commitReader { return NewMemoryRuntimeStore() }},
+		{name: "file", new: func(t *testing.T) commitReader {
 			store, err := NewFileRuntimeStore(t.TempDir())
 			if err != nil {
 				t.Fatalf("NewFileRuntimeStore(): %v", err)
@@ -92,7 +92,7 @@ func TestRuntimeStoreCommitCreatesRunWithEventsAtomically(t *testing.T) {
 				{ID: "event-run-created", RunID: run.RunID, Type: EventRunCreated},
 				{ID: "event-run-started", RunID: run.RunID, Type: EventRunStarted},
 			}
-			result, err := store.Commit(context.Background(), RuntimeCommit{
+			result, err := store.Commit(context.Background(), Commit{
 				Run:    &RunWrite{Mode: RunWriteCreate, Run: run},
 				Events: events,
 			})
@@ -117,7 +117,7 @@ func TestRuntimeStoreCommitCreatesRunWithEventsAtomically(t *testing.T) {
 				t.Fatalf("persisted events = %#v", persistedEvents)
 			}
 
-			duplicate := RuntimeCommit{
+			duplicate := Commit{
 				Run:    &RunWrite{Mode: RunWriteCreate, Run: run},
 				Events: []Event{{ID: "event-duplicate", RunID: run.RunID, Type: EventRunFailed}},
 			}
@@ -208,10 +208,10 @@ func TestRuntimeStoreCommitRejectsStepWithoutRun(t *testing.T) {
 
 	testCases := []struct {
 		name string
-		new  func(*testing.T) runtimeCommitReader
+		new  func(*testing.T) commitReader
 	}{
-		{name: "memory", new: func(*testing.T) runtimeCommitReader { return NewMemoryRuntimeStore() }},
-		{name: "file", new: func(t *testing.T) runtimeCommitReader {
+		{name: "memory", new: func(*testing.T) commitReader { return NewMemoryRuntimeStore() }},
+		{name: "file", new: func(t *testing.T) commitReader {
 			store, err := NewFileRuntimeStore(t.TempDir())
 			if err != nil {
 				t.Fatalf("NewFileRuntimeStore(): %v", err)
@@ -226,7 +226,7 @@ func TestRuntimeStoreCommitRejectsStepWithoutRun(t *testing.T) {
 
 			store := testCase.new(t)
 			step := StepRecord{RunID: "missing-run", StepID: "orphan-step", Status: StepStatusRunning}
-			_, err := store.Commit(context.Background(), RuntimeCommit{
+			_, err := store.Commit(context.Background(), Commit{
 				Steps: []StepWrite{{Mode: StepWriteAppend, Step: step}},
 			})
 			if !errors.Is(err, ErrRunnerRecordNotFound) {
@@ -258,7 +258,7 @@ func TestFileRuntimeStoreCommitRejectsStepMetadataIdentityMismatch(t *testing.T)
 	}
 
 	step.Status = StepStatusSucceeded
-	_, err = runtimeStore.Commit(context.Background(), RuntimeCommit{
+	_, err = runtimeStore.Commit(context.Background(), Commit{
 		Steps: []StepWrite{{Mode: StepWriteUpdate, Step: step}},
 	})
 	if err == nil || !strings.Contains(err.Error(), "metadata identity mismatch") {
@@ -283,7 +283,7 @@ func TestMemoryRuntimeStoreCommitRollsBackEveryRecordOnLateFailure(t *testing.T)
 		RunID: original.RunID, CheckpointID: "checkpoint-memory-atomic", StepID: step.StepID,
 		Stage: CheckpointAfterNode,
 	}
-	commit := RuntimeCommit{
+	commit := Commit{
 		Run:         &RunWrite{Mode: RunWriteUpdate, Run: updated},
 		Steps:       []StepWrite{{Mode: StepWriteAppend, Step: step}},
 		Checkpoints: []CheckpointWrite{{Record: checkpoint, Payload: []byte("checkpoint")}},
@@ -378,7 +378,7 @@ func TestFileRuntimeStoreRecoveryReplaysCommittedTransaction(t *testing.T) {
 	}
 }
 
-func prepareFileRuntimeTransaction(t *testing.T, baseDir string) (*FileRuntimeStore, RunRecord, RuntimeCommit) {
+func prepareFileRuntimeTransaction(t *testing.T, baseDir string) (*FileRuntimeStore, RunRecord, Commit) {
 	t.Helper()
 
 	runtimeStore, err := NewFileRuntimeStore(baseDir)
@@ -396,7 +396,7 @@ func prepareFileRuntimeTransaction(t *testing.T, baseDir string) (*FileRuntimeSt
 		RunID: original.RunID, CheckpointID: "checkpoint-file-transaction", StepID: step.StepID,
 		Stage: CheckpointAfterNode,
 	}
-	commit := RuntimeCommit{
+	commit := Commit{
 		Run:         &RunWrite{Mode: RunWriteUpdate, Run: updated},
 		Steps:       []StepWrite{{Mode: StepWriteAppend, Step: step}},
 		Checkpoints: []CheckpointWrite{{Record: checkpoint, Payload: []byte("checkpoint payload")}},
@@ -417,7 +417,7 @@ func persistFileRuntimeJournal(t *testing.T, runtimeStore *FileRuntimeStore, jou
 	return journalPath
 }
 
-func assertFileRuntimeTransactionRecords(t *testing.T, runtimeStore *FileRuntimeStore, commit RuntimeCommit, wantPresent bool) {
+func assertFileRuntimeTransactionRecords(t *testing.T, runtimeStore *FileRuntimeStore, commit Commit, wantPresent bool) {
 	t.Helper()
 	ctx := context.Background()
 	step := commit.Steps[0].Step
@@ -459,12 +459,12 @@ func TestFileRuntimeStoreCommitRejectsInvalidIDsWithoutWrites(t *testing.T) {
 
 	testCases := []struct {
 		name   string
-		mutate func(*RuntimeCommit)
+		mutate func(*Commit)
 	}{
-		{name: "run", mutate: func(commit *RuntimeCommit) { commit.Run.Run.RunID = "../invalid-run" }},
-		{name: "step", mutate: func(commit *RuntimeCommit) { commit.Steps[0].Step.StepID = "../invalid-step" }},
-		{name: "checkpoint", mutate: func(commit *RuntimeCommit) { commit.Checkpoints[0].Record.CheckpointID = "../invalid-checkpoint" }},
-		{name: "event", mutate: func(commit *RuntimeCommit) { commit.Events[0].ID = "../invalid-event" }},
+		{name: "run", mutate: func(commit *Commit) { commit.Run.Run.RunID = "../invalid-run" }},
+		{name: "step", mutate: func(commit *Commit) { commit.Steps[0].Step.StepID = "../invalid-step" }},
+		{name: "checkpoint", mutate: func(commit *Commit) { commit.Checkpoints[0].Record.CheckpointID = "../invalid-checkpoint" }},
+		{name: "event", mutate: func(commit *Commit) { commit.Events[0].ID = "../invalid-event" }},
 	}
 	for _, testCase := range testCases {
 		testCase := testCase

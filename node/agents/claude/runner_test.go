@@ -20,7 +20,7 @@ func TestClaudeArgumentsUseNonInteractiveRestrictedProtocol(t *testing.T) {
 			}},
 		},
 	}
-	got := claudeArguments(config)
+	got := arguments(config)
 	want := []string{
 		"--bare",
 		"--print",
@@ -54,7 +54,7 @@ func TestClaudeArgumentsEnableSandboxForWritableWorkspace(t *testing.T) {
 			}},
 		},
 	}
-	arguments := strings.Join(claudeArguments(config), " ")
+	arguments := strings.Join(arguments(config), " ")
 	if !strings.Contains(arguments, `--settings {"sandbox":{"enabled":true,"autoAllowBashIfSandboxed":false}}`) {
 		t.Fatalf("arguments = %s", arguments)
 	}

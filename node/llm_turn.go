@@ -34,17 +34,17 @@ type LLMTurnNode struct {
 	OutputPath       state.Path
 }
 
-func NewLLMTurnNode(options ...NodeOption) *LLMTurnNode {
-	node := &LLMTurnNode{
+func NewLLMTurnNode(options ...Option) *LLMTurnNode {
+	target := &LLMTurnNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeLLMTurn,
 			Description: "Run one LLM inference turn against a bound conversation.",
 		}),
 		ReasoningEffort: defaultReasoningEffort,
 	}
-	applyNodeOptions(&node.Base, options)
-	ApplyDefaultStatePaths(node)
-	return node
+	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
+	return target
 }
 
 func (n *LLMTurnNode) Validate() error {

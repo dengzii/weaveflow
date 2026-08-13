@@ -19,7 +19,7 @@ const defaultPlanSynthesisSystemPrompt = `Synthesize the final user-facing answe
 Use successful evidence, acknowledge material failures when necessary, and do not invent missing facts.
 Answer directly in the same language as the objective.`
 
-type PlanSynthesisNode struct {
+type SynthesisNode struct {
 	core.NodeBase
 	ModelID      string
 	SystemPrompt string
@@ -27,8 +27,8 @@ type PlanSynthesisNode struct {
 	ResultPath   state.Path
 }
 
-func NewPlanSynthesisNode(options ...core.NodeOption) *PlanSynthesisNode {
-	target := &PlanSynthesisNode{
+func NewSynthesisNode(options ...core.NodeOption) *SynthesisNode {
+	target := &SynthesisNode{
 		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypePlanSynthesis,
 			Description: "Synthesize plan results into the final answer.",
@@ -40,7 +40,7 @@ func NewPlanSynthesisNode(options ...core.NodeOption) *PlanSynthesisNode {
 	return target
 }
 
-func (n *PlanSynthesisNode) Validate() error {
+func (n *SynthesisNode) Validate() error {
 	if n == nil {
 		return errors.New("plan synthesis node is nil")
 	}
@@ -53,14 +53,14 @@ func (n *PlanSynthesisNode) Validate() error {
 	return nil
 }
 
-func (n *PlanSynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (n *SynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return newGraphNodeSpec(n.NodeBase, NodeTypePlanSynthesis, map[string]any{
 		"model_id":      n.ModelID,
 		"system_prompt": n.SystemPrompt,
 	}, map[string]state.Path{"plan": n.PlanPath, "result": n.ResultPath})
 }
 
-func PlanSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
+func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypePlanSynthesis,
@@ -98,7 +98,7 @@ func PlanSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanSynthesisNode(core.WithID(spec.ID))
+			target := NewSynthesisNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if _, exists := spec.Config["system_prompt"]; exists {
@@ -111,11 +111,11 @@ func PlanSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanSynthesisNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *SynthesisNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	return core.NodeResult{}, n.execute(ctx, access)
 }
 
-func (n *PlanSynthesisNode) execute(ctx core.Context, access *state.Access) error {
+func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("plan synthesis node: model %q not available", effectiveModelID(n.ModelID))
@@ -124,9 +124,9 @@ func (n *PlanSynthesisNode) execute(ctx core.Context, access *state.Access) erro
 	if err != nil {
 		return err
 	}
-	plan := planner.Value()
-	objective := planString(plan[planFieldObjective])
-	steps := planStepsFromValue(plan[planFieldSteps])
+	planValue := planner.Value()
+	objective := stringValue(planValue[planFieldObjective])
+	steps := stepsFromValue(planValue[planFieldSteps])
 	if objective == "" {
 		return errors.New("plan synthesis node: objective is empty")
 	}
@@ -137,7 +137,7 @@ func (n *PlanSynthesisNode) execute(ctx core.Context, access *state.Access) erro
 		Mode:    llms.ModelModeChat,
 		Messages: []llms.MessageContent{
 			llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
-			llms.TextParts(llms.ChatMessageTypeHuman, buildPlanSynthesisPrompt(objective, planString(plan[planFieldSummary]), steps)),
+			llms.TextParts(llms.ChatMessageTypeHuman, buildPlanSynthesisPrompt(objective, stringValue(planValue[planFieldSummary]), steps)),
 		},
 		Thinking:    llms.ThinkingModeLow,
 		Temperature: &temperature,
@@ -161,7 +161,7 @@ func (n *PlanSynthesisNode) execute(ctx core.Context, access *state.Access) erro
 	return planner.SetField(planFieldStatus, PlanStatusDone)
 }
 
-func (n *PlanSynthesisNode) effectiveSystemPrompt() string {
+func (n *SynthesisNode) effectiveSystemPrompt() string {
 	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
 		return defaultPlanSynthesisSystemPrompt
 	}
@@ -180,10 +180,10 @@ func buildPlanSynthesisPrompt(objective string, summary string, steps []plancap.
 	for _, step := range steps {
 		fmt.Fprintf(&builder, "- [%s] %s\n  status: %s\n", step.ID, step.Title, step.Status)
 		if step.Result != "" {
-			fmt.Fprintf(&builder, "  result: %s\n", planTextLimit(step.Result, 6000))
+			fmt.Fprintf(&builder, "  result: %s\n", textLimit(step.Result, 6000))
 		}
 		if step.Error != "" {
-			fmt.Fprintf(&builder, "  error: %s\n", planTextLimit(step.Error, 1500))
+			fmt.Fprintf(&builder, "  error: %s\n", textLimit(step.Error, 1500))
 		}
 	}
 	builder.WriteString("\nProduce the final answer now.")

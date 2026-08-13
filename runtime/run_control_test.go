@@ -33,8 +33,8 @@ type failingRuntimeTransactionStore struct {
 	err error
 }
 
-func (s failingRuntimeTransactionStore) Commit(context.Context, RuntimeCommit) (RuntimeCommitResult, error) {
-	return RuntimeCommitResult{}, s.err
+func (s failingRuntimeTransactionStore) Commit(context.Context, Commit) (CommitResult, error) {
+	return CommitResult{}, s.err
 }
 
 type runControlRecordingDeleter struct {

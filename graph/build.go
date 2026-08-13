@@ -47,30 +47,30 @@ func (builder *Builder) build(def dsl.GraphDefinition, instance *dsl.GraphInstan
 	}
 	ctx.ChildRunBuilder = builder.makeChildRunBuilder(ctx, buildPath)
 
-	graph := NewGraph(builder.registry)
-	graph.setDefinitionMetadata(def)
-	if err := graph.applyDefinitionExecutionPolicy(def); err != nil {
+	resultGraph := NewGraph(builder.registry)
+	resultGraph.setDefinitionMetadata(def)
+	if err := resultGraph.applyDefinitionExecutionPolicy(def); err != nil {
 		return nil, err
 	}
 	bindings, err := graphbuild.ResolveGraphBindings(def, builder.registry)
 	if err != nil {
 		return nil, err
 	}
-	graph.setInitialStatePaths(bindings.InitialStatePaths)
-	graph.setStateSchemas(bindings.StateSchemas)
-	graph.setNodeContracts(bindings.NodeContracts)
-	graph.setConditionContracts(bindings.ConditionContractsBySource)
-	graph.setStateBindingSemantics(graphbuild.StateBindingSemantics(bindings))
+	resultGraph.setInitialStatePaths(bindings.InitialStatePaths)
+	resultGraph.setStateSchemas(bindings.StateSchemas)
+	resultGraph.setNodeContracts(bindings.NodeContracts)
+	resultGraph.setConditionContracts(bindings.ConditionContractsBySource)
+	resultGraph.setStateBindingSemantics(graphbuild.StateBindingSemantics(bindings))
 
-	if err := graphbuild.PopulateGraph(graph, builder.registry, def, ctx, bindings); err != nil {
+	if err := graphbuild.PopulateGraph(resultGraph, builder.registry, def, ctx, bindings); err != nil {
 		return nil, err
 	}
-	if err := graph.Validate(); err != nil {
-		ctx.EmitContractDiagnostics(graph.ContractDiagnostics())
+	if err := resultGraph.Validate(); err != nil {
+		ctx.EmitContractDiagnostics(resultGraph.ContractDiagnostics())
 		return nil, err
 	}
-	ctx.EmitContractDiagnostics(graph.ContractDiagnostics())
-	return graph, nil
+	ctx.EmitContractDiagnostics(resultGraph.ContractDiagnostics())
+	return resultGraph, nil
 }
 
 func (builder *Builder) makeChildRunBuilder(parentCtx *registry.BuildContext, buildPath []string) registry.ChildRunBuilder {

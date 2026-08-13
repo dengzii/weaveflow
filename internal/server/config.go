@@ -38,7 +38,7 @@ type Config struct {
 	RunDeleter      runtime.RunDeleter
 	RunRetention    *runtime.RunRetentionPolicy
 	RetentionAudit  runtime.RetentionAuditSink
-	Codec           state.StateCodec
+	Codec           state.Codec
 
 	GraphID           string
 	GraphVersion      string

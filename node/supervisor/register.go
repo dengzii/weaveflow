@@ -12,9 +12,9 @@ func RegisterNodeTypes(target *registry.Registry) error {
 		return fmt.Errorf("registry is nil")
 	}
 	definitions := []registry.NodeTypeDefinition{
-		SupervisorNodeTypeDefinition(),
-		SupervisorWorkerNodeTypeDefinition(),
-		SupervisorSynthesisNodeTypeDefinition(),
+		NodeTypeDefinition(),
+		WorkerNodeTypeDefinition(),
+		SynthesisNodeTypeDefinition(),
 	}
 	for _, definition := range definitions {
 		if err := target.RegisterNodeTypeInGroup(basenode.NodeGroupOrchestration, definition); err != nil {

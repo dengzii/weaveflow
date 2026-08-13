@@ -13,7 +13,7 @@ func NewInMemoryRepository() Repository {
 	return &inMemoryRepository{}
 }
 
-func (r *inMemoryRepository) Store(memory []Entry) error {
+func (r *inMemoryRepository) Store(entries []Entry) error {
 	if r == nil {
 		return nil
 	}
@@ -21,7 +21,7 @@ func (r *inMemoryRepository) Store(memory []Entry) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	r.items = cloneEntries(memory)
+	r.items = cloneEntries(entries)
 	return nil
 }
 

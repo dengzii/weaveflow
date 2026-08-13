@@ -60,13 +60,13 @@ type resolvedClaudeRun struct {
 	resolvedClaudeRunConfig
 }
 
-type claudeOutputRead struct {
-	parser    *claudeEventParser
+type outputResult struct {
+	parser    *eventParser
 	err       error
 	truncated bool
 }
 
-type claudeStderrRead struct {
+type stderrResult struct {
 	text      string
 	err       error
 	truncated bool
@@ -159,7 +159,7 @@ func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunRe
 	if err != nil {
 		return RunResult{ExitCode: -1}, err
 	}
-	environment, secretValues, err := claudeEnvironment(runner.config)
+	environment, secretValues, err := environment(runner.config)
 	if err != nil {
 		return RunResult{ExitCode: -1}, fmt.Errorf("Claude environment: %w", err)
 	}
@@ -223,7 +223,7 @@ func runClaudeProcess(ctx context.Context, config resolvedClaudeRun, request Run
 	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(config.TimeoutSeconds)*time.Second)
 	defer cancelRun()
 
-	command := exec.CommandContext(runCtx, config.executablePath, claudeArguments(config)...)
+	command := exec.CommandContext(runCtx, config.executablePath, arguments(config)...)
 	command.Dir = config.workspacePath
 	command.Env = append([]string(nil), config.environment...)
 	command.Stdin = strings.NewReader(request.Prompt)
@@ -253,8 +253,8 @@ func runClaudeProcess(ctx context.Context, config resolvedClaudeRun, request Run
 		return result, fmt.Errorf("attach Claude process tree: %w", err)
 	}
 
-	stdoutResult := make(chan claudeOutputRead, 1)
-	stderrResult := make(chan claudeStderrRead, 1)
+	stdoutResult := make(chan outputResult, 1)
+	stderrResults := make(chan stderrResult, 1)
 	onChunk := request.OnChunk
 	if onChunk != nil {
 		onChunk = func(chunk Chunk) error {
@@ -274,11 +274,11 @@ func runClaudeProcess(ctx context.Context, config resolvedClaudeRun, request Run
 		if read.err != nil {
 			cancelRun()
 		}
-		stderrResult <- read
+		stderrResults <- read
 	}()
 
 	outputRead := <-stdoutResult
-	stderrRead := <-stderrResult
+	stderrRead := <-stderrResults
 	waitErr := command.Wait()
 	result.Duration = time.Since(startedAt)
 	if command.ProcessState != nil {
@@ -328,7 +328,7 @@ func runClaudeProcess(ctx context.Context, config resolvedClaudeRun, request Run
 	return result, nil
 }
 
-func claudeArguments(config resolvedClaudeRun) []string {
+func arguments(config resolvedClaudeRun) []string {
 	arguments := []string{
 		"--bare",
 		"--print",
@@ -359,7 +359,7 @@ func claudeArguments(config resolvedClaudeRun) []string {
 	return arguments
 }
 
-func readClaudeOutput(reader io.Reader, maxBytes int64, onChunk func(Chunk) error) claudeOutputRead {
+func readClaudeOutput(reader io.Reader, maxBytes int64, onChunk func(Chunk) error) outputResult {
 	parser := newClaudeEventParser(onChunk)
 	scanner := bufio.NewScanner(reader)
 	maximumLineBytes := int64(maxClaudeEventBytes)
@@ -375,19 +375,19 @@ func readClaudeOutput(reader io.Reader, maxBytes int64, onChunk func(Chunk) erro
 		line := scanner.Bytes()
 		total += int64(len(line)) + 1
 		if total > maxBytes {
-			return claudeOutputRead{parser: parser, err: errClaudeOutputLimit, truncated: true}
+			return outputResult{parser: parser, err: errClaudeOutputLimit, truncated: true}
 		}
 		if err := parser.parse(line); err != nil {
-			return claudeOutputRead{parser: parser, err: err}
+			return outputResult{parser: parser, err: err}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		if strings.Contains(err.Error(), "token too long") {
-			return claudeOutputRead{parser: parser, err: errClaudeOutputLimit, truncated: true}
+			return outputResult{parser: parser, err: errClaudeOutputLimit, truncated: true}
 		}
-		return claudeOutputRead{parser: parser, err: fmt.Errorf("read Claude stream-json: %w", err)}
+		return outputResult{parser: parser, err: fmt.Errorf("read Claude stream-json: %w", err)}
 	}
-	return claudeOutputRead{parser: parser}
+	return outputResult{parser: parser}
 }
 
 func redactedClaudeError(redactor secretRedactor, err error) error {
@@ -397,16 +397,16 @@ func redactedClaudeError(redactor secretRedactor, err error) error {
 	return errors.New(redactor.text(err.Error()))
 }
 
-func readClaudeStderr(reader io.Reader, maxBytes int64) claudeStderrRead {
+func readClaudeStderr(reader io.Reader, maxBytes int64) stderrResult {
 	limited := &io.LimitedReader{R: reader, N: maxBytes + 1}
 	data, err := io.ReadAll(limited)
 	if err != nil {
-		return claudeStderrRead{err: fmt.Errorf("read Claude stderr: %w", err)}
+		return stderrResult{err: fmt.Errorf("read Claude stderr: %w", err)}
 	}
 	if int64(len(data)) > maxBytes {
-		return claudeStderrRead{text: string(data[:maxBytes]), err: errClaudeOutputLimit, truncated: true}
+		return stderrResult{text: string(data[:maxBytes]), err: errClaudeOutputLimit, truncated: true}
 	}
-	return claudeStderrRead{text: string(data)}
+	return stderrResult{text: string(data)}
 }
 
 func redactClaudeEvents(events []json.RawMessage, redactor secretRedactor) []json.RawMessage {

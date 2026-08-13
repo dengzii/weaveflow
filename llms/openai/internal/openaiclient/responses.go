@@ -140,7 +140,7 @@ func (c *Client) CreateResponse(ctx context.Context, request *ResponseRequest) (
 		return nil, err
 	}
 	if response.Error != nil {
-		return nil, fmt.Errorf("responses API returned %v: %s", response.Error.Code, response.Error.Message)
+		return nil, fmt.Errorf("Responses API returned %v: %s", response.Error.Code, response.Error.Message)
 	}
 	return response, nil
 }
@@ -172,7 +172,7 @@ func (c *Client) createResponse(ctx context.Context, payload *ResponseRequest) (
 
 	var response Response
 	if err := json.NewDecoder(httpResponse.Body).Decode(&response); err != nil {
-		return nil, fmt.Errorf("decode responses API response: %w", err)
+		return nil, fmt.Errorf("decode Responses API response: %w", err)
 	}
 	return &response, nil
 }

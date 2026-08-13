@@ -61,13 +61,13 @@ type resolvedCodexRun struct {
 	resolvedCodexRunConfig
 }
 
-type codexOutputRead struct {
-	parser    *codexEventParser
+type outputResult struct {
+	parser    *eventParser
 	err       error
 	truncated bool
 }
 
-type codexStderrRead struct {
+type stderrResult struct {
 	text      string
 	err       error
 	truncated bool
@@ -110,11 +110,11 @@ func (runner *ProcessRunner) ensureReady() (string, error) {
 func validateCodexCapabilities(executable string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	rootHelp, err := codexHelp(ctx, executable, "--help")
+	rootHelp, err := help(ctx, executable, "--help")
 	if err != nil {
 		return err
 	}
-	execHelp, err := codexHelp(ctx, executable, "exec", "--help")
+	execHelp, err := help(ctx, executable, "exec", "--help")
 	if err != nil {
 		return err
 	}
@@ -135,7 +135,7 @@ func validateCodexHelp(rootHelp, execHelp string) error {
 	return nil
 }
 
-func codexHelp(ctx context.Context, executable string, arguments ...string) (string, error) {
+func help(ctx context.Context, executable string, arguments ...string) (string, error) {
 	command := exec.CommandContext(ctx, executable, arguments...)
 	output, err := command.Output()
 	if err != nil {
@@ -180,7 +180,7 @@ func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunRe
 	if err != nil {
 		return RunResult{ModelID: modelID, ExitCode: -1}, err
 	}
-	environment, secretValues, err := codexEnvironment(ctx, modelConfig.APIKey)
+	environment, secretValues, err := environment(ctx, modelConfig.APIKey)
 	if err != nil {
 		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex environment: %w", err)
 	}
@@ -253,7 +253,7 @@ func runCodexProcess(ctx context.Context, config resolvedCodexRun, request RunRe
 	runCtx, cancelRun := context.WithTimeout(ctx, time.Duration(config.TimeoutSeconds)*time.Second)
 	defer cancelRun()
 
-	command := exec.CommandContext(runCtx, config.executablePath, codexArguments(config)...)
+	command := exec.CommandContext(runCtx, config.executablePath, arguments(config)...)
 	command.Dir = config.workspacePath
 	command.Env = append([]string(nil), config.environment...)
 	command.Stdin = strings.NewReader(request.Prompt)
@@ -283,8 +283,8 @@ func runCodexProcess(ctx context.Context, config resolvedCodexRun, request RunRe
 		return result, fmt.Errorf("attach Codex process tree: %w", err)
 	}
 
-	stdoutResult := make(chan codexOutputRead, 1)
-	stderrResult := make(chan codexStderrRead, 1)
+	stdoutResult := make(chan outputResult, 1)
+	stderrResults := make(chan stderrResult, 1)
 	go func() {
 		read := readCodexOutput(stdout, config.modelID, config.MaxStdoutBytes, request.OnChunk)
 		if read.err != nil {
@@ -297,11 +297,11 @@ func runCodexProcess(ctx context.Context, config resolvedCodexRun, request RunRe
 		if read.err != nil {
 			cancelRun()
 		}
-		stderrResult <- read
+		stderrResults <- read
 	}()
 
 	outputRead := <-stdoutResult
-	stderrRead := <-stderrResult
+	stderrRead := <-stderrResults
 	waitErr := command.Wait()
 	result.Duration = time.Since(startedAt)
 	if command.ProcessState != nil {
@@ -350,7 +350,7 @@ func runCodexProcess(ctx context.Context, config resolvedCodexRun, request RunRe
 	return result, nil
 }
 
-func codexArguments(config resolvedCodexRun) []string {
+func arguments(config resolvedCodexRun) []string {
 	arguments := []string{"--ask-for-approval", "never"}
 	if config.baseURL != "" {
 		arguments = append(arguments, "-c", "openai_base_url="+strconv.Quote(config.baseURL))
@@ -378,7 +378,7 @@ func (config resolvedCodexRun) sandbox() string {
 	return "read-only"
 }
 
-func readCodexOutput(reader io.Reader, modelID string, maxBytes int64, onChunk func(Chunk) error) codexOutputRead {
+func readCodexOutput(reader io.Reader, modelID string, maxBytes int64, onChunk func(Chunk) error) outputResult {
 	parser := newCodexEventParser(modelID, onChunk)
 	scanner := bufio.NewScanner(reader)
 	maximumLineBytes := int64(maxCodexEventBytes)
@@ -394,19 +394,19 @@ func readCodexOutput(reader io.Reader, modelID string, maxBytes int64, onChunk f
 		line := scanner.Bytes()
 		total += int64(len(line)) + 1
 		if total > maxBytes {
-			return codexOutputRead{parser: parser, err: errCodexOutputLimit, truncated: true}
+			return outputResult{parser: parser, err: errCodexOutputLimit, truncated: true}
 		}
 		if err := parser.parse(line); err != nil {
-			return codexOutputRead{parser: parser, err: err}
+			return outputResult{parser: parser, err: err}
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		if strings.Contains(err.Error(), "token too long") {
-			return codexOutputRead{parser: parser, err: errCodexOutputLimit, truncated: true}
+			return outputResult{parser: parser, err: errCodexOutputLimit, truncated: true}
 		}
-		return codexOutputRead{parser: parser, err: fmt.Errorf("read Codex JSONL: %w", err)}
+		return outputResult{parser: parser, err: fmt.Errorf("read Codex JSONL: %w", err)}
 	}
-	return codexOutputRead{parser: parser}
+	return outputResult{parser: parser}
 }
 
 func redactedCodexError(redactor secretRedactor, err error) error {
@@ -416,16 +416,16 @@ func redactedCodexError(redactor secretRedactor, err error) error {
 	return errors.New(redactor.text(err.Error()))
 }
 
-func readCodexStderr(reader io.Reader, maxBytes int64) codexStderrRead {
+func readCodexStderr(reader io.Reader, maxBytes int64) stderrResult {
 	limited := &io.LimitedReader{R: reader, N: maxBytes + 1}
 	data, err := io.ReadAll(limited)
 	if err != nil {
-		return codexStderrRead{err: fmt.Errorf("read Codex stderr: %w", err)}
+		return stderrResult{err: fmt.Errorf("read Codex stderr: %w", err)}
 	}
 	if int64(len(data)) > maxBytes {
-		return codexStderrRead{text: string(data[:maxBytes]), err: errCodexOutputLimit, truncated: true}
+		return stderrResult{text: string(data[:maxBytes]), err: errCodexOutputLimit, truncated: true}
 	}
-	return codexStderrRead{text: string(data)}
+	return stderrResult{text: string(data)}
 }
 
 func redactCodexEvents(events []json.RawMessage, redactor secretRedactor) []json.RawMessage {

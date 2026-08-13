@@ -70,7 +70,7 @@ func EventReliabilityOf(eventType EventType) EventReliability {
 	}
 }
 
-func RuntimeEventTypes() []EventType {
+func EventTypes() []EventType {
 	return []EventType{
 		EventRunCreated,
 		EventRunStarted,

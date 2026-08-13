@@ -15,24 +15,24 @@ func NewDefaultRegistry() *registry.Registry {
 	return r
 }
 
-func RegisterDefaultComponents(registry *registry.Registry) error {
-	if registry == nil {
+func RegisterDefaultComponents(targetRegistry *registry.Registry) error {
+	if targetRegistry == nil {
 		return fmt.Errorf("registry is nil")
 	}
 
-	if err := RegisterModules(registry); err != nil {
+	if err := RegisterModules(targetRegistry); err != nil {
 		return err
 	}
-	if err := RegisterCoreNodeTypes(registry); err != nil {
+	if err := RegisterCoreNodeTypes(targetRegistry); err != nil {
 		return err
 	}
 	return nil
 }
 
-func RegisterModules(registry *registry.Registry) error {
-	if registry == nil {
+func RegisterModules(targetRegistry *registry.Registry) error {
+	if targetRegistry == nil {
 		return fmt.Errorf("registry is nil")
 	}
 
-	return registerConversationModule(registry)
+	return registerConversationModule(targetRegistry)
 }

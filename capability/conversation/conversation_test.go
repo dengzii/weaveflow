@@ -128,7 +128,7 @@ func roundTripState(t *testing.T, input *state.State) *state.State {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	restored, err := state.StateFromSnapshot(decoded)
+	restored, err := state.FromSnapshot(decoded)
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}

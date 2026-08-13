@@ -11,9 +11,9 @@ import (
 )
 
 var (
-	_ dsl.GraphNodeSpecProvider = (*SupervisorNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*SupervisorWorkerNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*SupervisorSynthesisNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*Node)(nil)
+	_ dsl.GraphNodeSpecProvider = (*WorkerNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*SynthesisNode)(nil)
 )
 
 func applyNodeOptions(base *core.NodeBase, options []core.NodeOption) {
@@ -35,27 +35,27 @@ func ApplyDefaultStatePaths(target core.Node) {
 		}
 	}
 	switch typed := target.(type) {
-	case *SupervisorNode:
+	case *Node:
 		setShared(&typed.ObjectivePath, "request", "input")
 		setShared(&typed.SupervisorPath, "supervisor")
-	case *SupervisorWorkerNode:
+	case *WorkerNode:
 		setShared(&typed.SupervisorPath, "supervisor")
 		setScope(&typed.ConversationPath, nodeOwner(typed, NodeTypeSupervisorWorker), "conversation")
-	case *SupervisorSynthesisNode:
+	case *SynthesisNode:
 		setShared(&typed.SupervisorPath, "supervisor")
 		setShared(&typed.ResultPath, "final", "answer")
 	}
 }
 
-func (n *SupervisorNode) ApplyDefaultStatePaths() {
+func (n *Node) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 
-func (n *SupervisorWorkerNode) ApplyDefaultStatePaths() {
+func (n *WorkerNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 
-func (n *SupervisorSynthesisNode) ApplyDefaultStatePaths() {
+func (n *SynthesisNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 

@@ -243,7 +243,7 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 		}
 	}
 
-	contract := state.Contract{}
+	var contract state.Contract
 	if options.Contract != nil {
 		contract = options.Contract.Clone()
 	} else {

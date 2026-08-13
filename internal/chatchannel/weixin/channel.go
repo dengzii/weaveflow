@@ -329,7 +329,7 @@ func (channel *Channel) getUpdates(ctx context.Context, cursor string) (getUpdat
 	return response, nil
 }
 
-func (channel *Channel) handleMessages(ctx context.Context, messages []weixinMessage, workers *sync.WaitGroup, stopWorkers context.CancelFunc, workerErrors chan<- error) {
+func (channel *Channel) handleMessages(ctx context.Context, messages []inboundMessage, workers *sync.WaitGroup, stopWorkers context.CancelFunc, workerErrors chan<- error) {
 	for _, message := range messages {
 		message := message
 		workers.Add(1)
@@ -354,7 +354,7 @@ func (channel *Channel) handleMessages(ctx context.Context, messages []weixinMes
 	}
 }
 
-func (channel *Channel) handleMessage(ctx context.Context, incoming weixinMessage) error {
+func (channel *Channel) handleMessage(ctx context.Context, incoming inboundMessage) error {
 	messageID := incoming.messageIDString()
 	channel.logger.Debug("WeChat message received",
 		"message_id", messageID,
@@ -721,8 +721,8 @@ type getUpdatesRequest struct {
 
 type getUpdatesResponse struct {
 	apiResponse
-	Messages []weixinMessage `json:"msgs"`
-	Cursor   string          `json:"get_updates_buf"`
+	Messages []inboundMessage `json:"msgs"`
+	Cursor   string           `json:"get_updates_buf"`
 }
 
 type getTypingConfigRequest struct {
@@ -779,7 +779,7 @@ func (err *tokenError) Error() string {
 	return fmt.Sprintf("iLink token rejected: code=%d", err.Code)
 }
 
-type weixinMessage struct {
+type inboundMessage struct {
 	Seq          int64           `json:"seq,omitempty"`
 	MessageID    json.RawMessage `json:"message_id,omitempty"`
 	FromUserID   string          `json:"from_user_id,omitempty"`
@@ -817,7 +817,7 @@ type sendMessage struct {
 	RunID        string        `json:"run_id,omitempty"`
 }
 
-func (message weixinMessage) textContent() string {
+func (message inboundMessage) textContent() string {
 	for _, item := range message.ItemList {
 		if item.Type == 1 && item.TextItem != nil {
 			return strings.TrimSpace(item.TextItem.Text)
@@ -826,7 +826,7 @@ func (message weixinMessage) textContent() string {
 	return ""
 }
 
-func (message weixinMessage) messageIDString() string {
+func (message inboundMessage) messageIDString() string {
 	if len(message.MessageID) == 0 || string(message.MessageID) == "null" {
 		return ""
 	}
@@ -842,11 +842,11 @@ func (message weixinMessage) messageIDString() string {
 }
 
 func randomWeChatUIN() string {
-	var bytes [4]byte
-	if _, err := rand.Read(bytes[:]); err != nil {
+	var randomBytes [4]byte
+	if _, err := rand.Read(randomBytes[:]); err != nil {
 		return base64.StdEncoding.EncodeToString([]byte("0"))
 	}
-	value := binary.BigEndian.Uint32(bytes[:])
+	value := binary.BigEndian.Uint32(randomBytes[:])
 	return base64.StdEncoding.EncodeToString([]byte(strconv.FormatUint(uint64(value), 10)))
 }
 

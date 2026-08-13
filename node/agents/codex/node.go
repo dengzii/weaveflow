@@ -33,7 +33,7 @@ type Node struct {
 	OutputPath state.Path
 }
 
-type codexProgressEvent struct {
+type progressEvent struct {
 	Kind       string `json:"kind"`
 	Event      string `json:"event"`
 	Provider   string `json:"provider"`
@@ -87,11 +87,11 @@ func (node *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 	if node == nil {
 		return dsl.GraphNodeSpec{}
 	}
-	config := map[string]any{}
+	nodeConfig := map[string]any{}
 	if strings.TrimSpace(node.ModelID) != "" {
-		config["model_id"] = node.ModelID
+		nodeConfig["model_id"] = node.ModelID
 	}
-	return basenode.NewGraphNodeSpec(node.NodeBase, NodeType, config, map[string]state.Path{
+	return basenode.NewGraphNodeSpec(node.NodeBase, NodeType, nodeConfig, map[string]state.Path{
 		"prompt": node.PromptPath,
 		"output": node.OutputPath,
 	})
@@ -155,7 +155,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	if runner == nil {
 		return fmt.Errorf("Codex node %q runner is not configured", node.ID())
 	}
-	if err := node.publishProgress(ctx, codexProgressEvent{
+	if err := node.publishProgress(ctx, progressEvent{
 		Event:   codexProgressStarted,
 		Status:  "started",
 		Message: "Codex execution started",
@@ -167,7 +167,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 		ModelID: node.ModelID,
 		Prompt:  prompt,
 		OnChunk: func(chunk Chunk) error {
-			return node.publishProgress(ctx, codexProgressEvent{
+			return node.publishProgress(ctx, progressEvent{
 				ModelID:  chunk.ModelID,
 				Event:    codexProgressRunning,
 				ThreadID: chunk.ThreadID,
@@ -179,7 +179,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	})
 	node.saveArtifacts(ctx, prompt, result, runErr)
 	if runErr != nil {
-		_ = node.publishProgress(ctx, codexProgressEvent{
+		_ = node.publishProgress(ctx, progressEvent{
 			ModelID:    result.ModelID,
 			Event:      codexProgressFailed,
 			ThreadID:   result.ThreadID,
@@ -190,7 +190,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 		return fmt.Errorf("Codex node %q: %w", node.ID(), runErr)
 	}
 	if err := state.Replace(access, state.NewRef[string](node.OutputPath), result.Output); err != nil {
-		_ = node.publishProgress(ctx, codexProgressEvent{
+		_ = node.publishProgress(ctx, progressEvent{
 			ModelID:    result.ModelID,
 			Event:      codexProgressFailed,
 			ThreadID:   result.ThreadID,
@@ -201,7 +201,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 		return err
 	}
 	usage := result.Usage
-	if err := node.publishProgress(ctx, codexProgressEvent{
+	if err := node.publishProgress(ctx, progressEvent{
 		ModelID:    result.ModelID,
 		Event:      codexProgressCompleted,
 		ThreadID:   result.ThreadID,
@@ -215,7 +215,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	return nil
 }
 
-func (node *Node) publishProgress(ctx core.Context, event codexProgressEvent) error {
+func (node *Node) publishProgress(ctx core.Context, event progressEvent) error {
 	event.Kind = codexProgressKind
 	event.Provider = "codex"
 	if strings.TrimSpace(event.ModelID) == "" {

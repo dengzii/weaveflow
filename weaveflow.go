@@ -237,7 +237,7 @@ func WithArtifactStore(store runtime.ArtifactStore) RunnerOption {
 	})
 }
 
-func WithStateCodec(codec state.StateCodec) RunnerOption {
+func WithStateCodec(codec state.Codec) RunnerOption {
 	return runnerOptionFunc(func(config *runnerConfig) error {
 		if codec == nil {
 			return fmt.Errorf("state codec is required")
@@ -297,7 +297,7 @@ type runnerConfig struct {
 	checkpointStore    runtime.CheckpointStore
 	eventSink          runtime.EventSink
 	artifactStore      runtime.ArtifactStore
-	codec              state.StateCodec
+	codec              state.Codec
 	graphID            string
 	graphVersion       string
 	breakpoints        []runtime.Breakpoint

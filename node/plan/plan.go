@@ -51,12 +51,12 @@ const (
 	planFieldFinalAnswer  = plancap.FieldFinalAnswer
 )
 
-type planModelOutput struct {
+type modelOutput struct {
 	Summary string         `json:"summary"`
 	Steps   []plancap.Step `json:"steps"`
 }
 
-func planModelOutputSchema() state.JSONSchema {
+func modelOutputSchema() state.JSONSchema {
 	return state.JSONSchema{
 		"type": "object",
 		"properties": map[string]any{
@@ -81,7 +81,7 @@ func planModelOutputSchema() state.JSONSchema {
 	}
 }
 
-func PlanStatusEquals(planPath state.Path, status string) registry.EdgeCondition {
+func StatusEquals(planPath state.Path, status string) registry.EdgeCondition {
 	status = strings.ToLower(strings.TrimSpace(status))
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 		Type:   ConditionTypePlanStatusEquals,
@@ -97,13 +97,13 @@ func PlanStatusEquals(planPath state.Path, status string) registry.EdgeCondition
 	})
 }
 
-func parsePlanModelOutput(content string) (planModelOutput, error) {
+func parsePlanModelOutput(content string) (modelOutput, error) {
 	content = strings.TrimSpace(stripPlanJSONFence(content))
 	if content == "" {
-		return planModelOutput{}, errors.New("empty content")
+		return modelOutput{}, errors.New("empty content")
 	}
 
-	var output planModelOutput
+	var output modelOutput
 	if err := json.Unmarshal([]byte(content), &output); err == nil {
 		return output, nil
 	}
@@ -114,7 +114,7 @@ func parsePlanModelOutput(content string) (planModelOutput, error) {
 			return output, nil
 		}
 	}
-	return planModelOutput{}, errors.New("content is not valid plan JSON")
+	return modelOutput{}, errors.New("content is not valid plan JSON")
 }
 
 func normalizePlanSteps(steps []plancap.Step, maxSteps int, knownTools map[string]struct{}) []plancap.Step {
@@ -191,19 +191,19 @@ func stripPlanJSONFence(content string) string {
 	return strings.TrimSpace(content)
 }
 
-func planStepsFromValue(value any) []plancap.Step {
+func stepsFromValue(value any) []plancap.Step {
 	return plancap.DecodeSteps(value)
 }
 
-func planStepMaps(steps []plancap.Step) []map[string]any {
+func stepMaps(steps []plancap.Step) []map[string]any {
 	return plancap.EncodeSteps(steps)
 }
 
-func planMapSlice(value any) []map[string]any {
+func mapSlice(value any) []map[string]any {
 	return plancap.DecodeObjectList(value)
 }
 
-func planToolDescriptions(available map[string]core.Tool) []map[string]any {
+func toolDescriptions(available map[string]core.Tool) []map[string]any {
 	if len(available) == 0 {
 		return nil
 	}
@@ -231,7 +231,7 @@ func planToolDescriptions(available map[string]core.Tool) []map[string]any {
 	return descriptions
 }
 
-func planToolNames(available map[string]core.Tool) map[string]struct{} {
+func toolNames(available map[string]core.Tool) map[string]struct{} {
 	names := make(map[string]struct{}, len(available)*2)
 	for id, tool := range available {
 		names[strings.ToLower(strings.TrimSpace(id))] = struct{}{}
@@ -242,29 +242,12 @@ func planToolNames(available map[string]core.Tool) map[string]struct{} {
 	return names
 }
 
-func planString(value any) string {
+func stringValue(value any) string {
 	text, _ := value.(string)
 	return strings.TrimSpace(text)
 }
 
-func planStringSlice(value any) []string {
-	switch typed := value.(type) {
-	case []string:
-		return append([]string(nil), typed...)
-	case []any:
-		items := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if text := planString(item); text != "" {
-				items = append(items, text)
-			}
-		}
-		return items
-	default:
-		return nil
-	}
-}
-
-func planInt(value any) int {
+func intValue(value any) int {
 	switch typed := value.(type) {
 	case int:
 		return typed
@@ -285,7 +268,7 @@ func planInt(value any) int {
 	}
 }
 
-func planTextLimit(value string, limit int) string {
+func textLimit(value string, limit int) string {
 	value = strings.TrimSpace(value)
 	if limit <= 0 || len(value) <= limit {
 		return value

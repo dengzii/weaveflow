@@ -12,7 +12,7 @@ type errorMapping struct {
 	message  string
 }
 
-var openaiErrorMappings = []errorMapping{
+var errorMappings = []errorMapping{
 	{patterns: []string{"incorrect api key", "invalid api key", "api key not found", "authentication"}, class: core.ErrorPermissionDenied, message: "invalid or missing API key"},
 	{patterns: []string{"rate limit exceeded", "too many requests", "429"}, class: core.ErrorRateLimited, message: "model provider rate limit exceeded"},
 	{patterns: []string{"model not found", "no such model", "invalid request", "400"}, class: core.ErrorInvalidInput, message: "model request is invalid"},
@@ -26,7 +26,7 @@ func MapError(err error) error {
 		return nil
 	}
 	message := strings.ToLower(err.Error())
-	for _, mapping := range openaiErrorMappings {
+	for _, mapping := range errorMappings {
 		for _, pattern := range mapping.patterns {
 			if strings.Contains(message, pattern) {
 				return core.NewExecutionError(mapping.class, mapping.message, err, map[string]any{"provider": "openai"})

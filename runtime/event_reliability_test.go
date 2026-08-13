@@ -7,7 +7,7 @@ import (
 )
 
 func TestRuntimeEventReliabilityCoversEveryDeclaredType(t *testing.T) {
-	for _, eventType := range RuntimeEventTypes() {
+	for _, eventType := range EventTypes() {
 		if reliability := EventReliabilityOf(eventType); reliability == "" {
 			t.Fatalf("event %q has no reliability classification", eventType)
 		}

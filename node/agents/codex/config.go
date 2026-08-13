@@ -88,16 +88,16 @@ func RunnerConfigFromEnvironment() (RunnerConfig, error) {
 		config.AllowedWorkspaceRoots = splitCodexWorkspaceRoots(value)
 	}
 	var err error
-	if config.TimeoutSeconds, err = codexEnvironmentInt(codexTimeoutSecondsEnvironment, config.TimeoutSeconds); err != nil {
+	if config.TimeoutSeconds, err = environmentInt(codexTimeoutSecondsEnvironment, config.TimeoutSeconds); err != nil {
 		return RunnerConfig{}, err
 	}
-	if config.MaxStdoutBytes, err = codexEnvironmentInt64(codexMaxStdoutBytesEnvironment, config.MaxStdoutBytes); err != nil {
+	if config.MaxStdoutBytes, err = environmentInt64(codexMaxStdoutBytesEnvironment, config.MaxStdoutBytes); err != nil {
 		return RunnerConfig{}, err
 	}
-	if config.MaxStderrBytes, err = codexEnvironmentInt64(codexMaxStderrBytesEnvironment, config.MaxStderrBytes); err != nil {
+	if config.MaxStderrBytes, err = environmentInt64(codexMaxStderrBytesEnvironment, config.MaxStderrBytes); err != nil {
 		return RunnerConfig{}, err
 	}
-	if config.MaxConcurrency, err = codexEnvironmentInt(codexMaxConcurrencyEnvironment, config.MaxConcurrency); err != nil {
+	if config.MaxConcurrency, err = environmentInt(codexMaxConcurrencyEnvironment, config.MaxConcurrency); err != nil {
 		return RunnerConfig{}, err
 	}
 	return config, nil
@@ -113,7 +113,7 @@ func splitCodexWorkspaceRoots(value string) []string {
 	return roots
 }
 
-func codexEnvironmentInt(name string, fallback int) (int, error) {
+func environmentInt(name string, fallback int) (int, error) {
 	value, ok := os.LookupEnv(name)
 	if !ok || strings.TrimSpace(value) == "" {
 		return fallback, nil
@@ -125,7 +125,7 @@ func codexEnvironmentInt(name string, fallback int) (int, error) {
 	return parsed, nil
 }
 
-func codexEnvironmentInt64(name string, fallback int64) (int64, error) {
+func environmentInt64(name string, fallback int64) (int64, error) {
 	value, ok := os.LookupEnv(name)
 	if !ok || strings.TrimSpace(value) == "" {
 		return fallback, nil
@@ -291,7 +291,7 @@ func resolveCodexExecutable(executable string) (string, error) {
 	return "", fmt.Errorf("resolved to non-native Windows launcher %q; configure the native codex.exe path", path)
 }
 
-func codexEnvironment(ctx context.Context, apiKey string) ([]string, []string, error) {
+func environment(ctx context.Context, apiKey string) ([]string, []string, error) {
 	values := make(map[string]string)
 	for _, name := range platformEnvironmentNames() {
 		if value, ok := os.LookupEnv(name); ok {

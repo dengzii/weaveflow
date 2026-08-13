@@ -142,7 +142,7 @@ func TestCodexEnvironmentUsesGraphSettings(t *testing.T) {
 		codexWorkspaceEnvironment: workspace,
 		"TASK_TOKEN":              "graph-secret-token",
 	}))
-	environment, secretValues, err := codexEnvironment(ctx, "model-api-key")
+	environment, secretValues, err := environment(ctx, "model-api-key")
 	if err != nil {
 		t.Fatal(err)
 	}

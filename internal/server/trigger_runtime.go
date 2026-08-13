@@ -24,14 +24,6 @@ type triggerGraphSession struct {
 	manifest       graphSessionManifest
 }
 
-func (s *Server) defaultTriggerTarget() trigger.Target {
-	runner := s.currentRunner()
-	if runner == nil {
-		return trigger.Target{}
-	}
-	return trigger.Target{GraphID: effectiveRunnerGraphID(runner)}
-}
-
 func (s *Server) resolveTriggerRunner(_ context.Context, target trigger.Target) (trigger.RunStarter, error) {
 	graphID := strings.TrimSpace(target.GraphID)
 	if graphID == "" {
@@ -108,10 +100,6 @@ func deriveTriggerRunContext(parent, base context.Context) (context.Context, con
 		runCtx = runtime.WithRunOrigin(runCtx, origin)
 	}
 	return runCtx, cancel
-}
-
-func triggerTargetMatchesRunner(graphID string, runner *runtime.GraphRunner) bool {
-	return runner != nil && strings.TrimSpace(graphID) == effectiveRunnerGraphID(runner)
 }
 
 func (s *Server) loadTriggerSession(graphID string) (graphRuntimeSession, error) {

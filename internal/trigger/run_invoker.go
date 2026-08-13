@@ -58,17 +58,17 @@ func (s *Service) InvokeWebhookInput(ctx context.Context, id string, input any, 
 }
 
 func (s *Service) invokeWebhook(ctx context.Context, id string, apiKey string, headers map[string]string, input func() (any, error), rawBody string) (runtime.RunRecord, error) {
-	trigger, err := s.triggerStore.Get(ctx, id)
+	definition, err := s.triggerStore.Get(ctx, id)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
-	if trigger.Type != TypeWebhook {
+	if definition.Type != TypeWebhook {
 		return runtime.RunRecord{}, fmt.Errorf("%w: trigger %q is not a webhook", ErrTypeMismatch, id)
 	}
-	if !trigger.Enabled {
+	if !definition.Enabled {
 		return runtime.RunRecord{}, ErrDisabled
 	}
-	if err := verifyWebhookAPIKey(trigger.Webhook, apiKey); err != nil {
+	if err := verifyWebhookAPIKey(definition.Webhook, apiKey); err != nil {
 		return runtime.RunRecord{}, err
 	}
 	payload, err := input()
@@ -76,30 +76,30 @@ func (s *Service) invokeWebhook(ctx context.Context, id string, apiKey string, h
 		return runtime.RunRecord{}, err
 	}
 	metadata := webhookMetadata(headers)
-	return s.invoke(ctx, trigger, payload, metadata, "webhook", rawBody)
+	return s.invoke(ctx, definition, payload, metadata, "webhook", rawBody)
 }
 
 func (s *Service) InvokeSchedule(ctx context.Context, id string) (runtime.RunRecord, error) {
-	trigger, err := s.triggerStore.Get(ctx, id)
+	definition, err := s.triggerStore.Get(ctx, id)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
-	if trigger.Type != TypeSchedule {
+	if definition.Type != TypeSchedule {
 		return runtime.RunRecord{}, fmt.Errorf("%w: trigger %q is not a schedule", ErrTypeMismatch, id)
 	}
-	if !trigger.Enabled {
+	if !definition.Enabled {
 		return runtime.RunRecord{}, ErrDisabled
 	}
 	input := map[string]any{}
-	if trigger.Schedule != nil && trigger.Schedule.Input != nil {
-		input = trigger.Schedule.Input
+	if definition.Schedule != nil && definition.Schedule.Input != nil {
+		input = definition.Schedule.Input
 	}
-	return s.invoke(ctx, trigger, input, map[string]any{"scheduled_at": s.now().UTC().Format(time.RFC3339Nano)}, "schedule", "")
+	return s.invoke(ctx, definition, input, map[string]any{"scheduled_at": s.now().UTC().Format(time.RFC3339Nano)}, "schedule", "")
 }
 
 func buildTriggerState(item Trigger, input any, metadata map[string]any, triggerType string, rawBody string) (*state.State, error) {
 	initial := state.FromMap(item.InitialState)
-	values := make([]triggerStateBindingValue, 0, 4)
+	values := make([]stateBindingValue, 0, 4)
 	switch item.Type {
 	case TypeWebhook:
 		if item.Webhook != nil && item.Webhook.StateBindings != nil {
@@ -123,7 +123,7 @@ func buildTriggerState(item Trigger, input any, metadata map[string]any, trigger
 	return initial, nil
 }
 
-type triggerStateBindingValue struct {
+type stateBindingValue struct {
 	name  string
 	path  string
 	value any
@@ -140,8 +140,8 @@ func requestTriggerStateBindingValues(
 	triggerID string,
 	triggerType string,
 	rawBody string,
-) []triggerStateBindingValue {
-	return []triggerStateBindingValue{
+) []stateBindingValue {
+	return []stateBindingValue{
 		{name: "input", path: inputPath, value: input},
 		{name: "metadata", path: metadataPath, value: metadata},
 		{name: "trigger_id", path: triggerIDPath, value: triggerID},
@@ -185,39 +185,39 @@ func (s *Service) invoke(ctx context.Context, item Trigger, input any, metadata 
 	return run, runErr
 }
 
-func (s *Service) invokeRun(ctx context.Context, trigger Trigger, input any, metadata map[string]any, triggerType string, rawBody string) (runtime.RunRecord, error) {
+func (s *Service) invokeRun(ctx context.Context, definition Trigger, input any, metadata map[string]any, triggerType string, rawBody string) (runtime.RunRecord, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	trackActive := false
-	if trigger.Concurrency == ConcurrencySkip {
+	if definition.Concurrency == ConcurrencySkip {
 		s.mu.Lock()
-		if s.activeRuns[trigger.ID] > 0 {
+		if s.activeRuns[definition.ID] > 0 {
 			s.mu.Unlock()
 			return runtime.RunRecord{}, ErrBusy
 		}
-		s.activeRuns[trigger.ID]++
+		s.activeRuns[definition.ID]++
 		s.mu.Unlock()
 		trackActive = true
 	}
 	defer func() {
 		if trackActive {
-			s.finishActive(trigger.ID)
+			s.finishActive(definition.ID)
 		}
 	}()
-	runner, err := s.resolver.Resolve(ctx, trigger.Target)
+	runner, err := s.resolver.Resolve(ctx, definition.Target)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
 	if runner == nil {
 		return runtime.RunRecord{}, fmt.Errorf("runner resolver returned nil")
 	}
-	initial, err := buildTriggerState(trigger, input, metadata, triggerType, rawBody)
+	initial, err := buildTriggerState(definition, input, metadata, triggerType, rawBody)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
-	if trigger.Type == TypeWebhook && trigger.Webhook != nil {
-		if err := applyWebhookStateMappings(initial, input, trigger.Webhook.StateMappings); err != nil {
+	if definition.Type == TypeWebhook && definition.Webhook != nil {
+		if err := applyWebhookStateMappings(initial, input, definition.Webhook.StateMappings); err != nil {
 			return runtime.RunRecord{}, err
 		}
 	}
@@ -227,7 +227,7 @@ func (s *Service) invokeRun(ctx context.Context, trigger Trigger, input any, met
 	executionCtx := s.executionContext(ctx)
 	executionCtx = runtime.WithRunOrigin(executionCtx, runtime.RunOrigin{
 		Type:      triggerType,
-		TriggerID: trigger.ID,
+		TriggerID: definition.ID,
 	})
 	if asyncRunner, ok := runner.(AsyncRunStarter); ok {
 		run, done, err := asyncRunner.StartAsync(executionCtx, initial)
@@ -238,7 +238,7 @@ func (s *Service) invokeRun(ctx context.Context, trigger Trigger, input any, met
 			trackActive = false
 			go func() {
 				<-done
-				s.finishActive(trigger.ID)
+				s.finishActive(definition.ID)
 			}()
 		}
 		return run, nil

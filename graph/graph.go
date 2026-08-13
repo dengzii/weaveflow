@@ -101,7 +101,7 @@ func NewGraph(reg *registry.Registry) *Graph {
 		initialStatePaths = append(initialStatePaths, field.Path)
 		stateSchemas[field.Path] = state.JSONSchema(field.Schema.Clone())
 	}
-	graph := &Graph{
+	resultGraph := &Graph{
 		registry:          reg,
 		nodes:             map[string]core.Node{},
 		nodeSpecs:         map[string]dsl.GraphNodeSpec{},
@@ -111,8 +111,8 @@ func NewGraph(reg *registry.Registry) *Graph {
 		initialStatePaths: initialStatePaths,
 		stateSchemas:      stateSchemas,
 	}
-	_ = graph.setExecutionPolicy(fruntime.DefaultGraphExecutionPolicy(), false)
-	return graph
+	_ = resultGraph.setExecutionPolicy(fruntime.DefaultGraphExecutionPolicy(), false)
+	return resultGraph
 }
 
 func (g *Graph) AddNode(targetNode core.Node) error {
@@ -215,7 +215,7 @@ func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
 }
 
 func (g *Graph) allocateNodeID(targetNode core.Node) string {
-	base := graphDefaultNodeID(targetNode)
+	base := defaultNodeID(targetNode)
 	if _, exists := g.nodes[base]; !exists {
 		return base
 	}
@@ -227,7 +227,7 @@ func (g *Graph) allocateNodeID(targetNode core.Node) string {
 	}
 }
 
-func graphDefaultNodeID(targetNode core.Node) string {
+func defaultNodeID(targetNode core.Node) string {
 	if targetNode == nil {
 		return "node"
 	}
@@ -325,10 +325,6 @@ func (g *Graph) AddEdge(from, to string) error {
 	return g.addEdgeInternal(from, to, true)
 }
 
-func (g *Graph) addRuntimeEdge(from, to string) error {
-	return g.addEdgeInternal(from, to, false)
-}
-
 func (g *Graph) addEdgeInternal(from, to string, trackSpec bool) error {
 	fromID, err := g.resolveNodeID(from)
 	if err != nil {
@@ -363,10 +359,6 @@ func (g *Graph) AddConditionalEdge(from, to string, condition registry.EdgeCondi
 
 func (g *Graph) AddResolvedConditionalEdge(from, to string, condition registry.EdgeCondition, contract state.Contract) error {
 	return g.addConditionalEdgeInternal(from, to, condition, true, contract, true, false)
-}
-
-func (g *Graph) addRuntimeConditionalEdge(from, to string, condition registry.EdgeCondition) error {
-	return g.addConditionalEdgeInternal(from, to, condition, false, state.Contract{}, false, false)
 }
 
 func (g *Graph) addConditionalEdgeInternal(
@@ -687,7 +679,7 @@ func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*stat
 	return result, nil
 }
 
-func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, config fruntime.SchedulerConfig) (*state.State, error) {
+func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.State, schedulerConfig fruntime.SchedulerConfig) (*state.State, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -700,7 +692,7 @@ func (r *Runnable) InvokeWithConfig(ctx context.Context, initialState *state.Sta
 	if issues := state.ValidateStateBySchemas(initialState, r.stateSchemas); len(issues) > 0 {
 		return initialState, state.NewValidationError("entry", issues)
 	}
-	result, err := r.scheduled.InvokeWithConfig(ctx, initialState, config)
+	result, err := r.scheduled.InvokeWithConfig(ctx, initialState, schedulerConfig)
 	if err != nil {
 		return result, err
 	}

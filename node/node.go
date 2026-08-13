@@ -6,13 +6,13 @@ import "github.com/dengzii/weaveflow/core"
 type Node = core.Node
 type Spec = core.NodeSpec
 type Base = core.NodeBase
-type NodeOption = core.NodeOption
+type Option = core.NodeOption
 
-func WithID(id string) NodeOption {
+func WithID(id string) Option {
 	return core.WithID(id)
 }
 
-func WithName(name string) NodeOption {
+func WithName(name string) Option {
 	return core.WithName(name)
 }
 
@@ -20,6 +20,6 @@ func NewBase(spec Spec) Base {
 	return core.NewNodeBase(spec)
 }
 
-func applyNodeOptions(base *Base, options []NodeOption) {
+func applyNodeOptions(base *Base, options []Option) {
 	core.ApplyNodeOptions(base, options)
 }

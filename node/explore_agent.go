@@ -52,8 +52,8 @@ type ExploreAgentNode struct {
 	ResultPath             state.Path
 }
 
-func NewExploreAgentNode(options ...NodeOption) *ExploreAgentNode {
-	node := &ExploreAgentNode{
+func NewExploreAgentNode(options ...Option) *ExploreAgentNode {
+	target := &ExploreAgentNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeExploreAgent,
 			Description: "Run an isolated file-reading loop and return a structured summary.",
@@ -63,9 +63,9 @@ func NewExploreAgentNode(options ...NodeOption) *ExploreAgentNode {
 		ToolResultCap:      defaultExploreAgentToolResultCap,
 		IncludeEnvironment: true,
 	}
-	applyNodeOptions(&node.Base, options)
-	ApplyDefaultStatePaths(node)
-	return node
+	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
+	return target
 }
 
 func (n *ExploreAgentNode) Validate() error {

@@ -113,19 +113,19 @@ func RunnerConfigFromEnvironment() (RunnerConfig, error) {
 		config.EnvironmentNames = splitClaudeList(value)
 	}
 	var err error
-	if config.TimeoutSeconds, err = claudeEnvironmentInt(claudeTimeoutSecondsEnvironment, config.TimeoutSeconds); err != nil {
+	if config.TimeoutSeconds, err = environmentInt(claudeTimeoutSecondsEnvironment, config.TimeoutSeconds); err != nil {
 		return RunnerConfig{}, err
 	}
-	if config.MaxStdoutBytes, err = claudeEnvironmentInt64(claudeMaxStdoutBytesEnvironment, config.MaxStdoutBytes); err != nil {
+	if config.MaxStdoutBytes, err = environmentInt64(claudeMaxStdoutBytesEnvironment, config.MaxStdoutBytes); err != nil {
 		return RunnerConfig{}, err
 	}
-	if config.MaxStderrBytes, err = claudeEnvironmentInt64(claudeMaxStderrBytesEnvironment, config.MaxStderrBytes); err != nil {
+	if config.MaxStderrBytes, err = environmentInt64(claudeMaxStderrBytesEnvironment, config.MaxStderrBytes); err != nil {
 		return RunnerConfig{}, err
 	}
-	if config.MaxConcurrency, err = claudeEnvironmentInt(claudeMaxConcurrencyEnvironment, config.MaxConcurrency); err != nil {
+	if config.MaxConcurrency, err = environmentInt(claudeMaxConcurrencyEnvironment, config.MaxConcurrency); err != nil {
 		return RunnerConfig{}, err
 	}
-	if config.MaxBudgetUSD, err = claudeEnvironmentFloat64(claudeMaxBudgetUSDEnvironment, config.MaxBudgetUSD); err != nil {
+	if config.MaxBudgetUSD, err = environmentFloat64(claudeMaxBudgetUSDEnvironment, config.MaxBudgetUSD); err != nil {
 		return RunnerConfig{}, err
 	}
 	return config, nil
@@ -151,7 +151,7 @@ func splitClaudeList(value string) []string {
 	return items
 }
 
-func claudeEnvironmentInt(name string, fallback int) (int, error) {
+func environmentInt(name string, fallback int) (int, error) {
 	value, ok := os.LookupEnv(name)
 	if !ok || strings.TrimSpace(value) == "" {
 		return fallback, nil
@@ -163,7 +163,7 @@ func claudeEnvironmentInt(name string, fallback int) (int, error) {
 	return parsed, nil
 }
 
-func claudeEnvironmentInt64(name string, fallback int64) (int64, error) {
+func environmentInt64(name string, fallback int64) (int64, error) {
 	value, ok := os.LookupEnv(name)
 	if !ok || strings.TrimSpace(value) == "" {
 		return fallback, nil
@@ -175,7 +175,7 @@ func claudeEnvironmentInt64(name string, fallback int64) (int64, error) {
 	return parsed, nil
 }
 
-func claudeEnvironmentFloat64(name string, fallback float64) (float64, error) {
+func environmentFloat64(name string, fallback float64) (float64, error) {
 	value, ok := os.LookupEnv(name)
 	if !ok || strings.TrimSpace(value) == "" {
 		return fallback, nil
@@ -344,7 +344,7 @@ func resolveClaudeExecutable(executable string) (string, error) {
 	return filepath.Clean(path), nil
 }
 
-func claudeEnvironment(config resolvedClaudeRunnerConfig) ([]string, []string, error) {
+func environment(config resolvedClaudeRunnerConfig) ([]string, []string, error) {
 	values := make(map[string]string)
 	for _, name := range platformEnvironmentNames() {
 		if value, ok := os.LookupEnv(name); ok {

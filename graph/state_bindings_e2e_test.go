@@ -22,8 +22,8 @@ import (
 
 func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
+	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
+	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
 		Name:         "two-agent-handoff",
@@ -76,8 +76,8 @@ func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 
 func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
+	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
+	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
 	conversationPath := "shared.team_conversation"
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
@@ -127,23 +127,23 @@ func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 		t.Fatalf("messages = %#v", messages)
 	}
 	for index, role := range roles {
-		if messages[index].Role != role || graphMessageText(messages[index]) != texts[index] {
-			t.Fatalf("message %d = role %q text %q, want role %q text %q", index, messages[index].Role, graphMessageText(messages[index]), role, texts[index])
+		if messages[index].Role != role || messageText(messages[index]) != texts[index] {
+			t.Fatalf("message %d = role %q text %q, want role %q text %q", index, messages[index].Role, messageText(messages[index]), role, texts[index])
 		}
 	}
 	if conversation.FinalAnswer() != "final answer" {
 		t.Fatalf("conversation final answer = %q", conversation.FinalAnswer())
 	}
 	writerCalls := secondModel.Calls()
-	if len(writerCalls) != 1 || len(writerCalls[0]) != 2 || writerCalls[0][1].Role != llms.ChatMessageTypeAI || graphMessageText(writerCalls[0][1]) != "research result" {
+	if len(writerCalls) != 1 || len(writerCalls[0]) != 2 || writerCalls[0][1].Role != llms.ChatMessageTypeAI || messageText(writerCalls[0][1]) != "research result" {
 		t.Fatalf("writer calls = %#v", writerCalls)
 	}
 }
 
 func TestGraphV2MultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
+	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
+	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
 		Name:         "isolated-multi-llm",
@@ -212,8 +212,8 @@ func TestGraphV2MultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testin
 
 func TestGraphV2MultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
 	t.Parallel()
-	firstModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
-	secondModel := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
+	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
+	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
 	conversationPath := "shared.conversation"
 	def := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
@@ -279,22 +279,22 @@ func TestGraphV2MultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
 		t.Fatalf("messages = %#v", messages)
 	}
 	for index, role := range roles {
-		if messages[index].Role != role || graphMessageText(messages[index]) != texts[index] {
-			t.Fatalf("message %d = role %q text %q, want role %q text %q", index, messages[index].Role, graphMessageText(messages[index]), role, texts[index])
+		if messages[index].Role != role || messageText(messages[index]) != texts[index] {
+			t.Fatalf("message %d = role %q text %q, want role %q text %q", index, messages[index].Role, messageText(messages[index]), role, texts[index])
 		}
 	}
 	if conversation.FinalAnswer() != "second output" {
 		t.Fatalf("conversation final answer = %q", conversation.FinalAnswer())
 	}
 	secondCalls := secondModel.Calls()
-	if len(secondCalls) != 1 || len(secondCalls[0]) != 3 || secondCalls[0][2].Role != llms.ChatMessageTypeHuman || graphMessageText(secondCalls[0][2]) != "first output" {
+	if len(secondCalls) != 1 || len(secondCalls[0]) != 3 || secondCalls[0][2].Role != llms.ChatMessageTypeHuman || messageText(secondCalls[0][2]) != "first output" {
 		t.Fatalf("second model calls = %#v", secondCalls)
 	}
 }
 
 func TestGraphV2LLMTurnToolExecutionAndConditionShareConversationBinding(t *testing.T) {
 	t.Parallel()
-	model := &graphScriptedModel{responses: []*llms.ModelResponse{
+	model := &scriptedModel{responses: []*llms.ModelResponse{
 		{
 			Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{{
 				ID: "call-1", Type: "function",
@@ -405,7 +405,7 @@ func TestGraphV2SubgraphUsesExplicitInputAndOutputBindings(t *testing.T) {
 			},
 		},
 		Build: func(_ *registry.BuildContext, spec registry.ResolvedNodeSpec) (core.Node, error) {
-			return &graphCopyNode{
+			return &copyNode{
 				NodeInfo: core.NodeInfo{NodeID: spec.Spec.ID},
 				input:    spec.State["input"].Path,
 				output:   spec.State["output"].Path,
@@ -558,7 +558,7 @@ func runBoundGraph(
 ) *state.State {
 	t.Helper()
 	reg := builtin.NewDefaultRegistry()
-	graph, err := NewBuilder(reg).Build(def, &registry.BuildContext{})
+	testGraph, err := NewBuilder(reg).Build(def, &registry.BuildContext{})
 	if err != nil {
 		t.Fatalf("BuildGraph(): %v", err)
 	}
@@ -566,7 +566,7 @@ func runBoundGraph(
 	if tools != nil {
 		ctx = core.WithTools(ctx, tools)
 	}
-	result, err := graph.Run(ctx, initial)
+	result, err := testGraph.Run(ctx, initial)
 	if err != nil {
 		t.Fatalf("Run(): %v", err)
 	}
@@ -585,19 +585,19 @@ func contentResponse(content string) *llms.ModelResponse {
 	return &llms.ModelResponse{Choices: []*llms.ModelChoice{{Content: content}}}
 }
 
-type graphScriptedModel struct {
+type scriptedModel struct {
 	mu        sync.Mutex
 	responses []*llms.ModelResponse
 	calls     [][]llms.MessageContent
 }
 
-type graphCopyNode struct {
+type copyNode struct {
 	core.NodeInfo
 	input  state.Path
 	output state.Path
 }
 
-func (n *graphCopyNode) Execute(_ core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *copyNode) Execute(_ core.Context, access *state.Access) (core.NodeResult, error) {
 	value, err := state.Get(access, state.NewRef[string](n.input))
 	if err != nil {
 		return core.NodeResult{}, err
@@ -611,7 +611,7 @@ func (n *graphCopyNode) Execute(_ core.Context, access *state.Access) (core.Node
 	}, nil
 }
 
-func (m *graphScriptedModel) Generate(_ context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
+func (m *scriptedModel) Generate(_ context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.responses) == 0 {
@@ -623,7 +623,7 @@ func (m *graphScriptedModel) Generate(_ context.Context, request llms.ModelReque
 	return response, nil
 }
 
-func (m *graphScriptedModel) Calls() [][]llms.MessageContent {
+func (m *scriptedModel) Calls() [][]llms.MessageContent {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	result := make([][]llms.MessageContent, len(m.calls))
@@ -658,7 +658,7 @@ func firstHumanText(calls [][]llms.MessageContent) string {
 	return ""
 }
 
-func graphMessageText(message llms.MessageContent) string {
+func messageText(message llms.MessageContent) string {
 	for _, part := range message.Parts {
 		if text, ok := part.(llms.TextContent); ok {
 			return strings.TrimSpace(text.Text)

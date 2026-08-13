@@ -18,7 +18,7 @@ type UserInputNode struct {
 	PendingInputPath state.Path
 }
 
-func NewUserInputNode(options ...NodeOption) *UserInputNode {
+func NewUserInputNode(options ...Option) *UserInputNode {
 	target := &UserInputNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeUserInput,

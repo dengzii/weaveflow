@@ -1366,23 +1366,23 @@ func TestRunnerExternalPauseAcceptsCustomCancellationError(t *testing.T) {
 	t.Parallel()
 
 	started := make(chan string, 1)
-	graph := NewGraph(nil)
-	mustAddNode(t, graph, "work", func(ctx context.Context, access *state.Access) error {
+	testGraph := NewGraph(nil)
+	mustAddNode(t, testGraph, "work", func(ctx context.Context, access *state.Access) error {
 		started <- "work"
 		<-ctx.Done()
 		return errors.New("request cancelled")
 	})
-	if err := graph.SetEntryPoint("work"); err != nil {
+	if err := testGraph.SetEntryPoint("work"); err != nil {
 		t.Fatalf("set entry: %v", err)
 	}
-	if err := graph.SetFinishPoint("work"); err != nil {
+	if err := testGraph.SetFinishPoint("work"); err != nil {
 		t.Fatalf("set finish: %v", err)
 	}
 
 	baseDir := t.TempDir()
 	executionStore := fruntime.NewFileExecutionStore(baseDir)
 	runner := mustNewGraphRunner(t,
-		graph,
+		testGraph,
 		executionStore,
 		fruntime.NewFileCheckpointStore(baseDir),
 		state.NewJSONStateCodec(""),
@@ -1728,7 +1728,7 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 }
 
 type failBarrierTransactionStore struct {
-	inner fruntime.RuntimeTransactionStore
+	inner fruntime.TransactionStore
 }
 
 type runnerResult struct {
@@ -1737,10 +1737,10 @@ type runnerResult struct {
 	err   error
 }
 
-func (store failBarrierTransactionStore) Commit(ctx context.Context, commit fruntime.RuntimeCommit) (fruntime.RuntimeCommitResult, error) {
+func (store failBarrierTransactionStore) Commit(ctx context.Context, commit fruntime.Commit) (fruntime.CommitResult, error) {
 	for _, checkpoint := range commit.Checkpoints {
 		if checkpoint.Record.Stage == fruntime.CheckpointAfterWave {
-			return fruntime.RuntimeCommitResult{}, errors.New("barrier checkpoint failed")
+			return fruntime.CommitResult{}, errors.New("barrier checkpoint failed")
 		}
 	}
 	return store.inner.Commit(ctx, commit)

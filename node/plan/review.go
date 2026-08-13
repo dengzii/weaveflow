@@ -13,15 +13,15 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-type PlanReviewNode struct {
+type ReviewNode struct {
 	core.NodeBase
 	PlanPath         state.Path
 	ExecutionPath    state.Path
 	ConversationPath state.Path
 }
 
-func NewPlanReviewNode(options ...core.NodeOption) *PlanReviewNode {
-	target := &PlanReviewNode{NodeBase: core.NewNodeBase(core.NodeSpec{
+func NewReviewNode(options ...core.NodeOption) *ReviewNode {
+	target := &ReviewNode{NodeBase: core.NewNodeBase(core.NodeSpec{
 		Name:        NodeTypePlanReview,
 		Description: "Record a step result and decide whether to continue, replan, or finish.",
 	})}
@@ -30,7 +30,7 @@ func NewPlanReviewNode(options ...core.NodeOption) *PlanReviewNode {
 	return target
 }
 
-func (n *PlanReviewNode) Validate() error {
+func (n *ReviewNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("plan review node is nil")
 	}
@@ -43,11 +43,11 @@ func (n *PlanReviewNode) Validate() error {
 	return nil
 }
 
-func (n *PlanReviewNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (n *ReviewNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return newGraphNodeSpec(n.NodeBase, NodeTypePlanReview, nil, map[string]state.Path{"plan": n.PlanPath, "execution": n.ExecutionPath, "conversation": n.ConversationPath})
 }
 
-func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
+func ReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:         NodeTypePlanReview,
@@ -82,7 +82,7 @@ func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanReviewNode(core.WithID(spec.ID))
+			target := NewReviewNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.PlanPath = planPath
 			target.ExecutionPath = executionPath
@@ -92,11 +92,11 @@ func PlanReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanReviewNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *ReviewNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	return core.NodeResult{}, n.execute(ctx, access)
 }
 
-func (n *PlanReviewNode) execute(_ core.Context, access *state.Access) error {
+func (n *ReviewNode) execute(_ core.Context, access *state.Access) error {
 	planner, err := plancap.Bind(access, n.PlanPath)
 	if err != nil {
 		return err
@@ -110,9 +110,9 @@ func (n *PlanReviewNode) execute(_ core.Context, access *state.Access) error {
 		return err
 	}
 
-	plan := planner.Value()
-	steps := planStepsFromValue(plan[planFieldSteps])
-	index := planInt(plan[planFieldCurrentIndex])
+	planValue := planner.Value()
+	steps := stepsFromValue(planValue[planFieldSteps])
+	index := intValue(planValue[planFieldCurrentIndex])
 	if index < 0 || index >= len(steps) {
 		return planner.SetField(planFieldStatus, PlanStatusFinalizing)
 	}
@@ -128,10 +128,10 @@ func (n *PlanReviewNode) execute(_ core.Context, access *state.Access) error {
 		step.Error = ""
 	}
 	steps[index] = step
-	if err := planner.SetField(planFieldSteps, planStepMaps(steps)); err != nil {
+	if err := planner.SetField(planFieldSteps, stepMaps(steps)); err != nil {
 		return err
 	}
-	stepResult := planStepMaps([]plancap.Step{step})[0]
+	stepResult := stepMaps([]plancap.Step{step})[0]
 	if err := execution.SetStepResult(step.ID, stepResult); err != nil {
 		return err
 	}
@@ -141,8 +141,8 @@ func (n *PlanReviewNode) execute(_ core.Context, access *state.Access) error {
 	}
 
 	if step.Status == PlanStepStatusFailed {
-		replanCount := planInt(plan[planFieldReplanCount])
-		maxReplans := planInt(plan[planFieldMaxReplans])
+		replanCount := intValue(planValue[planFieldReplanCount])
+		maxReplans := intValue(planValue[planFieldMaxReplans])
 		if replanCount < maxReplans {
 			if err := planner.SetField(planFieldReplanReason, fmt.Sprintf("step %s failed: %s", step.ID, step.Error)); err != nil {
 				return err

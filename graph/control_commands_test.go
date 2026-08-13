@@ -64,7 +64,7 @@ func TestRunnerDynamicSendPersistsStableOrderedTasks(t *testing.T) {
 		if firstTask.Order != taskIndex || secondTask.Order != taskIndex || !firstTask.Dynamic || !secondTask.Dynamic {
 			t.Fatalf("task %d ordering = %#v and %#v", taskIndex, firstTask, secondTask)
 		}
-		if value := graphTaskInputValue(t, firstTask); value != wantValue {
+		if value := taskInputValue(t, firstTask); value != wantValue {
 			t.Fatalf("task %d input = %q, want %q", taskIndex, value, wantValue)
 		}
 	}
@@ -439,7 +439,7 @@ func persistedDynamicTasks(t *testing.T, runner *fruntime.GraphRunner, runID str
 	return nil
 }
 
-func graphTaskInputValue(t *testing.T, task fruntime.GraphTask) string {
+func taskInputValue(t *testing.T, task fruntime.GraphTask) string {
 	t.Helper()
 	inputState, err := task.Input.Apply(state.NewState())
 	if err != nil {

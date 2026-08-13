@@ -21,7 +21,7 @@ const defaultSupervisorWorkerSystemPrompt = `You are a specialist worker in a su
 Complete only the delegated task. Use your tools when they improve accuracy.
 Return a concise, evidence-based result to the supervisor; do not address the end user or delegate to another worker.`
 
-type SupervisorWorkerNode struct {
+type WorkerNode struct {
 	core.NodeBase
 	WorkerID         string
 	Role             string
@@ -35,8 +35,8 @@ type SupervisorWorkerNode struct {
 	ConversationPath state.Path
 }
 
-func NewSupervisorWorkerNode(options ...core.NodeOption) *SupervisorWorkerNode {
-	target := &SupervisorWorkerNode{
+func NewWorkerNode(options ...core.NodeOption) *WorkerNode {
+	target := &WorkerNode{
 		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypeSupervisorWorker,
 			Description: "Execute one supervisor delegation with an isolated specialist agent loop.",
@@ -50,7 +50,7 @@ func NewSupervisorWorkerNode(options ...core.NodeOption) *SupervisorWorkerNode {
 	return target
 }
 
-func (n *SupervisorWorkerNode) Validate() error {
+func (n *WorkerNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("supervisor worker node is nil")
 	}
@@ -72,7 +72,7 @@ func (n *SupervisorWorkerNode) Validate() error {
 	return nil
 }
 
-func (n *SupervisorWorkerNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (n *WorkerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	configMap := map[string]any{
 		"worker_id":      n.WorkerID,
 		"role":           n.Role,
@@ -90,7 +90,7 @@ func (n *SupervisorWorkerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	})
 }
 
-func SupervisorWorkerNodeTypeDefinition() registry.NodeTypeDefinition {
+func WorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypeSupervisorWorker,
@@ -138,7 +138,7 @@ func SupervisorWorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewSupervisorWorkerNode(core.WithID(spec.ID))
+			target := NewWorkerNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.WorkerID = config.String(spec.Config, "worker_id")
 			target.Role = config.String(spec.Config, "role")
@@ -166,24 +166,24 @@ func SupervisorWorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *SupervisorWorkerNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *WorkerNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	return core.NodeResult{}, n.execute(ctx, access)
 }
 
-func (n *SupervisorWorkerNode) execute(ctx core.Context, access *state.Access) error {
+func (n *WorkerNode) execute(ctx core.Context, access *state.Access) error {
 	if err := n.Validate(); err != nil {
 		return err
 	}
-	supervisor, err := supervisorcap.Bind(access, n.SupervisorPath)
+	supervisorView, err := supervisorcap.Bind(access, n.SupervisorPath)
 	if err != nil {
 		return err
 	}
-	current := supervisor.Value()
-	selected := supervisorString(current, SupervisorFieldRoute)
+	current := supervisorView.Value()
+	selected := stringValue(current, SupervisorFieldRoute)
 	if !strings.EqualFold(selected, strings.TrimSpace(n.WorkerID)) {
 		return fmt.Errorf("supervisor worker node %q expected route %q, got %q", n.ID(), n.WorkerID, selected)
 	}
-	task := supervisorString(current, SupervisorFieldTask)
+	task := stringValue(current, SupervisorFieldTask)
 	if task == "" {
 		return fmt.Errorf("supervisor worker node %q received an empty task", n.ID())
 	}
@@ -223,11 +223,11 @@ func (n *SupervisorWorkerNode) execute(ctx core.Context, access *state.Access) e
 		return fmt.Errorf("supervisor worker %q returned an empty result", n.WorkerID)
 	}
 
-	history := supervisorHistoryFromValue(current[SupervisorFieldHistory])
-	turn := supervisorInt(current, SupervisorFieldTurnCount)
+	history := historyFromValue(current[SupervisorFieldHistory])
+	turn := intValue(current, SupervisorFieldTurnCount)
 	history = append(history, supervisorcap.Turn{Turn: turn, WorkerID: strings.TrimSpace(n.WorkerID), Task: task, Result: result})
-	if err := supervisor.Merge(map[string]any{
-		SupervisorFieldHistory:    supervisorTurnMaps(history),
+	if err := supervisorView.Merge(map[string]any{
+		SupervisorFieldHistory:    turnMaps(history),
 		SupervisorFieldLastResult: result,
 		SupervisorFieldStatus:     SupervisorStatusRouting,
 		SupervisorFieldRoute:      "",
@@ -242,7 +242,7 @@ func (n *SupervisorWorkerNode) execute(ctx core.Context, access *state.Access) e
 	return nil
 }
 
-func (n *SupervisorWorkerNode) effectiveSystemPrompt() string {
+func (n *WorkerNode) effectiveSystemPrompt() string {
 	prompt := strings.TrimSpace(n.SystemPrompt)
 	if prompt == "" {
 		prompt = defaultSupervisorWorkerSystemPrompt
@@ -253,7 +253,7 @@ func (n *SupervisorWorkerNode) effectiveSystemPrompt() string {
 	return prompt
 }
 
-func (n *SupervisorWorkerNode) effectiveMaxIterations() int {
+func (n *WorkerNode) effectiveMaxIterations() int {
 	if n == nil || n.MaxIterations <= 0 {
 		return defaultSupervisorWorkerMaxIterations
 	}

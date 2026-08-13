@@ -13,7 +13,7 @@ func TestCodexArgumentsKeepApprovalBeforeExec(t *testing.T) {
 			model:                     "graph-model",
 		},
 	}
-	got := codexArguments(config)
+	got := arguments(config)
 	want := []string{
 		"--ask-for-approval", "never",
 		"exec",
@@ -40,7 +40,7 @@ func TestCodexArgumentsConfigureBaseURLBeforeExec(t *testing.T) {
 			baseURL:                   "https://gateway.example/v1",
 		},
 	}
-	got := codexArguments(config)
+	got := arguments(config)
 	want := []string{
 		"--ask-for-approval", "never",
 		"-c", `openai_base_url="https://gateway.example/v1"`,

@@ -43,7 +43,7 @@ const (
 	APIFormatResponses       APIFormat = "responses"
 )
 
-type options struct {
+type clientOptions struct {
 	token        string
 	model        string
 	baseURL      string
@@ -64,7 +64,7 @@ type options struct {
 }
 
 // Option is a functional option for the OpenAI client.
-type Option func(*options)
+type Option func(*clientOptions)
 
 // ResponseFormat is the response format for the OpenAI client.
 type ResponseFormat = openaiclient.ResponseFormat
@@ -81,7 +81,7 @@ var ResponseFormatJSON = &ResponseFormat{Type: "json_object"} //nolint:gocheckno
 // WithToken passes the OpenAI API token to the client. If not set, the token
 // is read from the OPENAI_API_KEY environment variable.
 func WithToken(token string) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.token = token
 	}
 }
@@ -90,14 +90,14 @@ func WithToken(token string) Option {
 // is read from the OPENAI_MODEL environment variable.
 // Required when ApiType is Azure.
 func WithModel(model string) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.model = model
 	}
 }
 
 // WithEmbeddingModel passes the OpenAI model to the client. Required when ApiType is Azure.
 func WithEmbeddingModel(embeddingModel string) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.embeddingModel = embeddingModel
 	}
 }
@@ -107,7 +107,7 @@ func WithEmbeddingModel(embeddingModel string) Option {
 // For more info, please check openai doc
 // https://platform.openai.com/docs/api-reference/embeddings/create#embeddings-create-dimensions
 func WithEmbeddingDimensions(dimensions int) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.embeddingDimensions = dimensions
 	}
 }
@@ -116,7 +116,7 @@ func WithEmbeddingDimensions(dimensions int) Option {
 // is read from the OPENAI_BASE_URL environment variable. If still not set in ENV
 // VAR OPENAI_BASE_URL, then the default value is https://api.openai.com/v1 is used.
 func WithBaseURL(baseURL string) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.baseURL = baseURL
 	}
 }
@@ -124,7 +124,7 @@ func WithBaseURL(baseURL string) Option {
 // WithOrganization passes the OpenAI organization to the client. If not set, the
 // organization is read from the OPENAI_ORGANIZATION.
 func WithOrganization(organization string) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.organization = organization
 	}
 }
@@ -132,13 +132,13 @@ func WithOrganization(organization string) Option {
 // WithAPIType passes the api type to the client. If not set, the default value
 // is APITypeOpenAI.
 func WithAPIType(apiType APIType) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.apiType = apiType
 	}
 }
 
 func WithProvider(provider Provider) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.provider = provider
 	}
 }
@@ -153,7 +153,7 @@ func IsSupportedProvider(provider Provider) bool {
 }
 
 func WithAPIFormat(apiFormat APIFormat) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.apiFormat = apiFormat
 	}
 }
@@ -168,13 +168,13 @@ func IsSupportedAPIFormat(apiFormat APIFormat) bool {
 }
 
 func WithExtraBody(extraBody map[string]any) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.extraBody = cloneAnyMap(extraBody)
 	}
 }
 
 func WithExtraHeaders(extraHeaders map[string]string) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.extraHeaders = cloneStringMap(extraHeaders)
 	}
 }
@@ -182,7 +182,7 @@ func WithExtraHeaders(extraHeaders map[string]string) Option {
 // WithAPIVersion passes the api version to the client. If not set, the default value
 // is DefaultAPIVersion.
 func WithAPIVersion(apiVersion string) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.apiVersion = apiVersion
 	}
 }
@@ -190,14 +190,14 @@ func WithAPIVersion(apiVersion string) Option {
 // WithHTTPClient allows setting a custom HTTP client. If not set, the default value
 // is http.DefaultClient.
 func WithHTTPClient(client openaiclient.Doer) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.httpClient = client
 	}
 }
 
 // WithResponseFormat allows setting a custom response format.
 func WithResponseFormat(responseFormat *ResponseFormat) Option {
-	return func(opts *options) {
+	return func(opts *clientOptions) {
 		opts.responseFormat = responseFormat
 	}
 }

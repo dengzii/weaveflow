@@ -159,7 +159,7 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings, apiKey strin
 	for _, modelSettings := range enabledGraphModels(settings) {
 		modelAPIKey := firstNonEmpty(modelSettings.APIKey, apiKey, os.Getenv("OPENAI_API_KEY"))
 		if modelAPIKey == "" {
-			return nil, fmt.Errorf("OPENAI_API_KEY is required when model %q is enabled", modelSettings.ID)
+			return nil, fmt.Errorf("model %q requires OPENAI_API_KEY when enabled", modelSettings.ID)
 		}
 		model, err := openai.New(
 			openai.WithToken(modelAPIKey),

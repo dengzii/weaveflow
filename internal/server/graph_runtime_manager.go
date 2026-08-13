@@ -95,15 +95,6 @@ func (manager *graphRuntimeManager) runtimeContext() context.Context {
 	return manager.current.baseContext
 }
 
-func (manager *graphRuntimeManager) runtimeSettings() graphRuntimeSettings {
-	if manager == nil {
-		return graphRuntimeSettingsFromContext(context.Background())
-	}
-	manager.mu.RLock()
-	defer manager.mu.RUnlock()
-	return normalizedGraphSettings(manager.current.settings)
-}
-
 func (manager *graphRuntimeManager) defaults() (graphRuntimeSettings, context.Context) {
 	if manager == nil {
 		return graphRuntimeSettingsFromContext(context.Background()), context.Background()

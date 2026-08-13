@@ -55,7 +55,7 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
 			ID: "after-input", NodeID: "input", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
 		}))
-	model := &graphScriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
+	model := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
 	ctx := core.WithModels(context.Background(), map[string]llms.Model{"writer": model})
 	run, _, err := runner.Start(ctx, state.FromShared(map[string]any{
 		"request": map[string]any{"input": "draft the answer"},
@@ -75,7 +75,7 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		t.Fatalf("bind restored conversation: %v", err)
 	}
 	messages := conversation.Messages()
-	if len(messages) != 1 || messages[0].Role != llms.ChatMessageTypeHuman || graphMessageText(messages[0]) != "draft the answer" {
+	if len(messages) != 1 || messages[0].Role != llms.ChatMessageTypeHuman || messageText(messages[0]) != "draft the answer" {
 		t.Fatalf("restored messages = %#v", messages)
 	}
 
@@ -91,7 +91,7 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		t.Fatalf("answer = %#v", answer)
 	}
 	conversation, _ = conversationcap.Bind(state.NewAccess(result), state.Scope("writer", "conversation"))
-	if messages = conversation.Messages(); len(messages) != 2 || messages[1].Role != llms.ChatMessageTypeAI || graphMessageText(messages[1]) != "final answer" {
+	if messages = conversation.Messages(); len(messages) != 2 || messages[1].Role != llms.ChatMessageTypeAI || messageText(messages[1]) != "final answer" {
 		t.Fatalf("resumed messages = %#v", messages)
 	}
 }

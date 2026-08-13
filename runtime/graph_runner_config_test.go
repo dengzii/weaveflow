@@ -24,7 +24,7 @@ func TestNewGraphRunnerRequiresExecutionDependencies(t *testing.T) {
 		graph           *wfgraph.Graph
 		executionStore  runtime.ExecutionStore
 		checkpointStore runtime.CheckpointStore
-		codec           state.StateCodec
+		codec           state.Codec
 		eventSink       runtime.EventSink
 		want            string
 	}{

@@ -36,8 +36,8 @@ type EnvironmentContextNode struct {
 	GitStatusLimit  int
 }
 
-func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
-	node := &EnvironmentContextNode{
+func NewEnvironmentContextNode(options ...Option) *EnvironmentContextNode {
+	target := &EnvironmentContextNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeEnvironmentContext,
 			Description: "Collect deterministic workspace and project context for downstream agent nodes.",
@@ -46,9 +46,9 @@ func NewEnvironmentContextNode(options ...NodeOption) *EnvironmentContextNode {
 		IncludeProject: true,
 		GitStatusLimit: defaultEnvironmentGitStatusLimit,
 	}
-	applyNodeOptions(&node.Base, options)
-	ApplyDefaultStatePaths(node)
-	return node
+	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
+	return target
 }
 
 func (n *EnvironmentContextNode) Validate() error {
@@ -65,15 +65,15 @@ func (n *EnvironmentContextNode) Validate() error {
 }
 
 func (n *EnvironmentContextNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	config := map[string]any{
+	nodeConfig := map[string]any{
 		"workspace_root":  n.WorkspaceRoot,
 		"include_git":     n.IncludeGit,
 		"include_project": n.IncludeProject,
 	}
 	if n.GitStatusLimit > 0 {
-		config["git_status_limit"] = n.GitStatusLimit
+		nodeConfig["git_status_limit"] = n.GitStatusLimit
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeEnvironmentContext, config, map[string]state.Path{"environment": n.EnvironmentPath})
+	return newGraphNodeSpec(n.Base, NodeTypeEnvironmentContext, nodeConfig, map[string]state.Path{"environment": n.EnvironmentPath})
 }
 
 func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {

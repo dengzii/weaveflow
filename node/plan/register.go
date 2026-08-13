@@ -12,10 +12,10 @@ func RegisterNodeTypes(target *registry.Registry) error {
 		return fmt.Errorf("registry is nil")
 	}
 	definitions := []registry.NodeTypeDefinition{
-		PlanGeneratorNodeTypeDefinition(),
-		PlanStepNodeTypeDefinition(),
-		PlanReviewNodeTypeDefinition(),
-		PlanSynthesisNodeTypeDefinition(),
+		GeneratorNodeTypeDefinition(),
+		StepNodeTypeDefinition(),
+		ReviewNodeTypeDefinition(),
+		SynthesisNodeTypeDefinition(),
 	}
 	for _, definition := range definitions {
 		if err := target.RegisterNodeTypeInGroup(basenode.NodeGroupOrchestration, definition); err != nil {

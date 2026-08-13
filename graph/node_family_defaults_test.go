@@ -12,9 +12,9 @@ import (
 func TestAddNodeAppliesSubpackageDefaultsAfterAutomaticID(t *testing.T) {
 	t.Parallel()
 	target := NewGraph(nil)
-	firstPlanStep := plannode.NewPlanStepNode()
-	secondPlanStep := plannode.NewPlanStepNode()
-	worker := supervisornode.NewSupervisorWorkerNode()
+	firstPlanStep := plannode.NewStepNode()
+	secondPlanStep := plannode.NewStepNode()
+	worker := supervisornode.NewWorkerNode()
 
 	for _, node := range []core.Node{firstPlanStep, secondPlanStep, worker} {
 		if err := target.AddNode(node); err != nil {

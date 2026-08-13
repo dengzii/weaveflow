@@ -224,7 +224,7 @@ type CheckpointRecord struct {
 
 type RestoredCheckpoint struct {
 	Record    CheckpointRecord    `json:"record"`
-	Snapshot  state.StateSnapshot `json:"snapshot"`
+	Snapshot  state.Snapshot      `json:"snapshot"`
 	Business  *state.State        `json:"business"`
 	Runtime   state.RuntimeState  `json:"runtime"`
 	Artifacts []state.ArtifactRef `json:"artifacts,omitempty"`

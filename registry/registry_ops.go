@@ -116,12 +116,6 @@ func validateCapabilityFields(def dsl.StateCapabilityDefinition) error {
 	return nil
 }
 
-func validateRelativePath(path string) error {
-	_, err := normalizeRelativePath(path)
-	return err
-
-}
-
 func normalizeRelativePath(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {

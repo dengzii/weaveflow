@@ -20,7 +20,7 @@ type SubgraphNode struct {
 	RunChild   registry.ChildRunRunner
 }
 
-func NewSubgraphNode(options ...NodeOption) *SubgraphNode {
+func NewSubgraphNode(options ...Option) *SubgraphNode {
 	target := &SubgraphNode{Base: NewBase(Spec{Name: NodeTypeSubgraph, Description: "Invoke another graph with an explicitly bound state snapshot."})}
 	applyNodeOptions(&target.Base, options)
 	ApplyDefaultStatePaths(target)

@@ -175,7 +175,7 @@ func buildBM25Documents(memories []Entry) ([]bm25Document, float64) {
 	totalLen := 0
 
 	for _, item := range memories {
-		text := memoryText(item)
+		text := entryText(item)
 		tokens := tokenizeText(text)
 		if len(tokens) == 0 {
 			continue
@@ -268,16 +268,16 @@ func scoreMemoryRecencyBoost(entry Entry, options BM25Options) float64 {
 	return options.RecencyBoost * decay
 }
 
-func memoryText(memory Entry) string {
-	if text := strings.TrimSpace(memory.Text); text != "" {
+func entryText(entry Entry) string {
+	if text := strings.TrimSpace(entry.Text); text != "" {
 		return text
 	}
 
-	if len(memory.Payload) == 0 {
+	if len(entry.Payload) == 0 {
 		return ""
 	}
 
-	bytes, err := json.Marshal(memory.Payload)
+	bytes, err := json.Marshal(entry.Payload)
 	if err != nil {
 		return ""
 	}

@@ -13,13 +13,13 @@ import (
 // in-process GraphRunner owns the execution.
 type RunControlService struct {
 	executionStore   ExecutionStore
-	transactionStore RuntimeTransactionStore
+	transactionStore TransactionStore
 	eventSink        EventSink
 	runDeleter       RunDeleter
 	now              func() time.Time
 }
 
-func NewRunControlService(executionStore ExecutionStore, transactionStore RuntimeTransactionStore, eventSink EventSink, runDeleter RunDeleter) (*RunControlService, error) {
+func NewRunControlService(executionStore ExecutionStore, transactionStore TransactionStore, eventSink EventSink, runDeleter RunDeleter) (*RunControlService, error) {
 	if executionStore == nil {
 		return nil, fmt.Errorf("execution store is required")
 	}
@@ -79,7 +79,7 @@ func (s *RunControlService) MarkRunExecutionLost(ctx context.Context, runID stri
 	if err != nil {
 		return RunRecord{}, err
 	}
-	commitResult, err := s.commit(ctx, RuntimeCommit{
+	commitResult, err := s.commit(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Events: []Event{failedEvent},
 	})
@@ -155,7 +155,7 @@ func (s *RunControlService) cancelPausedRun(ctx context.Context, runID, expected
 	if err != nil {
 		return RunRecord{}, err
 	}
-	commitResult, err := s.commit(ctx, RuntimeCommit{
+	commitResult, err := s.commit(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Events: []Event{requestedEvent, canceledEvent},
 	})
@@ -233,10 +233,10 @@ func (s *RunControlService) buildEvent(run RunRecord, eventType EventType, paylo
 	return event, nil
 }
 
-func (s *RunControlService) commit(ctx context.Context, commit RuntimeCommit) (RuntimeCommitResult, error) {
+func (s *RunControlService) commit(ctx context.Context, commit Commit) (CommitResult, error) {
 	result, err := s.transactionStore.Commit(ctx, commit)
 	if err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	if err := publishCommittedEventObservers(ctx, s.eventSink, s.transactionStore, commit.Events); err != nil {
 		return result, err

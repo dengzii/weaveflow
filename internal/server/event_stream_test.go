@@ -73,9 +73,9 @@ func TestRuntimeEventStreamSendsGapAndReleasesSubscription(t *testing.T) {
 	hub := newTestEventHub(eventHubOptions{eventHistoryLimit: 1})
 	publishTestEvent(t, hub, runtime.Event{ID: "event-1", GraphID: "graph", RunID: "run", Type: runtime.EventRunStarted})
 	publishTestEvent(t, hub, runtime.Event{ID: "event-2", GraphID: "graph", RunID: "run", Type: runtime.EventRunFinished})
-	server := &Server{events: hub}
+	testServer := &Server{events: hub}
 	engine := gin.New()
-	engine.GET("/graphs/:graph_id/events/stream", server.handleRuntimeEventStream)
+	engine.GET("/graphs/:graph_id/events/stream", testServer.handleRuntimeEventStream)
 
 	requestContext, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -100,9 +100,9 @@ func TestRuntimeEventStreamSendsGapAndReleasesSubscription(t *testing.T) {
 
 func TestRuntimeEventStreamRejectsConflictingCursorSources(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	server := &Server{events: newTestEventHub(eventHubOptions{})}
+	testServer := &Server{events: newTestEventHub(eventHubOptions{})}
 	engine := gin.New()
-	engine.GET("/graphs/:graph_id/events/stream", server.handleRuntimeEventStream)
+	engine.GET("/graphs/:graph_id/events/stream", testServer.handleRuntimeEventStream)
 	request := httptest.NewRequest(http.MethodGet, "/graphs/graph/events/stream?cursor=query", nil)
 	request.Header.Set("Last-Event-ID", "header")
 	response := httptest.NewRecorder()

@@ -50,7 +50,7 @@ func main() {
 func newPlanGraph() (*wfgraph.Graph, error) {
 	graph := weaveflow.NewGraph()
 
-	generator := plannode.NewPlanGeneratorNode(node.WithID("generate_plan"))
+	generator := plannode.NewGeneratorNode(node.WithID("generate_plan"))
 	generator.ToolIDs = []string{"calculator", "current_time"}
 	generator.MaxSteps = 5
 	generator.MaxReplans = 1
@@ -58,7 +58,7 @@ func newPlanGraph() (*wfgraph.Graph, error) {
 	generator.PlanPath = planStatePath
 	generator.ExecutionPath = planExecutionPath
 
-	step := plannode.NewPlanStepNode(node.WithID("prepare_step"))
+	step := plannode.NewStepNode(node.WithID("prepare_step"))
 	step.MaxIterations = 4
 	step.PlanPath, step.ExecutionPath, step.ConversationPath = planStatePath, planExecutionPath, planConversationPath
 
@@ -71,9 +71,9 @@ func newPlanGraph() (*wfgraph.Graph, error) {
 	executeTools.Parallel = true
 	executeTools.ConversationPath = planConversationPath
 
-	review := plannode.NewPlanReviewNode(node.WithID("review_step"))
+	review := plannode.NewReviewNode(node.WithID("review_step"))
 	review.PlanPath, review.ExecutionPath, review.ConversationPath = planStatePath, planExecutionPath, planConversationPath
-	synthesis := plannode.NewPlanSynthesisNode(node.WithID("synthesize_plan"))
+	synthesis := plannode.NewSynthesisNode(node.WithID("synthesize_plan"))
 	synthesis.PlanPath, synthesis.ResultPath = planStatePath, planResultPath
 
 	for _, target := range []node.Node{generator, step, execute, executeTools, review, synthesis} {
@@ -90,7 +90,7 @@ func newPlanGraph() (*wfgraph.Graph, error) {
 	if err := graph.AddEdge(generator.ID(), step.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(step.ID(), execute.ID(), plannode.PlanStatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
+	if err := graph.AddConditionalEdge(step.ID(), execute.ID(), plannode.StatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(step.ID(), synthesis.ID()); err != nil {
@@ -105,10 +105,10 @@ func newPlanGraph() (*wfgraph.Graph, error) {
 	if err := graph.AddEdge(executeTools.ID(), execute.ID()); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(review.ID(), generator.ID(), plannode.PlanStatusEquals(planStatePath, plannode.PlanStatusReplan)); err != nil {
+	if err := graph.AddConditionalEdge(review.ID(), generator.ID(), plannode.StatusEquals(planStatePath, plannode.PlanStatusReplan)); err != nil {
 		return nil, err
 	}
-	if err := graph.AddConditionalEdge(review.ID(), step.ID(), plannode.PlanStatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
+	if err := graph.AddConditionalEdge(review.ID(), step.ID(), plannode.StatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
 		return nil, err
 	}
 	if err := graph.AddEdge(review.ID(), synthesis.ID()); err != nil {

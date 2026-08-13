@@ -26,17 +26,17 @@ type Access struct {
 
 // NewAccess returns a read-only copy of state for inspection or condition
 // evaluation. Mutating methods on the returned access fail.
-func NewAccess(state *State) *Access {
-	if state == nil {
-		state = NewState()
+func NewAccess(current *State) *Access {
+	if current == nil {
+		current = NewState()
 	}
-	return &Access{state: state.Clone()}
+	return &Access{state: current.Clone()}
 }
 
 // NewEditingAccess returns a copy-on-write view over state. Mutations update
 // the working copy and are captured as a Patch for replay or parallel merging.
-func NewEditingAccess(state *State) *Access {
-	access := NewAccess(state)
+func NewEditingAccess(current *State) *Access {
+	access := NewAccess(current)
 	access.editor = NewEditor(access.state)
 	return access
 }

@@ -19,7 +19,7 @@ var (
 	ErrExists   = errors.New("trigger already exists")
 )
 
-type TriggerStore interface {
+type DefinitionStore interface {
 	Create(context.Context, Trigger) error
 	Update(context.Context, Trigger) error
 	Get(context.Context, string) (Trigger, error)
@@ -132,7 +132,7 @@ type ChatConversationStore interface {
 }
 
 type Store interface {
-	TriggerStore
+	DefinitionStore
 	InvocationStore
 	ChatHistoryStore
 	ChatConversationStore
@@ -164,14 +164,14 @@ func NewFileStore(dir string) (*FileStore, error) {
 	return &FileStore{dir: dir}, nil
 }
 
-func (s *FileStore) Create(ctx context.Context, trigger Trigger) error {
+func (s *FileStore) Create(ctx context.Context, definition Trigger) error {
 	if s == nil {
 		return fmt.Errorf("trigger store is nil")
 	}
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	id, err := storeID(trigger.ID)
+	id, err := storeID(definition.ID)
 	if err != nil {
 		return err
 	}
@@ -186,17 +186,17 @@ func (s *FileStore) Create(ctx context.Context, trigger Trigger) error {
 	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return s.writeLocked(ctx, path, trigger)
+	return s.writeLocked(ctx, path, definition)
 }
 
-func (s *FileStore) Update(ctx context.Context, trigger Trigger) error {
+func (s *FileStore) Update(ctx context.Context, definition Trigger) error {
 	if s == nil {
 		return fmt.Errorf("trigger store is nil")
 	}
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	id, err := storeID(trigger.ID)
+	id, err := storeID(definition.ID)
 	if err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ func (s *FileStore) Update(ctx context.Context, trigger Trigger) error {
 	} else if err != nil {
 		return err
 	}
-	return s.writeLocked(ctx, path, trigger)
+	return s.writeLocked(ctx, path, definition)
 }
 
 func (s *FileStore) Get(ctx context.Context, id string) (Trigger, error) {
@@ -241,17 +241,17 @@ func (s *FileStore) getLocked(id string) (Trigger, error) {
 	if err != nil {
 		return Trigger{}, err
 	}
-	var trigger Trigger
-	if err := decodeStoredJSON(data, &trigger); err != nil {
+	var stored Trigger
+	if err := decodeStoredJSON(data, &stored); err != nil {
 		return Trigger{}, fmt.Errorf("decode trigger %q: %w", id, err)
 	}
-	if strings.TrimSpace(trigger.ID) != id {
-		return Trigger{}, fmt.Errorf("decode trigger %q: stored id %q does not match file name", id, trigger.ID)
+	if strings.TrimSpace(stored.ID) != id {
+		return Trigger{}, fmt.Errorf("decode trigger %q: stored id %q does not match file name", id, stored.ID)
 	}
-	if err := validateStoredTrigger(trigger); err != nil {
+	if err := validateStoredTrigger(stored); err != nil {
 		return Trigger{}, fmt.Errorf("decode trigger %q: %w", id, err)
 	}
-	return trigger, nil
+	return stored, nil
 }
 
 func (s *FileStore) List(ctx context.Context) ([]Trigger, error) {
@@ -425,11 +425,11 @@ func (s *FileStore) recordPath(id string) string {
 	return filepath.Join(s.recordsDir(), id+".json")
 }
 
-func (s *FileStore) writeLocked(ctx context.Context, path string, trigger Trigger) error {
-	if err := validateStoredTrigger(trigger); err != nil {
+func (s *FileStore) writeLocked(ctx context.Context, path string, definition Trigger) error {
+	if err := validateStoredTrigger(definition); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(trigger, "", "  ")
+	data, err := json.MarshalIndent(definition, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -494,11 +494,11 @@ func (s *FileStore) writeRecordLocked(ctx context.Context, path string, record R
 	return os.Rename(tempPath, path)
 }
 
-func validateStoredTrigger(trigger Trigger) error {
-	if err := trigger.Validate(); err != nil {
+func validateStoredTrigger(definition Trigger) error {
+	if err := definition.Validate(); err != nil {
 		return err
 	}
-	if trigger.CreatedAt.IsZero() || trigger.UpdatedAt.IsZero() {
+	if definition.CreatedAt.IsZero() || definition.UpdatedAt.IsZero() {
 		return fmt.Errorf("invalid trigger: timestamps are required")
 	}
 	return nil

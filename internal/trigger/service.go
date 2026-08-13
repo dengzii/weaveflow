@@ -33,7 +33,7 @@ const (
 )
 
 type Service struct {
-	triggerStore          TriggerStore
+	triggerStore          DefinitionStore
 	invocationStore       InvocationStore
 	chatHistoryStore      ChatHistoryStore
 	chatConversationStore ChatConversationStore
@@ -103,7 +103,7 @@ func NewService(store Store, resolver RunnerResolver, options ...ServiceOption) 
 	return service, nil
 }
 
-func (s *Service) Create(ctx context.Context, trigger Trigger) (Trigger, error) {
+func (s *Service) Create(ctx context.Context, definition Trigger) (Trigger, error) {
 	if s == nil {
 		return Trigger{}, fmt.Errorf("trigger service is nil")
 	}
@@ -111,78 +111,78 @@ func (s *Service) Create(ctx context.Context, trigger Trigger) (Trigger, error) 
 	defer s.operationMu.Unlock()
 
 	now := s.now()
-	trigger = trigger.Normalize(now)
-	if trigger.ID == "" {
-		trigger.ID = uuid.NewString()
+	definition = definition.Normalize(now)
+	if definition.ID == "" {
+		definition.ID = uuid.NewString()
 	}
-	if err := trigger.Validate(); err != nil {
+	if err := definition.Validate(); err != nil {
 		return Trigger{}, err
 	}
-	if err := validateScheduleExpression(trigger); err != nil {
+	if err := validateScheduleExpression(definition); err != nil {
 		return Trigger{}, err
 	}
-	schedule, err := s.buildSchedule(trigger)
+	schedule, err := s.buildSchedule(definition)
 	if err != nil {
 		return Trigger{}, err
 	}
-	channel, err := s.buildChatChannel(trigger)
+	channel, err := s.buildChatChannel(definition)
 	if err != nil {
 		return Trigger{}, err
 	}
-	if err := s.triggerStore.Create(ctx, trigger); err != nil {
+	if err := s.triggerStore.Create(ctx, definition); err != nil {
 		return Trigger{}, err
 	}
-	s.replaceSchedule(trigger.ID, schedule)
-	s.replaceChatChannel(trigger.ID, trigger.Chat, channel)
-	return trigger, nil
+	s.replaceSchedule(definition.ID, schedule)
+	s.replaceChatChannel(definition.ID, definition.Chat, channel)
+	return definition, nil
 }
 
-func (s *Service) Update(ctx context.Context, trigger Trigger) (Trigger, error) {
+func (s *Service) Update(ctx context.Context, definition Trigger) (Trigger, error) {
 	if s == nil {
 		return Trigger{}, fmt.Errorf("trigger service is nil")
 	}
 	s.operationMu.Lock()
 	defer s.operationMu.Unlock()
 
-	previous, err := s.triggerStore.Get(ctx, trigger.ID)
+	previous, err := s.triggerStore.Get(ctx, definition.ID)
 	if err != nil {
 		return Trigger{}, err
 	}
-	if trigger.Chat != nil && previous.Chat != nil {
-		if strings.TrimSpace(trigger.Chat.Channel) == "" {
-			trigger.Chat.Channel = previous.Chat.Channel
+	if definition.Chat != nil && previous.Chat != nil {
+		if strings.TrimSpace(definition.Chat.Channel) == "" {
+			definition.Chat.Channel = previous.Chat.Channel
 		}
-		if strings.TrimSpace(trigger.Chat.Channel) == strings.TrimSpace(previous.Chat.Channel) {
-			trigger.Chat.ChannelConfig = s.chatRegistry.MergeWriteOnlyConfig(
-				trigger.Chat.Channel,
+		if strings.TrimSpace(definition.Chat.Channel) == strings.TrimSpace(previous.Chat.Channel) {
+			definition.Chat.ChannelConfig = s.chatRegistry.MergeWriteOnlyConfig(
+				definition.Chat.Channel,
 				previous.Chat.ChannelConfig,
-				trigger.Chat.ChannelConfig,
+				definition.Chat.ChannelConfig,
 			)
 		}
 	}
-	trigger = trigger.Normalize(previous.CreatedAt)
-	trigger.CreatedAt = previous.CreatedAt
-	trigger.UpdatedAt = s.now()
-	if err := trigger.Validate(); err != nil {
+	definition = definition.Normalize(previous.CreatedAt)
+	definition.CreatedAt = previous.CreatedAt
+	definition.UpdatedAt = s.now()
+	if err := definition.Validate(); err != nil {
 		return Trigger{}, err
 	}
-	if err := validateScheduleExpression(trigger); err != nil {
+	if err := validateScheduleExpression(definition); err != nil {
 		return Trigger{}, err
 	}
-	schedule, err := s.buildSchedule(trigger)
+	schedule, err := s.buildSchedule(definition)
 	if err != nil {
 		return Trigger{}, err
 	}
-	channel, err := s.buildChatChannel(trigger)
+	channel, err := s.buildChatChannel(definition)
 	if err != nil {
 		return Trigger{}, err
 	}
-	if err := s.triggerStore.Update(ctx, trigger); err != nil {
+	if err := s.triggerStore.Update(ctx, definition); err != nil {
 		return Trigger{}, err
 	}
-	s.replaceSchedule(trigger.ID, schedule)
-	s.replaceChatChannel(trigger.ID, trigger.Chat, channel)
-	return trigger, nil
+	s.replaceSchedule(definition.ID, schedule)
+	s.replaceChatChannel(definition.ID, definition.Chat, channel)
+	return definition, nil
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Trigger, error) {

@@ -260,9 +260,9 @@ func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 	}
 
 	graphResult, graphOK := state.NewAccess(graphState).ReadAny(state.Shared("result"))
-	runnerResult, runnerOK := state.NewAccess(runnerState).ReadAny(state.Shared("result"))
-	if !graphOK || !runnerOK || graphResult != runnerResult || graphResult != "matched" {
-		t.Fatalf("graph result=%#v ok=%v runner result=%#v ok=%v", graphResult, graphOK, runnerResult, runnerOK)
+	runnerValue, runnerOK := state.NewAccess(runnerState).ReadAny(state.Shared("result"))
+	if !graphOK || !runnerOK || graphResult != runnerValue || graphResult != "matched" {
+		t.Fatalf("graph result=%#v ok=%v runner result=%#v ok=%v", graphResult, graphOK, runnerValue, runnerOK)
 	}
 }
 

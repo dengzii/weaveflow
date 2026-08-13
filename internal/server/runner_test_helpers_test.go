@@ -41,7 +41,7 @@ func mustNewEventTestServer(t *testing.T, sink runtime.EventSink, eventBuffer in
 	if sink != nil {
 		eventSink = runtime.NewCombineEventSink(runtimeStore, sink)
 	}
-	server, err := New(context.Background(), Config{
+	testServer, err := New(context.Background(), Config{
 		Graph:           newMinimalTestGraph(t),
 		ExecutionStore:  runtimeStore,
 		CheckpointStore: runtimeStore,
@@ -51,5 +51,5 @@ func mustNewEventTestServer(t *testing.T, sink runtime.EventSink, eventBuffer in
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
-	return server, server.Runner()
+	return testServer, testServer.Runner()
 }

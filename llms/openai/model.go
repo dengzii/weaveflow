@@ -243,7 +243,7 @@ func (o *LLM) generateChat(ctx context.Context, request llms.ModelRequest) (*llm
 	for _, tool := range request.Tools {
 		t, err := toolFromTool(tool)
 		if err != nil {
-			return nil, fmt.Errorf("failed to convert llms tool to openai tool: %w", err)
+			return nil, fmt.Errorf("failed to convert LLM tool to OpenAI tool: %w", err)
 		}
 		req.Tools = append(req.Tools, t)
 	}
@@ -726,13 +726,6 @@ func isAzureV1URL(baseURL string) bool {
 	return strings.HasSuffix(strings.ToLower(strings.TrimRight(strings.TrimSpace(baseURL), "/")), "/openai/v1")
 }
 
-func optionalFloat64(value float64) *float64 {
-	if value == 0 {
-		return nil
-	}
-	return &value
-}
-
 func mergeExtraBody(inputs ...map[string]any) map[string]any {
 	var merged map[string]any
 	for _, input := range inputs {
@@ -765,7 +758,7 @@ func (o *LLM) CreateEmbedding(ctx context.Context, inputTexts []string) ([][]flo
 		Model: o.client.EmbeddingModel,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create openai embeddings: %w", err)
+		return nil, fmt.Errorf("failed to create OpenAI embeddings: %w", err)
 	}
 	if len(embeddings) == 0 {
 		return nil, ErrEmptyResponse

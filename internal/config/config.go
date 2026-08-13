@@ -5,25 +5,25 @@ import (
 	"strings"
 )
 
-func String(config map[string]any, key string) string {
-	if len(config) == 0 {
+func String(values map[string]any, key string) string {
+	if len(values) == 0 {
 		return ""
 	}
-	if value, ok := config[key].(string); ok {
+	if value, ok := values[key].(string); ok {
 		return value
 	}
 	return ""
 }
 
-func TrimmedString(config map[string]any, key string) string {
-	return strings.TrimSpace(String(config, key))
+func TrimmedString(values map[string]any, key string) string {
+	return strings.TrimSpace(String(values, key))
 }
 
-func StringSlice(config map[string]any, key string) []string {
-	if len(config) == 0 {
+func StringSlice(values map[string]any, key string) []string {
+	if len(values) == 0 {
 		return nil
 	}
-	raw, ok := config[key]
+	raw, ok := values[key]
 	if !ok {
 		return nil
 	}
@@ -42,11 +42,11 @@ func StringSlice(config map[string]any, key string) []string {
 	return nil
 }
 
-func TrimmedStringSlice(config map[string]any, key string) []string {
-	if len(config) == 0 {
+func TrimmedStringSlice(values map[string]any, key string) []string {
+	if len(values) == 0 {
 		return nil
 	}
-	raw, ok := config[key]
+	raw, ok := values[key]
 	if !ok {
 		return nil
 	}
@@ -77,11 +77,11 @@ func TrimmedStringSlice(config map[string]any, key string) []string {
 	return nil
 }
 
-func StringMap(config map[string]any, key string) map[string]string {
-	if len(config) == 0 {
+func StringMap(values map[string]any, key string) map[string]string {
+	if len(values) == 0 {
 		return nil
 	}
-	raw, ok := config[key]
+	raw, ok := values[key]
 	if !ok {
 		return nil
 	}
@@ -104,12 +104,12 @@ func StringMap(config map[string]any, key string) map[string]string {
 	return nil
 }
 
-func Int(config map[string]any, key string) (int, bool) {
-	if len(config) == 0 {
+func Int(values map[string]any, key string) (int, bool) {
+	if len(values) == 0 {
 		return 0, false
 	}
 
-	switch value := config[key].(type) {
+	switch value := values[key].(type) {
 	case int:
 		return value, true
 	case int8:
@@ -134,12 +134,12 @@ func Int(config map[string]any, key string) (int, bool) {
 	return 0, false
 }
 
-func Bool(config map[string]any, key string) (bool, bool) {
-	if len(config) == 0 {
+func Bool(values map[string]any, key string) (bool, bool) {
+	if len(values) == 0 {
 		return false, false
 	}
 
-	switch value := config[key].(type) {
+	switch value := values[key].(type) {
 	case bool:
 		return value, true
 	case string:
@@ -152,12 +152,12 @@ func Bool(config map[string]any, key string) (bool, bool) {
 	return false, false
 }
 
-func Float(config map[string]any, key string) (float64, bool) {
-	if len(config) == 0 {
+func Float(values map[string]any, key string) (float64, bool) {
+	if len(values) == 0 {
 		return 0, false
 	}
 
-	switch value := config[key].(type) {
+	switch value := values[key].(type) {
 	case float64:
 		return value, true
 	case float32:

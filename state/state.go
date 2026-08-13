@@ -21,22 +21,22 @@ func NewState() *State {
 // FromMap creates state from an exported envelope. Missing root sections are
 // initialized.
 func FromMap(input map[string]any) *State {
-	state := NewState()
+	result := NewState()
 	if input != nil {
-		mergeMap(state.root, input)
+		mergeMap(result.root, input)
 	}
-	state.ensureRootSections()
-	return state
+	result.ensureRootSections()
+	return result
 }
 
 // FromShared creates state with values placed under the shared section.
 func FromShared(shared map[string]any) *State {
-	state := NewState()
+	result := NewState()
 	if shared != nil {
-		section, _ := state.root[SectionShared].(map[string]any)
+		section, _ := result.root[SectionShared].(map[string]any)
 		mergeMap(section, shared)
 	}
-	return state
+	return result
 }
 
 // Clone returns a deep copy of state.

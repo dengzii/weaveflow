@@ -10,7 +10,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-type GraphBuilder interface {
+type Builder interface {
 	AddNode(core.Node) error
 	AddEdge(from, to string) error
 	AddConditionalEdge(from, to string, condition registry.EdgeCondition) error
@@ -62,7 +62,7 @@ func PrepareDefinition(def dsl.GraphDefinition, instance *dsl.GraphInstanceConfi
 }
 
 func PopulateGraph(
-	target GraphBuilder,
+	target Builder,
 	reg *registry.Registry,
 	def dsl.GraphDefinition,
 	ctx *registry.BuildContext,

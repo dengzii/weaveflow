@@ -20,11 +20,11 @@ func (r JSONSchema) WriteToFile(path string) error {
 		return err
 	}
 	defer f.Close()
-	bytes, err := json.MarshalIndent(r, "", "  ")
+	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err
 	}
-	_, err = f.WriteString(string(bytes))
+	_, err = f.WriteString(string(data))
 	return err
 }
 

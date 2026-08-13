@@ -15,14 +15,14 @@ type SetFinalAnswerNode struct {
 	OutputPath  state.Path
 }
 
-func NewSetFinalAnswerNode(answer string, options ...NodeOption) *SetFinalAnswerNode {
+func NewSetFinalAnswerNode(answer string, options ...Option) *SetFinalAnswerNode {
 	target := &SetFinalAnswerNode{Base: NewBase(Spec{Name: "set_final_answer", Description: "Write a final answer."}), Answer: answer}
 	applyNodeOptions(&target.Base, options)
 	ApplyDefaultStatePaths(target)
 	return target
 }
 
-func NewRequestToFinalAnswerNode(options ...NodeOption) *SetFinalAnswerNode {
+func NewRequestToFinalAnswerNode(options ...Option) *SetFinalAnswerNode {
 	target := &SetFinalAnswerNode{Base: NewBase(Spec{Name: "request_to_final_answer", Description: "Copy an input value into the final answer."}), FromRequest: true}
 	applyNodeOptions(&target.Base, options)
 	ApplyDefaultStatePaths(target)

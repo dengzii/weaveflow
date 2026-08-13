@@ -2,7 +2,7 @@ package codex
 
 import "context"
 
-type codexRunnerContextKey struct{}
+type runnerContextKey struct{}
 
 func WithRunner(ctx context.Context, runner Runner) context.Context {
 	if ctx == nil {
@@ -11,13 +11,13 @@ func WithRunner(ctx context.Context, runner Runner) context.Context {
 	if runner == nil {
 		return ctx
 	}
-	return context.WithValue(ctx, codexRunnerContextKey{}, runner)
+	return context.WithValue(ctx, runnerContextKey{}, runner)
 }
 
 func RunnerFromContext(ctx context.Context) Runner {
 	if ctx == nil {
 		return nil
 	}
-	runner, _ := ctx.Value(codexRunnerContextKey{}).(Runner)
+	runner, _ := ctx.Value(runnerContextKey{}).(Runner)
 	return runner
 }

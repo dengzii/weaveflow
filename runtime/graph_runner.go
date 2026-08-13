@@ -25,9 +25,9 @@ type GraphRunner struct {
 	retentionPolicy    RunRetentionPolicy
 	retentionAudit     RetentionAuditSink
 	retentionMu        sync.Mutex
-	codec              state.StateCodec
+	codec              state.Codec
 	eventSink          EventSink
-	transactionStore   RuntimeTransactionStore
+	transactionStore   TransactionStore
 	graphID            string
 	graphVersion       string
 	graphHash          string
@@ -72,11 +72,11 @@ type graphRunnerConfig struct {
 	startupWarnings    []WarningRecord
 	nodeContracts      map[string]state.Contract
 	stateSchemas       map[string]state.JSONSchema
-	transactionStore   RuntimeTransactionStore
+	transactionStore   TransactionStore
 	now                func() time.Time
 }
 
-func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec state.StateCodec, eventSink EventSink, options ...GraphRunnerOption) (*GraphRunner, error) {
+func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec state.Codec, eventSink EventSink, options ...GraphRunnerOption) (*GraphRunner, error) {
 	if graph == nil {
 		return nil, fmt.Errorf("graph is required")
 	}
@@ -232,7 +232,7 @@ func WithStateSchemas(schemas map[string]state.JSONSchema) GraphRunnerOption {
 	return func(cfg *graphRunnerConfig) error { cfg.stateSchemas = cloneSchemas(schemas); return nil }
 }
 
-func WithRuntimeTransactionStore(store RuntimeTransactionStore) GraphRunnerOption {
+func WithRuntimeTransactionStore(store TransactionStore) GraphRunnerOption {
 	return func(cfg *graphRunnerConfig) error {
 		if store == nil {
 			return fmt.Errorf("runtime transaction store is required")
@@ -313,14 +313,14 @@ func (r *GraphRunner) EventSink() EventSink {
 	return r.eventSink
 }
 
-func (r *GraphRunner) TransactionStore() RuntimeTransactionStore {
+func (r *GraphRunner) TransactionStore() TransactionStore {
 	if r == nil {
 		return nil
 	}
 	return r.transactionStore
 }
 
-func (r *GraphRunner) StateCodec() state.StateCodec {
+func (r *GraphRunner) StateCodec() state.Codec {
 	if r == nil {
 		return nil
 	}
@@ -648,7 +648,7 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 	if err != nil {
 		return RunRecord{}, initialState, err
 	}
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{
+	commitResult, err := r.commitRuntime(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteCreate, Run: run},
 		Events: []Event{createdEvent, startedEvent},
 	})
@@ -1001,7 +1001,7 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{
+	commitResult, err := r.commitRuntime(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Events: []Event{resumedEvent},
 	})
@@ -1357,7 +1357,7 @@ func (r *GraphRunner) persistReservedControlRequest(ctx context.Context, runID s
 	if err != nil {
 		return RunRecord{}, err
 	}
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{
+	commitResult, err := r.commitRuntime(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Events: []Event{event},
 	})
@@ -1401,10 +1401,6 @@ func (r *GraphRunner) activeExecution(runID string) *graphRunnerExecution {
 	r.activeMu.Lock()
 	defer r.activeMu.Unlock()
 	return r.activeExecutions[runID]
-}
-
-func (r *GraphRunner) hasActiveExecution(runID string) bool {
-	return r.activeExecution(runID) != nil
 }
 
 func (r *GraphRunner) hasExecutionClaim(runID string) bool {
@@ -1562,7 +1558,7 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState
 	if err != nil {
 		return RunRecord{}, finalState, err
 	}
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{
+	commitResult, err := r.commitRuntime(ctx, Commit{
 		Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Checkpoints: []CheckpointWrite{checkpointWrite}, Events: []Event{checkpointEvent, finishedEvent},
 	})
 	if err != nil {
@@ -1586,10 +1582,6 @@ func clearRunExecutionPointers(run *RunRecord) {
 	run.ParallelWaveID = ""
 }
 
-func (r *GraphRunner) cancelRun(ctx context.Context, run RunRecord, currentState *state.State) (RunRecord, *state.State, error) {
-	return r.cancelRunWithTransition(ctx, run, currentState, runnerStepTransition{})
-}
-
 func (r *GraphRunner) cancelRunWithTransition(ctx context.Context, run RunRecord, currentState *state.State, transition runnerStepTransition) (RunRecord, *state.State, error) {
 	now := r.currentTime()
 	run.Status = RunStatusCanceled
@@ -1603,7 +1595,7 @@ func (r *GraphRunner) cancelRunWithTransition(ctx context.Context, run RunRecord
 	}
 	events := append([]Event(nil), transition.events...)
 	events = append(events, canceledEvent)
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{
+	commitResult, err := r.commitRuntime(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Steps:  transition.writes,
 		Events: events,
@@ -1626,7 +1618,7 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 	if err != nil {
 		return "", err
 	}
-	if _, err := r.commitRuntime(ctx, RuntimeCommit{
+	if _, err := r.commitRuntime(ctx, Commit{
 		Checkpoints: []CheckpointWrite{write},
 		Events:      []Event{event},
 	}); err != nil {
@@ -1708,7 +1700,7 @@ func (r *GraphRunner) buildCheckpointWrite(ctx context.Context, run RunRecord, s
 	return CheckpointWrite{Record: record, Payload: payload}, event, nil
 }
 
-func (r *GraphRunner) computeStateDiff(before, after *state.State) ([]state.StateChange, error) {
+func (r *GraphRunner) computeStateDiff(before, after *state.State) ([]state.Change, error) {
 	beforeSnapshot, err := state.SnapshotFromState(before)
 	if err != nil {
 		return nil, err
@@ -1748,7 +1740,7 @@ func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState 
 		return RunRecord{}, currentState, err
 	}
 	events = append(events, pausedEvent)
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Steps: stepWrites, Events: events})
+	commitResult, err := r.commitRuntime(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Steps: stepWrites, Events: events})
 	if err != nil {
 		return RunRecord{}, currentState, err
 	}
@@ -1787,7 +1779,7 @@ func (r *GraphRunner) pauseRunAtCheckpoint(ctx context.Context, run RunRecord, c
 		return RunRecord{}, currentState, err
 	}
 	events = append(events, pausedEvent)
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Events: events})
+	commitResult, err := r.commitRuntime(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Events: events})
 	if err != nil {
 		return RunRecord{}, currentState, err
 	}
@@ -1861,7 +1853,7 @@ func (r *GraphRunner) persistRunFailureWithTransition(ctx context.Context, run R
 	}
 	events := append([]Event(nil), transition.events...)
 	events = append(events, failedEvent)
-	commitResult, err := r.commitRuntime(ctx, RuntimeCommit{
+	commitResult, err := r.commitRuntime(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Steps:  transition.writes,
 		Events: events,
@@ -1950,14 +1942,14 @@ func (r *GraphRunner) abortStartedRun(ctx context.Context, run RunRecord, code s
 	if buildErr != nil {
 		return errors.Join(cause, buildErr)
 	}
-	_, commitErr := r.commitRuntime(failureCtx, RuntimeCommit{
+	_, commitErr := r.commitRuntime(failureCtx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Events: []Event{failedEvent},
 	})
 	return errors.Join(cause, commitErr)
 }
 
-func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRecord, runtime state.RuntimeState, currentState *state.State) ([]GraphTask, *breakpointSkip, error) {
+func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRecord, runtimeState state.RuntimeState, currentState *state.State) ([]GraphTask, *breakpointSkip, error) {
 	schedule, _ := LoadGraphSchedule(currentState)
 	switch checkpoint.Stage {
 	case CheckpointBeforeNode:
@@ -1974,7 +1966,7 @@ func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRec
 		if err != nil {
 			return nil, nil, err
 		}
-		if r.runnerGraph().IsParallelBranchTarget(nodeID) || runtime.ParallelWaveID != "" || runtime.WaveID != "" {
+		if r.runnerGraph().IsParallelBranchTarget(nodeID) || runtimeState.ParallelWaveID != "" || runtimeState.WaveID != "" {
 			return nil, nil, fmt.Errorf("resume from wave task %q checkpoint %q is not supported without after-wave context", checkpoint.Stage, checkpoint.CheckpointID)
 		}
 		nextNodeID, err := r.runnerGraph().ResolveNextNode(ctx, nodeID, currentState)
@@ -2071,13 +2063,13 @@ func (r *GraphRunner) publishPreparedEvent(ctx context.Context, event Event) err
 	return observeRunnerContextEvent(ctx, event)
 }
 
-func (r *GraphRunner) commitRuntime(ctx context.Context, commit RuntimeCommit) (RuntimeCommitResult, error) {
+func (r *GraphRunner) commitRuntime(ctx context.Context, commit Commit) (CommitResult, error) {
 	if r == nil || r.transactionStore == nil {
-		return RuntimeCommitResult{}, errors.New("runtime transaction store is nil")
+		return CommitResult{}, errors.New("runtime transaction store is nil")
 	}
 	result, err := r.transactionStore.Commit(ctx, commit)
 	if err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	if err := publishCommittedEventObservers(ctx, r.eventSink, r.transactionStore, commit.Events); err != nil {
 		return result, err

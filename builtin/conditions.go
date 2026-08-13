@@ -186,7 +186,7 @@ func supervisorRouteEqualsConditionDefinition() registry.ConditionDefinition {
 			if err != nil {
 				return registry.EdgeCondition{}, err
 			}
-			return supervisornode.SupervisorRouteEquals(path, workerID), nil
+			return supervisornode.RouteEquals(path, workerID), nil
 		},
 	}
 }
@@ -228,7 +228,7 @@ func planStatusEqualsConditionDefinition() registry.ConditionDefinition {
 			if err != nil {
 				return registry.EdgeCondition{}, err
 			}
-			return plannode.PlanStatusEquals(path, status), nil
+			return plannode.StatusEquals(path, status), nil
 		},
 	}
 }
@@ -402,18 +402,18 @@ type ExpressionConditionConfig struct {
 	Expressions []Expression `json:"expressions"`
 }
 
-func ExpressionConditions(rootPath state.Path, config ExpressionConditionConfig) (registry.EdgeCondition, error) {
-	config = normalizeExpressionConditionConfig(config)
-	if err := config.Validate(); err != nil {
+func ExpressionConditions(rootPath state.Path, conditionConfig ExpressionConditionConfig) (registry.EdgeCondition, error) {
+	conditionConfig = normalizeExpressionConditionConfig(conditionConfig)
+	if err := conditionConfig.Validate(); err != nil {
 		return registry.EdgeCondition{}, err
 	}
 
-	expressions := append([]Expression(nil), config.Expressions...)
-	matchMode := config.Match
+	expressions := append([]Expression(nil), conditionConfig.Expressions...)
+	matchMode := conditionConfig.Match
 
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 		Type:   ConditionTypeExpressionConditions,
-		Config: config.Map(),
+		Config: conditionConfig.Map(),
 		State:  map[string]dsl.StateBinding{"state": {Path: rootPath.String()}},
 	}, func(_ context.Context, current *state.State) (bool, error) {
 		root, ok := state.NewAccess(current).ReadAny(rootPath)
@@ -542,21 +542,21 @@ func (e Expression) Map() map[string]any {
 	}
 }
 
-func normalizeExpressionConditionConfig(config ExpressionConditionConfig) ExpressionConditionConfig {
-	config.Match = strings.ToLower(strings.TrimSpace(config.Match))
-	if config.Match == "" {
-		config.Match = ExpressionMatchAll
+func normalizeExpressionConditionConfig(conditionConfig ExpressionConditionConfig) ExpressionConditionConfig {
+	conditionConfig.Match = strings.ToLower(strings.TrimSpace(conditionConfig.Match))
+	if conditionConfig.Match == "" {
+		conditionConfig.Match = ExpressionMatchAll
 	}
-	if len(config.Expressions) == 0 {
-		config.Expressions = nil
-		return config
+	if len(conditionConfig.Expressions) == 0 {
+		conditionConfig.Expressions = nil
+		return conditionConfig
 	}
-	normalized := make([]Expression, 0, len(config.Expressions))
-	for _, expression := range config.Expressions {
+	normalized := make([]Expression, 0, len(conditionConfig.Expressions))
+	for _, expression := range conditionConfig.Expressions {
 		normalized = append(normalized, normalizeExpression(expression))
 	}
-	config.Expressions = normalized
-	return config
+	conditionConfig.Expressions = normalized
+	return conditionConfig
 }
 
 func normalizeExpression(expression Expression) Expression {

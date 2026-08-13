@@ -13,10 +13,6 @@ import (
 	"github.com/dengzii/weaveflow/llms"
 )
 
-const (
-	humanInputFile = ".local/instance/human_input.txt"
-)
-
 var reactAgentConversationPath = state.Scope("agent", "conversation")
 var reactAgentPendingInputPath = state.Scope("agent", "pending_input")
 

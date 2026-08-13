@@ -42,19 +42,19 @@ type CheckpointWrite struct {
 	Payload []byte
 }
 
-type RuntimeCommit struct {
+type Commit struct {
 	Run         *RunWrite
 	Steps       []StepWrite
 	Checkpoints []CheckpointWrite
 	Events      []Event
 }
 
-type RuntimeCommitResult struct {
+type CommitResult struct {
 	Run *RunRecord
 }
 
-type RuntimeTransactionStore interface {
-	Commit(ctx context.Context, commit RuntimeCommit) (RuntimeCommitResult, error)
+type TransactionStore interface {
+	Commit(ctx context.Context, commit Commit) (CommitResult, error)
 }
 
 type MemoryRuntimeStore struct {
@@ -148,15 +148,15 @@ func (store *MemoryRuntimeStore) DeleteRun(ctx context.Context, runID string) er
 	return store.events.DeleteRun(ctx, runID)
 }
 
-func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit RuntimeCommit) (RuntimeCommitResult, error) {
+func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit Commit) (CommitResult, error) {
 	if store == nil || store.execution == nil || store.checkpoints == nil || store.events == nil {
-		return RuntimeCommitResult{}, errors.New("memory runtime store is nil")
+		return CommitResult{}, errors.New("memory runtime store is nil")
 	}
 	if err := fileStoreContextErr(ctx); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	if err := validateRuntimeCommit(commit); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	store.execution.mu.Lock()
 	defer store.execution.mu.Unlock()
@@ -173,7 +173,7 @@ func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit RuntimeCommi
 
 	result, err := applyMemoryCommit(commit, runs, steps, checkpoints, events)
 	if err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	store.execution.runs = runs
 	store.execution.steps = steps
@@ -182,25 +182,25 @@ func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit RuntimeCommi
 	return result, nil
 }
 
-func applyMemoryCommit(commit RuntimeCommit, runs map[string]RunRecord, steps map[string]StepRecord, checkpoints map[string]memoryCheckpoint, events map[string][]Event) (RuntimeCommitResult, error) {
+func applyMemoryCommit(commit Commit, runs map[string]RunRecord, steps map[string]StepRecord, checkpoints map[string]memoryCheckpoint, events map[string][]Event) (CommitResult, error) {
 	if err := validateRuntimeCommit(commit); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
-	result := RuntimeCommitResult{}
+	result := CommitResult{}
 	if commit.Run != nil {
 		run := cloneRunRecord(commit.Run.Run)
 		existing, exists := runs[run.RunID]
 		switch commit.Run.Mode {
 		case RunWriteCreate:
 			if exists {
-				return RuntimeCommitResult{}, fmt.Errorf("run %q already exists", run.RunID)
+				return CommitResult{}, fmt.Errorf("run %q already exists", run.RunID)
 			}
 		case RunWriteUpdate:
 			if !exists {
-				return RuntimeCommitResult{}, ErrRunnerRecordNotFound
+				return CommitResult{}, ErrRunnerRecordNotFound
 			}
 			if existing.Revision != run.Revision {
-				return RuntimeCommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
+				return CommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
 			}
 			run.Revision++
 		}
@@ -210,39 +210,39 @@ func applyMemoryCommit(commit RuntimeCommit, runs map[string]RunRecord, steps ma
 	for _, write := range commit.Steps {
 		step := cloneStepRecord(write.Step)
 		if err := validateRunnerStorageID("run ID", step.RunID); err != nil {
-			return RuntimeCommitResult{}, err
+			return CommitResult{}, err
 		}
 		if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
-			return RuntimeCommitResult{}, err
+			return CommitResult{}, err
 		}
 		if _, exists := runs[step.RunID]; !exists {
-			return RuntimeCommitResult{}, ErrRunnerRecordNotFound
+			return CommitResult{}, ErrRunnerRecordNotFound
 		}
 		existing, exists := steps[step.StepID]
 		switch write.Mode {
 		case StepWriteAppend:
 			if exists {
-				return RuntimeCommitResult{}, fmt.Errorf("step %q already exists", step.StepID)
+				return CommitResult{}, fmt.Errorf("step %q already exists", step.StepID)
 			}
 		case StepWriteUpdate:
 			if !exists || existing.RunID != step.RunID {
-				return RuntimeCommitResult{}, ErrRunnerRecordNotFound
+				return CommitResult{}, ErrRunnerRecordNotFound
 			}
 		default:
-			return RuntimeCommitResult{}, fmt.Errorf("invalid step write mode %q", write.Mode)
+			return CommitResult{}, fmt.Errorf("invalid step write mode %q", write.Mode)
 		}
 		steps[step.StepID] = step
 	}
 	for _, write := range commit.Checkpoints {
 		record := write.Record
 		if err := validateRunnerStorageID("run ID", record.RunID); err != nil {
-			return RuntimeCommitResult{}, err
+			return CommitResult{}, err
 		}
 		if err := validateRunnerStorageID("checkpoint ID", record.CheckpointID); err != nil {
-			return RuntimeCommitResult{}, err
+			return CommitResult{}, err
 		}
 		if _, exists := checkpoints[record.CheckpointID]; exists {
-			return RuntimeCommitResult{}, fmt.Errorf("checkpoint %q already exists", record.CheckpointID)
+			return CommitResult{}, fmt.Errorf("checkpoint %q already exists", record.CheckpointID)
 		}
 		record.PayloadRef = ""
 		checkpoints[record.CheckpointID] = memoryCheckpoint{record: record, payload: append([]byte(nil), write.Payload...)}
@@ -256,7 +256,7 @@ func applyMemoryCommit(commit RuntimeCommit, runs map[string]RunRecord, steps ma
 	return result, nil
 }
 
-func validateRuntimeCommit(commit RuntimeCommit) error {
+func validateRuntimeCommit(commit Commit) error {
 	if commit.Run != nil {
 		if err := validateRunnerStorageID("run ID", commit.Run.Run.RunID); err != nil {
 			return err
@@ -469,56 +469,56 @@ type fileTransactionFile struct {
 	After        []byte `json:"after,omitempty"`
 }
 
-func (store *FileRuntimeStore) Commit(ctx context.Context, commit RuntimeCommit) (RuntimeCommitResult, error) {
+func (store *FileRuntimeStore) Commit(ctx context.Context, commit Commit) (CommitResult, error) {
 	if store == nil {
-		return RuntimeCommitResult{}, errors.New("file runtime store is nil")
+		return CommitResult{}, errors.New("file runtime store is nil")
 	}
 	if err := fileStoreContextErr(ctx); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	if err := validateRuntimeCommit(commit); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	unlock := store.lockComponents()
 	defer unlock()
 	if err := store.recoverLocked(); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	journal, result, err := store.prepareJournalLocked(commit)
 	if err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	if len(journal.Mutations) == 0 {
 		return result, nil
 	}
 	if err := os.MkdirAll(store.journalDir, 0o755); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	journalPath := filepath.Join(store.journalDir, journal.ID+".json")
 	if err := writeRunnerJSONFile(journalPath, journal); err != nil {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	if err := applyFileTransactionState(journal.Mutations, true); err != nil {
 		rollbackErr := applyFileTransactionState(journal.Mutations, false)
-		return RuntimeCommitResult{}, errors.Join(err, rollbackErr)
+		return CommitResult{}, errors.Join(err, rollbackErr)
 	}
 	journal.Phase = fileTransactionCommitted
 	if err := writeRunnerJSONFile(journalPath, journal); err != nil {
 		rollbackErr := applyFileTransactionState(journal.Mutations, false)
-		return RuntimeCommitResult{}, errors.Join(err, rollbackErr)
+		return CommitResult{}, errors.Join(err, rollbackErr)
 	}
 	if err := os.Remove(journalPath); err != nil && !os.IsNotExist(err) {
-		return RuntimeCommitResult{}, err
+		return CommitResult{}, err
 	}
 	return result, nil
 }
 
-func (store *FileRuntimeStore) prepareJournalLocked(commit RuntimeCommit) (fileTransactionJournal, RuntimeCommitResult, error) {
+func (store *FileRuntimeStore) prepareJournalLocked(commit Commit) (fileTransactionJournal, CommitResult, error) {
 	if err := validateRuntimeCommit(commit); err != nil {
-		return fileTransactionJournal{}, RuntimeCommitResult{}, err
+		return fileTransactionJournal{}, CommitResult{}, err
 	}
 	journal := fileTransactionJournal{ID: uuid.NewString(), Phase: fileTransactionPrepared}
-	result := RuntimeCommitResult{}
+	result := CommitResult{}
 	mutations := map[string]fileTransactionFile{}
 	addMutation := func(path string, after []byte) error {
 		absolute, err := filepath.Abs(path)
@@ -543,30 +543,30 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit RuntimeCommit) (fileT
 		switch commit.Run.Mode {
 		case RunWriteCreate:
 			if err := ensureRunnerRecordDoesNotExist(path, "run", run.RunID); err != nil {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, err
+				return fileTransactionJournal{}, CommitResult{}, err
 			}
 		case RunWriteUpdate:
 			var existing RunRecord
 			if err := readRunnerJSONFile(path, &existing); err != nil {
 				if os.IsNotExist(err) {
-					return fileTransactionJournal{}, RuntimeCommitResult{}, ErrRunnerRecordNotFound
+					return fileTransactionJournal{}, CommitResult{}, ErrRunnerRecordNotFound
 				}
-				return fileTransactionJournal{}, RuntimeCommitResult{}, err
+				return fileTransactionJournal{}, CommitResult{}, err
 			}
 			if existing.RunID != run.RunID {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, fmt.Errorf("run %q metadata identity mismatch", run.RunID)
+				return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("run %q metadata identity mismatch", run.RunID)
 			}
 			if existing.Revision != run.Revision {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
+				return fileTransactionJournal{}, CommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
 			}
 			run.Revision++
 		}
 		encoded, err := marshalRunnerJSONFile(run)
 		if err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		if err := addMutation(path, encoded); err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		result.Run = &run
 	}
@@ -577,12 +577,12 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit RuntimeCommit) (fileT
 			var referencedRun RunRecord
 			if err := readRunnerJSONFile(store.execution.runPath(step.RunID), &referencedRun); err != nil {
 				if os.IsNotExist(err) {
-					return fileTransactionJournal{}, RuntimeCommitResult{}, ErrRunnerRecordNotFound
+					return fileTransactionJournal{}, CommitResult{}, ErrRunnerRecordNotFound
 				}
-				return fileTransactionJournal{}, RuntimeCommitResult{}, err
+				return fileTransactionJournal{}, CommitResult{}, err
 			}
 			if referencedRun.RunID != step.RunID {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, fmt.Errorf("run %q metadata identity mismatch", step.RunID)
+				return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("run %q metadata identity mismatch", step.RunID)
 			}
 		}
 		path := store.execution.stepPath(step.RunID, step.StepID)
@@ -590,29 +590,29 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit RuntimeCommit) (fileT
 		readErr := readRunnerJSONFile(path, &existing)
 		exists := readErr == nil
 		if readErr != nil && !os.IsNotExist(readErr) {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, readErr
+			return fileTransactionJournal{}, CommitResult{}, readErr
 		}
 		switch write.Mode {
 		case StepWriteAppend:
 			if exists {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, fmt.Errorf("step %q already exists", step.StepID)
+				return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("step %q already exists", step.StepID)
 			}
 		case StepWriteUpdate:
 			if !exists {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, ErrRunnerRecordNotFound
+				return fileTransactionJournal{}, CommitResult{}, ErrRunnerRecordNotFound
 			}
 			if existing.RunID != step.RunID || existing.StepID != step.StepID {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, fmt.Errorf("step %q metadata identity mismatch", step.StepID)
+				return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("step %q metadata identity mismatch", step.StepID)
 			}
 		default:
-			return fileTransactionJournal{}, RuntimeCommitResult{}, fmt.Errorf("invalid step write mode %q", write.Mode)
+			return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("invalid step write mode %q", write.Mode)
 		}
 		encoded, err := marshalRunnerJSONFile(step)
 		if err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		if err := addMutation(path, encoded); err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 	}
 
@@ -621,20 +621,20 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit RuntimeCommit) (fileT
 		metadataPath := store.checkpoints.metadataPath(record.RunID, record.CheckpointID)
 		payloadPath := store.checkpoints.payloadPath(record.RunID, record.CheckpointID)
 		if _, err := os.Stat(metadataPath); err == nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, fmt.Errorf("checkpoint %q already exists", record.CheckpointID)
+			return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("checkpoint %q already exists", record.CheckpointID)
 		} else if !os.IsNotExist(err) {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		record.PayloadRef = payloadPath
 		metadata, err := marshalRunnerJSONFile(record)
 		if err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		if err := addMutation(payloadPath, write.Payload); err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		if err := addMutation(metadataPath, metadata); err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 	}
 
@@ -654,18 +654,18 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit RuntimeCommit) (fileT
 	for _, path := range paths {
 		existing, err := os.ReadFile(path)
 		if err != nil && !os.IsNotExist(err) {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		combined := append([]byte(nil), existing...)
 		for _, event := range eventsByPath[path] {
 			line, err := marshalRunnerJSONLine(event)
 			if err != nil {
-				return fileTransactionJournal{}, RuntimeCommitResult{}, err
+				return fileTransactionJournal{}, CommitResult{}, err
 			}
 			combined = append(combined, line...)
 		}
 		if err := addMutation(path, combined); err != nil {
-			return fileTransactionJournal{}, RuntimeCommitResult{}, err
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 	}
 
@@ -774,8 +774,8 @@ func fileStoreLock(baseDir string, storeMutex *fileStoreMutex) fileStoreLockRef 
 	return fileStoreLockRef{key: strings.ToLower(key), mutex: storeMutex.shared}
 }
 
-func resolveRuntimeTransactionStore(execution ExecutionStore, checkpoints CheckpointStore, eventSink EventSink) (RuntimeTransactionStore, error) {
-	if store, ok := execution.(RuntimeTransactionStore); ok {
+func resolveRuntimeTransactionStore(execution ExecutionStore, checkpoints CheckpointStore, eventSink EventSink) (TransactionStore, error) {
+	if store, ok := execution.(TransactionStore); ok {
 		return store, nil
 	}
 	persistentEventSink := firstTransactionalEventSink(eventSink)
@@ -810,7 +810,7 @@ func firstTransactionalEventSink(sink EventSink) EventSink {
 	return nil
 }
 
-func publishCommittedEventObservers(ctx context.Context, sink EventSink, transactionStore RuntimeTransactionStore, events []Event) error {
+func publishCommittedEventObservers(ctx context.Context, sink EventSink, transactionStore TransactionStore, events []Event) error {
 	if len(events) == 0 || sink == nil {
 		return nil
 	}
@@ -831,7 +831,7 @@ func publishCommittedEventObservers(ctx context.Context, sink EventSink, transac
 	return sink.PublishBatch(ctx, events)
 }
 
-func eventSinkIsTransactionStore(sink EventSink, transactionStore RuntimeTransactionStore) bool {
+func eventSinkIsTransactionStore(sink EventSink, transactionStore TransactionStore) bool {
 	if sink == nil || transactionStore == nil {
 		return false
 	}
@@ -844,8 +844,8 @@ func eventSinkIsTransactionStore(sink EventSink, transactionStore RuntimeTransac
 	return false
 }
 
-var _ RuntimeTransactionStore = (*MemoryRuntimeStore)(nil)
-var _ RuntimeTransactionStore = (*FileRuntimeStore)(nil)
+var _ TransactionStore = (*MemoryRuntimeStore)(nil)
+var _ TransactionStore = (*FileRuntimeStore)(nil)
 var _ ExecutionStore = (*MemoryRuntimeStore)(nil)
 var _ CheckpointStore = (*MemoryRuntimeStore)(nil)
 var _ EventSink = (*MemoryRuntimeStore)(nil)

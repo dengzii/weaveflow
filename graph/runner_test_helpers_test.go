@@ -7,9 +7,9 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-func mustNewGraphRunner(t *testing.T, graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec state.StateCodec, eventSink fruntime.EventSink, options ...fruntime.GraphRunnerOption) *fruntime.GraphRunner {
+func mustNewGraphRunner(t *testing.T, testGraph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec state.Codec, eventSink fruntime.EventSink, options ...fruntime.GraphRunnerOption) *fruntime.GraphRunner {
 	t.Helper()
-	runner, err := NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink, options...)
+	runner, err := NewGraphRunner(testGraph, executionStore, checkpointStore, codec, eventSink, options...)
 	if err != nil {
 		t.Fatalf("NewGraphRunner() error: %v", err)
 	}

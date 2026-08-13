@@ -13,10 +13,10 @@ import (
 	"github.com/dengzii/weaveflow/core"
 )
 
-const codexHelperEnvironment = "WEAVEFLOW_CODEX_HELPER"
+const helperEnvironment = "WEAVEFLOW_CODEX_HELPER"
 
 func TestMain(m *testing.M) {
-	if os.Getenv(codexHelperEnvironment) == "1" {
+	if os.Getenv(helperEnvironment) == "1" {
 		runCodexHelperProcess()
 		os.Exit(0)
 	}
@@ -142,7 +142,7 @@ func newHelperProcessRunner(t *testing.T, environment map[string]string, modelCo
 		t.Fatal(err)
 	}
 	graphEnvironment := map[string]string{
-		codexHelperEnvironment:    "1",
+		helperEnvironment:         "1",
 		codexWorkspaceEnvironment: workspace,
 	}
 	for name, value := range environment {

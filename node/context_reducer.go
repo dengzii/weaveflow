@@ -35,8 +35,8 @@ type ContextReducerNode struct {
 	ConversationPath state.Path
 }
 
-func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
-	node := &ContextReducerNode{
+func NewContextReducerNode(options ...Option) *ContextReducerNode {
+	target := &ContextReducerNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeContextReducer,
 			Description: "Compact older conversation context into a concise summary message.",
@@ -46,9 +46,9 @@ func NewContextReducerNode(options ...NodeOption) *ContextReducerNode {
 		PreserveRecent: defaultContextReducerPreserveTail,
 		SummaryPrefix:  defaultContextReducerSummaryLabel,
 	}
-	applyNodeOptions(&node.Base, options)
-	ApplyDefaultStatePaths(node)
-	return node
+	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
+	return target
 }
 
 func (n *ContextReducerNode) Validate() error {
@@ -65,19 +65,19 @@ func (n *ContextReducerNode) Validate() error {
 }
 
 func (n *ContextReducerNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	config := map[string]any{
+	nodeConfig := map[string]any{
 		"preserve_system": n.PreserveSystem,
 	}
 	if n.MaxMessages > 0 {
-		config["max_messages"] = n.MaxMessages
+		nodeConfig["max_messages"] = n.MaxMessages
 	}
 	if n.PreserveRecent >= 0 {
-		config["preserve_recent"] = n.PreserveRecent
+		nodeConfig["preserve_recent"] = n.PreserveRecent
 	}
 	if strings.TrimSpace(n.SummaryPrefix) != "" {
-		config["summary_prefix"] = n.SummaryPrefix
+		nodeConfig["summary_prefix"] = n.SummaryPrefix
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeContextReducer, config, map[string]state.Path{"conversation": n.ConversationPath})
+	return newGraphNodeSpec(n.Base, NodeTypeContextReducer, nodeConfig, map[string]state.Path{"conversation": n.ConversationPath})
 }
 
 func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {

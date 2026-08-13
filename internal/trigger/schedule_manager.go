@@ -13,28 +13,28 @@ type scheduleEntry struct {
 	id   cron.EntryID
 }
 
-func (s *Service) buildSchedule(trigger Trigger) (*scheduleEntry, error) {
-	if !trigger.Enabled || trigger.Type != TypeSchedule {
+func (s *Service) buildSchedule(definition Trigger) (*scheduleEntry, error) {
+	if !definition.Enabled || definition.Type != TypeSchedule {
 		return nil, nil
 	}
 	location := time.UTC
-	if trigger.Schedule.Timezone != "" {
-		loaded, err := time.LoadLocation(trigger.Schedule.Timezone)
+	if definition.Schedule.Timezone != "" {
+		loaded, err := time.LoadLocation(definition.Schedule.Timezone)
 		if err != nil {
 			return nil, err
 		}
 		location = loaded
 	}
 	scheduler := cron.New(cron.WithLocation(location))
-	entryID, err := scheduler.AddFunc(trigger.Schedule.Cron, func() {
+	entryID, err := scheduler.AddFunc(definition.Schedule.Cron, func() {
 		ctx := s.scheduleContext()
 		if ctx == nil {
 			return
 		}
-		_, _ = s.InvokeSchedule(ctx, trigger.ID)
+		_, _ = s.InvokeSchedule(ctx, definition.ID)
 	})
 	if err != nil {
-		return nil, fmt.Errorf("%w: parse schedule %q: %v", ErrInvalidTrigger, trigger.Schedule.Cron, err)
+		return nil, fmt.Errorf("%w: parse schedule %q: %v", ErrInvalidTrigger, definition.Schedule.Cron, err)
 	}
 	return &scheduleEntry{cron: scheduler, id: entryID}, nil
 }
@@ -61,13 +61,13 @@ func (s *Service) scheduleContext() context.Context {
 	return s.ctx
 }
 
-func validateScheduleExpression(trigger Trigger) error {
-	if trigger.Type != TypeSchedule || trigger.Schedule == nil {
+func validateScheduleExpression(definition Trigger) error {
+	if definition.Type != TypeSchedule || definition.Schedule == nil {
 		return nil
 	}
 	parser := cron.NewParser(cron.Minute | cron.Hour | cron.Dom | cron.Month | cron.Dow)
-	if _, err := parser.Parse(trigger.Schedule.Cron); err != nil {
-		return fmt.Errorf("%w: parse schedule %q: %v", ErrInvalidTrigger, trigger.Schedule.Cron, err)
+	if _, err := parser.Parse(definition.Schedule.Cron); err != nil {
+		return fmt.Errorf("%w: parse schedule %q: %v", ErrInvalidTrigger, definition.Schedule.Cron, err)
 	}
 	return nil
 }

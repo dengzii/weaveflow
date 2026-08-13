@@ -22,17 +22,17 @@ type ToolExecutionNode struct {
 	ConversationPath state.Path
 }
 
-func NewToolExecutionNode(options ...NodeOption) *ToolExecutionNode {
-	node := &ToolExecutionNode{
+func NewToolExecutionNode(options ...Option) *ToolExecutionNode {
+	target := &ToolExecutionNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeToolExecution,
 			Description: "Execute tool calls emitted by the model.",
 		}),
 		Parallel: true,
 	}
-	applyNodeOptions(&node.Base, options)
-	ApplyDefaultStatePaths(node)
-	return node
+	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
+	return target
 }
 
 func (t *ToolExecutionNode) Validate() error {
@@ -49,11 +49,11 @@ func (t *ToolExecutionNode) Validate() error {
 }
 
 func (t *ToolExecutionNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	config := map[string]any{
+	nodeConfig := map[string]any{
 		"tool_ids": t.ToolIDs,
 		"parallel": t.Parallel,
 	}
-	return newGraphNodeSpec(t.Base, NodeTypeToolExecution, config, map[string]state.Path{"conversation": t.ConversationPath})
+	return newGraphNodeSpec(t.Base, NodeTypeToolExecution, nodeConfig, map[string]state.Path{"conversation": t.ConversationPath})
 }
 
 func ToolExecutionNodeTypeDefinition() registry.NodeTypeDefinition {

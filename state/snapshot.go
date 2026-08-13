@@ -11,7 +11,7 @@ import (
 
 const DefaultSnapshotVersion = "state-v2"
 
-type StateSnapshot struct {
+type Snapshot struct {
 	Version  string         `json:"version"`
 	Shared   map[string]any `json:"shared,omitempty"`
 	Scopes   map[string]any `json:"scopes,omitempty"`
@@ -19,7 +19,7 @@ type StateSnapshot struct {
 	Runtime  map[string]any `json:"runtime,omitempty"`
 }
 
-type StateChange struct {
+type Change struct {
 	Path   string `json:"path"`
 	Before any    `json:"before,omitempty"`
 	After  any    `json:"after,omitempty"`
@@ -48,7 +48,7 @@ func (c *JSONStateCodec) Version() string {
 	return c.version
 }
 
-func (c *JSONStateCodec) Encode(snapshot StateSnapshot) ([]byte, error) {
+func (c *JSONStateCodec) Encode(snapshot Snapshot) ([]byte, error) {
 	if snapshot.Version == "" {
 		return nil, fmt.Errorf("state snapshot version is required")
 	}
@@ -58,26 +58,26 @@ func (c *JSONStateCodec) Encode(snapshot StateSnapshot) ([]byte, error) {
 	return json.Marshal(snapshot)
 }
 
-func (c *JSONStateCodec) Decode(data []byte) (StateSnapshot, error) {
+func (c *JSONStateCodec) Decode(data []byte) (Snapshot, error) {
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	decoder.UseNumber()
 
-	var snapshot StateSnapshot
+	var snapshot Snapshot
 	if err := decoder.Decode(&snapshot); err != nil {
-		return StateSnapshot{}, err
+		return Snapshot{}, err
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
-			return StateSnapshot{}, fmt.Errorf("state snapshot contains multiple JSON values")
+			return Snapshot{}, fmt.Errorf("state snapshot contains multiple JSON values")
 		}
-		return StateSnapshot{}, err
+		return Snapshot{}, err
 	}
 	if snapshot.Version == "" {
-		return StateSnapshot{}, fmt.Errorf("state snapshot version is required")
+		return Snapshot{}, fmt.Errorf("state snapshot version is required")
 	}
 	if snapshot.Version != c.Version() {
-		return StateSnapshot{}, fmt.Errorf("state snapshot version %q does not match codec version %q", snapshot.Version, c.Version())
+		return Snapshot{}, fmt.Errorf("state snapshot version %q does not match codec version %q", snapshot.Version, c.Version())
 	}
 	snapshot.Shared = normalizeDecodedMap(snapshot.Shared)
 	snapshot.Scopes = normalizeDecodedMap(snapshot.Scopes)
@@ -86,34 +86,34 @@ func (c *JSONStateCodec) Decode(data []byte) (StateSnapshot, error) {
 	return snapshot, nil
 }
 
-func (c *JSONStateCodec) Diff(before, after StateSnapshot) ([]StateChange, error) {
+func (c *JSONStateCodec) Diff(before, after Snapshot) ([]Change, error) {
 	return DiffSnapshots(before, after)
 }
 
-func SnapshotFromState(state *State) (StateSnapshot, error) {
+func SnapshotFromState(current *State) (Snapshot, error) {
 	root := NewState().Export()
-	if state != nil {
-		root = state.Export()
+	if current != nil {
+		root = current.Export()
 	}
 
 	shared, err := encodeSnapshotSection(root[SectionShared])
 	if err != nil {
-		return StateSnapshot{}, fmt.Errorf("encode shared state: %w", err)
+		return Snapshot{}, fmt.Errorf("encode shared state: %w", err)
 	}
 	scopes, err := encodeSnapshotSection(root[SectionScopes])
 	if err != nil {
-		return StateSnapshot{}, fmt.Errorf("encode scoped state: %w", err)
+		return Snapshot{}, fmt.Errorf("encode scoped state: %w", err)
 	}
 	internal, err := encodeSnapshotSection(root[SectionInternal])
 	if err != nil {
-		return StateSnapshot{}, fmt.Errorf("encode internal state: %w", err)
+		return Snapshot{}, fmt.Errorf("encode internal state: %w", err)
 	}
 	runtime, err := encodeSnapshotSection(root[SectionRuntime])
 	if err != nil {
-		return StateSnapshot{}, fmt.Errorf("encode runtime state: %w", err)
+		return Snapshot{}, fmt.Errorf("encode runtime state: %w", err)
 	}
 
-	return StateSnapshot{
+	return Snapshot{
 		Version:  DefaultSnapshotVersion,
 		Shared:   emptyMapToNil(shared),
 		Scopes:   emptyMapToNil(scopes),
@@ -122,7 +122,7 @@ func SnapshotFromState(state *State) (StateSnapshot, error) {
 	}, nil
 }
 
-func StateFromSnapshot(snapshot StateSnapshot) (*State, error) {
+func FromSnapshot(snapshot Snapshot) (*State, error) {
 	return FromMap(map[string]any{
 		SectionShared:   emptyMapToEmpty(snapshot.Shared),
 		SectionScopes:   emptyMapToEmpty(snapshot.Scopes),
@@ -131,7 +131,7 @@ func StateFromSnapshot(snapshot StateSnapshot) (*State, error) {
 	}), nil
 }
 
-func DiffSnapshots(before, after StateSnapshot) ([]StateChange, error) {
+func DiffSnapshots(before, after Snapshot) ([]Change, error) {
 	beforeFlat, err := flattenSnapshot(before)
 	if err != nil {
 		return nil, err
@@ -155,14 +155,14 @@ func DiffSnapshots(before, after StateSnapshot) ([]StateChange, error) {
 	}
 	sort.Strings(ordered)
 
-	changes := make([]StateChange, 0)
+	changes := make([]Change, 0)
 	for _, path := range ordered {
 		beforeValue, beforeOK := beforeFlat[path]
 		afterValue, afterOK := afterFlat[path]
 		if beforeOK && afterOK && jsonEqual(beforeValue, afterValue) {
 			continue
 		}
-		change := StateChange{Path: path}
+		change := Change{Path: path}
 		if beforeOK {
 			change.Before = cloneValue(beforeValue)
 		}
@@ -227,7 +227,7 @@ func encodeSnapshotValue(value any) (any, error) {
 	}
 }
 
-func flattenSnapshot(snapshot StateSnapshot) (map[string]any, error) {
+func flattenSnapshot(snapshot Snapshot) (map[string]any, error) {
 	values := map[string]any{}
 	for _, section := range []struct {
 		name  string

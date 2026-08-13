@@ -63,7 +63,7 @@ func observeChatLLMEvent(ctx context.Context, eventType runtime.EventType, stepI
 	})
 }
 
-func triggerMessageText(message llms.MessageContent) string {
+func messageText(message llms.MessageContent) string {
 	var text string
 	for _, part := range message.Parts {
 		if content, ok := part.(llms.TextContent); ok {
@@ -116,7 +116,7 @@ func TestChatConversationMessagesPreservesCompletedRepliesOldestFirst(t *testing
 		t.Fatalf("conversation messages = %#v", messages)
 	}
 	for index := range messages {
-		if messages[index].Role != wantRoles[index] || triggerMessageText(messages[index]) != wantText[index] {
+		if messages[index].Role != wantRoles[index] || messageText(messages[index]) != wantText[index] {
 			t.Fatalf("conversation message %d = %#v", index, messages[index])
 		}
 	}
@@ -382,8 +382,8 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 		t.Fatal(err)
 	}
 	if len(conversationMessages) != 2 || conversationMessages[0].Role != llms.ChatMessageTypeHuman ||
-		conversationMessages[1].Role != llms.ChatMessageTypeAI || triggerMessageText(conversationMessages[0]) != "first" ||
-		triggerMessageText(conversationMessages[1]) != "answer:first" {
+		conversationMessages[1].Role != llms.ChatMessageTypeAI || messageText(conversationMessages[0]) != "first" ||
+		messageText(conversationMessages[1]) != "answer:first" {
 		t.Fatalf("conversation messages = %#v", conversationMessages)
 	}
 	thirdHistoryValue, _ := state.ReadPath(starter.initials[2], "scopes.chat.raw_history")

@@ -127,9 +127,6 @@ func walkTree(root string, indent string, depth int, maxDepth int, maxEntries in
 	for _, e := range entries {
 		name := e.Name()
 		if strings.HasPrefix(name, ".") && name != "." && name != ".." {
-			if _, skip := treeSkipDirs[name]; skip {
-				continue
-			}
 			// other dotfiles/dotdirs: skip to keep output focused
 			continue
 		}

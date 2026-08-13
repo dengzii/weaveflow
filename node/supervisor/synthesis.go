@@ -21,7 +21,7 @@ const defaultSupervisorSynthesisSystemPrompt = `You synthesize the final user-fa
 Use the completed worker results as evidence. Resolve overlaps or conflicts, preserve important caveats, and answer the objective directly.
 Do not mention internal routing, worker ids, or the supervisor process unless the user explicitly asks.`
 
-type SupervisorSynthesisNode struct {
+type SynthesisNode struct {
 	core.NodeBase
 	ModelID        string
 	SystemPrompt   string
@@ -29,8 +29,8 @@ type SupervisorSynthesisNode struct {
 	ResultPath     state.Path
 }
 
-func NewSupervisorSynthesisNode(options ...core.NodeOption) *SupervisorSynthesisNode {
-	target := &SupervisorSynthesisNode{
+func NewSynthesisNode(options ...core.NodeOption) *SynthesisNode {
+	target := &SynthesisNode{
 		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypeSupervisorSynthesis,
 			Description: "Synthesize the final answer from the objective and completed supervisor delegations.",
@@ -42,7 +42,7 @@ func NewSupervisorSynthesisNode(options ...core.NodeOption) *SupervisorSynthesis
 	return target
 }
 
-func (n *SupervisorSynthesisNode) Validate() error {
+func (n *SynthesisNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("supervisor synthesis node is nil")
 	}
@@ -55,13 +55,13 @@ func (n *SupervisorSynthesisNode) Validate() error {
 	return nil
 }
 
-func (n *SupervisorSynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (n *SynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisorSynthesis, map[string]any{
 		"model_id": n.ModelID, "system_prompt": n.SystemPrompt,
 	}, map[string]state.Path{"supervisor": n.SupervisorPath, "result": n.ResultPath})
 }
 
-func SupervisorSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
+func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypeSupervisorSynthesis,
@@ -98,7 +98,7 @@ func SupervisorSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewSupervisorSynthesisNode(core.WithID(spec.ID))
+			target := NewSynthesisNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
@@ -111,25 +111,25 @@ func SupervisorSynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *SupervisorSynthesisNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *SynthesisNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	return core.NodeResult{}, n.execute(ctx, access)
 }
 
-func (n *SupervisorSynthesisNode) execute(ctx core.Context, access *state.Access) error {
+func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("supervisor synthesis node: model %q not available", effectiveModelID(n.ModelID))
 	}
-	supervisor, err := supervisorcap.Bind(access, n.SupervisorPath)
+	supervisorView, err := supervisorcap.Bind(access, n.SupervisorPath)
 	if err != nil {
 		return err
 	}
-	current := supervisor.Value()
-	objective := supervisorString(current, SupervisorFieldObjective)
+	current := supervisorView.Value()
+	objective := stringValue(current, SupervisorFieldObjective)
 	if objective == "" {
 		return fmt.Errorf("supervisor synthesis node %q requires an objective", n.ID())
 	}
-	history := supervisorHistoryFromValue(current[SupervisorFieldHistory])
+	history := historyFromValue(current[SupervisorFieldHistory])
 	historyJSON, _ := json.MarshalIndent(history, "", "  ")
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
@@ -158,7 +158,7 @@ func (n *SupervisorSynthesisNode) execute(ctx core.Context, access *state.Access
 	if err := state.Replace(access, state.NewRef[string](n.ResultPath), answer); err != nil {
 		return err
 	}
-	if err := supervisor.Merge(map[string]any{
+	if err := supervisorView.Merge(map[string]any{
 		SupervisorFieldStatus: SupervisorStatusDone,
 		SupervisorFieldRoute:  SupervisorRouteFinish,
 		SupervisorFieldTask:   "",
@@ -166,12 +166,12 @@ func (n *SupervisorSynthesisNode) execute(ctx core.Context, access *state.Access
 		return err
 	}
 	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, map[string]any{
-		"event": "supervisor.synthesized", "turn_count": supervisorInt(current, SupervisorFieldTurnCount), "answer": answer,
+		"event": "supervisor.synthesized", "turn_count": intValue(current, SupervisorFieldTurnCount), "answer": answer,
 	})
 	return nil
 }
 
-func (n *SupervisorSynthesisNode) effectiveSystemPrompt() string {
+func (n *SynthesisNode) effectiveSystemPrompt() string {
 	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
 		return defaultSupervisorSynthesisSystemPrompt
 	}

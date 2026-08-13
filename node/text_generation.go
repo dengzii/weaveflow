@@ -28,8 +28,8 @@ type TextGenerationNode struct {
 	OutputPath      state.Path
 }
 
-func NewTextGenerationNode(options ...NodeOption) *TextGenerationNode {
-	node := &TextGenerationNode{
+func NewTextGenerationNode(options ...Option) *TextGenerationNode {
+	target := &TextGenerationNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeTextGeneration,
 			Description: "Generate text from a raw prompt without conversation messages.",
@@ -37,9 +37,9 @@ func NewTextGenerationNode(options ...NodeOption) *TextGenerationNode {
 		Temperature:     defaultTextGenerationTemperature,
 		ReasoningEffort: defaultReasoningEffort,
 	}
-	applyNodeOptions(&node.Base, options)
-	ApplyDefaultStatePaths(node)
-	return node
+	applyNodeOptions(&target.Base, options)
+	ApplyDefaultStatePaths(target)
+	return target
 }
 
 func (n *TextGenerationNode) Validate() error {

@@ -328,12 +328,12 @@ func TestLoadGraphRuntimeSettingsRejectsModelWithoutID(t *testing.T) {
 
 func TestGraphUploadRejectsModelWithoutID(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	server, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	testServer, err := New(context.Background(), Config{BaseDir: t.TempDir()})
 	if err != nil {
 		t.Fatal(err)
 	}
 	engine := gin.New()
-	server.RegisterRoutes(engine.Group(""))
+	testServer.RegisterRoutes(engine.Group(""))
 
 	_, requestBody := graphSessionRequestBodyForTest(t, graphUploadBodyWithSettings(
 		"invalid-settings",

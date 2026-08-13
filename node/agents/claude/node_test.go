@@ -46,12 +46,12 @@ func TestClaudeNodeExecutesRunnerAndWritesOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	access := state.NewEditingAccess(state.FromShared(map[string]any{"request": map[string]any{"input": "review this repository"}}))
-	var progressEvents []claudeProgressEvent
+	var progressEvents []progressEvent
 	ctx := fruntime.WithRunnerEventPublisher(context.Background(), func(eventType fruntime.EventType, payload any) error {
 		if eventType != fruntime.EventNodeCustom {
 			t.Fatalf("event type = %q", eventType)
 		}
-		progressEvents = append(progressEvents, payload.(claudeProgressEvent))
+		progressEvents = append(progressEvents, payload.(progressEvent))
 		return nil
 	})
 	ctx = WithRunner(ctx, runner)
@@ -80,9 +80,9 @@ func TestClaudeNodeFailureDoesNotWriteOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	access := state.NewEditingAccess(state.FromShared(map[string]any{"request": map[string]any{"input": "review"}}))
-	var progressEvents []claudeProgressEvent
+	var progressEvents []progressEvent
 	ctx := fruntime.WithRunnerEventPublisher(context.Background(), func(_ fruntime.EventType, payload any) error {
-		progressEvents = append(progressEvents, payload.(claudeProgressEvent))
+		progressEvents = append(progressEvents, payload.(progressEvent))
 		return nil
 	})
 	ctx = WithRunner(ctx, runner)

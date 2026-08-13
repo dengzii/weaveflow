@@ -23,7 +23,7 @@ Use the available tools when they improve accuracy. Multiple independent tool ca
 When the step has enough evidence, stop calling tools and return a concise result for this step only.
 Do not synthesize the overall final answer. Use the same language as the objective.`
 
-type PlanStepNode struct {
+type StepNode struct {
 	core.NodeBase
 	SystemPrompt     string
 	MaxIterations    int
@@ -32,8 +32,8 @@ type PlanStepNode struct {
 	ConversationPath state.Path
 }
 
-func NewPlanStepNode(options ...core.NodeOption) *PlanStepNode {
-	target := &PlanStepNode{
+func NewStepNode(options ...core.NodeOption) *StepNode {
+	target := &StepNode{
 		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypePlanStep,
 			Description: "Prepare the current plan step for an LLM/tool execution loop.",
@@ -46,7 +46,7 @@ func NewPlanStepNode(options ...core.NodeOption) *PlanStepNode {
 	return target
 }
 
-func (n *PlanStepNode) Validate() error {
+func (n *StepNode) Validate() error {
 	if n == nil {
 		return fmt.Errorf("plan step node is nil")
 	}
@@ -59,14 +59,14 @@ func (n *PlanStepNode) Validate() error {
 	return nil
 }
 
-func (n *PlanStepNode) GraphNodeSpec() dsl.GraphNodeSpec {
+func (n *StepNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	return newGraphNodeSpec(n.NodeBase, NodeTypePlanStep, map[string]any{
 		"system_prompt":  n.SystemPrompt,
 		"max_iterations": n.MaxIterations,
 	}, map[string]state.Path{"plan": n.PlanPath, "execution": n.ExecutionPath, "conversation": n.ConversationPath})
 }
 
-func PlanStepNodeTypeDefinition() registry.NodeTypeDefinition {
+func StepNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypePlanStep,
@@ -114,7 +114,7 @@ func PlanStepNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanStepNode(core.WithID(spec.ID))
+			target := NewStepNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			if _, exists := spec.Config["system_prompt"]; exists {
 				target.SystemPrompt = config.String(spec.Config, "system_prompt")
@@ -133,11 +133,11 @@ func PlanStepNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanStepNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *StepNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	return core.NodeResult{}, n.execute(ctx, access)
 }
 
-func (n *PlanStepNode) execute(_ core.Context, access *state.Access) error {
+func (n *StepNode) execute(_ core.Context, access *state.Access) error {
 	planner, err := plancap.Bind(access, n.PlanPath)
 	if err != nil {
 		return err
@@ -151,9 +151,9 @@ func (n *PlanStepNode) execute(_ core.Context, access *state.Access) error {
 		return err
 	}
 
-	plan := planner.Value()
-	steps := planStepsFromValue(plan[planFieldSteps])
-	index := planInt(plan[planFieldCurrentIndex])
+	planValue := planner.Value()
+	steps := stepsFromValue(planValue[planFieldSteps])
+	index := intValue(planValue[planFieldCurrentIndex])
 	if index < 0 || index >= len(steps) {
 		if err := planner.SetField(planFieldStatus, PlanStatusFinalizing); err != nil {
 			return err
@@ -166,10 +166,10 @@ func (n *PlanStepNode) execute(_ core.Context, access *state.Access) error {
 	step.Result = ""
 	step.Error = ""
 	steps[index] = step
-	if err := planner.SetField(planFieldSteps, planStepMaps(steps)); err != nil {
+	if err := planner.SetField(planFieldSteps, stepMaps(steps)); err != nil {
 		return err
 	}
-	currentStep := planStepMaps([]plancap.Step{step})[0]
+	currentStep := stepMaps([]plancap.Step{step})[0]
 	currentStep["index"] = index
 	if err := execution.SetCurrentStep(currentStep); err != nil {
 		return err
@@ -178,7 +178,7 @@ func (n *PlanStepNode) execute(_ core.Context, access *state.Access) error {
 	if prompt := strings.TrimSpace(n.SystemPrompt); prompt != "" {
 		messages = append(messages, llms.TextParts(llms.ChatMessageTypeSystem, prompt))
 	}
-	messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, buildPlanStepPrompt(plan, steps, index)))
+	messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, buildPlanStepPrompt(planValue, steps, index)))
 	if err := conversation.SetMessages(messages); err != nil {
 		return err
 	}
@@ -191,18 +191,18 @@ func (n *PlanStepNode) execute(_ core.Context, access *state.Access) error {
 	return conversation.SetMaxIterations(n.effectiveMaxIterations())
 }
 
-func (n *PlanStepNode) effectiveMaxIterations() int {
+func (n *StepNode) effectiveMaxIterations() int {
 	if n == nil || n.MaxIterations <= 0 {
 		return defaultPlanStepMaxIterations
 	}
 	return n.MaxIterations
 }
 
-func buildPlanStepPrompt(plan map[string]any, steps []plancap.Step, index int) string {
+func buildPlanStepPrompt(planValue map[string]any, steps []plancap.Step, index int) string {
 	var builder strings.Builder
 	builder.WriteString("Objective:\n")
-	builder.WriteString(planString(plan[planFieldObjective]))
-	if summary := planString(plan[planFieldSummary]); summary != "" {
+	builder.WriteString(stringValue(planValue[planFieldObjective]))
+	if summary := stringValue(planValue[planFieldSummary]); summary != "" {
 		builder.WriteString("\n\nPlan summary:\n")
 		builder.WriteString(summary)
 	}
@@ -211,10 +211,10 @@ func buildPlanStepPrompt(plan map[string]any, steps []plancap.Step, index int) s
 		for _, previous := range steps[:index] {
 			fmt.Fprintf(&builder, "- [%s] %s\n", previous.ID, previous.Title)
 			if previous.Result != "" {
-				fmt.Fprintf(&builder, "  result: %s\n", planTextLimit(previous.Result, 4000))
+				fmt.Fprintf(&builder, "  result: %s\n", textLimit(previous.Result, 4000))
 			}
 			if previous.Error != "" {
-				fmt.Fprintf(&builder, "  error: %s\n", planTextLimit(previous.Error, 1000))
+				fmt.Fprintf(&builder, "  error: %s\n", textLimit(previous.Error, 1000))
 			}
 		}
 	}

@@ -158,7 +158,7 @@ func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunR
 		if update != nil {
 			update(&run)
 		}
-		commitResult, err := e.runner.commitRuntime(ctx, RuntimeCommit{
+		commitResult, err := e.runner.commitRuntime(ctx, Commit{
 			Run: &RunWrite{Mode: RunWriteUpdate, Run: run},
 		})
 		if errors.Is(err, ErrRunRevisionConflict) {
@@ -234,7 +234,7 @@ func (e *graphRunnerExecution) persistControlRequest(ctx context.Context, kind r
 	if err != nil {
 		return RunRecord{}, err
 	}
-	commitResult, err := e.runner.commitRuntime(ctx, RuntimeCommit{
+	commitResult, err := e.runner.commitRuntime(ctx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Events: []Event{event},
 	})
@@ -403,7 +403,7 @@ type contractStateArtifact struct {
 	Stage    string                    `json:"stage,omitempty"`
 	Contract state.Contract            `json:"contract"`
 	Summary  contractStateArtifactInfo `json:"summary"`
-	Snapshot state.StateSnapshot       `json:"snapshot"`
+	Snapshot state.Snapshot            `json:"snapshot"`
 }
 
 type contractStateArtifactInfo struct {
@@ -582,7 +582,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 				}
 				events = append(events, startedEvent)
 			}
-			commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+			commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
 				Run:         &RunWrite{Mode: RunWriteUpdate, Run: run},
 				Steps:       []StepWrite{{Mode: StepWriteAppend, Step: step}},
 				Checkpoints: []CheckpointWrite{checkpointWrite},
@@ -789,7 +789,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, completedTasks [
 		for _, step := range steps {
 			stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: step})
 		}
-		commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+		commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
 			Run:         &RunWrite{Mode: RunWriteUpdate, Run: barrierRun},
 			Steps:       stepWrites,
 			Checkpoints: []CheckpointWrite{checkpointWrite},
@@ -890,7 +890,7 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 		for _, step := range steps {
 			stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: step})
 		}
-		commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+		commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
 			Run:   &RunWrite{Mode: RunWriteUpdate, Run: run},
 			Steps: stepWrites,
 		})
@@ -931,13 +931,6 @@ func (e *graphRunnerExecution) recordBranchPatch(base *state.State, task GraphTa
 	if recorder != nil {
 		recorder.RecordBranchPatch(base, task, patch)
 	}
-}
-
-func (e *graphRunnerExecution) recordBranchPatchLocked(base *state.State, task GraphTask, patch state.Patch) {
-	if e == nil || e.patchRecorder == nil {
-		return
-	}
-	e.patchRecorder.RecordBranchPatch(base, task, patch)
 }
 
 func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, beforeState *state.State, currentState *state.State, eventDrafts []core.EventDraft) error {
@@ -1011,7 +1004,7 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 			return buildErr
 		}
 		events = append(events, finishedEvent)
-		commitResult, commitErr := e.runner.commitRuntime(ctx, RuntimeCommit{
+		commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
 			Run:         &RunWrite{Mode: RunWriteUpdate, Run: run},
 			Steps:       []StepWrite{{Mode: StepWriteUpdate, Step: step}},
 			Checkpoints: []CheckpointWrite{checkpointWrite},
@@ -1050,26 +1043,6 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 		e.pending = nil
 	}
 	e.mu.Unlock()
-	return nil
-}
-
-func (e *graphRunnerExecution) validateContract(ctx context.Context, run RunRecord, step StepRecord, nodeID string, currentState *state.State, changes []state.StateChange) error {
-	policy := e.contractPolicy
-	if !policy.Enabled() || policy.Mode == core.ContractValidationOff || e.nodeContracts == nil {
-		return nil
-	}
-	contract, ok := e.nodeContracts[nodeID]
-	if !ok {
-		return nil
-	}
-	violations := issuesToContractViolations(nodeID, state.ValidateRequiredReads(currentState, contract))
-	if len(violations) == 0 {
-		return nil
-	}
-	e.reportContractViolationsWithRun(ctx, run, step, violations)
-	if policy.Mode == core.ContractValidationStrict && policy.EnforceWrites {
-		return fmt.Errorf("state contract violation in node %q: %d violation(s) detected", nodeID, len(violations))
-	}
 	return nil
 }
 

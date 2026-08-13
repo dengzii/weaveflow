@@ -9,29 +9,29 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-func NewGraphRunner(graph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec state.StateCodec, eventSink fruntime.EventSink, options ...fruntime.GraphRunnerOption) (*fruntime.GraphRunner, error) {
-	if graph == nil {
+func NewGraphRunner(targetGraph *Graph, executionStore fruntime.ExecutionStore, checkpointStore fruntime.CheckpointStore, codec state.Codec, eventSink fruntime.EventSink, options ...fruntime.GraphRunnerOption) (*fruntime.GraphRunner, error) {
+	if targetGraph == nil {
 		return nil, fmt.Errorf("graph is required")
 	}
-	graphHash, err := graph.SemanticHash()
+	graphHash, err := targetGraph.SemanticHash()
 	if err != nil {
 		return nil, fmt.Errorf("compute graph semantic hash: %w", err)
 	}
-	snapshotHash, err := graph.SnapshotHash()
+	snapshotHash, err := targetGraph.SnapshotHash()
 	if err != nil {
 		return nil, fmt.Errorf("compute graph snapshot hash: %w", err)
 	}
 	baseOptions := []fruntime.GraphRunnerOption{
-		fruntime.WithNodeContracts(cloneNodeContracts(graph.nodeContracts)),
-		fruntime.WithStateSchemas(cloneStateSchemas(graph.stateSchemas)),
-		fruntime.WithStartupWarnings(buildRunnerWarnings(graph.ContractDiagnostics())),
+		fruntime.WithNodeContracts(cloneNodeContracts(targetGraph.nodeContracts)),
+		fruntime.WithStateSchemas(cloneStateSchemas(targetGraph.stateSchemas)),
+		fruntime.WithStartupWarnings(buildRunnerWarnings(targetGraph.ContractDiagnostics())),
 		fruntime.WithGraphMetadata("", "", graphHash, snapshotHash, ""),
 	}
-	if len(graph.nodeContracts) > 0 {
+	if len(targetGraph.nodeContracts) > 0 {
 		baseOptions = append(baseOptions, fruntime.WithContractValidation(core.ContractValidationStrict))
 	}
 	baseOptions = append(baseOptions, options...)
-	return fruntime.NewGraphRunner(newRunnerGraph(graph), executionStore, checkpointStore, codec, eventSink, baseOptions...)
+	return fruntime.NewGraphRunner(newRunnerGraph(targetGraph), executionStore, checkpointStore, codec, eventSink, baseOptions...)
 }
 
 func cloneNodeContracts(contracts map[string]state.Contract) map[string]state.Contract {
@@ -45,47 +45,47 @@ func cloneNodeContracts(contracts map[string]state.Contract) map[string]state.Co
 	return cloned
 }
 
-type graphRunnerGraph struct {
+type runtimeGraph struct {
 	graph *Graph
 }
 
-func newRunnerGraph(graph *Graph) fruntime.RunnerGraph {
-	if graph == nil {
+func newRunnerGraph(targetGraph *Graph) fruntime.RunnerGraph {
+	if targetGraph == nil {
 		return nil
 	}
-	return &graphRunnerGraph{graph: graph}
+	return &runtimeGraph{graph: targetGraph}
 }
 
-func (g *graphRunnerGraph) Validate() error {
+func (g *runtimeGraph) Validate() error {
 	if g == nil || g.graph == nil {
 		return fmt.Errorf("graph runner graph is nil")
 	}
 	return g.graph.Validate()
 }
 
-func (g *graphRunnerGraph) EntryPointID() string {
+func (g *runtimeGraph) EntryPointID() string {
 	if g == nil || g.graph == nil {
 		return ""
 	}
 	return g.graph.entryPoint
 }
 
-func (g *graphRunnerGraph) CompileForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
+func (g *runtimeGraph) CompileForRunner(execution fruntime.RunnerExecution) (fruntime.RunnerRunnable, error) {
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}
 	return g.graph.compileForRunner(execution)
 }
 
-func (g *graphRunnerGraph) ResolveNodeID(nodeID string) (string, error) {
+func (g *runtimeGraph) ResolveNodeID(nodeID string) (string, error) {
 	if g == nil || g.graph == nil {
 		return "", fmt.Errorf("graph runner graph is nil")
 	}
 	return g.graph.resolveNodeID(nodeID)
 }
 
-func (g *graphRunnerGraph) ResolveNextNode(ctx context.Context, currentNodeID string, state *state.State) (string, error) {
-	next, err := g.ResolveNextNodes(ctx, currentNodeID, state)
+func (g *runtimeGraph) ResolveNextNode(ctx context.Context, currentNodeID string, currentState *state.State) (string, error) {
+	next, err := g.ResolveNextNodes(ctx, currentNodeID, currentState)
 	if err != nil {
 		return "", err
 	}
@@ -95,28 +95,28 @@ func (g *graphRunnerGraph) ResolveNextNode(ctx context.Context, currentNodeID st
 	return next[0], nil
 }
 
-func (g *graphRunnerGraph) ResolveNextNodes(ctx context.Context, currentNodeID string, state *state.State) ([]string, error) {
+func (g *runtimeGraph) ResolveNextNodes(ctx context.Context, currentNodeID string, currentState *state.State) ([]string, error) {
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}
-	return g.graph.resolveNextNodes(ctx, currentNodeID, state)
+	return g.graph.resolveNextNodes(ctx, currentNodeID, currentState)
 }
 
-func (g *graphRunnerGraph) IsParallelBranchTarget(nodeID string) bool {
+func (g *runtimeGraph) IsParallelBranchTarget(nodeID string) bool {
 	if g == nil || g.graph == nil {
 		return false
 	}
 	return g.graph.isParallelBranchTarget(nodeID)
 }
 
-func (g *graphRunnerGraph) NodeName(nodeID string) string {
+func (g *runtimeGraph) NodeName(nodeID string) string {
 	if g == nil || g.graph == nil {
 		return nodeID
 	}
 	return g.graph.nodeDisplayName(nodeID)
 }
 
-func (g *graphRunnerGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint) ([]string, error) {
+func (g *runtimeGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint) ([]string, error) {
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}

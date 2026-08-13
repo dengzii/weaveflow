@@ -327,7 +327,7 @@ func TestChannelStartsTypingBeforeGraphAndCachesTicket(t *testing.T) {
 		return nil
 	})
 	for index := range 2 {
-		if err := channel.handleMessage(context.Background(), weixinMessage{
+		if err := channel.handleMessage(context.Background(), inboundMessage{
 			MessageID:    json.RawMessage(strconv.Itoa(index + 1)),
 			FromUserID:   "user",
 			ContextToken: "ctx",
@@ -387,7 +387,7 @@ func TestHandleMessagesAllowsStopWhilePreviousMessageIsRunning(t *testing.T) {
 	defer cancel()
 	workerErrors := make(chan error, 1)
 	var workers sync.WaitGroup
-	channel.handleMessages(ctx, []weixinMessage{
+	channel.handleMessages(ctx, []inboundMessage{
 		{
 			MessageID: json.RawMessage("1"), FromUserID: "user", ContextToken: "ctx-1", MessageType: 1,
 			ItemList: []messageItem{{Type: 1, TextItem: &textItem{Text: "long task"}}},
@@ -460,7 +460,7 @@ func TestChannelKeepsTypingActiveWhileGraphRuns(t *testing.T) {
 		}
 		return nil
 	})
-	if err := channel.handleMessage(context.Background(), weixinMessage{
+	if err := channel.handleMessage(context.Background(), inboundMessage{
 		MessageID:    json.RawMessage(`1`),
 		FromUserID:   "user",
 		ContextToken: "ctx",
@@ -525,10 +525,10 @@ func TestChannelSendsUnsupportedAndFailureMessages(t *testing.T) {
 		}),
 		wechatUIN: randomWeChatUIN(),
 	}
-	if err := channel.handleMessage(context.Background(), weixinMessage{FromUserID: "user", ContextToken: "ctx", MessageType: 2}); err != nil {
+	if err := channel.handleMessage(context.Background(), inboundMessage{FromUserID: "user", ContextToken: "ctx", MessageType: 2}); err != nil {
 		t.Fatal(err)
 	}
-	if err := channel.handleMessage(context.Background(), weixinMessage{
+	if err := channel.handleMessage(context.Background(), inboundMessage{
 		FromUserID:   "user",
 		ContextToken: "ctx",
 		MessageType:  1,
@@ -570,7 +570,7 @@ func TestChannelRunsGraphWhenTypingIsUnavailable(t *testing.T) {
 		}),
 		wechatUIN: randomWeChatUIN(),
 	}
-	if err := channel.handleMessage(context.Background(), weixinMessage{
+	if err := channel.handleMessage(context.Background(), inboundMessage{
 		MessageID:    json.RawMessage(`123`),
 		FromUserID:   "user",
 		ContextToken: "ctx",

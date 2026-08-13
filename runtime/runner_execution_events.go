@@ -2,8 +2,6 @@ package runtime
 
 import (
 	"context"
-	"fmt"
-	"reflect"
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
@@ -172,20 +170,4 @@ func toolExecutionEventPayload(event core.ToolExecutionEvent) map[string]any {
 		payload["duration_ms"] = max(event.FinishedAt.Sub(event.StartedAt).Milliseconds(), 0)
 	}
 	return payload
-}
-
-func modelTypeLabel(model llms.Model) string {
-	if model == nil {
-		return ""
-	}
-	if named, ok := model.(llms.NamedModel); ok {
-		if name := strings.TrimSpace(named.Name()); name != "" {
-			return name
-		}
-	}
-	typed := reflect.TypeOf(model)
-	if typed == nil {
-		return ""
-	}
-	return fmt.Sprint(typed)
 }

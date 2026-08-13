@@ -170,10 +170,6 @@ func TestFileStoreInstancesShareDirectoryMutex(t *testing.T) {
 	baseDir := t.TempDir()
 	first := NewFileExecutionStore(baseDir)
 	second := NewFileExecutionStore(filepath.Join(baseDir, "."))
-	first.mu.Lock()
-	first.mu.Unlock()
-	second.mu.Lock()
-	second.mu.Unlock()
 	if first.mu.shared != second.mu.shared {
 		t.Fatal("stores for the same directory use different mutexes")
 	}

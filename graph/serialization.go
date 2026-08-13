@@ -209,7 +209,7 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 		Metadata:     metadata,
 	}
 	if g.executionPolicyExplicit {
-		definition.Policy = graphExecutionPolicyToDSL(g.executionPolicy)
+		definition.Policy = definitionExecutionPolicyToDSL(g.executionPolicy)
 	}
 	return definition, nil
 }

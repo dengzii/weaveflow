@@ -247,7 +247,7 @@ func chatStateBindingType(name string) string {
 	}
 }
 
-type TriggerResult struct {
+type Result struct {
 	Trigger Trigger           `json:"trigger"`
 	Run     runtime.RunRecord `json:"run"`
 }

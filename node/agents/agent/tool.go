@@ -13,7 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/llms"
 )
 
-type agentToolInput struct {
+type toolInput struct {
 	Task string `json:"task"`
 }
 
@@ -30,7 +30,7 @@ func NewTool(config ToolConfig) (core.Tool, error) {
 	if err != nil {
 		return core.Tool{}, err
 	}
-	runner := agentRuntime{
+	runner := loopRunner{
 		config: normalized.Agent,
 		identity: executionIdentity{
 			ToolName: normalized.Name,
@@ -56,7 +56,7 @@ func NewTool(config ToolConfig) (core.Tool, error) {
 		},
 		ExecutionMode: core.ToolExecutionComposite,
 		Handler: func(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
-			var input agentToolInput
+			var input toolInput
 			if err := core.DecodeToolArguments(call, &input); err != nil {
 				return llms.ToolResult{}, err
 			}

@@ -104,16 +104,16 @@ func ValidateContract(contract Contract) []ValidationIssue {
 	return issues
 }
 
-func ValidateRequiredReads(state *State, contract Contract) []ValidationIssue {
+func ValidateRequiredReads(current *State, contract Contract) []ValidationIssue {
 	issues := ValidateContract(contract)
-	if state == nil {
-		state = NewState()
+	if current == nil {
+		current = NewState()
 	}
 	for _, field := range contract.Fields {
 		if !isReadMode(field.Mode) || field.Path.Empty() {
 			continue
 		}
-		value, ok := state.read(field.Path)
+		value, ok := current.read(field.Path)
 		if ok {
 			issues = append(issues, ValidateJSONSchemaValue(value, field.Schema, field.Path.String())...)
 			continue

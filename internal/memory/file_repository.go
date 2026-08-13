@@ -14,8 +14,7 @@ const fileRepositoryDateLayout = "2006-01-02"
 const fileRepositoryStorageDir = "memory"
 
 type fileRepository struct {
-	dir       string
-	retriever Retriever
+	dir string
 }
 
 type fileMemoryRecord struct {
@@ -40,7 +39,7 @@ func NewFileMemoryRepository(path string) Repository {
 	}
 }
 
-func (f *fileRepository) Store(memory []Entry) (err error) {
+func (f *fileRepository) Store(entries []Entry) (err error) {
 	if f == nil || strings.TrimSpace(f.dir) == "" {
 		return nil
 	}
@@ -58,9 +57,9 @@ func (f *fileRepository) Store(memory []Entry) (err error) {
 	}()
 
 	grouped := make(map[string][]fileMemoryRecord)
-	for index, item := range memory {
+	for index, item := range entries {
 		entry := normalizeEntry(item)
-		fileName := memoryTime(entry).Format(fileRepositoryDateLayout) + ".json"
+		fileName := entryTime(entry).Format(fileRepositoryDateLayout) + ".json"
 		grouped[fileName] = append(grouped[fileName], fileMemoryRecord{
 			Sequence:  index,
 			ID:        entry.ID,
@@ -84,7 +83,7 @@ func (f *fileRepository) Store(memory []Entry) (err error) {
 	if err := os.RemoveAll(targetDir); err != nil {
 		return err
 	}
-	if len(memory) == 0 {
+	if len(entries) == 0 {
 		return nil
 	}
 
@@ -140,8 +139,8 @@ func (f *fileRepository) Load(options *LoadOptions) ([]Entry, error) {
 	}
 
 	sort.SliceStable(items, func(i, j int) bool {
-		leftTime := memoryTime(items[i].entry)
-		rightTime := memoryTime(items[j].entry)
+		leftTime := entryTime(items[i].entry)
+		rightTime := entryTime(items[j].entry)
 		if !leftTime.Equal(rightTime) {
 			return leftTime.Before(rightTime)
 		}

@@ -12,7 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/llms/parts"
 	basenode "github.com/dengzii/weaveflow/node"
-	fruntime "github.com/dengzii/weaveflow/runtime"
+	executor "github.com/dengzii/weaveflow/runtime"
 
 	"github.com/dengzii/weaveflow/llms"
 )
@@ -23,17 +23,17 @@ type executionIdentity struct {
 	ConversationPath string
 }
 
-type agentRuntime struct {
+type loopRunner struct {
 	config        Config
 	identity      executionIdentity
 	strictToolIDs bool
 }
 
-func newNodeRuntime(target *Node) agentRuntime {
+func newNodeRuntime(target *Node) loopRunner {
 	if target == nil {
-		return agentRuntime{}
+		return loopRunner{}
 	}
-	return agentRuntime{
+	return loopRunner{
 		config: target.Config,
 		identity: executionIdentity{
 			NodeID:           target.ID(),
@@ -42,7 +42,7 @@ func newNodeRuntime(target *Node) agentRuntime {
 	}
 }
 
-func (runtime agentRuntime) runLoop(ctx core.Context, conversation *conversationcap.View) error {
+func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationcap.View) error {
 	model := ctx.Model(runtime.config.ModelID)
 	if model == nil {
 		return fmt.Errorf("agent: model %q not available", effectiveModelID(runtime.config.ModelID))
@@ -84,7 +84,7 @@ func (runtime agentRuntime) runLoop(ctx core.Context, conversation *conversation
 		promptMessages := basenode.TrimLLMPromptMessages(messages, promptMaxChars)
 		iteration := conversation.IterationCount()
 		if payload, err := buildPromptArtifact(runtime.identity, promptMessages, toolSets, iteration, maxIterations); err == nil {
-			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "agent.llm.prompt", payload)
+			_, _ = executor.SaveJSONArtifactBestEffort(ctx, "agent.llm.prompt", payload)
 		}
 
 		response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
@@ -104,7 +104,7 @@ func (runtime agentRuntime) runLoop(ctx core.Context, conversation *conversation
 			return err
 		}
 		if payload := buildResponseArtifact(runtime.identity, response, iteration); len(payload.Choices) > 0 {
-			_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "agent.llm.response", payload)
+			_, _ = executor.SaveJSONArtifactBestEffort(ctx, "agent.llm.response", payload)
 		}
 
 		choice := response.Choices[0]
@@ -121,7 +121,7 @@ func (runtime agentRuntime) runLoop(ctx core.Context, conversation *conversation
 					"message":         "agent received a tool call with no type",
 					"agent_iteration": iteration,
 				})
-				_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventWarning, payload)
+				_ = executor.PublishRunnerContextEvent(ctx, executor.EventWarning, payload)
 				continue
 			}
 			aiMessage.Parts = append(aiMessage.Parts, toolCall)
@@ -148,7 +148,7 @@ func (runtime agentRuntime) runLoop(ctx core.Context, conversation *conversation
 	}
 }
 
-func (runtime agentRuntime) selectTools(available map[string]core.Tool) (map[string]core.Tool, error) {
+func (runtime loopRunner) selectTools(available map[string]core.Tool) (map[string]core.Tool, error) {
 	if len(runtime.config.ToolIDs) == 0 {
 		return nil, nil
 	}
@@ -173,7 +173,7 @@ func (runtime agentRuntime) selectTools(available map[string]core.Tool) (map[str
 	return selected, nil
 }
 
-func (runtime agentRuntime) executeToolCalls(ctx core.Context, conversation *conversationcap.View, toolCalls []llms.ToolCall) error {
+func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conversationcap.View, toolCalls []llms.ToolCall) error {
 	if len(toolCalls) == 0 {
 		return nil
 	}
@@ -213,7 +213,7 @@ func (runtime agentRuntime) executeToolCalls(ctx core.Context, conversation *con
 	return conversation.SetMessages(append(conversation.Messages(), toolMessages...))
 }
 
-func (runtime agentRuntime) seedConversation(conversation *conversationcap.View, task string) error {
+func (runtime loopRunner) seedConversation(conversation *conversationcap.View, task string) error {
 	messages := conversation.Messages()
 	hasSystem := false
 	hasAnyHuman := false
@@ -241,7 +241,7 @@ func (runtime agentRuntime) seedConversation(conversation *conversationcap.View,
 	return nil
 }
 
-func (runtime agentRuntime) effectiveMaxIterations(conversation *conversationcap.View) int {
+func (runtime loopRunner) effectiveMaxIterations(conversation *conversationcap.View) int {
 	if runtime.config.MaxIterations > 0 {
 		return runtime.config.MaxIterations
 	}
@@ -253,31 +253,31 @@ func (runtime agentRuntime) effectiveMaxIterations(conversation *conversationcap
 	return conversationcap.DefaultMaxIterations
 }
 
-func (runtime agentRuntime) effectivePromptMaxChars() int {
+func (runtime loopRunner) effectivePromptMaxChars() int {
 	if runtime.config.PromptMaxChars <= 0 {
 		return defaultPromptMaxChars
 	}
 	return runtime.config.PromptMaxChars
 }
 
-func (runtime agentRuntime) publishLoopStopped(ctx context.Context, iteration int, reason string) {
+func (runtime loopRunner) publishLoopStopped(ctx context.Context, iteration int, reason string) {
 	payload := runtime.identityPayload(map[string]any{
 		"agent_iteration": iteration,
 		"reason":          reason,
 		"event":           "agent.loop_stopped",
 	})
-	_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, payload)
+	_ = executor.PublishRunnerContextEvent(ctx, executor.EventNodeCustom, payload)
 }
 
-func (runtime agentRuntime) saveErrorArtifact(ctx context.Context, iteration int, agentErr error) {
+func (runtime loopRunner) saveErrorArtifact(ctx context.Context, iteration int, agentErr error) {
 	payload := runtime.identityPayload(map[string]any{
 		"agent_iteration": iteration,
 		"error":           agentErr.Error(),
 	})
-	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "agent.llm.error", payload)
+	_, _ = executor.SaveJSONArtifactBestEffort(ctx, "agent.llm.error", payload)
 }
 
-func (runtime agentRuntime) identityPayload(payload map[string]any) map[string]any {
+func (runtime loopRunner) identityPayload(payload map[string]any) map[string]any {
 	if runtime.identity.NodeID != "" {
 		payload["agent_node_id"] = runtime.identity.NodeID
 	}

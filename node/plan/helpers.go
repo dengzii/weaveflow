@@ -11,10 +11,10 @@ import (
 )
 
 var (
-	_ dsl.GraphNodeSpecProvider = (*PlanGeneratorNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanStepNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanReviewNode)(nil)
-	_ dsl.GraphNodeSpecProvider = (*PlanSynthesisNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*GeneratorNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*StepNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*ReviewNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*SynthesisNode)(nil)
 )
 
 func applyNodeOptions(base *core.NodeBase, options []core.NodeOption) {
@@ -36,37 +36,37 @@ func ApplyDefaultStatePaths(target core.Node) {
 		}
 	}
 	switch typed := target.(type) {
-	case *PlanGeneratorNode:
+	case *GeneratorNode:
 		setShared(&typed.ObjectivePath, "request", "input")
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ExecutionPath, "execution")
-	case *PlanStepNode:
+	case *StepNode:
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ExecutionPath, "execution")
 		setScope(&typed.ConversationPath, nodeOwner(typed, NodeTypePlanStep), "conversation")
-	case *PlanReviewNode:
+	case *ReviewNode:
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ExecutionPath, "execution")
 		setScope(&typed.ConversationPath, nodeOwner(typed, NodeTypePlanReview), "conversation")
-	case *PlanSynthesisNode:
+	case *SynthesisNode:
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ResultPath, "final", "answer")
 	}
 }
 
-func (n *PlanGeneratorNode) ApplyDefaultStatePaths() {
+func (n *GeneratorNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 
-func (n *PlanStepNode) ApplyDefaultStatePaths() {
+func (n *StepNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 
-func (n *PlanReviewNode) ApplyDefaultStatePaths() {
+func (n *ReviewNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 
-func (n *PlanSynthesisNode) ApplyDefaultStatePaths() {
+func (n *SynthesisNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 

@@ -97,7 +97,7 @@ func TestClaudeEnvironmentUsesOnlyConfiguredHostVariables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	environment, secrets, err := claudeEnvironment(config)
+	environment, secrets, err := environment(config)
 	if err != nil {
 		t.Fatal(err)
 	}

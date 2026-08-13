@@ -121,15 +121,15 @@ func defaultNodePathOwner(nodeID string) string {
 	return strings.ReplaceAll(nodeID, ".", "_")
 }
 
-func ApplyDefaultStatePaths(node Node) {
-	if node == nil {
+func ApplyDefaultStatePaths(targetNode Node) {
+	if targetNode == nil {
 		return
 	}
-	if applier, ok := node.(DefaultStatePathApplier); ok {
+	if applier, ok := targetNode.(DefaultStatePathApplier); ok {
 		applier.ApplyDefaultStatePaths()
 		return
 	}
-	if strings.TrimSpace(node.ID()) == "" {
+	if strings.TrimSpace(targetNode.ID()) == "" {
 		return
 	}
 	setShared := func(target *state.Path, segments ...string) {
@@ -142,7 +142,7 @@ func ApplyDefaultStatePaths(node Node) {
 			*target = state.Scope(defaultNodePathOwner(owner), segments...)
 		}
 	}
-	switch typed := node.(type) {
+	switch typed := targetNode.(type) {
 	case *UserInputNode:
 		setShared(&typed.ValuePath, "request", "input")
 		setShared(&typed.PendingInputPath, "request", "pending_input")
@@ -180,9 +180,9 @@ func ApplyDefaultStatePaths(node Node) {
 	}
 }
 
-func defaultNodeOwner(node Node, fallback string) string {
-	if node != nil {
-		if id := strings.TrimSpace(node.ID()); id != "" {
+func defaultNodeOwner(targetNode Node, fallback string) string {
+	if targetNode != nil {
+		if id := strings.TrimSpace(targetNode.ID()); id != "" {
 			return id
 		}
 	}
@@ -227,27 +227,27 @@ func compactGraphNodeConfig(config map[string]any) map[string]any {
 	return out
 }
 
-func ensureNodeID(node Node) {
-	if node == nil || strings.TrimSpace(node.ID()) != "" {
+func ensureNodeID(targetNode Node) {
+	if targetNode == nil || strings.TrimSpace(targetNode.ID()) != "" {
 		return
 	}
-	setter, ok := node.(interface{ SetID(string) })
+	setter, ok := targetNode.(interface{ SetID(string) })
 	if !ok {
 		return
 	}
-	setter.SetID(defaultNodeID(node))
+	setter.SetID(defaultNodeID(targetNode))
 }
 
-func defaultNodeID(node Node) string {
-	if node == nil {
+func defaultNodeID(targetNode Node) string {
+	if targetNode == nil {
 		return "node"
 	}
-	if provider, ok := node.(dsl.GraphNodeSpecProvider); ok {
+	if provider, ok := targetNode.(dsl.GraphNodeSpecProvider); ok {
 		if nodeType := strings.TrimSpace(provider.GraphNodeSpec().Type); nodeType != "" {
 			return nodeType
 		}
 	}
-	if name := strings.TrimSpace(node.Name()); name != "" {
+	if name := strings.TrimSpace(targetNode.Name()); name != "" {
 		return name
 	}
 	return "node"

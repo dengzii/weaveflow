@@ -165,15 +165,6 @@ func messageHasToolCalls(message llms.MessageContent) bool {
 	return false
 }
 
-func messageHasToolResponses(message llms.MessageContent) bool {
-	for _, part := range message.Parts {
-		if _, ok := part.(llms.ToolResult); ok {
-			return true
-		}
-	}
-	return false
-}
-
 func trimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.MessageContent {
 	if len(messages) == 0 || maxChars <= 0 {
 		return cloneMessages(messages)

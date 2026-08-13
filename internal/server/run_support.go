@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/dengzii/weaveflow/runtime"
@@ -12,15 +11,6 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
-
-func (s *Server) requireRunner(c *gin.Context) *runtime.GraphRunner {
-	runner := s.currentRunner()
-	if runner == nil {
-		writeError(c, http.StatusServiceUnavailable, errRunnerNotConfigured)
-		return nil
-	}
-	return runner
-}
 
 func (s *Server) makeRunResult(
 	ctx context.Context,

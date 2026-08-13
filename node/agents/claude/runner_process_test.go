@@ -13,10 +13,10 @@ import (
 	"github.com/dengzii/weaveflow/core"
 )
 
-const claudeHelperEnvironment = "WEAVEFLOW_CLAUDE_HELPER"
+const helperEnvironment = "WEAVEFLOW_CLAUDE_HELPER"
 
 func TestMain(m *testing.M) {
-	if os.Getenv(claudeHelperEnvironment) == "1" {
+	if os.Getenv(helperEnvironment) == "1" {
 		runClaudeHelperProcess()
 		os.Exit(0)
 	}
@@ -114,11 +114,11 @@ func newClaudeHelperProcessRunner(t *testing.T, environmentNames []string) (*Pro
 	}
 	workspace := t.TempDir()
 	if environmentNames == nil {
-		environmentNames = []string{claudeHelperEnvironment}
+		environmentNames = []string{helperEnvironment}
 	} else {
-		environmentNames = append(environmentNames, claudeHelperEnvironment)
+		environmentNames = append(environmentNames, helperEnvironment)
 	}
-	t.Setenv(claudeHelperEnvironment, "1")
+	t.Setenv(helperEnvironment, "1")
 	runner, err := newProcessRunner(RunnerConfig{
 		Executable:            executable,
 		Access:                WorkspaceAccessReadOnly,

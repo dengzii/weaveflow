@@ -19,7 +19,7 @@ type ChatReplyNode struct {
 	InputPath state.Path
 }
 
-func NewChatReplyNode(options ...NodeOption) *ChatReplyNode {
+func NewChatReplyNode(options ...Option) *ChatReplyNode {
 	target := &ChatReplyNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeChatReply,

@@ -21,7 +21,7 @@ func main() {
 	//AgentExample()
 	//AgentAsToolExample()
 	ExploreAgentExample()
-	span := time.Now().Sub(now)
+	span := time.Since(now)
 	fmt.Printf("node invoke took %s\n", span)
 }
 

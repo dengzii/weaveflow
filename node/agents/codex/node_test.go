@@ -63,10 +63,10 @@ func TestCodexNodeExecutesRunnerAndWritesOutput(t *testing.T) {
 	initial := state.FromShared(map[string]any{"request": map[string]any{"input": "review this repository"}})
 	access := state.NewEditingAccess(initial)
 	var events []fruntime.EventType
-	var progressEvents []codexProgressEvent
+	var progressEvents []progressEvent
 	ctx := fruntime.WithRunnerEventPublisher(context.Background(), func(eventType fruntime.EventType, payload any) error {
 		events = append(events, eventType)
-		progress, ok := payload.(codexProgressEvent)
+		progress, ok := payload.(progressEvent)
 		if !ok {
 			t.Fatalf("payload = %T, want codexProgressEvent", payload)
 		}
@@ -117,9 +117,9 @@ func TestCodexNodeFailureDoesNotWriteOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	access := state.NewEditingAccess(state.FromShared(map[string]any{"request": map[string]any{"input": "review"}}))
-	var progressEvents []codexProgressEvent
+	var progressEvents []progressEvent
 	ctx := fruntime.WithRunnerEventPublisher(context.Background(), func(_ fruntime.EventType, payload any) error {
-		progressEvents = append(progressEvents, payload.(codexProgressEvent))
+		progressEvents = append(progressEvents, payload.(progressEvent))
 		return nil
 	})
 	ctx = WithRunner(ctx, runner)

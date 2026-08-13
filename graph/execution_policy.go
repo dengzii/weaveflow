@@ -88,10 +88,8 @@ func (g *Graph) nodeExecutionPolicy(nodeID string) fruntime.ExecutionPolicy {
 }
 
 func (g *Graph) applyDefinitionExecutionPolicy(def dsl.GraphDefinition) error {
-	policy := g.ExecutionPolicy()
 	if def.Policy != nil {
-		var err error
-		policy, err = graphExecutionPolicyFromDSL(def.Policy)
+		policy, err := definitionExecutionPolicyFromDSL(def.Policy)
 		if err != nil {
 			return err
 		}
@@ -114,7 +112,7 @@ func (g *Graph) rebuildNodeLimiters() {
 	}
 }
 
-func graphExecutionPolicyFromDSL(spec *dsl.GraphExecutionPolicy) (fruntime.GraphExecutionPolicy, error) {
+func definitionExecutionPolicyFromDSL(spec *dsl.GraphExecutionPolicy) (fruntime.GraphExecutionPolicy, error) {
 	policy := fruntime.DefaultGraphExecutionPolicy()
 	if spec == nil {
 		return policy, nil
@@ -228,7 +226,7 @@ func excludeErrorClasses(classes, excluded []core.ErrorClass) []core.ErrorClass 
 	return result
 }
 
-func graphExecutionPolicyToDSL(policy fruntime.GraphExecutionPolicy) *dsl.GraphExecutionPolicy {
+func definitionExecutionPolicyToDSL(policy fruntime.GraphExecutionPolicy) *dsl.GraphExecutionPolicy {
 	return &dsl.GraphExecutionPolicy{
 		Limits: dsl.GraphLimits{
 			MaxSuperSteps:      policy.Limits.MaxSuperSteps,

@@ -5,25 +5,25 @@ import (
 	"time"
 )
 
-type memoryManager struct {
+type manager struct {
 	options *Options
 	repo    Repository
 }
 
-func (m *memoryManager) Store(memory []Entry) error {
+func (m *manager) Store(entries []Entry) error {
 	if m == nil || m.repo == nil {
 		return nil
 	}
 
-	return m.repo.Store(cloneEntries(memory))
+	return m.repo.Store(cloneEntries(entries))
 }
 
-func (m *memoryManager) Append(memory ...Entry) error {
+func (m *manager) Append(entries ...Entry) error {
 	if m == nil || m.repo == nil {
 		return nil
 	}
 
-	if len(memory) == 0 {
+	if len(entries) == 0 {
 		return nil
 	}
 
@@ -32,14 +32,14 @@ func (m *memoryManager) Append(memory ...Entry) error {
 		return err
 	}
 
-	for _, entry := range memory {
+	for _, entry := range entries {
 		items = append(items, normalizeEntry(entry))
 	}
 
 	return m.Store(items)
 }
 
-func (m *memoryManager) Load(options *LoadOptions) ([]Entry, error) {
+func (m *manager) Load(options *LoadOptions) ([]Entry, error) {
 	if m == nil || m.repo == nil {
 		return []Entry{}, nil
 	}
@@ -47,7 +47,7 @@ func (m *memoryManager) Load(options *LoadOptions) ([]Entry, error) {
 	return m.repo.Load(options)
 }
 
-func (m *memoryManager) Recall(query *Query) ([]Entry, error) {
+func (m *manager) Recall(query *Query) ([]Entry, error) {
 	if m == nil {
 		return []Entry{}, nil
 	}
@@ -70,7 +70,7 @@ func (m *memoryManager) Recall(query *Query) ([]Entry, error) {
 	})
 }
 
-func (m *memoryManager) Delete() error {
+func (m *manager) Delete() error {
 	if m == nil || m.repo == nil {
 		return nil
 	}
@@ -108,7 +108,7 @@ func filterEntries(entries []Entry, options *LoadOptions) []Entry {
 				continue
 			}
 		}
-		if len(tagSet) > 0 && !memoryEntryHasAnyTag(entry, tagSet) {
+		if len(tagSet) > 0 && !entryHasAnyTag(entry, tagSet) {
 			continue
 		}
 		if len(typeSet) > 0 {
@@ -116,10 +116,10 @@ func filterEntries(entries []Entry, options *LoadOptions) []Entry {
 				continue
 			}
 		}
-		if !options.Since.IsZero() && memoryTime(entry).Before(options.Since) {
+		if !options.Since.IsZero() && entryTime(entry).Before(options.Since) {
 			continue
 		}
-		if !options.Until.IsZero() && memoryTime(entry).After(options.Until) {
+		if !options.Until.IsZero() && entryTime(entry).After(options.Until) {
 			continue
 		}
 		filtered = append(filtered, entry)
@@ -165,7 +165,7 @@ func normalizeEntryTypeSet(types []EntryType) map[EntryType]struct{} {
 	return typeSet
 }
 
-func memoryEntryHasAnyTag(entry Entry, tags map[string]struct{}) bool {
+func entryHasAnyTag(entry Entry, tags map[string]struct{}) bool {
 	for _, tag := range entry.Tags {
 		if _, ok := tags[strings.TrimSpace(tag)]; ok {
 			return true
@@ -174,6 +174,6 @@ func memoryEntryHasAnyTag(entry Entry, tags map[string]struct{}) bool {
 	return false
 }
 
-func memoryTime(entry Entry) time.Time {
+func entryTime(entry Entry) time.Time {
 	return entry.CreatedAt
 }

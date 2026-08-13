@@ -12,7 +12,7 @@ type Usage struct {
 	OutputTokens      int64 `json:"output_tokens,omitempty"`
 }
 
-type codexEventParser struct {
+type eventParser struct {
 	modelID    string
 	onChunk    func(Chunk) error
 	threadID   string
@@ -31,7 +31,7 @@ type Chunk struct {
 	Text     string `json:"text"`
 }
 
-type codexEventEnvelope struct {
+type eventEnvelope struct {
 	Type     string          `json:"type"`
 	ThreadID string          `json:"thread_id,omitempty"`
 	Item     json.RawMessage `json:"item,omitempty"`
@@ -41,21 +41,21 @@ type codexEventEnvelope struct {
 	Error    json.RawMessage `json:"error,omitempty"`
 }
 
-type codexItem struct {
+type eventItem struct {
 	Type  string `json:"type"`
 	Text  string `json:"text,omitempty"`
 	Delta string `json:"delta,omitempty"`
 }
 
-func newCodexEventParser(modelID string, onChunk func(Chunk) error) *codexEventParser {
-	return &codexEventParser{modelID: modelID, onChunk: onChunk}
+func newCodexEventParser(modelID string, onChunk func(Chunk) error) *eventParser {
+	return &eventParser{modelID: modelID, onChunk: onChunk}
 }
 
-func (parser *codexEventParser) parse(line []byte) error {
+func (parser *eventParser) parse(line []byte) error {
 	if len(line) == 0 {
 		return nil
 	}
-	var event codexEventEnvelope
+	var event eventEnvelope
 	if err := json.Unmarshal(line, &event); err != nil {
 		return fmt.Errorf("decode Codex JSONL event: %w", err)
 	}
@@ -68,7 +68,7 @@ func (parser *codexEventParser) parse(line []byte) error {
 	case "thread.started":
 		parser.threadID = strings.TrimSpace(event.ThreadID)
 	case "item.updated", "item.completed":
-		var item codexItem
+		var item eventItem
 		if len(event.Item) == 0 || json.Unmarshal(event.Item, &item) != nil {
 			return nil
 		}
@@ -105,7 +105,7 @@ func (parser *codexEventParser) parse(line []byte) error {
 	case "turn.failed":
 		message := strings.TrimSpace(event.Message)
 		if message == "" {
-			message = codexErrorMessage(event.Error)
+			message = errorMessage(event.Error)
 		}
 		if message == "" {
 			message = event.Type
@@ -114,7 +114,7 @@ func (parser *codexEventParser) parse(line []byte) error {
 	case "error":
 		message := strings.TrimSpace(event.Message)
 		if message == "" {
-			message = codexErrorMessage(event.Error)
+			message = errorMessage(event.Error)
 		}
 		if message == "" {
 			message = event.Type
@@ -124,7 +124,7 @@ func (parser *codexEventParser) parse(line []byte) error {
 	return nil
 }
 
-func codexErrorMessage(raw json.RawMessage) string {
+func errorMessage(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}

@@ -20,7 +20,7 @@ type Chunk struct {
 	Text      string `json:"text"`
 }
 
-type claudeEventParser struct {
+type eventParser struct {
 	onChunk         func(Chunk) error
 	model           string
 	sessionID       string
@@ -35,7 +35,7 @@ type claudeEventParser struct {
 	streamedThought bool
 }
 
-type claudeEventEnvelope struct {
+type eventEnvelope struct {
 	Type             string          `json:"type"`
 	Subtype          string          `json:"subtype,omitempty"`
 	SessionID        string          `json:"session_id,omitempty"`
@@ -50,38 +50,38 @@ type claudeEventEnvelope struct {
 	NumTurns         int             `json:"num_turns,omitempty"`
 }
 
-type claudeMessage struct {
-	Model   string                 `json:"model,omitempty"`
-	Content []claudeMessageContent `json:"content,omitempty"`
+type assistantMessage struct {
+	Model   string           `json:"model,omitempty"`
+	Content []messageContent `json:"content,omitempty"`
 }
 
-type claudeMessageContent struct {
+type messageContent struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
 	Thinking string `json:"thinking,omitempty"`
 }
 
-type claudeStreamEvent struct {
-	Type         string               `json:"type"`
-	Delta        claudeStreamDelta    `json:"delta,omitempty"`
-	ContentBlock claudeMessageContent `json:"content_block,omitempty"`
+type streamEvent struct {
+	Type         string         `json:"type"`
+	Delta        streamDelta    `json:"delta,omitempty"`
+	ContentBlock messageContent `json:"content_block,omitempty"`
 }
 
-type claudeStreamDelta struct {
+type streamDelta struct {
 	Type     string `json:"type"`
 	Text     string `json:"text,omitempty"`
 	Thinking string `json:"thinking,omitempty"`
 }
 
-func newClaudeEventParser(onChunk func(Chunk) error) *claudeEventParser {
-	return &claudeEventParser{onChunk: onChunk}
+func newClaudeEventParser(onChunk func(Chunk) error) *eventParser {
+	return &eventParser{onChunk: onChunk}
 }
 
-func (parser *claudeEventParser) parse(line []byte) error {
+func (parser *eventParser) parse(line []byte) error {
 	if len(line) == 0 {
 		return nil
 	}
-	var envelope claudeEventEnvelope
+	var envelope eventEnvelope
 	if err := json.Unmarshal(line, &envelope); err != nil {
 		return fmt.Errorf("decode Claude stream-json event: %w", err)
 	}
@@ -127,11 +127,11 @@ func (parser *claudeEventParser) parse(line []byte) error {
 	return nil
 }
 
-func (parser *claudeEventParser) parseStreamEvent(raw json.RawMessage) error {
+func (parser *eventParser) parseStreamEvent(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return nil
 	}
-	var event claudeStreamEvent
+	var event streamEvent
 	if err := json.Unmarshal(raw, &event); err != nil {
 		return nil
 	}
@@ -162,7 +162,7 @@ func (parser *claudeEventParser) parseStreamEvent(raw json.RawMessage) error {
 	return nil
 }
 
-func (parser *claudeEventParser) parseAssistantMessage(raw json.RawMessage) error {
+func (parser *eventParser) parseAssistantMessage(raw json.RawMessage) error {
 	if len(raw) == 0 {
 		return nil
 	}
@@ -170,7 +170,7 @@ func (parser *claudeEventParser) parseAssistantMessage(raw json.RawMessage) erro
 	streamedThought := parser.streamedThought
 	parser.streamedContent = false
 	parser.streamedThought = false
-	var message claudeMessage
+	var message assistantMessage
 	if err := json.Unmarshal(raw, &message); err != nil {
 		return nil
 	}
@@ -196,7 +196,7 @@ func (parser *claudeEventParser) parseAssistantMessage(raw json.RawMessage) erro
 	return nil
 }
 
-func (parser *claudeEventParser) publish(channel, value string) error {
+func (parser *eventParser) publish(channel, value string) error {
 	if parser.onChunk == nil || value == "" {
 		return nil
 	}

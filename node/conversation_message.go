@@ -22,7 +22,7 @@ type ConversationMessageNode struct {
 	ConversationPath state.Path
 }
 
-func NewConversationMessageNode(options ...NodeOption) *ConversationMessageNode {
+func NewConversationMessageNode(options ...Option) *ConversationMessageNode {
 	target := &ConversationMessageNode{
 		Base: NewBase(Spec{
 			Name:        NodeTypeConversationMessage,

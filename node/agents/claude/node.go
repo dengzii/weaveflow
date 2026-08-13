@@ -31,7 +31,7 @@ type Node struct {
 	OutputPath state.Path
 }
 
-type claudeProgressEvent struct {
+type progressEvent struct {
 	Kind       string  `json:"kind"`
 	Event      string  `json:"event"`
 	Provider   string  `json:"provider"`
@@ -144,7 +144,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	if runner == nil {
 		return fmt.Errorf("Claude node %q runner is not configured", node.ID())
 	}
-	if err := node.publishProgress(ctx, claudeProgressEvent{
+	if err := node.publishProgress(ctx, progressEvent{
 		Event:   claudeProgressStarted,
 		Status:  "started",
 		Message: "Claude Code execution started",
@@ -155,7 +155,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	result, runErr := runner.Run(ctx, RunRequest{
 		Prompt: prompt,
 		OnChunk: func(chunk Chunk) error {
-			return node.publishProgress(ctx, claudeProgressEvent{
+			return node.publishProgress(ctx, progressEvent{
 				Model:     chunk.Model,
 				Event:     claudeProgressRunning,
 				SessionID: chunk.SessionID,
@@ -167,7 +167,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	})
 	node.saveArtifacts(ctx, prompt, result, runErr)
 	if runErr != nil {
-		_ = node.publishProgress(ctx, claudeProgressEvent{
+		_ = node.publishProgress(ctx, progressEvent{
 			Model:      result.Model,
 			Event:      claudeProgressFailed,
 			SessionID:  result.SessionID,
@@ -178,7 +178,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 		return fmt.Errorf("Claude node %q: %w", node.ID(), runErr)
 	}
 	if err := state.Replace(access, state.NewRef[string](node.OutputPath), result.Output); err != nil {
-		_ = node.publishProgress(ctx, claudeProgressEvent{
+		_ = node.publishProgress(ctx, progressEvent{
 			Model:      result.Model,
 			Event:      claudeProgressFailed,
 			SessionID:  result.SessionID,
@@ -189,7 +189,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 		return err
 	}
 	usage := result.Usage
-	if err := node.publishProgress(ctx, claudeProgressEvent{
+	if err := node.publishProgress(ctx, progressEvent{
 		Model:      result.Model,
 		Event:      claudeProgressCompleted,
 		SessionID:  result.SessionID,
@@ -205,7 +205,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	return nil
 }
 
-func (node *Node) publishProgress(ctx core.Context, event claudeProgressEvent) error {
+func (node *Node) publishProgress(ctx core.Context, event progressEvent) error {
 	event.Kind = claudeProgressKind
 	event.Provider = "claude"
 	return fruntime.PublishRunnerContextEvent(ctx, fruntime.EventNodeCustom, event)

@@ -20,8 +20,8 @@ var (
 )
 
 // newClient creates an instance of the internal client.
-func newClient(opts ...Option) (*options, *openaiclient.Client, error) {
-	options := &options{
+func newClient(opts ...Option) (*clientOptions, *openaiclient.Client, error) {
+	options := &clientOptions{
 		token:        os.Getenv(tokenEnvVarName),
 		model:        os.Getenv(modelEnvVarName),
 		baseURL:      os.Getenv(baseURLEnvVarName),
@@ -66,13 +66,13 @@ func newClient(opts ...Option) (*options, *openaiclient.Client, error) {
 		return options, nil, ErrMissingToken
 	}
 
-	var clientOptions []openaiclient.Option
+	var internalOptions []openaiclient.Option
 	if options.embeddingDimensions != 0 {
-		clientOptions = append(clientOptions, openaiclient.WithEmbeddingDimensions(options.embeddingDimensions))
+		internalOptions = append(internalOptions, openaiclient.WithEmbeddingDimensions(options.embeddingDimensions))
 	}
 	cli, err := openaiclient.New(options.token, options.model, options.baseURL, options.organization,
 		openaiclient.APIType(options.apiType), options.apiVersion, options.httpClient, options.embeddingModel,
-		options.responseFormat, string(options.provider), options.extraBody, options.extraHeaders, clientOptions...,
+		options.responseFormat, string(options.provider), options.extraBody, options.extraHeaders, internalOptions...,
 	)
 	return options, cli, err
 }

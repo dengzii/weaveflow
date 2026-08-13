@@ -48,7 +48,7 @@ Rules:
 - Do not add a final synthesis step; final synthesis is handled separately.
 - When replanning, preserve successful information and replace only the ineffective path.`
 
-type PlanGeneratorNode struct {
+type GeneratorNode struct {
 	core.NodeBase
 	ModelID       string
 	ToolIDs       []string
@@ -60,8 +60,8 @@ type PlanGeneratorNode struct {
 	ExecutionPath state.Path
 }
 
-func NewPlanGeneratorNode(options ...core.NodeOption) *PlanGeneratorNode {
-	target := &PlanGeneratorNode{
+func NewGeneratorNode(options ...core.NodeOption) *GeneratorNode {
+	target := &GeneratorNode{
 		NodeBase: core.NewNodeBase(core.NodeSpec{
 			Name:        NodeTypePlanGenerator,
 			Description: "Generate or revise a structured execution plan.",
@@ -75,7 +75,7 @@ func NewPlanGeneratorNode(options ...core.NodeOption) *PlanGeneratorNode {
 	return target
 }
 
-func (n *PlanGeneratorNode) Validate() error {
+func (n *GeneratorNode) Validate() error {
 	if n == nil {
 		return errors.New("plan generator node is nil")
 	}
@@ -88,20 +88,20 @@ func (n *PlanGeneratorNode) Validate() error {
 	return nil
 }
 
-func (n *PlanGeneratorNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	config := map[string]any{
+func (n *GeneratorNode) GraphNodeSpec() dsl.GraphNodeSpec {
+	nodeConfig := map[string]any{
 		"model_id":      n.ModelID,
 		"tool_ids":      n.ToolIDs,
 		"system_prompt": n.SystemPrompt,
 		"max_steps":     n.MaxSteps,
 		"max_replans":   n.MaxReplans,
 	}
-	return newGraphNodeSpec(n.NodeBase, NodeTypePlanGenerator, config, map[string]state.Path{
+	return newGraphNodeSpec(n.NodeBase, NodeTypePlanGenerator, nodeConfig, map[string]state.Path{
 		"objective": n.ObjectivePath, "plan": n.PlanPath, "execution": n.ExecutionPath,
 	})
 }
 
-func PlanGeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
+func GeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
 			Type:        NodeTypePlanGenerator,
@@ -154,7 +154,7 @@ func PlanGeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 			if err != nil {
 				return nil, err
 			}
-			target := NewPlanGeneratorNode(core.WithID(spec.ID))
+			target := NewGeneratorNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
 			target.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
@@ -181,11 +181,11 @@ func PlanGeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 	}
 }
 
-func (n *PlanGeneratorNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *GeneratorNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	return core.NodeResult{}, n.execute(ctx, access)
 }
 
-func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) error {
+func (n *GeneratorNode) execute(ctx core.Context, access *state.Access) error {
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("plan generator node: model %q not available", effectiveModelID(n.ModelID))
@@ -203,16 +203,16 @@ func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) erro
 		return err
 	}
 	current := planner.Value()
-	objective := planString(current[planFieldObjective])
+	objective := stringValue(current[planFieldObjective])
 	if objective == "" {
 		objective = strings.TrimSpace(objectiveInput)
 	}
 	if objective == "" {
 		return errors.New("plan generator node: objective is required in planner.objective or request.input")
 	}
-	previousSteps := planStepsFromValue(current[planFieldSteps])
-	isReplan := strings.EqualFold(planString(current[planFieldStatus]), PlanStatusReplan)
-	replanCount := planInt(current[planFieldReplanCount])
+	previousSteps := stepsFromValue(current[planFieldSteps])
+	isReplan := strings.EqualFold(stringValue(current[planFieldStatus]), PlanStatusReplan)
+	replanCount := intValue(current[planFieldReplanCount])
 	maxReplans := n.effectiveMaxReplans()
 	if isReplan && replanCount >= maxReplans {
 		return fmt.Errorf("plan generator node: maximum replans reached (%d)", maxReplans)
@@ -222,10 +222,10 @@ func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) erro
 	payload := map[string]any{
 		"objective":        objective,
 		"is_replan":        isReplan,
-		"replan_reason":    planString(current[planFieldReplanReason]),
-		"previous_summary": planString(current[planFieldSummary]),
-		"previous_steps":   planStepMaps(previousSteps),
-		"available_tools":  planToolDescriptions(availableTools),
+		"replan_reason":    stringValue(current[planFieldReplanReason]),
+		"previous_summary": stringValue(current[planFieldSummary]),
+		"previous_steps":   stepMaps(previousSteps),
+		"available_tools":  toolDescriptions(availableTools),
 	}
 	prompt, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
@@ -242,7 +242,7 @@ func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) erro
 		Thinking:       llms.ThinkingModeNone,
 		Temperature:    &temperature,
 		ResponseName:   "execution_plan",
-		ResponseSchema: planModelOutputSchema(),
+		ResponseSchema: modelOutputSchema(),
 		StrictResponse: true,
 	})
 	if err != nil {
@@ -255,17 +255,17 @@ func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) erro
 	if err != nil {
 		return fmt.Errorf("plan generator node: parse response: %w", err)
 	}
-	steps := normalizePlanSteps(parsed.Steps, n.effectiveMaxSteps(), planToolNames(availableTools))
+	steps := normalizePlanSteps(parsed.Steps, n.effectiveMaxSteps(), toolNames(availableTools))
 	if len(steps) == 0 {
 		return errors.New("plan generator node: model produced no valid steps")
 	}
 
-	history := planMapSlice(current[planFieldHistory])
+	history := mapSlice(current[planFieldHistory])
 	if isReplan && len(previousSteps) > 0 {
 		history = append(history, map[string]any{
-			"summary": planString(current[planFieldSummary]),
-			"reason":  planString(current[planFieldReplanReason]),
-			"steps":   planStepMaps(previousSteps),
+			"summary": stringValue(current[planFieldSummary]),
+			"reason":  stringValue(current[planFieldReplanReason]),
+			"steps":   stepMaps(previousSteps),
 		})
 		replanCount++
 	}
@@ -273,7 +273,7 @@ func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) erro
 		planFieldObjective:    objective,
 		planFieldStatus:       PlanStatusExecuting,
 		planFieldSummary:      strings.TrimSpace(parsed.Summary),
-		planFieldSteps:        planStepMaps(steps),
+		planFieldSteps:        stepMaps(steps),
 		planFieldHistory:      history,
 		planFieldCurrentIndex: 0,
 		planFieldReplanCount:  replanCount,
@@ -296,21 +296,21 @@ func (n *PlanGeneratorNode) execute(ctx core.Context, access *state.Access) erro
 	return nil
 }
 
-func (n *PlanGeneratorNode) effectiveSystemPrompt() string {
+func (n *GeneratorNode) effectiveSystemPrompt() string {
 	if n == nil || strings.TrimSpace(n.SystemPrompt) == "" {
 		return defaultPlanGeneratorSystemPrompt
 	}
 	return n.SystemPrompt
 }
 
-func (n *PlanGeneratorNode) effectiveMaxSteps() int {
+func (n *GeneratorNode) effectiveMaxSteps() int {
 	if n == nil || n.MaxSteps <= 0 {
 		return defaultPlanMaxSteps
 	}
 	return n.MaxSteps
 }
 
-func (n *PlanGeneratorNode) effectiveMaxReplans() int {
+func (n *GeneratorNode) effectiveMaxReplans() int {
 	if n == nil || n.MaxReplans < 0 {
 		return defaultPlanMaxReplans
 	}

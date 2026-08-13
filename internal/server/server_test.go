@@ -2439,14 +2439,14 @@ func getRunResourcesForTest(t *testing.T, engine *gin.Engine, runID, graphID str
 		Events:      inspectionEnvelope.Data.Events.Items,
 		Interrupt:   inspectionEnvelope.Data.Interrupt,
 	}
-	artifactResponse := serveHTTP(engine, http.MethodGet, basePath+"/artifacts", "")
-	if artifactResponse.Code != http.StatusOK {
-		t.Fatalf("GET run artifacts status = %d, body = %s", artifactResponse.Code, artifactResponse.Body.String())
+	response := serveHTTP(engine, http.MethodGet, basePath+"/artifacts", "")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET run artifacts status = %d, body = %s", response.Code, response.Body.String())
 	}
 	var artifactEnvelope struct {
 		Data []state.ArtifactRef `json:"data"`
 	}
-	if err := json.Unmarshal(artifactResponse.Body.Bytes(), &artifactEnvelope); err != nil {
+	if err := json.Unmarshal(response.Body.Bytes(), &artifactEnvelope); err != nil {
 		t.Fatalf("decode run artifacts response: %v", err)
 	}
 	resources.Artifacts = artifactEnvelope.Data

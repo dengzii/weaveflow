@@ -87,7 +87,7 @@ type graphCacheReader struct {
 	artifactStores    []*runtime.FileArtifactStore
 	eventSinks        []*runtime.FileEventSink
 	transactionStores []*runtime.FileRuntimeStore
-	codec             state.StateCodec
+	codec             state.Codec
 }
 
 type combinedRunReader struct {
