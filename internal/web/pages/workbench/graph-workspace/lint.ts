@@ -156,7 +156,7 @@ export function buildGraphLintIssues({
   const edgePairs = new Map<string, number>();
   for (const [index, edge] of (definition.edges ?? []).entries()) {
     const edgeID = graphEdgeId(edge, index);
-    const pairKey = `${edge.from}\u0000${edge.to}`;
+    const pairKey = `${edge.from}\u0000${edge.to}\u0000${edge.failure ? "failure" : "normal"}`;
     const duplicateOf = edgePairs.get(pairKey);
     if (duplicateOf !== undefined) {
       issues.push({

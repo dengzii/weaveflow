@@ -24,6 +24,7 @@ func NewGraphRunner(targetGraph *Graph, executionStore fruntime.ExecutionStore, 
 	baseOptions := []fruntime.GraphRunnerOption{
 		fruntime.WithNodeContracts(cloneNodeContracts(targetGraph.nodeContracts)),
 		fruntime.WithStateSchemas(cloneStateSchemas(targetGraph.stateSchemas)),
+		fruntime.WithStateReducers(targetGraph.reducers()),
 		fruntime.WithStartupWarnings(buildRunnerWarnings(targetGraph.ContractDiagnostics())),
 		fruntime.WithGraphMetadata("", "", graphHash, snapshotHash, ""),
 	}
@@ -100,6 +101,20 @@ func (g *runtimeGraph) ResolveNextNodes(ctx context.Context, currentNodeID strin
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}
 	return g.graph.resolveNextNodes(ctx, currentNodeID, currentState)
+}
+
+func (g *runtimeGraph) ResolveNextTasks(ctx context.Context, parent fruntime.GraphTask, currentState *state.State) ([]fruntime.GraphTask, error) {
+	if g == nil || g.graph == nil {
+		return nil, fmt.Errorf("graph runner graph is nil")
+	}
+	return g.graph.resolveNextTasksObserved(ctx, parent, currentState, nil)
+}
+
+func (g *runtimeGraph) ResolveFailure(ctx context.Context, task fruntime.GraphTask, stage string, err error) ([]fruntime.GraphTask, error) {
+	if g == nil || g.graph == nil {
+		return nil, fmt.Errorf("graph runner graph is nil")
+	}
+	return g.graph.resolveFailure(ctx, task, stage, err)
 }
 
 func (g *runtimeGraph) IsParallelBranchTarget(nodeID string) bool {

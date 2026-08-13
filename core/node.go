@@ -221,6 +221,7 @@ type NodeExecutionOptions struct {
 	ApplyPatchToInput      bool
 	OnRequiredReadIssues   func([]state.ValidationIssue)
 	OnWriteIssues          func([]state.ValidationIssue)
+	Reducers               map[string]state.Reducer
 }
 
 func ExecuteNode(ctx context.Context, base *state.State, node Node) (ExecutionResult, error) {
@@ -270,7 +271,7 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 		}
 	}
 
-	access := state.NewEditingAccess(inputState)
+	access := state.NewEditingAccessWithReducers(inputState, options.Reducers)
 	nodeResult, err := node.Execute(NewContext(ctx), access)
 	if err != nil {
 		return ExecutionResult{}, err
@@ -288,7 +289,7 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 	}
 	nodeResult.Patch = patch
 	if options.ValidateWrites {
-		if issues := state.ValidatePatchResultByContract(inputState, patch, contract); len(issues) > 0 {
+		if issues := state.ValidatePatchResultByContractWithReducers(inputState, patch, contract, options.Reducers); len(issues) > 0 {
 			if options.OnWriteIssues != nil {
 				options.OnWriteIssues(issues)
 			}
@@ -299,7 +300,7 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 	if options.ApplyPatchToInput {
 		patchBase = base
 	}
-	resultState, err := patch.Apply(patchBase)
+	resultState, err := patch.ApplyWithReducers(patchBase, options.Reducers)
 	if err != nil {
 		return ExecutionResult{}, err
 	}

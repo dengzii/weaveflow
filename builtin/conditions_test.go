@@ -121,7 +121,7 @@ func TestStateExpressionFailsClosed(t *testing.T) {
 		if err != nil {
 			t.Fatalf("StateExpression(): %v", err)
 		}
-		if _, err := condition.Match(context.Background(), state.FromShared(map[string]any{"value": "yes"})); err == nil {
+		if _, err := condition.EvaluateRoute(context.Background(), state.FromShared(map[string]any{"value": "yes"})); err == nil {
 			t.Fatal("non-boolean result must return an error")
 		}
 	})
@@ -160,9 +160,9 @@ func TestStateExpressionConditionDefinitionUsesDynamicPorts(t *testing.T) {
 
 func mustMatchCondition(t *testing.T, condition registry.EdgeCondition, current *state.State) bool {
 	t.Helper()
-	matched, err := condition.Match(context.Background(), current)
+	decision, err := condition.EvaluateRoute(context.Background(), current)
 	if err != nil {
 		t.Fatalf("condition match: %v", err)
 	}
-	return matched
+	return decision.Matched
 }

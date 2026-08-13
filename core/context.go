@@ -16,9 +16,18 @@ type modelsKey struct{}
 type modelConfigsKey struct{}
 type toolsKey struct{}
 type environmentKey struct{}
+type failureKey struct{}
 
 type Context struct {
 	context.Context
+}
+
+type FailureContext struct {
+	Stage        string
+	ErrorClass   ErrorClass
+	Error        string
+	SourceNodeID string
+	Details      map[string]any
 }
 
 type ModelConfig struct {
@@ -91,6 +100,17 @@ func WithEnvironment(ctx context.Context, environment map[string]string) context
 		ctx = context.Background()
 	}
 	return context.WithValue(ctx, environmentKey{}, cloneEnvironment(environment))
+}
+
+func WithFailure(ctx context.Context, failure FailureContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	failure.Stage = strings.TrimSpace(failure.Stage)
+	failure.Error = strings.TrimSpace(failure.Error)
+	failure.SourceNodeID = strings.TrimSpace(failure.SourceNodeID)
+	failure.Details = cloneAnyMap(failure.Details)
+	return context.WithValue(ctx, failureKey{}, failure)
 }
 
 func ModelFromContext(ctx context.Context) llms.Model {
@@ -179,6 +199,18 @@ func EnvironmentVariableFromContext(ctx context.Context, name string) string {
 	return EnvironmentFromContext(ctx)[strings.TrimSpace(name)]
 }
 
+func FailureFromContext(ctx context.Context) (FailureContext, bool) {
+	if ctx == nil {
+		return FailureContext{}, false
+	}
+	failure, ok := ctx.Value(failureKey{}).(FailureContext)
+	if !ok {
+		return FailureContext{}, false
+	}
+	failure.Details = cloneAnyMap(failure.Details)
+	return failure, true
+}
+
 func (c Context) Deadline() (time.Time, bool) {
 	if c.Context == nil {
 		return time.Time{}, false
@@ -235,6 +267,10 @@ func (c Context) Tools() map[string]Tool {
 
 func (c Context) Environment() map[string]string {
 	return EnvironmentFromContext(c)
+}
+
+func (c Context) Failure() (FailureContext, bool) {
+	return FailureFromContext(c)
 }
 
 func (c Context) FilterTools(ids []string) map[string]Tool {
@@ -342,6 +378,17 @@ func cloneEnvironment(input map[string]string) map[string]string {
 	}
 	if len(out) == 0 {
 		return nil
+	}
+	return out
+}
+
+func cloneAnyMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return nil
+	}
+	out := make(map[string]any, len(input))
+	for key, value := range input {
+		out[key] = value
 	}
 	return out
 }

@@ -40,6 +40,7 @@ type StateCapabilityFieldDefinition struct {
 	Name          string             `json:"name"`
 	Schema        JSONSchema         `json:"schema"`
 	MergeStrategy StateMergeStrategy `json:"merge_strategy,omitempty"`
+	Reducer       string             `json:"reducer,omitempty"`
 }
 
 type StateCapabilityDefinition struct {
@@ -72,13 +73,45 @@ type GraphConditionSpec struct {
 }
 
 type StateBinding struct {
-	Path string `json:"path"`
+	Path    string `json:"path"`
+	Reducer string `json:"reducer,omitempty"`
 }
 
 type GraphEdgeSpec struct {
 	From      string              `json:"from"`
 	To        string              `json:"to"`
 	Condition *GraphConditionSpec `json:"condition,omitempty"`
+	Failure   *FailureRouteSpec   `json:"failure,omitempty"`
+}
+
+type FailureStage string
+
+const (
+	FailureStageNode      FailureStage = "node"
+	FailureStageCondition FailureStage = "condition"
+)
+
+type FailureRouteSpec struct {
+	Stages       []FailureStage `json:"stages,omitempty"`
+	ErrorClasses []string       `json:"error_classes,omitempty"`
+	CatchAll     bool           `json:"catch_all,omitempty"`
+}
+
+func (route *FailureRouteSpec) Validate() error {
+	if route == nil {
+		return nil
+	}
+	if len(route.Stages) == 0 && len(route.ErrorClasses) == 0 && !route.CatchAll {
+		return fmt.Errorf("failure route must declare a stage, error class, or catch_all")
+	}
+	for _, stage := range route.Stages {
+		switch stage {
+		case FailureStageNode, FailureStageCondition:
+		default:
+			return fmt.Errorf("failure route stage %q is invalid", stage)
+		}
+	}
+	return nil
 }
 
 type GraphDefinition struct {
@@ -106,6 +139,7 @@ func NormalizeGraphConditionSpec(spec GraphConditionSpec) GraphConditionSpec {
 		bindings := make(map[string]StateBinding, len(spec.State))
 		for name, binding := range spec.State {
 			binding.Path = strings.TrimSpace(binding.Path)
+			binding.Reducer = strings.TrimSpace(binding.Reducer)
 			bindings[name] = binding
 		}
 		spec.State = bindings
@@ -184,6 +218,7 @@ func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 			bindings := make(map[string]StateBinding, len(def.Nodes[i].State))
 			for name, binding := range def.Nodes[i].State {
 				binding.Path = strings.TrimSpace(binding.Path)
+				binding.Reducer = strings.TrimSpace(binding.Reducer)
 				bindings[name] = binding
 			}
 			def.Nodes[i].State = bindings
@@ -203,6 +238,12 @@ func NormalizeGraphDefinition(def GraphDefinition) GraphDefinition {
 		if def.Edges[i].Condition != nil {
 			condition := NormalizeGraphConditionSpec(*def.Edges[i].Condition)
 			def.Edges[i].Condition = &condition
+		}
+		if def.Edges[i].Failure != nil {
+			route := *def.Edges[i].Failure
+			route.Stages = append([]FailureStage(nil), route.Stages...)
+			route.ErrorClasses = append([]string(nil), route.ErrorClasses...)
+			def.Edges[i].Failure = &route
 		}
 	}
 	return def
@@ -276,6 +317,12 @@ func (d GraphDefinition) Validate() error {
 		}
 		if edge.Condition != nil && edge.Condition.Type == "" {
 			return fmt.Errorf("graph edge condition type is required")
+		}
+		if edge.Condition != nil && edge.Failure != nil {
+			return fmt.Errorf("graph edge %q -> %q cannot declare both condition and failure", edge.From, edge.To)
+		}
+		if err := edge.Failure.Validate(); err != nil {
+			return fmt.Errorf("graph edge %q -> %q failure route: %w", edge.From, edge.To, err)
 		}
 	}
 	return nil

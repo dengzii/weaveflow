@@ -7,6 +7,7 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/state"
 )
 
 func testStateModule() dsl.StateModuleDefinition {
@@ -48,6 +49,40 @@ func TestRegistryGraphSchemaExportsV2ModulesAndBindings(t *testing.T) {
 		if strings.Contains(text, legacy) {
 			t.Fatalf("graph schema contains legacy property %s: %s", legacy, text)
 		}
+	}
+}
+
+func TestRegisterReducerValidatesVersionAndExportsDiscovery(t *testing.T) {
+	t.Parallel()
+	reg := NewRegistry()
+	for _, identifier := range []string{"sum", "sum.v", "sum.v0", "sum.v1.extra"} {
+		if err := reg.RegisterReducer(identifier, state.SumReducer{}); err == nil {
+			t.Fatalf("expected invalid reducer ID %q", identifier)
+		}
+	}
+	if err := reg.RegisterReducer("sum.v1", state.SumReducer{}); err != nil {
+		t.Fatalf("register reducer: %v", err)
+	}
+	if err := reg.RegisterNodeType(NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{Type: "counter", StatePorts: []dsl.StatePortDefinition{{
+			Name: "total", Schema: dsl.JSONSchema{"type": "number"}, Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeReplace,
+		}}},
+		Build: func(*BuildContext, ResolvedNodeSpec) (core.Node, error) { return nil, nil },
+	}); err != nil {
+		t.Fatalf("register node type: %v", err)
+	}
+	if _, ok := reg.FindReducer("sum.v1"); !ok {
+		t.Fatal("registered reducer was not discoverable")
+	}
+	if got := reg.ReducerIDs(); len(got) != 1 || got[0] != "sum.v1" {
+		t.Fatalf("reducer IDs = %#v", got)
+	}
+	payload, err := json.Marshal(reg.JSONSchema())
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	if !strings.Contains(string(payload), `"reducer":{"enum":["sum.v1"]}`) {
+		t.Fatalf("graph schema missing reducer discovery: %s", payload)
 	}
 }
 

@@ -20,10 +20,14 @@ type ConditionSchema struct {
 	DynamicStatePorts *DynamicStatePortDefinition `json:"dynamic_state_ports,omitempty"`
 }
 
-func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, nodeTypes map[string]NodeTypeSchema, conditions map[string]ConditionSchema) JSONSchema {
+func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, nodeTypes map[string]NodeTypeSchema, conditions map[string]ConditionSchema, reducerIDs ...string) JSONSchema {
+	reducerItems := JSONSchema{"type": "string"}
+	if len(reducerIDs) > 0 {
+		reducerItems = JSONSchema{"enum": append([]string(nil), reducerIDs...)}
+	}
 	bindingSchema := JSONSchema{
 		"type":                 "object",
-		"properties":           JSONSchema{"path": JSONSchema{"type": "string"}},
+		"properties":           JSONSchema{"path": JSONSchema{"type": "string"}, "reducer": reducerItems},
 		"required":             []string{"path"},
 		"additionalProperties": false,
 	}
@@ -141,6 +145,15 @@ func BuildGraphDefinitionSchema(stateModules map[string]StateModuleDefinition, n
 						"from":      JSONSchema{"type": "string"},
 						"to":        JSONSchema{"type": "string"},
 						"condition": JSONSchema{"oneOf": conditionVariants},
+						"failure": JSONSchema{
+							"type": "object",
+							"properties": JSONSchema{
+								"stages":        JSONSchema{"type": "array", "items": JSONSchema{"enum": []string{string(FailureStageNode), string(FailureStageCondition)}}},
+								"error_classes": JSONSchema{"type": "array", "items": JSONSchema{"type": "string"}},
+								"catch_all":     JSONSchema{"type": "boolean"},
+							},
+							"additionalProperties": false,
+						},
 					},
 					"required":             []string{"from", "to"},
 					"additionalProperties": false,

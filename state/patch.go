@@ -18,13 +18,15 @@ const (
 	OpMerge PatchOpKind = "merge"
 	// OpAppend appends a value or slice of values to Path.
 	OpAppend PatchOpKind = "append"
+	OpReduce PatchOpKind = "reduce"
 )
 
 // PatchOp is one state mutation recorded by an Editor.
 type PatchOp struct {
-	Kind  PatchOpKind `json:"kind"`
-	Path  Path        `json:"path"`
-	Value any         `json:"value,omitempty"`
+	Kind    PatchOpKind `json:"kind"`
+	Path    Path        `json:"path"`
+	Value   any         `json:"value,omitempty"`
+	Reducer string      `json:"reducer,omitempty"`
 }
 
 // Patch is an ordered list of state mutations. It is immutable from callers'
@@ -71,12 +73,20 @@ func (p Patch) Empty() bool {
 // Apply replays the patch against a clone of base and returns the resulting
 // state.
 func (p Patch) Apply(base *State) (*State, error) {
+	return p.ApplyWithReducers(base, nil)
+}
+
+type Reducer interface {
+	Reduce(current, incoming any) (any, error)
+}
+
+func (p Patch) ApplyWithReducers(base *State, reducers map[string]Reducer) (*State, error) {
 	target := NewState()
 	if base != nil {
 		target = base.Clone()
 	}
 	for _, op := range p.ops {
-		if err := applyPatchOp(target, op); err != nil {
+		if err := applyPatchOpWithReducers(target, op, reducers); err != nil {
 			return nil, err
 		}
 	}
@@ -84,6 +94,10 @@ func (p Patch) Apply(base *State) (*State, error) {
 }
 
 func applyPatchOp(target *State, op PatchOp) error {
+	return applyPatchOpWithReducers(target, op, nil)
+}
+
+func applyPatchOpWithReducers(target *State, op PatchOp, reducers map[string]Reducer) error {
 	if target == nil {
 		return fmt.Errorf("target state is nil")
 	}
@@ -99,6 +113,20 @@ func applyPatchOp(target *State, op PatchOp) error {
 		return target.merge(op.Path, op.Value)
 	case OpAppend:
 		return appendPathValue(target, op.Path, op.Value)
+	case OpReduce:
+		if op.Reducer == "" {
+			return fmt.Errorf("reduce op reducer is required")
+		}
+		reducer := reducers[op.Reducer]
+		if reducer == nil {
+			return fmt.Errorf("unknown state reducer %q", op.Reducer)
+		}
+		current, _ := target.read(op.Path)
+		value, err := reducer.Reduce(current, op.Value)
+		if err != nil {
+			return fmt.Errorf("state reducer %q failed at %q: %w", op.Reducer, op.Path.String(), err)
+		}
+		return target.set(op.Path, value)
 	default:
 		return fmt.Errorf("unknown patch op kind %q", op.Kind)
 	}

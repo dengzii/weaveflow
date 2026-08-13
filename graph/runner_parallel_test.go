@@ -435,9 +435,9 @@ func TestRunnerResumeFromAfterNodeUsesActualConditionalRouting(t *testing.T) {
 	if err := g.SetEntryPoint("router"); err != nil {
 		t.Fatalf("set entry: %v", err)
 	}
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (bool, error) {
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (registry.RouteDecision, error) {
 		value, ok := state.NewAccess(current).ReadAny(state.Shared("route"))
-		return ok && value == "right", nil
+		return registry.RouteDecision{Matched: ok && value == "right", Reason: "route compared"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "right", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -601,9 +601,9 @@ func TestRunnerParallelBarrierNextNodeIDsUseActualConditionalRouting(t *testing.
 		t.Fatalf("set entry: %v", err)
 	}
 	conditionFor := func(branchID string) registry.EdgeCondition {
-		return registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (bool, error) {
+		return registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (registry.RouteDecision, error) {
 			value, ok := state.NewAccess(current).ReadAny(state.Scope(branchID, "route"))
-			return ok && value == "right", nil
+			return registry.RouteDecision{Matched: ok && value == "right", Reason: "branch route compared"}, nil
 		})
 	}
 	for _, edge := range [][2]string{

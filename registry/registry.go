@@ -2,10 +2,16 @@
 package registry
 
 import (
+	"fmt"
+	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/state"
 )
+
+var reducerIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]*\.v[1-9][0-9]*$`)
 
 type Registry struct {
 	stateModules      map[string]dsl.StateModuleDefinition
@@ -15,6 +21,7 @@ type Registry struct {
 	conditions        map[string]ConditionDefinition
 	stateFields       map[string]dsl.StateFieldDefinition
 	capabilityModules map[string]string
+	reducers          map[string]state.Reducer
 }
 
 func NewRegistry() *Registry {
@@ -26,7 +33,46 @@ func NewRegistry() *Registry {
 		conditions:        map[string]ConditionDefinition{},
 		stateFields:       map[string]dsl.StateFieldDefinition{},
 		capabilityModules: map[string]string{},
+		reducers:          map[string]state.Reducer{},
 	}
+}
+
+func (r *Registry) RegisterReducer(identifier string, reducer state.Reducer) error {
+	if r == nil {
+		return fmt.Errorf("registry is nil")
+	}
+	identifier = strings.TrimSpace(identifier)
+	if !reducerIDPattern.MatchString(identifier) {
+		return fmt.Errorf("reducer identifier %q must include a stable version", identifier)
+	}
+	if reducer == nil {
+		return fmt.Errorf("reducer %q is nil", identifier)
+	}
+	if _, exists := r.reducers[identifier]; exists {
+		return fmt.Errorf("reducer %q is already registered", identifier)
+	}
+	r.reducers[identifier] = reducer
+	return nil
+}
+
+func (r *Registry) FindReducer(identifier string) (state.Reducer, bool) {
+	if r == nil {
+		return nil, false
+	}
+	reducer, ok := r.reducers[strings.TrimSpace(identifier)]
+	return reducer, ok
+}
+
+func (r *Registry) ReducerIDs() []string {
+	if r == nil || len(r.reducers) == 0 {
+		return nil
+	}
+	identifiers := make([]string, 0, len(r.reducers))
+	for identifier := range r.reducers {
+		identifiers = append(identifiers, identifier)
+	}
+	sort.Strings(identifiers)
+	return identifiers
 }
 
 func StateModuleKey(name, version string) string {
@@ -116,7 +162,7 @@ func (r *Registry) JSONSchema() dsl.JSONSchema {
 	for key, def := range r.conditions {
 		conditions[key] = def.ConditionSchema
 	}
-	return dsl.BuildGraphDefinitionSchema(r.stateModules, nodeTypes, conditions)
+	return dsl.BuildGraphDefinitionSchema(r.stateModules, nodeTypes, conditions, r.ReducerIDs()...)
 }
 
 func (r *Registry) FindStateModule(name, version string) (dsl.StateModuleDefinition, bool) {

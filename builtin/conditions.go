@@ -142,17 +142,21 @@ func StateExpression(paths map[string]state.Path, expression string) (registry.E
 	sort.Strings(names)
 	return registry.NewEdgeCondition(dsl.GraphConditionSpec{
 		Type: ConditionTypeStateExpression, Config: map[string]any{"expression": strings.TrimSpace(expression)}, State: bindings,
-	}, func(ctx context.Context, current *state.State) (bool, error) {
+	}, func(ctx context.Context, current *state.State) (registry.RouteDecision, error) {
 		access := state.NewAccess(current)
 		inputs := make(map[string]any, len(names))
 		for _, name := range names {
 			value, ok := access.ReadAny(paths[name])
 			if !ok {
-				return false, nil
+				return registry.RouteDecision{Reason: fmt.Sprintf("state input %q is missing", name)}, nil
 			}
 			inputs[name] = value
 		}
-		return program.EvalBool(ctx, inputs)
+		matched, err := program.EvalBool(ctx, inputs)
+		if err != nil {
+			return registry.RouteDecision{}, err
+		}
+		return registry.RouteDecision{Matched: matched, Reason: "state expression evaluated"}, nil
 	}), nil
 }
 
@@ -336,36 +340,37 @@ func expressionConditionsConditionDefinition() registry.ConditionDefinition {
 
 func ConversationHasToolCalls(conversationPath state.Path) registry.EdgeCondition {
 	spec := dsl.GraphConditionSpec{Type: ConditionTypeConversationHasToolCalls, State: map[string]dsl.StateBinding{"conversation": {Path: conversationPath.String()}}}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (bool, error) {
+	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (registry.RouteDecision, error) {
 		conversation, err := conversationcap.Bind(state.NewAccess(current), conversationPath)
 		if err != nil {
-			return false, err
+			return registry.RouteDecision{}, err
 		}
 		messages := conversation.Messages()
 		if len(messages) == 0 {
-			return false, nil
+			return registry.RouteDecision{Reason: "conversation is empty"}, nil
 		}
 		lastMessage := messages[len(messages)-1]
 		if lastMessage.Role != llms.ChatMessageTypeAI {
-			return false, nil
+			return registry.RouteDecision{Reason: "last message is not from the model"}, nil
 		}
 		for _, part := range lastMessage.Parts {
 			if _, ok := part.(llms.ToolCall); ok {
-				return true, nil
+				return registry.RouteDecision{Matched: true, Reason: "last model message contains tool calls"}, nil
 			}
 		}
-		return false, nil
+		return registry.RouteDecision{Reason: "last model message has no tool calls"}, nil
 	})
 }
 
 func ConversationHasFinalAnswer(conversationPath state.Path) registry.EdgeCondition {
 	spec := dsl.GraphConditionSpec{Type: ConditionTypeConversationHasFinalAnswer, State: map[string]dsl.StateBinding{"conversation": {Path: conversationPath.String()}}}
-	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (bool, error) {
+	return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (registry.RouteDecision, error) {
 		conversation, err := conversationcap.Bind(state.NewAccess(current), conversationPath)
 		if err != nil {
-			return false, err
+			return registry.RouteDecision{}, err
 		}
-		return conversation.FinalAnswer() != "", nil
+		matched := conversation.FinalAnswer() != ""
+		return registry.RouteDecision{Matched: matched, Reason: "conversation final answer checked"}, nil
 	})
 }
 
@@ -415,26 +420,26 @@ func ExpressionConditions(rootPath state.Path, conditionConfig ExpressionConditi
 		Type:   ConditionTypeExpressionConditions,
 		Config: conditionConfig.Map(),
 		State:  map[string]dsl.StateBinding{"state": {Path: rootPath.String()}},
-	}, func(_ context.Context, current *state.State) (bool, error) {
+	}, func(_ context.Context, current *state.State) (registry.RouteDecision, error) {
 		root, ok := state.NewAccess(current).ReadAny(rootPath)
 		if !ok {
-			return false, fmt.Errorf("condition state is missing at %q", rootPath)
+			return registry.RouteDecision{}, fmt.Errorf("condition state is missing at %q", rootPath)
 		}
 		switch matchMode {
 		case ExpressionMatchAny:
 			for _, expression := range expressions {
 				if matchExpression(root, expression) {
-					return true, nil
+					return registry.RouteDecision{Matched: true, Reason: "one expression matched"}, nil
 				}
 			}
-			return false, nil
+			return registry.RouteDecision{Reason: "no expression matched"}, nil
 		default:
 			for _, expression := range expressions {
 				if !matchExpression(root, expression) {
-					return false, nil
+					return registry.RouteDecision{Reason: "not all expressions matched"}, nil
 				}
 			}
-			return true, nil
+			return registry.RouteDecision{Matched: true, Reason: "all expressions matched"}, nil
 		}
 	}), nil
 }

@@ -21,8 +21,8 @@ func TestExecutionPolicyLimitsLoopAndPublishesInspectionEvent(t *testing.T) {
 	if err := workflow.SetEntryPoint("loop"); err != nil {
 		t.Fatal(err)
 	}
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (bool, error) {
-		return true, nil
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Matched: true, Reason: "loop"}, nil
 	})
 	if err := workflow.AddConditionalEdge("loop", "loop", condition); err != nil {
 		t.Fatal(err)
@@ -615,8 +615,8 @@ func TestConditionFailureIncludesStableIdentityAndStatePaths(t *testing.T) {
 		State: map[string]dsl.StateBinding{
 			"route": {Path: "shared.route"},
 		},
-	}, func(context.Context, *state.State) (bool, error) {
-		return false, errors.New("route evaluation failed")
+	}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{}, errors.New("route evaluation failed")
 	})
 	if err := workflow.AddConditionalEdge("router", "matched", condition); err != nil {
 		t.Fatal(err)

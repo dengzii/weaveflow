@@ -446,7 +446,9 @@ func newBindingTestRegistry(t *testing.T) *registry.Registry {
 			},
 		},
 		Resolve: func(spec registry.ResolvedConditionSpec) (registry.EdgeCondition, error) {
-			return registry.NewEdgeCondition(spec.Spec, func(context.Context, *state.State) (bool, error) { return true, nil }), nil
+			return registry.NewEdgeCondition(spec.Spec, func(context.Context, *state.State) (registry.RouteDecision, error) {
+				return registry.RouteDecision{Matched: true, Reason: "test condition matched"}, nil
+			}), nil
 		},
 	}
 	if err := reg.RegisterCondition(condition); err != nil {

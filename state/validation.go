@@ -178,6 +178,9 @@ func ValidatePatch(patch Patch) []ValidationIssue {
 				})
 			}
 		}
+		if op.Kind == OpReduce && strings.TrimSpace(op.Reducer) == "" {
+			issues = append(issues, ValidationIssue{Path: path, Kind: "missing_reducer", Message: "reduce op requires reducer"})
+		}
 	}
 	return issues
 }
@@ -195,6 +198,21 @@ func ValidatePatchByContract(patch Patch, contract Contract) []ValidationIssue {
 			continue
 		}
 		if pathAllowedByAny(op.Path, writePaths) {
+			reducer, known := reducerForPath(contract, op.Path)
+			switch {
+			case known && reducer != "" && (op.Kind != OpReduce || strings.TrimSpace(op.Reducer) != reducer):
+				issues = append(issues, ValidationIssue{
+					Path:    op.Path.String(),
+					Kind:    "reducer_mismatch",
+					Message: fmt.Sprintf("patch at %q must use reducer %q", op.Path.String(), reducer),
+				})
+			case known && reducer == "" && op.Kind == OpReduce:
+				issues = append(issues, ValidationIssue{
+					Path:    op.Path.String(),
+					Kind:    "reducer_not_declared",
+					Message: fmt.Sprintf("patch at %q uses reducer %q without declaring it in the state contract", op.Path.String(), op.Reducer),
+				})
+			}
 			continue
 		}
 		issues = append(issues, ValidationIssue{
@@ -221,9 +239,40 @@ func ValidatePatchByContract(patch Patch, contract Contract) []ValidationIssue {
 	return issues
 }
 
+func reducerForPath(contract Contract, path Path) (string, bool) {
+	if path.Empty() {
+		return "", false
+	}
+	selected := ""
+	selectedDepth := -1
+	found := false
+	for _, field := range contract.Fields {
+		if !isWriteMode(field.Mode) || field.Path.Empty() {
+			continue
+		}
+		if !pathWithin(path, field.Path) && !pathWithin(field.Path, path) {
+			continue
+		}
+		depth := len(field.Path.segments)
+		if field.Path.section != "" {
+			depth++
+		}
+		if depth > selectedDepth {
+			selected = strings.TrimSpace(field.Reducer)
+			selectedDepth = depth
+			found = true
+		}
+	}
+	return selected, found
+}
+
 func ValidatePatchResultByContract(base *State, patch Patch, contract Contract) []ValidationIssue {
+	return ValidatePatchResultByContractWithReducers(base, patch, contract, nil)
+}
+
+func ValidatePatchResultByContractWithReducers(base *State, patch Patch, contract Contract, reducers map[string]Reducer) []ValidationIssue {
 	issues := ValidatePatchByContract(patch, contract)
-	resultState, err := patch.Apply(base)
+	resultState, err := patch.ApplyWithReducers(base, reducers)
 	if err != nil {
 		issues = append(issues, ValidationIssue{Kind: "patch_apply_failed", Message: err.Error()})
 		sortValidationIssues(issues)
@@ -329,7 +378,7 @@ func validMergeStrategy(strategy MergeStrategy) bool {
 
 func validPatchOpKind(kind PatchOpKind) bool {
 	switch kind {
-	case OpSet, OpDelete, OpMerge, OpAppend:
+	case OpSet, OpDelete, OpMerge, OpAppend, OpReduce:
 		return true
 	default:
 		return false

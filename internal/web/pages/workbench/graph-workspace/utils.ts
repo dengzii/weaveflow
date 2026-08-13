@@ -46,7 +46,7 @@ export function validateGraph(definition: GraphDefinition | null, registry?: Reg
   if (!definition.finish_point && !(definition.edges ?? []).some((edge) => edge.to === END_NODE_REF)) return "missing finish";
   const edgePairs = new Set<string>();
   for (const edge of definition.edges ?? []) {
-    const edgeKey = `${edge.from}\u0000${edge.to}`;
+    const edgeKey = `${edge.from}\u0000${edge.to}\u0000${edge.failure ? "failure" : "normal"}`;
     if (edgePairs.has(edgeKey)) return "duplicate edges";
     edgePairs.add(edgeKey);
     if (!nodeIds.has(edge.from)) return "missing source";

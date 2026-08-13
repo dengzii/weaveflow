@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
@@ -23,13 +25,14 @@ type scheduledNodeExecutor func(context.Context, fruntime.GraphTask, *state.Stat
 type scheduledNodePreparer func(context.Context, fruntime.GraphTask, *state.State) (context.Context, error)
 
 type scheduledRunnable struct {
-	graph        *Graph
-	patches      *compilePatchCollector
-	prepareNode  scheduledNodePreparer
-	executeNode  scheduledNodeExecutor
-	observeNode  func(context.Context, NodeEvent, string, *state.State, error, time.Duration)
-	joinNodes    map[string]struct{}
-	reachability map[string]map[string]bool
+	graph         *Graph
+	patches       *compilePatchCollector
+	prepareNode   scheduledNodePreparer
+	executeNode   scheduledNodeExecutor
+	observeNode   func(context.Context, NodeEvent, string, *state.State, error, time.Duration)
+	recordFailure func(context.Context, fruntime.GraphTask, error, []fruntime.GraphTask) error
+	joinNodes     map[string]struct{}
+	reachability  map[string]map[string]bool
 }
 
 type executionBudget struct {
@@ -123,6 +126,7 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	}
 
 	for {
+	nextWave:
 		if err := ctx.Err(); err != nil {
 			if parentCtx.Err() != nil {
 				return currentState, parentCtx.Err()
@@ -195,15 +199,75 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 			}
 		}
 		if nodeErr := firstError(nodeErrors); nodeErr != nil {
+			if errorCount(nodeErrors) > 1 {
+				return currentState, nodeErr
+			}
+			for index, task := range completedTasks {
+				if nodeErrors[index] == nil {
+					continue
+				}
+				failureTasks, resolveErr := runnable.graph.resolveFailure(ctx, task, string(dsl.FailureStageNode), nodeErrors[index])
+				if resolveErr != nil {
+					return currentState, resolveErr
+				}
+				if len(failureTasks) > 0 {
+					if runnable.recordFailure != nil {
+						if err := runnable.recordFailure(context.WithoutCancel(ctx), task, nodeErrors[index], failureTasks); err != nil {
+							return currentState, err
+						}
+					} else if err := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, failureRoutedSchedulerEvent(task, nodeErrors[index], failureTasks)); err != nil {
+						return currentState, err
+					}
+					currentTasks, pendingFanIn = runnable.scheduleNext(failureTasks, pendingFanIn)
+					if err := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{NextTasks: currentTasks, PendingFanInNodes: sortedNodeIDSet(pendingFanIn)}); err != nil {
+						return currentState, err
+					}
+					if err := runnable.notifyGraphStep(ctx, config, completedTasks, currentState); err != nil {
+						return currentState, err
+					}
+					goto nextWave
+				}
+			}
 			return currentState, nodeErr
 		}
 
-		nextTasks, returnCommand, suspend, err := runnable.resolveCommands(ctx, completedTasks, results, currentState)
+		nextTasks, returnCommand, suspend, err := runnable.resolveCommands(ctx, config, completedTasks, results, currentState)
 		if err != nil {
 			if event := conditionSchedulerEvent(err); event != nil {
 				if notifyErr := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, *event); notifyErr != nil {
 					return currentState, errors.Join(err, notifyErr)
 				}
+			}
+			failureTask := completedTasks[0]
+			var conditionErr *ConditionError
+			if errors.As(err, &conditionErr) {
+				for _, completedTask := range completedTasks {
+					if completedTask.NodeID == conditionErr.SourceNodeID {
+						failureTask = completedTask
+						break
+					}
+				}
+			}
+			failureTasks, resolveErr := runnable.graph.resolveFailure(ctx, failureTask, string(dsl.FailureStageCondition), err)
+			if resolveErr != nil {
+				return currentState, resolveErr
+			}
+			if len(failureTasks) > 0 {
+				if runnable.recordFailure != nil {
+					if recordErr := runnable.recordFailure(context.WithoutCancel(ctx), failureTask, err, failureTasks); recordErr != nil {
+						return currentState, recordErr
+					}
+				} else if notifyErr := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, failureRoutedSchedulerEvent(failureTask, err, failureTasks)); notifyErr != nil {
+					return currentState, notifyErr
+				}
+				currentTasks, pendingFanIn = runnable.scheduleNext(failureTasks, pendingFanIn)
+				if storeErr := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{NextTasks: currentTasks, PendingFanInNodes: sortedNodeIDSet(pendingFanIn)}); storeErr != nil {
+					return currentState, storeErr
+				}
+				if stepErr := runnable.notifyGraphStep(ctx, config, completedTasks, currentState); stepErr != nil {
+					return currentState, stepErr
+				}
+				goto nextWave
 			}
 			return currentState, err
 		}
@@ -577,7 +641,7 @@ type taskSuspend struct {
 	request *core.SuspendRequest
 }
 
-func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, completedTasks []fruntime.GraphTask, results []core.ExecutionResult, currentState *state.State) ([]fruntime.GraphTask, *core.ReturnCommand, *taskSuspend, error) {
+func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, config fruntime.SchedulerConfig, completedTasks []fruntime.GraphTask, results []core.ExecutionResult, currentState *state.State) ([]fruntime.GraphTask, *core.ReturnCommand, *taskSuspend, error) {
 	if len(completedTasks) != len(results) {
 		return nil, nil, nil, fmt.Errorf("resolve commands: %d tasks have %d results", len(completedTasks), len(results))
 	}
@@ -615,13 +679,13 @@ func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, complete
 				return nil, nil, nil, fmt.Errorf("task %q cannot suspend from a parallel wave", task.TaskID)
 			}
 			suspend = &taskSuspend{task: task, request: command.Suspend}
-			targets, err := runnable.graph.resolveNextNodes(ctx, task.NodeID, currentState)
+			tasks, err := runnable.graph.resolveNextTasksObserved(ctx, task, currentState, func(decision registry.RouteDecision) error {
+				return runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, routeDecisionSchedulerEvent(task.NodeID, decision))
+			})
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			for _, nodeID := range targets {
-				staticTargets[nodeID] = struct{}{}
-			}
+			appendResolvedRouteTasks(tasks, staticTargets, &dynamicTasks)
 		case len(command.Goto) > 0:
 			for _, target := range command.Goto {
 				nodeID, err := runnable.graph.resolveEdgeTarget(string(target))
@@ -650,13 +714,13 @@ func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, complete
 				})
 			}
 		default:
-			targets, err := runnable.graph.resolveNextNodes(ctx, task.NodeID, currentState)
+			tasks, err := runnable.graph.resolveNextTasksObserved(ctx, task, currentState, func(decision registry.RouteDecision) error {
+				return runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, routeDecisionSchedulerEvent(task.NodeID, decision))
+			})
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			for _, nodeID := range targets {
-				staticTargets[nodeID] = struct{}{}
-			}
+			appendResolvedRouteTasks(tasks, staticTargets, &dynamicTasks)
 		}
 	}
 	if returnCommand != nil {
@@ -684,6 +748,16 @@ func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, complete
 	return tasks, nil, suspend, nil
 }
 
+func appendResolvedRouteTasks(tasks []fruntime.GraphTask, staticTargets map[string]struct{}, dynamicTasks *[]fruntime.GraphTask) {
+	for _, task := range tasks {
+		if task.Dynamic {
+			*dynamicTasks = append(*dynamicTasks, task)
+			continue
+		}
+		staticTargets[task.NodeID] = struct{}{}
+	}
+}
+
 func dynamicTaskID(parent fruntime.GraphTask, send core.Send, index int) string {
 	identity := fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s", parent.TaskID, index, send.Target, strings.TrimSpace(send.CorrelationKey), strings.TrimSpace(send.OrderKey))
 	digest := sha256.Sum256([]byte(identity))
@@ -696,6 +770,10 @@ func (runnable *scheduledRunnable) scheduleNext(nextTasks []fruntime.GraphTask, 
 	for _, task := range nextTasks {
 		if task.Dynamic {
 			readyDynamic = append(readyDynamic, task)
+			continue
+		}
+		if task.Failure != nil {
+			readyStatic[task.NodeID] = task
 			continue
 		}
 		if runnable.isJoinNode(task.NodeID) {
@@ -871,6 +949,16 @@ func firstError(errorsList []error) error {
 		}
 	}
 	return nil
+}
+
+func errorCount(errorsList []error) int {
+	count := 0
+	for _, err := range errorsList {
+		if err != nil {
+			count++
+		}
+	}
+	return count
 }
 
 func configuredInterruptTask(tasks []fruntime.GraphTask, config fruntime.SchedulerConfig) (fruntime.GraphTask, bool) {

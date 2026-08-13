@@ -39,6 +39,7 @@ type GraphRunner struct {
 	startupWarnings    []WarningRecord
 	nodeContracts      map[string]state.Contract
 	stateSchemas       map[string]state.JSONSchema
+	reducers           map[string]state.Reducer
 	now                func() time.Time
 	eventDiagnosticsMu sync.Mutex
 	eventDiagnostics   EventPublicationDiagnostics
@@ -72,6 +73,7 @@ type graphRunnerConfig struct {
 	startupWarnings    []WarningRecord
 	nodeContracts      map[string]state.Contract
 	stateSchemas       map[string]state.JSONSchema
+	reducers           map[string]state.Reducer
 	transactionStore   TransactionStore
 	now                func() time.Time
 }
@@ -147,6 +149,7 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 		startupWarnings:    cloneWarnings(cfg.startupWarnings),
 		nodeContracts:      cloneContracts(cfg.nodeContracts),
 		stateSchemas:       cloneSchemas(cfg.stateSchemas),
+		reducers:           cloneReducers(cfg.reducers),
 		now:                cfg.now,
 		eventDiagnostics: EventPublicationDiagnostics{
 			BestEffortFailures: map[EventType]EventPublicationFailure{},
@@ -230,6 +233,21 @@ func WithNodeContracts(contracts map[string]state.Contract) GraphRunnerOption {
 
 func WithStateSchemas(schemas map[string]state.JSONSchema) GraphRunnerOption {
 	return func(cfg *graphRunnerConfig) error { cfg.stateSchemas = cloneSchemas(schemas); return nil }
+}
+
+func WithStateReducers(reducers map[string]state.Reducer) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error { cfg.reducers = cloneReducers(reducers); return nil }
+}
+
+func cloneReducers(reducers map[string]state.Reducer) map[string]state.Reducer {
+	if len(reducers) == 0 {
+		return nil
+	}
+	cloned := make(map[string]state.Reducer, len(reducers))
+	for identifier, reducer := range reducers {
+		cloned[identifier] = reducer
+	}
+	return cloned
 }
 
 func WithRuntimeTransactionStore(store TransactionStore) GraphRunnerOption {
@@ -1969,11 +1987,15 @@ func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRec
 		if r.runnerGraph().IsParallelBranchTarget(nodeID) || runtimeState.ParallelWaveID != "" || runtimeState.WaveID != "" {
 			return nil, nil, fmt.Errorf("resume from wave task %q checkpoint %q is not supported without after-wave context", checkpoint.Stage, checkpoint.CheckpointID)
 		}
-		nextNodeID, err := r.runnerGraph().ResolveNextNode(ctx, nodeID, currentState)
+		parent := GraphTask{TaskID: checkpoint.TaskID, NodeID: nodeID}
+		if parent.TaskID == "" {
+			parent.TaskID = nodeID
+		}
+		nextTasks, err := r.runnerGraph().ResolveNextTasks(ctx, parent, currentState)
 		if err != nil {
 			return nil, nil, err
 		}
-		return []GraphTask{NewStaticGraphTask(nextNodeID, 0)}, nil, nil
+		return CloneGraphTasks(nextTasks), nil, nil
 	case CheckpointAfterWave:
 		return CloneGraphTasks(schedule.NextTasks), nil, nil
 	case CheckpointFinal:

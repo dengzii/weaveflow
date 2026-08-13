@@ -32,6 +32,7 @@ type FieldAccess struct {
 	Mode        AccessMode
 	Required    bool
 	Merge       MergeStrategy
+	Reducer     string
 	Type        string
 	Schema      JSONSchema
 	Description string

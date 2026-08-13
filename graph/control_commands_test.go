@@ -12,6 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
@@ -67,6 +68,108 @@ func TestRunnerDynamicSendPersistsStableOrderedTasks(t *testing.T) {
 		if value := taskInputValue(t, firstTask); value != wantValue {
 			t.Fatalf("task %d input = %q, want %q", taskIndex, value, wantValue)
 		}
+	}
+}
+
+func TestRouteDecisionTargetsFanOutThroughScheduler(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph(nil)
+	mustAddResultNode(t, workflow, "router", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
+	})
+	for _, nodeID := range []string{"first", "second"} {
+		currentNodeID := nodeID
+		mustAddResultNode(t, workflow, currentNodeID, func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+			return core.Success(), access.AppendAny(state.Shared("visited"), currentNodeID)
+		})
+	}
+	mustAddResultNode(t, workflow, "finish", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("finish"); err != nil {
+		t.Fatal(err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Matched: true, Targets: []core.NodeRef{"second", "first"}, Reason: "fan out"}, nil
+	})
+	if err := workflow.AddConditionalEdge("router", "first", condition); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddEdge("router", "second"); err != nil {
+		t.Fatal(err)
+	}
+	for _, nodeID := range []string{"first", "second"} {
+		if err := workflow.AddEdge(nodeID, "finish"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	finalState, err := workflow.Run(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Run(): %v", err)
+	}
+	if visited := readStringItems(t, finalState, "shared.visited"); !reflect.DeepEqual(visited, []string{"second", "first"}) {
+		t.Fatalf("visited = %#v", visited)
+	}
+}
+
+func TestRunnerRouteDecisionSendPreservesInputAndResume(t *testing.T) {
+	t.Parallel()
+
+	var workerCalls atomic.Int32
+	workflow := NewGraph(nil)
+	mustAddResultNode(t, workflow, "router", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
+	})
+	mustAddResultNode(t, workflow, "worker", func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+		workerCalls.Add(1)
+		value, _ := access.ReadAny(state.Shared("item"))
+		return core.Success(), access.SetAny(state.Shared("result"), value)
+	})
+	mustAddResultNode(t, workflow, "fallback", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("worker"); err != nil {
+		t.Fatal(err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Matched: true, Send: []core.Send{{Target: "worker", Input: sendValuePatch("routed")}}, Reason: "dispatch"}, nil
+	})
+	if err := workflow.AddConditionalEdge("router", "worker", condition); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddEdge("router", "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddEdge("fallback", "worker"); err != nil {
+		t.Fatal(err)
+	}
+	runtimeStore := fruntime.NewMemoryRuntimeStore()
+	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore, fruntime.WithBreakpoints(fruntime.Breakpoint{
+		ID: "after-router", NodeID: "router", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
+	}))
+	pausedRun, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	if pausedRun.Status != fruntime.RunStatusPaused {
+		t.Fatalf("status = %q", pausedRun.Status)
+	}
+	resumedRun, finalState, err := runner.Resume(context.Background(), pausedRun.RunID, nil)
+	if err != nil {
+		t.Fatalf("Resume(): %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted || workerCalls.Load() != 1 {
+		t.Fatalf("run = %#v, worker calls = %d", resumedRun, workerCalls.Load())
+	}
+	if value, _ := state.ReadPath(finalState, "shared.result"); value != "routed" {
+		t.Fatalf("result = %#v", value)
 	}
 }
 

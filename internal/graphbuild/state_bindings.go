@@ -125,7 +125,7 @@ func appendResolvedBindingSemantics(target []dsl.StateBindingSemantic, component
 		}
 		for _, field := range binding.Contract.Fields {
 			semantic.Contract = append(semantic.Contract, dsl.StateContractSemanticField{
-				Path: field.Path.String(), Mode: dsl.StateAccessMode(field.Mode), Required: field.Required, MergeStrategy: dsl.StateMergeStrategy(field.Merge), Type: field.Type,
+				Path: field.Path.String(), Mode: dsl.StateAccessMode(field.Mode), Required: field.Required, MergeStrategy: dsl.StateMergeStrategy(field.Merge), Reducer: field.Reducer, Type: field.Type,
 			})
 		}
 		target = append(target, semantic)
@@ -193,6 +193,7 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 				Schema:        dynamic.Schema,
 				Mode:          dynamic.Mode,
 				MergeStrategy: dynamic.MergeStrategy,
+				Reducer:       dynamic.Reducer,
 			}
 		}
 	} else {
@@ -219,6 +220,15 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 		if pathText == "" {
 			pathText = expandDefaultPath(port.DefaultPath, ownerID)
 		}
+		if reducerID := strings.TrimSpace(binding.Reducer); reducerID != "" {
+			if port.Capability != "" {
+				return nil, state.Contract{}, fmt.Errorf("%s state port %q capability binding cannot override reducer", component, port.Name)
+			}
+			if !canWrite(port.Mode) {
+				return nil, state.Contract{}, fmt.Errorf("%s state port %q reducer requires write access", component, port.Name)
+			}
+			port.Reducer = reducerID
+		}
 		if pathText == "" {
 			if port.Required {
 				return nil, state.Contract{}, fmt.Errorf("%s requires state port %q", component, port.Name)
@@ -237,6 +247,11 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 		}
 
 		resolved := registry.ResolvedStateBinding{Path: path, Capability: strings.TrimSpace(port.Capability)}
+		if reducerID := strings.TrimSpace(port.Reducer); reducerID != "" {
+			if _, ok := r.registry.FindReducer(reducerID); !ok {
+				return nil, state.Contract{}, fmt.Errorf("%s state port %q reducer %q is not registered", component, port.Name, reducerID)
+			}
+		}
 		if resolved.Capability == "" {
 			fieldSchema := port.Schema.Clone()
 			if moduleField, ok := r.fields[path.String()]; ok && len(moduleField.Schema) > 0 {
@@ -247,6 +262,7 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 				Mode:        state.AccessMode(port.Mode),
 				Required:    port.Required && canRead(port.Mode),
 				Merge:       effectiveMerge(state.MergeStrategy(port.MergeStrategy)),
+				Reducer:     strings.TrimSpace(port.Reducer),
 				Type:        schemaType(port.Schema),
 				Schema:      state.JSONSchema(fieldSchema),
 				Description: port.Description,
@@ -313,7 +329,11 @@ func stateBindingSpecs(bindings map[string]registry.ResolvedStateBinding) map[st
 	}
 	specs := make(map[string]dsl.StateBinding, len(bindings))
 	for name, binding := range bindings {
-		specs[name] = dsl.StateBinding{Path: binding.Path.String()}
+		reducer := ""
+		if len(binding.Contract.Fields) == 1 {
+			reducer = binding.Contract.Fields[0].Reducer
+		}
+		specs[name] = dsl.StateBinding{Path: binding.Path.String(), Reducer: reducer}
 	}
 	return specs
 }
@@ -344,6 +364,7 @@ func expandCapabilityContract(root state.Path, capability dsl.StateCapabilityDef
 			Mode:        state.AccessMode(reference.Mode),
 			Required:    reference.Required && canRead(reference.Mode),
 			Merge:       state.MergeStrategy(field.MergeStrategy),
+			Reducer:     strings.TrimSpace(field.Reducer),
 			Type:        schemaType(field.Schema),
 			Schema:      state.JSONSchema(field.Schema.Clone()),
 			Description: description,
@@ -373,6 +394,9 @@ func mergeContracts(left, right state.Contract) (state.Contract, error) {
 		if effectiveMerge(existing.Merge) != effectiveMerge(field.Merge) {
 			return state.Contract{}, fmt.Errorf("state path %q has incompatible merge strategies %q and %q", key, existing.Merge, field.Merge)
 		}
+		if strings.TrimSpace(existing.Reducer) != strings.TrimSpace(field.Reducer) {
+			return state.Contract{}, fmt.Errorf("state path %q has incompatible reducers %q and %q", key, existing.Reducer, field.Reducer)
+		}
 		existing.Mode = mergeAccessModes(existing.Mode, field.Mode)
 		existing.Required = existing.Required || field.Required
 		if existing.Type == "" {
@@ -401,6 +425,10 @@ func mergeAccessModes(left, right state.AccessMode) state.AccessMode {
 
 func canRead(mode dsl.StateAccessMode) bool {
 	return mode == dsl.StateAccessRead || mode == dsl.StateAccessReadWrite
+}
+
+func canWrite(mode dsl.StateAccessMode) bool {
+	return mode == dsl.StateAccessWrite || mode == dsl.StateAccessReadWrite
 }
 
 func effectiveMerge(strategy state.MergeStrategy) state.MergeStrategy {

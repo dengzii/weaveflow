@@ -137,8 +137,8 @@ func TestGraphRejectsConditionalEdgeWithMultipleDefaultFallbacks(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGraph(t, "router", "a", "b", "fallback", "done")
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (bool, error) {
-		return false, nil
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Reason: "not matched"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "a", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -158,9 +158,9 @@ func TestResolveNextNodesConditionalMatchingFallbackAndErrors(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGraph(t, "router", "matched", "fallback")
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (bool, error) {
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (registry.RouteDecision, error) {
 		value, ok := state.NewAccess(current).ReadAny(state.Shared("route"))
-		return ok && value == "matched", nil
+		return registry.RouteDecision{Matched: ok && value == "matched", Reason: "route compared"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -216,9 +216,9 @@ func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 	if err := g.SetEntryPoint("router"); err != nil {
 		t.Fatalf("set entry: %v", err)
 	}
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (bool, error) {
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (registry.RouteDecision, error) {
 		value, ok := state.NewAccess(current).ReadAny(state.Shared("route"))
-		return ok && value == "matched", nil
+		return registry.RouteDecision{Matched: ok && value == "matched", Reason: "route compared"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -378,9 +378,9 @@ func TestResolveNextNodesUsesProvidedContext(t *testing.T) {
 
 	type routeKey struct{}
 	g := newTestGraph(t, "router", "matched", "fallback")
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (bool, error) {
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(ctx context.Context, current *state.State) (registry.RouteDecision, error) {
 		value, _ := ctx.Value(routeKey{}).(string)
-		return value == "matched", nil
+		return registry.RouteDecision{Matched: value == "matched", Reason: "context route compared"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -406,8 +406,8 @@ func TestGraphRejectsConditionalEdgeWithoutFallback(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGraph(t, "router", "matched", "done")
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (bool, error) {
-		return false, nil
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Reason: "not matched"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -424,8 +424,8 @@ func TestGraphAllowsConditionalEdgeWithDefaultFallback(t *testing.T) {
 	t.Parallel()
 
 	g := newTestGraph(t, "router", "matched", "done")
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (bool, error) {
-		return true, nil
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Matched: true, Reason: "matched"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "matched", condition); err != nil {
 		t.Fatalf("add conditional edge: %v", err)
@@ -697,8 +697,8 @@ func TestFanInDoesNotWaitForInactiveConditionalPredecessor(t *testing.T) {
 	if err := g.SetFinishPoint("collector"); err != nil {
 		t.Fatalf("set finish: %v", err)
 	}
-	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (bool, error) {
-		return true, nil
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Matched: true, Reason: "matched"}, nil
 	})
 	if err := g.AddConditionalEdge("router", "selected", condition); err != nil {
 		t.Fatalf("add selected condition: %v", err)

@@ -77,7 +77,15 @@ export function EdgeInspector({
       onChangeVirtualEdge((edge) => ({ ...edge, condition }));
       return;
     }
-    onChangeEdge((edge) => ({ ...edge, condition }));
+    onChangeEdge((edge) => ({ ...edge, condition, failure: undefined }));
+  }
+
+  function changeEdgeKind(kind: string) {
+    if (selectedVirtualEdge) return;
+    onChangeEdge((edge) => {
+      if (kind === "failure") return { ...edge, condition: undefined, failure: { catch_all: true } };
+      return { ...edge, failure: undefined };
+    });
   }
 
   function changeConditionConfig(config: Record<string, unknown>) {
@@ -98,7 +106,7 @@ export function EdgeInspector({
     <>
       <InspectorBlock title="Edge Properties">
         <div className="mb-2 flex items-center gap-2">
-          <span className="text-xs font-medium text-muted-foreground">{selectedConditionType || "Direct"}</span>
+          <span className="text-xs font-medium text-muted-foreground">{selectedEdge?.failure ? "Failure" : selectedConditionType || "Direct"}</span>
           <Button
             type="button"
             variant="ghost"
@@ -131,19 +139,64 @@ export function EdgeInspector({
                 />
               </Field>
             </div>
-            <Field label="Condition">
-              <Select value={selectedConditionType ?? ""} onChange={(event) => changeCondition(event.target.value)}>
-                <option value="">Direct</option>
-                {selectedConditionType && !conditions.some((condition) => condition.type === selectedConditionType) ? (
-                  <option value={selectedConditionType}>{selectedConditionType}</option>
-                ) : null}
-                {conditions.map((condition) => (
-                  <option key={condition.type} value={condition.type}>
-                    {condition.title || condition.type}
-                  </option>
-                ))}
-              </Select>
-            </Field>
+            {selectedEdge ? (
+              <Field label="Edge Kind">
+                <Select value={selectedEdge.failure ? "failure" : "normal"} onChange={(event) => changeEdgeKind(event.target.value)}>
+                  <option value="normal">Normal</option>
+                  <option value="failure">Failure</option>
+                </Select>
+              </Field>
+            ) : null}
+            {!selectedEdge?.failure ? (
+              <Field label="Condition">
+                <Select value={selectedConditionType ?? ""} onChange={(event) => changeCondition(event.target.value)}>
+                  <option value="">Direct</option>
+                  {selectedConditionType && !conditions.some((condition) => condition.type === selectedConditionType) ? (
+                    <option value={selectedConditionType}>{selectedConditionType}</option>
+                  ) : null}
+                  {conditions.map((condition) => (
+                    <option key={condition.type} value={condition.type}>
+                      {condition.title || condition.type}
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : null}
+            {selectedEdge?.failure ? (
+              <>
+                <Field label="Failure Stage">
+                  <Select
+                    value={selectedEdge.failure.stages?.[0] ?? ""}
+                    onChange={(event) => onChangeEdge((edge) => ({
+                      ...edge,
+                      failure: {
+                        ...edge.failure,
+                        stages: event.target.value ? [event.target.value as "node" | "condition"] : undefined,
+                      },
+                    }))}
+                  >
+                    <option value="">Any</option>
+                    <option value="node">Node</option>
+                    <option value="condition">Condition</option>
+                  </Select>
+                </Field>
+                <Field label="Error Classes">
+                  <input
+                    className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm"
+                    value={(selectedEdge.failure.error_classes ?? []).join(", ")}
+                    onChange={(event) => onChangeEdge((edge) => ({
+                      ...edge,
+                      failure: {
+                        ...edge.failure,
+                        error_classes: event.target.value.split(",").map((value) => value.trim()).filter(Boolean),
+                        catch_all: event.target.value.trim() === "",
+                      },
+                    }))}
+                    placeholder="unavailable, invalid_input"
+                  />
+                </Field>
+              </>
+            ) : null}
           </>
         ) : null}
       </InspectorBlock>

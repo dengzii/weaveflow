@@ -34,6 +34,7 @@ type registryResponse struct {
 	NodeGroups   []wfregistry.NodeGroup          `json:"node_groups"`
 	NodeTypes    []dsl.NodeTypeSchema            `json:"node_types"`
 	Conditions   []dsl.ConditionSchema           `json:"conditions"`
+	Reducers     []string                        `json:"reducers"`
 	GraphSchema  dsl.JSONSchema                  `json:"graph_schema"`
 	ChatChannels []chatchannel.Definition        `json:"chat_channels"`
 }
@@ -170,6 +171,7 @@ func (s *Server) handleGetRegistry(c *gin.Context) {
 		NodeGroups:   nodeGroups,
 		NodeTypes:    nodeTypes,
 		Conditions:   conditions,
+		Reducers:     s.registry.ReducerIDs(),
 		GraphSchema:  s.registry.JSONSchema(),
 		ChatChannels: chatChannels,
 	})

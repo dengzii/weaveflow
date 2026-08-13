@@ -24,6 +24,7 @@ type StateContractSemanticField struct {
 	Mode          StateAccessMode    `json:"mode"`
 	Required      bool               `json:"required,omitempty"`
 	MergeStrategy StateMergeStrategy `json:"merge_strategy"`
+	Reducer       string             `json:"reducer,omitempty"`
 	Type          string             `json:"type,omitempty"`
 }
 

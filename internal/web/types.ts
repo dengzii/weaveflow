@@ -35,6 +35,13 @@ export interface GraphEdgeSpec {
   from: string;
   to: string;
   condition?: GraphConditionSpec;
+  failure?: FailureRouteSpec;
+}
+
+export interface FailureRouteSpec {
+  stages?: Array<"node" | "condition">;
+  error_classes?: string[];
+  catch_all?: boolean;
 }
 
 export interface GraphConditionSpec {
@@ -83,6 +90,7 @@ export interface StateModuleRef {
 
 export interface StateBinding {
   path: string;
+  reducer?: string;
 }
 
 export interface GraphInfo {
@@ -325,6 +333,7 @@ export interface RegistryInfo {
   chat_channels?: ChatChannelDefinition[];
   node_types: NodeTypeSchema[];
   conditions: ConditionSchema[];
+  reducers?: string[];
   graph_schema: Record<string, unknown>;
 }
 
@@ -353,6 +362,7 @@ export interface StateCapabilityFieldDefinition {
   name: string;
   schema: Record<string, unknown>;
   merge_strategy?: StateMergeStrategy;
+  reducer?: string;
 }
 
 export interface StateCapabilityDefinition {
@@ -391,6 +401,7 @@ export interface StatePortDefinition {
   capability?: string;
   contract?: RelativeStateContract;
   merge_strategy?: StateMergeStrategy;
+  reducer?: string;
 }
 
 export interface NodeGroup {
@@ -407,6 +418,7 @@ export interface DynamicStatePortDefinition {
   schema: Record<string, unknown>;
   mode: StateAccessMode;
   merge_strategy: StateMergeStrategy;
+  reducer?: string;
 }
 
 export interface NodeTypeSchema {

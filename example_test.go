@@ -68,9 +68,9 @@ func ExampleRegistry_RegisterCondition() {
 			spec := resolved.Spec
 			path := resolved.State["value"].Path
 			want := spec.Config["value"]
-			return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (bool, error) {
+			return registry.NewEdgeCondition(spec, func(_ context.Context, current *state.State) (registry.RouteDecision, error) {
 				got, ok := state.NewAccess(current).ReadAny(path)
-				return ok && got == want, nil
+				return registry.RouteDecision{Matched: ok && got == want, Reason: "shared value compared"}, nil
 			}), nil
 		},
 	})

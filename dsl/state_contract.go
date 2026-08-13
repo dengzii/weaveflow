@@ -23,6 +23,7 @@ type StateFieldRef struct {
 	Description   string             `json:"description,omitempty"`
 	Schema        JSONSchema         `json:"schema,omitempty"`
 	MergeStrategy StateMergeStrategy `json:"merge_strategy,omitempty"`
+	Reducer       string             `json:"reducer,omitempty"`
 }
 
 type StateContract struct {
@@ -49,6 +50,7 @@ type StatePortDefinition struct {
 	Capability    string                `json:"capability,omitempty"`
 	Contract      RelativeStateContract `json:"contract,omitempty"`
 	MergeStrategy StateMergeStrategy    `json:"merge_strategy,omitempty"`
+	Reducer       string                `json:"reducer,omitempty"`
 }
 
 type DynamicStatePortDefinition struct {
@@ -60,6 +62,7 @@ type DynamicStatePortDefinition struct {
 	Schema        JSONSchema         `json:"schema"`
 	Mode          StateAccessMode    `json:"mode"`
 	MergeStrategy StateMergeStrategy `json:"merge_strategy"`
+	Reducer       string             `json:"reducer,omitempty"`
 }
 
 func (s JSONSchema) Clone() JSONSchema {

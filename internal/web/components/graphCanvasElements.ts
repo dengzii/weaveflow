@@ -199,6 +199,8 @@ export function buildGraphCanvasElements({
   }): Edge => {
     const selected = selectionId === selectedEdgeID;
     const condition = Boolean(edge.condition);
+    const failure = Boolean(edge.failure);
+	const label = edge.failure ? failureEdgeLabel(edge.failure) : edge.condition ? conditionDisplayLabel(edge.condition) : undefined;
     return {
       id,
       data: { selectionId },
@@ -207,27 +209,27 @@ export function buildGraphCanvasElements({
       sourceHandle,
       targetHandle,
       type: contained ? "default" : undefined,
-      label: showLabel && edge.condition ? conditionDisplayLabel(edge.condition) : undefined,
-      labelStyle: showLabel && condition ? {
+      label: showLabel ? label : undefined,
+      labelStyle: showLabel && (condition || failure) ? {
         fill: "var(--foreground)",
         fontFamily: "var(--font-mono)",
         fontSize: 10,
         fontWeight: 600,
       } : undefined,
-      labelBgStyle: showLabel && condition ? {
+      labelBgStyle: showLabel && (condition || failure) ? {
         fill: "var(--panel)",
         fillOpacity: 0.96,
         stroke: "var(--border)",
         strokeWidth: 1,
       } : undefined,
-      labelBgPadding: showLabel && condition ? [7, 4] : undefined,
-      labelBgBorderRadius: showLabel && condition ? 5 : undefined,
+      labelBgPadding: showLabel && (condition || failure) ? [7, 4] : undefined,
+      labelBgBorderRadius: showLabel && (condition || failure) ? 5 : undefined,
       animated: false,
       selected,
       reconnectable: false,
       interactionWidth: 24,
       zIndex: 1,
-      style: edgeStyle(selected, condition),
+      style: edgeStyle(selected, condition, failure),
     };
   });
   const triggerTarget = startVirtualNodeIDs[0] ?? definition.entry_point;
@@ -254,14 +256,22 @@ export function buildGraphCanvasElements({
   return { nodes, edges: [...flowEdges, ...triggerEdges] };
 }
 
-function edgeColor(selected: boolean, condition: boolean): string {
+function failureEdgeLabel(failure: NonNullable<GraphDefinition["edges"]>[number]["failure"]): string {
+  const stages = failure?.stages?.join("|");
+  const classes = failure?.error_classes?.join("|");
+  return ["failure", stages, classes].filter(Boolean).join(" · ");
+}
+
+function edgeColor(selected: boolean, condition: boolean, failure: boolean): string {
   if (selected) return "var(--flow-edge-selected)";
+  if (failure) return "var(--flow-edge-failure)";
   return condition ? "#8b5cf6" : "var(--muted-foreground)";
 }
 
-function edgeStyle(selected: boolean, condition: boolean) {
+function edgeStyle(selected: boolean, condition: boolean, failure: boolean) {
   return {
     strokeWidth: selected ? 2.6 : 1.4,
-    stroke: edgeColor(selected, condition),
+    stroke: edgeColor(selected, condition, failure),
+    strokeDasharray: failure ? "7 4" : undefined,
   };
 }

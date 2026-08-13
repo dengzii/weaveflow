@@ -141,6 +141,12 @@ func cloneGraphEdgeSpec(edge dsl.GraphEdgeSpec) dsl.GraphEdgeSpec {
 		}
 		cloned.Condition = &copyCondition
 	}
+	if edge.Failure != nil {
+		failure := *edge.Failure
+		failure.Stages = append([]dsl.FailureStage(nil), edge.Failure.Stages...)
+		failure.ErrorClasses = append([]string(nil), edge.Failure.ErrorClasses...)
+		cloned.Failure = &failure
+	}
 	return cloned
 }
 

@@ -29,6 +29,10 @@ type ParallelWaveRecorder interface {
 	OnParallelWave(ctx context.Context, base *state.State, tasks []GraphTask) error
 }
 
+type FailureRouteRecorder interface {
+	OnFailureRouted(ctx context.Context, source GraphTask, err error, next []GraphTask) error
+}
+
 type BranchPatchRecorderSetter interface {
 	SetBranchPatchRecorder(recorder BranchPatchRecorder)
 }
@@ -41,15 +45,18 @@ type SchedulerConfig struct {
 }
 
 type GraphTask struct {
-	TaskID           string      `json:"task_id"`
-	NodeID           string      `json:"node_id"`
-	Input            state.Patch `json:"input,omitempty"`
-	CorrelationKey   string      `json:"correlation_key,omitempty"`
-	OrderKey         string      `json:"order_key,omitempty"`
-	Order            int         `json:"order"`
-	Dynamic          bool        `json:"dynamic,omitempty"`
-	ParallelWaveSize int         `json:"parallel_wave_size,omitempty"`
+	TaskID           string          `json:"task_id"`
+	NodeID           string          `json:"node_id"`
+	Input            state.Patch     `json:"input,omitempty"`
+	CorrelationKey   string          `json:"correlation_key,omitempty"`
+	OrderKey         string          `json:"order_key,omitempty"`
+	Order            int             `json:"order"`
+	Dynamic          bool            `json:"dynamic,omitempty"`
+	ParallelWaveSize int             `json:"parallel_wave_size,omitempty"`
+	Failure          *FailureContext `json:"failure,omitempty"`
 }
+
+type FailureContext core.FailureContext
 
 type GraphSchedule struct {
 	CurrentTasks      []GraphTask `json:"current_tasks,omitempty"`
@@ -82,6 +89,24 @@ func CloneGraphTasks(tasks []GraphTask) []GraphTask {
 	for index, task := range tasks {
 		cloned[index] = task
 		cloned[index].Input = state.NewPatch(task.Input.Ops()...)
+		if task.Failure != nil {
+			failure := *task.Failure
+			if len(task.Failure.Details) > 0 {
+				failure.Details = cloneFailureDetails(task.Failure.Details)
+			}
+			cloned[index].Failure = &failure
+		}
+	}
+	return cloned
+}
+
+func cloneFailureDetails(details map[string]any) map[string]any {
+	if len(details) == 0 {
+		return nil
+	}
+	cloned := make(map[string]any, len(details))
+	for key, value := range details {
+		cloned[key] = value
 	}
 	return cloned
 }
@@ -92,6 +117,8 @@ const (
 	SchedulerEventLimitExceeded   SchedulerEventType = "limit_exceeded"
 	SchedulerEventRetryScheduled  SchedulerEventType = "retry_scheduled"
 	SchedulerEventConditionFailed SchedulerEventType = "condition_failed"
+	SchedulerEventRouteDecision   SchedulerEventType = "route_decision"
+	SchedulerEventFailureRouted   SchedulerEventType = "failure_routed"
 	SchedulerEventBackpressure    SchedulerEventType = "backpressure"
 )
 
@@ -112,6 +139,8 @@ type RunnerGraph interface {
 	ResolveNodeID(nodeID string) (string, error)
 	ResolveNextNodes(ctx context.Context, currentNodeID string, state *state.State) ([]string, error)
 	ResolveNextNode(ctx context.Context, currentNodeID string, state *state.State) (string, error)
+	ResolveNextTasks(ctx context.Context, parent GraphTask, state *state.State) ([]GraphTask, error)
+	ResolveFailure(ctx context.Context, task GraphTask, stage string, err error) ([]GraphTask, error)
 	IsParallelBranchTarget(nodeID string) bool
 	NodeName(nodeID string) string
 	AfterInterruptNodes(breakpoints []Breakpoint) ([]string, error)

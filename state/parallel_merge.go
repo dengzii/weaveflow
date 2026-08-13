@@ -20,6 +20,7 @@ type BranchPatch struct {
 type ParallelMergeOptions struct {
 	Contracts map[string]Contract
 	Schemas   map[string]JSONSchema
+	Reducers  map[string]Reducer
 }
 
 // MergeParallelPatches applies fan-in branch patches to a shared base state in
@@ -45,7 +46,7 @@ func MergeParallelPatches(base *State, branches []BranchPatch, options ParallelM
 	for _, entry := range entries {
 		ops = append(ops, entry.op)
 	}
-	merged, err := NewPatch(ops...).Apply(target)
+	merged, err := NewPatch(ops...).ApplyWithReducers(target, options.Reducers)
 	if err != nil {
 		return nil, err
 	}
@@ -91,14 +92,16 @@ func validateParallelMergeResult(merged *State, entries []parallelPatchEntry, op
 }
 
 type parallelPatchEntry struct {
-	taskID     string
-	nodeID     string
-	branchOrd  int
-	branchIdx  int
-	opIdx      int
-	op         PatchOp
-	merge      MergeStrategy
-	mergeKnown bool
+	taskID       string
+	nodeID       string
+	branchOrd    int
+	branchIdx    int
+	opIdx        int
+	op           PatchOp
+	merge        MergeStrategy
+	mergeKnown   bool
+	reducer      string
+	reducerKnown bool
 }
 
 func normalizeBranchPatchEntries(branches []BranchPatch, contracts map[string]Contract) ([]parallelPatchEntry, error) {
@@ -113,15 +116,18 @@ func normalizeBranchPatchEntries(branches []BranchPatch, contracts map[string]Co
 		}
 		for opIdx, op := range branch.Patch.Ops() {
 			merge, known := mergeStrategyForPath(contracts[branch.NodeID], op.Path)
+			reducer, reducerKnown := reducerForPath(contracts[branch.NodeID], op.Path)
 			entries = append(entries, parallelPatchEntry{
-				taskID:     branch.TaskID,
-				nodeID:     branch.NodeID,
-				branchOrd:  branch.Order,
-				branchIdx:  branchIdx,
-				opIdx:      opIdx,
-				op:         op,
-				merge:      merge,
-				mergeKnown: known,
+				taskID:       branch.TaskID,
+				nodeID:       branch.NodeID,
+				branchOrd:    branch.Order,
+				branchIdx:    branchIdx,
+				opIdx:        opIdx,
+				op:           op,
+				merge:        merge,
+				mergeKnown:   known,
+				reducer:      reducer,
+				reducerKnown: reducerKnown,
 			})
 		}
 	}
@@ -198,6 +204,17 @@ func validateParallelPatchPair(left, right parallelPatchEntry) error {
 		return nil
 	}
 
+	reducer, reducerKnown, err := parallelPairReducer(left, right)
+	if err != nil {
+		return err
+	}
+	if reducerKnown && reducer != "" {
+		if left.op.Kind != OpReduce || right.op.Kind != OpReduce || left.op.Reducer != reducer || right.op.Reducer != reducer {
+			return parallelConflictError(left, right, fmt.Sprintf("reducer %q requires matching reduce ops", reducer))
+		}
+		return nil
+	}
+
 	strategy, strategyKnown, err := parallelPairMergeStrategy(left, right)
 	if err != nil {
 		return err
@@ -207,6 +224,9 @@ func validateParallelPatchPair(left, right parallelPatchEntry) error {
 	}
 
 	if left.op.Kind == OpAppend && right.op.Kind == OpAppend {
+		return nil
+	}
+	if left.op.Kind == OpReduce && right.op.Kind == OpReduce && left.op.Reducer == right.op.Reducer {
 		return nil
 	}
 	if left.op.Kind == OpMerge && right.op.Kind == OpMerge {
@@ -222,6 +242,21 @@ func validateParallelPatchPair(left, right parallelPatchEntry) error {
 		return nil
 	}
 	return parallelConflictError(left, right, "conflicting writes")
+}
+
+func parallelPairReducer(left, right parallelPatchEntry) (string, bool, error) {
+	leftReducer := strings.TrimSpace(left.reducer)
+	rightReducer := strings.TrimSpace(right.reducer)
+	if left.reducerKnown && right.reducerKnown && leftReducer != rightReducer {
+		return "", false, parallelConflictError(left, right, "incompatible reducers")
+	}
+	if left.reducerKnown {
+		return leftReducer, true, nil
+	}
+	if right.reducerKnown {
+		return rightReducer, true, nil
+	}
+	return "", false, nil
 }
 
 func parallelPairMergeStrategy(left, right parallelPatchEntry) (MergeStrategy, bool, error) {

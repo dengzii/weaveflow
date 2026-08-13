@@ -18,6 +18,10 @@ type Builder interface {
 	SetFinishPoint(ref string) error
 }
 
+type failureRouteGraphBuilder interface {
+	AddFailureRoute(from, to string, route dsl.FailureRouteSpec) error
+}
+
 type resolvedConditionGraphBuilder interface {
 	AddResolvedConditionalEdge(from, to string, condition registry.EdgeCondition, contract state.Contract) error
 }
@@ -97,6 +101,16 @@ func PopulateGraph(
 		}
 	}
 	for edgeIndex, edge := range def.Edges {
+		if edge.Failure != nil {
+			failureTarget, ok := target.(failureRouteGraphBuilder)
+			if !ok {
+				return fmt.Errorf("graph builder does not support failure routes")
+			}
+			if err := failureTarget.AddFailureRoute(edge.From, edge.To, *edge.Failure); err != nil {
+				return err
+			}
+			continue
+		}
 		if edge.Condition == nil {
 			if err := target.AddEdge(edge.From, edge.To); err != nil {
 				return err

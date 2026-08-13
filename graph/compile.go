@@ -34,6 +34,9 @@ func (g *Graph) executePatchNode(ctx context.Context, task fruntime.GraphTask, t
 	if targetNode == nil {
 		return core.ExecutionResult{}, fmt.Errorf("node %q is nil", task.NodeID)
 	}
+	if task.Failure != nil {
+		ctx = core.WithFailure(ctx, core.FailureContext(*task.Failure))
+	}
 	resolvedContract, err := core.ContractFor(targetNode)
 	if err != nil {
 		return core.ExecutionResult{}, err
@@ -50,7 +53,7 @@ func (g *Graph) executePatchNode(ctx context.Context, task fruntime.GraphTask, t
 			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
 		}
 	}
-	inputState, err := task.Input.Apply(currentState)
+	inputState, err := task.Input.ApplyWithReducers(currentState, g.reducers())
 	if err != nil {
 		return core.ExecutionResult{}, fmt.Errorf("apply input for task %q: %w", task.TaskID, err)
 	}
@@ -63,6 +66,7 @@ func (g *Graph) executePatchNode(ctx context.Context, task fruntime.GraphTask, t
 		ValidateRequiredReads:  hasResolvedContract,
 		ValidateWrites:         hasResolvedContract || len(contract.Fields) > 0 || contract.WildcardWrite,
 		ApplyPatchToInput:      hasResolvedContract,
+		Reducers:               g.reducers(),
 		OnRequiredReadIssues: func(issues []state.ValidationIssue) {
 			readIssues = append([]state.ValidationIssue(nil), issues...)
 		},
@@ -89,7 +93,7 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.R
 	}
 	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, task fruntime.GraphTask, currentState *state.State) (core.ExecutionResult, error) {
 		targetNode := g.nodes[task.NodeID]
-		inputState, err := task.Input.Apply(currentState)
+		inputState, err := task.Input.ApplyWithReducers(currentState, g.reducers())
 		if err != nil {
 			recordFailedBranchPatch(patches, currentState, task, err)
 			return core.ExecutionResult{}, fmt.Errorf("apply input for task %q: %w", task.TaskID, err)
@@ -103,6 +107,9 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.R
 		return result, err
 	})
 	scheduled.prepareNode = execution.PrepareNode
+	if recorder, ok := execution.(fruntime.FailureRouteRecorder); ok {
+		scheduled.recordFailure = recorder.OnFailureRouted
+	}
 	return scheduled, nil
 }
 
@@ -140,7 +147,25 @@ func (g *Graph) mergeCompiledResults(ctx context.Context, current *state.State, 
 	if err := patches.notifyParallelWave(ctx, current, branches); err != nil {
 		return nil, err
 	}
-	return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{Contracts: g.nodeContracts, Schemas: g.stateSchemas})
+	return state.MergeParallelPatches(current, branches, state.ParallelMergeOptions{Contracts: g.nodeContracts, Schemas: g.stateSchemas, Reducers: g.reducers()})
+}
+
+func (g *Graph) reducers() map[string]state.Reducer {
+	if g == nil || g.registry == nil {
+		return nil
+	}
+	identifiers := map[string]state.Reducer{}
+	for _, contract := range g.nodeContracts {
+		for _, field := range contract.Fields {
+			if field.Reducer == "" {
+				continue
+			}
+			if reducer, ok := g.registry.FindReducer(field.Reducer); ok {
+				identifiers[field.Reducer] = reducer
+			}
+		}
+	}
+	return identifiers
 }
 
 func (g *Graph) compileBranchOrders() map[string]int {

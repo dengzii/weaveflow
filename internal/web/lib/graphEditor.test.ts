@@ -38,6 +38,7 @@ const registry: RegistryInfo = {
   node_groups: [],
   node_types: [nodeType],
   conditions: [condition],
+  reducers: ["sum.v1"],
   graph_schema: {},
 };
 
@@ -95,6 +96,30 @@ describe("v2 graph editor defaults", () => {
     graph.nodes.push({ id: "finish", type: "agent", state: { task: { path: "" } } });
     const next = addGraphEdge(graph, graph.nodes[0].id, "finish", condition.type, [condition]);
     expect(next.edges?.[0].condition?.state).toEqual({ result: { path: "" } });
+  });
+
+  test("preserves registered reducer bindings", () => {
+    expect(initialStateBindings([{
+      name: "total",
+      default_path: "shared.total",
+      mode: "write",
+      reducer: "sum.v1",
+    }], "worker")).toEqual({
+      total: { path: "shared.total", reducer: "sum.v1" },
+    });
+    expect(resolvedStatePortContract({
+      name: "total",
+      mode: "write",
+      reducer: "sum.v1",
+      schema: { type: "number" },
+    }, { path: "shared.total", reducer: "sum.v1" }, registry)).toEqual([{
+      path: "shared.total",
+      mode: "write",
+      required: false,
+      mergeStrategy: "replace",
+      reducer: "sum.v1",
+      type: "number",
+    }]);
   });
 
   test("supports dynamic state aliases without auto-creating hidden paths", () => {
@@ -164,6 +189,7 @@ describe("v2 graph editor defaults", () => {
       mode: "read_write",
       required: true,
       mergeStrategy: "append",
+      reducer: "",
       type: "array",
     }]);
   });

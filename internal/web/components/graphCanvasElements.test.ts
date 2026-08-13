@@ -151,6 +151,25 @@ describe("graph canvas elements", () => {
     });
   });
 
+  test("renders failure routes distinctly", () => {
+    const definition: GraphDefinition = {
+      nodes: [{ id: "source", type: "task" }, { id: "fallback", type: "task" }],
+      edges: [{
+        from: "source",
+        to: "fallback",
+        failure: { stages: ["node"], error_classes: ["unavailable"] },
+      }],
+    };
+    const edge = buildGraphCanvasElements(options(definition, { virtualNodeIDs: [] })).edges[0];
+    expect(edge).toMatchObject({
+      label: "failure · node · unavailable",
+      style: {
+        stroke: "var(--flow-edge-failure)",
+        strokeDasharray: "7 4",
+      },
+    });
+  });
+
   test("connects Trigger projections to the first visible Start node", () => {
     const definition: GraphDefinition = {
       entry_point: "task",

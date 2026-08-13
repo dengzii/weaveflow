@@ -176,6 +176,12 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 	edges := make([]dsl.GraphEdgeSpec, len(g.edgeSpecs))
 	for index, edge := range g.edgeSpecs {
 		edges[index] = edge
+		if edge.Failure != nil {
+			failure := *edge.Failure
+			failure.Stages = append([]dsl.FailureStage(nil), edge.Failure.Stages...)
+			failure.ErrorClasses = append([]string(nil), edge.Failure.ErrorClasses...)
+			edges[index].Failure = &failure
+		}
 		if edge.Condition == nil {
 			continue
 		}

@@ -14,6 +14,7 @@ type Writer interface {
 	Delete(path Path) error
 	MergeAny(path Path, value map[string]any) error
 	AppendAny(path Path, value any) error
+	ReduceAny(path Path, reducer string, value any) error
 }
 
 // Access is the node-facing state API. Read-only access wraps a State directly;
@@ -36,8 +37,12 @@ func NewAccess(current *State) *Access {
 // NewEditingAccess returns a copy-on-write view over state. Mutations update
 // the working copy and are captured as a Patch for replay or parallel merging.
 func NewEditingAccess(current *State) *Access {
+	return NewEditingAccessWithReducers(current, nil)
+}
+
+func NewEditingAccessWithReducers(current *State, reducers map[string]Reducer) *Access {
 	access := NewAccess(current)
-	access.editor = NewEditor(access.state)
+	access.editor = NewEditorWithReducers(access.state, reducers)
 	return access
 }
 
@@ -84,6 +89,13 @@ func (a *Access) AppendAny(path Path, value any) error {
 		return fmt.Errorf("state access is read-only")
 	}
 	return a.editor.AppendAny(path, value)
+}
+
+func (a *Access) ReduceAny(path Path, reducer string, value any) error {
+	if a == nil || a.editor == nil {
+		return fmt.Errorf("state access is read-only")
+	}
+	return a.editor.ReduceAny(path, reducer, value)
 }
 
 // Patch returns the structured mutations recorded by editing access.
@@ -182,20 +194,35 @@ func Merge(writer Writer, ref Ref[map[string]any], value map[string]any) error {
 	return writer.MergeAny(ref.Path(), value)
 }
 
+func Reduce[T any](writer Writer, ref Ref[T], value T) error {
+	if writer == nil {
+		return fmt.Errorf("state writer is nil")
+	}
+	if ref.reducer == "" {
+		return fmt.Errorf("state ref %q has no reducer", ref.Path().String())
+	}
+	return writer.ReduceAny(ref.Path(), ref.reducer, value)
+}
+
 // Editor applies patch operations to a working state while recording them for
 // later replay. Most node code should use Access instead.
 type Editor struct {
-	work *State
-	ops  []PatchOp
+	work     *State
+	ops      []PatchOp
+	reducers map[string]Reducer
 }
 
 // NewEditor creates an editor over a cloned copy of base.
 func NewEditor(base *State) *Editor {
+	return NewEditorWithReducers(base, nil)
+}
+
+func NewEditorWithReducers(base *State, reducers map[string]Reducer) *Editor {
 	work := NewState()
 	if base != nil {
 		work = base.Clone()
 	}
-	return &Editor{work: work}
+	return &Editor{work: work, reducers: reducers}
 }
 
 // ReadAny reads from the editor's working state.
@@ -226,6 +253,10 @@ func (e *Editor) AppendAny(path Path, value any) error {
 	return e.apply(PatchOp{Kind: OpAppend, Path: path, Value: value})
 }
 
+func (e *Editor) ReduceAny(path Path, reducer string, value any) error {
+	return e.apply(PatchOp{Kind: OpReduce, Path: path, Reducer: reducer, Value: value})
+}
+
 // Patch returns a clone of the operations recorded so far.
 func (e *Editor) Patch() Patch {
 	if e == nil {
@@ -249,7 +280,7 @@ func (e *Editor) apply(op PatchOp) error {
 	if e.work == nil {
 		e.work = NewState()
 	}
-	if err := applyPatchOp(e.work, op); err != nil {
+	if err := applyPatchOpWithReducers(e.work, op, e.reducers); err != nil {
 		return err
 	}
 	op.Value = cloneValue(op.Value)

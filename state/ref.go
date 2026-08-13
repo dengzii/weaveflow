@@ -8,6 +8,7 @@ type Ref[T any] struct {
 	path        Path
 	required    bool
 	merge       MergeStrategy
+	reducer     string
 	description string
 }
 
@@ -31,6 +32,11 @@ func (r Ref[T]) Required() Ref[T] {
 // WithMerge sets the parallel merge strategy emitted in contract fields.
 func (r Ref[T]) WithMerge(strategy MergeStrategy) Ref[T] {
 	r.merge = strategy
+	return r
+}
+
+func (r Ref[T]) WithReducer(identifier string) Ref[T] {
+	r.reducer = identifier
 	return r
 }
 
@@ -61,6 +67,7 @@ func (r Ref[T]) field(mode AccessMode) FieldAccess {
 		Mode:        mode,
 		Required:    r.required,
 		Merge:       r.merge,
+		Reducer:     r.reducer,
 		Type:        typeName[T](),
 		Description: r.description,
 	}

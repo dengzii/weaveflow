@@ -9,18 +9,28 @@ import (
 	"time"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
 
 func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, currentState *state.State) ([]string, error) {
+	tasks, err := g.resolveNextTasksObserved(ctx, fruntime.NewStaticGraphTask(currentNodeID, 0), currentState, nil)
+	if err != nil {
+		return nil, err
+	}
+	return fruntime.GraphTaskNodeIDs(tasks), nil
+}
+
+func (g *Graph) resolveNextTasksObserved(ctx context.Context, parent fruntime.GraphTask, currentState *state.State, observe func(registry.RouteDecision) error) ([]fruntime.GraphTask, error) {
 	if g == nil {
 		return nil, fmt.Errorf("graph is nil")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	currentNodeID = strings.TrimSpace(currentNodeID)
+	currentNodeID := strings.TrimSpace(parent.NodeID)
 	if currentNodeID == "" {
 		return nil, fmt.Errorf("node id is empty")
 	}
@@ -38,29 +48,118 @@ func (g *Graph) resolveNextNodes(ctx context.Context, currentNodeID string, curr
 				}
 				conditionState = state.ProjectStateByContract(currentState, edge.contract)
 			}
-			matched, err := edge.condition.Match(ctx, conditionState)
+			decision, err := edge.condition.EvaluateRoute(ctx, conditionState)
 			if err != nil {
 				return nil, g.conditionError(currentNodeID, edge, err)
 			}
-			if matched {
-				return []string{edge.to}, nil
+			if observe != nil {
+				if err := observe(decision); err != nil {
+					return nil, err
+				}
+			}
+			if decision.Matched {
+				return g.tasksFromRouteDecision(parent, edge.to, decision)
 			}
 		}
 		if targets := g.defaultEdges[currentNodeID]; len(targets) > 0 {
-			return []string{targets[0]}, nil
+			return staticRouteTasks(targets[:1]), nil
 		}
 		if currentNodeID == g.finishPoint {
-			return []string{endNodeID}, nil
+			return staticRouteTasks([]string{endNodeID}), nil
 		}
 		return nil, fmt.Errorf("node %q produced no matching conditional edge", currentNodeID)
 	}
 	if targets := g.defaultEdges[currentNodeID]; len(targets) > 0 {
-		return append([]string(nil), targets...), nil
+		return staticRouteTasks(targets), nil
 	}
 	if currentNodeID == g.finishPoint {
-		return []string{endNodeID}, nil
+		return staticRouteTasks([]string{endNodeID}), nil
 	}
 	return nil, fmt.Errorf("node %q has no outgoing edge", currentNodeID)
+}
+
+func (g *Graph) tasksFromRouteDecision(parent fruntime.GraphTask, edgeTarget string, decision registry.RouteDecision) ([]fruntime.GraphTask, error) {
+	if len(decision.Send) > 0 {
+		tasks := make([]fruntime.GraphTask, 0, len(decision.Send))
+		for index, send := range decision.Send {
+			nodeID, err := g.resolveNodeID(string(send.Target))
+			if err != nil {
+				return nil, fmt.Errorf("route decision send target %q: %w", send.Target, err)
+			}
+			tasks = append(tasks, fruntime.GraphTask{
+				TaskID:         dynamicTaskID(parent, send, index),
+				NodeID:         nodeID,
+				Input:          send.Input,
+				CorrelationKey: strings.TrimSpace(send.CorrelationKey),
+				OrderKey:       strings.TrimSpace(send.OrderKey),
+				Order:          index,
+				Dynamic:        true,
+			})
+		}
+		sort.SliceStable(tasks, func(leftIndex, rightIndex int) bool {
+			left, right := tasks[leftIndex], tasks[rightIndex]
+			if left.OrderKey != right.OrderKey {
+				return left.OrderKey < right.OrderKey
+			}
+			if left.CorrelationKey != right.CorrelationKey {
+				return left.CorrelationKey < right.CorrelationKey
+			}
+			return left.TaskID < right.TaskID
+		})
+		for index := range tasks {
+			tasks[index].Order = index
+		}
+		return tasks, nil
+	}
+	if len(decision.Targets) == 0 {
+		return staticRouteTasks([]string{edgeTarget}), nil
+	}
+	targets := make([]string, 0, len(decision.Targets))
+	for _, target := range decision.Targets {
+		nodeID, err := g.resolveEdgeTarget(string(target))
+		if err != nil {
+			return nil, fmt.Errorf("route decision target %q: %w", target, err)
+		}
+		targets = append(targets, nodeID)
+	}
+	return staticRouteTasks(targets), nil
+}
+
+func staticRouteTasks(targets []string) []fruntime.GraphTask {
+	tasks := make([]fruntime.GraphTask, 0, len(targets))
+	for index, nodeID := range targets {
+		tasks = append(tasks, fruntime.NewStaticGraphTask(nodeID, index))
+	}
+	return tasks
+}
+
+func routeDecisionSchedulerEvent(sourceNodeID string, decision registry.RouteDecision) fruntime.SchedulerEvent {
+	payload := map[string]any{"matched": decision.Matched}
+	if len(decision.Targets) > 0 {
+		targets := make([]string, len(decision.Targets))
+		for index, target := range decision.Targets {
+			targets[index] = string(target)
+		}
+		payload["targets"] = targets
+	}
+	if len(decision.Send) > 0 {
+		sends := make([]map[string]any, len(decision.Send))
+		for index, send := range decision.Send {
+			sends[index] = map[string]any{
+				"target":          string(send.Target),
+				"correlation_key": strings.TrimSpace(send.CorrelationKey),
+				"order_key":       strings.TrimSpace(send.OrderKey),
+			}
+		}
+		payload["sends"] = sends
+	}
+	if decision.Reason != "" {
+		payload["reason"] = decision.Reason
+	}
+	if len(decision.Details) > 0 {
+		payload["details"] = decision.Details
+	}
+	return fruntime.SchedulerEvent{Type: fruntime.SchedulerEventRouteDecision, NodeID: sourceNodeID, Payload: payload}
 }
 
 type ConditionError struct {
@@ -138,6 +237,117 @@ func conditionSchedulerEvent(err error) *fruntime.SchedulerEvent {
 	payload["error"] = conditionErr.Error()
 	payload["error_class"] = conditionErr.Class()
 	return &fruntime.SchedulerEvent{Type: fruntime.SchedulerEventConditionFailed, NodeID: conditionErr.SourceNodeID, Payload: payload}
+}
+
+func failureRoutedSchedulerEvent(source fruntime.GraphTask, cause error, next []fruntime.GraphTask) fruntime.SchedulerEvent {
+	payload := map[string]any{
+		"source_task_id": source.TaskID,
+		"source_node_id": source.NodeID,
+		"next_node_ids":  fruntime.GraphTaskNodeIDs(next),
+	}
+	if cause != nil {
+		payload["error"] = cause.Error()
+		payload["error_class"] = core.ClassifyError(cause)
+	}
+	if len(next) > 0 && next[0].Failure != nil {
+		failure := next[0].Failure
+		payload["stage"] = failure.Stage
+		payload["details"] = failure.Details
+	}
+	return fruntime.SchedulerEvent{Type: fruntime.SchedulerEventFailureRouted, NodeID: source.NodeID, Payload: payload}
+}
+
+func (g *Graph) resolveFailure(_ context.Context, task fruntime.GraphTask, stage string, err error) ([]fruntime.GraphTask, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	if err == nil {
+		return nil, nil
+	}
+	if !failureRoutable(stage, err) {
+		return nil, nil
+	}
+	sourceNodeID := task.NodeID
+	if stage == string(dsl.FailureStageCondition) {
+		var conditionErr *ConditionError
+		if errors.As(err, &conditionErr) {
+			sourceNodeID = conditionErr.SourceNodeID
+		}
+	}
+	errorClass := core.ClassifyError(err)
+	for _, route := range g.failureRoutes[sourceNodeID] {
+		if !failureRouteMatches(route.route, stage, errorClass) {
+			continue
+		}
+		failure := &fruntime.FailureContext{Stage: stage, ErrorClass: errorClass, Error: err.Error(), SourceNodeID: sourceNodeID}
+		var classified core.ExecutionError
+		if errors.As(err, &classified) {
+			failure.Details = classified.Details()
+		}
+		return []fruntime.GraphTask{{TaskID: fmt.Sprintf("failure-%s", task.TaskID), NodeID: route.to, Order: task.Order, Failure: failure}}, nil
+	}
+	return nil, nil
+}
+
+func failureRoutable(stage string, err error) bool {
+	if stage != string(dsl.FailureStageNode) && stage != string(dsl.FailureStageCondition) {
+		return false
+	}
+	if stage == string(dsl.FailureStageCondition) {
+		var conditionErr *ConditionError
+		if !errors.As(err, &conditionErr) {
+			return false
+		}
+		if errors.Is(conditionErr.Err, context.Canceled) {
+			return false
+		}
+		var classified core.ExecutionError
+		if errors.As(conditionErr.Err, &classified) && core.ClassifyError(conditionErr.Err) == core.ErrorResourceExhausted {
+			return false
+		}
+		return true
+	}
+	var classified core.ExecutionError
+	if !errors.As(err, &classified) {
+		return false
+	}
+	switch core.ClassifyError(err) {
+	case core.ErrorCanceled, core.ErrorResourceExhausted:
+		return false
+	default:
+		return true
+	}
+}
+
+func failureRouteMatches(route dsl.FailureRouteSpec, stage string, class core.ErrorClass) bool {
+	if !route.CatchAll && len(route.Stages) == 0 && len(route.ErrorClasses) == 0 {
+		return false
+	}
+	if len(route.Stages) > 0 {
+		matched := false
+		for _, candidate := range route.Stages {
+			if string(candidate) == stage {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	if len(route.ErrorClasses) > 0 {
+		matched := false
+		for _, candidate := range route.ErrorClasses {
+			if strings.TrimSpace(candidate) == string(class) {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return false
+		}
+	}
+	return true
 }
 
 func (g *Graph) Run(ctx context.Context, initialState *state.State) (*state.State, error) {

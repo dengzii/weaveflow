@@ -156,6 +156,11 @@ func TestSemanticGraphHashCanonicalizesModulesAndIncludesVersions(t *testing.T) 
 		ID: "node", Type: "node",
 		State: map[string]StateBinding{"input": {Path: "  shared.input  "}},
 	}}
+	changedReducer := base
+	changedReducer.Nodes = []GraphNodeSpec{{
+		ID: "node", Type: "node",
+		State: map[string]StateBinding{"input": {Path: "shared.input", Reducer: "sum.v1"}},
+	}}
 
 	baseHash, err := SemanticGraphHash(base)
 	if err != nil {
@@ -189,6 +194,13 @@ func TestSemanticGraphHashCanonicalizesModulesAndIncludesVersions(t *testing.T) 
 	if spacedHash != baseHash {
 		t.Fatalf("binding whitespace changed semantic hash: %q != %q", spacedHash, baseHash)
 	}
+	reducerHash, err := SemanticGraphHash(changedReducer)
+	if err != nil {
+		t.Fatalf("semantic hash changed reducer: %v", err)
+	}
+	if reducerHash == baseHash {
+		t.Fatal("state binding reducer did not change semantic hash")
+	}
 }
 
 func TestSemanticGraphHashIncludesResolvedCapabilityAndContract(t *testing.T) {
@@ -211,6 +223,9 @@ func TestSemanticGraphHashIncludesResolvedCapabilityAndContract(t *testing.T) {
 	changedContract := append([]StateBindingSemantic(nil), base...)
 	changedContract[0].Contract = append([]StateContractSemanticField(nil), base[0].Contract...)
 	changedContract[0].Contract[0].MergeStrategy = StateMergeAppend
+	changedReducer := append([]StateBindingSemantic(nil), base...)
+	changedReducer[0].Contract = append([]StateContractSemanticField(nil), base[0].Contract...)
+	changedReducer[0].Contract[0].Reducer = "messages.v1"
 
 	baseHash, err := SemanticGraphHashWithStateBindings(def, base)
 	if err != nil {
@@ -227,5 +242,9 @@ func TestSemanticGraphHashIncludesResolvedCapabilityAndContract(t *testing.T) {
 	contractHash, _ := SemanticGraphHashWithStateBindings(def, changedContract)
 	if contractHash == baseHash {
 		t.Fatal("resolved contract did not change semantic hash")
+	}
+	reducerHash, _ := SemanticGraphHashWithStateBindings(def, changedReducer)
+	if reducerHash == baseHash {
+		t.Fatal("resolved reducer did not change semantic hash")
 	}
 }

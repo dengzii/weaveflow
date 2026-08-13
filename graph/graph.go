@@ -53,6 +53,11 @@ type conditionalEdge struct {
 	resolved  bool
 }
 
+type failureRoute struct {
+	to    string
+	route dsl.FailureRouteSpec
+}
+
 func SetLogger(l *zap.Logger) {
 	fruntime.SetLogger(l)
 }
@@ -75,6 +80,7 @@ type Graph struct {
 	contractDiagnostics     []core.ContractDiagnostic
 	defaultEdges            map[string][]string
 	conditionalEdges        map[string][]conditionalEdge
+	failureRoutes           map[string][]failureRoute
 	edgeSpecs               []dsl.GraphEdgeSpec
 	version                 string
 	name                    string
@@ -107,6 +113,7 @@ func NewGraph(reg *registry.Registry) *Graph {
 		nodeSpecs:         map[string]dsl.GraphNodeSpec{},
 		defaultEdges:      map[string][]string{},
 		conditionalEdges:  map[string][]conditionalEdge{},
+		failureRoutes:     map[string][]failureRoute{},
 		stateModules:      []dsl.StateModuleRef{{Name: builtin.ProtocolsModuleName, Version: builtin.ProtocolsModuleVersion}},
 		initialStatePaths: initialStatePaths,
 		stateSchemas:      stateSchemas,
@@ -203,6 +210,17 @@ func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
 	contract, err := core.ContractFor(targetNode)
 	if err != nil {
 		return err
+	}
+	for _, field := range contract.Fields {
+		if field.Reducer == "" {
+			continue
+		}
+		if field.Mode != state.AccessWrite && field.Mode != state.AccessReadWrite {
+			return fmt.Errorf("node %q state path %q reducer requires write access", nodeID, field.Path.String())
+		}
+		if _, ok := reg.FindReducer(field.Reducer); !ok {
+			return fmt.Errorf("node %q state path %q reducer %q is not registered", nodeID, field.Path.String(), field.Reducer)
+		}
 	}
 	if len(contract.Fields) == 0 && !contract.WildcardRead && !contract.WildcardWrite {
 		return nil
@@ -323,6 +341,32 @@ func (g *Graph) SetFinishPoint(ref string) error {
 
 func (g *Graph) AddEdge(from, to string) error {
 	return g.addEdgeInternal(from, to, true)
+}
+
+func (g *Graph) AddFailureRoute(from, to string, route dsl.FailureRouteSpec) error {
+	if g == nil {
+		return fmt.Errorf("graph is nil")
+	}
+	if err := route.Validate(); err != nil {
+		return err
+	}
+	fromID, err := g.resolveNodeID(from)
+	if err != nil {
+		return err
+	}
+	toID, err := g.resolveEdgeTarget(to)
+	if err != nil {
+		return err
+	}
+	route.Stages = append([]dsl.FailureStage(nil), route.Stages...)
+	route.ErrorClasses = append([]string(nil), route.ErrorClasses...)
+	for index := range route.ErrorClasses {
+		route.ErrorClasses[index] = strings.TrimSpace(route.ErrorClasses[index])
+	}
+	g.failureRoutes[fromID] = append(g.failureRoutes[fromID], failureRoute{to: toID, route: route})
+	copyRoute := route
+	g.edgeSpecs = append(g.edgeSpecs, dsl.GraphEdgeSpec{From: g.nodeSpecs[fromID].ID, To: g.serializeNodeRef(toID), Failure: &copyRoute})
+	return nil
 }
 
 func (g *Graph) addEdgeInternal(from, to string, trackSpec bool) error {

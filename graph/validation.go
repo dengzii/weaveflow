@@ -61,6 +61,21 @@ func (g *Graph) Validate() error {
 			return fmt.Errorf("node %q has conditional edges but no default fallback edge", from)
 		}
 	}
+	for from, routes := range g.failureRoutes {
+		if _, ok := g.nodes[from]; !ok {
+			return fmt.Errorf("failure route source %q not found", from)
+		}
+		for _, route := range routes {
+			if err := route.route.Validate(); err != nil {
+				return fmt.Errorf("failure route from %q: %w", from, err)
+			}
+			if route.to != endNodeID {
+				if _, ok := g.nodes[route.to]; !ok {
+					return fmt.Errorf("failure route target %q not found", route.to)
+				}
+			}
+		}
+	}
 
 	for from, edges := range g.conditionalEdges {
 		if _, ok := g.nodes[from]; !ok {
@@ -156,6 +171,9 @@ func (g *Graph) reachableNodes() map[string]struct{} {
 		for _, edge := range g.conditionalEdges[nodeID] {
 			targets = append(targets, edge.to)
 		}
+		for _, route := range g.failureRoutes[nodeID] {
+			targets = append(targets, route.to)
+		}
 		for _, target := range targets {
 			if target == endNodeID {
 				continue
@@ -208,6 +226,15 @@ func (g *Graph) terminalReachableNodes() map[string]struct{} {
 				continue
 			}
 			reverseEdges[edge.to] = append(reverseEdges[edge.to], from)
+		}
+	}
+	for from, routes := range g.failureRoutes {
+		for _, route := range routes {
+			if route.to == endNodeID {
+				addTerminal(from)
+				continue
+			}
+			reverseEdges[route.to] = append(reverseEdges[route.to], from)
 		}
 	}
 	for len(queue) > 0 {

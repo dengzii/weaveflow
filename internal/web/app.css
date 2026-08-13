@@ -56,6 +56,7 @@
   --flow-edge-selected: #2563eb;
   --flow-edge-entry: #059669;
   --flow-edge-finish: #dc2626;
+  --flow-edge-failure: #dc2626;
   --status-neutral-bg: #eef2f7;
   --status-neutral-text: #64748b;
   --status-neutral-border: transparent;
@@ -102,6 +103,7 @@
   --flow-edge-selected: #60a5fa;
   --flow-edge-entry: #34d399;
   --flow-edge-finish: #f87171;
+  --flow-edge-failure: #fb7185;
   --status-neutral-bg: #23262d;
   --status-neutral-text: #aeb8c6;
   --status-neutral-border: #303541;

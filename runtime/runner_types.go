@@ -86,6 +86,8 @@ const (
 	EventNodeCanceled       EventType = "nodes.canceled"
 	EventNodeRetry          EventType = "nodes.retry"
 	EventConditionFailed    EventType = "condition.failed"
+	EventConditionEvaluated EventType = "condition.evaluated"
+	EventFailureRouted      EventType = "failure.routed"
 	EventNodeCustom         EventType = "nodes.custom"
 	EventLLMReasoningChunk  EventType = "llm.reasoning_chunk"
 	EventLLMContentChunk    EventType = "llm.content_chunk"

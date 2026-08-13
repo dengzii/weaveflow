@@ -224,6 +224,7 @@ func validateStatePorts(ports []dsl.StatePortDefinition) error {
 		port.Name = strings.TrimSpace(port.Name)
 		port.Capability = strings.TrimSpace(port.Capability)
 		port.DefaultPath = strings.TrimSpace(port.DefaultPath)
+		port.Reducer = strings.TrimSpace(port.Reducer)
 		if port.Name == "" {
 			return fmt.Errorf("state port name is required")
 		}
@@ -255,12 +256,15 @@ func validateStatePorts(ports []dsl.StatePortDefinition) error {
 			if !validMergeStrategy(port.MergeStrategy) {
 				return fmt.Errorf("primitive state port %q has invalid merge strategy %q", port.Name, port.MergeStrategy)
 			}
+			if port.Reducer != "" && port.Mode != dsl.StateAccessWrite && port.Mode != dsl.StateAccessReadWrite {
+				return fmt.Errorf("primitive state port %q reducer requires write access", port.Name)
+			}
 			if len(port.Contract.Fields) > 0 {
 				return fmt.Errorf("primitive state port %q cannot declare a relative contract", port.Name)
 			}
 			continue
 		}
-		if len(port.Schema) > 0 || port.Mode != "" || port.MergeStrategy != "" {
+		if len(port.Schema) > 0 || port.Mode != "" || port.MergeStrategy != "" || port.Reducer != "" {
 			return fmt.Errorf("capability state port %q cannot declare primitive schema, mode, or merge strategy", port.Name)
 		}
 		if len(port.Contract.Fields) == 0 {
@@ -314,6 +318,9 @@ func validateDynamicStatePorts(def *dsl.DynamicStatePortDefinition) error {
 	}
 	if def.Mode != dsl.StateAccessRead {
 		return fmt.Errorf("dynamic state ports only support read mode")
+	}
+	if strings.TrimSpace(def.Reducer) != "" {
+		return fmt.Errorf("dynamic state ports cannot declare a reducer in read mode")
 	}
 	if def.MergeStrategy != dsl.StateMergeReplace {
 		return fmt.Errorf("dynamic state ports only support replace merge strategy")

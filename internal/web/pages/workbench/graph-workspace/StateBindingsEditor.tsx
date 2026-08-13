@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { ChevronRight, Plus, Trash2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
+import { Select } from "../../../components/ui/select";
 import {
   dynamicStatePortForName,
   nextDynamicStatePortName,
@@ -113,7 +114,7 @@ function StateBindingsEditor({
                   className={!effectiveBinding?.path.trim() && port.required ? "border-destructive focus:border-destructive" : undefined}
                   onChange={(event) => onChange({
                     ...(bindings ?? {}),
-                    [port.name]: { path: event.target.value },
+                    [port.name]: { ...effectiveBinding, path: event.target.value },
                   })}
                 />
                 <datalist id={listID}>
@@ -145,6 +146,28 @@ function StateBindingsEditor({
               </div>
             ) : null}
 
+            {effectiveBinding && !port.capability && (port.mode === "write" || port.mode === "read_write") && (registry?.reducers?.length ?? 0) > 0 ? (
+              <div className="mt-2">
+                <div className="mb-1 text-[10px] font-medium uppercase text-muted-foreground">Reducer</div>
+                <Select
+                  aria-label={`${port.name} state reducer`}
+                  value={effectiveBinding.reducer ?? port.reducer ?? ""}
+                  onChange={(event) => onChange({
+                    ...(bindings ?? {}),
+                    [port.name]: {
+                      ...effectiveBinding,
+                      reducer: event.target.value || undefined,
+                    },
+                  })}
+                >
+                  <option value="">None</option>
+                  {(registry?.reducers ?? []).map((identifier) => (
+                    <option key={identifier} value={identifier}>{identifier}</option>
+                  ))}
+                </Select>
+              </div>
+            ) : null}
+
             {bindingMetadata ? (
               <div className="mt-1 break-words text-[10px] text-muted-foreground">
                 {bindingMetadata}
@@ -162,7 +185,7 @@ function StateBindingsEditor({
                     <div key={`${field.path}:${field.mode}`} className="grid min-w-0 gap-0.5 text-[11px]">
                       <span className="break-all font-mono">{field.path}</span>
                       <span className="break-words text-muted-foreground">
-                        {[field.mode, field.required ? "required" : "", field.type, field.mergeStrategy].filter(Boolean).join(" · ")}
+                        {[field.mode, field.required ? "required" : "", field.type, field.mergeStrategy, field.reducer ? `reducer ${field.reducer}` : ""].filter(Boolean).join(" · ")}
                       </span>
                     </div>
                   ))}

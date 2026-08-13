@@ -398,9 +398,10 @@ func RouteEquals(supervisorPath state.Path, workerID string) registry.EdgeCondit
 		Type:   ConditionTypeSupervisorRouteEquals,
 		Config: map[string]any{"worker_id": workerID},
 		State:  map[string]dsl.StateBinding{"supervisor": {Path: supervisorPath.String()}},
-	}, func(_ context.Context, current *state.State) (bool, error) {
+	}, func(_ context.Context, current *state.State) (registry.RouteDecision, error) {
 		value, ok := state.ReadPath(current, supervisorPath.MustChild(supervisorcap.FieldRoute).String())
-		return ok && strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), workerID), nil
+		matched := ok && strings.EqualFold(strings.TrimSpace(fmt.Sprint(value)), workerID)
+		return registry.RouteDecision{Matched: matched, Reason: "supervisor route compared"}, nil
 	})
 }
 

@@ -27,6 +27,7 @@ export interface ResolvedStateContractField {
   mode: StateAccessMode;
   required: boolean;
   mergeStrategy: StateMergeStrategy;
+  reducer: string;
   type: string;
 }
 
@@ -44,6 +45,7 @@ export function resolvedStatePortContract(
       mode: port.mode,
       required: Boolean(port.required && stateAccessReads(port.mode)),
       mergeStrategy: port.merge_strategy ?? "replace",
+      reducer: binding?.reducer?.trim() || port.reducer?.trim() || "",
       type: stateSchemaType(port.schema),
     }];
   }
@@ -59,6 +61,7 @@ export function resolvedStatePortContract(
       mode: reference.mode,
       required: Boolean(reference.required && stateAccessReads(reference.mode)),
       mergeStrategy: field.merge_strategy ?? "replace",
+      reducer: field.reducer?.trim() || "",
       type: stateSchemaType(field.schema),
     }];
   });
@@ -200,7 +203,7 @@ export function initialStateBindings(ports: StatePortDefinition[] | undefined, o
   const bindings: Record<string, StateBinding> = {};
   for (const port of ports ?? []) {
     const defaultPath = resolveDefaultStatePath(port.default_path, ownerID);
-    if (defaultPath || port.required) bindings[port.name] = { path: defaultPath };
+    if (defaultPath || port.required) bindings[port.name] = { path: defaultPath, reducer: port.reducer || undefined };
   }
   return bindings;
 }
@@ -217,6 +220,7 @@ export function dynamicStatePortForName(
     schema: dynamic.schema,
     mode: dynamic.mode,
     merge_strategy: dynamic.merge_strategy,
+    reducer: dynamic.reducer,
   };
 }
 
@@ -276,7 +280,7 @@ export function removeGraphEdge(definition: GraphDefinition, edgeID: string): Gr
 }
 
 export function graphEdgeId(edge: GraphEdgeSpec, index: number): string {
-  return `${edge.from}->${edge.to}:${edge.condition?.type ?? "direct"}:${index}`;
+  return `${edge.from}->${edge.to}:${edge.failure ? "failure" : edge.condition?.type ?? "direct"}:${index}`;
 }
 
 export function findGraphEdgeIndex(
@@ -370,6 +374,13 @@ function cloneEdge(edge: GraphEdgeSpec): GraphEdgeSpec {
     ...edge,
     condition: edge.condition
       ? { ...edge.condition, config: edge.condition.config ? { ...edge.condition.config } : undefined }
+      : undefined,
+    failure: edge.failure
+      ? {
+          ...edge.failure,
+          stages: edge.failure.stages ? [...edge.failure.stages] : undefined,
+          error_classes: edge.failure.error_classes ? [...edge.failure.error_classes] : undefined,
+        }
       : undefined,
   };
 }

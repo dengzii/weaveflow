@@ -258,6 +258,9 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 	taskLock.Lock()
 	defer taskLock.Unlock()
 	nodeCtx := core.NewContext(ctx)
+	if task.Failure != nil {
+		nodeCtx = core.NewContext(core.WithFailure(nodeCtx, core.FailureContext(*task.Failure)))
+	}
 
 	contract, hasContract := e.nodeContracts[task.NodeID]
 	policy := e.contractPolicy
@@ -293,6 +296,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 		Contract:          contractOption(contract, hasContract),
 		InputState:        executionInput,
 		ApplyPatchToInput: hasContract && policy.EnforceProjection,
+		Reducers:          e.runner.reducers,
 	})
 	if invokeErr != nil {
 		var interrupt *core.NodeInterrupt
@@ -302,7 +306,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 		return core.ExecutionResult{}, invokeErr
 	}
 	if hasContract && policy.RecordArtifacts {
-		patchView, err := result.Patch.Apply(executionInput)
+		patchView, err := result.Patch.ApplyWithReducers(executionInput, e.runner.reducers)
 		if err != nil {
 			return core.ExecutionResult{}, err
 		}
@@ -314,7 +318,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 	if hasContract && policy.Enabled() {
 		validateWrites := policy.Mode != core.ContractValidationOff || policy.EnforceWrites
 		if validateWrites {
-			if issues := state.ValidatePatchResultByContract(inputState, patch, contract); len(issues) > 0 {
+			if issues := state.ValidatePatchResultByContractWithReducers(inputState, patch, contract, e.runner.reducers); len(issues) > 0 {
 				violations := issuesToContractViolations(task.NodeID, issues)
 				e.reportContractViolations(nodeCtx, task.TaskID, violations)
 				if policy.EnforceWrites || policy.Mode == core.ContractValidationStrict {
@@ -665,6 +669,9 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 	nodeCtx := WithRunnerEventPublisher(ctx, func(eventType EventType, payload any) error {
 		return e.runner.publishEventWithTask(ctx, run, stepID, taskID, nodeID, eventType, payload)
 	})
+	if task.Failure != nil {
+		nodeCtx = core.WithFailure(nodeCtx, core.FailureContext(*task.Failure))
+	}
 	nodeCtx = WithRunnerMetadata(nodeCtx, RunnerMetadata{
 		RunID: runID, StepID: stepID, TaskID: taskID, NodeID: nodeID,
 		ParentRunID: run.ParentRunID, ParentStepID: run.ParentStepID, ParentTaskID: run.ParentTaskID,
@@ -697,6 +704,10 @@ func (e *graphRunnerExecution) OnSchedulerEvent(ctx context.Context, event Sched
 		eventType = EventNodeRetry
 	case SchedulerEventConditionFailed:
 		eventType = EventConditionFailed
+	case SchedulerEventRouteDecision:
+		eventType = EventConditionEvaluated
+	case SchedulerEventFailureRouted:
+		eventType = EventFailureRouted
 	case SchedulerEventBackpressure:
 		eventType = EventRunBackpressure
 	}
@@ -705,6 +716,98 @@ func (e *graphRunnerExecution) OnSchedulerEvent(ctx context.Context, event Sched
 		stepID = active.step.StepID
 	}
 	return e.runner.publishEvent(context.WithoutCancel(normalizeRunnerContext(ctx)), run, stepID, event.NodeID, eventType, event.Payload)
+}
+
+func (e *graphRunnerExecution) OnFailureRouted(ctx context.Context, source GraphTask, cause error, next []GraphTask) error {
+	if e == nil || cause == nil || len(next) == 0 {
+		return nil
+	}
+	ctx = e.controlPersistenceContext(ctx)
+	e.mu.Lock()
+	active := e.active[source.TaskID]
+	completed := e.completed[source.TaskID]
+	run := e.run
+	e.mu.Unlock()
+
+	var step StepRecord
+	markFailed := active != nil
+	if markFailed {
+		step = active.step
+	} else if completed != nil {
+		step = completed.step
+	}
+	failure := next[0].Failure
+	payload := map[string]any{
+		"source_task_id": source.TaskID,
+		"source_node_id": source.NodeID,
+		"next_node_ids":  GraphTaskNodeIDs(next),
+	}
+	if failure != nil {
+		payload["stage"] = failure.Stage
+		payload["error_class"] = failure.ErrorClass
+		payload["error"] = failure.Error
+		payload["details"] = failure.Details
+	}
+	e.runPersistMu.Lock()
+	defer e.runPersistMu.Unlock()
+	for {
+		latestRun, err := e.runner.executionStore.GetRun(ctx, run.RunID)
+		if err != nil {
+			return err
+		}
+		latestRun.PauseRequested = latestRun.PauseRequested || run.PauseRequested
+		latestRun.CancelRequested = latestRun.CancelRequested || run.CancelRequested
+		latestRun.UpdatedAt = e.runner.currentTime()
+
+		events := make([]Event, 0, 2)
+		stepWrites := make([]StepWrite, 0, 1)
+		if markFailed {
+			now := e.runner.currentTime()
+			step.Attempt = active.attempts
+			step.Status = StepStatusFailed
+			step.ErrorCode = string(core.ClassifyError(cause))
+			step.ErrorMessage = cause.Error()
+			step.FinishedAt = &now
+			step.UpdatedAt = now
+			failedEvent, buildErr := e.runner.buildEvent(latestRun, step.StepID, step.TaskID, step.NodeID, EventNodeFailed, map[string]any{
+				"error":       cause.Error(),
+				"error_class": core.ClassifyError(cause),
+				"attempt":     active.attempts,
+			})
+			if buildErr != nil {
+				return buildErr
+			}
+			events = append(events, failedEvent)
+			stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: step})
+		}
+		routedEvent, buildErr := e.runner.buildEvent(latestRun, step.StepID, source.TaskID, source.NodeID, EventFailureRouted, payload)
+		if buildErr != nil {
+			return buildErr
+		}
+		events = append(events, routedEvent)
+		commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: latestRun},
+			Steps:  stepWrites,
+			Events: events,
+		})
+		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			continue
+		}
+		if commitErr != nil {
+			return commitErr
+		}
+		if commitResult.Run != nil {
+			latestRun = *commitResult.Run
+		}
+		e.mu.Lock()
+		e.run = latestRun
+		if markFailed {
+			e.completed[source.TaskID] = &runnerCompletedStep{step: step}
+			delete(e.active, source.TaskID)
+		}
+		e.mu.Unlock()
+		return nil
+	}
 }
 
 func (e *graphRunnerExecution) firstActiveStep(identifier string) *runnerActiveStep {
