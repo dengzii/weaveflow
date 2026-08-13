@@ -7,6 +7,7 @@ import type {
   RegistryInfo,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  ToolDefinition,
 } from "../../../types";
 import { StatusText } from "../shared";
 import { CollapsibleInspectorBlock, InspectorBlock } from "./shared";
@@ -24,6 +25,7 @@ interface GraphDefinitionInspectorProps {
   initialStateText: string;
   runtimeSettings: RuntimeSettings | null;
   registry: RegistryInfo | null;
+  toolDefinitions: ToolDefinition[];
   onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
   onChangeDefinitionText: (value: string) => void;
   onChangeGraphField: <Key extends keyof GraphDefinition>(key: Key, value: GraphDefinition[Key]) => void;
@@ -39,6 +41,7 @@ export function GraphDefinitionInspector({
   initialStateText,
   runtimeSettings,
   registry,
+  toolDefinitions,
   onChangeRuntimeSettings,
   onChangeDefinitionText,
   onChangeGraphField,
@@ -99,7 +102,7 @@ export function GraphDefinitionInspector({
       </CollapsibleInspectorBlock>
 
       <CollapsibleInspectorBlock title="Runtime Settings" open={settingsOpen} onOpenChange={setSettingsOpen}>
-        <RuntimeSettingsEditor settings={runtimeSettings} onChangeRuntimeSettings={onChangeRuntimeSettings} />
+        <RuntimeSettingsEditor settings={runtimeSettings} toolDefinitions={toolDefinitions} onChangeRuntimeSettings={onChangeRuntimeSettings} />
       </CollapsibleInspectorBlock>
 
       <InspectorBlock title="Run Input">

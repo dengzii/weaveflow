@@ -174,6 +174,10 @@ describe("RunStatusPanel", () => {
 function runRecord(runID: string, status: RunStatus, startedAt: string): RunRecord {
   return {
     run_id: runID,
+    revision: 1,
+    root_run_id: runID,
+    run_path: [runID],
+    namespace: runID,
     graph_id: "graph",
     graph_version: "1.0",
     status,

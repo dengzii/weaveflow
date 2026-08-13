@@ -121,6 +121,7 @@ export function GraphInspectorPanel({
           initialStateText={initialStateText}
           runtimeSettings={runtimeSettings}
           registry={registry}
+          toolDefinitions={toolDefinitions}
           onChangeRuntimeSettings={onChangeRuntimeSettings}
           onChangeDefinitionText={onChangeDefinitionText}
           onChangeGraphField={onChangeGraphField}

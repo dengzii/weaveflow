@@ -10,6 +10,10 @@ export interface EditableGraphModel {
   extra_body: string;
   api_key: string;
   api_key_configured: boolean;
+  pricing_currency: string;
+  input_per_million: string;
+  cached_input_per_million: string;
+  output_per_million: string;
 }
 
 export interface EditableEnvironmentVariable {
@@ -31,6 +35,10 @@ export function modelsFromSettings(settings: RuntimeSettings | null): EditableGr
       : "",
     api_key: "",
     api_key_configured: model.api_key_configured,
+    pricing_currency: model.pricing?.currency ?? "USD",
+    input_per_million: pricingRate(model.pricing?.input_per_million),
+    cached_input_per_million: pricingRate(model.pricing?.cached_input_per_million),
+    output_per_million: pricingRate(model.pricing?.output_per_million),
   }));
 }
 
@@ -67,6 +75,7 @@ export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSet
       model: model.model.trim(),
       base_url: model.base_url.trim(),
       extra_body: parseModelExtraBody(model.extra_body, index),
+      pricing: normalizeModelPricing(model, index),
       api_key: apiKey || undefined,
     };
   });
@@ -113,6 +122,7 @@ export function applyRuntimeSettingsUpdate(
       model: model.model !== undefined ? model.model.trim() : previous?.model ?? "",
       base_url: model.base_url !== undefined ? model.base_url.trim() : previous?.base_url ?? "",
       extra_body: model.extra_body ?? previous?.extra_body,
+      pricing: model.pricing ?? previous?.pricing,
       api_key_configured: Boolean(apiKey || previous?.api_key_configured),
       api_key: apiKey,
     };
@@ -121,6 +131,8 @@ export function applyRuntimeSettingsUpdate(
     environment: update.environment ?? current.environment,
     environment_presets: current.environment_presets,
     models,
+    tool_permissions: update.tool_permissions ?? current.tool_permissions ?? [],
+    tool_approvals: update.tool_approvals ?? current.tool_approvals ?? {},
   };
 }
 
@@ -136,9 +148,39 @@ export function runtimeSettingsUpload(settings: RuntimeSettings): RuntimeSetting
       model: model.model ?? "",
       base_url: model.base_url ?? "",
       extra_body: model.extra_body,
+      pricing: model.pricing,
       api_key: model.api_key,
     })),
+    tool_permissions: settings.tool_permissions ?? [],
+    tool_approvals: settings.tool_approvals ?? {},
   };
+}
+
+function pricingRate(value: number | undefined): string {
+  return value === undefined || value === 0 ? "" : String(value);
+}
+
+function normalizeModelPricing(model: EditableGraphModel, index: number) {
+  const input = parsePricingRate(model.input_per_million ?? "", index, "input");
+  const cachedInput = parsePricingRate(model.cached_input_per_million ?? "", index, "cached input");
+  const output = parsePricingRate(model.output_per_million ?? "", index, "output");
+  if (input === 0 && cachedInput === 0 && output === 0) return undefined;
+  return {
+    currency: model.pricing_currency.trim().toUpperCase() || "USD",
+    input_per_million: input,
+    cached_input_per_million: cachedInput,
+    output_per_million: output,
+  };
+}
+
+function parsePricingRate(value: string, index: number, label: string): number {
+  const normalized = value.trim();
+  if (!normalized) return 0;
+  const rate = Number(normalized);
+  if (!Number.isFinite(rate) || rate < 0) {
+    throw new Error(`Model ${index + 1} ${label} price must be a non-negative number.`);
+  }
+  return rate;
 }
 
 function parseModelExtraBody(value: string, index: number): Record<string, unknown> | undefined {

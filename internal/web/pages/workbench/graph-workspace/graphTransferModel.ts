@@ -252,6 +252,7 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
       model: stringValue(item.model),
       base_url: stringValue(item.base_url),
       extra_body: isPlainRecord(item.extra_body) ? cloneJSONValue(item.extra_body) : undefined,
+      pricing: parseModelPricing(item.pricing),
       api_key_configured: Boolean(apiKey || item.api_key_configured === true),
       api_key: apiKey || undefined,
     };
@@ -262,7 +263,39 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
     environment,
     environment_presets: environmentPresets.length > 0 ? environmentPresets : undefined,
     models,
+    tool_permissions: stringArray(value.tool_permissions),
+    tool_approvals: booleanRecord(value.tool_approvals),
   };
+}
+
+function parseModelPricing(value: unknown) {
+  if (!isPlainRecord(value)) return undefined;
+  const input = finiteNonNegativeNumber(value.input_per_million);
+  const cachedInput = finiteNonNegativeNumber(value.cached_input_per_million);
+  const output = finiteNonNegativeNumber(value.output_per_million);
+  if (input === 0 && cachedInput === 0 && output === 0) return undefined;
+  return {
+    currency: stringValue(value.currency).toUpperCase() || "USD",
+    input_per_million: input,
+    cached_input_per_million: cachedInput,
+    output_per_million: output,
+  };
+}
+
+function finiteNonNegativeNumber(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function stringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => typeof item === "string" && item.trim() ? [item.trim()] : []);
+}
+
+function booleanRecord(value: unknown): Record<string, boolean> {
+  if (!isPlainRecord(value)) return {};
+  return Object.fromEntries(Object.entries(value).flatMap(([key, item]) => (
+    key.trim() && typeof item === "boolean" ? [[key.trim(), item]] : []
+  )));
 }
 
 function parseEnvironmentPresets(value: unknown): RuntimeEnvironmentPreset[] {
@@ -290,7 +323,10 @@ function exportableRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsUp
       model: model.model ?? "",
       base_url: model.base_url ?? "",
       extra_body: model.extra_body ? cloneJSONValue(model.extra_body) : undefined,
+      pricing: model.pricing ? cloneJSONValue(model.pricing) : undefined,
     })),
+    tool_permissions: [...settings.tool_permissions],
+    tool_approvals: { ...settings.tool_approvals },
   };
 }
 

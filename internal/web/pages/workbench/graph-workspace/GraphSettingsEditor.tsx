@@ -5,6 +5,7 @@ import { Input, SensitiveInput } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Textarea } from "../../../components/ui/textarea";
 import type { RuntimeSettings, RuntimeSettingsUpdate } from "../../../types";
+import type { ToolDefinition } from "../../../types";
 import { Field } from "./shared";
 import {
   environmentRowsFromSettings,
@@ -18,9 +19,11 @@ import type { EditableEnvironmentVariable, EditableGraphModel } from "./graphSet
 export function RuntimeSettingsEditor({
   settings,
   onChangeRuntimeSettings,
+  toolDefinitions,
 }: {
   settings: RuntimeSettings | null;
   onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
+  toolDefinitions: ToolDefinition[];
 }) {
   const [models, setModels] = useState<EditableGraphModel[]>([]);
   const [environmentRows, setEnvironmentRows] = useState<EditableEnvironmentVariable[]>([]);
@@ -62,6 +65,10 @@ export function RuntimeSettingsEditor({
         extra_body: "",
         api_key: "",
         api_key_configured: false,
+        pricing_currency: "USD",
+        input_per_million: "",
+        cached_input_per_million: "",
+        output_per_million: "",
       },
     ];
     setModels(nextModels);
@@ -131,6 +138,8 @@ export function RuntimeSettingsEditor({
       const next = onChangeRuntimeSettings({
         environment,
         models: modelUpdates,
+        tool_permissions: settings?.tool_permissions ?? [],
+        tool_approvals: settings?.tool_approvals ?? {},
       });
       locallyAppliedSettingsRef.current = next;
     } catch (err) {
@@ -212,6 +221,18 @@ export function RuntimeSettingsEditor({
                       onValueChange={(value) => updateModel(index, { api_key: value })}
                     />
                   </Field>
+                  <Field label="Pricing currency">
+                    <Input value={model.pricing_currency} onChange={(event) => updateModel(index, { pricing_currency: event.target.value })} placeholder="USD" />
+                  </Field>
+                  <Field label="Input / 1M">
+                    <Input type="number" min="0" step="any" value={model.input_per_million} onChange={(event) => updateModel(index, { input_per_million: event.target.value })} />
+                  </Field>
+                  <Field label="Cached input / 1M">
+                    <Input type="number" min="0" step="any" value={model.cached_input_per_million} onChange={(event) => updateModel(index, { cached_input_per_million: event.target.value })} />
+                  </Field>
+                  <Field label="Output / 1M">
+                    <Input type="number" min="0" step="any" value={model.output_per_million} onChange={(event) => updateModel(index, { output_per_million: event.target.value })} />
+                  </Field>
                   <Field label="Extra body (JSON)" className="sm:col-span-2">
                     <Textarea
                       value={model.extra_body}
@@ -223,6 +244,64 @@ export function RuntimeSettingsEditor({
                 </div>
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
+        <div className="flex min-h-8 items-center gap-2">
+          <span className="text-sm font-medium">Tool Governance</span>
+        </div>
+        {toolDefinitions.length === 0 ? (
+          <div className="rounded-md border border-dashed border-border bg-background/60 p-3 text-xs text-muted-foreground">
+            No tools available.
+          </div>
+        ) : (
+          <div className="grid gap-2">
+            {toolDefinitions.map((tool) => {
+              const permissions = tool.permissions ?? [];
+              const approvalKey = (tool.name || tool.id).trim();
+              const approval = settings?.tool_approvals?.[approvalKey.toLowerCase()];
+              return (
+                <div key={tool.id} className="grid gap-2 rounded-md border border-border bg-background p-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
+                  <div className="min-w-0">
+                    <div className="truncate font-mono text-xs font-medium">{approvalKey}</div>
+                    <div className="text-xs text-muted-foreground">{permissions.length > 0 ? permissions.join(", ") : "No permissions required"}</div>
+                  </div>
+                  {tool.approval === "required" ? (
+                    <Select
+                      aria-label={`${approvalKey} approval`}
+                      value={approval === undefined ? "pending" : approval ? "allow" : "deny"}
+                      onChange={(event) => {
+                        const next = { ...(settings?.tool_approvals ?? {}) };
+                        if (event.target.value === "pending") delete next[approvalKey.toLowerCase()];
+                        else next[approvalKey.toLowerCase()] = event.target.value === "allow";
+                        onChangeRuntimeSettings({ tool_approvals: next });
+                      }}
+                    >
+                      <option value="pending">Approval required</option>
+                      <option value="allow">Allow</option>
+                      <option value="deny">Deny</option>
+                    </Select>
+                  ) : null}
+                  {permissions.map((permission) => (
+                    <label key={permission} className="flex items-center gap-2 text-xs sm:col-span-2">
+                      <input
+                        type="checkbox"
+                        checked={(settings?.tool_permissions ?? []).includes(permission)}
+                        onChange={(event) => {
+                          const current = new Set(settings?.tool_permissions ?? []);
+                          if (event.target.checked) current.add(permission);
+                          else current.delete(permission);
+                          onChangeRuntimeSettings({ tool_permissions: [...current].sort() });
+                        }}
+                      />
+                      Grant {permission}
+                    </label>
+                  ))}
+                </div>
+              );
+            })}
           </div>
         )}
       </div>

@@ -85,7 +85,7 @@ function graphDefinition() {
 }
 
 function runtimeSettings() {
-  return { environment: {}, models: [] };
+  return { environment: {}, models: [], tool_permissions: [], tool_approvals: {} };
 }
 
 function graphDetail() {
@@ -107,6 +107,10 @@ function graphDetail() {
 function runRecord() {
   return {
     run_id: "run-1",
+    revision: 1,
+    root_run_id: "run-1",
+    run_path: ["run-1"],
+    namespace: "run-1",
     graph_id: "graph-1",
     graph_version: "2.0",
     status: "running",
@@ -129,6 +133,7 @@ function canceledStep() {
   return {
     step_id: "step-1",
     run_id: "run-1",
+    task_id: "start",
     node_id: "start",
     node_name: "Start",
     status: "canceled",

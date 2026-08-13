@@ -99,6 +99,15 @@ export interface RuntimeSettings {
   environment: Record<string, string>;
   environment_presets?: RuntimeEnvironmentPreset[];
   models: RuntimeModelSettings[];
+  tool_permissions: string[];
+  tool_approvals: Record<string, boolean>;
+}
+
+export interface RuntimeModelPricing {
+  currency?: string;
+  input_per_million?: number;
+  cached_input_per_million?: number;
+  output_per_million?: number;
 }
 
 export type TriggerType = "webhook" | "schedule" | "chat";
@@ -233,6 +242,7 @@ export interface RuntimeModelSettings {
   model?: string;
   base_url?: string;
   extra_body?: Record<string, unknown>;
+  pricing?: RuntimeModelPricing;
   api_key_configured: boolean;
   api_key?: string;
 }
@@ -240,6 +250,8 @@ export interface RuntimeModelSettings {
 export interface RuntimeSettingsUpdate {
   environment?: Record<string, string>;
   models?: RuntimeModelSettingsUpdate[];
+  tool_permissions?: string[];
+  tool_approvals?: Record<string, boolean>;
 }
 
 export interface RuntimeModelSettingsUpdate {
@@ -250,6 +262,7 @@ export interface RuntimeModelSettingsUpdate {
   model?: string;
   base_url?: string;
   extra_body?: Record<string, unknown>;
+  pricing?: RuntimeModelPricing;
   api_key?: string;
 }
 
@@ -324,7 +337,10 @@ export interface ToolDefinition {
   name?: string;
   description?: string;
   parameters?: unknown;
+  output_schema?: unknown;
   strict?: boolean;
+  permissions?: string[];
+  approval?: "" | "never" | "required";
 }
 
 export interface StateFieldDefinition {
@@ -413,6 +429,15 @@ export interface ConditionSchema {
 
 export interface RunRecord {
   run_id: string;
+  revision: number;
+  parent_run_id?: string;
+  parent_step_id?: string;
+  parent_task_id?: string;
+  root_run_id: string;
+  run_path: string[];
+  namespace: string;
+  child_run_ids?: string[];
+  return_value?: unknown;
   graph_id: string;
   graph_version: string;
   graph_hash?: string;
@@ -445,8 +470,16 @@ export interface RunOrigin {
 export interface StepRecord {
   step_id: string;
   run_id: string;
+  task_id: string;
+  parent_run_id?: string;
+  parent_step_id?: string;
+  parent_task_id?: string;
+  root_run_id?: string;
+  run_path?: string[];
+  namespace?: string;
   node_id: string;
   node_name: string;
+  wave_id?: string;
   status: StepStatus;
   attempt: number;
   checkpoint_before_id?: string;
@@ -462,6 +495,13 @@ export interface CheckpointRecord {
   checkpoint_id: string;
   run_id: string;
   step_id: string;
+  task_id?: string;
+  parent_run_id?: string;
+  parent_step_id?: string;
+  parent_task_id?: string;
+  root_run_id?: string;
+  run_path?: string[];
+  namespace?: string;
   node_id: string;
   stage: string;
   state_codec: string;
@@ -475,6 +515,12 @@ export interface ArtifactRef {
   run_id?: string;
   step_id?: string;
   node_id?: string;
+  parent_run_id?: string;
+  parent_step_id?: string;
+  parent_task_id?: string;
+  root_run_id?: string;
+  run_path?: string[];
+  namespace?: string;
   type?: string;
   mime_type?: string;
   location?: string;
@@ -493,7 +539,14 @@ export interface RuntimeEvent {
   graph_id?: string;
   graph_session_id?: string;
   run_id: string;
+  parent_run_id?: string;
+  parent_step_id?: string;
+  parent_task_id?: string;
+  root_run_id?: string;
+  run_path?: string[];
+  namespace?: string;
   step_id?: string;
+  task_id?: string;
   node_id?: string;
   type: string;
   timestamp: string;

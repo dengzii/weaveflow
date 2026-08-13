@@ -68,6 +68,14 @@ export function validateRunListPage(value: unknown, source: string): RunListPage
 export function validateRunRecord(value: unknown, source: string): RunRecord {
   const run = requireRecord(value, source);
   requireString(run.run_id, `${source}.run_id`, false);
+  requireUnsignedInteger(run.revision, `${source}.revision`);
+  requireOptionalString(run.parent_run_id, `${source}.parent_run_id`);
+  requireOptionalString(run.parent_step_id, `${source}.parent_step_id`);
+  requireOptionalString(run.parent_task_id, `${source}.parent_task_id`);
+  requireString(run.root_run_id, `${source}.root_run_id`, false);
+  requireStringArray(run.run_path, `${source}.run_path`);
+  requireString(run.namespace, `${source}.namespace`, false);
+  requireOptionalStringArray(run.child_run_ids, `${source}.child_run_ids`);
   requireString(run.graph_id, `${source}.graph_id`, false);
   requireString(run.graph_version, `${source}.graph_version`, false);
   const status = requireString(run.status, `${source}.status`, false);
@@ -173,6 +181,11 @@ function validateRuntimeSettings(value: unknown, source: string): RuntimeSetting
   const settings = requireRecord(value, source);
   requireRecord(settings.environment, `${source}.environment`);
   requireArray(settings.models, `${source}.models`);
+  requireStringArray(settings.tool_permissions, `${source}.tool_permissions`);
+  const approvals = requireRecord(settings.tool_approvals, `${source}.tool_approvals`);
+  Object.entries(approvals).forEach(([name, approved]) => {
+    if (!name.trim() || typeof approved !== "boolean") invalid(`${source}.tool_approvals.${name}`, "a boolean");
+  });
   return value as RuntimeSettings;
 }
 
@@ -188,6 +201,8 @@ function validateStepRecord(value: unknown, source: string): StepRecord {
   const step = requireRecord(value, source);
   requireString(step.step_id, `${source}.step_id`, false);
   requireString(step.run_id, `${source}.run_id`, false);
+  requireString(step.task_id, `${source}.task_id`, false);
+  validateOptionalLineage(step, source);
   requireString(step.node_id, `${source}.node_id`, false);
   requireString(step.node_name, `${source}.node_name`);
   const status = requireString(step.status, `${source}.status`, false);
@@ -203,6 +218,8 @@ function validateCheckpointRecord(value: unknown, source: string): CheckpointRec
   requireString(checkpoint.checkpoint_id, `${source}.checkpoint_id`, false);
   requireString(checkpoint.run_id, `${source}.run_id`, false);
   requireString(checkpoint.step_id, `${source}.step_id`);
+  requireOptionalString(checkpoint.task_id, `${source}.task_id`);
+  validateOptionalLineage(checkpoint, source);
   requireString(checkpoint.node_id, `${source}.node_id`);
   requireString(checkpoint.stage, `${source}.stage`, false);
   requireString(checkpoint.state_codec, `${source}.state_codec`);
@@ -215,6 +232,8 @@ function validateRuntimeEvent(value: unknown, source: string): RuntimeEvent {
   const event = requireRecord(value, source);
   requireString(event.id, `${source}.id`, false);
   requireString(event.run_id, `${source}.run_id`, false);
+  requireOptionalString(event.task_id, `${source}.task_id`);
+  validateOptionalLineage(event, source);
   requireString(event.type, `${source}.type`, false);
   requireString(event.timestamp, `${source}.timestamp`, false);
   return value as RuntimeEvent;
@@ -252,12 +271,31 @@ function requireOptionalString(value: unknown, source: string): void {
 
 function requireOptionalStringArray(value: unknown, source: string): void {
   if (value === undefined) return;
+  requireStringArray(value, source);
+}
+
+function requireStringArray(value: unknown, source: string): void {
   requireArray(value, source).forEach((item, index) => requireString(item, `${source}[${index}]`, false));
 }
 
 function requireNumber(value: unknown, source: string): number {
   if (typeof value !== "number" || !Number.isFinite(value)) invalid(source, "a finite number");
   return value as number;
+}
+
+function requireUnsignedInteger(value: unknown, source: string): number {
+  const number = requireNumber(value, source);
+  if (!Number.isInteger(number) || number < 0) invalid(source, "an unsigned integer");
+  return number;
+}
+
+function validateOptionalLineage(value: Record<string, unknown>, source: string): void {
+  requireOptionalString(value.parent_run_id, `${source}.parent_run_id`);
+  requireOptionalString(value.parent_step_id, `${source}.parent_step_id`);
+  requireOptionalString(value.parent_task_id, `${source}.parent_task_id`);
+  requireOptionalString(value.root_run_id, `${source}.root_run_id`);
+  requireOptionalStringArray(value.run_path, `${source}.run_path`);
+  requireOptionalString(value.namespace, `${source}.namespace`);
 }
 
 function invalid(source: string, expected: string): never {

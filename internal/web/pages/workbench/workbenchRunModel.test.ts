@@ -24,6 +24,10 @@ import {
 
 const baseRun: RunRecord = {
   run_id: "run-1",
+  revision: 1,
+  root_run_id: "run-1",
+  run_path: ["run-1"],
+  namespace: "run-1",
   graph_id: "graph-1",
   graph_version: "2.0",
   status: "running",

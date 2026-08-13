@@ -25,6 +25,10 @@ describe("graph settings editor model", () => {
         extra_body: "",
         api_key: "",
         api_key_configured: true,
+        pricing_currency: "USD",
+        input_per_million: "",
+        cached_input_per_million: "",
+        output_per_million: "",
       },
     ]);
   });
@@ -141,5 +145,7 @@ function graphSettings(): RuntimeSettings {
         api_key_configured: true,
       },
     ],
+    tool_permissions: [],
+    tool_approvals: {},
   };
 }

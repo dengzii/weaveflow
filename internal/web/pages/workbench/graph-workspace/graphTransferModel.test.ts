@@ -30,6 +30,9 @@ describe("graph transfer model", () => {
     expect(bundle.ui?.web).toEqual({ positions: { task: { x: 20, y: 40 } } });
     expect(bundle.settings?.environment).toEqual({ WORKDIR: "/workspace" });
     expect(bundle.settings?.models?.[0].api_key).toBeUndefined();
+    expect(bundle.settings?.models?.[0].pricing?.input_per_million).toBe(1.25);
+    expect(bundle.settings?.tool_permissions).toEqual(["filesystem.read"]);
+    expect(bundle.settings?.tool_approvals).toEqual({ bash: false });
     expect(bundle.triggers?.map((trigger) => trigger.id)).toEqual(["hook", "chat"]);
     expect(definition.metadata?.web).toBeDefined();
   });
@@ -147,6 +150,9 @@ describe("graph transfer model", () => {
     expect(imported.definition.metadata?.web).toEqual({ positions: { task: { x: 20, y: 40 } } });
     expect(imported.settings?.environment).toEqual({ WORKDIR: "/workspace" });
     expect(imported.settings?.models[0].api_key_configured).toBe(false);
+    expect(imported.settings?.models[0].pricing?.output_per_million).toBe(10);
+    expect(imported.settings?.tool_permissions).toEqual(["filesystem.read"]);
+    expect(imported.settings?.tool_approvals).toEqual({ bash: false });
     expect(imported.triggers?.map((trigger) => trigger.target.graph_id)).toEqual(["demo", "demo"]);
     expect(imported.triggers?.map((trigger) => trigger.enabled)).toEqual([false, false]);
   });
@@ -289,6 +295,14 @@ function runtimeSettings(): RuntimeSettings {
       base_url: "https://api.example.test/v1",
       api_key_configured: true,
       api_key: "local-secret",
+      pricing: {
+        currency: "USD",
+        input_per_million: 1.25,
+        cached_input_per_million: 0.25,
+        output_per_million: 10,
+      },
     }],
+    tool_permissions: ["filesystem.read"],
+    tool_approvals: { bash: false },
   };
 }
