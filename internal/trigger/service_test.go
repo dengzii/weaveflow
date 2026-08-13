@@ -403,7 +403,7 @@ func TestServiceInvokeChatInjectsHistoryPerTriggerUserAndConversation(t *testing
 		}
 		conversationValue, _ := state.ReadPath(starter.initials[index], "scopes.agent.conversation.messages")
 		conversationItems, ok := conversationValue.([]any)
-		if !ok || len(conversationItems) != 0 {
+		if !ok || conversationItems == nil || len(conversationItems) != 0 {
 			t.Fatalf("conversation for invocation %d = %#v", index, conversationValue)
 		}
 	}

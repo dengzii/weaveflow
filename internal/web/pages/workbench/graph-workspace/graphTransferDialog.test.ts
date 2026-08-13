@@ -33,6 +33,7 @@ describe("graph transfer UI", () => {
       definition: graphDefinition(),
       graphID: "demo",
       graphVersion: "v1",
+      registry: null,
       runtimeSettings: runtimeSettings(),
       triggers: graphTriggers(),
       onClose: () => undefined,

@@ -228,6 +228,20 @@ export function WorkbenchPage({
     },
     [graphId, graphTriggers.analysisPayloads, graphTriggers.triggers]
   );
+  const analyzeGraphForInputForm = useCallback(
+    async (targetDefinition: GraphDefinition): Promise<GraphInitialStateAnalysis> => {
+      try {
+        const analysis = await analyzeGraphDefinition(targetDefinition);
+        setInitialStateAnalysis(analysis);
+        setInitialRequirementsError("");
+        return analysis;
+      } catch (err) {
+        setInitialRequirementsError(err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+    },
+    [analyzeGraphDefinition]
+  );
 
   const {
     runs,
@@ -383,9 +397,7 @@ export function WorkbenchPage({
         setTab("graph");
         return;
       }
-      const analysis = await analyzeGraphDefinition(definition);
-      setInitialStateAnalysis(analysis);
-      setInitialRequirementsError("");
+      const analysis = await analyzeGraphForInputForm(definition);
 
       const initialState = parseJSON<unknown>(initialStateText);
       const missingInitialState = missingInitialStateRequirements(initialState, [
@@ -418,7 +430,6 @@ export function WorkbenchPage({
         sessionID: result.graph.graph_session_id,
       });
     } catch (err) {
-      setInitialRequirementsError(err instanceof Error ? err.message : String(err));
       notifyError(err);
     } finally {
       setBusy(false);
@@ -472,9 +483,7 @@ export function WorkbenchPage({
       }
       if (graphTriggers.isUnsaved) graphTriggers.validate();
 
-      const analysis = await analyzeGraphDefinition(definition);
-      setInitialStateAnalysis(analysis);
-      setInitialRequirementsError("");
+      const analysis = await analyzeGraphForInputForm(definition);
       const missingTriggerState = missingTriggerStateRequirements(analysis);
       if (missingTriggerState.length > 0) {
         const first = missingTriggerState[0];
@@ -501,7 +510,6 @@ export function WorkbenchPage({
       const session = result.graph.graph_session_id ? ` (${result.graph.graph_session_id})` : "";
       pushToast("info", `Saved ${result.graph.id}@${result.graph.version}${session}`);
     } catch (err) {
-      setInitialRequirementsError(err instanceof Error ? err.message : String(err));
       notifyError(err);
     } finally {
       savingRef.current = false;

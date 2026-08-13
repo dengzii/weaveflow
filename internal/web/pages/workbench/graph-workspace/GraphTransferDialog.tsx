@@ -13,7 +13,7 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import type { GraphDefinition, RuntimeSettings, Trigger } from "../../../types";
+import type { GraphDefinition, RegistryInfo, RuntimeSettings, Trigger } from "../../../types";
 import { WorkbenchDialogOverlay } from "../shared";
 import {
   buildGraphExportBundle,
@@ -31,6 +31,7 @@ export function GraphTransferDialog({
   definition,
   graphID,
   graphVersion,
+  registry,
   runtimeSettings,
   triggers,
   onClose,
@@ -40,6 +41,7 @@ export function GraphTransferDialog({
   definition: GraphDefinition | null;
   graphID: string;
   graphVersion: string;
+  registry: RegistryInfo | null;
   runtimeSettings: RuntimeSettings;
   triggers: Trigger[];
   onClose: () => void;
@@ -89,7 +91,7 @@ export function GraphTransferDialog({
     }
     setReadingFile(true);
     try {
-      setParsedImport(parseGraphImport(await file.text()));
+      setParsedImport(parseGraphImport(await file.text(), registry));
     } catch (readError) {
       setError(readError instanceof Error ? readError.message : String(readError));
     } finally {
@@ -179,6 +181,18 @@ export function GraphTransferDialog({
                 <TransferDetail label="Version" value={parsedImport.graphVersion || "Not set"} />
                 <TransferDetail label="Contents" value={contentLabel(parsedImport.contents)} />
                 <TransferDetail label="Nodes" value={String(parsedImport.definition.nodes.length)} />
+                {parsedImport.migration ? (
+                  <div className="mt-1 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs">
+                    <div className="font-medium text-amber-700 dark:text-amber-300">
+                      Migrated Graph Definition {parsedImport.migration.sourceVersion} → {parsedImport.migration.targetVersion}
+                    </div>
+                    {parsedImport.migration.warnings.length > 0 ? (
+                      <ul className="mt-2 grid list-disc gap-1 pl-4 text-muted-foreground">
+                        {parsedImport.migration.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+                      </ul>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {error ? <div className="text-sm text-destructive">{error}</div> : null}

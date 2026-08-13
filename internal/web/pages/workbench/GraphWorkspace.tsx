@@ -984,6 +984,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           definition={exportDefinition}
           graphID={graphId}
           graphVersion={graphVersion}
+          registry={registry}
           runtimeSettings={runtimeSettings}
           triggers={graphTriggers}
           onClose={() => setGraphTransferMode(null)}

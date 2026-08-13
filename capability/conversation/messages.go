@@ -36,7 +36,7 @@ type MessagePart struct {
 
 func SerializeMessages(messages []llms.MessageContent) ([]Message, error) {
 	if len(messages) == 0 {
-		return nil, nil
+		return []Message{}, nil
 	}
 	result := make([]Message, 0, len(messages))
 	for _, message := range messages {
