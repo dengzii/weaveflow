@@ -158,3 +158,38 @@ func TestGetReportsMissingAndTypeMismatchSeparately(t *testing.T) {
 		t.Fatalf("unexpected required read error %v", err)
 	}
 }
+
+func TestSetRejectsNonObjectParentWithoutChangingState(t *testing.T) {
+	t.Parallel()
+
+	current := FromShared(map[string]any{"profile": "keep"})
+	err := SetPath(current, "shared.profile.name", "replacement")
+	if err == nil || err.Error() != `state path "shared.profile.name" traverses non-object value at "shared.profile"` {
+		t.Fatalf("unexpected nested set error %v", err)
+	}
+	value, ok := ReadPath(current, "shared.profile")
+	if !ok || value != "keep" {
+		t.Fatalf("parent value changed to %#v ok=%v", value, ok)
+	}
+}
+
+func TestZeroValueStateSupportsSectionAndNestedWrites(t *testing.T) {
+	t.Parallel()
+
+	var current State
+	if err := current.SetSection(SectionShared, nil); err != nil {
+		t.Fatalf("set empty shared section: %v", err)
+	}
+	if err := SetPath(&current, "shared.profile.name", "Ada"); err != nil {
+		t.Fatalf("set nested value: %v", err)
+	}
+	value, ok := ReadPath(&current, "shared.profile.name")
+	if !ok || value != "Ada" {
+		t.Fatalf("nested value = %#v ok=%v", value, ok)
+	}
+	for _, section := range []string{SectionShared, SectionScopes, SectionInternal, SectionRuntime} {
+		if _, ok := current.Export()[section].(map[string]any); !ok {
+			t.Fatalf("section %q is not an object", section)
+		}
+	}
+}

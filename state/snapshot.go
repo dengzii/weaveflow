@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"sort"
-	"strconv"
 )
 
 const DefaultSnapshotVersion = "state-v2"
@@ -299,17 +298,14 @@ func normalizeDecodedValue(value any) any {
 		}
 		return result
 	case json.Number:
-		text := string(typed)
-		if integer, err := strconv.ParseInt(text, 10, 64); err == nil {
-			if integer >= minIntValue() && integer <= maxIntValue() {
-				return int(integer)
-			}
-			return integer
+		number, ok := parseJSONNumber(typed)
+		if !ok {
+			return typed.String()
 		}
-		if number, err := strconv.ParseFloat(text, 64); err == nil {
-			return number
+		if number.integer != nil {
+			return normalizeInteger(number.integer)
 		}
-		return text
+		return number.floating
 	default:
 		return value
 	}

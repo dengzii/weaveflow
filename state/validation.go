@@ -308,12 +308,30 @@ func ValidatePatchResultByContractWithReducers(base *State, patch Patch, contrac
 	return issues
 }
 
-func ValidateInputPatchByContract(base *State, patch Patch, contract Contract) []ValidationIssue {
+func ValidateInputPatchByContractWithReducers(base *State, patch Patch, contract Contract, reducers map[string]Reducer) []ValidationIssue {
 	issues := ValidatePatch(patch)
 	readPaths := contract.ReadPaths()
 	if !contract.WildcardRead {
 		for _, op := range patch.Ops() {
-			if op.Path.Empty() || pathAllowedByAny(op.Path, readPaths) {
+			if op.Path.Empty() {
+				continue
+			}
+			if pathAllowedByAny(op.Path, readPaths) {
+				reducer, known := reducerForPath(contract, op.Path)
+				switch {
+				case known && reducer != "" && (op.Kind != OpReduce || strings.TrimSpace(op.Reducer) != reducer):
+					issues = append(issues, ValidationIssue{
+						Path:    op.Path.String(),
+						Kind:    "reducer_mismatch",
+						Message: fmt.Sprintf("input patch at %q must use reducer %q", op.Path.String(), reducer),
+					})
+				case op.Kind == OpReduce && (!known || reducer == ""):
+					issues = append(issues, ValidationIssue{
+						Path:    op.Path.String(),
+						Kind:    "reducer_not_declared",
+						Message: fmt.Sprintf("input patch at %q uses reducer %q without declaring it in the writable state contract", op.Path.String(), op.Reducer),
+					})
+				}
 				continue
 			}
 			issues = append(issues, ValidationIssue{
@@ -323,7 +341,7 @@ func ValidateInputPatchByContract(base *State, patch Patch, contract Contract) [
 			})
 		}
 	}
-	inputState, err := patch.Apply(base)
+	inputState, err := patch.ApplyWithReducers(base, reducers)
 	if err != nil {
 		issues = append(issues, ValidationIssue{Kind: "input_patch_apply_failed", Message: err.Error()})
 	} else {

@@ -2,8 +2,10 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 )
 
 // State is the private storage envelope for state.
@@ -49,7 +51,7 @@ func (s *State) Clone() *State {
 
 // Export returns a deep copy of the state envelope.
 func (s *State) Export() map[string]any {
-	if s == nil {
+	if s == nil || s.root == nil {
 		return newRoot()
 	}
 	return cloneMap(s.root)
@@ -63,11 +65,19 @@ func (s *State) MarshalJSON() ([]byte, error) {
 // UnmarshalJSON decodes an exported state envelope and initializes missing
 // root sections.
 func (s *State) UnmarshalJSON(data []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	var root map[string]any
-	if err := json.Unmarshal(data, &root); err != nil {
+	if err := decoder.Decode(&root); err != nil {
 		return err
 	}
-	*s = *FromMap(root)
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("state contains multiple JSON values")
+		}
+		return err
+	}
+	*s = *FromMap(normalizeDecodedMap(root))
 	return nil
 }
 
@@ -108,12 +118,17 @@ func (s *State) set(path Path, value any) error {
 	if path.Empty() {
 		return fmt.Errorf("state path is required")
 	}
+	s.ensureRootSections()
 	if len(path.segments) == 0 {
 		mapped, ok := asMap(value)
 		if !ok {
 			return fmt.Errorf("state section %q requires map[string]any value", path.section)
 		}
-		s.root[path.section] = cloneMap(mapped)
+		cloned := cloneMap(mapped)
+		if cloned == nil {
+			cloned = map[string]any{}
+		}
+		s.root[path.section] = cloned
 		return nil
 	}
 	parent, key, err := s.parentMap(path, true)
@@ -131,6 +146,7 @@ func (s *State) delete(path Path) error {
 	if path.Empty() {
 		return fmt.Errorf("state path is required")
 	}
+	s.ensureRootSections()
 	if len(path.segments) == 0 {
 		s.root[path.section] = map[string]any{}
 		return nil
@@ -182,9 +198,26 @@ func (s *State) parentMap(path Path, create bool) (map[string]any, string, error
 	if len(path.segments) == 0 {
 		return s.root, path.section, nil
 	}
-	for _, segment := range path.segments[:len(path.segments)-1] {
-		next, ok := current[segment].(map[string]any)
+	for index, segment := range path.segments[:len(path.segments)-1] {
+		value, exists := current[segment]
+		if !exists {
+			if !create {
+				return nil, "", nil
+			}
+			next := map[string]any{}
+			current[segment] = next
+			current = next
+			continue
+		}
+		next, ok := value.(map[string]any)
 		if !ok {
+			if !create {
+				return nil, "", nil
+			}
+			parent := Path{section: path.section, segments: append([]string(nil), path.segments[:index+1]...)}
+			return nil, "", fmt.Errorf("state path %q traverses non-object value at %q", path.String(), parent.String())
+		}
+		if next == nil {
 			if !create {
 				return nil, "", nil
 			}

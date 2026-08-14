@@ -1,6 +1,9 @@
 package state
 
-import "reflect"
+import (
+	"math/big"
+	"reflect"
+)
 
 func cloneMap(input map[string]any) map[string]any {
 	if input == nil {
@@ -25,6 +28,13 @@ func cloneValue(value any) any {
 	switch typed := value.(type) {
 	case nil:
 		return nil
+	case big.Int:
+		return *new(big.Int).Set(&typed)
+	case *big.Int:
+		if typed == nil {
+			return (*big.Int)(nil)
+		}
+		return new(big.Int).Set(typed)
 	case bool, string,
 		int, int8, int16, int32, int64,
 		uint, uint8, uint16, uint32, uint64, uintptr,

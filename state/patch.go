@@ -1,8 +1,10 @@
 package state
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"reflect"
 )
 
@@ -43,9 +45,20 @@ func (p *Patch) UnmarshalJSON(data []byte) error {
 	if p == nil {
 		return fmt.Errorf("state patch target is nil")
 	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
 	var operations []PatchOp
-	if err := json.Unmarshal(data, &operations); err != nil {
+	if err := decoder.Decode(&operations); err != nil {
 		return err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return fmt.Errorf("state patch contains multiple JSON values")
+		}
+		return err
+	}
+	for index := range operations {
+		operations[index].Value = normalizeDecodedValue(operations[index].Value)
 	}
 	patch := NewPatch(operations...)
 	if issues := ValidatePatch(patch); len(issues) > 0 {
@@ -78,6 +91,19 @@ func (p Patch) Apply(base *State) (*State, error) {
 
 type Reducer interface {
 	Reduce(current, incoming any) (any, error)
+}
+
+func IsNilReducer(reducer Reducer) bool {
+	if reducer == nil {
+		return true
+	}
+	value := reflect.ValueOf(reducer)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (p Patch) ApplyWithReducers(base *State, reducers map[string]Reducer) (*State, error) {
@@ -118,7 +144,7 @@ func applyPatchOpWithReducers(target *State, op PatchOp, reducers map[string]Red
 			return fmt.Errorf("reduce op reducer is required")
 		}
 		reducer := reducers[op.Reducer]
-		if reducer == nil {
+		if IsNilReducer(reducer) {
 			return fmt.Errorf("unknown state reducer %q", op.Reducer)
 		}
 		current, _ := target.read(op.Path)
@@ -137,10 +163,14 @@ func appendPathValue(target *State, path Path, value any) error {
 	if !found {
 		return target.set(path, normalizeAppendSeed(value))
 	}
-	return target.set(path, appendValue(existing, value))
+	combined, err := appendValue(existing, value)
+	if err != nil {
+		return fmt.Errorf("append path %q: %w", path.String(), err)
+	}
+	return target.set(path, combined)
 }
 
-func appendValue(existing any, value any) any {
+func appendValue(existing any, value any) (any, error) {
 	left := reflect.ValueOf(existing)
 	right := reflect.ValueOf(value)
 	if left.IsValid() && left.Kind() == reflect.Slice {
@@ -148,19 +178,19 @@ func appendValue(existing any, value any) any {
 			combined := reflect.MakeSlice(left.Type(), left.Len(), left.Len()+right.Len())
 			reflect.Copy(combined, left)
 			combined = reflect.AppendSlice(combined, right)
-			return combined.Interface()
+			return combined.Interface(), nil
 		}
 		if right.IsValid() && right.Type().AssignableTo(left.Type().Elem()) {
 			combined := reflect.MakeSlice(left.Type(), left.Len(), left.Len()+1)
 			reflect.Copy(combined, left)
 			combined = reflect.Append(combined, right)
-			return combined.Interface()
+			return combined.Interface(), nil
 		}
 	}
 
 	leftItems, ok := anySlice(existing)
 	if !ok {
-		return normalizeAppendSeed(value)
+		return nil, fmt.Errorf("existing value has type %T, want slice", existing)
 	}
 	rightItems, ok := anySlice(value)
 	if !ok {
@@ -169,7 +199,7 @@ func appendValue(existing any, value any) any {
 	combined := make([]any, 0, len(leftItems)+len(rightItems))
 	combined = append(combined, leftItems...)
 	combined = append(combined, rightItems...)
-	return combined
+	return combined, nil
 }
 
 func normalizeAppendSeed(value any) any {
