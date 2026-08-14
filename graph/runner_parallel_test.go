@@ -419,6 +419,181 @@ func TestRunnerSequentialResumeFromAfterNodeStillWorks(t *testing.T) {
 	}
 }
 
+func TestRunnerRejectsStaticParallelAfterNodeCheckpointResume(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error {
+		return nil
+	})
+	for _, nodeID := range []string{"a", "b"} {
+		currentNodeID := nodeID
+		mustAddNode(t, workflow, currentNodeID, func(_ context.Context, access *state.Access) error {
+			return access.AppendAny(state.Shared("branches"), currentNodeID)
+		})
+	}
+	mustAddNode(t, workflow, "collector", func(_ context.Context, access *state.Access) error {
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("collector"); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{{"router", "a"}, {"router", "b"}, {"a", "collector"}, {"b", "collector"}} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	runner, runtimeStore := newCommandFileRunner(t, workflow, t.TempDir())
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	assertParallelAfterNodeRequiresAfterWave(t, runner, runtimeStore, run.RunID, "a", func(resumedState *state.State) {
+		count, ok := state.ReadPath(resumedState, "shared.branch_count")
+		if !ok || count != 2 {
+			t.Fatalf("resumed branch count = %#v, ok=%v", count, ok)
+		}
+	})
+}
+
+func TestRunnerRejectsDynamicSendAfterNodeCheckpointResume(t *testing.T) {
+	t.Parallel()
+
+	var mapperCalls atomic.Int32
+	var workerCalls atomic.Int32
+	var collectorCalls atomic.Int32
+	workflow := newDynamicSendGraph(t, []core.Send{
+		{Target: "worker", Input: sendValuePatch("first"), OrderKey: "a"},
+		{Target: "worker", Input: sendValuePatch("second"), OrderKey: "b"},
+	}, &mapperCalls, &workerCalls, &collectorCalls, nil)
+	runner, runtimeStore := newCommandFileRunner(t, workflow, t.TempDir())
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	assertParallelAfterNodeRequiresAfterWave(t, runner, runtimeStore, run.RunID, "worker", func(resumedState *state.State) {
+		value, ok := state.ReadPath(resumedState, "shared.results")
+		items, _ := value.([]any)
+		if !ok || len(items) != 2 {
+			t.Fatalf("resumed dynamic results = %#v, ok=%v", value, ok)
+		}
+		collected, ok := state.ReadPath(resumedState, "shared.collected")
+		if !ok || collected != true {
+			t.Fatalf("resumed collector state = %#v, ok=%v", collected, ok)
+		}
+	})
+}
+
+func TestRunnerRejectsGotoFanOutAfterNodeCheckpointResume(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph(nil)
+	mustAddResultNode(t, workflow, "router", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.NodeResult{Command: core.Command{Goto: []core.NodeRef{"first", "second"}}}, nil
+	})
+	for _, nodeID := range []string{"first", "second"} {
+		currentNodeID := nodeID
+		mustAddResultNode(t, workflow, currentNodeID, func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+			return core.Success(), access.AppendAny(state.Shared("branches"), currentNodeID)
+		})
+	}
+	mustAddResultNode(t, workflow, "fallback", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
+	})
+	mustAddResultNode(t, workflow, "collector", func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return core.Success(), access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("collector"); err != nil {
+		t.Fatal(err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Reason: "not selected"}, nil
+	})
+	if err := workflow.AddConditionalEdge("router", "first", condition); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{{"router", "fallback"}, {"fallback", "second"}, {"first", "collector"}, {"second", "collector"}} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	runner, runtimeStore := newCommandFileRunner(t, workflow, t.TempDir())
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	assertParallelAfterNodeRequiresAfterWave(t, runner, runtimeStore, run.RunID, "second", func(resumedState *state.State) {
+		count, ok := state.ReadPath(resumedState, "shared.branch_count")
+		if !ok || count != 2 {
+			t.Fatalf("resumed goto branch count = %#v, ok=%v", count, ok)
+		}
+	})
+}
+
+func TestRunnerRejectsRouteDecisionFanOutAfterNodeCheckpointResume(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph(nil)
+	mustAddResultNode(t, workflow, "router", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
+	})
+	for _, nodeID := range []string{"first", "second"} {
+		currentNodeID := nodeID
+		mustAddResultNode(t, workflow, currentNodeID, func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+			return core.Success(), access.AppendAny(state.Shared("branches"), currentNodeID)
+		})
+	}
+	mustAddResultNode(t, workflow, "fallback", func(core.Context, *state.Access) (core.NodeResult, error) {
+		return core.Success(), nil
+	})
+	mustAddResultNode(t, workflow, "collector", func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+		value, _ := access.ReadAny(state.Shared("branches"))
+		items, _ := value.([]any)
+		return core.Success(), access.SetAny(state.Shared("branch_count"), len(items))
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("collector"); err != nil {
+		t.Fatal(err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (registry.RouteDecision, error) {
+		return registry.RouteDecision{Matched: true, Targets: []core.NodeRef{"second", "first"}, Reason: "fan out"}, nil
+	})
+	if err := workflow.AddConditionalEdge("router", "first", condition); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{{"router", "fallback"}, {"fallback", "second"}, {"first", "collector"}, {"second", "collector"}} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	runner, runtimeStore := newCommandFileRunner(t, workflow, t.TempDir())
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+	assertParallelAfterNodeRequiresAfterWave(t, runner, runtimeStore, run.RunID, "second", func(resumedState *state.State) {
+		count, ok := state.ReadPath(resumedState, "shared.branch_count")
+		if !ok || count != 2 {
+			t.Fatalf("resumed route decision branch count = %#v, ok=%v", count, ok)
+		}
+	})
+}
+
 func TestRunnerResumeFromAfterNodeUsesActualConditionalRouting(t *testing.T) {
 	t.Parallel()
 
@@ -1468,7 +1643,26 @@ func TestRunnerExternalPauseAfterNodeStopsBeforeNextSequentialNode(t *testing.T)
 func TestRunnerExternalCancelAfterSingleNodeDoesNotComplete(t *testing.T) {
 	t.Parallel()
 
-	g, started, release := newControlledSingleNodeRunnerGraph(t)
+	g := NewGraph(nil)
+	started := make(chan string, 1)
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	mustAddNode(t, g, "work", func(context.Context, *state.Access) error {
+		started <- "work"
+		<-release
+		return nil
+	})
+	if err := g.SetEntryPoint("work"); err != nil {
+		t.Fatalf("set entry point: %v", err)
+	}
+	if err := g.SetFinishPoint("work"); err != nil {
+		t.Fatalf("set finish point: %v", err)
+	}
 	dir := t.TempDir()
 	executionStore := fruntime.NewFileExecutionStore(dir)
 	runner := mustNewGraphRunner(t,
@@ -1490,9 +1684,14 @@ func TestRunnerExternalCancelAfterSingleNodeDoesNotComplete(t *testing.T) {
 	if err := runner.Cancel(context.Background(), runID); err != nil {
 		t.Fatalf("cancel run: %v", err)
 	}
+	var res runnerResult
+	select {
+	case res = <-done:
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("cancel waited for the uncooperative node")
+	}
 	close(release)
-
-	res := waitForRunnerResult(t, done)
+	released = true
 	if res.err != nil {
 		t.Fatalf("runner start returned error: %v", res.err)
 	}
@@ -1724,6 +1923,111 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 	items, _ := branches.([]any)
 	if !ok || len(items) != 2 {
 		t.Fatalf("expected two merged branches after retry, got %#v ok=%v", branches, ok)
+	}
+}
+
+func assertParallelAfterNodeRequiresAfterWave(
+	t *testing.T,
+	runner *fruntime.GraphRunner,
+	runtimeStore *fruntime.FileRuntimeStore,
+	runID string,
+	nodeID string,
+	verify func(*state.State),
+) {
+	t.Helper()
+
+	steps, err := runner.ListSteps(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListSteps(): %v", err)
+	}
+	var branchStep fruntime.StepRecord
+	for _, step := range steps {
+		if step.NodeID == nodeID && step.CheckpointAfterID != "" {
+			branchStep = step
+			break
+		}
+	}
+	if branchStep.StepID == "" {
+		t.Fatalf("node %q has no after_node checkpoint: %#v", nodeID, steps)
+	}
+
+	branchCheckpoint, err := runner.LoadCheckpointState(context.Background(), branchStep.CheckpointAfterID)
+	if err != nil {
+		t.Fatalf("LoadCheckpointState(%q): %v", branchStep.CheckpointAfterID, err)
+	}
+	if branchCheckpoint.Record.Stage != fruntime.CheckpointAfterNode {
+		t.Fatalf("branch checkpoint stage = %q, want after_node", branchCheckpoint.Record.Stage)
+	}
+	schedule, ok := fruntime.LoadGraphSchedule(branchCheckpoint.Business)
+	if !ok {
+		t.Fatalf("branch checkpoint has no graph schedule: %#v", branchCheckpoint.Record)
+	}
+	parallelTaskFound := false
+	for _, task := range schedule.CurrentTasks {
+		if task.TaskID != branchStep.TaskID {
+			continue
+		}
+		parallelTaskFound = true
+		if task.ParallelWaveSize <= 1 {
+			t.Fatalf("branch task parallel wave size = %d, want > 1: %#v", task.ParallelWaveSize, task)
+		}
+		break
+	}
+	if !parallelTaskFound {
+		t.Fatalf("branch task %q missing from checkpoint schedule: %#v", branchStep.TaskID, schedule.CurrentTasks)
+	}
+
+	barrierID := ""
+	checkpoints, err := runner.ListCheckpoints(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("ListCheckpoints(): %v", err)
+	}
+	for _, checkpoint := range checkpoints {
+		if checkpoint.Stage != fruntime.CheckpointAfterWave {
+			continue
+		}
+		restored, loadErr := runner.LoadCheckpointState(context.Background(), checkpoint.CheckpointID)
+		if loadErr != nil {
+			t.Fatalf("LoadCheckpointState(%q): %v", checkpoint.CheckpointID, loadErr)
+		}
+		for _, stepID := range restored.Runtime.CurrentStepIDs {
+			if stepID == branchStep.StepID {
+				barrierID = checkpoint.CheckpointID
+				break
+			}
+		}
+		if barrierID != "" {
+			break
+		}
+	}
+	if barrierID == "" {
+		t.Fatalf("branch step %q has no after_wave checkpoint", branchStep.StepID)
+	}
+
+	_, _, err = runner.ResumeFromCheckpoint(context.Background(), branchStep.CheckpointAfterID, nil)
+	assertParallelAfterNodeResumeError(t, "ResumeFromCheckpoint", err)
+
+	forcePausedRunCheckpoint(t, runtimeStore, runID, branchStep.CheckpointAfterID)
+	_, _, err = runner.Resume(context.Background(), runID, nil)
+	assertParallelAfterNodeResumeError(t, "Resume", err)
+
+	resumedRun, resumedState, err := runner.ResumeFromCheckpoint(context.Background(), barrierID, nil)
+	if err != nil {
+		t.Fatalf("ResumeFromCheckpoint(after_wave): %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("after_wave resumed run status = %q, want completed", resumedRun.Status)
+	}
+	verify(resumedState)
+}
+
+func assertParallelAfterNodeResumeError(t *testing.T, operation string, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatalf("%s accepted a parallel after_node checkpoint", operation)
+	}
+	if !strings.Contains(err.Error(), "parallel wave after_node") || !strings.Contains(err.Error(), "after_wave") {
+		t.Fatalf("%s error = %q, want parallel wave and after_wave guidance", operation, err)
 	}
 }
 

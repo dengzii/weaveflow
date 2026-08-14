@@ -289,6 +289,9 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 			if err != nil {
 				return nil, state.Contract{}, fmt.Errorf("%s state port %q: %w", component, port.Name, err)
 			}
+			if err := r.validateContractReducers(resolved.Contract); err != nil {
+				return nil, state.Contract{}, fmt.Errorf("%s state port %q: %w", component, port.Name, err)
+			}
 			for _, expanded := range resolved.Contract.Fields {
 				field, ok := r.fields[expanded.Path.String()]
 				if !ok {
@@ -308,6 +311,22 @@ func (r *bindingResolver) resolvePorts(component, ownerID string, ports []dsl.St
 		bindings[port.Name] = resolved
 	}
 	return bindings, contract, nil
+}
+
+func (r *bindingResolver) validateContractReducers(contract state.Contract) error {
+	for _, field := range contract.Fields {
+		identifier := strings.TrimSpace(field.Reducer)
+		if identifier == "" {
+			continue
+		}
+		if field.Mode != state.AccessWrite && field.Mode != state.AccessReadWrite {
+			return fmt.Errorf("capability field %q reducer requires write access", field.Path.String())
+		}
+		if _, ok := r.registry.FindReducer(identifier); !ok {
+			return fmt.Errorf("capability field %q reducer %q is not registered", field.Path.String(), identifier)
+		}
+	}
+	return nil
 }
 
 func expandDefaultPath(template, ownerID string) string {
@@ -359,12 +378,16 @@ func expandCapabilityContract(root state.Path, capability dsl.StateCapabilityDef
 		if err != nil {
 			return state.Contract{}, fmt.Errorf("expand field %q: %w", name, err)
 		}
+		reducer := ""
+		if canWrite(reference.Mode) {
+			reducer = strings.TrimSpace(field.Reducer)
+		}
 		contract.Fields = append(contract.Fields, state.FieldAccess{
 			Path:        path,
 			Mode:        state.AccessMode(reference.Mode),
 			Required:    reference.Required && canRead(reference.Mode),
 			Merge:       state.MergeStrategy(field.MergeStrategy),
-			Reducer:     strings.TrimSpace(field.Reducer),
+			Reducer:     reducer,
 			Type:        schemaType(field.Schema),
 			Schema:      state.JSONSchema(field.Schema.Clone()),
 			Description: description,

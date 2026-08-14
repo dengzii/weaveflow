@@ -7,8 +7,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
@@ -163,6 +166,120 @@ func TestGraphRunnerValidatesDynamicSendInputSchema(t *testing.T) {
 	}
 	if workerCalls.Load() != 0 {
 		t.Fatalf("worker executed %d times with invalid Send input", workerCalls.Load())
+	}
+}
+
+func TestGraphRunnerValidatesDynamicSendReducerInput(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		operation state.PatchOp
+		wantErr   string
+	}{
+		{
+			name: "registered reducer preserves large integer",
+			operation: state.PatchOp{
+				Kind: state.OpReduce, Path: state.Shared("total"), Reducer: "sum.v1", Value: int64(2),
+			},
+		},
+		{
+			name: "declared reducer cannot be bypassed",
+			operation: state.PatchOp{
+				Kind: state.OpSet, Path: state.Shared("total"), Value: int64(2),
+			},
+			wantErr: `must use reducer "sum.v1"`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reg := builtin.NewDefaultRegistry()
+			if err := reg.RegisterNodeType(registry.NodeTypeDefinition{
+				NodeTypeSchema: dsl.NodeTypeSchema{Type: "test"},
+				Build: func(*registry.BuildContext, registry.ResolvedNodeSpec) (core.Node, error) {
+					return nil, nil
+				},
+			}); err != nil {
+				t.Fatalf("register test node type: %v", err)
+			}
+			var workerCalls atomic.Int32
+			var observedTotal atomic.Int64
+			workflow := NewGraph(reg)
+			mustAddResultNode(t, workflow, "mapper", func(core.Context, *state.Access) (core.NodeResult, error) {
+				return core.NodeResult{Command: core.Command{Send: []core.Send{{
+					Target: "worker", Input: state.NewPatch(test.operation),
+				}}}}, nil
+			})
+			mustAddResultNode(t, workflow, "worker", func(_ core.Context, access *state.Access) (core.NodeResult, error) {
+				workerCalls.Add(1)
+				value, ok := access.ReadAny(state.Shared("total"))
+				if !ok {
+					return core.NodeResult{}, errors.New("worker total is missing")
+				}
+				switch total := value.(type) {
+				case int:
+					observedTotal.Store(int64(total))
+				case int64:
+					observedTotal.Store(total)
+				default:
+					return core.NodeResult{}, errors.New("worker total has unexpected type")
+				}
+				return core.Success(), nil
+			})
+			if err := workflow.SetEntryPoint("mapper"); err != nil {
+				t.Fatal(err)
+			}
+			if err := workflow.SetFinishPoint("worker"); err != nil {
+				t.Fatal(err)
+			}
+			if err := workflow.AddEdge("mapper", "worker"); err != nil {
+				t.Fatal(err)
+			}
+			workflow.setNodeContracts(map[string]state.Contract{
+				"worker": state.NewContract(state.FieldAccess{
+					Path: state.Shared("total"), Mode: state.AccessReadWrite,
+					Merge: state.MergeReplace, Reducer: "sum.v1", Schema: state.JSONSchema{"type": "integer"},
+				}),
+			})
+			const initialTotal int64 = 9007199254740993
+			_, directErr := workflow.Run(context.Background(), state.FromShared(map[string]any{"total": initialTotal}))
+			if test.wantErr != "" {
+				if directErr == nil || !strings.Contains(directErr.Error(), test.wantErr) {
+					t.Fatalf("Graph.Run() error = %v, want substring %q", directErr, test.wantErr)
+				}
+				if workerCalls.Load() != 0 {
+					t.Fatalf("Graph.Run() worker calls = %d", workerCalls.Load())
+				}
+			} else {
+				if directErr != nil {
+					t.Fatalf("Graph.Run(): %v", directErr)
+				}
+				if workerCalls.Load() != 1 || observedTotal.Load() != initialTotal+2 {
+					t.Fatalf("Graph.Run() worker calls = %d, total = %d", workerCalls.Load(), observedTotal.Load())
+				}
+			}
+			workerCalls.Store(0)
+			observedTotal.Store(0)
+
+			runtimeStore := fruntime.NewMemoryRuntimeStore()
+			runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore)
+			run, _, err := runner.Start(context.Background(), state.FromShared(map[string]any{"total": initialTotal}))
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("Start() error = %v, want substring %q", err, test.wantErr)
+				}
+				if run.Status != fruntime.RunStatusFailed || workerCalls.Load() != 0 {
+					t.Fatalf("run = %#v, worker calls = %d", run, workerCalls.Load())
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Start(): %v", err)
+			}
+			if workerCalls.Load() != 1 || observedTotal.Load() != initialTotal+2 {
+				t.Fatalf("worker calls = %d, total = %d", workerCalls.Load(), observedTotal.Load())
+			}
+		})
 	}
 }
 

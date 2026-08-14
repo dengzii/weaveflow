@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync/atomic"
 	"time"
 
 	"github.com/dengzii/weaveflow/core"
@@ -21,6 +22,69 @@ type RunnerExecution interface {
 	OnGraphStep(ctx context.Context, completed []GraphTask, state *state.State) error
 }
 
+const (
+	nodeAttemptPending uint32 = iota
+	nodeAttemptAccepted
+	nodeAttemptAbandoned
+)
+
+type nodeAttemptKey struct{}
+
+// NodeAttempt arbitrates whether a node result or its deadline owns an attempt.
+type NodeAttempt struct {
+	decision atomic.Uint32
+}
+
+func NewNodeAttempt() *NodeAttempt {
+	return &NodeAttempt{}
+}
+
+// TryAccept reserves the attempt for result delivery or durable result commit.
+func (attempt *NodeAttempt) TryAccept() bool {
+	if attempt == nil {
+		return false
+	}
+	for {
+		switch attempt.decision.Load() {
+		case nodeAttemptAccepted:
+			return true
+		case nodeAttemptAbandoned:
+			return false
+		case nodeAttemptPending:
+			if attempt.decision.CompareAndSwap(nodeAttemptPending, nodeAttemptAccepted) {
+				return true
+			}
+		}
+	}
+}
+
+// TryAbandon reserves the attempt for timeout or cancellation handling.
+func (attempt *NodeAttempt) TryAbandon() bool {
+	return attempt != nil && attempt.decision.CompareAndSwap(nodeAttemptPending, nodeAttemptAbandoned)
+}
+
+func (attempt *NodeAttempt) IsAbandoned() bool {
+	return attempt != nil && attempt.decision.Load() == nodeAttemptAbandoned
+}
+
+func WithNodeAttempt(ctx context.Context, attempt *NodeAttempt) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if attempt == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, nodeAttemptKey{}, attempt)
+}
+
+func NodeAttemptFromContext(ctx context.Context) (*NodeAttempt, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	attempt, ok := ctx.Value(nodeAttemptKey{}).(*NodeAttempt)
+	return attempt, ok && attempt != nil
+}
+
 type BranchPatchRecorder interface {
 	RecordBranchPatch(base *state.State, task GraphTask, patch state.Patch)
 }
@@ -31,6 +95,10 @@ type ParallelWaveRecorder interface {
 
 type FailureRouteRecorder interface {
 	OnFailureRouted(ctx context.Context, source GraphTask, err error, next []GraphTask) error
+}
+
+type TaskErrorRecorder interface {
+	OnTaskError(task GraphTask, err error)
 }
 
 type BranchPatchRecorderSetter interface {
@@ -137,6 +205,7 @@ type RunnerGraph interface {
 	EntryPointID() string
 	CompileForRunner(execution RunnerExecution) (RunnerRunnable, error)
 	ResolveNodeID(nodeID string) (string, error)
+	ResolveEdgeTarget(target string) (string, error)
 	ResolveNextNodes(ctx context.Context, currentNodeID string, state *state.State) ([]string, error)
 	ResolveNextNode(ctx context.Context, currentNodeID string, state *state.State) (string, error)
 	ResolveNextTasks(ctx context.Context, parent GraphTask, state *state.State) ([]GraphTask, error)

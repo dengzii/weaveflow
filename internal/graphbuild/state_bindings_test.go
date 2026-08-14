@@ -336,6 +336,66 @@ func TestResolveGraphBindingsExpandsCapabilityAndMergesPorts(t *testing.T) {
 	assertContractField(t, combined, "shared.combined", state.AccessReadWrite, state.MergeReplace)
 }
 
+func TestResolveGraphBindingsValidatesCapabilityReducers(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		mode        dsl.StateAccessMode
+		register    bool
+		wantErr     string
+		wantReducer string
+	}{
+		{name: "registered writer", mode: dsl.StateAccessWrite, register: true, wantReducer: "sum.v1"},
+		{name: "unknown writer", mode: dsl.StateAccessWrite, wantErr: `reducer "missing.v1" is not registered`},
+		{name: "reader does not apply reducer", mode: dsl.StateAccessRead, register: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			reg := registry.NewRegistry()
+			identifier := "missing.v1"
+			if test.register {
+				identifier = "sum.v1"
+				if err := reg.RegisterReducer(identifier, state.SumReducer{}); err != nil {
+					t.Fatalf("register reducer: %v", err)
+				}
+			}
+			mustRegisterStateModule(t, reg, dsl.StateModuleDefinition{
+				Name: "reducer.test", Version: "1",
+				Capabilities: []dsl.StateCapabilityDefinition{{
+					ID: "reducer.test.counter.v1", Schema: dsl.JSONSchema{"type": "object"},
+					Fields: []dsl.StateCapabilityFieldDefinition{{
+						Name: "total", Schema: dsl.JSONSchema{"type": "integer"}, MergeStrategy: dsl.StateMergeReplace, Reducer: identifier,
+					}},
+				}},
+			})
+			mustRegisterNodeType(t, reg, "capability_reducer", []dsl.StatePortDefinition{
+				capabilityTestPort("counter", "reducer.test.counter.v1", dsl.RelativeStateFieldRef{Path: "total", Mode: test.mode}),
+			})
+			resolved, err := ResolveGraphBindings(dsl.GraphDefinition{
+				Version:      dsl.GraphDefinitionVersion,
+				StateModules: []dsl.StateModuleRef{{Name: "reducer.test", Version: "1"}},
+				Nodes: []dsl.GraphNodeSpec{{
+					ID: "counter", Type: "capability_reducer", State: map[string]dsl.StateBinding{"counter": {Path: "shared.counter"}},
+				}},
+			}, reg)
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("ResolveGraphBindings() error = %v, want substring %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("ResolveGraphBindings(): %v", err)
+			}
+			fields := resolved.NodeContracts["counter"].Fields
+			if len(fields) != 1 || fields[0].Reducer != test.wantReducer {
+				t.Fatalf("resolved reducer = %#v, want %q", fields, test.wantReducer)
+			}
+		})
+	}
+}
+
 func TestResolveGraphBindingsUsesDefaultPaths(t *testing.T) {
 	t.Parallel()
 	reg := newBindingTestRegistry(t)

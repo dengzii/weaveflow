@@ -60,6 +60,10 @@ func TestRegisterReducerValidatesVersionAndExportsDiscovery(t *testing.T) {
 			t.Fatalf("expected invalid reducer ID %q", identifier)
 		}
 	}
+	var nilReducer *testPointerReducer
+	if err := reg.RegisterReducer("nil.v1", nilReducer); err == nil || !strings.Contains(err.Error(), "is nil") {
+		t.Fatalf("typed nil reducer error = %v", err)
+	}
 	if err := reg.RegisterReducer("sum.v1", state.SumReducer{}); err != nil {
 		t.Fatalf("register reducer: %v", err)
 	}
@@ -84,6 +88,12 @@ func TestRegisterReducerValidatesVersionAndExportsDiscovery(t *testing.T) {
 	if !strings.Contains(string(payload), `"reducer":{"enum":["sum.v1"]}`) {
 		t.Fatalf("graph schema missing reducer discovery: %s", payload)
 	}
+}
+
+type testPointerReducer struct{}
+
+func (*testPointerReducer) Reduce(current, incoming any) (any, error) {
+	return incoming, nil
 }
 
 func TestRegisterStateModuleValidatesAndIndexesMetadata(t *testing.T) {

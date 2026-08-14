@@ -85,6 +85,13 @@ func (g *runtimeGraph) ResolveNodeID(nodeID string) (string, error) {
 	return g.graph.resolveNodeID(nodeID)
 }
 
+func (g *runtimeGraph) ResolveEdgeTarget(target string) (string, error) {
+	if g == nil || g.graph == nil {
+		return "", fmt.Errorf("graph runner graph is nil")
+	}
+	return g.graph.resolveEdgeTarget(target)
+}
+
 func (g *runtimeGraph) ResolveNextNode(ctx context.Context, currentNodeID string, currentState *state.State) (string, error) {
 	next, err := g.ResolveNextNodes(ctx, currentNodeID, currentState)
 	if err != nil {

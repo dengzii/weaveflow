@@ -238,13 +238,6 @@ func (s *RunControlService) commit(ctx context.Context, commit Commit) (CommitRe
 	if err != nil {
 		return CommitResult{}, err
 	}
-	if err := publishCommittedEventObservers(ctx, s.eventSink, s.transactionStore, commit.Events); err != nil {
-		return result, err
-	}
-	for _, event := range commit.Events {
-		if err := observeRunnerContextEvent(ctx, event); err != nil {
-			return result, err
-		}
-	}
+	observeCommittedEvents(ctx, s.eventSink, s.transactionStore, commit.Events)
 	return result, nil
 }

@@ -45,7 +45,7 @@ func (r *Registry) RegisterReducer(identifier string, reducer state.Reducer) err
 	if !reducerIDPattern.MatchString(identifier) {
 		return fmt.Errorf("reducer identifier %q must include a stable version", identifier)
 	}
-	if reducer == nil {
+	if state.IsNilReducer(reducer) {
 		return fmt.Errorf("reducer %q is nil", identifier)
 	}
 	if _, exists := r.reducers[identifier]; exists {
@@ -60,6 +60,9 @@ func (r *Registry) FindReducer(identifier string) (state.Reducer, bool) {
 		return nil, false
 	}
 	reducer, ok := r.reducers[strings.TrimSpace(identifier)]
+	if !ok || state.IsNilReducer(reducer) {
+		return nil, false
+	}
 	return reducer, ok
 }
 

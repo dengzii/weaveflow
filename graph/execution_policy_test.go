@@ -235,6 +235,27 @@ func TestExecutionPolicyRetryableOverrideRemovesInheritedNonRetryableClass(t *te
 	}
 }
 
+func TestExecutionPolicyDoesNotRetryAbandonedSchedulerTimeout(t *testing.T) {
+	policy := fruntime.DefaultGraphExecutionPolicy().NodeDefaults
+	if !retryable(policy.Retry, core.NewExecutionError(core.ErrorTimeout, "node timeout", nil, nil)) {
+		t.Fatalf("completed node timeout is not retryable: %#v", policy.Retry)
+	}
+	abandoned := core.NewExecutionError(core.ErrorTimeout, "scheduler timeout", nil, map[string]any{"attempt_abandoned": true})
+	if retryable(policy.Retry, abandoned) {
+		t.Fatalf("abandoned scheduler timeout is retryable: %#v", policy.Retry)
+	}
+
+	override, err := executionPolicyFromDSL(&dsl.ExecutionPolicy{Retry: &dsl.RetryPolicy{
+		RetryableErrorClasses: []string{string(core.ErrorTimeout)},
+	}}, policy)
+	if err != nil {
+		t.Fatalf("retryable node timeout override: %v", err)
+	}
+	if !retryable(override.Retry, core.NewExecutionError(core.ErrorTimeout, "node timeout", nil, nil)) || retryable(override.Retry, abandoned) {
+		t.Fatalf("timeout override did not preserve scheduler abandonment boundary: %#v", override.Retry)
+	}
+}
+
 func TestExecutionPolicyGraphDefaultsRefreshPartialNodeOverrides(t *testing.T) {
 	workflow := NewGraph(nil)
 	mustAddNode(t, workflow, "target", func(context.Context, *state.Access) error { return nil })
@@ -425,22 +446,264 @@ func TestExecutionPolicyNodeTimeoutRejectsLateResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(steps) != 1 || steps[0].Status != fruntime.StepStatusFailed {
+	if len(steps) != 1 || steps[0].Status != fruntime.StepStatusFailed || steps[0].CheckpointAfterID != "" {
 		t.Fatalf("steps = %#v", steps)
 	}
 }
 
-func TestExecutionPolicyTimeoutRetryWaitsForPreviousAttempt(t *testing.T) {
+func TestExecutionPolicyCommittedAttemptWinsDeadlineBeforeResultDelivery(t *testing.T) {
 	workflow := NewGraph(nil)
-	started := make(chan int32, 2)
+	mustAddNode(t, workflow, "work", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("finished"), true)
+	})
+	if err := workflow.SetEntryPoint("work"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("work"); err != nil {
+		t.Fatal(err)
+	}
+	policy := workflow.ExecutionPolicy()
+	policy.NodeDefaults.Timeout = 50 * time.Millisecond
+	policy.NodeDefaults.Retry.MaxAttempts = 1
+	if err := workflow.SetExecutionPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+
+	directory := t.TempDir()
+	runtimeStore, err := fruntime.NewFileRuntimeStore(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore)
+	committed := make(chan string, 1)
+	releaseResult := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseResult)
+		}
+	}()
+	ctx := fruntime.WithRunnerEventObserver(context.Background(), fruntime.EventObserverFunc(func(_ context.Context, event fruntime.Event) error {
+		if event.Type == fruntime.EventNodeFinished && event.NodeID == "work" {
+			committed <- event.RunID
+			<-releaseResult
+		}
+		return nil
+	}))
+	done := make(chan runnerResult, 1)
+	go func() {
+		run, finalState, runErr := runner.Start(ctx, state.NewState())
+		done <- runnerResult{run: run, state: finalState, err: runErr}
+	}()
+
+	var runID string
+	select {
+	case runID = <-committed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("node result was not committed")
+	}
+	steps, err := runner.ListSteps(context.Background(), runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Status != fruntime.StepStatusSucceeded || steps[0].CheckpointAfterID == "" {
+		t.Fatalf("committed steps = %#v", steps)
+	}
+	select {
+	case result := <-done:
+		t.Fatalf("committed attempt was abandoned at its deadline: run=%#v error=%v", result.run, result.err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(releaseResult)
+	released = true
+	result := waitForRunnerResult(t, done)
+	if result.err != nil || result.run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run = %#v, error = %v", result.run, result.err)
+	}
+	finished, _ := state.ReadPath(result.state, "shared.finished")
+	if finished != true {
+		t.Fatalf("final state finished = %#v", finished)
+	}
+}
+
+func TestExecutionPolicyAbandonedInvalidOutputDoesNotPublishContractViolation(t *testing.T) {
+	workflow := NewGraph(nil)
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	lateResult := make(chan struct{})
+	lateEventErr := make(chan error, 1)
+	lateArtifactErr := make(chan error, 1)
+	mustAddResultNode(t, workflow, "slow", func(nodeCtx core.Context, _ *state.Access) (core.NodeResult, error) {
+		<-release
+		lateEventErr <- fruntime.PublishRunnerContextEvent(nodeCtx, fruntime.EventType("late.inline"), nil)
+		_, artifactErr := fruntime.SaveArtifact(nodeCtx, fruntime.Artifact{Type: "late.inline", Data: []byte("late")})
+		lateArtifactErr <- artifactErr
+		close(lateResult)
+		return core.NodeResult{Patch: state.NewPatch(state.PatchOp{
+			Kind: state.OpSet, Path: state.Shared("forbidden"), Value: true,
+		}), Events: []core.EventDraft{{Type: "late.invalid"}}, Artifacts: []core.ArtifactDraft{{Type: "late.invalid", MIMEType: "text/plain", Data: []byte("late")}}}, nil
+	})
+	if err := workflow.SetEntryPoint("slow"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("slow"); err != nil {
+		t.Fatal(err)
+	}
+	workflow.setNodeContracts(map[string]state.Contract{
+		"slow": state.NewContract(state.FieldAccess{Path: state.Shared("allowed"), Mode: state.AccessWrite}),
+	})
+	policy := workflow.ExecutionPolicy()
+	policy.NodeDefaults.Timeout = 20 * time.Millisecond
+	policy.NodeDefaults.Retry.MaxAttempts = 1
+	if err := workflow.SetExecutionPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeStore := fruntime.NewMemoryRuntimeStore()
+	artifactStore := fruntime.NewMemoryArtifactStore()
+	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore,
+		fruntime.WithArtifactStore(artifactStore))
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil || run.Status != fruntime.RunStatusFailed || run.ErrorCode != string(core.ErrorTimeout) {
+		t.Fatalf("run = %#v, error = %v", run, err)
+	}
+	close(release)
+	released = true
+	select {
+	case <-lateResult:
+	case <-time.After(time.Second):
+		t.Fatal("late invalid result did not return")
+	}
+	if eventErr := <-lateEventErr; eventErr == nil {
+		t.Fatal("abandoned attempt published an inline event")
+	}
+	if artifactErr := <-lateArtifactErr; artifactErr == nil {
+		t.Fatal("abandoned attempt recorded an inline artifact")
+	}
+	time.Sleep(100 * time.Millisecond)
+
+	persistedRun, err := runner.GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persistedRun.Status != fruntime.RunStatusFailed || persistedRun.ErrorCode != string(core.ErrorTimeout) {
+		t.Fatalf("late invalid result changed run = %#v", persistedRun)
+	}
+	events, err := runner.ListEvents(run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type == fruntime.EventContractViolation || event.Type == fruntime.EventType("late.invalid") || event.Type == fruntime.EventType("late.inline") {
+			t.Fatalf("abandoned result published output event: %#v", event)
+		}
+	}
+	artifacts, err := artifactStore.List(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, artifact := range artifacts {
+		if artifact.Type == "late.invalid" || artifact.Type == "late.inline" || artifact.Type == "contract.output_patch" || artifact.Type == "contract.merged_state" {
+			t.Fatalf("abandoned result recorded output artifact: %#v", artifact)
+		}
+	}
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].Status != fruntime.StepStatusFailed || steps[0].CheckpointAfterID != "" {
+		t.Fatalf("steps = %#v", steps)
+	}
+}
+
+func TestExecutionPolicyParallelTimeoutKeepsTaskSpecificStepError(t *testing.T) {
+	workflow := NewGraph(nil)
+	secondAttemptStarted := make(chan struct{})
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	var attempts atomic.Int32
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error { return nil })
+	mustAddNode(t, workflow, "slow", func(context.Context, *state.Access) error {
+		if attempts.Add(1) == 1 {
+			return core.NewExecutionError(core.ErrorUnavailable, "first attempt unavailable", nil, nil)
+		}
+		close(secondAttemptStarted)
+		<-release
+		return nil
+	})
+	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error {
+		<-secondAttemptStarted
+		return errors.New("other branch failed")
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{{"router", "slow"}, {"router", "failed"}, {"slow", EndNodeRef}, {"failed", EndNodeRef}} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	slowPolicy := workflow.nodeExecutionPolicy("slow")
+	slowPolicy.Timeout = 20 * time.Millisecond
+	slowPolicy.Retry.MaxAttempts = 2
+	slowPolicy.Retry.InitialInterval = 0
+	slowPolicy.Retry.MaxInterval = 0
+	slowPolicy.Retry.BackoffMultiplier = 1
+	slowPolicy.Retry.Jitter = 0
+	if err := workflow.SetNodeExecutionPolicy("slow", slowPolicy); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeStore := fruntime.NewMemoryRuntimeStore()
+	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore)
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil || run.Status != fruntime.RunStatusFailed {
+		t.Fatalf("run = %#v, error = %v", run, err)
+	}
+	close(release)
+	released = true
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byNode := map[string]fruntime.StepRecord{}
+	for _, step := range steps {
+		byNode[step.NodeID] = step
+	}
+	if slow := byNode["slow"]; slow.Status != fruntime.StepStatusFailed || slow.ErrorCode != string(core.ErrorTimeout) || !strings.Contains(slow.ErrorMessage, "timed out") || strings.Contains(slow.ErrorMessage, "other branch") || strings.Contains(slow.ErrorMessage, "first attempt") {
+		t.Fatalf("slow step = %#v", slow)
+	}
+	if failed := byNode["failed"]; failed.Status != fruntime.StepStatusFailed || !strings.Contains(failed.ErrorMessage, "other branch failed") || strings.Contains(failed.ErrorMessage, "timed out") {
+		t.Fatalf("failed step = %#v", failed)
+	}
+}
+
+func TestExecutionPolicyTimeoutDoesNotWaitForUncooperativeAttempt(t *testing.T) {
+	workflow := NewGraph(nil)
+	started := make(chan struct{}, 1)
 	releaseFirst := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseFirst)
+		}
+	}()
 	var attempts atomic.Int32
 	mustAddNode(t, workflow, "slow", func(context.Context, *state.Access) error {
-		attempt := attempts.Add(1)
-		started <- attempt
-		if attempt == 1 {
-			<-releaseFirst
-		}
+		attempts.Add(1)
+		started <- struct{}{}
+		<-releaseFirst
 		return nil
 	})
 	if err := workflow.SetEntryPoint("slow"); err != nil {
@@ -450,7 +713,7 @@ func TestExecutionPolicyTimeoutRetryWaitsForPreviousAttempt(t *testing.T) {
 		t.Fatal(err)
 	}
 	policy := workflow.ExecutionPolicy()
-	policy.Limits.MaxWallTime = time.Second
+	policy.Limits.MaxWallTime = 2 * time.Second
 	policy.NodeDefaults.Timeout = 20 * time.Millisecond
 	policy.NodeDefaults.Retry.MaxAttempts = 2
 	policy.NodeDefaults.Retry.InitialInterval = time.Millisecond
@@ -466,36 +729,75 @@ func TestExecutionPolicyTimeoutRetryWaitsForPreviousAttempt(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case attempt := <-started:
-		if attempt != 1 {
-			t.Fatalf("first started attempt = %d", attempt)
-		}
+	case <-started:
 	case <-time.After(time.Second):
-		t.Fatal("first attempt did not start")
-	}
-	time.Sleep(50 * time.Millisecond)
-	select {
-	case attempt := <-started:
-		t.Fatalf("retry attempt %d overlapped the timed-out attempt", attempt)
-	default:
-	}
-	close(releaseFirst)
-	select {
-	case attempt := <-started:
-		if attempt != 2 {
-			t.Fatalf("second started attempt = %d", attempt)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("retry did not start after the timed-out attempt exited")
+		t.Fatal("attempt did not start")
 	}
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Fatalf("run failed after retry: %v", err)
+		if err == nil || core.ClassifyError(err) != core.ErrorTimeout {
+			t.Fatalf("run error = %v, want timeout", err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("run did not complete after retry")
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("node timeout waited for the uncooperative attempt")
 	}
+	if attempts.Load() != 1 {
+		t.Fatalf("attempts = %d, want 1 non-overlapping attempt", attempts.Load())
+	}
+	close(releaseFirst)
+	released = true
+}
+
+func TestExecutionPolicyParentCancellationDoesNotWaitForUncooperativeAttempt(t *testing.T) {
+	workflow := NewGraph(nil)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	mustAddNode(t, workflow, "slow", func(context.Context, *state.Access) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	})
+	if err := workflow.SetEntryPoint("slow"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddEdge("slow", EndNodeRef); err != nil {
+		t.Fatal(err)
+	}
+	policy := workflow.ExecutionPolicy()
+	policy.Limits.MaxWallTime = 2 * time.Second
+	policy.NodeDefaults.Timeout = time.Second
+	if err := workflow.SetExecutionPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := workflow.Run(ctx, state.NewState())
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("attempt did not start")
+	}
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("run error = %v, want context canceled", err)
+		}
+	case <-time.After(300 * time.Millisecond):
+		t.Fatal("parent cancellation waited for the uncooperative attempt")
+	}
+	close(release)
+	released = true
 }
 
 func TestExecutionPolicyWallTimeStopsWaitingForTimedOutAttempt(t *testing.T) {

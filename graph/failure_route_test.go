@@ -3,8 +3,10 @@ package graph
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
@@ -107,6 +109,65 @@ func TestRunnerFailureRoutePersistsFailedStepAndRoutedEvent(t *testing.T) {
 	}
 }
 
+func TestFailureRoutePreservesSuccessfulParallelSuccessors(t *testing.T) {
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error { return nil })
+	mustAddNode(t, workflow, "successful", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("branch_value"), "ready")
+	})
+	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error {
+		return core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, nil)
+	})
+	mustAddNode(t, workflow, "success_next", func(_ context.Context, access *state.Access) error {
+		value, ok := access.ReadAny(state.Shared("branch_value"))
+		if !ok || value != "ready" {
+			return errors.New("successful branch state is missing")
+		}
+		return access.SetAny(state.Shared("success_next"), true)
+	})
+	mustAddResultNode(t, workflow, "fallback", func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+		failure, ok := ctx.Failure()
+		if !ok || failure.SourceNodeID != "failed" {
+			return core.NodeResult{}, errors.New("failure context is missing")
+		}
+		value, ok := access.ReadAny(state.Shared("branch_value"))
+		if !ok || value != "ready" {
+			return core.NodeResult{}, errors.New("fallback cannot see successful branch state")
+		}
+		return core.Success(), access.SetAny(state.Shared("fallback"), true)
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddFailureRoute("failed", "fallback", dsl.FailureRouteSpec{CatchAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "successful"},
+		{"router", "failed"},
+		{"successful", "success_next"},
+		{"failed", EndNodeRef},
+		{"success_next", EndNodeRef},
+		{"fallback", EndNodeRef},
+	} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	store := fruntime.NewMemoryRuntimeStore()
+	runner := mustNewGraphRunner(t, workflow, store, store, state.NewJSONStateCodec(""), store)
+	run, finalState, err := runner.Start(context.Background(), state.NewState())
+	if err != nil || run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run = %#v, error = %v", run, err)
+	}
+	for _, path := range []string{"shared.success_next", "shared.fallback"} {
+		if value, _ := state.ReadPath(finalState, path); value != true {
+			t.Fatalf("%s = %#v, want true", path, value)
+		}
+	}
+}
+
 func TestFailureRouteDoesNotCatchUnclassifiedError(t *testing.T) {
 	workflow := NewGraph(nil)
 	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error { return errors.New("plain failure") })
@@ -132,6 +193,9 @@ func TestFailureRouteDoesNotRouteMultipleFailuresFromParallelWave(t *testing.T) 
 	workflow := NewGraph(nil)
 	var fallbackCalls atomic.Int32
 	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error { return nil })
+	mustAddNode(t, workflow, "successful", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("partial_commit"), true)
+	})
 	mustAddNode(t, workflow, "fallback", func(context.Context, *state.Access) error {
 		fallbackCalls.Add(1)
 		return nil
@@ -148,7 +212,7 @@ func TestFailureRouteDoesNotRouteMultipleFailuresFromParallelWave(t *testing.T) 
 	if err := workflow.SetEntryPoint("router"); err != nil {
 		t.Fatal(err)
 	}
-	for _, edge := range [][2]string{{"router", "first"}, {"router", "second"}, {"first", EndNodeRef}, {"second", EndNodeRef}} {
+	for _, edge := range [][2]string{{"router", "first"}, {"router", "second"}, {"router", "successful"}, {"first", EndNodeRef}, {"second", EndNodeRef}, {"successful", EndNodeRef}} {
 		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
 			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
 		}
@@ -156,12 +220,106 @@ func TestFailureRouteDoesNotRouteMultipleFailuresFromParallelWave(t *testing.T) 
 	if err := workflow.SetFinishPoint("fallback"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := workflow.Run(context.Background(), state.NewState()); err == nil {
+	result, err := workflow.Run(context.Background(), state.NewState())
+	if err == nil {
 		t.Fatal("expected parallel wave failure")
+	}
+	if !strings.Contains(err.Error(), "first unavailable") || !strings.Contains(err.Error(), "second unavailable") {
+		t.Fatalf("parallel failure = %v, want both branch errors", err)
+	}
+	if value, ok := state.ReadPath(result, "shared.partial_commit"); ok {
+		t.Fatalf("partial committed value = %#v", value)
 	}
 	if fallbackCalls.Load() != 0 {
 		t.Fatalf("fallback calls = %d, want 0", fallbackCalls.Load())
 	}
+}
+
+func TestParallelWaveUnroutedFailureDoesNotCommitSuccessfulSibling(t *testing.T) {
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error { return nil })
+	mustAddNode(t, workflow, "successful", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("partial_commit"), true)
+	})
+	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error {
+		return core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, nil)
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{{"router", "successful"}, {"router", "failed"}, {"successful", EndNodeRef}, {"failed", EndNodeRef}} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	result, err := workflow.Run(context.Background(), state.NewState())
+	if err == nil {
+		t.Fatal("expected parallel wave failure")
+	}
+	if value, ok := state.ReadPath(result, "shared.partial_commit"); ok {
+		t.Fatalf("partial committed value = %#v", value)
+	}
+}
+
+func TestFailureRouteTimeoutPreservesCompletedSiblingPatch(t *testing.T) {
+	workflow := NewGraph(nil)
+	siblingCompleted := make(chan struct{})
+	releaseSlow := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(releaseSlow)
+		}
+	}()
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error { return nil })
+	mustAddNode(t, workflow, "successful", func(_ context.Context, access *state.Access) error {
+		if err := access.SetAny(state.Shared("successful"), true); err != nil {
+			return err
+		}
+		close(siblingCompleted)
+		return nil
+	})
+	mustAddNode(t, workflow, "slow", func(context.Context, *state.Access) error {
+		<-siblingCompleted
+		<-releaseSlow
+		return nil
+	})
+	mustAddNode(t, workflow, "fallback", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("fallback"), true)
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{{"router", "successful"}, {"router", "slow"}, {"successful", EndNodeRef}, {"slow", EndNodeRef}, {"fallback", EndNodeRef}} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+	if err := workflow.AddFailureRoute("slow", "fallback", dsl.FailureRouteSpec{
+		Stages:       []dsl.FailureStage{dsl.FailureStageNode},
+		ErrorClasses: []string{string(core.ErrorTimeout)},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	policy := workflow.ExecutionPolicy().NodeDefaults
+	policy.Timeout = 20 * time.Millisecond
+	policy.Retry.MaxAttempts = 1
+	if err := workflow.SetNodeExecutionPolicy("slow", policy); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := workflow.Run(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	for _, path := range []string{"shared.successful", "shared.fallback"} {
+		if value, ok := state.ReadPath(result, path); !ok || value != true {
+			t.Fatalf("%s = %#v, present = %v", path, value, ok)
+		}
+	}
+	close(releaseSlow)
+	released = true
 }
 
 func TestFailureRouteDoesNotCatchCanceledCondition(t *testing.T) {

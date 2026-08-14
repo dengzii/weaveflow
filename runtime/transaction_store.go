@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/google/uuid"
+	"go.uber.org/zap"
 )
 
 type StepWriteMode string
@@ -815,20 +816,43 @@ func publishCommittedEventObservers(ctx context.Context, sink EventSink, transac
 		return nil
 	}
 	if combine, ok := sink.(*CombineEventSink); ok {
+		var publishErrors []error
 		for _, nested := range combine.sinks {
 			if eventSinkIsTransactionStore(nested, transactionStore) {
 				continue
 			}
 			if err := nested.PublishBatch(ctx, events); err != nil {
-				return err
+				publishErrors = append(publishErrors, err)
 			}
 		}
-		return nil
+		return errors.Join(publishErrors...)
 	}
 	if eventSinkIsTransactionStore(sink, transactionStore) {
 		return nil
 	}
 	return sink.PublishBatch(ctx, events)
+}
+
+func observeCommittedEvents(ctx context.Context, sink EventSink, transactionStore TransactionStore, events []Event) {
+	if len(events) == 0 {
+		return
+	}
+	observerCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
+	observationErrors := make([]error, 0, len(events)+1)
+	if err := publishCommittedEventObservers(observerCtx, sink, transactionStore, events); err != nil {
+		observationErrors = append(observationErrors, err)
+	}
+	for _, event := range events {
+		if err := observeRunnerContextEvent(observerCtx, event); err != nil {
+			observationErrors = append(observationErrors, err)
+		}
+	}
+	if err := errors.Join(observationErrors...); err != nil {
+		logger.Warn("committed runtime event observation failed",
+			zap.Int("event_count", len(events)),
+			zap.Error(err),
+		)
+	}
 }
 
 func eventSinkIsTransactionStore(sink EventSink, transactionStore TransactionStore) bool {

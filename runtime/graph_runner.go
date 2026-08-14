@@ -912,7 +912,11 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	if errorCode == string(core.ErrorUnknown) {
 		errorCode = "node_failed"
 	}
-	return r.failRunWithTransition(ctx, execution.currentRun(), finalState, errorCode, invokeErr.Error(), transition)
+	failedRun, persistErr := r.persistRunFailureWithTransition(ctx, execution.currentRun(), finalState, errorCode, invokeErr.Error(), transition)
+	if persistErr != nil {
+		return RunRecord{}, finalState, persistErr
+	}
+	return failedRun, finalState, invokeErr
 }
 
 func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, invokeErr error) (RunRecord, *state.State, bool, error) {
@@ -985,7 +989,7 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		return RunRecord{}, checkpoint.Business, state.NewValidationError("resume input", issues)
 	}
 
-	startTasks, skip, err := r.resumeTarget(ctx, checkpoint.Record, checkpoint.Runtime, checkpoint.Business)
+	startTasks, skip, suspend, err := r.resumeTarget(ctx, checkpoint.Record, checkpoint.Runtime, checkpoint.Business)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -999,12 +1003,15 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 	if checkpoint.Runtime.CurrentStepID != "" {
 		run.LastStepID = checkpoint.Runtime.CurrentStepID
 	}
-	resolvedToEnd := len(startTasks) == 0 || len(startTasks) == 1 && startTasks[0].NodeID == EndNodeID
+	resolvedToEnd := suspend == nil && (len(startTasks) == 0 || len(startTasks) == 1 && startTasks[0].NodeID == EndNodeID)
 	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
-	if checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "" {
+	if suspend == nil && (checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "") {
 		if len(startTasks) > 0 {
 			run.CurrentNodeID = startTasks[0].NodeID
 		}
+	}
+	if suspend != nil {
+		run.NextNodeIDs = GraphTaskNodeIDs(startTasks)
 	}
 	if resolvedToEnd {
 		clearRunExecutionPointers(&run)
@@ -1033,6 +1040,14 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		logger.Info("resume resolved to completed run", append(runLogFields(run), state.SummaryFields(checkpoint.Business)...)...)
 		return r.completeRun(ctx, run, checkpoint.Business, checkpoint.Artifacts)
 	}
+	if suspend != nil {
+		checkpointID, checkpointErr := r.saveCheckpoint(ctx, run, StepRecord{}, waveCheckpointNodeID, CheckpointAfterWave, checkpoint.Business, 0, nil, checkpoint.Artifacts)
+		if checkpointErr != nil {
+			return r.failRun(ctx, run, checkpoint.Business, "checkpoint_failed", checkpointErr.Error())
+		}
+		message := fmt.Sprintf("graph interrupted at node %s: %v", checkpoint.Record.NodeID, suspend.Value)
+		return r.pauseRunAtCheckpoint(ctx, run, checkpoint.Business, checkpointID, nil, message)
+	}
 
 	fields := append(runLogFields(run),
 		zap.Strings("start_nodes", GraphTaskNodeIDs(startTasks)),
@@ -1045,6 +1060,9 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 }
 
 func (r *GraphRunner) continueRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input *state.State) (RunRecord, *state.State, error) {
+	if err := r.validateIndependentCheckpoint(checkpoint); err != nil {
+		return RunRecord{}, nil, err
+	}
 	continuedState, err := state.PrepareContinuationState(checkpoint.Business, input)
 	if err != nil {
 		return RunRecord{}, nil, err
@@ -1613,7 +1631,8 @@ func (r *GraphRunner) cancelRunWithTransition(ctx context.Context, run RunRecord
 	}
 	events := append([]Event(nil), transition.events...)
 	events = append(events, canceledEvent)
-	commitResult, err := r.commitRuntime(ctx, Commit{
+	persistenceCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
+	commitResult, err := r.commitRuntime(persistenceCtx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Steps:  transition.writes,
 		Events: events,
@@ -1625,7 +1644,7 @@ func (r *GraphRunner) cancelRunWithTransition(ctx context.Context, run RunRecord
 		run = *commitResult.Run
 	}
 	logger.Info("run canceled", append(runLogFields(run), state.SummaryFields(currentState)...)...)
-	if err := r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), run.RunID); err != nil {
+	if err := r.applyRunRetention(persistenceCtx, run.RunID); err != nil {
 		return run, currentState, err
 	}
 	return run, currentState, nil
@@ -1854,6 +1873,7 @@ func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, curr
 }
 
 func (r *GraphRunner) persistRunFailureWithTransition(ctx context.Context, run RunRecord, currentState *state.State, code string, message string, transition runnerStepTransition) (RunRecord, error) {
+	persistenceCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
 	now := r.currentTime()
 	run.Status = RunStatusFailed
 	run.PauseRequested = false
@@ -1871,7 +1891,7 @@ func (r *GraphRunner) persistRunFailureWithTransition(ctx context.Context, run R
 	}
 	events := append([]Event(nil), transition.events...)
 	events = append(events, failedEvent)
-	commitResult, err := r.commitRuntime(ctx, Commit{
+	commitResult, err := r.commitRuntime(persistenceCtx, Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Steps:  transition.writes,
 		Events: events,
@@ -1886,7 +1906,7 @@ func (r *GraphRunner) persistRunFailureWithTransition(ctx context.Context, run R
 		logger.Error("nodes failed", append(stepLogFields(step), zap.String("error", message))...)
 	}
 	logger.Error("run failed", append(runLogFields(run), state.SummaryFields(currentState)...)...)
-	if err := r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), run.RunID); err != nil {
+	if err := r.applyRunRetention(persistenceCtx, run.RunID); err != nil {
 		return run, err
 	}
 	return run, nil
@@ -1967,42 +1987,75 @@ func (r *GraphRunner) abortStartedRun(ctx context.Context, run RunRecord, code s
 	return errors.Join(cause, commitErr)
 }
 
-func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRecord, runtimeState state.RuntimeState, currentState *state.State) ([]GraphTask, *breakpointSkip, error) {
+func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRecord, runtimeState state.RuntimeState, currentState *state.State) ([]GraphTask, *breakpointSkip, *core.SuspendRequest, error) {
 	schedule, _ := LoadGraphSchedule(currentState)
 	switch checkpoint.Stage {
 	case CheckpointBeforeNode:
 		nodeID, err := r.runnerGraph().ResolveNodeID(checkpoint.NodeID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if len(schedule.CurrentTasks) != 1 || schedule.CurrentTasks[0].NodeID != nodeID {
-			return nil, nil, fmt.Errorf("before-node checkpoint %q has invalid current task schedule", checkpoint.CheckpointID)
+			return nil, nil, nil, fmt.Errorf("before-node checkpoint %q has invalid current task schedule", checkpoint.CheckpointID)
 		}
-		return CloneGraphTasks(schedule.CurrentTasks), &breakpointSkip{NodeID: checkpoint.NodeID, Stage: string(CheckpointBeforeNode)}, nil
+		return CloneGraphTasks(schedule.CurrentTasks), &breakpointSkip{NodeID: checkpoint.NodeID, Stage: string(CheckpointBeforeNode)}, nil, nil
 	case CheckpointAfterNode:
 		nodeID, err := r.runnerGraph().ResolveNodeID(checkpoint.NodeID)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		if r.runnerGraph().IsParallelBranchTarget(nodeID) || runtimeState.ParallelWaveID != "" || runtimeState.WaveID != "" {
-			return nil, nil, fmt.Errorf("resume from wave task %q checkpoint %q is not supported without after-wave context", checkpoint.Stage, checkpoint.CheckpointID)
+		if isParallelWaveTaskCheckpoint(runtimeState, schedule) {
+			return nil, nil, nil, parallelAfterNodeCheckpointError(checkpoint.CheckpointID)
 		}
 		parent := GraphTask{TaskID: checkpoint.TaskID, NodeID: nodeID}
 		if parent.TaskID == "" {
 			parent.TaskID = nodeID
 		}
+		if nextTasks, suspend, handled, commandErr := r.resolveAfterNodeCommand(ctx, checkpoint, parent, currentState); handled || commandErr != nil {
+			return nextTasks, nil, suspend, commandErr
+		}
 		nextTasks, err := r.runnerGraph().ResolveNextTasks(ctx, parent, currentState)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
-		return CloneGraphTasks(nextTasks), nil, nil
+		return CloneGraphTasks(nextTasks), nil, nil, nil
 	case CheckpointAfterWave:
-		return CloneGraphTasks(schedule.NextTasks), nil, nil
+		return CloneGraphTasks(schedule.NextTasks), nil, nil, nil
 	case CheckpointFinal:
-		return nil, nil, fmt.Errorf("final checkpoint %q is not resumable", checkpoint.CheckpointID)
+		return nil, nil, nil, fmt.Errorf("final checkpoint %q is not resumable", checkpoint.CheckpointID)
 	default:
-		return nil, nil, fmt.Errorf("unsupported checkpoint stage %q", checkpoint.Stage)
+		return nil, nil, nil, fmt.Errorf("unsupported checkpoint stage %q", checkpoint.Stage)
 	}
+}
+
+func (r *GraphRunner) validateIndependentCheckpoint(checkpoint RestoredCheckpoint) error {
+	switch checkpoint.Record.Stage {
+	case CheckpointAfterNode:
+		schedule, _ := LoadGraphSchedule(checkpoint.Business)
+		if isParallelWaveTaskCheckpoint(checkpoint.Runtime, schedule) {
+			return parallelAfterNodeCheckpointError(checkpoint.Record.CheckpointID)
+		}
+	}
+	return nil
+}
+
+func isParallelWaveTaskCheckpoint(runtimeState state.RuntimeState, schedule GraphSchedule) bool {
+	if runtimeState.ParallelWaveID != "" || runtimeState.WaveID != "" {
+		return true
+	}
+	if len(schedule.CurrentTasks) > 1 {
+		return true
+	}
+	for _, task := range schedule.CurrentTasks {
+		if task.ParallelWaveSize > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func parallelAfterNodeCheckpointError(checkpointID string) error {
+	return fmt.Errorf("parallel wave after_node checkpoint %q is not independently resumable; resume from an after_wave checkpoint", checkpointID)
 }
 
 func (r *GraphRunner) matchBreakpoint(nodeID string, stage string, skip *breakpointSkip) *state.BreakpointHit {
@@ -2093,14 +2146,7 @@ func (r *GraphRunner) commitRuntime(ctx context.Context, commit Commit) (CommitR
 	if err != nil {
 		return CommitResult{}, err
 	}
-	if err := publishCommittedEventObservers(ctx, r.eventSink, r.transactionStore, commit.Events); err != nil {
-		return result, err
-	}
-	for _, event := range commit.Events {
-		if err := observeRunnerContextEvent(ctx, event); err != nil {
-			return result, err
-		}
-	}
+	observeCommittedEvents(ctx, r.eventSink, r.transactionStore, commit.Events)
 	return result, nil
 }
 

@@ -31,6 +31,7 @@ type scheduledRunnable struct {
 	executeNode   scheduledNodeExecutor
 	observeNode   func(context.Context, NodeEvent, string, *state.State, error, time.Duration)
 	recordFailure func(context.Context, fruntime.GraphTask, error, []fruntime.GraphTask) error
+	recordTaskErr func(fruntime.GraphTask, error)
 	joinNodes     map[string]struct{}
 	reachability  map[string]map[string]bool
 }
@@ -173,20 +174,12 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 
 		completedTasks := fruntime.CloneGraphTasks(currentTasks)
 		results, nodeErrors := runnable.executeTasks(ctx, config, budget, completedTasks, currentState)
-		mergedState, err := runnable.graph.mergeCompiledResults(ctx, currentState, results, runnable.patches)
-		if err != nil {
-			mergeErr := fmt.Errorf("state merge failed: %w", err)
-			return currentState, mergeErr
-		}
-		currentState = mergedState
-		if err := runnable.storeExecutionBudget(currentState, budget); err != nil {
-			return currentState, err
-		}
-		if err := runnable.validateStateSize(ctx, config, currentState); err != nil {
-			return currentState, err
-		}
-
-		if interrupt, task := firstNodeInterrupt(completedTasks, nodeErrors); interrupt != nil {
+		if interrupt, task := firstNodeInterrupt(completedTasks, nodeErrors); interrupt != nil && !hasNonInterruptError(nodeErrors) {
+			mergedState, err := runnable.mergeWaveResults(ctx, config, budget, currentState, results)
+			if err != nil {
+				return currentState, err
+			}
+			currentState = mergedState
 			if err := runnable.notifyGraphStep(ctx, config, completedTasks, currentState); err != nil {
 				return currentState, err
 			}
@@ -200,7 +193,8 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 		}
 		if nodeErr := firstError(nodeErrors); nodeErr != nil {
 			if errorCount(nodeErrors) > 1 {
-				return currentState, nodeErr
+				failedState, stateErr := runnable.failedWaveState(currentState, budget)
+				return failedState, errors.Join(errors.Join(nodeErrors...), stateErr)
 			}
 			for index, task := range completedTasks {
 				if nodeErrors[index] == nil {
@@ -208,9 +202,26 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 				}
 				failureTasks, resolveErr := runnable.graph.resolveFailure(ctx, task, string(dsl.FailureStageNode), nodeErrors[index])
 				if resolveErr != nil {
-					return currentState, resolveErr
+					failedState, stateErr := runnable.failedWaveState(currentState, budget)
+					return failedState, errors.Join(resolveErr, stateErr)
 				}
 				if len(failureTasks) > 0 {
+					mergedState, mergeErr := runnable.mergeWaveResults(ctx, config, budget, currentState, results)
+					if mergeErr != nil {
+						return currentState, mergeErr
+					}
+					nextTasks, returnCommand, suspend, commandErr := runnable.resolveCommands(ctx, config, completedTasks, results, nodeErrors, mergedState)
+					if commandErr != nil {
+						if event := conditionSchedulerEvent(commandErr); event != nil {
+							if notifyErr := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, *event); notifyErr != nil {
+								commandErr = errors.Join(commandErr, notifyErr)
+							}
+						}
+						return currentState, errors.Join(nodeErr, commandErr)
+					}
+					if returnCommand != nil || suspend != nil {
+						return currentState, fmt.Errorf("failure-routed wave resolved an incompatible control command")
+					}
 					if runnable.recordFailure != nil {
 						if err := runnable.recordFailure(context.WithoutCancel(ctx), task, nodeErrors[index], failureTasks); err != nil {
 							return currentState, err
@@ -218,7 +229,9 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 					} else if err := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, failureRoutedSchedulerEvent(task, nodeErrors[index], failureTasks)); err != nil {
 						return currentState, err
 					}
-					currentTasks, pendingFanIn = runnable.scheduleNext(failureTasks, pendingFanIn)
+					currentState = mergedState
+					nextTasks = append(nextTasks, failureTasks...)
+					currentTasks, pendingFanIn = runnable.scheduleNext(nextTasks, pendingFanIn)
 					if err := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{NextTasks: currentTasks, PendingFanInNodes: sortedNodeIDSet(pendingFanIn)}); err != nil {
 						return currentState, err
 					}
@@ -228,10 +241,17 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 					goto nextWave
 				}
 			}
-			return currentState, nodeErr
+			failedState, stateErr := runnable.failedWaveState(currentState, budget)
+			return failedState, errors.Join(nodeErr, stateErr)
 		}
 
-		nextTasks, returnCommand, suspend, err := runnable.resolveCommands(ctx, config, completedTasks, results, currentState)
+		mergedState, err := runnable.mergeWaveResults(ctx, config, budget, currentState, results)
+		if err != nil {
+			return currentState, err
+		}
+		currentState = mergedState
+
+		nextTasks, returnCommand, suspend, err := runnable.resolveCommands(ctx, config, completedTasks, results, nodeErrors, currentState)
 		if err != nil {
 			if event := conditionSchedulerEvent(err); event != nil {
 				if notifyErr := runnable.notifySchedulerEvent(context.WithoutCancel(ctx), config, *event); notifyErr != nil {
@@ -340,6 +360,9 @@ func (runnable *scheduledRunnable) executeTasks(ctx context.Context, config frun
 						if recovered := recover(); recovered != nil {
 							taskErrors[indexed.index] = fmt.Errorf("panic in task %s at node %s: %v", task.TaskID, task.NodeID, recovered)
 							recordFailedBranchPatch(runnable.patches, currentState, task, taskErrors[indexed.index])
+							if runnable.recordTaskErr != nil {
+								runnable.recordTaskErr(task, taskErrors[indexed.index])
+							}
 							runnable.notifyNode(ctx, EventNodeError, task.NodeID, currentState, taskErrors[indexed.index], time.Since(startedAt))
 						}
 					}()
@@ -348,6 +371,9 @@ func (runnable *scheduledRunnable) executeTasks(ctx context.Context, config frun
 					if err != nil {
 						taskErrors[indexed.index] = fmt.Errorf("error in task %s at node %s: %w", task.TaskID, task.NodeID, err)
 						recordFailedBranchPatch(runnable.patches, currentState, task, taskErrors[indexed.index])
+						if runnable.recordTaskErr != nil {
+							runnable.recordTaskErr(task, taskErrors[indexed.index])
+						}
 						runnable.notifyNode(ctx, EventNodeError, task.NodeID, result.State, taskErrors[indexed.index], time.Since(startedAt))
 						return
 					}
@@ -364,6 +390,29 @@ func (runnable *scheduledRunnable) executeTasks(ctx context.Context, config frun
 	return results, taskErrors
 }
 
+func (runnable *scheduledRunnable) mergeWaveResults(ctx context.Context, config fruntime.SchedulerConfig, budget *executionBudget, currentState *state.State, results []core.ExecutionResult) (*state.State, error) {
+	mergedState, err := runnable.graph.mergeCompiledResults(ctx, currentState, results, runnable.patches)
+	if err != nil {
+		return currentState, fmt.Errorf("state merge failed: %w", err)
+	}
+	if err := runnable.storeExecutionBudget(mergedState, budget); err != nil {
+		return currentState, err
+	}
+	if err := runnable.validateStateSize(ctx, config, mergedState); err != nil {
+		return currentState, err
+	}
+	return mergedState, nil
+}
+
+func (runnable *scheduledRunnable) failedWaveState(currentState *state.State, budget *executionBudget) (*state.State, error) {
+	runnable.patches.discard(currentState)
+	failedState := currentState.Clone()
+	if err := runnable.storeExecutionBudget(failedState, budget); err != nil {
+		return currentState, err
+	}
+	return failedState, nil
+}
+
 func (runnable *scheduledRunnable) notifyNode(ctx context.Context, event NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
 	if runnable.observeNode != nil {
 		runnable.observeNode(ctx, event, nodeID, currentState, err, duration)
@@ -374,22 +423,11 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 	policy := runnable.graph.nodeExecutionPolicy(task.NodeID)
 	var lastResult core.ExecutionResult
 	var lastErr error
-	var timedOutAttempt <-chan attemptResult
 	for attempt := 1; attempt <= policy.Retry.MaxAttempts; attempt++ {
-		if timedOutAttempt != nil {
-			select {
-			case <-timedOutAttempt:
-				timedOutAttempt = nil
-			case <-ctx.Done():
-				if budget.parentContext != nil && budget.parentContext.Err() != nil {
-					completed := <-timedOutAttempt
-					lastResult = completed.result
-				}
-				return lastResult, runnable.executionContextError(ctx, config, budget, task.NodeID)
-			}
-		}
 		lastErr = nil
 		executionCtx := fruntime.WithGraphExecutionBudgetProvider(ctx, budget.snapshot)
+		nodeAttempt := fruntime.NewNodeAttempt()
+		executionCtx = fruntime.WithNodeAttempt(executionCtx, nodeAttempt)
 		if runnable.prepareNode != nil {
 			var err error
 			executionCtx, err = runnable.prepareNode(executionCtx, task, currentState)
@@ -418,9 +456,13 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 					if recovered := recover(); recovered != nil {
 						completed.err = fmt.Errorf("panic in node %s: %v", task.NodeID, recovered)
 					}
+					nodeAttempt.TryAccept()
 					releaseNode()
 					releaseGraphNode()
 					result <- completed
+					if nodeAttempt.IsAbandoned() {
+						runnable.patches.releaseAbandonedTask(currentState, task.TaskID)
+					}
 				}()
 				completed.result, completed.err = runnable.executeNode(attemptCtx, task, currentState)
 			}()
@@ -429,21 +471,25 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 				lastResult, lastErr = completed.result, completed.err
 				cancel()
 			case <-attemptCtx.Done():
-				if ctx.Err() != nil {
+				if !nodeAttempt.TryAbandon() {
+					completed := <-result
+					lastResult, lastErr = completed.result, completed.err
 					cancel()
-					if budget.parentContext != nil && budget.parentContext.Err() != nil {
-						completed := <-result
-						lastResult = completed.result
-					}
+					break
+				}
+				runnable.patches.abandonTask(currentState, task)
+				cancel()
+				if ctx.Err() != nil {
 					return lastResult, runnable.executionContextError(ctx, config, budget, task.NodeID)
 				}
 				lastErr = core.NewExecutionError(core.ErrorTimeout, fmt.Sprintf("task %q at node %q timed out after %s", task.TaskID, task.NodeID, policy.Timeout), attemptCtx.Err(), map[string]any{
-					"task_id": task.TaskID,
-					"node_id": task.NodeID,
-					"timeout": policy.Timeout.String(),
+					"task_id":           task.TaskID,
+					"node_id":           task.NodeID,
+					"timeout":           policy.Timeout.String(),
+					"attempt":           attempt,
+					"attempt_abandoned": true,
 				})
-				timedOutAttempt = result
-				cancel()
+				return lastResult, lastErr
 			}
 		}
 		if lastErr == nil {
@@ -499,6 +545,13 @@ func (runnable *scheduledRunnable) executionContextError(ctx context.Context, co
 func retryable(policy fruntime.RetryPolicy, err error) bool {
 	if err == nil {
 		return false
+	}
+	var executionErr core.ExecutionError
+	if errors.As(err, &executionErr) {
+		abandoned, _ := executionErr.Details()["attempt_abandoned"].(bool)
+		if abandoned {
+			return false
+		}
 	}
 	class := core.ClassifyError(err)
 	for _, blocked := range policy.NonRetryableErrorClasses {
@@ -641,15 +694,21 @@ type taskSuspend struct {
 	request *core.SuspendRequest
 }
 
-func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, config fruntime.SchedulerConfig, completedTasks []fruntime.GraphTask, results []core.ExecutionResult, currentState *state.State) ([]fruntime.GraphTask, *core.ReturnCommand, *taskSuspend, error) {
+func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, config fruntime.SchedulerConfig, completedTasks []fruntime.GraphTask, results []core.ExecutionResult, taskErrors []error, currentState *state.State) ([]fruntime.GraphTask, *core.ReturnCommand, *taskSuspend, error) {
 	if len(completedTasks) != len(results) {
 		return nil, nil, nil, fmt.Errorf("resolve commands: %d tasks have %d results", len(completedTasks), len(results))
+	}
+	if len(taskErrors) != len(completedTasks) {
+		return nil, nil, nil, fmt.Errorf("resolve commands: %d tasks have %d errors", len(completedTasks), len(taskErrors))
 	}
 	staticTargets := map[string]struct{}{}
 	dynamicTasks := make([]fruntime.GraphTask, 0)
 	var suspend *taskSuspend
 	var returnCommand *core.ReturnCommand
 	for index, task := range completedTasks {
+		if taskErrors[index] != nil {
+			continue
+		}
 		command := results[index].Node.Command
 		controlCount := 0
 		if len(command.Goto) > 0 {
@@ -695,13 +754,19 @@ func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, config f
 				staticTargets[nodeID] = struct{}{}
 			}
 		case len(command.Send) > 0:
+			reducers := runnable.graph.reducers()
 			for sendIndex, send := range command.Send {
 				nodeID, err := runnable.graph.resolveNodeID(string(send.Target))
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("task %q send target %q: %w", task.TaskID, send.Target, err)
 				}
-				if issues := state.ValidatePatch(send.Input); len(issues) > 0 {
-					return nil, nil, nil, fmt.Errorf("task %q send %d input: %s", task.TaskID, sendIndex, issues[0].Message)
+				contract, hasContract := runnable.graph.nodeContracts[nodeID]
+				issues := state.ValidatePatch(send.Input)
+				if hasContract {
+					issues = state.ValidateInputPatchByContractWithReducers(currentState, send.Input, contract, reducers)
+				}
+				if len(issues) > 0 {
+					return nil, nil, nil, fmt.Errorf("task %q send %d input: %w", task.TaskID, sendIndex, state.NewValidationError("send input", issues))
 				}
 				dynamicTasks = append(dynamicTasks, fruntime.GraphTask{
 					TaskID:         dynamicTaskID(task, send, sendIndex),
@@ -949,6 +1014,19 @@ func firstError(errorsList []error) error {
 		}
 	}
 	return nil
+}
+
+func hasNonInterruptError(errorsList []error) bool {
+	for _, err := range errorsList {
+		if err == nil {
+			continue
+		}
+		var interrupt *core.NodeInterrupt
+		if !errors.As(err, &interrupt) {
+			return true
+		}
+	}
+	return false
 }
 
 func errorCount(errorsList []error) int {

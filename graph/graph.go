@@ -218,6 +218,9 @@ func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
 		if field.Mode != state.AccessWrite && field.Mode != state.AccessReadWrite {
 			return fmt.Errorf("node %q state path %q reducer requires write access", nodeID, field.Path.String())
 		}
+		if reg == nil {
+			return fmt.Errorf("node %q state path %q reducer %q requires a registry", nodeID, field.Path.String(), field.Reducer)
+		}
 		if _, ok := reg.FindReducer(field.Reducer); !ok {
 			return fmt.Errorf("node %q state path %q reducer %q is not registered", nodeID, field.Path.String(), field.Reducer)
 		}
@@ -587,10 +590,11 @@ type Runnable struct {
 }
 
 type compilePatchCollector struct {
-	mu      sync.Mutex
-	orders  map[string]int
-	patches map[*state.State][]state.BranchPatch
-	wave    fruntime.ParallelWaveRecorder
+	mu        sync.Mutex
+	orders    map[string]int
+	patches   map[*state.State][]state.BranchPatch
+	abandoned map[*state.State]map[string]struct{}
+	wave      fruntime.ParallelWaveRecorder
 }
 
 func newCompilePatchCollector(orders map[string]int) *compilePatchCollector {
@@ -598,8 +602,9 @@ func newCompilePatchCollector(orders map[string]int) *compilePatchCollector {
 		orders = map[string]int{}
 	}
 	return &compilePatchCollector{
-		orders:  orders,
-		patches: map[*state.State][]state.BranchPatch{},
+		orders:    orders,
+		patches:   map[*state.State][]state.BranchPatch{},
+		abandoned: map[*state.State]map[string]struct{}{},
 	}
 }
 
@@ -609,6 +614,11 @@ func (c *compilePatchCollector) record(base *state.State, task fruntime.GraphTas
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if tasks := c.abandoned[base]; tasks != nil {
+		if _, ok := tasks[task.TaskID]; ok {
+			return
+		}
+	}
 	order := task.Order
 	if !task.Dynamic {
 		var ok bool
@@ -631,6 +641,48 @@ func (c *compilePatchCollector) record(base *state.State, task fruntime.GraphTas
 		}
 	}
 	c.patches[base] = append(c.patches[base], branch)
+}
+
+func (c *compilePatchCollector) abandonTask(base *state.State, task fruntime.GraphTask) {
+	if c == nil || base == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.abandoned[base] == nil {
+		c.abandoned[base] = map[string]struct{}{}
+	}
+	c.abandoned[base][task.TaskID] = struct{}{}
+	order := task.Order
+	if !task.Dynamic {
+		var ok bool
+		order, ok = c.orders[task.NodeID]
+		if !ok {
+			order = len(c.orders)
+			c.orders[task.NodeID] = order
+		}
+	}
+	branch := state.BranchPatch{TaskID: task.TaskID, NodeID: task.NodeID, Order: order, Patch: state.Patch{}}
+	for index := range c.patches[base] {
+		if c.patches[base][index].TaskID == task.TaskID {
+			c.patches[base][index] = branch
+			return
+		}
+	}
+	c.patches[base] = append(c.patches[base], branch)
+}
+
+func (c *compilePatchCollector) releaseAbandonedTask(base *state.State, taskID string) {
+	if c == nil || base == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	tasks := c.abandoned[base]
+	delete(tasks, taskID)
+	if len(tasks) == 0 {
+		delete(c.abandoned, base)
+	}
 }
 
 func (c *compilePatchCollector) RecordBranchPatch(base *state.State, task fruntime.GraphTask, patch state.Patch) {
@@ -698,6 +750,15 @@ func (c *compilePatchCollector) consume(base *state.State) []state.BranchPatch {
 	branches := append([]state.BranchPatch(nil), c.patches[base]...)
 	delete(c.patches, base)
 	return branches
+}
+
+func (c *compilePatchCollector) discard(base *state.State) {
+	if c == nil || base == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	delete(c.patches, base)
 }
 
 func (r *Runnable) Invoke(ctx context.Context, initialState *state.State) (*state.State, error) {

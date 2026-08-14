@@ -10,9 +10,11 @@ import (
 type runControlEventSink struct {
 	events []Event
 	err    error
+	calls  int
 }
 
 func (s *runControlEventSink) Publish(_ context.Context, event Event) error {
+	s.calls++
 	if s.err != nil {
 		return s.err
 	}
@@ -134,7 +136,7 @@ func TestRunControlServiceNormalizesRunIDBeforeDeletion(t *testing.T) {
 	}
 }
 
-func TestRunControlServiceReportsStoreAndEventFailures(t *testing.T) {
+func TestRunControlServiceSeparatesStoreFailuresFromCommittedEventObserverFailures(t *testing.T) {
 	baseStore := NewMemoryRuntimeStore()
 	run := RunRecord{RunID: "run-1", Status: RunStatusPaused}
 	if err := baseStore.CreateRun(context.Background(), run); err != nil {
@@ -150,12 +152,17 @@ func TestRunControlServiceReportsStoreAndEventFailures(t *testing.T) {
 	}
 
 	eventErr := errors.New("event publish failed")
-	control, err = NewRunControlService(baseStore, baseStore, &runControlEventSink{err: eventErr}, nil)
+	eventSink := &runControlEventSink{err: eventErr}
+	control, err = NewRunControlService(baseStore, baseStore, eventSink, nil)
 	if err != nil {
 		t.Fatalf("new event failure service: %v", err)
 	}
-	if _, err := control.CancelPausedRun(context.Background(), run.RunID); !errors.Is(err, eventErr) {
-		t.Fatalf("event failure = %v", err)
+	canceled, err := control.CancelPausedRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("committed event observer failure leaked from CancelPausedRun(): %v", err)
+	}
+	if canceled.Status != RunStatusCanceled || eventSink.calls != 1 {
+		t.Fatalf("cancel result = %#v, observer calls = %d", canceled, eventSink.calls)
 	}
 	persisted, err := baseStore.GetRun(context.Background(), run.RunID)
 	if err != nil {

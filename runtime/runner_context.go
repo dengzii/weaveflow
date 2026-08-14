@@ -176,7 +176,8 @@ func RunOriginFromContext(ctx context.Context) (RunOrigin, bool) {
 }
 
 // WithRunnerEventObserver attaches a synchronous, run-scoped event observer.
-// Observer errors propagate through the operation that published the event.
+// Errors from live events propagate; committed lifecycle events are observed
+// best-effort because their transaction cannot be rolled back.
 func WithRunnerEventObserver(ctx context.Context, observer EventObserver) context.Context {
 	if ctx == nil {
 		ctx = context.Background()

@@ -49,7 +49,7 @@ func (g *Graph) executePatchNode(ctx context.Context, task fruntime.GraphTask, t
 		}
 	}
 	if task.Dynamic && hasResolvedContract {
-		if issues := state.ValidateInputPatchByContract(currentState, task.Input, resolvedContract); len(issues) > 0 {
+		if issues := state.ValidateInputPatchByContractWithReducers(currentState, task.Input, resolvedContract, g.reducers()); len(issues) > 0 {
 			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
 		}
 	}
@@ -109,6 +109,9 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.R
 	scheduled.prepareNode = execution.PrepareNode
 	if recorder, ok := execution.(fruntime.FailureRouteRecorder); ok {
 		scheduled.recordFailure = recorder.OnFailureRouted
+	}
+	if recorder, ok := execution.(fruntime.TaskErrorRecorder); ok {
+		scheduled.recordTaskErr = recorder.OnTaskError
 	}
 	return scheduled, nil
 }

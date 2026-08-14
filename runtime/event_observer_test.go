@@ -8,6 +8,42 @@ import (
 	"time"
 )
 
+type cancelAfterCommitTransactionStore struct {
+	store   TransactionStore
+	cancel  context.CancelFunc
+	commits int
+}
+
+func (store *cancelAfterCommitTransactionStore) Commit(ctx context.Context, commit Commit) (CommitResult, error) {
+	store.commits++
+	result, err := store.store.Commit(ctx, commit)
+	if err == nil {
+		store.cancel()
+	}
+	return result, err
+}
+
+type committedObserverSink struct {
+	calls      int
+	contextErr error
+	err        error
+}
+
+func (sink *committedObserverSink) Publish(ctx context.Context, _ Event) error {
+	sink.calls++
+	sink.contextErr = ctx.Err()
+	return sink.err
+}
+
+func (sink *committedObserverSink) PublishBatch(ctx context.Context, events []Event) error {
+	for _, event := range events {
+		if err := sink.Publish(ctx, event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func TestAnalyzeRunEventsKeepsPausedRunOpenAndTracksCanceledNodes(t *testing.T) {
 	t.Parallel()
 
@@ -55,6 +91,78 @@ func TestGraphRunnerPublishEventNotifiesSynchronousObserverAfterSink(t *testing.
 	}
 	if observed.RunID != "run-1" || observed.StepID != "step-1" || observed.NodeID != "node-1" || observed.Type != EventLLMContentChunk {
 		t.Fatalf("observed event = %#v", observed)
+	}
+}
+
+func TestGraphRunnerCommitKeepsObserverFailuresOutsideTransactionResult(t *testing.T) {
+	t.Parallel()
+
+	persistentStore := NewMemoryRuntimeStore()
+	commitCtx, cancel := context.WithCancel(context.Background())
+	transactionStore := &cancelAfterCommitTransactionStore{store: persistentStore, cancel: cancel}
+	sinkErr := errors.New("event sink observer failed")
+	sink := &committedObserverSink{err: sinkErr}
+	contextObserverErr := errors.New("context observer failed")
+	contextObserverCalls := 0
+	ctx := WithRunnerEventObserver(commitCtx, EventObserverFunc(func(observerCtx context.Context, _ Event) error {
+		contextObserverCalls++
+		if err := observerCtx.Err(); err != nil {
+			t.Fatalf("committed context observer received canceled context: %v", err)
+		}
+		return contextObserverErr
+	}))
+	runner := &GraphRunner{transactionStore: transactionStore, eventSink: sink}
+	run := RunRecord{RunID: "run-committed-observer", Status: RunStatusRunning}
+	event := Event{ID: "event-committed-observer", RunID: run.RunID, Type: EventRunStarted}
+
+	result, err := runner.commitRuntime(ctx, Commit{
+		Run:    &RunWrite{Mode: RunWriteCreate, Run: run},
+		Events: []Event{event},
+	})
+	if err != nil {
+		t.Fatalf("commitRuntime() error = %v", err)
+	}
+	if result.Run == nil || result.Run.RunID != run.RunID {
+		t.Fatalf("commit result = %#v", result.Run)
+	}
+	if transactionStore.commits != 1 {
+		t.Fatalf("transaction commits = %d, want 1", transactionStore.commits)
+	}
+	if sink.calls != 1 || sink.contextErr != nil {
+		t.Fatalf("event sink calls = %d, context error = %v", sink.calls, sink.contextErr)
+	}
+	if contextObserverCalls != 1 {
+		t.Fatalf("context observer calls = %d, want 1", contextObserverCalls)
+	}
+	persistedEvents, err := persistentStore.ListEvents(run.RunID)
+	if err != nil {
+		t.Fatalf("ListEvents(): %v", err)
+	}
+	if len(persistedEvents) != 1 || persistedEvents[0].ID != event.ID {
+		t.Fatalf("persisted events = %#v", persistedEvents)
+	}
+}
+
+func TestGraphRunnerCommitDoesNotObserveRejectedTransaction(t *testing.T) {
+	t.Parallel()
+
+	storeErr := errors.New("transaction rejected")
+	sink := &committedObserverSink{}
+	observerCalls := 0
+	ctx := WithRunnerEventObserver(context.Background(), EventObserverFunc(func(context.Context, Event) error {
+		observerCalls++
+		return nil
+	}))
+	runner := &GraphRunner{
+		transactionStore: failingRuntimeTransactionStore{err: storeErr},
+		eventSink:        sink,
+	}
+	_, err := runner.commitRuntime(ctx, Commit{Events: []Event{{ID: "not-committed", RunID: "run", Type: EventRunStarted}}})
+	if !errors.Is(err, storeErr) {
+		t.Fatalf("commitRuntime() error = %v, want %v", err, storeErr)
+	}
+	if sink.calls != 0 || observerCalls != 0 {
+		t.Fatalf("rejected commit observer calls = sink %d context %d", sink.calls, observerCalls)
 	}
 }
 
