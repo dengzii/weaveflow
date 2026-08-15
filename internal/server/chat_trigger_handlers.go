@@ -20,6 +20,9 @@ func (s *Server) handleChatTrigger(c *gin.Context) {
 	if !ok {
 		return
 	}
+	if !s.authorizeTriggerInvocation(c, item) {
+		return
+	}
 	triggerID := item.ID
 	if item.Type != trigger.TypeChat {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("%w: trigger %q is not a chat trigger", trigger.ErrTypeMismatch, triggerID))
@@ -38,11 +41,11 @@ func (s *Server) handleChatTrigger(c *gin.Context) {
 	defer cancel()
 
 	if acceptsEventStream(c.GetHeader("Accept")) {
-		s.handleStreamingChatTrigger(c, ctx, service, triggerID, message)
+		s.handleStreamingChatTrigger(c, ctx, service, item, message)
 		return
 	}
 	sink := &bufferedChatReplySink{}
-	result, err := service.InvokeChat(ctx, triggerID, message, sink)
+	result, err := service.InvokeChatTrigger(ctx, item, message, sink)
 	response := map[string]any{"result": result, "replies": sink.replies}
 	if err != nil {
 		writeErrorData(c, statusForError(err), err, response)
@@ -51,7 +54,8 @@ func (s *Server) handleChatTrigger(c *gin.Context) {
 	writeData(c, http.StatusOK, response)
 }
 
-func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context, service *trigger.Service, triggerID string, message chatcap.InboundMessage) {
+func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context, service *trigger.Service, item trigger.Trigger, message chatcap.InboundMessage) {
+	triggerID := item.ID
 	c.Writer.Header().Set("Content-Type", "text/event-stream")
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
@@ -63,7 +67,7 @@ func (s *Server) handleStreamingChatTrigger(c *gin.Context, ctx context.Context,
 	}
 
 	sink := &sseChatReplySink{writer: c.Writer}
-	result, err := service.InvokeChat(ctx, triggerID, message, sink)
+	result, err := service.InvokeChatTrigger(ctx, item, message, sink)
 	if err != nil {
 		if writeErr := writeChatSSEEvent(c.Writer, "error", map[string]any{"error": err.Error(), "result": result}); writeErr != nil {
 			slog.Debug("chat event stream closed", "trigger_id", triggerID, "reason", sseCloseReason(writeErr), "stage", "error", "error", writeErr)

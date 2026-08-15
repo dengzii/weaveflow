@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
@@ -33,7 +34,6 @@ type Target struct {
 }
 
 type WebhookSpec struct {
-	APIKey        string                `json:"api_key,omitempty"`
 	StateBindings *WebhookStateBindings `json:"state_bindings,omitempty"`
 	StateMappings []WebhookStateMapping `json:"state_mappings,omitempty"`
 }
@@ -104,6 +104,7 @@ type Trigger struct {
 	Enabled      bool              `json:"enabled"`
 	Target       Target            `json:"target"`
 	Concurrency  ConcurrencyPolicy `json:"concurrency,omitempty"`
+	Credential   *dsl.SecretRef    `json:"credential,omitempty"`
 	InitialState map[string]any    `json:"initial_state,omitempty"`
 	Webhook      *WebhookSpec      `json:"webhook,omitempty"`
 	Schedule     *ScheduleSpec     `json:"schedule,omitempty"`
@@ -270,6 +271,12 @@ func (t Trigger) Normalize(now time.Time) Trigger {
 	t.Type = Type(strings.TrimSpace(string(t.Type)))
 	t.Concurrency = ConcurrencyPolicy(strings.TrimSpace(string(t.Concurrency)))
 	t.Target.GraphID = strings.TrimSpace(t.Target.GraphID)
+	if t.Credential != nil {
+		credential := *t.Credential
+		credential.Source = strings.ToLower(strings.TrimSpace(credential.Source))
+		credential.Ref = strings.TrimSpace(credential.Ref)
+		t.Credential = &credential
+	}
 	if t.Concurrency == "" {
 		t.Concurrency = ConcurrencyParallel
 	}
@@ -330,6 +337,11 @@ func (t Trigger) Validate() error {
 	}
 	if t.Target.GraphID == "" {
 		return fmt.Errorf("%w: %w: graph_id is required", ErrInvalidTrigger, ErrInvalidTarget)
+	}
+	if t.Credential != nil {
+		if err := t.Credential.Validate(); err != nil {
+			return fmt.Errorf("%w: credential: %v", ErrInvalidTrigger, err)
+		}
 	}
 	if err := validateInitialState(t.InitialState); err != nil {
 		return fmt.Errorf("%w: initial_state: %v", ErrInvalidTrigger, err)

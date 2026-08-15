@@ -1,10 +1,13 @@
 package server
 
 import (
+	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/gin-gonic/gin"
@@ -21,6 +24,7 @@ type triggerPayload struct {
 	Type               trigger.Type              `json:"type"`
 	Enabled            *bool                     `json:"enabled,omitempty"`
 	Concurrency        trigger.ConcurrencyPolicy `json:"concurrency,omitempty"`
+	Credential         *dsl.SecretRef            `json:"credential,omitempty"`
 	InitialState       map[string]any            `json:"initial_state,omitempty"`
 	Webhook            *triggerWebhookPayload    `json:"webhook,omitempty"`
 	Schedule           *trigger.ScheduleSpec     `json:"schedule,omitempty"`
@@ -29,7 +33,6 @@ type triggerPayload struct {
 }
 
 type triggerWebhookPayload struct {
-	APIKey        string                        `json:"api_key,omitempty"`
 	StateBindings *trigger.WebhookStateBindings `json:"state_bindings,omitempty"`
 	StateMappings []trigger.WebhookStateMapping `json:"state_mappings,omitempty"`
 }
@@ -50,7 +53,6 @@ func (payload triggerPayload) toTrigger(graphID string) trigger.Trigger {
 	var webhook *trigger.WebhookSpec
 	if payload.Webhook != nil {
 		webhook = &trigger.WebhookSpec{
-			APIKey:        payload.Webhook.APIKey,
 			StateBindings: payload.Webhook.StateBindings,
 			StateMappings: append([]trigger.WebhookStateMapping(nil), payload.Webhook.StateMappings...),
 		}
@@ -62,6 +64,7 @@ func (payload triggerPayload) toTrigger(graphID string) trigger.Trigger {
 		Enabled:      enabled,
 		Target:       trigger.Target{GraphID: graphID},
 		Concurrency:  payload.Concurrency,
+		Credential:   payload.Credential,
 		InitialState: payload.InitialState,
 		Webhook:      webhook,
 		Schedule:     payload.Schedule,
@@ -121,7 +124,11 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 	}()
 	for _, itemPayload := range payload.Triggers {
 		item := itemPayload.toTrigger(graphID)
-		release, err := s.applyChatSetup(
+		if err := normalizeTriggerCredential(&item); err != nil {
+			writeError(c, http.StatusBadRequest, err)
+			return
+		}
+		setupRelease, err := s.applyChatSetup(
 			c.Request.Context(),
 			setupRequestOwner(c),
 			itemPayload.ChatSetupSessionID,
@@ -131,7 +138,13 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 			writeError(c, statusForChatSetupError(err), err)
 			return
 		}
-		releases = append(releases, release)
+		releases = append(releases, setupRelease)
+		secretRelease, err := s.externalizeChatChannelSecrets(c.Request.Context(), &item)
+		if err != nil {
+			writeError(c, statusForError(err), err)
+			return
+		}
+		releases = append(releases, secretRelease)
 		items = append(items, item)
 	}
 	session, err := s.loadTriggerSession(graphID)
@@ -149,6 +162,12 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 		return
 	}
 	committed = true
+	for _, release := range releases {
+		release(true)
+	}
+	if err := s.sweepManagedSecrets(context.WithoutCancel(c.Request.Context())); err != nil {
+		slog.Warn("managed secret cleanup failed after trigger replacement", "graph_id", graphID, "error", err)
+	}
 	result := make([]trigger.Trigger, 0, len(items))
 	for _, item := range items {
 		result = append(result, s.publicTrigger(item))
@@ -159,6 +178,9 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 func (s *Server) handleCreateTriggerInvocation(c *gin.Context) {
 	service, item, ok := s.scopedTrigger(c)
 	if !ok {
+		return
+	}
+	if !s.authorizeTriggerInvocation(c, item) {
 		return
 	}
 	ctx, cancel := s.deriveRunContext(c)
@@ -175,9 +197,9 @@ func (s *Server) handleCreateTriggerInvocation(c *gin.Context) {
 			writeError(c, statusForRequestError(readErr), readErr)
 			return
 		}
-		run, err = service.InvokeWebhook(ctx, item.ID, body, bearerToken(c), requestHeaders(c))
+		run, err = service.InvokeWebhookTrigger(ctx, item, body, requestHeaders(c))
 	case trigger.TypeSchedule:
-		run, err = service.InvokeSchedule(ctx, item.ID)
+		run, err = service.InvokeScheduleTrigger(ctx, item)
 	default:
 		err = trigger.ErrTypeMismatch
 	}
@@ -191,6 +213,9 @@ func (s *Server) handleCreateTriggerInvocation(c *gin.Context) {
 func (s *Server) handleWebhookTrigger(c *gin.Context) {
 	service, item, ok := s.scopedTrigger(c)
 	if !ok {
+		return
+	}
+	if !s.authorizeTriggerInvocation(c, item) {
 		return
 	}
 	if item.Type != trigger.TypeWebhook {
@@ -208,7 +233,7 @@ func (s *Server) handleWebhookTrigger(c *gin.Context) {
 	}
 	ctx, cancel := s.deriveRunContext(c)
 	defer cancel()
-	run, err := service.InvokeWebhook(ctx, item.ID, body, bearerToken(c), requestHeaders(c))
+	run, err := service.InvokeWebhookTrigger(ctx, item, body, requestHeaders(c))
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -241,18 +266,6 @@ func (s *Server) scopedTrigger(c *gin.Context) (*trigger.Service, trigger.Trigge
 	return service, item, true
 }
 
-func bearerToken(c *gin.Context) string {
-	value := strings.TrimSpace(c.GetHeader("Authorization"))
-	if value == "" {
-		return ""
-	}
-	parts := strings.Fields(value)
-	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
-		return value
-	}
-	return parts[1]
-}
-
 func requestHeaders(c *gin.Context) map[string]string {
 	headers := make(map[string]string, len(c.Request.Header))
 	for key, values := range c.Request.Header {
@@ -282,11 +295,6 @@ func decodeTriggerReplacementPayload(c *gin.Context) (triggerReplacementPayload,
 }
 
 func (s *Server) publicTrigger(item trigger.Trigger) trigger.Trigger {
-	if item.Webhook != nil {
-		copy := *item.Webhook
-		copy.APIKey = ""
-		item.Webhook = &copy
-	}
 	if s != nil && s.triggers != nil {
 		item = s.triggers.RedactChatChannelConfig(item)
 	}

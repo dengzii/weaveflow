@@ -2,8 +2,6 @@ package trigger
 
 import (
 	"context"
-	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -38,8 +36,16 @@ func (f RunnerResolverFunc) Resolve(ctx context.Context, target Target) (RunStar
 	return f(ctx, target)
 }
 
-func (s *Service) InvokeWebhook(ctx context.Context, id string, body []byte, apiKey string, headers map[string]string) (runtime.RunRecord, error) {
-	return s.invokeWebhook(ctx, id, apiKey, headers, func() (any, error) {
+func (s *Service) InvokeWebhook(ctx context.Context, id string, body []byte, headers map[string]string) (runtime.RunRecord, error) {
+	definition, err := s.triggerStore.Get(ctx, id)
+	if err != nil {
+		return runtime.RunRecord{}, err
+	}
+	return s.InvokeWebhookTrigger(ctx, definition, body, headers)
+}
+
+func (s *Service) InvokeWebhookTrigger(ctx context.Context, definition Trigger, body []byte, headers map[string]string) (runtime.RunRecord, error) {
+	return s.invokeWebhook(ctx, definition, headers, func() (any, error) {
 		if len(strings.TrimSpace(string(body))) == 0 {
 			return map[string]any{}, nil
 		}
@@ -51,25 +57,26 @@ func (s *Service) InvokeWebhook(ctx context.Context, id string, body []byte, api
 	}, string(body))
 }
 
-func (s *Service) InvokeWebhookInput(ctx context.Context, id string, input any, apiKey string, headers map[string]string) (runtime.RunRecord, error) {
-	return s.invokeWebhook(ctx, id, apiKey, headers, func() (any, error) {
-		return input, nil
-	}, "")
-}
-
-func (s *Service) invokeWebhook(ctx context.Context, id string, apiKey string, headers map[string]string, input func() (any, error), rawBody string) (runtime.RunRecord, error) {
+func (s *Service) InvokeWebhookInput(ctx context.Context, id string, input any, headers map[string]string) (runtime.RunRecord, error) {
 	definition, err := s.triggerStore.Get(ctx, id)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
+	return s.InvokeWebhookInputTrigger(ctx, definition, input, headers)
+}
+
+func (s *Service) InvokeWebhookInputTrigger(ctx context.Context, definition Trigger, input any, headers map[string]string) (runtime.RunRecord, error) {
+	return s.invokeWebhook(ctx, definition, headers, func() (any, error) {
+		return input, nil
+	}, "")
+}
+
+func (s *Service) invokeWebhook(ctx context.Context, definition Trigger, headers map[string]string, input func() (any, error), rawBody string) (runtime.RunRecord, error) {
 	if definition.Type != TypeWebhook {
-		return runtime.RunRecord{}, fmt.Errorf("%w: trigger %q is not a webhook", ErrTypeMismatch, id)
+		return runtime.RunRecord{}, fmt.Errorf("%w: trigger %q is not a webhook", ErrTypeMismatch, definition.ID)
 	}
 	if !definition.Enabled {
 		return runtime.RunRecord{}, ErrDisabled
-	}
-	if err := verifyWebhookAPIKey(definition.Webhook, apiKey); err != nil {
-		return runtime.RunRecord{}, err
 	}
 	payload, err := input()
 	if err != nil {
@@ -84,8 +91,12 @@ func (s *Service) InvokeSchedule(ctx context.Context, id string) (runtime.RunRec
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
+	return s.InvokeScheduleTrigger(ctx, definition)
+}
+
+func (s *Service) InvokeScheduleTrigger(ctx context.Context, definition Trigger) (runtime.RunRecord, error) {
 	if definition.Type != TypeSchedule {
-		return runtime.RunRecord{}, fmt.Errorf("%w: trigger %q is not a schedule", ErrTypeMismatch, id)
+		return runtime.RunRecord{}, fmt.Errorf("%w: trigger %q is not a schedule", ErrTypeMismatch, definition.ID)
 	}
 	if !definition.Enabled {
 		return runtime.RunRecord{}, ErrDisabled
@@ -306,22 +317,6 @@ func (s *Service) finishActive(id string) {
 		return
 	}
 	s.activeRuns[id]--
-}
-
-func verifyWebhookAPIKey(spec *WebhookSpec, provided string) error {
-	if spec == nil {
-		return nil
-	}
-	expected := spec.APIKey
-	if expected == "" {
-		return nil
-	}
-	expectedHash := sha256.Sum256([]byte(expected))
-	providedHash := sha256.Sum256([]byte(provided))
-	if subtle.ConstantTimeCompare(expectedHash[:], providedHash[:]) != 1 {
-		return ErrInvalidAPIKey
-	}
-	return nil
 }
 
 func webhookMetadata(headers map[string]string) map[string]any {

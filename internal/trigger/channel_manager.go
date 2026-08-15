@@ -41,7 +41,38 @@ func (s *Service) RedactChatChannelConfig(item Trigger) Trigger {
 	return item
 }
 
-func (s *Service) buildChatChannel(item Trigger) (chatchannel.Instance, error) {
+func (s *Service) ResolveChatChannelConfig(ctx context.Context, item Trigger) (map[string]any, error) {
+	if item.Type != TypeChat || item.Chat == nil {
+		return nil, fmt.Errorf("%w: chat spec is required", ErrInvalidTrigger)
+	}
+	if s == nil || s.chatRegistry == nil {
+		return nil, fmt.Errorf("%w: chat channel registry is unavailable", ErrInvalidTrigger)
+	}
+	channelID := strings.TrimSpace(item.Chat.Channel)
+	s.mu.Lock()
+	secretResolver := s.secretResolver
+	s.mu.Unlock()
+	config, err := s.chatRegistry.ResolveConfig(ctx, channelID, item.Chat.ChannelConfig, secretResolver)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidTrigger, err)
+	}
+	return config, nil
+}
+
+func (s *Service) validateChatChannelSecretRefs(item Trigger) error {
+	if item.Type != TypeChat || item.Chat == nil {
+		return nil
+	}
+	if s == nil || s.chatRegistry == nil {
+		return fmt.Errorf("%w: chat channel registry is unavailable", ErrInvalidTrigger)
+	}
+	if err := s.chatRegistry.ValidateSecretRefs(item.Chat.Channel, item.Chat.ChannelConfig); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidTrigger, err)
+	}
+	return nil
+}
+
+func (s *Service) buildChatChannel(ctx context.Context, item Trigger) (chatchannel.Instance, error) {
 	if item.Type != TypeChat || item.Chat == nil {
 		return nil, nil
 	}
@@ -52,12 +83,13 @@ func (s *Service) buildChatChannel(item Trigger) (chatchannel.Instance, error) {
 		return nil, fmt.Errorf("%w: chat channel registry is unavailable", ErrInvalidTrigger)
 	}
 	channelID := strings.TrimSpace(item.Chat.Channel)
-	if err := s.chatRegistry.ValidateConfig(channelID, item.Chat.ChannelConfig); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrInvalidTrigger, err)
+	resolvedConfig, err := s.ResolveChatChannelConfig(ctx, item)
+	if err != nil {
+		return nil, err
 	}
 	instance, err := s.chatRegistry.NewInstance(channelID, chatchannel.InstanceConfig{
 		TriggerID: item.ID,
-		Config:    item.Chat.ChannelConfig,
+		Config:    resolvedConfig,
 		Handler: chatchannel.HandlerFunc(func(ctx context.Context, message chatcap.InboundMessage, sink chatcap.ReplySink) error {
 			_, err := s.InvokeChat(ctx, item.ID, message, sink)
 			return err

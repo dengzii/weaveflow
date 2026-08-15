@@ -180,7 +180,7 @@ func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunRe
 	if err != nil {
 		return RunResult{ModelID: modelID, ExitCode: -1}, err
 	}
-	environment, secretValues, err := environment(ctx, modelConfig.APIKey)
+	environment, secretValues, err := environment(ctx, runner.config, modelConfig.APIKey)
 	if err != nil {
 		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex environment: %w", err)
 	}

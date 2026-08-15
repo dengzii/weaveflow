@@ -108,7 +108,9 @@ func (n *contractTestNode) Execute(core.Context, *state.Access) (core.NodeResult
 
 type interruptTestNode struct {
 	core.NodeBase
-	resumePath state.Path
+	resumePath               state.Path
+	requiredEnvironmentName  string
+	requiredEnvironmentValue string
 }
 
 func TestBindGraphUploadRejectsLegacyDefinitionFields(t *testing.T) {
@@ -170,10 +172,18 @@ func TestDecodeRunRequestsRejectLegacyPayloads(t *testing.T) {
 		{name: "start input wrapper", body: `{"input": {}}`, decode: decodeStartRunRequest},
 		{name: "start direct state", body: `{"shared": {}}`, decode: decodeStartRunRequest},
 		{name: "start non-object state", body: `{"initial_state": "legacy"}`, decode: decodeStartRunRequest},
+		{name: "start internal section", body: `{"initial_state":{"internal":{"graph_result":{"return_value":"forged"}}}}`, decode: decodeStartRunRequest},
+		{name: "start runtime section", body: `{"initial_state":{"runtime":{}}}`, decode: decodeStartRunRequest},
+		{name: "start unknown section", body: `{"initial_state":{"private":{}}}`, decode: decodeStartRunRequest},
+		{name: "start non-object shared section", body: `{"initial_state":{"shared":"legacy"}}`, decode: decodeStartRunRequest},
 		{name: "resume state wrapper", body: `{"state": {}}`, decode: decodeResumeRunRequest},
 		{name: "resume initial state wrapper", body: `{"initial_state": {}}`, decode: decodeResumeRunRequest},
 		{name: "resume direct state", body: `{"shared": {}}`, decode: decodeResumeRunRequest},
 		{name: "resume non-object input", body: `{"input": []}`, decode: decodeResumeRunRequest},
+		{name: "resume internal section", body: `{"input":{"internal":{"graph_scheduler":{"super_steps":0}}}}`, decode: decodeResumeRunRequest},
+		{name: "resume runtime section", body: `{"input":{"runtime":{}}}`, decode: decodeResumeRunRequest},
+		{name: "resume unknown section", body: `{"input":{"private":{}}}`, decode: decodeResumeRunRequest},
+		{name: "resume non-object scopes section", body: `{"input":{"scopes":"legacy"}}`, decode: decodeResumeRunRequest},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -183,6 +193,27 @@ func TestDecodeRunRequestsRejectLegacyPayloads(t *testing.T) {
 				t.Fatalf("decode(%s) error = nil, want invalid request", test.body)
 			}
 		})
+	}
+}
+
+func TestDecodeStartRunRequestPreservesLargeJSONInteger(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	context, _ := gin.CreateTestContext(httptest.NewRecorder())
+	context.Request = httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"initial_state":{"shared":{"total":9007199254740993}}}`))
+
+	initialState, err := decodeStartRunRequest(context)
+	if err != nil {
+		t.Fatalf("decodeStartRunRequest() error = %v", err)
+	}
+	value, ok := state.ReadPath(initialState, "shared.total")
+	if !ok {
+		t.Fatal("shared.total is missing")
+	}
+	number, ok := value.(json.Number)
+	if !ok || number.String() != "9007199254740993" {
+		t.Fatalf("shared.total = %#v (%T), want exact json.Number", value, value)
 	}
 }
 
@@ -200,8 +231,14 @@ func newInterruptTestNode(spec dsl.GraphNodeSpec, resumePath state.Path) *interr
 	}
 }
 
-func (n *interruptTestNode) Execute(_ core.Context, access *state.Access) (core.NodeResult, error) {
+func (n *interruptTestNode) Execute(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 	if value, ok := access.ReadAny(n.resumePath); ok && value == "ok" {
+		if n.requiredEnvironmentName != "" {
+			actual := core.EnvironmentVariableFromContext(ctx, n.requiredEnvironmentName)
+			if actual != n.requiredEnvironmentValue {
+				return core.NodeResult{}, fmt.Errorf("session environment %q = %q, want %q", n.requiredEnvironmentName, actual, n.requiredEnvironmentValue)
+			}
+		}
 		return core.Success(), nil
 	}
 	return core.NodeResult{}, &core.NodeInterrupt{NodeID: n.ID(), Value: "waiting for resume input"}
@@ -225,6 +262,29 @@ func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-cha
 			<-release
 		}
 		return core.Success(), access.SetAny(state.Shared("done"), true)
+	}))
+	if err != nil {
+		t.Fatalf("add work node: %v", err)
+	}
+	if err := graph.SetNodeSpec(dsl.GraphNodeSpec{ID: "work", Type: "test", Name: "work"}); err != nil {
+		t.Fatalf("set work node spec: %v", err)
+	}
+	if err := graph.SetEntryPoint("work"); err != nil {
+		t.Fatalf("set entry point: %v", err)
+	}
+	if err := graph.SetFinishPoint("work"); err != nil {
+		t.Fatalf("set finish point: %v", err)
+	}
+	return graph
+}
+
+func newCancelableResumeTestGraph(t *testing.T, attempts chan<- struct{}) *wfgraph.Graph {
+	t.Helper()
+	graph := wfgraph.NewGraph(nil)
+	err := graph.AddNode(node.NewFuncNode(node.Spec{ID: "work", Name: "work"}, func(ctx core.Context, _ *state.Access) (core.NodeResult, error) {
+		attempts <- struct{}{}
+		<-ctx.Done()
+		return core.NodeResult{}, ctx.Err()
 	}))
 	if err != nil {
 		t.Fatalf("add work node: %v", err)
@@ -342,12 +402,12 @@ func TestHandleRuntimeToolsReturnsDefinitions(t *testing.T) {
 
 func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("OPENAI_MODEL", "")
 	t.Setenv("OPENAI_BASE_URL", "")
-	t.Setenv("TAVILY_API_KEY", "")
+	t.Setenv("TAVILY_API_KEY", "tavily-key")
 	t.Setenv("WEAVEFLOW_TEST_FLAG", "")
-	t.Setenv("WEAVEFLOW_TEST_TOKEN", "")
+	t.Setenv("WEAVEFLOW_TEST_TOKEN", "secret-token")
 
 	ctx := core.WithTools(context.Background(), map[string]core.Tool{
 		"alpha": {
@@ -362,13 +422,16 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	settings := `{
-		"environment": {"TAVILY_API_KEY": "tavily-key", "WEAVEFLOW_TEST_FLAG": "enabled", "WEAVEFLOW_TEST_TOKEN": "secret-token"},
+		"environment": {"WEAVEFLOW_TEST_FLAG": "enabled"},
+		"environment_secrets": {
+			"TAVILY_API_KEY": {"source":"env","ref":"TAVILY_API_KEY"},
+			"WEAVEFLOW_TEST_TOKEN": {"source":"env","ref":"WEAVEFLOW_TEST_TOKEN"}
+		},
 		"models": [
 			{
 				"id": "default",
 				"enabled": true,
 				"provider": "openai",
-				"api_key": "test-key",
 				"model": "gpt-test",
 				"base_url": "http://127.0.0.1:9999/v1"
 			},
@@ -392,17 +455,17 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	if uploaded.Settings.Models[1].ID != "fast" || uploaded.Settings.Models[1].Model != "gpt-fast" {
 		t.Fatalf("fast model settings = %#v", uploaded.Settings.Models[1])
 	}
-	if !uploaded.Settings.Models[0].APIKeyConfigured || !uploaded.Settings.Models[1].APIKeyConfigured {
-		t.Fatalf("api key configured flags = %#v", uploaded.Settings.Models)
+	if !uploaded.Settings.Models[0].CredentialConfigured || !uploaded.Settings.Models[1].CredentialConfigured {
+		t.Fatalf("model credential status = %#v", uploaded.Settings.Models)
 	}
 	if uploaded.Settings.Environment["WEAVEFLOW_TEST_FLAG"] != "enabled" {
 		t.Fatalf("environment = %#v", uploaded.Settings.Environment)
 	}
-	if _, ok := uploaded.Settings.Environment["WEAVEFLOW_TEST_TOKEN"]; ok {
-		t.Fatalf("settings response leaked secret environment name: %#v", uploaded.Settings.Environment)
+	if uploaded.Settings.EnvironmentSecrets["WEAVEFLOW_TEST_TOKEN"].Ref != "WEAVEFLOW_TEST_TOKEN" {
+		t.Fatalf("settings response secret refs = %#v", uploaded.Settings.EnvironmentSecrets)
 	}
-	if _, ok := uploaded.Settings.Environment["TAVILY_API_KEY"]; ok {
-		t.Fatalf("settings response leaked TAVILY_API_KEY: %#v", uploaded.Settings.Environment)
+	if uploaded.Settings.EnvironmentSecrets["TAVILY_API_KEY"].Ref != "TAVILY_API_KEY" {
+		t.Fatalf("settings response secret refs = %#v", uploaded.Settings.EnvironmentSecrets)
 	}
 	responseData, err := json.Marshal(uploaded)
 	if err != nil {
@@ -411,7 +474,7 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	if strings.Contains(string(responseData), "test-key") || strings.Contains(string(responseData), "secret-token") || strings.Contains(string(responseData), "tavily-key") {
 		t.Fatalf("upload response leaked a secret: %s", responseData)
 	}
-	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "" {
+	if got := os.Getenv("WEAVEFLOW_TEST_TOKEN"); got != "secret-token" {
 		t.Fatalf("graph upload mutated process WEAVEFLOW_TEST_TOKEN = %q", got)
 	}
 	if got := os.Getenv("WEAVEFLOW_TEST_FLAG"); got != "" {
@@ -432,8 +495,19 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 		t.Fatalf("runtime context TAVILY_API_KEY = %q, want tavily-key", got)
 	}
 
+	t.Setenv("OPENAI_API_KEY", "rotated-key")
+	refreshed := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", settings))
+	if refreshed.Graph.GraphSessionID != uploaded.Graph.GraphSessionID {
+		t.Fatalf("secret rotation created session %q, want %q", refreshed.Graph.GraphSessionID, uploaded.Graph.GraphSessionID)
+	}
+	refreshedConfig, ok := core.ModelConfigByIDFromContext(srv.runtime.runtimeContext(), core.DefaultModelID)
+	if !ok || refreshedConfig.APIKey != "rotated-key" {
+		t.Fatalf("refreshed model config = %#v, want rotated credential", refreshedConfig)
+	}
+
 	withoutVisibleEnvironment := `{
 		"environment": {},
+		"environment_secrets": {},
 		"models": [
 			{"id":"default","enabled":true,"provider":"openai","model":"gpt-test","base_url":"http://127.0.0.1:9999/v1"},
 			{"id":"fast","enabled":true,"provider":"openai","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1"}
@@ -446,8 +520,8 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	if got := core.EnvironmentVariableFromContext(srv.runtime.runtimeContext(), "WEAVEFLOW_TEST_FLAG"); got != "" {
 		t.Fatalf("removed visible environment = %q, want empty", got)
 	}
-	if got := core.EnvironmentVariableFromContext(srv.runtime.runtimeContext(), "TAVILY_API_KEY"); got != "tavily-key" {
-		t.Fatalf("preserved runtime context TAVILY_API_KEY = %q, want tavily-key", got)
+	if got := core.EnvironmentVariableFromContext(srv.runtime.runtimeContext(), "TAVILY_API_KEY"); got != "" {
+		t.Fatalf("removed runtime context TAVILY_API_KEY = %q, want empty", got)
 	}
 }
 
@@ -504,13 +578,19 @@ func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 
 	settings := graphRuntimeSettingsFromContext(context.Background())
 	for key, value := range expected {
+		if key == "TAVILY_API_KEY" {
+			if ref := settings.EnvironmentSecrets[key]; ref.Source != "env" || ref.Ref != key {
+				t.Fatalf("%s secret ref = %#v", key, ref)
+			}
+			continue
+		}
 		if settings.Environment[key] != value {
 			t.Fatalf("%s = %q, want %q", key, settings.Environment[key], value)
 		}
 	}
 
 	expectedPresets := map[string]graphEnvironmentPreset{
-		"TAVILY_API_KEY":                      {Key: "TAVILY_API_KEY", Type: "string"},
+		"TAVILY_API_KEY":                      {Key: "TAVILY_API_KEY", Type: "string", Secret: true},
 		"WEAVEFLOW_TOOL_WORKDIR":              {Key: "WEAVEFLOW_TOOL_WORKDIR", Type: "string"},
 		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": {Key: "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", DefaultValue: "false", Type: "boolean"},
 		"WEAVEFLOW_BASH_TIMEOUT":              {Key: "WEAVEFLOW_BASH_TIMEOUT", DefaultValue: "120000", Type: "integer"},
@@ -529,13 +609,16 @@ func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 	}
 }
 
-func TestRuntimeSettingsContextEnvironmentOverridesProcess(t *testing.T) {
+func TestRuntimeSettingsContextSecretDoesNotOverrideProcessReference(t *testing.T) {
 	t.Setenv("TAVILY_API_KEY", "process-key")
 	ctx := core.WithEnvironment(context.Background(), map[string]string{"TAVILY_API_KEY": "context-key"})
 
 	settings := graphRuntimeSettingsFromContext(ctx)
-	if got := settings.Environment["TAVILY_API_KEY"]; got != "context-key" {
-		t.Fatalf("TAVILY_API_KEY = %q, want context-key", got)
+	if _, ok := settings.Environment["TAVILY_API_KEY"]; ok {
+		t.Fatalf("TAVILY_API_KEY plaintext persisted in environment: %#v", settings.Environment)
+	}
+	if ref := settings.EnvironmentSecrets["TAVILY_API_KEY"]; ref.Source != "env" || ref.Ref != "TAVILY_API_KEY" {
+		t.Fatalf("TAVILY_API_KEY secret ref = %#v", ref)
 	}
 }
 
@@ -1387,7 +1470,10 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 			}},
 		},
 		Build: func(_ *wfregistry.BuildContext, resolved wfregistry.ResolvedNodeSpec) (core.Node, error) {
-			return newInterruptTestNode(resolved.Spec, resolved.State["resume"].Path), nil
+			testNode := newInterruptTestNode(resolved.Spec, resolved.State["resume"].Path)
+			testNode.requiredEnvironmentName = "RESUME_CONTEXT"
+			testNode.requiredEnvironmentValue = "original-session"
+			return testNode, nil
 		},
 	}); err != nil {
 		t.Fatalf("register node type: %v", err)
@@ -1405,7 +1491,7 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 
 	graphBody := `{
 		"graph_id": "interrupt-graph",
-		"settings": {"environment": {}, "models": []},
+		"settings": {"environment": {"RESUME_CONTEXT":"original-session"}, "models": []},
 		"definition": {
 			"version": "2.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
@@ -1465,6 +1551,11 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	}
 	if pausedPayload["message"] != "waiting for resume input" {
 		t.Fatalf("paused message payload = %#v, want waiting for resume input", pausedPayload["message"])
+	}
+	newSessionBody := strings.Replace(graphBody, "original-session", "new-session", 1)
+	newSession := putGraphForHashTest(t, engine, newSessionBody)
+	if newSession.Graph.GraphSessionID == uploaded.Graph.GraphSessionID {
+		t.Fatal("updated runtime settings reused the original graph session")
 	}
 
 	w := serveHTTP(engine, http.MethodPost, "/graphs/interrupt-graph/runs/"+pausedRun.RunID+"/resume", `{
@@ -1701,7 +1792,62 @@ func TestResumeRunAfterActivePauseCompletes(t *testing.T) {
 	}
 }
 
-func TestCancelRunBlocksUntilCanceledStatus(t *testing.T) {
+func TestResumeRunStopsWhenRequestIsCanceled(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	attempts := make(chan struct{}, 2)
+	graph := newCancelableResumeTestGraph(t, attempts)
+	srv, err := New(context.Background(), Config{
+		Graph:   graph,
+		BaseDir: t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	run, runDone, err := srv.Runner().StartAsync(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("StartAsync() error = %v", err)
+	}
+	waitForSignal(t, attempts, "initial run node start")
+	pauseResponse := serveHTTP(engine, http.MethodPost, "/graphs/graph/runs/"+run.RunID+"/pause", "")
+	pausedRun := decodeRunRecordResponse(t, pauseResponse, http.StatusOK)
+	if pausedRun.Status != runtime.RunStatusPaused {
+		t.Fatalf("pause response status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
+	}
+	waitForSignal(t, runDone, "run pause")
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	resumeDone := make(chan *httptest.ResponseRecorder, 1)
+	go func() {
+		resumeDone <- serveHTTPWithContext(requestCtx, engine, http.MethodPost, "/graphs/graph/runs/"+run.RunID+"/resume", `{}`)
+	}()
+	waitForSignal(t, attempts, "resumed run node start")
+	cancelRequest()
+
+	resumeResponse := waitForHTTPResponse(t, resumeDone, "canceled resume")
+	if resumeResponse.Code != http.StatusRequestTimeout {
+		t.Fatalf("canceled resume status = %d, body = %s", resumeResponse.Code, resumeResponse.Body.String())
+	}
+	var response apiResponse
+	if err := json.Unmarshal(resumeResponse.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode canceled resume response: %v", err)
+	}
+	if response.Error == nil || response.Error.Code != "request_canceled" {
+		t.Fatalf("canceled resume error = %#v", response.Error)
+	}
+	persistedRun, err := srv.Runner().GetRun(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun(): %v", err)
+	}
+	if persistedRun.Status != runtime.RunStatusFailed || persistedRun.ErrorCode != string(core.ErrorCanceled) {
+		t.Fatalf("persisted canceled resume = %#v", persistedRun)
+	}
+}
+
+func TestCancelRunDoesNotWaitForUncooperativeNode(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	started := make(chan struct{})
@@ -1724,17 +1870,14 @@ func TestCancelRunBlocksUntilCanceledStatus(t *testing.T) {
 	waitForSignal(t, started, "run node start")
 	runID := run.RunID
 
-	cancelDone := serveHTTPAsync(engine, http.MethodPost, "/graphs/graph/runs/"+runID+"/cancel", "")
-	assertNoHTTPResponse(t, cancelDone, "cancel")
-	close(release)
-
-	cancelResponse := waitForHTTPResponse(t, cancelDone, "cancel")
+	cancelResponse := serveHTTP(engine, http.MethodPost, "/graphs/graph/runs/"+runID+"/cancel", "")
 	canceledRun := decodeRunRecordResponse(t, cancelResponse, http.StatusOK)
 	if canceledRun.Status != runtime.RunStatusCanceled {
 		t.Fatalf("cancel response status = %q, want %q", canceledRun.Status, runtime.RunStatusCanceled)
 	}
 
 	waitForSignal(t, runDone, "run cancel")
+	close(release)
 }
 
 func TestCancelRunCancelsActiveContext(t *testing.T) {

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/runtime"
@@ -19,6 +21,21 @@ import (
 
 type triggerRuntimeTestModel struct {
 	id string
+}
+
+type rotatingRuntimeSecretResolver struct {
+	values map[string]string
+}
+
+func (resolver *rotatingRuntimeSecretResolver) Resolve(_ context.Context, ref dsl.SecretRef) (string, error) {
+	if ref.Source != "env" {
+		return "", fmt.Errorf("unexpected secret source %q", ref.Source)
+	}
+	value, ok := resolver.values[ref.Ref]
+	if !ok {
+		return "", fmt.Errorf("secret %q is not configured", ref.Ref)
+	}
+	return value, nil
 }
 
 func (*triggerRuntimeTestModel) Generate(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
@@ -69,6 +86,78 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 	}
 }
 
+func TestResolveTriggerRunnerRefreshesCachedSessionSecrets(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	t.Setenv("OPENAI_API_KEY", "")
+	secretResolver := &rotatingRuntimeSecretResolver{values: map[string]string{
+		"SERVICE_TOKEN": "service-token-1",
+	}}
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), SecretResolver: secretResolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	settings := `{
+		"environment": {},
+		"environment_secrets": {
+			"SERVICE_TOKEN": {"source":"env","ref":"SERVICE_TOKEN"}
+		},
+		"models": [{
+			"id":"default",
+			"enabled":true,
+			"provider":"openai",
+			"credential_value":"model-token-1",
+			"model":"gpt-test",
+			"base_url":"http://127.0.0.1:9999/v1"
+		}]
+	}`
+	uploaded := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("graph-a", "v1", "secret-refresh", settings))
+
+	first, err := srv.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstStarter, ok := first.(*triggerRunStarter)
+	if !ok {
+		t.Fatalf("first resolved runner = %T, want *triggerRunStarter", first)
+	}
+	assertTriggerRuntimeSecrets(t, firstStarter.baseContext, "model-token-1", "service-token-1")
+
+	secretResolver.values["SERVICE_TOKEN"] = "service-token-2"
+	rotatedSettings := strings.Replace(settings, "model-token-1", "model-token-2", 1)
+	rotated := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("graph-a", "v1", "secret-refresh", rotatedSettings))
+	if rotated.Graph.GraphSessionID != uploaded.Graph.GraphSessionID {
+		t.Fatalf("model credential rotation created session %q, want %q", rotated.Graph.GraphSessionID, uploaded.Graph.GraphSessionID)
+	}
+	second, err := srv.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStarter, ok := second.(*triggerRunStarter)
+	if !ok {
+		t.Fatalf("second resolved runner = %T, want *triggerRunStarter", second)
+	}
+	assertTriggerRuntimeSecrets(t, secondStarter.baseContext, "model-token-2", "service-token-2")
+	if secondStarter.runner != firstStarter.runner || secondStarter.graph != firstStarter.graph {
+		t.Fatal("secret refresh replaced the cached graph session")
+	}
+	if runner := resolvedGraphRunner(t, second); runner.GraphSessionID() != uploaded.Graph.GraphSessionID {
+		t.Fatalf("secret refresh session = %q, want %q", runner.GraphSessionID(), uploaded.Graph.GraphSessionID)
+	}
+}
+
+func assertTriggerRuntimeSecrets(t *testing.T, ctx context.Context, modelToken string, serviceToken string) {
+	t.Helper()
+	modelConfig, ok := core.ModelConfigByIDFromContext(ctx, core.DefaultModelID)
+	if !ok || modelConfig.APIKey != modelToken {
+		t.Fatalf("trigger model config = %#v, want API key %q", modelConfig, modelToken)
+	}
+	if got := core.EnvironmentVariableFromContext(ctx, "SERVICE_TOKEN"); got != serviceToken {
+		t.Fatalf("trigger SERVICE_TOKEN = %q, want %q", got, serviceToken)
+	}
+}
+
 func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
@@ -100,7 +189,8 @@ func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 
 func TestTriggerRunOriginIsReturnedByRunList(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	credentialResolver := &triggerCredentialResolver{value: "origin-secret"}
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), SecretResolver: credentialResolver})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,13 +199,14 @@ func TestTriggerRunOriginIsReturnedByRunList(t *testing.T) {
 	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("origin-graph", "v1", "origin"))
 
 	replaced := serveHTTP(engine, http.MethodPut, "/graphs/origin-graph/triggers", `{"triggers":[{
-		"id":"hook","type":"webhook","enabled":true,"webhook":{}
+		"id":"hook","type":"webhook","enabled":true,
+		"credential":{"source":"env","ref":"TRIGGER_TOKEN"},"webhook":{}
 	}]}`)
 	if replaced.Code != http.StatusOK {
 		t.Fatalf("replace triggers status = %d, body = %s", replaced.Code, replaced.Body.String())
 	}
 
-	invoked := serveHTTP(engine, http.MethodPost, "/graphs/origin-graph/triggers/hook/invocations", `{}`)
+	invoked := requestWithHeader(engine, http.MethodPost, "/graphs/origin-graph/triggers/hook/invocations", `{}`, "Authorization", "Bearer origin-secret")
 	if invoked.Code != http.StatusAccepted {
 		t.Fatalf("invoke trigger status = %d, body = %s", invoked.Code, invoked.Body.String())
 	}

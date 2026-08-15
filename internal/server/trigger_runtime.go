@@ -33,7 +33,11 @@ func (s *Server) resolveTriggerRunner(_ context.Context, target trigger.Target) 
 	if err != nil {
 		return nil, err
 	}
-	return &triggerRunStarter{baseContext: session.baseContext, graph: session.graph, runner: session.runner}, nil
+	baseContext, err := s.buildRuntimeContext(session.settings)
+	if err != nil {
+		return nil, fmt.Errorf("build runtime context for graph session %q: %w", session.runner.GraphSessionID(), err)
+	}
+	return &triggerRunStarter{baseContext: baseContext, graph: session.graph, runner: session.runner}, nil
 }
 
 // triggerRunStarter keeps graph execution and runtime settings on the same
@@ -172,9 +176,7 @@ func (s *Server) loadStoredGraphSession(session triggerGraphSession, latest bool
 	if !found {
 		return graphRuntimeSession{}, fmt.Errorf("graph session %q settings are missing", session.manifest.GraphSessionID)
 	}
-	apiKey := firstNonEmpty(firstGraphModelAPIKey(settings), settings.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
-	markGraphModelAPIKeys(&settings, apiKey)
-	baseContext, err := s.buildRuntimeContext(settings, apiKey)
+	baseContext, err := s.buildRuntimeContext(settings)
 	if err != nil {
 		return graphRuntimeSession{}, err
 	}

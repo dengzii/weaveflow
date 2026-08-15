@@ -27,7 +27,10 @@ type Config struct {
 	Graph    *wfgraph.Graph
 	Registry *wfregistry.Registry
 
-	BaseDir string
+	BaseDir         string
+	SecretDirectory string
+	SecretResolver  SecretResolver
+	ManagementToken string
 
 	RuntimeContextDecorators []RuntimeContextDecorator
 
@@ -63,6 +66,9 @@ type Server struct {
 	chatChannels    *chatchannel.Registry
 	chatSetup       *chatSetupManager
 	chatSetupSaveMu sync.Mutex
+	managedSecrets  *managedSecretStore
+	secretResolver  SecretResolver
+	managementToken string
 }
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
@@ -81,6 +87,20 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	cfg.BaseDir = baseDir
+	externalSecretResolver := cfg.SecretResolver
+	if externalSecretResolver == nil {
+		externalSecretResolver, err = newLocalSecretResolver(cfg.SecretDirectory)
+		if err != nil {
+			return nil, err
+		}
+	}
+	managedSecrets, err := newManagedSecretStore(filepath.Join(baseDir, "managed-secrets"))
+	if err != nil {
+		return nil, err
+	}
+	secretResolver := &serverSecretResolver{managed: managedSecrets, external: externalSecretResolver}
+	cfg.SecretResolver = secretResolver
+	cfg.ManagementToken = strings.TrimSpace(cfg.ManagementToken)
 
 	hub := NewEventHub(cfg.EventBuffer)
 	var runner *runtime.GraphRunner
@@ -101,11 +121,14 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	initialSettings := graphRuntimeSettingsFromContext(ctx)
 	ctx = core.WithEnvironment(ctx, initialSettings.Environment)
 	srv := &Server{
-		runtime:  newGraphRuntimeManager(ctx, initialSettings, cfg.Graph, runner),
-		registry: reg,
-		events:   hub,
-		baseDir:  baseDir,
-		cfg:      cfg,
+		runtime:         newGraphRuntimeManager(ctx, initialSettings, cfg.Graph, runner),
+		registry:        reg,
+		events:          hub,
+		baseDir:         baseDir,
+		cfg:             cfg,
+		managedSecrets:  managedSecrets,
+		secretResolver:  secretResolver,
+		managementToken: cfg.ManagementToken,
 	}
 	triggerService := cfg.TriggerService
 	if triggerService == nil {
@@ -130,10 +153,13 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 			triggerStore,
 			trigger.RunnerResolverFunc(srv.resolveTriggerRunner),
 			trigger.WithChatChannels(chatChannels),
+			trigger.WithSecretResolver(secretResolver),
 		)
 		if err != nil {
 			return nil, err
 		}
+	} else if err := triggerService.SetSecretResolver(secretResolver); err != nil {
+		return nil, err
 	}
 	srv.triggers = triggerService
 	srv.chatChannels = triggerService.ChatChannels()
@@ -157,7 +183,10 @@ func ensureBaseDir(baseDir string) (string, error) {
 	if strings.TrimSpace(baseDir) == "" {
 		return os.MkdirTemp("", "weaveflow-server-*")
 	}
-	if err := os.MkdirAll(baseDir, 0o755); err != nil {
+	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(baseDir, 0o700); err != nil {
 		return "", err
 	}
 	return baseDir, nil
@@ -273,6 +302,14 @@ func (s *Server) TriggerService() *trigger.Service {
 func (s *Server) Start(ctx context.Context) error {
 	if s == nil || s.triggers == nil {
 		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	s.chatSetupSaveMu.Lock()
+	defer s.chatSetupSaveMu.Unlock()
+	if err := s.sweepManagedSecrets(ctx); err != nil {
+		return err
 	}
 	return s.triggers.Start(ctx)
 }

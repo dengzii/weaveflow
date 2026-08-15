@@ -83,6 +83,21 @@ func (manager *graphRuntimeManager) installSession(session graphRuntimeSession) 
 	}
 }
 
+func (manager *graphRuntimeManager) refreshSession(session graphRuntimeSession) {
+	if manager == nil || session.runner == nil {
+		return
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	key := graphRuntimeSessionKey{
+		graphID:   effectiveRunnerGraphID(session.runner),
+		sessionID: strings.TrimSpace(session.runner.GraphSessionID()),
+	}
+	manager.current = session
+	manager.triggerSessions[key.graphID] = session
+	manager.sessions[key] = session
+}
+
 func (manager *graphRuntimeManager) runtimeContext() context.Context {
 	if manager == nil {
 		return context.Background()

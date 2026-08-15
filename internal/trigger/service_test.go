@@ -15,6 +15,7 @@ import (
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
 	"github.com/dengzii/weaveflow/capability/conversation"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/runtime"
@@ -740,6 +741,19 @@ type lifecycleChannel struct {
 	stopped chan struct{}
 }
 
+type lifecycleSecretResolver struct {
+	value string
+	calls int
+}
+
+func (resolver *lifecycleSecretResolver) Resolve(_ context.Context, ref dsl.SecretRef) (string, error) {
+	resolver.calls++
+	if ref.Source != "env" || ref.Ref != "CHAT_CHANNEL_SECRET" {
+		return "", fmt.Errorf("unexpected chat channel secret ref")
+	}
+	return resolver.value, nil
+}
+
 func (channel *lifecycleChannel) Run(ctx context.Context) error {
 	channel.started <- channel.config
 	<-ctx.Done()
@@ -753,6 +767,7 @@ func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := &lifecycleChannelFactory{started: make(chan map[string]any, 2), stopped: make(chan struct{}, 2)}
+	secretResolver := &lifecycleSecretResolver{value: "stored-secret"}
 	channels := chatchannel.NewDefaultRegistry()
 	if err := channels.Register(factory); err != nil {
 		t.Fatal(err)
@@ -761,15 +776,25 @@ func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
 		store,
 		RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) { return &recordingStarter{}, nil }),
 		WithChatChannels(channels),
+		WithSecretResolver(secretResolver),
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), Trigger{
+		ID: "plaintext-chat", Type: TypeChat, Enabled: false, Target: Target{GraphID: "graph"},
+		Chat: &ChatSpec{
+			Channel:       "lifecycle",
+			ChannelConfig: map[string]any{"name": "plaintext", "secret": "must-not-persist"},
+		},
+	}); !errors.Is(err, ErrInvalidTrigger) {
+		t.Fatalf("plaintext channel secret error = %v, want ErrInvalidTrigger", err)
 	}
 	created, err := service.Create(context.Background(), Trigger{
 		ID: "managed-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"},
 		Chat: &ChatSpec{
 			Channel:       "lifecycle",
-			ChannelConfig: map[string]any{"name": "first", "secret": "stored-secret"},
+			ChannelConfig: map[string]any{"name": "first", "secret": dsl.SecretRef{Source: "env", Ref: "CHAT_CHANNEL_SECRET"}},
 		},
 	})
 	if err != nil {
@@ -791,6 +816,7 @@ func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
 		t.Fatal("chat channel did not start")
 	}
 
+	secretResolver.value = "rotated-secret"
 	updated, err := service.Update(context.Background(), Trigger{
 		ID: "managed-chat", Type: TypeChat, Enabled: true, Target: Target{GraphID: "graph"},
 		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "second"}},
@@ -798,8 +824,9 @@ func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if updated.Chat.ChannelConfig["secret"] != "stored-secret" {
-		t.Fatalf("updated chat config = %#v", updated.Chat.ChannelConfig)
+	ref, err := chatchannel.ParseSecretRef(updated.Chat.ChannelConfig["secret"])
+	if err != nil || ref.Source != "env" || ref.Ref != "CHAT_CHANNEL_SECRET" {
+		t.Fatalf("updated chat config = %#v, err = %v", updated.Chat.ChannelConfig, err)
 	}
 	select {
 	case <-factory.stopped:
@@ -808,7 +835,7 @@ func TestServiceManagesRegisteredChatChannelLifecycleAndSecrets(t *testing.T) {
 	}
 	select {
 	case config := <-factory.started:
-		if config["name"] != "second" || config["secret"] != "stored-secret" {
+		if config["name"] != "second" || config["secret"] != "rotated-secret" {
 			t.Fatalf("restarted config = %#v", config)
 		}
 	case <-time.After(time.Second):
@@ -830,6 +857,7 @@ func TestServiceReplaceGraphIsAtomicAndUpdatesLiveChannels(t *testing.T) {
 		t.Fatal(err)
 	}
 	factory := &lifecycleChannelFactory{started: make(chan map[string]any, 2), stopped: make(chan struct{}, 2)}
+	secretResolver := &lifecycleSecretResolver{value: "stored-secret"}
 	channels := chatchannel.NewDefaultRegistry()
 	if err := channels.Register(factory); err != nil {
 		t.Fatal(err)
@@ -838,13 +866,14 @@ func TestServiceReplaceGraphIsAtomicAndUpdatesLiveChannels(t *testing.T) {
 		store,
 		RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) { return &recordingStarter{}, nil }),
 		WithChatChannels(channels),
+		WithSecretResolver(secretResolver),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_, err = service.ReplaceGraph(context.Background(), "graph-a", []Trigger{{
 		ID: "chat", Type: TypeChat, Enabled: true,
-		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "first", "secret": "stored-secret"}},
+		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "first", "secret": dsl.SecretRef{Source: "env", Ref: "CHAT_CHANNEL_SECRET"}}},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -867,15 +896,16 @@ func TestServiceReplaceGraphIsAtomicAndUpdatesLiveChannels(t *testing.T) {
 		t.Fatal("initial chat channel did not start")
 	}
 
+	secretResolver.value = "rotated-secret"
 	replaced, err := service.ReplaceGraph(context.Background(), "graph-a", []Trigger{{
 		ID: "chat", Type: TypeChat, Enabled: true,
-		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "second"}},
+		Chat: &ChatSpec{Channel: "lifecycle", ChannelConfig: map[string]any{"name": "first"}},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := replaced[0].Chat.ChannelConfig["secret"]; got != "stored-secret" {
-		t.Fatalf("preserved channel secret = %#v, want stored-secret", got)
+	if ref, parseErr := chatchannel.ParseSecretRef(replaced[0].Chat.ChannelConfig["secret"]); parseErr != nil || ref.Ref != "CHAT_CHANNEL_SECRET" {
+		t.Fatalf("preserved channel secret ref = %#v, err = %v", replaced[0].Chat.ChannelConfig["secret"], parseErr)
 	}
 	select {
 	case <-factory.stopped:
@@ -884,7 +914,7 @@ func TestServiceReplaceGraphIsAtomicAndUpdatesLiveChannels(t *testing.T) {
 	}
 	select {
 	case config := <-factory.started:
-		if config["name"] != "second" || config["secret"] != "stored-secret" {
+		if config["name"] != "first" || config["secret"] != "rotated-secret" {
 			t.Fatalf("replaced channel config = %#v", config)
 		}
 	case <-time.After(time.Second):
@@ -918,6 +948,56 @@ func TestServiceReplaceGraphIsAtomicAndUpdatesLiveChannels(t *testing.T) {
 	}
 	if len(items) != 1 || items[0].ID != "other" || items[0].Target.GraphID != "graph-b" {
 		t.Fatalf("remaining triggers = %#v, want graph-b trigger", items)
+	}
+}
+
+func TestServiceInspectDefinitionsSerializesMutations(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
+		return &recordingStarter{}, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inspectionStarted := make(chan struct{})
+	releaseInspection := make(chan struct{})
+	inspectionDone := make(chan error, 1)
+	go func() {
+		inspectionDone <- service.InspectDefinitions(context.Background(), func([]Trigger) error {
+			close(inspectionStarted)
+			<-releaseInspection
+			return nil
+		})
+	}()
+	<-inspectionStarted
+
+	mutationDone := make(chan error, 1)
+	go func() {
+		_, mutationErr := service.Create(context.Background(), Trigger{
+			ID:      "serialized-trigger",
+			Type:    TypeWebhook,
+			Enabled: false,
+			Target:  Target{GraphID: "graph"},
+			Webhook: &WebhookSpec{},
+		})
+		mutationDone <- mutationErr
+	}()
+	select {
+	case mutationErr := <-mutationDone:
+		t.Fatalf("definition mutation completed during inspection: %v", mutationErr)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseInspection)
+	if err := <-inspectionDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-mutationDone; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1002,7 +1082,7 @@ func TestServiceValidatesTriggerStateBeforeStartingNormalAndChatRuns(t *testing.
 		}
 	}
 
-	if _, err := service.InvokeWebhook(context.Background(), "hook", []byte(`{}`), "", nil); err == nil || !strings.Contains(err.Error(), "validate trigger initial state") {
+	if _, err := service.InvokeWebhook(context.Background(), "hook", []byte(`{}`), nil); err == nil || !strings.Contains(err.Error(), "validate trigger initial state") {
 		t.Fatalf("webhook preflight error = %v", err)
 	}
 	if _, err := service.InvokeChat(context.Background(), "chat", chatcap.InboundMessage{
@@ -1026,7 +1106,7 @@ func (r *asyncRecordingStarter) StartAsync(_ context.Context, initial *state.Sta
 	return runtime.RunRecord{RunID: "run-async", Status: runtime.RunStatusRunning}, r.done, nil
 }
 
-func TestServiceInvokeWebhookBuildsStateAndChecksAPIKey(t *testing.T) {
+func TestServiceInvokeWebhookBuildsState(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1048,7 +1128,6 @@ func TestServiceInvokeWebhookBuildsStateAndChecksAPIKey(t *testing.T) {
 			"scopes": map[string]any{"agent": map[string]any{"mode": "review"}},
 		},
 		Webhook: &WebhookSpec{
-			APIKey: "secret",
 			StateBindings: &WebhookStateBindings{
 				Input:       "scopes.webhook.input",
 				Metadata:    "scopes.webhook.metadata",
@@ -1064,7 +1143,7 @@ func TestServiceInvokeWebhookBuildsStateAndChecksAPIKey(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := []byte(`{"message":"hello"}`)
-	run, err := service.InvokeWebhook(context.Background(), "webhook-1", body, "secret", map[string]string{
+	run, err := service.InvokeWebhook(context.Background(), "webhook-1", body, map[string]string{
 		"Authorization": "Bearer secret-token",
 		"Cookie":        "session=secret",
 		"X-Trace-ID":    "trace-1",
@@ -1403,7 +1482,7 @@ func TestTriggerStateBuildersUseOnlyConfiguredBindings(t *testing.T) {
 	}
 }
 
-func TestServiceRejectsInvalidWebhookAPIKeyAndPayload(t *testing.T) {
+func TestServiceRejectsInvalidWebhookPayload(t *testing.T) {
 	store, err := NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -1419,15 +1498,12 @@ func TestServiceRejectsInvalidWebhookAPIKeyAndPayload(t *testing.T) {
 		Type:    TypeWebhook,
 		Enabled: true,
 		Target:  Target{GraphID: "graph-1"},
-		Webhook: &WebhookSpec{APIKey: "secret"},
+		Webhook: &WebhookSpec{},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`{}`), "wrong", nil); err != ErrInvalidAPIKey {
-		t.Fatalf("invalid api_key error = %v", err)
-	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`not-json`), "secret", nil); !errors.Is(err, ErrInvalidPayload) {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-1", []byte(`not-json`), nil); !errors.Is(err, ErrInvalidPayload) {
 		t.Fatalf("invalid payload error = %v", err)
 	}
 }
@@ -1520,14 +1596,14 @@ func TestServiceAsyncRunKeepsSkipConcurrencyActiveUntilCompletion(t *testing.T) 
 		t.Fatal(err)
 	}
 
-	run, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), "", nil)
+	run, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if run.Status != runtime.RunStatusRunning {
 		t.Fatalf("run status = %q, want running", run.Status)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), "", nil); !errors.Is(err, ErrBusy) {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), nil); !errors.Is(err, ErrBusy) {
 		t.Fatalf("second invocation error = %v, want ErrBusy", err)
 	}
 
@@ -1545,7 +1621,7 @@ func TestServiceAsyncRunKeepsSkipConcurrencyActiveUntilCompletion(t *testing.T) 
 		}
 		time.Sleep(time.Millisecond)
 	}
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), "", nil); err != nil {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-async", []byte(`{}`), nil); err != nil {
 		t.Fatalf("invocation after completion error = %v", err)
 	}
 }
@@ -1697,7 +1773,7 @@ func TestServiceRecordsStartedAndFailedInvocations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	run, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), "", nil)
+	run, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1709,7 +1785,7 @@ func TestServiceRecordsStartedAndFailedInvocations(t *testing.T) {
 	service.resolver = RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
 		return nil, errors.New("graph unavailable")
 	})
-	if _, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), "", nil); err == nil {
+	if _, err := service.InvokeWebhook(context.Background(), "webhook-recorded", []byte(`{}`), nil); err == nil {
 		t.Fatal("failed invocation unexpectedly succeeded")
 	}
 

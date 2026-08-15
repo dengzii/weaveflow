@@ -17,18 +17,19 @@ import (
 )
 
 const (
-	codexWorkspaceEnvironment      = "WEAVEFLOW_TOOL_WORKDIR"
-	codexExecutableEnvironment     = "WEAVEFLOW_CODEX_EXECUTABLE"
-	codexSandboxEnvironment        = "WEAVEFLOW_CODEX_SANDBOX"
-	codexWorkspaceRootsEnvironment = "WEAVEFLOW_CODEX_WORKSPACE_ROOTS"
-	codexTimeoutSecondsEnvironment = "WEAVEFLOW_CODEX_TIMEOUT_SECONDS"
-	codexMaxStdoutBytesEnvironment = "WEAVEFLOW_CODEX_MAX_STDOUT_BYTES"
-	codexMaxStderrBytesEnvironment = "WEAVEFLOW_CODEX_MAX_STDERR_BYTES"
-	codexMaxConcurrencyEnvironment = "WEAVEFLOW_CODEX_MAX_CONCURRENCY"
-	defaultTimeoutSeconds          = 900
-	defaultMaxStdoutBytes          = 8 * 1024 * 1024
-	defaultMaxStderrBytes          = 1024 * 1024
-	defaultMaxConcurrency          = 1
+	codexWorkspaceEnvironment        = "WEAVEFLOW_TOOL_WORKDIR"
+	codexExecutableEnvironment       = "WEAVEFLOW_CODEX_EXECUTABLE"
+	codexSandboxEnvironment          = "WEAVEFLOW_CODEX_SANDBOX"
+	codexWorkspaceRootsEnvironment   = "WEAVEFLOW_CODEX_WORKSPACE_ROOTS"
+	codexTimeoutSecondsEnvironment   = "WEAVEFLOW_CODEX_TIMEOUT_SECONDS"
+	codexMaxStdoutBytesEnvironment   = "WEAVEFLOW_CODEX_MAX_STDOUT_BYTES"
+	codexMaxStderrBytesEnvironment   = "WEAVEFLOW_CODEX_MAX_STDERR_BYTES"
+	codexMaxConcurrencyEnvironment   = "WEAVEFLOW_CODEX_MAX_CONCURRENCY"
+	codexEnvironmentNamesEnvironment = "WEAVEFLOW_CODEX_ENVIRONMENT_NAMES"
+	defaultTimeoutSeconds            = 900
+	defaultMaxStdoutBytes            = 8 * 1024 * 1024
+	defaultMaxStderrBytes            = 1024 * 1024
+	defaultMaxConcurrency            = 1
 )
 
 type Sandbox string
@@ -46,6 +47,7 @@ type RunnerConfig struct {
 	MaxStdoutBytes        int64    `json:"max_stdout_bytes,omitempty"`
 	MaxStderrBytes        int64    `json:"max_stderr_bytes,omitempty"`
 	MaxConcurrency        int      `json:"max_concurrency,omitempty"`
+	EnvironmentNames      []string `json:"environment_names,omitempty"`
 }
 
 type resolvedCodexRunnerConfig struct {
@@ -87,6 +89,9 @@ func RunnerConfigFromEnvironment() (RunnerConfig, error) {
 	if value, ok := os.LookupEnv(codexWorkspaceRootsEnvironment); ok {
 		config.AllowedWorkspaceRoots = splitCodexWorkspaceRoots(value)
 	}
+	if value, ok := os.LookupEnv(codexEnvironmentNamesEnvironment); ok {
+		config.EnvironmentNames = splitCodexList(value)
+	}
 	var err error
 	if config.TimeoutSeconds, err = environmentInt(codexTimeoutSecondsEnvironment, config.TimeoutSeconds); err != nil {
 		return RunnerConfig{}, err
@@ -111,6 +116,16 @@ func splitCodexWorkspaceRoots(value string) []string {
 		}
 	}
 	return roots
+}
+
+func splitCodexList(value string) []string {
+	items := make([]string, 0)
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			items = append(items, item)
+		}
+	}
+	return items
 }
 
 func environmentInt(name string, fallback int) (int, error) {
@@ -178,6 +193,14 @@ func resolveCodexRunnerConfig(config RunnerConfig) (resolvedCodexRunnerConfig, e
 	if config.AllowedWorkspaceRoots == nil {
 		config.AllowedWorkspaceRoots = append([]string(nil), defaults.AllowedWorkspaceRoots...)
 	}
+	if config.EnvironmentNames == nil {
+		config.EnvironmentNames = append([]string(nil), defaults.EnvironmentNames...)
+	}
+	environmentNames, err := normalizeCodexEnvironmentNames(config.EnvironmentNames)
+	if err != nil {
+		return resolvedCodexRunnerConfig{}, err
+	}
+	config.EnvironmentNames = environmentNames
 
 	allowedRoots := make([]string, 0, len(config.AllowedWorkspaceRoots))
 	for _, root := range config.AllowedWorkspaceRoots {
@@ -192,6 +215,26 @@ func resolveCodexRunnerConfig(config RunnerConfig) (resolvedCodexRunnerConfig, e
 	}
 	config.AllowedWorkspaceRoots = append([]string(nil), allowedRoots...)
 	return resolvedCodexRunnerConfig{RunnerConfig: config, allowedWorkspaceRoots: allowedRoots}, nil
+}
+
+func normalizeCodexEnvironmentNames(values []string) ([]string, error) {
+	names := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, name := range values {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		if strings.ContainsAny(name, "=\x00\r\n ") {
+			return nil, fmt.Errorf("Codex environment_names contains invalid name %q", name)
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		names = append(names, name)
+	}
+	return names, nil
 }
 
 func resolveCodexWorkspace(ctx context.Context, config resolvedCodexRunnerConfig) (string, error) {
@@ -291,15 +334,21 @@ func resolveCodexExecutable(executable string) (string, error) {
 	return "", fmt.Errorf("resolved to non-native Windows launcher %q; configure the native codex.exe path", path)
 }
 
-func environment(ctx context.Context, apiKey string) ([]string, []string, error) {
+func environment(ctx context.Context, config resolvedCodexRunnerConfig, apiKey string) ([]string, []string, error) {
 	values := make(map[string]string)
 	for _, name := range platformEnvironmentNames() {
 		if value, ok := os.LookupEnv(name); ok {
 			values[name] = value
 		}
 	}
-	for name, value := range core.EnvironmentFromContext(ctx) {
-		values[strings.TrimSpace(name)] = value
+	graphEnvironment := core.EnvironmentFromContext(ctx)
+	for _, name := range config.EnvironmentNames {
+		if value, ok := graphEnvironment[name]; ok {
+			values[name] = value
+		}
+	}
+	if value := strings.TrimSpace(graphEnvironment[codexWorkspaceEnvironment]); value != "" {
+		values[codexWorkspaceEnvironment] = value
 	}
 	if strings.TrimSpace(apiKey) != "" {
 		values["OPENAI_API_KEY"] = strings.TrimSpace(apiKey)

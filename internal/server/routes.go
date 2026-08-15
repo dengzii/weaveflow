@@ -7,12 +7,15 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 		return
 	}
 
-	s.registerGraphRoutes(group)
-	s.registerRuntimeRoutes(group)
-	s.registerRegistryRoutes(group)
-	s.registerChatChannelRoutes(group)
-	s.registerTriggerRoutes(group)
-	s.registerRunRoutes(group)
+	management := group.Group("")
+	management.Use(s.requireManagementAuth)
+	s.registerGraphRoutes(management)
+	s.registerRuntimeRoutes(management)
+	s.registerRegistryRoutes(management)
+	s.registerChatChannelRoutes(management)
+	s.registerTriggerManagementRoutes(management)
+	s.registerRunRoutes(management)
+	s.registerPublicTriggerRoutes(group)
 }
 
 func (s *Server) registerGraphRoutes(group *gin.RouterGroup) {
@@ -38,9 +41,12 @@ func (s *Server) registerChatChannelRoutes(group *gin.RouterGroup) {
 	group.DELETE("/chat-channels/:channel_id/setup-sessions/:session_id", s.handleCancelChatChannelSetup)
 }
 
-func (s *Server) registerTriggerRoutes(group *gin.RouterGroup) {
+func (s *Server) registerTriggerManagementRoutes(group *gin.RouterGroup) {
 	group.GET("/graphs/:graph_id/triggers", s.handleListTriggers)
 	group.PUT("/graphs/:graph_id/triggers", s.handleReplaceTriggers)
+}
+
+func (s *Server) registerPublicTriggerRoutes(group *gin.RouterGroup) {
 	group.POST("/graphs/:graph_id/triggers/:trigger_id/invocations", s.handleCreateTriggerInvocation)
 	group.POST("/graphs/:graph_id/triggers/:trigger_id/webhook", s.handleWebhookTrigger)
 	group.POST("/graphs/:graph_id/triggers/:trigger_id/chat", s.handleChatTrigger)

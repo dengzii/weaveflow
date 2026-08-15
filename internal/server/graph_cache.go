@@ -190,7 +190,7 @@ func (s *Server) handleGetGraphDetail(c *gin.Context) {
 			FinishPoint:       definition.FinishPoint,
 		},
 		Definition:               definition,
-		Settings:                 graphSettingsResponse(session.settings),
+		Settings:                 s.graphSettingsResponse(session.settings),
 		InitialStateRequirements: session.graph.InitialStateRequirements(),
 		LatestSession: graphSessionSummary{
 			ID:        stored.manifest.GraphSessionID,

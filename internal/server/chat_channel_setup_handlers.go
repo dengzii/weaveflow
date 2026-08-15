@@ -153,7 +153,7 @@ func (s *Server) chatSetupExistingConfig(ctx context.Context, channelID, trigger
 	if item.Type != trigger.TypeChat || item.Chat == nil || strings.TrimSpace(item.Chat.Channel) != channelID {
 		return nil, fmt.Errorf("%w: trigger %q does not use chat channel %q", chatchannel.ErrInvalidSetupInput, triggerID, channelID)
 	}
-	return item.Chat.ChannelConfig, nil
+	return service.ResolveChatChannelConfig(ctx, item)
 }
 
 func (s *Server) applyChatSetup(ctx context.Context, owner, sessionID string, item *trigger.Trigger) (func(bool), error) {
@@ -203,7 +203,11 @@ func (s *Server) ensureChatSetupCredentialAvailable(ctx context.Context, item tr
 		if existing.ID == item.ID || existing.Type != trigger.TypeChat || existing.Chat == nil || strings.TrimSpace(existing.Chat.Channel) != channelID {
 			continue
 		}
-		if s.chatChannels.CredentialID(channelID, existing.Chat.ChannelConfig) == credentialID {
+		config, err := s.triggers.ResolveChatChannelConfig(ctx, existing)
+		if err != nil {
+			return err
+		}
+		if s.chatChannels.CredentialID(channelID, config) == credentialID {
 			return errChatSetupCredentialInUse
 		}
 	}

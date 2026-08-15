@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const defaultListenAddr = ":8080"
+const defaultListenAddr = "127.0.0.1:8080"
 
 func (s *Server) Engine() *gin.Engine {
 	engine := gin.New()

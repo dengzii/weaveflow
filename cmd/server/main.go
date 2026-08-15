@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"net"
 	"os"
 	"strings"
 
@@ -22,13 +23,18 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", ":8080", "listen address")
+	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	dataDir := flag.String("data", ".local/server", "data directory for graph debug runs")
+	secretDir := flag.String("secret-dir", "", "directory for file-backed secret references")
 	prefix := flag.String("prefix", "", "route prefix")
 	corsOrigins := flag.String("cors-origins", defaultCORSOrigins, "comma-separated WebUI origins allowed by CORS; use * to allow all")
 	graphPath := flag.String("graph", "", "optional graph definition JSON file to preload")
 	logLevel := flag.String("log-level", "debug", "log level: debug, info, or error")
 	flag.Parse()
+	managementToken := strings.TrimSpace(os.Getenv("WEAVEFLOW_MANAGEMENT_TOKEN"))
+	if !isLoopbackListenAddress(*addr) && managementToken == "" {
+		log.Fatal("non-loopback listen address requires WEAVEFLOW_MANAGEMENT_TOKEN")
+	}
 	level, err := parseLogLevel(*logLevel)
 	if err != nil {
 		log.Fatal(err)
@@ -64,8 +70,10 @@ func main() {
 	ctx := core.WithTools(context.Background(), defaultTools())
 
 	srv, err := server.New(ctx, server.Config{
-		Graph:   graph,
-		BaseDir: *dataDir,
+		Graph:           graph,
+		BaseDir:         *dataDir,
+		SecretDirectory: *secretDir,
+		ManagementToken: managementToken,
 		RuntimeContextDecorators: []server.RuntimeContextDecorator{
 			func(ctx context.Context) context.Context {
 				return claudenode.WithRunner(ctx, claudeRunner)
@@ -97,6 +105,22 @@ func main() {
 	if err := engine.Run(*addr); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func isLoopbackListenAddress(addr string) bool {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return false
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func normalizePrefix(prefix string) string {

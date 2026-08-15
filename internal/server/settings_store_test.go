@@ -18,10 +18,10 @@ import (
 
 func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_API_KEY", "persisted-key")
 	t.Setenv("OPENAI_MODEL", "")
 	t.Setenv("OPENAI_BASE_URL", "")
-	t.Setenv("TAVILY_API_KEY", "")
+	t.Setenv("TAVILY_API_KEY", "persisted-tavily-key")
 	t.Setenv("WEAVEFLOW_PERSISTED_SETTING", "")
 
 	baseDir := t.TempDir()
@@ -33,13 +33,13 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 
 	settings := `{
-		"environment": {"TAVILY_API_KEY": "persisted-tavily-key", "WEAVEFLOW_PERSISTED_SETTING": "saved"},
+		"environment": {"WEAVEFLOW_PERSISTED_SETTING": "saved"},
+		"environment_secrets": {"TAVILY_API_KEY":{"source":"env","ref":"TAVILY_API_KEY"}},
 		"models": [
 			{
 				"id": "default",
 				"enabled": true,
 				"provider": "openai",
-				"api_key": "persisted-key",
 				"model": "gpt-persisted",
 				"base_url": "http://127.0.0.1:9999/v1"
 			},
@@ -57,6 +57,7 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	uploaded := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("persisted-graph", "v1", "persisted", settings))
 	repeatedSettings := `{
 		"environment": {"WEAVEFLOW_PERSISTED_SETTING": "saved"},
+		"environment_secrets": {"TAVILY_API_KEY":{"source":"env","ref":"TAVILY_API_KEY"}},
 		"models": [
 			{"id":"default","enabled":true,"provider":"openai","model":"gpt-persisted","base_url":"http://127.0.0.1:9999/v1"},
 			{"id":"fast","enabled":true,"provider":"mistral","api_format":"chat_completions","model":"gpt-fast","base_url":"http://127.0.0.1:9999/v1","extra_body":{"safe_prompt":true}}
@@ -67,16 +68,10 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 		t.Fatalf("upload without masked secrets created session %q, want %q", repeated.Graph.GraphSessionID, uploaded.Graph.GraphSessionID)
 	}
 
-	if err := os.Unsetenv("OPENAI_API_KEY"); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.Unsetenv("OPENAI_MODEL"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Unsetenv("OPENAI_BASE_URL"); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Unsetenv("TAVILY_API_KEY"); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Unsetenv("WEAVEFLOW_PERSISTED_SETTING"); err != nil {
@@ -120,8 +115,8 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	if settingsResponse.Models[1].Provider != "mistral" || settingsResponse.Models[1].APIFormat != "chat_completions" || settingsResponse.Models[1].ExtraBody["safe_prompt"] != true {
 		t.Fatalf("restored fast provider settings = %#v", settingsResponse.Models[1])
 	}
-	if !settingsResponse.Models[0].APIKeyConfigured || !settingsResponse.Models[1].APIKeyConfigured {
-		t.Fatalf("restored API key flags = %#v", settingsResponse.Models)
+	if !settingsResponse.Models[0].CredentialConfigured || !settingsResponse.Models[1].CredentialConfigured {
+		t.Fatalf("restored credential status = %#v", settingsResponse.Models)
 	}
 	if settingsResponse.Environment["WEAVEFLOW_PERSISTED_SETTING"] != "saved" {
 		t.Fatalf("restored environment = %#v", settingsResponse.Environment)
@@ -193,6 +188,7 @@ func TestGraphRuntimeSettingsRebuildsModelPricingAndToolGovernance(t *testing.T)
 		ToolPermissions: []string{"filesystem.write"},
 		ToolApprovals:   map[string]bool{"write_file": true},
 	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	if err := persistGraphRuntimeSettings(srv.baseDir, wantSettings); err != nil {
 		t.Fatalf("persistGraphRuntimeSettings() error = %v", err)
 	}
@@ -214,7 +210,7 @@ func TestGraphRuntimeSettingsRebuildsModelPricingAndToolGovernance(t *testing.T)
 		t.Fatalf("persisted tool governance = permissions=%#v approvals=%#v", gotSettings.ToolPermissions, gotSettings.ToolApprovals)
 	}
 
-	runtimeContext, err := srv.buildRuntimeContext(gotSettings, "test-key")
+	runtimeContext, err := srv.buildRuntimeContext(gotSettings)
 	if err != nil {
 		t.Fatalf("buildRuntimeContext() error = %v", err)
 	}
@@ -277,6 +273,7 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 	if err != nil {
 		t.Fatalf("new server: %v", err)
 	}
+	t.Setenv("OPENAI_API_KEY", "test-key")
 	runtimeContext, err := srv.buildRuntimeContext(graphRuntimeSettings{
 		Models: []graphModelSettings{{
 			ID:        core.DefaultModelID,
@@ -287,7 +284,7 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 			BaseURL:   providerServer.URL + "/v1",
 			ExtraBody: map[string]any{"custom_option": "enabled"},
 		}},
-	}, "test-key")
+	})
 	if err != nil {
 		t.Fatalf("build runtime context: %v", err)
 	}
@@ -315,13 +312,26 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 
 func TestLoadGraphRuntimeSettingsRejectsModelWithoutID(t *testing.T) {
 	baseDir := t.TempDir()
-	data := []byte(`{"version":3,"environment":{},"models":[{"enabled":true,"provider":"openai"}],"tool_permissions":[],"tool_approvals":{}}`)
+	data := []byte(`{"version":4,"environment":{},"environment_secrets":{},"models":[{"enabled":true,"provider":"openai"}],"tool_permissions":[],"tool_approvals":{}}`)
 	if err := os.WriteFile(graphRuntimeSettingsPath(baseDir), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	_, _, err := loadGraphRuntimeSettings(baseDir)
 	if err == nil || !strings.Contains(err.Error(), "id is required") {
+		t.Fatalf("loadGraphRuntimeSettings() error = %v", err)
+	}
+}
+
+func TestLoadGraphRuntimeSettingsRejectsPlaintextSecretEnvironment(t *testing.T) {
+	baseDir := t.TempDir()
+	data := []byte(`{"version":4,"environment":{"SERVICE_TOKEN":"plaintext"},"environment_secrets":{},"models":[],"tool_permissions":[],"tool_approvals":{}}`)
+	if err := os.WriteFile(graphRuntimeSettingsPath(baseDir), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err := loadGraphRuntimeSettings(baseDir)
+	if err == nil || !strings.Contains(err.Error(), "must use environment_secrets") {
 		t.Fatalf("loadGraphRuntimeSettings() error = %v", err)
 	}
 }

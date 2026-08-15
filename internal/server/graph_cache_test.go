@@ -97,8 +97,9 @@ func TestReadCachedGraphSessionHashesStoredSettingsBytes(t *testing.T) {
 		t.Fatal(err)
 	}
 	settingsData := []byte(`{
-  "version": 3,
+  "version": 4,
   "environment": {},
+  "environment_secrets": {},
   "models": [
     {
       "id": "default",

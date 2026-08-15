@@ -16,15 +16,12 @@ var (
 	ErrInvalidTrigger      = errors.New("invalid trigger")
 	ErrDisabled            = errors.New("trigger is disabled")
 	ErrBusy                = errors.New("trigger is already running")
-	ErrInvalidAPIKey       = errors.New("webhook api_key is invalid")
 	ErrInvalidPayload      = errors.New("invalid webhook payload")
 	ErrInvalidStateMapping = errors.New("invalid webhook state mapping")
 	ErrInvalidTarget       = errors.New("invalid trigger target")
 	ErrTypeMismatch        = errors.New("trigger type mismatch")
 	ErrChatReplyMissing    = errors.New("chat graph completed without a reply")
 )
-
-const APIKeyQueryParameter = "api_key"
 
 const (
 	DefaultRecordLimit      = 100
@@ -39,6 +36,7 @@ type Service struct {
 	chatConversationStore ChatConversationStore
 	resolver              RunnerResolver
 	chatRegistry          *chatchannel.Registry
+	secretResolver        chatchannel.SecretResolver
 	now                   func() time.Time
 
 	operationMu    sync.Mutex
@@ -68,6 +66,29 @@ func WithChatChannels(registry *chatchannel.Registry) ServiceOption {
 		service.chatRegistry = registry
 		return nil
 	}
+}
+
+func WithSecretResolver(resolver chatchannel.SecretResolver) ServiceOption {
+	return func(service *Service) error {
+		if resolver == nil {
+			return fmt.Errorf("secret resolver is nil")
+		}
+		service.secretResolver = resolver
+		return nil
+	}
+}
+
+func (s *Service) SetSecretResolver(resolver chatchannel.SecretResolver) error {
+	if s == nil {
+		return fmt.Errorf("trigger service is nil")
+	}
+	if resolver == nil {
+		return fmt.Errorf("secret resolver is nil")
+	}
+	s.mu.Lock()
+	s.secretResolver = resolver
+	s.mu.Unlock()
+	return nil
 }
 
 func NewService(store Store, resolver RunnerResolver, options ...ServiceOption) (*Service, error) {
@@ -118,6 +139,9 @@ func (s *Service) Create(ctx context.Context, definition Trigger) (Trigger, erro
 	if err := definition.Validate(); err != nil {
 		return Trigger{}, err
 	}
+	if err := s.validateChatChannelSecretRefs(definition); err != nil {
+		return Trigger{}, err
+	}
 	if err := validateScheduleExpression(definition); err != nil {
 		return Trigger{}, err
 	}
@@ -125,7 +149,7 @@ func (s *Service) Create(ctx context.Context, definition Trigger) (Trigger, erro
 	if err != nil {
 		return Trigger{}, err
 	}
-	channel, err := s.buildChatChannel(definition)
+	channel, err := s.buildChatChannel(ctx, definition)
 	if err != nil {
 		return Trigger{}, err
 	}
@@ -166,6 +190,9 @@ func (s *Service) Update(ctx context.Context, definition Trigger) (Trigger, erro
 	if err := definition.Validate(); err != nil {
 		return Trigger{}, err
 	}
+	if err := s.validateChatChannelSecretRefs(definition); err != nil {
+		return Trigger{}, err
+	}
 	if err := validateScheduleExpression(definition); err != nil {
 		return Trigger{}, err
 	}
@@ -173,7 +200,7 @@ func (s *Service) Update(ctx context.Context, definition Trigger) (Trigger, erro
 	if err != nil {
 		return Trigger{}, err
 	}
-	channel, err := s.buildChatChannel(definition)
+	channel, err := s.buildChatChannel(ctx, definition)
 	if err != nil {
 		return Trigger{}, err
 	}
@@ -191,6 +218,24 @@ func (s *Service) Get(ctx context.Context, id string) (Trigger, error) {
 
 func (s *Service) List(ctx context.Context) ([]Trigger, error) {
 	return s.triggerStore.List(ctx)
+}
+
+// InspectDefinitions runs maintenance against a stable definition snapshot.
+// The callback must not call a definition-mutating Service method.
+func (s *Service) InspectDefinitions(ctx context.Context, inspect func([]Trigger) error) error {
+	if s == nil {
+		return fmt.Errorf("trigger service is nil")
+	}
+	if inspect == nil {
+		return fmt.Errorf("definition inspector is nil")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+	items, err := s.triggerStore.List(ctx)
+	if err != nil {
+		return err
+	}
+	return inspect(items)
 }
 
 func (s *Service) ReplaceGraph(ctx context.Context, graphID string, items []Trigger) ([]Trigger, error) {
@@ -229,9 +274,6 @@ func (s *Service) ReplaceGraph(ctx context.Context, graphID string, items []Trig
 			return nil, ErrExists
 		}
 		if exists {
-			if item.Webhook != nil && item.Webhook.APIKey == "" && previous.Webhook != nil {
-				item.Webhook.APIKey = previous.Webhook.APIKey
-			}
 			if item.Chat != nil && previous.Chat != nil && strings.TrimSpace(item.Chat.Channel) == strings.TrimSpace(previous.Chat.Channel) {
 				item.Chat.ChannelConfig = s.chatRegistry.MergeWriteOnlyConfig(
 					item.Chat.Channel,
@@ -252,6 +294,9 @@ func (s *Service) ReplaceGraph(ctx context.Context, graphID string, items []Trig
 		if err := item.Validate(); err != nil {
 			return nil, err
 		}
+		if err := s.validateChatChannelSecretRefs(item); err != nil {
+			return nil, err
+		}
 		if err := validateScheduleExpression(item); err != nil {
 			return nil, err
 		}
@@ -259,7 +304,7 @@ func (s *Service) ReplaceGraph(ctx context.Context, graphID string, items []Trig
 		if err != nil {
 			return nil, err
 		}
-		channel, err := s.buildChatChannel(item)
+		channel, err := s.buildChatChannel(ctx, item)
 		if err != nil {
 			return nil, err
 		}
@@ -363,6 +408,9 @@ func (s *Service) Start(ctx context.Context) error {
 		if err := item.Validate(); err != nil {
 			return fmt.Errorf("load trigger %q: %w", item.ID, err)
 		}
+		if err := s.validateChatChannelSecretRefs(item); err != nil {
+			return fmt.Errorf("load trigger %q: %w", item.ID, err)
+		}
 		if err := validateScheduleExpression(item); err != nil {
 			return fmt.Errorf("load trigger %q: %w", item.ID, err)
 		}
@@ -373,7 +421,7 @@ func (s *Service) Start(ctx context.Context) error {
 		if schedule != nil {
 			schedules[item.ID] = schedule
 		}
-		channel, err := s.buildChatChannel(item)
+		channel, err := s.buildChatChannel(ctx, item)
 		if err != nil {
 			return fmt.Errorf("load trigger %q: %w", item.ID, err)
 		}

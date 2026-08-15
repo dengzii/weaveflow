@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/dengzii/weaveflow/dsl"
 )
 
 func currentGraphEnvironment() map[string]string {
@@ -14,7 +16,9 @@ func currentGraphEnvironment() map[string]string {
 		"OPENAI_ORGANIZATION",
 	}
 	for _, preset := range graphEnvironmentPresets() {
-		keys = append(keys, preset.Key)
+		if !preset.Secret {
+			keys = append(keys, preset.Key)
+		}
 	}
 	for _, key := range keys {
 		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
@@ -24,9 +28,19 @@ func currentGraphEnvironment() map[string]string {
 	return environment
 }
 
+func currentGraphEnvironmentSecrets() map[string]dsl.SecretRef {
+	secrets := map[string]dsl.SecretRef{}
+	for _, preset := range graphEnvironmentPresets() {
+		if preset.Secret && strings.TrimSpace(os.Getenv(preset.Key)) != "" {
+			secrets[preset.Key] = dsl.SecretRef{Source: "env", Ref: preset.Key}
+		}
+	}
+	return secrets
+}
+
 func graphEnvironmentPresets() []graphEnvironmentPreset {
 	return []graphEnvironmentPreset{
-		{Key: "TAVILY_API_KEY", Type: "string"},
+		{Key: "TAVILY_API_KEY", Type: "string", Secret: true},
 		{Key: "WEAVEFLOW_TOOL_WORKDIR", Type: "string"},
 		{Key: "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", DefaultValue: "false", Type: "boolean"},
 		{Key: "WEAVEFLOW_BASH_TIMEOUT", DefaultValue: "120000", Type: "integer"},

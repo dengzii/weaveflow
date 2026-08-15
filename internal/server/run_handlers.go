@@ -99,15 +99,15 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 		writeError(c, statusForRequestError(err), err)
 		return
 	}
-	runner := s.requireRunControlRunner(c, runID)
-	if runner == nil {
+	session, ok := s.requireRunControlSession(c, runID)
+	if !ok {
 		return
 	}
-	ctx, cancel := s.deriveRunContext(c)
+	ctx, cancel := deriveRunContextFromBase(c.Request.Context(), session.baseContext)
 	defer cancel()
 
-	run, finalState, err := runner.Resume(ctx, runID, input)
-	result := s.makeRunResult(ctx, runner, run, finalState)
+	run, finalState, err := session.runner.Resume(ctx, runID, input)
+	result := s.makeRunResult(ctx, session.runner, run, finalState)
 	if err != nil {
 		writeErrorData(c, statusForError(err), err, result)
 		return
@@ -235,6 +235,25 @@ func (s *Server) requireRunControlRunner(c *gin.Context, runID string) *runtime.
 		return nil
 	}
 	return runner
+}
+
+func (s *Server) requireRunControlSession(c *gin.Context, runID string) (graphRuntimeSession, bool) {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return graphRuntimeSession{}, false
+	}
+	runner, err := s.runControlRunner(c.Request.Context(), graphID, runID)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return graphRuntimeSession{}, false
+	}
+	session := s.runtime.session(graphID, runner.GraphSessionID())
+	if session.runner != runner {
+		err := fmt.Errorf("%w: graph session %q is not loaded", errRunnerNotConfigured, runner.GraphSessionID())
+		writeError(c, statusForError(err), err)
+		return graphRuntimeSession{}, false
+	}
+	return session, true
 }
 
 func (s *Server) handleDeleteRun(c *gin.Context) {

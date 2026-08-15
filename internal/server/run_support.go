@@ -166,6 +166,9 @@ func decodeStartRunRequest(c *gin.Context) (*state.State, error) {
 	if request.InitialState == nil {
 		return state.NewState(), nil
 	}
+	if err := validateExternalRunState(request.InitialState); err != nil {
+		return nil, err
+	}
 	return state.FromMap(request.InitialState), nil
 }
 
@@ -177,7 +180,26 @@ func decodeResumeRunRequest(c *gin.Context) (*state.State, error) {
 	if request.Input == nil {
 		return state.NewState(), nil
 	}
+	if err := validateExternalRunState(request.Input); err != nil {
+		return nil, err
+	}
 	return state.FromMap(request.Input), nil
+}
+
+func validateExternalRunState(values map[string]any) error {
+	for section, value := range values {
+		switch section {
+		case state.SectionShared, state.SectionScopes:
+			if _, ok := value.(map[string]any); !ok {
+				return invalidRequestf("state section %q must be an object", section)
+			}
+		case state.SectionInternal, state.SectionRuntime:
+			return invalidRequestf("state section %q is reserved", section)
+		default:
+			return invalidRequestf("state section %q is unknown", section)
+		}
+	}
+	return nil
 }
 
 func decodeRunRequest(c *gin.Context, target any) error {

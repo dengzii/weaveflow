@@ -302,16 +302,18 @@ resume runs, stream live events, and inspect persisted checkpoints, events, and 
 Start the API server with:
 
 ```bash
-go run ./cmd/server -addr :8080 -data .local/server
+go run ./cmd/server -data .local/server
 ```
 
 To preload a graph definition, including the ready-to-edit supervisor example:
 
 ```bash
-go run ./cmd/server -addr :8080 -data .local/server -graph examples/supervisor_mode/graph.json
+go run ./cmd/server -data .local/server -graph examples/supervisor_mode/graph.json
 ```
 
-If `OPENAI_API_KEY` is set, model-backed nodes are enabled. The server also wires the bundled `read`, `write`, `edit`,
+Set or replace each model API key in Graph Settings. The server stores one protected local credential file per model ID;
+Graph Session settings and API responses never contain the key. `OPENAI_API_KEY` remains the fallback when a model has
+no server-managed key. The server also wires the bundled `read`, `write`, `edit`,
 `glob`, `grep`, `calculator`, `current_time`, and `web_fetch` tools into the runtime context.
 
 The API routes are mounted at the root by default. Use `-prefix /debug` to mount them under a path prefix.
@@ -328,6 +330,10 @@ Open the printed dev-server URL; the app redirects to `/app/graph`. The WebUI co
 `http://localhost:8080` by default. Change the Backend base URL under `/app/settings` to use another server; the value
 may include the server route prefix, for example `http://localhost:8080/debug`.
 
+The server listens on `127.0.0.1:8080` by default. A non-loopback `-addr` requires `WEAVEFLOW_MANAGEMENT_TOKEN`; enter
+the same token under `/app/settings`. File-backed environment and Trigger secret references require `-secret-dir`, and
+their relative paths must remain below that directory.
+
 `bun run build` creates a standalone static site in `internal/web/dist`. For deployment-wide configuration, edit the
 unbundled `dist/config.js`:
 
@@ -341,7 +347,7 @@ The browser setting overrides `config.js`. A separately hosted WebUI also requir
 server. Local WebUI origins on port `3031` are allowed by default; configure other origins explicitly:
 
 ```bash
-go run ./cmd/server -addr :8080 -prefix /debug -cors-origins https://web.example.com
+WEAVEFLOW_MANAGEMENT_TOKEN=<management-token> go run ./cmd/server -addr 0.0.0.0:8080 -prefix /debug -cors-origins https://web.example.com
 ```
 
 ## Examples

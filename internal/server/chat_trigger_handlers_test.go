@@ -10,47 +10,150 @@ import (
 	"time"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/gin-gonic/gin"
 )
 
-type chatHandlerStarter struct{}
+type chatHandlerStarter struct {
+	initial *state.State
+	calls   int
+}
 
-func (chatHandlerStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+type countingChatTriggerStore struct {
+	trigger.Store
+	historyCreates      int
+	conversationCreates int
+}
+
+func (store *countingChatTriggerStore) CreateChatHistory(ctx context.Context, history trigger.ChatHistory) (trigger.ChatHistory, error) {
+	store.historyCreates++
+	return store.Store.CreateChatHistory(ctx, history)
+}
+
+func (store *countingChatTriggerStore) CreateChatConversation(ctx context.Context, conversation trigger.ChatConversation) (trigger.ChatConversation, error) {
+	store.conversationCreates++
+	return store.Store.CreateChatConversation(ctx, conversation)
+}
+
+func (starter *chatHandlerStarter) Start(ctx context.Context, initial *state.State) (runtime.RunRecord, *state.State, error) {
+	starter.initial = initial.Clone()
+	starter.calls++
 	if err := chatcap.EmitReply(ctx, chatcap.Reply{Kind: chatcap.ReplyMessage, Content: "first", NodeID: "reply"}); err != nil {
 		return runtime.RunRecord{}, initial, err
 	}
 	return runtime.RunRecord{RunID: "chat-run", Status: runtime.RunStatusCompleted}, initial, nil
 }
 
-func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
-	store, err := trigger.NewFileStore(t.TempDir())
+func TestAuthenticatedChatExecutesAuthorizedTriggerSnapshot(t *testing.T) {
+	fileStore, err := trigger.NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
+	store := &authorizedSnapshotStore{Store: fileStore}
+	starter := &chatHandlerStarter{}
 	service, err := trigger.NewService(store, trigger.RunnerResolverFunc(func(context.Context, trigger.Target) (trigger.RunStarter, error) {
-		return chatHandlerStarter{}, nil
+		return starter, nil
 	}))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Create(context.Background(), trigger.Trigger{
-		ID: "chat", Type: trigger.TypeChat, Enabled: true, Target: trigger.Target{GraphID: "graph"},
-		Chat: &trigger.ChatSpec{},
-	}); err != nil {
+	authorized, err := service.Create(context.Background(), trigger.Trigger{
+		ID: "snapshot-chat", Type: trigger.TypeChat, Enabled: true,
+		Target:       trigger.Target{GraphID: "graph"},
+		Credential:   &dsl.SecretRef{Source: "env", Ref: "TRIGGER_TOKEN"},
+		InitialState: map[string]any{"shared": map[string]any{"snapshot": "authorized"}},
+		Chat:         &trigger.ChatSpec{},
+	})
+	if err != nil {
 		t.Fatal(err)
 	}
-	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), TriggerService: service})
+	store.authorized = authorized
+	store.replacement = authorized
+	store.replacement.Credential = &dsl.SecretRef{Source: "env", Ref: "ROTATED_TRIGGER_TOKEN"}
+	store.replacement.InitialState = map[string]any{"shared": map[string]any{"snapshot": "replacement"}}
+
+	credentialResolver := &triggerCredentialResolver{value: "authorized-secret"}
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), TriggerService: service, SecretResolver: credentialResolver})
 	if err != nil {
 		t.Fatal(err)
 	}
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
-	buffered := httptest.NewRecorder()
+	response := requestWithHeader(engine, http.MethodPost, "/graphs/graph/triggers/snapshot-chat/chat", `{"message_id":"m1","user_id":"u1","conversation_id":"c1","content":"hello"}`, "Authorization", "Bearer authorized-secret")
+	if response.Code != http.StatusOK {
+		t.Fatalf("snapshot chat status = %d, body = %s", response.Code, response.Body.String())
+	}
+	if store.getCalls != 1 {
+		t.Fatalf("trigger reads = %d, want one authenticated snapshot", store.getCalls)
+	}
+	value, ok := state.ReadPath(starter.initial, "shared.snapshot")
+	if !ok || value != "authorized" {
+		t.Fatalf("executed trigger snapshot = %#v, want authorized", value)
+	}
+}
+
+func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
+	fileStore, err := trigger.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &countingChatTriggerStore{Store: fileStore}
+	starter := &chatHandlerStarter{}
+	service, err := trigger.NewService(store, trigger.RunnerResolverFunc(func(context.Context, trigger.Target) (trigger.RunStarter, error) {
+		return starter, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), trigger.Trigger{
+		ID: "chat", Type: trigger.TypeChat, Enabled: true, Target: trigger.Target{GraphID: "graph"},
+		Credential: &dsl.SecretRef{Source: "env", Ref: "TRIGGER_TOKEN"},
+		Chat:       &trigger.ChatSpec{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	credentialResolver := &triggerCredentialResolver{value: "chat-secret"}
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), TriggerService: service, SecretResolver: credentialResolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+
+	missingCredential := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"message_id":"m1","user_id":"u1","conversation_id":"c1","content":"hello"}`))
+	engine.ServeHTTP(missingCredential, request)
+	if missingCredential.Code != http.StatusUnauthorized {
+		t.Fatalf("missing credential status = %d body = %s", missingCredential.Code, missingCredential.Body.String())
+	}
+	wrongCredential := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"message_id":"m1","user_id":"u1","conversation_id":"c1","content":"hello"}`))
+	request.Header.Set("Authorization", "Bearer wrong")
+	engine.ServeHTTP(wrongCredential, request)
+	if wrongCredential.Code != http.StatusForbidden {
+		t.Fatalf("wrong credential status = %d body = %s", wrongCredential.Code, wrongCredential.Body.String())
+	}
+	if starter.calls != 0 {
+		t.Fatalf("unauthorized chat requests started %d runs", starter.calls)
+	}
+	records, err := service.ListRecords(context.Background(), "chat", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 0 {
+		t.Fatalf("unauthorized chat requests created records: %#v", records)
+	}
+	if store.historyCreates != 0 || store.conversationCreates != 0 {
+		t.Fatalf("unauthorized chat requests created history=%d conversations=%d", store.historyCreates, store.conversationCreates)
+	}
+
+	buffered := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"message_id":"m1","user_id":"u1","conversation_id":"c1","content":"hello"}`))
+	request.Header.Set("Authorization", "Bearer chat-secret")
 	engine.ServeHTTP(buffered, request)
 	if buffered.Code != http.StatusOK {
 		t.Fatalf("buffered status = %d body = %s", buffered.Code, buffered.Body.String())
@@ -70,9 +173,29 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 	if response.Data.Result.FinalReply != "first" || response.Data.Result.ConversationID == "" || response.Data.Result.ConversationID == "c1" || response.Data.Replies[1].Content != "" {
 		t.Fatalf("buffered result = %#v", response.Data.Result)
 	}
+	if starter.calls != 1 || store.historyCreates != 1 || store.conversationCreates != 1 {
+		t.Fatalf("authorized chat side effects = runs %d history %d conversations %d", starter.calls, store.historyCreates, store.conversationCreates)
+	}
+
+	credentialResolver.value = "rotated-chat-secret"
+	stale := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"hello"}`))
+	request.Header.Set("Authorization", "Bearer chat-secret")
+	engine.ServeHTTP(stale, request)
+	if stale.Code != http.StatusForbidden {
+		t.Fatalf("stale chat credential status = %d body = %s", stale.Code, stale.Body.String())
+	}
+	records, err = service.ListRecords(context.Background(), "chat", 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if starter.calls != 1 || len(records) != 1 || store.historyCreates != 1 || store.conversationCreates != 1 {
+		t.Fatalf("stale chat credential changed side effects = runs %d records %d history %d conversations %d", starter.calls, len(records), store.historyCreates, store.conversationCreates)
+	}
 
 	streamed := httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"hello"}`))
+	request.Header.Set("Authorization", "Bearer rotated-chat-secret")
 	request.Header.Set("Accept", "text/event-stream")
 	engine.ServeHTTP(streamed, request)
 	if streamed.Code != http.StatusOK || streamed.Header().Get("Content-Type") != "text/event-stream" {
@@ -86,6 +209,7 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 
 	newConversation := httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"user_id":"u1","conversation_id":"c1","content":"/new"}`))
+	request.Header.Set("Authorization", "Bearer rotated-chat-secret")
 	engine.ServeHTTP(newConversation, request)
 	if newConversation.Code != http.StatusOK {
 		t.Fatalf("new conversation status = %d body = %s", newConversation.Code, newConversation.Body.String())
@@ -105,6 +229,7 @@ func TestChatTriggerRouteSupportsBufferedAndStreamingReplies(t *testing.T) {
 
 	missingIdentity := httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/graphs/graph/triggers/chat/chat", strings.NewReader(`{"content":"hello"}`))
+	request.Header.Set("Authorization", "Bearer rotated-chat-secret")
 	engine.ServeHTTP(missingIdentity, request)
 	if missingIdentity.Code != http.StatusBadRequest {
 		t.Fatalf("missing identity status = %d body = %s", missingIdentity.Code, missingIdentity.Body.String())

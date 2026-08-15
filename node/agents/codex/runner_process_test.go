@@ -133,10 +133,15 @@ func newHelperProcessRunner(t *testing.T, environment map[string]string, modelCo
 		t.Fatal(err)
 	}
 	workspace := t.TempDir()
+	environmentNames := []string{helperEnvironment}
+	for name := range environment {
+		environmentNames = append(environmentNames, name)
+	}
 	runner, err := newProcessRunner(RunnerConfig{
 		Executable:            executable,
 		Sandbox:               SandboxReadOnly,
 		AllowedWorkspaceRoots: []string{workspace},
+		EnvironmentNames:      environmentNames,
 	}, false)
 	if err != nil {
 		t.Fatal(err)

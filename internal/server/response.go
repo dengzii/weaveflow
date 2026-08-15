@@ -64,8 +64,6 @@ func errorCode(status int, err error) string {
 		return "request_too_large"
 	case errors.Is(err, errInvalidGraphDefinition):
 		return "invalid_graph_definition"
-	case errors.Is(err, trigger.ErrInvalidAPIKey):
-		return "invalid_api_key"
 	case errors.Is(err, trigger.ErrDisabled):
 		return "trigger_disabled"
 	case errors.Is(err, runtime.ErrRunControlNotAllowed):
@@ -81,6 +79,8 @@ func errorCode(status int, err error) string {
 		return "invalid_request"
 	case http.StatusUnauthorized:
 		return "unauthorized"
+	case http.StatusForbidden:
+		return "forbidden"
 	case http.StatusNotFound:
 		return "not_found"
 	case http.StatusConflict:
@@ -110,8 +110,6 @@ func statusForError(err error) int {
 		return http.StatusNotFound
 	case errors.Is(err, trigger.ErrExists), errors.Is(err, trigger.ErrBusy), errors.Is(err, trigger.ErrDisabled):
 		return http.StatusConflict
-	case errors.Is(err, trigger.ErrInvalidAPIKey):
-		return http.StatusUnauthorized
 	case errors.Is(err, errRequestBodyTooLarge), errors.Is(err, errWebhookBodyTooLarge):
 		return http.StatusRequestEntityTooLarge
 	case errors.Is(err, errInvalidGraphDefinition):

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/runtime"
 )
 
@@ -70,10 +71,11 @@ func TestFileStoreUpdateAtomicallyReplacesTrigger(t *testing.T) {
 		Enabled:     true,
 		Concurrency: ConcurrencyParallel,
 		Target:      Target{GraphID: "graph-1"},
+		Credential:  &dsl.SecretRef{Source: "env", Ref: "TRIGGER_TOKEN"},
 		InitialState: map[string]any{
 			"shared": map[string]any{"tenant": "tenant-1"},
 		},
-		Webhook:   &WebhookSpec{APIKey: "first"},
+		Webhook:   &WebhookSpec{},
 		CreatedAt: time.Now().UTC(),
 		UpdatedAt: time.Now().UTC(),
 	}
@@ -81,7 +83,7 @@ func TestFileStoreUpdateAtomicallyReplacesTrigger(t *testing.T) {
 		t.Fatal(err)
 	}
 	item.Name = "updated"
-	item.Webhook.APIKey = "second"
+	item.Credential = &dsl.SecretRef{Source: "file", Ref: "trigger.token"}
 	if err := store.Update(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +91,7 @@ func TestFileStoreUpdateAtomicallyReplacesTrigger(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.Name != "updated" || stored.Webhook == nil || stored.Webhook.APIKey != "second" {
+	if stored.Name != "updated" || stored.Webhook == nil || stored.Credential == nil || stored.Credential.Source != "file" || stored.Credential.Ref != "trigger.token" {
 		t.Fatalf("updated trigger = %#v", stored)
 	}
 	shared, ok := stored.InitialState["shared"].(map[string]any)

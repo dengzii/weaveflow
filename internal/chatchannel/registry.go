@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	chatcap "github.com/dengzii/weaveflow/capability/chat"
+	"github.com/dengzii/weaveflow/dsl"
 )
 
 const HTTPChannelID = "http"
@@ -105,6 +107,10 @@ type SetupFactory interface {
 
 type CredentialIdentifier interface {
 	CredentialID(map[string]any) string
+}
+
+type SecretResolver interface {
+	Resolve(context.Context, dsl.SecretRef) (string, error)
 }
 
 type Registry struct {
@@ -275,6 +281,77 @@ func (r *Registry) MergeWriteOnlyConfig(id string, stored, incoming map[string]a
 	return result
 }
 
+func (r *Registry) MapWriteOnlyConfig(id string, config map[string]any, mapper func(string, any) (any, error)) (map[string]any, error) {
+	definition, ok := r.Definition(id)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q", ErrChannelNotFound, strings.TrimSpace(id))
+	}
+	if mapper == nil {
+		return nil, errors.New("write-only config mapper is nil")
+	}
+	result := cloneConfig(config)
+	if err := mapWriteOnlyConfig(definition.ConfigSchema, result, "", mapper); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (r *Registry) ValidateSecretRefs(id string, config map[string]any) error {
+	_, err := r.MapWriteOnlyConfig(id, config, func(path string, value any) (any, error) {
+		ref, err := ParseSecretRef(value)
+		if err != nil {
+			return nil, fmt.Errorf("channel %q config %q: %w", strings.TrimSpace(id), path, err)
+		}
+		return ref, nil
+	})
+	return err
+}
+
+func (r *Registry) ResolveConfig(ctx context.Context, id string, config map[string]any, resolver SecretResolver) (map[string]any, error) {
+	return r.MapWriteOnlyConfig(id, config, func(path string, value any) (any, error) {
+		if resolver == nil {
+			return nil, fmt.Errorf("channel %q config %q secret resolver is required", strings.TrimSpace(id), path)
+		}
+		ref, err := ParseSecretRef(value)
+		if err != nil {
+			return nil, fmt.Errorf("channel %q config %q: %w", strings.TrimSpace(id), path, err)
+		}
+		resolved, err := resolver.Resolve(ctx, ref)
+		if err != nil {
+			return nil, fmt.Errorf("resolve channel %q config %q: %w", strings.TrimSpace(id), path, err)
+		}
+		if strings.TrimSpace(resolved) == "" {
+			return nil, fmt.Errorf("resolve channel %q config %q: secret is empty", strings.TrimSpace(id), path)
+		}
+		return resolved, nil
+	})
+}
+
+func ParseSecretRef(value any) (dsl.SecretRef, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return dsl.SecretRef{}, fmt.Errorf("invalid secret reference: %w", err)
+	}
+	var ref dsl.SecretRef
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&ref); err != nil {
+		return dsl.SecretRef{}, fmt.Errorf("invalid secret reference: %w", err)
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			err = errors.New("multiple JSON values")
+		}
+		return dsl.SecretRef{}, fmt.Errorf("invalid secret reference: %w", err)
+	}
+	ref.Source = strings.ToLower(strings.TrimSpace(ref.Source))
+	ref.Ref = strings.TrimSpace(ref.Ref)
+	if err := ref.Validate(); err != nil {
+		return dsl.SecretRef{}, fmt.Errorf("invalid secret reference: %w", err)
+	}
+	return ref, nil
+}
+
 func (r *Registry) factory(id string) (Factory, bool) {
 	if r == nil {
 		return nil, false
@@ -360,6 +437,40 @@ func preserveWriteOnly(schema, stored, incoming map[string]any) {
 			preserveWriteOnly(property, storedChild, incomingChild)
 		}
 	}
+}
+
+func mapWriteOnlyConfig(schema, value map[string]any, prefix string, mapper func(string, any) (any, error)) error {
+	properties, _ := schema["properties"].(map[string]any)
+	for key, rawProperty := range properties {
+		property, _ := rawProperty.(map[string]any)
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
+		}
+		if writeOnly, _ := property["writeOnly"].(bool); writeOnly {
+			current, exists := value[key]
+			if !exists {
+				continue
+			}
+			mapped, err := mapper(path, current)
+			if err != nil {
+				return err
+			}
+			if mapped == nil {
+				delete(value, key)
+				continue
+			}
+			value[key] = mapped
+			continue
+		}
+		child, _ := value[key].(map[string]any)
+		if child != nil {
+			if err := mapWriteOnlyConfig(property, child, path, mapper); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func emptyWriteOnlyValue(value any) bool {

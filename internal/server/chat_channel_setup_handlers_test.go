@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -87,17 +89,8 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 	if err := channels.Register(&setupHandlerTestFactory{}); err != nil {
 		t.Fatal(err)
 	}
-	store, err := trigger.NewFileStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	service, err := trigger.NewService(
-		store,
-		trigger.RunnerResolverFunc(func(context.Context, trigger.Target) (trigger.RunStarter, error) {
-			return &triggerTestStarter{}, nil
-		}),
-		trigger.WithChatChannels(channels),
-	)
+	triggerDirectory := t.TempDir()
+	store, err := trigger.NewFileStore(triggerDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -107,11 +100,13 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 		GraphID:        "graph",
 		GraphVersion:   "v1",
 		GraphSessionID: "setup-session",
-		TriggerService: service,
+		TriggerStore:   store,
+		ChatChannels:   channels,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	service := srv.TriggerService()
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -174,8 +169,20 @@ func TestChatChannelSetupCreatesTriggerWithoutExposingCredential(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if persisted.Chat.ChannelConfig["bot_token"] != "setup-secret" || persisted.Chat.ChannelConfig["base_url"] != "https://example.test" {
-		t.Fatalf("persisted config = %#v", persisted.Chat.ChannelConfig)
+	secretRef, err := chatchannel.ParseSecretRef(persisted.Chat.ChannelConfig["bot_token"])
+	if err != nil || secretRef.Source != managedSecretSource || persisted.Chat.ChannelConfig["base_url"] != "https://example.test" {
+		t.Fatalf("persisted config = %#v, err = %v", persisted.Chat.ChannelConfig, err)
+	}
+	storedData, err := os.ReadFile(filepath.Join(triggerDirectory, "setup-chat.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(storedData), "setup-secret") || !strings.Contains(string(storedData), `"source": "managed"`) {
+		t.Fatalf("stored setup trigger contains an invalid credential: %s", storedData)
+	}
+	resolvedConfig, err := service.ResolveChatChannelConfig(context.Background(), persisted)
+	if err != nil || resolvedConfig["bot_token"] != "setup-secret" {
+		t.Fatalf("resolved setup config = %#v, err = %v", resolvedConfig, err)
 	}
 
 	reuse := httptest.NewRecorder()

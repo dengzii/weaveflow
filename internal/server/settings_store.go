@@ -7,21 +7,23 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/llms/openai"
 )
 
 const (
 	graphRuntimeSettingsFileName = "runtime-settings.json"
-	graphRuntimeSettingsVersion  = 3
+	graphRuntimeSettingsVersion  = 4
 )
 
 type graphRuntimeSettingsFile struct {
-	Version         int                      `json:"version"`
-	Environment     map[string]string        `json:"environment"`
-	Models          []graphModelSettingsFile `json:"models"`
-	ToolPermissions []string                 `json:"tool_permissions"`
-	ToolApprovals   map[string]bool          `json:"tool_approvals"`
+	Version            int                      `json:"version"`
+	Environment        map[string]string        `json:"environment"`
+	EnvironmentSecrets map[string]dsl.SecretRef `json:"environment_secrets"`
+	Models             []graphModelSettingsFile `json:"models"`
+	ToolPermissions    []string                 `json:"tool_permissions"`
+	ToolApprovals      map[string]bool          `json:"tool_approvals"`
 }
 
 type graphModelSettingsFile struct {
@@ -32,7 +34,6 @@ type graphModelSettingsFile struct {
 	Model     string            `json:"model,omitempty"`
 	BaseURL   string            `json:"base_url,omitempty"`
 	ExtraBody map[string]any    `json:"extra_body,omitempty"`
-	APIKey    string            `json:"api_key,omitempty"`
 	Pricing   llms.ModelPricing `json:"pricing,omitempty"`
 }
 
@@ -45,12 +46,37 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 	if err != nil {
 		return graphRuntimeSettings{}, false, fmt.Errorf("read graph runtime settings: %w", err)
 	}
+	var header struct {
+		Version int `json:"version"`
+	}
+	if err := json.Unmarshal(data, &header); err != nil {
+		return graphRuntimeSettings{}, false, fmt.Errorf("decode graph runtime settings version: %w", err)
+	}
+	if header.Version != graphRuntimeSettingsVersion {
+		return graphRuntimeSettings{}, false, fmt.Errorf("unsupported graph runtime settings version %d", header.Version)
+	}
 	var stored graphRuntimeSettingsFile
 	if err := decodeStrictJSON(data, &stored); err != nil {
 		return graphRuntimeSettings{}, false, fmt.Errorf("decode graph runtime settings: %w", err)
 	}
-	if stored.Version != graphRuntimeSettingsVersion {
-		return graphRuntimeSettings{}, false, fmt.Errorf("unsupported graph runtime settings version %d", stored.Version)
+	for name := range stored.Environment {
+		if err := validateEnvironmentName(strings.TrimSpace(name)); err != nil {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings environment: %w", err)
+		}
+		if isSecretEnvironmentName(name) {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings environment variable %q must use environment_secrets", name)
+		}
+	}
+	for name, ref := range stored.EnvironmentSecrets {
+		if err := validateEnvironmentName(strings.TrimSpace(name)); err != nil {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings environment secret: %w", err)
+		}
+		if !isSecretEnvironmentName(name) {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings environment secret name %q must be secret-like", name)
+		}
+		if _, err := normalizeSecretRef(ref); err != nil {
+			return graphRuntimeSettings{}, false, fmt.Errorf("graph runtime settings environment secret %q: %w", name, err)
+		}
 	}
 	seenModelIDs := make(map[string]struct{}, len(stored.Models))
 	for index, model := range stored.Models {
@@ -76,26 +102,24 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 		stored.Models[index].Pricing = pricing
 	}
 	settings := graphRuntimeSettings{
-		Environment:     stored.Environment,
-		Models:          make([]graphModelSettings, 0, len(stored.Models)),
-		ToolPermissions: stored.ToolPermissions,
-		ToolApprovals:   stored.ToolApprovals,
+		Environment:        stored.Environment,
+		EnvironmentSecrets: stored.EnvironmentSecrets,
+		Models:             make([]graphModelSettings, 0, len(stored.Models)),
+		ToolPermissions:    stored.ToolPermissions,
+		ToolApprovals:      stored.ToolApprovals,
 	}
 	for _, model := range stored.Models {
 		settings.Models = append(settings.Models, graphModelSettings{
-			ID:               model.ID,
-			Enabled:          model.Enabled,
-			Provider:         model.Provider,
-			APIFormat:        model.APIFormat,
-			Model:            model.Model,
-			BaseURL:          model.BaseURL,
-			ExtraBody:        cloneGraphModelExtraBody(model.ExtraBody),
-			APIKeyConfigured: strings.TrimSpace(model.APIKey) != "",
-			APIKey:           strings.TrimSpace(model.APIKey),
-			Pricing:          model.Pricing,
+			ID:        model.ID,
+			Enabled:   model.Enabled,
+			Provider:  model.Provider,
+			APIFormat: model.APIFormat,
+			Model:     model.Model,
+			BaseURL:   model.BaseURL,
+			ExtraBody: cloneGraphModelExtraBody(model.ExtraBody),
+			Pricing:   model.Pricing,
 		})
 	}
-	markGraphModelAPIKeys(&settings, firstGraphModelAPIKey(settings))
 	return normalizedGraphSettings(settings), true, nil
 }
 
@@ -113,11 +137,12 @@ func persistGraphRuntimeSettings(baseDir string, settings graphRuntimeSettings) 
 func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
 	settings = normalizedGraphSettings(settings)
 	stored := graphRuntimeSettingsFile{
-		Version:         graphRuntimeSettingsVersion,
-		Environment:     settings.Environment,
-		Models:          make([]graphModelSettingsFile, 0, len(settings.Models)),
-		ToolPermissions: settings.ToolPermissions,
-		ToolApprovals:   settings.ToolApprovals,
+		Version:            graphRuntimeSettingsVersion,
+		Environment:        settings.Environment,
+		EnvironmentSecrets: settings.EnvironmentSecrets,
+		Models:             make([]graphModelSettingsFile, 0, len(settings.Models)),
+		ToolPermissions:    settings.ToolPermissions,
+		ToolApprovals:      settings.ToolApprovals,
 	}
 	for _, model := range settings.Models {
 		stored.Models = append(stored.Models, graphModelSettingsFile{
@@ -128,7 +153,6 @@ func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
 			Model:     model.Model,
 			BaseURL:   model.BaseURL,
 			ExtraBody: cloneGraphModelExtraBody(model.ExtraBody),
-			APIKey:    strings.TrimSpace(model.APIKey),
 			Pricing:   model.Pricing,
 		})
 	}

@@ -23,22 +23,45 @@ func (s *Service) InvokeChat(ctx context.Context, id string, message chatcap.Inb
 	if s == nil {
 		return ChatResult{}, fmt.Errorf("trigger service is nil")
 	}
-	if ctx == nil {
-		ctx = context.Background()
-	}
-	if sink == nil {
-		return ChatResult{}, chatcap.ErrReplySinkUnavailable
-	}
-	message = message.Normalize()
-	if err := message.Validate(); err != nil {
-		return ChatResult{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	ctx, message, err := prepareChatInvocation(ctx, message, sink)
+	if err != nil {
+		return ChatResult{}, err
 	}
 	item, err := s.triggerStore.Get(ctx, id)
 	if err != nil {
 		return ChatResult{}, err
 	}
+	return s.invokeChatTrigger(ctx, item, message, sink)
+}
+
+func (s *Service) InvokeChatTrigger(ctx context.Context, item Trigger, message chatcap.InboundMessage, sink chatcap.ReplySink) (ChatResult, error) {
+	if s == nil {
+		return ChatResult{}, fmt.Errorf("trigger service is nil")
+	}
+	ctx, message, err := prepareChatInvocation(ctx, message, sink)
+	if err != nil {
+		return ChatResult{}, err
+	}
+	return s.invokeChatTrigger(ctx, item, message, sink)
+}
+
+func prepareChatInvocation(ctx context.Context, message chatcap.InboundMessage, sink chatcap.ReplySink) (context.Context, chatcap.InboundMessage, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if sink == nil {
+		return nil, chatcap.InboundMessage{}, chatcap.ErrReplySinkUnavailable
+	}
+	message = message.Normalize()
+	if err := message.Validate(); err != nil {
+		return nil, chatcap.InboundMessage{}, fmt.Errorf("%w: %v", ErrInvalidPayload, err)
+	}
+	return ctx, message, nil
+}
+
+func (s *Service) invokeChatTrigger(ctx context.Context, item Trigger, message chatcap.InboundMessage, sink chatcap.ReplySink) (ChatResult, error) {
 	if item.Type != TypeChat {
-		return ChatResult{}, fmt.Errorf("%w: trigger %q is not a chat trigger", ErrTypeMismatch, id)
+		return ChatResult{}, fmt.Errorf("%w: trigger %q is not a chat trigger", ErrTypeMismatch, item.ID)
 	}
 	if !item.Enabled {
 		return ChatResult{}, ErrDisabled

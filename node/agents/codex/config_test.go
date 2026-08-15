@@ -45,6 +45,7 @@ func TestRunnerConfigFromEnvironment(t *testing.T) {
 	t.Setenv(codexMaxStdoutBytesEnvironment, "1024")
 	t.Setenv(codexMaxStderrBytesEnvironment, "512")
 	t.Setenv(codexMaxConcurrencyEnvironment, "3")
+	t.Setenv(codexEnvironmentNamesEnvironment, "TASK_TOKEN, TASK_ENDPOINT")
 
 	config, err := RunnerConfigFromEnvironment()
 	if err != nil {
@@ -55,6 +56,9 @@ func TestRunnerConfigFromEnvironment(t *testing.T) {
 	}
 	if len(config.AllowedWorkspaceRoots) != 2 || config.AllowedWorkspaceRoots[0] != firstRoot || config.AllowedWorkspaceRoots[1] != secondRoot {
 		t.Fatalf("allowed roots = %#v", config.AllowedWorkspaceRoots)
+	}
+	if strings.Join(config.EnvironmentNames, ",") != "TASK_TOKEN,TASK_ENDPOINT" {
+		t.Fatalf("environment names = %#v", config.EnvironmentNames)
 	}
 }
 
@@ -136,22 +140,29 @@ func TestResolveCodexWorkspaceRejectsPathOutsideAllowedRoot(t *testing.T) {
 	}
 }
 
-func TestCodexEnvironmentUsesGraphSettings(t *testing.T) {
+func TestCodexEnvironmentUsesOnlyWorkspaceAndSelectedCredential(t *testing.T) {
 	workspace := t.TempDir()
 	ctx := core.NewContext(core.WithEnvironment(context.Background(), map[string]string{
 		codexWorkspaceEnvironment: workspace,
 		"TASK_TOKEN":              "graph-secret-token",
 	}))
-	environment, secretValues, err := environment(ctx, "model-api-key")
+	config, err := resolveCodexRunnerConfig(RunnerConfig{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	environment, secretValues, err := environment(ctx, config, "model-api-key")
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(environment, "\n")
-	if !strings.Contains(joined, codexWorkspaceEnvironment+"="+workspace) || !strings.Contains(joined, "OPENAI_API_KEY=model-api-key") || !strings.Contains(joined, "TASK_TOKEN=graph-secret-token") {
+	if !strings.Contains(joined, codexWorkspaceEnvironment+"="+workspace) || !strings.Contains(joined, "OPENAI_API_KEY=model-api-key") {
 		t.Fatalf("environment = %#v", environment)
 	}
+	if strings.Contains(joined, "TASK_TOKEN") || strings.Contains(joined, "graph-secret-token") {
+		t.Fatalf("environment inherited unrelated graph secret = %#v", environment)
+	}
 	secrets := strings.Join(secretValues, "\n")
-	if !strings.Contains(secrets, "model-api-key") || !strings.Contains(secrets, "graph-secret-token") {
+	if !strings.Contains(secrets, "model-api-key") || strings.Contains(secrets, "graph-secret-token") {
 		t.Fatalf("secret values = %#v", secretValues)
 	}
 }

@@ -80,7 +80,7 @@ func (s *Server) handleCreateGraphSession(c *gin.Context) {
 		return
 	}
 
-	resp, err := s.configureGraph(req)
+	resp, err := s.configureGraph(c.Request.Context(), req)
 	if err != nil {
 		writeError(c, statusForError(err), err)
 		return
@@ -119,6 +119,7 @@ func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
 func decodeStrictJSON(data []byte, target any) error {
 	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	decoder.DisallowUnknownFields()
+	decoder.UseNumber()
 	if err := decoder.Decode(target); err != nil {
 		return err
 	}
@@ -131,12 +132,21 @@ func decodeStrictJSON(data []byte, target any) error {
 	return nil
 }
 
-func (s *Server) configureGraph(req graphUploadRequest) (graphLoadResponse, error) {
+func (s *Server) configureGraph(ctx context.Context, req graphUploadRequest) (graphLoadResponse, error) {
 	if s == nil {
 		return graphLoadResponse{}, errGraphNotConfigured
 	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.runtime.graphUpdateMu.Lock()
 	defer s.runtime.graphUpdateMu.Unlock()
+	credentialRelease, err := s.applyGraphModelCredentialChanges(ctx, req.Settings)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
+	committed := false
+	defer func() { credentialRelease(committed) }()
 
 	if s.registry == nil {
 		return graphLoadResponse{}, errRegistryNotConfigured
@@ -167,15 +177,10 @@ func (s *Server) configureGraph(req graphUploadRequest) (graphLoadResponse, erro
 		return graphLoadResponse{}, err
 	}
 	nextSettings := previousSettings
-	apiKey, apiKeyProvided, err := applyGraphSettingsRequest(&nextSettings, *req.Settings)
-	if err != nil {
+	if err := applyGraphSettingsRequest(&nextSettings, *req.Settings); err != nil {
 		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)
 	}
-	if !apiKeyProvided {
-		apiKey = firstNonEmpty(firstGraphModelAPIKey(nextSettings), nextSettings.Environment["OPENAI_API_KEY"], os.Getenv("OPENAI_API_KEY"))
-	}
-	markGraphModelAPIKeys(&nextSettings, apiKey)
-	baseContext, err := s.buildRuntimeContext(nextSettings, apiKey)
+	baseContext, err := s.buildRuntimeContext(nextSettings)
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)
 	}
@@ -187,6 +192,7 @@ func (s *Server) configureGraph(req graphUploadRequest) (graphLoadResponse, erro
 	current := s.runtime.currentSession()
 	currentGraph := current.graph
 	currentRunner := current.runner
+	var response graphLoadResponse
 	if graphUploadMatchesSession(current, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash) {
 		runnerBaseDir := s.uploadedGraphBaseDir(graphID, currentRunner.GraphSessionID())
 		if err := s.pruneGraphSessions(graphID, currentRunner.GraphSessionID()); err != nil {
@@ -195,10 +201,19 @@ func (s *Server) configureGraph(req graphUploadRequest) (graphLoadResponse, erro
 		if currentGraph == nil {
 			currentGraph = graph
 		}
-		return graphResponse(currentGraph, currentRunner, runnerBaseDir, current.settings)
+		current.graph = currentGraph
+		current.baseContext = baseContext
+		current.settings = nextSettings
+		s.runtime.refreshSession(current)
+		response, err = s.graphResponse(currentGraph, currentRunner, runnerBaseDir, nextSettings)
+	} else {
+		response, err = s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash, nextSettings, baseContext)
 	}
-
-	return s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash, nextSettings, baseContext)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
+	committed = true
+	return response, nil
 }
 
 func (s *Server) installUploadedGraph(
@@ -245,6 +260,9 @@ func (s *Server) installUploadedGraph(
 	cfg.GraphSessionID = graphSessionID
 	runner, err := newDefaultRunner(graph, cfg, s.graphHistoryBaseDir(graphID), s.events)
 	if err != nil {
+		if cleanupErr := os.RemoveAll(runnerBaseDir); cleanupErr != nil {
+			return graphLoadResponse{}, fmt.Errorf("create graph runner: %v; remove new graph session: %w", err, cleanupErr)
+		}
 		return graphLoadResponse{}, err
 	}
 
@@ -267,7 +285,7 @@ func (s *Server) installUploadedGraph(
 		},
 		Definition:    def,
 		RunnerBaseDir: runnerBaseDir,
-		Settings:      graphSettingsResponse(settings),
+		Settings:      s.graphSettingsResponse(settings),
 		Warnings:      runner.StartupWarnings(),
 	}, nil
 }
@@ -294,7 +312,7 @@ func graphUploadMatchesSession(
 		strings.TrimSpace(runner.GraphSnapshotHash()) == strings.TrimSpace(graphSnapshotHash)
 }
 
-func graphResponse(
+func (s *Server) graphResponse(
 	graph *wfgraph.Graph,
 	runner *runtime.GraphRunner,
 	runnerBaseDir string,
@@ -319,7 +337,7 @@ func graphResponse(
 		},
 		Definition:    def,
 		RunnerBaseDir: runnerBaseDir,
-		Settings:      graphSettingsResponse(settings),
+		Settings:      s.graphSettingsResponse(settings),
 		Warnings:      runner.StartupWarnings(),
 	}, nil
 }

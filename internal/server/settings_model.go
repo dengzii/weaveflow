@@ -7,22 +7,21 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/llms/openai"
 )
 
-func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeSettingsRequest) (string, bool, error) {
+func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeSettingsRequest) error {
 	if req.Environment != nil {
 		environment := map[string]string{}
-		for key, value := range settings.Environment {
-			if isSecretEnvironmentName(key) {
-				environment[key] = value
-			}
-		}
 		for key, value := range req.Environment {
 			name := strings.TrimSpace(key)
 			if err := validateEnvironmentName(name); err != nil {
-				return "", false, err
+				return err
+			}
+			if isSecretEnvironmentName(name) {
+				return fmt.Errorf("environment variable %q must use environment_secrets", name)
 			}
 			environment[name] = strings.TrimSpace(value)
 		}
@@ -30,19 +29,33 @@ func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeS
 	} else if settings.Environment == nil {
 		settings.Environment = map[string]string{}
 	}
+	if req.EnvironmentSecrets != nil {
+		environmentSecrets := make(map[string]dsl.SecretRef, len(req.EnvironmentSecrets))
+		for key, ref := range req.EnvironmentSecrets {
+			name := strings.TrimSpace(key)
+			if err := validateEnvironmentName(name); err != nil {
+				return err
+			}
+			if !isSecretEnvironmentName(name) {
+				return fmt.Errorf("environment secret name %q must be secret-like", name)
+			}
+			normalized, err := normalizeSecretRef(ref)
+			if err != nil {
+				return fmt.Errorf("environment secret %q: %w", name, err)
+			}
+			environmentSecrets[name] = normalized
+		}
+		settings.EnvironmentSecrets = environmentSecrets
+	} else if settings.EnvironmentSecrets == nil {
+		settings.EnvironmentSecrets = map[string]dsl.SecretRef{}
+	}
 
-	apiKey := ""
-	apiKeyProvided := false
 	if req.Models != nil {
-		models, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsListFromRequest(settings.Models, req.Models)
+		models, err := graphModelSettingsListFromRequest(settings.Models, req.Models)
 		if err != nil {
-			return "", false, err
+			return err
 		}
 		settings.Models = models
-		if modelAPIKeyProvided {
-			apiKey = modelAPIKey
-			apiKeyProvided = true
-		}
 	} else {
 		applyEnvironmentModelDefaults(settings)
 	}
@@ -52,53 +65,42 @@ func applyGraphSettingsRequest(settings *graphRuntimeSettings, req graphRuntimeS
 	if req.ToolApprovals != nil {
 		settings.ToolApprovals = normalizedToolApprovals(req.ToolApprovals)
 	}
-	if value, ok := req.Environment["OPENAI_API_KEY"]; ok {
-		apiKey = strings.TrimSpace(value)
-		apiKeyProvided = true
-	}
 	syncGraphModelEnvironment(settings)
-
-	return apiKey, apiKeyProvided, nil
+	return nil
 }
 
 func graphModelSettingsListFromRequest(
 	currentModels []graphModelSettings,
 	reqModels []graphModelSettingsRequest,
-) ([]graphModelSettings, string, bool, error) {
+) ([]graphModelSettings, error) {
 	models := make([]graphModelSettings, 0, len(reqModels))
 	seen := map[string]struct{}{}
 	currentByID := make(map[string]graphModelSettings, len(currentModels))
 	for _, current := range currentModels {
 		currentByID[strings.TrimSpace(current.ID)] = current
 	}
-	apiKey := ""
-	apiKeyProvided := false
 	for _, req := range reqModels {
 		current := currentByID[strings.TrimSpace(req.ID)]
-		model, modelAPIKey, modelAPIKeyProvided, err := graphModelSettingsFromRequest(current, req)
+		model, err := graphModelSettingsFromRequest(current, req)
 		if err != nil {
-			return nil, "", false, err
+			return nil, err
 		}
 		if _, ok := seen[model.ID]; ok {
-			return nil, "", false, fmt.Errorf("duplicate model id %q", model.ID)
+			return nil, fmt.Errorf("duplicate model id %q", model.ID)
 		}
 		seen[model.ID] = struct{}{}
-		if modelAPIKeyProvided && !apiKeyProvided {
-			apiKey = modelAPIKey
-			apiKeyProvided = true
-		}
 		models = append(models, model)
 	}
-	return models, apiKey, apiKeyProvided, nil
+	return models, nil
 }
 
 func graphModelSettingsFromRequest(
 	current graphModelSettings,
 	req graphModelSettingsRequest,
-) (graphModelSettings, string, bool, error) {
+) (graphModelSettings, error) {
 	modelID := strings.TrimSpace(req.ID)
 	if modelID == "" {
-		return graphModelSettings{}, "", false, fmt.Errorf("model id is required")
+		return graphModelSettings{}, fmt.Errorf("model id is required")
 	}
 	model := current
 	model.ID = modelID
@@ -110,12 +112,12 @@ func graphModelSettingsFromRequest(
 	model.Provider = firstNonEmpty(req.Provider, model.Provider, "openai")
 	model.Provider = strings.ToLower(strings.TrimSpace(model.Provider))
 	if !openai.IsSupportedProvider(openai.Provider(model.Provider)) {
-		return graphModelSettings{}, "", false, fmt.Errorf("unsupported model provider %q", model.Provider)
+		return graphModelSettings{}, fmt.Errorf("unsupported model provider %q", model.Provider)
 	}
 	model.APIFormat = firstNonEmpty(req.APIFormat, model.APIFormat, string(openai.APIFormatChatCompletions))
 	model.APIFormat = strings.ToLower(strings.TrimSpace(model.APIFormat))
 	if !openai.IsSupportedAPIFormat(openai.APIFormat(model.APIFormat)) {
-		return graphModelSettings{}, "", false, fmt.Errorf("unsupported model API format %q", model.APIFormat)
+		return graphModelSettings{}, fmt.Errorf("unsupported model API format %q", model.APIFormat)
 	}
 	model.Model = strings.TrimSpace(req.Model)
 	model.BaseURL = strings.TrimSpace(req.BaseURL)
@@ -124,15 +126,13 @@ func graphModelSettingsFromRequest(
 	}
 	pricing, err := normalizeModelPricing(req.Pricing)
 	if err != nil {
-		return graphModelSettings{}, "", false, fmt.Errorf("model %q pricing: %w", modelID, err)
+		return graphModelSettings{}, fmt.Errorf("model %q pricing: %w", modelID, err)
 	}
 	model.Pricing = pricing
-	apiKey := strings.TrimSpace(req.APIKey)
-	if apiKey != "" {
-		model.APIKey = apiKey
-		model.APIKeyConfigured = true
+	if strings.TrimSpace(req.CredentialValue) != "" {
+		return graphModelSettings{}, fmt.Errorf("model %q credential value was not applied", modelID)
 	}
-	return sanitizeGraphModelSettings(model), apiKey, apiKey != "", nil
+	return sanitizeGraphModelSettings(model), nil
 }
 
 func applyEnvironmentModelDefaults(settings *graphRuntimeSettings) {
@@ -162,16 +162,6 @@ func syncGraphModelEnvironment(settings *graphRuntimeSettings) {
 	settings.Environment["OPENAI_BASE_URL"] = defaultModel.BaseURL
 }
 
-func markGraphModelAPIKeys(settings *graphRuntimeSettings, apiKey string) {
-	if settings == nil {
-		return
-	}
-	configured := strings.TrimSpace(apiKey) != ""
-	for index := range settings.Models {
-		settings.Models[index].APIKeyConfigured = settings.Models[index].APIKeyConfigured || configured || strings.TrimSpace(settings.Models[index].APIKey) != ""
-	}
-}
-
 func normalizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings {
 	environment := make(map[string]string, len(settings.Environment))
 	for key, value := range settings.Environment {
@@ -182,6 +172,18 @@ func normalizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings
 		environment[name] = strings.TrimSpace(value)
 	}
 	settings.Environment = environment
+	environmentSecrets := make(map[string]dsl.SecretRef, len(settings.EnvironmentSecrets))
+	for key, ref := range settings.EnvironmentSecrets {
+		name := strings.TrimSpace(key)
+		if name == "" {
+			continue
+		}
+		normalized, err := normalizeSecretRef(ref)
+		if err == nil {
+			environmentSecrets[name] = normalized
+		}
+	}
+	settings.EnvironmentSecrets = environmentSecrets
 	settings.Models = sanitizedGraphModelList(settings.Models)
 	if settings.Models == nil {
 		settings.Models = []graphModelSettings{}
@@ -223,13 +225,7 @@ func normalizedToolApprovals(approvals map[string]bool) map[string]bool {
 }
 
 func sanitizedGraphSettings(settings graphRuntimeSettings) graphRuntimeSettings {
-	settings = normalizedGraphSettings(settings)
-	for key := range settings.Environment {
-		if isSecretEnvironmentName(key) {
-			delete(settings.Environment, key)
-		}
-	}
-	return settings
+	return normalizedGraphSettings(settings)
 }
 
 func sanitizedGraphModelList(models []graphModelSettings) []graphModelSettings {
@@ -270,7 +266,6 @@ func sanitizeGraphModelSettings(model graphModelSettings) graphModelSettings {
 	model.Model = strings.TrimSpace(model.Model)
 	model.BaseURL = strings.TrimSpace(model.BaseURL)
 	model.ExtraBody = cloneGraphModelExtraBody(model.ExtraBody)
-	model.APIKey = strings.TrimSpace(model.APIKey)
 	model.Pricing.Currency = strings.ToUpper(strings.TrimSpace(model.Pricing.Currency))
 	return model
 }
@@ -294,20 +289,6 @@ func normalizeModelPricing(pricing llms.ModelPricing) (llms.ModelPricing, error)
 		pricing.Currency = "USD"
 	}
 	return pricing, nil
-}
-
-func firstGraphModelAPIKey(settings graphRuntimeSettings) string {
-	for _, model := range settings.Models {
-		if model.ID == core.DefaultModelID && strings.TrimSpace(model.APIKey) != "" {
-			return strings.TrimSpace(model.APIKey)
-		}
-	}
-	for _, model := range settings.Models {
-		if strings.TrimSpace(model.APIKey) != "" {
-			return strings.TrimSpace(model.APIKey)
-		}
-	}
-	return ""
 }
 
 func defaultGraphModelSettings(models []graphModelSettings) graphModelSettings {
