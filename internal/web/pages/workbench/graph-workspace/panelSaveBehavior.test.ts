@@ -10,11 +10,32 @@ describe("inspector save behavior", () => {
   test("keeps runtime settings local without a panel save button", () => {
     const markup = renderToStaticMarkup(createElement(RuntimeSettingsEditor, {
       settings: runtimeSettings(),
+      toolDefinitions: [],
       onChangeRuntimeSettings: () => runtimeSettings(),
     }));
 
     expect(markup).not.toContain("Apply settings");
     expect(markup).not.toContain("Save settings");
+  });
+
+  test("shows only the simple API key controls", () => {
+    const settings = runtimeSettings();
+    settings.models = [{
+      id: "default",
+      enabled: true,
+      provider: "openai",
+      credential_configured: true,
+    }];
+    const markup = renderToStaticMarkup(createElement(RuntimeSettingsEditor, {
+      settings,
+      toolDefinitions: [],
+      onChangeRuntimeSettings: () => settings,
+    }));
+
+    expect(markup).toContain('type="password"');
+    expect(markup).toContain("Replace");
+    expect(markup).toContain("Clear");
+    expect(markup).not.toContain("Advanced credential reference");
   });
 
   test("keeps trigger editing local without a panel save button", () => {
@@ -69,7 +90,10 @@ describe("inspector save behavior", () => {
 function runtimeSettings(): RuntimeSettings {
   return {
     environment: {},
+    environment_secrets: {},
     models: [],
+    tool_permissions: [],
+    tool_approvals: {},
   };
 }
 

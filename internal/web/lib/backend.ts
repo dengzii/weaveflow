@@ -1,6 +1,7 @@
 export const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
 
 const storageKey = "weaveflow:web:backend-base-url:v1";
+const managementTokenStorageKey = "weaveflow:web:management-token:v1";
 
 export function normalizeBackendBaseUrl(value: string): string {
   let candidate = value.trim();
@@ -68,6 +69,33 @@ export function hasStoredBackendBaseUrl(): boolean {
   } catch {
     return false;
   }
+}
+
+export function getManagementToken(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(managementTokenStorageKey)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setStoredManagementToken(value: string): string {
+  const token = value.trim();
+  if (token) window.localStorage.setItem(managementTokenStorageKey, token);
+  else window.localStorage.removeItem(managementTokenStorageKey);
+  return token;
+}
+
+export function resetStoredManagementToken(): void {
+  window.localStorage.removeItem(managementTokenStorageKey);
+}
+
+export function managementHeaders(input?: HeadersInit): Headers {
+  const headers = new Headers(input);
+  const token = getManagementToken();
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  return headers;
 }
 
 function readStoredBackendBaseUrl(): string {

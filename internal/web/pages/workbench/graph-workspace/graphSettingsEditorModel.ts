@@ -8,8 +8,10 @@ export interface EditableGraphModel {
   model: string;
   base_url: string;
   extra_body: string;
-  api_key: string;
-  api_key_configured: boolean;
+  credential_configured: boolean;
+  credential_input: string;
+  credential_value: string;
+  credential_clear: boolean;
   pricing_currency: string;
   input_per_million: string;
   cached_input_per_million: string;
@@ -19,6 +21,9 @@ export interface EditableGraphModel {
 export interface EditableEnvironmentVariable {
   key: string;
   value: string;
+  secret: boolean;
+  secret_source: "env" | "file" | "managed";
+  secret_ref: string;
 }
 
 export function modelsFromSettings(settings: RuntimeSettings | null): EditableGraphModel[] {
@@ -33,8 +38,10 @@ export function modelsFromSettings(settings: RuntimeSettings | null): EditableGr
     extra_body: model.extra_body && Object.keys(model.extra_body).length > 0
       ? JSON.stringify(model.extra_body, null, 2)
       : "",
-    api_key: "",
-    api_key_configured: model.api_key_configured,
+    credential_configured: Boolean(model.credential_configured),
+    credential_input: "",
+    credential_value: model.credential_value ?? "",
+    credential_clear: Boolean(model.credential_clear),
     pricing_currency: model.pricing?.currency ?? "USD",
     input_per_million: pricingRate(model.pricing?.input_per_million),
     cached_input_per_million: pricingRate(model.pricing?.cached_input_per_million),
@@ -66,7 +73,8 @@ export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSet
       throw new Error(`Duplicate model id: ${modelID}`);
     }
     seen.add(modelID);
-    const apiKey = model.api_key.trim();
+    const credentialValue = model.credential_value?.trim() ?? "";
+    const credentialClear = Boolean(model.credential_clear);
     return {
       id: modelID,
       enabled: model.enabled,
@@ -76,19 +84,36 @@ export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSet
       base_url: model.base_url.trim(),
       extra_body: parseModelExtraBody(model.extra_body, index),
       pricing: normalizeModelPricing(model, index),
-      api_key: apiKey || undefined,
+      credential_value: credentialValue || undefined,
+      credential_clear: credentialClear || undefined,
     };
   });
 }
 
 export function environmentRowsFromSettings(settings: RuntimeSettings | null): EditableEnvironmentVariable[] {
-  return Object.entries(editableEnvironment(settings))
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([key, value]) => ({ key, value }));
+  const values = Object.entries(editableEnvironment(settings)).map(([key, value]) => ({
+    key,
+    value,
+    secret: false,
+    secret_source: "env" as const,
+    secret_ref: "",
+  }));
+  const secrets = Object.entries(settings?.environment_secrets ?? {}).map(([key, ref]) => ({
+    key,
+    value: "",
+    secret: true,
+    secret_source: ref.source,
+    secret_ref: ref.ref,
+  }));
+  return [...values, ...secrets].sort((left, right) => left.key.localeCompare(right.key));
 }
 
-export function normalizeEnvironmentSettings(rows: EditableEnvironmentVariable[]): Record<string, string> {
+export function normalizeEnvironmentSettings(rows: EditableEnvironmentVariable[]): {
+  environment: Record<string, string>;
+  environmentSecrets: RuntimeSettingsUpdate["environment_secrets"];
+} {
   const environment: Record<string, string> = {};
+  const environmentSecrets: NonNullable<RuntimeSettingsUpdate["environment_secrets"]> = {};
   const seen = new Set<string>();
   for (const [index, row] of rows.entries()) {
     const key = row.key.trim();
@@ -99,9 +124,15 @@ export function normalizeEnvironmentSettings(rows: EditableEnvironmentVariable[]
       throw new Error(`Duplicate environment key: ${key}`);
     }
     seen.add(key);
-    environment[key] = row.value;
+    if (row.secret) {
+      const ref = row.secret_ref.trim();
+      if (!ref) throw new Error(`Environment ${key} secret ref is required.`);
+      environmentSecrets[key] = { source: row.secret_source, ref };
+    } else {
+      environment[key] = row.value;
+    }
   }
-  return environment;
+  return { environment, environmentSecrets };
 }
 
 export function applyRuntimeSettingsUpdate(
@@ -113,7 +144,8 @@ export function applyRuntimeSettingsUpdate(
   const models = (update.models ?? current.models).map((model, index) => {
     const id = model.id?.trim() || (index === 0 ? "default" : `model-${index + 1}`);
     const previous = currentModels.get(id);
-    const apiKey = model.api_key?.trim() || previous?.api_key;
+    const credentialValue = model.credential_value?.trim() ?? "";
+    const credentialClear = Boolean(model.credential_clear);
     return {
       id,
       enabled: model.enabled ?? previous?.enabled ?? true,
@@ -123,12 +155,16 @@ export function applyRuntimeSettingsUpdate(
       base_url: model.base_url !== undefined ? model.base_url.trim() : previous?.base_url ?? "",
       extra_body: model.extra_body ?? previous?.extra_body,
       pricing: model.pricing ?? previous?.pricing,
-      api_key_configured: Boolean(apiKey || previous?.api_key_configured),
-      api_key: apiKey,
+      credential_configured: credentialClear
+        ? false
+        : Boolean(credentialValue || previous?.credential_configured),
+      credential_value: credentialValue || undefined,
+      credential_clear: credentialClear || undefined,
     };
   });
   return {
     environment: update.environment ?? current.environment,
+    environment_secrets: update.environment_secrets ?? current.environment_secrets ?? {},
     environment_presets: current.environment_presets,
     models,
     tool_permissions: update.tool_permissions ?? current.tool_permissions ?? [],
@@ -140,6 +176,7 @@ export function runtimeSettingsUpload(settings: RuntimeSettings): RuntimeSetting
   requireRuntimeSettings(settings, "Cannot upload graph");
   return {
     environment: settings.environment,
+    environment_secrets: settings.environment_secrets,
     models: settings.models.map((model) => ({
       id: model.id,
       enabled: model.enabled,
@@ -149,7 +186,8 @@ export function runtimeSettingsUpload(settings: RuntimeSettings): RuntimeSetting
       base_url: model.base_url ?? "",
       extra_body: model.extra_body,
       pricing: model.pricing,
-      api_key: model.api_key,
+      credential_value: model.credential_value?.trim() || undefined,
+      credential_clear: model.credential_clear || undefined,
     })),
     tool_permissions: settings.tool_permissions ?? [],
     tool_approvals: settings.tool_approvals ?? {},
@@ -208,6 +246,9 @@ function requireRuntimeSettings(
     typeof settings.environment !== "object" ||
     settings.environment === null ||
     Array.isArray(settings.environment) ||
+    typeof settings.environment_secrets !== "object" ||
+    settings.environment_secrets === null ||
+    Array.isArray(settings.environment_secrets) ||
     !Array.isArray(settings.models)
   ) {
     throw new Error(`${operation}: runtime settings are missing.`);

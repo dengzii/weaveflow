@@ -29,7 +29,8 @@ describe("graph transfer model", () => {
     expect(bundle.definition.metadata).toEqual({ owner: "team" });
     expect(bundle.ui?.web).toEqual({ positions: { task: { x: 20, y: 40 } } });
     expect(bundle.settings?.environment).toEqual({ WORKDIR: "/workspace" });
-    expect(bundle.settings?.models?.[0].api_key).toBeUndefined();
+    expect(bundle.settings?.models?.[0]).not.toHaveProperty("credential_configured");
+    expect(bundle.settings?.environment_secrets).toEqual({ SERVICE_TOKEN: { source: "env", ref: "SERVICE_TOKEN" } });
     expect(bundle.settings?.models?.[0].pricing?.input_per_million).toBe(1.25);
     expect(bundle.settings?.tool_permissions).toEqual(["filesystem.read"]);
     expect(bundle.settings?.tool_approvals).toEqual({ bash: false });
@@ -78,7 +79,32 @@ describe("graph transfer model", () => {
     expect(bundle.ui).toBeUndefined();
   });
 
-  test("exports triggers disabled and excludes credentials and bot IDs", () => {
+  test("omits server-managed credentials and pending values from exports", () => {
+    const settings = runtimeSettings();
+    settings.models[0].credential_value = "pending-secret";
+    settings.environment_secrets.LOCAL_TOKEN = { source: "managed", ref: "00000000-0000-4000-8000-000000000002" };
+    const triggers = graphTriggers();
+    triggers[0].credential = { source: "managed", ref: "00000000-0000-4000-8000-000000000003" };
+    const bundle = buildGraphExportBundle({
+      definition: graphDefinition(),
+      graphID: "demo",
+      graphVersion: "v1",
+      runtimeSettings: settings,
+      triggers,
+      includeConfig: false,
+      includeSettings: true,
+      includeTriggers: true,
+      includeUI: false,
+    });
+
+    expect(bundle.settings?.models?.[0]).not.toHaveProperty("credential_configured");
+    expect(bundle.settings?.environment_secrets?.LOCAL_TOKEN).toBeUndefined();
+    expect(bundle.triggers?.[0].credential).toBeUndefined();
+    expect(JSON.stringify(bundle)).not.toContain("pending-secret");
+    expect(JSON.stringify(bundle)).not.toContain("00000000-0000-4000-8000-000000000003");
+  });
+
+  test("exports triggers disabled with credential refs and without credential values or bot IDs", () => {
     const bundle = buildGraphExportBundle({
       definition: graphDefinition(),
       graphID: "demo",
@@ -92,8 +118,7 @@ describe("graph transfer model", () => {
     });
 
     expect(bundle.settings?.environment).toEqual({ WORKDIR: "/workspace" });
-    expect(bundle.settings?.models?.[0].api_key).toBeUndefined();
-    expect(bundle.triggers?.[0].webhook?.api_key).toBeUndefined();
+    expect(bundle.triggers?.[0].credential).toEqual({ source: "env", ref: "TRIGGER_TOKEN" });
     expect(bundle.triggers?.map((trigger) => trigger.enabled)).toEqual([false, false]);
     expect(bundle.triggers?.[1].chat?.channel_config).toEqual({});
   });
@@ -149,12 +174,26 @@ describe("graph transfer model", () => {
     expect(imported.contents).toEqual(["graph", "config", "settings", "triggers", "ui"]);
     expect(imported.definition.metadata?.web).toEqual({ positions: { task: { x: 20, y: 40 } } });
     expect(imported.settings?.environment).toEqual({ WORKDIR: "/workspace" });
-    expect(imported.settings?.models[0].api_key_configured).toBe(false);
+    expect(imported.settings?.models[0].credential_configured).toBe(false);
     expect(imported.settings?.models[0].pricing?.output_per_million).toBe(10);
     expect(imported.settings?.tool_permissions).toEqual(["filesystem.read"]);
     expect(imported.settings?.tool_approvals).toEqual({ bash: false });
+    expect(imported.triggers?.[0].credential).toEqual({ source: "env", ref: "TRIGGER_TOKEN" });
     expect(imported.triggers?.map((trigger) => trigger.target.graph_id)).toEqual(["demo", "demo"]);
     expect(imported.triggers?.map((trigger) => trigger.enabled)).toEqual([false, false]);
+  });
+
+  test("rejects removed plaintext webhook credentials during import", () => {
+    expect(() => parseGraphImport(JSON.stringify({
+      graph_id: "demo",
+      definition: graphDefinition(),
+      triggers: [{
+        id: "hook",
+        type: "webhook",
+        enabled: false,
+        webhook: { api_key: "plaintext" },
+      }],
+    }))).toThrow("removed plaintext webhook api_key");
   });
 
   test("normalizes legacy runtime settings storage version during import", () => {
@@ -176,6 +215,8 @@ describe("graph transfer model", () => {
 
     expect(imported.settings).toEqual({
       environment: { WORKDIR: "/legacy" },
+      environment_secrets: {},
+      environment_presets: undefined,
       models: [{
         id: "default",
         enabled: true,
@@ -185,8 +226,7 @@ describe("graph transfer model", () => {
         base_url: "",
         extra_body: undefined,
         pricing: undefined,
-        api_key_configured: false,
-        api_key: undefined,
+        credential_configured: false,
       }],
       tool_permissions: [],
       tool_approvals: {},
@@ -442,8 +482,8 @@ function graphTriggers(): Trigger[] {
       enabled: true,
       concurrency: "parallel",
       target: { graph_id: "demo" },
+      credential: { source: "env", ref: "TRIGGER_TOKEN" },
       webhook: {
-        api_key: "webhook-secret",
         state_mappings: [{ parameter: "user.id", state_path: "shared.user.id" }],
       },
       created_at: "",
@@ -473,14 +513,16 @@ function runtimeSettings(): RuntimeSettings {
       WORKDIR: "/workspace",
       SERVICE_TOKEN: "secret-value",
     },
+    environment_secrets: {
+      SERVICE_TOKEN: { source: "env", ref: "SERVICE_TOKEN" },
+    },
     models: [{
       id: "default",
       enabled: true,
       provider: "openai",
       model: "gpt-5",
       base_url: "https://api.example.test/v1",
-      api_key_configured: true,
-      api_key: "local-secret",
+      credential_configured: true,
       pricing: {
         currency: "USD",
         input_per_million: 1.25,

@@ -538,12 +538,20 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
     environment[key] = item;
   }
 
+  const environmentSecrets = parseSecretRefs(value.environment_secrets, "environment secret");
+
   const models = value.models.map((item, index) => {
     if (!isPlainRecord(item)) {
       throw new Error(`Invalid graph file: model ${index + 1} must be an object.`);
     }
     const id = stringValue(item.id) || (index === 0 ? "default" : `model-${index + 1}`);
-    const apiKey = stringValue(item.api_key);
+    if (
+      Object.prototype.hasOwnProperty.call(item, "api_key")
+      || Object.prototype.hasOwnProperty.call(item, "api_key_configured")
+      || Object.prototype.hasOwnProperty.call(item, "credential")
+    ) {
+      throw new Error(`Invalid graph file: model ${index + 1} uses removed API key fields.`);
+    }
     return {
       id,
       enabled: typeof item.enabled === "boolean" ? item.enabled : true,
@@ -553,14 +561,14 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
       base_url: stringValue(item.base_url),
       extra_body: isPlainRecord(item.extra_body) ? cloneJSONValue(item.extra_body) : undefined,
       pricing: parseModelPricing(item.pricing),
-      api_key_configured: Boolean(apiKey || item.api_key_configured === true),
-      api_key: apiKey || undefined,
+      credential_configured: false,
     };
   });
 
   const environmentPresets = parseEnvironmentPresets(value.environment_presets);
   return {
     environment,
+    environment_secrets: environmentSecrets,
     environment_presets: environmentPresets.length > 0 ? environmentPresets : undefined,
     models,
     tool_permissions: stringArray(value.tool_permissions),
@@ -605,16 +613,39 @@ function parseEnvironmentPresets(value: unknown): RuntimeEnvironmentPreset[] {
     const key = stringValue(item.key);
     const type = item.type;
     if (!key || (type !== "string" && type !== "boolean" && type !== "integer")) return [];
-    return [{ key, type, default_value: stringValue(item.default_value) }];
+    return [{ key, type, default_value: stringValue(item.default_value), secret: item.secret === true }];
   });
 }
 
+function parseSecretRefs(value: unknown, label: string): Record<string, { source: "env" | "file"; ref: string }> {
+  if (value === undefined) return {};
+  if (!isPlainRecord(value)) throw new Error(`Invalid graph file: ${label}s must be an object.`);
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, requireSecretRef(item, `${label} ${key}`)]));
+}
+
+function parseSecretRef(value: unknown, label: string) {
+  if (value === undefined) return undefined;
+  return requireSecretRef(value, label);
+}
+
+function requireSecretRef(value: unknown, label: string): { source: "env" | "file"; ref: string } {
+  if (!isPlainRecord(value)) throw new Error(`Invalid graph file: ${label} must be an object.`);
+  const source = stringValue(value.source);
+  const ref = stringValue(value.ref);
+  if ((source !== "env" && source !== "file") || !ref) {
+    throw new Error(`Invalid graph file: ${label} requires source env or file and a ref.`);
+  }
+  return { source, ref };
+}
+
 function exportableRuntimeSettings(settings: RuntimeSettings): RuntimeSettingsUpdate {
-  const environment = Object.fromEntries(
-    Object.entries(settings.environment).filter(([key]) => !isSensitiveSettingName(key))
-  );
   return {
-    environment,
+    environment: Object.fromEntries(
+      Object.entries(settings.environment).filter(([key]) => !isSensitiveSettingName(key))
+    ),
+    environment_secrets: Object.fromEntries(
+      Object.entries(settings.environment_secrets).filter(([, ref]) => ref.source !== "managed")
+    ),
     models: settings.models.map((model) => ({
       id: model.id,
       enabled: model.enabled,
@@ -638,6 +669,9 @@ function exportableTriggers(triggers: Trigger[]): GraphExportTrigger[] {
       type: trigger.type,
       enabled: false,
       concurrency: trigger.concurrency,
+      credential: trigger.credential && trigger.credential.source !== "managed"
+        ? cloneJSONValue(trigger.credential)
+        : undefined,
       initial_state: cloneJSONValue(trigger.initial_state),
       webhook: trigger.webhook ? {
         state_bindings: cloneJSONValue(trigger.webhook.state_bindings),
@@ -675,12 +709,16 @@ function parseGraphTriggers(value: unknown, graphID: string): Trigger[] {
     if (concurrency !== undefined && concurrency !== "parallel" && concurrency !== "skip") {
       throw new Error(`Invalid graph file: trigger ${id} has an unsupported concurrency policy.`);
     }
+    if (isPlainRecord(item.webhook) && Object.prototype.hasOwnProperty.call(item.webhook, "api_key")) {
+      throw new Error(`Invalid graph file: trigger ${id} uses the removed plaintext webhook api_key field.`);
+    }
     return {
       ...(cloneJSONValue(item) as unknown as GraphExportTrigger),
       id,
       type,
       enabled: typeof item.enabled === "boolean" ? item.enabled : true,
       concurrency: concurrency ?? "parallel",
+      credential: parseSecretRef(item.credential, `trigger ${id} credential`),
       target: { graph_id: graphID },
       created_at: "",
       updated_at: "",

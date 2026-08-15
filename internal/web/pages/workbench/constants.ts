@@ -35,8 +35,6 @@ export const sampleGraph: GraphDefinition = {
 export const defaultInitialState = {
   shared: {},
   scopes: {},
-  internal: {},
-  runtime: {},
 };
 
 export const runtimeEventTypes = [

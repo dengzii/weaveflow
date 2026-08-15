@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { resolveBackendUrl } from "../../lib/backend";
+import { managementHeaders, resolveBackendUrl } from "../../lib/backend";
 import { isPlainRecord } from "../../lib/utils";
 import type { RuntimeEvent } from "../../types";
 
@@ -206,7 +206,7 @@ export class RuntimeEventStreamClient {
       const response = await this.fetcher(
         resolveBackendUrl(`/graphs/${encodeURIComponent(this.graphID)}/events/stream${suffix}`),
         {
-          headers: { Accept: "text/event-stream" },
+          headers: managementHeaders({ Accept: "text/event-stream" }),
           signal: controller.signal,
         }
       );

@@ -72,7 +72,10 @@ interface PendingInitialStateAnalysis {
 
 const emptyRuntimeSettings: RuntimeSettings = {
   environment: {},
+  environment_secrets: {},
   models: [],
+  tool_permissions: [],
+  tool_approvals: {},
 };
 
 export function WorkbenchPage({
@@ -413,7 +416,7 @@ export function WorkbenchPage({
       }
       const settings = runtimeSettingsUpload(runtimeSettings);
       const result = await createGraphSession(graphId, definition, settings, graphVersion);
-      const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
+      const nextRuntimeSettings = result.settings;
       setGraphInfo(result.graph);
       changeGraphID(result.graph.id);
       setGraphVersion(result.graph.version);
@@ -495,7 +498,7 @@ export function WorkbenchPage({
 
       const settings = runtimeSettingsUpload(runtimeSettings);
       const result = await createGraphSession(graphId, definition, settings, graphVersion);
-      const nextRuntimeSettings = applyRuntimeSettingsUpdate(result.settings, settings);
+      const nextRuntimeSettings = result.settings;
       setGraphInfo(result.graph);
       changeGraphID(result.graph.id);
       setGraphVersion(result.graph.version);

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { KeyRound, Plus, Trash2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import { Input, SensitiveInput } from "../../../components/ui/input";
+import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
 import { Textarea } from "../../../components/ui/textarea";
 import type { RuntimeSettings, RuntimeSettingsUpdate } from "../../../types";
@@ -25,8 +25,8 @@ export function RuntimeSettingsEditor({
   onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
   toolDefinitions: ToolDefinition[];
 }) {
-  const [models, setModels] = useState<EditableGraphModel[]>([]);
-  const [environmentRows, setEnvironmentRows] = useState<EditableEnvironmentVariable[]>([]);
+  const [models, setModels] = useState<EditableGraphModel[]>(() => modelsFromSettings(settings));
+  const [environmentRows, setEnvironmentRows] = useState<EditableEnvironmentVariable[]>(() => environmentRowsFromSettings(settings));
   const [environmentPresetKey, setEnvironmentPresetKey] = useState("");
   const [newEnvironmentKey, setNewEnvironmentKey] = useState("");
   const [newEnvironmentValue, setNewEnvironmentValue] = useState("");
@@ -63,8 +63,10 @@ export function RuntimeSettingsEditor({
         model: "",
         base_url: "",
         extra_body: "",
-        api_key: "",
-        api_key_configured: false,
+        credential_configured: false,
+        credential_input: "",
+        credential_value: "",
+        credential_clear: false,
         pricing_currency: "USD",
         input_per_million: "",
         cached_input_per_million: "",
@@ -81,6 +83,35 @@ export function RuntimeSettingsEditor({
     publish(models, nextRows);
   }
 
+  function updateModelInput(index: number, value: string) {
+    setModels(models.map((model, modelIndex) => (
+      modelIndex === index ? { ...model, credential_input: value } : model
+    )));
+  }
+
+  function setModelCredential(index: number) {
+    const value = models[index]?.credential_input.trim() ?? "";
+    if (!value) {
+      setStatus("API key is required.");
+      return;
+    }
+    updateModel(index, {
+      credential_configured: true,
+      credential_input: "",
+      credential_value: value,
+      credential_clear: false,
+    });
+  }
+
+  function clearModelCredential(index: number) {
+    updateModel(index, {
+      credential_configured: false,
+      credential_input: "",
+      credential_value: "",
+      credential_clear: true,
+    });
+  }
+
   function removeEnvironment(index: number) {
     const nextRows = environmentRows.filter((_, rowIndex) => rowIndex !== index);
     setEnvironmentRows(nextRows);
@@ -90,7 +121,13 @@ export function RuntimeSettingsEditor({
   function addEnvironmentPreset() {
     const preset = settings?.environment_presets?.find((item) => item.key === environmentPresetKey);
     if (!preset || environmentRows.some((row) => row.key.trim() === preset.key)) return;
-    const nextRows = [...environmentRows, { key: preset.key, value: preset.default_value }];
+    const nextRows = [...environmentRows, {
+      key: preset.key,
+      value: preset.secret ? "" : preset.default_value,
+      secret: Boolean(preset.secret),
+      secret_source: "env" as const,
+      secret_ref: preset.secret ? preset.key : "",
+    }];
     setEnvironmentRows(nextRows);
     setEnvironmentPresetKey("");
     publish(models, nextRows);
@@ -106,7 +143,14 @@ export function RuntimeSettingsEditor({
       setStatus(`Duplicate environment key: ${key}`);
       return;
     }
-    const nextRows = [...environmentRows, { key, value: newEnvironmentValue }];
+    const secret = isSensitiveEnvironmentName(key);
+    const nextRows = [...environmentRows, {
+      key,
+      value: secret ? "" : newEnvironmentValue,
+      secret,
+      secret_source: "env" as const,
+      secret_ref: secret ? (newEnvironmentValue.trim() || key) : "",
+    }];
     setEnvironmentRows(nextRows);
     setNewEnvironmentKey("");
     setNewEnvironmentValue("");
@@ -124,9 +168,10 @@ export function RuntimeSettingsEditor({
     nextEnvironmentRows: EditableEnvironmentVariable[]
   ) {
     let environment: Record<string, string>;
+    let environmentSecrets: RuntimeSettingsUpdate["environment_secrets"];
     let modelUpdates: RuntimeSettingsUpdate["models"];
     try {
-      environment = normalizeEnvironmentSettings(nextEnvironmentRows);
+      ({ environment, environmentSecrets } = normalizeEnvironmentSettings(nextEnvironmentRows));
       modelUpdates = normalizeModelSettings(nextModels);
     } catch (err) {
       setStatus(err instanceof Error ? err.message : String(err));
@@ -137,6 +182,7 @@ export function RuntimeSettingsEditor({
     try {
       const next = onChangeRuntimeSettings({
         environment,
+        environment_secrets: environmentSecrets,
         models: modelUpdates,
         tool_permissions: settings?.tool_permissions ?? [],
         tool_approvals: settings?.tool_approvals ?? {},
@@ -214,13 +260,34 @@ export function RuntimeSettingsEditor({
                   <Field label="Base URL">
                     <Input value={model.base_url} onChange={(event) => updateModel(index, { base_url: event.target.value })} placeholder="https://api.openai.com/v1" />
                   </Field>
-                  <Field label="API key">
-                    <SensitiveInput
-                      value={model.api_key}
-                      configured={model.api_key_configured}
-                      onValueChange={(value) => updateModel(index, { api_key: value })}
-                    />
-                  </Field>
+                  <div className="grid min-w-0 gap-1 sm:col-span-2">
+                    <span className="text-xs font-medium text-muted-foreground">API key</span>
+                    <div className="grid min-w-0 gap-2 sm:grid-cols-[minmax(0,1fr)_auto_auto]">
+                      <Input
+                        type="password"
+                        autoComplete="new-password"
+                        value={model.credential_input}
+                        onChange={(event) => updateModelInput(index, event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter") {
+                            event.preventDefault();
+                            setModelCredential(index);
+                          }
+                        }}
+                        placeholder={modelCredentialConfigured(model) ? "Enter a replacement key" : "Enter API key"}
+                        className="font-mono text-xs"
+                      />
+                      <Button type="button" variant="outline" size="sm" onClick={() => setModelCredential(index)} disabled={!model.credential_input.trim()}>
+                        <KeyRound className="h-4 w-4" />
+                        {modelCredentialConfigured(model) ? "Replace" : "Set"}
+                      </Button>
+                      <Button type="button" variant="ghost" size="sm" onClick={() => clearModelCredential(index)} disabled={!modelCredentialConfigured(model)}>
+                        <X className="h-4 w-4" />
+                        Clear
+                      </Button>
+                    </div>
+                    <span className="text-xs text-muted-foreground">{modelCredentialStatus(model)}</span>
+                  </div>
                   <Field label="Pricing currency">
                     <Input value={model.pricing_currency} onChange={(event) => updateModel(index, { pricing_currency: event.target.value })} placeholder="USD" />
                   </Field>
@@ -337,18 +404,31 @@ export function RuntimeSettingsEditor({
         ) : (
           <div className="grid gap-2">
             {environmentRows.map((row, index) => (
-              <div key={`${row.key || "environment"}-${index}`} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_32px] gap-2">
+              <div key={`${row.key || "environment"}-${index}`} className="grid grid-cols-[minmax(0,1fr)_110px_minmax(0,1fr)_32px] gap-2">
                 <Input value={row.key} onChange={(event) => updateEnvironment(index, { key: event.target.value })} placeholder="KEY" className="font-mono text-xs" />
-                {isSensitiveEnvironmentName(row.key) ? (
-                  <SensitiveInput
-                    value={row.value}
-                    onValueChange={(value) => updateEnvironment(index, { value })}
-                    placeholder="value"
-                    className="font-mono text-xs"
-                  />
-                ) : (
-                  <Input value={row.value} onChange={(event) => updateEnvironment(index, { value: event.target.value })} placeholder="value" className="font-mono text-xs" />
-                )}
+                <Select
+                  value={row.secret ? row.secret_source : "value"}
+                  onChange={(event) => {
+                    const source = event.target.value as "value" | "env" | "file" | "managed";
+                    updateEnvironment(index, {
+                      secret: source !== "value",
+                      secret_source: source === "value" ? "env" : source,
+                      secret_ref: source === "value" ? "" : (source === "managed" ? row.secret_ref : row.secret_ref || row.key),
+                    });
+                  }}
+                >
+                  <option value="value">Value</option>
+                  {row.secret_source === "managed" ? <option value="managed">Server managed</option> : null}
+                  <option value="env">Env ref</option>
+                  <option value="file">File ref</option>
+                </Select>
+                <Input
+                  value={row.secret ? row.secret_ref : row.value}
+                  onChange={(event) => updateEnvironment(index, row.secret ? { secret_ref: event.target.value } : { value: event.target.value })}
+                  placeholder={row.secret_source === "file" ? "secret-file" : row.secret ? row.key : "value"}
+                  className="font-mono text-xs"
+                  disabled={row.secret && row.secret_source === "managed"}
+                />
                 <Button type="button" variant="ghost" size="icon" className="h-9 w-8" onClick={() => removeEnvironment(index)} aria-label="Remove environment variable">
                   <Trash2 className="h-4 w-4" />
                 </Button>
@@ -359,16 +439,12 @@ export function RuntimeSettingsEditor({
 
         <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2">
           <Input value={newEnvironmentKey} onChange={(event) => setNewEnvironmentKey(event.target.value)} placeholder="KEY" className="font-mono text-xs" />
-          {isSensitiveEnvironmentName(newEnvironmentKey) ? (
-            <SensitiveInput
-              value={newEnvironmentValue}
-              onValueChange={setNewEnvironmentValue}
-              placeholder="value"
-              className="font-mono text-xs"
-            />
-          ) : (
-            <Input value={newEnvironmentValue} onChange={(event) => setNewEnvironmentValue(event.target.value)} placeholder="value" className="font-mono text-xs" />
-          )}
+          <Input
+            value={newEnvironmentValue}
+            onChange={(event) => setNewEnvironmentValue(event.target.value)}
+            placeholder={isSensitiveEnvironmentName(newEnvironmentKey) ? "Environment variable ref" : "value"}
+            className="font-mono text-xs"
+          />
           <Button type="button" variant="outline" size="sm" onClick={addEnvironment} disabled={!newEnvironmentKey.trim()}>
             <Plus className="h-4 w-4" />
             Add variable
@@ -387,4 +463,16 @@ function isSensitiveEnvironmentName(value: string): boolean {
     || normalized.includes("TOKEN")
     || normalized.includes("SECRET")
     || normalized.includes("PASSWORD");
+}
+
+function modelCredentialConfigured(model: EditableGraphModel): boolean {
+  if (model.credential_clear) return false;
+  return Boolean(model.credential_value || model.credential_configured);
+}
+
+function modelCredentialStatus(model: EditableGraphModel): string {
+  if (model.credential_clear) return "API key will be cleared when the graph is saved.";
+  if (model.credential_value) return "New API key is ready to save.";
+  if (model.credential_configured) return "API key is configured.";
+  return "No API key configured.";
 }

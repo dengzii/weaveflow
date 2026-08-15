@@ -26,7 +26,8 @@ export interface TriggerEditorValues {
   target: TriggerTarget;
   initialStateEntries: TriggerInitialStateEntry[];
   stateBindings: TriggerEditorStateBindings;
-  apiKey: string;
+  credentialSource: "env" | "file";
+  credentialRef: string;
   mappings: WebhookStateMapping[];
   cron: string;
   timezone: string;
@@ -59,7 +60,8 @@ export function triggerEditorValues(
     target: trigger?.target ?? fallbackTarget,
     initialStateEntries: triggerInitialStateEntries(trigger?.initial_state),
     stateBindings: trigger ? triggerStateBindings(trigger) : defaultTriggerStateBindings(type),
-    apiKey: "",
+    credentialSource: trigger?.credential?.source ?? "env",
+    credentialRef: trigger?.credential?.ref ?? "",
     mappings: (trigger?.webhook?.state_mappings ?? []).map((mapping) => ({ ...mapping })),
     cron: trigger?.schedule?.cron ?? "*/5 * * * *",
     timezone: trigger?.schedule?.timezone ?? "UTC",
@@ -86,6 +88,10 @@ export function buildTriggerPayload(
     enabled: values.enabled,
     concurrency: values.concurrency,
   };
+  const credentialRef = values.credentialRef.trim();
+  if (credentialRef) {
+    input.credential = { source: values.credentialSource, ref: credentialRef };
+  }
   const initialState = buildTriggerInitialState(values.initialStateEntries);
   if (Object.keys(initialState).length > 0) input.initial_state = initialState;
   if (!values.id.trim()) throw new Error("trigger id is required");
@@ -114,7 +120,6 @@ export function buildTriggerPayload(
       ...initialStateDestinations(values.initialStateEntries),
     ]);
     input.webhook = {
-      api_key: values.apiKey || undefined,
       state_bindings: Object.keys(stateBindings).length > 0 ? stateBindings : undefined,
       state_mappings: mappings,
     };
@@ -176,6 +181,9 @@ export function triggerDraftFromEditorValues(
     enabled: values.enabled,
     concurrency: values.concurrency,
     target: { graph_id: values.target.graph_id.trim() },
+    credential: values.credentialRef.trim()
+      ? { source: values.credentialSource, ref: values.credentialRef.trim() }
+      : undefined,
     initial_state: initialState,
     created_at: current?.created_at || timestamp,
     updated_at: current?.updated_at || timestamp,
@@ -184,7 +192,6 @@ export function triggerDraftFromEditorValues(
   if (values.type === "webhook") {
     const stateBindings = draftStateBindings("webhook", values.stateBindings);
     trigger.webhook = {
-      api_key: values.apiKey || undefined,
       state_mappings: values.mappings.map((mapping) => ({ ...mapping })),
       ...(Object.keys(stateBindings).length > 0 ? { state_bindings: stateBindings } : {}),
     };
@@ -433,7 +440,7 @@ export function webhookTriggerURL(graphID: string, triggerID: string): string {
 }
 
 export function webhookCurlCommand(url: string): string {
-  return `curl -X POST "${url}" -H "Content-Type: application/json" -d "{}"`;
+  return `curl -X POST "${url}" -H "Authorization: Bearer $TRIGGER_TOKEN" -H "Content-Type: application/json" -d "{}"`;
 }
 
 export function triggerTargetKey(target?: TriggerTarget): string {

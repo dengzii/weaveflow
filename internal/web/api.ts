@@ -32,7 +32,7 @@ import {
   validateRuntimeEventPage,
   validateToolsInfo,
 } from "./apiValidation";
-import { resolveBackendUrl } from "./lib/backend";
+import { managementHeaders, resolveBackendUrl } from "./lib/backend";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -68,7 +68,10 @@ async function readResponse<T>(response: Response): Promise<T> {
 }
 
 export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(resolveBackendUrl(path), init);
+  const response = await fetch(resolveBackendUrl(path), {
+    ...init,
+    headers: managementHeaders(init?.headers),
+  });
   return readResponse<T>(response);
 }
 

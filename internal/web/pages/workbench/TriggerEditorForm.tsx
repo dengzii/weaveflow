@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useState } from "react";
 import { CheckCircle2, Link2, Plus, Trash2 } from "lucide-react";
 import { Button } from "../../components/ui/button";
-import { Input, SensitiveInput } from "../../components/ui/input";
+import { Input } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import type { ChatChannelDefinition, ChatChannelSetupAccount, Trigger, WebhookStateMapping } from "../../types";
 import { ChatChannelSetupDialog } from "./ChatChannelSetupDialog";
@@ -336,6 +336,26 @@ export function TriggerEditorForm({
             </Select>
           </label>
         </div>
+        <div className="grid grid-cols-[minmax(0,120px)_minmax(0,1fr)] gap-2">
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Credential source</span>
+            <Select
+              value={values.credentialSource}
+              onChange={(event) => change("credentialSource", event.target.value as TriggerEditorValues["credentialSource"])}
+            >
+              <option value="env">Environment</option>
+              <option value="file">File</option>
+            </Select>
+          </label>
+          <label className="grid gap-1 text-sm">
+            <span className="text-xs font-medium text-muted-foreground">Credential reference</span>
+            <Input
+              value={values.credentialRef}
+              onChange={(event) => change("credentialRef", event.target.value)}
+              placeholder={values.credentialSource === "env" ? "TRIGGER_TOKEN" : "trigger.token"}
+            />
+          </label>
+        </div>
       </CollapsibleInspectorBlock>
 
       {values.type === "webhook" ? (
@@ -356,15 +376,7 @@ export function TriggerEditorForm({
             </Button>
           }
         >
-          <div className="text-[11px] text-muted-foreground">Authentication and request-to-state bindings.</div>
-          <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">API key</span>
-            <SensitiveInput
-              value={values.apiKey}
-              onValueChange={(value) => change("apiKey", value)}
-              placeholder={trigger ? "Unchanged" : "Optional"}
-            />
-          </label>
+          <div className="text-[11px] text-muted-foreground">Request-to-state bindings.</div>
           <div className="grid gap-2 border-t border-border pt-3">
             <div className="text-xs font-medium">State mappings</div>
             {values.mappings.length === 0 ? <div className="rounded border border-dashed border-border p-3 text-xs text-muted-foreground">No additional state mappings.</div> : null}

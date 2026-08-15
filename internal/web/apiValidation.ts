@@ -180,6 +180,7 @@ function validateGraphDefinition(value: unknown, source: string): GraphDefinitio
 function validateRuntimeSettings(value: unknown, source: string): RuntimeSettings {
   const settings = requireRecord(value, source);
   requireRecord(settings.environment, `${source}.environment`);
+  requireRecord(settings.environment_secrets, `${source}.environment_secrets`);
   requireArray(settings.models, `${source}.models`);
   requireStringArray(settings.tool_permissions, `${source}.tool_permissions`);
   const approvals = requireRecord(settings.tool_approvals, `${source}.tool_approvals`);

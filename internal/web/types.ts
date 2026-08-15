@@ -105,6 +105,7 @@ export interface GraphInfo {
 
 export interface RuntimeSettings {
   environment: Record<string, string>;
+  environment_secrets: Record<string, SecretRef>;
   environment_presets?: RuntimeEnvironmentPreset[];
   models: RuntimeModelSettings[];
   tool_permissions: string[];
@@ -133,7 +134,6 @@ export interface WebhookStateMapping {
 }
 
 export interface TriggerWebhookSpec {
-  api_key?: string;
   state_bindings?: TriggerRequestStateBindings;
   state_mappings?: WebhookStateMapping[];
 }
@@ -215,6 +215,7 @@ export interface Trigger {
   enabled: boolean;
   target?: TriggerTarget;
   concurrency?: TriggerConcurrency;
+  credential?: SecretRef;
   initial_state?: Record<string, unknown>;
   webhook?: TriggerWebhookSpec;
   schedule?: TriggerScheduleSpec;
@@ -240,6 +241,13 @@ export interface RuntimeEnvironmentPreset {
   key: string;
   default_value: string;
   type: "string" | "boolean" | "integer";
+  secret?: boolean;
+}
+
+export interface SecretRef {
+  source: "env" | "file" | "managed";
+  ref: string;
+  metadata?: Record<string, unknown>;
 }
 
 export interface RuntimeModelSettings {
@@ -251,12 +259,14 @@ export interface RuntimeModelSettings {
   base_url?: string;
   extra_body?: Record<string, unknown>;
   pricing?: RuntimeModelPricing;
-  api_key_configured: boolean;
-  api_key?: string;
+  credential_configured: boolean;
+  credential_value?: string;
+  credential_clear?: boolean;
 }
 
 export interface RuntimeSettingsUpdate {
   environment?: Record<string, string>;
+  environment_secrets?: Record<string, SecretRef>;
   models?: RuntimeModelSettingsUpdate[];
   tool_permissions?: string[];
   tool_approvals?: Record<string, boolean>;
@@ -271,7 +281,8 @@ export interface RuntimeModelSettingsUpdate {
   base_url?: string;
   extra_body?: Record<string, unknown>;
   pricing?: RuntimeModelPricing;
-  api_key?: string;
+  credential_value?: string;
+  credential_clear?: boolean;
 }
 
 export interface GraphLoadResult {

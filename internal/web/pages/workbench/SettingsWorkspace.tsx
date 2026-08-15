@@ -1,13 +1,16 @@
 import { type FormEvent, useState } from "react";
 import { Braces, RotateCcw, Save, Server, Settings } from "lucide-react";
 import { Button } from "../../components/ui/button";
-import { Input } from "../../components/ui/input";
+import { Input, SensitiveInput } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import {
   getBackendBaseUrl,
+  getManagementToken,
   hasStoredBackendBaseUrl,
   resetStoredBackendBaseUrl,
+  resetStoredManagementToken,
   setStoredBackendBaseUrl,
+  setStoredManagementToken,
 } from "../../lib/backend";
 import { themePreferences, useTheme, type ThemePreference } from "../../lib/theme";
 import { stringifyJSON } from "../../lib/utils";
@@ -19,6 +22,7 @@ import { themePreferenceLabel } from "./utils";
 export function SettingsWorkspace({ registry }: { registry: RegistryInfo | null }) {
   const { preference, resolvedTheme, setPreference } = useTheme();
   const [backendBaseUrl, setBackendBaseUrl] = useState(getBackendBaseUrl);
+  const [managementToken, setManagementToken] = useState(getManagementToken);
   const [backendError, setBackendError] = useState("");
   const hasBackendOverride = hasStoredBackendBaseUrl();
 
@@ -26,6 +30,7 @@ export function SettingsWorkspace({ registry }: { registry: RegistryInfo | null 
     event.preventDefault();
     try {
       setStoredBackendBaseUrl(backendBaseUrl);
+      setStoredManagementToken(managementToken);
       window.location.reload();
     } catch (error) {
       setBackendError(error instanceof Error ? error.message : String(error));
@@ -35,6 +40,7 @@ export function SettingsWorkspace({ registry }: { registry: RegistryInfo | null 
   function resetBackend() {
     try {
       resetStoredBackendBaseUrl();
+      resetStoredManagementToken();
       window.location.reload();
     } catch (error) {
       setBackendError(error instanceof Error ? error.message : String(error));
@@ -62,6 +68,18 @@ export function SettingsWorkspace({ registry }: { registry: RegistryInfo | null 
                 spellCheck={false}
                 autoCapitalize="none"
                 aria-invalid={backendError ? true : undefined}
+              />
+            </label>
+            <label className="grid gap-1 text-sm">
+              <span className="text-xs font-medium text-muted-foreground">Management token</span>
+              <SensitiveInput
+                value={managementToken}
+                configured={Boolean(managementToken)}
+                onValueChange={(value) => {
+                  setManagementToken(value);
+                  setBackendError("");
+                }}
+                placeholder="WEAVEFLOW_MANAGEMENT_TOKEN"
               />
             </label>
             {backendError ? <div className="text-xs text-destructive">{backendError}</div> : null}

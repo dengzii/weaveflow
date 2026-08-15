@@ -20,6 +20,7 @@ const webhook: Trigger = {
   enabled: true,
   concurrency: "skip",
   target: { graph_id: "graph-a" },
+  credential: { source: "env", ref: "TRIGGER_TOKEN" },
   initial_state: { shared: { tenant: "tenant-a" } },
   webhook: {
     state_bindings: {
@@ -35,7 +36,7 @@ const webhook: Trigger = {
 };
 
 describe("trigger editor payload", () => {
-  test("preserves the full update contract while omitting an unchanged api_key", () => {
+  test("preserves the full update contract with a credential reference", () => {
     const values = triggerEditorValues(webhook, { graph_id: "fallback" });
     values.enabled = false;
     const payload = buildTriggerPayload(values, webhook);
@@ -46,9 +47,9 @@ describe("trigger editor payload", () => {
       type: "webhook",
       enabled: false,
       concurrency: "skip",
+      credential: { source: "env", ref: "TRIGGER_TOKEN" },
       initial_state: { shared: { tenant: "tenant-a" } },
       webhook: {
-        api_key: undefined,
         state_bindings: {
           input: "shared.request.input",
           metadata: "shared.request.metadata",
@@ -347,7 +348,7 @@ describe("trigger editor payload", () => {
 
   test("builds a curl webhook test command", () => {
     expect(webhookCurlCommand("http://localhost:8080/graphs/graph-a/triggers/incoming/webhook")).toBe(
-      'curl -X POST "http://localhost:8080/graphs/graph-a/triggers/incoming/webhook" -H "Content-Type: application/json" -d "{}"'
+      'curl -X POST "http://localhost:8080/graphs/graph-a/triggers/incoming/webhook" -H "Authorization: Bearer $TRIGGER_TOKEN" -H "Content-Type: application/json" -d "{}"'
     );
   });
 

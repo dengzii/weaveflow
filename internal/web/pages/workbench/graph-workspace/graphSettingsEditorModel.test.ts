@@ -11,7 +11,7 @@ import {
 } from "./graphSettingsEditorModel";
 
 describe("graph settings editor model", () => {
-  test("builds editable models without exposing configured API keys", () => {
+  test("builds editable models from configured status", () => {
     const models = modelsFromSettings(graphSettings());
 
     expect(models).toEqual([
@@ -23,8 +23,10 @@ describe("graph settings editor model", () => {
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
         extra_body: "",
-        api_key: "",
-        api_key_configured: true,
+        credential_configured: true,
+        credential_input: "",
+        credential_value: "",
+        credential_clear: false,
         pricing_currency: "USD",
         input_per_million: "",
         cached_input_per_million: "",
@@ -33,7 +35,7 @@ describe("graph settings editor model", () => {
     ]);
   });
 
-  test("normalizes models while omitting an unchanged configured API key", () => {
+  test("normalizes models without credential transport metadata", () => {
     expect(
       normalizeModelSettings([
         {
@@ -44,8 +46,14 @@ describe("graph settings editor model", () => {
           model: " gpt-5 ",
           base_url: " https://api.example.test/v1 ",
           extra_body: "{\"include\":[\"reasoning.encrypted_content\"]}",
-          api_key: "",
-          api_key_configured: true,
+          credential_configured: true,
+          credential_input: "",
+          credential_value: "",
+          credential_clear: false,
+          pricing_currency: "USD",
+          input_per_million: "",
+          cached_input_per_million: "",
+          output_per_million: "",
         },
       ])
     ).toEqual([
@@ -57,7 +65,7 @@ describe("graph settings editor model", () => {
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
         extra_body: { include: ["reasoning.encrypted_content"] },
-        api_key: undefined,
+        pricing: undefined,
       },
     ]);
   });
@@ -71,29 +79,36 @@ describe("graph settings editor model", () => {
       model: "gpt-5",
       base_url: "",
       extra_body: "",
-      api_key: "",
-      api_key_configured: false,
+      credential_configured: false,
+      credential_input: "",
+      credential_value: "",
+      credential_clear: false,
+      pricing_currency: "USD",
+      input_per_million: "",
+      cached_input_per_million: "",
+      output_per_million: "",
     };
 
     expect(() => normalizeModelSettings([model, model])).toThrow("Duplicate model id: default");
     expect(() =>
       normalizeEnvironmentSettings([
-        { key: "WORKDIR", value: "one" },
-        { key: " WORKDIR ", value: "two" },
+        { key: "WORKDIR", value: "one", secret: false, secret_source: "env", secret_ref: "" },
+        { key: " WORKDIR ", value: "two", secret: false, secret_source: "env", secret_ref: "" },
       ])
     ).toThrow("Duplicate environment key: WORKDIR");
   });
 
   test("keeps environment rows sorted and excludes model transport fields", () => {
     expect(environmentRowsFromSettings(graphSettings())).toEqual([
-      { key: "A_VALUE", value: "a" },
-      { key: "Z_VALUE", value: "z" },
+      { key: "A_VALUE", value: "a", secret: false, secret_source: "env", secret_ref: "" },
+      { key: "SERVICE_TOKEN", value: "", secret: true, secret_source: "env", secret_ref: "SERVICE_TOKEN" },
+      { key: "Z_VALUE", value: "z", secret: false, secret_source: "env", secret_ref: "" },
     ]);
     expect(nextModelID([])).toBe("default");
     expect(nextModelID(modelsFromSettings(graphSettings()))).toBe("model-2");
   });
 
-  test("keeps a locally entered API key until the graph upload", () => {
+  test("keeps configured status local without uploading it", () => {
     const next = applyRuntimeSettingsUpdate(graphSettings(), {
       models: [{
         id: "default",
@@ -102,12 +117,36 @@ describe("graph settings editor model", () => {
         api_format: "chat_completions",
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
-        api_key: "local-secret",
       }],
     });
 
-    expect(next.models[0].api_key).toBe("local-secret");
-    expect(runtimeSettingsUpload(next).models?.[0].api_key).toBe("local-secret");
+
+    expect(next.models[0].credential_configured).toBe(true);
+    expect(runtimeSettingsUpload(next).models?.[0]).not.toHaveProperty("credential_configured");
+  });
+
+  test("uploads a managed credential value once and supports explicit clear", () => {
+    const replacement = applyRuntimeSettingsUpdate(graphSettings(), {
+      models: [{
+        id: "default",
+        credential_value: " replacement-key ",
+      }],
+    });
+
+    expect(replacement.models[0].credential_configured).toBe(true);
+    expect(runtimeSettingsUpload(replacement).models?.[0]).toMatchObject({
+      credential_value: "replacement-key",
+      credential_clear: undefined,
+    });
+
+    const cleared = applyRuntimeSettingsUpdate(graphSettings(), {
+      models: [{ id: "default", credential_clear: true }],
+    });
+    expect(cleared.models[0].credential_configured).toBe(false);
+    expect(runtimeSettingsUpload(cleared).models?.[0]).toMatchObject({
+      credential_value: undefined,
+      credential_clear: true,
+    });
   });
 
   test("rejects missing runtime settings with an explicit error", () => {
@@ -134,6 +173,9 @@ function graphSettings(): RuntimeSettings {
       A_VALUE: "a",
       OPENAI_BASE_URL: "https://api.example.test/v1",
     },
+    environment_secrets: {
+      SERVICE_TOKEN: { source: "env", ref: "SERVICE_TOKEN" },
+    },
     models: [
       {
         id: "default",
@@ -142,7 +184,7 @@ function graphSettings(): RuntimeSettings {
         api_format: "chat_completions",
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
-        api_key_configured: true,
+        credential_configured: true,
       },
     ],
     tool_permissions: [],
