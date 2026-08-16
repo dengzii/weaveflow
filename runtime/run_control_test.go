@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -37,6 +38,25 @@ type failingRuntimeTransactionStore struct {
 
 func (s failingRuntimeTransactionStore) Commit(context.Context, Commit) (CommitResult, error) {
 	return CommitResult{}, s.err
+}
+
+type runControlHookTransactionStore struct {
+	TransactionStore
+	once              sync.Once
+	beforeFirstUpdate func(context.Context) error
+	hookErr           error
+}
+
+func (store *runControlHookTransactionStore) Commit(ctx context.Context, commit Commit) (CommitResult, error) {
+	if commit.Run != nil && commit.Run.Mode == RunWriteUpdate && store.beforeFirstUpdate != nil {
+		store.once.Do(func() {
+			store.hookErr = store.beforeFirstUpdate(ctx)
+		})
+		if store.hookErr != nil {
+			return CommitResult{}, store.hookErr
+		}
+	}
+	return store.TransactionStore.Commit(ctx, commit)
 }
 
 type runControlRecordingDeleter struct {
@@ -115,6 +135,87 @@ func TestRunControlServiceMarksLostExecutionFailed(t *testing.T) {
 	}
 }
 
+func TestRunControlServiceReevaluatesStatusAfterRevisionConflict(t *testing.T) {
+	t.Parallel()
+
+	t.Run("lost execution preserves concurrent completion", func(t *testing.T) {
+		baseStore := NewMemoryRuntimeStore()
+		run := RunRecord{RunID: "run-completed", GraphID: "graph-1", Status: RunStatusRunning}
+		if err := baseStore.CreateRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		finishedAt := time.Date(2026, 8, 17, 9, 0, 0, 0, time.UTC)
+		hookStore := &runControlHookTransactionStore{TransactionStore: baseStore}
+		hookStore.beforeFirstUpdate = func(ctx context.Context) error {
+			current, err := baseStore.GetRun(ctx, run.RunID)
+			if err != nil {
+				return err
+			}
+			current.Status = RunStatusCompleted
+			current.UpdatedAt = finishedAt
+			current.FinishedAt = &finishedAt
+			_, err = baseStore.CompareAndSwapRun(ctx, current.Revision, current)
+			return err
+		}
+		sink := &runControlEventSink{}
+		control, err := NewRunControlService(baseStore, hookStore, sink, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		completed, err := control.MarkRunExecutionLost(context.Background(), run.RunID)
+		if err != nil {
+			t.Fatalf("MarkRunExecutionLost() error = %v", err)
+		}
+		if completed.Status != RunStatusCompleted || completed.ErrorCode != "" {
+			t.Fatalf("run = %#v, want concurrent completion", completed)
+		}
+		if len(sink.events) != 0 {
+			t.Fatalf("events = %#v, want none", sink.events)
+		}
+	})
+
+	t.Run("paused cancel preserves concurrent resume", func(t *testing.T) {
+		baseStore := NewMemoryRuntimeStore()
+		run := RunRecord{RunID: "run-resumed", GraphID: "graph-1", Status: RunStatusPaused, PauseRequested: true}
+		if err := baseStore.CreateRun(context.Background(), run); err != nil {
+			t.Fatal(err)
+		}
+		hookStore := &runControlHookTransactionStore{TransactionStore: baseStore}
+		hookStore.beforeFirstUpdate = func(ctx context.Context) error {
+			current, err := baseStore.GetRun(ctx, run.RunID)
+			if err != nil {
+				return err
+			}
+			current.Status = RunStatusRunning
+			current.PauseRequested = false
+			current.UpdatedAt = time.Date(2026, 8, 17, 9, 1, 0, 0, time.UTC)
+			_, err = baseStore.CompareAndSwapRun(ctx, current.Revision, current)
+			return err
+		}
+		sink := &runControlEventSink{}
+		control, err := NewRunControlService(baseStore, hookStore, sink, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		_, err = control.CancelPausedRun(context.Background(), run.RunID)
+		if !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("CancelPausedRun() error = %v, want run control rejection", err)
+		}
+		persisted, getErr := baseStore.GetRun(context.Background(), run.RunID)
+		if getErr != nil {
+			t.Fatal(getErr)
+		}
+		if persisted.Status != RunStatusRunning || persisted.PauseRequested {
+			t.Fatalf("run = %#v, want concurrent resume", persisted)
+		}
+		if len(sink.events) != 0 {
+			t.Fatalf("events = %#v, want none", sink.events)
+		}
+	})
+}
+
 func TestRunControlServiceNormalizesRunIDBeforeDeletion(t *testing.T) {
 	store := NewMemoryRuntimeStore()
 	run := RunRecord{RunID: "run-1", Status: RunStatusCompleted}
@@ -183,9 +284,9 @@ func TestRunControlServiceSeparatesStoreFailuresFromCommittedEventObserverFailur
 func TestRunControlServiceCancelPausedRunCascadesThroughPersistedChildren(t *testing.T) {
 	store := NewMemoryRuntimeStore()
 	runs := []RunRecord{
-		{RunID: "parent", Status: RunStatusPaused, ChildRunIDs: []string{"child"}},
-		{RunID: "child", ParentRunID: "parent", Status: RunStatusPaused, ChildRunIDs: []string{"grandchild"}},
-		{RunID: "grandchild", ParentRunID: "child", Status: RunStatusPaused},
+		{RunID: "parent", RootRunID: "parent", RunPath: []string{"parent"}, Status: RunStatusPaused, ChildRunIDs: []string{"child"}},
+		{RunID: "child", ParentRunID: "parent", RootRunID: "parent", RunPath: []string{"parent", "child"}, Status: RunStatusPaused, ChildRunIDs: []string{"grandchild"}},
+		{RunID: "grandchild", ParentRunID: "child", RootRunID: "parent", RunPath: []string{"parent", "child", "grandchild"}, Status: RunStatusPaused},
 	}
 	for _, run := range runs {
 		if err := store.CreateRun(context.Background(), run); err != nil {

@@ -17,13 +17,28 @@ type commitReader interface {
 	ListEvents(string) ([]Event, error)
 }
 
+type checkpointEventCommitReader interface {
+	TransactionStore
+	Load(context.Context, string) (CheckpointRecord, []byte, error)
+	ListEvents(string) ([]Event, error)
+}
+
+type deletionAwareCommitStore interface {
+	commitReader
+	RunDeletionExecutionStore
+	RunDeletionFencer
+	CheckpointStore
+	CreateRun(context.Context, RunRecord) error
+	GetStep(context.Context, string) (StepRecord, error)
+}
+
 type recordingRuntimeTransactionStore struct {
 	commits []Commit
 }
 
 func (store *recordingRuntimeTransactionStore) Commit(_ context.Context, commit Commit) (CommitResult, error) {
 	store.commits = append(store.commits, commit)
-	if commit.Run == nil {
+	if commit.Run == nil || commit.Run.Mode == RunWriteCheck {
 		return CommitResult{}, nil
 	}
 	run := commit.Run.Run
@@ -62,6 +77,83 @@ func TestMemoryRuntimeStoreCommitRejectsStaleRunRevision(t *testing.T) {
 	}
 	if persisted.Revision != 1 || persisted.Status != RunStatusRunning {
 		t.Fatalf("persisted run = %#v", persisted)
+	}
+}
+
+func TestRuntimeStoreCommitChecksRunRevisionWithoutWritingRun(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		new  func(*testing.T) commitReader
+	}{
+		{name: "memory", new: func(*testing.T) commitReader { return NewMemoryRuntimeStore() }},
+		{name: "file", new: func(t *testing.T) commitReader {
+			store, err := NewFileRuntimeStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewFileRuntimeStore(): %v", err)
+			}
+			return store
+		}},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			store := testCase.new(t)
+			original := RunRecord{RunID: "run-check-revision", Status: RunStatusPending}
+			if _, err := store.Commit(ctx, Commit{Run: &RunWrite{Mode: RunWriteCreate, Run: original}}); err != nil {
+				t.Fatalf("Commit(create): %v", err)
+			}
+
+			checkedEvent := Event{ID: "event-checked-revision", RunID: original.RunID, Type: EventRunStarted}
+			result, err := store.Commit(ctx, Commit{
+				Run:    &RunWrite{Mode: RunWriteCheck, Run: original},
+				Events: []Event{checkedEvent},
+			})
+			if err != nil {
+				t.Fatalf("Commit(check): %v", err)
+			}
+			if result.Run != nil {
+				t.Fatalf("check result run = %#v, want nil", result.Run)
+			}
+			persisted, err := store.GetRun(ctx, original.RunID)
+			if err != nil {
+				t.Fatalf("GetRun(after check): %v", err)
+			}
+			if persisted.Revision != original.Revision || persisted.Status != original.Status {
+				t.Fatalf("run changed by check = %#v", persisted)
+			}
+
+			updated := persisted
+			updated.Status = RunStatusRunning
+			if _, err := store.Commit(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: updated}}); err != nil {
+				t.Fatalf("Commit(update): %v", err)
+			}
+			staleEvent := Event{ID: "event-stale-check", RunID: original.RunID, Type: EventRunFinished}
+			if _, err := store.Commit(ctx, Commit{
+				Run:    &RunWrite{Mode: RunWriteCheck, Run: original},
+				Events: []Event{staleEvent},
+			}); !errors.Is(err, ErrRunRevisionConflict) {
+				t.Fatalf("Commit(stale check) error = %v, want revision conflict", err)
+			}
+			events, err := store.ListEvents(original.RunID)
+			if err != nil {
+				t.Fatalf("ListEvents(): %v", err)
+			}
+			if len(events) != 1 || events[0].ID != checkedEvent.ID {
+				t.Fatalf("events after stale check = %#v", events)
+			}
+			persisted, err = store.GetRun(ctx, original.RunID)
+			if err != nil {
+				t.Fatalf("GetRun(after stale check): %v", err)
+			}
+			if persisted.Revision != 1 || persisted.Status != RunStatusRunning {
+				t.Fatalf("run after stale check = %#v", persisted)
+			}
+		})
 	}
 }
 
@@ -175,9 +267,16 @@ func TestGraphRunnerCommitsTerminalRunAndStepTransitionAtomically(t *testing.T) 
 			t.Parallel()
 
 			store := &recordingRuntimeTransactionStore{}
-			runner := &GraphRunner{transactionStore: store}
 			run := RunRecord{RunID: "terminal-run", Revision: 3, Status: RunStatusRunning, CurrentNodeID: "work"}
 			step := StepRecord{RunID: run.RunID, StepID: "terminal-step", NodeID: "work", Status: testCase.stepStatus}
+			executionStore := NewMemoryExecutionStore()
+			if err := executionStore.CreateRun(context.Background(), run); err != nil {
+				t.Fatalf("CreateRun() error = %v", err)
+			}
+			if err := executionStore.AppendStep(context.Background(), step); err != nil {
+				t.Fatalf("AppendStep() error = %v", err)
+			}
+			runner := &GraphRunner{executionStore: executionStore, transactionStore: store}
 			transition := runnerStepTransition{
 				writes: []StepWrite{{Mode: StepWriteUpdate, Step: step}},
 				events: []Event{{ID: "terminal-node-event", RunID: run.RunID, StepID: step.StepID, NodeID: step.NodeID, Type: testCase.nodeEvent}},
@@ -232,6 +331,116 @@ func TestRuntimeStoreCommitRejectsStepWithoutRun(t *testing.T) {
 			if !errors.Is(err, ErrRunnerRecordNotFound) {
 				t.Fatalf("Commit() error = %v, want record not found", err)
 			}
+		})
+	}
+}
+
+func TestRuntimeStoreCommitRejectsOrphanCheckpointAndEvent(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		new  func(*testing.T) checkpointEventCommitReader
+	}{
+		{name: "memory", new: func(*testing.T) checkpointEventCommitReader { return NewMemoryRuntimeStore() }},
+		{name: "file", new: func(t *testing.T) checkpointEventCommitReader {
+			store, err := NewFileRuntimeStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewFileRuntimeStore(): %v", err)
+			}
+			return store
+		}},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+
+			t.Run("checkpoint", func(t *testing.T) {
+				store := testCase.new(t)
+				checkpoint := CheckpointRecord{RunID: "missing-run", CheckpointID: "orphan-checkpoint"}
+				_, err := store.Commit(context.Background(), Commit{
+					Checkpoints: []CheckpointWrite{{Record: checkpoint, Payload: []byte("payload")}},
+				})
+				if !errors.Is(err, ErrRunnerRecordNotFound) {
+					t.Fatalf("Commit() error = %v, want record not found", err)
+				}
+				if _, _, err := store.Load(context.Background(), checkpoint.CheckpointID); !errors.Is(err, ErrRunnerRecordNotFound) {
+					t.Fatalf("Load() error = %v, want record not found", err)
+				}
+			})
+
+			t.Run("event", func(t *testing.T) {
+				store := testCase.new(t)
+				event := Event{ID: "orphan-event", RunID: "missing-run", Type: EventNodeFinished}
+				_, err := store.Commit(context.Background(), Commit{Events: []Event{event}})
+				if !errors.Is(err, ErrRunnerRecordNotFound) {
+					t.Fatalf("Commit() error = %v, want record not found", err)
+				}
+				events, listErr := store.ListEvents(event.RunID)
+				if listErr != nil {
+					t.Fatalf("ListEvents() error = %v", listErr)
+				}
+				if len(events) != 0 {
+					t.Fatalf("orphan events persisted: %#v", events)
+				}
+			})
+
+			t.Run("late orphan event rolls back records", func(t *testing.T) {
+				store := testCase.new(t)
+				run := RunRecord{RunID: "run-before-orphan-event", Status: RunStatusRunning}
+				if _, err := store.Commit(context.Background(), Commit{Run: &RunWrite{Mode: RunWriteCreate, Run: run}}); err != nil {
+					t.Fatalf("create Run commit: %v", err)
+				}
+				checkpoint := CheckpointRecord{RunID: run.RunID, CheckpointID: "checkpoint-before-orphan-event"}
+				validEvent := Event{ID: "event-before-orphan-event", RunID: run.RunID, Type: EventNodeFinished}
+				orphanEvent := Event{ID: "orphan-event-after-valid-records", RunID: "missing-run", Type: EventNodeFinished}
+				_, err := store.Commit(context.Background(), Commit{
+					Checkpoints: []CheckpointWrite{{Record: checkpoint, Payload: []byte("payload")}},
+					Events:      []Event{validEvent, orphanEvent},
+				})
+				if !errors.Is(err, ErrRunnerRecordNotFound) {
+					t.Fatalf("Commit() error = %v, want record not found", err)
+				}
+				if _, _, err := store.Load(context.Background(), checkpoint.CheckpointID); !errors.Is(err, ErrRunnerRecordNotFound) {
+					t.Fatalf("Load() error = %v, want record not found", err)
+				}
+				events, listErr := store.ListEvents(run.RunID)
+				if listErr != nil {
+					t.Fatalf("ListEvents() error = %v", listErr)
+				}
+				if len(events) != 0 {
+					t.Fatalf("records survived orphan event failure: %#v", events)
+				}
+			})
+
+			t.Run("same transaction create", func(t *testing.T) {
+				store := testCase.new(t)
+				run := RunRecord{RunID: "run-created-with-records", Status: RunStatusRunning}
+				checkpoint := CheckpointRecord{RunID: run.RunID, CheckpointID: "checkpoint-created-with-run"}
+				event := Event{ID: "event-created-with-run", RunID: run.RunID, Type: EventRunStarted}
+				if _, err := store.Commit(context.Background(), Commit{
+					Run:         &RunWrite{Mode: RunWriteCreate, Run: run},
+					Checkpoints: []CheckpointWrite{{Record: checkpoint, Payload: []byte("payload")}},
+					Events:      []Event{event},
+				}); err != nil {
+					t.Fatalf("Commit() error = %v", err)
+				}
+				_, payload, err := store.Load(context.Background(), checkpoint.CheckpointID)
+				if err != nil {
+					t.Fatalf("Load() error = %v", err)
+				}
+				if string(payload) != "payload" {
+					t.Fatalf("checkpoint payload = %q, want payload", payload)
+				}
+				events, err := store.ListEvents(run.RunID)
+				if err != nil {
+					t.Fatalf("ListEvents() error = %v", err)
+				}
+				if len(events) != 1 || events[0].ID != event.ID {
+					t.Fatalf("events = %#v, want %#v", events, []Event{event})
+				}
+			})
 		})
 	}
 }
@@ -318,12 +527,119 @@ func TestMemoryRuntimeStoreCommitRollsBackEveryRecordOnLateFailure(t *testing.T)
 	}
 }
 
+func TestRuntimeStoreCommitRejectsTombstonedRunAtomically(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		new  func(*testing.T) deletionAwareCommitStore
+	}{
+		{name: "memory", new: func(*testing.T) deletionAwareCommitStore { return NewMemoryRuntimeStore() }},
+		{name: "file", new: func(t *testing.T) deletionAwareCommitStore {
+			store, err := NewFileRuntimeStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewFileRuntimeStore(): %v", err)
+			}
+			return store
+		}},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			store := testCase.new(t)
+			run := RunRecord{RunID: "run-tombstoned-commit", RootRunID: "run-tombstoned-commit", Status: RunStatusCompleted}
+			if err := store.CreateRun(ctx, run); err != nil {
+				t.Fatalf("CreateRun(): %v", err)
+			}
+			deletionID := "deletion-tombstoned-commit"
+			run.Deletion = &RunDeletionState{ID: deletionID, RootRunID: run.RunID, Phase: RunDeletionReserved}
+			reserved, err := store.CompareAndSwapRun(withRunDeletionMutation(ctx, deletionID), run.Revision, run)
+			if err != nil {
+				t.Fatalf("reserve deletion: %v", err)
+			}
+			step := StepRecord{RunID: run.RunID, StepID: "step-tombstoned-commit", Status: StepStatusSucceeded}
+			checkpoint := CheckpointRecord{RunID: run.RunID, CheckpointID: "checkpoint-tombstoned-commit", StepID: step.StepID, Stage: CheckpointAfterNode}
+			_, err = store.Commit(ctx, Commit{
+				Steps:       []StepWrite{{Mode: StepWriteAppend, Step: step}},
+				Checkpoints: []CheckpointWrite{{Record: checkpoint, Payload: []byte("payload")}},
+				Events:      []Event{{ID: "event-tombstoned-commit", RunID: run.RunID, Type: EventRunFinished}},
+			})
+			if !errors.Is(err, ErrRunControlNotAllowed) {
+				t.Fatalf("Commit() error = %v, want control not allowed", err)
+			}
+			persisted, err := store.GetRun(ctx, run.RunID)
+			if err != nil {
+				t.Fatalf("GetRun(): %v", err)
+			}
+			if persisted.Revision != reserved.Revision || persisted.Deletion == nil || persisted.Deletion.ID != deletionID {
+				t.Fatalf("persisted run = %#v, want unchanged reservation %#v", persisted, reserved)
+			}
+			if _, err := store.GetStep(ctx, step.StepID); !errors.Is(err, ErrRunnerRecordNotFound) {
+				t.Fatalf("GetStep() error = %v, want not found", err)
+			}
+			if _, _, err := store.Load(ctx, checkpoint.CheckpointID); !errors.Is(err, ErrRunnerRecordNotFound) {
+				t.Fatalf("Load() error = %v, want not found", err)
+			}
+			events, err := store.ListEvents(run.RunID)
+			if err != nil {
+				t.Fatalf("ListEvents(): %v", err)
+			}
+			if len(events) != 0 {
+				t.Fatalf("events survived rejected commit: %#v", events)
+			}
+		})
+	}
+}
+
+func TestRuntimeStoreDeletionFenceRejectsRunRecreation(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name string
+		new  func(*testing.T) deletionAwareCommitStore
+	}{
+		{name: "memory", new: func(*testing.T) deletionAwareCommitStore { return NewMemoryRuntimeStore() }},
+		{name: "file", new: func(t *testing.T) deletionAwareCommitStore {
+			store, err := NewFileRuntimeStore(t.TempDir())
+			if err != nil {
+				t.Fatalf("NewFileRuntimeStore(): %v", err)
+			}
+			return store
+		}},
+	}
+	for _, testCase := range testCases {
+		testCase := testCase
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			store := testCase.new(t)
+			run := RunRecord{RunID: "run-recreate-fenced", RootRunID: "run-recreate-fenced", Status: RunStatusCompleted}
+			if err := store.CreateRun(ctx, run); err != nil {
+				t.Fatalf("CreateRun(): %v", err)
+			}
+			coordinator := NewRunDeletionCoordinator(store, store, store, nil)
+			if err := coordinator.DeleteRun(ctx, run.RunID); err != nil {
+				t.Fatalf("DeleteRun(): %v", err)
+			}
+			_, err := store.Commit(ctx, Commit{Run: &RunWrite{Mode: RunWriteCreate, Run: run}})
+			if !errors.Is(err, ErrRunControlNotAllowed) {
+				t.Fatalf("Commit(recreate) error = %v, want control not allowed", err)
+			}
+			if _, err := store.GetRun(ctx, run.RunID); !errors.Is(err, ErrRunnerRecordNotFound) {
+				t.Fatalf("GetRun() error = %v, want not found", err)
+			}
+		})
+	}
+}
+
 func TestFileRuntimeStoreRecoveryRollsBackPreparedTransaction(t *testing.T) {
 	t.Parallel()
 
 	baseDir := t.TempDir()
 	runtimeStore, original, commit := prepareFileRuntimeTransaction(t, baseDir)
-	journal, _, err := runtimeStore.prepareJournalLocked(commit)
+	journal, _, err := runtimeStore.prepareJournalLocked(context.Background(), commit)
 	if err != nil {
 		t.Fatalf("prepareJournalLocked(): %v", err)
 	}
@@ -354,7 +670,7 @@ func TestFileRuntimeStoreRecoveryReplaysCommittedTransaction(t *testing.T) {
 
 	baseDir := t.TempDir()
 	runtimeStore, _, commit := prepareFileRuntimeTransaction(t, baseDir)
-	journal, result, err := runtimeStore.prepareJournalLocked(commit)
+	journal, result, err := runtimeStore.prepareJournalLocked(context.Background(), commit)
 	if err != nil {
 		t.Fatalf("prepareJournalLocked(): %v", err)
 	}

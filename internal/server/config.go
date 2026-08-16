@@ -199,7 +199,7 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 		cfg.EventSink == nil
 
 	executionStore := cfg.ExecutionStore
-	var defaultExecutionDeleter runtime.RunDeleter
+	var defaultExecutionDeleter runtime.RunDeletionExecutionStore
 	if executionStore == nil {
 		store := runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution"))
 		executionStore = store

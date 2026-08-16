@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -31,9 +32,9 @@ func TestBestEffortEventFailureDiagnosticsTrackCountAndLastError(t *testing.T) {
 			BestEffortFailures: map[EventType]EventPublicationFailure{},
 		},
 	}
-	runner.recordBestEffortEventFailure(EventArtifactCreated, errors.New("first"))
+	runner.recordBestEffortEventFailure(context.Background(), EventArtifactCreated, errors.New("first"))
 	now = now.Add(time.Second)
-	runner.recordBestEffortEventFailure(EventArtifactCreated, errors.New("second"))
+	runner.recordBestEffortEventFailure(context.Background(), EventArtifactCreated, errors.New("second"))
 
 	diagnostics := runner.EventPublicationDiagnostics()
 	failure := diagnostics.BestEffortFailures[EventArtifactCreated]

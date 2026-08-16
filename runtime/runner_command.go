@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -290,10 +291,13 @@ func (r *GraphRunner) resolveAfterNodeCommand(ctx context.Context, checkpoint Ch
 		}
 	}
 	if command.Return == nil {
-		schedule, _ := LoadGraphSchedule(currentState)
+		schedule, _, err := LoadGraphSchedule(currentState)
+		if err != nil {
+			return nil, nil, true, fmt.Errorf("load graph schedule: %w", err)
+		}
 		if err := StoreGraphSchedule(currentState, GraphSchedule{
 			NextTasks:         tasks,
-			PendingFanInNodes: schedule.PendingFanInNodes,
+			PendingFanInTasks: CloneGraphTasks(schedule.PendingFanInTasks),
 		}); err != nil {
 			return nil, nil, true, err
 		}
@@ -332,15 +336,19 @@ func (r *GraphRunner) resolveRestoredSend(parent GraphTask, sends []core.Send, c
 		if err != nil {
 			return nil, fmt.Errorf("task %q send target %q: %w", parent.TaskID, send.Target, err)
 		}
-		issues := state.ValidatePatch(send.Input)
+		issues := state.ValidateInputPatch(send.Input)
 		if contract, ok := r.nodeContracts[nodeID]; ok {
-			issues = state.ValidateInputPatchByContractWithReducers(currentState, send.Input, contract, r.reducers)
+			issues = state.ValidateInputPatchByContract(send.Input, contract)
 		}
 		if len(issues) > 0 {
 			return nil, fmt.Errorf("task %q send %d input: %w", parent.TaskID, index, state.NewValidationError("send input", issues))
 		}
+		taskID, taskIDErr := restoredDynamicTaskID(parent, send, index)
+		if taskIDErr != nil {
+			return nil, fmt.Errorf("task %q send %d: %w", parent.TaskID, index, taskIDErr)
+		}
 		tasks = append(tasks, GraphTask{
-			TaskID:         restoredDynamicTaskID(parent, send, index),
+			TaskID:         taskID,
 			NodeID:         nodeID,
 			Input:          state.NewPatch(send.Input.Ops()...),
 			CorrelationKey: strings.TrimSpace(send.CorrelationKey),
@@ -365,10 +373,21 @@ func (r *GraphRunner) resolveRestoredSend(parent GraphTask, sends []core.Send, c
 	return tasks, nil
 }
 
-func restoredDynamicTaskID(parent GraphTask, send core.Send, index int) string {
-	identity := fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s", parent.TaskID, index, send.Target, strings.TrimSpace(send.CorrelationKey), strings.TrimSpace(send.OrderKey))
-	digest := sha256.Sum256([]byte(identity))
-	return fmt.Sprintf("send-%x", digest[:12])
+func restoredDynamicTaskID(parent GraphTask, send core.Send, index int) (string, error) {
+	identity, err := json.Marshal([]any{
+		"send.v1",
+		parent.TaskID,
+		index,
+		string(send.Target),
+		strings.TrimSpace(send.CorrelationKey),
+		strings.TrimSpace(send.OrderKey),
+		send.Input.Ops(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal send task identity: %w", err)
+	}
+	digest := sha256.Sum256(identity)
+	return fmt.Sprintf("send-%x", digest[:12]), nil
 }
 
 func hasNodeCommand(command core.Command) bool {

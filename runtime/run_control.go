@@ -57,39 +57,49 @@ func (s *RunControlService) MarkRunExecutionLost(ctx context.Context, runID stri
 	}
 	ctx = normalizeRunnerContext(ctx)
 	runID = strings.TrimSpace(runID)
-	run, err := s.executionStore.GetRun(ctx, runID)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	if run.Status != RunStatusPending && run.Status != RunStatusRunning {
+	revisionConflicts := 0
+	for {
+		run, err := s.executionStore.GetRun(ctx, runID)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if run.Status != RunStatusPending && run.Status != RunStatusRunning {
+			return run, nil
+		}
+		now := s.now()
+		run.Status = RunStatusFailed
+		run.PauseRequested = false
+		run.CancelRequested = false
+		run.ErrorCode = "run_execution_lost"
+		run.ErrorMessage = "run execution is no longer active in this server process"
+		run.UpdatedAt = now
+		run.FinishedAt = &now
+		failedEvent, err := s.buildEvent(run, EventRunFailed, map[string]any{
+			"error_code":    run.ErrorCode,
+			"error_message": run.ErrorMessage,
+		})
+		if err != nil {
+			return RunRecord{}, err
+		}
+		commitResult, err := s.commit(ctx, Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+			Events: []Event{failedEvent},
+		})
+		if errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return RunRecord{}, runRevisionRetriesExceeded("mark run execution lost")
+			}
+			continue
+		}
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
 		return run, nil
 	}
-	now := s.now()
-	run.Status = RunStatusFailed
-	run.PauseRequested = false
-	run.CancelRequested = false
-	run.ErrorCode = "run_execution_lost"
-	run.ErrorMessage = "run execution is no longer active in this server process"
-	run.UpdatedAt = now
-	run.FinishedAt = &now
-	failedEvent, err := s.buildEvent(run, EventRunFailed, map[string]any{
-		"error_code":    run.ErrorCode,
-		"error_message": run.ErrorMessage,
-	})
-	if err != nil {
-		return RunRecord{}, err
-	}
-	commitResult, err := s.commit(ctx, Commit{
-		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
-		Events: []Event{failedEvent},
-	})
-	if err != nil {
-		return RunRecord{}, err
-	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
-	}
-	return run, nil
 }
 
 func (s *RunControlService) CancelPausedRun(ctx context.Context, runID string) (RunRecord, error) {
@@ -113,60 +123,70 @@ func (s *RunControlService) cancelPausedRun(ctx context.Context, runID, expected
 	} else if visit.done {
 		return visit.run, nil
 	}
-	run, err := s.executionStore.GetRun(ctx, runID)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	if expectedParentRunID != "" && run.ParentRunID != expectedParentRunID {
-		return RunRecord{}, fmt.Errorf("child run %q parent is %q, want %q", run.RunID, run.ParentRunID, expectedParentRunID)
-	}
-	visits[runID] = runCancelVisit{run: run, visiting: true}
-	for _, childRunID := range run.ChildRunIDs {
-		childRunID = strings.TrimSpace(childRunID)
-		if childRunID == "" {
-			return RunRecord{}, fmt.Errorf("run %q has an empty child run ID", run.RunID)
+	revisionConflicts := 0
+	for {
+		run, err := s.executionStore.GetRun(ctx, runID)
+		if err != nil {
+			return RunRecord{}, err
 		}
-		if _, err := s.cancelPausedRun(ctx, childRunID, run.RunID, false, visits); err != nil {
-			return RunRecord{}, fmt.Errorf("cancel child run %q of %q: %w", childRunID, run.RunID, err)
+		if expectedParentRunID != "" && run.ParentRunID != expectedParentRunID {
+			return RunRecord{}, fmt.Errorf("child run %q parent is %q, want %q", run.RunID, run.ParentRunID, expectedParentRunID)
 		}
-	}
-	if run.Status == RunStatusCanceled {
-		visits[runID] = runCancelVisit{run: run, done: true}
-		return run, nil
-	}
-	if run.Status != RunStatusPaused {
-		if !root && (run.Status == RunStatusCompleted || run.Status == RunStatusFailed) {
+		visits[runID] = runCancelVisit{run: run, visiting: true}
+		for _, childRunID := range run.ChildRunIDs {
+			childRunID = strings.TrimSpace(childRunID)
+			if childRunID == "" {
+				return RunRecord{}, fmt.Errorf("run %q has an empty child run ID", run.RunID)
+			}
+			if _, err := s.cancelPausedRun(ctx, childRunID, run.RunID, false, visits); err != nil {
+				return RunRecord{}, fmt.Errorf("cancel child run %q of %q: %w", childRunID, run.RunID, err)
+			}
+		}
+		if run.Status == RunStatusCanceled {
 			visits[runID] = runCancelVisit{run: run, done: true}
 			return run, nil
 		}
-		return RunRecord{}, fmt.Errorf("%w: run %q status %q cannot be canceled without an active runner", ErrRunControlNotAllowed, runID, run.Status)
+		if run.Status != RunStatusPaused {
+			if !root && (run.Status == RunStatusCompleted || run.Status == RunStatusFailed) {
+				visits[runID] = runCancelVisit{run: run, done: true}
+				return run, nil
+			}
+			return RunRecord{}, fmt.Errorf("%w: run %q status %q cannot be canceled without an active runner", ErrRunControlNotAllowed, runID, run.Status)
+		}
+		now := s.now()
+		run.PauseRequested = false
+		run.Status = RunStatusCanceled
+		run.CancelRequested = false
+		run.UpdatedAt = now
+		run.FinishedAt = &now
+		requestedEvent, err := s.buildEvent(run, EventRunCancelRequested, nil)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		canceledEvent, err := s.buildEvent(run, EventRunCanceled, nil)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		commitResult, err := s.commit(ctx, Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+			Events: []Event{requestedEvent, canceledEvent},
+		})
+		if errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return RunRecord{}, runRevisionRetriesExceeded("cancel paused run")
+			}
+			continue
+		}
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
+		visits[runID] = runCancelVisit{run: run, done: true}
+		return run, nil
 	}
-	now := s.now()
-	run.PauseRequested = false
-	run.Status = RunStatusCanceled
-	run.CancelRequested = false
-	run.UpdatedAt = now
-	run.FinishedAt = &now
-	requestedEvent, err := s.buildEvent(run, EventRunCancelRequested, nil)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	canceledEvent, err := s.buildEvent(run, EventRunCanceled, nil)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	commitResult, err := s.commit(ctx, Commit{
-		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
-		Events: []Event{requestedEvent, canceledEvent},
-	})
-	if err != nil {
-		return RunRecord{}, err
-	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
-	}
-	visits[runID] = runCancelVisit{run: run, done: true}
-	return run, nil
 }
 
 func (s *RunControlService) DeleteRun(ctx context.Context, runID string) (RunRecord, error) {
@@ -234,6 +254,7 @@ func (s *RunControlService) buildEvent(run RunRecord, eventType EventType, paylo
 }
 
 func (s *RunControlService) commit(ctx context.Context, commit Commit) (CommitResult, error) {
+	commit = sanitizeCommit(ctx, commit)
 	result, err := s.transactionStore.Commit(ctx, commit)
 	if err != nil {
 		return CommitResult{}, err

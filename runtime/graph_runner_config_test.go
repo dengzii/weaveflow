@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/runtime"
@@ -42,6 +43,120 @@ func TestNewGraphRunnerRequiresExecutionDependencies(t *testing.T) {
 				t.Fatalf("NewGraphRunner() = %#v, %v; want %q", runner, err, test.want)
 			}
 		})
+	}
+}
+
+func TestGraphRunnerRejectsInvalidContractOptions(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	workflow := newTestGraph(t)
+	newRunner := func(options ...runtime.GraphRunnerOption) error {
+		_, err := wfgraph.NewGraphRunner(
+			workflow,
+			runtime.NewFileExecutionStore(directory),
+			runtime.NewFileCheckpointStore(directory),
+			state.NewJSONStateCodec(""),
+			runtime.NewFileEventSink(directory),
+			options...,
+		)
+		return err
+	}
+
+	if err := newRunner(runtime.WithNodeContracts(map[string]state.Contract{
+		"start": state.NewContract(state.FieldAccess{Path: state.Internal("runtime"), Mode: state.AccessRead}),
+	})); err == nil || !strings.Contains(err.Error(), "reserved") {
+		t.Fatalf("invalid node contract error = %v", err)
+	}
+	if err := newRunner(runtime.WithContractValidation(core.ContractValidationMode("invalid"))); err == nil || !strings.Contains(err.Error(), "unsupported contract validation mode") {
+		t.Fatalf("invalid contract mode error = %v", err)
+	}
+}
+
+func TestGraphRunnerRequiresDeletionCapablePersistence(t *testing.T) {
+	t.Parallel()
+
+	transactionStore := runtime.NewMemoryRuntimeStore()
+	artifactStore := runtime.NewMemoryArtifactStore()
+	tests := []struct {
+		name             string
+		transactionStore runtime.TransactionStore
+		artifactStore    runtime.ArtifactStore
+		want             string
+	}{
+		{
+			name: "transaction deletion",
+			transactionStore: struct {
+				runtime.TransactionStore
+				runtime.RunDeletionFencer
+			}{TransactionStore: transactionStore, RunDeletionFencer: transactionStore},
+			artifactStore: artifactStore,
+			want:          "transaction store with deletion support",
+		},
+		{
+			name: "transaction fencing",
+			transactionStore: struct {
+				runtime.TransactionStore
+				runtime.RunDeleter
+			}{TransactionStore: transactionStore, RunDeleter: transactionStore},
+			artifactStore: artifactStore,
+			want:          "transaction store with deletion fencing",
+		},
+		{
+			name:             "artifact deletion",
+			transactionStore: transactionStore,
+			artifactStore: struct {
+				runtime.ArtifactStore
+				runtime.RunDeletionFencer
+			}{ArtifactStore: artifactStore, RunDeletionFencer: artifactStore},
+			want: "artifact store with deletion support",
+		},
+		{
+			name:             "artifact fencing",
+			transactionStore: transactionStore,
+			artifactStore: struct {
+				runtime.ArtifactStore
+				runtime.RunDeleter
+			}{ArtifactStore: artifactStore, RunDeleter: artifactStore},
+			want: "artifact store with deletion fencing",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner, err := wfgraph.NewGraphRunner(
+				newTestGraph(t),
+				transactionStore,
+				transactionStore,
+				state.NewJSONStateCodec(""),
+				transactionStore,
+				runtime.WithRuntimeTransactionStore(test.transactionStore),
+				runtime.WithArtifactStore(test.artifactStore),
+				runtime.WithRunDeleter(transactionStore),
+			)
+			if runner != nil || err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("NewGraphRunner() = %#v, %v; want %q", runner, err, test.want)
+			}
+		})
+	}
+}
+
+func TestGraphRunnerAllowsNoopArtifactWithRunDeletion(t *testing.T) {
+	t.Parallel()
+
+	transactionStore := runtime.NewMemoryRuntimeStore()
+	runner, err := wfgraph.NewGraphRunner(
+		newTestGraph(t),
+		transactionStore,
+		transactionStore,
+		state.NewJSONStateCodec(""),
+		transactionStore,
+		runtime.WithRunDeleter(transactionStore),
+	)
+	if err != nil {
+		t.Fatalf("NewGraphRunner() error = %v", err)
+	}
+	if _, ok := runner.ArtifactStore().(*runtime.NoopArtifactStore); !ok {
+		t.Fatalf("ArtifactStore() = %T, want *runtime.NoopArtifactStore", runner.ArtifactStore())
 	}
 }
 

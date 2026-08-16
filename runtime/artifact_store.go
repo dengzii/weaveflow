@@ -21,6 +21,7 @@ type FileArtifactStore struct {
 
 func NewFileArtifactStore(baseDir string) *FileArtifactStore {
 	baseDir = strings.TrimSpace(baseDir)
+	baseDir = namespacedFileStoreBase(baseDir, "artifacts")
 	return &FileArtifactStore{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
 }
 
@@ -29,7 +30,7 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 		return state.ArtifactRef{}, err
 	}
 	runID := artifact.RunID
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return state.ArtifactRef{}, err
 	}
 
@@ -43,6 +44,9 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ensureFileRunNotDeletingLocked(s.baseDir, runID, "save an artifact"); err != nil {
+		return state.ArtifactRef{}, err
+	}
 
 	metadataPath := s.metadataPath(runID, id)
 	if err := ensureRunnerRecordDoesNotExist(metadataPath, "artifact", id); err != nil {
@@ -58,6 +62,8 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 	if mimeType == "" {
 		mimeType = "application/octet-stream"
 	}
+	artifact.MIMEType = mimeType
+	artifact = sanitizeArtifact(ctx, artifact)
 
 	ref := state.ArtifactRef{
 		ID:           id,
@@ -71,7 +77,7 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 		RunPath:      append([]string(nil), artifact.RunPath...),
 		Namespace:    strings.Trim(strings.TrimSpace(artifact.Namespace), "/"),
 		Type:         strings.TrimSpace(artifact.Type),
-		MIMEType:     mimeType,
+		MIMEType:     artifact.MIMEType,
 		Location:     s.payloadPath(runID, id),
 		CreatedAt:    createdAt,
 	}
@@ -96,7 +102,7 @@ func (s *FileArtifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Ar
 	if err := fileStoreContextErr(ctx); err != nil {
 		return Artifact{}, err
 	}
-	if err := validateRunnerStorageID("run ID", ref.RunID); err != nil {
+	if err := validateFileStoreRunID(ref.RunID); err != nil {
 		return Artifact{}, err
 	}
 	if err := validateRunnerStorageID("artifact ID", ref.ID); err != nil {
@@ -146,7 +152,7 @@ func (s *FileArtifactStore) List(ctx context.Context, runID string) ([]state.Art
 	if err := fileStoreContextErr(ctx); err != nil {
 		return nil, err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -193,12 +199,30 @@ func (s *FileArtifactStore) DeleteRun(ctx context.Context, runID string) error {
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := requireFileRunDeletionLocked(ctx, s.baseDir, runID); err != nil {
+		return err
+	}
 	return os.RemoveAll(s.artifactsDir(runID))
+}
+
+func (s *FileArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateFileStoreRunID(runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return fenceFileRunDeletionLocked(ctx, s.baseDir, runID, deletionID)
 }
 
 func (s *FileArtifactStore) artifactsDir(runID string) string {
@@ -215,4 +239,8 @@ func (s *FileArtifactStore) metadataPath(runID, artifactID string) string {
 
 func (s *FileArtifactStore) payloadPath(runID, artifactID string) string {
 	return filepath.Join(s.payloadDir(runID), artifactID+".bin")
+}
+
+func (s *FileArtifactStore) deletionPath(runID string) string {
+	return fileRunDeletionPath(s.baseDir, runID)
 }

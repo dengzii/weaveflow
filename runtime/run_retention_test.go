@@ -51,11 +51,12 @@ func TestRunRetentionDeletesOnlyOldTerminalRunsAndAudits(t *testing.T) {
 			StartedAt: time.Unix(int64(index+1), 0),
 			UpdatedAt: time.Unix(int64(index+1), 0),
 		}
+		run.RootRunID = run.RunID
 		if err := executionStore.CreateRun(ctx, run); err != nil {
 			t.Fatal(err)
 		}
 	}
-	newest := RunRecord{RunID: "newest", GraphID: "graph", Status: RunStatusCanceled, StartedAt: time.Unix(4, 0), UpdatedAt: time.Unix(4, 0)}
+	newest := RunRecord{RunID: "newest", RootRunID: "newest", GraphID: "graph", Status: RunStatusCanceled, StartedAt: time.Unix(4, 0), UpdatedAt: time.Unix(4, 0)}
 	if err := executionStore.CreateRun(ctx, newest); err != nil {
 		t.Fatal(err)
 	}

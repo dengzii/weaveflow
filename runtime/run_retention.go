@@ -53,7 +53,7 @@ func (sink *FileRetentionAuditSink) RecordRetention(ctx context.Context, record 
 	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(sink.path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(sink.path), 0o700); err != nil {
 		return err
 	}
 	file, err := os.OpenFile(sink.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)

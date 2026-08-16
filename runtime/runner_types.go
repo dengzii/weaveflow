@@ -20,6 +20,12 @@ var (
 	ErrRunRevisionConflict = errors.New("run revision conflict")
 )
 
+const runRevisionRetryLimit = 8
+
+func runRevisionRetriesExceeded(action string) error {
+	return fmt.Errorf("%s exceeded %d run revision retries: %w", action, runRevisionRetryLimit, ErrRunRevisionConflict)
+}
+
 type RunRevisionConflictError struct {
 	RunID    string
 	Expected uint64
@@ -119,39 +125,77 @@ func IsStreamingEvent(event EventType) bool {
 }
 
 type RunRecord struct {
-	RunID             string     `json:"run_id"`
-	Revision          uint64     `json:"revision"`
-	ParentRunID       string     `json:"parent_run_id,omitempty"`
-	ParentStepID      string     `json:"parent_step_id,omitempty"`
-	ParentTaskID      string     `json:"parent_task_id,omitempty"`
-	RootRunID         string     `json:"root_run_id"`
-	RunPath           []string   `json:"run_path"`
-	Namespace         string     `json:"namespace"`
-	ChildRunIDs       []string   `json:"child_run_ids,omitempty"`
-	ReturnValue       any        `json:"return_value,omitempty"`
-	GraphID           string     `json:"graph_id"`
-	GraphVersion      string     `json:"graph_version"`
-	GraphHash         string     `json:"graph_hash,omitempty"`
-	GraphSnapshotHash string     `json:"graph_snapshot_hash,omitempty"`
-	GraphSessionID    string     `json:"graph_session_id,omitempty"`
-	Origin            *RunOrigin `json:"origin,omitempty"`
-	Status            RunStatus  `json:"status"`
-	EntryNodeID       string     `json:"entry_node_id"`
-	CurrentNodeID     string     `json:"current_node_id,omitempty"`
-	CurrentNodeIDs    []string   `json:"current_node_ids,omitempty"`
-	CurrentStepIDs    []string   `json:"current_step_ids,omitempty"`
-	NextNodeIDs       []string   `json:"next_node_ids,omitempty"`
-	ParallelWaveID    string     `json:"parallel_wave_id,omitempty"`
-	LastStepID        string     `json:"last_step_id,omitempty"`
-	LastCheckpointID  string     `json:"last_checkpoint_id,omitempty"`
-	PauseRequested    bool       `json:"pause_requested,omitempty"`
-	CancelRequested   bool       `json:"cancel_requested,omitempty"`
-	ErrorCode         string     `json:"error_code,omitempty"`
-	ErrorMessage      string     `json:"error_message,omitempty"`
-	StartedAt         time.Time  `json:"started_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
-	FinishedAt        *time.Time `json:"finished_at,omitempty"`
+	RunID             string            `json:"run_id"`
+	Revision          uint64            `json:"revision"`
+	ParentRunID       string            `json:"parent_run_id,omitempty"`
+	ParentStepID      string            `json:"parent_step_id,omitempty"`
+	ParentTaskID      string            `json:"parent_task_id,omitempty"`
+	ChildRequestKey   string            `json:"child_request_key,omitempty"`
+	ChildInputHash    string            `json:"child_input_hash,omitempty"`
+	ExecutionClaimID  string            `json:"execution_claim_id,omitempty"`
+	RootRunID         string            `json:"root_run_id"`
+	RunPath           []string          `json:"run_path"`
+	Namespace         string            `json:"namespace"`
+	ChildRunIDs       []string          `json:"child_run_ids,omitempty"`
+	PendingChildRuns  []PendingChildRun `json:"pending_child_runs,omitempty"`
+	Deletion          *RunDeletionState `json:"deletion,omitempty"`
+	ReturnValue       any               `json:"return_value,omitempty"`
+	GraphID           string            `json:"graph_id"`
+	GraphVersion      string            `json:"graph_version"`
+	GraphHash         string            `json:"graph_hash,omitempty"`
+	GraphSnapshotHash string            `json:"graph_snapshot_hash,omitempty"`
+	GraphSessionID    string            `json:"graph_session_id,omitempty"`
+	Origin            *RunOrigin        `json:"origin,omitempty"`
+	Status            RunStatus         `json:"status"`
+	EntryNodeID       string            `json:"entry_node_id"`
+	CurrentNodeID     string            `json:"current_node_id,omitempty"`
+	CurrentNodeIDs    []string          `json:"current_node_ids,omitempty"`
+	CurrentStepIDs    []string          `json:"current_step_ids,omitempty"`
+	NextNodeIDs       []string          `json:"next_node_ids,omitempty"`
+	ParallelWaveID    string            `json:"parallel_wave_id,omitempty"`
+	LastStepID        string            `json:"last_step_id,omitempty"`
+	LastCheckpointID  string            `json:"last_checkpoint_id,omitempty"`
+	PauseRequested    bool              `json:"pause_requested,omitempty"`
+	CancelRequested   bool              `json:"cancel_requested,omitempty"`
+	ErrorCode         string            `json:"error_code,omitempty"`
+	ErrorMessage      string            `json:"error_message,omitempty"`
+	StartedAt         time.Time         `json:"started_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+	FinishedAt        *time.Time        `json:"finished_at,omitempty"`
 }
+
+type PendingChildRun struct {
+	RequestKey        string    `json:"request_key"`
+	ChildRunID        string    `json:"child_run_id"`
+	ParentRunID       string    `json:"parent_run_id"`
+	ParentStepID      string    `json:"parent_step_id"`
+	ParentTaskID      string    `json:"parent_task_id"`
+	GraphRef          string    `json:"graph_ref"`
+	GraphID           string    `json:"graph_id"`
+	GraphVersion      string    `json:"graph_version"`
+	GraphHash         string    `json:"graph_hash,omitempty"`
+	GraphSnapshotHash string    `json:"graph_snapshot_hash,omitempty"`
+	GraphSessionID    string    `json:"graph_session_id,omitempty"`
+	Namespace         string    `json:"namespace"`
+	InputHash         string    `json:"input_hash"`
+	ReservedAt        time.Time `json:"reserved_at"`
+}
+
+type RunDeletionState struct {
+	ID          string           `json:"id"`
+	RootRunID   string           `json:"root_run_id"`
+	ParentRunID string           `json:"parent_run_id,omitempty"`
+	Phase       RunDeletionPhase `json:"phase"`
+	RunIDs      []string         `json:"run_ids,omitempty"`
+}
+
+type RunDeletionPhase string
+
+const (
+	RunDeletionReserved RunDeletionPhase = "reserved"
+	RunDeletionPlanned  RunDeletionPhase = "planned"
+	RunDeletionUnlinked RunDeletionPhase = "unlinked"
+)
 
 type RunOrigin struct {
 	Type      string `json:"type"`

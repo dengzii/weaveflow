@@ -126,6 +126,7 @@ func (l *LoggerEventSink) Publish(ctx context.Context, event Event) error {
 	if IsStreamingEvent(event.Type) {
 		return nil
 	}
+	event = sanitizeEventPayload(ctx, event)
 	l.logger.Info("Publish",
 		zap.Any("type", event.Type),
 		zap.String("node_id", event.NodeID),
@@ -136,7 +137,7 @@ func (l *LoggerEventSink) Publish(ctx context.Context, event Event) error {
 }
 
 func (l *LoggerEventSink) PublishBatch(ctx context.Context, events []Event) error {
-	l.logger.Info("EventBatch", zap.Any("events", events))
+	l.logger.Info("EventBatch", zap.Any("events", sanitizeEvents(ctx, events)))
 	return nil
 }
 
@@ -147,12 +148,23 @@ func NewFileExecutionStore(baseDir string) *FileExecutionStore {
 
 func NewFileCheckpointStore(baseDir string) *FileCheckpointStore {
 	baseDir = strings.TrimSpace(baseDir)
+	baseDir = namespacedFileStoreBase(baseDir, "checkpoints")
 	return &FileCheckpointStore{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
 }
 
 func NewFileEventSink(baseDir string) *FileEventSink {
 	baseDir = strings.TrimSpace(baseDir)
 	return &FileEventSink{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
+}
+
+func namespacedFileStoreBase(baseDir, namespace string) string {
+	if baseDir == "" {
+		return baseDir
+	}
+	if strings.EqualFold(filepath.Base(filepath.Clean(baseDir)), namespace) {
+		return baseDir
+	}
+	return filepath.Join(baseDir, namespace)
 }
 
 func sharedFileStoreMutex(baseDir string) *sync.Mutex {
@@ -213,19 +225,137 @@ func fileStoreContextErr(ctx context.Context) error {
 	return ctx.Err()
 }
 
+const fileRunDeletionDirName = ".deletions"
+
+type fileRunDeletionFence struct {
+	RunID      string `json:"run_id"`
+	DeletionID string `json:"deletion_id"`
+}
+
+func validateFileStoreRunID(runID string) error {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
+	if strings.EqualFold(runID, fileRunDeletionDirName) {
+		return fmt.Errorf("run ID %q is reserved by file storage", runID)
+	}
+	return nil
+}
+
+func fenceFileRunDeletionLocked(ctx context.Context, baseDir, runID, deletionID string) error {
+	if err := requireRunDeletionMutation(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	path := fileRunDeletionPath(baseDir, runID)
+	var existing fileRunDeletionFence
+	if err := readRunnerJSONFile(path, &existing); err == nil {
+		if err := validateFileRunDeletionFence(existing, runID); err != nil {
+			return err
+		}
+		if existing.DeletionID != deletionID {
+			return fmt.Errorf("%w: run %q is fenced by deletion %q", ErrRunControlNotAllowed, runID, existing.DeletionID)
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	return writeRunnerJSONFile(path, fileRunDeletionFence{RunID: runID, DeletionID: deletionID})
+}
+
+func ensureFileRunNotDeletingLocked(baseDir, runID, action string) error {
+	var fence fileRunDeletionFence
+	if err := readRunnerJSONFile(fileRunDeletionPath(baseDir, runID), &fence); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := validateFileRunDeletionFence(fence, runID); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: run %q is fenced for deletion and cannot %s", ErrRunControlNotAllowed, runID, action)
+}
+
+func requireFileRunDeletionLocked(ctx context.Context, baseDir, runID string) error {
+	var fence fileRunDeletionFence
+	if err := readRunnerJSONFile(fileRunDeletionPath(baseDir, runID), &fence); err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%w: run %q has no durable deletion fence", ErrRunControlNotAllowed, runID)
+		}
+		return err
+	}
+	if err := validateFileRunDeletionFence(fence, runID); err != nil {
+		return err
+	}
+	return requireRunDeletionMutation(ctx, runID, fence.DeletionID)
+}
+
+func validateFileRunDeletionFence(fence fileRunDeletionFence, runID string) error {
+	if fence.RunID != runID {
+		return fmt.Errorf("run %q deletion fence identity mismatch", runID)
+	}
+	if err := validateRunnerStorageID("deletion ID", fence.DeletionID); err != nil {
+		return fmt.Errorf("run %q deletion fence: %w", runID, err)
+	}
+	return nil
+}
+
+func requireRunDeletionMutation(ctx context.Context, runID, deletionID string) error {
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	mutationID := ""
+	if ctx != nil {
+		mutationID, _ = ctx.Value(runDeletionMutationKey{}).(string)
+	}
+	if mutationID != deletionID {
+		return fmt.Errorf("%w: deletion %q is not authorized for run %q", ErrRunControlNotAllowed, mutationID, runID)
+	}
+	return nil
+}
+
+func fileRunDeletionPath(baseDir, runID string) string {
+	return filepath.Join(baseDir, fileRunDeletionDirName, runID+".json")
+}
+
 func (s *FileExecutionStore) CreateRun(ctx context.Context, run RunRecord) error {
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
+	if err := validateFileStoreRunID(run.RunID); err != nil {
+		return err
+	}
+	if err := validateNewRunDeletion(run); err != nil {
+		return err
+	}
+	run = sanitizeRunRecord(ctx, run)
+	if err := validateRunChildState(run); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ensureFileRunNotDeletingLocked(s.baseDir, run.RunID, "create a run"); err != nil {
+		return err
+	}
 
 	path := s.runPath(run.RunID)
 	if err := ensureRunnerRecordDoesNotExist(path, "run", run.RunID); err != nil {
 		return err
+	}
+	if run.ParentRunID != "" {
+		if err := validateFileStoreRunID(run.ParentRunID); err != nil {
+			return err
+		}
+		if err := ensureFileRunNotDeletingLocked(s.baseDir, run.ParentRunID, "create a child run"); err != nil {
+			return err
+		}
+		parent, err := s.readRunLocked(run.ParentRunID)
+		if err != nil {
+			return fmt.Errorf("load parent run %q: %w", run.ParentRunID, err)
+		}
+		if err := validateNewRunParent(run, parent); err != nil {
+			return err
+		}
 	}
 	return writeRunnerJSONFile(path, run)
 }
@@ -234,7 +364,11 @@ func (s *FileExecutionStore) CompareAndSwapRun(ctx context.Context, expectedRevi
 	if err := fileStoreContextErr(ctx); err != nil {
 		return RunRecord{}, err
 	}
-	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
+	if err := validateFileStoreRunID(run.RunID); err != nil {
+		return RunRecord{}, err
+	}
+	run = sanitizeRunRecord(ctx, run)
+	if err := validateRunChildState(run); err != nil {
 		return RunRecord{}, err
 	}
 	s.mu.Lock()
@@ -250,6 +384,9 @@ func (s *FileExecutionStore) CompareAndSwapRun(ctx context.Context, expectedRevi
 	if existing.Revision != expectedRevision || run.Revision != expectedRevision {
 		return RunRecord{}, &RunRevisionConflictError{RunID: run.RunID, Expected: expectedRevision, Actual: existing.Revision}
 	}
+	if err := validateRunDeletionTransition(ctx, existing, run); err != nil {
+		return RunRecord{}, err
+	}
 	run.Revision = expectedRevision + 1
 	if err := writeRunnerJSONFile(path, run); err != nil {
 		return RunRecord{}, err
@@ -261,7 +398,7 @@ func (s *FileExecutionStore) GetRun(ctx context.Context, runID string) (RunRecor
 	if err := fileStoreContextErr(ctx); err != nil {
 		return RunRecord{}, err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return RunRecord{}, err
 	}
 	s.mu.Lock()
@@ -293,16 +430,24 @@ func (s *FileExecutionStore) AppendStep(ctx context.Context, step StepRecord) er
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", step.RunID); err != nil {
+	if err := validateFileStoreRunID(step.RunID); err != nil {
 		return err
 	}
 	if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
 		return err
 	}
+	step = sanitizeStepRecord(ctx, step)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if err := ensureRunnerRecordExists(s.runPath(step.RunID), "run", step.RunID); err != nil {
+	run, err := s.readRunLocked(step.RunID)
+	if err != nil {
+		return err
+	}
+	if err := ensureRunNotDeleting(run, "append a step"); err != nil {
+		return err
+	}
+	if err := ensureFileRunNotDeletingLocked(s.baseDir, step.RunID, "append a step"); err != nil {
 		return err
 	}
 	path := s.stepPath(step.RunID, step.StepID)
@@ -316,14 +461,25 @@ func (s *FileExecutionStore) UpdateStep(ctx context.Context, step StepRecord) er
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", step.RunID); err != nil {
+	if err := validateFileStoreRunID(step.RunID); err != nil {
 		return err
 	}
 	if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
 		return err
 	}
+	step = sanitizeStepRecord(ctx, step)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	run, err := s.readRunLocked(step.RunID)
+	if err != nil {
+		return err
+	}
+	if err := ensureRunNotDeleting(run, "update a step"); err != nil {
+		return err
+	}
+	if err := ensureFileRunNotDeletingLocked(s.baseDir, step.RunID, "update a step"); err != nil {
+		return err
+	}
 	path := s.stepPath(step.RunID, step.StepID)
 	if err := ensureRunnerRecordExists(path, "step", step.StepID); err != nil {
 		return err
@@ -345,6 +501,7 @@ func (s *FileExecutionStore) GetStep(ctx context.Context, stepID string) (StepRe
 	if err != nil {
 		return StepRecord{}, err
 	}
+	var found *StepRecord
 	for _, run := range runs {
 		path := s.stepPath(run.RunID, stepID)
 		var step StepRecord
@@ -353,11 +510,19 @@ func (s *FileExecutionStore) GetStep(ctx context.Context, stepID string) (StepRe
 			if step.RunID != run.RunID || step.StepID != stepID {
 				return StepRecord{}, fmt.Errorf("step %q metadata identity mismatch", stepID)
 			}
-			return step, nil
+			if found != nil {
+				return StepRecord{}, fmt.Errorf("step %q is ambiguous across runs", stepID)
+			}
+			copy := cloneStepRecord(step)
+			found = &copy
+			continue
 		}
 		if !os.IsNotExist(err) {
 			return StepRecord{}, err
 		}
+	}
+	if found != nil {
+		return *found, nil
 	}
 	return StepRecord{}, ErrRunnerRecordNotFound
 }
@@ -366,7 +531,7 @@ func (s *FileExecutionStore) ListSteps(ctx context.Context, runID string) ([]Ste
 	if err := fileStoreContextErr(ctx); err != nil {
 		return nil, err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -414,15 +579,28 @@ func (s *FileExecutionStore) DeleteRun(ctx context.Context, runID string) error 
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := os.Stat(s.runPath(runID)); err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
+	run, err := s.readRunLocked(runID)
+	if errors.Is(err, ErrRunnerRecordNotFound) {
+		return requireFileRunDeletionLocked(ctx, s.baseDir, runID)
+	}
+	if err != nil {
+		return err
+	}
+	if run.Deletion == nil {
+		return fmt.Errorf("%w: run %q is not reserved for deletion", ErrRunControlNotAllowed, runID)
+	}
+	if err := validateRunDeletionState(run.Deletion); err != nil {
+		return fmt.Errorf("run %q deletion state: %w", runID, err)
+	}
+	if err := requireRunDeletionMutation(ctx, runID, run.Deletion.ID); err != nil {
+		return err
+	}
+	if err := requireFileRunDeletionLocked(ctx, s.baseDir, runID); err != nil {
 		return err
 	}
 	if err := os.RemoveAll(s.stepsDir(runID)); err != nil {
@@ -435,6 +613,49 @@ func (s *FileExecutionStore) DeleteRun(ctx context.Context, runID string) error 
 		return err
 	}
 	return nil
+}
+
+func (s *FileExecutionStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateFileStoreRunID(runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	run, err := s.readRunLocked(runID)
+	if err == nil {
+		if run.Deletion == nil {
+			return fmt.Errorf("%w: run %q is not reserved for deletion", ErrRunControlNotAllowed, runID)
+		}
+		if err := validateRunDeletionState(run.Deletion); err != nil {
+			return fmt.Errorf("run %q deletion state: %w", runID, err)
+		}
+		if run.Deletion.ID != deletionID {
+			return fmt.Errorf("%w: run %q is reserved by deletion %q", ErrRunControlNotAllowed, runID, run.Deletion.ID)
+		}
+	} else if !errors.Is(err, ErrRunnerRecordNotFound) {
+		return err
+	}
+	return fenceFileRunDeletionLocked(ctx, s.baseDir, runID, deletionID)
+}
+
+func (s *FileExecutionStore) readRunLocked(runID string) (RunRecord, error) {
+	var run RunRecord
+	if err := readRunnerJSONFile(s.runPath(runID), &run); err != nil {
+		if os.IsNotExist(err) {
+			return RunRecord{}, ErrRunnerRecordNotFound
+		}
+		return RunRecord{}, err
+	}
+	if run.RunID != runID {
+		return RunRecord{}, fmt.Errorf("run %q metadata identity mismatch", runID)
+	}
+	return run, nil
 }
 
 func (s *FileExecutionStore) listRunsLocked(filter RunFilter) ([]RunRecord, error) {
@@ -461,7 +682,7 @@ func (s *FileExecutionStore) listRunsLocked(filter RunFilter) ([]RunRecord, erro
 		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &run); err != nil {
 			return nil, err
 		}
-		if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
+		if err := validateFileStoreRunID(run.RunID); err != nil {
 			return nil, err
 		}
 		if file.Name() != run.RunID+".json" {
@@ -512,11 +733,15 @@ func (s *FileExecutionStore) stepsDir(runID string) string {
 	return filepath.Join(s.baseDir, "steps", runID)
 }
 
+func (s *FileExecutionStore) deletionPath(runID string) string {
+	return fileRunDeletionPath(s.baseDir, runID)
+}
+
 func (s *FileCheckpointStore) Save(ctx context.Context, record CheckpointRecord, payload []byte) error {
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", record.RunID); err != nil {
+	if err := validateFileStoreRunID(record.RunID); err != nil {
 		return err
 	}
 	if err := validateRunnerStorageID("checkpoint ID", record.CheckpointID); err != nil {
@@ -524,15 +749,18 @@ func (s *FileCheckpointStore) Save(ctx context.Context, record CheckpointRecord,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ensureFileRunNotDeletingLocked(s.baseDir, record.RunID, "save a checkpoint"); err != nil {
+		return err
+	}
 
 	metadataPath := s.metadataPath(record.RunID, record.CheckpointID)
 	if err := ensureRunnerRecordDoesNotExist(metadataPath, "checkpoint", record.CheckpointID); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.checkpointsDir(record.RunID), 0o755); err != nil {
+	if err := os.MkdirAll(s.checkpointsDir(record.RunID), 0o700); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(s.payloadDir(record.RunID), 0o755); err != nil {
+	if err := os.MkdirAll(s.payloadDir(record.RunID), 0o700); err != nil {
 		return err
 	}
 	record.PayloadRef = s.payloadPath(record.RunID, record.CheckpointID)
@@ -570,8 +798,10 @@ func (s *FileCheckpointStore) Load(ctx context.Context, checkpointID string) (Ch
 		return CheckpointRecord{}, nil, err
 	}
 
+	var foundRecord *CheckpointRecord
+	var foundPayload []byte
 	for _, runDir := range runDirs {
-		if !runDir.IsDir() {
+		if !runDir.IsDir() || runDir.Name() == fileRunDeletionDirName {
 			continue
 		}
 		metaPath := filepath.Join(s.baseDir, runDir.Name(), checkpointID+".json")
@@ -590,8 +820,16 @@ func (s *FileCheckpointStore) Load(ctx context.Context, checkpointID string) (Ch
 		if err != nil {
 			return CheckpointRecord{}, nil, err
 		}
+		if foundRecord != nil {
+			return CheckpointRecord{}, nil, fmt.Errorf("checkpoint %q is ambiguous across runs", checkpointID)
+		}
 		record.PayloadRef = payloadPath
-		return record, payload, nil
+		copy := record
+		foundRecord = &copy
+		foundPayload = append([]byte(nil), payload...)
+	}
+	if foundRecord != nil {
+		return *foundRecord, foundPayload, nil
 	}
 
 	return CheckpointRecord{}, nil, ErrRunnerRecordNotFound
@@ -601,7 +839,7 @@ func (s *FileCheckpointStore) List(ctx context.Context, runID string) ([]Checkpo
 	if err := fileStoreContextErr(ctx); err != nil {
 		return nil, err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -648,12 +886,30 @@ func (s *FileCheckpointStore) DeleteRun(ctx context.Context, runID string) error
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := requireFileRunDeletionLocked(ctx, s.baseDir, runID); err != nil {
+		return err
+	}
 	return os.RemoveAll(s.checkpointsDir(runID))
+}
+
+func (s *FileCheckpointStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateFileStoreRunID(runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return fenceFileRunDeletionLocked(ctx, s.baseDir, runID, deletionID)
 }
 
 func (s *FileCheckpointStore) checkpointsDir(runID string) string {
@@ -672,6 +928,10 @@ func (s *FileCheckpointStore) payloadPath(runID, checkpointID string) string {
 	return filepath.Join(s.payloadDir(runID), checkpointID+".bin")
 }
 
+func (s *FileCheckpointStore) deletionPath(runID string) string {
+	return fileRunDeletionPath(s.baseDir, runID)
+}
+
 func (s *FileEventSink) Publish(ctx context.Context, event Event) error {
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
@@ -679,11 +939,15 @@ func (s *FileEventSink) Publish(ctx context.Context, event Event) error {
 	if event.Type == EventLLMReasoningChunk || event.Type == EventLLMContentChunk {
 		return nil
 	}
-	if err := validateRunnerStorageID("run ID", event.RunID); err != nil {
+	event = sanitizeEventPayload(ctx, event)
+	if err := validateFileStoreRunID(event.RunID); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := ensureFileRunNotDeletingLocked(s.baseDir, event.RunID, "publish an event"); err != nil {
+		return err
+	}
 	return appendRunnerJSONLine(s.eventsPath(event.RunID), event)
 }
 
@@ -692,22 +956,24 @@ func (s *FileEventSink) PublishBatch(ctx context.Context, events []Event) error 
 		return err
 	}
 	type pendingEventLine struct {
-		path string
-		data []byte
+		runID string
+		path  string
+		data  []byte
 	}
+	events = sanitizeEvents(ctx, events)
 	pending := make([]pendingEventLine, 0, len(events))
 	for _, event := range events {
 		if event.Type == EventLLMReasoningChunk || event.Type == EventLLMContentChunk {
 			continue
 		}
-		if err := validateRunnerStorageID("run ID", event.RunID); err != nil {
+		if err := validateFileStoreRunID(event.RunID); err != nil {
 			return err
 		}
 		data, err := marshalRunnerJSONLine(event)
 		if err != nil {
 			return err
 		}
-		pending = append(pending, pendingEventLine{path: s.eventsPath(event.RunID), data: data})
+		pending = append(pending, pendingEventLine{runID: event.RunID, path: s.eventsPath(event.RunID), data: data})
 	}
 	if len(pending) == 0 {
 		return nil
@@ -715,6 +981,16 @@ func (s *FileEventSink) PublishBatch(ctx context.Context, events []Event) error 
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	checkedRuns := make(map[string]struct{}, len(pending))
+	for _, event := range pending {
+		if _, checked := checkedRuns[event.runID]; checked {
+			continue
+		}
+		if err := ensureFileRunNotDeletingLocked(s.baseDir, event.runID, "publish events"); err != nil {
+			return err
+		}
+		checkedRuns[event.runID] = struct{}{}
+	}
 	for _, event := range pending {
 		if err := appendRunnerJSONLineData(event.path, event.data); err != nil {
 			return err
@@ -724,7 +1000,7 @@ func (s *FileEventSink) PublishBatch(ctx context.Context, events []Event) error 
 }
 
 func (s *FileEventSink) ListEvents(runID string) ([]Event, error) {
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -762,7 +1038,7 @@ func (s *FileEventSink) ListEventPage(runID, cursor string, limit int) (EventPag
 	if limit <= 0 {
 		return EventPage{}, fmt.Errorf("event page limit must be positive")
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return EventPage{}, err
 	}
 
@@ -921,19 +1197,41 @@ func (s *FileEventSink) DeleteRun(ctx context.Context, runID string) error {
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := requireFileRunDeletionLocked(ctx, s.baseDir, runID); err != nil {
+		return err
+	}
 	if err := os.Remove(s.eventsPath(runID)); err != nil && !os.IsNotExist(err) {
 		return err
 	}
 	return nil
 }
 
+func (s *FileEventSink) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateFileStoreRunID(runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return fenceFileRunDeletionLocked(ctx, s.baseDir, runID, deletionID)
+}
+
 func (s *FileEventSink) eventsPath(runID string) string {
 	return filepath.Join(s.baseDir, runID+".jsonl")
+}
+
+func (s *FileEventSink) deletionPath(runID string) string {
+	return fileRunDeletionPath(s.baseDir, runID)
 }
 
 func writeRunnerJSONFile(path string, value any) error {
@@ -983,7 +1281,7 @@ func readRunnerJSONFile(path string, out any) error {
 }
 
 func writeRunnerBinaryFile(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	temp, err := os.CreateTemp(filepath.Dir(path), "tmp-*")
@@ -1022,14 +1320,17 @@ func marshalRunnerJSONLine(value any) ([]byte, error) {
 }
 
 func appendRunnerJSONLineData(path string, data []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if err := f.Chmod(0o600); err != nil {
+		return err
+	}
 
 	if _, err := f.Write(data); err != nil {
 		return err
@@ -1077,6 +1378,10 @@ type NoopArtifactStore struct{}
 
 func NewNoopArtifactStore() *NoopArtifactStore { return &NoopArtifactStore{} }
 
+var _ ArtifactStore = (*NoopArtifactStore)(nil)
+var _ RunDeleter = (*NoopArtifactStore)(nil)
+var _ RunDeletionFencer = (*NoopArtifactStore)(nil)
+
 func (*NoopArtifactStore) Save(context.Context, Artifact) (state.ArtifactRef, error) {
 	return state.ArtifactRef{}, nil
 }
@@ -1085,6 +1390,21 @@ func (*NoopArtifactStore) Load(context.Context, state.ArtifactRef) (Artifact, er
 }
 func (*NoopArtifactStore) List(context.Context, string) ([]state.ArtifactRef, error) {
 	return []state.ArtifactRef{}, nil
+}
+func (*NoopArtifactStore) DeleteRun(ctx context.Context, runID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	return validateRunnerStorageID("run ID", runID)
+}
+func (*NoopArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
+	return validateRunnerStorageID("deletion ID", deletionID)
 }
 
 type NoopEventSink struct{}

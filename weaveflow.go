@@ -337,9 +337,13 @@ func (config *runnerConfig) build(target *graph.Graph) (*runtime.GraphRunner, er
 	if target == nil {
 		return nil, fmt.Errorf("graph is required")
 	}
+	runDeleter, err := config.runDeleter()
+	if err != nil {
+		return nil, fmt.Errorf("configure run deletion: %w", err)
+	}
 	options := []runtime.GraphRunnerOption{
 		runtime.WithArtifactStore(config.artifactStore),
-		runtime.WithRunDeleter(config.runDeleter()),
+		runtime.WithRunDeleter(runDeleter),
 		runtime.WithGraphMetadata(config.graphID, config.graphVersion, "", "", ""),
 		runtime.WithBreakpoints(config.breakpoints...),
 		runtime.WithContractValidation(config.contractValidation),
@@ -351,13 +355,36 @@ func (config *runnerConfig) build(target *graph.Graph) (*runtime.GraphRunner, er
 	return graph.NewGraphRunner(target, config.executionStore, config.checkpointStore, config.codec, config.eventSink, options...)
 }
 
-func (config *runnerConfig) runDeleter() runtime.RunDeleter {
-	executionStore, ok := config.executionStore.(runtime.RunDeleter)
+func (config *runnerConfig) runDeleter() (runtime.RunDeleter, error) {
+	executionStore, ok := config.executionStore.(runtime.RunDeletionExecutionStore)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("execution store does not support run deletion")
 	}
-	checkpointStore, _ := config.checkpointStore.(runtime.RunDeleter)
-	eventSink, _ := config.eventSink.(runtime.RunDeleter)
-	artifactStore, _ := config.artifactStore.(runtime.RunDeleter)
-	return runtime.NewRunDeletionCoordinator(executionStore, checkpointStore, eventSink, artifactStore)
+	if _, ok := config.executionStore.(runtime.RunDeletionFencer); !ok {
+		return nil, fmt.Errorf("execution store does not support run deletion fencing")
+	}
+	checkpointStore, err := runDeletionStore("checkpoint", config.checkpointStore)
+	if err != nil {
+		return nil, err
+	}
+	eventStore, err := runDeletionStore("event", config.eventSink)
+	if err != nil {
+		return nil, err
+	}
+	artifactStore, err := runDeletionStore("artifact", config.artifactStore)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.NewRunDeletionCoordinator(executionStore, checkpointStore, eventStore, artifactStore), nil
+}
+
+func runDeletionStore(name string, store any) (runtime.RunDeleter, error) {
+	deleter, ok := store.(runtime.RunDeleter)
+	if !ok {
+		return nil, fmt.Errorf("%s store does not support run deletion", name)
+	}
+	if _, ok := store.(runtime.RunDeletionFencer); !ok {
+		return nil, fmt.Errorf("%s store does not support run deletion fencing", name)
+	}
+	return deleter, nil
 }

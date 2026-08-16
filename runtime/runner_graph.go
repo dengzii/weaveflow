@@ -1,9 +1,12 @@
 package runtime
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -129,7 +132,7 @@ type FailureContext core.FailureContext
 type GraphSchedule struct {
 	CurrentTasks      []GraphTask `json:"current_tasks,omitempty"`
 	NextTasks         []GraphTask `json:"next_tasks,omitempty"`
-	PendingFanInNodes []string    `json:"pending_fan_in_nodes,omitempty"`
+	PendingFanInTasks []GraphTask `json:"pending_fan_in_tasks,omitempty"`
 }
 
 func NewStaticGraphTask(nodeID string, order int) GraphTask {
@@ -172,10 +175,8 @@ func cloneFailureDetails(details map[string]any) map[string]any {
 	if len(details) == 0 {
 		return nil
 	}
-	cloned := make(map[string]any, len(details))
-	for key, value := range details {
-		cloned[key] = value
-	}
+	clonedValue, _ := state.CloneValue(details)
+	cloned, _ := clonedValue.(map[string]any)
 	return cloned
 }
 
@@ -253,16 +254,19 @@ func (graphErr *GraphStepError) Unwrap() error {
 }
 
 const graphSchedulerNamespace = "graph_scheduler"
+const graphSchedulerVersion = "2"
 const graphResultNamespace = "graph_result"
 
 var (
-	graphSchedulerPendingPath = state.Internal(graphSchedulerNamespace, "pending_fan_in_nodes")
-	graphSchedulerCurrentPath = state.Internal(graphSchedulerNamespace, "current_tasks")
-	graphSchedulerNextPath    = state.Internal(graphSchedulerNamespace, "next_tasks")
-	graphSchedulerStepsPath   = state.Internal(graphSchedulerNamespace, "super_steps")
-	graphSchedulerNodesPath   = state.Internal(graphSchedulerNamespace, "node_executions")
-	graphSchedulerElapsedPath = state.Internal(graphSchedulerNamespace, "elapsed_wall_time_ns")
-	graphReturnValuePath      = state.Internal(graphResultNamespace, "return_value")
+	graphSchedulerVersionPath       = state.Internal(graphSchedulerNamespace, "version")
+	graphSchedulerPendingTasksPath  = state.Internal(graphSchedulerNamespace, "pending_fan_in_tasks")
+	graphSchedulerLegacyPendingPath = state.Internal(graphSchedulerNamespace, "pending_fan_in_nodes")
+	graphSchedulerCurrentPath       = state.Internal(graphSchedulerNamespace, "current_tasks")
+	graphSchedulerNextPath          = state.Internal(graphSchedulerNamespace, "next_tasks")
+	graphSchedulerStepsPath         = state.Internal(graphSchedulerNamespace, "super_steps")
+	graphSchedulerNodesPath         = state.Internal(graphSchedulerNamespace, "node_executions")
+	graphSchedulerElapsedPath       = state.Internal(graphSchedulerNamespace, "elapsed_wall_time_ns")
+	graphReturnValuePath            = state.Internal(graphResultNamespace, "return_value")
 )
 
 type GraphExecutionBudget struct {
@@ -275,12 +279,16 @@ func StoreGraphSchedule(currentState *state.State, schedule GraphSchedule) error
 	if currentState == nil {
 		return nil
 	}
+	if err := state.SetPath(currentState, graphSchedulerVersionPath.String(), graphSchedulerVersion); err != nil {
+		return err
+	}
 	for _, item := range []struct {
 		path  state.Path
 		tasks []GraphTask
 	}{
 		{path: graphSchedulerCurrentPath, tasks: schedule.CurrentTasks},
 		{path: graphSchedulerNextPath, tasks: schedule.NextTasks},
+		{path: graphSchedulerPendingTasksPath, tasks: schedule.PendingFanInTasks},
 	} {
 		if len(item.tasks) == 0 {
 			if err := state.DeletePath(currentState, item.path.String()); err != nil {
@@ -292,30 +300,53 @@ func StoreGraphSchedule(currentState *state.State, schedule GraphSchedule) error
 			return err
 		}
 	}
-	if len(schedule.PendingFanInNodes) == 0 {
-		return state.DeletePath(currentState, graphSchedulerPendingPath.String())
-	}
-	return state.SetPath(currentState, graphSchedulerPendingPath.String(), append([]string(nil), schedule.PendingFanInNodes...))
+	return nil
 }
 
-func LoadGraphSchedule(currentState *state.State) (GraphSchedule, bool) {
+func LoadGraphSchedule(currentState *state.State) (GraphSchedule, bool, error) {
 	if currentState == nil {
-		return GraphSchedule{}, false
+		return GraphSchedule{}, false, nil
 	}
 	access := state.NewAccess(currentState)
+	if _, found := access.ReadAny(state.Internal(graphSchedulerNamespace)); !found {
+		return GraphSchedule{}, false, nil
+	}
+	if _, legacy := access.ReadAny(graphSchedulerLegacyPendingPath); legacy {
+		return GraphSchedule{}, true, fmt.Errorf("unsupported graph scheduler metadata field %q", graphSchedulerLegacyPendingPath.String())
+	}
+	versionValue, _ := access.ReadAny(graphSchedulerVersionPath)
 	currentValue, currentOK := access.ReadAny(graphSchedulerCurrentPath)
 	nextValue, nextOK := access.ReadAny(graphSchedulerNextPath)
-	pendingValue, pendingOK := access.ReadAny(graphSchedulerPendingPath)
+	pendingValue, pendingOK := access.ReadAny(graphSchedulerPendingTasksPath)
+	version, ok := versionValue.(string)
+	if !ok || version != graphSchedulerVersion {
+		return GraphSchedule{}, true, fmt.Errorf("unsupported graph scheduler metadata version %q", fmt.Sprint(versionValue))
+	}
+	currentTasks, err := graphScheduleTasks("current_tasks", currentValue, currentOK)
+	if err != nil {
+		return GraphSchedule{}, true, err
+	}
+	nextTasks, err := graphScheduleTasks("next_tasks", nextValue, nextOK)
+	if err != nil {
+		return GraphSchedule{}, true, err
+	}
+	pendingTasks, err := graphScheduleTasks("pending_fan_in_tasks", pendingValue, pendingOK)
+	if err != nil {
+		return GraphSchedule{}, true, err
+	}
 	return GraphSchedule{
-		CurrentTasks:      graphScheduleTasks(currentValue),
-		NextTasks:         graphScheduleTasks(nextValue),
-		PendingFanInNodes: graphScheduleNodeIDs(pendingValue),
-	}, currentOK || nextOK || pendingOK
+		CurrentTasks:      currentTasks,
+		NextTasks:         nextTasks,
+		PendingFanInTasks: pendingTasks,
+	}, true, nil
 }
 
 func StoreGraphExecutionBudget(currentState *state.State, budget GraphExecutionBudget) error {
 	if currentState == nil {
 		return nil
+	}
+	if err := state.SetPath(currentState, graphSchedulerVersionPath.String(), graphSchedulerVersion); err != nil {
+		return err
 	}
 	for _, item := range []struct {
 		path  state.Path
@@ -332,19 +363,45 @@ func StoreGraphExecutionBudget(currentState *state.State, budget GraphExecutionB
 	return nil
 }
 
-func LoadGraphExecutionBudget(currentState *state.State) (GraphExecutionBudget, bool) {
+func LoadGraphExecutionBudget(currentState *state.State) (GraphExecutionBudget, bool, error) {
 	if currentState == nil {
-		return GraphExecutionBudget{}, false
+		return GraphExecutionBudget{}, false, nil
 	}
 	access := state.NewAccess(currentState)
+	if _, found := access.ReadAny(state.Internal(graphSchedulerNamespace)); !found {
+		return GraphExecutionBudget{}, false, nil
+	}
+	versionValue, _ := access.ReadAny(graphSchedulerVersionPath)
+	version, ok := versionValue.(string)
+	if !ok || version != graphSchedulerVersion {
+		return GraphExecutionBudget{}, false, fmt.Errorf("unsupported graph scheduler metadata version %q", fmt.Sprint(versionValue))
+	}
 	superSteps, superStepsOK := access.ReadAny(graphSchedulerStepsPath)
 	nodeExecutions, nodeExecutionsOK := access.ReadAny(graphSchedulerNodesPath)
 	elapsedWallTime, elapsedWallTimeOK := access.ReadAny(graphSchedulerElapsedPath)
+	if !superStepsOK && !nodeExecutionsOK && !elapsedWallTimeOK {
+		return GraphExecutionBudget{}, false, nil
+	}
+	if !superStepsOK || !nodeExecutionsOK || !elapsedWallTimeOK {
+		return GraphExecutionBudget{}, true, fmt.Errorf("graph scheduler execution budget is incomplete")
+	}
+	superStepCount, err := graphSchedulerInt64("super_steps", superSteps)
+	if err != nil {
+		return GraphExecutionBudget{}, true, err
+	}
+	nodeExecutionCount, err := graphSchedulerInt64("node_executions", nodeExecutions)
+	if err != nil {
+		return GraphExecutionBudget{}, true, err
+	}
+	elapsedNanoseconds, err := graphSchedulerInt64("elapsed_wall_time_ns", elapsedWallTime)
+	if err != nil {
+		return GraphExecutionBudget{}, true, err
+	}
 	return GraphExecutionBudget{
-		SuperSteps:      graphSchedulerInt64(superSteps),
-		NodeExecutions:  graphSchedulerInt64(nodeExecutions),
-		ElapsedWallTime: time.Duration(graphSchedulerInt64(elapsedWallTime)),
-	}, superStepsOK || nodeExecutionsOK || elapsedWallTimeOK
+		SuperSteps:      superStepCount,
+		NodeExecutions:  nodeExecutionCount,
+		ElapsedWallTime: time.Duration(elapsedNanoseconds),
+	}, true, nil
 }
 
 func ClearGraphSchedule(currentState *state.State) error {
@@ -375,71 +432,94 @@ func ClearGraphReturnValue(currentState *state.State) error {
 	return state.DeletePath(currentState, state.Internal(graphResultNamespace).String())
 }
 
-func graphScheduleNodeIDs(value any) []string {
-	switch typed := value.(type) {
-	case []string:
-		return append([]string(nil), typed...)
-	case []any:
-		nodeIDs := make([]string, 0, len(typed))
-		for _, item := range typed {
-			if nodeID, ok := item.(string); ok && nodeID != "" {
-				nodeIDs = append(nodeIDs, nodeID)
-			}
-		}
-		return nodeIDs
-	default:
-		return nil
+func graphScheduleTasks(field string, value any, present bool) ([]GraphTask, error) {
+	if !present {
+		return nil, nil
 	}
-}
-
-func graphScheduleTasks(value any) []GraphTask {
 	if value == nil {
-		return nil
+		return nil, fmt.Errorf("graph scheduler field %q cannot be null", field)
 	}
 	payload, err := json.Marshal(value)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("encode graph scheduler field %q: %w", field, err)
 	}
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
 	var tasks []GraphTask
-	if err := json.Unmarshal(payload, &tasks); err != nil {
-		return nil
+	if err := decoder.Decode(&tasks); err != nil {
+		return nil, fmt.Errorf("decode graph scheduler field %q: %w", field, err)
 	}
-	valid := tasks[:0]
-	for _, task := range tasks {
-		if task.TaskID == "" || task.NodeID == "" {
-			continue
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("graph scheduler field %q contains multiple JSON values", field)
 		}
-		valid = append(valid, task)
+		return nil, fmt.Errorf("decode graph scheduler field %q: %w", field, err)
 	}
-	return CloneGraphTasks(valid)
+	seenTaskIDs := make(map[string]struct{}, len(tasks))
+	seenNodeIDs := make(map[string]struct{}, len(tasks))
+	for index, task := range tasks {
+		if strings.TrimSpace(task.TaskID) == "" || task.TaskID != strings.TrimSpace(task.TaskID) {
+			return nil, fmt.Errorf("graph scheduler field %q task %d has invalid task ID %q", field, index, task.TaskID)
+		}
+		if _, exists := seenTaskIDs[task.TaskID]; exists {
+			return nil, fmt.Errorf("graph scheduler field %q has duplicate task ID %q", field, task.TaskID)
+		}
+		seenTaskIDs[task.TaskID] = struct{}{}
+		if strings.TrimSpace(task.NodeID) == "" || task.NodeID != strings.TrimSpace(task.NodeID) {
+			return nil, fmt.Errorf("graph scheduler field %q task %d has invalid node ID %q", field, index, task.NodeID)
+		}
+		if field == "pending_fan_in_tasks" {
+			if _, exists := seenNodeIDs[task.NodeID]; exists {
+				return nil, fmt.Errorf("graph scheduler field %q has duplicate node ID %q", field, task.NodeID)
+			}
+			seenNodeIDs[task.NodeID] = struct{}{}
+		}
+		if issues := state.ValidateInputPatch(task.Input); len(issues) > 0 {
+			return nil, fmt.Errorf("graph scheduler field %q task %d input: %w", field, index, state.NewValidationError("task input", issues))
+		}
+	}
+	return CloneGraphTasks(tasks), nil
 }
 
-func graphSchedulerInt64(value any) int64 {
+func graphSchedulerInt64(field string, value any) (int64, error) {
+	var result int64
 	switch typed := value.(type) {
 	case int:
-		return int64(typed)
+		result = int64(typed)
 	case int8:
-		return int64(typed)
+		result = int64(typed)
 	case int16:
-		return int64(typed)
+		result = int64(typed)
 	case int32:
-		return int64(typed)
+		result = int64(typed)
 	case int64:
-		return typed
+		result = typed
 	case uint:
-		return int64(typed)
-	case uint8:
-		return int64(typed)
-	case uint16:
-		return int64(typed)
-	case uint32:
-		return int64(typed)
-	case uint64:
-		if typed <= uint64(^uint64(0)>>1) {
-			return int64(typed)
+		if uint64(typed) > uint64(^uint64(0)>>1) {
+			return 0, fmt.Errorf("graph scheduler field %q overflows int64", field)
 		}
+		result = int64(typed)
+	case uint8:
+		result = int64(typed)
+	case uint16:
+		result = int64(typed)
+	case uint32:
+		result = int64(typed)
+	case uint64:
+		if typed > uint64(^uint64(0)>>1) {
+			return 0, fmt.Errorf("graph scheduler field %q overflows int64", field)
+		}
+		result = int64(typed)
 	case float64:
-		return int64(typed)
+		result = int64(typed)
+		if float64(result) != typed {
+			return 0, fmt.Errorf("graph scheduler field %q must be an integer", field)
+		}
+	default:
+		return 0, fmt.Errorf("graph scheduler field %q has invalid type %T", field, value)
 	}
-	return 0
+	if result < 0 {
+		return 0, fmt.Errorf("graph scheduler field %q cannot be negative", field)
+	}
+	return result, nil
 }

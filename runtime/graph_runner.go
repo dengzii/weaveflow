@@ -2,9 +2,11 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -46,6 +48,7 @@ type GraphRunner struct {
 	activeMu           sync.Mutex
 	activeExecutions   map[string]*graphRunnerExecution
 	executionClaims    map[string]struct{}
+	childRunMu         sync.Mutex
 }
 
 func normalizeRunnerContext(ctx context.Context) context.Context {
@@ -107,6 +110,9 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 			return nil, err
 		}
 	}
+	if err := validateNodeContractsWithReducers(cfg.nodeContracts, cfg.reducers); err != nil {
+		return nil, err
+	}
 	if cfg.artifactStore == nil {
 		return nil, fmt.Errorf("artifact store is required")
 	}
@@ -119,6 +125,20 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 		transactionStore, err = resolveRuntimeTransactionStore(executionStore, checkpointStore, eventSink)
 		if err != nil {
 			return nil, fmt.Errorf("initialize runtime transaction store: %w", err)
+		}
+	}
+	if cfg.runDeleter != nil {
+		if _, ok := transactionStore.(RunDeleter); !ok {
+			return nil, fmt.Errorf("run deletion requires a transaction store with deletion support")
+		}
+		if _, ok := transactionStore.(RunDeletionFencer); !ok {
+			return nil, fmt.Errorf("run deletion requires a transaction store with deletion fencing")
+		}
+		if _, ok := cfg.artifactStore.(RunDeleter); !ok {
+			return nil, fmt.Errorf("run deletion requires an artifact store with deletion support")
+		}
+		if _, ok := cfg.artifactStore.(RunDeletionFencer); !ok {
+			return nil, fmt.Errorf("run deletion requires an artifact store with deletion fencing")
 		}
 	}
 	if err := validateRunRetentionPolicy(cfg.retentionPolicy); err != nil {
@@ -213,11 +233,25 @@ func WithBreakpoints(breakpoints ...Breakpoint) GraphRunnerOption {
 }
 
 func WithContractValidation(mode core.ContractValidationMode) GraphRunnerOption {
-	return func(cfg *graphRunnerConfig) error { cfg.contractValidation = mode; return nil }
+	return func(cfg *graphRunnerConfig) error {
+		if err := validateContractValidationMode(mode); err != nil {
+			return err
+		}
+		cfg.contractValidation = mode
+		return nil
+	}
 }
 
 func WithContractPolicy(policy ContractPolicy) GraphRunnerOption {
-	return func(cfg *graphRunnerConfig) error { cfg.contractPolicy = policy; return nil }
+	return func(cfg *graphRunnerConfig) error {
+		if policy.ModeSet || policy.Mode != core.ContractValidationOff {
+			if err := validateContractValidationMode(policy.Mode); err != nil {
+				return err
+			}
+		}
+		cfg.contractPolicy = policy
+		return nil
+	}
 }
 
 func WithStartupWarnings(warnings []WarningRecord) GraphRunnerOption {
@@ -228,7 +262,13 @@ func WithStartupWarnings(warnings []WarningRecord) GraphRunnerOption {
 }
 
 func WithNodeContracts(contracts map[string]state.Contract) GraphRunnerOption {
-	return func(cfg *graphRunnerConfig) error { cfg.nodeContracts = cloneContracts(contracts); return nil }
+	return func(cfg *graphRunnerConfig) error {
+		if err := validateNodeContracts(contracts); err != nil {
+			return err
+		}
+		cfg.nodeContracts = cloneContracts(contracts)
+		return nil
+	}
 }
 
 func WithStateSchemas(schemas map[string]state.JSONSchema) GraphRunnerOption {
@@ -293,6 +333,51 @@ func cloneContracts(items map[string]state.Contract) map[string]state.Contract {
 		cloned[key] = item.Clone()
 	}
 	return cloned
+}
+
+func validateContractValidationMode(mode core.ContractValidationMode) error {
+	switch mode {
+	case core.ContractValidationOff, core.ContractValidationWarn, core.ContractValidationStrict:
+		return nil
+	default:
+		return fmt.Errorf("unsupported contract validation mode %q", mode)
+	}
+}
+
+func validateNodeContracts(contracts map[string]state.Contract) error {
+	for nodeID, contract := range contracts {
+		if strings.TrimSpace(nodeID) == "" {
+			return fmt.Errorf("node contract ID is required")
+		}
+		if strings.TrimSpace(nodeID) != nodeID {
+			return fmt.Errorf("node contract ID %q must not have surrounding whitespace", nodeID)
+		}
+		if issues := state.ValidateContract(contract); len(issues) > 0 {
+			return fmt.Errorf("node %q contract: %w", nodeID, state.NewValidationError("contract", issues))
+		}
+	}
+	return nil
+}
+
+func validateNodeContractsWithReducers(contracts map[string]state.Contract, reducers map[string]state.Reducer) error {
+	if err := validateNodeContracts(contracts); err != nil {
+		return err
+	}
+	for nodeID, contract := range contracts {
+		for _, field := range contract.Fields {
+			reducerID := strings.TrimSpace(field.Reducer)
+			if reducerID == "" {
+				continue
+			}
+			if field.Mode != state.AccessWrite && field.Mode != state.AccessReadWrite {
+				return fmt.Errorf("node %q state path %q reducer requires write access", nodeID, field.Path.String())
+			}
+			if state.IsNilReducer(reducers[reducerID]) {
+				return fmt.Errorf("node %q state path %q reducer %q is not registered", nodeID, field.Path.String(), reducerID)
+			}
+		}
+	}
+	return nil
 }
 
 func cloneSchemas(items map[string]state.JSONSchema) map[string]state.JSONSchema {
@@ -416,7 +501,7 @@ func (r *GraphRunner) Start(ctx context.Context, initialState *state.State) (Run
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	run, initialState, err := r.startRun(ctx, initialState)
+	run, initialState, err := r.startRun(ctx, initialState, nil)
 	if err != nil {
 		return RunRecord{}, initialState, err
 	}
@@ -425,6 +510,11 @@ func (r *GraphRunner) Start(ctx context.Context, initialState *state.State) (Run
 
 func (r *GraphRunner) RunChild(ctx context.Context, request ChildRunRequest, input *state.State) (ChildRunResult, error) {
 	ctx = normalizeRunnerContext(ctx)
+	var err error
+	input, err = normalizeExternalState(input)
+	if err != nil {
+		return ChildRunResult{}, fmt.Errorf("child run input: %w", err)
+	}
 	request.ParentRunID = strings.TrimSpace(request.ParentRunID)
 	request.ParentStepID = strings.TrimSpace(request.ParentStepID)
 	request.ParentTaskID = strings.TrimSpace(request.ParentTaskID)
@@ -433,69 +523,607 @@ func (r *GraphRunner) RunChild(ctx context.Context, request ChildRunRequest, inp
 	if request.ParentRunID == "" || request.ParentStepID == "" || request.ParentTaskID == "" || request.GraphRef == "" {
 		return ChildRunResult{}, fmt.Errorf("child run requires parent_run_id, parent_step_id, parent_task_id, and graph_ref")
 	}
+	metadata, metadataOK := RunnerMetadataFromContext(ctx)
+	if !metadataOK || strings.TrimSpace(metadata.RunID) == "" {
+		return ChildRunResult{}, errors.New("child run requires runner metadata")
+	}
+	if metadata.RunID != request.ParentRunID || metadata.StepID != request.ParentStepID || metadata.TaskID != request.ParentTaskID {
+		return ChildRunResult{}, fmt.Errorf("child run parent identity does not match runner metadata")
+	}
 	parentRun, err := r.executionStore.GetRun(ctx, request.ParentRunID)
 	if err != nil {
 		return ChildRunResult{}, fmt.Errorf("load parent run %q: %w", request.ParentRunID, err)
 	}
+	if parentRunner, ok := GraphRunnerFromContext(ctx); ok && parentRunner != nil {
+		if err := parentRunner.validateRunGraphHash(parentRun); err != nil {
+			return ChildRunResult{}, fmt.Errorf("validate parent run %q: %w", parentRun.RunID, err)
+		}
+	}
+	if !isActiveDeleteRunStatus(parentRun.Status) && parentRun.Status != RunStatusPaused {
+		return ChildRunResult{}, fmt.Errorf("parent run %q status %q cannot create or resume a child", parentRun.RunID, parentRun.Status)
+	}
 	if request.Namespace == "" {
 		request.Namespace = strings.Trim(parentRun.Namespace+"/"+request.GraphRef+":"+request.ParentTaskID, "/")
 	}
-	lineage := ChildRunLineage{
-		ParentRunID: request.ParentRunID, ParentStepID: request.ParentStepID, ParentTaskID: request.ParentTaskID,
-		RootRunID: parentRun.RootRunID, ParentRunPath: append([]string(nil), parentRun.RunPath...), Namespace: request.Namespace,
+	keyFields := []struct {
+		name  string
+		value string
+	}{
+		{name: "parent run ID", value: request.ParentRunID},
+		{name: "parent task ID", value: request.ParentTaskID},
+		{name: "graph ref", value: request.GraphRef},
+		{name: "namespace", value: request.Namespace},
 	}
-	childCtx := WithGraphRunner(ctx, r)
-	childCtx = WithChildRunLineage(childCtx, lineage)
-
-	existing, err := r.findChildRun(childCtx, request)
+	for _, field := range keyFields {
+		if strings.ContainsRune(field.value, '\x00') {
+			return ChildRunResult{}, fmt.Errorf("child run %s must not contain NUL", field.name)
+		}
+	}
+	if input == nil {
+		input = state.NewState()
+	}
+	inputHash, err := childRunInputHash(input)
 	if err != nil {
 		return ChildRunResult{}, err
 	}
+	requestKey := childRunRequestKey(request)
+	childRunID := childRunIDForRequestKey(requestKey)
+	childCtx := WithGraphRunner(ctx, r)
+	r.childRunMu.Lock()
+	existing, err := r.findChildRun(childCtx, request, requestKey)
+	if err != nil {
+		r.childRunMu.Unlock()
+		return ChildRunResult{}, err
+	}
+	proposed := PendingChildRun{
+		RequestKey: requestKey, ChildRunID: childRunID,
+		ParentRunID: request.ParentRunID, ParentStepID: request.ParentStepID, ParentTaskID: request.ParentTaskID,
+		GraphRef: request.GraphRef, GraphID: r.resolvedGraphID(), GraphVersion: r.resolvedGraphVersion(),
+		GraphHash: r.resolvedGraphHash(), GraphSnapshotHash: r.resolvedGraphSnapshotHash(), GraphSessionID: r.resolvedGraphSessionID(),
+		Namespace: request.Namespace, InputHash: inputHash, ReservedAt: r.currentTime(),
+	}
 	if existing != nil {
+		if strings.TrimSpace(existing.ParentStepID) == "" {
+			r.childRunMu.Unlock()
+			return ChildRunResult{}, fmt.Errorf("child run %q parent step ID is empty", existing.RunID)
+		}
+		proposed.ParentStepID = existing.ParentStepID
+		if err := validateReservedChildRun(*existing, proposed); err != nil {
+			r.childRunMu.Unlock()
+			return ChildRunResult{}, err
+		}
+		lineage := ChildRunLineage{
+			ParentRunID: proposed.ParentRunID, ParentStepID: proposed.ParentStepID, ParentTaskID: proposed.ParentTaskID,
+			RootRunID: parentRun.RootRunID, ParentRunPath: append([]string(nil), parentRun.RunPath...), Namespace: proposed.Namespace,
+		}
+		childCtx = WithChildRunLineage(childCtx, lineage)
+		if err := r.finalizeChildRun(childCtx, parentRun.RunID, requestKey, existing.RunID); err != nil {
+			r.childRunMu.Unlock()
+			return ChildRunResult{Run: *existing, State: input, Resumed: true}, err
+		}
+		r.childRunMu.Unlock()
 		return r.continueChildRun(childCtx, request, *existing, input, true)
 	}
 
-	run, initialState, err := r.startRun(childCtx, input)
+	reservation, err := r.reserveChildRun(childCtx, parentRun.RunID, proposed)
 	if err != nil {
+		r.childRunMu.Unlock()
 		return ChildRunResult{}, err
 	}
-	if err := r.linkChildRun(childCtx, parentRun.RunID, run.RunID); err != nil {
-		_, _, _ = r.failRun(context.WithoutCancel(childCtx), run, initialState, "parent_link_failed", err.Error())
+	lineage := ChildRunLineage{
+		ParentRunID: reservation.ParentRunID, ParentStepID: reservation.ParentStepID, ParentTaskID: reservation.ParentTaskID,
+		RootRunID: parentRun.RootRunID, ParentRunPath: append([]string(nil), parentRun.RunPath...), Namespace: reservation.Namespace,
+	}
+	childCtx = WithChildRunLineage(childCtx, lineage)
+
+	run, initialState, err := r.startRun(childCtx, input, &reservation)
+	if err != nil {
+		persisted, loadErr := r.executionStore.GetRun(childCtx, reservation.ChildRunID)
+		if loadErr != nil {
+			r.childRunMu.Unlock()
+			return ChildRunResult{}, err
+		}
+		run = persisted
+		initialState = input
+	}
+	if err := validateReservedChildRun(run, reservation); err != nil {
+		r.childRunMu.Unlock()
+		return ChildRunResult{}, err
+	}
+	if err := r.finalizeChildRun(childCtx, parentRun.RunID, requestKey, run.RunID); err != nil {
+		r.childRunMu.Unlock()
 		return ChildRunResult{Run: run, State: initialState}, err
 	}
+	r.childRunMu.Unlock()
 	return r.continueChildRun(childCtx, request, run, initialState, false)
 }
 
-func (r *GraphRunner) findChildRun(ctx context.Context, request ChildRunRequest) (*RunRecord, error) {
-	runs, err := r.executionStore.ListRuns(ctx, RunFilter{ParentRunID: request.ParentRunID, ParentTaskID: request.ParentTaskID})
+type childRunExecutionTakeoverKey struct{}
+type childRunExecutionOwnerKey struct{}
+
+// RecoverChildRun explicitly takes over an abandoned child execution claim.
+func (r *GraphRunner) RecoverChildRun(ctx context.Context, request ChildRunRequest, input *state.State, abandonedClaimID string) (ChildRunResult, error) {
+	abandonedClaimID = strings.TrimSpace(abandonedClaimID)
+	if err := validateRunnerStorageID("abandoned child execution claim ID", abandonedClaimID); err != nil {
+		return ChildRunResult{}, err
+	}
+	ctx = context.WithValue(normalizeRunnerContext(ctx), childRunExecutionTakeoverKey{}, abandonedClaimID)
+	return r.RunChild(ctx, request, input)
+}
+
+func (r *GraphRunner) findChildRun(ctx context.Context, request ChildRunRequest, requestKey string) (*RunRecord, error) {
+	runID := childRunIDForRequestKey(requestKey)
+	run, err := r.executionStore.GetRun(ctx, runID)
+	if errors.Is(err, ErrRunnerRecordNotFound) {
+		return nil, nil
+	}
 	if err != nil {
 		return nil, err
 	}
-	matches := make([]RunRecord, 0, 1)
-	for _, run := range runs {
-		if run.GraphID != r.resolvedGraphID() || run.Namespace != request.Namespace {
-			continue
-		}
-		matches = append(matches, run)
+	if err := validateChildRunRecordIdentity(run); err != nil {
+		return nil, err
 	}
-	if len(matches) > 1 {
-		return nil, fmt.Errorf("child task %q in parent run %q has %d persisted runs", request.ParentTaskID, request.ParentRunID, len(matches))
+	if run.ChildRequestKey != requestKey || run.ParentRunID != request.ParentRunID || run.ParentTaskID != request.ParentTaskID {
+		return nil, fmt.Errorf("child run %q identity does not match request key %q", run.RunID, requestKey)
 	}
-	if len(matches) == 0 {
-		return nil, nil
-	}
-	return &matches[0], nil
+	return &run, nil
 }
 
-func (r *GraphRunner) continueChildRun(ctx context.Context, request ChildRunRequest, run RunRecord, input *state.State, resumed bool) (ChildRunResult, error) {
+func childRunRequestKey(request ChildRunRequest) string {
+	payload, _ := json.Marshal([]string{
+		request.ParentRunID,
+		request.ParentTaskID,
+		request.GraphRef,
+		request.Namespace,
+	})
+	digest := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func childRunIDForRequestKey(requestKey string) string {
+	return "child-" + requestKey
+}
+
+func childRunInputHash(input *state.State) (string, error) {
+	if input == nil {
+		input = state.NewState()
+	}
+	payload, err := json.Marshal(input.Export())
+	if err != nil {
+		return "", fmt.Errorf("hash child run input: %w", err)
+	}
+	digest := sha256.Sum256(payload)
+	return fmt.Sprintf("%x", digest[:]), nil
+}
+
+func (r *GraphRunner) reserveChildRun(ctx context.Context, parentRunID string, proposed PendingChildRun) (PendingChildRun, error) {
+	if controller, ok := ChildRunControllerFromContext(ctx); ok {
+		return controller.ReserveChildRun(ctx, parentRunID, proposed)
+	}
+	revisionConflicts := 0
+	for {
+		parentRun, err := r.executionStore.GetRun(ctx, parentRunID)
+		if err != nil {
+			return PendingChildRun{}, err
+		}
+		reservation, changed, err := reservePendingChildRun(&parentRun, proposed, r.currentTime())
+		if err != nil {
+			return PendingChildRun{}, err
+		}
+		if !changed {
+			return reservation, nil
+		}
+		if _, err := compareAndSwapRun(ctx, r.executionStore, parentRun); errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return PendingChildRun{}, runRevisionRetriesExceeded("reserve child run")
+			}
+			continue
+		} else if err != nil {
+			return PendingChildRun{}, err
+		}
+		return reservation, nil
+	}
+}
+
+func (r *GraphRunner) finalizeChildRun(ctx context.Context, parentRunID, requestKey, childRunID string) error {
+	if controller, ok := ChildRunControllerFromContext(ctx); ok {
+		return controller.FinalizeChildRun(ctx, parentRunID, requestKey, childRunID)
+	}
+	revisionConflicts := 0
+	for {
+		parentRun, err := r.executionStore.GetRun(ctx, parentRunID)
+		if err != nil {
+			return err
+		}
+		changed, err := finalizePendingChildRun(&parentRun, requestKey, childRunID, r.currentTime())
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+		if _, err := compareAndSwapRun(ctx, r.executionStore, parentRun); errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return runRevisionRetriesExceeded("finalize child run")
+			}
+			continue
+		} else if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+func reservePendingChildRun(parentRun *RunRecord, proposed PendingChildRun, now time.Time) (PendingChildRun, bool, error) {
+	if parentRun == nil {
+		return PendingChildRun{}, false, errors.New("parent run is nil")
+	}
+	if err := validatePendingChildRun(proposed); err != nil {
+		return PendingChildRun{}, false, err
+	}
+	if parentRun.RunID != proposed.ParentRunID {
+		return PendingChildRun{}, false, fmt.Errorf("child reservation parent mismatch: run=%q request=%q", parentRun.RunID, proposed.ParentRunID)
+	}
+	if !isActiveDeleteRunStatus(parentRun.Status) && parentRun.Status != RunStatusPaused {
+		return PendingChildRun{}, false, fmt.Errorf("parent run %q status %q cannot reserve a child", parentRun.RunID, parentRun.Status)
+	}
+	if parentRun.Deletion != nil {
+		return PendingChildRun{}, false, fmt.Errorf("parent run %q is reserved for deletion", parentRun.RunID)
+	}
+	seenChildRunIDs := make(map[string]struct{}, len(parentRun.ChildRunIDs))
+	for _, existingID := range parentRun.ChildRunIDs {
+		if _, exists := seenChildRunIDs[existingID]; exists {
+			return PendingChildRun{}, false, fmt.Errorf("parent run %q has duplicate child run ID %q", parentRun.RunID, existingID)
+		}
+		seenChildRunIDs[existingID] = struct{}{}
+	}
+	_, finalized := seenChildRunIDs[proposed.ChildRunID]
+	existing, found, err := pendingChildRunByKey(parentRun.PendingChildRuns, proposed.RequestKey)
+	if err != nil {
+		return PendingChildRun{}, false, err
+	}
+	if found {
+		if err := validateMatchingPendingChildRun(existing, proposed); err != nil {
+			return PendingChildRun{}, false, err
+		}
+		if finalized {
+			return PendingChildRun{}, false, fmt.Errorf("parent run %q child %q is both pending and finalized", parentRun.RunID, proposed.ChildRunID)
+		}
+		return existing, false, nil
+	}
+	if finalized {
+		return proposed, false, nil
+	}
+	parentRun.PendingChildRuns = append(append([]PendingChildRun(nil), parentRun.PendingChildRuns...), proposed)
+	parentRun.UpdatedAt = now
+	return proposed, true, nil
+}
+
+func finalizePendingChildRun(parentRun *RunRecord, requestKey, childRunID string, now time.Time) (bool, error) {
+	if parentRun == nil {
+		return false, errors.New("parent run is nil")
+	}
+	requestKey = strings.TrimSpace(requestKey)
+	childRunID = strings.TrimSpace(childRunID)
+	if requestKey == "" {
+		return false, errors.New("child request key is required")
+	}
+	if err := validateRunnerStorageID("child run ID", childRunID); err != nil {
+		return false, err
+	}
+	pendingRuns := make([]PendingChildRun, 0, len(parentRun.PendingChildRuns))
+	pendingKeys := make(map[string]struct{}, len(parentRun.PendingChildRuns))
+	var matchedPending *PendingChildRun
+	for _, pending := range parentRun.PendingChildRuns {
+		if _, exists := pendingKeys[pending.RequestKey]; exists {
+			return false, fmt.Errorf("parent run %q has duplicate pending child request key %q", parentRun.RunID, pending.RequestKey)
+		}
+		pendingKeys[pending.RequestKey] = struct{}{}
+		if pending.RequestKey == requestKey {
+			pendingCopy := pending
+			matchedPending = &pendingCopy
+			continue
+		}
+		pendingRuns = append(pendingRuns, pending)
+	}
+	if matchedPending != nil && matchedPending.ChildRunID != childRunID {
+		return false, fmt.Errorf("pending child request %q reserves run %q, not %q", requestKey, matchedPending.ChildRunID, childRunID)
+	}
+	if matchedPending != nil {
+		if err := validatePendingChildRun(*matchedPending); err != nil {
+			return false, fmt.Errorf("parent run %q has invalid pending child request %q: %w", parentRun.RunID, requestKey, err)
+		}
+		if matchedPending.ParentRunID != parentRun.RunID {
+			return false, fmt.Errorf("pending child request %q parent is %q, not %q", requestKey, matchedPending.ParentRunID, parentRun.RunID)
+		}
+	}
+	seen := make(map[string]struct{}, len(parentRun.ChildRunIDs))
+	linked := false
+	for _, existingID := range parentRun.ChildRunIDs {
+		if _, exists := seen[existingID]; exists {
+			return false, fmt.Errorf("parent run %q has duplicate child run ID %q", parentRun.RunID, existingID)
+		}
+		seen[existingID] = struct{}{}
+		linked = linked || existingID == childRunID
+	}
+	if matchedPending == nil {
+		if !linked {
+			return false, fmt.Errorf("child run %q has no pending reservation or finalized link", childRunID)
+		}
+		return false, nil
+	}
+	parentRun.PendingChildRuns = pendingRuns
+	if !linked {
+		parentRun.ChildRunIDs = append(append([]string(nil), parentRun.ChildRunIDs...), childRunID)
+	}
+	parentRun.UpdatedAt = now
+	return true, nil
+}
+
+func pendingChildRunByKey(pendingRuns []PendingChildRun, requestKey string) (PendingChildRun, bool, error) {
+	var matched PendingChildRun
+	count := 0
+	for _, pending := range pendingRuns {
+		if pending.RequestKey != requestKey {
+			continue
+		}
+		matched = pending
+		count++
+	}
+	if count > 1 {
+		return PendingChildRun{}, false, fmt.Errorf("request key %q has %d pending child reservations", requestKey, count)
+	}
+	return matched, count == 1, nil
+}
+
+func validatePendingChildRun(pending PendingChildRun) error {
+	requestKey := strings.TrimSpace(pending.RequestKey)
+	if requestKey == "" {
+		return errors.New("child request key is required")
+	}
+	if requestKey != pending.RequestKey {
+		return errors.New("child request key cannot contain surrounding whitespace")
+	}
+	if err := validateRunnerStorageID("child run ID", pending.ChildRunID); err != nil {
+		return err
+	}
+	expectedChildRunID := childRunIDForRequestKey(requestKey)
+	if pending.ChildRunID != expectedChildRunID {
+		return fmt.Errorf("child reservation run ID %q does not match request key %q", pending.ChildRunID, pending.RequestKey)
+	}
+	required := []struct {
+		name  string
+		value string
+	}{
+		{name: "parent run ID", value: pending.ParentRunID},
+		{name: "parent step ID", value: pending.ParentStepID},
+		{name: "parent task ID", value: pending.ParentTaskID},
+		{name: "graph ref", value: pending.GraphRef},
+		{name: "graph ID", value: pending.GraphID},
+		{name: "graph version", value: pending.GraphVersion},
+		{name: "namespace", value: pending.Namespace},
+		{name: "input hash", value: pending.InputHash},
+	}
+	for _, field := range required {
+		if strings.TrimSpace(field.value) == "" {
+			return fmt.Errorf("child reservation %s is required", field.name)
+		}
+	}
+	if pending.ReservedAt.IsZero() {
+		return errors.New("child reservation time is required")
+	}
+	return nil
+}
+
+func validateMatchingPendingChildRun(existing, proposed PendingChildRun) error {
+	fields := []struct {
+		name     string
+		existing string
+		proposed string
+	}{
+		{name: "child run ID", existing: existing.ChildRunID, proposed: proposed.ChildRunID},
+		{name: "parent run ID", existing: existing.ParentRunID, proposed: proposed.ParentRunID},
+		{name: "parent task ID", existing: existing.ParentTaskID, proposed: proposed.ParentTaskID},
+		{name: "graph ref", existing: existing.GraphRef, proposed: proposed.GraphRef},
+		{name: "graph ID", existing: existing.GraphID, proposed: proposed.GraphID},
+		{name: "graph version", existing: existing.GraphVersion, proposed: proposed.GraphVersion},
+		{name: "graph hash", existing: existing.GraphHash, proposed: proposed.GraphHash},
+		{name: "graph snapshot hash", existing: existing.GraphSnapshotHash, proposed: proposed.GraphSnapshotHash},
+		{name: "graph session ID", existing: existing.GraphSessionID, proposed: proposed.GraphSessionID},
+		{name: "namespace", existing: existing.Namespace, proposed: proposed.Namespace},
+		{name: "input hash", existing: existing.InputHash, proposed: proposed.InputHash},
+	}
+	for _, field := range fields {
+		if field.existing != field.proposed {
+			return fmt.Errorf("pending child request %q %s changed from %q to %q", existing.RequestKey, field.name, field.existing, field.proposed)
+		}
+	}
+	return validatePendingChildRun(existing)
+}
+
+func validateReservedChildRun(run RunRecord, reservation PendingChildRun) error {
+	if err := validateChildRunRecordIdentity(run); err != nil {
+		return err
+	}
+	fields := []struct {
+		name     string
+		actual   string
+		expected string
+	}{
+		{name: "run ID", actual: run.RunID, expected: reservation.ChildRunID},
+		{name: "request key", actual: run.ChildRequestKey, expected: reservation.RequestKey},
+		{name: "input hash", actual: run.ChildInputHash, expected: reservation.InputHash},
+		{name: "parent run ID", actual: run.ParentRunID, expected: reservation.ParentRunID},
+		{name: "parent step ID", actual: run.ParentStepID, expected: reservation.ParentStepID},
+		{name: "parent task ID", actual: run.ParentTaskID, expected: reservation.ParentTaskID},
+		{name: "graph ID", actual: run.GraphID, expected: reservation.GraphID},
+		{name: "graph version", actual: run.GraphVersion, expected: reservation.GraphVersion},
+		{name: "graph hash", actual: run.GraphHash, expected: reservation.GraphHash},
+		{name: "graph snapshot hash", actual: run.GraphSnapshotHash, expected: reservation.GraphSnapshotHash},
+		{name: "graph session ID", actual: run.GraphSessionID, expected: reservation.GraphSessionID},
+		{name: "namespace", actual: run.Namespace, expected: reservation.Namespace},
+	}
+	for _, field := range fields {
+		if field.actual != field.expected {
+			return fmt.Errorf("child run %q %s is %q, want %q", run.RunID, field.name, field.actual, field.expected)
+		}
+	}
+	return nil
+}
+
+func validateChildRunRecordIdentity(run RunRecord) error {
+	requestKey := strings.TrimSpace(run.ChildRequestKey)
+	if requestKey == "" {
+		return nil
+	}
+	expectedRunID := childRunIDForRequestKey(requestKey)
+	if run.RunID != expectedRunID {
+		return fmt.Errorf("child run %q does not match request key %q", run.RunID, requestKey)
+	}
+	return nil
+}
+
+func validateChildRunExecutionOwner(ctx context.Context, run RunRecord) error {
+	if strings.TrimSpace(run.ChildRequestKey) == "" {
+		return nil
+	}
+	if err := validateChildRunRecordIdentity(run); err != nil {
+		return err
+	}
+	claimID := strings.TrimSpace(run.ExecutionClaimID)
+	if claimID == "" {
+		return fmt.Errorf("%w: child run %q has no execution claim", ErrRunControlNotAllowed, run.RunID)
+	}
+	ownerClaimID, _ := ctx.Value(childRunExecutionOwnerKey{}).(string)
+	if ownerClaimID != claimID {
+		return fmt.Errorf("%w: child run %q execution claim is owned by another caller", ErrRunControlNotAllowed, run.RunID)
+	}
+	return nil
+}
+
+func (r *GraphRunner) claimChildRunExecution(ctx context.Context, runID string) (RunRecord, string, error) {
+	ctx = normalizeRunnerContext(ctx)
+	claimID := newRunnerID()
+	takeoverClaimID, _ := ctx.Value(childRunExecutionTakeoverKey{}).(string)
+	revisionConflicts := 0
+	for {
+		run, err := r.executionStore.GetRun(ctx, runID)
+		if err != nil {
+			return RunRecord{}, "", err
+		}
+		if err := validateChildRunRecordIdentity(run); err != nil {
+			return run, "", err
+		}
+		switch run.Status {
+		case RunStatusCompleted, RunStatusFailed, RunStatusCanceled:
+			if takeoverClaimID != "" {
+				if run.ExecutionClaimID != takeoverClaimID {
+					return run, "", fmt.Errorf("child run %q execution claim is %q, not abandoned claim %q", run.RunID, run.ExecutionClaimID, takeoverClaimID)
+				}
+				run.ExecutionClaimID = ""
+				run.UpdatedAt = r.currentTime()
+				cleared, clearErr := compareAndSwapRun(ctx, r.executionStore, run)
+				if errors.Is(clearErr, ErrRunRevisionConflict) {
+					revisionConflicts++
+					if revisionConflicts >= runRevisionRetryLimit {
+						return run, "", runRevisionRetriesExceeded("claim child run execution")
+					}
+					continue
+				}
+				if clearErr != nil {
+					return run, "", clearErr
+				}
+				return cleared, "", nil
+			}
+			return run, "", nil
+		case RunStatusPending, RunStatusRunning, RunStatusPaused:
+		default:
+			return run, "", fmt.Errorf("child run %q has unsupported status %q", run.RunID, run.Status)
+		}
+		if run.Deletion != nil {
+			return run, "", fmt.Errorf("child run %q is reserved for deletion", run.RunID)
+		}
+		existingClaimID := strings.TrimSpace(run.ExecutionClaimID)
+		if takeoverClaimID != "" {
+			if existingClaimID != takeoverClaimID {
+				return run, "", fmt.Errorf("child run %q execution claim is %q, not abandoned claim %q", run.RunID, existingClaimID, takeoverClaimID)
+			}
+		} else if existingClaimID != "" {
+			return run, "", fmt.Errorf("%w: child run %q already has execution claim %q", ErrRunControlNotAllowed, run.RunID, run.ExecutionClaimID)
+		}
+		run.ExecutionClaimID = claimID
+		run.UpdatedAt = r.currentTime()
+		claimed, err := compareAndSwapRun(ctx, r.executionStore, run)
+		if errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return run, "", runRevisionRetriesExceeded("claim child run execution")
+			}
+			continue
+		}
+		if err != nil {
+			return run, "", err
+		}
+		return claimed, claimID, nil
+	}
+}
+
+func (r *GraphRunner) releaseChildRunExecution(ctx context.Context, runID, claimID string) error {
+	ctx = normalizeRunnerContext(ctx)
+	if strings.TrimSpace(claimID) == "" {
+		return errors.New("child execution claim ID is required")
+	}
+	revisionConflicts := 0
+	for {
+		run, err := r.executionStore.GetRun(ctx, runID)
+		if err != nil {
+			return err
+		}
+		if run.ExecutionClaimID == "" {
+			return nil
+		}
+		if run.ExecutionClaimID != claimID {
+			return fmt.Errorf("child run %q execution claim changed from %q to %q", runID, claimID, run.ExecutionClaimID)
+		}
+		run.ExecutionClaimID = ""
+		run.UpdatedAt = r.currentTime()
+		if _, err := compareAndSwapRun(ctx, r.executionStore, run); errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return runRevisionRetriesExceeded("release child run execution")
+			}
+			continue
+		} else if err != nil {
+			return err
+		}
+		return nil
+	}
+}
+
+func (r *GraphRunner) continueChildRun(ctx context.Context, request ChildRunRequest, run RunRecord, input *state.State, resumed bool) (result ChildRunResult, resultErr error) {
 	controller, _ := ChildRunControllerFromContext(ctx)
 	if controller != nil {
 		controller.RegisterChildRun(request.ParentTaskID, r, run.RunID)
 		defer controller.UnregisterChildRun(request.ParentTaskID, run.RunID)
 	}
+	claimedRun, executionClaimID, err := r.claimChildRunExecution(ctx, run.RunID)
+	if err != nil {
+		return ChildRunResult{Run: claimedRun, State: input, Resumed: resumed}, err
+	}
+	run = claimedRun
+	if executionClaimID != "" {
+		ctx = context.WithValue(ctx, childRunExecutionOwnerKey{}, executionClaimID)
+		defer func() {
+			releaseErr := r.releaseChildRunExecution(context.WithoutCancel(ctx), run.RunID, executionClaimID)
+			if releaseErr != nil {
+				resultErr = errors.Join(resultErr, fmt.Errorf("release child run execution claim: %w", releaseErr))
+			}
+		}()
+	}
 
 	var finalState *state.State
-	var err error
 	switch run.Status {
 	case RunStatusCompleted:
 		if run.LastCheckpointID == "" {
@@ -503,6 +1131,9 @@ func (r *GraphRunner) continueChildRun(ctx context.Context, request ChildRunRequ
 		}
 		checkpoint, loadErr := r.LoadCheckpointState(ctx, run.LastCheckpointID)
 		if loadErr != nil {
+			return ChildRunResult{Run: run, ReturnValue: run.ReturnValue, Resumed: resumed}, loadErr
+		}
+		if loadErr := validateCheckpointRun(run, checkpoint); loadErr != nil {
 			return ChildRunResult{Run: run, ReturnValue: run.ReturnValue, Resumed: resumed}, loadErr
 		}
 		finalState = checkpoint.Business
@@ -524,36 +1155,11 @@ func (r *GraphRunner) continueChildRun(ctx context.Context, request ChildRunRequ
 	default:
 		err = fmt.Errorf("child run %q has unsupported status %q", run.RunID, run.Status)
 	}
-	result := ChildRunResult{
+	result = ChildRunResult{
 		Run: run, State: finalState, ReturnValue: run.ReturnValue,
 		Interrupted: run.Status == RunStatusPaused, Resumed: resumed,
 	}
 	return result, err
-}
-
-func (r *GraphRunner) linkChildRun(ctx context.Context, parentRunID, childRunID string) error {
-	if controller, ok := ChildRunControllerFromContext(ctx); ok {
-		return controller.LinkChildRun(ctx, parentRunID, childRunID)
-	}
-	for {
-		parentRun, err := r.executionStore.GetRun(ctx, parentRunID)
-		if err != nil {
-			return err
-		}
-		for _, existingID := range parentRun.ChildRunIDs {
-			if existingID == childRunID {
-				return nil
-			}
-		}
-		parentRun.ChildRunIDs = append(parentRun.ChildRunIDs, childRunID)
-		parentRun.UpdatedAt = r.currentTime()
-		if _, err := compareAndSwapRun(ctx, r.executionStore, parentRun); errors.Is(err, ErrRunRevisionConflict) {
-			continue
-		} else if err != nil {
-			return err
-		}
-		return nil
-	}
 }
 
 // StartAsync creates and starts a run, then executes it in the background. The
@@ -566,7 +1172,7 @@ func (r *GraphRunner) StartAsync(ctx context.Context, initialState *state.State)
 	if initialState != nil {
 		initialState = initialState.Clone()
 	}
-	run, initialState, err := r.startRun(ctx, initialState)
+	run, initialState, err := r.startRun(ctx, initialState, nil)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -594,22 +1200,41 @@ func (r *GraphRunner) StartAsync(ctx context.Context, initialState *state.State)
 	return run, done, nil
 }
 
-func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (RunRecord, *state.State, error) {
+func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State, reservation *PendingChildRun) (RunRecord, *state.State, error) {
 	if err := r.validate(); err != nil {
 		return RunRecord{}, initialState, err
 	}
+	if reservation != nil {
+		if err := validatePendingChildRun(*reservation); err != nil {
+			return RunRecord{}, initialState, err
+		}
+	}
 
+	var err error
+	initialState, err = normalizeExternalState(initialState)
+	if err != nil {
+		return RunRecord{}, initialState, fmt.Errorf("entry state: %w", err)
+	}
 	if initialState == nil {
 		initialState = state.NewState()
 	}
 	if issues := state.ValidateStateBySchemas(initialState, r.stateSchemas); len(issues) > 0 {
 		return RunRecord{}, initialState, state.NewValidationError("entry", issues)
 	}
+	if validator, ok := r.graph.(interface{ ValidateInitialState(*state.State) error }); ok {
+		if err := validator.ValidateInitialState(initialState); err != nil {
+			return RunRecord{}, initialState, fmt.Errorf("graph initial state: %w", err)
+		}
+	}
 
 	now := r.currentTime()
 	entryPoint := r.entryPointID()
+	runID := newRunnerID()
+	if reservation != nil {
+		runID = reservation.ChildRunID
+	}
 	run := RunRecord{
-		RunID:             newRunnerID(),
+		RunID:             runID,
 		GraphID:           r.resolvedGraphID(),
 		GraphVersion:      r.resolvedGraphVersion(),
 		GraphHash:         r.resolvedGraphHash(),
@@ -619,6 +1244,10 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 		EntryNodeID:       entryPoint,
 		StartedAt:         now,
 		UpdatedAt:         now,
+	}
+	if reservation != nil {
+		run.ChildRequestKey = reservation.RequestKey
+		run.ChildInputHash = reservation.InputHash
 	}
 	if lineage, ok := ChildRunLineageFromContext(ctx); ok {
 		run.ParentRunID = strings.TrimSpace(lineage.ParentRunID)
@@ -637,6 +1266,11 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 	}
 	if run.Namespace == "" {
 		run.Namespace = run.RunID
+	}
+	if reservation != nil {
+		if err := validateReservedChildRun(run, *reservation); err != nil {
+			return RunRecord{}, initialState, err
+		}
 	}
 	if origin, ok := RunOriginFromContext(ctx); ok {
 		originCopy := origin
@@ -676,7 +1310,7 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State) (
 	if commitResult.Run != nil {
 		run = *commitResult.Run
 	}
-	logger.Info("run started", append(runLogFields(run), state.SummaryFields(initialState)...)...)
+	logger.Info("run started", append(runLogFields(ctx, run), state.SummaryFields(initialState)...)...)
 	return run, initialState, nil
 }
 
@@ -706,12 +1340,18 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string, input *state.Sta
 	if err := r.validateRunGraphHash(run); err != nil {
 		return RunRecord{}, nil, err
 	}
+	if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+		return RunRecord{}, nil, err
+	}
 	if strings.TrimSpace(run.LastCheckpointID) == "" {
 		return RunRecord{}, nil, fmt.Errorf("resume run %q: no checkpoint available", runID)
 	}
 
 	checkpoint, err := r.LoadCheckpointState(ctx, run.LastCheckpointID)
 	if err != nil {
+		return RunRecord{}, nil, err
+	}
+	if err := validateCheckpointRun(run, checkpoint); err != nil {
 		return RunRecord{}, nil, err
 	}
 	if checkpoint.Record.Stage == CheckpointFinal {
@@ -770,6 +1410,12 @@ func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID str
 	if err := r.validateRunGraphHash(run); err != nil {
 		return RunRecord{}, nil, err
 	}
+	if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+		return RunRecord{}, nil, err
+	}
+	if err := validateCheckpointRun(run, checkpoint); err != nil {
+		return RunRecord{}, nil, err
+	}
 	switch {
 	case isResumableRunStatus(run.Status):
 		return r.resumeExistingRun(ctx, run, checkpoint, input)
@@ -798,7 +1444,7 @@ func (r *GraphRunner) latestCheckpointedRun(ctx context.Context, predicate func(
 	var candidate *RunRecord
 	for i := range runs {
 		run := runs[i]
-		if sessionID := r.resolvedGraphSessionID(); sessionID != "" && strings.TrimSpace(run.GraphSessionID) != sessionID {
+		if !r.runBelongsToRunner(run) {
 			continue
 		}
 		if run.LastCheckpointID == "" {
@@ -836,6 +1482,9 @@ func isContinuableRunStatus(status RunStatus) bool {
 }
 
 func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *state.State, startTasks []GraphTask, skip *breakpointSkip, artifacts []state.ArtifactRef) (RunRecord, *state.State, error) {
+	if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+		return RunRecord{}, currentState, err
+	}
 	invokeCtx, cancelInvoke := context.WithCancel(ctx)
 	defer cancelInvoke()
 	execution := newGraphRunnerExecution(r, run, currentState, artifacts, skip, cancelInvoke)
@@ -866,7 +1515,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	if len(afterNodes) > 0 {
 		config.InterruptAfterNodeIDs = afterNodes
 	}
-	fields := append(runLogFields(run),
+	fields := append(runLogFields(ctx, run),
 		zap.Strings("start_nodes", GraphTaskNodeIDs(startTasks)),
 		zap.Int("breakpoint_count", len(r.breakpoints)),
 		zap.Int("interrupt_after_count", len(afterNodes)),
@@ -914,7 +1563,10 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	}
 	failedRun, persistErr := r.persistRunFailureWithTransition(ctx, execution.currentRun(), finalState, errorCode, invokeErr.Error(), transition)
 	if persistErr != nil {
-		return RunRecord{}, finalState, persistErr
+		return failedRun, finalState, persistErr
+	}
+	if failedRun.Status != RunStatusFailed {
+		return failedRun, finalState, nil
 	}
 	return failedRun, finalState, invokeErr
 }
@@ -936,13 +1588,13 @@ func (r *GraphRunner) resolvePendingControl(ctx context.Context, execution *grap
 					run, finalState, err := r.failRun(ctx, execution.currentRun(), currentState, "interrupt_failed", fmt.Sprintf("pause interrupt missing before checkpoint for %q", active.step.NodeID))
 					return run, finalState, true, err
 				}
-				checkpointID, checkpointErr := r.saveCheckpoint(ctx, execution.currentRun(), active.step, active.step.NodeID, CheckpointBeforeNode, currentState, active.attempts, control.hit, execution.snapshotArtifacts())
+				checkpointID, checkpointRun, checkpointErr := r.saveCheckpoint(ctx, execution.currentRun(), active.step, active.step.NodeID, CheckpointBeforeNode, currentState, active.attempts, control.hit, execution.snapshotArtifacts())
 				if checkpointErr != nil {
-					run, finalState, err := r.failRun(ctx, execution.currentRun(), currentState, "interrupt_failed", fmt.Sprintf("refresh pause checkpoint for %q: %v", active.step.NodeID, checkpointErr))
+					run, finalState, err := r.failRun(ctx, checkpointRun, currentState, "interrupt_failed", fmt.Sprintf("refresh pause checkpoint for %q: %v", active.step.NodeID, checkpointErr))
 					return run, finalState, true, err
 				}
 				active.step.CheckpointBeforeID = checkpointID
-				run, finalState, err := r.pauseRun(ctx, execution.currentRun(), currentState, active.step, checkpointID, control.hit, control.message)
+				run, finalState, err := r.pauseRun(ctx, checkpointRun, currentState, active.step, checkpointID, control.hit, control.message)
 				return run, finalState, true, err
 			}
 			execution.restorePendingControl(control)
@@ -982,6 +1634,10 @@ func pauseControlCanceledInvoke(control *runnerPendingControl, invokeErr error) 
 
 func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, checkpoint RestoredCheckpoint, input *state.State) (RunRecord, *state.State, error) {
 	var err error
+	input, err = normalizeExternalState(input)
+	if err != nil {
+		return RunRecord{}, nil, fmt.Errorf("resume input: %w", err)
+	}
 	if checkpoint.Business, err = state.MergeResumeInput(checkpoint.Business, input); err != nil {
 		return RunRecord{}, nil, err
 	}
@@ -994,62 +1650,92 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 		return RunRecord{}, nil, err
 	}
 
-	run.Status = RunStatusRunning
-	run.PauseRequested = false
-	run.CancelRequested = false
-	run.ErrorCode = ""
-	run.ErrorMessage = ""
-	run.FinishedAt = nil
+	expectedRun := run
+	desiredRun := run
+	desiredRun.Status = RunStatusRunning
+	desiredRun.PauseRequested = false
+	desiredRun.CancelRequested = false
+	desiredRun.ErrorCode = ""
+	desiredRun.ErrorMessage = ""
+	desiredRun.FinishedAt = nil
 	if checkpoint.Runtime.CurrentStepID != "" {
-		run.LastStepID = checkpoint.Runtime.CurrentStepID
+		desiredRun.LastStepID = checkpoint.Runtime.CurrentStepID
 	}
 	resolvedToEnd := suspend == nil && (len(startTasks) == 0 || len(startTasks) == 1 && startTasks[0].NodeID == EndNodeID)
-	run.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
-	if suspend == nil && (checkpoint.Record.Stage != CheckpointBeforeNode || run.CurrentNodeID == "") {
+	desiredRun.CurrentNodeID = checkpoint.Runtime.CurrentNodeID
+	if suspend == nil && (checkpoint.Record.Stage != CheckpointBeforeNode || desiredRun.CurrentNodeID == "") {
 		if len(startTasks) > 0 {
-			run.CurrentNodeID = startTasks[0].NodeID
+			desiredRun.CurrentNodeID = startTasks[0].NodeID
 		}
 	}
 	if suspend != nil {
-		run.NextNodeIDs = GraphTaskNodeIDs(startTasks)
+		desiredRun.NextNodeIDs = GraphTaskNodeIDs(startTasks)
 	}
 	if resolvedToEnd {
-		clearRunExecutionPointers(&run)
+		clearRunExecutionPointers(&desiredRun)
 	}
-	run.UpdatedAt = r.currentTime()
-	resumedEvent, err := r.buildEvent(run, "", "", "", EventRunResumed, map[string]any{
-		"checkpoint_id": checkpoint.Record.CheckpointID,
-		"node_id":       run.CurrentNodeID,
-		"node_ids":      GraphTaskNodeIDs(startTasks),
-		"tasks":         startTasks,
+	updatedRun, err := r.commitRunUpdateWithRetry(ctx, expectedRun, "resume run", func(latestRun RunRecord) (runUpdatePreparation, error) {
+		if latestRun.CancelRequested {
+			return r.prepareCanceledRunUpdate(latestRun, runnerStepTransition{})
+		}
+		if latestRun.Status != expectedRun.Status && !isActiveDeleteRunStatus(latestRun.Status) {
+			return runUpdatePreparation{run: latestRun}, nil
+		}
+		latestRun.Status = RunStatusRunning
+		latestRun.CancelRequested = false
+		latestRun.ErrorCode = ""
+		latestRun.ErrorMessage = ""
+		latestRun.FinishedAt = nil
+		latestRun.LastStepID = desiredRun.LastStepID
+		latestRun.CurrentNodeID = desiredRun.CurrentNodeID
+		latestRun.CurrentNodeIDs = append([]string(nil), desiredRun.CurrentNodeIDs...)
+		latestRun.CurrentStepIDs = append([]string(nil), desiredRun.CurrentStepIDs...)
+		latestRun.NextNodeIDs = append([]string(nil), desiredRun.NextNodeIDs...)
+		latestRun.ParallelWaveID = desiredRun.ParallelWaveID
+		latestRun.UpdatedAt = r.currentTime()
+		resumedEvent, buildErr := r.buildEvent(latestRun, "", "", "", EventRunResumed, map[string]any{
+			"checkpoint_id": checkpoint.Record.CheckpointID,
+			"node_id":       latestRun.CurrentNodeID,
+			"node_ids":      GraphTaskNodeIDs(startTasks),
+			"tasks":         startTasks,
+		})
+		if buildErr != nil {
+			return runUpdatePreparation{}, buildErr
+		}
+		commit := Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: latestRun},
+			Events: []Event{resumedEvent},
+		}
+		return runUpdatePreparation{run: latestRun, commit: &commit}, nil
 	})
 	if err != nil {
-		return RunRecord{}, nil, err
+		return updatedRun, checkpoint.Business, err
 	}
-	commitResult, err := r.commitRuntime(ctx, Commit{
-		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
-		Events: []Event{resumedEvent},
-	})
-	if err != nil {
-		return RunRecord{}, nil, err
-	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
+	run = updatedRun
+	if run.Status != RunStatusRunning {
+		logger.Info("run transition won before resume", append(runLogFields(ctx, run), state.SummaryFields(checkpoint.Business)...)...)
+		if isTerminalRunStatus(run.Status) {
+			if err := r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), run.RunID); err != nil {
+				return run, checkpoint.Business, err
+			}
+		}
+		return run, checkpoint.Business, nil
 	}
 	if resolvedToEnd {
-		logger.Info("resume resolved to completed run", append(runLogFields(run), state.SummaryFields(checkpoint.Business)...)...)
+		logger.Info("resume resolved to completed run", append(runLogFields(ctx, run), state.SummaryFields(checkpoint.Business)...)...)
 		return r.completeRun(ctx, run, checkpoint.Business, checkpoint.Artifacts)
 	}
 	if suspend != nil {
-		checkpointID, checkpointErr := r.saveCheckpoint(ctx, run, StepRecord{}, waveCheckpointNodeID, CheckpointAfterWave, checkpoint.Business, 0, nil, checkpoint.Artifacts)
+		checkpointID, checkpointRun, checkpointErr := r.saveCheckpoint(ctx, run, StepRecord{}, waveCheckpointNodeID, CheckpointAfterWave, checkpoint.Business, 0, nil, checkpoint.Artifacts)
 		if checkpointErr != nil {
-			return r.failRun(ctx, run, checkpoint.Business, "checkpoint_failed", checkpointErr.Error())
+			return r.failRun(ctx, checkpointRun, checkpoint.Business, "checkpoint_failed", checkpointErr.Error())
 		}
+		run = checkpointRun
 		message := fmt.Sprintf("graph interrupted at node %s: %v", checkpoint.Record.NodeID, suspend.Value)
 		return r.pauseRunAtCheckpoint(ctx, run, checkpoint.Business, checkpointID, nil, message)
 	}
 
-	fields := append(runLogFields(run),
+	fields := append(runLogFields(ctx, run),
 		zap.Strings("start_nodes", GraphTaskNodeIDs(startTasks)),
 		zap.String("resume_checkpoint_id", checkpoint.Record.CheckpointID),
 		zap.Int("artifact_count", len(checkpoint.Artifacts)),
@@ -1063,10 +1749,16 @@ func (r *GraphRunner) continueRun(ctx context.Context, run RunRecord, checkpoint
 	if err := r.validateIndependentCheckpoint(checkpoint); err != nil {
 		return RunRecord{}, nil, err
 	}
+	var err error
+	input, err = normalizeExternalState(input)
+	if err != nil {
+		return RunRecord{}, nil, fmt.Errorf("continuation input: %w", err)
+	}
 	continuedState, err := state.PrepareContinuationState(checkpoint.Business, input)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
+	continuedState = projectBusinessState(continuedState)
 	if issues := state.ValidateStateBySchemas(continuedState, r.stateSchemas); len(issues) > 0 {
 		return RunRecord{}, continuedState, state.NewValidationError("resume input", issues)
 	}
@@ -1215,7 +1907,7 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 			if err != nil {
 				return err
 			}
-			logger.Info("pause requested during execution startup", runLogFields(run)...)
+			logger.Info("pause requested during execution startup", runLogFields(ctx, run)...)
 			return nil
 		}
 		return fmt.Errorf("%w: run %q has no active execution", ErrRunControlNotAllowed, runID)
@@ -1228,7 +1920,7 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("pause requested", runLogFields(run)...)
+	logger.Info("pause requested", runLogFields(ctx, run)...)
 	execution.requestPause()
 	return nil
 }
@@ -1260,7 +1952,7 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 		if controlErr != nil {
 			return controlErr
 		}
-		logger.Info("run canceled", runLogFields(canceledRun)...)
+		logger.Info("run canceled", runLogFields(ctx, canceledRun)...)
 		return r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), canceledRun.RunID)
 	case RunStatusPending, RunStatusRunning:
 	default:
@@ -1273,7 +1965,7 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 			if err != nil {
 				return err
 			}
-			logger.Info("cancel requested during execution startup", runLogFields(run)...)
+			logger.Info("cancel requested during execution startup", runLogFields(ctx, run)...)
 			return nil
 		}
 		return fmt.Errorf("%w: run %q has no active execution", ErrRunControlNotAllowed, runID)
@@ -1286,7 +1978,7 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	if err != nil {
 		return err
 	}
-	logger.Info("cancel requested", runLogFields(run)...)
+	logger.Info("cancel requested", runLogFields(ctx, run)...)
 	execution.requestCancel()
 	return nil
 }
@@ -1302,6 +1994,9 @@ func (r *GraphRunner) DeleteRun(ctx context.Context, runID string) (RunRecord, e
 	}
 	run, err := r.executionStore.GetRun(ctx, runID)
 	if err != nil {
+		return RunRecord{}, err
+	}
+	if err := r.validateRunGraphHash(run); err != nil {
 		return RunRecord{}, err
 	}
 	if isActiveDeleteRunStatus(run.Status) || r.hasExecutionClaim(runID) {
@@ -1368,42 +2063,52 @@ func (r *GraphRunner) claimExecution(runID string) error {
 
 func (r *GraphRunner) persistReservedControlRequest(ctx context.Context, runID string, kind runnerControlKind) (RunRecord, error) {
 	ctx = normalizeRunnerContext(ctx)
-	run, err := r.executionStore.GetRun(ctx, runID)
-	if err != nil {
-		return RunRecord{}, err
+	revisionConflicts := 0
+	for {
+		run, err := r.executionStore.GetRun(ctx, runID)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if !isActiveDeleteRunStatus(run.Status) {
+			return run, fmt.Errorf("%w: run %q status %q cannot be controlled", ErrRunControlNotAllowed, runID, run.Status)
+		}
+		switch kind {
+		case runnerControlPause:
+			run.PauseRequested = true
+		case runnerControlCancel:
+			run.PauseRequested = false
+			run.CancelRequested = true
+		default:
+			return RunRecord{}, fmt.Errorf("unsupported runner control %q", kind)
+		}
+		run.UpdatedAt = r.currentTime()
+		eventType, err := controlRequestEventType(kind)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		event, err := r.buildEvent(run, "", "", "", eventType, nil)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		commitResult, err := r.commitRuntime(ctx, Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+			Events: []Event{event},
+		})
+		if errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return RunRecord{}, runRevisionRetriesExceeded("persist reserved run control request")
+			}
+			continue
+		}
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
+		return run, nil
 	}
-	if !isActiveDeleteRunStatus(run.Status) {
-		return run, fmt.Errorf("%w: run %q status %q cannot be controlled", ErrRunControlNotAllowed, runID, run.Status)
-	}
-	switch kind {
-	case runnerControlPause:
-		run.PauseRequested = true
-	case runnerControlCancel:
-		run.PauseRequested = false
-		run.CancelRequested = true
-	default:
-		return RunRecord{}, fmt.Errorf("unsupported runner control %q", kind)
-	}
-	run.UpdatedAt = r.currentTime()
-	eventType, err := controlRequestEventType(kind)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	event, err := r.buildEvent(run, "", "", "", eventType, nil)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	commitResult, err := r.commitRuntime(ctx, Commit{
-		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
-		Events: []Event{event},
-	})
-	if err != nil {
-		return RunRecord{}, err
-	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
-	}
-	return run, nil
 }
 
 func (r *GraphRunner) releaseExecutionClaim(runID string) {
@@ -1494,9 +2199,9 @@ func isActiveDeleteRunStatus(status RunStatus) bool {
 
 func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunnerExecution, currentState *state.State, interrupt *GraphInterrupt) (RunRecord, *state.State, error) {
 	run := execution.currentRun()
-	fields := append(runLogFields(run),
+	fields := append(runLogFields(ctx, run),
 		zap.String("interrupt_node_id", interrupt.NodeID),
-		zap.String("interrupt_reason", interrupt.Error()),
+		zap.String("interrupt_reason", redactSensitiveString(ctx, interrupt.Error())),
 	)
 	fields = append(fields, state.SummaryFields(currentState)...)
 	logger.Info("run interrupt", fields...)
@@ -1520,17 +2225,21 @@ func (r *GraphRunner) handleInterrupt(ctx context.Context, execution *graphRunne
 			step := active.step
 			if active.beforeInterrupted {
 				checkpointState := currentState.Clone()
-				schedule, _ := LoadGraphSchedule(checkpointState)
+				schedule, _, scheduleErr := LoadGraphSchedule(checkpointState)
+				if scheduleErr != nil {
+					return r.failRun(ctx, run, currentState, "checkpoint_failed", scheduleErr.Error())
+				}
 				if err := StoreGraphSchedule(checkpointState, GraphSchedule{
 					CurrentTasks:      []GraphTask{active.task},
-					PendingFanInNodes: schedule.PendingFanInNodes,
+					PendingFanInTasks: CloneGraphTasks(schedule.PendingFanInTasks),
 				}); err != nil {
 					return r.failRun(ctx, run, currentState, "checkpoint_failed", err.Error())
 				}
-				savedID, err := r.saveCheckpoint(ctx, run, step, step.NodeID, CheckpointBeforeNode, checkpointState, active.attempts, control.hit, execution.snapshotArtifacts())
+				savedID, checkpointRun, err := r.saveCheckpoint(ctx, run, step, step.NodeID, CheckpointBeforeNode, checkpointState, active.attempts, control.hit, execution.snapshotArtifacts())
 				if err != nil {
-					return r.failRun(ctx, run, currentState, "checkpoint_failed", err.Error())
+					return r.failRun(ctx, checkpointRun, currentState, "checkpoint_failed", err.Error())
 				}
+				run = checkpointRun
 				checkpointID = savedID
 				step.CheckpointBeforeID = savedID
 			}
@@ -1573,41 +2282,66 @@ func (r *GraphRunner) completeRun(ctx context.Context, run RunRecord, finalState
 	if issues := state.ValidateStateBySchemas(finalState, r.stateSchemas); len(issues) > 0 {
 		return r.failRun(ctx, run, finalState, "output_schema_validation_failed", state.NewValidationError("output", issues).Error())
 	}
-	now := r.currentTime()
-	run.Status = RunStatusCompleted
-	run.PauseRequested = false
-	run.CancelRequested = false
-	clearRunExecutionPointers(&run)
-	run.UpdatedAt = now
-	run.FinishedAt = &now
-	finalStep := StepRecord{StepID: run.LastStepID}
-	checkpointWrite, checkpointEvent, err := r.buildCheckpointWrite(ctx, run, finalStep, "__final__", CheckpointFinal, finalState, 0, nil, artifacts)
-	if err != nil {
-		return RunRecord{}, finalState, err
-	}
-	run.LastCheckpointID = checkpointWrite.Record.CheckpointID
-	payload := any(nil)
-	if run.ReturnValue != nil {
-		payload = map[string]any{"return_value": run.ReturnValue}
-	}
-	finishedEvent, err := r.buildEvent(run, run.LastStepID, "", "", EventRunFinished, payload)
-	if err != nil {
-		return RunRecord{}, finalState, err
-	}
-	commitResult, err := r.commitRuntime(ctx, Commit{
-		Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Checkpoints: []CheckpointWrite{checkpointWrite}, Events: []Event{checkpointEvent, finishedEvent},
+	expectedRun := run
+	persistenceCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
+	updatedRun, err := r.commitRunUpdateWithRetry(persistenceCtx, expectedRun, "complete run", func(latestRun RunRecord) (runUpdatePreparation, error) {
+		switch {
+		case latestRun.CancelRequested:
+			return r.prepareCanceledRunUpdate(latestRun, runnerStepTransition{})
+		case latestRun.PauseRequested:
+			return r.preparePausedRunUpdate(persistenceCtx, latestRun, runnerStepTransition{}, "pause requested before run completion")
+		case !isActiveDeleteRunStatus(latestRun.Status):
+			return runUpdatePreparation{run: latestRun}, nil
+		}
+
+		now := r.currentTime()
+		latestRun.Status = RunStatusCompleted
+		latestRun.PauseRequested = false
+		latestRun.CancelRequested = false
+		latestRun.ErrorCode = ""
+		latestRun.ErrorMessage = ""
+		latestRun.ReturnValue = expectedRun.ReturnValue
+		clearRunExecutionPointers(&latestRun)
+		latestRun.UpdatedAt = now
+		latestRun.FinishedAt = &now
+		finalStep := StepRecord{StepID: latestRun.LastStepID}
+		checkpointWrite, checkpointEvent, buildErr := r.buildCheckpointWrite(persistenceCtx, latestRun, finalStep, "__final__", CheckpointFinal, finalState, 0, nil, artifacts)
+		if buildErr != nil {
+			return runUpdatePreparation{}, buildErr
+		}
+		latestRun.LastCheckpointID = checkpointWrite.Record.CheckpointID
+		payload := any(nil)
+		if latestRun.ReturnValue != nil {
+			payload = map[string]any{"return_value": latestRun.ReturnValue}
+		}
+		finishedEvent, buildErr := r.buildEvent(latestRun, latestRun.LastStepID, "", "", EventRunFinished, payload)
+		if buildErr != nil {
+			return runUpdatePreparation{}, buildErr
+		}
+		commit := Commit{
+			Run:         &RunWrite{Mode: RunWriteUpdate, Run: latestRun},
+			Checkpoints: []CheckpointWrite{checkpointWrite},
+			Events:      []Event{checkpointEvent, finishedEvent},
+		}
+		return runUpdatePreparation{run: latestRun, commit: &commit}, nil
 	})
 	if err != nil {
-		return RunRecord{}, finalState, err
+		return updatedRun, finalState, err
 	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
+	switch updatedRun.Status {
+	case RunStatusCompleted:
+		logger.Info("run completed", append(runLogFields(ctx, updatedRun), state.SummaryFields(finalState)...)...)
+	case RunStatusCanceled:
+		logger.Info("run canceled", append(runLogFields(ctx, updatedRun), state.SummaryFields(finalState)...)...)
+	case RunStatusPaused:
+		logger.Info("run paused before completion", append(runLogFields(ctx, updatedRun), state.SummaryFields(finalState)...)...)
 	}
-	logger.Info("run completed", append(runLogFields(run), state.SummaryFields(finalState)...)...)
-	if err := r.applyRunRetention(context.WithoutCancel(normalizeRunnerContext(ctx)), run.RunID); err != nil {
-		return run, finalState, err
+	if isTerminalRunStatus(updatedRun.Status) {
+		if err := r.applyRunRetention(persistenceCtx, updatedRun.RunID); err != nil {
+			return updatedRun, finalState, err
+		}
 	}
-	return run, finalState, nil
+	return updatedRun, finalState, nil
 }
 
 func clearRunExecutionPointers(run *RunRecord) {
@@ -1619,6 +2353,84 @@ func clearRunExecutionPointers(run *RunRecord) {
 }
 
 func (r *GraphRunner) cancelRunWithTransition(ctx context.Context, run RunRecord, currentState *state.State, transition runnerStepTransition) (RunRecord, *state.State, error) {
+	persistenceCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
+	updatedRun, err := r.commitRunUpdateWithRetry(persistenceCtx, run, "cancel run", func(latestRun RunRecord) (runUpdatePreparation, error) {
+		if isTerminalRunStatus(latestRun.Status) {
+			return runUpdatePreparation{run: latestRun}, nil
+		}
+		return r.prepareCanceledRunUpdate(latestRun, transition)
+	})
+	if err != nil {
+		return updatedRun, currentState, err
+	}
+	if updatedRun.Status == RunStatusCanceled {
+		logger.Info("run canceled", append(runLogFields(ctx, updatedRun), state.SummaryFields(currentState)...)...)
+		if err := r.applyRunRetention(persistenceCtx, updatedRun.RunID); err != nil {
+			return updatedRun, currentState, err
+		}
+	}
+	return updatedRun, currentState, nil
+}
+
+type runUpdatePreparation struct {
+	run    RunRecord
+	commit *Commit
+}
+
+func (r *GraphRunner) commitRunUpdateWithRetry(ctx context.Context, expectedRun RunRecord, action string, prepare func(RunRecord) (runUpdatePreparation, error)) (RunRecord, error) {
+	latestRun := expectedRun
+	for retry := 0; retry < runRevisionRetryLimit; retry++ {
+		var err error
+		latestRun, err = r.loadRunForUpdate(ctx, expectedRun)
+		if err != nil {
+			return latestRun, err
+		}
+		prepared, err := prepare(latestRun)
+		if err != nil {
+			return latestRun, err
+		}
+		if prepared.commit == nil {
+			return prepared.run, nil
+		}
+		commitResult, commitErr := r.commitRuntime(ctx, *prepared.commit)
+		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			continue
+		}
+		if commitErr != nil {
+			return prepared.run, commitErr
+		}
+		if commitResult.Run != nil {
+			prepared.run = *commitResult.Run
+		}
+		return prepared.run, nil
+	}
+	return latestRun, runRevisionRetriesExceeded(action)
+}
+
+func (r *GraphRunner) loadRunForUpdate(ctx context.Context, expectedRun RunRecord) (RunRecord, error) {
+	latestRun, err := r.executionStore.GetRun(ctx, expectedRun.RunID)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	if err := validateChildRunExecutionOwner(ctx, latestRun); err != nil {
+		return latestRun, err
+	}
+	if latestRun.Deletion != nil {
+		return latestRun, fmt.Errorf("%w: run %q is reserved for deletion", ErrRunControlNotAllowed, latestRun.RunID)
+	}
+	if expectedRun.ExecutionClaimID != latestRun.ExecutionClaimID &&
+		(expectedRun.ExecutionClaimID != "" || latestRun.ExecutionClaimID != "") {
+		return latestRun, fmt.Errorf("%w: run %q execution claim changed", ErrRunControlNotAllowed, latestRun.RunID)
+	}
+	latestRun.PauseRequested = latestRun.PauseRequested || expectedRun.PauseRequested
+	latestRun.CancelRequested = latestRun.CancelRequested || expectedRun.CancelRequested
+	if latestRun.CancelRequested {
+		latestRun.PauseRequested = false
+	}
+	return latestRun, nil
+}
+
+func (r *GraphRunner) prepareCanceledRunUpdate(run RunRecord, transition runnerStepTransition) (runUpdatePreparation, error) {
 	now := r.currentTime()
 	run.Status = RunStatusCanceled
 	run.PauseRequested = false
@@ -1627,41 +2439,110 @@ func (r *GraphRunner) cancelRunWithTransition(ctx context.Context, run RunRecord
 	run.FinishedAt = &now
 	canceledEvent, err := r.buildEvent(run, "", "", run.CurrentNodeID, EventRunCanceled, nil)
 	if err != nil {
-		return RunRecord{}, currentState, err
+		return runUpdatePreparation{}, err
 	}
 	events := append([]Event(nil), transition.events...)
 	events = append(events, canceledEvent)
-	persistenceCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
-	commitResult, err := r.commitRuntime(persistenceCtx, Commit{
+	commit := Commit{
 		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
 		Steps:  transition.writes,
 		Events: events,
-	})
-	if err != nil {
-		return RunRecord{}, currentState, err
 	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
-	}
-	logger.Info("run canceled", append(runLogFields(run), state.SummaryFields(currentState)...)...)
-	if err := r.applyRunRetention(persistenceCtx, run.RunID); err != nil {
-		return run, currentState, err
-	}
-	return run, currentState, nil
+	return runUpdatePreparation{run: run, commit: &commit}, nil
 }
 
-func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step StepRecord, nodeID string, stage CheckpointStage, currentState *state.State, attempts int, hit *state.BreakpointHit, artifacts []state.ArtifactRef) (string, error) {
-	write, event, err := r.buildCheckpointWrite(ctx, run, step, nodeID, stage, currentState, attempts, hit, artifacts)
+func (r *GraphRunner) preparePausedRunUpdate(ctx context.Context, run RunRecord, transition runnerStepTransition, message string) (runUpdatePreparation, error) {
+	checkpointID := strings.TrimSpace(run.LastCheckpointID)
+	if checkpointID == "" {
+		for _, step := range transition.steps {
+			checkpointID = firstNonEmpty(step.CheckpointBeforeID, step.CheckpointAfterID)
+			if checkpointID != "" {
+				break
+			}
+		}
+	}
+	if checkpointID == "" {
+		return runUpdatePreparation{}, fmt.Errorf("pause run %q before terminal transition: no checkpoint available", run.RunID)
+	}
+	if r.checkpointStore == nil {
+		return runUpdatePreparation{}, errors.New("checkpoint store is required")
+	}
+	checkpoint, _, err := r.checkpointStore.Load(ctx, checkpointID)
 	if err != nil {
-		return "", err
+		return runUpdatePreparation{}, err
 	}
-	if _, err := r.commitRuntime(ctx, Commit{
-		Checkpoints: []CheckpointWrite{write},
-		Events:      []Event{event},
-	}); err != nil {
-		return "", err
+	if checkpoint.RunID != run.RunID {
+		return runUpdatePreparation{}, fmt.Errorf("checkpoint %q belongs to run %q, not run %q", checkpoint.CheckpointID, checkpoint.RunID, run.RunID)
 	}
-	return write.Record.CheckpointID, nil
+	if checkpoint.Stage == CheckpointFinal {
+		return runUpdatePreparation{}, fmt.Errorf("final checkpoint %q cannot pause run %q", checkpoint.CheckpointID, run.RunID)
+	}
+
+	now := r.currentTime()
+	run.Status = RunStatusPaused
+	run.PauseRequested = false
+	run.CancelRequested = false
+	run.ErrorCode = ""
+	run.ErrorMessage = ""
+	run.LastCheckpointID = checkpoint.CheckpointID
+	run.UpdatedAt = now
+	run.FinishedAt = nil
+	stepWrites := make([]StepWrite, 0, len(transition.steps))
+	for _, transitionStep := range transition.steps {
+		if transitionStep.Status == StepStatusSucceeded || transitionStep.Status == StepStatusCanceled {
+			continue
+		}
+		transitionStep.Status = StepStatusPaused
+		transitionStep.ErrorCode = ""
+		transitionStep.ErrorMessage = ""
+		transitionStep.FinishedAt = nil
+		transitionStep.UpdatedAt = now
+		stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: transitionStep})
+	}
+	pausedEvent, err := r.buildEvent(run, checkpoint.StepID, checkpoint.TaskID, checkpoint.NodeID, EventRunPaused, pauseEventPayload(checkpoint.CheckpointID, checkpoint.Stage, checkpoint.NodeID, message, nil))
+	if err != nil {
+		return runUpdatePreparation{}, err
+	}
+	commit := Commit{
+		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+		Steps:  stepWrites,
+		Events: []Event{pausedEvent},
+	}
+	return runUpdatePreparation{run: run, commit: &commit}, nil
+}
+
+func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step StepRecord, nodeID string, stage CheckpointStage, currentState *state.State, attempts int, hit *state.BreakpointHit, artifacts []state.ArtifactRef) (string, RunRecord, error) {
+	for retry := 0; retry < runRevisionRetryLimit; retry++ {
+		if err := normalizeRunnerContext(ctx).Err(); err != nil {
+			return "", run, err
+		}
+		persistedRun, err := r.executionStore.GetRun(ctx, run.RunID)
+		if err != nil {
+			return "", run, err
+		}
+		if err := validateChildRunExecutionOwner(ctx, persistedRun); err != nil {
+			return "", persistedRun, err
+		}
+		if err := validateNodeExecutionRun(run, persistedRun); err != nil {
+			return "", persistedRun, err
+		}
+		run = persistedRun
+		write, event, err := r.buildCheckpointWrite(ctx, run, step, nodeID, stage, currentState, attempts, hit, artifacts)
+		if err != nil {
+			return "", run, err
+		}
+		if _, err := r.commitRuntime(ctx, Commit{
+			Run:         &RunWrite{Mode: RunWriteCheck, Run: run},
+			Checkpoints: []CheckpointWrite{write},
+			Events:      []Event{event},
+		}); !errors.Is(err, ErrRunRevisionConflict) {
+			if err != nil {
+				return "", run, err
+			}
+			return write.Record.CheckpointID, run, nil
+		}
+	}
+	return "", run, runRevisionRetriesExceeded("save checkpoint")
 }
 
 func (r *GraphRunner) buildCheckpointWrite(ctx context.Context, run RunRecord, step StepRecord, nodeID string, stage CheckpointStage, currentState *state.State, attempts int, hit *state.BreakpointHit, artifacts []state.ArtifactRef) (CheckpointWrite, Event, error) {
@@ -1750,88 +2631,182 @@ func (r *GraphRunner) computeStateDiff(before, after *state.State) ([]state.Chan
 }
 
 func (r *GraphRunner) pauseRun(ctx context.Context, run RunRecord, currentState *state.State, step StepRecord, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
-	now := r.currentTime()
 	stage := pauseCheckpointStage(step, checkpointID)
-	run.Status = RunStatusPaused
-	run.PauseRequested = false
-	run.LastCheckpointID = checkpointID
-	run.UpdatedAt = now
-	run.FinishedAt = nil
-	stepUpdated := stage != CheckpointAfterNode
-	stepWrites := []StepWrite(nil)
-	if stepUpdated {
-		step.Status = StepStatusPaused
-		step.UpdatedAt = now
-		stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: step})
-	}
-	events := make([]Event, 0, 2)
-	if hit != nil {
-		event, err := r.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventBreakpointHit, hit)
+	expectedRun := run
+	for retry := 0; retry < runRevisionRetryLimit; retry++ {
+		var err error
+		run, err = r.loadPauseRun(ctx, expectedRun)
 		if err != nil {
-			return RunRecord{}, currentState, err
+			return run, currentState, err
 		}
-		events = append(events, event)
+		if run.CancelRequested {
+			transition, buildErr := r.buildPauseCancellationTransition(run, step, stage)
+			if buildErr != nil {
+				return run, currentState, buildErr
+			}
+			return r.cancelRunWithTransition(ctx, run, currentState, transition)
+		}
+
+		now := r.currentTime()
+		run.Status = RunStatusPaused
+		run.PauseRequested = false
+		run.CancelRequested = false
+		run.LastCheckpointID = checkpointID
+		run.UpdatedAt = now
+		run.FinishedAt = nil
+		stepWrites := []StepWrite(nil)
+		if stage != CheckpointAfterNode {
+			step.Status = StepStatusPaused
+			step.UpdatedAt = now
+			stepWrites = append(stepWrites, StepWrite{Mode: StepWriteUpdate, Step: step})
+		}
+		events := make([]Event, 0, 2)
+		if hit != nil {
+			event, buildErr := r.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventBreakpointHit, hit)
+			if buildErr != nil {
+				return run, currentState, buildErr
+			}
+			events = append(events, event)
+		}
+		pausedEvent, buildErr := r.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventRunPaused, pauseEventPayload(checkpointID, stage, step.NodeID, message, hit))
+		if buildErr != nil {
+			return run, currentState, buildErr
+		}
+		events = append(events, pausedEvent)
+		commitResult, commitErr := r.commitRuntime(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Steps: stepWrites, Events: events})
+		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			continue
+		}
+		if commitErr != nil {
+			return run, currentState, commitErr
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
+		fields := append(runLogFields(ctx, run), stepLogFields(ctx, step)...)
+		fields = append(fields, state.SummaryFields(currentState)...)
+		if hit != nil {
+			fields = append(fields,
+				zap.String("breakpoint_id", hit.BreakpointID),
+				zap.String("breakpoint_stage", hit.Stage),
+			)
+		}
+		logger.Info("run paused", fields...)
+		return run, currentState, nil
 	}
-	pausedEvent, err := r.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventRunPaused, pauseEventPayload(checkpointID, stage, step.NodeID, message, hit))
-	if err != nil {
-		return RunRecord{}, currentState, err
-	}
-	events = append(events, pausedEvent)
-	commitResult, err := r.commitRuntime(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Steps: stepWrites, Events: events})
-	if err != nil {
-		return RunRecord{}, currentState, err
-	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
-	}
-	fields := append(runLogFields(run), stepLogFields(step)...)
-	fields = append(fields, state.SummaryFields(currentState)...)
-	if hit != nil {
-		fields = append(fields,
-			zap.String("breakpoint_id", hit.BreakpointID),
-			zap.String("breakpoint_stage", hit.Stage),
-		)
-	}
-	logger.Info("run paused", fields...)
-	return run, currentState, nil
+	return run, currentState, runRevisionRetriesExceeded("pause run")
 }
 
 func (r *GraphRunner) pauseRunAtCheckpoint(ctx context.Context, run RunRecord, currentState *state.State, checkpointID string, hit *state.BreakpointHit, message string) (RunRecord, *state.State, error) {
-	now := r.currentTime()
-	run.Status = RunStatusPaused
-	run.PauseRequested = false
-	run.LastCheckpointID = checkpointID
-	run.UpdatedAt = now
-	run.FinishedAt = nil
-	events := make([]Event, 0, 2)
-	if hit != nil {
-		event, err := r.buildEvent(run, "", "", waveCheckpointNodeID, EventBreakpointHit, hit)
+	expectedRun := run
+	for retry := 0; retry < runRevisionRetryLimit; retry++ {
+		var err error
+		run, err = r.loadPauseRun(ctx, expectedRun)
 		if err != nil {
-			return RunRecord{}, currentState, err
+			return run, currentState, err
 		}
-		events = append(events, event)
+		if run.CancelRequested {
+			return r.cancelRunWithTransition(ctx, run, currentState, runnerStepTransition{})
+		}
+
+		now := r.currentTime()
+		run.Status = RunStatusPaused
+		run.PauseRequested = false
+		run.CancelRequested = false
+		run.LastCheckpointID = checkpointID
+		run.UpdatedAt = now
+		run.FinishedAt = nil
+		events := make([]Event, 0, 2)
+		if hit != nil {
+			event, buildErr := r.buildEvent(run, "", "", waveCheckpointNodeID, EventBreakpointHit, hit)
+			if buildErr != nil {
+				return run, currentState, buildErr
+			}
+			events = append(events, event)
+		}
+		pausedEvent, buildErr := r.buildEvent(run, "", "", waveCheckpointNodeID, EventRunPaused, pauseEventPayload(checkpointID, CheckpointAfterWave, waveCheckpointNodeID, message, hit))
+		if buildErr != nil {
+			return run, currentState, buildErr
+		}
+		events = append(events, pausedEvent)
+		commitResult, commitErr := r.commitRuntime(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Events: events})
+		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			continue
+		}
+		if commitErr != nil {
+			return run, currentState, commitErr
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
+		fields := append(runLogFields(ctx, run), state.SummaryFields(currentState)...)
+		if hit != nil {
+			fields = append(fields,
+				zap.String("breakpoint_id", hit.BreakpointID),
+				zap.String("breakpoint_stage", hit.Stage),
+			)
+		}
+		logger.Info("run paused", fields...)
+		return run, currentState, nil
 	}
-	pausedEvent, err := r.buildEvent(run, "", "", waveCheckpointNodeID, EventRunPaused, pauseEventPayload(checkpointID, CheckpointAfterWave, waveCheckpointNodeID, message, hit))
+	return run, currentState, runRevisionRetriesExceeded("pause run at checkpoint")
+}
+
+func (r *GraphRunner) loadPauseRun(ctx context.Context, expectedRun RunRecord) (RunRecord, error) {
+	persistedRun, err := r.executionStore.GetRun(ctx, expectedRun.RunID)
 	if err != nil {
-		return RunRecord{}, currentState, err
+		return RunRecord{}, err
 	}
-	events = append(events, pausedEvent)
-	commitResult, err := r.commitRuntime(ctx, Commit{Run: &RunWrite{Mode: RunWriteUpdate, Run: run}, Events: events})
-	if err != nil {
-		return RunRecord{}, currentState, err
+	if err := validateChildRunExecutionOwner(ctx, persistedRun); err != nil {
+		return persistedRun, err
 	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
+	if err := validateNodeExecutionRun(expectedRun, persistedRun); err != nil {
+		return persistedRun, err
 	}
-	fields := append(runLogFields(run), state.SummaryFields(currentState)...)
-	if hit != nil {
-		fields = append(fields,
-			zap.String("breakpoint_id", hit.BreakpointID),
-			zap.String("breakpoint_stage", hit.Stage),
-		)
+	persistedRun.PauseRequested = persistedRun.PauseRequested || expectedRun.PauseRequested
+	persistedRun.CancelRequested = persistedRun.CancelRequested || expectedRun.CancelRequested
+	if persistedRun.CancelRequested {
+		persistedRun.PauseRequested = false
 	}
-	logger.Info("run paused", fields...)
-	return run, currentState, nil
+	return persistedRun, nil
+}
+
+func (r *GraphRunner) buildPauseCancellationTransition(run RunRecord, step StepRecord, stage CheckpointStage) (runnerStepTransition, error) {
+	if stage == CheckpointAfterNode || strings.TrimSpace(step.StepID) == "" {
+		return runnerStepTransition{}, nil
+	}
+	return r.prepareCanceledStepTransition(run, []StepRecord{step})
+}
+
+func (r *GraphRunner) prepareCanceledStepTransition(run RunRecord, steps []StepRecord) (runnerStepTransition, error) {
+	transition := runnerStepTransition{
+		writes: make([]StepWrite, 0, len(steps)),
+		events: make([]Event, 0, len(steps)),
+		steps:  make([]StepRecord, 0, len(steps)),
+	}
+	for _, step := range steps {
+		if step.Status == StepStatusSucceeded || step.Status == StepStatusCanceled {
+			continue
+		}
+		now := r.currentTime()
+		step.Status = StepStatusCanceled
+		step.ErrorCode = "run_canceled"
+		step.ErrorMessage = "run canceled"
+		step.FinishedAt = &now
+		step.UpdatedAt = now
+		canceledEvent, err := r.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeCanceled, map[string]any{
+			"attempt":    step.Attempt,
+			"error_code": "run_canceled",
+			"message":    "run canceled",
+		})
+		if err != nil {
+			return runnerStepTransition{}, err
+		}
+		transition.writes = append(transition.writes, StepWrite{Mode: StepWriteUpdate, Step: step})
+		transition.events = append(transition.events, canceledEvent)
+		transition.steps = append(transition.steps, step)
+	}
+	return transition, nil
 }
 
 func pauseCheckpointStage(step StepRecord, checkpointID string) CheckpointStage {
@@ -1863,9 +2838,12 @@ func (r *GraphRunner) failRun(ctx context.Context, run RunRecord, currentState *
 func (r *GraphRunner) failRunWithTransition(ctx context.Context, run RunRecord, currentState *state.State, code string, message string, transition runnerStepTransition) (RunRecord, *state.State, error) {
 	failedRun, err := r.persistRunFailureWithTransition(ctx, run, currentState, code, message, transition)
 	if err != nil {
-		return RunRecord{}, currentState, err
+		return failedRun, currentState, err
 	}
-	return failedRun, currentState, errors.New(message)
+	if failedRun.Status == RunStatusFailed {
+		return failedRun, currentState, errors.New(message)
+	}
+	return failedRun, currentState, nil
 }
 
 func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, currentState *state.State, code string, message string) (RunRecord, error) {
@@ -1874,42 +2852,64 @@ func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, curr
 
 func (r *GraphRunner) persistRunFailureWithTransition(ctx context.Context, run RunRecord, currentState *state.State, code string, message string, transition runnerStepTransition) (RunRecord, error) {
 	persistenceCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
-	now := r.currentTime()
-	run.Status = RunStatusFailed
-	run.PauseRequested = false
-	run.CancelRequested = false
-	run.ErrorCode = code
-	run.ErrorMessage = message
-	run.UpdatedAt = now
-	run.FinishedAt = &now
-	failedEvent, err := r.buildEvent(run, "", "", run.CurrentNodeID, EventRunFailed, map[string]any{
-		"error_code":    code,
-		"error_message": message,
+	updatedRun, err := r.commitRunUpdateWithRetry(persistenceCtx, run, "fail run", func(latestRun RunRecord) (runUpdatePreparation, error) {
+		switch {
+		case latestRun.CancelRequested:
+			canceledTransition, buildErr := r.prepareCanceledStepTransition(latestRun, transition.steps)
+			if buildErr != nil {
+				return runUpdatePreparation{}, buildErr
+			}
+			return r.prepareCanceledRunUpdate(latestRun, canceledTransition)
+		case latestRun.PauseRequested:
+			return r.preparePausedRunUpdate(persistenceCtx, latestRun, transition, "pause requested before run failure")
+		case !isActiveDeleteRunStatus(latestRun.Status):
+			return runUpdatePreparation{run: latestRun}, nil
+		}
+
+		now := r.currentTime()
+		latestRun.Status = RunStatusFailed
+		latestRun.PauseRequested = false
+		latestRun.CancelRequested = false
+		latestRun.ErrorCode = code
+		latestRun.ErrorMessage = message
+		latestRun.UpdatedAt = now
+		latestRun.FinishedAt = &now
+		failedEvent, buildErr := r.buildEvent(latestRun, "", "", latestRun.CurrentNodeID, EventRunFailed, map[string]any{
+			"error_code":    code,
+			"error_message": message,
+		})
+		if buildErr != nil {
+			return runUpdatePreparation{}, buildErr
+		}
+		events := append([]Event(nil), transition.events...)
+		events = append(events, failedEvent)
+		commit := Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: latestRun},
+			Steps:  transition.writes,
+			Events: events,
+		}
+		return runUpdatePreparation{run: latestRun, commit: &commit}, nil
 	})
 	if err != nil {
-		return RunRecord{}, err
+		return updatedRun, err
 	}
-	events := append([]Event(nil), transition.events...)
-	events = append(events, failedEvent)
-	commitResult, err := r.commitRuntime(persistenceCtx, Commit{
-		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
-		Steps:  transition.writes,
-		Events: events,
-	})
-	if err != nil {
-		return RunRecord{}, err
+	switch updatedRun.Status {
+	case RunStatusFailed:
+		for _, step := range transition.steps {
+			logger.Error("nodes failed", append(stepLogFields(ctx, step), zap.String("error", redactSensitiveString(ctx, message)))...)
+		}
+		logger.Error("run failed", append(runLogFields(ctx, updatedRun), state.SummaryFields(currentState)...)...)
+	case RunStatusCanceled:
+		logger.Info("run canceled before failure", append(runLogFields(ctx, updatedRun), state.SummaryFields(currentState)...)...)
+	case RunStatusPaused:
+		logger.Info("run paused before failure", append(runLogFields(ctx, updatedRun), state.SummaryFields(currentState)...)...)
 	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
+	if isTerminalRunStatus(updatedRun.Status) {
+		if err := r.applyRunRetention(persistenceCtx, updatedRun.RunID); err != nil {
+			return updatedRun, err
+		}
 	}
-	for _, step := range transition.steps {
-		logger.Error("nodes failed", append(stepLogFields(step), zap.String("error", message))...)
-	}
-	logger.Error("run failed", append(runLogFields(run), state.SummaryFields(currentState)...)...)
-	if err := r.applyRunRetention(persistenceCtx, run.RunID); err != nil {
-		return run, err
-	}
-	return run, nil
+	return updatedRun, nil
 }
 
 func (r *GraphRunner) applyRunRetention(ctx context.Context, protectedRunID string) error {
@@ -1923,10 +2923,15 @@ func (r *GraphRunner) applyRunRetention(ctx context.Context, protectedRunID stri
 		return fmt.Errorf("list runs for retention: %w", err)
 	}
 	byID := make(map[string]RunRecord, len(runs))
+	scopedRuns := make([]RunRecord, 0, len(runs))
 	for _, run := range runs {
+		if !r.runBelongsToRunner(run) {
+			continue
+		}
 		byID[run.RunID] = run
+		scopedRuns = append(scopedRuns, run)
 	}
-	for runID, reason := range retentionCandidates(runs, r.retentionPolicy, r.currentTime()) {
+	for runID, reason := range retentionCandidates(scopedRuns, r.retentionPolicy, r.currentTime()) {
 		if runID == protectedRunID || r.IsRunActive(runID) {
 			continue
 		}
@@ -1965,30 +2970,42 @@ func (r *GraphRunner) abortStartedRun(ctx context.Context, run RunRecord, code s
 		return cause
 	}
 	failureCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
-	now := r.currentTime()
-	run.Status = RunStatusFailed
-	run.PauseRequested = false
-	run.CancelRequested = false
-	run.ErrorCode = code
-	run.ErrorMessage = cause.Error()
-	run.UpdatedAt = now
-	run.FinishedAt = &now
-	failedEvent, buildErr := r.buildEvent(run, "", "", run.CurrentNodeID, EventRunFailed, map[string]any{
-		"error_code":    code,
-		"error_message": cause.Error(),
+	_, updateErr := r.commitRunUpdateWithRetry(failureCtx, run, "abort started run", func(latestRun RunRecord) (runUpdatePreparation, error) {
+		if latestRun.CancelRequested {
+			return r.prepareCanceledRunUpdate(latestRun, runnerStepTransition{})
+		}
+		if isTerminalRunStatus(latestRun.Status) {
+			return runUpdatePreparation{run: latestRun}, nil
+		}
+		now := r.currentTime()
+		latestRun.Status = RunStatusFailed
+		latestRun.PauseRequested = false
+		latestRun.CancelRequested = false
+		latestRun.ErrorCode = code
+		latestRun.ErrorMessage = cause.Error()
+		latestRun.UpdatedAt = now
+		latestRun.FinishedAt = &now
+		failedEvent, buildErr := r.buildEvent(latestRun, "", "", latestRun.CurrentNodeID, EventRunFailed, map[string]any{
+			"error_code":    code,
+			"error_message": cause.Error(),
+		})
+		if buildErr != nil {
+			return runUpdatePreparation{}, buildErr
+		}
+		commit := Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: latestRun},
+			Events: []Event{failedEvent},
+		}
+		return runUpdatePreparation{run: latestRun, commit: &commit}, nil
 	})
-	if buildErr != nil {
-		return errors.Join(cause, buildErr)
-	}
-	_, commitErr := r.commitRuntime(failureCtx, Commit{
-		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
-		Events: []Event{failedEvent},
-	})
-	return errors.Join(cause, commitErr)
+	return errors.Join(cause, updateErr)
 }
 
 func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRecord, runtimeState state.RuntimeState, currentState *state.State) ([]GraphTask, *breakpointSkip, *core.SuspendRequest, error) {
-	schedule, _ := LoadGraphSchedule(currentState)
+	schedule, _, err := LoadGraphSchedule(currentState)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("load graph schedule: %w", err)
+	}
 	switch checkpoint.Stage {
 	case CheckpointBeforeNode:
 		nodeID, err := r.runnerGraph().ResolveNodeID(checkpoint.NodeID)
@@ -2031,7 +3048,10 @@ func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRec
 func (r *GraphRunner) validateIndependentCheckpoint(checkpoint RestoredCheckpoint) error {
 	switch checkpoint.Record.Stage {
 	case CheckpointAfterNode:
-		schedule, _ := LoadGraphSchedule(checkpoint.Business)
+		schedule, _, err := LoadGraphSchedule(checkpoint.Business)
+		if err != nil {
+			return fmt.Errorf("load graph schedule: %w", err)
+		}
 		if isParallelWaveTaskCheckpoint(checkpoint.Runtime, schedule) {
 			return parallelAfterNodeCheckpointError(checkpoint.Record.CheckpointID)
 		}
@@ -2096,6 +3116,7 @@ func (r *GraphRunner) publishEventWithTask(ctx context.Context, run RunRecord, s
 	if err != nil {
 		return err
 	}
+	event = sanitizeEventPayload(ctx, event)
 	return r.publishPreparedEvent(ctx, event)
 }
 
@@ -2142,12 +3163,88 @@ func (r *GraphRunner) commitRuntime(ctx context.Context, commit Commit) (CommitR
 	if r == nil || r.transactionStore == nil {
 		return CommitResult{}, errors.New("runtime transaction store is nil")
 	}
-	result, err := r.transactionStore.Commit(ctx, commit)
+	commit = sanitizeCommit(ctx, commit)
+	guardedCommit, _, err := r.fenceChildExecutionCommit(ctx, commit)
 	if err != nil {
 		return CommitResult{}, err
 	}
-	observeCommittedEvents(ctx, r.eventSink, r.transactionStore, commit.Events)
+	result, err := r.transactionStore.Commit(ctx, guardedCommit)
+	if err != nil {
+		return CommitResult{}, err
+	}
+	observeCommittedEvents(ctx, r.eventSink, r.transactionStore, guardedCommit.Events)
 	return result, nil
+}
+
+func (r *GraphRunner) fenceChildExecutionCommit(ctx context.Context, commit Commit) (Commit, bool, error) {
+	ownerClaimID, _ := normalizeRunnerContext(ctx).Value(childRunExecutionOwnerKey{}).(string)
+	if strings.TrimSpace(ownerClaimID) == "" {
+		return commit, false, nil
+	}
+	runID, err := singleCommitRunID(commit)
+	if err != nil {
+		return Commit{}, false, err
+	}
+	persistedRun, err := r.executionStore.GetRun(ctx, runID)
+	if err != nil {
+		return Commit{}, false, err
+	}
+	if err := validateChildRunExecutionOwner(ctx, persistedRun); err != nil {
+		return Commit{}, false, err
+	}
+	if commit.Run == nil {
+		commit.Run = &RunWrite{Mode: RunWriteCheck, Run: persistedRun}
+		return commit, true, nil
+	}
+	if commit.Run.Mode != RunWriteUpdate && commit.Run.Mode != RunWriteCheck {
+		return Commit{}, false, fmt.Errorf("child execution commit for run %q must reference the existing run", runID)
+	}
+	if err := validateChildRunExecutionOwner(ctx, commit.Run.Run); err != nil {
+		return Commit{}, false, err
+	}
+	return commit, false, nil
+}
+
+func singleCommitRunID(commit Commit) (string, error) {
+	runID := ""
+	addRunID := func(candidate string) error {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			return nil
+		}
+		if runID == "" {
+			runID = candidate
+			return nil
+		}
+		if runID != candidate {
+			return fmt.Errorf("child execution commit spans runs %q and %q", runID, candidate)
+		}
+		return nil
+	}
+	if commit.Run != nil {
+		if err := addRunID(commit.Run.Run.RunID); err != nil {
+			return "", err
+		}
+	}
+	for _, stepWrite := range commit.Steps {
+		if err := addRunID(stepWrite.Step.RunID); err != nil {
+			return "", err
+		}
+	}
+	for _, checkpointWrite := range commit.Checkpoints {
+		if err := addRunID(checkpointWrite.Record.RunID); err != nil {
+			return "", err
+		}
+	}
+	for _, event := range commit.Events {
+		if err := addRunID(event.RunID); err != nil {
+			return "", err
+		}
+	}
+	if runID == "" {
+		return "", errors.New("child execution commit requires a run ID")
+	}
+	return runID, nil
 }
 
 func (r *GraphRunner) validate() error {
@@ -2184,7 +3281,7 @@ func (r *GraphRunner) publishStartupWarnings(ctx context.Context, run RunRecord)
 		if strings.TrimSpace(warning.Message) == "" {
 			continue
 		}
-		fields := append(runLogFields(run),
+		fields := append(runLogFields(ctx, run),
 			zap.String("warning_code", warning.Code),
 			zap.String("warning_message", warning.Message),
 		)
@@ -2208,38 +3305,64 @@ func (r *GraphRunner) publishStartupWarnings(ctx context.Context, run RunRecord)
 	return nil
 }
 
+func normalizeExternalState(input *state.State) (*state.State, error) {
+	if input == nil {
+		return nil, nil
+	}
+	isolated, err := input.CloneStrict()
+	if err != nil {
+		return nil, fmt.Errorf("state cannot be safely cloned: %w", err)
+	}
+	exported := isolated.Export()
+	business := make(map[string]any, 2)
+	for section, value := range exported {
+		switch section {
+		case state.SectionShared, state.SectionScopes:
+			if _, ok := value.(map[string]any); !ok {
+				return nil, fmt.Errorf("state section %q must be an object", section)
+			}
+			business[section] = value
+		case state.SectionInternal, state.SectionRuntime:
+			mapped, ok := value.(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("state section %q is reserved", section)
+			}
+			if len(mapped) > 0 {
+				return nil, fmt.Errorf("state section %q is reserved", section)
+			}
+		default:
+			return nil, fmt.Errorf("state section %q is unknown", section)
+		}
+	}
+	return state.FromMap(business), nil
+}
+
+func projectBusinessState(input *state.State) *state.State {
+	if input == nil {
+		return state.NewState()
+	}
+	exported := input.Export()
+	business := make(map[string]any, 2)
+	for _, section := range []string{state.SectionShared, state.SectionScopes} {
+		if values, ok := exported[section].(map[string]any); ok {
+			business[section] = values
+		}
+	}
+	return state.FromMap(business)
+}
+
 func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
 	if r == nil || r.artifactStore == nil {
 		return state.ArtifactRef{}, ErrArtifactRecorderUnavailable
 	}
 
 	metadata, _ := RunnerMetadataFromContext(ctx)
-	if artifact.RunID == "" {
-		artifact.RunID = metadata.RunID
-	}
-	if artifact.StepID == "" {
-		artifact.StepID = metadata.StepID
-	}
-	if artifact.NodeID == "" {
-		artifact.NodeID = metadata.NodeID
-	}
-	if artifact.ParentRunID == "" {
-		artifact.ParentRunID = metadata.ParentRunID
-	}
-	if artifact.ParentStepID == "" {
-		artifact.ParentStepID = metadata.ParentStepID
-	}
-	if artifact.ParentTaskID == "" {
-		artifact.ParentTaskID = metadata.ParentTaskID
-	}
-	if artifact.RootRunID == "" {
-		artifact.RootRunID = metadata.RootRunID
-	}
-	if len(artifact.RunPath) == 0 {
-		artifact.RunPath = append([]string(nil), metadata.RunPath...)
-	}
-	if artifact.Namespace == "" {
-		artifact.Namespace = metadata.Namespace
+	if strings.TrimSpace(metadata.RunID) != "" {
+		boundArtifact, err := bindArtifactRunnerMetadata(artifact, metadata)
+		if err != nil {
+			return state.ArtifactRef{}, err
+		}
+		artifact = boundArtifact
 	}
 	if artifact.CreatedAt.IsZero() {
 		artifact.CreatedAt = r.currentTime()
@@ -2269,21 +3392,73 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (st
 	return ref, nil
 }
 
+func bindArtifactRunnerMetadata(artifact Artifact, metadata RunnerMetadata) (Artifact, error) {
+	identities := []struct {
+		name     string
+		provided string
+		expected string
+	}{
+		{name: "run ID", provided: artifact.RunID, expected: metadata.RunID},
+		{name: "step ID", provided: artifact.StepID, expected: metadata.StepID},
+		{name: "node ID", provided: artifact.NodeID, expected: metadata.NodeID},
+		{name: "parent run ID", provided: artifact.ParentRunID, expected: metadata.ParentRunID},
+		{name: "parent step ID", provided: artifact.ParentStepID, expected: metadata.ParentStepID},
+		{name: "parent task ID", provided: artifact.ParentTaskID, expected: metadata.ParentTaskID},
+		{name: "root run ID", provided: artifact.RootRunID, expected: metadata.RootRunID},
+	}
+	for _, identity := range identities {
+		provided := strings.TrimSpace(identity.provided)
+		expected := strings.TrimSpace(identity.expected)
+		if provided != "" && provided != expected {
+			return Artifact{}, fmt.Errorf("artifact %s %q does not match runner metadata %q", identity.name, provided, expected)
+		}
+	}
+	providedNamespace := strings.Trim(strings.TrimSpace(artifact.Namespace), "/")
+	expectedNamespace := strings.Trim(strings.TrimSpace(metadata.Namespace), "/")
+	if providedNamespace != "" && providedNamespace != expectedNamespace {
+		return Artifact{}, fmt.Errorf("artifact namespace %q does not match runner metadata %q", providedNamespace, expectedNamespace)
+	}
+	if len(artifact.RunPath) > 0 && !slices.Equal(artifact.RunPath, metadata.RunPath) {
+		return Artifact{}, fmt.Errorf("artifact run path does not match runner metadata")
+	}
+
+	artifact.RunID = strings.TrimSpace(metadata.RunID)
+	artifact.StepID = strings.TrimSpace(metadata.StepID)
+	artifact.NodeID = strings.TrimSpace(metadata.NodeID)
+	artifact.ParentRunID = strings.TrimSpace(metadata.ParentRunID)
+	artifact.ParentStepID = strings.TrimSpace(metadata.ParentStepID)
+	artifact.ParentTaskID = strings.TrimSpace(metadata.ParentTaskID)
+	artifact.RootRunID = strings.TrimSpace(metadata.RootRunID)
+	artifact.RunPath = append([]string(nil), metadata.RunPath...)
+	artifact.Namespace = expectedNamespace
+	return artifact, nil
+}
+
 func (r *GraphRunner) validateRestoredCheckpoint(checkpoint RestoredCheckpoint) error {
+	if r == nil || r.codec == nil {
+		return errors.New("state codec is required")
+	}
+	return ValidateRestoredCheckpoint(checkpoint, r.codec)
+}
+
+func ValidateRestoredCheckpoint(checkpoint RestoredCheckpoint, codec state.Codec) error {
+	if codec == nil {
+		return errors.New("state codec is required")
+	}
 	record := checkpoint.Record
 	codecName := strings.TrimSpace(record.StateCodec)
 	if codecName == "" {
 		return fmt.Errorf("checkpoint %q state codec is required", record.CheckpointID)
 	}
-	if codecName != r.codec.Name() {
-		return fmt.Errorf("checkpoint %q uses state codec %q, runner configured for %q", record.CheckpointID, codecName, r.codec.Name())
+	if codecName != codec.Name() {
+		return fmt.Errorf("checkpoint %q uses state codec %q, runner configured for %q", record.CheckpointID, codecName, codec.Name())
 	}
 	version := strings.TrimSpace(record.StateVersion)
 	if version == "" {
 		return fmt.Errorf("checkpoint %q state version is required", record.CheckpointID)
 	}
-	if version != r.codec.Version() {
-		return fmt.Errorf("checkpoint %q uses state version %q, runner configured for %q", record.CheckpointID, version, r.codec.Version())
+	if version != codec.Version() {
+		return fmt.Errorf("checkpoint %q uses state version %q, runner configured for %q", record.CheckpointID, version, codec.Version())
 	}
 	if checkpoint.Snapshot.Version == "" {
 		return fmt.Errorf("checkpoint %q snapshot version is required", record.CheckpointID)
@@ -2291,17 +3466,34 @@ func (r *GraphRunner) validateRestoredCheckpoint(checkpoint RestoredCheckpoint) 
 	if version != checkpoint.Snapshot.Version {
 		return fmt.Errorf("checkpoint %q state version mismatch: record=%q snapshot=%q", record.CheckpointID, version, checkpoint.Snapshot.Version)
 	}
-	if record.RunID != "" && checkpoint.Runtime.RunID != "" && record.RunID != checkpoint.Runtime.RunID {
+	if err := validateRunnerStorageID("checkpoint record run ID", record.RunID); err != nil {
+		return fmt.Errorf("checkpoint %q has invalid record identity: %w", record.CheckpointID, err)
+	}
+	if err := validateRunnerStorageID("checkpoint snapshot run ID", checkpoint.Runtime.RunID); err != nil {
+		return fmt.Errorf("checkpoint %q has invalid snapshot identity: %w", record.CheckpointID, err)
+	}
+	if record.RunID != checkpoint.Runtime.RunID {
 		return fmt.Errorf("checkpoint %q run mismatch: record=%q snapshot=%q", record.CheckpointID, record.RunID, checkpoint.Runtime.RunID)
 	}
-	if record.StepID != "" && checkpoint.Runtime.CurrentStepID != "" && record.StepID != checkpoint.Runtime.CurrentStepID {
+	if record.StepID != checkpoint.Runtime.CurrentStepID {
 		return fmt.Errorf("checkpoint %q step mismatch: record=%q snapshot=%q", record.CheckpointID, record.StepID, checkpoint.Runtime.CurrentStepID)
 	}
-	if record.TaskID != "" && checkpoint.Runtime.CurrentTaskID != "" && record.TaskID != checkpoint.Runtime.CurrentTaskID {
+	if record.TaskID != checkpoint.Runtime.CurrentTaskID {
 		return fmt.Errorf("checkpoint %q task mismatch: record=%q snapshot=%q", record.CheckpointID, record.TaskID, checkpoint.Runtime.CurrentTaskID)
 	}
-	if record.NodeID != "" && checkpoint.Runtime.CurrentNodeID != "" && record.NodeID != checkpoint.Runtime.CurrentNodeID {
+	if record.NodeID != checkpoint.Runtime.CurrentNodeID {
 		return fmt.Errorf("checkpoint %q nodes mismatch: record=%q snapshot=%q", record.CheckpointID, record.NodeID, checkpoint.Runtime.CurrentNodeID)
+	}
+	return nil
+}
+
+func validateCheckpointRun(run RunRecord, checkpoint RestoredCheckpoint) error {
+	recordRunID := strings.TrimSpace(checkpoint.Record.RunID)
+	if recordRunID == "" {
+		return fmt.Errorf("checkpoint %q has no run id", checkpoint.Record.CheckpointID)
+	}
+	if recordRunID != strings.TrimSpace(run.RunID) {
+		return fmt.Errorf("checkpoint %q belongs to run %q, not run %q", checkpoint.Record.CheckpointID, recordRunID, run.RunID)
 	}
 	return nil
 }
@@ -2325,20 +3517,54 @@ func (r *GraphRunner) resolvedGraphHash() string {
 }
 
 func (r *GraphRunner) validateRunGraphHash(run RunRecord) error {
+	if expectedID := strings.TrimSpace(r.graphID); expectedID != "" && strings.TrimSpace(run.GraphID) != expectedID {
+		return fmt.Errorf("resume run %q: graph id mismatch: run uses %q, runner uses %q", run.RunID, run.GraphID, expectedID)
+	}
+	if expectedVersion := strings.TrimSpace(r.graphVersion); expectedVersion != "" && strings.TrimSpace(run.GraphVersion) != expectedVersion {
+		return fmt.Errorf("resume run %q: graph version mismatch: run uses %q, runner uses %q", run.RunID, run.GraphVersion, expectedVersion)
+	}
 	expectedSessionID := r.resolvedGraphSessionID()
 	actualSessionID := strings.TrimSpace(run.GraphSessionID)
 	if expectedSessionID != "" && actualSessionID != expectedSessionID {
 		return fmt.Errorf("resume run %q: graph session mismatch: run uses %q, runner uses %q", run.RunID, actualSessionID, expectedSessionID)
 	}
 	expected := r.resolvedGraphHash()
-	if expected == "" {
-		return nil
+	if expected != "" {
+		actual := strings.TrimSpace(run.GraphHash)
+		if actual != expected {
+			return fmt.Errorf("resume run %q: graph hash mismatch: run uses %q, runner uses %q", run.RunID, actual, expected)
+		}
 	}
-	actual := strings.TrimSpace(run.GraphHash)
-	if actual == expected {
-		return nil
+	expectedSnapshot := r.resolvedGraphSnapshotHash()
+	if expectedSnapshot != "" {
+		actualSnapshot := strings.TrimSpace(run.GraphSnapshotHash)
+		if actualSnapshot != expectedSnapshot {
+			return fmt.Errorf("resume run %q: graph snapshot hash mismatch: run uses %q, runner uses %q", run.RunID, actualSnapshot, expectedSnapshot)
+		}
 	}
-	return fmt.Errorf("resume run %q: graph hash mismatch: run uses %q, runner uses %q", run.RunID, actual, expected)
+	return nil
+}
+
+func (r *GraphRunner) runBelongsToRunner(run RunRecord) bool {
+	if r == nil {
+		return false
+	}
+	if expectedID := strings.TrimSpace(r.graphID); expectedID != "" && strings.TrimSpace(run.GraphID) != expectedID {
+		return false
+	}
+	if expectedVersion := strings.TrimSpace(r.graphVersion); expectedVersion != "" && strings.TrimSpace(run.GraphVersion) != expectedVersion {
+		return false
+	}
+	if expectedHash := r.resolvedGraphHash(); expectedHash != "" && strings.TrimSpace(run.GraphHash) != expectedHash {
+		return false
+	}
+	if expectedSnapshot := r.resolvedGraphSnapshotHash(); expectedSnapshot != "" && strings.TrimSpace(run.GraphSnapshotHash) != expectedSnapshot {
+		return false
+	}
+	if expectedSession := r.resolvedGraphSessionID(); expectedSession != "" && strings.TrimSpace(run.GraphSessionID) != expectedSession {
+		return false
+	}
+	return true
 }
 
 func (r *GraphRunner) resolvedGraphSnapshotHash() string {

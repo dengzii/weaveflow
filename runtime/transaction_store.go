@@ -26,6 +26,7 @@ type RunWriteMode string
 const (
 	RunWriteCreate RunWriteMode = "create"
 	RunWriteUpdate RunWriteMode = "update"
+	RunWriteCheck  RunWriteMode = "check"
 )
 
 type RunWrite struct {
@@ -140,13 +141,90 @@ func (store *MemoryRuntimeStore) ListEventPage(runID, cursor string, limit int) 
 }
 
 func (store *MemoryRuntimeStore) DeleteRun(ctx context.Context, runID string) error {
-	if err := store.execution.DeleteRun(ctx, runID); err != nil {
+	if store == nil || store.execution == nil || store.checkpoints == nil || store.events == nil {
+		return errors.New("memory runtime store is nil")
+	}
+	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := store.checkpoints.DeleteRun(ctx, runID); err != nil {
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
 		return err
 	}
-	return store.events.DeleteRun(ctx, runID)
+	store.execution.mu.Lock()
+	defer store.execution.mu.Unlock()
+	store.checkpoints.mu.Lock()
+	defer store.checkpoints.mu.Unlock()
+	store.events.mu.Lock()
+	defer store.events.mu.Unlock()
+	store.execution.ensureInitialized()
+	if err := validateMemoryRunFenceDeletion(ctx, store.execution.deletions, runID); err != nil {
+		return err
+	}
+	if err := validateMemoryRunFenceDeletion(ctx, store.checkpoints.deletions, runID); err != nil {
+		return err
+	}
+	if err := validateMemoryRunFenceDeletion(ctx, store.events.deletions, runID); err != nil {
+		return err
+	}
+	if run, exists := store.execution.runs[runID]; exists {
+		if err := validateMemoryRunDeletion(ctx, runID, run.Deletion); err != nil {
+			return err
+		}
+	}
+	for checkpointID, checkpoint := range store.checkpoints.checkpoints {
+		if checkpoint.record.RunID == runID {
+			delete(store.checkpoints.checkpoints, checkpointID)
+		}
+	}
+	delete(store.events.events, runID)
+	for stepID, step := range store.execution.steps {
+		if step.RunID == runID {
+			delete(store.execution.steps, stepID)
+		}
+	}
+	delete(store.execution.runs, runID)
+	return nil
+}
+
+func (store *MemoryRuntimeStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if store == nil || store.execution == nil || store.checkpoints == nil || store.events == nil {
+		return errors.New("memory runtime store is nil")
+	}
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
+	if err := requireRunDeletionMutation(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	store.execution.mu.Lock()
+	defer store.execution.mu.Unlock()
+	store.checkpoints.mu.Lock()
+	defer store.checkpoints.mu.Unlock()
+	store.events.mu.Lock()
+	defer store.events.mu.Unlock()
+	store.execution.ensureInitialized()
+	for _, fences := range []map[string]string{
+		store.execution.deletions,
+		store.checkpoints.deletions,
+		store.events.deletions,
+	} {
+		if existingID := fences[runID]; existingID != "" && existingID != deletionID {
+			return fmt.Errorf("%w: run %q is fenced by deletion %q, not %q", ErrRunControlNotAllowed, runID, existingID, deletionID)
+		}
+	}
+	store.execution.deletions[runID] = deletionID
+	if store.checkpoints.deletions == nil {
+		store.checkpoints.deletions = map[string]string{}
+	}
+	store.checkpoints.deletions[runID] = deletionID
+	if store.events.deletions == nil {
+		store.events.deletions = map[string]string{}
+	}
+	store.events.deletions[runID] = deletionID
+	return nil
 }
 
 func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit Commit) (CommitResult, error) {
@@ -156,6 +234,7 @@ func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit Commit) (Com
 	if err := fileStoreContextErr(ctx); err != nil {
 		return CommitResult{}, err
 	}
+	commit = sanitizeCommit(ctx, commit)
 	if err := validateRuntimeCommit(commit); err != nil {
 		return CommitResult{}, err
 	}
@@ -172,7 +251,7 @@ func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit Commit) (Com
 	checkpoints := cloneMemoryCheckpoints(store.checkpoints.checkpoints)
 	events := cloneMemoryEvents(store.events.events)
 
-	result, err := applyMemoryCommit(commit, runs, steps, checkpoints, events)
+	result, err := applyMemoryCommit(ctx, commit, runs, steps, checkpoints, events, store.execution.deletions)
 	if err != nil {
 		return CommitResult{}, err
 	}
@@ -183,7 +262,15 @@ func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit Commit) (Com
 	return result, nil
 }
 
-func applyMemoryCommit(commit Commit, runs map[string]RunRecord, steps map[string]StepRecord, checkpoints map[string]memoryCheckpoint, events map[string][]Event) (CommitResult, error) {
+func applyMemoryCommit(
+	ctx context.Context,
+	commit Commit,
+	runs map[string]RunRecord,
+	steps map[string]StepRecord,
+	checkpoints map[string]memoryCheckpoint,
+	events map[string][]Event,
+	deletions map[string]string,
+) (CommitResult, error) {
 	if err := validateRuntimeCommit(commit); err != nil {
 		return CommitResult{}, err
 	}
@@ -193,20 +280,55 @@ func applyMemoryCommit(commit Commit, runs map[string]RunRecord, steps map[strin
 		existing, exists := runs[run.RunID]
 		switch commit.Run.Mode {
 		case RunWriteCreate:
+			if err := validateNewRunDeletion(run); err != nil {
+				return CommitResult{}, err
+			}
+			if err := ensureMemoryRunWritable(deletions, run.RunID); err != nil {
+				return CommitResult{}, err
+			}
 			if exists {
 				return CommitResult{}, fmt.Errorf("run %q already exists", run.RunID)
 			}
-		case RunWriteUpdate:
+			if run.ParentRunID != "" {
+				if err := ensureMemoryRunWritable(deletions, run.ParentRunID); err != nil {
+					return CommitResult{}, err
+				}
+				parent, parentExists := runs[run.ParentRunID]
+				if !parentExists {
+					return CommitResult{}, fmt.Errorf("parent run %q: %w", run.ParentRunID, ErrRunnerRecordNotFound)
+				}
+				if err := validateNewRunParent(run, parent); err != nil {
+					return CommitResult{}, err
+				}
+			}
+		case RunWriteUpdate, RunWriteCheck:
 			if !exists {
 				return CommitResult{}, ErrRunnerRecordNotFound
+			}
+			if existing.RunID != run.RunID {
+				return CommitResult{}, fmt.Errorf("run %q metadata identity mismatch", run.RunID)
 			}
 			if existing.Revision != run.Revision {
 				return CommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
 			}
+			if commit.Run.Mode == RunWriteCheck {
+				if err := ensureMemoryRunWritable(deletions, run.RunID); err != nil {
+					return CommitResult{}, err
+				}
+				if err := ensureRunNotDeleting(existing, "write runtime records"); err != nil {
+					return CommitResult{}, err
+				}
+				break
+			}
+			if err := validateRunDeletionTransition(ctx, existing, run); err != nil {
+				return CommitResult{}, err
+			}
 			run.Revision++
 		}
-		runs[run.RunID] = cloneRunRecord(run)
-		result.Run = &run
+		if commit.Run.Mode != RunWriteCheck {
+			runs[run.RunID] = cloneRunRecord(run)
+			result.Run = &run
+		}
 	}
 	for _, write := range commit.Steps {
 		step := cloneStepRecord(write.Step)
@@ -216,8 +338,15 @@ func applyMemoryCommit(commit Commit, runs map[string]RunRecord, steps map[strin
 		if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
 			return CommitResult{}, err
 		}
-		if _, exists := runs[step.RunID]; !exists {
+		run, exists := runs[step.RunID]
+		if !exists {
 			return CommitResult{}, ErrRunnerRecordNotFound
+		}
+		if err := ensureMemoryRunWritable(deletions, step.RunID); err != nil {
+			return CommitResult{}, err
+		}
+		if err := ensureRunNotDeleting(run, "write a step"); err != nil {
+			return CommitResult{}, err
 		}
 		existing, exists := steps[step.StepID]
 		switch write.Mode {
@@ -242,6 +371,16 @@ func applyMemoryCommit(commit Commit, runs map[string]RunRecord, steps map[strin
 		if err := validateRunnerStorageID("checkpoint ID", record.CheckpointID); err != nil {
 			return CommitResult{}, err
 		}
+		run, exists := runs[record.RunID]
+		if !exists {
+			return CommitResult{}, ErrRunnerRecordNotFound
+		}
+		if err := ensureMemoryRunWritable(deletions, record.RunID); err != nil {
+			return CommitResult{}, err
+		}
+		if err := ensureRunNotDeleting(run, "write a checkpoint"); err != nil {
+			return CommitResult{}, err
+		}
 		if _, exists := checkpoints[record.CheckpointID]; exists {
 			return CommitResult{}, fmt.Errorf("checkpoint %q already exists", record.CheckpointID)
 		}
@@ -251,6 +390,16 @@ func applyMemoryCommit(commit Commit, runs map[string]RunRecord, steps map[strin
 	for _, event := range commit.Events {
 		if IsStreamingEvent(event.Type) {
 			continue
+		}
+		run, exists := runs[event.RunID]
+		if !exists {
+			return CommitResult{}, ErrRunnerRecordNotFound
+		}
+		if err := ensureMemoryRunWritable(deletions, event.RunID); err != nil {
+			return CommitResult{}, err
+		}
+		if err := ensureRunNotDeleting(run, "publish an event"); err != nil {
+			return CommitResult{}, err
 		}
 		events[event.RunID] = append(events[event.RunID], cloneEvent(event))
 	}
@@ -262,8 +411,11 @@ func validateRuntimeCommit(commit Commit) error {
 		if err := validateRunnerStorageID("run ID", commit.Run.Run.RunID); err != nil {
 			return err
 		}
+		if err := validateRunChildState(commit.Run.Run); err != nil {
+			return err
+		}
 		switch commit.Run.Mode {
-		case RunWriteCreate, RunWriteUpdate:
+		case RunWriteCreate, RunWriteUpdate, RunWriteCheck:
 		default:
 			return fmt.Errorf("invalid run write mode %q", commit.Run.Mode)
 		}
@@ -440,13 +592,95 @@ func (store *FileRuntimeStore) ListEventPage(runID, cursor string, limit int) (E
 }
 
 func (store *FileRuntimeStore) DeleteRun(ctx context.Context, runID string) error {
-	if err := store.execution.DeleteRun(ctx, runID); err != nil {
+	if store == nil || store.execution == nil || store.checkpoints == nil || store.events == nil {
+		return errors.New("file runtime store is nil")
+	}
+	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
-	if err := store.checkpoints.DeleteRun(ctx, runID); err != nil {
+	if err := validateFileStoreRunID(runID); err != nil {
 		return err
 	}
-	return store.events.DeleteRun(ctx, runID)
+	unlock := store.lockComponents()
+	defer unlock()
+	if err := store.recoverLocked(); err != nil {
+		return err
+	}
+	for _, baseDir := range []string{store.execution.baseDir, store.checkpoints.baseDir, store.events.baseDir} {
+		if err := requireFileRunDeletionLocked(ctx, baseDir, runID); err != nil {
+			return err
+		}
+	}
+	run, err := store.execution.readRunLocked(runID)
+	if err != nil && !errors.Is(err, ErrRunnerRecordNotFound) {
+		return err
+	}
+	if err == nil {
+		if run.Deletion == nil {
+			return fmt.Errorf("%w: run %q is not reserved for deletion", ErrRunControlNotAllowed, runID)
+		}
+		if err := validateRunDeletionState(run.Deletion); err != nil {
+			return fmt.Errorf("run %q deletion state: %w", runID, err)
+		}
+		if err := requireRunDeletionMutation(ctx, runID, run.Deletion.ID); err != nil {
+			return err
+		}
+	}
+	if err := os.RemoveAll(store.checkpoints.checkpointsDir(runID)); err != nil {
+		return err
+	}
+	if err := os.Remove(store.events.eventsPath(runID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	if err := os.RemoveAll(store.execution.stepsDir(runID)); err != nil {
+		return err
+	}
+	if err := os.Remove(store.execution.runPath(runID)); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
+}
+
+func (store *FileRuntimeStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if store == nil || store.execution == nil || store.checkpoints == nil || store.events == nil {
+		return errors.New("file runtime store is nil")
+	}
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateFileStoreRunID(runID); err != nil {
+		return err
+	}
+	if err := requireRunDeletionMutation(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	unlock := store.lockComponents()
+	defer unlock()
+	if err := store.recoverLocked(); err != nil {
+		return err
+	}
+	for _, baseDir := range []string{store.execution.baseDir, store.checkpoints.baseDir, store.events.baseDir} {
+		var fence fileRunDeletionFence
+		err := readRunnerJSONFile(fileRunDeletionPath(baseDir, runID), &fence)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if err := validateFileRunDeletionFence(fence, runID); err != nil {
+			return err
+		}
+		if fence.DeletionID != deletionID {
+			return fmt.Errorf("%w: run %q is fenced by deletion %q, not %q", ErrRunControlNotAllowed, runID, fence.DeletionID, deletionID)
+		}
+	}
+	for _, baseDir := range []string{store.execution.baseDir, store.checkpoints.baseDir, store.events.baseDir} {
+		if err := fenceFileRunDeletionLocked(ctx, baseDir, runID, deletionID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type fileTransactionPhase string
@@ -477,6 +711,7 @@ func (store *FileRuntimeStore) Commit(ctx context.Context, commit Commit) (Commi
 	if err := fileStoreContextErr(ctx); err != nil {
 		return CommitResult{}, err
 	}
+	commit = sanitizeCommit(ctx, commit)
 	if err := validateRuntimeCommit(commit); err != nil {
 		return CommitResult{}, err
 	}
@@ -485,14 +720,14 @@ func (store *FileRuntimeStore) Commit(ctx context.Context, commit Commit) (Commi
 	if err := store.recoverLocked(); err != nil {
 		return CommitResult{}, err
 	}
-	journal, result, err := store.prepareJournalLocked(commit)
+	journal, result, err := store.prepareJournalLocked(ctx, commit)
 	if err != nil {
 		return CommitResult{}, err
 	}
 	if len(journal.Mutations) == 0 {
 		return result, nil
 	}
-	if err := os.MkdirAll(store.journalDir, 0o755); err != nil {
+	if err := os.MkdirAll(store.journalDir, 0o700); err != nil {
 		return CommitResult{}, err
 	}
 	journalPath := filepath.Join(store.journalDir, journal.ID+".json")
@@ -514,7 +749,7 @@ func (store *FileRuntimeStore) Commit(ctx context.Context, commit Commit) (Commi
 	return result, nil
 }
 
-func (store *FileRuntimeStore) prepareJournalLocked(commit Commit) (fileTransactionJournal, CommitResult, error) {
+func (store *FileRuntimeStore) prepareJournalLocked(ctx context.Context, commit Commit) (fileTransactionJournal, CommitResult, error) {
 	if err := validateRuntimeCommit(commit); err != nil {
 		return fileTransactionJournal{}, CommitResult{}, err
 	}
@@ -543,10 +778,31 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit Commit) (fileTransact
 		path := store.execution.runPath(run.RunID)
 		switch commit.Run.Mode {
 		case RunWriteCreate:
+			if err := validateNewRunDeletion(run); err != nil {
+				return fileTransactionJournal{}, CommitResult{}, err
+			}
+			if err := ensureFileRunNotDeletingLocked(store.execution.baseDir, run.RunID, "create a run"); err != nil {
+				return fileTransactionJournal{}, CommitResult{}, err
+			}
 			if err := ensureRunnerRecordDoesNotExist(path, "run", run.RunID); err != nil {
 				return fileTransactionJournal{}, CommitResult{}, err
 			}
-		case RunWriteUpdate:
+			if run.ParentRunID != "" {
+				if err := validateFileStoreRunID(run.ParentRunID); err != nil {
+					return fileTransactionJournal{}, CommitResult{}, err
+				}
+				if err := ensureFileRunNotDeletingLocked(store.execution.baseDir, run.ParentRunID, "create a child run"); err != nil {
+					return fileTransactionJournal{}, CommitResult{}, err
+				}
+				parent, err := store.execution.readRunLocked(run.ParentRunID)
+				if err != nil {
+					return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("load parent run %q: %w", run.ParentRunID, err)
+				}
+				if err := validateNewRunParent(run, parent); err != nil {
+					return fileTransactionJournal{}, CommitResult{}, err
+				}
+			}
+		case RunWriteUpdate, RunWriteCheck:
 			var existing RunRecord
 			if err := readRunnerJSONFile(path, &existing); err != nil {
 				if os.IsNotExist(err) {
@@ -560,31 +816,36 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit Commit) (fileTransact
 			if existing.Revision != run.Revision {
 				return fileTransactionJournal{}, CommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
 			}
+			if commit.Run.Mode == RunWriteCheck {
+				if err := ensureFileRunNotDeletingLocked(store.execution.baseDir, run.RunID, "write runtime records"); err != nil {
+					return fileTransactionJournal{}, CommitResult{}, err
+				}
+				if err := ensureRunNotDeleting(existing, "write runtime records"); err != nil {
+					return fileTransactionJournal{}, CommitResult{}, err
+				}
+				break
+			}
+			if err := validateRunDeletionTransition(ctx, existing, run); err != nil {
+				return fileTransactionJournal{}, CommitResult{}, err
+			}
 			run.Revision++
 		}
-		encoded, err := marshalRunnerJSONFile(run)
-		if err != nil {
-			return fileTransactionJournal{}, CommitResult{}, err
+		if commit.Run.Mode != RunWriteCheck {
+			encoded, err := marshalRunnerJSONFile(run)
+			if err != nil {
+				return fileTransactionJournal{}, CommitResult{}, err
+			}
+			if err := addMutation(path, encoded); err != nil {
+				return fileTransactionJournal{}, CommitResult{}, err
+			}
+			result.Run = &run
 		}
-		if err := addMutation(path, encoded); err != nil {
-			return fileTransactionJournal{}, CommitResult{}, err
-		}
-		result.Run = &run
 	}
 
 	for _, write := range commit.Steps {
 		step := cloneStepRecord(write.Step)
-		if commit.Run == nil || commit.Run.Run.RunID != step.RunID {
-			var referencedRun RunRecord
-			if err := readRunnerJSONFile(store.execution.runPath(step.RunID), &referencedRun); err != nil {
-				if os.IsNotExist(err) {
-					return fileTransactionJournal{}, CommitResult{}, ErrRunnerRecordNotFound
-				}
-				return fileTransactionJournal{}, CommitResult{}, err
-			}
-			if referencedRun.RunID != step.RunID {
-				return fileTransactionJournal{}, CommitResult{}, fmt.Errorf("run %q metadata identity mismatch", step.RunID)
-			}
+		if err := store.ensureFileCommitRunLocked(commit, step.RunID, "write a step"); err != nil {
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		path := store.execution.stepPath(step.RunID, step.StepID)
 		var existing StepRecord
@@ -619,6 +880,9 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit Commit) (fileTransact
 
 	for _, write := range commit.Checkpoints {
 		record := write.Record
+		if err := store.ensureFileCommitRunLocked(commit, record.RunID, "write a checkpoint"); err != nil {
+			return fileTransactionJournal{}, CommitResult{}, err
+		}
 		metadataPath := store.checkpoints.metadataPath(record.RunID, record.CheckpointID)
 		payloadPath := store.checkpoints.payloadPath(record.RunID, record.CheckpointID)
 		if _, err := os.Stat(metadataPath); err == nil {
@@ -643,6 +907,9 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit Commit) (fileTransact
 	for _, event := range commit.Events {
 		if IsStreamingEvent(event.Type) {
 			continue
+		}
+		if err := store.ensureFileCommitRunLocked(commit, event.RunID, "publish an event"); err != nil {
+			return fileTransactionJournal{}, CommitResult{}, err
 		}
 		path := store.events.eventsPath(event.RunID)
 		eventsByPath[path] = append(eventsByPath[path], cloneEvent(event))
@@ -679,6 +946,37 @@ func (store *FileRuntimeStore) prepareJournalLocked(commit Commit) (fileTransact
 		journal.Mutations = append(journal.Mutations, mutations[path])
 	}
 	return journal, result, nil
+}
+
+func (store *FileRuntimeStore) ensureFileCommitRunLocked(commit Commit, runID, action string) error {
+	if commit.Run != nil && commit.Run.Run.RunID == runID {
+		if commit.Run.Mode == RunWriteCheck {
+			referencedRun, err := store.execution.readRunLocked(runID)
+			if err != nil {
+				return err
+			}
+			if err := ensureFileRunNotDeletingLocked(store.execution.baseDir, runID, action); err != nil {
+				return err
+			}
+			return ensureRunNotDeleting(referencedRun, action)
+		}
+		return ensureRunNotDeleting(commit.Run.Run, action)
+	}
+
+	var referencedRun RunRecord
+	if err := readRunnerJSONFile(store.execution.runPath(runID), &referencedRun); err != nil {
+		if os.IsNotExist(err) {
+			return ErrRunnerRecordNotFound
+		}
+		return err
+	}
+	if referencedRun.RunID != runID {
+		return fmt.Errorf("run %q metadata identity mismatch", runID)
+	}
+	if err := ensureFileRunNotDeletingLocked(store.execution.baseDir, runID, action); err != nil {
+		return err
+	}
+	return ensureRunNotDeleting(referencedRun, action)
 }
 
 func (store *FileRuntimeStore) recoverLocked() error {
@@ -850,7 +1148,7 @@ func observeCommittedEvents(ctx context.Context, sink EventSink, transactionStor
 	if err := errors.Join(observationErrors...); err != nil {
 		logger.Warn("committed runtime event observation failed",
 			zap.Int("event_count", len(events)),
-			zap.Error(err),
+			zap.String("error", redactSensitiveString(observerCtx, err.Error())),
 		)
 	}
 }
@@ -870,6 +1168,10 @@ func eventSinkIsTransactionStore(sink EventSink, transactionStore TransactionSto
 
 var _ TransactionStore = (*MemoryRuntimeStore)(nil)
 var _ TransactionStore = (*FileRuntimeStore)(nil)
+var _ RunDeleter = (*MemoryRuntimeStore)(nil)
+var _ RunDeletionFencer = (*MemoryRuntimeStore)(nil)
+var _ RunDeleter = (*FileRuntimeStore)(nil)
+var _ RunDeletionFencer = (*FileRuntimeStore)(nil)
 var _ ExecutionStore = (*MemoryRuntimeStore)(nil)
 var _ CheckpointStore = (*MemoryRuntimeStore)(nil)
 var _ EventSink = (*MemoryRuntimeStore)(nil)

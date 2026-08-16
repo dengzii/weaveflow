@@ -1,12 +1,14 @@
 package runtime
 
 import (
+	"context"
+
 	"go.uber.org/zap"
 
 	"github.com/dengzii/weaveflow/state"
 )
 
-func runLogFields(run RunRecord) []zap.Field {
+func runLogFields(ctx context.Context, run RunRecord) []zap.Field {
 	fields := []zap.Field{
 		zap.String("run_id", run.RunID),
 		zap.String("graph_id", run.GraphID),
@@ -29,12 +31,12 @@ func runLogFields(run RunRecord) []zap.Field {
 		fields = append(fields, zap.String("error_code", run.ErrorCode))
 	}
 	if run.ErrorMessage != "" {
-		fields = append(fields, zap.String("error_message", run.ErrorMessage))
+		fields = append(fields, zap.String("error_message", redactSensitiveString(ctx, run.ErrorMessage)))
 	}
 	return fields
 }
 
-func stepLogFields(step StepRecord) []zap.Field {
+func stepLogFields(ctx context.Context, step StepRecord) []zap.Field {
 	fields := []zap.Field{
 		zap.String("run_id", step.RunID),
 		zap.String("step_id", step.StepID),
@@ -53,7 +55,7 @@ func stepLogFields(step StepRecord) []zap.Field {
 		fields = append(fields, zap.String("error_code", step.ErrorCode))
 	}
 	if step.ErrorMessage != "" {
-		fields = append(fields, zap.String("error_message", step.ErrorMessage))
+		fields = append(fields, zap.String("error_message", redactSensitiveString(ctx, step.ErrorMessage)))
 	}
 	return fields
 }

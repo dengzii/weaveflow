@@ -162,27 +162,28 @@ func (r *GraphRunner) publishBestEffortEvent(
 		nodeID = metadata.NodeID
 	}
 	if err := r.publishEventWithTask(ctx, run, stepID, metadata.TaskID, nodeID, eventType, payload); err != nil {
-		r.recordBestEffortEventFailure(eventType, err)
+		r.recordBestEffortEventFailure(ctx, eventType, err)
 	}
 }
 
-func (r *GraphRunner) recordBestEffortEventFailure(eventType EventType, err error) {
+func (r *GraphRunner) recordBestEffortEventFailure(ctx context.Context, eventType EventType, err error) {
 	if r == nil || err == nil {
 		return
 	}
+	redactedError := redactSensitiveString(ctx, err.Error())
 	r.eventDiagnosticsMu.Lock()
 	if r.eventDiagnostics.BestEffortFailures == nil {
 		r.eventDiagnostics.BestEffortFailures = map[EventType]EventPublicationFailure{}
 	}
 	failure := r.eventDiagnostics.BestEffortFailures[eventType]
 	failure.Count++
-	failure.LastError = err.Error()
+	failure.LastError = redactedError
 	failure.LastOccurredAt = r.currentTime()
 	r.eventDiagnostics.BestEffortFailures[eventType] = failure
 	r.eventDiagnosticsMu.Unlock()
 	logger.Warn("best-effort runtime event publication failed",
 		zap.String("event_type", string(eventType)),
 		zap.String("event_reliability", string(EventReliabilityOf(eventType))),
-		zap.String("error", err.Error()),
+		zap.String("error", redactedError),
 	)
 }

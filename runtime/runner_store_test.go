@@ -47,6 +47,19 @@ func TestFileRuntimeStoresRejectUnsafeRecordIDs(t *testing.T) {
 		{name: "publish event", run: func() error {
 			return eventSink.Publish(context.Background(), Event{RunID: unsafeID, Type: EventRunCreated})
 		}},
+		{name: "create reserved run", run: func() error {
+			return executionStore.CreateRun(context.Background(), RunRecord{RunID: fileRunDeletionDirName})
+		}},
+		{name: "save checkpoint for reserved run", run: func() error {
+			return checkpointStore.Save(context.Background(), CheckpointRecord{RunID: fileRunDeletionDirName, CheckpointID: "checkpoint"}, nil)
+		}},
+		{name: "save artifact for reserved run", run: func() error {
+			_, err := artifactStore.Save(context.Background(), Artifact{RunID: fileRunDeletionDirName, ID: "artifact"})
+			return err
+		}},
+		{name: "publish event for reserved run", run: func() error {
+			return eventSink.Publish(context.Background(), Event{RunID: fileRunDeletionDirName, Type: EventRunCreated})
+		}},
 	}
 	for _, operation := range operations {
 		t.Run(operation.name, func(t *testing.T) {
@@ -146,6 +159,46 @@ func TestFileRuntimeStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
 	}
 }
 
+func TestFilePayloadStoresUseDistinctNamespaces(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	baseDir := t.TempDir()
+	checkpointStore := NewFileCheckpointStore(baseDir)
+	artifactStore := NewFileArtifactStore(baseDir)
+	checkpoint := CheckpointRecord{RunID: "shared-run", CheckpointID: "shared-record"}
+	artifact := Artifact{RunID: checkpoint.RunID, ID: checkpoint.CheckpointID, Data: []byte("artifact payload")}
+
+	if err := checkpointStore.Save(ctx, checkpoint, []byte("checkpoint payload")); err != nil {
+		t.Fatalf("save checkpoint: %v", err)
+	}
+	artifactRef, err := artifactStore.Save(ctx, artifact)
+	if err != nil {
+		t.Fatalf("save artifact: %v", err)
+	}
+	if checkpointStore.baseDir == artifactStore.baseDir {
+		t.Fatalf("checkpoint and artifact stores share base directory %q", checkpointStore.baseDir)
+	}
+	if checkpointStore.metadataPath(checkpoint.RunID, checkpoint.CheckpointID) == artifactStore.metadataPath(artifactRef.RunID, artifactRef.ID) {
+		t.Fatal("checkpoint and artifact metadata paths collide")
+	}
+
+	_, checkpointPayload, err := checkpointStore.Load(ctx, checkpoint.CheckpointID)
+	if err != nil {
+		t.Fatalf("load checkpoint: %v", err)
+	}
+	if string(checkpointPayload) != "checkpoint payload" {
+		t.Fatalf("checkpoint payload = %q, want checkpoint payload", checkpointPayload)
+	}
+	loadedArtifact, err := artifactStore.Load(ctx, artifactRef)
+	if err != nil {
+		t.Fatalf("load artifact: %v", err)
+	}
+	if string(loadedArtifact.Data) != "artifact payload" {
+		t.Fatalf("artifact payload = %q, want artifact payload", loadedArtifact.Data)
+	}
+}
+
 func TestNoopRuntimeStoresReportMissingRecords(t *testing.T) {
 	t.Parallel()
 
@@ -161,6 +214,33 @@ func TestNoopRuntimeStoresReportMissingRecords(t *testing.T) {
 	}
 	if _, err := NewNoopArtifactStore().Load(ctx, state.ArtifactRef{RunID: "run", ID: "artifact"}); !errors.Is(err, ErrRunnerRecordNotFound) {
 		t.Fatalf("Load artifact error = %v, want record not found", err)
+	}
+}
+
+func TestNoopArtifactStoreValidatesDeletionInputs(t *testing.T) {
+	t.Parallel()
+
+	store := NewNoopArtifactStore()
+	if err := store.DeleteRun(context.Background(), "run"); err != nil {
+		t.Fatalf("DeleteRun() error = %v", err)
+	}
+	if err := store.FenceRunDeletion(context.Background(), "run", "deletion"); err != nil {
+		t.Fatalf("FenceRunDeletion() error = %v", err)
+	}
+	if err := store.DeleteRun(context.Background(), "../run"); err == nil {
+		t.Fatal("DeleteRun() error = nil, want invalid run ID rejection")
+	}
+	if err := store.FenceRunDeletion(context.Background(), "run", "../deletion"); err == nil {
+		t.Fatal("FenceRunDeletion() error = nil, want invalid deletion ID rejection")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := store.DeleteRun(ctx, "run"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("DeleteRun() error = %v, want context canceled", err)
+	}
+	if err := store.FenceRunDeletion(ctx, "run", "deletion"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("FenceRunDeletion() error = %v, want context canceled", err)
 	}
 }
 
@@ -242,6 +322,13 @@ func TestFilePayloadStoresRejectDuplicateRecordIDs(t *testing.T) {
 		if string(payload) != "original" {
 			t.Fatalf("checkpoint payload = %q, want original", payload)
 		}
+
+		if err := store.Save(ctx, CheckpointRecord{RunID: "other-run", CheckpointID: record.CheckpointID}, []byte("other")); err != nil {
+			t.Fatalf("save duplicate checkpoint ID in another run: %v", err)
+		}
+		if _, _, err := store.Load(ctx, record.CheckpointID); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+			t.Fatalf("ambiguous checkpoint load error = %v", err)
+		}
 	})
 
 	t.Run("artifact", func(t *testing.T) {
@@ -261,6 +348,197 @@ func TestFilePayloadStoresRejectDuplicateRecordIDs(t *testing.T) {
 		}
 		if string(stored.Data) != "original" {
 			t.Fatalf("artifact payload = %q, want original", stored.Data)
+		}
+	})
+}
+
+func TestFileExecutionStoreRejectsAmbiguousStepLookup(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewFileExecutionStore(t.TempDir())
+	for _, runID := range []string{"run-a", "run-b"} {
+		if err := store.CreateRun(ctx, RunRecord{RunID: runID}); err != nil {
+			t.Fatalf("create run %q: %v", runID, err)
+		}
+		if err := store.AppendStep(ctx, StepRecord{RunID: runID, StepID: "shared-step"}); err != nil {
+			t.Fatalf("append step for %q: %v", runID, err)
+		}
+	}
+	if _, err := store.GetStep(ctx, "shared-step"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous step lookup error = %v", err)
+	}
+}
+
+func TestFileExecutionStoreEnforcesRunDeletionReservation(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store := NewFileExecutionStore(t.TempDir())
+	run := RunRecord{RunID: "run-delete", RootRunID: "run-delete", Status: RunStatusCompleted}
+	deletionID := "deletion-file-execution"
+	if err := store.CreateRun(ctx, RunRecord{
+		RunID: "invalid-new-run", Deletion: &RunDeletionState{
+			ID: deletionID, RootRunID: "invalid-new-run", Phase: RunDeletionReserved,
+		},
+	}); err == nil {
+		t.Fatal("CreateRun() accepted a deletion reservation")
+	}
+	if err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	step := StepRecord{RunID: run.RunID, StepID: "existing-step"}
+	if err := store.AppendStep(ctx, step); err != nil {
+		t.Fatalf("AppendStep() before deletion error = %v", err)
+	}
+
+	stored, err := store.GetRun(ctx, run.RunID)
+	if err != nil {
+		t.Fatalf("GetRun() error = %v", err)
+	}
+	stored.Deletion = &RunDeletionState{
+		ID: deletionID, RootRunID: run.RunID, Phase: RunDeletionReserved,
+	}
+	deletionCtx := withRunDeletionMutation(ctx, deletionID)
+	stored, err = store.CompareAndSwapRun(deletionCtx, stored.Revision, stored)
+	if err != nil {
+		t.Fatalf("reserve deletion error = %v", err)
+	}
+	if _, err := store.CompareAndSwapRun(ctx, stored.Revision, stored); !errors.Is(err, ErrRunControlNotAllowed) {
+		t.Fatalf("unfenced CompareAndSwapRun() error = %v, want control rejection", err)
+	}
+	if err := store.AppendStep(ctx, StepRecord{RunID: run.RunID, StepID: "late-step"}); !errors.Is(err, ErrRunControlNotAllowed) {
+		t.Fatalf("AppendStep() error = %v, want control rejection", err)
+	}
+	if err := store.UpdateStep(ctx, step); !errors.Is(err, ErrRunControlNotAllowed) {
+		t.Fatalf("UpdateStep() error = %v, want control rejection", err)
+	}
+	if err := store.FenceRunDeletion(deletionCtx, run.RunID, deletionID); err != nil {
+		t.Fatalf("FenceRunDeletion() error = %v", err)
+	}
+	if _, err := os.Stat(store.deletionPath(run.RunID)); err != nil {
+		t.Fatalf("durable deletion fence missing: %v", err)
+	}
+	if err := store.DeleteRun(ctx, run.RunID); !errors.Is(err, ErrRunControlNotAllowed) {
+		t.Fatalf("unauthorized DeleteRun() error = %v, want control rejection", err)
+	}
+	if err := store.DeleteRun(withRunDeletionMutation(ctx, "other-deletion"), run.RunID); !errors.Is(err, ErrRunControlNotAllowed) {
+		t.Fatalf("mismatched DeleteRun() error = %v, want control rejection", err)
+	}
+	if err := store.DeleteRun(deletionCtx, run.RunID); err != nil {
+		t.Fatalf("authorized DeleteRun() error = %v", err)
+	}
+	if _, err := store.GetRun(ctx, run.RunID); !errors.Is(err, ErrRunnerRecordNotFound) {
+		t.Fatalf("GetRun() after deletion error = %v, want record not found", err)
+	}
+	if _, err := os.Stat(store.stepPath(run.RunID, step.StepID)); !os.IsNotExist(err) {
+		t.Fatalf("step survived run deletion: %v", err)
+	}
+	if err := NewFileExecutionStore(store.baseDir).CreateRun(ctx, run); !errors.Is(err, ErrRunControlNotAllowed) {
+		t.Fatalf("CreateRun() after physical deletion error = %v, want control rejection", err)
+	}
+}
+
+func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	runID := "run-fenced"
+	deletionID := "deletion-file-payloads"
+	deletionCtx := withRunDeletionMutation(ctx, deletionID)
+
+	t.Run("checkpoint", func(t *testing.T) {
+		baseDir := filepath.Join(t.TempDir(), "checkpoints")
+		store := NewFileCheckpointStore(baseDir)
+		record := CheckpointRecord{RunID: runID, CheckpointID: "checkpoint"}
+		if err := store.Save(ctx, record, []byte("payload")); err != nil {
+			t.Fatalf("Save() before fence error = %v", err)
+		}
+		if err := store.FenceRunDeletion(deletionCtx, runID, deletionID); err != nil {
+			t.Fatalf("FenceRunDeletion() error = %v", err)
+		}
+		if _, err := os.Stat(store.deletionPath(runID)); err != nil {
+			t.Fatalf("durable deletion fence missing: %v", err)
+		}
+
+		reopened := NewFileCheckpointStore(baseDir)
+		if err := reopened.FenceRunDeletion(deletionCtx, runID, deletionID); err != nil {
+			t.Fatalf("idempotent FenceRunDeletion() error = %v", err)
+		}
+		if err := reopened.Save(ctx, CheckpointRecord{RunID: runID, CheckpointID: "late"}, nil); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("Save() after fence error = %v, want control rejection", err)
+		}
+		if err := reopened.DeleteRun(ctx, runID); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("unauthorized DeleteRun() error = %v, want control rejection", err)
+		}
+		if err := reopened.DeleteRun(deletionCtx, runID); err != nil {
+			t.Fatalf("authorized DeleteRun() error = %v", err)
+		}
+		if _, _, err := reopened.Load(ctx, runID); !errors.Is(err, ErrRunnerRecordNotFound) {
+			t.Fatalf("Load() interpreted fence as checkpoint: %v", err)
+		}
+		if err := reopened.Save(ctx, CheckpointRecord{RunID: runID, CheckpointID: "after-delete"}, nil); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("Save() after physical deletion error = %v, want control rejection", err)
+		}
+	})
+
+	t.Run("event", func(t *testing.T) {
+		baseDir := filepath.Join(t.TempDir(), "events")
+		store := NewFileEventSink(baseDir)
+		if err := store.Publish(ctx, Event{ID: "before", RunID: runID, Type: EventRunStarted}); err != nil {
+			t.Fatalf("Publish() before fence error = %v", err)
+		}
+		if err := store.FenceRunDeletion(deletionCtx, runID, deletionID); err != nil {
+			t.Fatalf("FenceRunDeletion() error = %v", err)
+		}
+
+		reopened := NewFileEventSink(baseDir)
+		if err := reopened.Publish(ctx, Event{ID: "late", RunID: runID, Type: EventRunFailed}); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("Publish() after fence error = %v, want control rejection", err)
+		}
+		otherRunID := "run-not-fenced"
+		if err := reopened.PublishBatch(ctx, []Event{
+			{ID: "other", RunID: otherRunID, Type: EventRunStarted},
+			{ID: "fenced", RunID: runID, Type: EventRunFailed},
+		}); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("PublishBatch() error = %v, want control rejection", err)
+		}
+		if events, err := reopened.ListEvents(otherRunID); err != nil || len(events) != 0 {
+			t.Fatalf("PublishBatch() partially wrote events: events=%#v error=%v", events, err)
+		}
+		if err := reopened.DeleteRun(withRunDeletionMutation(ctx, "other-deletion"), runID); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("mismatched DeleteRun() error = %v, want control rejection", err)
+		}
+		if err := reopened.DeleteRun(deletionCtx, runID); err != nil {
+			t.Fatalf("authorized DeleteRun() error = %v", err)
+		}
+		if err := reopened.Publish(ctx, Event{ID: "after-delete", RunID: runID, Type: EventRunStarted}); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("Publish() after physical deletion error = %v, want control rejection", err)
+		}
+	})
+
+	t.Run("artifact", func(t *testing.T) {
+		baseDir := filepath.Join(t.TempDir(), "artifacts")
+		store := NewFileArtifactStore(baseDir)
+		if _, err := store.Save(ctx, Artifact{RunID: runID, ID: "before", Data: []byte("payload")}); err != nil {
+			t.Fatalf("Save() before fence error = %v", err)
+		}
+		if err := store.FenceRunDeletion(deletionCtx, runID, deletionID); err != nil {
+			t.Fatalf("FenceRunDeletion() error = %v", err)
+		}
+
+		reopened := NewFileArtifactStore(baseDir)
+		if _, err := reopened.Save(ctx, Artifact{RunID: runID, ID: "late"}); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("Save() after fence error = %v, want control rejection", err)
+		}
+		if err := reopened.DeleteRun(ctx, runID); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("unauthorized DeleteRun() error = %v, want control rejection", err)
+		}
+		if err := reopened.DeleteRun(deletionCtx, runID); err != nil {
+			t.Fatalf("authorized DeleteRun() error = %v", err)
+		}
+		if _, err := reopened.Save(ctx, Artifact{RunID: runID, ID: "after-delete"}); !errors.Is(err, ErrRunControlNotAllowed) {
+			t.Fatalf("Save() after physical deletion error = %v, want control rejection", err)
 		}
 	})
 }

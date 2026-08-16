@@ -16,13 +16,18 @@ import (
 
 // MemoryExecutionStore keeps run and step records in process memory.
 type MemoryExecutionStore struct {
-	mu    sync.RWMutex
-	runs  map[string]RunRecord
-	steps map[string]StepRecord
+	mu        sync.RWMutex
+	runs      map[string]RunRecord
+	steps     map[string]StepRecord
+	deletions map[string]string
 }
 
 func NewMemoryExecutionStore() *MemoryExecutionStore {
-	return &MemoryExecutionStore{runs: map[string]RunRecord{}, steps: map[string]StepRecord{}}
+	return &MemoryExecutionStore{
+		runs:      map[string]RunRecord{},
+		steps:     map[string]StepRecord{},
+		deletions: map[string]string{},
+	}
 }
 
 func (store *MemoryExecutionStore) CreateRun(ctx context.Context, run RunRecord) error {
@@ -32,11 +37,33 @@ func (store *MemoryExecutionStore) CreateRun(ctx context.Context, run RunRecord)
 	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
 		return err
 	}
+	run = sanitizeRunRecord(ctx, run)
+	if err := validateNewRunDeletion(run); err != nil {
+		return err
+	}
+	if err := validateRunChildState(run); err != nil {
+		return err
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.ensureInitialized()
+	if err := ensureMemoryRunWritable(store.deletions, run.RunID); err != nil {
+		return err
+	}
 	if _, exists := store.runs[run.RunID]; exists {
 		return fmt.Errorf("run %q already exists", run.RunID)
+	}
+	if run.ParentRunID != "" {
+		if err := ensureMemoryRunWritable(store.deletions, run.ParentRunID); err != nil {
+			return err
+		}
+		parent, exists := store.runs[run.ParentRunID]
+		if !exists {
+			return fmt.Errorf("parent run %q: %w", run.ParentRunID, ErrRunnerRecordNotFound)
+		}
+		if err := validateNewRunParent(run, parent); err != nil {
+			return err
+		}
 	}
 	store.runs[run.RunID] = cloneRunRecord(run)
 	return nil
@@ -49,6 +76,10 @@ func (store *MemoryExecutionStore) CompareAndSwapRun(ctx context.Context, expect
 	if err := validateRunnerStorageID("run ID", run.RunID); err != nil {
 		return RunRecord{}, err
 	}
+	run = sanitizeRunRecord(ctx, run)
+	if err := validateRunChildState(run); err != nil {
+		return RunRecord{}, err
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.ensureInitialized()
@@ -58,6 +89,9 @@ func (store *MemoryExecutionStore) CompareAndSwapRun(ctx context.Context, expect
 	}
 	if existing.Revision != expectedRevision || run.Revision != expectedRevision {
 		return RunRecord{}, &RunRevisionConflictError{RunID: run.RunID, Expected: expectedRevision, Actual: existing.Revision}
+	}
+	if err := validateRunDeletionTransition(ctx, existing, run); err != nil {
+		return RunRecord{}, err
 	}
 	run.Revision = expectedRevision + 1
 	store.runs[run.RunID] = cloneRunRecord(run)
@@ -130,11 +164,19 @@ func (store *MemoryExecutionStore) AppendStep(ctx context.Context, step StepReco
 	if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
 		return err
 	}
+	step = sanitizeStepRecord(ctx, step)
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.ensureInitialized()
-	if _, exists := store.runs[step.RunID]; !exists {
+	run, exists := store.runs[step.RunID]
+	if !exists {
 		return ErrRunnerRecordNotFound
+	}
+	if err := ensureRunNotDeleting(run, "append a step"); err != nil {
+		return err
+	}
+	if err := ensureMemoryRunWritable(store.deletions, step.RunID); err != nil {
+		return err
 	}
 	if _, exists := store.steps[step.StepID]; exists {
 		return fmt.Errorf("step %q already exists", step.StepID)
@@ -153,9 +195,20 @@ func (store *MemoryExecutionStore) UpdateStep(ctx context.Context, step StepReco
 	if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
 		return err
 	}
+	step = sanitizeStepRecord(ctx, step)
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.ensureInitialized()
+	run, exists := store.runs[step.RunID]
+	if !exists {
+		return ErrRunnerRecordNotFound
+	}
+	if err := ensureRunNotDeleting(run, "update a step"); err != nil {
+		return err
+	}
+	if err := ensureMemoryRunWritable(store.deletions, step.RunID); err != nil {
+		return err
+	}
 	existing, exists := store.steps[step.StepID]
 	if !exists || existing.RunID != step.RunID {
 		return ErrRunnerRecordNotFound
@@ -213,6 +266,17 @@ func (store *MemoryExecutionStore) DeleteRun(ctx context.Context, runID string) 
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	store.ensureInitialized()
+	if err := validateMemoryRunFenceDeletion(ctx, store.deletions, runID); err != nil {
+		return err
+	}
+	run, exists := store.runs[runID]
+	if !exists {
+		return nil
+	}
+	if err := validateMemoryRunDeletion(ctx, runID, run.Deletion); err != nil {
+		return err
+	}
 	delete(store.runs, runID)
 	for stepID, step := range store.steps {
 		if step.RunID == runID {
@@ -222,6 +286,25 @@ func (store *MemoryExecutionStore) DeleteRun(ctx context.Context, runID string) 
 	return nil
 }
 
+func (store *MemoryExecutionStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	if err := requireRunDeletionMutation(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.ensureInitialized()
+	return fenceMemoryRun(&store.deletions, runID, deletionID)
+}
+
 func (store *MemoryExecutionStore) ensureInitialized() {
 	if store.runs == nil {
 		store.runs = map[string]RunRecord{}
@@ -229,12 +312,16 @@ func (store *MemoryExecutionStore) ensureInitialized() {
 	if store.steps == nil {
 		store.steps = map[string]StepRecord{}
 	}
+	if store.deletions == nil {
+		store.deletions = map[string]string{}
+	}
 }
 
 // MemoryCheckpointStore keeps checkpoint metadata and payloads in process memory.
 type MemoryCheckpointStore struct {
 	mu          sync.RWMutex
 	checkpoints map[string]memoryCheckpoint
+	deletions   map[string]string
 }
 
 type memoryCheckpoint struct {
@@ -243,7 +330,10 @@ type memoryCheckpoint struct {
 }
 
 func NewMemoryCheckpointStore() *MemoryCheckpointStore {
-	return &MemoryCheckpointStore{checkpoints: map[string]memoryCheckpoint{}}
+	return &MemoryCheckpointStore{
+		checkpoints: map[string]memoryCheckpoint{},
+		deletions:   map[string]string{},
+	}
 }
 
 func (store *MemoryCheckpointStore) Save(ctx context.Context, record CheckpointRecord, payload []byte) error {
@@ -261,6 +351,9 @@ func (store *MemoryCheckpointStore) Save(ctx context.Context, record CheckpointR
 	if store.checkpoints == nil {
 		store.checkpoints = map[string]memoryCheckpoint{}
 	}
+	if err := ensureMemoryRunWritable(store.deletions, record.RunID); err != nil {
+		return err
+	}
 	if _, exists := store.checkpoints[record.CheckpointID]; exists {
 		return fmt.Errorf("checkpoint %q already exists", record.CheckpointID)
 	}
@@ -268,6 +361,24 @@ func (store *MemoryCheckpointStore) Save(ctx context.Context, record CheckpointR
 	cloned.PayloadRef = ""
 	store.checkpoints[record.CheckpointID] = memoryCheckpoint{record: cloned, payload: append([]byte(nil), payload...)}
 	return nil
+}
+
+func (store *MemoryCheckpointStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	if err := requireRunDeletionMutation(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return fenceMemoryRun(&store.deletions, runID, deletionID)
 }
 
 func (store *MemoryCheckpointStore) Load(ctx context.Context, checkpointID string) (CheckpointRecord, []byte, error) {
@@ -319,6 +430,9 @@ func (store *MemoryCheckpointStore) DeleteRun(ctx context.Context, runID string)
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := validateMemoryRunFenceDeletion(ctx, store.deletions, runID); err != nil {
+		return err
+	}
 	for checkpointID, checkpoint := range store.checkpoints {
 		if checkpoint.record.RunID == runID {
 			delete(store.checkpoints, checkpointID)
@@ -329,12 +443,16 @@ func (store *MemoryCheckpointStore) DeleteRun(ctx context.Context, runID string)
 
 // MemoryEventSink keeps non-streaming runtime events in process memory.
 type MemoryEventSink struct {
-	mu     sync.RWMutex
-	events map[string][]Event
+	mu        sync.RWMutex
+	events    map[string][]Event
+	deletions map[string]string
 }
 
 func NewMemoryEventSink() *MemoryEventSink {
-	return &MemoryEventSink{events: map[string][]Event{}}
+	return &MemoryEventSink{
+		events:    map[string][]Event{},
+		deletions: map[string]string{},
+	}
 }
 
 func (sink *MemoryEventSink) Publish(ctx context.Context, event Event) error {
@@ -345,6 +463,7 @@ func (sink *MemoryEventSink) PublishBatch(ctx context.Context, events []Event) e
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
+	events = sanitizeEvents(ctx, events)
 	for _, event := range events {
 		if IsStreamingEvent(event.Type) {
 			continue
@@ -359,11 +478,37 @@ func (sink *MemoryEventSink) PublishBatch(ctx context.Context, events []Event) e
 		sink.events = map[string][]Event{}
 	}
 	for _, event := range events {
+		if IsStreamingEvent(event.Type) {
+			continue
+		}
+		if err := ensureMemoryRunWritable(sink.deletions, event.RunID); err != nil {
+			return err
+		}
+	}
+	for _, event := range events {
 		if !IsStreamingEvent(event.Type) {
 			sink.events[event.RunID] = append(sink.events[event.RunID], cloneEvent(event))
 		}
 	}
 	return nil
+}
+
+func (sink *MemoryEventSink) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	if err := requireRunDeletionMutation(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	sink.mu.Lock()
+	defer sink.mu.Unlock()
+	return fenceMemoryRun(&sink.deletions, runID, deletionID)
 }
 
 func (sink *MemoryEventSink) ListEvents(runID string) ([]Event, error) {
@@ -397,6 +542,9 @@ func (sink *MemoryEventSink) DeleteRun(ctx context.Context, runID string) error 
 	}
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
+	if err := validateMemoryRunFenceDeletion(ctx, sink.deletions, runID); err != nil {
+		return err
+	}
 	delete(sink.events, runID)
 	return nil
 }
@@ -405,10 +553,14 @@ func (sink *MemoryEventSink) DeleteRun(ctx context.Context, runID string) error 
 type MemoryArtifactStore struct {
 	mu        sync.RWMutex
 	artifacts map[string]Artifact
+	deletions map[string]string
 }
 
 func NewMemoryArtifactStore() *MemoryArtifactStore {
-	return &MemoryArtifactStore{artifacts: map[string]Artifact{}}
+	return &MemoryArtifactStore{
+		artifacts: map[string]Artifact{},
+		deletions: map[string]string{},
+	}
 }
 
 func (store *MemoryArtifactStore) Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
@@ -434,6 +586,7 @@ func (store *MemoryArtifactStore) Save(ctx context.Context, artifact Artifact) (
 	if artifact.MIMEType == "" {
 		artifact.MIMEType = "application/octet-stream"
 	}
+	artifact = sanitizeArtifact(ctx, artifact)
 	artifact.Location = "memory/" + artifact.RunID + "/" + artifact.ID
 	key := memoryArtifactKey(artifact.RunID, artifact.ID)
 	store.mu.Lock()
@@ -441,11 +594,32 @@ func (store *MemoryArtifactStore) Save(ctx context.Context, artifact Artifact) (
 	if store.artifacts == nil {
 		store.artifacts = map[string]Artifact{}
 	}
+	if err := ensureMemoryRunWritable(store.deletions, artifact.RunID); err != nil {
+		return state.ArtifactRef{}, err
+	}
 	if _, exists := store.artifacts[key]; exists {
 		return state.ArtifactRef{}, fmt.Errorf("artifact %q already exists", artifact.ID)
 	}
 	store.artifacts[key] = cloneArtifact(artifact)
 	return artifactRef(artifact), nil
+}
+
+func (store *MemoryArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("run ID", runID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
+		return err
+	}
+	if err := requireRunDeletionMutation(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	return fenceMemoryRun(&store.deletions, runID, deletionID)
 }
 
 func (store *MemoryArtifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Artifact, error) {
@@ -500,6 +674,9 @@ func (store *MemoryArtifactStore) DeleteRun(ctx context.Context, runID string) e
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
+	if err := validateMemoryRunFenceDeletion(ctx, store.deletions, runID); err != nil {
+		return err
+	}
 	for key, artifact := range store.artifacts {
 		if artifact.RunID == runID {
 			delete(store.artifacts, key)
@@ -510,6 +687,43 @@ func (store *MemoryArtifactStore) DeleteRun(ctx context.Context, runID string) e
 
 func memoryArtifactKey(runID, artifactID string) string {
 	return runID + "\x00" + artifactID
+}
+
+func fenceMemoryRun(fences *map[string]string, runID, deletionID string) error {
+	if *fences == nil {
+		*fences = map[string]string{}
+	}
+	existingID := (*fences)[runID]
+	if existingID != "" && existingID != deletionID {
+		return fmt.Errorf("%w: run %q is fenced by deletion %q, not %q", ErrRunControlNotAllowed, runID, existingID, deletionID)
+	}
+	(*fences)[runID] = deletionID
+	return nil
+}
+
+func ensureMemoryRunWritable(fences map[string]string, runID string) error {
+	if deletionID := fences[runID]; deletionID != "" {
+		return fmt.Errorf("%w: run %q is fenced by deletion %q", ErrRunControlNotAllowed, runID, deletionID)
+	}
+	return nil
+}
+
+func validateMemoryRunDeletion(ctx context.Context, runID string, deletion *RunDeletionState) error {
+	if deletion == nil {
+		return fmt.Errorf("%w: run %q is not reserved for deletion", ErrRunControlNotAllowed, runID)
+	}
+	if err := validateRunDeletionState(deletion); err != nil {
+		return fmt.Errorf("run %q deletion state: %w", runID, err)
+	}
+	return requireRunDeletionMutation(ctx, runID, deletion.ID)
+}
+
+func validateMemoryRunFenceDeletion(ctx context.Context, fences map[string]string, runID string) error {
+	fenceID := fences[runID]
+	if fenceID == "" {
+		return fmt.Errorf("%w: run %q has no durable deletion fence", ErrRunControlNotAllowed, runID)
+	}
+	return requireRunDeletionMutation(ctx, runID, fenceID)
 }
 
 func artifactRef(artifact Artifact) state.ArtifactRef {
@@ -525,6 +739,12 @@ func cloneRunRecord(run RunRecord) RunRecord {
 	cloned := run
 	cloned.RunPath = append([]string(nil), run.RunPath...)
 	cloned.ChildRunIDs = append([]string(nil), run.ChildRunIDs...)
+	cloned.PendingChildRuns = append([]PendingChildRun(nil), run.PendingChildRuns...)
+	if run.Deletion != nil {
+		deletion := *run.Deletion
+		deletion.RunIDs = append([]string(nil), run.Deletion.RunIDs...)
+		cloned.Deletion = &deletion
+	}
 	cloned.ReturnValue = cloneRunValue(run.ReturnValue)
 	cloned.CurrentNodeIDs = append([]string(nil), run.CurrentNodeIDs...)
 	cloned.CurrentStepIDs = append([]string(nil), run.CurrentStepIDs...)

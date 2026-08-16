@@ -2,13 +2,13 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
+
 	"github.com/dengzii/weaveflow/state"
 )
 
 type runnerEventPublisher func(eventType EventType, payload any) error
-type runnerEventFailureReporter func(eventType EventType, err error)
+type runnerEventFailureReporter func(context.Context, EventType, error)
 type runnerArtifactRecorder func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
 
 // EventObserver synchronously observes fully populated events from one run.
@@ -77,7 +77,8 @@ type ChildRunLineage struct {
 type ChildRunController interface {
 	RegisterChildRun(taskID string, runner *GraphRunner, runID string)
 	UnregisterChildRun(taskID, runID string)
-	LinkChildRun(ctx context.Context, parentRunID, childRunID string) error
+	ReserveChildRun(ctx context.Context, parentRunID string, pending PendingChildRun) (PendingChildRun, error)
+	FinalizeChildRun(ctx context.Context, parentRunID, requestKey, childRunID string) error
 }
 
 func WithRunnerEventPublisher(ctx context.Context, publisher func(EventType, any) error) context.Context {
@@ -230,7 +231,7 @@ func publishRunnerContextEventBestEffort(ctx context.Context, eventType EventTyp
 	if err := PublishRunnerContextEvent(ctx, eventType, payload); err != nil {
 		reporter, _ := ctx.Value(runnerEventFailureReporterKey{}).(runnerEventFailureReporter)
 		if reporter != nil {
-			reporter(eventType, err)
+			reporter(ctx, eventType, err)
 		}
 	}
 }
@@ -277,6 +278,7 @@ func SaveArtifact(ctx context.Context, artifact Artifact) (state.ArtifactRef, er
 	if ctx == nil {
 		return state.ArtifactRef{}, ErrArtifactRecorderUnavailable
 	}
+	artifact = sanitizeArtifact(ctx, artifact)
 	recorder, _ := ctx.Value(runnerArtifactRecorderKey{}).(runnerArtifactRecorder)
 	if recorder == nil {
 		return state.ArtifactRef{}, ErrArtifactRecorderUnavailable
@@ -295,7 +297,7 @@ func HasArtifactRecorder(ctx context.Context) bool {
 }
 
 func SaveJSONArtifact(ctx context.Context, artifactType string, payload any) (state.ArtifactRef, error) {
-	data, err := json.Marshal(payload)
+	data, err := marshalRedactedJSON(ctx, payload)
 	if err != nil {
 		return state.ArtifactRef{}, err
 	}

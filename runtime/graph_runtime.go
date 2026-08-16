@@ -140,33 +140,68 @@ func (e *graphRunnerExecution) lockForTask(taskID string) *sync.Mutex {
 }
 
 func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunRecord)) (RunRecord, error) {
+	run, _, err := e.persistRunChecked(ctx, func(run *RunRecord) (bool, error) {
+		if update != nil {
+			update(run)
+		}
+		return true, nil
+	})
+	return run, err
+}
+
+func (e *graphRunnerExecution) persistRunChecked(ctx context.Context, update func(*RunRecord) (bool, error)) (RunRecord, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	e.runPersistMu.Lock()
 	defer e.runPersistMu.Unlock()
 
+	revisionConflicts := 0
 	for {
 		e.mu.Lock()
 		localRun := e.run
 		e.mu.Unlock()
 		run, err := e.runner.executionStore.GetRun(ctx, localRun.RunID)
 		if err != nil {
-			return RunRecord{}, err
+			return RunRecord{}, false, err
 		}
+		if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+			return RunRecord{}, false, err
+		}
+		changed := run.PauseRequested != (run.PauseRequested || localRun.PauseRequested) ||
+			run.CancelRequested != (run.CancelRequested || localRun.CancelRequested)
 		run.PauseRequested = run.PauseRequested || localRun.PauseRequested
 		run.CancelRequested = run.CancelRequested || localRun.CancelRequested
 		if update != nil {
-			update(&run)
+			updated, updateErr := update(&run)
+			if updateErr != nil {
+				return RunRecord{}, false, updateErr
+			}
+			changed = changed || updated
+		}
+		if !changed {
+			e.mu.Lock()
+			controlsChanged := e.run.PauseRequested && !run.PauseRequested || e.run.CancelRequested && !run.CancelRequested
+			if !controlsChanged {
+				e.run = run
+				e.mu.Unlock()
+				return run, false, nil
+			}
+			e.mu.Unlock()
+			continue
 		}
 		commitResult, err := e.runner.commitRuntime(ctx, Commit{
 			Run: &RunWrite{Mode: RunWriteUpdate, Run: run},
 		})
 		if errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return RunRecord{}, false, runRevisionRetriesExceeded("persist run")
+			}
 			continue
 		}
 		if err != nil {
-			return RunRecord{}, err
+			return RunRecord{}, false, err
 		}
 		if commitResult.Run != nil {
 			run = *commitResult.Run
@@ -177,7 +212,7 @@ func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunR
 		if !controlsChanged {
 			e.run = run
 			e.mu.Unlock()
-			return run, nil
+			return run, true, nil
 		}
 		e.mu.Unlock()
 	}
@@ -207,48 +242,57 @@ func (e *graphRunnerExecution) persistControlRequest(ctx context.Context, kind r
 	defer e.runPersistMu.Unlock()
 
 	e.mu.Lock()
-	run := e.run
+	runID := e.run.RunID
 	e.mu.Unlock()
-	latestRun, err := e.runner.executionStore.GetRun(ctx, run.RunID)
-	if err != nil {
-		return RunRecord{}, err
+	revisionConflicts := 0
+	for {
+		run, err := e.runner.executionStore.GetRun(ctx, runID)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if run.Status != "" && !isActiveDeleteRunStatus(run.Status) {
+			return run, fmt.Errorf("%w: run %q status %q cannot be controlled", ErrRunControlNotAllowed, run.RunID, run.Status)
+		}
+		switch kind {
+		case runnerControlPause:
+			run.PauseRequested = true
+		case runnerControlCancel:
+			run.PauseRequested = false
+			run.CancelRequested = true
+		default:
+			return RunRecord{}, fmt.Errorf("unsupported runner control %q", kind)
+		}
+		run.UpdatedAt = e.runner.currentTime()
+		eventType, err := controlRequestEventType(kind)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		event, err := e.runner.buildEvent(run, "", "", "", eventType, nil)
+		if err != nil {
+			return RunRecord{}, err
+		}
+		commitResult, err := e.runner.commitRuntime(ctx, Commit{
+			Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
+			Events: []Event{event},
+		})
+		if errors.Is(err, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return RunRecord{}, runRevisionRetriesExceeded("persist run control request")
+			}
+			continue
+		}
+		if err != nil {
+			return RunRecord{}, err
+		}
+		if commitResult.Run != nil {
+			run = *commitResult.Run
+		}
+		e.mu.Lock()
+		e.run = run
+		e.mu.Unlock()
+		return run, nil
 	}
-	run = latestRun
-	if run.Status != "" && !isActiveDeleteRunStatus(run.Status) {
-		return run, fmt.Errorf("%w: run %q status %q cannot be controlled", ErrRunControlNotAllowed, run.RunID, run.Status)
-	}
-	switch kind {
-	case runnerControlPause:
-		run.PauseRequested = true
-	case runnerControlCancel:
-		run.PauseRequested = false
-		run.CancelRequested = true
-	default:
-		return RunRecord{}, fmt.Errorf("unsupported runner control %q", kind)
-	}
-	run.UpdatedAt = e.runner.currentTime()
-	eventType, err := controlRequestEventType(kind)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	event, err := e.runner.buildEvent(run, "", "", "", eventType, nil)
-	if err != nil {
-		return RunRecord{}, err
-	}
-	commitResult, err := e.runner.commitRuntime(ctx, Commit{
-		Run:    &RunWrite{Mode: RunWriteUpdate, Run: run},
-		Events: []Event{event},
-	})
-	if err != nil {
-		return RunRecord{}, err
-	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
-	}
-	e.mu.Lock()
-	e.run = run
-	e.mu.Unlock()
-	return run, nil
 }
 
 func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, executor core.Node, baseState *state.State, inputState *state.State) (result core.ExecutionResult, executionErr error) {
@@ -270,16 +314,21 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 
 	contract, hasContract := e.nodeContracts[task.NodeID]
 	policy := e.contractPolicy
-	if task.Dynamic && hasContract {
-		if issues := state.ValidateInputPatchByContractWithReducers(baseState, task.Input, contract, e.runner.reducers); len(issues) > 0 {
+	if task.Dynamic {
+		if issues := state.ValidateInputPatch(task.Input); len(issues) > 0 {
 			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
 		}
 	}
-	executionInput := inputState.Clone()
+	if task.Dynamic && hasContract {
+		if issues := state.ValidateAppliedInputPatchByContract(inputState, task.Input, contract); len(issues) > 0 {
+			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
+		}
+	}
+	executionInput := state.ProjectStateByContract(inputState, state.Contract{WildcardRead: true})
 	if hasContract && policy.Enabled() {
 		validateInputs := policy.Mode != core.ContractValidationOff || policy.EnforceProjection
 		if validateInputs {
-			if issues := state.ValidateRequiredReads(inputState, contract); len(issues) > 0 {
+			if issues := state.ValidateRequiredReads(executionInput, contract); len(issues) > 0 {
 				violations := issuesToContractViolations(task.NodeID, issues)
 				e.reportContractViolations(nodeCtx, task.TaskID, violations)
 				if policy.Mode == core.ContractValidationStrict {
@@ -288,11 +337,16 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 			}
 		}
 		if policy.EnforceProjection {
-			executionInput = state.ProjectStateByContract(inputState, contract)
+			executionInput = state.ProjectStateByContract(executionInput, contract)
 		}
-		if policy.RecordArtifacts {
-			e.recordContractStateArtifact(nodeCtx, task.NodeID, contractInputViewArtifactType, contract, executionInput)
-		}
+	}
+	isolatedInput, err := executionInput.CloneStrict()
+	if err != nil {
+		return core.ExecutionResult{}, core.NewExecutionError(core.ErrorInvalidInput, fmt.Sprintf("node input state cannot be safely cloned: %v", err), err, nil)
+	}
+	executionInput = isolatedInput
+	if hasContract && policy.RecordArtifacts {
+		e.recordContractStateArtifact(nodeCtx, task.NodeID, contractInputViewArtifactType, contract, executionInput)
 	}
 
 	if executor == nil {
@@ -301,23 +355,31 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 	result, invokeErr := core.ExecuteNodeWithOptions(nodeCtx, inputState, executor, core.NodeExecutionOptions{
 		Contract:          contractOption(contract, hasContract),
 		InputState:        executionInput,
-		ApplyPatchToInput: hasContract && policy.EnforceProjection,
+		ApplyPatchToInput: true,
 		Reducers:          e.runner.reducers,
 	})
 	if invokeErr != nil {
 		var interrupt *core.NodeInterrupt
 		if errors.As(invokeErr, &interrupt) {
-			e.markNodeInterrupt(task, fmt.Sprint(interrupt.Value))
+			e.markNodeInterrupt(nodeCtx, task, fmt.Sprint(interrupt.Value))
 		}
 		return core.ExecutionResult{}, invokeErr
 	}
+	if err := validateNodeResultDrafts(result.Node); err != nil {
+		if acceptErr := acceptNodeAttempt(ctx); acceptErr != nil {
+			return core.ExecutionResult{}, acceptErr
+		}
+		return core.ExecutionResult{}, err
+	}
+	if _, err := state.SnapshotFromState(result.State); err != nil {
+		if acceptErr := acceptNodeAttempt(ctx); acceptErr != nil {
+			return core.ExecutionResult{}, acceptErr
+		}
+		return core.ExecutionResult{}, core.NewExecutionError(core.ErrorNonRetryable, fmt.Sprintf("node result state cannot be checkpointed: %v", err), err, nil)
+	}
 	var patchView *state.State
 	if hasContract && policy.RecordArtifacts {
-		var patchErr error
-		patchView, patchErr = result.Patch.ApplyWithReducers(executionInput, e.runner.reducers)
-		if patchErr != nil {
-			return core.ExecutionResult{}, patchErr
-		}
+		patchView = result.State
 	}
 
 	patch := result.Patch
@@ -326,7 +388,7 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 	if hasContract && policy.Enabled() {
 		validateWrites := policy.Mode != core.ContractValidationOff || policy.EnforceWrites
 		if validateWrites {
-			if issues := state.ValidatePatchResultByContractWithReducers(inputState, patch, contract, e.runner.reducers); len(issues) > 0 {
+			if issues := state.ValidateAppliedPatchResultByContract(result.State, patch, contract); len(issues) > 0 {
 				writeViolations = issuesToContractViolations(task.NodeID, issues)
 				if policy.EnforceWrites || policy.Mode == core.ContractValidationStrict {
 					if err := acceptNodeAttempt(ctx); err != nil {
@@ -339,13 +401,6 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 		}
 	}
 	mergedState := result.State
-	if err := validateNodeResultDrafts(result.Node); err != nil {
-		if acceptErr := acceptNodeAttempt(ctx); acceptErr != nil {
-			return core.ExecutionResult{}, acceptErr
-		}
-		e.recordNodeOutputObservations(nodeCtx, task, contract, patchView, mergedState, writeViolations)
-		return core.ExecutionResult{}, err
-	}
 	persistResult := func() error {
 		e.recordNodeOutputObservations(nodeCtx, task, contract, patchView, mergedState, writeViolations)
 		return e.recordNodeResultArtifacts(nodeCtx, result.Node.Artifacts)
@@ -382,6 +437,21 @@ func (e *graphRunnerExecution) recordNodeOutputObservations(ctx context.Context,
 }
 
 func validateNodeResultDrafts(result core.NodeResult) error {
+	for index, send := range result.Command.Send {
+		if _, err := json.Marshal(send.Input); err != nil {
+			return fmt.Errorf("encode node result send %d input: %w", index, err)
+		}
+	}
+	if result.Command.Suspend != nil {
+		if _, err := json.Marshal(result.Command.Suspend.Value); err != nil {
+			return fmt.Errorf("encode node result suspend value: %w", err)
+		}
+	}
+	if result.Command.Return != nil {
+		if _, err := json.Marshal(result.Command.Return.Value); err != nil {
+			return fmt.Errorf("encode node result return value: %w", err)
+		}
+	}
 	for _, draft := range result.Events {
 		if strings.TrimSpace(draft.Type) == "" {
 			return fmt.Errorf("node result event type is required")
@@ -457,7 +527,8 @@ func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, 
 	if ctx == nil || strings.TrimSpace(nodeID) == "" || strings.TrimSpace(artifactType) == "" {
 		return
 	}
-	snapshot, err := state.SnapshotFromState(currentState)
+	observedState := projectContractObservationState(currentState, artifactType, contract)
+	snapshot, err := state.SnapshotFromState(observedState)
 	if err != nil {
 		logger.Warn("contract state artifact snapshot failed",
 			zap.String("node_id", nodeID),
@@ -471,8 +542,8 @@ func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, 
 		Stage:    contractArtifactStage(artifactType),
 		Contract: contract,
 		Summary: contractStateArtifactInfo{
-			StateKeys:   state.CountKeys(currentState),
-			StateScopes: state.CountScopes(currentState),
+			StateKeys:   state.CountKeys(observedState),
+			StateScopes: state.CountScopes(observedState),
 		},
 		Snapshot: snapshot,
 	}
@@ -483,6 +554,29 @@ func (e *graphRunnerExecution) recordContractStateArtifact(ctx context.Context, 
 			zap.Error(err),
 		)
 	}
+}
+
+func projectContractObservationState(current *state.State, artifactType string, contract state.Contract) *state.State {
+	if contract.WildcardRead {
+		return state.ProjectStateByContract(current, state.Contract{WildcardRead: true})
+	}
+	if contract.WildcardWrite && artifactType != contractInputViewArtifactType {
+		return state.ProjectStateByContract(current, state.Contract{WildcardRead: true})
+	}
+	fields := make([]state.FieldAccess, 0, len(contract.Fields))
+	seen := make(map[string]struct{}, len(contract.Fields))
+	for _, field := range contract.Fields {
+		if field.Path.Empty() {
+			continue
+		}
+		path := field.Path.String()
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		fields = append(fields, state.FieldAccess{Path: field.Path, Mode: state.AccessRead})
+	}
+	return state.ProjectStateByContract(current, state.NewContract(fields...))
 }
 
 func contractArtifactStage(artifactType string) string {
@@ -516,6 +610,10 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 		e.runPersistMu.Unlock()
 		return core.NewContext(ctx), err
 	}
+	if err := validateNodeExecutionRun(run, latestRun); err != nil {
+		e.runPersistMu.Unlock()
+		return core.NewContext(ctx), err
+	}
 	latestRun.PauseRequested = latestRun.PauseRequested || run.PauseRequested
 	latestRun.CancelRequested = latestRun.CancelRequested || run.CancelRequested
 	run = latestRun
@@ -543,11 +641,14 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 	e.mu.Unlock()
 	if active == nil || active.step.TaskID != task.TaskID {
 		checkpointState := currentState.Clone()
-		schedule, _ := LoadGraphSchedule(currentState)
+		schedule, _, err := LoadGraphSchedule(currentState)
+		if err != nil {
+			return core.NewContext(ctx), fmt.Errorf("load graph schedule: %w", err)
+		}
 		if err := StoreGraphSchedule(checkpointState, GraphSchedule{
 			CurrentTasks:      []GraphTask{task},
 			NextTasks:         schedule.NextTasks,
-			PendingFanInNodes: schedule.PendingFanInNodes,
+			PendingFanInTasks: CloneGraphTasks(schedule.PendingFanInTasks),
 		}); err != nil {
 			return core.NewContext(ctx), err
 		}
@@ -557,12 +658,17 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 		var setupHit *state.BreakpointHit
 		var skipBreakpoint bool
 		e.runPersistMu.Lock()
+		revisionConflicts := 0
 		for {
 			e.mu.Lock()
 			localRun := e.run
 			e.mu.Unlock()
 			run, err = e.runner.executionStore.GetRun(ctx, localRun.RunID)
 			if err != nil {
+				e.runPersistMu.Unlock()
+				return core.NewContext(ctx), err
+			}
+			if err := validateNodeExecutionRun(localRun, run); err != nil {
 				e.runPersistMu.Unlock()
 				return core.NewContext(ctx), err
 			}
@@ -631,6 +737,11 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 				Events:      events,
 			})
 			if errors.Is(commitErr, ErrRunRevisionConflict) {
+				revisionConflicts++
+				if revisionConflicts >= runRevisionRetryLimit {
+					e.runPersistMu.Unlock()
+					return core.NewContext(ctx), runRevisionRetriesExceeded("start node")
+				}
 				continue
 			}
 			if commitErr != nil {
@@ -663,22 +774,22 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 			break
 		}
 		e.runPersistMu.Unlock()
-		logger.Debug("nodes scheduled", stepLogFields(active.step)...)
+		logger.Debug("nodes scheduled", stepLogFields(ctx, active.step)...)
 		if run.PauseRequested {
 			e.recordBranchPatch(currentState, task, state.Patch{})
-			logger.Info("pause interrupt requested", stepLogFields(active.step)...)
+			logger.Info("pause interrupt requested", stepLogFields(ctx, active.step)...)
 			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: task.NodeID, Value: string(runnerControlPause)}
 		}
 		if setupHit != nil {
 			e.recordBranchPatch(currentState, task, state.Patch{})
-			fields := append(stepLogFields(active.step),
+			fields := append(stepLogFields(ctx, active.step),
 				zap.String("breakpoint_id", setupHit.BreakpointID),
 				zap.String("breakpoint_stage", setupHit.Stage),
 			)
 			logger.Info("breakpoint hit before nodes", fields...)
 			return core.NewContext(ctx), &core.NodeInterrupt{NodeID: task.NodeID, Value: setupHit}
 		}
-		logger.Info("nodes started", append(stepLogFields(active.step), state.SummaryFields(currentState)...)...)
+		logger.Info("nodes started", append(stepLogFields(ctx, active.step), state.SummaryFields(currentState)...)...)
 	} else {
 		e.mu.Lock()
 		if active.attempts == 0 {
@@ -690,7 +801,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 		e.mu.Unlock()
 		logStep := active.step
 		logStep.Attempt = active.attempts
-		logger.Warn("nodes retrying", stepLogFields(logStep)...)
+		logger.Warn("nodes retrying", stepLogFields(ctx, logStep)...)
 	}
 
 	e.mu.Lock()
@@ -728,6 +839,24 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 		return ref, nil
 	})
 	return withRunnerEventContext(nodeCtx, e.runner, runID, stepID, nodeID), nil
+}
+
+func validateNodeExecutionRun(localRun, persistedRun RunRecord) error {
+	if persistedRun.Deletion != nil {
+		return fmt.Errorf("%w: run %q is reserved for deletion", ErrRunControlNotAllowed, persistedRun.RunID)
+	}
+	switch persistedRun.Status {
+	case RunStatusPending, RunStatusRunning:
+	case RunStatusPaused, RunStatusCompleted, RunStatusFailed, RunStatusCanceled:
+		return fmt.Errorf("%w: run %q status %q cannot execute a node", ErrRunControlNotAllowed, persistedRun.RunID, persistedRun.Status)
+	default:
+		return fmt.Errorf("%w: run %q has unsupported status %q", ErrRunControlNotAllowed, persistedRun.RunID, persistedRun.Status)
+	}
+	if localRun.ExecutionClaimID != persistedRun.ExecutionClaimID &&
+		(localRun.ExecutionClaimID != "" || persistedRun.ExecutionClaimID != "") {
+		return fmt.Errorf("%w: run %q execution claim changed", ErrRunControlNotAllowed, persistedRun.RunID)
+	}
+	return nil
 }
 
 func (e *graphRunnerExecution) OnSchedulerEvent(ctx context.Context, event SchedulerEvent) error {
@@ -789,9 +918,13 @@ func (e *graphRunnerExecution) OnFailureRouted(ctx context.Context, source Graph
 	}
 	e.runPersistMu.Lock()
 	defer e.runPersistMu.Unlock()
+	revisionConflicts := 0
 	for {
 		latestRun, err := e.runner.executionStore.GetRun(ctx, run.RunID)
 		if err != nil {
+			return err
+		}
+		if err := validateChildRunExecutionOwner(ctx, latestRun); err != nil {
 			return err
 		}
 		latestRun.PauseRequested = latestRun.PauseRequested || run.PauseRequested
@@ -830,6 +963,10 @@ func (e *graphRunnerExecution) OnFailureRouted(ctx context.Context, source Graph
 			Events: events,
 		})
 		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return runRevisionRetriesExceeded("record failure route")
+			}
 			continue
 		}
 		if commitErr != nil {
@@ -883,7 +1020,11 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, completedTasks [
 		steps[index].WaveID = waveID
 	}
 	nodeIDs := GraphTaskNodeIDs(completedTasks)
-	schedule, _ := LoadGraphSchedule(currentState)
+	schedule, _, err := LoadGraphSchedule(currentState)
+	if err != nil {
+		e.mu.Unlock()
+		return fmt.Errorf("load graph schedule: %w", err)
+	}
 	nextTasks := CloneGraphTasks(schedule.NextTasks)
 	nextNodeIDs := GraphTaskNodeIDs(nextTasks)
 	e.mu.Unlock()
@@ -891,7 +1032,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, completedTasks [
 	checkpointState := currentState.Clone()
 	if err := StoreGraphSchedule(checkpointState, GraphSchedule{
 		NextTasks:         nextTasks,
-		PendingFanInNodes: append([]string(nil), schedule.PendingFanInNodes...),
+		PendingFanInTasks: CloneGraphTasks(schedule.PendingFanInTasks),
 	}); err != nil {
 		return err
 	}
@@ -900,12 +1041,16 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, completedTasks [
 	defer e.runPersistMu.Unlock()
 	var barrierRun RunRecord
 	var barrierID string
+	revisionConflicts := 0
 	for {
 		e.mu.Lock()
 		localRun := e.run
 		e.mu.Unlock()
 		latestRun, err := e.runner.executionStore.GetRun(ctx, localRun.RunID)
 		if err != nil {
+			return err
+		}
+		if err := validateChildRunExecutionOwner(ctx, latestRun); err != nil {
 			return err
 		}
 		latestRun.PauseRequested = latestRun.PauseRequested || localRun.PauseRequested
@@ -938,6 +1083,10 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, completedTasks [
 			Events:      []Event{checkpointEvent},
 		})
 		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return runRevisionRetriesExceeded("save graph step checkpoint")
+			}
 			continue
 		}
 		if commitErr != nil {
@@ -1013,6 +1162,7 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 
 	e.runPersistMu.Lock()
 	var run RunRecord
+	revisionConflicts := 0
 	for {
 		e.mu.Lock()
 		localRun := e.run
@@ -1020,6 +1170,10 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 		var err error
 		run, err = e.runner.executionStore.GetRun(ctx, localRun.RunID)
 		if err != nil {
+			e.runPersistMu.Unlock()
+			return err
+		}
+		if err := validateChildRunExecutionOwner(ctx, run); err != nil {
 			e.runPersistMu.Unlock()
 			return err
 		}
@@ -1037,6 +1191,11 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 			Steps: stepWrites,
 		})
 		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				e.runPersistMu.Unlock()
+				return runRevisionRetriesExceeded("update parallel wave")
+			}
 			continue
 		}
 		if commitErr != nil {
@@ -1131,6 +1290,7 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 	defer e.runPersistMu.Unlock()
 	var run RunRecord
 	var afterID string
+	revisionConflicts := 0
 	for {
 		if !e.isActiveAttempt(task.TaskID, step.StepID, attempts) {
 			return nil
@@ -1140,6 +1300,9 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 		e.mu.Unlock()
 		run, err = e.runner.executionStore.GetRun(ctx, localRun.RunID)
 		if err != nil {
+			return err
+		}
+		if err := validateChildRunExecutionOwner(ctx, run); err != nil {
 			return err
 		}
 		run.PauseRequested = run.PauseRequested || localRun.PauseRequested
@@ -1204,6 +1367,10 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 			Events:      events,
 		})
 		if errors.Is(commitErr, ErrRunRevisionConflict) {
+			revisionConflicts++
+			if revisionConflicts >= runRevisionRetryLimit {
+				return runRevisionRetriesExceeded("finish node")
+			}
 			continue
 		}
 		if commitErr != nil {
@@ -1214,7 +1381,7 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 		}
 		break
 	}
-	fields := append(stepLogFields(step),
+	fields := append(stepLogFields(ctx, step),
 		zap.String("checkpoint_after_id", afterID),
 	)
 	fields = append(fields, state.SummaryFields(currentState)...)
@@ -1522,9 +1689,29 @@ func (e *graphRunnerExecution) UnregisterChildRun(taskID, runID string) {
 	}
 }
 
-func (e *graphRunnerExecution) LinkChildRun(ctx context.Context, parentRunID, childRunID string) error {
-	if e == nil || strings.TrimSpace(parentRunID) == "" || strings.TrimSpace(childRunID) == "" {
-		return fmt.Errorf("parent and child run IDs are required")
+func (e *graphRunnerExecution) ReserveChildRun(ctx context.Context, parentRunID string, proposed PendingChildRun) (PendingChildRun, error) {
+	if e == nil || strings.TrimSpace(parentRunID) == "" {
+		return PendingChildRun{}, fmt.Errorf("parent run ID is required")
+	}
+	e.mu.Lock()
+	actualParentRunID := e.run.RunID
+	e.mu.Unlock()
+	if actualParentRunID != parentRunID {
+		return PendingChildRun{}, fmt.Errorf("child run parent mismatch: execution=%q request=%q", actualParentRunID, parentRunID)
+	}
+	var reservation PendingChildRun
+	_, _, err := e.persistRunChecked(ctx, func(run *RunRecord) (bool, error) {
+		var changed bool
+		var reserveErr error
+		reservation, changed, reserveErr = reservePendingChildRun(run, proposed, e.runner.currentTime())
+		return changed, reserveErr
+	})
+	return reservation, err
+}
+
+func (e *graphRunnerExecution) FinalizeChildRun(ctx context.Context, parentRunID, requestKey, childRunID string) error {
+	if e == nil || strings.TrimSpace(parentRunID) == "" {
+		return fmt.Errorf("parent run ID is required")
 	}
 	e.mu.Lock()
 	actualParentRunID := e.run.RunID
@@ -1532,14 +1719,8 @@ func (e *graphRunnerExecution) LinkChildRun(ctx context.Context, parentRunID, ch
 	if actualParentRunID != parentRunID {
 		return fmt.Errorf("child run parent mismatch: execution=%q request=%q", actualParentRunID, parentRunID)
 	}
-	_, err := e.persistRun(ctx, func(run *RunRecord) {
-		for _, existingID := range run.ChildRunIDs {
-			if existingID == childRunID {
-				return
-			}
-		}
-		run.ChildRunIDs = append(run.ChildRunIDs, childRunID)
-		run.UpdatedAt = e.runner.currentTime()
+	_, _, err := e.persistRunChecked(ctx, func(run *RunRecord) (bool, error) {
+		return finalizePendingChildRun(run, requestKey, childRunID, e.runner.currentTime())
 	})
 	return err
 }
@@ -1612,7 +1793,7 @@ func (e *graphRunnerExecution) afterInterruptNodes() ([]string, error) {
 	return graph.AfterInterruptNodes(e.runner.breakpoints)
 }
 
-func (e *graphRunnerExecution) markNodeInterrupt(task GraphTask, message string) {
+func (e *graphRunnerExecution) markNodeInterrupt(ctx context.Context, task GraphTask, message string) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	active := e.active[task.TaskID]
@@ -1624,7 +1805,7 @@ func (e *graphRunnerExecution) markNodeInterrupt(task GraphTask, message string)
 	e.pending = &runnerPendingControl{kind: runnerControlPause, taskID: task.TaskID, nodeID: task.NodeID, message: message}
 	logStep := active.step
 	logStep.Attempt = active.attempts
-	logger.Info("nodes interrupt captured", stepLogFields(logStep)...)
+	logger.Info("nodes interrupt captured", stepLogFields(ctx, logStep)...)
 }
 
 func (e *graphRunnerExecution) firstActiveStepLocked(identifier string) *runnerActiveStep {

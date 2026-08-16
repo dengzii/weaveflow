@@ -212,13 +212,17 @@ func (r *graphCacheReader) LoadCheckpointState(ctx context.Context, checkpointID
 		if err != nil {
 			return runtime.RestoredCheckpoint{}, err
 		}
-		return runtime.RestoredCheckpoint{
+		checkpoint := runtime.RestoredCheckpoint{
 			Record:    record,
 			Snapshot:  restored.Snapshot,
 			Business:  restored.Business,
 			Runtime:   restored.Runtime,
 			Artifacts: restored.Artifacts,
-		}, nil
+		}
+		if err := runtime.ValidateRestoredCheckpoint(checkpoint, r.codec); err != nil {
+			return runtime.RestoredCheckpoint{}, err
+		}
+		return checkpoint, nil
 	}
 	return runtime.RestoredCheckpoint{}, runtime.ErrRunnerRecordNotFound
 }
