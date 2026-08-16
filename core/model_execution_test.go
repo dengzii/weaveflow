@@ -13,8 +13,42 @@ import (
 
 type modelFunc func(context.Context, llms.ModelRequest) (*llms.ModelResponse, error)
 
+type mutableObserverError struct {
+	message string
+}
+
+func (observerErr *mutableObserverError) Error() string {
+	return observerErr.message
+}
+
 func (generate modelFunc) Generate(ctx context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
 	return generate(ctx, request)
+}
+
+func TestModelObserverCannotMutateReturnedError(t *testing.T) {
+	originalErr := &mutableObserverError{message: "provider failed"}
+	ctx := WithModelCallObserver(context.Background(), func(_ context.Context, event ModelCallEvent) error {
+		if event.Stage != ModelCallFailed {
+			return nil
+		}
+		if observedErr, ok := event.Err.(*mutableObserverError); ok {
+			observedErr.message = "observer changed error"
+		}
+		return nil
+	})
+	_, err := GenerateModel(ctx, modelFunc(func(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+		return nil, originalErr
+	}), llms.ModelRequest{Mode: llms.ModelModeCompletion, Prompt: "test"})
+	if err != originalErr {
+		t.Fatalf("GenerateModel() error = %v, want original error", err)
+	}
+	if originalErr.message != "provider failed" {
+		t.Fatalf("provider error message = %q", originalErr.message)
+	}
+}
+
+type modelObserverOpaqueValue struct {
+	values []string
 }
 
 func TestGenerateModelRejectsTrailingStructuredJSONAndReportsCost(t *testing.T) {
@@ -70,8 +104,135 @@ func TestGenerateModelRejectsTrailingStructuredJSONAndReportsCost(t *testing.T) 
 	if got.Cost.Currency != "USD" || math.Abs(got.Cost.Total-1.9) > 1e-9 {
 		t.Fatalf("cost = %#v, want USD 1.9", got.Cost)
 	}
-	if failedEvent.Response != response || failedEvent.Response.Cost == nil || failedEvent.Err == nil {
+	if failedEvent.Response == nil || failedEvent.Response == response || failedEvent.Response.Cost == nil || failedEvent.Err == nil {
 		t.Fatalf("failed observer event = %#v", failedEvent)
+	}
+}
+
+func TestGenerateModelValidatesAnImmutableRequestSnapshot(t *testing.T) {
+	responseSchema := state.JSONSchema{
+		"type": "object",
+		"properties": state.JSONSchema{
+			"answer": state.JSONSchema{"type": "integer"},
+		},
+		"required":             []string{"answer"},
+		"additionalProperties": false,
+	}
+	ctx := WithModelCallObserver(context.Background(), func(_ context.Context, event ModelCallEvent) error {
+		if event.Stage == ModelCallStarted || event.Stage == ModelCallStream {
+			event.Request.ResponseSchema = nil
+		}
+		return nil
+	})
+	_, err := GenerateModel(ctx, modelFunc(func(_ context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
+		request.ResponseSchema = nil
+		if request.Stream != nil {
+			if streamErr := request.Stream(context.Background(), llms.ModelStreamEvent{Text: "progress"}); streamErr != nil {
+				return nil, streamErr
+			}
+		}
+		return &llms.ModelResponse{Choices: []*llms.ModelChoice{{Content: `{"answer":"not-an-integer"}`}}}, nil
+	}), llms.ModelRequest{
+		Mode:           llms.ModelModeChat,
+		Messages:       []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "validate")},
+		ResponseSchema: responseSchema,
+	})
+	if err == nil || !strings.Contains(err.Error(), "model response") {
+		t.Fatalf("GenerateModel() error = %v, want immutable schema validation failure", err)
+	}
+}
+
+func TestGenerateModelObserverCannotMutateReturnedResponse(t *testing.T) {
+	response := &llms.ModelResponse{Choices: []*llms.ModelChoice{{Content: `{"answer":7}`}}}
+	ctx := WithModelCallObserver(context.Background(), func(_ context.Context, event ModelCallEvent) error {
+		if event.Stage == ModelCallCompleted {
+			event.Response.Choices[0].Content = `{"answer":"changed"}`
+		}
+		return nil
+	})
+	got, err := GenerateModel(ctx, modelFunc(func(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+		return response, nil
+	}), llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "validate")},
+		ResponseSchema: state.JSONSchema{
+			"type": "object",
+			"properties": state.JSONSchema{
+				"answer": state.JSONSchema{"type": "integer"},
+			},
+			"required": []string{"answer"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateModel() error = %v", err)
+	}
+	if got != response || got.Choices[0].Content != `{"answer":7}` {
+		t.Fatalf("observer mutated returned response: %#v", got)
+	}
+}
+
+func TestGenerateModelRejectsOpaqueMutableRequestData(t *testing.T) {
+	called := false
+	_, err := GenerateModel(context.Background(), modelFunc(func(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+		called = true
+		return &llms.ModelResponse{}, nil
+	}), llms.ModelRequest{
+		Mode:            llms.ModelModeChat,
+		Messages:        []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "validate")},
+		ProviderOptions: map[string]any{"opaque": &modelObserverOpaqueValue{values: []string{"source"}}},
+	})
+	if err == nil || ClassifyError(err) != ErrorInvalidInput || !strings.Contains(err.Error(), "cannot be safely cloned") {
+		t.Fatalf("GenerateModel() error = %v, want invalid opaque request", err)
+	}
+	if called {
+		t.Fatal("GenerateModel() called provider with an unsafe request clone")
+	}
+}
+
+func TestModelObserverOmitsOpaqueResponseMetadata(t *testing.T) {
+	opaque := &modelObserverOpaqueValue{values: []string{"source"}}
+	response := &llms.ModelResponse{
+		Choices:  []*llms.ModelChoice{{Content: "ok"}},
+		Metadata: map[string]any{"opaque": opaque},
+	}
+	var completed ModelCallEvent
+	ctx := WithModelCallObserver(context.Background(), func(_ context.Context, event ModelCallEvent) error {
+		if event.Stage == ModelCallCompleted {
+			completed = event
+		}
+		return nil
+	})
+	got, err := GenerateModel(ctx, modelFunc(func(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+		return response, nil
+	}), llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "validate")},
+	})
+	if err != nil {
+		t.Fatalf("GenerateModel() error = %v", err)
+	}
+	if completed.CloneError == nil || completed.Response == nil || completed.Response.Metadata != nil {
+		t.Fatalf("completed observer event = %#v, clone error = %v", completed.Response, completed.CloneError)
+	}
+	if got != response || got.Metadata["opaque"] != opaque || opaque.values[0] != "source" {
+		t.Fatalf("observer clone changed returned response: %#v", got)
+	}
+}
+
+func TestModelConfigsDeepCloneExtraBody(t *testing.T) {
+	extraBody := map[string]any{"nested": map[string]any{"value": "original"}}
+	ctx := WithModelConfigs(context.Background(), map[string]ModelConfig{
+		"default": {ExtraBody: extraBody},
+	})
+	extraBody["nested"].(map[string]any)["value"] = "changed"
+	config, ok := ModelConfigByIDFromContext(ctx, "default")
+	if !ok || config.ExtraBody["nested"].(map[string]any)["value"] != "original" {
+		t.Fatalf("WithModelConfigs() retained caller alias: %#v", config.ExtraBody)
+	}
+	config.ExtraBody["nested"].(map[string]any)["value"] = "changed-again"
+	again, _ := ModelConfigByIDFromContext(ctx, "default")
+	if again.ExtraBody["nested"].(map[string]any)["value"] != "original" {
+		t.Fatalf("ModelConfigsFromContext() exposed stored alias: %#v", again.ExtraBody)
 	}
 }
 

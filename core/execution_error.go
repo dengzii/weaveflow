@@ -131,12 +131,34 @@ func normalizeErrorClass(class ErrorClass) ErrorClass {
 }
 
 func cloneErrorDetails(details map[string]any) map[string]any {
-	if len(details) == 0 {
-		return nil
+	return cloneAnyMap(details)
+}
+
+func cloneObserverError(err error) (error, error) {
+	if err == nil {
+		return nil, nil
 	}
-	cloned := make(map[string]any, len(details))
-	for key, value := range details {
-		cloned[key] = value
+	message := err.Error()
+	class := ClassifyError(err)
+	var executionErr ExecutionError
+	if !errors.As(err, &executionErr) && class == ErrorUnknown {
+		return errors.New(message), nil
 	}
-	return cloned
+
+	var (
+		details      map[string]any
+		detailsError error
+		retryAfter   time.Duration
+	)
+	if executionErr != nil {
+		retryAfter = executionErr.RetryAfter()
+		clonedValue, cloneErr := cloneAnyValue(executionErr.Details())
+		if cloneErr != nil {
+			detailsError = fmt.Errorf("omit observer error details: %w", cloneErr)
+		} else {
+			details, _ = clonedValue.(map[string]any)
+		}
+	}
+	cloned := NewExecutionError(class, message, nil, details).WithRetryAfter(retryAfter)
+	return cloned, detailsError
 }

@@ -3,12 +3,42 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/state"
 )
+
+type toolObserverOpaqueValue struct {
+	values []string
+}
+
+func TestToolObserverCannotMutateReturnedError(t *testing.T) {
+	originalErr := &mutableObserverError{message: "tool failed"}
+	ctx := WithToolExecutionObserver(context.Background(), func(_ context.Context, event ToolExecutionEvent) {
+		if event.Stage != ToolExecutionFailed {
+			return
+		}
+		if observedErr, ok := event.Err.(*mutableObserverError); ok {
+			observedErr.message = "observer changed error"
+		}
+	})
+	tool := Tool{
+		Function: &llms.FunctionDefinition{Name: "fail"},
+		Handler: func(context.Context, llms.ToolCall) (llms.ToolResult, error) {
+			return llms.ToolResult{}, originalErr
+		},
+	}
+	_, err := ExecuteTool(ctx, tool, testToolCall("fail", `{}`))
+	if err != originalErr {
+		t.Fatalf("ExecuteTool() error = %v, want original error", err)
+	}
+	if originalErr.message != "tool failed" {
+		t.Fatalf("tool error message = %q", originalErr.message)
+	}
+}
 
 func TestExecuteToolValidatesStructuredInputAndOutput(t *testing.T) {
 	handled := 0
@@ -149,6 +179,165 @@ func TestExecuteToolEnforcesPermissionsAndApprovalLifecycle(t *testing.T) {
 	}
 	if handled != 1 {
 		t.Fatalf("approved handler calls = %d, want 1", handled)
+	}
+}
+
+func TestToolExecutionClonesObserverAndApprovalInputs(t *testing.T) {
+	permissionTool := Tool{
+		Function:    &llms.FunctionDefinition{Name: "protected"},
+		Permissions: []string{"filesystem.write"},
+		Handler: func(context.Context, llms.ToolCall) (llms.ToolResult, error) {
+			t.Fatal("permission-bypassed tool executed")
+			return llms.ToolResult{}, nil
+		},
+	}
+	ctx := WithToolExecutionObserver(context.Background(), func(_ context.Context, event ToolExecutionEvent) {
+		if event.Stage == ToolExecutionRequested {
+			event.Tool.Permissions[0] = ""
+		}
+	})
+	if _, err := ExecuteTool(ctx, permissionTool, testToolCall("protected", `{}`)); err == nil || ClassifyError(err) != ErrorPermissionDenied {
+		t.Fatalf("permission mutation changed authorization: %v", err)
+	}
+
+	handled := 0
+	argumentTool := Tool{
+		Function: &llms.FunctionDefinition{
+			Name: "echo_number",
+			Parameters: state.JSONSchema{
+				"type": "object",
+				"properties": state.JSONSchema{
+					"value": state.JSONSchema{"type": "integer"},
+				},
+				"required":             []string{"value"},
+				"additionalProperties": false,
+			},
+		},
+		Approval:    ToolApprovalRequired,
+		Permissions: []string{"filesystem.write"},
+		Handler: func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+			handled++
+			var input struct {
+				Value int `json:"value"`
+			}
+			if err := DecodeToolArguments(call, &input); err != nil {
+				return llms.ToolResult{}, err
+			}
+			if input.Value != 7 {
+				t.Fatalf("handler received mutated arguments: %d", input.Value)
+			}
+			return llms.ToolResult{Content: "ok"}, nil
+		},
+	}
+	call := testToolCall("echo_number", `{"value":7}`)
+	argumentContext := WithToolPermissions(context.Background(), "filesystem.write")
+	argumentContext = WithToolExecutionObserver(argumentContext, func(_ context.Context, event ToolExecutionEvent) {
+		if event.Stage == ToolExecutionApprovalNeeded {
+			event.Call.FunctionCall.Arguments = []byte(`{"value":1}`)
+		}
+	})
+	argumentContext = WithToolApprover(argumentContext, ToolApproverFunc(func(_ context.Context, request ToolApprovalRequest) (ToolApprovalDecision, error) {
+		request.ToolCall.FunctionCall.Arguments = []byte(`{"value":2}`)
+		return ToolApprovalDecision{Approved: true}, nil
+	}))
+	if _, err := ExecuteTool(argumentContext, argumentTool, call); err != nil {
+		t.Fatalf("ExecuteTool() error = %v", err)
+	}
+	if handled != 1 || string(call.FunctionCall.Arguments) != `{"value":7}` {
+		t.Fatalf("tool call was mutated: handled=%d call=%s", handled, call.FunctionCall.Arguments)
+	}
+}
+
+func TestToolObserverPreservesCyclesWithoutSharingResult(t *testing.T) {
+	cyclic := map[string]any{"value": "source"}
+	cyclic["self"] = cyclic
+	ctx := WithToolExecutionObserver(context.Background(), func(_ context.Context, event ToolExecutionEvent) {
+		if event.Stage != ToolExecutionReturned {
+			return
+		}
+		if event.CloneError != nil {
+			t.Fatalf("observer CloneError = %v", event.CloneError)
+		}
+		observed := event.Result.Value.(map[string]any)
+		if reflect.ValueOf(observed).Pointer() != reflect.ValueOf(observed["self"]).Pointer() {
+			t.Fatal("tool observer result lost its map cycle")
+		}
+		observed["value"] = "observer"
+	})
+	result, err := ExecuteTool(ctx, Tool{
+		Function: &llms.FunctionDefinition{Name: "cyclic"},
+		Handler: func(context.Context, llms.ToolCall) (llms.ToolResult, error) {
+			return llms.ToolResult{Value: cyclic}, nil
+		},
+	}, testToolCall("cyclic", `{}`))
+	if err != nil {
+		t.Fatalf("ExecuteTool() error = %v", err)
+	}
+	if result.Value.(map[string]any)["value"] != "source" || cyclic["value"] != "source" {
+		t.Fatalf("observer mutated actual result: %#v", result.Value)
+	}
+}
+
+func TestToolObserverOmitsOpaqueResultValue(t *testing.T) {
+	opaque := &toolObserverOpaqueValue{values: []string{"source"}}
+	var returned ToolExecutionEvent
+	ctx := WithToolExecutionObserver(context.Background(), func(_ context.Context, event ToolExecutionEvent) {
+		if event.Stage == ToolExecutionReturned {
+			returned = event
+		}
+	})
+	result, err := ExecuteTool(ctx, Tool{
+		Function: &llms.FunctionDefinition{Name: "opaque"},
+		Handler: func(context.Context, llms.ToolCall) (llms.ToolResult, error) {
+			return llms.ToolResult{Value: opaque}, nil
+		},
+	}, testToolCall("opaque", `{}`))
+	if err != nil {
+		t.Fatalf("ExecuteTool() error = %v", err)
+	}
+	if returned.CloneError == nil || returned.Result.Value != nil {
+		t.Fatalf("returned observer value = %#v, clone error = %v", returned.Result.Value, returned.CloneError)
+	}
+	if result.Value != opaque || opaque.values[0] != "source" {
+		t.Fatalf("observer clone changed actual result: %#v", result.Value)
+	}
+}
+
+func TestWithToolsDeepClonesPermissionAndDefinition(t *testing.T) {
+	permissions := []string{"filesystem.write"}
+	function := &llms.FunctionDefinition{Name: "protected"}
+	ctx := WithTools(context.Background(), map[string]Tool{
+		"protected": {Function: function, Permissions: permissions},
+	})
+	permissions[0] = ""
+	function.Name = "changed"
+	stored := ToolsFromContext(ctx)["protected"]
+	if stored.Name() != "protected" || stored.Permissions[0] != "filesystem.write" {
+		t.Fatalf("WithTools() retained caller aliases: %#v", stored)
+	}
+	stored.Permissions[0] = ""
+	stored.Function.Name = "changed-again"
+	again := ToolsFromContext(ctx)["protected"]
+	if again.Name() != "protected" || again.Permissions[0] != "filesystem.write" {
+		t.Fatalf("ToolsFromContext() exposed stored aliases: %#v", again)
+	}
+	filtered := FilterTools(ToolsFromContext(ctx), []string{"protected"})["protected"]
+	filtered.Permissions[0] = ""
+	if ToolsFromContext(ctx)["protected"].Permissions[0] != "filesystem.write" {
+		t.Fatal("FilterTools() exposed stored permission aliases")
+	}
+}
+
+func TestFindToolRejectsAmbiguousFallbackMatches(t *testing.T) {
+	available := map[string]Tool{
+		"first":  {Function: &llms.FunctionDefinition{Name: "shared"}},
+		"second": {Function: &llms.FunctionDefinition{Name: "shared"}},
+	}
+	if tool, ok := FindTool(available, "shared"); ok || tool.Function != nil {
+		t.Fatalf("FindTool() accepted ambiguous function-name match: %#v, %v", tool, ok)
+	}
+	if tool, ok := FindTool(available, "first"); !ok || tool.Name() != "shared" {
+		t.Fatalf("FindTool() lost exact-key lookup: %#v, %v", tool, ok)
 	}
 }
 

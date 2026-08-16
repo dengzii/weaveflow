@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+
+	"github.com/dengzii/weaveflow/state"
 )
 
 type ChatMessageType string
@@ -159,9 +161,85 @@ func CloneMessages(messages []MessageContent) []MessageContent {
 	}
 	cloned := make([]MessageContent, len(messages))
 	for index, message := range messages {
-		cloned[index] = MessageContent{Role: message.Role, Parts: append([]ContentPart(nil), message.Parts...)}
+		parts := make([]ContentPart, len(message.Parts))
+		for partIndex, part := range message.Parts {
+			parts[partIndex] = cloneContentPart(part)
+		}
+		cloned[index] = MessageContent{Role: message.Role, Parts: parts}
 	}
 	return cloned
+}
+
+func cloneContentPart(part ContentPart) ContentPart {
+	switch content := part.(type) {
+	case *TextContent:
+		if content == nil {
+			return (*TextContent)(nil)
+		}
+		cloned := *content
+		return &cloned
+	case *ReasoningContent:
+		if content == nil {
+			return (*ReasoningContent)(nil)
+		}
+		cloned := *content
+		return &cloned
+	case *ImageURLContent:
+		if content == nil {
+			return (*ImageURLContent)(nil)
+		}
+		cloned := *content
+		return &cloned
+	case BinaryContent:
+		content.Data = append([]byte(nil), content.Data...)
+		return content
+	case *BinaryContent:
+		if content == nil {
+			return (*BinaryContent)(nil)
+		}
+		cloned := *content
+		cloned.Data = append([]byte(nil), content.Data...)
+		return &cloned
+	case ToolCall:
+		if content.FunctionCall != nil {
+			functionCall := *content.FunctionCall
+			functionCall.Arguments = append(json.RawMessage(nil), content.FunctionCall.Arguments...)
+			content.FunctionCall = &functionCall
+		}
+		return content
+	case *ToolCall:
+		if content == nil {
+			return (*ToolCall)(nil)
+		}
+		cloned := *content
+		if content.FunctionCall != nil {
+			functionCall := *content.FunctionCall
+			functionCall.Arguments = append(json.RawMessage(nil), content.FunctionCall.Arguments...)
+			cloned.FunctionCall = &functionCall
+		}
+		return &cloned
+	case ToolResult:
+		content.Value = cloneMessageValue(content.Value)
+		return content
+	case *ToolResult:
+		if content == nil {
+			return (*ToolResult)(nil)
+		}
+		cloned := *content
+		cloned.Value = cloneMessageValue(content.Value)
+		return &cloned
+	default:
+		return part
+	}
+}
+
+func cloneMessageValue(value any) any {
+	if value == nil {
+		return nil
+	}
+	clonedRoot := state.FromShared(map[string]any{"value": value}).Export()
+	clonedShared, _ := clonedRoot[state.SectionShared].(map[string]any)
+	return clonedShared["value"]
 }
 
 func ToolResultText(result ToolResult) string {

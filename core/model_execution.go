@@ -29,6 +29,9 @@ type ModelCallEvent struct {
 	Stream   llms.ModelStreamEvent
 	Response *llms.ModelResponse
 	Err      error
+	// CloneError reports observer fields omitted because they could not be
+	// safely deep-cloned. It never exposes the original mutable value.
+	CloneError error
 }
 
 type ModelCallObserver func(context.Context, ModelCallEvent) error
@@ -52,7 +55,10 @@ func GenerateModel(ctx context.Context, model llms.Model, request llms.ModelRequ
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	request = cloneModelRequest(request)
+	request, err := cloneModelRequest(request)
+	if err != nil {
+		return nil, NewExecutionError(ErrorInvalidInput, fmt.Sprintf("model request cannot be safely cloned: %v", err), err, nil)
+	}
 	if request.CallID == "" {
 		request.CallID = newModelCallID()
 	}
@@ -62,10 +68,11 @@ func GenerateModel(ctx context.Context, model llms.Model, request llms.ModelRequ
 	if err := validateModelRequest(request); err != nil {
 		return nil, err
 	}
+	validationRequest := request
 
 	observer, _ := ctx.Value(modelCallObserverKey{}).(ModelCallObserver)
 	if observer != nil {
-		if err := observer(ctx, ModelCallEvent{Stage: ModelCallStarted, Request: request}); err != nil {
+		if err := notifyModelCallObserver(ctx, observer, ModelCallEvent{Stage: ModelCallStarted, Request: request}); err != nil {
 			return nil, err
 		}
 	}
@@ -79,7 +86,7 @@ func GenerateModel(ctx context.Context, model llms.Model, request llms.ModelRequ
 				event.CallID = request.CallID
 			}
 			if observer != nil {
-				if err := observer(streamCtx, ModelCallEvent{Stage: ModelCallStream, Request: request, Stream: event}); err != nil {
+				if err := notifyModelCallObserver(streamCtx, observer, ModelCallEvent{Stage: ModelCallStream, Request: request, Stream: event}); err != nil {
 					return err
 				}
 			}
@@ -90,17 +97,21 @@ func GenerateModel(ctx context.Context, model llms.Model, request llms.ModelRequ
 		}
 	}
 
-	response, err := model.Generate(ctx, request)
+	providerRequest, err := cloneModelRequest(request)
+	if err != nil {
+		return nil, NewExecutionError(ErrorInvalidInput, fmt.Sprintf("model request cannot be safely cloned: %v", err), err, nil)
+	}
+	response, err := model.Generate(ctx, providerRequest)
 	if err != nil {
 		if observer != nil {
-			_ = observer(ctx, ModelCallEvent{Stage: ModelCallFailed, Request: request, Response: response, Err: err})
+			_ = notifyModelCallObserver(ctx, observer, ModelCallEvent{Stage: ModelCallFailed, Request: request, Response: response, Err: err})
 		}
 		return response, err
 	}
 	if response == nil {
 		err = errors.New("model returned a nil response")
 		if observer != nil {
-			_ = observer(ctx, ModelCallEvent{Stage: ModelCallFailed, Request: request, Err: err})
+			_ = notifyModelCallObserver(ctx, observer, ModelCallEvent{Stage: ModelCallFailed, Request: request, Err: err})
 		}
 		return nil, err
 	}
@@ -115,14 +126,14 @@ func GenerateModel(ctx context.Context, model llms.Model, request llms.ModelRequ
 			response.Cost = llms.CalculateModelCost(response.Usage, config.Pricing)
 		}
 	}
-	if err := validateStructuredModelResponse(request, response); err != nil {
+	if err := validateStructuredModelResponse(validationRequest, response); err != nil {
 		if observer != nil {
-			_ = observer(ctx, ModelCallEvent{Stage: ModelCallFailed, Request: request, Response: response, Err: err})
+			_ = notifyModelCallObserver(ctx, observer, ModelCallEvent{Stage: ModelCallFailed, Request: request, Response: response, Err: err})
 		}
 		return response, err
 	}
 	if observer != nil {
-		_ = observer(ctx, ModelCallEvent{Stage: ModelCallCompleted, Request: request, Response: response})
+		_ = notifyModelCallObserver(ctx, observer, ModelCallEvent{Stage: ModelCallCompleted, Request: request, Response: response})
 	}
 	return response, nil
 }
@@ -185,14 +196,93 @@ func validateStructuredModelResponse(request llms.ModelRequest, response *llms.M
 	return nil
 }
 
-func cloneModelRequest(request llms.ModelRequest) llms.ModelRequest {
-	request.Messages = llms.CloneMessages(request.Messages)
-	request.Tools = append([]llms.ToolDefinition(nil), request.Tools...)
-	request.StopWords = append([]string(nil), request.StopWords...)
-	request.ResponseSchema = request.ResponseSchema.Clone()
-	request.Metadata = cloneErrorDetails(request.Metadata)
-	request.ProviderOptions = cloneErrorDetails(request.ProviderOptions)
-	return request
+func cloneModelRequest(request llms.ModelRequest) (llms.ModelRequest, error) {
+	stream := request.Stream
+	request.Stream = nil
+	clonedValue, err := cloneAnyValue(request)
+	if err != nil {
+		return llms.ModelRequest{}, fmt.Errorf("clone model request data: %w", err)
+	}
+	cloned, ok := clonedValue.(llms.ModelRequest)
+	if !ok {
+		return llms.ModelRequest{}, fmt.Errorf("clone model request returned %T", clonedValue)
+	}
+	cloned.Stream = stream
+	return cloned, nil
+}
+
+func notifyModelCallObserver(ctx context.Context, observer ModelCallObserver, event ModelCallEvent) error {
+	if observer == nil {
+		return nil
+	}
+	clonedRequest, requestErr := cloneModelRequest(event.Request)
+	if requestErr != nil {
+		event.Request = llms.ModelRequest{}
+		requestErr = fmt.Errorf("omit model observer request: %w", requestErr)
+	} else {
+		clonedRequest.Stream = nil
+		event.Request = clonedRequest
+	}
+	clonedResponse, responseErr := cloneModelResponse(event.Response)
+	event.Response = clonedResponse
+	clonedErr, errorCloneErr := cloneObserverError(event.Err)
+	event.Err = clonedErr
+	event.CloneError = errors.Join(event.CloneError, requestErr, responseErr, errorCloneErr)
+	return observer(ctx, event)
+}
+
+func cloneModelResponse(response *llms.ModelResponse) (*llms.ModelResponse, error) {
+	if response == nil {
+		return nil, nil
+	}
+	base := *response
+	base.Metadata = nil
+	if response.Choices != nil {
+		base.Choices = make([]*llms.ModelChoice, len(response.Choices))
+		for index, choice := range response.Choices {
+			if choice == nil {
+				continue
+			}
+			baseChoice := *choice
+			baseChoice.Metadata = nil
+			base.Choices[index] = &baseChoice
+		}
+	}
+	clonedValue, err := cloneAnyValue(&base)
+	if err != nil {
+		return nil, fmt.Errorf("omit model observer response: %w", err)
+	}
+	cloned, ok := clonedValue.(*llms.ModelResponse)
+	if !ok {
+		return nil, fmt.Errorf("clone model response returned %T", clonedValue)
+	}
+	metadata := make(map[string]any, len(response.Choices)+1)
+	if response.Metadata != nil {
+		metadata["response"] = response.Metadata
+	}
+	for index, choice := range response.Choices {
+		if choice != nil && choice.Metadata != nil {
+			metadata[fmt.Sprintf("choice:%d", index)] = choice.Metadata
+		}
+	}
+	if len(metadata) == 0 {
+		return cloned, nil
+	}
+	clonedMetadataValue, err := cloneAnyValue(metadata)
+	if err != nil {
+		return cloned, fmt.Errorf("omit model observer metadata: %w", err)
+	}
+	clonedMetadata, _ := clonedMetadataValue.(map[string]any)
+	if response.Metadata != nil {
+		cloned.Metadata, _ = clonedMetadata["response"].(map[string]any)
+	}
+	for index, choice := range response.Choices {
+		if choice == nil || choice.Metadata == nil {
+			continue
+		}
+		cloned.Choices[index].Metadata, _ = clonedMetadata[fmt.Sprintf("choice:%d", index)].(map[string]any)
+	}
+	return cloned, nil
 }
 
 func newModelCallID() string {

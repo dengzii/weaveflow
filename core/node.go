@@ -261,6 +261,11 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 	} else if options.EnforceInputProjection {
 		inputState = state.ProjectStateByContract(base, contract)
 	}
+	isolatedInput, err := inputState.CloneStrict()
+	if err != nil {
+		return ExecutionResult{}, NewExecutionError(ErrorInvalidInput, fmt.Sprintf("node input state cannot be safely cloned: %v", err), err, nil)
+	}
+	inputState = isolatedInput
 
 	if options.ValidateRequiredReads {
 		if issues := state.ValidateRequiredReads(inputState, contract); len(issues) > 0 {
@@ -288,13 +293,17 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 		patch = accessPatch
 	}
 	nodeResult.Patch = patch
-	if options.ValidateWrites {
-		if issues := state.ValidatePatchResultByContractWithReducers(inputState, patch, contract, options.Reducers); len(issues) > 0 {
-			if options.OnWriteIssues != nil {
-				options.OnWriteIssues(issues)
-			}
-			return ExecutionResult{}, state.NewValidationError("node output", issues)
+	isolatedNodeResult, err := cloneNodeResultStrict(nodeResult)
+	if err != nil {
+		return ExecutionResult{}, NewExecutionError(ErrorNonRetryable, fmt.Sprintf("node result cannot be safely cloned: %v", err), err, nil)
+	}
+	nodeResult = isolatedNodeResult
+	patch = nodeResult.Patch
+	if issues := state.ValidateNodePatch(patch); len(issues) > 0 {
+		if options.OnWriteIssues != nil {
+			options.OnWriteIssues(issues)
 		}
+		return ExecutionResult{}, state.NewValidationError("node output", issues)
 	}
 	patchBase := inputState
 	if options.ApplyPatchToInput {
@@ -304,10 +313,111 @@ func ExecuteNodeWithOptions(ctx context.Context, base *state.State, node Node, o
 	if err != nil {
 		return ExecutionResult{}, err
 	}
+	if options.ValidateWrites {
+		if issues := state.ValidateAppliedPatchResultByContract(resultState, patch, contract); len(issues) > 0 {
+			if options.OnWriteIssues != nil {
+				options.OnWriteIssues(issues)
+			}
+			return ExecutionResult{}, state.NewValidationError("node output", issues)
+		}
+	}
+	resultState, err = resultState.CloneStrict()
+	if err != nil {
+		return ExecutionResult{}, NewExecutionError(ErrorNonRetryable, fmt.Sprintf("node result state cannot be safely cloned: %v", err), err, nil)
+	}
 	return ExecutionResult{
 		State:    resultState,
 		Patch:    patch,
 		Contract: contract,
 		Node:     nodeResult,
 	}, nil
+}
+
+func cloneNodeResultStrict(result NodeResult) (NodeResult, error) {
+	patch, err := clonePatchStrict(result.Patch)
+	if err != nil {
+		return NodeResult{}, fmt.Errorf("patch: %w", err)
+	}
+	command, err := cloneCommandStrict(result.Command)
+	if err != nil {
+		return NodeResult{}, fmt.Errorf("command: %w", err)
+	}
+
+	events := make([]EventDraft, len(result.Events))
+	for index, draft := range result.Events {
+		payload, cloneErr := state.CloneValue(draft.Payload)
+		if cloneErr != nil {
+			return NodeResult{}, fmt.Errorf("event %d payload: %w", index, cloneErr)
+		}
+		events[index] = draft
+		events[index].Payload = payload
+	}
+	if result.Events == nil {
+		events = nil
+	}
+
+	artifacts := make([]ArtifactDraft, len(result.Artifacts))
+	for index, draft := range result.Artifacts {
+		artifacts[index] = draft
+		if draft.Data != nil {
+			artifacts[index].Data = make([]byte, len(draft.Data))
+			copy(artifacts[index].Data, draft.Data)
+		}
+	}
+	if result.Artifacts == nil {
+		artifacts = nil
+	}
+
+	return NodeResult{
+		Patch:     patch,
+		Command:   command,
+		Events:    events,
+		Artifacts: artifacts,
+	}, nil
+}
+
+func cloneCommandStrict(command Command) (Command, error) {
+	cloned := command
+	if command.Goto != nil {
+		cloned.Goto = make([]NodeRef, len(command.Goto))
+		copy(cloned.Goto, command.Goto)
+	}
+	if command.Send != nil {
+		cloned.Send = make([]Send, len(command.Send))
+		for index, send := range command.Send {
+			input, err := clonePatchStrict(send.Input)
+			if err != nil {
+				return Command{}, fmt.Errorf("send %d input: %w", index, err)
+			}
+			cloned.Send[index] = send
+			cloned.Send[index].Input = input
+		}
+	}
+	if command.Suspend != nil {
+		value, err := state.CloneValue(command.Suspend.Value)
+		if err != nil {
+			return Command{}, fmt.Errorf("suspend value: %w", err)
+		}
+		cloned.Suspend = &SuspendRequest{Value: value}
+	}
+	if command.Return != nil {
+		value, err := state.CloneValue(command.Return.Value)
+		if err != nil {
+			return Command{}, fmt.Errorf("return value: %w", err)
+		}
+		cloned.Return = &ReturnCommand{Value: value}
+	}
+	return cloned, nil
+}
+
+func clonePatchStrict(patch state.Patch) (state.Patch, error) {
+	operations := patch.Ops()
+	for index := range operations {
+		value, err := state.CloneValue(operations[index].Value)
+		if err != nil {
+			return state.Patch{}, fmt.Errorf("operation %d value: %w", index, err)
+		}
+		operations[index].Value = value
+	}
+	return state.NewPatch(operations...), nil
 }

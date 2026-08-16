@@ -153,6 +153,9 @@ type ToolExecutionEvent struct {
 	Err        error
 	StartedAt  time.Time
 	FinishedAt time.Time
+	// CloneError reports observer fields omitted because they could not be
+	// safely deep-cloned. It never changes the tool's actual returned value.
+	CloneError error
 }
 
 type ToolExecutionObserver func(context.Context, ToolExecutionEvent)
@@ -173,7 +176,8 @@ func ExecuteTool(ctx context.Context, tool Tool, call llms.ToolCall) (llms.ToolR
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	call = normalizeToolCall(tool, call)
+	tool = cloneTool(tool)
+	call = normalizeToolCall(tool, cloneToolCall(call))
 	startedAt := time.Now().UTC()
 	notifyToolObserver(ctx, ToolExecutionEvent{Stage: ToolExecutionRequested, Tool: tool, Call: call, StartedAt: startedAt})
 	if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
@@ -247,12 +251,18 @@ func FindTool(available map[string]Tool, name string) (Tool, bool) {
 	if tool, ok := available[name]; ok {
 		return tool, true
 	}
+	var matched Tool
+	found := false
 	for key, tool := range available {
 		if strings.EqualFold(strings.TrimSpace(key), name) || strings.EqualFold(strings.TrimSpace(tool.Name()), name) {
-			return tool, true
+			if found {
+				return Tool{}, false
+			}
+			matched = tool
+			found = true
 		}
 	}
-	return Tool{}, false
+	return matched, found
 }
 
 func normalizeToolCall(tool Tool, call llms.ToolCall) llms.ToolCall {
@@ -344,7 +354,7 @@ func approveToolExecution(ctx context.Context, tool Tool, call llms.ToolCall) (*
 	if approver == nil {
 		return nil, NewExecutionError(ErrorPermissionDenied, fmt.Sprintf("%s for tool %q", ErrToolApprovalRequired, tool.Name()), ErrToolApprovalRequired, nil)
 	}
-	decision, err := approver.Approve(ctx, ToolApprovalRequest{ToolCall: call, Permissions: normalizedPermissions(tool.Permissions)})
+	decision, err := approver.Approve(ctx, ToolApprovalRequest{ToolCall: cloneToolCall(call), Permissions: normalizedPermissions(tool.Permissions)})
 	if err != nil {
 		return &decision, NewExecutionError(ErrorPermissionDenied, fmt.Sprintf("tool %q approval failed: %v", tool.Name(), err), err, nil)
 	}
@@ -374,8 +384,56 @@ func denyToolExecution(ctx context.Context, tool Tool, call llms.ToolCall, start
 func notifyToolObserver(ctx context.Context, event ToolExecutionEvent) {
 	observer, _ := ctx.Value(toolExecutionObserverKey{}).(ToolExecutionObserver)
 	if observer != nil {
+		clonedTool, toolErr := cloneToolForObserver(event.Tool)
+		event.Tool = clonedTool
+		event.Call = cloneToolCall(event.Call)
+		clonedResult, resultErr := cloneToolResult(event.Result)
+		event.Result = clonedResult
+		clonedErr, errorCloneErr := cloneObserverError(event.Err)
+		event.Err = clonedErr
+		if event.Approval != nil {
+			approval := *event.Approval
+			event.Approval = &approval
+		}
+		event.CloneError = errors.Join(event.CloneError, toolErr, resultErr, errorCloneErr)
 		observer(ctx, event)
 	}
+}
+
+func cloneToolForObserver(tool Tool) (Tool, error) {
+	tool.Handler = nil
+	clonedValue, err := cloneAnyValue(tool)
+	if err != nil {
+		return Tool{}, fmt.Errorf("omit tool observer definition: %w", err)
+	}
+	cloned, ok := clonedValue.(Tool)
+	if !ok {
+		return Tool{}, fmt.Errorf("clone tool observer definition returned %T", clonedValue)
+	}
+	return cloned, nil
+}
+
+func cloneToolCall(call llms.ToolCall) llms.ToolCall {
+	if call.FunctionCall == nil {
+		return call
+	}
+	functionCall := *call.FunctionCall
+	functionCall.Arguments = append(json.RawMessage(nil), call.FunctionCall.Arguments...)
+	call.FunctionCall = &functionCall
+	return call
+}
+
+func cloneToolResult(result llms.ToolResult) (llms.ToolResult, error) {
+	clonedValue, err := cloneAnyValue(result)
+	if err != nil {
+		result.Value = nil
+		return result, fmt.Errorf("omit tool observer result value: %w", err)
+	}
+	cloned, ok := clonedValue.(llms.ToolResult)
+	if !ok {
+		return llms.ToolResult{}, fmt.Errorf("clone tool observer result returned %T", clonedValue)
+	}
+	return cloned, nil
 }
 
 func callArguments(call llms.ToolCall) json.RawMessage {

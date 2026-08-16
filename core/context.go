@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/dengzii/weaveflow/llms"
+	"github.com/dengzii/weaveflow/state"
 )
 
 const DefaultModelID = "default"
@@ -291,7 +292,7 @@ func FilterTools(available map[string]Tool, ids []string) map[string]Tool {
 			continue
 		}
 		if tool, ok := available[id]; ok {
-			filtered[id] = tool
+			filtered[id] = cloneTool(tool)
 		}
 	}
 	return filtered
@@ -307,12 +308,20 @@ func cloneTools(input map[string]Tool) map[string]Tool {
 		if id == "" {
 			continue
 		}
-		out[id] = tool
+		out[id] = cloneTool(tool)
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func cloneTool(tool Tool) Tool {
+	tool.Function = cloneFunctionDefinition(tool.Function)
+	if tool.Permissions != nil {
+		tool.Permissions = append([]string{}, tool.Permissions...)
+	}
+	return tool
 }
 
 func cloneModels(input map[string]llms.Model) map[string]llms.Model {
@@ -349,13 +358,7 @@ func cloneModelConfigs(input map[string]ModelConfig) map[string]ModelConfig {
 		config.Model = strings.TrimSpace(config.Model)
 		config.BaseURL = strings.TrimSpace(config.BaseURL)
 		config.APIKey = strings.TrimSpace(config.APIKey)
-		if len(config.ExtraBody) > 0 {
-			extraBody := make(map[string]any, len(config.ExtraBody))
-			for field, value := range config.ExtraBody {
-				extraBody[field] = value
-			}
-			config.ExtraBody = extraBody
-		}
+		config.ExtraBody = cloneAnyMap(config.ExtraBody)
 		out[id] = config
 	}
 	if len(out) == 0 {
@@ -386,11 +389,16 @@ func cloneAnyMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return nil
 	}
-	out := make(map[string]any, len(input))
-	for key, value := range input {
-		out[key] = value
-	}
-	return out
+	// These context helpers have no error return and retain the state package's
+	// best-effort behavior. Isolation-sensitive boundaries call cloneAnyValue
+	// directly and handle its error.
+	clonedValue, _ := cloneAnyValue(input)
+	cloned, _ := clonedValue.(map[string]any)
+	return cloned
+}
+
+func cloneAnyValue(value any) (any, error) {
+	return state.CloneValue(value)
 }
 
 func defaultModel(models map[string]llms.Model) llms.Model {
