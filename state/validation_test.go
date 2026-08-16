@@ -145,6 +145,61 @@ func TestProjectStateByContractSelectsReadablePaths(t *testing.T) {
 	}
 }
 
+func TestContractBoundaryRejectsReservedPathsAndWildcardLeaks(t *testing.T) {
+	t.Parallel()
+
+	contract := NewContract(FieldAccess{Path: Internal("scheduler", "state"), Mode: AccessReadWrite})
+	issues := ValidateContract(contract)
+	if len(issues) != 1 || issues[0].Kind != "reserved_contract_path" {
+		t.Fatalf("reserved contract issues = %#v", issues)
+	}
+
+	full := FromMap(map[string]any{
+		SectionShared:   map[string]any{"value": "ok"},
+		SectionInternal: map[string]any{"secret": "must not leak"},
+		SectionRuntime:  map[string]any{"checkpoint": "must not leak"},
+	})
+	wildcard := Contract{WildcardRead: true, WildcardWrite: true}
+	projected := ProjectStateByContract(full, wildcard)
+	if _, ok := ReadPath(projected, "internal.secret"); ok {
+		t.Fatal("wildcard projection exposed internal state")
+	}
+	if _, ok := ReadPath(projected, "runtime.checkpoint"); ok {
+		t.Fatal("wildcard projection exposed runtime state")
+	}
+	patchIssues := ValidatePatchByContract(NewPatch(PatchOp{
+		Kind: OpSet, Path: Runtime("checkpoint"), Value: "tampered",
+	}), wildcard)
+	if len(patchIssues) != 1 || patchIssues[0].Kind != "reserved_patch_path" {
+		t.Fatalf("wildcard patch issues = %#v", patchIssues)
+	}
+}
+
+func TestValidateInputPatchRejectsReservedPathsAndInvalidContracts(t *testing.T) {
+	t.Parallel()
+
+	patch := NewPatch(PatchOp{Kind: OpSet, Path: Internal("scheduler", "state"), Value: "tampered"})
+	patchIssues := ValidateInputPatch(patch)
+	if len(patchIssues) != 1 || patchIssues[0].Kind != "reserved_input_path" {
+		t.Fatalf("input patch issues = %#v", patchIssues)
+	}
+
+	contract := NewContract(FieldAccess{Path: Internal("scheduler", "state"), Mode: AccessReadWrite})
+	issues := ValidateInputPatchByContractWithReducers(
+		NewState(),
+		patch,
+		contract,
+		nil,
+	)
+	seen := map[string]bool{}
+	for _, issue := range issues {
+		seen[issue.Kind] = true
+	}
+	if !seen["reserved_contract_path"] || !seen["reserved_input_path"] {
+		t.Fatalf("input validation issues = %#v", issues)
+	}
+}
+
 func TestValidatePatchRejectsInvalidMergeValue(t *testing.T) {
 	t.Parallel()
 

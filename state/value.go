@@ -1,133 +1,243 @@
 package state
 
 import (
+	"fmt"
 	"math/big"
 	"reflect"
+	"time"
 )
+
+var (
+	bigFloatType = reflect.TypeOf(big.Float{})
+	bigIntType   = reflect.TypeOf(big.Int{})
+	bigRatType   = reflect.TypeOf(big.Rat{})
+	patchType    = reflect.TypeOf(Patch{})
+	timeType     = reflect.TypeOf(time.Time{})
+)
+
+type cloneVisit struct {
+	kind      reflect.Kind
+	valueType reflect.Type
+	pointer   uintptr
+	length    int
+	capacity  int
+}
+
+type valueCloner struct {
+	visited         map[cloneVisit]reflect.Value
+	unsupportedType reflect.Type
+}
 
 func cloneMap(input map[string]any) map[string]any {
 	if input == nil {
 		return nil
 	}
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = cloneValue(value)
-	}
+	clonedValue, _ := CloneValue(input)
+	cloned, _ := clonedValue.(map[string]any)
 	return cloned
 }
 
-// cloneValue returns a deep copy of value so callers can mutate the result
-// without affecting state-owned data. Primitives short-circuit; common
-// containers are handled directly; everything else falls through to a
-// reflection walk that clones pointers, interfaces, slices, arrays, maps, and
-// structs whose fields are all exported. Structs with any unexported field are
-// treated as opaque shared references — safe for value-semantic types such as
-// time.Time, but callers storing types with mutable unexported state must
-// clone before handing the value to state. Cycles are not detected.
-func cloneValue(value any) any {
-	switch typed := value.(type) {
-	case nil:
-		return nil
-	case big.Int:
-		return *new(big.Int).Set(&typed)
-	case *big.Int:
-		if typed == nil {
-			return (*big.Int)(nil)
-		}
-		return new(big.Int).Set(typed)
-	case bool, string,
-		int, int8, int16, int32, int64,
-		uint, uint8, uint16, uint32, uint64, uintptr,
-		float32, float64, complex64, complex128:
-		return typed
-	case map[string]any:
-		return cloneMap(typed)
-	case []any:
-		if typed == nil {
-			return []any(nil)
-		}
-		cloned := make([]any, len(typed))
-		for i, item := range typed {
-			cloned[i] = cloneValue(item)
-		}
-		return cloned
-	case []string:
-		if typed == nil {
-			return []string(nil)
-		}
-		return append([]string(nil), typed...)
-	case []byte:
-		if typed == nil {
-			return []byte(nil)
-		}
-		return append([]byte(nil), typed...)
+// CloneValue returns a cycle-safe best-effort copy of value. Pointer and map
+// identity, plus repeated references to the same slice view, are preserved
+// within the copied object graph, including cycles. Distinct overlapping slice
+// views are copied independently and need not share backing storage. The
+// returned error means full isolation could not be proven because the graph
+// contains an opaque reference value. In that case the returned copy may retain
+// aliases and must not be exposed as an isolated view.
+func CloneValue(value any) (any, error) {
+	if value == nil {
+		return nil, nil
 	}
-	cloned := cloneReflect(reflect.ValueOf(value))
+	cloner := valueCloner{visited: make(map[cloneVisit]reflect.Value)}
+	cloned, safe := cloner.clone(reflect.ValueOf(value))
 	if !cloned.IsValid() {
-		return value
+		return nil, nil
 	}
-	return cloned.Interface()
+	result := cloned.Interface()
+	if !safe {
+		return result, fmt.Errorf("value contains opaque reference type %s that cannot be safely cloned", cloner.unsupportedType)
+	}
+	return result, nil
 }
 
-func cloneReflect(src reflect.Value) reflect.Value {
+// cloneValue is the state package's best-effort copy boundary. State accepts
+// arbitrary Go values, so callers that require proven isolation must use
+// CloneValue and handle its error instead.
+func cloneValue(value any) any {
+	cloned, _ := CloneValue(value)
+	return cloned
+}
+
+func (cloner *valueCloner) clone(src reflect.Value) (reflect.Value, bool) {
 	if !src.IsValid() {
-		return src
+		return src, true
+	}
+	switch src.Type() {
+	case bigFloatType:
+		value := src.Interface().(big.Float)
+		return reflect.ValueOf(*new(big.Float).Copy(&value)), true
+	case bigIntType:
+		value := src.Interface().(big.Int)
+		return reflect.ValueOf(*new(big.Int).Set(&value)), true
+	case bigRatType:
+		value := src.Interface().(big.Rat)
+		return reflect.ValueOf(*new(big.Rat).Set(&value)), true
+	case patchType:
+		patch := src.Interface().(Patch)
+		operations := make([]PatchOp, len(patch.ops))
+		safe := true
+		for index, operation := range patch.ops {
+			operations[index] = operation
+			operations[index].Path = Path{
+				section:  operation.Path.section,
+				segments: append([]string(nil), operation.Path.segments...),
+			}
+			value, valueSafe := cloner.clone(reflect.ValueOf(operation.Value))
+			if value.IsValid() {
+				operations[index].Value = value.Interface()
+			} else {
+				operations[index].Value = nil
+			}
+			safe = safe && valueSafe
+		}
+		return reflect.ValueOf(Patch{ops: operations}), safe
+	case timeType:
+		return src, true
 	}
 	switch src.Kind() {
 	case reflect.Ptr:
 		if src.IsNil() {
-			return src
+			return src, true
 		}
-		clone := reflect.New(src.Type().Elem())
-		clone.Elem().Set(cloneReflect(src.Elem()))
-		return clone
+		visit := cloneVisit{kind: src.Kind(), valueType: src.Type(), pointer: src.Pointer()}
+		if cloned, ok := cloner.visited[visit]; ok {
+			return cloned, true
+		}
+		cloned := reflect.New(src.Type().Elem())
+		cloner.visited[visit] = cloned
+		element, safe := cloner.clone(src.Elem())
+		cloned.Elem().Set(element)
+		return cloned, safe
 	case reflect.Interface:
 		if src.IsNil() {
-			return reflect.Zero(src.Type())
+			return reflect.Zero(src.Type()), true
 		}
-		concrete := cloneReflect(src.Elem())
+		concrete, safe := cloner.clone(src.Elem())
 		wrapper := reflect.New(src.Type()).Elem()
 		wrapper.Set(concrete)
-		return wrapper
+		return wrapper, safe
 	case reflect.Slice:
 		if src.IsNil() {
-			return src
+			return src, true
 		}
-		clone := reflect.MakeSlice(src.Type(), src.Len(), src.Len())
-		for i := 0; i < src.Len(); i++ {
-			clone.Index(i).Set(cloneReflect(src.Index(i)))
+		visit := cloneVisit{
+			kind:      src.Kind(),
+			valueType: src.Type(),
+			pointer:   src.Pointer(),
+			length:    src.Len(),
+			capacity:  src.Cap(),
 		}
-		return clone
+		if cloned, ok := cloner.visited[visit]; ok {
+			return cloned, true
+		}
+		cloned := reflect.MakeSlice(src.Type(), src.Len(), src.Len())
+		cloner.visited[visit] = cloned
+		safe := true
+		for index := 0; index < src.Len(); index++ {
+			item, itemSafe := cloner.clone(src.Index(index))
+			cloned.Index(index).Set(item)
+			safe = safe && itemSafe
+		}
+		return cloned, safe
 	case reflect.Array:
-		clone := reflect.New(src.Type()).Elem()
-		for i := 0; i < src.Len(); i++ {
-			clone.Index(i).Set(cloneReflect(src.Index(i)))
+		cloned := reflect.New(src.Type()).Elem()
+		safe := true
+		for index := 0; index < src.Len(); index++ {
+			item, itemSafe := cloner.clone(src.Index(index))
+			cloned.Index(index).Set(item)
+			safe = safe && itemSafe
 		}
-		return clone
+		return cloned, safe
 	case reflect.Map:
 		if src.IsNil() {
-			return src
+			return src, true
 		}
-		clone := reflect.MakeMapWithSize(src.Type(), src.Len())
+		visit := cloneVisit{kind: src.Kind(), valueType: src.Type(), pointer: src.Pointer()}
+		if cloned, ok := cloner.visited[visit]; ok {
+			return cloned, true
+		}
+		cloned := reflect.MakeMapWithSize(src.Type(), src.Len())
+		cloner.visited[visit] = cloned
+		safe := true
 		iter := src.MapRange()
 		for iter.Next() {
-			clone.SetMapIndex(cloneReflect(iter.Key()), cloneReflect(iter.Value()))
+			key, keySafe := cloner.clone(iter.Key())
+			value, valueSafe := cloner.clone(iter.Value())
+			cloned.SetMapIndex(key, value)
+			safe = safe && keySafe && valueSafe
 		}
-		return clone
+		return cloned, safe
 	case reflect.Struct:
-		t := src.Type()
-		for i := 0; i < t.NumField(); i++ {
-			if t.Field(i).PkgPath != "" {
-				return src
+		typeInfo := src.Type()
+		for index := 0; index < typeInfo.NumField(); index++ {
+			fieldInfo := typeInfo.Field(index)
+			if fieldInfo.PkgPath != "" && !isShallowCopyIsolated(fieldInfo.Type) {
+				cloner.markUnsupported(typeInfo)
+				return src, false
 			}
 		}
-		clone := reflect.New(t).Elem()
-		for i := 0; i < src.NumField(); i++ {
-			clone.Field(i).Set(cloneReflect(src.Field(i)))
+		cloned := reflect.New(typeInfo).Elem()
+		cloned.Set(src)
+		safe := true
+		for index := 0; index < src.NumField(); index++ {
+			if typeInfo.Field(index).PkgPath != "" {
+				continue
+			}
+			field, fieldSafe := cloner.clone(src.Field(index))
+			cloned.Field(index).Set(field)
+			safe = safe && fieldSafe
 		}
-		return clone
+		return cloned, safe
+	case reflect.Func, reflect.Chan, reflect.UnsafePointer:
+		if src.IsNil() {
+			return src, true
+		}
+		cloner.markUnsupported(src.Type())
+		return src, false
 	default:
-		return src
+		return src, true
+	}
+}
+
+func (cloner *valueCloner) markUnsupported(typeInfo reflect.Type) {
+	if cloner.unsupportedType == nil {
+		cloner.unsupportedType = typeInfo
+	}
+}
+
+func isShallowCopyIsolated(typeInfo reflect.Type) bool {
+	if typeInfo == timeType {
+		return true
+	}
+	switch typeInfo.Kind() {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr,
+		reflect.Float32, reflect.Float64,
+		reflect.Complex64, reflect.Complex128,
+		reflect.String:
+		return true
+	case reflect.Array:
+		return isShallowCopyIsolated(typeInfo.Elem())
+	case reflect.Struct:
+		for index := 0; index < typeInfo.NumField(); index++ {
+			if !isShallowCopyIsolated(typeInfo.Field(index).Type) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
 }
 

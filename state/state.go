@@ -31,7 +31,8 @@ func FromMap(input map[string]any) *State {
 	return result
 }
 
-// FromShared creates state with values placed under the shared section.
+// FromShared creates state with best-effort copies placed under the shared
+// section. Opaque values that cannot be safely cloned may retain aliases.
 func FromShared(shared map[string]any) *State {
 	result := NewState()
 	if shared != nil {
@@ -41,7 +42,8 @@ func FromShared(shared map[string]any) *State {
 	return result
 }
 
-// Clone returns a deep copy of state.
+// Clone returns a cycle-safe best-effort copy of state. Callers that require
+// proven isolation should use CloneStrict.
 func (s *State) Clone() *State {
 	if s == nil {
 		return NewState()
@@ -49,7 +51,26 @@ func (s *State) Clone() *State {
 	return FromMap(s.root)
 }
 
-// Export returns a deep copy of the state envelope.
+// CloneStrict returns an isolated copy or an error when state contains an
+// opaque mutable value that cannot be safely cloned.
+func (s *State) CloneStrict() (*State, error) {
+	if s == nil || s.root == nil {
+		return NewState(), nil
+	}
+	clonedValue, err := CloneValue(s.root)
+	if err != nil {
+		return nil, fmt.Errorf("clone state: %w", err)
+	}
+	clonedRoot, ok := clonedValue.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("clone state returned %T", clonedValue)
+	}
+	cloned := &State{root: clonedRoot}
+	cloned.ensureRootSections()
+	return cloned, nil
+}
+
+// Export returns a cycle-safe best-effort copy of the state envelope.
 func (s *State) Export() map[string]any {
 	if s == nil || s.root == nil {
 		return newRoot()

@@ -79,6 +79,13 @@ func ValidateContract(contract Contract) []ValidationIssue {
 				Message: "contract field path is required",
 			})
 		}
+		if isReservedPath(field.Path) {
+			issues = append(issues, ValidationIssue{
+				Path:    path,
+				Kind:    "reserved_contract_path",
+				Message: fmt.Sprintf("contract path %q is reserved for the runtime", path),
+			})
+		}
 		if !validAccessMode(field.Mode) {
 			issues = append(issues, ValidationIssue{
 				Path:    path,
@@ -106,6 +113,13 @@ func ValidateContract(contract Contract) []ValidationIssue {
 
 func ValidateRequiredReads(current *State, contract Contract) []ValidationIssue {
 	issues := ValidateContract(contract)
+	issues = append(issues, validateRequiredReadsOnly(current, contract)...)
+	sortValidationIssues(issues)
+	return issues
+}
+
+func validateRequiredReadsOnly(current *State, contract Contract) []ValidationIssue {
+	issues := make([]ValidationIssue, 0)
 	if current == nil {
 		current = NewState()
 	}
@@ -135,7 +149,7 @@ func ProjectStateByContract(full *State, contract Contract) *State {
 		full = NewState()
 	}
 	if contract.WildcardRead {
-		return full.Clone()
+		return projectBusinessState(full)
 	}
 
 	projected := NewState()
@@ -185,10 +199,49 @@ func ValidatePatch(patch Patch) []ValidationIssue {
 	return issues
 }
 
+func ValidateNodePatch(patch Patch) []ValidationIssue {
+	issues := ValidatePatch(patch)
+	for _, op := range patch.Ops() {
+		if !isReservedPath(op.Path) {
+			continue
+		}
+		issues = append(issues, ValidationIssue{
+			Path:    op.Path.String(),
+			Kind:    "reserved_patch_path",
+			Message: fmt.Sprintf("patch writes reserved path %q", op.Path.String()),
+		})
+	}
+	return issues
+}
+
+func ValidateInputPatch(patch Patch) []ValidationIssue {
+	issues := ValidatePatch(patch)
+	for _, op := range patch.Ops() {
+		if !isReservedPath(op.Path) {
+			continue
+		}
+		issues = append(issues, ValidationIssue{
+			Path:    op.Path.String(),
+			Kind:    "reserved_input_path",
+			Message: fmt.Sprintf("input patch writes reserved path %q", op.Path.String()),
+		})
+	}
+	return issues
+}
+
 func ValidatePatchByContract(patch Patch, contract Contract) []ValidationIssue {
 	issues := ValidatePatch(patch)
 	issues = append(issues, ValidateContract(contract)...)
 	if contract.WildcardWrite {
+		for _, op := range patch.Ops() {
+			if isReservedPath(op.Path) {
+				issues = append(issues, ValidationIssue{
+					Path:    op.Path.String(),
+					Kind:    "reserved_patch_path",
+					Message: fmt.Sprintf("patch writes reserved path %q", op.Path.String()),
+				})
+			}
+		}
 		return issues
 	}
 
@@ -271,13 +324,18 @@ func ValidatePatchResultByContract(base *State, patch Patch, contract Contract) 
 }
 
 func ValidatePatchResultByContractWithReducers(base *State, patch Patch, contract Contract, reducers map[string]Reducer) []ValidationIssue {
-	issues := ValidatePatchByContract(patch, contract)
 	resultState, err := patch.ApplyWithReducers(base, reducers)
 	if err != nil {
+		issues := ValidatePatchByContract(patch, contract)
 		issues = append(issues, ValidationIssue{Kind: "patch_apply_failed", Message: err.Error()})
 		sortValidationIssues(issues)
 		return issues
 	}
+	return ValidateAppliedPatchResultByContract(resultState, patch, contract)
+}
+
+func ValidateAppliedPatchResultByContract(resultState *State, patch Patch, contract Contract) []ValidationIssue {
+	issues := ValidatePatchByContract(patch, contract)
 	writtenPaths := make(map[string]struct{})
 	for _, op := range patch.Ops() {
 		if !op.Path.Empty() {
@@ -309,7 +367,26 @@ func ValidatePatchResultByContractWithReducers(base *State, patch Patch, contrac
 }
 
 func ValidateInputPatchByContractWithReducers(base *State, patch Patch, contract Contract, reducers map[string]Reducer) []ValidationIssue {
-	issues := ValidatePatch(patch)
+	inputState, err := patch.ApplyWithReducers(base, reducers)
+	if err != nil {
+		issues := ValidateInputPatchByContract(patch, contract)
+		issues = append(issues, ValidationIssue{Kind: "input_patch_apply_failed", Message: err.Error()})
+		sortValidationIssues(issues)
+		return issues
+	}
+	return ValidateAppliedInputPatchByContract(inputState, patch, contract)
+}
+
+func ValidateAppliedInputPatchByContract(inputState *State, patch Patch, contract Contract) []ValidationIssue {
+	issues := ValidateInputPatchByContract(patch, contract)
+	issues = append(issues, validateRequiredReadsOnly(inputState, contract)...)
+	sortValidationIssues(issues)
+	return issues
+}
+
+func ValidateInputPatchByContract(patch Patch, contract Contract) []ValidationIssue {
+	issues := ValidateInputPatch(patch)
+	issues = append(issues, ValidateContract(contract)...)
 	readPaths := contract.ReadPaths()
 	if !contract.WildcardRead {
 		for _, op := range patch.Ops() {
@@ -341,13 +418,6 @@ func ValidateInputPatchByContractWithReducers(base *State, patch Patch, contract
 			})
 		}
 	}
-	inputState, err := patch.ApplyWithReducers(base, reducers)
-	if err != nil {
-		issues = append(issues, ValidationIssue{Kind: "input_patch_apply_failed", Message: err.Error()})
-	} else {
-		issues = append(issues, ValidateRequiredReads(inputState, contract)...)
-	}
-	sortValidationIssues(issues)
 	return issues
 }
 
@@ -409,6 +479,24 @@ func isReadMode(mode AccessMode) bool {
 
 func isWriteMode(mode AccessMode) bool {
 	return mode == AccessWrite || mode == AccessReadWrite
+}
+
+func isReservedPath(path Path) bool {
+	return path.section == SectionInternal || path.section == SectionRuntime
+}
+
+func projectBusinessState(full *State) *State {
+	if full == nil {
+		return NewState()
+	}
+	exported := full.Export()
+	business := make(map[string]any, 2)
+	for _, section := range []string{SectionShared, SectionScopes} {
+		if value, ok := exported[section].(map[string]any); ok {
+			business[section] = value
+		}
+	}
+	return FromMap(business)
 }
 
 func pathAllowedByAny(path Path, allowed []Path) bool {

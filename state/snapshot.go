@@ -178,52 +178,17 @@ func encodeSnapshotSection(value any) (map[string]any, error) {
 	if !ok || mapped == nil {
 		return map[string]any{}, nil
 	}
-	encoded, err := encodeSnapshotValue(cloneMap(mapped))
+	payload, err := json.Marshal(cloneMap(mapped))
 	if err != nil {
 		return nil, err
 	}
-	section, ok := encoded.(map[string]any)
-	if !ok {
-		return map[string]any{}, nil
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.UseNumber()
+	var section map[string]any
+	if err := decoder.Decode(&section); err != nil {
+		return nil, err
 	}
-	return section, nil
-}
-
-func encodeSnapshotValue(value any) (any, error) {
-	switch typed := value.(type) {
-	case map[string]any:
-		result := make(map[string]any, len(typed))
-		for key, item := range typed {
-			encoded, err := encodeSnapshotValue(item)
-			if err != nil {
-				return nil, err
-			}
-			result[key] = encoded
-		}
-		return result, nil
-	case []any:
-		result := make([]any, len(typed))
-		for index, item := range typed {
-			encoded, err := encodeSnapshotValue(item)
-			if err != nil {
-				return nil, err
-			}
-			result[index] = encoded
-		}
-		return result, nil
-	default:
-		payload, err := json.Marshal(value)
-		if err != nil {
-			return nil, err
-		}
-		decoder := json.NewDecoder(bytes.NewReader(payload))
-		decoder.UseNumber()
-		var encoded any
-		if err := decoder.Decode(&encoded); err != nil {
-			return nil, err
-		}
-		return normalizeDecodedValue(encoded), nil
-	}
+	return normalizeDecodedMap(section), nil
 }
 
 func flattenSnapshot(snapshot Snapshot) (map[string]any, error) {

@@ -148,14 +148,34 @@ func applyPatchOpWithReducers(target *State, op PatchOp, reducers map[string]Red
 			return fmt.Errorf("unknown state reducer %q", op.Reducer)
 		}
 		current, _ := target.read(op.Path)
-		value, err := reducer.Reduce(current, op.Value)
+		isolatedCurrent, err := cloneReducerValue(current)
+		if err != nil {
+			return fmt.Errorf("state reducer %q current value at %q: %w", op.Reducer, op.Path.String(), err)
+		}
+		isolatedIncoming, err := cloneReducerValue(op.Value)
+		if err != nil {
+			return fmt.Errorf("state reducer %q incoming value at %q: %w", op.Reducer, op.Path.String(), err)
+		}
+		value, err := reducer.Reduce(isolatedCurrent, isolatedIncoming)
 		if err != nil {
 			return fmt.Errorf("state reducer %q failed at %q: %w", op.Reducer, op.Path.String(), err)
 		}
-		return target.set(op.Path, value)
+		isolatedValue, err := cloneReducerValue(value)
+		if err != nil {
+			return fmt.Errorf("state reducer %q result at %q: %w", op.Reducer, op.Path.String(), err)
+		}
+		return target.set(op.Path, isolatedValue)
 	default:
 		return fmt.Errorf("unknown patch op kind %q", op.Kind)
 	}
+}
+
+func cloneReducerValue(value any) (any, error) {
+	cloned, err := CloneValue(value)
+	if err != nil {
+		return nil, fmt.Errorf("cannot be safely cloned: %w", err)
+	}
+	return cloned, nil
 }
 
 func appendPathValue(target *State, path Path, value any) error {

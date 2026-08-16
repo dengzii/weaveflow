@@ -23,6 +23,60 @@ func TestReducerAppliesSequentially(t *testing.T) {
 	}
 }
 
+func TestReducerCannotRetainPatchOrStateAliases(t *testing.T) {
+	baseValue := map[string]any{"items": []any{"base"}}
+	incomingValue := map[string]any{"items": []any{"incoming"}}
+	patch := NewPatch(PatchOp{Kind: OpReduce, Path: Shared("value"), Reducer: "retain.v1", Value: incomingValue})
+	reducer := &retainingReducer{}
+	result, err := patch.ApplyWithReducers(FromShared(map[string]any{"value": baseValue}), map[string]Reducer{"retain.v1": reducer})
+	if err != nil {
+		t.Fatalf("ApplyWithReducers() error = %v", err)
+	}
+
+	reducer.current.(map[string]any)["items"].([]any)[0] = "mutated-current"
+	reducer.incoming.(map[string]any)["items"].([]any)[0] = "mutated-incoming"
+	reducer.result.(map[string]any)["items"].([]any)[0] = "mutated-result"
+
+	if got := baseValue["items"].([]any)[0]; got != "base" {
+		t.Fatalf("base value = %#v, want base", got)
+	}
+	operations := patch.Ops()
+	if got := operations[0].Value.(map[string]any)["items"].([]any)[0]; got != "incoming" {
+		t.Fatalf("patch value = %#v, want incoming", got)
+	}
+	value, ok := ReadPath(result, "shared.value")
+	if !ok {
+		t.Fatal("reduced value is missing")
+	}
+	if got := value.(map[string]any)["items"].([]any)[0]; got != "result" {
+		t.Fatalf("result value = %#v, want result", got)
+	}
+}
+
+func TestAppliedContractValidationDoesNotRunReducer(t *testing.T) {
+	reducer := &countingReducer{}
+	patch := NewPatch(PatchOp{Kind: OpReduce, Path: Shared("total"), Reducer: "count.v1", Value: 2})
+	contract := NewContract(FieldAccess{
+		Path:    Shared("total"),
+		Mode:    AccessReadWrite,
+		Reducer: "count.v1",
+		Schema:  JSONSchema{"type": "integer"},
+	})
+	applied, err := patch.ApplyWithReducers(FromShared(map[string]any{"total": 1}), map[string]Reducer{"count.v1": reducer})
+	if err != nil {
+		t.Fatalf("ApplyWithReducers() error = %v", err)
+	}
+	if issues := ValidateAppliedInputPatchByContract(applied, patch, contract); len(issues) > 0 {
+		t.Fatalf("ValidateAppliedInputPatchByContract() issues = %#v", issues)
+	}
+	if issues := ValidateAppliedPatchResultByContract(applied, patch, contract); len(issues) > 0 {
+		t.Fatalf("ValidateAppliedPatchResultByContract() issues = %#v", issues)
+	}
+	if reducer.calls != 1 {
+		t.Fatalf("Reducer calls = %d, want 1", reducer.calls)
+	}
+}
+
 func TestReducerRejectsUnknownIdentifier(t *testing.T) {
 	patch := NewPatch(PatchOp{Kind: OpReduce, Path: Shared("total"), Reducer: "missing.v1", Value: 1})
 	if _, err := patch.Apply(NewState()); err == nil {
@@ -162,5 +216,27 @@ func TestStateReadClonesLargeInteger(t *testing.T) {
 type pointerReducer struct{}
 
 func (*pointerReducer) Reduce(current, incoming any) (any, error) {
+	return incoming, nil
+}
+
+type retainingReducer struct {
+	current  any
+	incoming any
+	result   any
+}
+
+func (reducer *retainingReducer) Reduce(current, incoming any) (any, error) {
+	reducer.current = current
+	reducer.incoming = incoming
+	reducer.result = map[string]any{"items": []any{"result"}}
+	return reducer.result, nil
+}
+
+type countingReducer struct {
+	calls int
+}
+
+func (reducer *countingReducer) Reduce(_, incoming any) (any, error) {
+	reducer.calls++
 	return incoming, nil
 }

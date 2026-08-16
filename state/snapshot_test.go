@@ -1,6 +1,7 @@
 package state
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -62,6 +63,17 @@ func TestJSONStateCodecRoundTripsJSONShapeWithoutDomainReconstruction(t *testing
 	attempt, ok := restoredAccess.ReadAny(Scope("agent", "thread", "attempt"))
 	if !ok || attempt != 2 {
 		t.Fatalf("expected int attempt 2, got %#v ok=%v", attempt, ok)
+	}
+}
+
+func TestSnapshotFromStateRejectsCyclicValues(t *testing.T) {
+	cyclic := map[string]any{}
+	cyclic["self"] = cyclic
+	current := FromShared(map[string]any{"cyclic": cyclic})
+
+	_, err := SnapshotFromState(current)
+	if err == nil || !strings.Contains(err.Error(), "encountered a cycle") {
+		t.Fatalf("SnapshotFromState() error = %v, want cycle error", err)
 	}
 }
 
