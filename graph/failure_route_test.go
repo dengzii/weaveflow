@@ -15,6 +15,10 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
+type failureOpaqueDetails struct {
+	values []string
+}
+
 func TestFailureRouteRunsAfterNodeFailure(t *testing.T) {
 	workflow := NewGraph(nil)
 	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error {
@@ -46,6 +50,87 @@ func TestFailureRouteRunsAfterNodeFailure(t *testing.T) {
 	value, ok := state.ReadPath(result, "shared.handled")
 	if !ok || value != true {
 		t.Fatalf("handled = %#v", value)
+	}
+}
+
+func TestFailureRouteRejectsOpaqueMutableDetails(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph(nil)
+	var fallbackCalls atomic.Int32
+	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error {
+		return core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, map[string]any{
+			"opaque": &failureOpaqueDetails{values: []string{"source"}},
+		})
+	})
+	mustAddNode(t, workflow, "fallback", func(context.Context, *state.Access) error {
+		fallbackCalls.Add(1)
+		return nil
+	})
+	if err := workflow.SetEntryPoint("failed"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddFailureRoute("failed", "fallback", dsl.FailureRouteSpec{CatchAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddEdge("failed", EndNodeRef); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("fallback"); err != nil {
+		t.Fatal(err)
+	}
+	_, err := workflow.Run(context.Background(), state.NewState())
+	if err == nil || !strings.Contains(err.Error(), "failure details cannot be safely cloned") {
+		t.Fatalf("Run() error = %v, want unsafe failure details rejection", err)
+	}
+	if fallbackCalls.Load() != 0 {
+		t.Fatalf("fallback calls = %d, want 0", fallbackCalls.Load())
+	}
+}
+
+func TestFailureRouteToJoinPreservesContext(t *testing.T) {
+	workflow := NewGraph(nil)
+	var fallbackCalls atomic.Int32
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error { return nil })
+	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error {
+		return core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, nil)
+	})
+	for _, nodeID := range []string{"left", "right"} {
+		mustAddNode(t, workflow, nodeID, func(context.Context, *state.Access) error { return nil })
+	}
+	mustAddResultNode(t, workflow, "fallback", func(ctx core.Context, _ *state.Access) (core.NodeResult, error) {
+		fallbackCalls.Add(1)
+		failure, ok := ctx.Failure()
+		if !ok || failure.Stage != string(dsl.FailureStageNode) || failure.ErrorClass != core.ErrorUnavailable || failure.SourceNodeID != "failed" {
+			return core.NodeResult{}, errors.New("failure context is missing or invalid")
+		}
+		return core.Success(), nil
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddFailureRoute("failed", "fallback", dsl.FailureRouteSpec{CatchAll: true}); err != nil {
+		t.Fatal(err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "failed"},
+		{"router", "left"},
+		{"router", "right"},
+		{"failed", EndNodeRef},
+		{"left", "fallback"},
+		{"right", "fallback"},
+		{"fallback", EndNodeRef},
+	} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+
+	if _, err := workflow.Run(context.Background(), state.NewState()); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if fallbackCalls.Load() != 1 {
+		t.Fatalf("fallback calls = %d, want 1", fallbackCalls.Load())
 	}
 }
 

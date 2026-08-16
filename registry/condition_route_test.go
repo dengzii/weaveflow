@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/dengzii/weaveflow/core"
@@ -55,4 +56,46 @@ func TestRouteDecisionPreservesUnmatchedDiagnostic(t *testing.T) {
 	if decision.Matched || decision.Reason != "threshold not met" || decision.Details["score"] != 0.2 {
 		t.Fatalf("decision = %#v", decision)
 	}
+}
+
+func TestRouteDecisionIsolatesMutableOutput(t *testing.T) {
+	details := map[string]any{"nested": map[string]any{"value": "source"}}
+	inputValue := map[string]any{"items": []any{"source"}}
+	condition := NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (RouteDecision, error) {
+		return RouteDecision{
+			Matched: true,
+			Reason:  "isolated",
+			Details: details,
+			Send: []core.Send{{Target: "worker", Input: state.NewPatch(state.PatchOp{
+				Kind: state.OpSet, Path: state.Shared("input"), Value: inputValue,
+			})}},
+		}, nil
+	})
+	decision, err := condition.EvaluateRoute(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("EvaluateRoute() error = %v", err)
+	}
+	details["nested"].(map[string]any)["value"] = "mutated"
+	inputValue["items"].([]any)[0] = "mutated"
+	if got := decision.Details["nested"].(map[string]any)["value"]; got != "source" {
+		t.Fatalf("decision details value = %#v, want source", got)
+	}
+	operations := decision.Send[0].Input.Ops()
+	if got := operations[0].Value.(map[string]any)["items"].([]any)[0]; got != "source" {
+		t.Fatalf("decision send input = %#v, want source", got)
+	}
+}
+
+func TestRouteDecisionRejectsOpaqueMutableOutput(t *testing.T) {
+	condition := NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(context.Context, *state.State) (RouteDecision, error) {
+		return RouteDecision{Matched: true, Reason: "opaque", Details: map[string]any{"opaque": &routeOpaqueValue{values: []string{"source"}}}}, nil
+	})
+	_, err := condition.EvaluateRoute(context.Background(), state.NewState())
+	if err == nil || !strings.Contains(err.Error(), "cannot be safely cloned") {
+		t.Fatalf("EvaluateRoute() error = %v, want strict clone rejection", err)
+	}
+}
+
+type routeOpaqueValue struct {
+	values []string
 }

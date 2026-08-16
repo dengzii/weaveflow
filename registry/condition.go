@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -34,8 +35,11 @@ func (decision RouteDecision) Validate() error {
 		if strings.TrimSpace(string(send.Target)) == "" {
 			return fmt.Errorf("route decision send target is empty")
 		}
-		if issues := state.ValidatePatch(send.Input); len(issues) > 0 {
+		if issues := state.ValidateInputPatch(send.Input); len(issues) > 0 {
 			return fmt.Errorf("route decision send input: %s", issues[0].Message)
+		}
+		if _, err := json.Marshal(send.Input); err != nil {
+			return fmt.Errorf("route decision send input cannot be encoded: %w", err)
 		}
 	}
 	if strings.TrimSpace(decision.Reason) == "" && len(decision.Details) > 0 {
@@ -74,9 +78,15 @@ func (condition EdgeCondition) EvaluateRoute(ctx context.Context, current *state
 	decision.Reason = strings.TrimSpace(decision.Reason)
 	decision.Targets = append([]core.NodeRef(nil), decision.Targets...)
 	decision.Send = append([]core.Send(nil), decision.Send...)
-	decision.Details = cloneRouteDetails(decision.Details)
+	decision.Details, err = cloneRouteDetails(decision.Details)
+	if err != nil {
+		return RouteDecision{}, err
+	}
 	for index := range decision.Send {
-		decision.Send[index].Input = state.NewPatch(decision.Send[index].Input.Ops()...)
+		decision.Send[index].Input, err = cloneRoutePatch(decision.Send[index].Input)
+		if err != nil {
+			return RouteDecision{}, fmt.Errorf("route decision send %d input: %w", index, err)
+		}
 	}
 	if err := decision.Validate(); err != nil {
 		return RouteDecision{}, err
@@ -84,15 +94,34 @@ func (condition EdgeCondition) EvaluateRoute(ctx context.Context, current *state
 	return decision, nil
 }
 
-func cloneRouteDetails(details map[string]any) map[string]any {
+func cloneRouteDetails(details map[string]any) (map[string]any, error) {
 	if len(details) == 0 {
-		return nil
+		return nil, nil
 	}
-	cloned := make(map[string]any, len(details))
-	for key, value := range details {
-		cloned[key] = value
+	clonedValue, err := state.CloneValue(details)
+	if err != nil {
+		return nil, fmt.Errorf("route decision details cannot be safely cloned: %w", err)
 	}
-	return cloned
+	cloned, ok := clonedValue.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("route decision details clone has type %T", clonedValue)
+	}
+	if _, err := json.Marshal(cloned); err != nil {
+		return nil, fmt.Errorf("route decision details cannot be encoded: %w", err)
+	}
+	return cloned, nil
+}
+
+func cloneRoutePatch(patch state.Patch) (state.Patch, error) {
+	operations := patch.Ops()
+	for index := range operations {
+		value, err := state.CloneValue(operations[index].Value)
+		if err != nil {
+			return state.Patch{}, fmt.Errorf("operation %d value cannot be safely cloned: %w", index, err)
+		}
+		operations[index].Value = value
+	}
+	return state.NewPatch(operations...), nil
 }
 
 func (condition EdgeCondition) WithSpec(spec dsl.GraphConditionSpec) EdgeCondition {

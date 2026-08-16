@@ -11,9 +11,15 @@ import (
 )
 
 func (g *Graph) Compile() (*Runnable, error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	g.mutationMu.Lock()
+	defer g.mutationMu.Unlock()
 	if err := g.Validate(); err != nil {
 		return nil, err
 	}
+	g.sealed = true
 	patches := newCompilePatchCollector(g.compileBranchOrders())
 	scheduled := newScheduledRunnable(g, patches, func(ctx context.Context, task fruntime.GraphTask, currentState *state.State) (core.ExecutionResult, error) {
 		targetNode := g.nodes[task.NodeID]
@@ -48,8 +54,8 @@ func (g *Graph) executePatchNode(ctx context.Context, task fruntime.GraphTask, t
 			hasResolvedContract = true
 		}
 	}
-	if task.Dynamic && hasResolvedContract {
-		if issues := state.ValidateInputPatchByContractWithReducers(currentState, task.Input, resolvedContract, g.reducers()); len(issues) > 0 {
+	if task.Dynamic {
+		if issues := state.ValidateInputPatch(task.Input); len(issues) > 0 {
 			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
 		}
 	}
@@ -57,15 +63,25 @@ func (g *Graph) executePatchNode(ctx context.Context, task fruntime.GraphTask, t
 	if err != nil {
 		return core.ExecutionResult{}, fmt.Errorf("apply input for task %q: %w", task.TaskID, err)
 	}
+	if task.Dynamic && hasResolvedContract {
+		if issues := state.ValidateAppliedInputPatchByContract(inputState, task.Input, resolvedContract); len(issues) > 0 {
+			return core.ExecutionResult{}, state.NewValidationError("send input", issues)
+		}
+	}
+	nodeInput := state.ProjectStateByContract(inputState, state.Contract{WildcardRead: true})
+	if hasResolvedContract {
+		nodeInput = state.ProjectStateByContract(inputState, resolvedContract)
+	}
 	contract := &resolvedContract
 	var readIssues []state.ValidationIssue
 	var writeIssues []state.ValidationIssue
 	result, err := core.ExecuteNodeWithOptions(ctx, inputState, targetNode, core.NodeExecutionOptions{
 		Contract:               contract,
+		InputState:             nodeInput,
 		EnforceInputProjection: hasResolvedContract,
 		ValidateRequiredReads:  hasResolvedContract,
 		ValidateWrites:         hasResolvedContract || len(contract.Fields) > 0 || contract.WildcardWrite,
-		ApplyPatchToInput:      hasResolvedContract,
+		ApplyPatchToInput:      true,
 		Reducers:               g.reducers(),
 		OnRequiredReadIssues: func(issues []state.ValidationIssue) {
 			readIssues = append([]state.ValidationIssue(nil), issues...)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -203,6 +204,54 @@ func TestGraphRunDynamicSendWithoutContractMatchesRunner(t *testing.T) {
 	}
 }
 
+func TestDynamicSendWithoutContractRejectsReservedInput(t *testing.T) {
+	t.Parallel()
+
+	reservedInput := state.NewPatch(state.PatchOp{
+		Kind:  state.OpDelete,
+		Path:  state.Internal("graph_scheduler"),
+		Value: nil,
+	})
+	tests := []struct {
+		name string
+		run  func(*Graph, *fruntime.MemoryRuntimeStore) (fruntime.RunRecord, error)
+	}{
+		{
+			name: "direct",
+			run: func(workflow *Graph, _ *fruntime.MemoryRuntimeStore) (fruntime.RunRecord, error) {
+				_, err := workflow.Run(context.Background(), state.NewState())
+				return fruntime.RunRecord{}, err
+			},
+		},
+		{
+			name: "graph runner",
+			run: func(workflow *Graph, runtimeStore *fruntime.MemoryRuntimeStore) (fruntime.RunRecord, error) {
+				runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore)
+				run, _, err := runner.Start(context.Background(), state.NewState())
+				return run, err
+			},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			var mapperCalls atomic.Int32
+			var workerCalls atomic.Int32
+			workflow := newDynamicSendGraph(t, []core.Send{{Target: "worker", Input: reservedInput}}, &mapperCalls, &workerCalls, nil, nil)
+			runtimeStore := fruntime.NewMemoryRuntimeStore()
+			run, err := testCase.run(workflow, runtimeStore)
+			if err == nil || !strings.Contains(err.Error(), "reserved path") {
+				t.Fatalf("run error = %v, want reserved input rejection", err)
+			}
+			if mapperCalls.Load() != 1 || workerCalls.Load() != 0 {
+				t.Fatalf("mapper calls = %d, worker calls = %d", mapperCalls.Load(), workerCalls.Load())
+			}
+			if testCase.name == "graph runner" && run.Status != fruntime.RunStatusFailed {
+				t.Fatalf("run status = %q, want %q", run.Status, fruntime.RunStatusFailed)
+			}
+		})
+	}
+}
+
 func TestRunnerDynamicSendPauseAtBarrierDoesNotReplaySenderOrWorkers(t *testing.T) {
 	t.Parallel()
 
@@ -258,7 +307,10 @@ func TestRunnerDynamicSendPauseAtBarrierDoesNotReplaySenderOrWorkers(t *testing.
 	if restored.Record.Stage != fruntime.CheckpointAfterWave {
 		t.Fatalf("pause checkpoint stage = %q, want after_wave", restored.Record.Stage)
 	}
-	schedule, ok := fruntime.LoadGraphSchedule(restored.Business)
+	schedule, ok, err := fruntime.LoadGraphSchedule(restored.Business)
+	if err != nil {
+		t.Fatalf("LoadGraphSchedule() error = %v", err)
+	}
 	if !ok || len(schedule.NextTasks) != 1 || schedule.NextTasks[0].NodeID != "collector" || schedule.NextTasks[0].Dynamic {
 		t.Fatalf("pause schedule = %#v", schedule)
 	}
@@ -526,7 +578,10 @@ func persistedDynamicTasks(t *testing.T, runner *fruntime.GraphRunner, runID str
 		if err != nil {
 			t.Fatalf("LoadCheckpointState(%q): %v", checkpoint.CheckpointID, err)
 		}
-		schedule, ok := fruntime.LoadGraphSchedule(restored.Business)
+		schedule, ok, err := fruntime.LoadGraphSchedule(restored.Business)
+		if err != nil {
+			t.Fatalf("LoadGraphSchedule() error = %v", err)
+		}
 		if !ok || len(schedule.NextTasks) == 0 {
 			continue
 		}

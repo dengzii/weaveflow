@@ -12,7 +12,6 @@ import (
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
@@ -96,6 +95,8 @@ type Graph struct {
 	nodeLimiter             *core.ConcurrencyLimiter
 	toolLimiter             *core.ConcurrencyLimiter
 	nodeLimiters            map[string]*core.ConcurrencyLimiter
+	mutationMu              sync.Mutex
+	sealed                  bool
 	contractDiagnosticsMu   sync.RWMutex
 }
 
@@ -126,6 +127,11 @@ func (g *Graph) AddNode(targetNode core.Node) error {
 	if targetNode == nil {
 		return fmt.Errorf("node is nil")
 	}
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 
 	id := strings.TrimSpace(targetNode.ID())
 	if id == "" {
@@ -154,6 +160,7 @@ func (g *Graph) AddNode(targetNode core.Node) error {
 		if spec.Name == "" {
 			spec.Name = id
 		}
+		spec = cloneGraphNodeSpec(spec)
 		g.nodeSpecs[id] = spec
 	} else {
 		name := strings.TrimSpace(targetNode.Name())
@@ -199,6 +206,9 @@ func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
 			if !ok {
 				return fmt.Errorf("node %q has no resolved state contract", nodeID)
 			}
+			if err := validateStateContract(fmt.Sprintf("node %q contract", nodeID), contract); err != nil {
+				return err
+			}
 			if g.nodeContracts == nil {
 				g.nodeContracts = map[string]state.Contract{}
 			}
@@ -209,6 +219,9 @@ func (g *Graph) attachNodeContract(nodeID string, targetNode core.Node) error {
 
 	contract, err := core.ContractFor(targetNode)
 	if err != nil {
+		return err
+	}
+	if err := validateStateContract(fmt.Sprintf("node %q contract", nodeID), contract); err != nil {
 		return err
 	}
 	for _, field := range contract.Fields {
@@ -264,9 +277,11 @@ func defaultNodeID(targetNode core.Node) string {
 }
 
 func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
 	}
+	defer unlock()
 	id := strings.TrimSpace(spec.ID)
 	if id == "" {
 		return fmt.Errorf("node spec id is required")
@@ -275,9 +290,7 @@ func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) error {
 	if !ok {
 		return fmt.Errorf("node %q not found", id)
 	}
-	if len(spec.Config) > 0 {
-		spec.Config = config.CloneMap(spec.Config)
-	}
+	spec = cloneGraphNodeSpec(spec)
 	var parsedPolicy *fruntime.ExecutionPolicy
 	if spec.Policy != nil {
 		policy, err := executionPolicyFromDSL(spec.Policy, g.executionPolicy.NodeDefaults)
@@ -325,6 +338,11 @@ func (g *Graph) SetNodeSpec(spec dsl.GraphNodeSpec) error {
 }
 
 func (g *Graph) SetEntryPoint(ref string) error {
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	nodeID, err := g.resolveNodeID(ref)
 	if err != nil {
 		return err
@@ -334,6 +352,11 @@ func (g *Graph) SetEntryPoint(ref string) error {
 }
 
 func (g *Graph) SetFinishPoint(ref string) error {
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	nodeID, err := g.resolveNodeID(ref)
 	if err != nil {
 		return err
@@ -343,13 +366,20 @@ func (g *Graph) SetFinishPoint(ref string) error {
 }
 
 func (g *Graph) AddEdge(from, to string) error {
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return g.addEdgeInternal(from, to, true)
 }
 
 func (g *Graph) AddFailureRoute(from, to string, route dsl.FailureRouteSpec) error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
 	}
+	defer unlock()
 	if err := route.Validate(); err != nil {
 		return err
 	}
@@ -397,6 +427,11 @@ func (g *Graph) addEdgeInternal(from, to string, trackSpec bool) error {
 }
 
 func (g *Graph) AddConditionalEdge(from, to string, condition registry.EdgeCondition) error {
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	contract, resolved, err := g.resolveDefaultConditionContract(condition.CloneSpec())
 	if err != nil {
 		return err
@@ -405,6 +440,11 @@ func (g *Graph) AddConditionalEdge(from, to string, condition registry.EdgeCondi
 }
 
 func (g *Graph) AddResolvedConditionalEdge(from, to string, condition registry.EdgeCondition, contract state.Contract) error {
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return g.addConditionalEdgeInternal(from, to, condition, true, contract, true, false)
 }
 
@@ -428,6 +468,9 @@ func (g *Graph) addConditionalEdgeInternal(
 	if err != nil {
 		return err
 	}
+	if err := validateStateContract(fmt.Sprintf("conditional edge %q -> %q contract", fromID, toID), contract); err != nil {
+		return err
+	}
 
 	g.conditionalEdges[fromID] = append(g.conditionalEdges[fromID], conditionalEdge{
 		to:        toID,
@@ -447,6 +490,26 @@ func (g *Graph) addConditionalEdgeInternal(
 		})
 	}
 	return nil
+}
+
+func validateStateContract(label string, contract state.Contract) error {
+	issues := state.ValidateContract(contract)
+	if len(issues) == 0 {
+		return nil
+	}
+	return state.NewValidationError(label, issues)
+}
+
+func (g *Graph) beginMutation() (func(), error) {
+	if g == nil {
+		return nil, fmt.Errorf("graph is nil")
+	}
+	g.mutationMu.Lock()
+	if g.sealed {
+		g.mutationMu.Unlock()
+		return nil, fmt.Errorf("graph is sealed and cannot be modified")
+	}
+	return g.mutationMu.Unlock, nil
 }
 
 func (g *Graph) resolveDefaultConditionContract(spec dsl.GraphConditionSpec) (state.Contract, bool, error) {
@@ -557,7 +620,7 @@ func (g *Graph) NodeSpecs() map[string]dsl.GraphNodeSpec {
 	}
 	cloned := make(map[string]dsl.GraphNodeSpec, len(g.nodeSpecs))
 	for key, value := range g.nodeSpecs {
-		cloned[key] = value
+		cloned[key] = cloneGraphNodeSpec(value)
 	}
 	return cloned
 }
@@ -812,38 +875,34 @@ func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan
 		ctx = context.Background()
 	}
 	if r == nil {
-		events := make(chan StreamEvent, 1)
-		events <- StreamEvent{State: initialState, Error: fmt.Errorf("runnable is nil")}
-		close(events)
-		return events
+		return streamWithSingleEvent(StreamEvent{State: initialState, Error: fmt.Errorf("runnable is nil")})
 	}
 	if r.scheduled == nil {
-		events := make(chan StreamEvent, 1)
-		events <- StreamEvent{State: initialState, Error: fmt.Errorf("runnable is not initialized")}
-		close(events)
-		return events
+		return streamWithSingleEvent(StreamEvent{State: initialState, Error: fmt.Errorf("runnable is not initialized")})
 	}
 	events := make(chan StreamEvent, 100)
 	go func() {
 		defer close(events)
-		send := func(event StreamEvent) bool {
+		send := func(event StreamEvent) (bool, error) {
+			clonedEvent, cloneErr := cloneStreamEvent(event)
 			select {
-			case events <- event:
-				return true
+			case events <- clonedEvent:
+				return true, cloneErr
 			case <-ctx.Done():
-				return false
+				return false, cloneErr
 			}
 		}
-		if !send(StreamEvent{Timestamp: time.Now(), Event: EventChainStart, State: initialState}) {
+		sent, cloneErr := send(StreamEvent{Timestamp: time.Now(), Event: EventChainStart, State: initialState})
+		if !sent || cloneErr != nil {
 			return
 		}
 		if issues := state.ValidateStateBySchemas(initialState, r.stateSchemas); len(issues) > 0 {
-			send(StreamEvent{Timestamp: time.Now(), Event: EventChainEnd, State: initialState, Error: state.NewValidationError("entry", issues)})
+			_, _ = send(StreamEvent{Timestamp: time.Now(), Event: EventChainEnd, State: initialState, Error: state.NewValidationError("entry", issues)})
 			return
 		}
 		scheduled := *r.scheduled
 		scheduled.observeNode = func(_ context.Context, event NodeEvent, nodeID string, currentState *state.State, err error, duration time.Duration) {
-			send(StreamEvent{
+			_, _ = send(StreamEvent{
 				Timestamp: time.Now(),
 				NodeName:  nodeID,
 				Event:     event,
@@ -858,7 +917,60 @@ func (r *Runnable) Stream(ctx context.Context, initialState *state.State) <-chan
 				err = state.NewValidationError("output", issues)
 			}
 		}
-		send(StreamEvent{Timestamp: time.Now(), Event: EventChainEnd, State: finalState, Error: err})
+		_, _ = send(StreamEvent{Timestamp: time.Now(), Event: EventChainEnd, State: finalState, Error: err})
 	}()
 	return events
+}
+
+func streamWithSingleEvent(event StreamEvent) <-chan StreamEvent {
+	events := make(chan StreamEvent, 1)
+	clonedEvent, _ := cloneStreamEvent(event)
+	events <- clonedEvent
+	close(events)
+	return events
+}
+
+func cloneStreamEvent(event StreamEvent) (StreamEvent, error) {
+	cloned := event
+	cloned.State = nil
+	cloned.Error = nil
+	clonedError, errorCloneErr := cloneStreamError(event.Error)
+	cloned.Error = clonedError
+
+	var stateCloneErr error
+	if event.State != nil {
+		cloned.State, stateCloneErr = event.State.CloneStrict()
+		if stateCloneErr != nil {
+			stateCloneErr = fmt.Errorf("stream event %q state cannot be safely cloned: %w", event.Event, stateCloneErr)
+		}
+	}
+	if errorCloneErr != nil {
+		errorCloneErr = fmt.Errorf("stream event %q error cannot be safely cloned: %w", event.Event, errorCloneErr)
+	}
+	cloneErr := errors.Join(stateCloneErr, errorCloneErr)
+	if cloneErr != nil {
+		cloned.State = nil
+		cloned.Error = errors.Join(cloned.Error, cloneErr)
+	}
+	return cloned, cloneErr
+}
+
+func cloneStreamError(err error) (error, error) {
+	if err == nil {
+		return nil, nil
+	}
+	message := err.Error()
+	var executionErr core.ExecutionError
+	if !errors.As(err, &executionErr) {
+		return errors.New(message), nil
+	}
+	detailsValue, cloneErr := state.CloneValue(executionErr.Details())
+	if cloneErr != nil {
+		return errors.New(message), cloneErr
+	}
+	details, ok := detailsValue.(map[string]any)
+	if detailsValue != nil && !ok {
+		return errors.New(message), fmt.Errorf("execution error details clone returned %T", detailsValue)
+	}
+	return core.NewExecutionError(executionErr.Class(), message, nil, details).WithRetryAfter(executionErr.RetryAfter()), nil
 }

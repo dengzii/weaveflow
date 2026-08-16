@@ -92,6 +92,10 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	if run.LastCheckpointID == "" {
 		t.Fatal("run has no checkpoint")
 	}
+	snapshotRunner := mustNewGraphRunner(t, g, runner.ExecutionStore(), runner.CheckpointStore(), state.NewJSONStateCodec(""), runner.EventSink(), fruntime.WithGraphMetadata("", "", runner.GraphHash(), "sha256:changed-snapshot", runner.GraphSessionID()))
+	if _, _, err := snapshotRunner.Resume(context.Background(), run.RunID, nil); err == nil || !strings.Contains(err.Error(), "graph snapshot hash mismatch") {
+		t.Fatalf("Resume() error = %v, want graph snapshot hash mismatch", err)
+	}
 	runner = mustNewGraphRunner(t, g, runner.ExecutionStore(), runner.CheckpointStore(), state.NewJSONStateCodec(""), runner.EventSink(), fruntime.WithGraphMetadata("", "", "sha256:changed", runner.GraphSnapshotHash(), runner.GraphSessionID()))
 
 	if _, _, err := runner.Resume(context.Background(), run.RunID, nil); err == nil || !strings.Contains(err.Error(), "graph hash mismatch") {
@@ -116,7 +120,7 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	}
 }
 
-func TestGraphRunnerReportsJSONIncompatibleCheckpointState(t *testing.T) {
+func TestGraphRunnerRejectsUnsafeNodeResultBeforeCheckpoint(t *testing.T) {
 	g := NewGraph(nil)
 	mustAddNode(t, g, "input", func(_ context.Context, access *state.Access) error {
 		return access.SetAny(state.Shared("invalid"), func() {})
@@ -137,8 +141,8 @@ func TestGraphRunnerReportsJSONIncompatibleCheckpointState(t *testing.T) {
 	)
 
 	_, _, err := runner.Start(context.Background(), state.NewState())
-	if err == nil || !strings.Contains(err.Error(), "encode shared state") || !strings.Contains(err.Error(), "unsupported type: func()") {
-		t.Fatalf("Start() error = %v, want explicit JSON checkpoint error", err)
+	if err == nil || !strings.Contains(err.Error(), "node result cannot be safely cloned") || !strings.Contains(err.Error(), "opaque reference type func()") {
+		t.Fatalf("Start() error = %v, want strict node result clone error", err)
 	}
 }
 

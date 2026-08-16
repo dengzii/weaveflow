@@ -11,6 +11,11 @@ import (
 )
 
 func (g *Graph) SetExecutionPolicy(policy fruntime.GraphExecutionPolicy) error {
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	return g.setExecutionPolicy(policy, true)
 }
 
@@ -54,9 +59,11 @@ func (g *Graph) ExecutionPolicy() fruntime.GraphExecutionPolicy {
 }
 
 func (g *Graph) SetNodeExecutionPolicy(nodeID string, policy fruntime.ExecutionPolicy) error {
-	if g == nil {
-		return fmt.Errorf("graph is nil")
+	unlock, err := g.beginMutation()
+	if err != nil {
+		return err
 	}
+	defer unlock()
 	nodeID = strings.TrimSpace(nodeID)
 	if _, ok := g.nodes[nodeID]; !ok {
 		return fmt.Errorf("node %q not found", nodeID)

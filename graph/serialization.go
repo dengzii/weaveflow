@@ -8,8 +8,8 @@ import (
 	"strings"
 
 	"github.com/dengzii/weaveflow/dsl"
-	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/internal/graphbuild"
+	"github.com/dengzii/weaveflow/state"
 )
 
 func (g *Graph) setDefinitionMetadata(def dsl.GraphDefinition) {
@@ -21,7 +21,7 @@ func (g *Graph) setDefinitionMetadata(def dsl.GraphDefinition) {
 	g.description = strings.TrimSpace(def.Description)
 	g.stateModules = append([]dsl.StateModuleRef(nil), def.StateModules...)
 	if len(def.Metadata) > 0 {
-		g.metadata = config.CloneMap(def.Metadata)
+		g.metadata = cloneNodeConfig(def.Metadata)
 	} else {
 		g.metadata = nil
 	}
@@ -160,15 +160,9 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 
 	nodes := make([]dsl.GraphNodeSpec, 0, len(nodeIDs))
 	for _, nodeID := range nodeIDs {
-		spec := g.nodeSpecs[nodeID]
+		spec := cloneGraphNodeSpec(g.nodeSpecs[nodeID])
 		if spec.Type == "" {
 			return dsl.GraphDefinition{}, fmt.Errorf("node %q is not serializable: missing registered type", nodeID)
-		}
-		if len(spec.Config) > 0 {
-			spec.Config = config.CloneMap(spec.Config)
-		}
-		if len(spec.State) > 0 {
-			spec.State = cloneStateBindings(spec.State)
 		}
 		nodes = append(nodes, spec)
 	}
@@ -186,10 +180,10 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 			continue
 		}
 		condition := *edge.Condition
-		if len(condition.Config) > 0 {
-			condition.Config = config.CloneMap(condition.Config)
+		if condition.Config != nil {
+			condition.Config = cloneNodeConfig(condition.Config)
 		}
-		if len(condition.State) > 0 {
+		if condition.State != nil {
 			condition.State = cloneStateBindings(condition.State)
 		}
 		edges[index].Condition = &condition
@@ -201,7 +195,7 @@ func (g *Graph) Definition() (dsl.GraphDefinition, error) {
 	}
 	var metadata map[string]any
 	if len(g.metadata) > 0 {
-		metadata = config.CloneMap(g.metadata)
+		metadata = cloneNodeConfig(g.metadata)
 	}
 	definition := dsl.GraphDefinition{
 		Version:      version,
@@ -225,6 +219,50 @@ func cloneStateBindings(bindings map[string]dsl.StateBinding) map[string]dsl.Sta
 	for key, binding := range bindings {
 		cloned[key] = binding
 	}
+	return cloned
+}
+
+func cloneGraphNodeSpec(spec dsl.GraphNodeSpec) dsl.GraphNodeSpec {
+	if spec.Config != nil {
+		spec.Config = cloneNodeConfig(spec.Config)
+	}
+	if spec.State != nil {
+		spec.State = cloneStateBindings(spec.State)
+	}
+	if spec.Policy != nil {
+		policy := *spec.Policy
+		if spec.Policy.Retry != nil {
+			retry := *spec.Policy.Retry
+			retry.RetryableErrorClasses = clonePolicyErrorClasses(spec.Policy.Retry.RetryableErrorClasses)
+			retry.NonRetryableErrorClasses = clonePolicyErrorClasses(spec.Policy.Retry.NonRetryableErrorClasses)
+			if spec.Policy.Retry.BackoffMultiplier != nil {
+				value := *spec.Policy.Retry.BackoffMultiplier
+				retry.BackoffMultiplier = &value
+			}
+			if spec.Policy.Retry.Jitter != nil {
+				value := *spec.Policy.Retry.Jitter
+				retry.Jitter = &value
+			}
+			policy.Retry = &retry
+		}
+		spec.Policy = &policy
+	}
+	return spec
+}
+
+func clonePolicyErrorClasses(classes []string) []string {
+	if classes == nil {
+		return nil
+	}
+	return append([]string{}, classes...)
+}
+
+func cloneNodeConfig(values map[string]any) map[string]any {
+	if values == nil {
+		return nil
+	}
+	root := state.FromMap(map[string]any{state.SectionShared: values}).Export()
+	cloned, _ := root[state.SectionShared].(map[string]any)
 	return cloned
 }
 

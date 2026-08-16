@@ -13,6 +13,8 @@ func NewGraphRunner(targetGraph *Graph, executionStore fruntime.ExecutionStore, 
 	if targetGraph == nil {
 		return nil, fmt.Errorf("graph is required")
 	}
+	targetGraph.mutationMu.Lock()
+	defer targetGraph.mutationMu.Unlock()
 	graphHash, err := targetGraph.SemanticHash()
 	if err != nil {
 		return nil, fmt.Errorf("compute graph semantic hash: %w", err)
@@ -32,7 +34,12 @@ func NewGraphRunner(targetGraph *Graph, executionStore fruntime.ExecutionStore, 
 		baseOptions = append(baseOptions, fruntime.WithContractValidation(core.ContractValidationStrict))
 	}
 	baseOptions = append(baseOptions, options...)
-	return fruntime.NewGraphRunner(newRunnerGraph(targetGraph), executionStore, checkpointStore, codec, eventSink, baseOptions...)
+	runner, err := fruntime.NewGraphRunner(newRunnerGraph(targetGraph, graphHash, snapshotHash), executionStore, checkpointStore, codec, eventSink, baseOptions...)
+	if err != nil {
+		return nil, err
+	}
+	targetGraph.sealed = true
+	return runner, nil
 }
 
 func cloneNodeContracts(contracts map[string]state.Contract) map[string]state.Contract {
@@ -47,21 +54,58 @@ func cloneNodeContracts(contracts map[string]state.Contract) map[string]state.Co
 }
 
 type runtimeGraph struct {
-	graph *Graph
+	graph        *Graph
+	semanticHash string
+	snapshotHash string
 }
 
-func newRunnerGraph(targetGraph *Graph) fruntime.RunnerGraph {
+func newRunnerGraph(targetGraph *Graph, hashes ...string) fruntime.RunnerGraph {
 	if targetGraph == nil {
 		return nil
 	}
-	return &runtimeGraph{graph: targetGraph}
+	result := &runtimeGraph{graph: targetGraph}
+	if len(hashes) > 0 {
+		result.semanticHash = hashes[0]
+	}
+	if len(hashes) > 1 {
+		result.snapshotHash = hashes[1]
+	}
+	return result
 }
 
 func (g *runtimeGraph) Validate() error {
 	if g == nil || g.graph == nil {
 		return fmt.Errorf("graph runner graph is nil")
 	}
-	return g.graph.Validate()
+	if err := g.graph.Validate(); err != nil {
+		return err
+	}
+	if g.semanticHash != "" {
+		current, err := g.graph.SemanticHash()
+		if err != nil {
+			return fmt.Errorf("compute current graph semantic hash: %w", err)
+		}
+		if current != g.semanticHash {
+			return fmt.Errorf("graph changed after runner construction: semantic hash %q, want %q", current, g.semanticHash)
+		}
+	}
+	if g.snapshotHash != "" {
+		current, err := g.graph.SnapshotHash()
+		if err != nil {
+			return fmt.Errorf("compute current graph snapshot hash: %w", err)
+		}
+		if current != g.snapshotHash {
+			return fmt.Errorf("graph changed after runner construction: snapshot hash %q, want %q", current, g.snapshotHash)
+		}
+	}
+	return nil
+}
+
+func (g *runtimeGraph) ValidateInitialState(initial *state.State) error {
+	if g == nil || g.graph == nil {
+		return fmt.Errorf("graph runner graph is nil")
+	}
+	return g.graph.ValidateInitialState(initial)
 }
 
 func (g *runtimeGraph) EntryPointID() string {
@@ -75,7 +119,16 @@ func (g *runtimeGraph) CompileForRunner(execution fruntime.RunnerExecution) (fru
 	if g == nil || g.graph == nil {
 		return nil, fmt.Errorf("graph runner graph is nil")
 	}
-	return g.graph.compileForRunner(execution)
+	g.graph.mutationMu.Lock()
+	defer g.graph.mutationMu.Unlock()
+	if err := g.Validate(); err != nil {
+		return nil, err
+	}
+	runnable, err := g.graph.compileForRunner(execution)
+	if err == nil {
+		g.graph.sealed = true
+	}
+	return runnable, err
 }
 
 func (g *runtimeGraph) ResolveNodeID(nodeID string) (string, error) {

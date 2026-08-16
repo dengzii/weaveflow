@@ -96,7 +96,10 @@ func TestExecutionPolicyBudgetSurvivesResume(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	budget, ok := fruntime.LoadGraphExecutionBudget(restored.Business)
+	budget, ok, err := fruntime.LoadGraphExecutionBudget(restored.Business)
+	if err != nil {
+		t.Fatalf("LoadGraphExecutionBudget() error = %v", err)
+	}
 	if !ok || budget.SuperSteps != 1 || budget.NodeExecutions != 1 || budget.ElapsedWallTime <= 0 {
 		t.Fatalf("restored budget = %#v ok=%v", budget, ok)
 	}
@@ -158,7 +161,10 @@ func TestExecutionPolicyBudgetIncludesInterruptedActiveTime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	budget, ok := fruntime.LoadGraphExecutionBudget(restored.Business)
+	budget, ok, err := fruntime.LoadGraphExecutionBudget(restored.Business)
+	if err != nil {
+		t.Fatalf("LoadGraphExecutionBudget() error = %v", err)
+	}
 	if !ok || budget.SuperSteps != 1 || budget.NodeExecutions != 1 || budget.ElapsedWallTime < 20*time.Millisecond {
 		t.Fatalf("interrupted execution budget = %#v ok=%v", budget, ok)
 	}
@@ -954,4 +960,154 @@ func TestConditionFailureIncludesStableIdentityAndStatePaths(t *testing.T) {
 		}
 	}
 	t.Fatalf("condition failure event missing: %#v", events)
+}
+
+type observerOpaqueMutable struct {
+	values []string
+}
+
+func TestSchedulerObserversReceiveIsolatedMutableSnapshots(t *testing.T) {
+	runnable := &scheduledRunnable{}
+	currentState := state.FromShared(map[string]any{
+		"nested": map[string]any{"value": "scheduler"},
+	})
+	completedTasks := []fruntime.GraphTask{{
+		TaskID: "task-1",
+		NodeID: "node-1",
+		Input: state.NewPatch(state.PatchOp{
+			Kind:  state.OpSet,
+			Path:  state.Shared("input"),
+			Value: map[string]any{"nested": map[string]any{"value": "scheduler"}},
+		}),
+		Failure: &fruntime.FailureContext{
+			Stage: "node",
+			Details: map[string]any{
+				"nested": map[string]any{"value": "scheduler"},
+			},
+		},
+	}}
+
+	stepCalled := false
+	stepConfig := fruntime.SchedulerConfig{
+		StepObserver: func(_ context.Context, tasks []fruntime.GraphTask, observedState *state.State) error {
+			stepCalled = true
+			if observedState == currentState {
+				t.Fatal("step observer received scheduler-owned state")
+			}
+			if err := observedState.SetSection(state.SectionShared, map[string]any{
+				"nested": map[string]any{"value": "observer"},
+			}); err != nil {
+				t.Fatalf("mutate observed state: %v", err)
+			}
+			tasks[0].Failure.Details["nested"].(map[string]any)["value"] = "observer"
+			tasks[0].Input = state.NewPatch(state.PatchOp{
+				Kind:  state.OpSet,
+				Path:  state.Shared("input"),
+				Value: "observer",
+			})
+			return nil
+		},
+	}
+	if err := runnable.notifyGraphStep(context.Background(), stepConfig, completedTasks, currentState); err != nil {
+		t.Fatalf("notifyGraphStep() error = %v", err)
+	}
+	if !stepCalled {
+		t.Fatal("step observer was not called")
+	}
+	stateValue, ok := state.NewAccess(currentState).ReadAny(state.Shared("nested"))
+	if !ok || stateValue.(map[string]any)["value"] != "scheduler" {
+		t.Fatalf("scheduler state = %#v, found = %v", stateValue, ok)
+	}
+	if value := completedTasks[0].Failure.Details["nested"].(map[string]any)["value"]; value != "scheduler" {
+		t.Fatalf("scheduler failure details value = %#v", value)
+	}
+	operations := completedTasks[0].Input.Ops()
+	if value := operations[0].Value.(map[string]any)["nested"].(map[string]any)["value"]; value != "scheduler" {
+		t.Fatalf("scheduler task input value = %#v", value)
+	}
+
+	payload := map[string]any{
+		"nested": map[string]any{
+			"items": []any{map[string]any{"value": "scheduler"}},
+		},
+	}
+	eventCalled := false
+	eventConfig := fruntime.SchedulerConfig{
+		EventObserver: func(_ context.Context, event fruntime.SchedulerEvent) error {
+			eventCalled = true
+			event.Payload["nested"].(map[string]any)["items"].([]any)[0].(map[string]any)["value"] = "observer"
+			event.Payload["added"] = true
+			return nil
+		},
+	}
+	if err := runnable.notifySchedulerEvent(context.Background(), eventConfig, fruntime.SchedulerEvent{
+		Type:    fruntime.SchedulerEventRouteDecision,
+		NodeID:  "node-1",
+		Payload: payload,
+	}); err != nil {
+		t.Fatalf("notifySchedulerEvent() error = %v", err)
+	}
+	if !eventCalled {
+		t.Fatal("event observer was not called")
+	}
+	if _, exists := payload["added"]; exists {
+		t.Fatal("event observer mutated scheduler-owned payload map")
+	}
+	if value := payload["nested"].(map[string]any)["items"].([]any)[0].(map[string]any)["value"]; value != "scheduler" {
+		t.Fatalf("scheduler event payload value = %#v", value)
+	}
+}
+
+func TestSchedulerObserversRejectOpaqueMutableValues(t *testing.T) {
+	runnable := &scheduledRunnable{}
+	opaque := &observerOpaqueMutable{values: []string{"scheduler"}}
+	observerCalled := false
+	stepConfig := fruntime.SchedulerConfig{
+		StepObserver: func(context.Context, []fruntime.GraphTask, *state.State) error {
+			observerCalled = true
+			return nil
+		},
+	}
+
+	err := runnable.notifyGraphStep(context.Background(), stepConfig, nil, state.FromShared(map[string]any{"opaque": opaque}))
+	var stepErr *fruntime.GraphStepError
+	if !errors.As(err, &stepErr) || !strings.Contains(err.Error(), "step observer state cannot be safely cloned") {
+		t.Fatalf("opaque state error = %v", err)
+	}
+	if observerCalled {
+		t.Fatal("step observer received opaque state")
+	}
+
+	err = runnable.notifyGraphStep(context.Background(), stepConfig, []fruntime.GraphTask{{
+		TaskID: "opaque-input",
+		NodeID: "node-1",
+		Input: state.NewPatch(state.PatchOp{
+			Kind:  state.OpSet,
+			Path:  state.Shared("opaque"),
+			Value: opaque,
+		}),
+	}}, state.NewState())
+	if !errors.As(err, &stepErr) || !strings.Contains(err.Error(), "step observer tasks cannot be safely cloned") || !strings.Contains(err.Error(), "observerOpaqueMutable") {
+		t.Fatalf("opaque task input error = %v", err)
+	}
+	if observerCalled {
+		t.Fatal("step observer received opaque task input")
+	}
+
+	eventConfig := fruntime.SchedulerConfig{
+		EventObserver: func(context.Context, fruntime.SchedulerEvent) error {
+			observerCalled = true
+			return nil
+		},
+	}
+	err = runnable.notifySchedulerEvent(context.Background(), eventConfig, fruntime.SchedulerEvent{
+		Type:    fruntime.SchedulerEventRouteDecision,
+		Payload: map[string]any{"opaque": opaque},
+	})
+	if err == nil || !strings.Contains(err.Error(), "scheduler event \"route_decision\" payload cannot be safely cloned") {
+		t.Fatalf("opaque event payload error = %v", err)
+	}
+	if observerCalled {
+		t.Fatal("event observer received opaque payload")
+	}
 }

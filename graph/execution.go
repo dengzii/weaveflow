@@ -41,7 +41,7 @@ func (g *Graph) resolveNextTasksObserved(ctx context.Context, parent fruntime.Gr
 	}
 	if conditional := g.conditionalEdges[currentNodeID]; len(conditional) > 0 {
 		for _, edge := range conditional {
-			conditionState := currentState
+			conditionState := state.ProjectStateByContract(currentState, state.Contract{WildcardRead: true})
 			if edge.resolved {
 				if issues := state.ValidateRequiredReads(currentState, edge.contract); len(issues) > 0 {
 					return nil, g.conditionError(currentNodeID, edge, fmt.Errorf("state contract violation: %s", issues[0].Message))
@@ -86,8 +86,12 @@ func (g *Graph) tasksFromRouteDecision(parent fruntime.GraphTask, edgeTarget str
 			if err != nil {
 				return nil, fmt.Errorf("route decision send target %q: %w", send.Target, err)
 			}
+			taskID, taskIDErr := dynamicTaskID(parent, send, index)
+			if taskIDErr != nil {
+				return nil, fmt.Errorf("route decision send %d: %w", index, taskIDErr)
+			}
 			tasks = append(tasks, fruntime.GraphTask{
-				TaskID:         dynamicTaskID(parent, send, index),
+				TaskID:         taskID,
 				NodeID:         nodeID,
 				Input:          send.Input,
 				CorrelationKey: strings.TrimSpace(send.CorrelationKey),
@@ -282,7 +286,11 @@ func (g *Graph) resolveFailure(_ context.Context, task fruntime.GraphTask, stage
 		failure := &fruntime.FailureContext{Stage: stage, ErrorClass: errorClass, Error: err.Error(), SourceNodeID: sourceNodeID}
 		var classified core.ExecutionError
 		if errors.As(err, &classified) {
-			failure.Details = classified.Details()
+			clonedDetails, cloneErr := state.CloneValue(classified.Details())
+			if cloneErr != nil {
+				return nil, fmt.Errorf("failure details cannot be safely cloned: %w", cloneErr)
+			}
+			failure.Details, _ = clonedDetails.(map[string]any)
 		}
 		return []fruntime.GraphTask{{TaskID: fmt.Sprintf("failure-%s", task.TaskID), NodeID: route.to, Order: task.Order, Failure: failure}}, nil
 	}

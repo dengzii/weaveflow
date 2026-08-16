@@ -254,9 +254,12 @@ func TestRunnerParallelFanInWaitsForUnevenBranches(t *testing.T) {
 		if strings.Join(restored.Runtime.NextNodeIDs, ",") != "slow_tail" {
 			t.Fatalf("uneven barrier next nodes = %#v, want [slow_tail]", restored.Runtime.NextNodeIDs)
 		}
-		schedule, ok := fruntime.LoadGraphSchedule(restored.Business)
-		if !ok || strings.Join(schedule.PendingFanInNodes, ",") != "collector" {
-			t.Fatalf("uneven barrier pending fan-in = %#v ok=%v, want [collector]", schedule.PendingFanInNodes, ok)
+		schedule, ok, err := fruntime.LoadGraphSchedule(restored.Business)
+		if err != nil {
+			t.Fatalf("LoadGraphSchedule() error = %v", err)
+		}
+		if !ok || strings.Join(fruntime.GraphTaskNodeIDs(schedule.PendingFanInTasks), ",") != "collector" {
+			t.Fatalf("uneven barrier pending fan-in = %#v ok=%v, want [collector]", schedule.PendingFanInTasks, ok)
 		}
 		barrierID = checkpoint.CheckpointID
 		break
@@ -279,6 +282,162 @@ func TestRunnerParallelFanInWaitsForUnevenBranches(t *testing.T) {
 	}
 	if calls := collectorCalls.Load(); calls != 1 {
 		t.Fatalf("collector calls after barrier resume = %d, want 1", calls)
+	}
+}
+
+func TestRunnerFailureRouteFanInWaitsForUnevenBranches(t *testing.T) {
+	t.Parallel()
+
+	var slowTailCalls atomic.Int32
+	var fallbackCalls atomic.Int32
+	workflow := newFailureRouteUnevenJoin(t, &slowTailCalls, &fallbackCalls)
+	directory := t.TempDir()
+	runner := mustNewGraphRunner(t,
+		workflow,
+		fruntime.NewFileExecutionStore(directory),
+		fruntime.NewFileCheckpointStore(directory),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(directory),
+	)
+
+	run, finalState, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+	if calls := slowTailCalls.Load(); calls != 1 {
+		t.Fatalf("slow tail calls = %d, want 1", calls)
+	}
+	if calls := fallbackCalls.Load(); calls != 1 {
+		t.Fatalf("fallback calls = %d, want 1", calls)
+	}
+	if completed, ok := state.NewAccess(finalState).ReadAny(state.Shared("fallback_completed")); !ok || completed != true {
+		t.Fatalf("fallback completion = %#v ok=%v, want true", completed, ok)
+	}
+	assertNodeStepCount(t, runner, run.RunID, "fallback", 1)
+}
+
+func TestRunnerFailureRoutePendingFanInSurvivesCheckpointResume(t *testing.T) {
+	t.Parallel()
+
+	var slowTailCalls atomic.Int32
+	var fallbackCalls atomic.Int32
+	workflow := newFailureRouteUnevenJoin(t, &slowTailCalls, &fallbackCalls)
+	directory := t.TempDir()
+	runner := mustNewGraphRunner(t,
+		workflow,
+		fruntime.NewFileExecutionStore(directory),
+		fruntime.NewFileCheckpointStore(directory),
+		state.NewJSONStateCodec(""),
+		fruntime.NewFileEventSink(directory),
+		fruntime.WithBreakpoints(fruntime.Breakpoint{
+			ID:      "before-slow-tail",
+			NodeID:  "slow_tail",
+			Stage:   string(fruntime.CheckpointBeforeNode),
+			Enabled: true,
+		}),
+	)
+
+	pausedRun, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("runner start: %v", err)
+	}
+	if pausedRun.Status != fruntime.RunStatusPaused {
+		t.Fatalf("run status = %q, want paused", pausedRun.Status)
+	}
+	if calls := slowTailCalls.Load(); calls != 0 {
+		t.Fatalf("slow tail calls before resume = %d, want 0", calls)
+	}
+	if calls := fallbackCalls.Load(); calls != 0 {
+		t.Fatalf("fallback calls before resume = %d, want 0", calls)
+	}
+
+	restored, err := runner.LoadCheckpointState(context.Background(), pausedRun.LastCheckpointID)
+	if err != nil {
+		t.Fatalf("load pause checkpoint: %v", err)
+	}
+	if restored.Record.Stage != fruntime.CheckpointBeforeNode {
+		t.Fatalf("pause checkpoint stage = %q, want before_node", restored.Record.Stage)
+	}
+	schedule, ok, err := fruntime.LoadGraphSchedule(restored.Business)
+	if err != nil {
+		t.Fatalf("LoadGraphSchedule() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("pause checkpoint has no graph schedule: %#v", restored.Record)
+	}
+	if len(schedule.PendingFanInTasks) != 1 {
+		t.Fatalf("pending fan-in tasks = %#v, want one fallback task", schedule.PendingFanInTasks)
+	}
+	pendingFallback := schedule.PendingFanInTasks[0]
+	if pendingFallback.NodeID != "fallback" || pendingFallback.Failure == nil {
+		t.Fatalf("pending fan-in task = %#v, want failure fallback", pendingFallback)
+	}
+	if pendingFallback.Failure.Stage != string(dsl.FailureStageNode) ||
+		pendingFallback.Failure.ErrorClass != core.ErrorUnavailable ||
+		pendingFallback.Failure.SourceNodeID != "failed" ||
+		pendingFallback.Failure.Details["provider"] != "test" {
+		t.Fatalf("pending failure context = %#v", pendingFallback.Failure)
+	}
+
+	resumedRun, resumedState, err := runner.Resume(context.Background(), pausedRun.RunID, nil)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed status = %q, want completed", resumedRun.Status)
+	}
+	if calls := slowTailCalls.Load(); calls != 1 {
+		t.Fatalf("slow tail calls after resume = %d, want 1", calls)
+	}
+	if calls := fallbackCalls.Load(); calls != 1 {
+		t.Fatalf("fallback calls after resume = %d, want 1", calls)
+	}
+	if completed, ok := state.NewAccess(resumedState).ReadAny(state.Shared("fallback_completed")); !ok || completed != true {
+		t.Fatalf("resumed fallback completion = %#v ok=%v, want true", completed, ok)
+	}
+	assertNodeStepCount(t, runner, resumedRun.RunID, "fallback", 1)
+}
+
+func TestRunnerFailureRoutePendingFanInSurvivesAfterNodeResume(t *testing.T) {
+	var slowTailCalls atomic.Int32
+	var fallbackCalls atomic.Int32
+	workflow := newFailureRouteUnevenJoin(t, &slowTailCalls, &fallbackCalls)
+	runner, runtimeStore := newCommandFileRunner(t, workflow, t.TempDir())
+
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	checkpointID := afterNodeCheckpointID(t, runner, run.RunID, "slow_tail")
+	restored, err := runner.LoadCheckpointState(context.Background(), checkpointID)
+	if err != nil {
+		t.Fatalf("LoadCheckpointState() error = %v", err)
+	}
+	schedule, ok, err := fruntime.LoadGraphSchedule(restored.Business)
+	if err != nil {
+		t.Fatalf("LoadGraphSchedule() error = %v", err)
+	}
+	if !ok || len(schedule.PendingFanInTasks) != 1 || schedule.PendingFanInTasks[0].Failure == nil {
+		t.Fatalf("after-node pending fan-in schedule = %#v, ok=%v", schedule, ok)
+	}
+
+	forcePausedRunCheckpoint(t, runtimeStore, run.RunID, checkpointID)
+	fallbackCalls.Store(0)
+	resumedRun, resumedState, err := runner.Resume(context.Background(), run.RunID, nil)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if resumedRun.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("resumed status = %q, want completed", resumedRun.Status)
+	}
+	if calls := fallbackCalls.Load(); calls != 1 {
+		t.Fatalf("fallback calls after resume = %d, want 1", calls)
+	}
+	if completed, found := state.ReadPath(resumedState, "shared.fallback_completed"); !found || completed != true {
+		t.Fatalf("fallback completion = %#v, found=%v", completed, found)
 	}
 }
 
@@ -1958,7 +2117,10 @@ func assertParallelAfterNodeRequiresAfterWave(
 	if branchCheckpoint.Record.Stage != fruntime.CheckpointAfterNode {
 		t.Fatalf("branch checkpoint stage = %q, want after_node", branchCheckpoint.Record.Stage)
 	}
-	schedule, ok := fruntime.LoadGraphSchedule(branchCheckpoint.Business)
+	schedule, ok, err := fruntime.LoadGraphSchedule(branchCheckpoint.Business)
+	if err != nil {
+		t.Fatalf("LoadGraphSchedule() error = %v", err)
+	}
 	if !ok {
 		t.Fatalf("branch checkpoint has no graph schedule: %#v", branchCheckpoint.Record)
 	}
@@ -2048,6 +2210,81 @@ func (store failBarrierTransactionStore) Commit(ctx context.Context, commit frun
 		}
 	}
 	return store.inner.Commit(ctx, commit)
+}
+
+func newFailureRouteUnevenJoin(t *testing.T, slowTailCalls, fallbackCalls *atomic.Int32) *Graph {
+	t.Helper()
+
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, workflow, "failed", func(context.Context, *state.Access) error {
+		return core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, map[string]any{"provider": "test"})
+	})
+	mustAddNode(t, workflow, "left", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("left_succeeded"), true)
+	})
+	mustAddNode(t, workflow, "slow", func(context.Context, *state.Access) error {
+		return nil
+	})
+	mustAddNode(t, workflow, "slow_tail", func(_ context.Context, access *state.Access) error {
+		slowTailCalls.Add(1)
+		return access.SetAny(state.Shared("slow_tail_succeeded"), true)
+	})
+	mustAddResultNode(t, workflow, "fallback", func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+		fallbackCalls.Add(1)
+		failure, ok := ctx.Failure()
+		if !ok || failure.Stage != string(dsl.FailureStageNode) ||
+			failure.ErrorClass != core.ErrorUnavailable ||
+			failure.SourceNodeID != "failed" ||
+			failure.Details["provider"] != "test" {
+			return core.NodeResult{}, errors.New("failure context is missing or invalid")
+		}
+		slowTailSucceeded, ok := access.ReadAny(state.Shared("slow_tail_succeeded"))
+		if !ok || slowTailSucceeded != true {
+			return core.NodeResult{}, errors.New("slow tail state is missing")
+		}
+		return core.Success(), access.SetAny(state.Shared("fallback_completed"), true)
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := workflow.AddFailureRoute("failed", "fallback", dsl.FailureRouteSpec{CatchAll: true}); err != nil {
+		t.Fatalf("add failure route: %v", err)
+	}
+	for _, edge := range [][2]string{
+		{"router", "failed"},
+		{"router", "left"},
+		{"router", "slow"},
+		{"failed", EndNodeRef},
+		{"left", "fallback"},
+		{"slow", "slow_tail"},
+		{"slow_tail", "fallback"},
+		{"fallback", EndNodeRef},
+	} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			t.Fatalf("add edge %s -> %s: %v", edge[0], edge[1], err)
+		}
+	}
+	return workflow
+}
+
+func assertNodeStepCount(t *testing.T, runner *fruntime.GraphRunner, runID, nodeID string, want int) {
+	t.Helper()
+	steps, err := runner.ListSteps(context.Background(), runID)
+	if err != nil {
+		t.Fatalf("list steps: %v", err)
+	}
+	count := 0
+	for _, step := range steps {
+		if step.NodeID == nodeID {
+			count++
+		}
+	}
+	if count != want {
+		t.Fatalf("node %q steps = %d, want %d; steps=%#v", nodeID, count, want, steps)
+	}
 }
 
 func newControlledParallelRunnerGraph(t *testing.T) (*Graph, chan string, chan struct{}, *int32) {

@@ -509,11 +509,15 @@ func analysisParallelWaves(input ContractAnalysisGraph, reachable []string) [][]
 }
 
 func nextAnalysisFrontiers(input ContractAnalysisGraph, frontier []string, reachable map[string]struct{}) [][]string {
+	const maxAnalysisFrontiers = 4096
 	combinations := [][]string{{}}
 	for _, nodeID := range frontier {
 		options := analysisNodeNextOptions(input, nodeID, reachable)
 		if len(options) == 0 {
 			options = [][]string{{}}
+		}
+		if len(combinations) > maxAnalysisFrontiers/max(1, len(options)) {
+			return conservativeAnalysisFrontier(input, frontier, reachable)
 		}
 		next := make([][]string, 0, len(combinations)*len(options))
 		for _, prefix := range combinations {
@@ -540,6 +544,19 @@ func nextAnalysisFrontiers(input ContractAnalysisGraph, frontier []string, reach
 		result = append(result, normalized)
 	}
 	return result
+}
+
+func conservativeAnalysisFrontier(input ContractAnalysisGraph, frontier []string, reachable map[string]struct{}) [][]string {
+	union := make([]string, 0)
+	for _, nodeID := range frontier {
+		for _, options := range analysisNodeNextOptions(input, nodeID, reachable) {
+			union = append(union, options...)
+		}
+	}
+	if normalized := normalizeAnalysisFrontier(union, input, reachable); len(normalized) > 0 {
+		return [][]string{normalized}
+	}
+	return nil
 }
 
 func analysisNodeNextOptions(input ContractAnalysisGraph, nodeID string, reachable map[string]struct{}) [][]string {

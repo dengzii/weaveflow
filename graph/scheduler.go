@@ -85,9 +85,19 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	defer releaseRun()
 	currentState := state.NewState()
 	if initialState != nil {
-		currentState = initialState.Clone()
+		currentState, err = initialState.CloneStrict()
+		if err != nil {
+			return nil, core.NewExecutionError(core.ErrorInvalidInput, fmt.Sprintf("graph initial state cannot be safely cloned: %v", err), err, nil)
+		}
 	}
-	restoredBudget, _ := fruntime.LoadGraphExecutionBudget(currentState)
+	restoredSchedule, _, err := fruntime.LoadGraphSchedule(currentState)
+	if err != nil {
+		return currentState, fmt.Errorf("load graph schedule: %w", err)
+	}
+	restoredBudget, _, err := fruntime.LoadGraphExecutionBudget(currentState)
+	if err != nil {
+		return currentState, fmt.Errorf("load graph execution budget: %w", err)
+	}
 	remainingWallTime := policy.Limits.MaxWallTime - restoredBudget.ElapsedWallTime
 	if remainingWallTime <= 0 {
 		limitErr := core.NewExecutionError(core.ErrorTimeout, "graph wall-time limit exceeded", nil, map[string]any{
@@ -107,8 +117,7 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 	if len(config.StartTasks) > 0 {
 		currentTasks = fruntime.CloneGraphTasks(config.StartTasks)
 	}
-	restoredSchedule, _ := fruntime.LoadGraphSchedule(currentState)
-	pendingFanIn := nodeIDSet(restoredSchedule.PendingFanInNodes)
+	pendingFanIn := taskMapByNodeID(restoredSchedule.PendingFanInTasks)
 	currentTasks, pendingFanIn = runnable.resumeSchedule(currentTasks, pendingFanIn)
 	budget := &executionBudget{
 		maxNodeExecutions: int64(policy.Limits.MaxNodeExecutions),
@@ -154,17 +163,12 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 			})
 			return currentState, runnable.notifyLimitExceeded(ctx, config, "", limitErr)
 		}
-		if len(currentTasks) > policy.Limits.MaxFanOut {
-			limitErr := core.NewExecutionError(core.ErrorResourceExhausted, "graph fan-out limit exceeded", nil, map[string]any{
-				"limit":  policy.Limits.MaxFanOut,
-				"actual": len(currentTasks),
-				"kind":   "fan_out",
-			})
-			return currentState, runnable.notifyLimitExceeded(ctx, config, "", limitErr)
+		if err := runnable.checkFanOut(ctx, config, len(currentTasks)); err != nil {
+			return currentState, err
 		}
 		if err := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{
 			CurrentTasks:      currentTasks,
-			PendingFanInNodes: sortedNodeIDSet(pendingFanIn),
+			PendingFanInTasks: sortedTasksByNodeID(pendingFanIn),
 		}); err != nil {
 			return currentState, err
 		}
@@ -174,6 +178,14 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 
 		completedTasks := fruntime.CloneGraphTasks(currentTasks)
 		results, nodeErrors := runnable.executeTasks(ctx, config, budget, completedTasks, currentState)
+		if interrupts := nodeInterrupts(completedTasks, nodeErrors); len(interrupts) > 1 && !hasNonInterruptError(nodeErrors) {
+			failedState, stateErr := runnable.failedWaveState(currentState, budget)
+			interruptErrs := make([]error, 0, len(interrupts))
+			for _, interrupt := range interrupts {
+				interruptErrs = append(interruptErrs, fmt.Errorf("node %q interrupted: %v", interrupt.NodeID, interrupt.Value))
+			}
+			return failedState, errors.Join(errors.New("multiple node interrupts in one parallel wave are unsupported"), errors.Join(interruptErrs...), stateErr)
+		}
 		if interrupt, task := firstNodeInterrupt(completedTasks, nodeErrors); interrupt != nil && !hasNonInterruptError(nodeErrors) {
 			mergedState, err := runnable.mergeWaveResults(ctx, config, budget, currentState, results)
 			if err != nil {
@@ -206,6 +218,9 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 					return failedState, errors.Join(resolveErr, stateErr)
 				}
 				if len(failureTasks) > 0 {
+					if err := runnable.validateNextTasks(ctx, config, failureTasks, pendingFanIn); err != nil {
+						return currentState, err
+					}
 					mergedState, mergeErr := runnable.mergeWaveResults(ctx, config, budget, currentState, results)
 					if mergeErr != nil {
 						return currentState, mergeErr
@@ -222,6 +237,9 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 					if returnCommand != nil || suspend != nil {
 						return currentState, fmt.Errorf("failure-routed wave resolved an incompatible control command")
 					}
+					if err := runnable.validateNextTasks(ctx, config, nextTasks, pendingFanIn); err != nil {
+						return currentState, err
+					}
 					if runnable.recordFailure != nil {
 						if err := runnable.recordFailure(context.WithoutCancel(ctx), task, nodeErrors[index], failureTasks); err != nil {
 							return currentState, err
@@ -231,8 +249,11 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 					}
 					currentState = mergedState
 					nextTasks = append(nextTasks, failureTasks...)
+					if err := runnable.validateNextTasks(ctx, config, nextTasks, pendingFanIn); err != nil {
+						return currentState, err
+					}
 					currentTasks, pendingFanIn = runnable.scheduleNext(nextTasks, pendingFanIn)
-					if err := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{NextTasks: currentTasks, PendingFanInNodes: sortedNodeIDSet(pendingFanIn)}); err != nil {
+					if err := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{NextTasks: currentTasks, PendingFanInTasks: sortedTasksByNodeID(pendingFanIn)}); err != nil {
 						return currentState, err
 					}
 					if err := runnable.notifyGraphStep(ctx, config, completedTasks, currentState); err != nil {
@@ -273,6 +294,9 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 				return currentState, resolveErr
 			}
 			if len(failureTasks) > 0 {
+				if err := runnable.validateNextTasks(ctx, config, failureTasks, pendingFanIn); err != nil {
+					return currentState, err
+				}
 				if runnable.recordFailure != nil {
 					if recordErr := runnable.recordFailure(context.WithoutCancel(ctx), failureTask, err, failureTasks); recordErr != nil {
 						return currentState, recordErr
@@ -281,7 +305,7 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 					return currentState, notifyErr
 				}
 				currentTasks, pendingFanIn = runnable.scheduleNext(failureTasks, pendingFanIn)
-				if storeErr := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{NextTasks: currentTasks, PendingFanInNodes: sortedNodeIDSet(pendingFanIn)}); storeErr != nil {
+				if storeErr := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{NextTasks: currentTasks, PendingFanInTasks: sortedTasksByNodeID(pendingFanIn)}); storeErr != nil {
 					return currentState, storeErr
 				}
 				if stepErr := runnable.notifyGraphStep(ctx, config, completedTasks, currentState); stepErr != nil {
@@ -300,10 +324,13 @@ func (runnable *scheduledRunnable) invokeWithConfig(ctx context.Context, initial
 			}
 			break
 		}
+		if err := runnable.validateNextTasks(ctx, config, nextTasks, pendingFanIn); err != nil {
+			return currentState, err
+		}
 		currentTasks, pendingFanIn = runnable.scheduleNext(nextTasks, pendingFanIn)
 		if err := fruntime.StoreGraphSchedule(currentState, fruntime.GraphSchedule{
 			NextTasks:         currentTasks,
-			PendingFanInNodes: sortedNodeIDSet(pendingFanIn),
+			PendingFanInTasks: sortedTasksByNodeID(pendingFanIn),
 		}); err != nil {
 			return currentState, err
 		}
@@ -661,9 +688,66 @@ func (runnable *scheduledRunnable) notifyLimitExceeded(ctx context.Context, conf
 	return limitErr
 }
 
+func (runnable *scheduledRunnable) checkFanOut(ctx context.Context, config fruntime.SchedulerConfig, count int) error {
+	if runnable == nil || runnable.graph == nil || count <= runnable.graph.executionPolicy.Limits.MaxFanOut {
+		return nil
+	}
+	limitErr := core.NewExecutionError(core.ErrorResourceExhausted, "graph fan-out limit exceeded", nil, map[string]any{
+		"limit":  runnable.graph.executionPolicy.Limits.MaxFanOut,
+		"actual": count,
+		"kind":   "fan_out",
+	})
+	return runnable.notifyLimitExceeded(ctx, config, "", limitErr)
+}
+
+func (runnable *scheduledRunnable) validateNextTasks(ctx context.Context, config fruntime.SchedulerConfig, tasks []fruntime.GraphTask, pendingFanIn map[string]fruntime.GraphTask) error {
+	if err := runnable.checkFanOut(ctx, config, len(tasks)); err != nil {
+		return err
+	}
+	dynamicJoinTaskIndexes := make(map[string]int)
+	for taskIndex, task := range tasks {
+		if !task.Dynamic || !runnable.isJoinNode(task.NodeID) {
+			continue
+		}
+		if _, exists := dynamicJoinTaskIndexes[task.NodeID]; exists {
+			return fmt.Errorf("multiple dynamic tasks target join node %q in one wave", task.NodeID)
+		}
+		if _, waiting := pendingFanIn[task.NodeID]; waiting {
+			return fmt.Errorf("dynamic task %q targets pending join node %q; use an explicit barrier", task.TaskID, task.NodeID)
+		}
+		dynamicJoinTaskIndexes[task.NodeID] = taskIndex
+	}
+	for nodeID, taskIndex := range dynamicJoinTaskIndexes {
+		task := tasks[taskIndex]
+		for otherIndex, other := range tasks {
+			if otherIndex == taskIndex {
+				continue
+			}
+			if other.NodeID == nodeID {
+				return fmt.Errorf("dynamic task %q targets join node %q while task %q targets the same join node; use an explicit barrier", task.TaskID, nodeID, other.TaskID)
+			}
+			if runnable.isStrictUpstream(other.NodeID, nodeID) {
+				return fmt.Errorf("dynamic task %q targets join node %q while upstream task %q is scheduled; use an explicit barrier", task.TaskID, nodeID, other.TaskID)
+			}
+		}
+	}
+	return nil
+}
+
 func (runnable *scheduledRunnable) notifySchedulerEvent(ctx context.Context, config fruntime.SchedulerConfig, event fruntime.SchedulerEvent) error {
 	if config.EventObserver == nil {
 		return nil
+	}
+	if event.Payload != nil {
+		clonedValue, err := state.CloneValue(event.Payload)
+		if err != nil {
+			return fmt.Errorf("scheduler event %q payload cannot be safely cloned: %w", event.Type, err)
+		}
+		clonedPayload, ok := clonedValue.(map[string]any)
+		if !ok {
+			return fmt.Errorf("scheduler event %q payload clone returned %T", event.Type, clonedValue)
+		}
+		event.Payload = clonedPayload
 	}
 	return config.EventObserver(ctx, event)
 }
@@ -754,22 +838,28 @@ func (runnable *scheduledRunnable) resolveCommands(ctx context.Context, config f
 				staticTargets[nodeID] = struct{}{}
 			}
 		case len(command.Send) > 0:
-			reducers := runnable.graph.reducers()
+			if err := runnable.checkFanOut(ctx, config, len(command.Send)); err != nil {
+				return nil, nil, nil, err
+			}
 			for sendIndex, send := range command.Send {
 				nodeID, err := runnable.graph.resolveNodeID(string(send.Target))
 				if err != nil {
 					return nil, nil, nil, fmt.Errorf("task %q send target %q: %w", task.TaskID, send.Target, err)
 				}
 				contract, hasContract := runnable.graph.nodeContracts[nodeID]
-				issues := state.ValidatePatch(send.Input)
+				issues := state.ValidateInputPatch(send.Input)
 				if hasContract {
-					issues = state.ValidateInputPatchByContractWithReducers(currentState, send.Input, contract, reducers)
+					issues = state.ValidateInputPatchByContract(send.Input, contract)
 				}
 				if len(issues) > 0 {
 					return nil, nil, nil, fmt.Errorf("task %q send %d input: %w", task.TaskID, sendIndex, state.NewValidationError("send input", issues))
 				}
+				taskID, taskIDErr := dynamicTaskID(task, send, sendIndex)
+				if taskIDErr != nil {
+					return nil, nil, nil, fmt.Errorf("task %q send %d: %w", task.TaskID, sendIndex, taskIDErr)
+				}
 				dynamicTasks = append(dynamicTasks, fruntime.GraphTask{
-					TaskID:         dynamicTaskID(task, send, sendIndex),
+					TaskID:         taskID,
 					NodeID:         nodeID,
 					Input:          send.Input,
 					CorrelationKey: strings.TrimSpace(send.CorrelationKey),
@@ -823,13 +913,24 @@ func appendResolvedRouteTasks(tasks []fruntime.GraphTask, staticTargets map[stri
 	}
 }
 
-func dynamicTaskID(parent fruntime.GraphTask, send core.Send, index int) string {
-	identity := fmt.Sprintf("%s\x00%d\x00%s\x00%s\x00%s", parent.TaskID, index, send.Target, strings.TrimSpace(send.CorrelationKey), strings.TrimSpace(send.OrderKey))
-	digest := sha256.Sum256([]byte(identity))
-	return fmt.Sprintf("send-%x", digest[:12])
+func dynamicTaskID(parent fruntime.GraphTask, send core.Send, index int) (string, error) {
+	identity, err := json.Marshal([]any{
+		"send.v1",
+		parent.TaskID,
+		index,
+		string(send.Target),
+		strings.TrimSpace(send.CorrelationKey),
+		strings.TrimSpace(send.OrderKey),
+		send.Input.Ops(),
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal send task identity: %w", err)
+	}
+	digest := sha256.Sum256(identity)
+	return fmt.Sprintf("send-%x", digest[:12]), nil
 }
 
-func (runnable *scheduledRunnable) scheduleNext(nextTasks []fruntime.GraphTask, pendingFanIn map[string]struct{}) ([]fruntime.GraphTask, map[string]struct{}) {
+func (runnable *scheduledRunnable) scheduleNext(nextTasks []fruntime.GraphTask, pendingFanIn map[string]fruntime.GraphTask) ([]fruntime.GraphTask, map[string]fruntime.GraphTask) {
 	readyStatic := map[string]fruntime.GraphTask{}
 	readyDynamic := make([]fruntime.GraphTask, 0)
 	for _, task := range nextTasks {
@@ -837,15 +938,11 @@ func (runnable *scheduledRunnable) scheduleNext(nextTasks []fruntime.GraphTask, 
 			readyDynamic = append(readyDynamic, task)
 			continue
 		}
-		if task.Failure != nil {
-			readyStatic[task.NodeID] = task
-			continue
-		}
 		if runnable.isJoinNode(task.NodeID) {
-			pendingFanIn[task.NodeID] = struct{}{}
+			storePreferredTask(pendingFanIn, task)
 			continue
 		}
-		readyStatic[task.NodeID] = task
+		storePreferredTask(readyStatic, task)
 	}
 	runnable.releasePendingFanIn(readyStatic, pendingFanIn)
 	ready := make([]fruntime.GraphTask, 0, len(readyStatic)+len(readyDynamic))
@@ -856,15 +953,18 @@ func (runnable *scheduledRunnable) scheduleNext(nextTasks []fruntime.GraphTask, 
 	return ready, pendingFanIn
 }
 
-func (runnable *scheduledRunnable) resumeSchedule(startTasks []fruntime.GraphTask, pendingFanIn map[string]struct{}) ([]fruntime.GraphTask, map[string]struct{}) {
+func (runnable *scheduledRunnable) resumeSchedule(startTasks []fruntime.GraphTask, pendingFanIn map[string]fruntime.GraphTask) ([]fruntime.GraphTask, map[string]fruntime.GraphTask) {
 	readyStatic := map[string]fruntime.GraphTask{}
 	readyDynamic := make([]fruntime.GraphTask, 0)
 	for _, task := range startTasks {
-		delete(pendingFanIn, task.NodeID)
 		if task.Dynamic {
 			readyDynamic = append(readyDynamic, task)
 		} else {
-			readyStatic[task.NodeID] = task
+			if pendingTask, exists := pendingFanIn[task.NodeID]; exists {
+				delete(pendingFanIn, task.NodeID)
+				storePreferredTask(readyStatic, pendingTask)
+			}
+			storePreferredTask(readyStatic, task)
 		}
 	}
 	runnable.releasePendingFanIn(readyStatic, pendingFanIn)
@@ -876,15 +976,16 @@ func (runnable *scheduledRunnable) resumeSchedule(startTasks []fruntime.GraphTas
 	return ready, pendingFanIn
 }
 
-func (runnable *scheduledRunnable) releasePendingFanIn(ready map[string]fruntime.GraphTask, pendingFanIn map[string]struct{}) {
+func (runnable *scheduledRunnable) releasePendingFanIn(ready map[string]fruntime.GraphTask, pendingFanIn map[string]fruntime.GraphTask) {
 	for {
 		released := false
-		for _, fanInNodeID := range sortedNodeIDSet(pendingFanIn) {
+		for _, fanInNodeID := range sortedGraphTaskNodeIDs(pendingFanIn) {
 			if runnable.hasUpstreamBlocker(fanInNodeID, ready, pendingFanIn) {
 				continue
 			}
+			task := pendingFanIn[fanInNodeID]
 			delete(pendingFanIn, fanInNodeID)
-			ready[fanInNodeID] = fruntime.NewStaticGraphTask(fanInNodeID, len(ready))
+			ready[fanInNodeID] = task
 			released = true
 		}
 		if !released {
@@ -893,7 +994,7 @@ func (runnable *scheduledRunnable) releasePendingFanIn(ready map[string]fruntime
 	}
 }
 
-func (runnable *scheduledRunnable) hasUpstreamBlocker(fanInNodeID string, ready map[string]fruntime.GraphTask, pendingFanIn map[string]struct{}) bool {
+func (runnable *scheduledRunnable) hasUpstreamBlocker(fanInNodeID string, ready map[string]fruntime.GraphTask, pendingFanIn map[string]fruntime.GraphTask) bool {
 	for nodeID := range ready {
 		if runnable.isStrictUpstream(nodeID, fanInNodeID) {
 			return true
@@ -923,10 +1024,36 @@ func (runnable *scheduledRunnable) notifyGraphStep(ctx context.Context, config f
 	if config.StepObserver == nil {
 		return nil
 	}
-	if err := config.StepObserver(ctx, fruntime.CloneGraphTasks(completedTasks), currentState); err != nil {
+	clonedTasks, err := cloneGraphTasksStrict(completedTasks)
+	if err != nil {
+		return &fruntime.GraphStepError{Err: fmt.Errorf("step observer tasks cannot be safely cloned: %w", err)}
+	}
+	var clonedState *state.State
+	if currentState != nil {
+		clonedState, err = currentState.CloneStrict()
+		if err != nil {
+			return &fruntime.GraphStepError{Err: fmt.Errorf("step observer state cannot be safely cloned: %w", err)}
+		}
+	}
+	if err := config.StepObserver(ctx, clonedTasks, clonedState); err != nil {
 		return &fruntime.GraphStepError{Err: err}
 	}
 	return nil
+}
+
+func cloneGraphTasksStrict(tasks []fruntime.GraphTask) ([]fruntime.GraphTask, error) {
+	if len(tasks) == 0 {
+		return nil, nil
+	}
+	clonedValue, err := state.CloneValue(tasks)
+	if err != nil {
+		return nil, err
+	}
+	cloned, ok := clonedValue.([]fruntime.GraphTask)
+	if !ok {
+		return nil, fmt.Errorf("graph task clone returned %T", clonedValue)
+	}
+	return cloned, nil
 }
 
 func (g *Graph) compileJoinNodes() map[string]struct{} {
@@ -1005,6 +1132,21 @@ func firstNodeInterrupt(tasks []fruntime.GraphTask, taskErrors []error) (*core.N
 		}
 	}
 	return nil, fruntime.GraphTask{}
+}
+
+func nodeInterrupts(tasks []fruntime.GraphTask, taskErrors []error) []*core.NodeInterrupt {
+	interrupts := make([]*core.NodeInterrupt, 0)
+	for index, taskErr := range taskErrors {
+		var interrupt *core.NodeInterrupt
+		if !errors.As(taskErr, &interrupt) || interrupt == nil {
+			continue
+		}
+		if interrupt.NodeID == "" && index < len(tasks) {
+			interrupt.NodeID = tasks[index].NodeID
+		}
+		interrupts = append(interrupts, interrupt)
+	}
+	return interrupts
 }
 
 func firstError(errorsList []error) error {
@@ -1090,14 +1232,29 @@ func sortedGraphTaskNodeIDs(tasks map[string]fruntime.GraphTask) []string {
 	return nodeIDs
 }
 
-func nodeIDSet(nodeIDs []string) map[string]struct{} {
-	result := make(map[string]struct{}, len(nodeIDs))
-	for _, nodeID := range nodeIDs {
-		if nodeID != "" {
-			result[nodeID] = struct{}{}
+func taskMapByNodeID(tasks []fruntime.GraphTask) map[string]fruntime.GraphTask {
+	result := make(map[string]fruntime.GraphTask, len(tasks))
+	for _, task := range tasks {
+		if task.NodeID != "" {
+			storePreferredTask(result, task)
 		}
 	}
 	return result
+}
+
+func sortedTasksByNodeID(tasks map[string]fruntime.GraphTask) []fruntime.GraphTask {
+	result := make([]fruntime.GraphTask, 0, len(tasks))
+	for _, nodeID := range sortedGraphTaskNodeIDs(tasks) {
+		result = append(result, tasks[nodeID])
+	}
+	return result
+}
+
+func storePreferredTask(tasks map[string]fruntime.GraphTask, task fruntime.GraphTask) {
+	current, exists := tasks[task.NodeID]
+	if !exists || current.Failure == nil && task.Failure != nil {
+		tasks[task.NodeID] = task
+	}
 }
 
 func sortedNodeIDSet(nodeIDs map[string]struct{}) []string {

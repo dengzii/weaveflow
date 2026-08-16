@@ -672,6 +672,190 @@ func TestFanOutFanInWaitsForUnevenBranches(t *testing.T) {
 	}
 }
 
+func TestStreamPublishesIndependentStrictStateSnapshots(t *testing.T) {
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "writer", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("output"), map[string]any{"value": "scheduler"})
+	})
+	if err := workflow.SetEntryPoint("writer"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := workflow.SetFinishPoint("writer"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	runnable, err := workflow.Compile()
+	if err != nil {
+		t.Fatalf("compile graph: %v", err)
+	}
+	initialState := state.FromShared(map[string]any{
+		"input": map[string]any{"value": "caller"},
+	})
+
+	var startState *state.State
+	var finalState *state.State
+	nodeStates := make([]*state.State, 0)
+	for event := range runnable.Stream(context.Background(), initialState) {
+		if event.Error != nil {
+			t.Fatalf("stream event %q error = %v", event.Event, event.Error)
+		}
+		switch event.Event {
+		case EventChainStart:
+			startState = event.State
+		case EventNodeStart, EventNodeComplete:
+			nodeStates = append(nodeStates, event.State)
+		case EventChainEnd:
+			finalState = event.State
+		}
+	}
+	if startState == nil || finalState == nil || len(nodeStates) != 2 {
+		t.Fatalf("stream states: start=%p nodes=%d final=%p", startState, len(nodeStates), finalState)
+	}
+	if startState == initialState {
+		t.Fatal("chain-start event exposed caller-owned initial state")
+	}
+	for _, nodeState := range nodeStates {
+		if nodeState == initialState || nodeState == startState || nodeState == finalState {
+			t.Fatal("stream reused a mutable state envelope across ownership boundaries")
+		}
+	}
+	if err := startState.SetSection(state.SectionShared, map[string]any{"poisoned": "start"}); err != nil {
+		t.Fatalf("mutate start snapshot: %v", err)
+	}
+	if err := nodeStates[0].SetSection(state.SectionShared, map[string]any{"poisoned": "node"}); err != nil {
+		t.Fatalf("mutate node snapshot: %v", err)
+	}
+	initialValue, ok := state.NewAccess(initialState).ReadAny(state.Shared("input"))
+	if !ok || initialValue.(map[string]any)["value"] != "caller" {
+		t.Fatalf("caller initial state = %#v, found = %v", initialValue, ok)
+	}
+	finalValue, ok := state.NewAccess(finalState).ReadAny(state.Shared("output"))
+	if !ok || finalValue.(map[string]any)["value"] != "scheduler" {
+		t.Fatalf("final stream state = %#v, found = %v", finalValue, ok)
+	}
+}
+
+func TestStreamPublishesCloneErrorWithoutExposingOpaqueInitialState(t *testing.T) {
+	workflow := NewGraph(nil)
+	var executed atomic.Bool
+	mustAddNode(t, workflow, "entry", func(context.Context, *state.Access) error {
+		executed.Store(true)
+		return nil
+	})
+	if err := workflow.SetEntryPoint("entry"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := workflow.SetFinishPoint("entry"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+	runnable, err := workflow.Compile()
+	if err != nil {
+		t.Fatalf("compile graph: %v", err)
+	}
+	initialState := state.FromShared(map[string]any{"opaque": make(chan int)})
+
+	events := make([]StreamEvent, 0)
+	for event := range runnable.Stream(context.Background(), initialState) {
+		events = append(events, event)
+	}
+	if len(events) != 1 {
+		t.Fatalf("stream emitted %d events, want one clone failure", len(events))
+	}
+	event := events[0]
+	if event.Event != EventChainStart || event.State != nil || event.Error == nil || !strings.Contains(event.Error.Error(), "state cannot be safely cloned") {
+		t.Fatalf("clone failure event = %#v", event)
+	}
+	if executed.Load() {
+		t.Fatal("graph executed after the initial stream snapshot failed")
+	}
+}
+
+func TestGraphNodeInputOmitsReservedState(t *testing.T) {
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "entry", func(_ context.Context, access *state.Access) error {
+		for _, path := range []state.Path{
+			state.Internal("graph_scheduler"),
+			state.Internal("private"),
+			state.Runtime("run_id"),
+		} {
+			if value, found := access.ReadAny(path); found {
+				return fmt.Errorf("node observed reserved state %q: %#v", path.String(), value)
+			}
+		}
+		return access.SetAny(state.Shared("executed"), true)
+	})
+	if err := workflow.SetEntryPoint("entry"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := workflow.SetFinishPoint("entry"); err != nil {
+		t.Fatalf("set finish: %v", err)
+	}
+
+	initialState := state.NewState()
+	if err := state.SetPath(initialState, state.Internal("private").String(), "hidden"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetPath(initialState, state.Runtime("run_id").String(), "hidden-run"); err != nil {
+		t.Fatal(err)
+	}
+	finalState, err := workflow.Run(context.Background(), initialState)
+	if err != nil {
+		t.Fatalf("run graph: %v", err)
+	}
+	executed, found := state.NewAccess(finalState).ReadAny(state.Shared("executed"))
+	if !found || executed != true {
+		t.Fatalf("node output = %#v, found = %v", executed, found)
+	}
+}
+
+func TestGraphConditionReceivesIsolatedBusinessState(t *testing.T) {
+	workflow := NewGraph(nil)
+	mustAddNode(t, workflow, "router", func(context.Context, *state.Access) error { return nil })
+	mustAddNode(t, workflow, "matched", func(_ context.Context, access *state.Access) error {
+		return access.SetAny(state.Shared("matched"), true)
+	})
+	if err := workflow.SetEntryPoint("router"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("matched"); err != nil {
+		t.Fatal(err)
+	}
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{Type: "test"}, func(_ context.Context, current *state.State) (registry.RouteDecision, error) {
+		for _, path := range []state.Path{state.Internal("graph_scheduler"), state.Internal("private"), state.Runtime("run_id")} {
+			if value, found := state.ReadPath(current, path.String()); found {
+				return registry.RouteDecision{}, fmt.Errorf("condition observed reserved state %q: %#v", path.String(), value)
+			}
+		}
+		if err := state.SetPath(current, state.Shared("condition_mutation").String(), true); err != nil {
+			return registry.RouteDecision{}, err
+		}
+		return registry.RouteDecision{Matched: true, Reason: "isolated"}, nil
+	})
+	if err := workflow.AddConditionalEdge("router", "matched", condition); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.AddEdge("router", EndNodeRef); err != nil {
+		t.Fatal(err)
+	}
+
+	initialState := state.NewState()
+	if err := state.SetPath(initialState, state.Internal("private").String(), "hidden"); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SetPath(initialState, state.Runtime("run_id").String(), "hidden-run"); err != nil {
+		t.Fatal(err)
+	}
+	finalState, err := workflow.Run(context.Background(), initialState)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if _, found := state.ReadPath(finalState, "shared.condition_mutation"); found {
+		t.Fatal("condition mutation leaked into graph state")
+	}
+	if matched, found := state.ReadPath(finalState, "shared.matched"); !found || matched != true {
+		t.Fatalf("matched = %#v, found=%v", matched, found)
+	}
+}
+
 func TestFanInDoesNotWaitForInactiveConditionalPredecessor(t *testing.T) {
 	t.Parallel()
 
