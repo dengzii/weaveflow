@@ -35,9 +35,9 @@ running them.
 | Path                                   | Demonstrates                                                                   |
 |----------------------------------------|--------------------------------------------------------------------------------|
 | `examples/state_operations/graph.json` | State set, copy, merge, append, transform, delete, and a CEL-backed condition. |
-| `examples/supervisor_mode/graph.json`  | A complete editable Graph Definition v2 supervisor workflow.                   |
+| `examples/supervisor_mode/graph.json`  | A complete editable Graph Definition supervisor workflow.                      |
 | `examples/dsl/`                        | Exporting the default registry and Graph Definition JSON schema.               |
 | `examples/node/`                       | Focused construction and execution examples for individual node types.         |
 
-Graph Definition v2 files keep state paths in component `state` bindings. Validate a definition against the current
+Graph Definition files keep state paths in component `state` bindings. Validate a definition against the current
 registry before creating a Graph Session because registered node, condition, tool, and model settings may differ.

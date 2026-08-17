@@ -68,6 +68,7 @@ func TestChildRunCreatedBeforeFinalizeIsRecovered(t *testing.T) {
 	t.Parallel()
 
 	fixture := newChildRunRecoveryFixture(t, false)
+	resumeChildRunFixtureAtStep(&fixture, "resumed-parent-step")
 	assertChildRunRecovery(t, fixture)
 }
 
@@ -75,6 +76,7 @@ func TestChildRunFinalizedRetryDoesNotCreateSecondRun(t *testing.T) {
 	t.Parallel()
 
 	fixture := newChildRunRecoveryFixture(t, true)
+	resumeChildRunFixtureAtStep(&fixture, "resumed-parent-step")
 	assertChildRunRecovery(t, fixture)
 }
 
@@ -249,6 +251,88 @@ func TestChildRunReservationReusesOriginalStepAcrossResumeAttempts(t *testing.T)
 	}
 	if len(parent.PendingChildRuns) != 1 || parent.PendingChildRuns[0].ParentStepID != reservation.ParentStepID {
 		t.Fatalf("persisted reservations = %#v, want original lineage", parent.PendingChildRuns)
+	}
+}
+
+func TestChildRunPendingReservationCreatesChildWithOriginalStepAcrossResumeAttempts(t *testing.T) {
+	t.Parallel()
+
+	fixedTime := time.Unix(320, 0)
+	request := ChildRunRequest{
+		ParentRunID:  "parent-run",
+		ParentStepID: "parent-step",
+		ParentTaskID: "parent-task",
+		GraphRef:     "child-graph-ref",
+		Namespace:    "root/child",
+	}
+	input := state.NewState()
+	inputHash, err := childRunInputHash(input)
+	if err != nil {
+		t.Fatalf("childRunInputHash() error = %v", err)
+	}
+	requestKey := childRunRequestKey(request)
+	reservation := PendingChildRun{
+		RequestKey: requestKey, ChildRunID: childRunIDForRequestKey(requestKey),
+		ParentRunID: request.ParentRunID, ParentStepID: request.ParentStepID, ParentTaskID: request.ParentTaskID,
+		GraphRef: request.GraphRef, GraphID: "child-graph", GraphVersion: "v1",
+		Namespace: request.Namespace, InputHash: inputHash, ReservedAt: fixedTime,
+	}
+	executionStore := NewMemoryExecutionStore()
+	parent := RunRecord{
+		RunID: request.ParentRunID, Status: RunStatusRunning,
+		RootRunID: request.ParentRunID, RunPath: []string{request.ParentRunID}, Namespace: "root",
+		PendingChildRuns: []PendingChildRun{reservation},
+	}
+	if err := executionStore.CreateRun(context.Background(), parent); err != nil {
+		t.Fatalf("CreateRun(parent) error = %v", err)
+	}
+	checkpointStore := NewMemoryCheckpointStore()
+	eventSink := NewMemoryEventSink()
+	transactionStore, err := resolveRuntimeTransactionStore(executionStore, checkpointStore, eventSink)
+	if err != nil {
+		t.Fatalf("resolveRuntimeTransactionStore() error = %v", err)
+	}
+	release := make(chan struct{})
+	close(release)
+	fixture := childRunRecoveryFixture{store: executionStore}
+	runner := newTestChildExecutionRunner(fixture, &blockingChildRunGraph{
+		entered: make(chan struct{}, 1),
+		release: release,
+	}, checkpointStore, eventSink, transactionStore)
+
+	request.ParentStepID = "resumed-parent-step"
+	ctx := WithRunnerMetadata(context.Background(), RunnerMetadata{
+		RunID: request.ParentRunID, StepID: request.ParentStepID, TaskID: request.ParentTaskID,
+	})
+	result, err := runner.RunChild(ctx, request, input)
+	if err != nil {
+		t.Fatalf("RunChild() error = %v", err)
+	}
+	if result.Resumed {
+		t.Fatal("RunChild() treated a pending-only reservation as an existing child run")
+	}
+	if result.Run.RunID != reservation.ChildRunID {
+		t.Fatalf("RunChild() run ID = %q, want %q", result.Run.RunID, reservation.ChildRunID)
+	}
+	if result.Run.ParentStepID != reservation.ParentStepID {
+		t.Fatalf("RunChild() parent step ID = %q, want original %q", result.Run.ParentStepID, reservation.ParentStepID)
+	}
+	persistedChild, err := executionStore.GetRun(context.Background(), reservation.ChildRunID)
+	if err != nil {
+		t.Fatalf("GetRun(child) error = %v", err)
+	}
+	if persistedChild.ParentStepID != reservation.ParentStepID {
+		t.Fatalf("persisted child parent step ID = %q, want original %q", persistedChild.ParentStepID, reservation.ParentStepID)
+	}
+	persistedParent, err := executionStore.GetRun(context.Background(), request.ParentRunID)
+	if err != nil {
+		t.Fatalf("GetRun(parent) error = %v", err)
+	}
+	if len(persistedParent.PendingChildRuns) != 0 {
+		t.Fatalf("pending child reservations = %#v", persistedParent.PendingChildRuns)
+	}
+	if len(persistedParent.ChildRunIDs) != 1 || persistedParent.ChildRunIDs[0] != reservation.ChildRunID {
+		t.Fatalf("child run links = %#v", persistedParent.ChildRunIDs)
 	}
 }
 
@@ -890,14 +974,15 @@ func TestChildRunNodeExecutionRejectsLostOwnershipAndInactiveStatus(t *testing.T
 }
 
 type childRunRecoveryFixture struct {
-	ctx        context.Context
-	runner     *GraphRunner
-	store      *MemoryExecutionStore
-	request    ChildRunRequest
-	input      *state.State
-	parentID   string
-	childID    string
-	requestKey string
+	ctx          context.Context
+	runner       *GraphRunner
+	store        *MemoryExecutionStore
+	request      ChildRunRequest
+	input        *state.State
+	parentID     string
+	parentStepID string
+	childID      string
+	requestKey   string
 }
 
 func newChildRunRecoveryFixture(t *testing.T, finalized bool) childRunRecoveryFixture {
@@ -969,8 +1054,15 @@ func newChildRunFixture(t *testing.T, finalized bool, childStatus RunStatus, err
 			executionStore: store, graphID: "child-graph", graphVersion: "v1", now: func() time.Time { return fixedTime },
 		},
 		store: store, request: request, input: input,
-		parentID: request.ParentRunID, childID: childID, requestKey: requestKey,
+		parentID: request.ParentRunID, parentStepID: request.ParentStepID, childID: childID, requestKey: requestKey,
 	}
+}
+
+func resumeChildRunFixtureAtStep(fixture *childRunRecoveryFixture, parentStepID string) {
+	fixture.request.ParentStepID = parentStepID
+	fixture.ctx = WithRunnerMetadata(context.Background(), RunnerMetadata{
+		RunID: fixture.request.ParentRunID, StepID: parentStepID, TaskID: fixture.request.ParentTaskID,
+	})
 }
 
 func assertChildRunRecovery(t *testing.T, fixture childRunRecoveryFixture) {
@@ -983,6 +1075,9 @@ func assertChildRunRecovery(t *testing.T, fixture childRunRecoveryFixture) {
 	if !result.Resumed || result.Run.RunID != fixture.childID {
 		t.Fatalf("RunChild() result = %#v", result)
 	}
+	if result.Run.ParentStepID != fixture.parentStepID {
+		t.Fatalf("RunChild() parent step ID = %q, want original %q", result.Run.ParentStepID, fixture.parentStepID)
+	}
 	parent, err := fixture.store.GetRun(context.Background(), fixture.parentID)
 	if err != nil {
 		t.Fatalf("GetRun(parent) error = %v", err)
@@ -992,6 +1087,13 @@ func assertChildRunRecovery(t *testing.T, fixture childRunRecoveryFixture) {
 	}
 	if len(parent.ChildRunIDs) != 1 || parent.ChildRunIDs[0] != fixture.childID {
 		t.Fatalf("child run links = %#v", parent.ChildRunIDs)
+	}
+	persistedChild, err := fixture.store.GetRun(context.Background(), fixture.childID)
+	if err != nil {
+		t.Fatalf("GetRun(child) error = %v", err)
+	}
+	if persistedChild.ParentStepID != fixture.parentStepID {
+		t.Fatalf("persisted child parent step ID = %q, want original %q", persistedChild.ParentStepID, fixture.parentStepID)
 	}
 	runs, err := fixture.store.ListRuns(context.Background(), RunFilter{})
 	if err != nil {

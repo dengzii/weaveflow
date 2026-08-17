@@ -1,4 +1,4 @@
-// Package dsl defines serializable Graph Definition v2 data transfer objects.
+// Package dsl defines serializable Graph Definition data transfer objects.
 package dsl
 
 import (
@@ -28,7 +28,7 @@ func (r JSONSchema) WriteToFile(path string) error {
 	return err
 }
 
-const GraphDefinitionVersion = "2.0"
+const GraphDefinitionVersion = "1.0"
 
 type StateFieldDefinition struct {
 	Path        string     `json:"path"`

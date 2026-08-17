@@ -244,13 +244,7 @@ func TestGraphRunAndRunnerStartConditionalRoutingAgree(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 	run, runnerState, err := runner.Start(context.Background(), initial)
 	if err != nil {
 		t.Fatalf("runner start: %v", err)
@@ -291,14 +285,9 @@ func TestGraphRunAndRunnerStartContractWriteBehaviorAgree(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir), fruntime.WithContractPolicy(fruntime.ContractPolicy{
-			EnforceWrites: true,
-		}))
+	runner, _ := mustNewFileGraphRunner(t, g, dir, fruntime.WithContractPolicy(fruntime.ContractPolicy{
+		EnforceWrites: true,
+	}))
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil || !strings.Contains(err.Error(), "undeclared path") {
 		t.Fatalf("expected GraphRunner.Start contract violation, got %v", err)
@@ -350,13 +339,7 @@ func TestResolvedContractsProjectNodeInputAndPreserveUnboundState(t *testing.T) 
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 	if runner.ContractValidation() != core.ContractValidationStrict {
 		t.Fatalf("runner contract validation = %q, want strict", runner.ContractValidation())
 	}

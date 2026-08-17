@@ -4,14 +4,16 @@
 package weaveflow
 
 import (
+	"context"
 	"fmt"
-	"path/filepath"
+	"io"
 	"time"
 
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/graph"
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -169,14 +171,32 @@ func NewLocalRunner(target *graph.Graph, baseDir string, options ...RunnerOption
 		return nil, fmt.Errorf("runner base directory is required")
 	}
 	config := defaultRunnerConfig()
-	config.executionStore = runtime.NewFileExecutionStore(baseDir)
-	config.checkpointStore = runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
-	config.eventSink = runtime.NewFileEventSink(filepath.Join(baseDir, "events"))
-	config.artifactStore = runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
 	if err := config.apply(options); err != nil {
 		return nil, err
 	}
-	return config.build(target)
+	if config.storageOverridden() {
+		return nil, fmt.Errorf("local runner storage cannot be overridden")
+	}
+	store, err := filestore.Open(baseDir)
+	if err != nil {
+		return nil, err
+	}
+	config.executionStore = store.ExecutionStore()
+	config.checkpointStore = store.CheckpointStore()
+	config.eventSink = store.EventSink()
+	config.artifactStore = store.ArtifactStore()
+	config.transactionStore = store.TransactionStore()
+	config.closer = store
+	runner, err := config.build(target)
+	if err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	if err := runner.ReconcileRunDeletions(context.Background()); err != nil {
+		_ = store.Close()
+		return nil, err
+	}
+	return runner, nil
 }
 
 func NewInMemoryRunner(target *graph.Graph, options ...RunnerOption) (*runtime.GraphRunner, error) {
@@ -203,6 +223,7 @@ func WithExecutionStore(store runtime.ExecutionStore) RunnerOption {
 			return fmt.Errorf("execution store is required")
 		}
 		config.executionStore = store
+		config.executionStoreOverridden = true
 		return nil
 	})
 }
@@ -213,6 +234,7 @@ func WithCheckpointStore(store runtime.CheckpointStore) RunnerOption {
 			return fmt.Errorf("checkpoint store is required")
 		}
 		config.checkpointStore = store
+		config.checkpointStoreOverridden = true
 		return nil
 	})
 }
@@ -223,6 +245,7 @@ func WithEventSink(sink runtime.EventSink) RunnerOption {
 			return fmt.Errorf("event sink is required")
 		}
 		config.eventSink = sink
+		config.eventSinkOverridden = true
 		return nil
 	})
 }
@@ -233,6 +256,7 @@ func WithArtifactStore(store runtime.ArtifactStore) RunnerOption {
 			return fmt.Errorf("artifact store is required")
 		}
 		config.artifactStore = store
+		config.artifactStoreOverridden = true
 		return nil
 	})
 }
@@ -293,17 +317,30 @@ func WithNow(now func() time.Time) RunnerOption {
 }
 
 type runnerConfig struct {
-	executionStore     runtime.ExecutionStore
-	checkpointStore    runtime.CheckpointStore
-	eventSink          runtime.EventSink
-	artifactStore      runtime.ArtifactStore
-	codec              state.Codec
-	graphID            string
-	graphVersion       string
-	breakpoints        []runtime.Breakpoint
-	contractValidation core.ContractValidationMode
-	contractPolicy     runtime.ContractPolicy
-	now                func() time.Time
+	executionStore            runtime.ExecutionStore
+	checkpointStore           runtime.CheckpointStore
+	eventSink                 runtime.EventSink
+	artifactStore             runtime.ArtifactStore
+	codec                     state.Codec
+	graphID                   string
+	graphVersion              string
+	breakpoints               []runtime.Breakpoint
+	contractValidation        core.ContractValidationMode
+	contractPolicy            runtime.ContractPolicy
+	transactionStore          runtime.TransactionStore
+	closer                    io.Closer
+	now                       func() time.Time
+	executionStoreOverridden  bool
+	checkpointStoreOverridden bool
+	eventSinkOverridden       bool
+	artifactStoreOverridden   bool
+}
+
+func (config *runnerConfig) storageOverridden() bool {
+	return config.executionStoreOverridden ||
+		config.checkpointStoreOverridden ||
+		config.eventSinkOverridden ||
+		config.artifactStoreOverridden
 }
 
 func defaultRunnerConfig() runnerConfig {
@@ -351,6 +388,12 @@ func (config *runnerConfig) build(target *graph.Graph) (*runtime.GraphRunner, er
 	}
 	if config.now != nil {
 		options = append(options, runtime.WithNow(config.now))
+	}
+	if config.transactionStore != nil {
+		options = append(options, runtime.WithRuntimeTransactionStore(config.transactionStore))
+	}
+	if config.closer != nil {
+		options = append(options, runtime.WithStoreCloser(config.closer))
 	}
 	return graph.NewGraphRunner(target, config.executionStore, config.checkpointStore, config.codec, config.eventSink, options...)
 }

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 )
 
@@ -14,10 +15,15 @@ func TestAnalyzeGraphRunnerAggregatesRunStats(t *testing.T) {
 
 	ctx := context.Background()
 	base := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(base + "/execution")
-	checkpointStore := fruntime.NewFileCheckpointStore(base + "/checkpoints")
-	artifactStore := fruntime.NewFileArtifactStore(base + "/artifacts")
-	eventSink := fruntime.NewFileEventSink(base + "/events")
+	store, err := filestore.Open(base)
+	if err != nil {
+		t.Fatalf("file.Open() error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	executionStore := store.ExecutionStore()
+	checkpointStore := store.CheckpointStore()
+	artifactStore := store.ArtifactStore()
+	eventSink := store.EventSink()
 
 	startedAt := time.Date(2026, 6, 8, 10, 0, 0, 0, time.UTC)
 	nodeFinishedAt := startedAt.Add(3 * time.Second)
@@ -112,7 +118,7 @@ func TestAnalyzeGraphRunnerAggregatesRunStats(t *testing.T) {
 		"changes": []map[string]any{{"path": "a"}, {"path": "b"}},
 	}))
 
-	analyzer := NewAnalyzeGraphRunnerFromStores(executionStore, checkpointStore, artifactStore, eventSink)
+	analyzer := NewAnalyzeGraphRunnerFromStores(executionStore, checkpointStore, artifactStore, store)
 	analysis, err := analyzer.AnalyzeRun(ctx, run.RunID)
 	if err != nil {
 		t.Fatalf("analyze run: %v", err)
@@ -161,7 +167,12 @@ func TestAnalyzeLatestRunUsesMostRecentlyUpdatedRun(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	executionStore := fruntime.NewFileExecutionStore(t.TempDir())
+	store, err := filestore.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("file.Open() error: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	executionStore := store.ExecutionStore()
 	oldUpdatedAt := time.Date(2026, 6, 8, 10, 0, 0, 0, time.UTC)
 	newUpdatedAt := oldUpdatedAt.Add(time.Hour)
 

@@ -1,4 +1,4 @@
-package runtime
+package file
 
 import (
 	"context"
@@ -8,29 +8,31 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/dengzii/weaveflow/state"
 	"github.com/google/uuid"
 )
 
-type FileArtifactStore struct {
+type artifactStore struct {
 	baseDir string
-	mu      fileStoreMutex
+	mu      storeMutex
+	writer  *writerState
 }
 
-func NewFileArtifactStore(baseDir string) *FileArtifactStore {
+func newArtifactStore(baseDir string, shared *sync.Mutex) *artifactStore {
 	baseDir = strings.TrimSpace(baseDir)
 	baseDir = namespacedFileStoreBase(baseDir, "artifacts")
-	return &FileArtifactStore{baseDir: baseDir, mu: fileStoreMutex{baseDir: baseDir}}
+	return &artifactStore{baseDir: baseDir, mu: storeMutex{shared: shared}}
 }
 
-func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
-	if err := fileStoreContextErr(ctx); err != nil {
+func (s *artifactStore) Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
+	if err := storeContextErr(ctx); err != nil {
 		return state.ArtifactRef{}, err
 	}
 	runID := artifact.RunID
-	if err := validateFileStoreRunID(runID); err != nil {
+	if err := validateRunID(runID); err != nil {
 		return state.ArtifactRef{}, err
 	}
 
@@ -44,7 +46,10 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := ensureFileRunNotDeletingLocked(s.baseDir, runID, "save an artifact"); err != nil {
+	if err := requireWritable(s.writer); err != nil {
+		return state.ArtifactRef{}, err
+	}
+	if err := ensureRunNotDeletingLocked(s.baseDir, runID, "save an artifact"); err != nil {
 		return state.ArtifactRef{}, err
 	}
 
@@ -90,7 +95,7 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 		return state.ArtifactRef{}, err
 	}
 	if err := writeRunnerBinaryFile(metadataPath, metadata); err != nil {
-		if cleanupErr := os.Remove(ref.Location); cleanupErr != nil && !os.IsNotExist(cleanupErr) {
+		if cleanupErr := removeRunnerFile(ref.Location); cleanupErr != nil {
 			return state.ArtifactRef{}, errors.Join(err, fmt.Errorf("cleanup artifact payload: %w", cleanupErr))
 		}
 		return state.ArtifactRef{}, err
@@ -98,11 +103,11 @@ func (s *FileArtifactStore) Save(ctx context.Context, artifact Artifact) (state.
 	return ref, nil
 }
 
-func (s *FileArtifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Artifact, error) {
-	if err := fileStoreContextErr(ctx); err != nil {
+func (s *artifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Artifact, error) {
+	if err := storeContextErr(ctx); err != nil {
 		return Artifact{}, err
 	}
-	if err := validateFileStoreRunID(ref.RunID); err != nil {
+	if err := validateRunID(ref.RunID); err != nil {
 		return Artifact{}, err
 	}
 	if err := validateRunnerStorageID("artifact ID", ref.ID); err != nil {
@@ -148,11 +153,11 @@ func (s *FileArtifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Ar
 	}, nil
 }
 
-func (s *FileArtifactStore) List(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
-	if err := fileStoreContextErr(ctx); err != nil {
+func (s *artifactStore) List(ctx context.Context, runID string) ([]state.ArtifactRef, error) {
+	if err := storeContextErr(ctx); err != nil {
 		return nil, err
 	}
-	if err := validateFileStoreRunID(runID); err != nil {
+	if err := validateRunID(runID); err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
@@ -195,26 +200,29 @@ func (s *FileArtifactStore) List(ctx context.Context, runID string) ([]state.Art
 	return items, nil
 }
 
-func (s *FileArtifactStore) DeleteRun(ctx context.Context, runID string) error {
-	if err := fileStoreContextErr(ctx); err != nil {
+func (s *artifactStore) DeleteRun(ctx context.Context, runID string) error {
+	if err := storeContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateFileStoreRunID(runID); err != nil {
+	if err := validateRunID(runID); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := requireFileRunDeletionLocked(ctx, s.baseDir, runID); err != nil {
+	if err := requireWritable(s.writer); err != nil {
 		return err
 	}
-	return os.RemoveAll(s.artifactsDir(runID))
+	if err := requireRunDeletionLocked(ctx, s.baseDir, runID); err != nil {
+		return err
+	}
+	return removeRunnerDirectory(s.artifactsDir(runID))
 }
 
-func (s *FileArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
-	if err := fileStoreContextErr(ctx); err != nil {
+func (s *artifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := storeContextErr(ctx); err != nil {
 		return err
 	}
-	if err := validateFileStoreRunID(runID); err != nil {
+	if err := validateRunID(runID); err != nil {
 		return err
 	}
 	if err := validateRunnerStorageID("deletion ID", deletionID); err != nil {
@@ -222,25 +230,28 @@ func (s *FileArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletio
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return fenceFileRunDeletionLocked(ctx, s.baseDir, runID, deletionID)
+	if err := requireWritable(s.writer); err != nil {
+		return err
+	}
+	return fenceRunDeletionLocked(ctx, s.baseDir, runID, deletionID)
 }
 
-func (s *FileArtifactStore) artifactsDir(runID string) string {
+func (s *artifactStore) artifactsDir(runID string) string {
 	return filepath.Join(s.baseDir, runID)
 }
 
-func (s *FileArtifactStore) payloadDir(runID string) string {
+func (s *artifactStore) payloadDir(runID string) string {
 	return filepath.Join(s.baseDir, runID, "payloads")
 }
 
-func (s *FileArtifactStore) metadataPath(runID, artifactID string) string {
+func (s *artifactStore) metadataPath(runID, artifactID string) string {
 	return filepath.Join(s.artifactsDir(runID), artifactID+".json")
 }
 
-func (s *FileArtifactStore) payloadPath(runID, artifactID string) string {
+func (s *artifactStore) payloadPath(runID, artifactID string) string {
 	return filepath.Join(s.payloadDir(runID), artifactID+".bin")
 }
 
-func (s *FileArtifactStore) deletionPath(runID string) string {
-	return fileRunDeletionPath(s.baseDir, runID)
+func (s *artifactStore) deletionPath(runID string) string {
+	return runDeletionPath(s.baseDir, runID)
 }

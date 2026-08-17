@@ -42,7 +42,7 @@ const registry: RegistryInfo = {
   graph_schema: {},
 };
 
-describe("v2 graph editor defaults", () => {
+describe("graph editor defaults", () => {
   test("creates graph IDs without the debug prefix", () => {
     expect(createGraphID(1_234_567_890)).toBe("graph_kf12oi");
   });
@@ -75,9 +75,9 @@ describe("v2 graph editor defaults", () => {
     });
   });
 
-  test("creates version 2 graphs with module refs and required node bindings", () => {
+  test("creates graphs with the current format, module refs, and required node bindings", () => {
     const graph = createGraphDefinition("handoff", nodeType, modules);
-    expect(graph.version).toBe("2.0");
+    expect(graph.version).toBe("1.0");
     expect(graph.state_modules).toEqual([{ name: "weaveflow.protocols", version: "1" }]);
     expect(graph.nodes[0].state).toEqual({ task: { path: "" } });
   });
@@ -211,7 +211,7 @@ describe("v2 graph editor defaults", () => {
 
   test("recognizes bound user input only for paused runs and builds the resume patch", () => {
     const definition: GraphDefinition = {
-      version: "2.0",
+      version: "1.0",
       state_modules: [{ name: "weaveflow.protocols", version: "1" }],
       nodes: [{
         id: "input",

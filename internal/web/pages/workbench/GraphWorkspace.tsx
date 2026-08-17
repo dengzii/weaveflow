@@ -18,6 +18,7 @@ import {
   type NodePosition,
 } from "../../lib/graphEditor";
 import {
+  defaultGraphVersion,
   hydrateServerGraph,
   isHydratedLocalGraph,
   type LocalGraph,
@@ -442,7 +443,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     const nextName = createGraphID();
     const next = createGraphDefinition(nextName, undefined, registry?.state_modules);
     onGraphId(next.name || nextName);
-    onGraphVersion(next.version || "2.0");
+    onGraphVersion(defaultGraphVersion);
     onDefinitionText(stringifyJSON(next));
     resetActiveGraph();
     clearSelection();
@@ -521,7 +522,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       [...knownTriggerIDs, ...graphTriggers.map((trigger) => trigger.id)]
     );
     const nextGraphID = resolvedGraph.graphID;
-    const nextGraphVersion = resolvedGraph.graphVersion || resolvedGraph.definition.version || "2.0";
+    const nextGraphVersion = resolvedGraph.graphVersion || defaultGraphVersion;
     const workspaceState = savedGraphWorkspaceState(resolvedGraph.definition);
     if (resolvedGraph.triggers) stageTriggerImport(nextGraphID, resolvedGraph.triggers);
     onGraphId(nextGraphID);
@@ -984,7 +985,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           definition={exportDefinition}
           graphID={graphId}
           graphVersion={graphVersion}
-          registry={registry}
           runtimeSettings={runtimeSettings}
           triggers={graphTriggers}
           onClose={() => setGraphTransferMode(null)}

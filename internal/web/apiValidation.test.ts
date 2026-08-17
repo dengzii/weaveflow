@@ -81,11 +81,15 @@ function graphInfo() {
 }
 
 function graphDefinition() {
-  return { version: "2.0", nodes: [{ id: "start", type: "user_input" }] };
+  return {
+    version: "1.0",
+    state_modules: [{ name: "weaveflow.protocols", version: "1" }],
+    nodes: [{ id: "start", type: "user_input" }],
+  };
 }
 
 function runtimeSettings() {
-  return { environment: {}, models: [], tool_permissions: [], tool_approvals: {} };
+  return { environment: {}, environment_secrets: {}, models: [], tool_permissions: [], tool_approvals: {} };
 }
 
 function graphDetail() {

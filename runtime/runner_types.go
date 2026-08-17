@@ -195,7 +195,18 @@ const (
 	RunDeletionReserved RunDeletionPhase = "reserved"
 	RunDeletionPlanned  RunDeletionPhase = "planned"
 	RunDeletionUnlinked RunDeletionPhase = "unlinked"
+	RunDeletionDeleted  RunDeletionPhase = "deleted"
 )
+
+type RunDeletionManifest struct {
+	ID          string           `json:"id"`
+	RootRunID   string           `json:"root_run_id"`
+	ParentRunID string           `json:"parent_run_id,omitempty"`
+	Phase       RunDeletionPhase `json:"phase"`
+	RunIDs      []string         `json:"run_ids"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+}
 
 type RunOrigin struct {
 	Type      string `json:"type"`
@@ -337,15 +348,19 @@ type Breakpoint struct {
 	Enabled bool   `json:"enabled"`
 }
 
-type ExecutionStore interface {
-	CreateRun(ctx context.Context, run RunRecord) error
-	CompareAndSwapRun(ctx context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error)
+type ExecutionReader interface {
 	GetRun(ctx context.Context, runID string) (RunRecord, error)
 	ListRuns(ctx context.Context, filter RunFilter) ([]RunRecord, error)
-	AppendStep(ctx context.Context, step StepRecord) error
-	UpdateStep(ctx context.Context, step StepRecord) error
 	GetStep(ctx context.Context, stepID string) (StepRecord, error)
 	ListSteps(ctx context.Context, runID string) ([]StepRecord, error)
+}
+
+type ExecutionStore interface {
+	ExecutionReader
+	CreateRun(ctx context.Context, run RunRecord) error
+	CompareAndSwapRun(ctx context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error)
+	AppendStep(ctx context.Context, step StepRecord) error
+	UpdateStep(ctx context.Context, step StepRecord) error
 }
 
 func compareAndSwapRun(ctx context.Context, store ExecutionStore, run RunRecord) (RunRecord, error) {
@@ -355,10 +370,14 @@ func compareAndSwapRun(ctx context.Context, store ExecutionStore, run RunRecord)
 	return store.CompareAndSwapRun(ctx, run.Revision, run)
 }
 
-type CheckpointStore interface {
-	Save(ctx context.Context, record CheckpointRecord, payload []byte) error
+type CheckpointReader interface {
 	Load(ctx context.Context, checkpointID string) (CheckpointRecord, []byte, error)
 	List(ctx context.Context, runID string) ([]CheckpointRecord, error)
+}
+
+type CheckpointStore interface {
+	CheckpointReader
+	Save(ctx context.Context, record CheckpointRecord, payload []byte) error
 }
 
 type EventSink interface {
@@ -366,8 +385,12 @@ type EventSink interface {
 	PublishBatch(ctx context.Context, events []Event) error
 }
 
-type ArtifactStore interface {
-	Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
+type ArtifactReader interface {
 	Load(ctx context.Context, ref state.ArtifactRef) (Artifact, error)
 	List(ctx context.Context, runID string) ([]state.ArtifactRef, error)
+}
+
+type ArtifactStore interface {
+	ArtifactReader
+	Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
 }

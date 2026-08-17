@@ -27,7 +27,7 @@ func ExampleRegistry_RegisterNodeType() {
 	})
 
 	graph, _ := weaveflow.BuildGraph(reg, dsl.GraphDefinition{
-		Version: "2.0", StateModules: []dsl.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
+		Version: "1.0", StateModules: []dsl.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
 		Nodes: []dsl.GraphNodeSpec{{
 			ID:     "answer",
 			Type:   "set_answer",
@@ -76,7 +76,7 @@ func ExampleRegistry_RegisterCondition() {
 	})
 
 	graph, _ := weaveflow.BuildGraph(reg, dsl.GraphDefinition{
-		Version: "2.0", StateModules: []dsl.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
+		Version: "1.0", StateModules: []dsl.StateModuleRef{{Name: "weaveflow.protocols", Version: "1"}},
 		Nodes: []dsl.GraphNodeSpec{
 			{ID: "start", Type: "set_flag", Config: map[string]any{"value": "yes"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.route"}}},
 			{ID: "yes", Type: "set_flag", Config: map[string]any{"value": "matched"}, State: map[string]dsl.StateBinding{"output": {Path: "shared.answer"}}},

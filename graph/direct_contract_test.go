@@ -54,13 +54,7 @@ func TestDirectBuiltinGraphResolvesStrictStateContracts(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		workflow,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, dir)
 	if runner.ContractValidation() != core.ContractValidationStrict {
 		t.Fatalf("contract validation = %q, want strict", runner.ContractValidation())
 	}

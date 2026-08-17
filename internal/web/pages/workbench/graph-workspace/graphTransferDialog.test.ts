@@ -33,7 +33,6 @@ describe("graph transfer UI", () => {
       definition: graphDefinition(),
       graphID: "demo",
       graphVersion: "v1",
-      registry: null,
       runtimeSettings: runtimeSettings(),
       triggers: graphTriggers(),
       onClose: () => undefined,
@@ -54,7 +53,7 @@ describe("graph transfer UI", () => {
 
 function graphDefinition(): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     name: "demo",
     nodes: [{ id: "task", type: "task" }],
   };

@@ -1,6 +1,6 @@
 # WeaveFlow Debug Web
 
-Dense server-facing Graph v2 editor and run debugger.
+Dense server-facing Graph Definition editor and run debugger.
 
 ```bash
 bun install
@@ -47,7 +47,7 @@ graphs in memory. It also supports node type palette creation from `/registry`, 
 creation through `POST /graphs/:graph_id/sessions`, exact-Session asynchronous runs, aggregate Run inspection, and
 Graph-scoped SSE replay.
 
-Graph definitions use version `2.0`. The Graph Inspector selects registered State Modules; Node and edge Condition
+Graph definitions use version `1.0`. The Graph Inspector selects registered State Modules; Node and edge Condition
 Inspectors render a separate State Bindings section from each component's `state_ports`. The path picker filters module
 fields, producer outputs, and capability-compatible roots while still allowing a valid custom `shared` or `scopes`
 path. Bound capability ports show their final absolute resolved contract. The collapsible Graph JSON editor and the

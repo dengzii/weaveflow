@@ -20,7 +20,7 @@ import (
 	"github.com/dengzii/weaveflow/llms"
 )
 
-func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
+func TestGraphTwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 	t.Parallel()
 	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
 	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
@@ -74,7 +74,7 @@ func TestGraphV2TwoAgentHandoffUsesIsolatedConversations(t *testing.T) {
 	}
 }
 
-func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
+func TestGraphTwoAgentsCanShareConversationRoot(t *testing.T) {
 	t.Parallel()
 	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("research result")}}
 	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
@@ -140,7 +140,7 @@ func TestGraphV2TwoAgentsCanShareConversationRoot(t *testing.T) {
 	}
 }
 
-func TestGraphV2MultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testing.T) {
+func TestGraphMultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testing.T) {
 	t.Parallel()
 	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
 	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
@@ -210,7 +210,7 @@ func TestGraphV2MultipleLLMTurnsUseDifferentModelsAndConversationRoots(t *testin
 	}
 }
 
-func TestGraphV2MultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
+func TestGraphMultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
 	t.Parallel()
 	firstModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("first output")}}
 	secondModel := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("second output")}}
@@ -292,7 +292,7 @@ func TestGraphV2MultipleLLMTurnsCanShareConversationRoot(t *testing.T) {
 	}
 }
 
-func TestGraphV2LLMTurnToolExecutionAndConditionShareConversationBinding(t *testing.T) {
+func TestGraphLLMTurnToolExecutionAndConditionShareConversationBinding(t *testing.T) {
 	t.Parallel()
 	model := &scriptedModel{responses: []*llms.ModelResponse{
 		{
@@ -383,7 +383,7 @@ func TestGraphV2LLMTurnToolExecutionAndConditionShareConversationBinding(t *test
 	}
 }
 
-func TestGraphV2SubgraphUsesExplicitInputAndOutputBindings(t *testing.T) {
+func TestGraphSubgraphUsesExplicitInputAndOutputBindings(t *testing.T) {
 	t.Parallel()
 	const moduleName = "test.subgraph"
 	reg := builtin.NewDefaultRegistry()

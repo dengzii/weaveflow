@@ -1,5 +1,5 @@
 import type { VirtualGraphEdge } from "../../../components/GraphCanvas";
-import { END_NODE_REF, START_NODE_REF, graphEdgeId, matchesDynamicStatePortName, resolveDefaultStatePath } from "../../../lib/graphEditor";
+import { END_NODE_REF, START_NODE_REF, graphDefinitionVersion, graphEdgeId, matchesDynamicStatePortName, resolveDefaultStatePath } from "../../../lib/graphEditor";
 import { parseJSON } from "../../../lib/utils";
 import type { GraphDefinition, GraphNodeSpec, NodeTypeSchema, RegistryInfo } from "../../../types";
 import { fallbackNodeTypes } from "./constants";
@@ -7,7 +7,7 @@ import type { VirtualNodeKind } from "./types";
 
 export function validateGraph(definition: GraphDefinition | null, registry?: RegistryInfo | null): string {
   if (!definition) return "invalid json";
-  if (definition.version !== "2.0") return "version must be 2.0";
+  if (definition.version !== graphDefinitionVersion) return `version must be ${graphDefinitionVersion}`;
   if ((definition.state_modules ?? []).length === 0) return "state modules required";
   if (definition.nodes.length === 0) return "no nodes";
   const nodeIds = new Set(definition.nodes.map((node) => node.id));

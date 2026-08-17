@@ -1,10 +1,11 @@
 import type { GraphDefinition } from "../../types";
+import { graphDefinitionVersion } from "../../lib/graphEditor";
 
 export const workspaceTabs = ["graph", "settings"] as const;
 export type WorkspaceTab = (typeof workspaceTabs)[number];
 
 export const sampleGraph: GraphDefinition = {
-  version: "2.0",
+  version: graphDefinitionVersion,
   name: "debug_graph",
   state_modules: [{ name: "weaveflow.protocols", version: "1" }],
   entry_point: "input",

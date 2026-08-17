@@ -473,7 +473,7 @@ func TestTriggerReplacementValidatesEachEntryProvider(t *testing.T) {
 		"graph_id":"required-graph",
 		"graph_version":"v1",
 		"definition":{
-			"version":"2.0",
+			"version":"1.0",
 			"state_modules":[{"name":"weaveflow.protocols","version":"1"}],
 			"name":"required-graph",
 			"entry_point":"input",

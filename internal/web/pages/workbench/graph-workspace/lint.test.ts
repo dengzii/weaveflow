@@ -3,7 +3,7 @@ import type { GraphDefinition, RegistryInfo } from "../../../types";
 import { buildGraphLintIssues } from "./lint";
 
 const validSupervisorGraph: GraphDefinition = {
-  version: "2.0",
+  version: "1.0",
   name: "supervisor",
   state_modules: [{ name: "weaveflow.protocols", version: "1" }],
   entry_point: "supervisor",
@@ -193,7 +193,7 @@ function bindingRegistry(): RegistryInfo {
 
 function bindingGraph(): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     name: "bindings",
     state_modules: [{ name: "weaveflow.protocols", version: "1" }],
     entry_point: "writer",

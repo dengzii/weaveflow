@@ -1,4 +1,4 @@
-package runtime
+package file
 
 import (
 	"context"
@@ -6,21 +6,23 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/dengzii/weaveflow/state"
 )
 
-func TestFileRuntimeStoresRejectUnsafeRecordIDs(t *testing.T) {
+func TestStoresRejectUnsafeRecordIDs(t *testing.T) {
 	t.Parallel()
 
 	baseDir := t.TempDir()
 	unsafeID := "../outside"
-	executionStore := NewFileExecutionStore(filepath.Join(baseDir, "execution"))
-	checkpointStore := NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
-	artifactStore := NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
-	eventSink := NewFileEventSink(filepath.Join(baseDir, "events"))
+	executionStore := newExecutionTestStore(filepath.Join(baseDir, "execution"))
+	checkpointStore := newCheckpointTestStore(filepath.Join(baseDir, "checkpoints"))
+	artifactStore := newArtifactTestStore(filepath.Join(baseDir, "artifacts"))
+	eventSink := newEventTestSink(filepath.Join(baseDir, "events"))
 
 	operations := []struct {
 		name string
@@ -48,17 +50,17 @@ func TestFileRuntimeStoresRejectUnsafeRecordIDs(t *testing.T) {
 			return eventSink.Publish(context.Background(), Event{RunID: unsafeID, Type: EventRunCreated})
 		}},
 		{name: "create reserved run", run: func() error {
-			return executionStore.CreateRun(context.Background(), RunRecord{RunID: fileRunDeletionDirName})
+			return executionStore.CreateRun(context.Background(), RunRecord{RunID: runDeletionDirName})
 		}},
 		{name: "save checkpoint for reserved run", run: func() error {
-			return checkpointStore.Save(context.Background(), CheckpointRecord{RunID: fileRunDeletionDirName, CheckpointID: "checkpoint"}, nil)
+			return checkpointStore.Save(context.Background(), CheckpointRecord{RunID: runDeletionDirName, CheckpointID: "checkpoint"}, nil)
 		}},
 		{name: "save artifact for reserved run", run: func() error {
-			_, err := artifactStore.Save(context.Background(), Artifact{RunID: fileRunDeletionDirName, ID: "artifact"})
+			_, err := artifactStore.Save(context.Background(), Artifact{RunID: runDeletionDirName, ID: "artifact"})
 			return err
 		}},
 		{name: "publish event for reserved run", run: func() error {
-			return eventSink.Publish(context.Background(), Event{RunID: fileRunDeletionDirName, Type: EventRunCreated})
+			return eventSink.Publish(context.Background(), Event{RunID: runDeletionDirName, Type: EventRunCreated})
 		}},
 	}
 	for _, operation := range operations {
@@ -85,26 +87,26 @@ func TestFileRuntimeStoresRejectUnsafeRecordIDs(t *testing.T) {
 	}
 }
 
-func TestFileRuntimeStoresHonorCanceledContext(t *testing.T) {
+func TestStoresHonorCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dir := t.TempDir()
 
-	if _, err := NewFileExecutionStore(dir).GetRun(ctx, "run"); !errors.Is(err, context.Canceled) {
+	if _, err := newExecutionTestStore(dir).GetRun(ctx, "run"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("GetRun() error = %v, want context canceled", err)
 	}
-	if _, err := NewFileCheckpointStore(dir).List(ctx, "run"); !errors.Is(err, context.Canceled) {
+	if _, err := newCheckpointTestStore(dir).List(ctx, "run"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("checkpoint List() error = %v, want context canceled", err)
 	}
-	if _, err := NewFileArtifactStore(dir).List(ctx, "run"); !errors.Is(err, context.Canceled) {
+	if _, err := newArtifactTestStore(dir).List(ctx, "run"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("artifact List() error = %v, want context canceled", err)
 	}
-	if err := NewFileEventSink(dir).Publish(ctx, Event{RunID: "run", Type: EventRunStarted}); !errors.Is(err, context.Canceled) {
+	if err := newEventTestSink(dir).Publish(ctx, Event{RunID: "run", Type: EventRunStarted}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("event Publish() error = %v, want context canceled", err)
 	}
 }
 
-func TestFileRuntimeStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
+func TestStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -114,7 +116,7 @@ func TestFileRuntimeStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
 		t.Fatalf("write outside payload: %v", err)
 	}
 
-	checkpointStore := NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
+	checkpointStore := newCheckpointTestStore(filepath.Join(baseDir, "checkpoints"))
 	checkpoint := CheckpointRecord{RunID: "run", CheckpointID: "checkpoint"}
 	if err := checkpointStore.Save(ctx, checkpoint, []byte("checkpoint payload")); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
@@ -136,7 +138,7 @@ func TestFileRuntimeStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
 		t.Fatalf("checkpoint load used persisted payload path: record=%#v payload=%q", loadedCheckpoint, checkpointPayload)
 	}
 
-	artifactStore := NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
+	artifactStore := newArtifactTestStore(filepath.Join(baseDir, "artifacts"))
 	artifactRef, err := artifactStore.Save(ctx, Artifact{RunID: "run", ID: "artifact", Data: []byte("artifact payload")})
 	if err != nil {
 		t.Fatalf("save artifact: %v", err)
@@ -159,13 +161,13 @@ func TestFileRuntimeStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
 	}
 }
 
-func TestFilePayloadStoresUseDistinctNamespaces(t *testing.T) {
+func TestPayloadStoresUseDistinctNamespaces(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	baseDir := t.TempDir()
-	checkpointStore := NewFileCheckpointStore(baseDir)
-	artifactStore := NewFileArtifactStore(baseDir)
+	checkpointStore := newCheckpointTestStore(baseDir)
+	artifactStore := newArtifactTestStore(baseDir)
 	checkpoint := CheckpointRecord{RunID: "shared-run", CheckpointID: "shared-record"}
 	artifact := Artifact{RunID: checkpoint.RunID, ID: checkpoint.CheckpointID, Data: []byte("artifact payload")}
 
@@ -199,68 +201,24 @@ func TestFilePayloadStoresUseDistinctNamespaces(t *testing.T) {
 	}
 }
 
-func TestNoopRuntimeStoresReportMissingRecords(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	if _, err := NewNoopExecutionStore().GetRun(ctx, "run"); !errors.Is(err, ErrRunnerRecordNotFound) {
-		t.Fatalf("GetRun() error = %v, want record not found", err)
-	}
-	if _, err := NewNoopExecutionStore().GetStep(ctx, "step"); !errors.Is(err, ErrRunnerRecordNotFound) {
-		t.Fatalf("GetStep() error = %v, want record not found", err)
-	}
-	if _, _, err := NewNoopCheckpointStore().Load(ctx, "checkpoint"); !errors.Is(err, ErrRunnerRecordNotFound) {
-		t.Fatalf("Load checkpoint error = %v, want record not found", err)
-	}
-	if _, err := NewNoopArtifactStore().Load(ctx, state.ArtifactRef{RunID: "run", ID: "artifact"}); !errors.Is(err, ErrRunnerRecordNotFound) {
-		t.Fatalf("Load artifact error = %v, want record not found", err)
-	}
-}
-
-func TestNoopArtifactStoreValidatesDeletionInputs(t *testing.T) {
-	t.Parallel()
-
-	store := NewNoopArtifactStore()
-	if err := store.DeleteRun(context.Background(), "run"); err != nil {
-		t.Fatalf("DeleteRun() error = %v", err)
-	}
-	if err := store.FenceRunDeletion(context.Background(), "run", "deletion"); err != nil {
-		t.Fatalf("FenceRunDeletion() error = %v", err)
-	}
-	if err := store.DeleteRun(context.Background(), "../run"); err == nil {
-		t.Fatal("DeleteRun() error = nil, want invalid run ID rejection")
-	}
-	if err := store.FenceRunDeletion(context.Background(), "run", "../deletion"); err == nil {
-		t.Fatal("FenceRunDeletion() error = nil, want invalid deletion ID rejection")
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := store.DeleteRun(ctx, "run"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("DeleteRun() error = %v, want context canceled", err)
-	}
-	if err := store.FenceRunDeletion(ctx, "run", "deletion"); !errors.Is(err, context.Canceled) {
-		t.Fatalf("FenceRunDeletion() error = %v, want context canceled", err)
-	}
-}
-
-func TestFileStoreInstancesShareDirectoryMutex(t *testing.T) {
+func TestStoreComponentsShareDirectoryMutex(t *testing.T) {
 	t.Parallel()
 
 	baseDir := t.TempDir()
-	first := NewFileExecutionStore(baseDir)
-	second := NewFileExecutionStore(filepath.Join(baseDir, "."))
+	shared := &sync.Mutex{}
+	first := newExecutionStore(baseDir, shared)
+	second := newExecutionStore(filepath.Join(baseDir, "."), shared)
 	if first.mu.shared != second.mu.shared {
 		t.Fatal("stores for the same directory use different mutexes")
 	}
 }
 
-func TestFilePayloadStoresCommitMetadataAfterPayload(t *testing.T) {
+func TestPayloadStoresCommitMetadataAfterPayload(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	t.Run("checkpoint", func(t *testing.T) {
-		store := NewFileCheckpointStore(t.TempDir())
+		store := newCheckpointTestStore(t.TempDir())
 		record := CheckpointRecord{RunID: "run", CheckpointID: "checkpoint"}
 		if err := os.MkdirAll(store.payloadPath(record.RunID, record.CheckpointID), 0o755); err != nil {
 			t.Fatalf("block checkpoint payload path: %v", err)
@@ -281,7 +239,7 @@ func TestFilePayloadStoresCommitMetadataAfterPayload(t *testing.T) {
 	})
 
 	t.Run("artifact", func(t *testing.T) {
-		store := NewFileArtifactStore(t.TempDir())
+		store := newArtifactTestStore(t.TempDir())
 		artifact := Artifact{RunID: "run", ID: "artifact", Data: []byte("payload")}
 		if err := os.MkdirAll(store.payloadPath(artifact.RunID, artifact.ID), 0o755); err != nil {
 			t.Fatalf("block artifact payload path: %v", err)
@@ -302,12 +260,12 @@ func TestFilePayloadStoresCommitMetadataAfterPayload(t *testing.T) {
 	})
 }
 
-func TestFilePayloadStoresRejectDuplicateRecordIDs(t *testing.T) {
+func TestPayloadStoresRejectDuplicateRecordIDs(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
 	t.Run("checkpoint", func(t *testing.T) {
-		store := NewFileCheckpointStore(t.TempDir())
+		store := newCheckpointTestStore(t.TempDir())
 		record := CheckpointRecord{RunID: "run", CheckpointID: "checkpoint"}
 		if err := store.Save(ctx, record, []byte("original")); err != nil {
 			t.Fatalf("save original checkpoint: %v", err)
@@ -332,7 +290,7 @@ func TestFilePayloadStoresRejectDuplicateRecordIDs(t *testing.T) {
 	})
 
 	t.Run("artifact", func(t *testing.T) {
-		store := NewFileArtifactStore(t.TempDir())
+		store := newArtifactTestStore(t.TempDir())
 		artifact := Artifact{RunID: "run", ID: "artifact", Data: []byte("original")}
 		ref, err := store.Save(ctx, artifact)
 		if err != nil {
@@ -352,11 +310,11 @@ func TestFilePayloadStoresRejectDuplicateRecordIDs(t *testing.T) {
 	})
 }
 
-func TestFileExecutionStoreRejectsAmbiguousStepLookup(t *testing.T) {
+func TestExecutionStoreRejectsAmbiguousStepLookup(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store := NewFileExecutionStore(t.TempDir())
+	store := newExecutionTestStore(t.TempDir())
 	for _, runID := range []string{"run-a", "run-b"} {
 		if err := store.CreateRun(ctx, RunRecord{RunID: runID}); err != nil {
 			t.Fatalf("create run %q: %v", runID, err)
@@ -370,11 +328,11 @@ func TestFileExecutionStoreRejectsAmbiguousStepLookup(t *testing.T) {
 	}
 }
 
-func TestFileExecutionStoreEnforcesRunDeletionReservation(t *testing.T) {
+func TestExecutionStoreEnforcesRunDeletionReservation(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store := NewFileExecutionStore(t.TempDir())
+	store := newExecutionTestStore(t.TempDir())
 	run := RunRecord{RunID: "run-delete", RootRunID: "run-delete", Status: RunStatusCompleted}
 	deletionID := "deletion-file-execution"
 	if err := store.CreateRun(ctx, RunRecord{
@@ -434,12 +392,12 @@ func TestFileExecutionStoreEnforcesRunDeletionReservation(t *testing.T) {
 	if _, err := os.Stat(store.stepPath(run.RunID, step.StepID)); !os.IsNotExist(err) {
 		t.Fatalf("step survived run deletion: %v", err)
 	}
-	if err := NewFileExecutionStore(store.baseDir).CreateRun(ctx, run); !errors.Is(err, ErrRunControlNotAllowed) {
+	if err := newExecutionTestStore(store.baseDir).CreateRun(ctx, run); !errors.Is(err, ErrRunControlNotAllowed) {
 		t.Fatalf("CreateRun() after physical deletion error = %v, want control rejection", err)
 	}
 }
 
-func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
+func TestPayloadStoresPersistRunDeletionFences(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
@@ -449,7 +407,7 @@ func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
 
 	t.Run("checkpoint", func(t *testing.T) {
 		baseDir := filepath.Join(t.TempDir(), "checkpoints")
-		store := NewFileCheckpointStore(baseDir)
+		store := newCheckpointTestStore(baseDir)
 		record := CheckpointRecord{RunID: runID, CheckpointID: "checkpoint"}
 		if err := store.Save(ctx, record, []byte("payload")); err != nil {
 			t.Fatalf("Save() before fence error = %v", err)
@@ -461,7 +419,7 @@ func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
 			t.Fatalf("durable deletion fence missing: %v", err)
 		}
 
-		reopened := NewFileCheckpointStore(baseDir)
+		reopened := newCheckpointTestStore(baseDir)
 		if err := reopened.FenceRunDeletion(deletionCtx, runID, deletionID); err != nil {
 			t.Fatalf("idempotent FenceRunDeletion() error = %v", err)
 		}
@@ -484,7 +442,7 @@ func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
 
 	t.Run("event", func(t *testing.T) {
 		baseDir := filepath.Join(t.TempDir(), "events")
-		store := NewFileEventSink(baseDir)
+		store := newEventTestSink(baseDir)
 		if err := store.Publish(ctx, Event{ID: "before", RunID: runID, Type: EventRunStarted}); err != nil {
 			t.Fatalf("Publish() before fence error = %v", err)
 		}
@@ -492,7 +450,7 @@ func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
 			t.Fatalf("FenceRunDeletion() error = %v", err)
 		}
 
-		reopened := NewFileEventSink(baseDir)
+		reopened := newEventTestSink(baseDir)
 		if err := reopened.Publish(ctx, Event{ID: "late", RunID: runID, Type: EventRunFailed}); !errors.Is(err, ErrRunControlNotAllowed) {
 			t.Fatalf("Publish() after fence error = %v, want control rejection", err)
 		}
@@ -519,7 +477,7 @@ func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
 
 	t.Run("artifact", func(t *testing.T) {
 		baseDir := filepath.Join(t.TempDir(), "artifacts")
-		store := NewFileArtifactStore(baseDir)
+		store := newArtifactTestStore(baseDir)
 		if _, err := store.Save(ctx, Artifact{RunID: runID, ID: "before", Data: []byte("payload")}); err != nil {
 			t.Fatalf("Save() before fence error = %v", err)
 		}
@@ -527,7 +485,7 @@ func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
 			t.Fatalf("FenceRunDeletion() error = %v", err)
 		}
 
-		reopened := NewFileArtifactStore(baseDir)
+		reopened := newArtifactTestStore(baseDir)
 		if _, err := reopened.Save(ctx, Artifact{RunID: runID, ID: "late"}); !errors.Is(err, ErrRunControlNotAllowed) {
 			t.Fatalf("Save() after fence error = %v, want control rejection", err)
 		}
@@ -543,10 +501,10 @@ func TestFilePayloadStoresPersistRunDeletionFences(t *testing.T) {
 	})
 }
 
-func TestFileEventSinkPublishBatchValidatesBeforeWriting(t *testing.T) {
+func TestEventSinkPublishBatchValidatesBeforeWriting(t *testing.T) {
 	t.Parallel()
 
-	sink := NewFileEventSink(t.TempDir())
+	sink := newEventTestSink(t.TempDir())
 	runID := "run-batch"
 	err := sink.PublishBatch(context.Background(), []Event{
 		{ID: "first", RunID: runID, Type: EventRunStarted},
@@ -583,11 +541,11 @@ func TestWriteRunnerBinaryFileReplacesExistingFile(t *testing.T) {
 	}
 }
 
-func TestFileExecutionStoreListRunsUsesRunIDAsTimestampTieBreaker(t *testing.T) {
+func TestExecutionStoreListRunsUsesRunIDAsTimestampTieBreaker(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store := NewFileExecutionStore(t.TempDir())
+	store := newExecutionTestStore(t.TempDir())
 	for _, runID := range []string{"run-b", "run-a"} {
 		if err := store.CreateRun(ctx, RunRecord{RunID: runID}); err != nil {
 			t.Fatalf("create run %q: %v", runID, err)
@@ -602,11 +560,11 @@ func TestFileExecutionStoreListRunsUsesRunIDAsTimestampTieBreaker(t *testing.T) 
 	}
 }
 
-func TestFileExecutionStoreEnforcesCreateAndUpdateBoundaries(t *testing.T) {
+func TestExecutionStoreEnforcesCreateAndUpdateBoundaries(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	store := NewFileExecutionStore(t.TempDir())
+	store := newExecutionTestStore(t.TempDir())
 	run := RunRecord{RunID: "run"}
 	step := StepRecord{RunID: run.RunID, StepID: "step"}
 
@@ -639,10 +597,10 @@ func TestFileExecutionStoreEnforcesCreateAndUpdateBoundaries(t *testing.T) {
 	}
 }
 
-func TestFileEventSinkListEventsSupportsLargePayloads(t *testing.T) {
+func TestEventSinkListEventsSupportsLargePayloads(t *testing.T) {
 	t.Parallel()
 
-	sink := NewFileEventSink(t.TempDir())
+	sink := newEventTestSink(t.TempDir())
 	runID := "run-large-payload"
 	largeText := strings.Repeat("x", 256*1024)
 	payload, err := json.Marshal(map[string]string{"text": largeText})
@@ -682,10 +640,10 @@ func TestFileEventSinkListEventsSupportsLargePayloads(t *testing.T) {
 	}
 }
 
-func TestFileEventSinkListEventPageReadsNewestFirstAcrossPages(t *testing.T) {
+func TestEventSinkListEventPageReadsNewestFirstAcrossPages(t *testing.T) {
 	t.Parallel()
 
-	sink := NewFileEventSink(t.TempDir())
+	sink := newEventTestSink(t.TempDir())
 	runID := "run-paginated"
 	for index := 0; index < 5; index++ {
 		if err := sink.Publish(context.Background(), Event{
@@ -725,10 +683,10 @@ func TestFileEventSinkListEventPageReadsNewestFirstAcrossPages(t *testing.T) {
 	}
 }
 
-func TestFileEventSinkListEventPageRejectsInvalidCursor(t *testing.T) {
+func TestEventSinkListEventPageRejectsInvalidCursor(t *testing.T) {
 	t.Parallel()
 
-	sink := NewFileEventSink(t.TempDir())
+	sink := newEventTestSink(t.TempDir())
 	if err := sink.Publish(context.Background(), Event{ID: "event-1", RunID: "run-1", Type: EventRunStarted}); err != nil {
 		t.Fatalf("publish event: %v", err)
 	}
@@ -737,16 +695,56 @@ func TestFileEventSinkListEventPageRejectsInvalidCursor(t *testing.T) {
 	}
 }
 
-func TestFileEventSinkListEventPageReturnsEmptyPageForMissingRun(t *testing.T) {
+func TestEventSinkListEventPageReturnsEmptyPageForMissingRun(t *testing.T) {
 	t.Parallel()
 
-	page, err := NewFileEventSink(t.TempDir()).ListEventPage("missing", "", 10)
+	page, err := newEventTestSink(t.TempDir()).ListEventPage("missing", "", 10)
 	if err != nil {
 		t.Fatalf("ListEventPage() error = %v", err)
 	}
 	if len(page.Items) != 0 || page.NextCursor != "" {
 		t.Fatalf("page = %#v, want empty", page)
 	}
+}
+
+func TestEventSinkCreatesPrivateEventFiles(t *testing.T) {
+	baseDir := t.TempDir()
+	sink := newEventTestSink(baseDir)
+	if err := sink.Publish(context.Background(), Event{RunID: "run-1", Type: EventRunStarted}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(baseDir, "run-1.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if goruntime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		permissions := info.Mode().Perm()
+		t.Fatalf("event file permissions = %o, want 600", permissions)
+	}
+}
+
+func newExecutionTestStore(baseDir string) *executionStore {
+	store := newExecutionStore(baseDir, &sync.Mutex{})
+	store.writer = &writerState{}
+	return store
+}
+
+func newCheckpointTestStore(baseDir string) *checkpointStore {
+	store := newCheckpointStore(baseDir, &sync.Mutex{})
+	store.writer = &writerState{}
+	return store
+}
+
+func newArtifactTestStore(baseDir string) *artifactStore {
+	store := newArtifactStore(baseDir, &sync.Mutex{})
+	store.writer = &writerState{}
+	return store
+}
+
+func newEventTestSink(baseDir string) *eventSink {
+	store := newEventSink(baseDir, &sync.Mutex{})
+	store.writer = &writerState{}
+	return store
 }
 
 func assertEventIDs(t *testing.T, events []Event, want ...string) {

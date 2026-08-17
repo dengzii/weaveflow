@@ -41,13 +41,7 @@ func TestNewGraphRunnerPopulatesGraphHashes(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 	if runner.GraphHash() != graphHash {
 		t.Fatalf("runner graph hash = %q, want %q", runner.GraphHash(), graphHash)
 	}
@@ -78,13 +72,7 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
 		t.Fatalf("start runner: %v", err)
@@ -132,13 +120,7 @@ func TestGraphRunnerRejectsUnsafeNodeResultBeforeCheckpoint(t *testing.T) {
 		t.Fatalf("set finish point: %v", err)
 	}
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	_, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil || !strings.Contains(err.Error(), "node result cannot be safely cloned") || !strings.Contains(err.Error(), "opaque reference type func()") {

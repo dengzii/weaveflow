@@ -21,7 +21,7 @@ func testStateModule() dsl.StateModuleDefinition {
 	}
 }
 
-func TestRegistryGraphSchemaExportsV2ModulesAndBindings(t *testing.T) {
+func TestRegistryGraphSchemaExportsModulesAndBindings(t *testing.T) {
 	t.Parallel()
 	reg := NewRegistry()
 	if err := reg.RegisterStateModule(testStateModule()); err != nil {
@@ -40,7 +40,7 @@ func TestRegistryGraphSchemaExportsV2ModulesAndBindings(t *testing.T) {
 		t.Fatalf("marshal schema: %v", err)
 	}
 	text := string(payload)
-	for _, required := range []string{`"state_modules"`, `"state"`, `"input"`, `"2.0"`} {
+	for _, required := range []string{`"state_modules"`, `"state"`, `"input"`, `"1.0"`} {
 		if !strings.Contains(text, required) {
 			t.Fatalf("graph schema missing %s: %s", required, text)
 		}

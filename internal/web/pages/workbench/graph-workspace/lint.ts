@@ -1,4 +1,4 @@
-import { END_NODE_REF, graphEdgeId } from "../../../lib/graphEditor";
+import { END_NODE_REF, graphDefinitionVersion, graphEdgeId } from "../../../lib/graphEditor";
 import type {
   GraphDefinition,
   InitialStateRequirements,
@@ -41,11 +41,11 @@ export function buildGraphLintIssues({
     ];
   }
 
-  if (definition.version !== "2.0") {
+  if (definition.version !== graphDefinitionVersion) {
     issues.push({
       id: "graph-version-invalid",
       severity: "error",
-      message: `Graph version must be "2.0"; received "${definition.version ?? ""}".`,
+      message: `Graph Definition version must be "${graphDefinitionVersion}"; received "${definition.version ?? ""}".`,
       path: "version",
     });
   }
@@ -179,7 +179,7 @@ export function buildGraphLintIssues({
       degree.set(edge.from, (degree.get(edge.from) ?? 0) + 1);
     }
     if (edge.to === END_NODE_REF) {
-      // Graph Definition v2 accepts "__end__" as the explicit terminal target.
+      // Graph Definition accepts "__end__" as the explicit terminal target.
     } else if (!nodeIDs.has(edge.to)) {
       issues.push({
         id: `edge-target-missing-${edgeID}`,

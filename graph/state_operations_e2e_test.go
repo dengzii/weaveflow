@@ -14,7 +14,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-func TestGraphV2StateOperationPipeline(t *testing.T) {
+func TestGraphStateOperationPipeline(t *testing.T) {
 	t.Parallel()
 	definition := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
@@ -82,7 +82,7 @@ func TestGraphV2StateOperationPipeline(t *testing.T) {
 	}
 }
 
-func TestGraphV2DynamicTransformAndStateExpressionCondition(t *testing.T) {
+func TestGraphDynamicTransformAndStateExpressionCondition(t *testing.T) {
 	t.Parallel()
 	definition := dynamicStateExpressionDefinition("shared.cart.price")
 	result := runBoundGraph(t, definition, state.FromShared(map[string]any{
@@ -98,7 +98,7 @@ func TestGraphV2DynamicTransformAndStateExpressionCondition(t *testing.T) {
 	}
 }
 
-func TestGraphV2StateExpressionTreatsMissingInputAsOptionalNonMatch(t *testing.T) {
+func TestGraphStateExpressionTreatsMissingInputAsOptionalNonMatch(t *testing.T) {
 	t.Parallel()
 	definition := dsl.GraphDefinition{
 		Version:      dsl.GraphDefinitionVersion,
@@ -156,7 +156,7 @@ func TestGraphV2StateExpressionTreatsMissingInputAsOptionalNonMatch(t *testing.T
 	}
 }
 
-func TestGraphV2DynamicBindingsChangeSemanticHash(t *testing.T) {
+func TestGraphDynamicBindingsChangeSemanticHash(t *testing.T) {
 	t.Parallel()
 	left, err := NewBuilder(builtin.NewDefaultRegistry()).Build(dynamicStateExpressionDefinition("shared.cart.price"), &registry.BuildContext{})
 	if err != nil {
@@ -179,7 +179,7 @@ func TestGraphV2DynamicBindingsChangeSemanticHash(t *testing.T) {
 	}
 }
 
-func TestGraphV2StateAppendUsesStableParallelOrder(t *testing.T) {
+func TestGraphStateAppendUsesStableParallelOrder(t *testing.T) {
 	t.Parallel()
 	definition := stateOperationFanOutDefinition(node.NodeTypeStateAppend, "shared.list")
 	result := runBoundGraph(t, definition, state.FromShared(map[string]any{
@@ -193,7 +193,7 @@ func TestGraphV2StateAppendUsesStableParallelOrder(t *testing.T) {
 	}
 }
 
-func TestGraphV2StateMergeHandlesParallelFieldsAndConflicts(t *testing.T) {
+func TestGraphStateMergeHandlesParallelFieldsAndConflicts(t *testing.T) {
 	t.Parallel()
 	definition := stateOperationFanOutDefinition(node.NodeTypeStateMerge, "shared.merged")
 	t.Run("disjoint", func(t *testing.T) {

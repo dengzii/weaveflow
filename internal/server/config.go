@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
@@ -34,14 +36,15 @@ type Config struct {
 
 	RuntimeContextDecorators []RuntimeContextDecorator
 
-	ExecutionStore  runtime.ExecutionStore
-	CheckpointStore runtime.CheckpointStore
-	ArtifactStore   runtime.ArtifactStore
-	EventSink       runtime.EventSink
-	RunDeleter      runtime.RunDeleter
-	RunRetention    *runtime.RunRetentionPolicy
-	RetentionAudit  runtime.RetentionAuditSink
-	Codec           state.Codec
+	ExecutionStore   runtime.ExecutionStore
+	CheckpointStore  runtime.CheckpointStore
+	ArtifactStore    runtime.ArtifactStore
+	EventSink        runtime.EventSink
+	TransactionStore runtime.TransactionStore
+	RunDeleter       runtime.RunDeleter
+	RunRetention     *runtime.RunRetentionPolicy
+	RetentionAudit   runtime.RetentionAuditSink
+	Codec            state.Codec
 
 	GraphID           string
 	GraphVersion      string
@@ -130,6 +133,10 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		secretResolver:  secretResolver,
 		managementToken: cfg.ManagementToken,
 	}
+	if err := srv.reconcileCachedRunDeletions(ctx); err != nil {
+		_ = srv.Close()
+		return nil, fmt.Errorf("reconcile cached run deletions: %w", err)
+	}
 	triggerService := cfg.TriggerService
 	if triggerService == nil {
 		chatChannels := cfg.ChatChannels
@@ -198,19 +205,28 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 		cfg.ArtifactStore == nil &&
 		cfg.EventSink == nil
 
+	usesDefaultTransactionStores := cfg.ExecutionStore == nil && cfg.CheckpointStore == nil && cfg.EventSink == nil
+	needsDefaultStore := cfg.ExecutionStore == nil || cfg.CheckpointStore == nil || cfg.ArtifactStore == nil || cfg.EventSink == nil
+	var defaultStore *filestore.Store
+	var err error
+	if needsDefaultStore {
+		defaultStore, err = filestore.Open(baseDir)
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	executionStore := cfg.ExecutionStore
 	var defaultExecutionDeleter runtime.RunDeletionExecutionStore
 	if executionStore == nil {
-		store := runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution"))
-		executionStore = store
-		defaultExecutionDeleter = store
+		executionStore = defaultStore.ExecutionStore()
+		defaultExecutionDeleter = defaultStore.ExecutionDeletionStore()
 	}
 	checkpointStore := cfg.CheckpointStore
 	var defaultCheckpointDeleter runtime.RunDeleter
 	if checkpointStore == nil {
-		store := runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))
-		checkpointStore = store
-		defaultCheckpointDeleter = store
+		checkpointStore = defaultStore.CheckpointStore()
+		defaultCheckpointDeleter = defaultStore.CheckpointDeleter()
 	}
 	codec := cfg.Codec
 	if codec == nil {
@@ -219,9 +235,8 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 	eventSink := cfg.EventSink
 	var defaultEventDeleter runtime.RunDeleter
 	if eventSink == nil {
-		store := runtime.NewFileEventSink(filepath.Join(baseDir, "events"))
-		eventSink = store
-		defaultEventDeleter = store
+		eventSink = defaultStore.EventSink()
+		defaultEventDeleter = defaultStore.EventDeleter()
 	}
 	if hub != nil {
 		eventSink = runtime.NewCombineEventSink(eventSink, hub)
@@ -229,9 +244,8 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 	var defaultArtifactDeleter runtime.RunDeleter
 	artifactStore := cfg.ArtifactStore
 	if artifactStore == nil {
-		store := runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))
-		artifactStore = store
-		defaultArtifactDeleter = store
+		artifactStore = defaultStore.ArtifactStore()
+		defaultArtifactDeleter = defaultStore.ArtifactDeleter()
 	}
 	runDeleter := cfg.RunDeleter
 	if runDeleter == nil && usesDefaultRunStores {
@@ -247,10 +261,32 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 	if retentionPolicy.MaxRuns > 0 || retentionPolicy.MaxAge > 0 {
 		retentionAudit = effectiveRetentionAudit(cfg.RetentionAudit, baseDir)
 	}
-	runner, err := wfgraph.NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink,
+	options := []runtime.GraphRunnerOption{
 		runtime.WithArtifactStore(artifactStore), runtime.WithRunDeleter(runDeleter),
 		runtime.WithRunRetention(retentionPolicy, retentionAudit),
-		runtime.WithGraphMetadata(cfg.GraphID, cfg.GraphVersion, cfg.GraphHash, cfg.GraphSnapshotHash, cfg.GraphSessionID))
+		runtime.WithGraphMetadata(cfg.GraphID, cfg.GraphVersion, cfg.GraphHash, cfg.GraphSnapshotHash, cfg.GraphSessionID),
+	}
+	transactionStore := cfg.TransactionStore
+	if transactionStore == nil && usesDefaultTransactionStores {
+		transactionStore = defaultStore.TransactionStore()
+	}
+	if transactionStore != nil {
+		options = append(options, runtime.WithRuntimeTransactionStore(transactionStore))
+	}
+	if defaultStore != nil {
+		options = append(options, runtime.WithStoreCloser(defaultStore))
+	}
+	runner, err := wfgraph.NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink, options...)
+	if err != nil && defaultStore != nil {
+		_ = defaultStore.Close()
+		return nil, err
+	}
+	if err == nil {
+		err = runner.ReconcileRunDeletions(context.Background())
+		if err != nil && defaultStore != nil {
+			_ = defaultStore.Close()
+		}
+	}
 	return runner, err
 }
 
@@ -268,7 +304,7 @@ func effectiveRetentionAudit(audit runtime.RetentionAuditSink, baseDir string) r
 	if audit != nil {
 		return audit
 	}
-	return runtime.NewFileRetentionAuditSink(filepath.Join(baseDir, "retention-audit.jsonl"))
+	return filestore.NewRetentionAuditSink(filepath.Join(baseDir, "retention-audit.jsonl"))
 }
 
 func (s *Server) BaseDir() string {
@@ -321,6 +357,9 @@ func (s *Server) Close() error {
 	var err error
 	if s.triggers != nil {
 		err = s.triggers.Close()
+	}
+	if s.runtime != nil {
+		err = errors.Join(err, s.runtime.Close())
 	}
 	if s.events != nil {
 		s.events.Close()

@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"time"
 )
 
 type RunDeleter interface {
@@ -21,6 +22,16 @@ type RunDeletionExecutionStore interface {
 
 type RunDeletionFencer interface {
 	FenceRunDeletion(context.Context, string, string) error
+}
+
+type RunDeletionManifestStore interface {
+	LoadRunDeletionManifest(context.Context, string) (RunDeletionManifest, error)
+	ListRunDeletionManifests(context.Context) ([]RunDeletionManifest, error)
+	SaveRunDeletionManifest(context.Context, RunDeletionManifest) error
+}
+
+type RunDeletionFenceScanner interface {
+	ValidateRunDeletionFences(context.Context) error
 }
 
 type RunDeletionCoordinator struct {
@@ -71,6 +82,20 @@ func (coordinator *RunDeletionCoordinator) DeleteRun(ctx context.Context, runID 
 	if runID == "" {
 		return ErrRunnerRecordNotFound
 	}
+	if err := coordinator.validateDeletionStores(); err != nil {
+		return err
+	}
+	deletion, err := prepareRunDeletion(ctx, coordinator.executionStore, runID)
+	if err != nil {
+		return err
+	}
+	if err := coordinator.ensureRunDeletionManifest(ctx, deletion); err != nil {
+		return err
+	}
+	return coordinator.reconcileRunDeletion(ctx, deletion)
+}
+
+func (coordinator *RunDeletionCoordinator) validateDeletionStores() error {
 	stores := uniqueRunDeletionStores(coordinator.executionStore, []runDeletionStoreTarget{
 		{name: "checkpoints", store: coordinator.checkpointStore},
 		{name: "artifacts", store: coordinator.artifactStore},
@@ -84,10 +109,18 @@ func (coordinator *RunDeletionCoordinator) DeleteRun(ctx context.Context, runID 
 			return fmt.Errorf("%s store does not support run deletion fencing", target.name)
 		}
 	}
-	deletion, err := prepareRunDeletion(ctx, coordinator.executionStore, runID)
-	if err != nil {
+	return nil
+}
+
+func (coordinator *RunDeletionCoordinator) reconcileRunDeletion(ctx context.Context, deletion RunDeletionState) error {
+	if err := validateRunDeletionPlanRecords(ctx, coordinator.executionStore, deletion); err != nil {
 		return err
 	}
+	stores := uniqueRunDeletionStores(coordinator.executionStore, []runDeletionStoreTarget{
+		{name: "checkpoints", store: coordinator.checkpointStore},
+		{name: "artifacts", store: coordinator.artifactStore},
+		{name: "events", store: coordinator.eventStore},
+	})
 	deletionCtx := withRunDeletionMutation(ctx, deletion.ID)
 	for _, targetRunID := range deletion.RunIDs {
 		for _, target := range stores {
@@ -104,8 +137,12 @@ func (coordinator *RunDeletionCoordinator) DeleteRun(ctx context.Context, runID 
 		if err := unlinkRunDeletionRoot(deletionCtx, coordinator.executionStore, deletion); err != nil {
 			return err
 		}
-		deletion, err = advanceRunDeletionPhase(deletionCtx, coordinator.executionStore, deletion.RootRunID, deletion.ID, RunDeletionUnlinked)
+		updatedDeletion, err := advanceRunDeletionPhase(deletionCtx, coordinator.executionStore, deletion.RootRunID, deletion.ID, RunDeletionUnlinked)
 		if err != nil {
+			return err
+		}
+		deletion = updatedDeletion
+		if err := coordinator.updateRunDeletionManifest(ctx, deletion); err != nil {
 			return err
 		}
 	}
@@ -117,6 +154,245 @@ func (coordinator *RunDeletionCoordinator) DeleteRun(ctx context.Context, runID 
 			if err := target.store.DeleteRun(deletionCtx, targetRunID); err != nil && !errors.Is(err, ErrRunnerRecordNotFound) {
 				return fmt.Errorf("delete run %q from %s store: %w", targetRunID, target.name, err)
 			}
+		}
+	}
+	return coordinator.markRunDeletionDeleted(ctx, deletion)
+}
+
+func (coordinator *RunDeletionCoordinator) ReconcileRunDeletions(ctx context.Context) error {
+	if coordinator == nil || coordinator.executionStore == nil {
+		return fmt.Errorf("run deletion execution store is required")
+	}
+	ctx = normalizeRunnerContext(ctx)
+	if err := coordinator.validateDeletionStores(); err != nil {
+		return err
+	}
+	if scanner, ok := coordinator.executionStore.(RunDeletionFenceScanner); ok {
+		if err := scanner.ValidateRunDeletionFences(ctx); err != nil {
+			return err
+		}
+	}
+	manifestStore, ok := coordinator.executionStore.(RunDeletionManifestStore)
+	if !ok {
+		return nil
+	}
+	manifests, err := manifestStore.ListRunDeletionManifests(ctx)
+	if err != nil {
+		return err
+	}
+	manifestByID := make(map[string]RunDeletionManifest, len(manifests))
+	for _, manifest := range manifests {
+		if err := ValidateRunDeletionManifest(manifest); err != nil {
+			return fmt.Errorf("deletion manifest %q: %w", manifest.ID, err)
+		}
+		if _, exists := manifestByID[manifest.ID]; exists {
+			return fmt.Errorf("duplicate deletion manifest %q", manifest.ID)
+		}
+		manifestByID[manifest.ID] = manifest
+		if manifest.Phase == RunDeletionDeleted {
+			continue
+		}
+		if err := coordinator.reconcileRunDeletionManifest(ctx, manifest); err != nil {
+			return err
+		}
+		manifest.Phase = RunDeletionDeleted
+		manifest.UpdatedAt = time.Now().UTC()
+		manifestByID[manifest.ID] = manifest
+	}
+	runLister, ok := coordinator.executionStore.(interface {
+		ListRuns(context.Context, RunFilter) ([]RunRecord, error)
+	})
+	if !ok {
+		return fmt.Errorf("run deletion reconciliation requires run listing")
+	}
+	runs, err := runLister.ListRuns(ctx, RunFilter{})
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if run.Deletion == nil {
+			continue
+		}
+		if err := validateRunDeletionState(run.Deletion); err != nil {
+			return fmt.Errorf("run %q deletion state: %w", run.RunID, err)
+		}
+		deletionID := run.Deletion.ID
+		manifest, exists := manifestByID[deletionID]
+		if exists && manifest.Phase == RunDeletionDeleted {
+			return fmt.Errorf("completed deletion manifest %q retains run %q", deletionID, run.RunID)
+		}
+		if run.Deletion.RootRunID != run.RunID {
+			if !exists {
+				return fmt.Errorf("run %q has orphan deletion reservation %q", run.RunID, deletionID)
+			}
+			if !manifestContainsRun(manifest, run.RunID) {
+				return fmt.Errorf("deletion manifest %q omits reserved run %q", deletionID, run.RunID)
+			}
+			continue
+		}
+		if exists {
+			if err := validateRunDeletionManifestMatchesRun(manifest, run); err != nil {
+				return err
+			}
+			continue
+		}
+		deletion, err := prepareRunDeletion(ctx, coordinator.executionStore, run.RunID)
+		if err != nil {
+			return err
+		}
+		if err := coordinator.ensureRunDeletionManifest(ctx, deletion); err != nil {
+			return err
+		}
+		if err := coordinator.reconcileRunDeletion(ctx, deletion); err != nil {
+			return err
+		}
+		manifestByID[deletion.ID] = RunDeletionManifest{
+			ID: deletion.ID, RootRunID: deletion.RootRunID, ParentRunID: deletion.ParentRunID,
+			Phase: RunDeletionDeleted, RunIDs: append([]string(nil), deletion.RunIDs...),
+			CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+		}
+	}
+	return nil
+}
+
+func (coordinator *RunDeletionCoordinator) reconcileRunDeletionManifest(ctx context.Context, manifest RunDeletionManifest) error {
+	deletion := RunDeletionState{
+		ID: manifest.ID, RootRunID: manifest.RootRunID, ParentRunID: manifest.ParentRunID,
+		Phase: manifest.Phase, RunIDs: append([]string(nil), manifest.RunIDs...),
+	}
+	if err := validateRunDeletionState(&deletion); err != nil {
+		return fmt.Errorf("deletion manifest %q: %w", manifest.ID, err)
+	}
+	if manifest.Phase == RunDeletionPlanned {
+		root, err := coordinator.executionStore.GetRun(ctx, manifest.RootRunID)
+		if err != nil {
+			return fmt.Errorf("load deletion root %q: %w", manifest.RootRunID, err)
+		}
+		if err := validateRunDeletionManifestMatchesRun(manifest, root); err != nil {
+			return err
+		}
+	}
+	return coordinator.reconcileRunDeletion(ctx, deletion)
+}
+
+func (coordinator *RunDeletionCoordinator) ensureRunDeletionManifest(ctx context.Context, deletion RunDeletionState) error {
+	manifestStore, ok := coordinator.executionStore.(RunDeletionManifestStore)
+	if !ok {
+		return nil
+	}
+	now := time.Now().UTC()
+	manifest := deletionManifestFromState(deletion, now)
+	existing, err := manifestStore.LoadRunDeletionManifest(ctx, deletion.ID)
+	if errors.Is(err, ErrRunnerRecordNotFound) {
+		return manifestStore.SaveRunDeletionManifest(ctx, manifest)
+	}
+	if err != nil {
+		return err
+	}
+	if err := validateRunDeletionManifestIdentity(existing, manifest); err != nil {
+		return err
+	}
+	if existing.Phase == RunDeletionDeleted {
+		return fmt.Errorf("deletion manifest %q is already completed", deletion.ID)
+	}
+	return nil
+}
+
+func (coordinator *RunDeletionCoordinator) updateRunDeletionManifest(ctx context.Context, deletion RunDeletionState) error {
+	manifestStore, ok := coordinator.executionStore.(RunDeletionManifestStore)
+	if !ok {
+		return nil
+	}
+	manifest, err := manifestStore.LoadRunDeletionManifest(ctx, deletion.ID)
+	if err != nil {
+		return err
+	}
+	if err := validateRunDeletionManifestIdentity(manifest, deletionManifestFromState(deletion, manifest.UpdatedAt)); err != nil {
+		return err
+	}
+	manifest.Phase = deletion.Phase
+	manifest.UpdatedAt = time.Now().UTC()
+	return manifestStore.SaveRunDeletionManifest(ctx, manifest)
+}
+
+func (coordinator *RunDeletionCoordinator) markRunDeletionDeleted(ctx context.Context, deletion RunDeletionState) error {
+	manifestStore, ok := coordinator.executionStore.(RunDeletionManifestStore)
+	if !ok {
+		return nil
+	}
+	manifest, err := manifestStore.LoadRunDeletionManifest(ctx, deletion.ID)
+	if err != nil {
+		return err
+	}
+	if err := validateRunDeletionManifestIdentity(manifest, deletionManifestFromState(deletion, manifest.UpdatedAt)); err != nil {
+		return err
+	}
+	manifest.Phase = RunDeletionDeleted
+	manifest.UpdatedAt = time.Now().UTC()
+	return manifestStore.SaveRunDeletionManifest(ctx, manifest)
+}
+
+func deletionManifestFromState(deletion RunDeletionState, now time.Time) RunDeletionManifest {
+	return RunDeletionManifest{
+		ID: deletion.ID, RootRunID: deletion.RootRunID, ParentRunID: deletion.ParentRunID,
+		Phase: deletion.Phase, RunIDs: append([]string(nil), deletion.RunIDs...),
+		CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func manifestContainsRun(manifest RunDeletionManifest, runID string) bool {
+	return slices.Contains(manifest.RunIDs, runID)
+}
+
+func validateRunDeletionPlanRecords(ctx context.Context, store RunDeletionExecutionStore, deletion RunDeletionState) error {
+	plan := make(map[string]struct{}, len(deletion.RunIDs))
+	for _, runID := range deletion.RunIDs {
+		plan[runID] = struct{}{}
+	}
+	lineageRootID := ""
+	for _, runID := range deletion.RunIDs {
+		run, err := store.GetRun(ctx, runID)
+		if errors.Is(err, ErrRunnerRecordNotFound) {
+			if deletion.Phase != RunDeletionUnlinked {
+				return fmt.Errorf("deletion %q planned run %q is missing", deletion.ID, runID)
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if run.RunID != runID || run.Deletion == nil || run.Deletion.ID != deletion.ID {
+			return fmt.Errorf("deletion %q run %q reservation identity mismatch", deletion.ID, runID)
+		}
+		if runID != deletion.RootRunID && (run.Deletion.Phase != RunDeletionReserved || len(run.Deletion.RunIDs) != 0) {
+			return fmt.Errorf("deletion %q descendant %q has invalid phase %q", deletion.ID, runID, run.Deletion.Phase)
+		}
+		if lineageRootID == "" {
+			lineageRootID = run.RootRunID
+		} else if run.RootRunID != lineageRootID {
+			return fmt.Errorf("deletion %q run %q lineage root mismatch", deletion.ID, runID)
+		}
+		if runID == deletion.RootRunID {
+			if run.ParentRunID != deletion.ParentRunID {
+				return fmt.Errorf("deletion %q root %q parent mismatch", deletion.ID, runID)
+			}
+			switch deletion.Phase {
+			case RunDeletionPlanned:
+				if run.Deletion.Phase != RunDeletionPlanned && run.Deletion.Phase != RunDeletionUnlinked {
+					return fmt.Errorf("deletion %q root %q phase mismatch: %q", deletion.ID, runID, run.Deletion.Phase)
+				}
+			case RunDeletionUnlinked:
+				if run.Deletion.Phase != RunDeletionUnlinked {
+					return fmt.Errorf("deletion %q root %q phase mismatch: %q", deletion.ID, runID, run.Deletion.Phase)
+				}
+			}
+			continue
+		}
+		if run.ParentRunID == "" {
+			return fmt.Errorf("deletion %q descendant %q has no parent", deletion.ID, runID)
+		}
+		if _, exists := plan[run.ParentRunID]; !exists {
+			return fmt.Errorf("deletion %q descendant %q parent %q is outside plan", deletion.ID, runID, run.ParentRunID)
 		}
 	}
 	return nil
@@ -670,6 +946,76 @@ func validateRunDeletionState(deletion *RunDeletionState) error {
 	default:
 		return fmt.Errorf("deletion %q has unsupported phase %q", deletion.ID, deletion.Phase)
 	}
+}
+
+func validateRunDeletionManifest(manifest RunDeletionManifest) error {
+	if err := validateRunnerStorageID("deletion ID", manifest.ID); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("deletion root run ID", manifest.RootRunID); err != nil {
+		return err
+	}
+	if manifest.ParentRunID != "" {
+		if err := validateRunnerStorageID("deletion parent run ID", manifest.ParentRunID); err != nil {
+			return err
+		}
+		if manifest.ParentRunID == manifest.RootRunID {
+			return fmt.Errorf("deletion root run %q cannot be its own parent", manifest.RootRunID)
+		}
+	}
+	if manifest.CreatedAt.IsZero() || manifest.UpdatedAt.IsZero() || manifest.UpdatedAt.Before(manifest.CreatedAt) {
+		return fmt.Errorf("deletion manifest %q has invalid timestamps", manifest.ID)
+	}
+	switch manifest.Phase {
+	case RunDeletionReserved:
+		return fmt.Errorf("deletion manifest %q cannot remain reserved", manifest.ID)
+	case RunDeletionPlanned, RunDeletionUnlinked, RunDeletionDeleted:
+		return validateRunDeletionPlan(manifest.RootRunID, manifest.RunIDs)
+	default:
+		return fmt.Errorf("deletion manifest %q has unsupported phase %q", manifest.ID, manifest.Phase)
+	}
+}
+
+func validateRunDeletionManifestIdentity(manifest RunDeletionManifest, deletion RunDeletionManifest) error {
+	if err := validateRunDeletionManifest(manifest); err != nil {
+		return fmt.Errorf("deletion manifest %q: %w", manifest.ID, err)
+	}
+	if manifest.ID != deletion.ID || manifest.RootRunID != deletion.RootRunID || manifest.ParentRunID != deletion.ParentRunID {
+		return fmt.Errorf("deletion manifest %q identity mismatch", manifest.ID)
+	}
+	if !slices.Equal(manifest.RunIDs, deletion.RunIDs) {
+		return fmt.Errorf("deletion manifest %q run plan mismatch", manifest.ID)
+	}
+	if manifest.Phase != deletion.Phase &&
+		!((manifest.Phase == RunDeletionPlanned || manifest.Phase == RunDeletionUnlinked) &&
+			(deletion.Phase == RunDeletionPlanned || deletion.Phase == RunDeletionUnlinked || deletion.Phase == RunDeletionDeleted)) {
+		return fmt.Errorf("deletion manifest %q phase mismatch: %q versus %q", manifest.ID, manifest.Phase, deletion.Phase)
+	}
+	return nil
+}
+
+func validateRunDeletionManifestMatchesRun(manifest RunDeletionManifest, run RunRecord) error {
+	if manifest.RootRunID != run.RunID || run.Deletion == nil {
+		return fmt.Errorf("deletion manifest %q root run mismatch", manifest.ID)
+	}
+	deletion := run.Deletion
+	if deletion.ID != manifest.ID || deletion.RootRunID != manifest.RootRunID || deletion.ParentRunID != manifest.ParentRunID {
+		return fmt.Errorf("deletion manifest %q root run identity mismatch", manifest.ID)
+	}
+	if len(deletion.RunIDs) > 0 && !slices.Equal(deletion.RunIDs, manifest.RunIDs) {
+		return fmt.Errorf("deletion manifest %q root run plan mismatch", manifest.ID)
+	}
+	switch manifest.Phase {
+	case RunDeletionPlanned:
+		if deletion.Phase != RunDeletionPlanned && deletion.Phase != RunDeletionUnlinked {
+			return fmt.Errorf("deletion manifest %q root phase mismatch: %q", manifest.ID, deletion.Phase)
+		}
+	case RunDeletionUnlinked:
+		if deletion.Phase != RunDeletionUnlinked {
+			return fmt.Errorf("deletion manifest %q root phase mismatch: %q", manifest.ID, deletion.Phase)
+		}
+	}
+	return nil
 }
 
 func validateRunDeletionPlan(rootID string, runIDs []string) error {

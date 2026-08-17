@@ -10,7 +10,7 @@ import {
 
 function graph(): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     nodes: [
       { id: "task", type: "task" },
       { id: "review", type: "task" },

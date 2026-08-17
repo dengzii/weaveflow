@@ -1,11 +1,11 @@
 ---
 name: weaveflow-graph
-description: Create, configure, validate, upload, run, inspect, and resume WeaveFlow Graph Definition v2 agent graphs through the project debug server HTTP API. Use when an agent must discover the live registry; compose node config and state bindings; configure Graph Session settings or model IDs; create an immutable Graph Session; manage Graph Triggers or Chat Channel setup; execute an exact Session; consume runtime events; diagnose failed, paused, or historical Runs; or inspect checkpoints and artifacts, including workflows using Agent or Codex nodes.
+description: Create, configure, validate, upload, run, inspect, and resume WeaveFlow Graph Definition agent graphs through the project debug server HTTP API. Use when an agent must discover the live registry; compose node config and state bindings; configure Graph Session settings or model IDs; create an immutable Graph Session; manage Graph Triggers or Chat Channel setup; execute an exact Session; consume runtime events; diagnose failed, paused, or historical Runs; or inspect checkpoints and artifacts, including workflows using Agent or Codex nodes.
 ---
 
 # WeaveFlow Graph
 
-Use the server as the validation and debugging boundary for Graph Definition v2. Discover the running server's registry instead of guessing node schemas.
+Use the server as the validation and debugging boundary for Graph Definition. Discover the running server's registry instead of guessing node schemas.
 
 ## Read The Relevant Reference
 

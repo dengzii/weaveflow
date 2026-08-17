@@ -63,7 +63,7 @@ describe("node inspector model", () => {
 
 function graphDefinition(node: GraphNodeSpec): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     entry_point: node.id,
     finish_point: node.id,
     nodes: [node, { id: "source", type: "source" }],

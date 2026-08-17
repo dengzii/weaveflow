@@ -170,7 +170,7 @@ func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 
 	failed := serveHTTP(engine, "POST", "/graphs/graph-a/sessions", `{
 		"graph_version":"v2",
-		"definition":{"version":"2.0","name":"invalid","nodes":[]},
+		"definition":{"version":"1.0","name":"invalid","nodes":[]},
 		"settings":{"environment":{},"models":[]}
 	}`)
 	if failed.Code != 400 {
@@ -403,7 +403,7 @@ func graphUploadBodyWithSettings(graphID, graphVersion, content, settings string
 		"graph_id": %q,
 		"graph_version": %q,
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": %q,
 			"entry_point": "input",

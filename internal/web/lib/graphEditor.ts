@@ -16,6 +16,7 @@ import { exampleConfigForSchema } from "./jsonSchemaDefaults";
 
 export const START_NODE_REF = "__start__";
 export const END_NODE_REF = "__end__";
+export const graphDefinitionVersion = "1.0";
 
 export interface NodePosition {
   x: number;
@@ -83,7 +84,7 @@ export function createGraphDefinition(
   const graphName = slugify(name || "debug_graph", "debug_graph");
   const nodes = nodeType ? [createNodeFromType(nodeType, [])] : [];
   return {
-    version: "2.0",
+    version: graphDefinitionVersion,
     name: graphName,
     state_modules: stateModules.map(({ name: moduleName, version }) => ({ name: moduleName, version })),
     entry_point: nodes[0]?.id,

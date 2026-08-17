@@ -6,6 +6,7 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -15,10 +16,11 @@ func TestNewGraphRunnerRequiresExecutionDependencies(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	workflow := newTestGraph(t)
-	executionStore := runtime.NewFileExecutionStore(directory)
-	checkpointStore := runtime.NewFileCheckpointStore(directory)
+	store := openFileStore(t, directory)
+	executionStore := store.ExecutionStore()
+	checkpointStore := store.CheckpointStore()
 	codec := state.NewJSONStateCodec("")
-	eventSink := runtime.NewFileEventSink(directory)
+	eventSink := store.EventSink()
 
 	tests := []struct {
 		name            string
@@ -50,14 +52,15 @@ func TestGraphRunnerRejectsInvalidContractOptions(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
 	workflow := newTestGraph(t)
+	store := openFileStore(t, directory)
 	newRunner := func(options ...runtime.GraphRunnerOption) error {
 		_, err := wfgraph.NewGraphRunner(
 			workflow,
-			runtime.NewFileExecutionStore(directory),
-			runtime.NewFileCheckpointStore(directory),
+			store.ExecutionStore(),
+			store.CheckpointStore(),
 			state.NewJSONStateCodec(""),
-			runtime.NewFileEventSink(directory),
-			options...,
+			store.EventSink(),
+			append([]runtime.GraphRunnerOption{runtime.WithRuntimeTransactionStore(store)}, options...)...,
 		)
 		return err
 	}
@@ -163,6 +166,7 @@ func TestGraphRunnerAllowsNoopArtifactWithRunDeletion(t *testing.T) {
 func TestGraphRunnerOptionsAndGettersCloneMutableValues(t *testing.T) {
 	t.Parallel()
 	directory := t.TempDir()
+	store := openFileStore(t, directory)
 	breakpoints := []runtime.Breakpoint{{ID: "before:start", NodeID: "start", Stage: string(runtime.CheckpointBeforeNode), Enabled: true}}
 	warnings := []runtime.WarningRecord{{Code: "test", Message: "warning", Sources: []string{"source-1"}}}
 	contracts := map[string]state.Contract{
@@ -171,10 +175,11 @@ func TestGraphRunnerOptionsAndGettersCloneMutableValues(t *testing.T) {
 
 	runner, err := wfgraph.NewGraphRunner(
 		newTestGraph(t),
-		runtime.NewFileExecutionStore(directory),
-		runtime.NewFileCheckpointStore(directory),
+		store.ExecutionStore(),
+		store.CheckpointStore(),
 		state.NewJSONStateCodec(""),
-		runtime.NewFileEventSink(directory),
+		store.EventSink(),
+		runtime.WithRuntimeTransactionStore(store),
 		runtime.WithBreakpoints(breakpoints...),
 		runtime.WithStartupWarnings(warnings),
 		runtime.WithNodeContracts(contracts),
@@ -225,4 +230,14 @@ func newTestGraph(t *testing.T) *wfgraph.Graph {
 		t.Fatalf("AddEdge() error = %v", err)
 	}
 	return workflow
+}
+
+func openFileStore(t *testing.T, directory string) *filestore.Store {
+	t.Helper()
+	store, err := filestore.Open(directory)
+	if err != nil {
+		t.Fatalf("file.Open() error = %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	return store
 }

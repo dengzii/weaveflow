@@ -4,9 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
-	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -102,11 +99,7 @@ func TestRuntimeStoreCommitRedactsDirectErrorRecords(t *testing.T) {
 		TransactionStore
 		ExecutionStore
 	}
-	fileStore, err := NewFileRuntimeStore(t.TempDir())
-	if err != nil {
-		t.Fatalf("NewFileRuntimeStore() error = %v", err)
-	}
-	stores := []runtimeRecordStore{NewMemoryRuntimeStore(), fileStore}
+	stores := []runtimeRecordStore{NewMemoryRuntimeStore()}
 	for _, store := range stores {
 		ctx := core.WithModelConfigs(context.Background(), map[string]core.ModelConfig{
 			"default": {APIKey: "direct-store-secret"},
@@ -139,7 +132,6 @@ func TestExecutionStoresRedactDirectWrites(t *testing.T) {
 		newStore func(*testing.T) ExecutionStore
 	}{
 		{name: "memory", newStore: func(*testing.T) ExecutionStore { return NewMemoryExecutionStore() }},
-		{name: "file", newStore: func(t *testing.T) ExecutionStore { return NewFileExecutionStore(t.TempDir()) }},
 	}
 
 	for _, test := range tests {
@@ -211,7 +203,6 @@ func TestArtifactStoresRedactDirectJSONWrites(t *testing.T) {
 		newStore func(*testing.T) ArtifactStore
 	}{
 		{name: "memory", newStore: func(*testing.T) ArtifactStore { return NewMemoryArtifactStore() }},
-		{name: "file", newStore: func(t *testing.T) ArtifactStore { return NewFileArtifactStore(t.TempDir()) }},
 	}
 
 	for _, test := range tests {
@@ -395,21 +386,5 @@ func TestProjectContractObservationStateKeepsWildcardWriteBusinessOnly(t *testin
 	}
 	if value, ok := state.ReadPath(projected, "shared.value"); !ok || value != "visible" {
 		t.Fatalf("wildcard write observation lost business state: %#v, %v", value, ok)
-	}
-}
-
-func TestFileEventSinkCreatesPrivateEventFiles(t *testing.T) {
-	baseDir := t.TempDir()
-	sink := NewFileEventSink(baseDir)
-	if err := sink.Publish(context.Background(), Event{RunID: "run-1", Type: EventRunStarted}); err != nil {
-		t.Fatal(err)
-	}
-	info, err := os.Stat(filepath.Join(baseDir, "run-1.jsonl"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if goruntime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		permissions := info.Mode().Perm()
-		t.Fatalf("event file permissions = %o, want 600", permissions)
 	}
 }

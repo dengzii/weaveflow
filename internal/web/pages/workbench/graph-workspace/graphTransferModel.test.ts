@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import type { GraphDefinition, RegistryInfo, RuntimeSettings, Trigger } from "../../../types";
+import type { GraphDefinition, RuntimeSettings, Trigger } from "../../../types";
 import {
   buildGraphExportBundle,
   graphExportFilename,
@@ -238,132 +238,21 @@ describe("graph transfer model", () => {
     const imported = parseGraphImport(JSON.stringify(graphDefinition()));
 
     expect(imported.graphID).toBe("demo");
-    expect(imported.graphVersion).toBe("2.0");
+    expect(imported.graphVersion).toBe("1.0");
     expect(imported.settings).toBeUndefined();
     expect(imported.contents).toEqual(["graph", "config", "ui"]);
   });
 
-  test("migrates Graph Definition 1.0 nodes, conditions, and state scopes", () => {
-    const imported = parseGraphImport(JSON.stringify({
-      version: "1.0",
-      name: "legacy",
-      state_schema: "weaveflow.state.v2",
-      entry_point: "input",
-      finish_point: "agent",
-      nodes: [
-        { id: "input", type: "human_message", config: { state_scope: "worker", content: "hello" } },
-        { id: "model", type: "llm", config: { state_scope: "worker", model_id: "default" } },
-        { id: "tools", type: "tools", config: { state_scope: "worker", parallel: true } },
-        {
-          id: "agent",
-          type: "agent",
-          config: {
-            state_scope: "researcher",
-            input_path: "shared.custom.task",
-            output_path: "shared.custom.answer",
-            tool_name: "legacy-agent",
-          },
-        },
-      ],
-      edges: [
-        { from: "input", to: "model" },
-        {
-          from: "model",
-          to: "tools",
-          condition: { type: "last_message_has_tool_calls", config: { state_scope: "worker" } },
-        },
-        { from: "tools", to: "agent" },
-      ],
-    }), migrationRegistry());
-
-    expect(imported.definition.version).toBe("2.0");
-    expect(imported.definition.state_modules).toEqual([{ name: "weaveflow.protocols", version: "1" }]);
-    expect(imported.definition.nodes[0]).toMatchObject({
-      id: "input",
-      type: "conversation_message",
-      config: { role: "human", content: "hello" },
-      state: { conversation: { path: "scopes.worker.conversation" } },
-    });
-    expect(imported.definition.nodes[1]).toMatchObject({
-      type: "llm_turn",
-      state: { conversation: { path: "scopes.worker.conversation" } },
-    });
-    expect(imported.definition.nodes[1].state?.output).toBeUndefined();
-    expect(imported.definition.nodes[2]).toMatchObject({
-      type: "tool_execution",
-      state: { conversation: { path: "scopes.worker.conversation" } },
-    });
-    expect(imported.definition.nodes[3]).toMatchObject({
-      type: "agent",
-      state: {
-        task: { path: "shared.custom.task" },
-        conversation: { path: "scopes.researcher.conversation" },
-        result: { path: "shared.custom.answer" },
-      },
-    });
-    expect(imported.definition.nodes[3].config?.tool_name).toBeUndefined();
-    expect(imported.definition.edges?.[1].condition).toEqual({
-      type: "conversation_has_tool_calls",
-      state: { conversation: { path: "scopes.worker.conversation" } },
-    });
-    expect(imported.migration).toMatchObject({ sourceVersion: "1.0", targetVersion: "2.0" });
-    expect(imported.migration?.warnings).toContain("Node \"model\" type migrated from llm to llm_turn.");
-    expect(imported.migration?.warnings).toContain("Node \"agent\" dropped obsolete agent tool_name/tool_description config.");
-  });
-
-  test("uses the legacy default agent scope during migration", () => {
-    const imported = parseGraphImport(JSON.stringify({
-      version: "1.0",
-      nodes: [{ id: "model", type: "llm" }],
-    }), migrationRegistry());
-
-    expect(imported.definition.nodes[0].state).toEqual({
-      conversation: { path: "scopes.agent.conversation" },
-    });
-  });
-
-  test("migrates legacy expression conditions relative to their state scope", () => {
-    const imported = parseGraphImport(JSON.stringify({
-      version: "1.0",
-      nodes: [{ id: "model", type: "llm" }],
-      edges: [{
-        from: "model",
-        to: "__end__",
-        condition: {
-          type: "expression_conditions",
-          config: {
-            state_scope: "worker",
-            match: "all",
-            expressions: [{ value1: "final_answer", op: "not_equal", value2: "" }],
-          },
-        },
-      }],
-    }), migrationRegistry());
-
-    expect(imported.definition.edges?.[0].condition).toEqual({
-      type: "expression_conditions",
-      config: {
-        match: "all",
-        expressions: [{ value1: "conversation.final_answer", op: "not_equal", value2: "" }],
-      },
-      state: { state: { path: "scopes.worker" } },
-    });
-  });
-
-  test("rejects legacy graphs that cannot be migrated without changing semantics", () => {
+  test("rejects removed and unsupported Graph Definition formats", () => {
     expect(() => parseGraphImport(JSON.stringify({
       version: "1.0",
-      state_schema: "custom.state.v1",
       nodes: [{ id: "model", type: "llm" }],
-    }), migrationRegistry())).toThrow("state_schema");
+    }))).toThrow("definition.state_modules");
     expect(() => parseGraphImport(JSON.stringify({
-      version: "1.0",
-      nodes: [{ id: "input", type: "human_message", config: {} }],
-    }), migrationRegistry())).toThrow("requires a user_input plus conversation_message topology");
-    expect(() => parseGraphImport(JSON.stringify({
-      version: "3.0",
+      version: "2.0",
+      state_modules: [{ name: "weaveflow.protocols", version: "1" }],
       nodes: [{ id: "model", type: "llm" }],
-    }), migrationRegistry())).toThrow("Unsupported Graph Definition version");
+    }))).toThrow("Unsupported Graph Definition version");
   });
 
   test("generates a new graph ID and numbered name for import conflicts", () => {
@@ -450,7 +339,7 @@ describe("graph transfer model", () => {
 
 function graphDefinition(): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     name: "demo",
     state_modules: [{ name: "weaveflow.protocols", version: "1" }],
     entry_point: "task",
@@ -532,62 +421,5 @@ function runtimeSettings(): RuntimeSettings {
     }],
     tool_permissions: ["filesystem.read"],
     tool_approvals: { bash: false },
-  };
-}
-
-function migrationRegistry(): RegistryInfo {
-  const conversationPort = {
-    name: "conversation",
-    required: true,
-    capability: "weaveflow.conversation.v1",
-  };
-  return {
-    state_modules: [{
-      name: "weaveflow.protocols",
-      version: "1",
-      fields: [],
-      capabilities: [],
-    }],
-    capabilities: [],
-    node_groups: [],
-    node_types: [
-      {
-        type: "conversation_message",
-        state_ports: [
-          { name: "input", default_path: "shared.request.input", mode: "read" },
-          conversationPort,
-        ],
-      },
-      {
-        type: "llm_turn",
-        state_ports: [
-          conversationPort,
-          { name: "output", default_path: "shared.final.answer", mode: "write" },
-        ],
-      },
-      { type: "tool_execution", state_ports: [conversationPort] },
-      {
-        type: "agent",
-        state_ports: [
-          { name: "task", required: true, default_path: "shared.request.input", mode: "read" },
-          conversationPort,
-          { name: "result", required: true, default_path: "shared.final.answer", mode: "write" },
-        ],
-      },
-      { type: "context_reducer", state_ports: [conversationPort] },
-      {
-        type: "environment_context",
-        state_ports: [{ name: "environment", required: true, default_path: "shared.environment", mode: "write" }],
-      },
-    ],
-    conditions: [
-      { type: "conversation_has_tool_calls", state_ports: [conversationPort] },
-      { type: "conversation_has_final_answer", state_ports: [conversationPort] },
-      {
-        type: "expression_conditions",
-        state_ports: [{ name: "state", required: true, mode: "read" }],
-      },
-    ],
-    graph_schema: {},
   };
 }

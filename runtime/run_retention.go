@@ -2,12 +2,8 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 )
 
@@ -28,71 +24,6 @@ type RetentionAuditRecord struct {
 
 type RetentionAuditSink interface {
 	RecordRetention(context.Context, RetentionAuditRecord) error
-}
-
-type FileRetentionAuditSink struct {
-	path string
-	mu   fileStoreMutex
-}
-
-func NewFileRetentionAuditSink(path string) *FileRetentionAuditSink {
-	path = filepath.Clean(strings.TrimSpace(path))
-	return &FileRetentionAuditSink{path: path, mu: fileStoreMutex{baseDir: path}}
-}
-
-func (sink *FileRetentionAuditSink) RecordRetention(ctx context.Context, record RetentionAuditRecord) error {
-	if sink == nil || strings.TrimSpace(sink.path) == "" || sink.path == "." {
-		return fmt.Errorf("retention audit path is required")
-	}
-	if err := fileStoreContextErr(ctx); err != nil {
-		return err
-	}
-	data, err := json.Marshal(record)
-	if err != nil {
-		return err
-	}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(sink.path), 0o700); err != nil {
-		return err
-	}
-	file, err := os.OpenFile(sink.path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-	if err != nil {
-		return err
-	}
-	defer file.Close()
-	if _, err := file.Write(append(data, '\n')); err != nil {
-		return err
-	}
-	return file.Sync()
-}
-
-func (sink *FileRetentionAuditSink) List() ([]RetentionAuditRecord, error) {
-	if sink == nil || strings.TrimSpace(sink.path) == "" || sink.path == "." {
-		return nil, nil
-	}
-	sink.mu.Lock()
-	defer sink.mu.Unlock()
-	data, err := os.ReadFile(sink.path)
-	if os.IsNotExist(err) {
-		return []RetentionAuditRecord{}, nil
-	}
-	if err != nil {
-		return nil, err
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	records := make([]RetentionAuditRecord, 0, len(lines))
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			continue
-		}
-		var record RetentionAuditRecord
-		if err := json.Unmarshal([]byte(line), &record); err != nil {
-			return nil, err
-		}
-		records = append(records, record)
-	}
-	return records, nil
 }
 
 func validateRunRetentionPolicy(policy RunRetentionPolicy) error {

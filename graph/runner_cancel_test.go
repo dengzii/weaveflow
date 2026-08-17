@@ -41,11 +41,7 @@ func TestRunnerParallelExternalCancelDoesNotWaitForUncooperativeBranches(t *test
 	}
 
 	directory := t.TempDir()
-	runtimeStore, err := fruntime.NewFileRuntimeStore(directory)
-	if err != nil {
-		t.Fatalf("NewFileRuntimeStore(): %v", err)
-	}
-	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore)
+	runner, runtimeStore := mustNewFileGraphRunner(t, workflow, directory)
 	done := make(chan runnerResult, 1)
 	go func() {
 		run, finalState, runErr := runner.Start(context.Background(), state.NewState())

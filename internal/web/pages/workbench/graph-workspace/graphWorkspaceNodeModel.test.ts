@@ -22,7 +22,7 @@ const nodeType: NodeTypeSchema = {
 
 function graph(overrides: Partial<GraphDefinition> = {}): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     nodes: [
       { id: "task", name: "Task", type: "task", config: { nested: { value: 1 } } },
       { id: "review", name: "Review", type: "task" },
@@ -44,7 +44,7 @@ describe("graph workspace node model", () => {
   test("creates the first real node and adds later nodes with stable selection", () => {
     const created = addGraphWorkspaceNode(state(null), nodeType, "sample graph", [], { x: 10, y: 20 });
     expect(created.definition).toMatchObject({
-      version: "2.0",
+      version: "1.0",
       name: "sample_graph",
       entry_point: "task",
     });

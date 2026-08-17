@@ -1,5 +1,7 @@
 import type { CachedGraphSummary, GraphDefinition, GraphDetail, RuntimeSettings } from "../types";
 
+export const defaultGraphVersion = "1.0";
+
 export interface LocalGraph {
   id: string;
   title: string;
@@ -115,7 +117,7 @@ export function saveLocalGraph(input: SaveLocalGraphInput): LocalGraph {
     id: existing?.id ?? createLocalGraphID(),
     title: input.title?.trim() || input.definition.name || input.graphId || "Untitled graph",
     graphId: input.graphId.trim() || input.definition.name || "debug_graph",
-    graphVersion: input.graphVersion.trim() || input.definition.version || "2.0",
+    graphVersion: input.graphVersion.trim() || defaultGraphVersion,
     definition: input.definition,
     runtimeSettings: input.runtimeSettings,
     nodeCount: input.definition.nodes.length,

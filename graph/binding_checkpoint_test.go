@@ -15,7 +15,7 @@ import (
 	"github.com/dengzii/weaveflow/llms"
 )
 
-func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
+func TestGraphCheckpointResumePreservesBoundConversation(t *testing.T) {
 	t.Parallel()
 	conversationPath := "scopes.writer.conversation"
 	definition := dsl.GraphDefinition{
@@ -47,14 +47,9 @@ func TestGraphV2CheckpointResumePreservesBoundConversation(t *testing.T) {
 		t.Fatalf("BuildGraph(): %v", err)
 	}
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		workflow,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
-			ID: "after-input", NodeID: "input", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
-		}))
+	runner, _ := mustNewFileGraphRunner(t, workflow, dir, fruntime.WithBreakpoints(fruntime.Breakpoint{
+		ID: "after-input", NodeID: "input", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
+	}))
 	model := &scriptedModel{responses: []*llms.ModelResponse{contentResponse("final answer")}}
 	ctx := core.WithModels(context.Background(), map[string]llms.Model{"writer": model})
 	run, _, err := runner.Start(ctx, state.FromShared(map[string]any{

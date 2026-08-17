@@ -48,6 +48,7 @@ func runWithRunner(ctx context.Context) {
 	tryPanic(graph.WriteToFile(filepath.Join(baseDir, "graph.json")))
 
 	runner := newExampleRunner(baseDir, graph)
+	defer func() { _ = runner.Close() }()
 	_, _, err := runner.Start(ctx, newReActAgentInitialState())
 	tryPanic(err)
 }
@@ -61,6 +62,7 @@ func resumeFromCheckpoint(ctx context.Context) {
 	tryPanic(err)
 
 	runner := newExampleRunner(baseDir, graph)
+	defer func() { _ = runner.Close() }()
 	run, err := runner.GetContinuableRun(ctx)
 	tryPanic(err)
 	if run == nil {
@@ -82,20 +84,9 @@ func tryPanic(error interface{}) {
 }
 
 func newExampleRunner(baseDir string, graph *wfgraph.Graph) *runtime.GraphRunner {
-	log, err := zap.NewDevelopment()
-	tryPanic(err)
-
-	sink := runtime.NewCombineEventSink(
-		runtime.NewLoggerEventSink(log),
-		runtime.NewFileEventSink(filepath.Join(baseDir, "events")),
-	)
-
-	runner, err := weaveflow.NewRunner(
+	runner, err := weaveflow.NewLocalRunner(
 		graph,
-		weaveflow.WithExecutionStore(runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution"))),
-		weaveflow.WithCheckpointStore(runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints"))),
-		weaveflow.WithEventSink(sink),
-		weaveflow.WithArtifactStore(runtime.NewFileArtifactStore(filepath.Join(baseDir, "artifacts"))),
+		baseDir,
 		weaveflow.WithGraphID("graph-runner"),
 		weaveflow.WithGraphVersion("v1.0.0"),
 	)

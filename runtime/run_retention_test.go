@@ -28,12 +28,9 @@ func (deleter *recordingRetentionDeleter) DeleteRun(_ context.Context, runID str
 
 func TestRunRetentionDeletesOnlyOldTerminalRunsAndAudits(t *testing.T) {
 	ctx := context.Background()
-	directory := t.TempDir()
-	executionStore := NewFileExecutionStore(directory)
-	checkpointStore := NewFileCheckpointStore(directory)
-	eventStore := NewFileEventSink(directory)
-	artifactStore := NewFileArtifactStore(directory)
-	deleter := NewRunDeletionCoordinator(executionStore, checkpointStore, eventStore, artifactStore)
+	executionStore := NewMemoryRuntimeStore()
+	artifactStore := NewMemoryArtifactStore()
+	deleter := NewRunDeletionCoordinator(executionStore, executionStore, executionStore, artifactStore)
 	audit := &recordingRetentionAudit{}
 	runner := &GraphRunner{
 		executionStore:   executionStore,

@@ -33,14 +33,9 @@ func main() {
 	must(os.MkdirAll(baseDir, 0o755))
 	must(graph.WriteToFile(filepath.Join(baseDir, "graph.json")))
 
-	runner, err := wfgraph.NewGraphRunner(
-		graph,
-		runtime.NewFileExecutionStore(filepath.Join(baseDir, "execution")),
-		runtime.NewFileCheckpointStore(filepath.Join(baseDir, "checkpoints")),
-		state.NewJSONStateCodec(""),
-		runtime.NewFileEventSink(filepath.Join(baseDir, "events")),
-	)
+	runner, err := weaveflow.NewLocalRunner(graph, baseDir)
 	must(err)
+	defer func() { _ = runner.Close() }()
 	run, _, err := runner.Start(ctx, state.NewState())
 	must(err)
 

@@ -232,10 +232,10 @@ func (r *graphCacheReader) ListEvents(runID string) ([]runtime.Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	if index >= len(r.eventSinks) {
+	if index >= len(r.eventReaders) {
 		return nil, runtime.ErrRunnerRecordNotFound
 	}
-	return r.eventSinks[index].ListEvents(runID)
+	return r.eventReaders[index].ListEvents(runID)
 }
 
 func (r *graphCacheReader) ListEventPage(runID, cursor string, limit int) (runtime.EventPage, error) {
@@ -243,10 +243,10 @@ func (r *graphCacheReader) ListEventPage(runID, cursor string, limit int) (runti
 	if err != nil {
 		return runtime.EventPage{}, err
 	}
-	if index >= len(r.eventSinks) {
+	if index >= len(r.eventPageReaders) {
 		return runtime.EventPage{}, runtime.ErrRunnerRecordNotFound
 	}
-	return r.eventSinks[index].ListEventPage(runID, cursor, limit)
+	return r.eventPageReaders[index].ListEventPage(runID, cursor, limit)
 }
 
 func (r *graphCacheReader) ListArtifacts(ctx context.Context, runID string) ([]state.ArtifactRef, error) {

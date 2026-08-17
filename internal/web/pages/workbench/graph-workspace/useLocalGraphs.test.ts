@@ -19,7 +19,9 @@ import {
 function snapshot(): LocalGraphWorkspaceSnapshot {
   return {
     definition: {
+      version: "1.0",
       name: "workflow",
+      state_modules: [{ name: "weaveflow.protocols", version: "1" }],
       nodes: [{ id: "task", type: "task" }],
       metadata: {
         web: {

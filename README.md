@@ -24,7 +24,7 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 
 ## Core Capabilities
 
-- Declarative Graph Definition v2 with explicit State Module dependencies and path bindings.
+- Declarative Graph Definition with explicit State Module dependencies and path bindings.
 - Deterministic runtime with execution stores, checkpoint stores, and event sinks.
 - State Ports and capability contracts that validate node/condition read-write behavior at build time.
 - Built-in nodes for LLM calls, tool execution, planning, replanning, verification, routing, iteration, and
@@ -181,9 +181,9 @@ _, finalState, err := runner.Start(ctx, initialState)
 The root package provides high-level graph and runner assembly. Definitions, registry metadata, runtime records, state,
 context helpers, built-in conditions, nodes, and tools remain owned by their respective domain packages.
 
-## Graph Definition v2 State Bindings
+## Graph Definition State Bindings
 
-Every Graph v2 definition declares its State Modules. Every Node and Condition binds its declared State Ports at the
+Every Graph Definition declares its State Modules. Every Node and Condition binds its declared State Ports at the
 top-level `state` field; state paths never belong in component `config`.
 
 Built-in state ports also declare a `default_path`. New nodes materialize those paths in their `state` bindings, and the
@@ -195,7 +195,7 @@ execution, and supervisor capabilities, and `scopes.<node_id>.<port>` for conver
 
 ```json
 {
-  "version": "2.0",
+  "version": "1.0",
   "name": "two_step",
   "state_modules": [
     {

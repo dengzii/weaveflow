@@ -341,7 +341,7 @@ func TestGraphUploadDistinguishesInvalidDefinitionFromStorageFailure(t *testing.
 		srv.RegisterRoutes(engine.Group(""))
 		response := serveHTTP(engine, http.MethodPost, "/graphs/graph-a/sessions", `{
 			"definition": {
-				"version": "2.0",
+				"version": "1.0",
 				"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 				"entry_point": "missing",
 				"finish_point": "missing",

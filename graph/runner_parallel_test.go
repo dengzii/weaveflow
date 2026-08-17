@@ -11,6 +11,7 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -52,15 +53,7 @@ func TestRunnerParallelFanOutFanInRecordsBranchSteps(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(dir)
-	checkpointStore := fruntime.NewFileCheckpointStore(dir)
-	runner := mustNewGraphRunner(t,
-		g,
-		executionStore,
-		checkpointStore,
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, finalState, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -196,13 +189,7 @@ func TestRunnerParallelFanInWaitsForUnevenBranches(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 	run, finalState, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
 		t.Fatalf("runner start: %v", err)
@@ -292,13 +279,7 @@ func TestRunnerFailureRouteFanInWaitsForUnevenBranches(t *testing.T) {
 	var fallbackCalls atomic.Int32
 	workflow := newFailureRouteUnevenJoin(t, &slowTailCalls, &fallbackCalls)
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 
 	run, finalState, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -326,12 +307,7 @@ func TestRunnerFailureRoutePendingFanInSurvivesCheckpointResume(t *testing.T) {
 	var fallbackCalls atomic.Int32
 	workflow := newFailureRouteUnevenJoin(t, &slowTailCalls, &fallbackCalls)
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory,
 		fruntime.WithBreakpoints(fruntime.Breakpoint{
 			ID:      "before-slow-tail",
 			NodeID:  "slow_tail",
@@ -477,13 +453,7 @@ func TestRunnerParallelResumeFromBarrierContinuesToCollector(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -538,13 +508,7 @@ func TestRunnerSequentialResumeFromAfterNodeStillWorks(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -787,13 +751,7 @@ func TestRunnerResumeFromAfterNodeUsesActualConditionalRouting(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -857,13 +815,7 @@ func TestRunnerParallelFanOutToEndLeavesLastCheckpointAtBarrier(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, finalState, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -964,13 +916,7 @@ func TestRunnerParallelBarrierNextNodeIDsUseActualConditionalRouting(t *testing.
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -1049,13 +995,7 @@ func TestRunnerParallelBarrierNextNodeIDsAreStable(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -1110,13 +1050,7 @@ func TestRunnerRejectsParallelMergeConflict(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil {
@@ -1161,16 +1095,13 @@ func TestRunnerParallelBarrierCheckpointFailureFailsRun(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	store, err := fruntime.NewFileRuntimeStore(dir)
-	if err != nil {
-		t.Fatalf("new runtime store: %v", err)
-	}
+	store := mustOpenFileStore(t, dir)
 	runner := mustNewGraphRunner(t,
 		g,
-		store,
-		store,
+		store.ExecutionStore(),
+		store.CheckpointStore(),
 		state.NewJSONStateCodec(""),
-		store,
+		store.EventSink(),
 		fruntime.WithRuntimeTransactionStore(failBarrierTransactionStore{inner: store}),
 	)
 
@@ -1216,17 +1147,12 @@ func TestRunnerRejectsAfterNodeBreakpointOnParallelBranch(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
-			ID:      "bp-after-a",
-			NodeID:  "a",
-			Stage:   string(fruntime.CheckpointAfterNode),
-			Enabled: true,
-		}))
+	runner, _ := mustNewFileGraphRunner(t, g, dir, fruntime.WithBreakpoints(fruntime.Breakpoint{
+		ID:      "bp-after-a",
+		NodeID:  "a",
+		Stage:   string(fruntime.CheckpointAfterNode),
+		Enabled: true,
+	}))
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil {
@@ -1270,17 +1196,12 @@ func TestRunnerParallelBeforeBreakpointPausesWithoutBarrierFailure(t *testing.T)
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
-			ID:      "bp-before-a",
-			NodeID:  "a",
-			Stage:   string(fruntime.CheckpointBeforeNode),
-			Enabled: true,
-		}))
+	runner, _ := mustNewFileGraphRunner(t, g, dir, fruntime.WithBreakpoints(fruntime.Breakpoint{
+		ID:      "bp-before-a",
+		NodeID:  "a",
+		Stage:   string(fruntime.CheckpointBeforeNode),
+		Enabled: true,
+	}))
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -1330,17 +1251,12 @@ func TestRunnerParallelResumeFromBeforeBreakpointPreservesSiblingOutput(t *testi
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
-			ID:      "bp-before-a",
-			NodeID:  "a",
-			Stage:   string(fruntime.CheckpointBeforeNode),
-			Enabled: true,
-		}))
+	runner, _ := mustNewFileGraphRunner(t, g, dir, fruntime.WithBreakpoints(fruntime.Breakpoint{
+		ID:      "bp-before-a",
+		NodeID:  "a",
+		Stage:   string(fruntime.CheckpointBeforeNode),
+		Enabled: true,
+	}))
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -1377,14 +1293,8 @@ func TestRunnerParallelExternalPauseStopsAtBarrier(t *testing.T) {
 
 	g, started, release, collectorCalls := newControlledParallelRunnerGraph(t)
 	dir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(dir)
-	runner := mustNewGraphRunner(t,
-		g,
-		executionStore,
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, runtimeStore := mustNewFileGraphRunner(t, g, dir)
+	executionStore := runtimeStore.ExecutionStore()
 
 	done := make(chan runnerResult, 1)
 	go func() {
@@ -1441,14 +1351,8 @@ func TestRunnerParallelExternalCancelStopsAtBarrier(t *testing.T) {
 
 	g, started, release, collectorCalls := newControlledParallelRunnerGraph(t)
 	dir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(dir)
-	runner := mustNewGraphRunner(t,
-		g,
-		executionStore,
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, runtimeStore := mustNewFileGraphRunner(t, g, dir)
+	executionStore := runtimeStore.ExecutionStore()
 
 	done := make(chan runnerResult, 1)
 	go func() {
@@ -1487,14 +1391,8 @@ func TestRunnerExternalPauseAfterSingleNodeDoesNotComplete(t *testing.T) {
 
 	g, started, release := newControlledSingleNodeRunnerGraph(t)
 	dir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(dir)
-	runner := mustNewGraphRunner(t,
-		g,
-		executionStore,
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, runtimeStore := mustNewFileGraphRunner(t, g, dir)
+	executionStore := runtimeStore.ExecutionStore()
 
 	done := make(chan runnerResult, 1)
 	go func() {
@@ -1536,13 +1434,7 @@ func TestRunnerAfterNodePausePreservesSucceededStepAndResumeEmitsLifecycle(t *te
 	}
 
 	directory := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(directory)
-	runner := mustNewGraphRunner(t,
-		workflow,
-		executionStore,
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
+	runner, runtimeStore := mustNewFileGraphRunner(t, workflow, directory,
 		fruntime.WithBreakpoints(fruntime.Breakpoint{
 			ID:      "after-work",
 			NodeID:  "work",
@@ -1550,6 +1442,7 @@ func TestRunnerAfterNodePausePreservesSucceededStepAndResumeEmitsLifecycle(t *te
 			Enabled: true,
 		}),
 	)
+	executionStore := runtimeStore.ExecutionStore()
 
 	pausedRun, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -1609,17 +1502,12 @@ func TestRunnerRejectsConcurrentResumeOfSameRun(t *testing.T) {
 
 	g, started, release := newControlledSingleNodeRunnerGraph(t)
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir), fruntime.WithBreakpoints(fruntime.Breakpoint{
-			ID:      "bp-before-work",
-			NodeID:  "work",
-			Stage:   string(fruntime.CheckpointBeforeNode),
-			Enabled: true,
-		}))
+	runner, _ := mustNewFileGraphRunner(t, g, dir, fruntime.WithBreakpoints(fruntime.Breakpoint{
+		ID:      "bp-before-work",
+		NodeID:  "work",
+		Stage:   string(fruntime.CheckpointBeforeNode),
+		Enabled: true,
+	}))
 	pausedRun, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil || pausedRun.Status != fruntime.RunStatusPaused {
 		t.Fatalf("initial run = %#v, err=%v; want paused", pausedRun, err)
@@ -1650,14 +1538,8 @@ func TestRunnerExternalPauseCancelsActiveNodeAtBeforeCheckpoint(t *testing.T) {
 
 	g, started, release := newControlledSingleNodeRunnerGraph(t)
 	dir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(dir)
-	runner := mustNewGraphRunner(t,
-		g,
-		executionStore,
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, runtimeStore := mustNewFileGraphRunner(t, g, dir)
+	executionStore := runtimeStore.ExecutionStore()
 
 	done := make(chan runnerResult, 1)
 	go func() {
@@ -1714,14 +1596,8 @@ func TestRunnerExternalPauseAcceptsCustomCancellationError(t *testing.T) {
 	}
 
 	baseDir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(baseDir)
-	runner := mustNewGraphRunner(t,
-		testGraph,
-		executionStore,
-		fruntime.NewFileCheckpointStore(baseDir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(baseDir),
-	)
+	runner, runtimeStore := mustNewFileGraphRunner(t, testGraph, baseDir)
+	executionStore := runtimeStore.ExecutionStore()
 	done := make(chan runnerResult, 1)
 	go func() {
 		run, finalState, err := runner.Start(context.Background(), state.NewState())
@@ -1754,14 +1630,8 @@ func TestRunnerExternalPauseAfterNodeStopsBeforeNextSequentialNode(t *testing.T)
 
 	g, started, release, nextCalls := newControlledSequentialRunnerGraph(t)
 	dir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(dir)
-	runner := mustNewGraphRunner(t,
-		g,
-		executionStore,
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, runtimeStore := mustNewFileGraphRunner(t, g, dir)
+	executionStore := runtimeStore.ExecutionStore()
 
 	done := make(chan runnerResult, 1)
 	go func() {
@@ -1823,14 +1693,8 @@ func TestRunnerExternalCancelAfterSingleNodeDoesNotComplete(t *testing.T) {
 		t.Fatalf("set finish point: %v", err)
 	}
 	dir := t.TempDir()
-	executionStore := fruntime.NewFileExecutionStore(dir)
-	runner := mustNewGraphRunner(t,
-		g,
-		executionStore,
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, runtimeStore := mustNewFileGraphRunner(t, g, dir)
+	executionStore := runtimeStore.ExecutionStore()
 
 	done := make(chan runnerResult, 1)
 	go func() {
@@ -1912,13 +1776,7 @@ func TestRunnerParallelMarksAllFailedActiveBranches(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil {
@@ -1970,13 +1828,7 @@ func TestRunnerParallelSurfacesOriginalBranchFailure(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil || !strings.Contains(err.Error(), "branch failed") {
@@ -2057,13 +1909,7 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner := mustNewGraphRunner(t,
-		g,
-		fruntime.NewFileExecutionStore(dir),
-		fruntime.NewFileCheckpointStore(dir),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(dir),
-	)
+	runner, _ := mustNewFileGraphRunner(t, g, dir)
 
 	run, finalState, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
@@ -2088,7 +1934,7 @@ func TestRunnerParallelRetryDoesNotReplaySucceededSibling(t *testing.T) {
 func assertParallelAfterNodeRequiresAfterWave(
 	t *testing.T,
 	runner *fruntime.GraphRunner,
-	runtimeStore *fruntime.FileRuntimeStore,
+	runtimeStore *filestore.Store,
 	runID string,
 	nodeID string,
 	verify func(*state.State),

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 type recordingRunDeleter struct {
@@ -288,6 +289,83 @@ func TestRunDeletionCoordinatorResumesUnlinkedDeletionWithStableID(t *testing.T)
 	checkpointStore.mu.Unlock()
 	if len(fenceIDs) != 2 || fenceIDs[0] != deletionID || fenceIDs[1] != deletionID {
 		t.Fatalf("fence IDs = %#v, want stable %q", fenceIDs, deletionID)
+	}
+}
+
+func TestRunDeletionCoordinatorReconcilesDurableManifestAfterInterruption(t *testing.T) {
+	ctx := context.Background()
+	runtimeStore := NewMemoryRuntimeStore()
+	if err := runtimeStore.CreateRun(ctx, RunRecord{RunID: "root", RootRunID: "root", Status: RunStatusCompleted}); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	checkpointStore := &flakyCheckpointDeletionStore{
+		MemoryCheckpointStore: NewMemoryCheckpointStore(),
+		failures:              1,
+	}
+	coordinator := NewRunDeletionCoordinator(runtimeStore, checkpointStore, nil, nil)
+	if err := coordinator.DeleteRun(ctx, "root"); err == nil || !strings.Contains(err.Error(), "interrupted") {
+		t.Fatalf("first DeleteRun() error = %v, want interruption", err)
+	}
+	manifests, err := runtimeStore.ListRunDeletionManifests(ctx)
+	if err != nil || len(manifests) != 1 {
+		t.Fatalf("ListRunDeletionManifests() = %#v, error = %v", manifests, err)
+	}
+	if manifests[0].Phase != RunDeletionUnlinked {
+		t.Fatalf("manifest phase = %q, want unlinked", manifests[0].Phase)
+	}
+	if err := coordinator.ReconcileRunDeletions(ctx); err != nil {
+		t.Fatalf("ReconcileRunDeletions() error = %v", err)
+	}
+	manifest, err := runtimeStore.LoadRunDeletionManifest(ctx, manifests[0].ID)
+	if err != nil {
+		t.Fatalf("LoadRunDeletionManifest() error = %v", err)
+	}
+	if manifest.Phase != RunDeletionDeleted {
+		t.Fatalf("manifest phase after reconciliation = %q, want deleted", manifest.Phase)
+	}
+	if _, err := runtimeStore.GetRun(ctx, "root"); !errors.Is(err, ErrRunnerRecordNotFound) {
+		t.Fatalf("GetRun() after reconciliation error = %v, want not found", err)
+	}
+	if err := coordinator.ReconcileRunDeletions(ctx); err != nil {
+		t.Fatalf("second ReconcileRunDeletions() error = %v", err)
+	}
+}
+
+func TestRunDeletionReconciliationFailsClosedForMissingPlannedRun(t *testing.T) {
+	ctx := context.Background()
+	runtimeStore := NewMemoryRuntimeStore()
+	run := RunRecord{RunID: "root", RootRunID: "root", Status: RunStatusCompleted}
+	if err := runtimeStore.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	run.Deletion = &RunDeletionState{ID: "deletion", RootRunID: run.RunID, Phase: RunDeletionReserved}
+	reserved, err := runtimeStore.CompareAndSwapRun(withRunDeletionMutation(ctx, run.Deletion.ID), run.Revision, run)
+	if err != nil {
+		t.Fatalf("reserve deletion error = %v", err)
+	}
+	reserved.Deletion.Phase = RunDeletionPlanned
+	reserved.Deletion.RunIDs = []string{"missing-child", run.RunID}
+	planned, err := runtimeStore.CompareAndSwapRun(withRunDeletionMutation(ctx, run.Deletion.ID), reserved.Revision, reserved)
+	if err != nil {
+		t.Fatalf("persist deletion plan error = %v", err)
+	}
+	now := time.Now().UTC()
+	if err := runtimeStore.SaveRunDeletionManifest(ctx, RunDeletionManifest{
+		ID: planned.Deletion.ID, RootRunID: planned.RunID, Phase: RunDeletionPlanned,
+		RunIDs: append([]string(nil), planned.Deletion.RunIDs...), CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("SaveRunDeletionManifest() error = %v", err)
+	}
+	coordinator := NewRunDeletionCoordinator(runtimeStore, nil, nil, nil)
+	if err := coordinator.ReconcileRunDeletions(ctx); err == nil || !strings.Contains(err.Error(), "planned run") {
+		t.Fatalf("ReconcileRunDeletions() error = %v, want missing planned run rejection", err)
+	}
+	if _, err := runtimeStore.GetRun(ctx, run.RunID); err != nil {
+		t.Fatalf("GetRun() after rejected reconciliation error = %v", err)
+	}
+	manifest, err := runtimeStore.LoadRunDeletionManifest(ctx, run.Deletion.ID)
+	if err != nil || manifest.Phase != RunDeletionPlanned {
+		t.Fatalf("manifest after rejected reconciliation = %#v, error = %v", manifest, err)
 	}
 }
 

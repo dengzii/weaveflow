@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"sync"
@@ -49,6 +50,9 @@ type GraphRunner struct {
 	activeExecutions   map[string]*graphRunnerExecution
 	executionClaims    map[string]struct{}
 	childRunMu         sync.Mutex
+	closer             io.Closer
+	closeOnce          sync.Once
+	closeErr           error
 }
 
 func normalizeRunnerContext(ctx context.Context) context.Context {
@@ -78,6 +82,7 @@ type graphRunnerConfig struct {
 	stateSchemas       map[string]state.JSONSchema
 	reducers           map[string]state.Reducer
 	transactionStore   TransactionStore
+	closer             io.Closer
 	now                func() time.Time
 }
 
@@ -158,6 +163,7 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 		codec:              codec,
 		eventSink:          eventSink,
 		transactionStore:   transactionStore,
+		closer:             cfg.closer,
 		graphID:            strings.TrimSpace(cfg.graphID),
 		graphVersion:       strings.TrimSpace(cfg.graphVersion),
 		graphHash:          strings.TrimSpace(cfg.graphHash),
@@ -298,6 +304,32 @@ func WithRuntimeTransactionStore(store TransactionStore) GraphRunnerOption {
 		cfg.transactionStore = store
 		return nil
 	}
+}
+
+func WithStoreCloser(closer io.Closer) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		if closer == nil {
+			return fmt.Errorf("store closer is required")
+		}
+		cfg.closer = closer
+		return nil
+	}
+}
+
+func (r *GraphRunner) Close() error {
+	if r == nil || r.closer == nil {
+		return nil
+	}
+	r.activeMu.Lock()
+	active := len(r.activeExecutions)
+	r.activeMu.Unlock()
+	if active > 0 {
+		return fmt.Errorf("cannot close graph runner with %d active executions", active)
+	}
+	r.closeOnce.Do(func() {
+		r.closeErr = r.closer.Close()
+	})
+	return r.closeErr
 }
 
 func WithNow(now func() time.Time) GraphRunnerOption {
@@ -2009,6 +2041,19 @@ func (r *GraphRunner) DeleteRun(ctx context.Context, runID string) (RunRecord, e
 		return RunRecord{}, err
 	}
 	return run, nil
+}
+
+func (r *GraphRunner) ReconcileRunDeletions(ctx context.Context) error {
+	if r == nil || r.runDeleter == nil {
+		return nil
+	}
+	reconciler, ok := r.runDeleter.(interface {
+		ReconcileRunDeletions(context.Context) error
+	})
+	if !ok {
+		return nil
+	}
+	return reconciler.ReconcileRunDeletions(ctx)
 }
 
 func (r *GraphRunner) registerActiveExecution(runID string, execution *graphRunnerExecution) {

@@ -14,6 +14,7 @@ import (
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -68,6 +69,9 @@ func TestRunnerRestoresGotoCommandFromFileCheckpoint(t *testing.T) {
 			}
 			sourceCheckpointID := pausedRun.LastCheckpointID
 			assertCheckpointStage(t, runner, sourceCheckpointID, fruntime.CheckpointAfterNode)
+			if err := runner.Close(); err != nil {
+				t.Fatalf("Close() error: %v", err)
+			}
 
 			restarted, _ := newCommandFileRunner(t, workflow, directory, fruntime.WithBreakpoints(fruntime.Breakpoint{
 				ID: "after-router", NodeID: "router", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
@@ -163,6 +167,9 @@ func TestRunnerRestoresSendCommandFromFileCheckpoint(t *testing.T) {
 			t.Fatalf("dynamic task %d = %#v", index, originalTasks[index])
 		}
 	}
+	if err := runner.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
 
 	restarted, _ := newCommandFileRunner(t, workflow, directory, fruntime.WithBreakpoints(fruntime.Breakpoint{
 		ID: "after-mapper", NodeID: "mapper", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
@@ -225,6 +232,9 @@ func TestRunnerRestoresSuspendCommandOnceFromFileCheckpoint(t *testing.T) {
 	}
 	sourceCheckpointID := afterNodeCheckpointID(t, runner, pausedRun.RunID, "approval")
 	forcePausedRunCheckpoint(t, runtimeStore, pausedRun.RunID, sourceCheckpointID)
+	if err := runner.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
 
 	restarted, _ := newCommandFileRunner(t, workflow, directory)
 	restoredPause, _, err := restarted.Resume(context.Background(), pausedRun.RunID, nil)
@@ -236,6 +246,9 @@ func TestRunnerRestoresSuspendCommandOnceFromFileCheckpoint(t *testing.T) {
 	}
 	assertCheckpointStage(t, restarted, restoredPause.LastCheckpointID, fruntime.CheckpointAfterWave)
 	assertCheckpointHasCommand(t, restarted, restoredPause.LastCheckpointID, false)
+	if err := restarted.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
 
 	restartedAgain, _ := newCommandFileRunner(t, workflow, directory)
 	completedRun, _, err := restartedAgain.Resume(context.Background(), pausedRun.RunID, nil)
@@ -279,6 +292,9 @@ func TestRunnerRestoresReturnCommandFromFileCheckpoint(t *testing.T) {
 	}
 	sourceCheckpointID := afterNodeCheckpointID(t, runner, completedRun.RunID, "return")
 	forcePausedRunCheckpoint(t, runtimeStore, completedRun.RunID, sourceCheckpointID)
+	if err := runner.Close(); err != nil {
+		t.Fatalf("Close() error: %v", err)
+	}
 
 	restarted, _ := newCommandFileRunner(t, workflow, directory)
 	restoredRun, _, err := restarted.Resume(context.Background(), completedRun.RunID, nil)
@@ -384,12 +400,9 @@ func TestRunnerCancelWinsAfterNodePersistenceRace(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runtimeStore, err := fruntime.NewFileRuntimeStore(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
+	runtimeStore := mustOpenFileStore(t, directory)
 	codec := newBlockingDiffCodec()
-	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, codec, runtimeStore)
+	runner := mustNewGraphRunner(t, workflow, runtimeStore.ExecutionStore(), runtimeStore.CheckpointStore(), codec, runtimeStore.EventSink(), fruntime.WithRuntimeTransactionStore(runtimeStore))
 	finishedEvents := make(chan struct{}, 1)
 	ctx := fruntime.WithRunnerEventObserver(context.Background(), fruntime.EventObserverFunc(func(_ context.Context, event fruntime.Event) error {
 		if event.Type == fruntime.EventNodeFinished && event.NodeID == "work" {
@@ -430,13 +443,9 @@ func TestRunnerCancelWinsAfterNodePersistenceRace(t *testing.T) {
 	}
 }
 
-func newCommandFileRunner(t *testing.T, workflow *Graph, directory string, options ...fruntime.GraphRunnerOption) (*fruntime.GraphRunner, *fruntime.FileRuntimeStore) {
+func newCommandFileRunner(t *testing.T, workflow *Graph, directory string, options ...fruntime.GraphRunnerOption) (*fruntime.GraphRunner, *filestore.Store) {
 	t.Helper()
-	runtimeStore, err := fruntime.NewFileRuntimeStore(directory)
-	if err != nil {
-		t.Fatalf("NewFileRuntimeStore(): %v", err)
-	}
-	return mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore, options...), runtimeStore
+	return mustNewFileGraphRunner(t, workflow, directory, options...)
 }
 
 func commandSend(item string, add int, correlationKey, orderKey string) core.Send {
@@ -477,7 +486,7 @@ func afterNodeCheckpointID(t *testing.T, runner *fruntime.GraphRunner, runID, no
 	return ""
 }
 
-func forcePausedRunCheckpoint(t *testing.T, runtimeStore *fruntime.FileRuntimeStore, runID, checkpointID string) {
+func forcePausedRunCheckpoint(t *testing.T, runtimeStore *filestore.Store, runID, checkpointID string) {
 	t.Helper()
 	run, err := runtimeStore.GetRun(context.Background(), runID)
 	if err != nil {

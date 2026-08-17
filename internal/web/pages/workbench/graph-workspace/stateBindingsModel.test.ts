@@ -65,7 +65,7 @@ describe("state bindings model", () => {
 
 function graphDefinition(): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     state_modules: [{ name: "conversation", version: "v1" }],
     nodes: [
       {

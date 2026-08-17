@@ -256,12 +256,50 @@ func (manager *graphRuntimeManager) removeSession(graphID string, sessionID stri
 		sessionID: strings.TrimSpace(sessionID),
 	}
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
+	session := manager.sessions[key]
 	delete(manager.sessions, key)
 	if latest := manager.triggerSessions[key.graphID]; latest.runner != nil &&
 		strings.TrimSpace(latest.runner.GraphSessionID()) == key.sessionID {
+		if session.runner == nil {
+			session = latest
+		}
 		delete(manager.triggerSessions, key.graphID)
 	}
+	manager.mu.Unlock()
+	if session.runner != nil {
+		_ = session.runner.Close()
+	}
+}
+
+func (manager *graphRuntimeManager) Close() error {
+	if manager == nil {
+		return nil
+	}
+	manager.mu.Lock()
+	runners := make(map[*runtime.GraphRunner]struct{}, len(manager.sessions)+len(manager.triggerSessions)+1)
+	if manager.current.runner != nil {
+		runners[manager.current.runner] = struct{}{}
+	}
+	for _, session := range manager.sessions {
+		if session.runner != nil {
+			runners[session.runner] = struct{}{}
+		}
+	}
+	for _, session := range manager.triggerSessions {
+		if session.runner != nil {
+			runners[session.runner] = struct{}{}
+		}
+	}
+	manager.current = graphRuntimeSession{}
+	manager.triggerSessions = make(map[string]graphRuntimeSession)
+	manager.sessions = make(map[graphRuntimeSessionKey]graphRuntimeSession)
+	manager.mu.Unlock()
+
+	var result error
+	for runner := range runners {
+		result = errors.Join(result, runner.Close())
+	}
+	return result
 }
 
 func (manager *graphRuntimeManager) rememberSessionLocked(session graphRuntimeSession) graphRuntimeSession {

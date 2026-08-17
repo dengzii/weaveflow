@@ -1,15 +1,11 @@
-import { createGraphID } from "../../../lib/graphEditor";
+import { createGraphID, graphDefinitionVersion } from "../../../lib/graphEditor";
+import { defaultGraphVersion } from "../../../lib/localGraphs";
 import { cloneJSONValue, isPlainRecord } from "../../../lib/utils";
 import type {
-  ConditionSchema,
   GraphDefinition,
-  GraphNodeSpec,
-  NodeTypeSchema,
-  RegistryInfo,
   RuntimeEnvironmentPreset,
   RuntimeSettings,
   RuntimeSettingsUpdate,
-  StateBinding,
   Trigger,
 } from "../../../types";
 
@@ -41,20 +37,7 @@ export interface ParsedGraphImport {
   settings?: RuntimeSettings;
   triggers?: Trigger[];
   contents: GraphExportContent[];
-  migration?: GraphImportMigration;
 }
-
-export interface GraphImportMigration {
-  sourceVersion: string;
-  targetVersion: string;
-  warnings: string[];
-}
-
-const currentGraphDefinitionVersion = "2.0";
-const legacyGraphDefinitionVersion = "1.0";
-const legacyStateSchema = "weaveflow.state.v2";
-const protocolsStateModule = { name: "weaveflow.protocols", version: "1" };
-const legacyDefaultScope = "agent";
 
 export function buildGraphExportBundle({
   definition,
@@ -93,7 +76,7 @@ export function buildGraphExportBundle({
     exported_at: exportedAt,
     contents,
     graph_id: graphID.trim() || definition.name?.trim() || "graph",
-    graph_version: graphVersion.trim() || definition.version?.trim() || "2.0",
+    graph_version: graphVersion.trim() || defaultGraphVersion,
     definition: includeConfig ? split.definition : withoutGraphConfig(split.definition),
     settings: includeSettings ? exportableRuntimeSettings(runtimeSettings) : undefined,
     triggers: exportedTriggers,
@@ -143,7 +126,7 @@ export function resolveGraphImportConflicts(
   };
 }
 
-export function parseGraphImport(text: string, registry: RegistryInfo | null = null): ParsedGraphImport {
+export function parseGraphImport(text: string): ParsedGraphImport {
   let value: unknown;
   try {
     value = JSON.parse(text);
@@ -163,7 +146,7 @@ export function parseGraphImport(text: string, registry: RegistryInfo | null = n
       throw new Error(`Unsupported graph export version: ${String(value.format_version)}`);
     }
     const contents = parseExportContents(value.contents);
-    return parseGraphEnvelope(value, contents, registry);
+    return parseGraphEnvelope(value, contents);
   }
 
   if (value.definition !== undefined) {
@@ -171,16 +154,15 @@ export function parseGraphImport(text: string, registry: RegistryInfo | null = n
     if (value.settings !== undefined) contents.push("settings");
     if (value.triggers !== undefined) contents.push("triggers");
     if (value.ui !== undefined) contents.push("ui");
-    return parseGraphEnvelope(value, contents, registry);
+    return parseGraphEnvelope(value, contents);
   }
 
-  const parsedDefinition = parseImportedGraphDefinition(value, registry);
+  const definition = parseImportedGraphDefinition(value);
   return {
-    definition: parsedDefinition.definition,
+    definition,
     graphID: stringValue(value.name),
-    graphVersion: stringValue(parsedDefinition.definition.version),
+    graphVersion: defaultGraphVersion,
     contents: ["graph", "config", ...(hasGraphUI(value) ? ["ui" as const] : [])],
-    migration: parsedDefinition.migration,
   };
 }
 
@@ -195,11 +177,9 @@ export function graphExportFilename(graphID: string, definition: GraphDefinition
 
 function parseGraphEnvelope(
   envelope: Record<string, unknown>,
-  contents: GraphExportContent[],
-  registry: RegistryInfo | null
+  contents: GraphExportContent[]
 ): ParsedGraphImport {
-  const parsedDefinition = parseImportedGraphDefinition(envelope.definition, registry);
-  let definition = parsedDefinition.definition;
+  let definition = parseImportedGraphDefinition(envelope.definition);
   const ui = envelope.ui;
   if (isPlainRecord(ui) && isPlainRecord(ui.web)) {
     definition = withGraphUI(definition, ui.web);
@@ -207,7 +187,7 @@ function parseGraphEnvelope(
   return {
     definition,
     graphID: stringValue(envelope.graph_id) || stringValue(definition.name),
-    graphVersion: stringValue(envelope.graph_version) || stringValue(definition.version),
+    graphVersion: stringValue(envelope.graph_version) || defaultGraphVersion,
     settings: envelope.settings === undefined ? undefined : parseRuntimeSettings(envelope.settings),
     triggers: envelope.triggers === undefined
       ? undefined
@@ -216,7 +196,6 @@ function parseGraphEnvelope(
           stringValue(envelope.graph_id) || stringValue(definition.name)
         ),
     contents,
-    migration: parsedDefinition.migration,
   };
 }
 
@@ -235,6 +214,9 @@ function requireGraphDefinition(value: unknown): GraphDefinition {
   if (!isPlainRecord(value) || !Array.isArray(value.nodes)) {
     throw new Error("Invalid graph file: definition.nodes must be an array.");
   }
+  if (!Array.isArray(value.state_modules) || value.state_modules.length === 0) {
+    throw new Error("Invalid graph file: definition.state_modules must be a non-empty array.");
+  }
   for (const [index, node] of value.nodes.entries()) {
     if (!isPlainRecord(node) || typeof node.id !== "string" || !node.id.trim()) {
       throw new Error(`Invalid graph file: node ${index + 1} must have an id.`);
@@ -246,283 +228,15 @@ function requireGraphDefinition(value: unknown): GraphDefinition {
   return cloneJSONValue(value) as unknown as GraphDefinition;
 }
 
-function parseImportedGraphDefinition(
-  value: unknown,
-  registry: RegistryInfo | null
-): { definition: GraphDefinition; migration?: GraphImportMigration } {
+function parseImportedGraphDefinition(value: unknown): GraphDefinition {
   if (!isPlainRecord(value)) {
     throw new Error("Invalid graph file: definition must be an object.");
   }
   const version = stringValue(value.version);
-  if (version === currentGraphDefinitionVersion) {
-    return { definition: requireGraphDefinition(value) };
+  if (version !== graphDefinitionVersion) {
+    throw new Error(`Unsupported Graph Definition version: ${version || "missing"}`);
   }
-  if (version === legacyGraphDefinitionVersion || (!version && value.state_modules === undefined)) {
-    if (!registry) {
-      throw new Error("Cannot migrate Graph Definition 1.0 before the current registry is loaded.");
-    }
-    return migrateGraphDefinitionV1(value, registry);
-  }
-  throw new Error(`Unsupported Graph Definition version: ${version || "missing"}`);
-}
-
-function migrateGraphDefinitionV1(
-  value: Record<string, unknown>,
-  registry: RegistryInfo
-): { definition: GraphDefinition; migration: GraphImportMigration } {
-  const legacyDefinition = requireGraphDefinition(value);
-  const stateSchema = stringValue(value.state_schema) || legacyStateSchema;
-  if (stateSchema !== legacyStateSchema) {
-    throw new Error(`Cannot migrate Graph Definition 1.0 state_schema ${JSON.stringify(stateSchema)} automatically.`);
-  }
-  if (!registry.state_modules.some((module) => (
-    module.name === protocolsStateModule.name && module.version === protocolsStateModule.version
-  ))) {
-    throw new Error(`Cannot migrate Graph Definition 1.0: current registry does not provide ${protocolsStateModule.name}@${protocolsStateModule.version}.`);
-  }
-
-  const warnings: string[] = [];
-  const nodes = legacyDefinition.nodes.map((node, index) => migrateGraphNodeV1(node, index, registry, warnings));
-  const edges = legacyDefinition.edges?.map((edge, index) => {
-    if (!edge.condition) return cloneJSONValue(edge);
-    return {
-      ...cloneJSONValue(edge),
-      condition: migrateGraphConditionV1(edge.condition as unknown as Record<string, unknown>, index, registry, warnings),
-    };
-  });
-  const definition: GraphDefinition = {
-    version: currentGraphDefinitionVersion,
-    name: legacyDefinition.name,
-    description: legacyDefinition.description,
-    state_modules: [protocolsStateModule],
-    entry_point: legacyDefinition.entry_point,
-    finish_point: legacyDefinition.finish_point,
-    nodes,
-    edges,
-    metadata: legacyDefinition.metadata ? cloneJSONValue(legacyDefinition.metadata) : undefined,
-  };
-  return {
-    definition,
-    migration: {
-      sourceVersion: legacyGraphDefinitionVersion,
-      targetVersion: currentGraphDefinitionVersion,
-      warnings,
-    },
-  };
-}
-
-function migrateGraphNodeV1(
-  source: GraphNodeSpec,
-  index: number,
-  registry: RegistryInfo,
-  warnings: string[]
-): GraphNodeSpec {
-  const nodeID = stringValue(source.id);
-  const sourceType = stringValue(source.type);
-  const config = isPlainRecord(source.config) ? cloneJSONValue(source.config) : {};
-  const scope = legacyScope(config);
-  let targetType = sourceType;
-  let state: Record<string, StateBinding> = {};
-
-  switch (sourceType) {
-    case "human_message": {
-      const content = stringValue(config.content);
-      if (!content) {
-        throw new Error(`Cannot migrate node ${JSON.stringify(nodeID)}: human_message without fixed content requires a user_input plus conversation_message topology.`);
-      }
-      targetType = "conversation_message";
-      state = { conversation: { path: legacyConversationPath(scope) } };
-      config.role = "human";
-      delete config.interrupt_message;
-      delete config.state_scope;
-      break;
-    }
-    case "llm":
-      targetType = "llm_turn";
-      state = { conversation: { path: legacyConversationPath(scope) } };
-      delete config.state_scope;
-      break;
-    case "tools":
-      targetType = "tool_execution";
-      state = { conversation: { path: legacyConversationPath(scope) } };
-      delete config.state_scope;
-      break;
-    case "agent":
-      state = {
-        task: { path: stringValue(config.input_path) || "shared.request.input" },
-        conversation: { path: legacyConversationPath(scope) },
-        result: { path: stringValue(config.output_path) || "shared.final.answer" },
-      };
-      delete config.state_scope;
-      delete config.input_path;
-      delete config.output_path;
-      if (config.tool_name !== undefined || config.tool_description !== undefined) {
-        warnings.push(`Node ${JSON.stringify(nodeID)} dropped obsolete agent tool_name/tool_description config.`);
-      }
-      delete config.tool_name;
-      delete config.tool_description;
-      break;
-    case "context_reducer":
-      state = { conversation: { path: legacyConversationPath(scope) } };
-      delete config.state_scope;
-      break;
-    case "environment_context":
-      state = { environment: { path: stringValue(config.environment_state_path) || "shared.environment" } };
-      delete config.environment_state_path;
-      break;
-    case "mapped_subgraph":
-      throw new Error(`Cannot migrate node ${JSON.stringify(nodeID)}: mapped_subgraph has no semantics-preserving current equivalent.`);
-    default:
-      throw new Error(`Cannot migrate node ${JSON.stringify(nodeID)}: unsupported legacy node type ${JSON.stringify(sourceType)}.`);
-  }
-
-  const nodeType = requireRegisteredNodeType(targetType, nodeID, index, registry);
-  state = withDefaultStateBindings(state, nodeType, nodeID);
-  if (targetType !== sourceType) {
-    warnings.push(`Node ${JSON.stringify(nodeID)} type migrated from ${sourceType} to ${targetType}.`);
-  }
-  return {
-    id: nodeID,
-    name: source.name,
-    type: targetType,
-    description: source.description,
-    config: Object.keys(config).length > 0 ? config : undefined,
-    state: Object.keys(state).length > 0 ? state : undefined,
-  };
-}
-
-function requireRegisteredNodeType(
-  nodeType: string,
-  nodeID: string,
-  index: number,
-  registry: RegistryInfo
-): NodeTypeSchema {
-  const definition = registry.node_types.find((item) => item.type === nodeType);
-  if (!definition) {
-    const label = nodeID || `#${index + 1}`;
-    throw new Error(`Cannot migrate node ${JSON.stringify(label)}: current registry does not provide type ${JSON.stringify(nodeType)}.`);
-  }
-  return definition;
-}
-
-function migrateGraphConditionV1(
-  source: Record<string, unknown>,
-  edgeIndex: number,
-  registry: RegistryInfo,
-  warnings: string[]
-) {
-  const sourceType = stringValue(source.type);
-  const config = isPlainRecord(source.config) ? cloneJSONValue(source.config) : {};
-  const scope = legacyScope(config);
-  let targetType = sourceType;
-  let state: Record<string, StateBinding> = {};
-
-  switch (sourceType) {
-    case "last_message_has_tool_calls":
-      targetType = "conversation_has_tool_calls";
-      state = { conversation: { path: legacyConversationPath(scope) } };
-      delete config.state_scope;
-      break;
-    case "has_final_answer":
-      targetType = "conversation_has_final_answer";
-      state = { conversation: { path: legacyConversationPath(scope) } };
-      delete config.state_scope;
-      break;
-    case "expression_conditions":
-      if (!scope) {
-        throw new Error(`Cannot migrate edge ${edgeIndex + 1}: expression_conditions with an empty state_scope cannot bind the shared state root in Graph Definition 2.0.`);
-      }
-      state = { state: { path: legacyScopePath(scope) } };
-      migrateLegacyExpressions(config.expressions);
-      delete config.state_scope;
-      break;
-    default:
-      throw new Error(`Cannot migrate edge ${edgeIndex + 1}: unsupported legacy condition type ${JSON.stringify(sourceType)}.`);
-  }
-
-  const condition = requireRegisteredCondition(targetType, edgeIndex, registry);
-  state = withDefaultStateBindings(state, condition, `edge_${edgeIndex + 1}`);
-  if (targetType !== sourceType) {
-    warnings.push(`Edge ${edgeIndex + 1} condition migrated from ${sourceType} to ${targetType}.`);
-  }
-  return {
-    ...(stringValue(source.id) ? { id: stringValue(source.id) } : {}),
-    type: targetType,
-    ...(Object.keys(config).length > 0 ? { config } : {}),
-    ...(Object.keys(state).length > 0 ? { state } : {}),
-  };
-}
-
-function requireRegisteredCondition(
-  conditionType: string,
-  edgeIndex: number,
-  registry: RegistryInfo
-): ConditionSchema {
-  const definition = registry.conditions.find((item) => item.type === conditionType);
-  if (!definition) {
-    throw new Error(`Cannot migrate edge ${edgeIndex + 1}: current registry does not provide condition ${JSON.stringify(conditionType)}.`);
-  }
-  return definition;
-}
-
-function withDefaultStateBindings(
-  explicit: Record<string, StateBinding>,
-  definition: NodeTypeSchema | ConditionSchema,
-  ownerID: string
-): Record<string, StateBinding> {
-  const state = { ...explicit };
-  for (const port of definition.state_ports ?? []) {
-    if (state[port.name]?.path.trim()) continue;
-    if (!port.required) continue;
-    const defaultPath = stringValue(port.default_path).replaceAll("{node_id}", ownerID.replaceAll(".", "_"));
-    if (defaultPath) {
-      state[port.name] = { path: defaultPath };
-      continue;
-    }
-    throw new Error(`Cannot migrate ${JSON.stringify(ownerID)}: required state binding ${JSON.stringify(port.name)} has no legacy mapping.`);
-  }
-  return state;
-}
-
-function migrateLegacyExpressions(value: unknown) {
-  if (!Array.isArray(value)) {
-    throw new Error("Cannot migrate expression_conditions: expressions must be an array.");
-  }
-  for (const item of value) {
-    if (!isPlainRecord(item)) {
-      throw new Error("Cannot migrate expression_conditions: expression items must be objects.");
-    }
-    if (Array.isArray(item.children)) migrateLegacyExpressions(item.children);
-    const path = stringValue(item.value1);
-    if (!path) continue;
-    if (isAbsoluteStatePath(path)) {
-      throw new Error(`Cannot migrate expression_conditions absolute path ${JSON.stringify(path)} automatically.`);
-    }
-    if (isLegacyConversationField(path)) item.value1 = `conversation.${path}`;
-  }
-}
-
-function legacyScope(config: Record<string, unknown>): string {
-  return Object.prototype.hasOwnProperty.call(config, "state_scope")
-    ? stringValue(config.state_scope)
-    : legacyDefaultScope;
-}
-
-function legacyConversationPath(scope: string): string {
-  return scope ? `scopes.${scope}.conversation` : "shared.conversation";
-}
-
-function legacyScopePath(scope: string): string {
-  return `scopes.${scope}`;
-}
-
-function isAbsoluteStatePath(path: string): boolean {
-  return ["shared", "scopes", "runtime", "internal"].some((section) => path === section || path.startsWith(`${section}.`));
-}
-
-function isLegacyConversationField(path: string): boolean {
-  const first = path.split(".", 1)[0];
-  return first === "messages" || first === "final_answer" || first === "iteration_count" || first === "max_iterations";
+  return requireGraphDefinition(value);
 }
 
 function parseRuntimeSettings(value: unknown): RuntimeSettings {

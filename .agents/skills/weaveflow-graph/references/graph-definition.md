@@ -1,4 +1,4 @@
-# Graph Definition v2
+# Graph Definition
 
 Construct graphs from the live registry. Do not maintain a private list of node or condition schemas.
 
@@ -32,7 +32,7 @@ Construct graphs from the live registry. Do not maintain a private list of node 
 
 ```json
 {
-  "version": "2.0",
+  "version": "1.0",
   "name": "graph-name",
   "description": "Optional description",
   "state_modules": [
@@ -51,7 +51,7 @@ Construct graphs from the live registry. Do not maintain a private list of node 
 
 Enforce these invariants:
 
-- Use exactly version `2.0`.
+- Use exactly version `1.0`.
 - Include at least one state module and one node.
 - Give every node a unique non-empty `id` and a registered `type`.
 - Point `entry_point` and `finish_point` only at existing nodes when present.
@@ -81,7 +81,7 @@ differ:
 
 ```json
 {
-  "version": "2.0",
+  "version": "1.0",
   "name": "single_agent",
   "description": "A single ReAct agent writes its final answer to shared state.",
   "state_modules": [
@@ -172,6 +172,6 @@ Use these only after checking the live registry:
 - `examples/supervisor_mode/graph.json` for supervisor routing and synthesis.
 - `examples/state_operations/graph.json` for explicit state operations, dynamic state inputs, and CEL-backed conditions.
 - `docs/graph-agent-workflow-patterns.md` for larger workflow patterns.
-- `dsl/dsl.go`, `dsl/node_spec.go`, and `dsl/registry_schema.go` for Graph v2 serialization and schema generation.
+- `dsl/dsl.go`, `dsl/node_spec.go`, and `dsl/registry_schema.go` for Graph Definition serialization and schema generation.
 - `node/agents/agent/node.go`, `node/agents/codex/node.go`, and other node definition files for implementation-specific
   behavior.

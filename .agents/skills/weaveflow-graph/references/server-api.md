@@ -68,7 +68,7 @@ and optional Trigger initial-state requirements. Do not treat successful analysi
 {
   "graph_version": "v1",
   "definition": {
-    "version": "2.0",
+    "version": "1.0",
     "state_modules": [],
     "nodes": []
   },
@@ -79,7 +79,7 @@ and optional Trigger initial-state requirements. Do not treat successful analysi
 }
 ```
 
-Unknown fields, extra JSON values, a missing definition, and invalid Graph v2 content are rejected. Example:
+Unknown fields, extra JSON values, a missing definition, and invalid Graph Definition content are rejected. Example:
 
 ```powershell
 $graphID = "support-agent"

@@ -154,7 +154,7 @@ describe("loop presentation", () => {
 
 function toolLoopGraph(): GraphDefinition {
   return {
-    version: "2.0",
+    version: "1.0",
     name: "shared_llm_turn_tool_execution_condition_loop",
     entry_point: "input",
     nodes: [

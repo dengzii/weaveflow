@@ -1,5 +1,5 @@
 {
-  "version": "2.0",
+  "version": "1.0",
   "name": "supervisor_mode",
   "description": "A supervisor delegates to research and quantitative specialists, then synthesizes the final answer.",
   "state_modules": [{"name": "weaveflow.protocols", "version": "1"}],

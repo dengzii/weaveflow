@@ -37,12 +37,7 @@ func TestExecutionPolicyLimitsLoopAndPublishesInspectionEvent(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil || run.Status != fruntime.RunStatusFailed || run.ErrorCode != string(core.ErrorResourceExhausted) {
 		t.Fatalf("run = %#v, error = %v", run, err)
@@ -79,11 +74,7 @@ func TestExecutionPolicyBudgetSurvivesResume(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory,
 		fruntime.WithBreakpoints(fruntime.Breakpoint{
 			ID: "after-first", NodeID: "first", Stage: string(fruntime.CheckpointAfterNode), Enabled: true,
 		}),
@@ -134,12 +125,7 @@ func TestExecutionPolicyBudgetIncludesInterruptedActiveTime(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	run, done, err := runner.StartAsync(context.Background(), state.NewState())
 	if err != nil {
 		t.Fatal(err)
@@ -319,12 +305,7 @@ func TestExecutionPolicyUsesStructuredRetryAndNodeTimeout(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	run, finalState, err := runner.Start(context.Background(), state.NewState())
 	if err != nil || run.Status != fruntime.RunStatusCompleted || attempts.Load() != 2 {
 		t.Fatalf("run = %#v, attempts = %d, error = %v", run, attempts.Load(), err)
@@ -357,12 +338,7 @@ func TestExecutionPolicyConvertsNodePanicToRunFailure(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil || run.Status != fruntime.RunStatusFailed || !strings.Contains(err.Error(), "panic in node panic: boom") {
 		t.Fatalf("run = %#v, error = %v", run, err)
@@ -437,12 +413,7 @@ func TestExecutionPolicyNodeTimeoutRejectsLateResult(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	close(release)
 	if err == nil || run.Status != fruntime.RunStatusFailed || run.ErrorCode != string(core.ErrorTimeout) {
@@ -476,11 +447,7 @@ func TestExecutionPolicyCommittedAttemptWinsDeadlineBeforeResultDelivery(t *test
 	}
 
 	directory := t.TempDir()
-	runtimeStore, err := fruntime.NewFileRuntimeStore(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runner := mustNewGraphRunner(t, workflow, runtimeStore, runtimeStore, state.NewJSONStateCodec(""), runtimeStore)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	committed := make(chan string, 1)
 	releaseResult := make(chan struct{})
 	released := false
@@ -868,12 +835,7 @@ func TestExecutionPolicyPublishesRunBackpressure(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	first, firstDone, err := runner.StartAsync(context.Background(), state.NewState())
 	if err != nil {
 		t.Fatal(err)
@@ -940,12 +902,7 @@ func TestConditionFailureIncludesStableIdentityAndStatePaths(t *testing.T) {
 	}
 
 	directory := t.TempDir()
-	runner := mustNewGraphRunner(t, workflow,
-		fruntime.NewFileExecutionStore(directory),
-		fruntime.NewFileCheckpointStore(directory),
-		state.NewJSONStateCodec(""),
-		fruntime.NewFileEventSink(directory),
-	)
+	runner, _ := mustNewFileGraphRunner(t, workflow, directory)
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err == nil || !strings.Contains(err.Error(), "route-ready") || !strings.Contains(err.Error(), "shared.route") {
 		t.Fatalf("run = %#v, error = %v", run, err)

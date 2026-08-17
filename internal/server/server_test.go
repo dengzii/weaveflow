@@ -21,6 +21,7 @@ import (
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/node"
 	wfregistry "github.com/dengzii/weaveflow/registry"
@@ -118,7 +119,7 @@ func TestBindGraphUploadRejectsLegacyDefinitionFields(t *testing.T) {
 	ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 	ginContext.Request = httptest.NewRequest(http.MethodPost, "/graphs/graph/sessions", strings.NewReader(`{
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"nodes": [{"id":"node","type":"conversation_message","state":{}}],
 			"state_schema": "legacy"
@@ -135,7 +136,7 @@ func TestBindGraphUploadRejectsLegacyEnvelopeForms(t *testing.T) {
 		`{"graph": {}}`,
 		`{"id": "legacy", "definition": {}}`,
 		`{"graph_id": "legacy", "definition": {}}`,
-		`{"version":"2.0","state_modules":[],"nodes":[]}`,
+		`{"version":"1.0","state_modules":[],"nodes":[]}`,
 	}
 	for _, body := range tests {
 		ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
@@ -878,7 +879,7 @@ func TestCreateGraphSessionConfiguresRunnerForDebugRun(t *testing.T) {
 		"graph_id": "debug-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
@@ -988,7 +989,7 @@ func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 		"graph_id": "debug-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
@@ -1007,7 +1008,7 @@ func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
 		"graph_id": "debug-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
@@ -1081,7 +1082,7 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 		"graph_id": "debug-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
@@ -1129,6 +1130,11 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Server.Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1136,7 +1142,7 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 		"graph_id": "debug-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
@@ -1155,6 +1161,11 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New cache-only server error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := cacheOnlyServer.Close(); err != nil {
+			t.Errorf("cache-only Server.Close() error = %v", err)
+		}
+	})
 	cacheOnlyEngine := gin.New()
 	cacheOnlyServer.RegisterRoutes(cacheOnlyEngine.Group(""))
 
@@ -1191,10 +1202,11 @@ func TestDeleteCachedActiveRunWithoutConfiguredGraphIsRejected(t *testing.T) {
 
 	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("debug-graph", "v1", "hello"))
 	active := startGraphRunForTest(t, engine, uploaded, `{}`)
-	active = waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, active.RunID)
+	activeRunner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
+	active = waitForRunTerminalStatus(t, activeRunner, active.RunID)
 	active.Status = runtime.RunStatusRunning
 	active.FinishedAt = nil
-	if _, err := runtime.NewFileExecutionStore(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "execution")).CompareAndSwapRun(context.Background(), active.Revision, active); err != nil {
+	if _, err := activeRunner.ExecutionStore().CompareAndSwapRun(context.Background(), active.Revision, active); err != nil {
 		t.Fatalf("mark cached run active: %v", err)
 	}
 
@@ -1215,6 +1227,52 @@ func TestDeleteCachedActiveRunWithoutConfiguredGraphIsRejected(t *testing.T) {
 	}
 }
 
+func TestServerStartupReconcilesCachedRunDeletions(t *testing.T) {
+	baseDir := t.TempDir()
+	historyDir := filepath.Join(baseDir, "graphs", "graph", "history")
+	store, err := filestore.Open(historyDir)
+	if err != nil {
+		t.Fatalf("file.Open() error = %v", err)
+	}
+	run := runtime.RunRecord{RunID: "run", RootRunID: "run", Status: runtime.RunStatusCompleted}
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	run.Deletion = &runtime.RunDeletionState{ID: "deletion", RootRunID: run.RunID, Phase: runtime.RunDeletionReserved}
+	if _, err := store.CompareAndSwapRun(runtime.WithRunDeletionMutation(context.Background(), run.Deletion.ID), run.Revision, run); err != nil {
+		t.Fatalf("reserve deletion error = %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	srv, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Server.Close() error = %v", err)
+		}
+	})
+
+	reopened, err := filestore.Open(historyDir)
+	if err != nil {
+		t.Fatalf("reopen history store error = %v", err)
+	}
+	defer func() { _ = reopened.Close() }()
+	manifest, err := reopened.LoadRunDeletionManifest(context.Background(), "deletion")
+	if err != nil {
+		t.Fatalf("LoadRunDeletionManifest() error = %v", err)
+	}
+	if manifest.Phase != runtime.RunDeletionDeleted {
+		t.Fatalf("manifest phase = %q, want deleted", manifest.Phase)
+	}
+	if _, err := reopened.GetRun(context.Background(), run.RunID); !errors.Is(err, runtime.ErrRunnerRecordNotFound) {
+		t.Fatalf("GetRun() error = %v, want not found", err)
+	}
+}
+
 func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1229,7 +1287,7 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 		"graph_id": "debug-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
@@ -1287,47 +1345,60 @@ func TestRunResourceReadersKeepSessionOwnership(t *testing.T) {
 	runID := "shared-run"
 	artifactID := "second-artifact"
 
-	newSessionReader := func(name string) *graphCacheReader {
+	newSessionReader := func(name string) (*graphCacheReader, *filestore.Store) {
 		sessionDir := filepath.Join(baseDir, name)
-		return &graphCacheReader{
-			executionStores:  []*runtime.FileExecutionStore{runtime.NewFileExecutionStore(filepath.Join(sessionDir, "execution"))},
-			checkpointStores: []*runtime.FileCheckpointStore{runtime.NewFileCheckpointStore(filepath.Join(sessionDir, "checkpoints"))},
-			artifactStores:   []*runtime.FileArtifactStore{runtime.NewFileArtifactStore(filepath.Join(sessionDir, "artifacts"))},
-			eventSinks:       []*runtime.FileEventSink{runtime.NewFileEventSink(filepath.Join(sessionDir, "events"))},
-			codec:            state.NewJSONStateCodec(""),
+		store, err := filestore.Open(sessionDir)
+		if err != nil {
+			t.Fatalf("file.Open(%q) error = %v", name, err)
 		}
+		t.Cleanup(func() { _ = store.Close() })
+		return &graphCacheReader{
+			storeDirs:        []string{sessionDir},
+			executionStores:  []runtime.ExecutionReader{store.ExecutionStore()},
+			checkpointStores: []runtime.CheckpointReader{store.CheckpointStore()},
+			artifactStores:   []runtime.ArtifactReader{store.ArtifactStore()},
+			eventReaders:     []runtime.EventReader{store},
+			eventPageReaders: []runtime.EventPageReader{store},
+			codec:            state.NewJSONStateCodec(""),
+		}, store
 	}
-	first := newSessionReader("first")
-	second := newSessionReader("second")
+	first, firstStore := newSessionReader("first")
+	second, secondStore := newSessionReader("second")
 	for _, reader := range []*graphCacheReader{first, second} {
-		if err := reader.executionStores[0].CreateRun(ctx, runtime.RunRecord{RunID: runID}); err != nil {
+		store := firstStore
+		if reader == second {
+			store = secondStore
+		}
+		if err := store.ExecutionStore().CreateRun(ctx, runtime.RunRecord{RunID: runID}); err != nil {
 			t.Fatalf("create run: %v", err)
 		}
 	}
-	if err := second.executionStores[0].AppendStep(ctx, runtime.StepRecord{RunID: runID, StepID: "second-step"}); err != nil {
+	if err := secondStore.ExecutionStore().AppendStep(ctx, runtime.StepRecord{RunID: runID, StepID: "second-step"}); err != nil {
 		t.Fatalf("append second-session step: %v", err)
 	}
-	if err := second.checkpointStores[0].Save(ctx, runtime.CheckpointRecord{
+	if err := secondStore.CheckpointStore().Save(ctx, runtime.CheckpointRecord{
 		RunID: runID, CheckpointID: "second-checkpoint",
 	}, nil); err != nil {
 		t.Fatalf("save second-session checkpoint: %v", err)
 	}
-	if err := second.eventSinks[0].Publish(ctx, runtime.Event{
+	if err := secondStore.EventSink().Publish(ctx, runtime.Event{
 		RunID: runID, ID: "second-event", Type: runtime.EventRunCreated,
 	}); err != nil {
 		t.Fatalf("publish second-session event: %v", err)
 	}
-	if _, err := second.artifactStores[0].Save(ctx, runtime.Artifact{
+	if _, err := secondStore.ArtifactStore().Save(ctx, runtime.Artifact{
 		RunID: runID, ID: artifactID, Data: []byte("second"),
 	}); err != nil {
 		t.Fatalf("save second-session artifact: %v", err)
 	}
 
 	aggregated := &graphCacheReader{
-		executionStores:  []*runtime.FileExecutionStore{first.executionStores[0], second.executionStores[0]},
-		checkpointStores: []*runtime.FileCheckpointStore{first.checkpointStores[0], second.checkpointStores[0]},
-		artifactStores:   []*runtime.FileArtifactStore{first.artifactStores[0], second.artifactStores[0]},
-		eventSinks:       []*runtime.FileEventSink{first.eventSinks[0], second.eventSinks[0]},
+		storeDirs:        append(append([]string(nil), first.storeDirs...), second.storeDirs...),
+		executionStores:  []runtime.ExecutionReader{first.executionStores[0], second.executionStores[0]},
+		checkpointStores: []runtime.CheckpointReader{first.checkpointStores[0], second.checkpointStores[0]},
+		artifactStores:   []runtime.ArtifactReader{first.artifactStores[0], second.artifactStores[0]},
+		eventReaders:     []runtime.EventReader{first.eventReaders[0], second.eventReaders[0]},
+		eventPageReaders: []runtime.EventPageReader{first.eventPageReaders[0], second.eventPageReaders[0]},
 		codec:            state.NewJSONStateCodec(""),
 	}
 	readers := map[string]runReader{
@@ -1363,18 +1434,22 @@ func TestRunReadersUseRunIDAsTimestampTieBreaker(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	newStore := func(runID string) *runtime.FileExecutionStore {
-		store := runtime.NewFileExecutionStore(filepath.Join(t.TempDir(), "execution"))
-		if err := store.CreateRun(ctx, runtime.RunRecord{RunID: runID}); err != nil {
+	newStore := func(runID string) runtime.ExecutionReader {
+		store, err := filestore.Open(t.TempDir())
+		if err != nil {
+			t.Fatalf("file.Open() error = %v", err)
+		}
+		t.Cleanup(func() { _ = store.Close() })
+		if err := store.ExecutionStore().CreateRun(ctx, runtime.RunRecord{RunID: runID}); err != nil {
 			t.Fatalf("create run %q: %v", runID, err)
 		}
-		return store
+		return store.ExecutionStore()
 	}
 
-	first := &graphCacheReader{executionStores: []*runtime.FileExecutionStore{newStore("run-b")}}
-	second := &graphCacheReader{executionStores: []*runtime.FileExecutionStore{newStore("run-a")}}
+	first := &graphCacheReader{executionStores: []runtime.ExecutionReader{newStore("run-b")}}
+	second := &graphCacheReader{executionStores: []runtime.ExecutionReader{newStore("run-a")}}
 	readers := map[string]runReader{
-		"graph cache": &graphCacheReader{executionStores: []*runtime.FileExecutionStore{
+		"graph cache": &graphCacheReader{executionStores: []runtime.ExecutionReader{
 			first.executionStores[0], second.executionStores[0],
 		}},
 		"combined": &combinedRunReader{readers: []runReader{first, second}},
@@ -1406,7 +1481,7 @@ func TestRunInspectionResourcesExposeDebugRecords(t *testing.T) {
 		"graph_id": "debug-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "debug-graph",
 			"entry_point": "input",
@@ -1496,7 +1571,7 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 		"graph_id": "interrupt-graph",
 		"settings": {"environment": {"RESUME_CONTEXT":"original-session"}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "interrupt-graph",
 			"entry_point": "wait",
@@ -1623,7 +1698,7 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 		"graph_id": "interrupt-graph",
 		"settings": {"environment": {}, "models": []},
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "interrupt-graph",
 			"entry_point": "wait",
@@ -1929,7 +2004,7 @@ func TestCancelRunUsesTriggerSessionRunner(t *testing.T) {
 	}
 	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
-		GraphVersion:   "2.0",
+		GraphVersion:   "1.0",
 		GraphSessionID: "trigger-session",
 	}, t.TempDir(), nil)
 	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
@@ -1980,7 +2055,7 @@ func TestDeleteActiveRunUsesTriggerSessionRunner(t *testing.T) {
 	}
 	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
-		GraphVersion:   "2.0",
+		GraphVersion:   "1.0",
 		GraphSessionID: "trigger-session",
 	}, t.TempDir(), nil)
 	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
@@ -2032,7 +2107,7 @@ func TestPauseAndResumeRunUseTriggerSessionRunner(t *testing.T) {
 	}
 	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
-		GraphVersion:   "2.0",
+		GraphVersion:   "1.0",
 		GraphSessionID: "trigger-session",
 	}, t.TempDir(), nil)
 	srv.runtime.cacheTriggerSession("trigger-graph", graphRuntimeSession{
@@ -2202,9 +2277,17 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	srv.RegisterRoutes(engine.Group(""))
 	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("orphan-graph", "v1", "hello"))
 	started := startGraphRunForTest(t, engine, uploaded, `{}`)
-	started = waitForRunTerminalStatus(t, srv.runtime.session("orphan-graph", uploaded.Graph.GraphSessionID).runner, started.RunID)
+	runner := srv.runtime.session("orphan-graph", uploaded.Graph.GraphSessionID).runner
+	started = waitForRunTerminalStatus(t, runner, started.RunID)
+	deadline := time.Now().Add(time.Second)
+	for runner.IsRunActive(started.RunID) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if runner.IsRunActive(started.RunID) {
+		t.Fatal("run remained active after reaching terminal status")
+	}
 
-	executionStore := runtime.NewFileExecutionStore(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "execution"))
+	executionStore := runner.ExecutionStore()
 	started.Status = runtime.RunStatusRunning
 	started.PauseRequested = true
 	started.CancelRequested = true
@@ -2215,6 +2298,9 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	started.FinishedAt = nil
 	if _, err := executionStore.CompareAndSwapRun(context.Background(), started.Revision, started); err != nil {
 		t.Fatalf("CompareAndSwapRun() error = %v", err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 
 	restarted, err := New(context.Background(), Config{BaseDir: baseDir})
@@ -2253,7 +2339,11 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for reconciled run.failed event")
 	}
-	persistedEvents, err := runtime.NewFileEventSink(filepath.Join(srv.graphHistoryBaseDir(uploaded.Graph.ID), "events")).ListEvents(started.RunID)
+	reader, err := filestore.OpenReader(srv.graphHistoryBaseDir(uploaded.Graph.ID))
+	if err != nil {
+		t.Fatalf("OpenReader() error = %v", err)
+	}
+	persistedEvents, err := reader.EventReader().ListEvents(started.RunID)
 	if err != nil {
 		t.Fatalf("ListEvents() error = %v", err)
 	}
@@ -2299,7 +2389,7 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 			{"id":"empty","type":"webhook","enabled":true,"webhook":{}}
 		],
 		"definition": {
-			"version": "2.0",
+			"version": "1.0",
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"name": "requires-input",
 			"entry_point": "input",
