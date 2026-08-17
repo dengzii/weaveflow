@@ -244,6 +244,7 @@
 }
 
 .debug-node {
+  position: relative;
   width: 176px;
   height: 68px;
   min-height: 68px;
@@ -297,6 +298,7 @@
 .debug-node-meta-main,
 .debug-node-runtime {
   display: flex;
+  flex: 1;
   min-width: 0;
   align-items: center;
   gap: 6px;
@@ -305,6 +307,25 @@
 .debug-node-runtime,
 .debug-node-binding {
   flex: none;
+}
+
+.debug-node-binding {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 4px;
+  background: var(--status-ok-bg);
+  padding: 1px 4px;
+  color: var(--status-ok-text);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+.debug-node-binding-missing {
+  background: var(--status-warn-bg);
+  color: var(--status-warn-text);
 }
 
 .debug-node-type {
@@ -427,6 +448,91 @@
 .debug-node-canceled {
   border-color: var(--status-neutral-text);
   opacity: 0.78;
+}
+
+.debug-node-config-invalid:not(.debug-node-failed) {
+  border-color: var(--status-warn-text);
+}
+
+.debug-node-config-icon {
+  width: 14px;
+  height: 14px;
+  flex: none;
+  color: var(--status-warn-text);
+}
+
+.debug-node-config-label {
+  color: var(--status-warn-text);
+  font-weight: 600;
+}
+
+.debug-node-hover-card {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 9px);
+  left: 0;
+  width: max-content;
+  min-width: 220px;
+  max-width: 320px;
+  visibility: hidden;
+  transform: translateY(-3px);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 9px 10px;
+  box-shadow: var(--control-shadow);
+  color: var(--foreground);
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 100ms ease, transform 100ms ease, visibility 100ms ease;
+  white-space: normal;
+}
+
+.debug-node:hover .debug-node-hover-card,
+.debug-flow .react-flow__node:focus .debug-node-hover-card,
+.debug-flow .react-flow__node:focus-visible .debug-node-hover-card {
+  visibility: visible;
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.debug-flow .react-flow__node:has(.debug-node:hover),
+.debug-flow .react-flow__node:has(.debug-node-hover-card):focus,
+.debug-flow .react-flow__node:has(.debug-node-hover-card):focus-visible {
+  z-index: 40 !important;
+}
+
+.debug-node-hover-name {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.debug-node-hover-type {
+  margin-top: 1px;
+  color: var(--muted-foreground);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.debug-node-hover-detail {
+  margin-top: 6px;
+  color: var(--muted-foreground);
+}
+
+.debug-node-hover-error {
+  margin-top: 7px;
+  border-top: 1px solid color-mix(in srgb, var(--status-danger-text) 28%, var(--border));
+  padding-top: 6px;
+  overflow-wrap: anywhere;
+  color: var(--status-danger-text);
+}
+
+.debug-node-hover-heading {
+  margin-bottom: 2px;
+  font-weight: 700;
 }
 
 .debug-loop {

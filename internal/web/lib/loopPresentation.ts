@@ -216,6 +216,7 @@ function buildEdgeSegmentsForLoopDisplay(
         source: edge.from,
         target: sourceLoop.loop.id,
         targetHandle: loopEndInnerHandleId,
+        showLabel: false,
         contained: true,
       },
       {
@@ -226,7 +227,7 @@ function buildEdgeSegmentsForLoopDisplay(
         target: targetLoop.loop.id,
         sourceHandle: loopEndHandleId,
         targetHandle: loopStartHandleId,
-        showLabel: false,
+        showLabel: true,
       },
       {
         edge,
@@ -250,6 +251,7 @@ function buildEdgeSegmentsForLoopDisplay(
         source: edge.from,
         target: sourceLoop.loop.id,
         targetHandle: loopEndInnerHandleId,
+        showLabel: false,
         contained: true,
       },
       {
@@ -259,7 +261,7 @@ function buildEdgeSegmentsForLoopDisplay(
         source: sourceLoop.loop.id,
         target: edge.to,
         sourceHandle: loopEndHandleId,
-        showLabel: false,
+        showLabel: true,
       },
     ];
   }

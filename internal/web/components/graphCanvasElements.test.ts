@@ -13,6 +13,7 @@ function options(
 ): GraphCanvasElementOptions {
   return {
     definition,
+    configurationErrors: new Map(),
     editable: true,
     interactive: true,
     highlightedNodeIDs: new Set(),
@@ -118,6 +119,46 @@ describe("graph canvas elements", () => {
     expect(elements.nodes[0].data).toMatchObject({
       bindingSummary: "2/3 state",
       missingBindings: true,
+    });
+  });
+
+  test("projects important configuration, validation errors, and runtime failure details", () => {
+    const definition: GraphDefinition = {
+      nodes: [{
+        id: "agent",
+        name: "Long-running research agent",
+        type: "agent",
+        config: { model_id: "reasoner", tool_ids: ["search", "read", "write"] },
+      }],
+    };
+    const elements = buildGraphCanvasElements(options(definition, {
+      configurationErrors: new Map([["agent", ["Config prompt: Required field."]]]),
+      nodeTypes: [{
+        type: "agent",
+        title: "Agent",
+        config_schema: {
+          type: "object",
+          properties: {
+            model_id: { type: "string" },
+            tool_ids: { type: "array", items: { type: "string" } },
+          },
+        },
+      }],
+      runtime: new Map([[
+        "agent",
+        { status: "failed", attempt: 2, at: 1, errorMessage: "provider request timed out" },
+      ]]),
+      virtualNodeIDs: [],
+    }));
+
+    expect(elements.nodes[0]).toMatchObject({
+      ariaLabel: expect.stringContaining("configuration error"),
+      data: {
+        typeLabel: "Agent",
+        configurationSummary: "model: reasoner · tools: 3",
+        configurationErrors: ["Config prompt: Required field."],
+        errorSummary: "provider request timed out",
+      },
     });
   });
 

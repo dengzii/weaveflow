@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import type { CheckpointRecord, RuntimeEvent, StepRecord } from "../../types";
+import type { CheckpointRecord, RunRecord, RuntimeEvent, StepRecord } from "../../types";
 import {
   eventListKey,
   eventMatchesFilters,
   fixedVirtualRange,
   stateHistoryEntries,
+  summarizeRunMetrics,
   uniqueSorted,
 } from "./runStatusModel";
 
@@ -64,6 +65,58 @@ describe("run status model", () => {
     expect(fixedVirtualRange(100, 0, 280, 28, 2)).toEqual({ start: 0, end: 12, offset: 0 });
     expect(fixedVirtualRange(100, 1400, 280, 28, 2)).toEqual({ start: 48, end: 62, offset: 1344 });
     expect(fixedVirtualRange(100, 2600, 280, 28, 2)).toEqual({ start: 90, end: 100, offset: 2520 });
+  });
+
+  test("summarizes execution, model, tool, and state metrics for the selected run", () => {
+    const run: RunRecord = {
+      run_id: "run-1",
+      revision: 1,
+      root_run_id: "run-1",
+      run_path: ["run-1"],
+      namespace: "run-1",
+      graph_id: "graph",
+      graph_version: "1",
+      status: "completed",
+      entry_node_id: "input",
+      started_at: "2026-07-30T02:00:00Z",
+      updated_at: "2026-07-30T02:00:05Z",
+      finished_at: "2026-07-30T02:00:05Z",
+    };
+    const steps: StepRecord[] = [
+      stepRecord("step-1", "succeeded", 2),
+      stepRecord("step-2", "failed", 1),
+      { ...stepRecord("other-step", "succeeded", 1), run_id: "other-run" },
+    ];
+    const checkpoints = [checkpointRecord("checkpoint-1", "after_node", "2026-07-30T02:00:03Z")];
+    const events: RuntimeEvent[] = [
+      metricEvent("llm.call", { prompt_tokens: 100, completion_tokens: 20, reasoning_tokens: 5, prompt_cached_tokens: 40 }),
+      metricEvent("tool.called"),
+      metricEvent("tool.failed"),
+      metricEvent("state.changed", { changes: [{ path: "shared.a" }, { path: "shared.b" }] }),
+      metricEvent("warning"),
+      { ...metricEvent("llm.call", { prompt_tokens: 999 }), run_id: "other-run" },
+    ];
+
+    expect(summarizeRunMetrics(run, steps, checkpoints, events)).toEqual({
+      durationMs: 5_000,
+      eventCount: 5,
+      stepCount: 2,
+      succeededSteps: 1,
+      failedSteps: 1,
+      activeSteps: 0,
+      retries: 1,
+      checkpointCount: 1,
+      stateChangeCount: 2,
+      llmCallCount: 1,
+      toolCallCount: 1,
+      toolFailureCount: 1,
+      promptTokens: 100,
+      completionTokens: 20,
+      reasoningTokens: 5,
+      cachedPromptTokens: 40,
+      warningCount: 1,
+      errorCount: 1,
+    });
   });
 
   test("builds checkpoint-backed state history with baseline, changes, and parallel barriers", () => {
@@ -162,5 +215,29 @@ function checkpointRecord(checkpointID: string, stage: string, createdAt: string
     state_codec: "json",
     state_version: "state-v2",
     created_at: createdAt,
+  };
+}
+
+function stepRecord(stepID: string, status: StepRecord["status"], attempt: number): StepRecord {
+  return {
+    step_id: stepID,
+    run_id: "run-1",
+    task_id: `${stepID}-task`,
+    node_id: "worker",
+    node_name: "Worker",
+    status,
+    attempt,
+    started_at: "2026-07-30T02:00:00Z",
+    updated_at: "2026-07-30T02:00:02Z",
+  };
+}
+
+function metricEvent(type: string, payload?: unknown): RuntimeEvent {
+  return {
+    id: `event-${type}`,
+    run_id: "run-1",
+    type,
+    timestamp: "2026-07-30T02:00:02Z",
+    payload,
   };
 }

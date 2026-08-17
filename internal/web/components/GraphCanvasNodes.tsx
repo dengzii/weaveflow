@@ -1,5 +1,5 @@
 import { Handle, Position } from "@xyflow/react";
-import { Clock3, MessageCircle, Repeat2, Webhook } from "lucide-react";
+import { Clock3, MessageCircle, Repeat2, TriangleAlert, Webhook } from "lucide-react";
 import {
   loopContinueHandleId,
   loopEndHandleId,
@@ -8,6 +8,7 @@ import {
   loopStartInnerHandleId,
 } from "../lib/loopPresentation";
 import {
+  flowNodeAriaLabel,
   minGraphLoopHeight,
   minGraphLoopWidth,
   triggerTargetHandleID,
@@ -20,10 +21,12 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
   const virtualKind = data.virtualKind;
   const attempt = typeof data.attempt === "number" && data.attempt > 0 ? data.attempt : 0;
   const highlighted = Boolean(data.highlighted);
-  const className = `debug-node debug-node-${status}${virtualKind ? ` debug-node-virtual debug-node-virtual-${virtualKind}` : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}`;
+  const configurationErrors = data.configurationErrors ?? [];
+  const configurationInvalid = configurationErrors.length > 0;
+  const className = `debug-node debug-node-${status}${virtualKind ? ` debug-node-virtual debug-node-virtual-${virtualKind}` : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}${configurationInvalid ? " debug-node-config-invalid" : ""}`;
   if (virtualKind === "start" || virtualKind === "end") {
     return (
-      <div className={className}>
+      <div className={className} role="group" aria-label={flowNodeAriaLabel(data)}>
         {virtualKind === "start" ? (
           <Handle id={triggerTargetHandleID} type="target" position={Position.Left} isConnectable={false} />
         ) : null}
@@ -38,10 +41,14 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
     );
   }
 
-  const typeLabel = humanizeNodeType(data.type);
-  const showType = !data.bindingSummary || shouldShowNodeType(data.label, typeLabel);
+  const typeLabel = data.typeLabel || humanizeNodeType(data.type);
+  const fallbackType = shouldShowNodeType(data.label, typeLabel) ? typeLabel : "";
+  const configurationDetails = configurationInvalid
+    ? "configuration error"
+    : data.configurationSummary;
+  const metaText = configurationDetails || fallbackType;
   return (
-    <div className={className}>
+    <div className={className} role="group" aria-label={flowNodeAriaLabel(data)}>
       <Handle type="target" position={Position.Left} isConnectable={editable} />
       <div className="debug-node-header">
         <span
@@ -50,21 +57,43 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
           aria-label={`Execution status: ${status}`}
           title={`Execution status: ${status}`}
         />
-        <div className="debug-node-label min-w-0 flex-1 truncate" title={data.label}>
+        <div className="debug-node-label min-w-0 flex-1 truncate">
           {data.label}
         </div>
+        {configurationInvalid ? (
+          <TriangleAlert
+            className="debug-node-config-icon"
+            aria-hidden="true"
+          />
+        ) : null}
       </div>
       <div className="debug-node-meta">
         <span className="debug-node-meta-main">
-          {showType ? (
-            <span className="debug-node-type" title={typeLabel}>
-              {typeLabel}
+          {metaText ? (
+            <span
+              className={`debug-node-type${configurationInvalid ? " debug-node-config-label" : ""}`}
+              title={configurationInvalid ? configurationErrors.join("\n") : metaText}
+            >
+              {metaText}
             </span>
           ) : null}
         </span>
+        {data.bindingSummary && data.missingBindings ? (
+          <span
+            className="debug-node-binding debug-node-binding-missing"
+            title={`State bindings: ${data.bindingSummary}`}
+          >
+            {data.bindingSummary}
+          </span>
+        ) : null}
         {attempt ? <span className="debug-node-attempt">#{attempt}</span> : null}
       </div>
       <Handle type="source" position={Position.Right} isConnectable={editable} />
+      <NodeHoverCard
+        data={data}
+        typeLabel={typeLabel}
+        configurationErrors={configurationErrors}
+      />
     </div>
   );
 }
@@ -75,10 +104,10 @@ export function GraphTriggerNode({ data, selected }: { data: FlowNodeData; selec
   const TriggerIcon = data.triggerType === "schedule" ? Clock3 : data.triggerType === "chat" ? MessageCircle : Webhook;
   const className = `debug-node debug-node-virtual debug-node-virtual-trigger${valid ? "" : " debug-node-trigger-invalid"}${enabled ? "" : " debug-node-trigger-disabled"}${selected ? " debug-node-selected" : ""}`;
   return (
-    <div className={className}>
+    <div className={className} role="group" aria-label={flowNodeAriaLabel(data)}>
       <div className="debug-node-header">
         <TriggerIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
-        <div className="debug-node-label min-w-0 flex-1 truncate" title={data.label}>
+        <div className="debug-node-label min-w-0 flex-1 truncate">
           {data.label}
         </div>
         {!valid ? <span className="debug-node-status-dot" title="Invalid configuration" /> : null}
@@ -88,6 +117,7 @@ export function GraphTriggerNode({ data, selected }: { data: FlowNodeData; selec
         <span>{valid ? (enabled ? "enabled" : "disabled") : "invalid"}</span>
       </div>
       <Handle type="source" position={Position.Right} isConnectable={false} />
+      <NodeHoverCard data={data} typeLabel={data.triggerType || "trigger"} configurationErrors={[]} />
     </div>
   );
 }
@@ -96,7 +126,12 @@ export function GraphLoopNode({ data, selected }: { data: FlowNodeData; selected
   const width = typeof data.width === "number" ? data.width : minGraphLoopWidth;
   const height = typeof data.height === "number" ? data.height : minGraphLoopHeight;
   return (
-    <div className={`debug-loop${selected ? " debug-loop-selected" : ""}`} style={{ width, height }}>
+    <div
+      className={`debug-loop${selected ? " debug-loop-selected" : ""}`}
+      style={{ width, height }}
+      role="group"
+      aria-label={flowNodeAriaLabel(data)}
+    >
       <Handle
         id={loopStartHandleId}
         type="target"
@@ -147,6 +182,40 @@ export function GraphLoopNode({ data, selected }: { data: FlowNodeData; selected
           <span className="truncate">{data.label}</span>
         </span>
       </div>
+    </div>
+  );
+}
+
+function NodeHoverCard({
+  data,
+  typeLabel,
+  configurationErrors,
+}: {
+  data: FlowNodeData;
+  typeLabel: string;
+  configurationErrors: readonly string[];
+}) {
+  const failed = data.status === "failed";
+  return (
+    <div className="debug-node-hover-card" aria-hidden="true">
+      <div className="debug-node-hover-name">{data.label}</div>
+      <div className="debug-node-hover-type">{typeLabel}</div>
+      {!configurationErrors.length && data.configurationSummary ? (
+        <div className="debug-node-hover-detail">{data.configurationSummary}</div>
+      ) : null}
+      {configurationErrors.length > 0 ? (
+        <div className="debug-node-hover-error">
+          <div className="debug-node-hover-heading">Configuration error</div>
+          {configurationErrors.slice(0, 2).map((message) => <div key={message}>{message}</div>)}
+          {configurationErrors.length > 2 ? <div>+{configurationErrors.length - 2} more</div> : null}
+        </div>
+      ) : null}
+      {failed ? (
+        <div className="debug-node-hover-error">
+          <div className="debug-node-hover-heading">Run failed</div>
+          <div>{data.errorSummary || "Node execution failed."}</div>
+        </div>
+      ) : null}
     </div>
   );
 }

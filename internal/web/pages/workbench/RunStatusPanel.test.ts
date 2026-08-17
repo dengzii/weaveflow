@@ -4,6 +4,9 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { CheckpointDetail, RunRecord, RunStatus, RuntimeEvent } from "../../types";
 import {
   RunStatusPanel,
+  RunMetrics,
+  RunOverview,
+  RunPanelTabs,
   StateDetailTabs,
   StateSnapshotDetail,
   resizeRunPanelColumnRatios,
@@ -34,6 +37,8 @@ describe("RunStatusPanel", () => {
     expect(markup).toContain('aria-label="Event detail"');
     expect(markup).toContain('aria-label="Run history view"');
     expect(markup).toContain('role="tab" aria-selected="true"');
+    expect(markup).toContain(">Overview</button>");
+    expect(markup).toContain(">Metrics</button>");
     expect(markup).toContain(">Event</button>");
     expect(markup).toContain(">State</button>");
     expect(markup).not.toContain("data-state-history-count");
@@ -54,6 +59,52 @@ describe("RunStatusPanel", () => {
     expect(resized[1]).toBeCloseTo(1.35);
     expect(resized[2]).toBeCloseTo(2);
     expect(resized[0] + resized[1] + resized[2]).toBeCloseTo(4.5);
+  });
+
+  test("renders selected run overview and metrics content", () => {
+    const run = {
+      ...runRecord("run-overview", "completed", "2026-07-30T02:00:00Z"),
+      current_node_id: "review",
+      finished_at: "2026-07-30T02:00:05Z",
+      return_value: { answer: "ready" },
+    };
+    const metrics = {
+      durationMs: 5_000,
+      eventCount: 12,
+      stepCount: 3,
+      succeededSteps: 3,
+      failedSteps: 0,
+      activeSteps: 0,
+      retries: 1,
+      checkpointCount: 4,
+      stateChangeCount: 7,
+      llmCallCount: 2,
+      toolCallCount: 3,
+      toolFailureCount: 1,
+      promptTokens: 100,
+      completionTokens: 20,
+      reasoningTokens: 5,
+      cachedPromptTokens: 40,
+      warningCount: 1,
+      errorCount: 1,
+    };
+    const tabs = renderToStaticMarkup(
+      createElement(RunPanelTabs, { view: "metrics", onChange: () => undefined })
+    );
+    const overview = renderToStaticMarkup(createElement(RunOverview, { run, metrics }));
+    const metricMarkup = renderToStaticMarkup(createElement(RunMetrics, { metrics, partial: true }));
+
+    expect(tabs).toContain('role="tab" aria-selected="true"');
+    expect(tabs).toContain(">Metrics</button>");
+    expect(overview).toContain('data-run-overview="run-overview"');
+    expect(overview).toContain("Current node");
+    expect(overview).toContain("review");
+    expect(overview).toContain("Return value");
+    expect(metricMarkup).toContain('data-run-metrics="true"');
+    expect(metricMarkup).toContain("Model usage");
+    expect(metricMarkup).toContain("Total tokens");
+    expect(metricMarkup).toContain(">125<");
+    expect(metricMarkup).toContain("loaded events only");
   });
 
   test("renders Snapshot as the default State detail with complete State sections", () => {

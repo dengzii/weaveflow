@@ -1,5 +1,5 @@
 import { stringifyJSON } from "../../lib/utils";
-import type { CheckpointRecord, RuntimeEvent, StepRecord } from "../../types";
+import type { CheckpointRecord, RunRecord, RuntimeEvent, StepRecord } from "../../types";
 import type { StatusTone } from "./shared";
 
 export type EventFilterMode = "include" | "exclude";
@@ -29,6 +29,27 @@ export interface StoredEventFilters {
   types?: string[];
   nodes?: string[];
   keyword?: string;
+}
+
+export interface RunMetricsSummary {
+  durationMs: number;
+  eventCount: number;
+  stepCount: number;
+  succeededSteps: number;
+  failedSteps: number;
+  activeSteps: number;
+  retries: number;
+  checkpointCount: number;
+  stateChangeCount: number;
+  llmCallCount: number;
+  toolCallCount: number;
+  toolFailureCount: number;
+  promptTokens: number;
+  completionTokens: number;
+  reasoningTokens: number;
+  cachedPromptTokens: number;
+  warningCount: number;
+  errorCount: number;
 }
 
 export const MIN_PANEL_HEIGHT = 180;
@@ -227,6 +248,82 @@ export function eventMatchesFilters(
   if (!hasEventFilterCriteria(filters)) return true;
   const matches = eventMatchesPositiveFilters(event, filters);
   return filters.mode === "exclude" ? !matches : matches;
+}
+
+export function summarizeRunMetrics(
+  run: RunRecord | undefined,
+  steps: StepRecord[] = [],
+  checkpoints: CheckpointRecord[] = [],
+  events: RuntimeEvent[] = []
+): RunMetricsSummary {
+  const runEvents = run ? events.filter((event) => event.run_id === run.run_id) : [];
+  const runSteps = run ? steps.filter((step) => step.run_id === run.run_id) : [];
+  const runCheckpoints = run ? checkpoints.filter((checkpoint) => checkpoint.run_id === run.run_id) : [];
+  const start = timeRank(run?.started_at);
+  const end = timeRank(run?.finished_at || run?.updated_at);
+  const durationMs = start > 0 && end >= start ? end - start : 0;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let reasoningTokens = 0;
+  let cachedPromptTokens = 0;
+  let llmCallCount = 0;
+  let toolCallCount = 0;
+  let toolFailureCount = 0;
+  let stateChangeCount = 0;
+  let warningCount = 0;
+  let errorCount = 0;
+
+  for (const event of runEvents) {
+    const payload = recordPayload(event.payload);
+    if (event.type === "llm.call") {
+      llmCallCount += Math.max(1, numberPayload(payload, "calls"));
+      promptTokens += numberPayload(payload, "prompt_tokens");
+      completionTokens += numberPayload(payload, "completion_tokens");
+      reasoningTokens += numberPayload(payload, "reasoning_tokens");
+      cachedPromptTokens += numberPayload(payload, "prompt_cached_tokens");
+    }
+    if (event.type === "tool.called") toolCallCount += Math.max(1, numberPayload(payload, "count"));
+    if (event.type === "tool.failed") {
+      toolFailureCount += 1;
+    }
+    if (event.type === "state.changed") stateChangeCount += payloadArrayLength(payload, "changes");
+    if (event.type === "warning") warningCount += 1;
+    if (event.type.includes("failed") || event.type === "contract.violation") errorCount += 1;
+  }
+
+  return {
+    durationMs,
+    eventCount: runEvents.length,
+    stepCount: runSteps.length,
+    succeededSteps: runSteps.filter((step) => step.status === "succeeded").length,
+    failedSteps: runSteps.filter((step) => step.status === "failed").length,
+    activeSteps: runSteps.filter((step) => step.status === "running" || step.status === "scheduled").length,
+    retries: runSteps.reduce((total, step) => total + Math.max(0, step.attempt - 1), 0),
+    checkpointCount: runCheckpoints.length,
+    stateChangeCount,
+    llmCallCount,
+    toolCallCount,
+    toolFailureCount,
+    promptTokens,
+    completionTokens,
+    reasoningTokens,
+    cachedPromptTokens,
+    warningCount,
+    errorCount,
+  };
+}
+
+function recordPayload(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function numberPayload(payload: Record<string, unknown> | null, key: string): number {
+  const value = payload?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function payloadArrayLength(payload: Record<string, unknown> | null, key: string): number {
+  return Array.isArray(payload?.[key]) ? payload[key].length : 0;
 }
 
 function eventMatchesPositiveFilters(

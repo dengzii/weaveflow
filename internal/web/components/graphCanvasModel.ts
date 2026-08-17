@@ -11,12 +11,16 @@ import { analyzeVirtualGraphLoop, type VirtualGraphLoop } from "../lib/loopPrese
 export interface FlowNodeData extends Record<string, unknown> {
   label: string;
   type: string;
+  typeLabel?: string;
   status: FlowNodeStatus;
   editable: boolean;
   attempt?: number;
   highlighted?: boolean;
   bindingSummary?: string;
   missingBindings?: boolean;
+  configurationSummary?: string;
+  configurationErrors?: readonly string[];
+  errorSummary?: string;
   virtualKind?: "start" | "end" | "loop" | "trigger";
   triggerID?: string;
   triggerType?: TriggerType;
@@ -33,6 +37,7 @@ export interface RuntimeNodeState {
   status: RuntimeNodeStatus;
   attempt: number;
   at: number;
+  errorMessage?: string;
 }
 
 export interface VirtualLoopLayout {
@@ -55,6 +60,22 @@ const loopPaddingX = 62;
 const loopPaddingTop = 54;
 const loopPaddingBottom = 20;
 
+export function flowNodeAriaLabel(data: FlowNodeData): string {
+  const parts = [data.label];
+  const typeLabel = data.typeLabel || data.type;
+  if (typeLabel && typeLabel !== data.label) parts.push(`type ${typeLabel}`);
+  if (data.configurationErrors?.length) {
+    parts.push(`configuration error: ${data.configurationErrors[0]}`);
+  } else {
+    if (data.configurationSummary) parts.push(data.configurationSummary);
+    if (data.bindingSummary) parts.push(data.bindingSummary);
+  }
+  if (data.status && data.status !== "idle") parts.push(`execution status ${data.status}`);
+  if (data.attempt) parts.push(`attempt ${data.attempt}`);
+  if (data.errorSummary) parts.push(`error: ${data.errorSummary}`);
+  return parts.join(". ");
+}
+
 export function runtimeFromSteps(steps: StepRecord[], runID?: string): Map<string, RuntimeNodeState> {
   const runtime = new Map<string, RuntimeNodeState>();
   for (const step of steps) {
@@ -65,7 +86,8 @@ export function runtimeFromSteps(steps: StepRecord[], runID?: string): Map<strin
       step.node_id,
       normalizeRuntimeStatus(step.status),
       Number.isFinite(step.attempt) ? step.attempt : 0,
-      timeRank(step.updated_at || step.finished_at || step.started_at)
+      timeRank(step.updated_at || step.finished_at || step.started_at),
+      step.error_message
     );
   }
   return runtime;
@@ -76,7 +98,8 @@ export function applyRuntime(
   nodeID: string,
   status: RuntimeNodeStatus,
   attempt: number,
-  at: number
+  at: number,
+  errorMessage = ""
 ): boolean {
   const current = runtime.get(nodeID);
   const nextAttempt = Math.max(current?.attempt ?? 0, attempt);
@@ -86,8 +109,20 @@ export function applyRuntime(
     return true;
   }
 
-  const next = { status, attempt: nextAttempt, at };
-  if (current && current.status === next.status && current.attempt === next.attempt && current.at === next.at) {
+  const next: RuntimeNodeState = {
+    status,
+    attempt: nextAttempt,
+    at,
+  };
+  const nextErrorMessage = status === "failed" ? errorMessage.trim() : "";
+  if (nextErrorMessage) next.errorMessage = nextErrorMessage;
+  if (
+    current
+    && current.status === next.status
+    && current.attempt === next.attempt
+    && current.at === next.at
+    && (current.errorMessage ?? "") === (next.errorMessage ?? "")
+  ) {
     return false;
   }
   runtime.set(nodeID, next);
@@ -130,7 +165,7 @@ export function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeDat
   let changed = false;
   const next = nodes.map((node) => {
     if (node.data.virtualKind) return node;
-    if ((node.data.status || "idle") === "idle" && !node.data.attempt) return node;
+    if ((node.data.status || "idle") === "idle" && !node.data.attempt && !node.data.errorSummary) return node;
     changed = true;
     return {
       ...node,
@@ -138,7 +173,14 @@ export function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeDat
         ...node.data,
         status: "idle",
         attempt: 0,
+        errorSummary: undefined,
       },
+      ariaLabel: flowNodeAriaLabel({
+        ...node.data,
+        status: "idle",
+        attempt: 0,
+        errorSummary: undefined,
+      }),
     };
   });
   return changed ? next : nodes;
@@ -164,6 +206,13 @@ export function eventAttempt(payload: unknown): number {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
   const value = (payload as Record<string, unknown>).attempt;
   return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+export function eventErrorMessage(payload: unknown): string {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+  const record = payload as Record<string, unknown>;
+  const value = record.error_message ?? record.error;
+  return typeof value === "string" ? value.trim() : "";
 }
 
 export function timeRank(value?: string): number {
@@ -278,10 +327,17 @@ export function isVirtualEndNodeID(nodeID: string): boolean {
 
 function updateRuntimeNodeData(node: Node<FlowNodeData>, runtime: RuntimeNodeState): Node<FlowNodeData> {
   const attempt = runtime.attempt || 0;
-  if (node.data.status === runtime.status && node.data.attempt === attempt) return node;
+  const errorSummary = runtime.status === "failed" ? runtime.errorMessage || undefined : undefined;
+  if (
+    node.data.status === runtime.status
+    && node.data.attempt === attempt
+    && node.data.errorSummary === errorSummary
+  ) return node;
+  const data = { ...node.data, status: runtime.status, attempt, errorSummary };
   return {
     ...node,
-    data: { ...node.data, status: runtime.status, attempt },
+    data,
+    ariaLabel: flowNodeAriaLabel(data),
   };
 }
 

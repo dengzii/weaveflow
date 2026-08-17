@@ -34,7 +34,10 @@ describe("loop presentation", () => {
     expect(analysis.loopStartId).toBe("llm");
     expect(analysis.loopEndIds).toEqual(["llm"]);
     expect(analysis.conditionNodeIds).toEqual(["llm"]);
-    expect(analysis.conditionLabels).toEqual(["continue · conversation has tool calls"]);
+    expect(analysis.conditionLabels).toEqual([
+      "continue · conversation has tool calls",
+      "exit · conversation has no tool calls",
+    ]);
     expect(analysis.nextNodeIds).toEqual(["_end"]);
     expect([...analysis.backEdgeIds]).toEqual([graphEdgeId(definition.edges![3], 3)]);
 
@@ -58,12 +61,14 @@ describe("loop presentation", () => {
       source: "loop:auto:llm",
       target: "_end",
       sourceHandle: loopEndHandleId,
+      showLabel: true,
     });
     expect(displayEdges.find(({ id }) => id === `${exitEdgeId}:loop-end`)).toMatchObject({
       selectionId: exitEdgeId,
       source: "llm",
       target: "loop:auto:llm",
       targetHandle: loopEndInnerHandleId,
+      showLabel: false,
       contained: true,
     });
     expect(displayEdges.find(({ id }) => id === graphEdgeId(definition.edges![1], 1))).toMatchObject({
@@ -133,12 +138,14 @@ describe("loop presentation", () => {
         source: "llm",
         target: "loop:auto:llm",
         targetHandle: loopEndInnerHandleId,
+        showLabel: false,
         contained: true,
       },
       {
         source: "loop:auto:llm",
         target: "__end__",
         sourceHandle: loopEndHandleId,
+        showLabel: true,
       },
     ]);
   });
@@ -165,7 +172,7 @@ function toolLoopGraph(): GraphDefinition {
     edges: [
       { from: "input", to: "llm" },
       { from: "llm", to: "tools", condition: { type: "conversation_has_tool_calls" } },
-      { from: "llm", to: "_end" },
+      { from: "llm", to: "_end", condition: { type: "conversation_has_no_tool_calls" } },
       { from: "tools", to: "llm" },
     ],
   };

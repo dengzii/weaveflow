@@ -24,6 +24,7 @@ import {
   applyRuntime,
   applyRuntimeSnapshot,
   eventAttempt,
+  eventErrorMessage,
   resetRuntimeNodes,
   runtimeFromSteps,
   runtimeStatusFromEvent,
@@ -60,6 +61,7 @@ const graphCanvasNodeTypes = {
   debugLoop: GraphLoopNode,
   debugTrigger: GraphTriggerNode,
 };
+const emptyConfigurationErrors = new Map<string, readonly string[]>();
 
 export function GraphCanvas({
   definition,
@@ -76,6 +78,7 @@ export function GraphCanvas({
   viewportStorageKey,
   highlightedNodeIds = [],
   nodeTypes = [],
+  configurationErrors = emptyConfigurationErrors,
   virtualNodeIds = [START_NODE_REF, END_NODE_REF],
   virtualEdges = [],
   virtualLoops = [],
@@ -108,6 +111,7 @@ export function GraphCanvas({
   viewportStorageKey?: string;
   highlightedNodeIds?: string[];
   nodeTypes?: NodeTypeSchema[];
+  configurationErrors?: ReadonlyMap<string, readonly string[]>;
   virtualNodeIds?: string[];
   virtualEdges?: VirtualGraphEdge[];
   virtualLoops?: VirtualGraphLoop[];
@@ -143,6 +147,7 @@ export function GraphCanvas({
         viewportStorageKey={viewportStorageKey}
         highlightedNodeIds={highlightedNodeIds}
         nodeTypes={nodeTypes}
+        configurationErrors={configurationErrors}
         virtualNodeIds={virtualNodeIds}
         virtualEdges={virtualEdges}
         virtualLoops={virtualLoops}
@@ -180,6 +185,7 @@ function GraphCanvasInner({
   viewportStorageKey,
   highlightedNodeIds,
   nodeTypes,
+  configurationErrors,
   virtualNodeIds,
   virtualEdges,
   virtualLoops,
@@ -212,6 +218,7 @@ function GraphCanvasInner({
   viewportStorageKey?: string;
   highlightedNodeIds: string[];
   nodeTypes: NodeTypeSchema[];
+  configurationErrors: ReadonlyMap<string, readonly string[]>;
   virtualNodeIds: string[];
   virtualEdges: VirtualGraphEdge[];
   virtualLoops: VirtualGraphLoop[];
@@ -270,7 +277,7 @@ function GraphCanvasInner({
     if (stepRuntime.size === 0) return;
     const next = new Map(runtimeRef.current);
     for (const [nodeId, runtime] of stepRuntime) {
-      applyRuntime(next, nodeId, runtime.status, runtime.attempt, runtime.at);
+      applyRuntime(next, nodeId, runtime.status, runtime.attempt, runtime.at, runtime.errorMessage);
     }
     runtimeRef.current = next;
     setNodes((current) => applyRuntimeSnapshot(current, next));
@@ -293,7 +300,14 @@ function GraphCanvasInner({
     if (!status) return;
 
     const next = new Map(runtimeRef.current);
-    const changed = applyRuntime(next, nodeId, status, eventAttempt(event.payload), timeRank(event.timestamp));
+    const changed = applyRuntime(
+      next,
+      nodeId,
+      status,
+      eventAttempt(event.payload),
+      timeRank(event.timestamp),
+      eventErrorMessage(event.payload)
+    );
     if (!changed && !switchedRun) return;
     runtimeRef.current = next;
     const runtime = next.get(nodeId);
@@ -310,6 +324,7 @@ function GraphCanvasInner({
       interactive: isInteractive,
       highlightedNodeIDs: highlightedNodeSet,
       nodeTypes,
+      configurationErrors,
       runtime: runtimeRef.current,
       selectedEdgeID: selectedEdgeId,
       selectedLoopID: selectedLoopId,
@@ -326,6 +341,7 @@ function GraphCanvasInner({
       highlightedNodeSet,
       isInteractive,
       nodeTypes,
+      configurationErrors,
       selectedEdgeId,
       selectedLoopId,
       selectedNodeId,

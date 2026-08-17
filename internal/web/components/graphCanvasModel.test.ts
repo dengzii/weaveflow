@@ -5,6 +5,7 @@ import { END_NODE_REF, START_NODE_REF } from "../lib/graphEditor";
 import {
   applyRuntime,
   applyRuntimeSnapshot,
+  eventErrorMessage,
   isVirtualEndNodeID,
   isVirtualStartNodeID,
   layoutNodes,
@@ -65,6 +66,15 @@ describe("graph canvas model", () => {
     expect(runtimeFromSteps([step({ status: "pending" as StepRecord["status"] })]).get("node-1")?.status).toBe("idle");
     expect(runtimeFromSteps([step({ status: "running" })]).get("node-1")?.status).toBe("running");
     expect(runtimeFromSteps([step({ status: "canceled" })]).get("node-1")?.status).toBe("canceled");
+  });
+
+  test("retains the latest node failure summary and reads event errors", () => {
+    const runtime = runtimeFromSteps([
+      step({ status: "failed", error_message: "provider request timed out" }),
+    ]);
+    expect(runtime.get("node-1")?.errorMessage).toBe("provider request timed out");
+    expect(eventErrorMessage({ error_message: " model unavailable " })).toBe("model unavailable");
+    expect(eventErrorMessage({ error: "fallback error" })).toBe("fallback error");
   });
 
   test("ignores stale runtime status while retaining a newer attempt", () => {

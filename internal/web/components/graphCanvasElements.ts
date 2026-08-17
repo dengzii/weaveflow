@@ -17,6 +17,7 @@ import {
   type VirtualGraphLoop,
 } from "../lib/loopPresentation";
 import {
+  flowNodeAriaLabel,
   isVirtualEndNodeID,
   isVirtualStartNodeID,
   layoutNodes,
@@ -43,6 +44,7 @@ export interface GraphCanvasElements {
 
 export interface GraphCanvasElementOptions {
   definition: GraphDefinition | null;
+  configurationErrors: ReadonlyMap<string, readonly string[]>;
   editable: boolean;
   interactive: boolean;
   highlightedNodeIDs: ReadonlySet<string>;
@@ -60,6 +62,7 @@ export interface GraphCanvasElementOptions {
 
 export function buildGraphCanvasElements({
   definition,
+  configurationErrors,
   editable,
   interactive,
   highlightedNodeIDs,
@@ -134,6 +137,7 @@ export function buildGraphCanvasElements({
     ...displayNodes.map((node): Node<FlowNodeData> => {
       const virtualKind = virtualNodeKind(node.id);
       const nodeType = nodeTypes.find((item) => item.type === node.type);
+      const runtimeState = runtime.get(node.id);
       const statePorts = nodeType?.state_ports ?? [];
       const staticPortNames = new Set(statePorts.map((port) => port.name));
       const dynamicPortNames = Object.keys(node.state ?? {}).filter(
@@ -152,27 +156,33 @@ export function buildGraphCanvasElements({
       );
       const dynamicMinimum = nodeType?.dynamic_state_ports?.min_ports ?? 0;
       const missingDynamicBindings = dynamicPortNames.length < dynamicMinimum;
+      const data: FlowNodeData = {
+        label: node.name || node.id,
+        type: node.type || "node",
+        typeLabel: nodeType?.title || node.type || "Node",
+        status: virtualKind ? "idle" : runtimeState?.status || "idle",
+        attempt: virtualKind ? 0 : runtimeState?.attempt || 0,
+        editable: interactive,
+        highlighted: highlightedNodeIDs.has(node.id),
+        bindingSummary: virtualKind || totalPortCount === 0
+          ? undefined
+          : `${boundPortCount}/${totalPortCount} state`,
+        missingBindings: missingBindings || missingDynamicBindings,
+        configurationSummary: virtualKind ? undefined : importantConfigurationSummary(node, nodeType),
+        configurationErrors: virtualKind ? undefined : configurationErrors.get(node.id),
+        errorSummary: virtualKind ? undefined : runtimeState?.errorMessage,
+        virtualKind,
+      };
       return {
         id: node.id,
         type: "debugNode",
+        ariaLabel: flowNodeAriaLabel(data),
         position: positions.get(node.id) ?? { x: 0, y: 0 },
         draggable: editable,
         selectable: true,
         selected: node.id === selectedNodeID,
         zIndex: 2,
-        data: {
-          label: node.name || node.id,
-          type: node.type || "node",
-          status: virtualKind ? "idle" : runtime.get(node.id)?.status || "idle",
-          attempt: virtualKind ? 0 : runtime.get(node.id)?.attempt || 0,
-          editable: interactive,
-          highlighted: highlightedNodeIDs.has(node.id),
-          bindingSummary: virtualKind || totalPortCount === 0
-            ? undefined
-            : `${boundPortCount}/${totalPortCount} state`,
-          missingBindings: missingBindings || missingDynamicBindings,
-          virtualKind,
-        },
+        data,
       };
     }),
   ];
@@ -254,6 +264,27 @@ export function buildGraphCanvasElements({
       }))
     : [];
   return { nodes, edges: [...flowEdges, ...triggerEdges] };
+}
+
+function importantConfigurationSummary(node: GraphNodeSpec, nodeType?: NodeTypeSchema): string | undefined {
+  const schemaProperties = recordValue(nodeType?.config_schema?.properties);
+  const config = recordValue(node.config);
+  const parts: string[] = [];
+  if (schemaProperties && Object.prototype.hasOwnProperty.call(schemaProperties, "model_id")) {
+    const modelID = typeof config?.model_id === "string" ? config.model_id.trim() : "";
+    parts.push(`model: ${modelID || "default"}`);
+  }
+  if (schemaProperties && Object.prototype.hasOwnProperty.call(schemaProperties, "tool_ids")) {
+    const toolCount = Array.isArray(config?.tool_ids) ? config.tool_ids.length : 0;
+    parts.push(`tools: ${toolCount}`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
 }
 
 function failureEdgeLabel(failure: NonNullable<GraphDefinition["edges"]>[number]["failure"]): string {

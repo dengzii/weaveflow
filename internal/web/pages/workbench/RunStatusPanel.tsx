@@ -40,13 +40,14 @@ import {
   readStoredEventFilters,
   readStoredPanelHeight,
   resizeRunPanelColumnRatios,
+  summarizeRunMetrics,
   stateHistoryEntries,
   timeRank,
   uniqueSorted,
   writeStoredEventFilters,
   writeStoredPanelHeight,
 } from "./runStatusModel";
-import type { ColumnRatios, EventFilterMode, StateChangeKind, StateHistoryEntry } from "./runStatusModel";
+import type { ColumnRatios, EventFilterMode, RunMetricsSummary, StateChangeKind, StateHistoryEntry } from "./runStatusModel";
 import { StatusText } from "./shared";
 
 export { resizeRunPanelColumnRatios } from "./runStatusModel";
@@ -54,7 +55,7 @@ export { resizeRunPanelColumnRatios } from "./runStatusModel";
 const COLUMN_KEYBOARD_STEP_RATIO = 0.03;
 const MAX_CACHED_CHECKPOINTS = 6;
 const snapshotJSONCache = new WeakMap<object, string>();
-type RunPanelView = "events" | "state";
+type RunPanelView = "overview" | "metrics" | "events" | "state";
 type StateDetailView = "diff" | "snapshot";
 type EventHistoryItem = { event: RuntimeEvent; key: string };
 type StateHistoryItem = StateHistoryEntry & { key: string };
@@ -109,6 +110,10 @@ export function RunStatusPanel({
     () => [...(runs ?? [])].sort((a, b) => timeRank(b.started_at) - timeRank(a.started_at)),
     [runs]
   );
+  const selectedRun = useMemo(
+    () => runOptions.find((run) => run.run_id === selectedRunId),
+    [runOptions, selectedRunId]
+  );
   const eventListItems = useMemo(
     () => events.map((event, index) => ({ event, key: eventListKey(event, index) })),
     [events]
@@ -140,6 +145,10 @@ export function RunStatusPanel({
   const totalStateChanges = useMemo(
     () => stateHistoryItems.reduce((total, entry) => total + entry.changes.length, 0),
     [stateHistoryItems]
+  );
+  const runMetrics = useMemo(
+    () => summarizeRunMetrics(selectedRun, steps, checkpoints, events),
+    [checkpoints, events, selectedRun, steps]
   );
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
 
@@ -180,6 +189,7 @@ export function RunStatusPanel({
     return () => window.removeEventListener("resize", clampPanelHeight);
   }, []);
 
+  const isSummaryView = panelView === "overview" || panelView === "metrics";
   const visibleItems = panelView === "events" ? filteredEventItems : stateHistoryItems;
   const effectiveKey =
     selectedKey && visibleItems.some((item) => item.key === selectedKey)
@@ -346,130 +356,356 @@ export function RunStatusPanel({
           onKeyDown={(event) => resizeColumnsWithKeyboard(0, event)}
         />
 
-        <div aria-label={panelView === "events" ? "Event list" : "State history list"} className="flex min-h-0 min-w-0 flex-col">
-          <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
-            <div role="tablist" aria-label="Run history view" className="flex h-full items-stretch gap-3">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={panelView === "events"}
-                onClick={() => setPanelView("events")}
-                className={cn(
-                  "border-b-2 border-transparent text-xs font-semibold text-muted-foreground hover:text-foreground",
-                  panelView === "events" && "border-primary text-foreground"
-                )}
-              >
-                Event
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={panelView === "state"}
-                onClick={() => setPanelView("state")}
-                className={cn(
-                  "flex items-center gap-1 border-b-2 border-transparent text-xs font-semibold text-muted-foreground hover:text-foreground",
-                  panelView === "state" && "border-primary text-foreground"
-                )}
-              >
-                State
-              </button>
+        {isSummaryView ? (
+          <div
+            aria-label={panelView === "overview" ? "Run overview" : "Run metrics"}
+            className="col-span-3 flex min-h-0 min-w-0 flex-col"
+          >
+            <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
+              <RunPanelTabs view={panelView} onChange={setPanelView} />
             </div>
-            {panelView === "events" ? (
-              <RunEventFilterControls
-                open={eventFiltersOpen}
-                mode={eventFilterMode}
-                types={eventTypeFilters}
-                selectedNodes={eventNodeFilters}
-                keyword={eventKeywordFilter}
-                eventTypes={eventTypes}
-                nodes={eventNodes}
-                activeCount={activeEventFilterCount}
-                filteredCount={filteredEventItems.length}
-                totalCount={events.length}
-                onOpenChange={setEventFiltersOpen}
-                onModeChange={setEventFilterMode}
-                onTypesChange={setEventTypeFilters}
-                onNodesChange={setEventNodeFilters}
-                onKeywordChange={setEventKeywordFilter}
-                onClear={() => {
-                  setEventFilterMode("include");
-                  setEventTypeFilters([]);
-                  setEventNodeFilters([]);
-                  setEventKeywordFilter("");
-                }}
-              />
-            ) : (
-              <span className="ml-auto text-[11px] text-muted-foreground">
-                {stateHistoryItems.length} updates · {totalStateChanges} paths
-              </span>
-            )}
+            <div className="min-h-0 flex-1 overflow-auto p-3">
+              {panelView === "overview" ? (
+                <RunOverview run={selectedRun} metrics={runMetrics} loading={runInspectionLoading} />
+              ) : !selectedRun ? (
+                <EmptyDetail>{runInspectionLoading ? "Loading run metrics…" : "Select a run"}</EmptyDetail>
+              ) : (
+                <RunMetrics metrics={runMetrics} loading={runInspectionLoading} partial={hasOlderEvents} />
+              )}
+            </div>
           </div>
-          <div className="min-h-0 flex-1">
-            {panelView === "events" ? (
-              <EventHistoryList
-                runID={selectedRunId ?? ""}
-                items={filteredEventItems}
-                effectiveKey={effectiveKey}
-                onSelect={setSelectedKey}
-                hasEvents={events.length > 0}
-                inspectionLoading={runInspectionLoading}
-                hasOlderEvents={hasOlderEvents}
-                loading={olderEventsLoading}
-                onLoadOlder={onLoadOlderEvents}
-              />
-            ) : (
-              <div className="h-full overflow-auto">
-                <StateHistoryList items={stateHistoryItems} effectiveKey={effectiveKey} onSelect={setSelectedKey} />
+        ) : (
+          <>
+            <div aria-label={panelView === "events" ? "Event list" : "State history list"} className="flex min-h-0 min-w-0 flex-col">
+              <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
+                <RunPanelTabs view={panelView} onChange={setPanelView} />
+                {panelView === "events" ? (
+                  <RunEventFilterControls
+                    open={eventFiltersOpen}
+                    mode={eventFilterMode}
+                    types={eventTypeFilters}
+                    selectedNodes={eventNodeFilters}
+                    keyword={eventKeywordFilter}
+                    eventTypes={eventTypes}
+                    nodes={eventNodes}
+                    activeCount={activeEventFilterCount}
+                    filteredCount={filteredEventItems.length}
+                    totalCount={events.length}
+                    onOpenChange={setEventFiltersOpen}
+                    onModeChange={setEventFilterMode}
+                    onTypesChange={setEventTypeFilters}
+                    onNodesChange={setEventNodeFilters}
+                    onKeywordChange={setEventKeywordFilter}
+                    onClear={() => {
+                      setEventFilterMode("include");
+                      setEventTypeFilters([]);
+                      setEventNodeFilters([]);
+                      setEventKeywordFilter("");
+                    }}
+                  />
+                ) : (
+                  <span className="ml-auto text-[11px] text-muted-foreground">
+                    {stateHistoryItems.length} updates · {totalStateChanges} paths
+                  </span>
+                )}
               </div>
-            )}
-          </div>
-        </div>
+              <div className="min-h-0 flex-1">
+                {panelView === "events" ? (
+                  <EventHistoryList
+                    runID={selectedRunId ?? ""}
+                    items={filteredEventItems}
+                    effectiveKey={effectiveKey}
+                    onSelect={setSelectedKey}
+                    hasEvents={events.length > 0}
+                    inspectionLoading={runInspectionLoading}
+                    hasOlderEvents={hasOlderEvents}
+                    loading={olderEventsLoading}
+                    onLoadOlder={onLoadOlderEvents}
+                  />
+                ) : (
+                  <div className="h-full overflow-auto">
+                    <StateHistoryList items={stateHistoryItems} effectiveKey={effectiveKey} onSelect={setSelectedKey} />
+                  </div>
+                )}
+              </div>
+            </div>
 
-        <ColumnResizeHandle
-          label="Resize Event and Event Detail columns"
-          value={columnBoundaryPercent(columnRatios, 1)}
-          onPointerDown={(event) => startResizeColumns(1, event)}
-          onKeyDown={(event) => resizeColumnsWithKeyboard(1, event)}
-        />
+            <ColumnResizeHandle
+              label="Resize Event and Event Detail columns"
+              value={columnBoundaryPercent(columnRatios, 1)}
+              onPointerDown={(event) => startResizeColumns(1, event)}
+              onKeyDown={(event) => resizeColumnsWithKeyboard(1, event)}
+            />
 
-        <div aria-label={panelView === "events" ? "Event detail" : "State detail"} className="flex min-h-0 min-w-0 flex-col">
-          <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
-            <span className="text-xs font-semibold">{panelView === "events" ? "Event Detail" : "State Detail"}</span>
-            {panelView === "state" ? (
-              <StateDetailTabs view={stateDetailView} onChange={setStateDetailView} />
-            ) : null}
-          </div>
-          <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
-            {panelView === "events" ? (
-              selectedEvent ? (
-                <RunEventDetail event={selectedEvent} />
-              ) : runInspectionLoading ? (
-                <EmptyDetail>Loading event detail…</EmptyDetail>
-              ) : (
-                <EmptyDetail>Select an event</EmptyDetail>
-              )
-            ) : stateDetailView === "diff" ? (
-              deferredStateEntry?.event
-                ? <RunEventDetail event={deferredStateEntry.event} />
-                : <EmptyDetail>This checkpoint has no path-level diff</EmptyDetail>
-            ) : deferredStateEntry ? (
-              deferredCheckpointError ? (
-                <EmptyDetail>Checkpoint load failed: {deferredCheckpointError}</EmptyDetail>
-              ) : deferredCheckpointDetail ? (
-                <StateSnapshotDetail key={deferredCheckpointID} detail={deferredCheckpointDetail} />
-              ) : deferredCheckpointID ? (
-                <EmptyDetail>Loading checkpoint snapshot…</EmptyDetail>
-              ) : (
-                <EmptyDetail>No checkpoint is linked to this state change</EmptyDetail>
-              )
-            ) : (
-              <EmptyDetail>No state checkpoints recorded</EmptyDetail>
-            )}
-          </div>
-        </div>
+            <div aria-label={panelView === "events" ? "Event detail" : "State detail"} className="flex min-h-0 min-w-0 flex-col">
+              <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
+                <span className="text-xs font-semibold">{panelView === "events" ? "Event Detail" : "State Detail"}</span>
+                {panelView === "state" ? (
+                  <StateDetailTabs view={stateDetailView} onChange={setStateDetailView} />
+                ) : null}
+              </div>
+              <div className="min-h-0 min-w-0 flex-1 overflow-auto p-3">
+                {panelView === "events" ? (
+                  selectedEvent ? (
+                    <RunEventDetail event={selectedEvent} />
+                  ) : runInspectionLoading ? (
+                    <EmptyDetail>Loading event detail…</EmptyDetail>
+                  ) : (
+                    <EmptyDetail>Select an event</EmptyDetail>
+                  )
+                ) : stateDetailView === "diff" ? (
+                  deferredStateEntry?.event
+                    ? <RunEventDetail event={deferredStateEntry.event} />
+                    : <EmptyDetail>This checkpoint has no path-level diff</EmptyDetail>
+                ) : deferredStateEntry ? (
+                  deferredCheckpointError ? (
+                    <EmptyDetail>Checkpoint load failed: {deferredCheckpointError}</EmptyDetail>
+                  ) : deferredCheckpointDetail ? (
+                    <StateSnapshotDetail key={deferredCheckpointID} detail={deferredCheckpointDetail} />
+                  ) : deferredCheckpointID ? (
+                    <EmptyDetail>Loading checkpoint snapshot…</EmptyDetail>
+                  ) : (
+                    <EmptyDetail>No checkpoint is linked to this state change</EmptyDetail>
+                  )
+                ) : (
+                  <EmptyDetail>No state checkpoints recorded</EmptyDetail>
+                )}
+              </div>
+            </div>
+          </>
+        )}
       </div>
     </section>
   );
+}
+
+export function RunPanelTabs({
+  view,
+  onChange,
+}: {
+  view: RunPanelView;
+  onChange: (view: RunPanelView) => void;
+}) {
+  const tabs: Array<{ id: RunPanelView; label: string }> = [
+    { id: "overview", label: "Overview" },
+    { id: "metrics", label: "Metrics" },
+    { id: "events", label: "Event" },
+    { id: "state", label: "State" },
+  ];
+  return (
+    <div role="tablist" aria-label="Run history view" className="flex h-full items-stretch gap-3">
+      {tabs.map((tab) => (
+        <button
+          key={tab.id}
+          type="button"
+          role="tab"
+          aria-selected={view === tab.id}
+          onClick={() => onChange(tab.id)}
+          className={cn(
+            "border-b-2 border-transparent text-xs font-semibold text-muted-foreground hover:text-foreground",
+            view === tab.id && "border-primary text-foreground"
+          )}
+        >
+          {tab.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export function RunOverview({
+  run,
+  metrics,
+  loading = false,
+}: {
+  run?: RunRecord;
+  metrics: RunMetricsSummary;
+  loading?: boolean;
+}) {
+  if (!run) return <EmptyDetail>{loading ? "Loading run overview…" : "Select a run"}</EmptyDetail>;
+  const currentNodes = run.current_node_ids?.length
+    ? run.current_node_ids.join(", ")
+    : run.current_node_id || "—";
+  const nextNodes = run.next_node_ids?.length ? run.next_node_ids.join(", ") : "—";
+  const origin = run.origin?.type || "direct";
+
+  return (
+    <div className="grid gap-3" data-run-overview={run.run_id}>
+      <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+        <SummaryCard label="Status">
+          <StatusText tone={eventTone(`run.${run.status}`)}>{run.status}</StatusText>
+        </SummaryCard>
+        <SummaryCard label={run.finished_at ? "Duration" : "Elapsed"} value={formatDuration(metrics.durationMs)} />
+        <SummaryCard label="Steps" value={`${metrics.succeededSteps} / ${metrics.stepCount}`} hint="succeeded / total" />
+        <SummaryCard label="Current node" value={currentNodes} mono />
+      </div>
+
+      {run.error_code || run.error_message ? (
+        <section className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-xs">
+          <div className="mb-1 font-semibold text-destructive">Run failure</div>
+          {run.error_code ? <div className="font-mono text-destructive">{run.error_code}</div> : null}
+          {run.error_message ? <div className="mt-1 whitespace-pre-wrap break-words">{run.error_message}</div> : null}
+        </section>
+      ) : null}
+
+      <div className="grid gap-3 lg:grid-cols-2">
+        <OverviewSection title="Execution">
+          <OverviewRow label="Run ID" value={run.run_id} />
+          <OverviewRow label="Root Run" value={run.root_run_id} />
+          {run.parent_run_id ? <OverviewRow label="Parent Run" value={run.parent_run_id} /> : null}
+          {run.parent_step_id ? <OverviewRow label="Parent Step" value={run.parent_step_id} /> : null}
+          <OverviewRow label="Namespace" value={run.namespace} />
+          <OverviewRow label="Origin" value={origin} />
+          <OverviewRow label="Entry node" value={run.entry_node_id} />
+          <OverviewRow label="Current node" value={currentNodes} />
+          <OverviewRow label="Next node" value={nextNodes} />
+          {run.parallel_wave_id ? <OverviewRow label="Parallel wave" value={run.parallel_wave_id} /> : null}
+          {run.last_checkpoint_id ? <OverviewRow label="Last checkpoint" value={run.last_checkpoint_id} /> : null}
+        </OverviewSection>
+
+        <OverviewSection title="Graph and time">
+          <OverviewRow label="Graph ID" value={run.graph_id} />
+          <OverviewRow label="Graph version" value={run.graph_version} />
+          {run.graph_session_id ? <OverviewRow label="Session" value={run.graph_session_id} /> : null}
+          {run.graph_snapshot_hash ? <OverviewRow label="Snapshot hash" value={run.graph_snapshot_hash} /> : null}
+          <OverviewRow label="Started" value={formatDateTimeMs(run.started_at)} />
+          <OverviewRow label="Updated" value={formatDateTimeMs(run.updated_at)} />
+          {run.finished_at ? <OverviewRow label="Finished" value={formatDateTimeMs(run.finished_at)} /> : null}
+          <OverviewRow label="Revision" value={String(run.revision)} />
+          <OverviewRow label="Run path" value={run.run_path.join(" → ")} />
+          {run.child_run_ids?.length ? <OverviewRow label="Child runs" value={run.child_run_ids.join(", ")} /> : null}
+        </OverviewSection>
+      </div>
+
+      {run.return_value !== undefined ? (
+        <OverviewSection title="Return value">
+          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[11px]">
+            {stringifyJSON(run.return_value)}
+          </pre>
+        </OverviewSection>
+      ) : null}
+    </div>
+  );
+}
+
+export function RunMetrics({
+  metrics,
+  loading = false,
+  partial = false,
+}: {
+  metrics: RunMetricsSummary;
+  loading?: boolean;
+  partial?: boolean;
+}) {
+  if (loading && metrics.eventCount === 0 && metrics.stepCount === 0) {
+    return <EmptyDetail>Loading run metrics…</EmptyDetail>;
+  }
+  const totalTokens = metrics.promptTokens + metrics.completionTokens + metrics.reasoningTokens;
+  return (
+    <div className="grid gap-3" data-run-metrics="true">
+      {partial ? (
+        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+          Event-derived metrics include loaded events only. Load older events in the Event tab for complete totals.
+        </div>
+      ) : null}
+      <section>
+        <MetricSectionTitle>Execution</MetricSectionTitle>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <SummaryCard label="Duration" value={formatDuration(metrics.durationMs)} />
+          <SummaryCard label="Events" value={formatMetric(metrics.eventCount)} />
+          <SummaryCard label="Steps" value={formatMetric(metrics.stepCount)} />
+          <SummaryCard label="Checkpoints" value={formatMetric(metrics.checkpointCount)} />
+          <SummaryCard label="Succeeded" value={formatMetric(metrics.succeededSteps)} />
+          <SummaryCard label="Active" value={formatMetric(metrics.activeSteps)} />
+          <SummaryCard label="Failed" value={formatMetric(metrics.failedSteps)} />
+          <SummaryCard label="Retries" value={formatMetric(metrics.retries)} />
+        </div>
+      </section>
+      <section>
+        <MetricSectionTitle>Model usage</MetricSectionTitle>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <SummaryCard label="LLM calls" value={formatMetric(metrics.llmCallCount)} />
+          <SummaryCard label="Total tokens" value={formatMetric(totalTokens)} />
+          <SummaryCard label="Prompt tokens" value={formatMetric(metrics.promptTokens)} />
+          <SummaryCard label="Completion tokens" value={formatMetric(metrics.completionTokens)} />
+          <SummaryCard label="Reasoning tokens" value={formatMetric(metrics.reasoningTokens)} />
+          <SummaryCard label="Cached prompt" value={formatMetric(metrics.cachedPromptTokens)} />
+        </div>
+      </section>
+      <section>
+        <MetricSectionTitle>Tools and state</MetricSectionTitle>
+        <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+          <SummaryCard label="Tool calls" value={formatMetric(metrics.toolCallCount)} />
+          <SummaryCard label="Tool failures" value={formatMetric(metrics.toolFailureCount)} />
+          <SummaryCard label="State changes" value={formatMetric(metrics.stateChangeCount)} />
+          <SummaryCard label="Warnings" value={formatMetric(metrics.warningCount)} />
+          <SummaryCard label="Error events" value={formatMetric(metrics.errorCount)} />
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function SummaryCard({
+  label,
+  value,
+  hint,
+  mono = false,
+  children,
+}: {
+  label: string;
+  value?: string;
+  hint?: string;
+  mono?: boolean;
+  children?: ReactNode;
+}) {
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-muted/30 p-3">
+      <div className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className={cn("mt-1 truncate text-sm font-semibold tabular-nums", mono && "font-mono")} title={value}>
+        {children ?? value ?? "—"}
+      </div>
+      {hint ? <div className="mt-0.5 text-[10px] text-muted-foreground">{hint}</div> : null}
+    </div>
+  );
+}
+
+function OverviewSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-md border border-border bg-muted/20 p-3">
+      <div className="mb-2 text-xs font-semibold">{title}</div>
+      <div className="grid gap-1.5">{children}</div>
+    </section>
+  );
+}
+
+function OverviewRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="grid grid-cols-[110px_minmax(0,1fr)] gap-2 text-xs">
+      <span className="text-muted-foreground">{label}</span>
+      <span className="min-w-0 truncate font-mono" title={value}>{value || "—"}</span>
+    </div>
+  );
+}
+
+function MetricSectionTitle({ children }: { children: ReactNode }) {
+  return <div className="mb-2 text-xs font-semibold">{children}</div>;
+}
+
+function formatMetric(value: number): string {
+  return new Intl.NumberFormat("en-US").format(value);
+}
+
+function formatDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return "0 ms";
+  if (durationMs < 1_000) return `${Math.round(durationMs)} ms`;
+  const seconds = durationMs / 1_000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)} s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h ${minutes % 60}m`;
 }
 
 function cacheCheckpointDetail(
