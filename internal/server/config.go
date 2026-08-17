@@ -74,6 +74,11 @@ type Server struct {
 	managementToken string
 }
 
+type graphRuntimeStore struct {
+	baseDir string
+	store   *filestore.Store
+}
+
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
 	return New(ctx, cfg)
 }
@@ -105,16 +110,6 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	cfg.SecretResolver = secretResolver
 	cfg.ManagementToken = strings.TrimSpace(cfg.ManagementToken)
 
-	hub := NewEventHub(cfg.EventBuffer)
-	var runner *runtime.GraphRunner
-	if cfg.Graph != nil {
-		var runnerErr error
-		runner, runnerErr = newDefaultRunner(cfg.Graph, cfg, baseDir, hub)
-		if runnerErr != nil {
-			return nil, runnerErr
-		}
-	}
-
 	reg := cfg.Registry
 	if reg == nil {
 		reg = builtin.NewDefaultRegistry()
@@ -123,8 +118,24 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	ctx = applyRuntimeContextDecorators(ctx, cfg.RuntimeContextDecorators)
 	initialSettings := graphRuntimeSettingsFromContext(ctx)
 	ctx = core.WithEnvironment(ctx, initialSettings.Environment)
+	hub := NewEventHub(cfg.EventBuffer)
+	runtimeManager := newGraphRuntimeManager(ctx, initialSettings, nil, nil)
+	var runner *runtime.GraphRunner
+	if cfg.Graph != nil {
+		runner, err = runtimeManager.newRunner(cfg.Graph, cfg, baseDir, hub)
+		if err != nil {
+			_ = runtimeManager.Close()
+			return nil, err
+		}
+		runtimeManager.installSession(graphRuntimeSession{
+			graph:       cfg.Graph,
+			runner:      runner,
+			baseContext: ctx,
+			settings:    initialSettings,
+		})
+	}
 	srv := &Server{
-		runtime:         newGraphRuntimeManager(ctx, initialSettings, cfg.Graph, runner),
+		runtime:         runtimeManager,
 		registry:        reg,
 		events:          hub,
 		baseDir:         baseDir,
@@ -171,6 +182,10 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 	srv.triggers = triggerService
 	srv.chatChannels = triggerService.ChatChannels()
 	srv.chatSetup = newChatSetupManager(srv.chatChannels)
+	if err := srv.recoverGraphCommits(ctx); err != nil {
+		_ = srv.Close()
+		return nil, err
+	}
 	return srv, nil
 }
 
@@ -200,20 +215,44 @@ func ensureBaseDir(baseDir string) (string, error) {
 }
 
 func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *EventHub) (*runtime.GraphRunner, error) {
+	defaultStore, err := openDefaultRuntimeStore(cfg, baseDir)
+	if err != nil {
+		return nil, err
+	}
+	runner, err := newRunnerWithStore(graph, cfg, baseDir, hub, defaultStore, true)
+	if err != nil && defaultStore != nil {
+		_ = defaultStore.Close()
+	}
+	return runner, err
+}
+
+func openDefaultRuntimeStore(cfg Config, baseDir string) (*filestore.Store, error) {
+	if !needsDefaultRuntimeStore(cfg) {
+		return nil, nil
+	}
+	return filestore.Open(baseDir)
+}
+
+func needsDefaultRuntimeStore(cfg Config) bool {
+	return cfg.ExecutionStore == nil || cfg.CheckpointStore == nil || cfg.ArtifactStore == nil || cfg.EventSink == nil
+}
+
+func newRunnerWithStore(
+	graph *wfgraph.Graph,
+	cfg Config,
+	baseDir string,
+	hub *EventHub,
+	defaultStore *filestore.Store,
+	closeDefaultStore bool,
+) (*runtime.GraphRunner, error) {
 	usesDefaultRunStores := cfg.ExecutionStore == nil &&
 		cfg.CheckpointStore == nil &&
 		cfg.ArtifactStore == nil &&
 		cfg.EventSink == nil
 
 	usesDefaultTransactionStores := cfg.ExecutionStore == nil && cfg.CheckpointStore == nil && cfg.EventSink == nil
-	needsDefaultStore := cfg.ExecutionStore == nil || cfg.CheckpointStore == nil || cfg.ArtifactStore == nil || cfg.EventSink == nil
-	var defaultStore *filestore.Store
-	var err error
-	if needsDefaultStore {
-		defaultStore, err = filestore.Open(baseDir)
-		if err != nil {
-			return nil, err
-		}
+	if needsDefaultRuntimeStore(cfg) && defaultStore == nil {
+		return nil, fmt.Errorf("default runtime store is required")
 	}
 
 	executionStore := cfg.ExecutionStore
@@ -273,19 +312,12 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 	if transactionStore != nil {
 		options = append(options, runtime.WithRuntimeTransactionStore(transactionStore))
 	}
-	if defaultStore != nil {
+	if closeDefaultStore && defaultStore != nil {
 		options = append(options, runtime.WithStoreCloser(defaultStore))
 	}
 	runner, err := wfgraph.NewGraphRunner(graph, executionStore, checkpointStore, codec, eventSink, options...)
-	if err != nil && defaultStore != nil {
-		_ = defaultStore.Close()
-		return nil, err
-	}
 	if err == nil {
 		err = runner.ReconcileRunDeletions(context.Background())
-		if err != nil && defaultStore != nil {
-			_ = defaultStore.Close()
-		}
 	}
 	return runner, err
 }

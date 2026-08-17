@@ -30,7 +30,8 @@ const (
 )
 
 type Target struct {
-	GraphID string `json:"graph_id"`
+	GraphID        string `json:"graph_id"`
+	GraphSessionID string `json:"graph_session_id,omitempty"`
 }
 
 type WebhookSpec struct {

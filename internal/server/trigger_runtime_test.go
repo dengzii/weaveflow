@@ -61,11 +61,21 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 		t.Fatalf("resolved first graph session = %q, want %q", runner.GraphSessionID(), first.Graph.GraphSessionID)
 	}
 	second := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v2", "second"))
+	if err := uploader.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	resolver, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := resolver.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
+	resolverEngine := gin.New()
+	resolver.RegisterRoutes(resolverEngine.Group(""))
 	resolved, err = resolver.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +85,7 @@ func TestResolveTriggerRunnerUsesLatestGraphSession(t *testing.T) {
 		t.Fatalf("resolved graph = version %q session %q, want version v2 session %q", runner.GraphVersion(), runner.GraphSessionID(), second.Graph.GraphSessionID)
 	}
 
-	third := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v3", "third"))
+	third := putGraphForHashTest(t, resolverEngine, triggerGraphUploadBody("graph-a", "v3", "third"))
 	resolved, err = resolver.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"})
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +106,11 @@ func TestResolveTriggerRunnerRefreshesCachedSessionSecrets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Server.Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	settings := `{
@@ -164,6 +179,11 @@ func TestFailedGraphUploadKeepsPreviousSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Server.Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	previous := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "previous"))

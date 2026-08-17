@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
+	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 
@@ -29,13 +31,26 @@ type graphUploadRequest struct {
 	GraphVersion string
 	Settings     *graphRuntimeSettingsRequest
 	Triggers     []triggerPayload
+	Mode         graphCommitMode
+	ExpectedHead string
+	RequestID    string
 }
+
+type graphCommitMode string
+
+const (
+	graphCommitCreate    graphCommitMode = "create"
+	graphCommitOverwrite graphCommitMode = "overwrite"
+)
 
 type graphUploadEnvelope struct {
 	Definition   json.RawMessage              `json:"definition"`
 	GraphVersion string                       `json:"graph_version"`
 	Settings     *graphRuntimeSettingsRequest `json:"settings"`
 	Triggers     []triggerPayload             `json:"triggers,omitempty"`
+	Mode         graphCommitMode              `json:"mode,omitempty"`
+	ExpectedHead string                       `json:"expected_graph_session_id,omitempty"`
+	RequestID    string                       `json:"request_id"`
 }
 
 type graphLoadResponse struct {
@@ -44,6 +59,30 @@ type graphLoadResponse struct {
 	RunnerBaseDir string                  `json:"runner_base_dir,omitempty"`
 	Settings      graphRuntimeSettings    `json:"settings"`
 	Warnings      []runtime.WarningRecord `json:"warnings,omitempty"`
+	Triggers      []trigger.Trigger       `json:"triggers"`
+	TriggerIDMap  map[string]string       `json:"trigger_id_mapping,omitempty"`
+	candidateDir  string
+}
+
+type graphCommitJournal struct {
+	GraphID          string            `json:"graph_id"`
+	GraphSessionID   string            `json:"graph_session_id"`
+	RequestID        string            `json:"request_id"`
+	Response         graphLoadResponse `json:"response"`
+	PreviousTriggers []trigger.Trigger `json:"previous_triggers"`
+}
+
+type graphHeadConflictError struct {
+	Expected string
+	Current  graphSessionManifest
+}
+
+func (conflict *graphHeadConflictError) Error() string {
+	return fmt.Sprintf("%v: expected %q, current %q", errGraphHeadConflict, conflict.Expected, conflict.Current.GraphSessionID)
+}
+
+func (conflict *graphHeadConflictError) Unwrap() error {
+	return errGraphHeadConflict
 }
 
 type graphSessionManifest struct {
@@ -80,13 +119,163 @@ func (s *Server) handleCreateGraphSession(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, fmt.Errorf("graph upload settings are required"))
 		return
 	}
+	if receipt, found, err := s.loadGraphCommitReceipt(graphID, req.RequestID); err != nil {
+		writeError(c, http.StatusInternalServerError, err)
+		return
+	} else if found {
+		writeData(c, http.StatusOK, receipt)
+		return
+	}
 
-	resp, err := s.configureGraph(c.Request.Context(), req)
+	resp, err := s.commitGraph(c.Request.Context(), setupRequestOwner(c), req)
 	if err != nil {
+		var conflict *graphHeadConflictError
+		if errors.As(err, &conflict) {
+			writeErrorData(c, http.StatusConflict, err, map[string]any{
+				"current_head": graphSessionSummary{ID: conflict.Current.GraphSessionID, CreatedAt: conflict.Current.CreatedAt},
+			})
+			return
+		}
 		writeError(c, statusForError(err), err)
 		return
 	}
 	writeData(c, http.StatusOK, resp)
+}
+
+func (s *Server) commitGraph(ctx context.Context, setupOwner string, req graphUploadRequest) (graphLoadResponse, error) {
+	if s == nil || s.triggers == nil {
+		return graphLoadResponse{}, errRunnerNotConfigured
+	}
+	s.chatSetupSaveMu.Lock()
+	defer s.chatSetupSaveMu.Unlock()
+
+	items := make([]trigger.Trigger, 0, len(req.Triggers))
+	releases := make([]func(bool), 0, len(req.Triggers)*2)
+	committed := false
+	defer func() {
+		for _, release := range releases {
+			release(committed)
+		}
+	}()
+	for _, itemPayload := range req.Triggers {
+		item := itemPayload.toTrigger(req.GraphID)
+		if err := normalizeTriggerCredential(&item); err != nil {
+			return graphLoadResponse{}, err
+		}
+		setupRelease, err := s.applyChatSetup(ctx, setupOwner, itemPayload.ChatSetupSessionID, &item)
+		if err != nil {
+			return graphLoadResponse{}, err
+		}
+		releases = append(releases, setupRelease)
+		secretRelease, err := s.externalizeChatChannelSecrets(ctx, &item)
+		if err != nil {
+			return graphLoadResponse{}, err
+		}
+		releases = append(releases, secretRelease)
+		items = append(items, item)
+	}
+
+	replacement, idMapping, err := s.triggers.PrepareGraphReplacement(
+		ctx,
+		req.GraphID,
+		items,
+		req.Mode == graphCommitCreate,
+	)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
+	defer func() { _ = replacement.Rollback(context.WithoutCancel(ctx)) }()
+	if len(idMapping) > 0 {
+		req.Definition = remapDefinitionTriggerIDs(req.Definition, idMapping)
+	}
+
+	response, err := s.configureGraphWithPublish(ctx, req, func(candidate graphLoadResponse) error {
+		replacement.SetGraphSessionID(candidate.Graph.GraphSessionID)
+		session := s.runtime.session(candidate.Graph.ID, candidate.Graph.GraphSessionID)
+		if session.graph == nil {
+			return fmt.Errorf("candidate graph session %q is unavailable", candidate.Graph.GraphSessionID)
+		}
+		if err := validateGraphTriggerState(session.graph, replacement.Items()); err != nil {
+			return err
+		}
+		candidate.Triggers = make([]trigger.Trigger, 0, len(replacement.Items()))
+		for _, item := range replacement.Items() {
+			candidate.Triggers = append(candidate.Triggers, s.publicTrigger(item))
+		}
+		candidate.TriggerIDMap = idMapping
+		if err := s.writeGraphCommitJournal(candidate, req.RequestID, replacement.PreviousItems()); err != nil {
+			return err
+		}
+		return replacement.Persist(ctx)
+	})
+	if err != nil {
+		_ = s.removeGraphCommitJournal(req.GraphID)
+		return graphLoadResponse{}, err
+	}
+	response.Triggers = make([]trigger.Trigger, 0, len(replacement.Items()))
+	for _, item := range replacement.Items() {
+		response.Triggers = append(response.Triggers, s.publicTrigger(item))
+	}
+	response.TriggerIDMap = idMapping
+	receiptWritten := true
+	if err := s.writeGraphCommitReceipt(req.GraphID, req.RequestID, response); err != nil {
+		receiptWritten = false
+		response.Warnings = append(response.Warnings, runtime.WarningRecord{
+			Code:    "graph_commit_receipt_failed",
+			Message: err.Error(),
+		})
+	}
+	if receiptWritten {
+		if err := s.removeGraphCommitJournal(req.GraphID); err != nil {
+			response.Warnings = append(response.Warnings, runtime.WarningRecord{
+				Code:    "graph_commit_journal_cleanup_failed",
+				Message: err.Error(),
+			})
+		}
+	}
+	replacement.Commit()
+	committed = true
+	if err := s.sweepManagedSecrets(context.WithoutCancel(ctx)); err != nil {
+		response.Warnings = append(response.Warnings, runtime.WarningRecord{
+			Code:    "managed_secret_cleanup_failed",
+			Message: err.Error(),
+		})
+	}
+	return response, nil
+}
+
+func remapDefinitionTriggerIDs(definition dsl.GraphDefinition, idMapping map[string]string) dsl.GraphDefinition {
+	if len(idMapping) == 0 || definition.Metadata == nil {
+		return definition
+	}
+	web, ok := definition.Metadata["web"].(map[string]any)
+	if !ok {
+		return definition
+	}
+	triggerNodes, ok := web["trigger_nodes"].(map[string]any)
+	if !ok {
+		return definition
+	}
+	remapped := make(map[string]any, len(triggerNodes))
+	for triggerID, position := range triggerNodes {
+		if nextID := strings.TrimSpace(idMapping[triggerID]); nextID != "" {
+			remapped[nextID] = position
+		} else {
+			remapped[triggerID] = position
+		}
+	}
+	metadata := make(map[string]any, len(definition.Metadata))
+	for key, value := range definition.Metadata {
+		metadata[key] = value
+	}
+	remappedWeb := make(map[string]any, len(web))
+	for key, value := range web {
+		remappedWeb[key] = value
+	}
+	remappedWeb["trigger_nodes"] = remapped
+	metadata["web"] = remappedWeb
+	definition.Metadata = metadata
+	return definition
 }
 
 func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
@@ -105,6 +294,22 @@ func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
 	if len(envelope.Definition) == 0 {
 		return graphUploadRequest{}, fmt.Errorf("graph upload definition is required")
 	}
+	if envelope.Mode != graphCommitCreate && envelope.Mode != graphCommitOverwrite {
+		return graphUploadRequest{}, invalidRequestf("mode must be create or overwrite")
+	}
+	if envelope.Triggers == nil {
+		return graphUploadRequest{}, invalidRequestf("triggers is required")
+	}
+	if envelope.Settings == nil {
+		return graphUploadRequest{}, invalidRequestf("settings is required")
+	}
+	envelope.RequestID = strings.TrimSpace(envelope.RequestID)
+	if envelope.RequestID == "" {
+		return graphUploadRequest{}, invalidRequestf("request_id is required")
+	}
+	if len(envelope.RequestID) > 200 {
+		return graphUploadRequest{}, invalidRequestf("request_id exceeds 200 characters")
+	}
 	definition, err := dsl.DeserializeGraphDefinition(envelope.Definition)
 	if err != nil {
 		return graphUploadRequest{}, fmt.Errorf("invalid definition: %w", err)
@@ -114,6 +319,9 @@ func bindGraphUpload(c *gin.Context) (graphUploadRequest, error) {
 		GraphVersion: strings.TrimSpace(envelope.GraphVersion),
 		Settings:     envelope.Settings,
 		Triggers:     envelope.Triggers,
+		Mode:         envelope.Mode,
+		ExpectedHead: strings.TrimSpace(envelope.ExpectedHead),
+		RequestID:    envelope.RequestID,
 	}, nil
 }
 
@@ -133,7 +341,11 @@ func decodeStrictJSON(data []byte, target any) error {
 	return nil
 }
 
-func (s *Server) configureGraph(ctx context.Context, req graphUploadRequest) (graphLoadResponse, error) {
+func (s *Server) configureGraphWithPublish(
+	ctx context.Context,
+	req graphUploadRequest,
+	publish func(graphLoadResponse) error,
+) (graphLoadResponse, error) {
 	if s == nil {
 		return graphLoadResponse{}, errGraphNotConfigured
 	}
@@ -144,6 +356,9 @@ func (s *Server) configureGraph(ctx context.Context, req graphUploadRequest) (gr
 	defer s.runtime.graphUpdateMu.Unlock()
 	if s.registry == nil {
 		return graphLoadResponse{}, errRegistryNotConfigured
+	}
+	if err := s.validateGraphCommitHead(req); err != nil {
+		return graphLoadResponse{}, err
 	}
 
 	graph, err := wfgraph.NewBuilder(s.registry).Build(req.Definition, &wfregistry.BuildContext{})
@@ -195,14 +410,12 @@ func (s *Server) configureGraph(ctx context.Context, req graphUploadRequest) (gr
 	}
 
 	current := s.runtime.currentSession()
+	previous := current
 	currentGraph := current.graph
 	currentRunner := current.runner
 	var response graphLoadResponse
 	if graphUploadMatchesSession(current, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash) {
 		runnerBaseDir := s.uploadedGraphBaseDir(graphID, currentRunner.GraphSessionID())
-		if err := s.pruneGraphSessions(graphID, currentRunner.GraphSessionID()); err != nil {
-			return graphLoadResponse{}, err
-		}
 		if currentGraph == nil {
 			currentGraph = graph
 		}
@@ -212,13 +425,79 @@ func (s *Server) configureGraph(ctx context.Context, req graphUploadRequest) (gr
 		s.runtime.refreshSession(current)
 		response, err = s.graphResponse(currentGraph, currentRunner, runnerBaseDir, nextSettings)
 	} else {
-		response, err = s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash, nextSettings, baseContext)
+		response, err = s.installUploadedGraph(graph, def, graphID, graphVersion, graphHash, graphSnapshotHash, runtimeSettingsHash, nextSettings, baseContext, true)
 	}
 	if err != nil {
 		return graphLoadResponse{}, err
 	}
+	if publish != nil {
+		if err := publish(response); err != nil {
+			s.rollbackConfiguredGraph(previous, response)
+			return graphLoadResponse{}, err
+		}
+	}
+	if err := s.publishGraphCandidate(response); err != nil {
+		s.rollbackConfiguredGraph(previous, response)
+		return graphLoadResponse{}, err
+	}
+	if err := s.pruneGraphSessions(graphID, response.Graph.GraphSessionID); err != nil {
+		response.Warnings = append(response.Warnings, runtime.WarningRecord{
+			Code:    "graph_session_prune_failed",
+			Message: fmt.Sprintf("prune graph sessions: %v", err),
+		})
+	}
 	committed = true
 	return response, nil
+}
+
+func (s *Server) validateGraphCommitHead(req graphUploadRequest) error {
+	if req.Mode == "" {
+		return nil
+	}
+	graphID := strings.TrimSpace(req.GraphID)
+	latest, err := s.latestGraphSession(graphID)
+	switch req.Mode {
+	case graphCommitCreate:
+		if err == nil {
+			return fmt.Errorf("%w: graph %q currently points to session %q", errGraphAlreadyExists, graphID, latest.manifest.GraphSessionID)
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+	case graphCommitOverwrite:
+		if err != nil {
+			return err
+		}
+		expected := strings.TrimSpace(req.ExpectedHead)
+		if expected == "" {
+			return invalidRequestf("expected_graph_session_id is required for overwrite")
+		}
+		if expected != latest.manifest.GraphSessionID {
+			return &graphHeadConflictError{Expected: expected, Current: latest.manifest}
+		}
+	default:
+		return invalidRequestf("commit mode must be create or overwrite")
+	}
+	return nil
+}
+
+func (s *Server) rollbackConfiguredGraph(previous graphRuntimeSession, response graphLoadResponse) {
+	if s == nil || s.runtime == nil {
+		return
+	}
+	newSessionID := strings.TrimSpace(response.Graph.GraphSessionID)
+	previousSessionID := ""
+	if previous.runner != nil {
+		previousSessionID = strings.TrimSpace(previous.runner.GraphSessionID())
+	}
+	if newSessionID != "" && newSessionID != previousSessionID {
+		s.runtime.removeSession(response.Graph.ID, newSessionID)
+		_ = os.RemoveAll(response.RunnerBaseDir)
+		_ = os.RemoveAll(response.candidateDir)
+	}
+	if previous.runner != nil {
+		s.runtime.installSession(previous)
+	}
 }
 
 func (s *Server) installUploadedGraph(
@@ -231,10 +510,15 @@ func (s *Server) installUploadedGraph(
 	runtimeSettingsHash string,
 	settings graphRuntimeSettings,
 	baseContext context.Context,
+	candidate bool,
 ) (graphLoadResponse, error) {
 	runnerBaseDir := s.nextUploadedGraphBaseDir(graphID)
 	graphSessionID := graphSessionIDFromBaseDir(runnerBaseDir)
-	if err := writeGraphSessionSnapshot(runnerBaseDir, graphSessionManifest{
+	snapshotBaseDir := runnerBaseDir
+	if candidate {
+		snapshotBaseDir = filepath.Join(filepath.Dir(runnerBaseDir), ".candidates", graphSessionID)
+	}
+	if err := writeGraphSessionSnapshot(snapshotBaseDir, graphSessionManifest{
 		GraphID:             graphID,
 		GraphName:           strings.TrimSpace(def.Name),
 		GraphVersion:        graphVersion,
@@ -249,13 +533,6 @@ func (s *Server) installUploadedGraph(
 	}, def, settings); err != nil {
 		return graphLoadResponse{}, err
 	}
-	if err := s.pruneGraphSessions(graphID, graphSessionID); err != nil {
-		if cleanupErr := os.RemoveAll(runnerBaseDir); cleanupErr != nil {
-			return graphLoadResponse{}, fmt.Errorf("prune graph sessions: %v; remove new graph session: %w", err, cleanupErr)
-		}
-		return graphLoadResponse{}, fmt.Errorf("prune graph sessions: %w", err)
-	}
-
 	cfg := s.cfg
 	cfg.Graph = graph
 	cfg.GraphID = graphID
@@ -263,9 +540,9 @@ func (s *Server) installUploadedGraph(
 	cfg.GraphHash = graphHash
 	cfg.GraphSnapshotHash = graphSnapshotHash
 	cfg.GraphSessionID = graphSessionID
-	runner, err := newDefaultRunner(graph, cfg, s.graphHistoryBaseDir(graphID), s.events)
+	runner, err := s.runtime.newRunner(graph, cfg, s.graphHistoryBaseDir(graphID), s.events)
 	if err != nil {
-		if cleanupErr := os.RemoveAll(runnerBaseDir); cleanupErr != nil {
+		if cleanupErr := os.RemoveAll(snapshotBaseDir); cleanupErr != nil {
 			return graphLoadResponse{}, fmt.Errorf("create graph runner: %v; remove new graph session: %w", err, cleanupErr)
 		}
 		return graphLoadResponse{}, err
@@ -292,7 +569,92 @@ func (s *Server) installUploadedGraph(
 		RunnerBaseDir: runnerBaseDir,
 		Settings:      s.graphSettingsResponse(settings),
 		Warnings:      runner.StartupWarnings(),
+		candidateDir:  snapshotBaseDir,
 	}, nil
+}
+
+func (s *Server) publishGraphCandidate(response graphLoadResponse) error {
+	if strings.TrimSpace(response.candidateDir) == "" {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(response.RunnerBaseDir), 0o700); err != nil {
+		return err
+	}
+	if err := os.Rename(response.candidateDir, response.RunnerBaseDir); err != nil {
+		return fmt.Errorf("publish graph candidate: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) graphCommitJournalPath(graphID string) string {
+	return filepath.Join(graphStorageDirectory(s.baseDir, graphID), ".commit.json")
+}
+
+func (s *Server) writeGraphCommitJournal(response graphLoadResponse, requestID string, previous []trigger.Trigger) error {
+	journal := graphCommitJournal{
+		GraphID:          response.Graph.ID,
+		GraphSessionID:   response.Graph.GraphSessionID,
+		RequestID:        requestID,
+		Response:         response,
+		PreviousTriggers: previous,
+	}
+	data, err := json.MarshalIndent(journal, "", "  ")
+	if err != nil {
+		return fmt.Errorf("serialize graph commit journal: %w", err)
+	}
+	data = append(data, '\n')
+	path := s.graphCommitJournalPath(response.Graph.ID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	if err := writeGraphSessionFile(path, data); err != nil {
+		return fmt.Errorf("write graph commit journal: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) removeGraphCommitJournal(graphID string) error {
+	err := os.Remove(s.graphCommitJournalPath(graphID))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove graph commit journal: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) graphCommitReceiptPath(graphID string, requestID string) string {
+	hash := sha256.Sum256([]byte(strings.TrimSpace(requestID)))
+	return filepath.Join(graphStorageDirectory(s.baseDir, graphID), ".commits", fmt.Sprintf("%x.json", hash[:]))
+}
+
+func (s *Server) loadGraphCommitReceipt(graphID string, requestID string) (graphLoadResponse, bool, error) {
+	data, err := os.ReadFile(s.graphCommitReceiptPath(graphID, requestID))
+	if os.IsNotExist(err) {
+		return graphLoadResponse{}, false, nil
+	}
+	if err != nil {
+		return graphLoadResponse{}, false, fmt.Errorf("read graph commit receipt: %w", err)
+	}
+	var response graphLoadResponse
+	if err := decodeStrictJSON(data, &response); err != nil {
+		return graphLoadResponse{}, false, fmt.Errorf("decode graph commit receipt: %w", err)
+	}
+	return response, true, nil
+}
+
+func (s *Server) writeGraphCommitReceipt(graphID string, requestID string, response graphLoadResponse) error {
+	path := s.graphCommitReceiptPath(graphID, requestID)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(response, "", "  ")
+	if err != nil {
+		return fmt.Errorf("serialize graph commit receipt: %w", err)
+	}
+	data = append(data, '\n')
+	if err := writeGraphSessionFile(path, data); err != nil {
+		return fmt.Errorf("write graph commit receipt: %w", err)
+	}
+	return nil
 }
 
 func graphUploadMatchesSession(

@@ -29,7 +29,15 @@ func (s *Server) resolveTriggerRunner(_ context.Context, target trigger.Target) 
 	if graphID == "" {
 		return nil, fmt.Errorf("%w: graph_id is required", trigger.ErrInvalidTarget)
 	}
-	session, err := s.loadTriggerSession(graphID)
+	var (
+		session graphRuntimeSession
+		err     error
+	)
+	if sessionID := strings.TrimSpace(target.GraphSessionID); sessionID != "" {
+		session, err = s.loadGraphSession(graphID, sessionID)
+	} else {
+		session, err = s.loadTriggerSession(graphID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -187,7 +195,7 @@ func (s *Server) loadStoredGraphSession(session triggerGraphSession, latest bool
 	cfg.GraphHash = graphHash
 	cfg.GraphSnapshotHash = graphSnapshotHash
 	cfg.GraphSessionID = session.manifest.GraphSessionID
-	runner, err := newDefaultRunner(graph, cfg, s.graphHistoryBaseDir(graphID), s.events)
+	runner, err := s.runtime.newRunner(graph, cfg, s.graphHistoryBaseDir(graphID), s.events)
 	if err != nil {
 		return graphRuntimeSession{}, err
 	}

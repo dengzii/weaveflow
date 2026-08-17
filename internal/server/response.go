@@ -24,6 +24,8 @@ var (
 	errTriggerPayloadRequired   = errors.New("trigger payload is required")
 	errWebhookBodyTooLarge      = errors.New("webhook body is too large")
 	errRequestBodyTooLarge      = errors.New("request body is too large")
+	errGraphHeadConflict        = errors.New("graph head conflict")
+	errGraphAlreadyExists       = errors.New("graph already exists")
 )
 
 type apiResponse struct {
@@ -64,6 +66,12 @@ func errorCode(status int, err error) string {
 		return "request_too_large"
 	case errors.Is(err, errInvalidGraphDefinition):
 		return "invalid_graph_definition"
+	case errors.Is(err, errGraphHeadConflict):
+		return "graph_head_conflict"
+	case errors.Is(err, errGraphAlreadyExists):
+		return "graph_exists"
+	case errors.Is(err, trigger.ErrExists):
+		return "trigger_id_conflict"
 	case errors.Is(err, trigger.ErrDisabled):
 		return "trigger_disabled"
 	case errors.Is(err, runtime.ErrRunControlNotAllowed):
@@ -109,6 +117,8 @@ func statusForError(err error) int {
 	case errors.Is(err, errTriggerGraphNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, trigger.ErrExists), errors.Is(err, trigger.ErrBusy), errors.Is(err, trigger.ErrDisabled):
+		return http.StatusConflict
+	case errors.Is(err, errGraphHeadConflict), errors.Is(err, errGraphAlreadyExists):
 		return http.StatusConflict
 	case errors.Is(err, errRequestBodyTooLarge), errors.Is(err, errWebhookBodyTooLarge):
 		return http.StatusRequestEntityTooLarge

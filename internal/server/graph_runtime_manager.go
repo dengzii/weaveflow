@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/runtime"
 )
 
@@ -31,6 +33,7 @@ type graphRuntimeManager struct {
 	defaultSettings graphRuntimeSettings
 	triggerSessions map[string]graphRuntimeSession
 	sessions        map[graphRuntimeSessionKey]graphRuntimeSession
+	stores          map[string]graphRuntimeStore
 }
 
 func newGraphRuntimeManager(
@@ -53,12 +56,54 @@ func newGraphRuntimeManager(
 		defaultSettings: normalizedGraphSettings(settings),
 		triggerSessions: make(map[string]graphRuntimeSession),
 		sessions:        make(map[graphRuntimeSessionKey]graphRuntimeSession),
+		stores:          make(map[string]graphRuntimeStore),
 	}
 	if runner != nil {
 		manager.triggerSessions[effectiveRunnerGraphID(runner)] = manager.current
 		manager.rememberSessionLocked(manager.current)
 	}
 	return manager
+}
+
+func (manager *graphRuntimeManager) newRunner(
+	graph *wfgraph.Graph,
+	cfg Config,
+	baseDir string,
+	hub *EventHub,
+) (*runtime.GraphRunner, error) {
+	if manager == nil {
+		return nil, fmt.Errorf("graph runtime manager is required")
+	}
+	defaultStore, err := manager.defaultStore(cfg.GraphID, baseDir, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return newRunnerWithStore(graph, cfg, baseDir, hub, defaultStore, false)
+}
+
+func (manager *graphRuntimeManager) defaultStore(
+	graphID string,
+	baseDir string,
+	cfg Config,
+) (*filestore.Store, error) {
+	if !needsDefaultRuntimeStore(cfg) {
+		return nil, nil
+	}
+	graphID = strings.TrimSpace(graphID)
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if existing, ok := manager.stores[graphID]; ok {
+		if existing.baseDir != baseDir {
+			return nil, fmt.Errorf("graph %q runtime store directory changed from %q to %q", graphID, existing.baseDir, baseDir)
+		}
+		return existing.store, nil
+	}
+	store, err := openDefaultRuntimeStore(cfg, baseDir)
+	if err != nil {
+		return nil, err
+	}
+	manager.stores[graphID] = graphRuntimeStore{baseDir: baseDir, store: store}
+	return store, nil
 }
 
 func (manager *graphRuntimeManager) currentSession() graphRuntimeSession {
@@ -290,14 +335,30 @@ func (manager *graphRuntimeManager) Close() error {
 			runners[session.runner] = struct{}{}
 		}
 	}
+	for runner := range runners {
+		if active := runner.ActiveRunCount(); active > 0 {
+			manager.mu.Unlock()
+			return fmt.Errorf("cannot close graph runtime manager with %d active executions", active)
+		}
+	}
+	stores := make([]*filestore.Store, 0, len(manager.stores))
+	for _, runtimeStore := range manager.stores {
+		if runtimeStore.store != nil {
+			stores = append(stores, runtimeStore.store)
+		}
+	}
 	manager.current = graphRuntimeSession{}
 	manager.triggerSessions = make(map[string]graphRuntimeSession)
 	manager.sessions = make(map[graphRuntimeSessionKey]graphRuntimeSession)
+	manager.stores = make(map[string]graphRuntimeStore)
 	manager.mu.Unlock()
 
 	var result error
 	for runner := range runners {
 		result = errors.Join(result, runner.Close())
+	}
+	for _, store := range stores {
+		result = errors.Join(result, store.Close())
 	}
 	return result
 }

@@ -22,6 +22,11 @@ func TestRepeatedGraphUploadReusesCurrentSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	body := triggerGraphUploadBody("graph-a", "v1", "hello")
@@ -54,6 +59,11 @@ func TestGraphUploadStoresSettingsInTheSameSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	first := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
@@ -108,6 +118,33 @@ func TestGraphUploadStoresSettingsInTheSameSession(t *testing.T) {
 	}
 }
 
+func TestServerCloseReleasesGraphRuntimeStoreWriter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	baseDir := t.TempDir()
+	first, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := gin.New()
+	first.RegisterRoutes(engine.Group(""))
+	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "first"))
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err != nil {
+		t.Fatalf("reopen server after close: %v", err)
+	}
+	if _, err := second.resolveTriggerRunner(context.Background(), trigger.Target{GraphID: "graph-a"}); err != nil {
+		_ = second.Close()
+		t.Fatalf("reopen graph runtime store: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestGraphUploadRetainsFiveLatestSessions(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	baseDir := t.TempDir()
@@ -115,6 +152,11 @@ func TestGraphUploadRetainsFiveLatestSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -215,6 +257,11 @@ func TestGraphUploadRetainsActiveHistoricalSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("close server: %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -232,13 +279,16 @@ func TestGraphUploadRetainsActiveHistoricalSession(t *testing.T) {
 		}
 	}()
 	activeGraph := newRunControlTestGraph(t, started, release, true)
-	activeRunner := mustNewDefaultRunner(t, activeGraph, Config{
+	activeRunner, err := srv.runtime.newRunner(activeGraph, Config{
 		GraphID:           first.Graph.ID,
 		GraphVersion:      first.Graph.Version,
 		GraphHash:         first.Graph.GraphHash,
 		GraphSnapshotHash: first.Graph.GraphSnapshotHash,
 		GraphSessionID:    first.Graph.GraphSessionID,
-	}, first.RunnerBaseDir, nil)
+	}, srv.graphHistoryBaseDir(first.Graph.ID), srv.events)
+	if err != nil {
+		t.Fatal(err)
+	}
 	srv.runtime.removeSession(first.Graph.ID, first.Graph.GraphSessionID)
 	srv.runtime.installSession(graphRuntimeSession{
 		graph:       activeGraph,

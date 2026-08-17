@@ -37,7 +37,7 @@ func (f RunnerResolverFunc) Resolve(ctx context.Context, target Target) (RunStar
 }
 
 func (s *Service) InvokeWebhook(ctx context.Context, id string, body []byte, headers map[string]string) (runtime.RunRecord, error) {
-	definition, err := s.triggerStore.Get(ctx, id)
+	definition, err := s.Get(ctx, id)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
@@ -58,7 +58,7 @@ func (s *Service) InvokeWebhookTrigger(ctx context.Context, definition Trigger, 
 }
 
 func (s *Service) InvokeWebhookInput(ctx context.Context, id string, input any, headers map[string]string) (runtime.RunRecord, error) {
-	definition, err := s.triggerStore.Get(ctx, id)
+	definition, err := s.Get(ctx, id)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
@@ -87,7 +87,7 @@ func (s *Service) invokeWebhook(ctx context.Context, definition Trigger, headers
 }
 
 func (s *Service) InvokeSchedule(ctx context.Context, id string) (runtime.RunRecord, error) {
-	definition, err := s.triggerStore.Get(ctx, id)
+	definition, err := s.Get(ctx, id)
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}

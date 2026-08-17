@@ -156,6 +156,9 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 		writeError(c, http.StatusBadRequest, err)
 		return
 	}
+	for index := range items {
+		items[index].Target.GraphSessionID = session.runner.GraphSessionID()
+	}
 	items, err = service.ReplaceGraph(c.Request.Context(), graphID, items)
 	if err != nil {
 		writeError(c, statusForError(err), err)

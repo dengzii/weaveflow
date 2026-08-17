@@ -213,10 +213,20 @@ func (s *Service) Update(ctx context.Context, definition Trigger) (Trigger, erro
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Trigger, error) {
+	if s == nil {
+		return Trigger{}, fmt.Errorf("trigger service is nil")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	return s.triggerStore.Get(ctx, id)
 }
 
 func (s *Service) List(ctx context.Context) ([]Trigger, error) {
+	if s == nil {
+		return nil, fmt.Errorf("trigger service is nil")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
 	return s.triggerStore.List(ctx)
 }
 
@@ -239,99 +249,17 @@ func (s *Service) InspectDefinitions(ctx context.Context, inspect func([]Trigger
 }
 
 func (s *Service) ReplaceGraph(ctx context.Context, graphID string, items []Trigger) ([]Trigger, error) {
-	if s == nil {
-		return nil, fmt.Errorf("trigger service is nil")
-	}
-	graphID = strings.TrimSpace(graphID)
-	if graphID == "" {
-		return nil, fmt.Errorf("%w: graph_id is required", ErrInvalidTarget)
-	}
-	s.operationMu.Lock()
-	defer s.operationMu.Unlock()
-
-	existing, err := s.triggerStore.List(ctx)
+	replacement, _, err := s.PrepareGraphReplacement(ctx, graphID, items, false)
 	if err != nil {
 		return nil, err
 	}
-	existingByID := make(map[string]Trigger, len(existing))
-	oldGraphIDs := make(map[string]struct{})
-	for _, item := range existing {
-		existingByID[item.ID] = item
-		if item.Target.GraphID == graphID {
-			oldGraphIDs[item.ID] = struct{}{}
-		}
-	}
-
-	now := s.now()
-	next := make([]Trigger, 0, len(items))
-	schedules := make(map[string]*scheduleEntry, len(items))
-	channels := make(map[string]chatchannel.Instance, len(items))
-	seen := make(map[string]struct{}, len(items))
-	for _, item := range items {
-		item.Target = Target{GraphID: graphID}
-		previous, exists := existingByID[item.ID]
-		if exists && previous.Target.GraphID != graphID {
-			return nil, ErrExists
-		}
-		if exists {
-			if item.Chat != nil && previous.Chat != nil && strings.TrimSpace(item.Chat.Channel) == strings.TrimSpace(previous.Chat.Channel) {
-				item.Chat.ChannelConfig = s.chatRegistry.MergeWriteOnlyConfig(
-					item.Chat.Channel,
-					previous.Chat.ChannelConfig,
-					item.Chat.ChannelConfig,
-				)
-			}
-			item = item.Normalize(previous.CreatedAt)
-			item.CreatedAt = previous.CreatedAt
-			item.UpdatedAt = now
-		} else {
-			item = item.Normalize(now)
-		}
-		if _, duplicate := seen[item.ID]; duplicate {
-			return nil, ErrExists
-		}
-		seen[item.ID] = struct{}{}
-		if err := item.Validate(); err != nil {
-			return nil, err
-		}
-		if err := s.validateChatChannelSecretRefs(item); err != nil {
-			return nil, err
-		}
-		if err := validateScheduleExpression(item); err != nil {
-			return nil, err
-		}
-		schedule, err := s.buildSchedule(item)
-		if err != nil {
-			return nil, err
-		}
-		channel, err := s.buildChatChannel(ctx, item)
-		if err != nil {
-			return nil, err
-		}
-		if schedule != nil {
-			schedules[item.ID] = schedule
-		}
-		if channel != nil {
-			channels[item.ID] = channel
-		}
-		next = append(next, item)
-	}
-
-	if err := s.triggerStore.ReplaceGraph(ctx, graphID, next); err != nil {
+	defer func() { _ = replacement.Rollback(ctx) }()
+	if err := replacement.Persist(ctx); err != nil {
 		return nil, err
 	}
-	for id := range oldGraphIDs {
-		if _, keep := seen[id]; keep {
-			continue
-		}
-		s.replaceSchedule(id, nil)
-		s.replaceChatChannel(id, nil, nil)
-	}
-	for _, item := range next {
-		s.replaceSchedule(item.ID, schedules[item.ID])
-		s.replaceChatChannel(item.ID, item.Chat, channels[item.ID])
-	}
-	return next, nil
+	result := replacement.Items()
+	replacement.Commit()
+	return result, nil
 }
 
 func (s *Service) ListRecords(ctx context.Context, triggerID string, limit int) ([]Record, error) {

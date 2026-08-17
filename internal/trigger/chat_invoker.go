@@ -27,7 +27,7 @@ func (s *Service) InvokeChat(ctx context.Context, id string, message chatcap.Inb
 	if err != nil {
 		return ChatResult{}, err
 	}
-	item, err := s.triggerStore.Get(ctx, id)
+	item, err := s.Get(ctx, id)
 	if err != nil {
 		return ChatResult{}, err
 	}

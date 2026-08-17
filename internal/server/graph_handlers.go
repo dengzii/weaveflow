@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -49,12 +50,22 @@ type graphInitialStateAnalysis struct {
 	Triggers []triggerInitialStateRequirements `json:"triggers"`
 }
 
+type graphAnalysisRequest struct {
+	Definition dsl.GraphDefinition
+	Triggers   []triggerPayload
+}
+
+type graphAnalysisEnvelope struct {
+	Definition json.RawMessage  `json:"definition"`
+	Triggers   []triggerPayload `json:"triggers"`
+}
+
 func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
 	graphID, ok := requireGraphIDPathParam(c)
 	if !ok {
 		return
 	}
-	req, err := bindGraphUpload(c)
+	req, err := bindGraphAnalysis(c)
 	if err != nil {
 		writeError(c, statusForRequestError(err), err)
 		return
@@ -74,6 +85,25 @@ func (s *Server) handleAnalyzeGraphInitialStateRequirements(c *gin.Context) {
 		return
 	}
 	writeData(c, http.StatusOK, analysis)
+}
+
+func bindGraphAnalysis(c *gin.Context) (graphAnalysisRequest, error) {
+	body, err := readRequestBody(c.Request.Body, maxGraphUploadBodyBytes)
+	if err != nil {
+		return graphAnalysisRequest{}, err
+	}
+	var envelope graphAnalysisEnvelope
+	if err := decodeStrictJSON(body, &envelope); err != nil {
+		return graphAnalysisRequest{}, fmt.Errorf("invalid graph analysis: %w", err)
+	}
+	if len(envelope.Definition) == 0 {
+		return graphAnalysisRequest{}, invalidRequestf("definition is required")
+	}
+	definition, err := dsl.DeserializeGraphDefinition(envelope.Definition)
+	if err != nil {
+		return graphAnalysisRequest{}, fmt.Errorf("invalid definition: %w", err)
+	}
+	return graphAnalysisRequest{Definition: definition, Triggers: envelope.Triggers}, nil
 }
 
 func analyzeGraphInitialState(graph *wfgraph.Graph, graphID string, payloads []triggerPayload) (graphInitialStateAnalysis, error) {

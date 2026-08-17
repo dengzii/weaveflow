@@ -123,7 +123,11 @@ func TestBindGraphUploadRejectsLegacyDefinitionFields(t *testing.T) {
 			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
 			"nodes": [{"id":"node","type":"conversation_message","state":{}}],
 			"state_schema": "legacy"
-		}
+		},
+		"settings": {},
+		"triggers": [],
+		"mode": "create",
+		"request_id": "test"
 	}`))
 	if _, err := bindGraphUpload(ginContext); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("bindGraphUpload() error = %v, want unknown field", err)
@@ -150,9 +154,9 @@ func TestBindGraphUploadRejectsLegacyEnvelopeForms(t *testing.T) {
 func TestBindGraphUploadRejectsUnknownSettingsFields(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	for _, body := range []string{
-		`{"definition":{},"settings":{"modle": {}}}`,
-		`{"definition":{},"settings":{"model": {}}}`,
-		`{"definition":{},"settings":{"memory": {"enabled": true, "path": "legacy"}}}`,
+		`{"definition":{},"settings":{"modle": {}},"triggers":[],"mode":"create"}`,
+		`{"definition":{},"settings":{"model": {}},"triggers":[],"mode":"create"}`,
+		`{"definition":{},"settings":{"memory": {"enabled": true, "path": "legacy"}},"triggers":[],"mode":"create"}`,
 	} {
 		ginContext, _ := gin.CreateTestContext(httptest.NewRecorder())
 		ginContext.Request = httptest.NewRequest(http.MethodPost, "/graphs/graph/sessions", strings.NewReader(body))
@@ -872,6 +876,11 @@ func TestCreateGraphSessionConfiguresRunnerForDebugRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Server.Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -969,10 +978,12 @@ func TestCreateGraphSessionConfiguresRunnerForDebugRun(t *testing.T) {
 	if run.GraphSessionID != graphResponse.Graph.GraphSessionID {
 		t.Fatalf("run graph session id = %q, want %q", run.GraphSessionID, graphResponse.Graph.GraphSessionID)
 	}
-	completed := waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", graphResponse.Graph.GraphSessionID).runner, run.RunID)
+	runner := srv.runtime.session("debug-graph", graphResponse.Graph.GraphSessionID).runner
+	completed := waitForRunTerminalStatus(t, runner, run.RunID)
 	if completed.Status != runtime.RunStatusCompleted {
 		t.Fatalf("run status = %q, want %q", completed.Status, runtime.RunStatusCompleted)
 	}
+	waitForRunInactive(t, runner, run.RunID)
 }
 
 func TestPutGraphMetadataOnlyChangeKeepsSemanticHash(t *testing.T) {
@@ -2494,6 +2505,32 @@ func serveHTTPWithContext(ctx context.Context, engine *gin.Engine, method string
 func putGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoadResponse {
 	t.Helper()
 	graphID, requestBody := graphSessionRequestBodyForTest(t, body)
+	var envelope map[string]any
+	if err := json.Unmarshal([]byte(requestBody), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	detailResponse := serveHTTP(engine, http.MethodGet, "/graphs/"+graphID, "")
+	if detailResponse.Code == http.StatusOK {
+		var detailEnvelope struct {
+			Data graphDetailResponse `json:"data"`
+		}
+		if err := json.Unmarshal(detailResponse.Body.Bytes(), &detailEnvelope); err != nil {
+			t.Fatal(err)
+		}
+		envelope["mode"] = string(graphCommitOverwrite)
+		envelope["expected_graph_session_id"] = detailEnvelope.Data.Graph.GraphSessionID
+	} else if detailResponse.Code == http.StatusNotFound {
+		envelope["mode"] = string(graphCommitCreate)
+	} else {
+		t.Fatalf("inspect graph head status = %d, body = %s", detailResponse.Code, detailResponse.Body.String())
+	}
+	envelope["triggers"] = []any{}
+	envelope["request_id"] = graphRequestIDForTest(t, envelope)
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestBody = string(data)
 	return requestGraphForHashTest(t, engine, http.MethodPost, "/graphs/"+graphID+"/sessions", requestBody)
 }
 
@@ -2534,6 +2571,15 @@ func graphSessionRequestBodyForTest(t *testing.T, body string) (string, string) 
 	}
 	graphID, _ := envelope["graph_id"].(string)
 	delete(envelope, "graph_id")
+	if _, exists := envelope["mode"]; !exists {
+		envelope["mode"] = string(graphCommitCreate)
+	}
+	if _, exists := envelope["triggers"]; !exists {
+		envelope["triggers"] = []any{}
+	}
+	if _, exists := envelope["request_id"]; !exists {
+		envelope["request_id"] = graphRequestIDForTest(t, envelope)
+	}
 	if graphID == "" {
 		definition, _ := envelope["definition"].(map[string]any)
 		graphID, _ = definition["name"].(string)
@@ -2546,6 +2592,16 @@ func graphSessionRequestBodyForTest(t *testing.T, body string) (string, string) 
 		t.Fatalf("encode graph test body: %v", err)
 	}
 	return graphID, string(requestBody)
+}
+
+func graphRequestIDForTest(t *testing.T, envelope map[string]any) string {
+	t.Helper()
+	delete(envelope, "request_id")
+	data, err := json.Marshal(envelope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return "test-" + graphRuntimeSettingsDataHash(data)
 }
 
 func waitForSignal(t *testing.T, signal <-chan struct{}, name string) {
@@ -2615,6 +2671,20 @@ func waitForRunTerminalStatus(t *testing.T, runner *runtime.GraphRunner, runID s
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for run %q to finish", runID)
+		case <-ticker.C:
+		}
+	}
+}
+
+func waitForRunInactive(t *testing.T, runner *runtime.GraphRunner, runID string) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for runner.IsRunActive(runID) {
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for run %q to become inactive", runID)
 		case <-ticker.C:
 		}
 	}
