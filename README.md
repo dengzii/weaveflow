@@ -50,7 +50,7 @@ This makes WeaveFlow suitable for agents that need stronger runtime control than
 | `llms/openai/`     | OpenAI-compatible LLM adapter.                                                            |
 | `cmd/server/`      | Graph debugging server entrypoint.                                                        |
 | `internal/server/` | Server API implementation for graph upload, runs, events, checkpoints, and artifacts.     |
-| `internal/memory/` | Internal, currently unassembled memory storage and retrieval implementation.               |
+| `internal/memory/` | Internal, currently unassembled memory storage and retrieval implementation.              |
 | `internal/web/`    | Debug web UI for editing graphs and inspecting runs.                                      |
 
 ## Getting Started
@@ -110,6 +110,16 @@ go run ./examples/multi_llm_turns "Draft and review an explanation of capability
 go run ./examples/shared_tool_loop "Use the calculator to evaluate 125 * 48."
 ```
 
+Run the model-free runtime-control examples:
+
+```bash
+go run ./examples/graph/conditional_routing.go
+go run ./examples/graph/dynamic_map_reduce.go
+go run ./examples/graph/failure_fallback.go
+go run ./examples/graph/human_approval.go
+go run ./examples/graph/fan_in_fan_out.go
+```
+
 The example:
 
 - builds a ReAct-style graph,
@@ -122,7 +132,7 @@ The example:
 ```go
 model, err := openai.New()
 if err != nil {
-	return err
+return err
 }
 g := weaveflow.NewGraph()
 
@@ -158,12 +168,12 @@ _ = g.SetEntryPoint(input.ID())
 
 runner, err := weaveflow.NewRunner(g)
 if err != nil {
-	return err
+return err
 }
 ctx := core.WithModel(context.Background(), model)
 ctx = core.WithTools(ctx, map[string]core.Tool{"calculator": tools.NewCalculator()})
 initialState := state.FromShared(map[string]any{
-    "request": map[string]any{"input": "What is 125 * 48?"},
+"request": map[string]any{"input": "What is 125 * 48?"},
 })
 _, finalState, err := runner.Start(ctx, initialState)
 ```
@@ -269,9 +279,9 @@ conditions, graph resolvers, or instance-bound config:
 ```go
 reg := weaveflow.NewDefaultRegistry()
 workflow, err := weaveflow.LoadGraphFromFile(
-	"graph.json",
-	weaveflow.WithRegistry(reg),
-	weaveflow.WithBuildContext(&registry.BuildContext{}),
+"graph.json",
+weaveflow.WithRegistry(reg),
+weaveflow.WithBuildContext(&registry.BuildContext{}),
 )
 ```
 
@@ -279,10 +289,10 @@ For persisted local runs, construct the runner in one call:
 
 ```go
 runner, err := weaveflow.NewLocalRunner(
-	workflow,
-	".local/instance",
-	weaveflow.WithGraphID("agent"),
-	weaveflow.WithGraphVersion("v1"),
+workflow,
+".local/instance",
+weaveflow.WithGraphID("agent"),
+weaveflow.WithGraphVersion("v1"),
 )
 ```
 
@@ -312,8 +322,10 @@ go run ./cmd/server -data .local/server -graph examples/supervisor_mode/graph.js
 ```
 
 Set or replace each model API key in Graph Settings. The server stores one protected local credential file per model ID;
-Graph Session settings and API responses never contain the key. `OPENAI_API_KEY` remains the fallback when a model has
-no server-managed key. The server also wires the bundled `read`, `write`, `edit`,
+Graph Session settings and API responses never contain the key. The process `OPENAI_API_KEY` fallback is limited to the
+default OpenAI endpoint; custom endpoints and other providers require an explicit or server-managed credential. The
+server
+also wires the bundled `read`, `write`, `edit`,
 `glob`, `grep`, `calculator`, `current_time`, and `web_fetch` tools into the runtime context.
 
 The API routes are mounted at the root by default. Use `-prefix /debug` to mount them under a path prefix.
@@ -339,7 +351,7 @@ unbundled `dist/config.js`:
 
 ```js
 window.__WEAVEFLOW_CONFIG__ = {
-  backendBaseUrl: "https://api.example.com/debug",
+    backendBaseUrl: "https://api.example.com/debug",
 };
 ```
 
@@ -352,16 +364,18 @@ WEAVEFLOW_MANAGEMENT_TOKEN=<management-token> go run ./cmd/server -addr 0.0.0.0:
 
 ## Examples
 
-| Path                          | Description                                                                        |
-|-------------------------------|------------------------------------------------------------------------------------|
-| `examples/graph/`             | End-to-end ReAct-style agent with checkpoint and resume.                           |
-| `examples/plan_mode/`         | Structured planning, tool execution, replanning, and final synthesis.              |
-| `examples/supervisor_mode/`   | Supervisor routing, specialist agent delegation, and final synthesis.              |
-| `examples/two_agent_handoff/` | Agent result-to-task handoff with isolated conversation roots.                     |
-| `examples/multi_llm_turns/`   | Two LLM turns with separate models and conversations plus an explicit output-to-input handoff. |
-| `examples/shared_tool_loop/`  | LLM, Tools, and edge Condition sharing one conversation capability root.           |
-| `examples/dsl/`               | Exports the default registry and graph JSON schema.                                |
-| `examples/node/`              | Focused runnable examples for individual node types.                               |
+| Path                          | Description                                                                                       |
+|-------------------------------|---------------------------------------------------------------------------------------------------|
+| `examples/README.md`          | Scenario catalog with runnable commands, prerequisites, and covered capabilities.                 |
+| `examples/graph/`             | End-to-end ReAct-style agent with checkpoint and resume.                                          |
+| `examples/graph/*.go`         | Model-free routing, dynamic fan-out, reducers, failure fallback, approval, events, and artifacts. |
+| `examples/plan_mode/`         | Structured planning, tool execution, replanning, and final synthesis.                             |
+| `examples/supervisor_mode/`   | Supervisor routing, specialist agent delegation, and final synthesis.                             |
+| `examples/two_agent_handoff/` | Agent result-to-task handoff with isolated conversation roots.                                    |
+| `examples/multi_llm_turns/`   | Two LLM turns with separate models and conversations plus an explicit output-to-input handoff.    |
+| `examples/shared_tool_loop/`  | LLM, Tools, and edge Condition sharing one conversation capability root.                          |
+| `examples/dsl/`               | Exports the default registry and graph JSON schema.                                               |
+| `examples/node/`              | Focused runnable examples for individual node types.                                              |
 
 ## Development
 

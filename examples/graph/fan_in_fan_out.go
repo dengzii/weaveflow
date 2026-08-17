@@ -13,6 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	"github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
@@ -51,36 +52,80 @@ func main() {
 }
 
 func newFanInFanOutGraph() *wfgraph.Graph {
-	g := weaveflow.NewGraph()
-	addFuncNode(g, "router", func(ctx context.Context, access *state.Access) error {
+	componentRegistry := weaveflow.NewDefaultRegistry()
+	registerFanInFanOutTypes(componentRegistry)
+	workflow := wfgraph.NewGraph(componentRegistry)
+	addFuncNode(workflow, "router", func(ctx context.Context, access *state.Access) error {
 		return nil
 	})
-	addFuncNode(g, "research", func(ctx context.Context, access *state.Access) error {
+	addFuncNode(workflow, "research", func(ctx context.Context, access *state.Access) error {
 		return access.AppendAny(state.Shared("branches"), "research")
 	})
-	addFuncNode(g, "draft", func(ctx context.Context, access *state.Access) error {
+	addFuncNode(workflow, "draft", func(ctx context.Context, access *state.Access) error {
 		return access.AppendAny(state.Shared("branches"), "draft")
 	})
-	addFuncNode(g, "collector", func(ctx context.Context, access *state.Access) error {
+	addFuncNode(workflow, "collector", func(ctx context.Context, access *state.Access) error {
 		value, _ := access.ReadAny(state.Shared("branches"))
 		items, _ := value.([]any)
 		return access.SetAny(state.Shared("branch_count"), len(items))
 	})
 
-	must(g.SetEntryPoint("router"))
-	must(g.SetFinishPoint("collector"))
-	must(g.AddEdge("router", "research"))
-	must(g.AddEdge("router", "draft"))
-	must(g.AddEdge("research", "collector"))
-	must(g.AddEdge("draft", "collector"))
-	return g
+	must(workflow.SetEntryPoint("router"))
+	must(workflow.SetFinishPoint("collector"))
+	must(workflow.AddEdge("router", "research"))
+	must(workflow.AddEdge("router", "draft"))
+	must(workflow.AddEdge("research", "collector"))
+	must(workflow.AddEdge("draft", "collector"))
+	return workflow
 }
 
-func addFuncNode(g *wfgraph.Graph, id string, fn func(context.Context, *state.Access) error) {
-	must(g.AddNode(node.NewFuncNode(node.Spec{ID: id, Name: id}, func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
-		return core.Success(), fn(ctx, access)
+func addFuncNode(workflow *wfgraph.Graph, identifier string, execute func(context.Context, *state.Access) error) {
+	must(workflow.AddNode(node.NewFuncNode(node.Spec{ID: identifier, Name: identifier}, func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
+		return core.Success(), execute(ctx, access)
 	})))
-	must(g.SetNodeSpec(dsl.GraphNodeSpec{ID: id, Type: "example", Name: id}))
+	must(workflow.SetNodeSpec(fanInFanOutSpec(identifier)))
+}
+
+func registerFanInFanOutTypes(componentRegistry *registry.Registry) {
+	directBuild := func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
+		return nil, fmt.Errorf("example node %q must be constructed directly", resolved.Spec.ID)
+	}
+	definitions := []registry.NodeTypeDefinition{
+		{NodeTypeSchema: dsl.NodeTypeSchema{Type: "example_control"}, Build: directBuild},
+		{
+			NodeTypeSchema: dsl.NodeTypeSchema{Type: "example_branch", StatePorts: []dsl.StatePortDefinition{{
+				Name: "branches", Required: true, Schema: dsl.JSONSchema{"type": "array", "items": map[string]any{"type": "string"}},
+				Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeAppend,
+			}}},
+			Build: directBuild,
+		},
+		{
+			NodeTypeSchema: dsl.NodeTypeSchema{Type: "example_collector", StatePorts: []dsl.StatePortDefinition{
+				{Name: "branches", Required: true, Schema: dsl.JSONSchema{"type": "array", "items": map[string]any{"type": "string"}}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace},
+				{Name: "count", Required: true, Schema: dsl.JSONSchema{"type": "integer"}, Mode: dsl.StateAccessWrite, MergeStrategy: dsl.StateMergeReplace},
+			}},
+			Build: directBuild,
+		},
+	}
+	for _, definition := range definitions {
+		must(componentRegistry.RegisterNodeType(definition))
+	}
+}
+
+func fanInFanOutSpec(identifier string) dsl.GraphNodeSpec {
+	spec := dsl.GraphNodeSpec{ID: identifier, Type: "example_control", Name: identifier}
+	switch identifier {
+	case "research", "draft":
+		spec.Type = "example_branch"
+		spec.State = map[string]dsl.StateBinding{"branches": {Path: "shared.branches"}}
+	case "collector":
+		spec.Type = "example_collector"
+		spec.State = map[string]dsl.StateBinding{
+			"branches": {Path: "shared.branches"},
+			"count":    {Path: "shared.branch_count"},
+		}
+	}
+	return spec
 }
 
 func findBarrierCheckpoint(ctx context.Context, runner *runtime.GraphRunner, runID string) string {
