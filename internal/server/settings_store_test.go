@@ -41,7 +41,8 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 				"enabled": true,
 				"provider": "openai",
 				"model": "gpt-persisted",
-				"base_url": "http://127.0.0.1:9999/v1"
+				"base_url": "http://127.0.0.1:9999/v1",
+				"credential_value": "persisted-key"
 			},
 			{
 				"id": "fast",
@@ -50,6 +51,7 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 				"api_format": "chat_completions",
 				"model": "gpt-fast",
 				"base_url": "http://127.0.0.1:9999/v1",
+				"credential_value": "persisted-key",
 				"extra_body": {"safe_prompt": true}
 			}
 		]
@@ -199,6 +201,16 @@ func TestGraphRuntimeSettingsRebuildsModelPricingAndToolGovernance(t *testing.T)
 	if !found {
 		t.Fatal("loadGraphRuntimeSettings() did not find persisted settings")
 	}
+	releaseCredential, err := srv.managedSecrets.SetModel(context.Background(), core.DefaultModelID, gotSettings.Models[0].Provider, gotSettings.Models[0].BaseURL, "test-key")
+	if err != nil {
+		t.Fatalf("store model credential: %v", err)
+	}
+	releaseCredential(true)
+	releaseFastCredential, err := srv.managedSecrets.SetModel(context.Background(), "fast", "openai", "", "test-key")
+	if err != nil {
+		t.Fatalf("store fast model credential: %v", err)
+	}
+	releaseFastCredential(true)
 	if gotSettings.Models[0].Pricing != (llms.ModelPricing{
 		Currency:         "USD",
 		InputPerMillion:  2,
@@ -274,6 +286,11 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	t.Setenv("OPENAI_API_KEY", "test-key")
+	releaseCredential, err := srv.managedSecrets.SetModel(context.Background(), core.DefaultModelID, "deepseek", providerServer.URL+"/v1", "test-key")
+	if err != nil {
+		t.Fatalf("store model credential: %v", err)
+	}
+	releaseCredential(true)
 	runtimeContext, err := srv.buildRuntimeContext(graphRuntimeSettings{
 		Models: []graphModelSettings{{
 			ID:        core.DefaultModelID,

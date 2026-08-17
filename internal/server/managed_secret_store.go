@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,7 +14,18 @@ import (
 	"github.com/google/uuid"
 )
 
-const managedSecretSource = "managed"
+const (
+	managedSecretSource                 = "managed"
+	managedModelCredentialFormatVersion = 1
+)
+
+type managedModelCredential struct {
+	Version  int    `json:"version"`
+	ModelID  string `json:"model_id"`
+	Provider string `json:"provider"`
+	BaseURL  string `json:"base_url"`
+	Value    string `json:"value"`
+}
 
 type managedSecretStore struct {
 	dir     string
@@ -168,7 +180,7 @@ func (store *managedSecretStore) Resolve(_ context.Context, ref dsl.SecretRef) (
 	return (&localSecretResolver{secretDir: store.dir}).resolveFile(ref.Ref)
 }
 
-func (store *managedSecretStore) SetModel(ctx context.Context, modelID string, value string) (func(bool), error) {
+func (store *managedSecretStore) SetModel(ctx context.Context, modelID, provider, baseURL, value string) (func(bool), error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return nil, fmt.Errorf("model credential value is empty")
@@ -176,14 +188,18 @@ func (store *managedSecretStore) SetModel(ctx context.Context, modelID string, v
 	if int64(len(value)) > maxSecretFileBytes {
 		return nil, fmt.Errorf("model credential exceeds %d bytes", maxSecretFileBytes)
 	}
-	return store.updateModel(ctx, modelID, &value)
+	credential, err := newManagedModelCredential(modelID, provider, baseURL, value)
+	if err != nil {
+		return nil, err
+	}
+	return store.updateModel(ctx, modelID, &credential)
 }
 
 func (store *managedSecretStore) ClearModel(ctx context.Context, modelID string) (func(bool), error) {
 	return store.updateModel(ctx, modelID, nil)
 }
 
-func (store *managedSecretStore) ResolveModel(ctx context.Context, modelID string) (string, error) {
+func (store *managedSecretStore) ResolveModel(ctx context.Context, modelID, provider, baseURL string) (string, error) {
 	if store == nil || store.dir == "" {
 		return "", fmt.Errorf("managed secret store is unavailable")
 	}
@@ -197,10 +213,47 @@ func (store *managedSecretStore) ResolveModel(ctx context.Context, modelID strin
 	if err != nil {
 		return "", err
 	}
-	return (&localSecretResolver{secretDir: store.dir}).resolveFile(name)
+	data, err := (&localSecretResolver{secretDir: store.dir}).resolveFile(name)
+	if err != nil {
+		return "", err
+	}
+	var credential managedModelCredential
+	if err := json.Unmarshal([]byte(data), &credential); err != nil {
+		return "", fmt.Errorf("decode managed model credential: %w", err)
+	}
+	expected, err := newManagedModelCredential(modelID, provider, baseURL, credential.Value)
+	if err != nil {
+		return "", err
+	}
+	if credential.Version != managedModelCredentialFormatVersion ||
+		credential.ModelID != expected.ModelID || credential.Provider != expected.Provider || credential.BaseURL != expected.BaseURL {
+		return "", fmt.Errorf("managed model credential binding does not match model %q endpoint", expected.ModelID)
+	}
+	if strings.TrimSpace(credential.Value) == "" {
+		return "", fmt.Errorf("managed model credential is empty")
+	}
+	return credential.Value, nil
 }
 
-func (store *managedSecretStore) updateModel(ctx context.Context, modelID string, value *string) (func(bool), error) {
+func newManagedModelCredential(modelID, provider, baseURL, value string) (managedModelCredential, error) {
+	modelID = strings.TrimSpace(modelID)
+	if modelID == "" {
+		return managedModelCredential{}, fmt.Errorf("model id is required")
+	}
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	if provider == "" {
+		return managedModelCredential{}, fmt.Errorf("model provider is required")
+	}
+	return managedModelCredential{
+		Version:  managedModelCredentialFormatVersion,
+		ModelID:  modelID,
+		Provider: provider,
+		BaseURL:  strings.TrimRight(strings.TrimSpace(baseURL), "/"),
+		Value:    strings.TrimSpace(value),
+	}, nil
+}
+
+func (store *managedSecretStore) updateModel(ctx context.Context, modelID string, credential *managedModelCredential) (func(bool), error) {
 	if store == nil || store.dir == "" {
 		return nil, fmt.Errorf("managed secret store is unavailable")
 	}
@@ -223,15 +276,26 @@ func (store *managedSecretStore) updateModel(ctx context.Context, modelID string
 		store.mu.Unlock()
 		return nil, fmt.Errorf("read model credential: %w", readErr)
 	}
-	if value == nil {
+	if credential == nil {
 		err = os.Remove(path)
 		if err != nil && !os.IsNotExist(err) {
 			store.mu.Unlock()
 			return nil, fmt.Errorf("clear model credential: %w", err)
 		}
-	} else if err = writeManagedSecretFile(path, *value); err != nil {
-		store.mu.Unlock()
-		return nil, err
+	} else {
+		encoded, encodeErr := json.Marshal(credential)
+		if encodeErr != nil {
+			store.mu.Unlock()
+			return nil, fmt.Errorf("encode model credential: %w", encodeErr)
+		}
+		if int64(len(encoded)) > maxSecretFileBytes {
+			store.mu.Unlock()
+			return nil, fmt.Errorf("encoded model credential exceeds %d bytes", maxSecretFileBytes)
+		}
+		if err = writeManagedSecretFile(path, string(encoded)); err != nil {
+			store.mu.Unlock()
+			return nil, err
+		}
 	}
 	store.mu.Unlock()
 
@@ -290,7 +354,7 @@ func writeManagedSecretFile(path string, value string) error {
 	return nil
 }
 
-func (s *Server) applyGraphModelCredentialChanges(ctx context.Context, settings *graphRuntimeSettingsRequest) (func(bool), error) {
+func (s *Server) applyGraphModelCredentialChanges(ctx context.Context, settings *graphRuntimeSettingsRequest, effective graphRuntimeSettings) (func(bool), error) {
 	noSecrets := func(bool) {}
 	if settings == nil || len(settings.Models) == 0 {
 		return noSecrets, nil
@@ -299,6 +363,10 @@ func (s *Server) applyGraphModelCredentialChanges(ctx context.Context, settings 
 		ctx = context.Background()
 	}
 	seenModelIDs := make(map[string]struct{}, len(settings.Models))
+	effectiveModels := make(map[string]graphModelSettings, len(effective.Models))
+	for _, model := range effective.Models {
+		effectiveModels[strings.TrimSpace(model.ID)] = sanitizeGraphModelSettings(model)
+	}
 	for _, model := range settings.Models {
 		modelID := strings.TrimSpace(model.ID)
 		if modelID == "" {
@@ -336,7 +404,12 @@ func (s *Server) applyGraphModelCredentialChanges(ctx context.Context, settings 
 		if model.CredentialClear {
 			release, err = s.managedSecrets.ClearModel(ctx, model.ID)
 		} else {
-			release, err = s.managedSecrets.SetModel(ctx, model.ID, value)
+			binding, ok := effectiveModels[strings.TrimSpace(model.ID)]
+			if !ok {
+				rollback()
+				return nil, invalidRequestf("model %q credential has no effective model settings", strings.TrimSpace(model.ID))
+			}
+			release, err = s.managedSecrets.SetModel(ctx, binding.ID, binding.Provider, binding.BaseURL, value)
 		}
 		if err != nil {
 			rollback()

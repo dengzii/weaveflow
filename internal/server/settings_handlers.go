@@ -65,7 +65,7 @@ type graphModelSettingsRequest struct {
 func (s *Server) graphSettingsResponse(settings graphRuntimeSettings) graphRuntimeSettings {
 	settings = sanitizedGraphSettings(settings)
 	for index := range settings.Models {
-		settings.Models[index].CredentialConfigured = s.isModelCredentialConfigured(settings.Models[index].ID)
+		settings.Models[index].CredentialConfigured = s.isModelCredentialConfigured(settings.Models[index])
 	}
 	settings.EnvironmentPresets = graphEnvironmentPresets()
 	return settings
@@ -150,11 +150,11 @@ func graphModelSettingsFromContext(ctx context.Context) []graphModelSettings {
 			ExtraBody: cloneGraphModelExtraBody(config.ExtraBody),
 			Pricing:   config.Pricing,
 		}
-		model.CredentialConfigured = strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != ""
 		if model.ID == core.DefaultModelID {
 			model.Model = firstNonEmpty(model.Model, os.Getenv("OPENAI_MODEL"))
 			model.BaseURL = firstNonEmpty(model.BaseURL, os.Getenv("OPENAI_BASE_URL"))
 		}
+		model.CredentialConfigured = strings.TrimSpace(config.APIKey) != "" || (processOpenAIKeyAllowed(model) && strings.TrimSpace(os.Getenv("OPENAI_API_KEY")) != "")
 		out = append(out, model)
 	}
 	return out
@@ -179,7 +179,7 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings) (context.Con
 	models := map[string]llms.Model{}
 	modelConfigs := map[string]core.ModelConfig{}
 	for _, modelSettings := range enabledGraphModels(settings) {
-		modelAPIKey, err := s.resolveModelCredential(ctx, modelSettings.ID)
+		modelAPIKey, err := s.resolveModelCredential(ctx, modelSettings)
 		if err != nil {
 			return nil, err
 		}
@@ -237,9 +237,10 @@ func (s *Server) resolveSecret(ctx context.Context, ref dsl.SecretRef) (string, 
 	return s.secretResolver.Resolve(ctx, ref)
 }
 
-func (s *Server) resolveModelCredential(ctx context.Context, modelID string) (string, error) {
+func (s *Server) resolveModelCredential(ctx context.Context, model graphModelSettings) (string, error) {
+	modelID := strings.TrimSpace(model.ID)
 	if s != nil && s.managedSecrets != nil {
-		value, err := s.managedSecrets.ResolveModel(ctx, modelID)
+		value, err := s.managedSecrets.ResolveModel(ctx, modelID, model.Provider, model.BaseURL)
 		if err == nil {
 			return value, nil
 		}
@@ -247,15 +248,25 @@ func (s *Server) resolveModelCredential(ctx context.Context, modelID string) (st
 			return "", fmt.Errorf("resolve model %q credential: %w", modelID, err)
 		}
 	}
-	if value := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); value != "" {
-		return value, nil
+	if processOpenAIKeyAllowed(model) {
+		if value := strings.TrimSpace(os.Getenv("OPENAI_API_KEY")); value != "" {
+			return value, nil
+		}
 	}
-	return "", fmt.Errorf("model %q requires an API key", strings.TrimSpace(modelID))
+	return "", fmt.Errorf("model %q requires a managed API key", modelID)
 }
 
-func (s *Server) isModelCredentialConfigured(modelID string) bool {
-	_, err := s.resolveModelCredential(context.Background(), modelID)
+func (s *Server) isModelCredentialConfigured(model graphModelSettings) bool {
+	_, err := s.resolveModelCredential(context.Background(), model)
 	return err == nil
+}
+
+func processOpenAIKeyAllowed(model graphModelSettings) bool {
+	if strings.ToLower(strings.TrimSpace(model.Provider)) != string(openai.ProviderOpenAI) {
+		return false
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(model.BaseURL), "/")
+	return baseURL == "" || strings.EqualFold(baseURL, "https://api.openai.com/v1")
 }
 
 func defaultToolPermissions() []string {

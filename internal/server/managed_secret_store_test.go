@@ -101,11 +101,11 @@ func TestGraphModelCredentialLifecycle(t *testing.T) {
 		t.Fatal("first credential is not reported as configured")
 	}
 	credentialPath := modelCredentialTestPath(t, baseDirectory, "default")
-	firstData, err := os.ReadFile(credentialPath)
+	firstData, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(firstData) != "first-key" {
+	if firstData != "first-key" {
 		t.Fatalf("first managed credential = %q", firstData)
 	}
 	assertGraphSessionOmitsCredentialValue(t, srv, first, "first-key")
@@ -120,11 +120,11 @@ func TestGraphModelCredentialLifecycle(t *testing.T) {
 	if !preserved.Settings.Models[0].CredentialConfigured {
 		t.Fatal("blank credential value cleared the configured status")
 	}
-	preservedData, err := os.ReadFile(credentialPath)
+	preservedData, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(preservedData) != "first-key" {
+	if preservedData != "first-key" {
 		t.Fatalf("blank credential value changed stored value to %q", preservedData)
 	}
 
@@ -139,11 +139,11 @@ func TestGraphModelCredentialLifecycle(t *testing.T) {
 		t.Fatal("rotated credential is not reported as configured")
 	}
 	assertGraphSessionOmitsCredentialValue(t, srv, rotated, "second-key")
-	rotatedData, err := os.ReadFile(credentialPath)
+	rotatedData, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(rotatedData) != "second-key" {
+	if rotatedData != "second-key" {
 		t.Fatalf("rotated credential = %q, want second-key", rotatedData)
 	}
 	modelConfig, ok := core.ModelConfigByIDFromContext(srv.runtime.runtimeContext(), core.DefaultModelID)
@@ -182,7 +182,7 @@ func TestGraphModelCredentialPersistsAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	value, err := restarted.managedSecrets.ResolveModel(context.Background(), "default")
+	value, err := restarted.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -215,7 +215,7 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 	if strings.Contains(response.Body.String(), "failed-key") {
 		t.Fatalf("failed rotation response leaked credential: %s", response.Body.String())
 	}
-	value, err := srv.managedSecrets.ResolveModel(context.Background(), "default")
+	value, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +231,7 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 	if cleared.Code != http.StatusBadRequest {
 		t.Fatalf("failed clear status = %d, body = %s", cleared.Code, cleared.Body.String())
 	}
-	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default")
+	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 	if duplicate.Code != http.StatusBadRequest {
 		t.Fatalf("duplicate model status = %d, body = %s", duplicate.Code, duplicate.Body.String())
 	}
-	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default")
+	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -305,7 +305,7 @@ func TestServerStartSweepsOnlyOrphanedManagedSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	releaseOrphaned(true)
-	modelRelease, err := secretStore.SetModel(context.Background(), "default", "model-secret")
+	modelRelease, err := secretStore.SetModel(context.Background(), "default", "openai", "", "model-secret")
 	if err != nil {
 		t.Fatal(err)
 	}

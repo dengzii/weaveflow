@@ -21,8 +21,9 @@ var (
 
 // newClient creates an instance of the internal client.
 func newClient(opts ...Option) (*clientOptions, *openaiclient.Client, error) {
+	environmentToken := strings.TrimSpace(os.Getenv(tokenEnvVarName))
 	options := &clientOptions{
-		token:        os.Getenv(tokenEnvVarName),
+		token:        environmentToken,
 		model:        os.Getenv(modelEnvVarName),
 		baseURL:      os.Getenv(baseURLEnvVarName),
 		organization: os.Getenv(organizationEnvVarName),
@@ -61,8 +62,11 @@ func newClient(opts ...Option) (*clientOptions, *openaiclient.Client, error) {
 			return options, nil, ErrMissingBaseURL
 		}
 	}
+	if !options.tokenExplicit && !environmentTokenAllowed(options) {
+		options.token = ""
+	}
 
-	if len(options.token) == 0 {
+	if strings.TrimSpace(options.token) == "" {
 		return options, nil, ErrMissingToken
 	}
 
@@ -75,6 +79,14 @@ func newClient(opts ...Option) (*clientOptions, *openaiclient.Client, error) {
 		options.responseFormat, string(options.provider), options.extraBody, options.extraHeaders, internalOptions...,
 	)
 	return options, cli, err
+}
+
+func environmentTokenAllowed(options *clientOptions) bool {
+	if options == nil || options.provider != ProviderOpenAI || options.apiType != APITypeOpenAI {
+		return false
+	}
+	baseURL := strings.TrimRight(strings.TrimSpace(options.baseURL), "/")
+	return strings.EqualFold(baseURL, defaultBaseURLForProvider(ProviderOpenAI))
 }
 
 func defaultBaseURLForProvider(provider Provider) string {

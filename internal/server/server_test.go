@@ -433,14 +433,16 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 				"enabled": true,
 				"provider": "openai",
 				"model": "gpt-test",
-				"base_url": "http://127.0.0.1:9999/v1"
+				"base_url": "http://127.0.0.1:9999/v1",
+				"credential_value": "test-key"
 			},
 			{
 				"id": "fast",
 				"enabled": true,
 				"provider": "openai",
 				"model": "gpt-fast",
-				"base_url": "http://127.0.0.1:9999/v1"
+				"base_url": "http://127.0.0.1:9999/v1",
+				"credential_value": "test-key"
 			}
 		]
 	}`
@@ -496,7 +498,8 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	}
 
 	t.Setenv("OPENAI_API_KEY", "rotated-key")
-	refreshed := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", settings))
+	rotatedSettings := strings.ReplaceAll(settings, "test-key", "rotated-key")
+	refreshed := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", rotatedSettings))
 	if refreshed.Graph.GraphSessionID != uploaded.Graph.GraphSessionID {
 		t.Fatalf("secret rotation created session %q, want %q", refreshed.Graph.GraphSessionID, uploaded.Graph.GraphSessionID)
 	}

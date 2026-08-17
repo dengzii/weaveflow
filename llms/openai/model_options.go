@@ -44,16 +44,17 @@ const (
 )
 
 type clientOptions struct {
-	token        string
-	model        string
-	baseURL      string
-	organization string
-	apiType      APIType
-	provider     Provider
-	apiFormat    APIFormat
-	httpClient   openaiclient.Doer
-	extraBody    map[string]any
-	extraHeaders map[string]string
+	token         string
+	tokenExplicit bool
+	model         string
+	baseURL       string
+	organization  string
+	apiType       APIType
+	provider      Provider
+	apiFormat     APIFormat
+	httpClient    openaiclient.Doer
+	extraBody     map[string]any
+	extraHeaders  map[string]string
 
 	responseFormat *ResponseFormat
 
@@ -79,10 +80,11 @@ type ResponseFormatJSONSchemaProperty = openaiclient.ResponseFormatJSONSchemaPro
 var ResponseFormatJSON = &ResponseFormat{Type: "json_object"} //nolint:gochecknoglobals
 
 // WithToken passes the OpenAI API token to the client. If not set, the token
-// is read from the OPENAI_API_KEY environment variable.
+// is read from OPENAI_API_KEY only when the default OpenAI endpoint is used.
 func WithToken(token string) Option {
 	return func(opts *clientOptions) {
 		opts.token = token
+		opts.tokenExplicit = true
 	}
 }
 

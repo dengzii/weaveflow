@@ -141,13 +141,6 @@ func (s *Server) configureGraph(ctx context.Context, req graphUploadRequest) (gr
 	}
 	s.runtime.graphUpdateMu.Lock()
 	defer s.runtime.graphUpdateMu.Unlock()
-	credentialRelease, err := s.applyGraphModelCredentialChanges(ctx, req.Settings)
-	if err != nil {
-		return graphLoadResponse{}, err
-	}
-	committed := false
-	defer func() { credentialRelease(committed) }()
-
 	if s.registry == nil {
 		return graphLoadResponse{}, errRegistryNotConfigured
 	}
@@ -177,9 +170,20 @@ func (s *Server) configureGraph(ctx context.Context, req graphUploadRequest) (gr
 		return graphLoadResponse{}, err
 	}
 	nextSettings := previousSettings
-	if err := applyGraphSettingsRequest(&nextSettings, *req.Settings); err != nil {
+	settingsRequest := *req.Settings
+	settingsRequest.Models = append([]graphModelSettingsRequest(nil), req.Settings.Models...)
+	for index := range settingsRequest.Models {
+		settingsRequest.Models[index].CredentialValue = ""
+	}
+	if err := applyGraphSettingsRequest(&nextSettings, settingsRequest); err != nil {
 		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)
 	}
+	credentialRelease, err := s.applyGraphModelCredentialChanges(ctx, req.Settings, nextSettings)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
+	committed := false
+	defer func() { credentialRelease(committed) }()
 	baseContext, err := s.buildRuntimeContext(nextSettings)
 	if err != nil {
 		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)
