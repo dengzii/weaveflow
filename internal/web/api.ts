@@ -118,23 +118,40 @@ export async function analyzeInitialStateRequirements(
   });
 }
 
-export async function createGraphSession(
+export async function commitGraph(
   graphID: string,
   definition: GraphDefinition,
   settings: RuntimeSettingsUpdate,
+  triggers: Record<string, unknown>[],
+  mode: "create" | "overwrite",
+  expectedGraphSessionID?: string,
   graphVersion?: string
 ): Promise<GraphLoadResult> {
   const path = `${graphPath(graphID)}/sessions`;
+  const request = {
+    graph_version: graphVersion || undefined,
+    definition,
+    settings,
+    triggers,
+    mode,
+    expected_graph_session_id: expectedGraphSessionID || undefined,
+  };
   const result = await apiFetch<unknown>(path, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      graph_version: graphVersion || undefined,
-      definition,
-      settings,
-    }),
+    body: JSON.stringify({ ...request, request_id: graphCommitRequestID(graphID, request) }),
   });
   return validateGraphLoadResult(result, `POST ${path} response`);
+}
+
+function graphCommitRequestID(graphID: string, request: Record<string, unknown>): string {
+  const value = JSON.stringify([graphID.trim(), request]);
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `graph-${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 export async function getRegistry(): Promise<RegistryInfo> {

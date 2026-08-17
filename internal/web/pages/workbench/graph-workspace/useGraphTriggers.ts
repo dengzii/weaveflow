@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelChatChannelSetup,
   listTriggers,
-  replaceTriggers,
 } from "../../../api";
 import type { Trigger, TriggerType } from "../../../types";
 import {
@@ -91,6 +90,23 @@ export function useGraphTriggers(graphID: string) {
     return loadGraphTriggers(requestGeneration, targetGraphID);
   }, [loadGraphTriggers]);
 
+  const applyImportedTriggers = useCallback((targetGraphID: string, triggers: Trigger[]) => {
+    const importedTriggers = triggers.map((trigger) => ({
+      ...trigger,
+      target: { graph_id: targetGraphID },
+    }));
+    const importedDrafts = importedTriggers.map(importedTriggerDraft);
+    requestGenerationRef.current += 1;
+    pendingImportRef.current = null;
+    serverTriggersRef.current = new Map();
+    replaceDrafts(importedDrafts);
+    setKnownTriggerIDs(uniqueTriggerIDs(importedTriggers));
+    setSavedSignature("");
+    setHydrated(true);
+    setLoadError("");
+    setSelectedTriggerID(null);
+  }, [replaceDrafts]);
+
   useEffect(() => {
     replaceDrafts([]);
     serverTriggersRef.current = new Map();
@@ -100,12 +116,7 @@ export function useGraphTriggers(graphID: string) {
     setSelectedTriggerID(null);
     const pendingImport = pendingImportRef.current;
     if (pendingImport?.graphID === normalizedGraphID) {
-      pendingImportRef.current = null;
-      const importedDrafts = pendingImport.triggers.map(importedTriggerDraft);
-      serverTriggersRef.current = new Map();
-      replaceDrafts(importedDrafts);
-      setSavedSignature(triggerDraftSignature([]));
-      setHydrated(true);
+      applyImportedTriggers(normalizedGraphID, pendingImport.triggers);
       return () => {
         requestGenerationRef.current += 1;
       };
@@ -114,7 +125,7 @@ export function useGraphTriggers(graphID: string) {
     return () => {
       requestGenerationRef.current += 1;
     };
-  }, [normalizedGraphID, refresh, replaceDrafts]);
+  }, [applyImportedTriggers, normalizedGraphID, refresh, replaceDrafts]);
 
   const triggers = useMemo(() => drafts.map((draft) => draft.trigger), [drafts]);
   const selectedDraft = useMemo(
@@ -212,46 +223,30 @@ export function useGraphTriggers(graphID: string) {
   }, [analysisPayloads]);
 
   const stageImport = useCallback((targetGraphID: string, triggers: Trigger[]) => {
+    const normalizedTargetGraphID = targetGraphID.trim();
+    if (normalizedTargetGraphID === graphIDRef.current) {
+      applyImportedTriggers(normalizedTargetGraphID, triggers);
+      return;
+    }
     pendingImportRef.current = {
-      graphID: targetGraphID.trim(),
+      graphID: normalizedTargetGraphID,
       triggers: triggers.map((trigger) => ({
         ...trigger,
-        target: { graph_id: targetGraphID.trim() },
+        target: { graph_id: normalizedTargetGraphID },
       })),
     };
-  }, []);
+  }, [applyImportedTriggers]);
 
-  const save = useCallback(async () => {
-    const targetGraphID = graphIDRef.current;
-    if (!targetGraphID || !hydrated) return [];
-    const requestGeneration = requestGenerationRef.current;
-    const currentDrafts = draftsRef.current;
-    const payloads = analysisPayloads();
-
-    try {
-      const saved = await replaceTriggers(targetGraphID, payloads);
-      if (!isCurrentRequest(requestGeneration, targetGraphID)) return [];
-
-      const savedByID = new Map(saved.map((trigger) => [trigger.id, trigger]));
-      const nextDrafts = currentDrafts.map((draft) => serverTriggerDraft(
-        savedByID.get(draft.trigger.id) ?? draft.trigger
-      ));
-      serverTriggersRef.current = savedByID;
-      replaceDrafts(nextDrafts);
-      setKnownTriggerIDs((current) => uniqueTriggerIDs(
-        nextDrafts.map((draft) => draft.trigger),
-        current
-      ));
-      setSavedSignature(triggerDraftSignature(nextDrafts));
-      setLoadError("");
-      return nextDrafts.map((draft) => draft.trigger);
-    } catch (error) {
-      if (isCurrentRequest(requestGeneration, targetGraphID)) {
-        setLoadError(errorMessage(error));
-      }
-      throw error;
-    }
-  }, [analysisPayloads, hydrated, isCurrentRequest, replaceDrafts]);
+  const acceptCommit = useCallback((saved: Trigger[]) => {
+    const nextDrafts = saved.map(serverTriggerDraft);
+    serverTriggersRef.current = new Map(saved.map((trigger) => [trigger.id, trigger]));
+    replaceDrafts(nextDrafts);
+    setKnownTriggerIDs(uniqueTriggerIDs(saved));
+    setSavedSignature(triggerDraftSignature(nextDrafts));
+    setHydrated(true);
+    setLoadError("");
+    setSelectedTriggerID((current) => saved.some((trigger) => trigger.id === current) ? current : null);
+  }, [replaceDrafts]);
 
   return {
     triggers,
@@ -273,7 +268,7 @@ export function useGraphTriggers(graphID: string) {
     validate,
     analysisPayloads,
     stageImport,
-    save,
+    acceptCommit,
   };
 }
 

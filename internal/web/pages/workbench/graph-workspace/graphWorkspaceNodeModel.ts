@@ -17,6 +17,8 @@ import type {
 } from "../../../types";
 import { removeGraphWorkspaceVirtualEdgesForNode } from "./graphWorkspaceEdgeModel";
 import { cloneJSONRecord, uniqueNodeID } from "./graphWorkspaceModel";
+import type { GraphLintIssue } from "./lintTypes";
+import { validateSchemaValue } from "./schemaFormModel";
 import {
   isVirtualNodeId,
   isVirtualNodeType,
@@ -35,6 +37,31 @@ export interface GraphWorkspaceNodeState {
 export interface GraphWorkspaceNodeMutation extends GraphWorkspaceNodeState {
   selectedNodeID?: string | null;
   message: string;
+}
+
+export function configurationErrorsForNodes(
+  definition: GraphDefinition | null,
+  nodeTypes: NodeTypeSchema[],
+  lintIssues: GraphLintIssue[]
+): Map<string, string[]> {
+  const errorsByNode = new Map<string, string[]>();
+  if (!definition) return errorsByNode;
+
+  for (const node of definition.nodes) {
+    const messages: string[] = [];
+    const nodeType = nodeTypes.find((item) => item.type === node.type);
+    if (nodeType?.config_schema) {
+      for (const issue of validateSchemaValue(nodeType.config_schema, node.config ?? {})) {
+        messages.push(`Config ${issue.path || "value"}: ${issue.message}`);
+      }
+    }
+    for (const issue of lintIssues) {
+      if (issue.severity === "error" && issue.nodeID === node.id) messages.push(issue.message);
+    }
+    const uniqueMessages = [...new Set(messages)];
+    if (uniqueMessages.length > 0) errorsByNode.set(node.id, uniqueMessages);
+  }
+  return errorsByNode;
 }
 
 interface GraphWorkspaceNodeContext extends GraphWorkspaceNodeState {

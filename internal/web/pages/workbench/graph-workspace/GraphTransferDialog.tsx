@@ -13,16 +13,22 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
-import type { GraphDefinition, RuntimeSettings, Trigger } from "../../../types";
+import { getGraphDetail } from "../../../api";
+import type { GraphDefinition, GraphDetail, RuntimeSettings, Trigger } from "../../../types";
 import { WorkbenchDialogOverlay } from "../shared";
 import {
   buildGraphExportBundle,
   graphExportFilename,
   parseGraphImport,
+  type GraphImportStrategy,
   type ParsedGraphImport,
 } from "./graphTransferModel";
 
 export type GraphTransferMode = "import" | "export";
+
+export interface GraphImportOptions {
+  strategy: GraphImportStrategy;
+}
 
 const maxImportFileBytes = 8 * 1024 * 1024;
 
@@ -33,6 +39,7 @@ export function GraphTransferDialog({
   graphVersion,
   runtimeSettings,
   triggers,
+  existingGraphIDs,
   onClose,
   onImport,
 }: {
@@ -42,8 +49,9 @@ export function GraphTransferDialog({
   graphVersion: string;
   runtimeSettings: RuntimeSettings;
   triggers: Trigger[];
+  existingGraphIDs: string[];
   onClose: () => void;
-  onImport: (graph: ParsedGraphImport) => boolean;
+  onImport: (graph: ParsedGraphImport, options: GraphImportOptions) => Promise<boolean>;
 }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [includeConfig, setIncludeConfig] = useState(true);
@@ -52,7 +60,12 @@ export function GraphTransferDialog({
   const [includeUI, setIncludeUI] = useState(true);
   const [fileName, setFileName] = useState("");
   const [parsedImport, setParsedImport] = useState<ParsedGraphImport | null>(null);
+  const [overwriteExisting, setOverwriteExisting] = useState(false);
   const [readingFile, setReadingFile] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [overwriteTarget, setOverwriteTarget] = useState<GraphDetail | null>(null);
+  const [targetLoading, setTargetLoading] = useState(false);
+  const [targetReloadRevision, setTargetReloadRevision] = useState(0);
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -63,7 +76,12 @@ export function GraphTransferDialog({
     setIncludeUI(true);
     setFileName("");
     setParsedImport(null);
+    setOverwriteExisting(false);
     setReadingFile(false);
+    setImporting(false);
+    setOverwriteTarget(null);
+    setTargetLoading(false);
+    setTargetReloadRevision(0);
     setError("");
   }, [mode]);
 
@@ -76,12 +94,35 @@ export function GraphTransferDialog({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [mode, onClose]);
 
+  useEffect(() => {
+    if (!overwriteExisting || !parsedImport?.graphID.trim()) {
+      setOverwriteTarget(null);
+      setTargetLoading(false);
+      return;
+    }
+    const controller = new AbortController();
+    setTargetLoading(true);
+    setError("");
+    void getGraphDetail(parsedImport.graphID)
+      .then((detail) => {
+        if (!controller.signal.aborted) setOverwriteTarget(detail);
+      })
+      .catch((loadError) => {
+        if (!controller.signal.aborted) setError(loadError instanceof Error ? loadError.message : String(loadError));
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setTargetLoading(false);
+      });
+    return () => controller.abort();
+  }, [overwriteExisting, parsedImport, targetReloadRevision]);
+
   if (!mode) return null;
 
   async function readImportFile(file: File | undefined) {
     if (!file) return;
     setFileName(file.name);
     setParsedImport(null);
+    setOverwriteExisting(false);
     setError("");
     if (file.size > maxImportFileBytes) {
       setError("Graph file exceeds the 8 MB limit.");
@@ -97,9 +138,17 @@ export function GraphTransferDialog({
     }
   }
 
-  function importGraph() {
+  async function importGraph() {
     if (!parsedImport) return;
-    if (onImport(parsedImport)) onClose();
+    setImporting(true);
+    setError("");
+    try {
+      if (await onImport(parsedImport, { strategy: overwriteExisting ? "overwrite" : "copy" })) onClose();
+    } catch (importError) {
+      setError(importError instanceof Error ? importError.message : String(importError));
+    } finally {
+      setImporting(false);
+    }
   }
 
   function exportGraph() {
@@ -128,6 +177,9 @@ export function GraphTransferDialog({
   }
 
   const title = mode === "import" ? "Import graph" : "Export graph";
+  const importedGraphID = parsedImport?.graphID.trim() ?? "";
+  const existingGraphIDSet = new Set(existingGraphIDs.map((value) => value.trim()).filter(Boolean));
+  const hasGraphIDConflict = Boolean(importedGraphID && existingGraphIDSet.has(importedGraphID));
   return (
     <WorkbenchDialogOverlay onDismiss={onClose}>
       <div
@@ -179,9 +231,52 @@ export function GraphTransferDialog({
                 <TransferDetail label="Version" value={parsedImport.graphVersion || "Not set"} />
                 <TransferDetail label="Contents" value={contentLabel(parsedImport.contents)} />
                 <TransferDetail label="Nodes" value={String(parsedImport.definition.nodes.length)} />
+                {hasGraphIDConflict ? (
+                  <label className="mt-2 flex items-start gap-3 rounded-md border border-border bg-muted/20 p-3">
+                    <input
+                      type="checkbox"
+                      className="mt-0.5 h-4 w-4 accent-primary"
+                      checked={overwriteExisting}
+                      onChange={(event) => setOverwriteExisting(event.target.checked)}
+                    />
+                    <span className="grid gap-1">
+                      <span className="font-medium">Overwrite existing graph</span>
+                      <span className="text-xs text-muted-foreground">
+                        Preserve any Settings or Triggers not declared by the file, and reject if the target Head changes.
+                      </span>
+                    </span>
+                  </label>
+                ) : null}
+                {overwriteExisting ? (
+                  <div className="mt-1 grid gap-2 rounded-md border border-border bg-background p-3">
+                    <TransferDetail label="Target" value={overwriteTarget?.graph.id || importedGraphID} />
+                    <TransferDetail
+                      label="Head session"
+                      value={targetLoading ? "Loading…" : overwriteTarget?.graph.graph_session_id || "Unavailable"}
+                    />
+                    <TransferDetail
+                      label="Settings"
+                      value={parsedImport.contents.includes("settings") ? "Replace from file" : "Preserve target"}
+                    />
+                    <TransferDetail
+                      label="Triggers"
+                      value={parsedImport.contents.includes("triggers") ? "Replace from file" : "Preserve target"}
+                    />
+                  </div>
+                ) : null}
+                {parsedImport.contents.includes("triggers") ? (
+                  <div className="mt-1 text-xs text-muted-foreground">
+                    Imported Triggers remain disabled; managed credentials, pending values, Bot IDs, and plaintext API keys are not imported.
+                  </div>
+                ) : null}
               </div>
             ) : null}
             {error ? <div className="text-sm text-destructive">{error}</div> : null}
+            {overwriteExisting && error.includes("graph head conflict") ? (
+              <Button variant="outline" onClick={() => setTargetReloadRevision((revision) => revision + 1)}>
+                Reload target Head
+              </Button>
+            ) : null}
           </div>
         ) : (
           <div className="grid gap-4 p-5">
@@ -233,9 +328,9 @@ export function GraphTransferDialog({
         <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           {mode === "import" ? (
-            <Button onClick={importGraph} disabled={!parsedImport || readingFile}>
-              <FileUp className="h-4 w-4" />
-              Import graph
+            <Button onClick={() => void importGraph()} disabled={!parsedImport || readingFile || importing || targetLoading || (overwriteExisting && !overwriteTarget)}>
+              {importing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <FileUp className="h-4 w-4" />}
+              {importing ? "Importing…" : "Import graph"}
             </Button>
           ) : (
             <Button onClick={exportGraph} disabled={!definition}>

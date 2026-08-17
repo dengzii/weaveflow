@@ -53,6 +53,8 @@ export function validateGraphLoadResult(value: unknown, source: string): GraphLo
   validateRuntimeSettings(result.settings, `${source}.settings`);
   requireOptionalString(result.runner_base_dir, `${source}.runner_base_dir`);
   requireOptionalArray(result.warnings, `${source}.warnings`);
+  requireArray(result.triggers, `${source}.triggers`);
+  if (result.trigger_id_mapping !== undefined) requireRecord(result.trigger_id_mapping, `${source}.trigger_id_mapping`);
   return value as GraphLoadResult;
 }
 

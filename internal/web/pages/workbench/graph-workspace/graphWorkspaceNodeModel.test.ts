@@ -8,6 +8,7 @@ import {
 import type { GraphDefinition, NodeTypeSchema } from "../../../types";
 import {
   addGraphWorkspaceNode,
+  configurationErrorsForNodes,
   deleteGraphWorkspaceNode,
   duplicateGraphWorkspaceNode,
   renameGraphWorkspaceNode,
@@ -54,6 +55,34 @@ describe("graph workspace node model", () => {
     const added = addGraphWorkspaceNode(created, nodeType, "sample graph");
     expect(added.definition?.nodes.map((node) => node.id)).toEqual(["task", "task_2"]);
     expect(added.selectedNodeID).toBe("task_2");
+  });
+
+  test("collects schema and node lint errors for canvas configuration state", () => {
+    const definition = graph({
+      nodes: [{ id: "task", type: "task", config: {} }],
+    });
+    const errors = configurationErrorsForNodes(
+      definition,
+      [{
+        type: "task",
+        config_schema: {
+          type: "object",
+          required: ["prompt"],
+          properties: { prompt: { type: "string" } },
+        },
+      }],
+      [{
+        id: "task-binding-required-input",
+        severity: "error",
+        message: "Node requires input binding.",
+        nodeID: "task",
+      }]
+    );
+
+    expect(errors.get("task")).toEqual([
+      "Config prompt: Required field.",
+      "Node requires input binding.",
+    ]);
   });
 
   test("adds numbered virtual boundary nodes without changing graph execution nodes", () => {

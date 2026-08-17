@@ -109,6 +109,18 @@ export function isToolIDsField(path: string, name: string): boolean {
   return parts.at(-1) === "tool_ids";
 }
 
+export function isModelIDField(
+  path: string,
+  name: string,
+  schema: Record<string, unknown>
+): boolean {
+  if (schema["x-control"] === "model-id") return true;
+  const title = typeof schema.title === "string" ? schema.title : "";
+  return [name, path.split(".").at(-1) ?? "", title].some((value) => (
+    value.trim().toLowerCase().replace(/[\s_-]+/g, "") === "modelid"
+  ));
+}
+
 export function getPathValue(root: Record<string, unknown>, path: string): unknown {
   const parts = schemaPathSegments(path);
   if (!parts) return undefined;

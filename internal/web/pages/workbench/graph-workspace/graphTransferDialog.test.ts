@@ -35,6 +35,7 @@ describe("graph transfer UI", () => {
       graphVersion: "v1",
       runtimeSettings: runtimeSettings(),
       triggers: graphTriggers(),
+      existingGraphIDs: ["demo"],
       onClose: () => undefined,
       onImport: () => true,
     }));

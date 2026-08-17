@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from "react";
-import { KeyRound, Plus, Trash2, X } from "lucide-react";
+import { type ReactNode, useEffect, useRef, useState } from "react";
+import { ChevronDown, ChevronRight, KeyRound, Plus, Trash2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
@@ -30,6 +30,9 @@ export function RuntimeSettingsEditor({
   const [environmentPresetKey, setEnvironmentPresetKey] = useState("");
   const [newEnvironmentKey, setNewEnvironmentKey] = useState("");
   const [newEnvironmentValue, setNewEnvironmentValue] = useState("");
+  const [modelsOpen, setModelsOpen] = useState(true);
+  const [toolAccessOpen, setToolAccessOpen] = useState(false);
+  const [environmentOpen, setEnvironmentOpen] = useState(true);
   const [status, setStatus] = useState("");
   const locallyAppliedSettingsRef = useRef<RuntimeSettings | null>(null);
 
@@ -163,6 +166,16 @@ export function RuntimeSettingsEditor({
     publish(nextModels, environmentRows);
   }
 
+  function toggleAllToolPermissions() {
+    const next = new Set(settings?.tool_permissions ?? []);
+    if (allToolPermissionsSelected) {
+      for (const permission of allToolPermissions) next.delete(permission);
+    } else {
+      for (const permission of allToolPermissions) next.add(permission);
+    }
+    onChangeRuntimeSettings({ tool_permissions: [...next].sort() });
+  }
+
   function publish(
     nextModels: EditableGraphModel[],
     nextEnvironmentRows: EditableEnvironmentVariable[]
@@ -196,18 +209,23 @@ export function RuntimeSettingsEditor({
   const availableEnvironmentPresets = (settings?.environment_presets ?? []).filter(
     (preset) => !environmentRows.some((row) => row.key.trim() === preset.key)
   );
-
+  const allToolPermissions = [...new Set(toolDefinitions.flatMap((tool) => tool.permissions ?? []))].sort();
+  const allToolPermissionsSelected = allToolPermissions.length > 0 && allToolPermissions.every(
+    (permission) => (settings?.tool_permissions ?? []).includes(permission)
+  );
   return (
     <div className="grid gap-3">
-      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
-        <div className="flex min-h-8 items-center gap-2">
-          <span className="text-sm font-medium">Models</span>
-          <Button type="button" variant="outline" size="sm" className="ml-auto" onClick={addModel}>
+      <SettingsSection
+        title="Models"
+        open={modelsOpen}
+        onOpenChange={setModelsOpen}
+        action={(
+          <Button type="button" variant="outline" size="sm" onClick={addModel}>
             <Plus className="h-4 w-4" />
             Add model
           </Button>
-        </div>
-
+        )}
+      >
         {models.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-background/60 p-3 text-xs text-muted-foreground">
             No models configured.
@@ -313,12 +331,24 @@ export function RuntimeSettingsEditor({
             ))}
           </div>
         )}
-      </div>
+      </SettingsSection>
 
-      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
-        <div className="flex min-h-8 items-center gap-2">
-          <span className="text-sm font-medium">Tool Governance</span>
-        </div>
+      <SettingsSection
+        title="Tool Access"
+        open={toolAccessOpen}
+        onOpenChange={setToolAccessOpen}
+        action={(
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={toggleAllToolPermissions}
+            disabled={allToolPermissions.length === 0}
+          >
+            {allToolPermissionsSelected ? "Deselect all" : "Select all"}
+          </Button>
+        )}
+      >
         {toolDefinitions.length === 0 ? (
           <div className="rounded-md border border-dashed border-border bg-background/60 p-3 text-xs text-muted-foreground">
             No tools available.
@@ -330,54 +360,54 @@ export function RuntimeSettingsEditor({
               const approvalKey = (tool.name || tool.id).trim();
               const approval = settings?.tool_approvals?.[approvalKey.toLowerCase()];
               return (
-                <div key={tool.id} className="grid gap-2 rounded-md border border-border bg-background p-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
-                  <div className="min-w-0">
-                    <div className="truncate font-mono text-xs font-medium">{approvalKey}</div>
-                    <div className="text-xs text-muted-foreground">{permissions.length > 0 ? permissions.join(", ") : "No permissions required"}</div>
-                  </div>
-                  {tool.approval === "required" ? (
-                    <Select
-                      aria-label={`${approvalKey} approval`}
-                      value={approval === undefined ? "pending" : approval ? "allow" : "deny"}
-                      onChange={(event) => {
-                        const next = { ...(settings?.tool_approvals ?? {}) };
-                        if (event.target.value === "pending") delete next[approvalKey.toLowerCase()];
-                        else next[approvalKey.toLowerCase()] = event.target.value === "allow";
-                        onChangeRuntimeSettings({ tool_approvals: next });
-                      }}
-                    >
-                      <option value="pending">Approval required</option>
-                      <option value="allow">Allow</option>
-                      <option value="deny">Deny</option>
-                    </Select>
-                  ) : null}
-                  {permissions.map((permission) => (
-                    <label key={permission} className="flex items-center gap-2 text-xs sm:col-span-2">
-                      <input
-                        type="checkbox"
-                        checked={(settings?.tool_permissions ?? []).includes(permission)}
+                <div key={tool.id} className="flex min-h-10 min-w-0 items-center gap-3 rounded-md border border-border bg-background p-2">
+                  <div className="min-w-0 flex-1 truncate font-mono text-xs font-medium">{approvalKey}</div>
+                  <div className="flex shrink-0 items-center gap-3">
+                    {tool.approval === "required" ? (
+                      <Select
+                        aria-label={`${approvalKey} approval`}
+                        value={approval === undefined ? "pending" : approval ? "allow" : "deny"}
                         onChange={(event) => {
-                          const current = new Set(settings?.tool_permissions ?? []);
-                          if (event.target.checked) current.add(permission);
-                          else current.delete(permission);
-                          onChangeRuntimeSettings({ tool_permissions: [...current].sort() });
+                          const next = { ...(settings?.tool_approvals ?? {}) };
+                          if (event.target.value === "pending") delete next[approvalKey.toLowerCase()];
+                          else next[approvalKey.toLowerCase()] = event.target.value === "allow";
+                          onChangeRuntimeSettings({ tool_approvals: next });
                         }}
-                      />
-                      Grant {permission}
-                    </label>
-                  ))}
+                      >
+                        <option value="pending">Approval required</option>
+                        <option value="allow">Allow</option>
+                        <option value="deny">Deny</option>
+                      </Select>
+                    ) : null}
+                    {permissions.map((permission) => (
+                      <label key={permission} className="flex items-center gap-1.5 whitespace-nowrap text-xs">
+                        <span>{permission}</span>
+                        <input
+                          type="checkbox"
+                          className="shrink-0"
+                          checked={(settings?.tool_permissions ?? []).includes(permission)}
+                          onChange={(event) => {
+                            const current = new Set(settings?.tool_permissions ?? []);
+                            if (event.target.checked) current.add(permission);
+                            else current.delete(permission);
+                            onChangeRuntimeSettings({ tool_permissions: [...current].sort() });
+                          }}
+                        />
+                      </label>
+                    ))}
+                  </div>
                 </div>
               );
             })}
           </div>
         )}
-      </div>
+      </SettingsSection>
 
-      <div className="grid gap-2 rounded-md border border-border bg-muted/30 p-2">
-        <div className="flex min-h-8 items-center gap-2">
-          <span className="text-sm font-medium">Environment</span>
-        </div>
-
+      <SettingsSection
+        title="Environment"
+        open={environmentOpen}
+        onOpenChange={setEnvironmentOpen}
+      >
         <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
           <Select
             value={environmentPresetKey}
@@ -450,10 +480,43 @@ export function RuntimeSettingsEditor({
             Add variable
           </Button>
         </div>
-      </div>
+      </SettingsSection>
 
       {status ? <div className="rounded-md border border-border bg-muted p-2 text-xs text-muted-foreground">{status}</div> : null}
     </div>
+  );
+}
+
+function SettingsSection({
+  title,
+  open,
+  onOpenChange,
+  action,
+  children,
+}: {
+  title: string;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  action?: ReactNode;
+  children: ReactNode;
+}) {
+  const Icon = open ? ChevronDown : ChevronRight;
+  return (
+    <section className="rounded-md border border-border bg-muted/30">
+      <div className="flex min-h-10 items-center gap-2">
+        <button
+          type="button"
+          className="flex min-h-10 min-w-0 flex-1 items-center gap-2 px-2 text-left"
+          aria-expanded={open}
+          onClick={() => onOpenChange(!open)}
+        >
+          <Icon className="h-4 w-4 shrink-0 text-muted-foreground" />
+          <span className="truncate text-sm font-medium">{title}</span>
+        </button>
+        {open && action ? <div className="mr-2 shrink-0">{action}</div> : null}
+      </div>
+      {open ? <div className="grid gap-2 p-2 pt-0">{children}</div> : null}
+    </section>
   );
 }
 

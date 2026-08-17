@@ -59,9 +59,9 @@ export function useTheme() {
 }
 
 function readStoredPreference(): ThemePreference {
-  if (typeof window === "undefined") return "system";
+  if (typeof window === "undefined") return "dark";
   const value = window.localStorage.getItem(storageKey);
-  return isThemePreference(value) ? value : "system";
+  return isThemePreference(value) ? value : "dark";
 }
 
 function readSystemTheme(): ResolvedTheme {

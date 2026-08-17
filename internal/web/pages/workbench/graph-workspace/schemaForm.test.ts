@@ -123,4 +123,23 @@ describe("JSON schema controls", () => {
 
     expect(html).toContain('value="**********"');
   });
+
+  test("renders model ID suggestions and quick add for model fields", () => {
+    const html = renderToStaticMarkup(createElement(JsonSchemaForm, {
+      schema: {
+        type: "object",
+        properties: {
+          model_id: { type: "string", title: "Model ID" },
+        },
+      },
+      value: { model_id: "default" },
+      modelIDs: ["default", "reviewer"],
+      onAddModel: () => {},
+      onChange: () => {},
+    }));
+
+    expect(html).toContain('<option value="default"></option>');
+    expect(html).toContain('<option value="reviewer"></option>');
+    expect(html).toContain('aria-label="Add model"');
+  });
 });

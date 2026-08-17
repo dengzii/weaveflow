@@ -23,6 +23,7 @@ describe("API response validation", () => {
       graph: graphInfo(),
       definition: graphDefinition(),
       settings: runtimeSettings(),
+      triggers: [],
     }, "graph session")).toMatchObject({ graph: graphInfo() });
 
     expect(validateRunListPage({ items: [runRecord()], next_cursor: "" }, "runs").items).toHaveLength(1);

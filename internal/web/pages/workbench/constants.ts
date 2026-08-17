@@ -1,9 +1,6 @@
 import type { GraphDefinition } from "../../types";
 import { graphDefinitionVersion } from "../../lib/graphEditor";
 
-export const workspaceTabs = ["graph", "settings"] as const;
-export type WorkspaceTab = (typeof workspaceTabs)[number];
-
 export const sampleGraph: GraphDefinition = {
   version: graphDefinitionVersion,
   name: "debug_graph",
@@ -74,13 +71,4 @@ export const runtimeEventTypes = [
   "state.changed",
   "contract.violation",
   "warning",
-];
-
-export const extensionPoints = [
-  "Node palette",
-  "Condition builder",
-  "Runner profiles",
-  "Artifact viewers",
-  "Schema forms",
-  "Layout plugins",
 ];

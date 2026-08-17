@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   analyzeInitialStateRequirements,
-  createGraphSession,
+  ApiError,
+  commitGraph,
   getGraphDetail,
   getRegistry,
   getTools,
@@ -10,6 +11,7 @@ import {
 import {
   cacheServerGraphs,
   hydrateServerGraph,
+  hydrateServerGraphResult,
   preferredServerGraph,
   rememberGraphID,
 } from "../lib/localGraphs";
@@ -17,13 +19,11 @@ import { parseJSON, stringifyJSON } from "../lib/utils";
 import {
   defaultInitialState,
   sampleGraph,
-  workspaceTabs,
-  type WorkspaceTab,
 } from "./workbench/constants";
 import { GraphWorkspace } from "./workbench/GraphWorkspace";
 import { RegistryDialog } from "./workbench/RegistryDialog";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
-import { SettingsWorkspace } from "./workbench/SettingsWorkspace";
+import { SettingsDialog } from "./workbench/SettingsDialog";
 import { WorkbenchShell } from "./workbench/WorkbenchShell";
 import { UserInputPromptDialog } from "./workbench/UserInputPromptDialog";
 import { useWorkbenchRuns } from "./workbench/useWorkbenchRuns";
@@ -49,15 +49,21 @@ import type {
   GraphDetail,
   GraphInfo,
   GraphInitialStateAnalysis,
+  GraphLoadResult,
   RegistryInfo,
   RuntimeSettings,
   RuntimeSettingsUpdate,
   ToolDefinition,
+  Trigger,
 } from "../types";
 
-export { workspaceTabs };
-export type { WorkspaceTab };
 export { pendingUserInputState, userInputPromptFromInterrupt } from "./workbench/userInputModel";
+
+function triggerPayloadForCommit(trigger: Trigger): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(trigger).filter(([key]) => (
+    key !== "target" && key !== "created_at" && key !== "updated_at"
+  )));
+}
 
 interface CachedInitialStateAnalysis {
   signature: string;
@@ -78,22 +84,7 @@ const emptyRuntimeSettings: RuntimeSettings = {
   tool_approvals: {},
 };
 
-export function WorkbenchPage({
-  tab: controlledTab,
-  onTabChange,
-}: {
-  tab?: WorkspaceTab;
-  onTabChange?: (tab: WorkspaceTab) => void;
-}) {
-  const [localTab, setLocalTab] = useState<WorkspaceTab>("graph");
-  const tab = controlledTab ?? localTab;
-  const setTab = useCallback(
-    (nextTab: WorkspaceTab) => {
-      if (!controlledTab) setLocalTab(nextTab);
-      onTabChange?.(nextTab);
-    },
-    [controlledTab, onTabChange]
-  );
+export function WorkbenchPage() {
   const [definitionText, setDefinitionText] = useState(stringifyJSON(sampleGraph));
   const [initialStateText, setInitialStateText] = useState(stringifyJSON(defaultInitialState));
   const [graphInfo, setGraphInfo] = useState<GraphInfo | null>(null);
@@ -102,6 +93,7 @@ export function WorkbenchPage({
   const [toolDefinitions, setToolDefinitions] = useState<ToolDefinition[]>([]);
   const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettings>(emptyRuntimeSettings);
   const [registryDialogOpen, setRegistryDialogOpen] = useState(false);
+  const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [graphId, setGraphId] = useState("debug_graph");
   const [graphVersion, setGraphVersion] = useState("1.0");
   const [initialRequirementsError, setInitialRequirementsError] = useState("");
@@ -109,6 +101,7 @@ export function WorkbenchPage({
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [savedGraphSignatures, setSavedGraphSignatures] = useState<Record<string, string>>({});
+  const [serverGraphRevision, setServerGraphRevision] = useState(0);
   const [serverStateLoaded, setServerStateLoaded] = useState(false);
   const [serverGraphsLoaded, setServerGraphsLoaded] = useState(false);
   const initialRequirementsCacheRef = useRef<CachedInitialStateAnalysis | null>(null);
@@ -116,9 +109,9 @@ export function WorkbenchPage({
   const toastSeqRef = useRef(0);
   const savingRef = useRef(false);
   const graphTriggers = useGraphTriggers(graphId);
-  const changeGraphID = useCallback((value: string) => {
+  const changeGraphID = useCallback((value: string, remember = true) => {
     setGraphId(value);
-    rememberGraphID(value);
+    if (remember) rememberGraphID(value);
   }, []);
 
   const definition = useMemo(() => {
@@ -397,7 +390,6 @@ export function WorkbenchPage({
       const graphValidationError = validateGraph(definition, registry);
       if (graphValidationError) {
         pushToast("error", `Graph validation failed: ${graphValidationError}`);
-        setTab("graph");
         return;
       }
       const analysis = await analyzeGraphForInputForm(definition);
@@ -411,22 +403,10 @@ export function WorkbenchPage({
         const preview = missingInitialState.slice(0, 4).join(", ");
         const suffix = missingInitialState.length > 4 ? ` (+${missingInitialState.length - 4} more)` : "";
         pushToast("error", `Missing initial state: ${preview}${suffix}`);
-        setTab("graph");
         return;
       }
-      const settings = runtimeSettingsUpload(runtimeSettings);
-      const result = await createGraphSession(graphId, definition, settings, graphVersion);
-      const nextRuntimeSettings = result.settings;
-      setGraphInfo(result.graph);
-      changeGraphID(result.graph.id);
-      setGraphVersion(result.graph.version);
-      setRuntimeSettings(nextRuntimeSettings);
-      recordSavedGraph(
-        definition,
-        runtimeSettingsUpload(nextRuntimeSettings),
-        result.graph.id,
-        result.graph.version
-      );
+      const result = await commitCurrentGraph(definition);
+      if (!result) return;
       await startConfiguredRun(initialState, {
         id: result.graph.id,
         version: result.graph.version,
@@ -496,20 +476,8 @@ export function WorkbenchPage({
         return;
       }
 
-      const settings = runtimeSettingsUpload(runtimeSettings);
-      const result = await createGraphSession(graphId, definition, settings, graphVersion);
-      const nextRuntimeSettings = result.settings;
-      setGraphInfo(result.graph);
-      changeGraphID(result.graph.id);
-      setGraphVersion(result.graph.version);
-      setRuntimeSettings(nextRuntimeSettings);
-      recordSavedGraph(
-        definition,
-        runtimeSettingsUpload(nextRuntimeSettings),
-        result.graph.id,
-        result.graph.version
-      );
-      if (graphTriggers.isUnsaved) await graphTriggers.save();
+      const result = await commitCurrentGraph(definition);
+      if (!result) return;
       const session = result.graph.graph_session_id ? ` (${result.graph.graph_session_id})` : "";
       pushToast("info", `Saved ${result.graph.id}@${result.graph.version}${session}`);
     } catch (err) {
@@ -521,9 +489,76 @@ export function WorkbenchPage({
     }
   }
 
+  async function commitCurrentGraph(targetDefinition: GraphDefinition) {
+    let expectedGraphSessionID = graphInfo?.id === graphId ? graphInfo.graph_session_id : undefined;
+    let mode: "create" | "overwrite" = expectedGraphSessionID ? "overwrite" : "create";
+    if (!expectedGraphSessionID) {
+      try {
+        const detail = await getGraphDetail(graphId);
+        expectedGraphSessionID = detail.graph.graph_session_id;
+        mode = "overwrite";
+      } catch (error) {
+        if (!(error instanceof ApiError) || error.status !== 404) throw error;
+      }
+    }
+    const result = await commitGraph(
+      graphId,
+      targetDefinition,
+      runtimeSettingsUpload(runtimeSettings),
+      graphTriggers.analysisPayloads(),
+      mode,
+      expectedGraphSessionID,
+      graphVersion
+    );
+    await applyGraphCommitResult(result);
+    return result;
+  }
+
+  async function commitImportedGraph(input: {
+    definition: GraphDefinition;
+    graphID: string;
+    graphVersion: string;
+    settings: RuntimeSettings;
+    triggers: Trigger[];
+    mode: "create" | "overwrite";
+    expectedGraphSessionID?: string;
+  }) {
+    const result = await commitGraph(
+      input.graphID,
+      input.definition,
+      runtimeSettingsUpload(input.settings),
+      input.triggers.map(triggerPayloadForCommit),
+      input.mode,
+      input.expectedGraphSessionID,
+      input.graphVersion
+    );
+    await applyGraphCommitResult(result);
+    return result;
+  }
+
+  async function applyGraphCommitResult(result: GraphLoadResult) {
+    graphTriggers.acceptCommit(result.triggers);
+    const nextRuntimeSettings = result.settings;
+    setGraphInfo(result.graph);
+    changeGraphID(result.graph.id);
+    setGraphVersion(result.graph.version);
+    setRuntimeSettings(nextRuntimeSettings);
+    recordSavedGraph(
+      result.definition,
+      runtimeSettingsUpload(nextRuntimeSettings),
+      result.graph.id,
+      result.graph.version
+    );
+    const summaries = await listGraphs();
+    const cachedGraphs = cacheServerGraphs(summaries);
+    const committedGraph = cachedGraphs.find((graph) => graph.graphId === result.graph.id);
+    if (committedGraph) hydrateServerGraphResult(committedGraph, result);
+    setServerGraphRevision((revision) => revision + 1);
+  }
+
   useEffect(() => {
     const handleSaveShortcut = (event: KeyboardEvent) => {
-      if (tab !== "graph" || !isSaveShortcut(event)) return;
+      if (settingsDialogOpen || !isSaveShortcut(event)) return;
       event.preventDefault();
       if (event.repeat || workbenchBusy || !definition) return;
       void saveGraph();
@@ -534,7 +569,6 @@ export function WorkbenchPage({
 
   return (
     <WorkbenchShell
-      tab={tab}
       streamStatus={streamStatus}
       streamDiagnostics={streamDiagnostics}
       onReconnectEventStream={reconnectEventStream}
@@ -551,7 +585,7 @@ export function WorkbenchPage({
       onStop={() => void cancelSelectedRun()}
       onResume={() => void resumeSelectedRun()}
       onShowRegistry={() => setRegistryDialogOpen(true)}
-      onTabChange={setTab}
+      onShowSettings={() => setSettingsDialogOpen(true)}
       hasRunStatus={runs.length > 0 || Boolean(selectedRunID)}
       runStatusVisible={runStatusVisible}
       onToggleRunStatus={toggleRunStatus}
@@ -574,39 +608,37 @@ export function WorkbenchPage({
         />
       }
     >
-      {tab === "graph" ? (
-        <GraphWorkspace
-          definition={definition}
-          definitionText={definitionText}
-          initialStateText={initialStateText}
-          initialRequirements={initialRequirements}
-          directInitialRequirements={directInitialRequirements}
-          initialRequirementsError={initialRequirementsError}
-          steps={steps}
-          selectedRunId={selectedRunID}
-          registry={registry}
-          toolDefinitions={toolDefinitions}
-          runtimeSettings={runtimeSettings}
-          graphTriggers={graphTriggers}
-          onChangeRuntimeSettings={changeRuntimeSettings}
-          onReplaceRuntimeSettings={replaceRuntimeSettings}
-          graphId={graphId}
-          graphVersion={graphVersion}
-          serverGraphsLoaded={serverGraphsLoaded}
-          graphSwitchDisabled={graphSwitchDisabled}
-          toasts={toasts}
-          onGraphId={changeGraphID}
-          onGraphVersion={setGraphVersion}
-          onDefinitionText={setDefinitionText}
-          onInitialStateText={setInitialStateText}
-          onDismissToast={dismissToast}
-          onGraphSwitch={prepareGraphSwitch}
-          onGraphDetailLoaded={handleGraphDetailLoaded}
-        />
-      ) : null}
-      {tab === "settings" ? (
-        <SettingsWorkspace registry={registry} />
-      ) : null}
+      <GraphWorkspace
+        definition={definition}
+        definitionText={definitionText}
+        initialStateText={initialStateText}
+        initialRequirements={initialRequirements}
+        directInitialRequirements={directInitialRequirements}
+        initialRequirementsError={initialRequirementsError}
+        steps={steps}
+        selectedRunId={selectedRunID}
+        registry={registry}
+        toolDefinitions={toolDefinitions}
+        runtimeSettings={runtimeSettings}
+        graphTriggers={graphTriggers}
+        onChangeRuntimeSettings={changeRuntimeSettings}
+        onReplaceRuntimeSettings={replaceRuntimeSettings}
+        graphId={graphId}
+        graphVersion={graphVersion}
+        serverGraphRevision={serverGraphRevision}
+        serverGraphsLoaded={serverGraphsLoaded}
+        graphSwitchDisabled={graphSwitchDisabled}
+        toasts={toasts}
+        onGraphId={changeGraphID}
+        onGraphVersion={setGraphVersion}
+        onDefinitionText={setDefinitionText}
+        onInitialStateText={setInitialStateText}
+        onDismissToast={dismissToast}
+        onNotify={pushToast}
+        onCommitGraphImport={commitImportedGraph}
+        onGraphSwitch={prepareGraphSwitch}
+        onGraphDetailLoaded={handleGraphDetailLoaded}
+      />
       <UserInputPromptDialog
         prompt={humanPrompt}
         value={humanPromptText}
@@ -620,6 +652,10 @@ export function WorkbenchPage({
         registry={registry}
         toolDefinitions={toolDefinitions}
         onClose={() => setRegistryDialogOpen(false)}
+      />
+      <SettingsDialog
+        open={settingsDialogOpen}
+        onClose={() => setSettingsDialogOpen(false)}
       />
     </WorkbenchShell>
   );

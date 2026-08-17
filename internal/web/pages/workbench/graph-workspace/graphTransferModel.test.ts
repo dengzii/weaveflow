@@ -4,7 +4,7 @@ import {
   buildGraphExportBundle,
   graphExportFilename,
   parseGraphImport,
-  resolveGraphImportConflicts,
+  resolveGraphImport,
 } from "./graphTransferModel";
 
 describe("graph transfer model", () => {
@@ -185,8 +185,13 @@ describe("graph transfer model", () => {
 
   test("rejects removed plaintext webhook credentials during import", () => {
     expect(() => parseGraphImport(JSON.stringify({
+      format: "weaveflow.graph-export",
+      format_version: "1.0",
+      exported_at: "2026-08-17T00:00:00Z",
+      contents: ["graph", "config", "triggers"],
       graph_id: "demo",
-      definition: graphDefinition(),
+      graph_version: "v1",
+      definition: { ...graphDefinition(), metadata: undefined },
       triggers: [{
         id: "hook",
         type: "webhook",
@@ -196,8 +201,8 @@ describe("graph transfer model", () => {
     }))).toThrow("removed plaintext webhook api_key");
   });
 
-  test("normalizes legacy runtime settings storage version during import", () => {
-    const imported = parseGraphImport(JSON.stringify({
+  test("rejects legacy export envelopes without the explicit format contract", () => {
+    expect(() => parseGraphImport(JSON.stringify({
       graph_id: "legacy-demo",
       graph_version: "v1",
       definition: graphDefinition(),
@@ -211,48 +216,24 @@ describe("graph transfer model", () => {
           model: "legacy-model",
         }],
       },
-    }));
-
-    expect(imported.settings).toEqual({
-      environment: { WORKDIR: "/legacy" },
-      environment_secrets: {},
-      environment_presets: undefined,
-      models: [{
-        id: "default",
-        enabled: true,
-        provider: "openai",
-        api_format: "chat_completions",
-        model: "legacy-model",
-        base_url: "",
-        extra_body: undefined,
-        pricing: undefined,
-        credential_configured: false,
-      }],
-      tool_permissions: [],
-      tool_approvals: {},
-    });
-    expect("version" in imported.settings!).toBe(false);
+    }))).toThrow("Unsupported graph export format: missing");
   });
 
-  test("imports a plain Graph Definition JSON file", () => {
-    const imported = parseGraphImport(JSON.stringify(graphDefinition()));
-
-    expect(imported.graphID).toBe("demo");
-    expect(imported.graphVersion).toBe("1.0");
-    expect(imported.settings).toBeUndefined();
-    expect(imported.contents).toEqual(["graph", "config", "ui"]);
+  test("rejects plain Graph Definition files without an export contract", () => {
+    expect(() => parseGraphImport(JSON.stringify(graphDefinition())))
+      .toThrow("Unsupported graph export format: missing");
   });
 
   test("rejects removed and unsupported Graph Definition formats", () => {
     expect(() => parseGraphImport(JSON.stringify({
       version: "1.0",
       nodes: [{ id: "model", type: "llm" }],
-    }))).toThrow("definition.state_modules");
+    }))).toThrow("Unsupported graph export format: missing");
     expect(() => parseGraphImport(JSON.stringify({
       version: "2.0",
       state_modules: [{ name: "weaveflow.protocols", version: "1" }],
       nodes: [{ id: "model", type: "llm" }],
-    }))).toThrow("Unsupported Graph Definition version");
+    }))).toThrow("Unsupported graph export format: missing");
   });
 
   test("generates a new graph ID and numbered name for import conflicts", () => {
@@ -277,25 +258,25 @@ describe("graph transfer model", () => {
       includeTriggers: true,
       includeUI: true,
     })));
-    const resolved = resolveGraphImportConflicts(
-      imported,
-      ["demo", "graph_clone"],
-      ["demo", "demo 1"],
-      ["hook", "chat"],
-      "graph_clone"
-    );
+    const resolved = resolveGraphImport(imported, {
+      strategy: "copy",
+      existingGraphIDs: ["demo", "graph_clone"],
+      existingGraphNames: ["demo", "demo 1"],
+      existingTriggerIDs: ["hook", "chat"],
+      generatedGraphID: "graph_clone",
+    });
 
     expect(resolved.graphID).toBe("graph_clone_1");
     expect(resolved.definition.name).toBe("demo 2");
-    expect(resolved.triggers?.map((trigger) => trigger.id)).toEqual(["hook_1", "chat_1"]);
+    expect(resolved.triggers?.map((trigger) => trigger.id)).toEqual(["hook", "chat"]);
     expect(resolved.triggers?.map((trigger) => trigger.target.graph_id)).toEqual([
       "graph_clone_1",
       "graph_clone_1",
     ]);
     expect(resolved.definition.metadata?.web).toEqual({
       trigger_nodes: {
-        hook_1: { x: -100, y: 20 },
-        chat_1: { x: -100, y: 120 },
+        hook: { x: -100, y: 20 },
+        chat: { x: -100, y: 120 },
       },
     });
     expect(imported.graphID).toBe("demo");
@@ -315,17 +296,83 @@ describe("graph transfer model", () => {
       includeUI: false,
     })));
 
-    const resolved = resolveGraphImportConflicts(
-      imported,
-      ["another-graph"],
-      ["another graph"],
-      [],
-      "graph_imported"
-    );
+    const resolved = resolveGraphImport(imported, {
+      strategy: "copy",
+      existingGraphIDs: ["another-graph"],
+      existingGraphNames: ["another graph"],
+      generatedGraphID: "graph_imported",
+    });
 
     expect(resolved.graphID).toBe("graph_imported");
     expect(resolved.triggers?.[0].target.graph_id).toBe("graph_imported");
     expect(imported.graphID).toBe("legacy-demo");
+  });
+
+  test("overwrites a graph without changing graph or trigger IDs", () => {
+    const imported = parseGraphImport(JSON.stringify(buildGraphExportBundle({
+      definition: graphDefinition(),
+      graphID: "demo",
+      graphVersion: "v4",
+      runtimeSettings: runtimeSettings(),
+      triggers: graphTriggers(),
+      includeConfig: true,
+      includeSettings: true,
+      includeTriggers: true,
+      includeUI: true,
+    })));
+
+    const resolved = resolveGraphImport(imported, {
+      strategy: "overwrite",
+      existingGraphIDs: ["demo"],
+      existingGraphNames: ["demo"],
+      existingTriggerIDs: ["hook", "chat"],
+    });
+
+    expect(resolved.graphID).toBe("demo");
+    expect(resolved.definition.name).toBe("demo");
+    expect(resolved.triggers?.map((trigger) => trigger.id)).toEqual(["hook", "chat"]);
+    expect(resolved.triggers?.map((trigger) => trigger.target.graph_id)).toEqual(["demo", "demo"]);
+  });
+
+  test("preserves the target trigger list when an overwrite import omits triggers", () => {
+    const imported = parseGraphImport(JSON.stringify(buildGraphExportBundle({
+      definition: graphDefinition(),
+      graphID: "demo",
+      graphVersion: "v1",
+      runtimeSettings: runtimeSettings(),
+      triggers: graphTriggers(),
+      includeConfig: true,
+      includeSettings: false,
+      includeTriggers: false,
+      includeUI: false,
+    })));
+
+    const resolved = resolveGraphImport(imported, {
+      strategy: "overwrite",
+      existingGraphIDs: ["demo"],
+      existingGraphNames: ["demo"],
+    });
+
+    expect(resolved.triggers).toBeUndefined();
+  });
+
+  test("rejects contents that disagree with exported fields", () => {
+    const source = buildGraphExportBundle({
+      definition: graphDefinition(),
+      graphID: "demo",
+      graphVersion: "v1",
+      runtimeSettings: runtimeSettings(),
+      triggers: graphTriggers(),
+      includeConfig: true,
+      includeSettings: true,
+      includeTriggers: false,
+      includeUI: false,
+    });
+    delete source.settings;
+    expect(() => parseGraphImport(JSON.stringify(source))).toThrow("contents declares settings");
+    source.contents = ["graph", "config"];
+    source.settings = {};
+    expect(() => parseGraphImport(JSON.stringify(source))).toThrow("settings is present");
   });
 
   test("rejects malformed files and sanitizes download filenames", () => {

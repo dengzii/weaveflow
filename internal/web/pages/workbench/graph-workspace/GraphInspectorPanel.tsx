@@ -136,6 +136,7 @@ export function GraphInspectorPanel({
           paletteNodeTypes={paletteNodeTypes}
           registry={registry}
           registryLoaded={registryLoaded}
+          runtimeSettings={runtimeSettings}
           toolDefinitions={toolDefinitions}
           selectedNode={selectedNode}
           steps={steps}
@@ -143,6 +144,7 @@ export function GraphInspectorPanel({
           onChangeNode={onChangeNode}
           onChangeNodeConfigText={onChangeNodeConfigText}
           onChangeNodeID={onChangeNodeId}
+          onChangeRuntimeSettings={onChangeRuntimeSettings}
           onDeleteNode={onDeleteNode}
         />
       ) : null}

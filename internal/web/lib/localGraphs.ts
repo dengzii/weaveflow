@@ -1,4 +1,4 @@
-import type { CachedGraphSummary, GraphDefinition, GraphDetail, RuntimeSettings } from "../types";
+import type { CachedGraphSummary, GraphDefinition, GraphDetail, GraphLoadResult, RuntimeSettings } from "../types";
 
 export const defaultGraphVersion = "1.0";
 
@@ -100,6 +100,23 @@ export function hydrateServerGraph(graph: LocalGraph, detail: GraphDetail): Hydr
     runtimeSettings: detail.settings,
     nodeCount: detail.definition.nodes.length,
     latestSession: detail.latest_session.id,
+  };
+  cachedGraphs = cachedGraphs.map((item) => item.id === graph.id ? hydrated : item).sort(sortGraphs);
+  return hydrated;
+}
+
+export function hydrateServerGraphResult(graph: LocalGraph, result: GraphLoadResult): HydratedLocalGraph {
+  if (graph.graphId !== result.graph.id) {
+    throw new Error(`graph commit ${result.graph.id} does not match ${graph.graphId}`);
+  }
+  const hydrated: HydratedLocalGraph = {
+    ...graph,
+    title: result.definition.name || result.graph.id,
+    graphVersion: result.graph.version,
+    definition: result.definition,
+    runtimeSettings: result.settings,
+    nodeCount: result.definition.nodes.length,
+    latestSession: result.graph.graph_session_id,
   };
   cachedGraphs = cachedGraphs.map((item) => item.id === graph.id ? hydrated : item).sort(sortGraphs);
   return hydrated;

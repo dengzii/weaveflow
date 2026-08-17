@@ -7,15 +7,18 @@ import { cn, isPlainRecord } from "../../../lib/utils";
 import type { ToolDefinition } from "../../../types";
 import {
   JSONValueControl,
+  ModelIDControl,
   ObjectListControl,
   StringListControl,
   ToolIDListControl,
+  type ModelAddHandler,
 } from "./SchemaFormControls";
 import {
   coerceEnumValue,
   formatStructuredValue,
   getPathValue,
   isObjectArraySchema,
+  isModelIDField,
   isStringArraySchema,
   isToolIDsField,
   normalizeConfigSchema,
@@ -34,6 +37,8 @@ interface JsonSchemaFormProps {
   unavailableReason?: string;
   value: Record<string, unknown>;
   toolDefinitions?: ToolDefinition[];
+  modelIDs?: string[];
+  onAddModel?: ModelAddHandler;
   writeOnlyValuesConfigured?: boolean;
   onChange: (value: Record<string, unknown>) => void;
 }
@@ -43,6 +48,8 @@ export function JsonSchemaForm({
   unavailableReason,
   value,
   toolDefinitions = [],
+  modelIDs = [],
+  onAddModel,
   writeOnlyValuesConfigured = false,
   onChange,
 }: JsonSchemaFormProps) {
@@ -76,6 +83,8 @@ export function JsonSchemaForm({
           rootValue={value}
           issues={issues}
           toolDefinitions={toolDefinitions}
+          modelIDs={modelIDs}
+          onAddModel={onAddModel}
           writeOnlyValuesConfigured={writeOnlyValuesConfigured}
           onChange={onChange}
         />
@@ -100,6 +109,8 @@ function SchemaField({
   rootValue,
   issues,
   toolDefinitions,
+  modelIDs,
+  onAddModel,
   writeOnlyValuesConfigured,
   onChange,
 }: {
@@ -109,6 +120,8 @@ function SchemaField({
   rootValue: Record<string, unknown>;
   issues: SchemaFormIssue[];
   toolDefinitions: ToolDefinition[];
+  modelIDs: string[];
+  onAddModel?: ModelAddHandler;
   writeOnlyValuesConfigured: boolean;
   onChange: (value: Record<string, unknown>) => void;
 }) {
@@ -147,6 +160,8 @@ function SchemaField({
                 rootValue={rootValue}
                 issues={issues}
                 toolDefinitions={toolDefinitions}
+                modelIDs={modelIDs}
+                onAddModel={onAddModel}
                 writeOnlyValuesConfigured={writeOnlyValuesConfigured}
                 onChange={onChange}
               />
@@ -162,6 +177,8 @@ function SchemaField({
             path,
             name,
             toolDefinitions,
+            modelIDs,
+            onAddModel,
             writeOnlyValuesConfigured
           )
         )}
@@ -186,6 +203,8 @@ function renderSchemaControl(
   path: string,
   name: string,
   toolDefinitions: ToolDefinition[],
+  modelIDs: string[],
+  onAddModel: ModelAddHandler | undefined,
   writeOnlyValuesConfigured: boolean
 ) {
   const enumValues = Array.isArray(schema.enum) ? schema.enum : [];
@@ -193,6 +212,18 @@ function renderSchemaControl(
 
   if (schema["x-control"] === "json") {
     return <JSONValueControl value={value} invalid={invalid} onChange={onChange} />;
+  }
+
+  if (type === "string" && isModelIDField(path, name, schema)) {
+    return (
+      <ModelIDControl
+        value={value}
+        invalid={invalid}
+        modelIDs={modelIDs}
+        onAddModel={onAddModel}
+        onChange={onChange}
+      />
+    );
   }
 
   if (enumValues.length > 0) {
@@ -262,6 +293,8 @@ function renderSchemaControl(
             schema={itemSchema}
             value={itemValue}
             toolDefinitions={toolDefinitions}
+            modelIDs={modelIDs}
+            onAddModel={onAddModel}
             writeOnlyValuesConfigured={writeOnlyValuesConfigured}
             onChange={onItemChange}
           />

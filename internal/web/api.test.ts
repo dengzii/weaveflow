@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   ApiError,
   analyzeInitialStateRequirements,
-  createGraphSession,
+  commitGraph,
   getRunInspection,
   listGraphs,
   listRuns,
@@ -52,6 +52,7 @@ describe("server API client", () => {
           graph: { id: "graph a", version: "2.0", graph_session_id: "session/1" },
           definition: { nodes: [] },
           settings: runtimeSettings(),
+          triggers: [],
         });
       }
       if (url.endsWith("/runs")) return jsonResponse(run("run-1"), 202);
@@ -63,7 +64,7 @@ describe("server API client", () => {
       });
     }) as typeof fetch;
 
-    await createGraphSession("graph a", { nodes: [] }, {}, "2.0");
+    await commitGraph("graph a", { nodes: [] }, {}, [], "create", undefined, "2.0");
     await startRun("graph a", "session/1", { shared: {} });
     await getRunInspection("graph a", "run/1");
 
@@ -72,11 +73,15 @@ describe("server API client", () => {
       "http://localhost:8080/graphs/graph%20a/sessions/session%2F1/runs",
       "http://localhost:8080/graphs/graph%20a/runs/run%2F1/inspection?event_limit=500",
     ]);
-    expect(JSON.parse(String(requests[0].init?.body))).toEqual({
+    const commitBody = JSON.parse(String(requests[0].init?.body));
+    expect(commitBody).toMatchObject({
       graph_version: "2.0",
       definition: { nodes: [] },
       settings: {},
+      triggers: [],
+      mode: "create",
     });
+    expect(commitBody.request_id).toMatch(/^graph-[0-9a-f]{8}$/);
   });
 
   test("replaces all Graph triggers in one request", async () => {
@@ -163,6 +168,10 @@ function graph(id: string) {
 function run(runID: string) {
   return {
     run_id: runID,
+    revision: 1,
+    root_run_id: runID,
+    run_path: [runID],
+    namespace: "root",
     graph_id: "graph-a",
     graph_version: "2.0",
     status: "completed",
@@ -173,5 +182,11 @@ function run(runID: string) {
 }
 
 function runtimeSettings() {
-  return { environment: {}, models: [] };
+  return {
+    environment: {},
+    environment_secrets: {},
+    models: [],
+    tool_permissions: [],
+    tool_approvals: {},
+  };
 }

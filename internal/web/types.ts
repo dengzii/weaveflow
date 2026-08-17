@@ -126,6 +126,7 @@ export type StepStatus = "scheduled" | "running" | "succeeded" | "failed" | "pau
 
 export interface TriggerTarget {
   graph_id: string;
+  graph_session_id?: string;
 }
 
 export interface WebhookStateMapping {
@@ -291,6 +292,8 @@ export interface GraphLoadResult {
   settings: RuntimeSettings;
   runner_base_dir?: string;
   warnings?: WarningRecord[];
+  triggers: Trigger[];
+  trigger_id_mapping?: Record<string, string>;
 }
 
 export interface GraphSessionSummary {

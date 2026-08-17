@@ -218,6 +218,10 @@ export function useLocalGraphs({
     return clearAutoSave;
   }, [cacheHydrated, clearAutoSave, definition, onStatus, saveLocal, signature]);
 
+  const refreshGraphs = useCallback(() => {
+    setGraphs(readLocalGraphs());
+  }, []);
+
   return {
     graphs,
     cacheHydrated,
@@ -227,5 +231,6 @@ export function useLocalGraphs({
     activateGraph,
     resetActiveGraph,
     deleteActiveGraph,
+    refreshGraphs,
   };
 }

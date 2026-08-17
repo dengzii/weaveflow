@@ -14,6 +14,7 @@ export const graphExportFormatVersion = "1.0";
 
 export type GraphExportContent = "graph" | "config" | "settings" | "triggers" | "ui";
 export type GraphExportTrigger = Omit<Trigger, "target" | "created_at" | "updated_at">;
+export type GraphImportStrategy = "copy" | "overwrite";
 
 export interface GraphExportBundle {
   format: typeof graphExportFormat;
@@ -89,28 +90,47 @@ export function buildGraphExportBundle({
   };
 }
 
-export function resolveGraphImportConflicts(
+export function resolveGraphImport(
   graph: ParsedGraphImport,
-  existingGraphIDs: string[],
-  existingGraphNames: string[],
-  existingTriggerIDs: string[] = [],
-  generatedGraphID = createGraphID()
+  {
+    strategy,
+    existingGraphIDs,
+    existingGraphNames,
+    generatedGraphID = createGraphID(),
+  }: {
+    strategy: GraphImportStrategy;
+    existingGraphIDs: string[];
+    existingGraphNames: string[];
+    existingTriggerIDs?: string[];
+    generatedGraphID?: string;
+  }
 ): ParsedGraphImport {
   const usedGraphIDs = new Set(existingGraphIDs.map((value) => value.trim()).filter(Boolean));
   const usedGraphNames = new Set(existingGraphNames.map((value) => value.trim()).filter(Boolean));
   const sourceGraphID = graph.graphID.trim() || graph.definition.name?.trim() || "imported_graph";
   const sourceGraphName = graph.definition.name?.trim() || sourceGraphID;
+  if (strategy === "overwrite") {
+    if (!usedGraphIDs.has(sourceGraphID)) {
+      throw new Error(`Cannot overwrite missing graph ${sourceGraphID}.`);
+    }
+    return {
+      ...graph,
+      graphID: sourceGraphID,
+      triggers: graph.triggers?.map((trigger) => ({
+        ...trigger,
+        target: { graph_id: sourceGraphID },
+      })),
+      definition: {
+        ...graph.definition,
+        name: sourceGraphName,
+      },
+    };
+  }
   const graphID = nextAvailableValue(generatedGraphID.trim() || createGraphID(), usedGraphIDs, "_");
   const graphName = nextAvailableValue(sourceGraphName, usedGraphNames, " ");
-  const usedTriggerIDs = new Set(existingTriggerIDs.map((value) => value.trim()).filter(Boolean));
-  const triggerIDMap = new Map<string, string>();
   const triggers = graph.triggers?.map((trigger) => {
-    const triggerID = nextAvailableValue(trigger.id, usedTriggerIDs, "_");
-    usedTriggerIDs.add(triggerID);
-    triggerIDMap.set(trigger.id, triggerID);
     return {
       ...trigger,
-      id: triggerID,
       target: { graph_id: graphID },
     };
   });
@@ -120,7 +140,7 @@ export function resolveGraphImportConflicts(
     graphID,
     triggers,
     definition: {
-      ...remapTriggerCanvasPositions(graph.definition, triggerIDMap),
+      ...graph.definition,
       name: graphName,
     },
   };
@@ -138,32 +158,15 @@ export function parseGraphImport(text: string): ParsedGraphImport {
     throw new Error("Invalid graph file: expected a JSON object.");
   }
 
-  if (value.format !== undefined) {
-    if (value.format !== graphExportFormat) {
-      throw new Error(`Unsupported graph export format: ${String(value.format)}`);
-    }
-    if (value.format_version !== graphExportFormatVersion) {
-      throw new Error(`Unsupported graph export version: ${String(value.format_version)}`);
-    }
-    const contents = parseExportContents(value.contents);
-    return parseGraphEnvelope(value, contents);
+  if (value.format !== graphExportFormat) {
+    throw new Error(`Unsupported graph export format: ${String(value.format ?? "missing")}`);
   }
-
-  if (value.definition !== undefined) {
-    const contents: GraphExportContent[] = ["graph", "config"];
-    if (value.settings !== undefined) contents.push("settings");
-    if (value.triggers !== undefined) contents.push("triggers");
-    if (value.ui !== undefined) contents.push("ui");
-    return parseGraphEnvelope(value, contents);
+  if (value.format_version !== graphExportFormatVersion) {
+    throw new Error(`Unsupported graph export version: ${String(value.format_version)}`);
   }
-
-  const definition = parseImportedGraphDefinition(value);
-  return {
-    definition,
-    graphID: stringValue(value.name),
-    graphVersion: defaultGraphVersion,
-    contents: ["graph", "config", ...(hasGraphUI(value) ? ["ui" as const] : [])],
-  };
+  const contents = parseExportContents(value.contents);
+  validateDeclaredContents(value, contents);
+  return parseGraphEnvelope(value, contents);
 }
 
 export function graphExportFilename(graphID: string, definition: GraphDefinition): string {
@@ -207,7 +210,53 @@ function parseExportContents(value: unknown): GraphExportContent[] {
   if (!value.every((item) => typeof item === "string" && allowed.has(item as GraphExportContent))) {
     throw new Error("Invalid graph export: contents contains an unsupported value.");
   }
-  return [...new Set(value)] as GraphExportContent[];
+  const declared = new Set(value as GraphExportContent[]);
+  return (["graph", "config", "settings", "triggers", "ui"] as const)
+    .filter((content) => declared.has(content));
+}
+
+function validateDeclaredContents(envelope: Record<string, unknown>, contents: GraphExportContent[]) {
+  assertKnownFields(envelope, [
+    "format",
+    "format_version",
+    "exported_at",
+    "contents",
+    "graph_id",
+    "graph_version",
+    "definition",
+    "settings",
+    "triggers",
+    "ui",
+  ], "graph export");
+  if (!stringValue(envelope.exported_at)) throw new Error("Invalid graph export: exported_at is required.");
+  if (!stringValue(envelope.graph_id)) throw new Error("Invalid graph export: graph_id is required.");
+  if (!stringValue(envelope.graph_version)) throw new Error("Invalid graph export: graph_version is required.");
+  const declared = new Set(contents);
+  for (const field of ["settings", "triggers", "ui"] as const) {
+    const hasField = envelope[field] !== undefined;
+    if (declared.has(field) && !hasField) {
+      throw new Error(`Invalid graph export: contents declares ${field}, but ${field} is missing.`);
+    }
+    if (!declared.has(field) && hasField) {
+      throw new Error(`Invalid graph export: ${field} is present but contents does not declare it.`);
+    }
+  }
+  if (!isPlainRecord(envelope.definition)) return;
+  const definition = envelope.definition;
+  const hiddenUI = isPlainRecord(definition.metadata) && definition.metadata.web !== undefined;
+  if (hiddenUI) {
+    throw new Error("Invalid graph export: definition.metadata.web must be declared through ui.");
+  }
+  if (!declared.has("config") && graphDefinitionHasConfig(definition)) {
+    throw new Error("Invalid graph export: config is present but contents does not declare it.");
+  }
+}
+
+function graphDefinitionHasConfig(definition: Record<string, unknown>): boolean {
+  const nodes = Array.isArray(definition.nodes) ? definition.nodes : [];
+  if (nodes.some((node) => isPlainRecord(node) && node.config !== undefined)) return true;
+  const edges = Array.isArray(definition.edges) ? definition.edges : [];
+  return edges.some((edge) => isPlainRecord(edge) && isPlainRecord(edge.condition) && edge.condition.config !== undefined);
 }
 
 function requireGraphDefinition(value: unknown): GraphDefinition {
@@ -251,6 +300,14 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
     }
     environment[key] = item;
   }
+  assertKnownFields(value, [
+    "environment",
+    "environment_secrets",
+    "environment_presets",
+    "models",
+    "tool_permissions",
+    "tool_approvals",
+  ], "runtime settings");
 
   const environmentSecrets = parseSecretRefs(value.environment_secrets, "environment secret");
 
@@ -259,13 +316,16 @@ function parseRuntimeSettings(value: unknown): RuntimeSettings {
       throw new Error(`Invalid graph file: model ${index + 1} must be an object.`);
     }
     const id = stringValue(item.id) || (index === 0 ? "default" : `model-${index + 1}`);
-    if (
-      Object.prototype.hasOwnProperty.call(item, "api_key")
-      || Object.prototype.hasOwnProperty.call(item, "api_key_configured")
-      || Object.prototype.hasOwnProperty.call(item, "credential")
-    ) {
-      throw new Error(`Invalid graph file: model ${index + 1} uses removed API key fields.`);
-    }
+    assertKnownFields(item, [
+      "id",
+      "enabled",
+      "provider",
+      "api_format",
+      "model",
+      "base_url",
+      "extra_body",
+      "pricing",
+    ], `model ${index + 1}`);
     return {
       id,
       enabled: typeof item.enabled === "boolean" ? item.enabled : true,
@@ -423,6 +483,18 @@ function parseGraphTriggers(value: unknown, graphID: string): Trigger[] {
     if (concurrency !== undefined && concurrency !== "parallel" && concurrency !== "skip") {
       throw new Error(`Invalid graph file: trigger ${id} has an unsupported concurrency policy.`);
     }
+    assertKnownFields(item, [
+      "id",
+      "name",
+      "type",
+      "enabled",
+      "concurrency",
+      "credential",
+      "initial_state",
+      "webhook",
+      "schedule",
+      "chat",
+    ], `trigger ${index + 1}`);
     if (isPlainRecord(item.webhook) && Object.prototype.hasOwnProperty.call(item.webhook, "api_key")) {
       throw new Error(`Invalid graph file: trigger ${id} uses the removed plaintext webhook api_key field.`);
     }
@@ -449,29 +521,6 @@ function exportableGraphUI(web: Record<string, unknown>, triggerIDs: string[]): 
   );
   if (Object.keys(next.trigger_nodes).length === 0) delete next.trigger_nodes;
   return next;
-}
-
-function remapTriggerCanvasPositions(
-  definition: GraphDefinition,
-  triggerIDMap: Map<string, string>
-): GraphDefinition {
-  if (triggerIDMap.size === 0 || !isPlainRecord(definition.metadata?.web)) return definition;
-  const web = cloneJSONValue(definition.metadata.web);
-  if (!isPlainRecord(web.trigger_nodes)) return definition;
-  const triggerNodes: Record<string, unknown> = {};
-  for (const [triggerID, position] of Object.entries(web.trigger_nodes)) {
-    const nextTriggerID = triggerIDMap.get(triggerID);
-    if (nextTriggerID) triggerNodes[nextTriggerID] = position;
-  }
-  if (Object.keys(triggerNodes).length > 0) web.trigger_nodes = triggerNodes;
-  else delete web.trigger_nodes;
-  return {
-    ...definition,
-    metadata: {
-      ...definition.metadata,
-      web,
-    },
-  };
 }
 
 function sanitizeSensitiveValues(value: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
@@ -550,10 +599,6 @@ function withGraphUI(definition: GraphDefinition, web: Record<string, unknown>):
   };
 }
 
-function hasGraphUI(value: Record<string, unknown>): boolean {
-  return isPlainRecord(value.metadata) && isPlainRecord(value.metadata.web);
-}
-
 function isSensitiveSettingName(value: string): boolean {
   const upper = value.toUpperCase();
   return upper.includes("KEY") || upper.includes("TOKEN") || upper.includes("SECRET") || upper.includes("PASSWORD");
@@ -561,4 +606,10 @@ function isSensitiveSettingName(value: string): boolean {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function assertKnownFields(value: Record<string, unknown>, allowed: readonly string[], label: string) {
+  const allowedFields = new Set(allowed);
+  const unknown = Object.keys(value).find((key) => !allowedFields.has(key));
+  if (unknown) throw new Error(`Invalid graph file: ${label} contains unknown field ${unknown}.`);
 }

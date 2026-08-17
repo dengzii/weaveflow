@@ -15,7 +15,6 @@ import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
 import { getBackendBaseUrl } from "../../lib/backend";
 import type { GraphDefinition } from "../../types";
-import type { WorkspaceTab } from "./constants";
 
 type StreamStatus = "connecting" | "connected" | "reconnecting" | "gap" | "failed" | "closed";
 interface StreamDiagnostics {
@@ -36,7 +35,6 @@ interface StreamDiagnostics {
 type RunControlMode = "run" | "active" | "resume";
 
 export function WorkbenchShell({
-  tab,
   streamStatus,
   streamDiagnostics,
   busy,
@@ -56,11 +54,10 @@ export function WorkbenchShell({
   onStop,
   onResume,
   onShowRegistry,
+  onShowSettings,
   onReconnectEventStream,
   onToggleRunStatus,
-  onTabChange,
 }: {
-  tab: WorkspaceTab;
   streamStatus: StreamStatus;
   streamDiagnostics: StreamDiagnostics;
   busy: boolean;
@@ -80,9 +77,9 @@ export function WorkbenchShell({
   onStop: () => void;
   onResume: () => void;
   onShowRegistry: () => void;
+  onShowSettings: () => void;
   onReconnectEventStream: () => void;
   onToggleRunStatus: () => void;
-  onTabChange: (tab: WorkspaceTab) => void;
 }) {
   const backendBaseUrl = getBackendBaseUrl();
 
@@ -92,37 +89,27 @@ export function WorkbenchShell({
         <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
           <GitBranch className="h-4 w-4" />
         </div>
-        <NavButton icon={LayoutDashboard} active={tab === "graph"} onClick={() => onTabChange("graph")} label="Graph" />
+        <NavButton icon={LayoutDashboard} active onClick={() => undefined} label="Graph" />
         <div className="flex-1" />
-        <NavButton icon={Settings} active={tab === "settings"} onClick={() => onTabChange("settings")} label="Settings" />
+        <NavButton icon={Settings} onClick={onShowSettings} label="Settings" />
       </aside>
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
-          {tab === "graph" ? (
-            <div id="graph-title-slot" className="min-w-0" />
-          ) : (
-            <div className="min-w-0">
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-sm font-semibold">WeaveFlow</span>
-              </div>
-            </div>
-          )}
+          <div id="graph-title-slot" className="min-w-0" />
           <div className="flex-1" />
-          {tab === "graph" ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
-              onClick={onSave}
-              disabled={busy || !definition}
-              title="Save graph"
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save
-            </Button>
-          ) : null}
-          {tab === "graph" && runControlMode === "active" ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
+            onClick={onSave}
+            disabled={busy || !definition}
+            title="Save graph"
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save
+          </Button>
+          {runControlMode === "active" ? (
             <>
               <Button variant="outline" size="sm" onClick={onPause} disabled={runControlsDisabled || !hasRunStatus} title="Pause run">
                 <Pause className="h-4 w-4" />
@@ -133,7 +120,7 @@ export function WorkbenchShell({
                 Stop
               </Button>
             </>
-          ) : tab === "graph" && runControlMode === "resume" ? (
+          ) : runControlMode === "resume" ? (
             <>
               <Button size="sm" onClick={onResume} disabled={busy || !canResume} title="Resume paused run">
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
@@ -144,12 +131,12 @@ export function WorkbenchShell({
                 Stop
               </Button>
             </>
-          ) : tab === "graph" ? (
+          ) : (
             <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
               {busy && !saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               Run
             </Button>
-          ) : null}
+          )}
           <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">
             <Braces className="h-4 w-4" />
             Registry
@@ -282,12 +269,12 @@ function retryBackoffSummary(delayMS: number): string {
 
 function NavButton({
   icon: Icon,
-  active,
+  active = false,
   label,
   onClick,
 }: {
   icon: ComponentType<{ className?: string }>;
-  active: boolean;
+  active?: boolean;
   label: string;
   onClick: () => void;
 }) {
