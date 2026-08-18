@@ -180,6 +180,21 @@ export function useLocalGraphs({
     return activation;
   }, [clearAutoSave]);
 
+  const createDraft = useCallback((nextSnapshot: LocalGraphWorkspaceSnapshot) => {
+    const input = localGraphSaveInput(nextSnapshot, "");
+    if (!input) return null;
+    clearAutoSave();
+    const graph = saveLocalGraph(input);
+    const activation = localGraphActivation(graph);
+    activeCacheIDRef.current = graph.id;
+    setActiveCacheID(graph.id);
+    setGraphs(readLocalGraphs());
+    lastSavedSignatureRef.current = activation.signature;
+    autoSaveHydratedRef.current = true;
+    onStatus("new graph");
+    return graph;
+  }, [clearAutoSave, onStatus]);
+
   const resetActiveGraph = useCallback(() => {
     clearAutoSave();
     activeCacheIDRef.current = "";
@@ -188,16 +203,22 @@ export function useLocalGraphs({
     autoSaveHydratedRef.current = true;
   }, [clearAutoSave]);
 
-  const deleteActiveGraph = useCallback(() => {
-    const cacheID = activeCacheIDRef.current;
-    if (!cacheID) return false;
-    clearAutoSave();
-    setGraphs(deleteLocalGraph(cacheID));
-    activeCacheIDRef.current = "";
-    setActiveCacheID("");
-    lastSavedSignatureRef.current = "";
+  const deleteGraph = useCallback((cacheID: string) => {
+    if (!cacheID) return null;
+    const graph = readLocalGraphs().find((item) => item.id === cacheID);
+    if (!graph || graph.serverGraph) return null;
+    const deletedActiveGraph = activeCacheIDRef.current === cacheID;
+    if (deletedActiveGraph) clearAutoSave();
+    const remainingGraphs = deleteLocalGraph(cacheID);
+    setGraphs(remainingGraphs);
+    if (deletedActiveGraph) {
+      activeCacheIDRef.current = "";
+      setActiveCacheID("");
+      lastSavedSignatureRef.current = "";
+      autoSaveHydratedRef.current = false;
+    }
     onStatus("graph deleted");
-    return true;
+    return { deletedActiveGraph, remainingGraphs };
   }, [clearAutoSave, onStatus]);
 
   useEffect(() => {
@@ -229,8 +250,9 @@ export function useLocalGraphs({
     isUnsaved: Boolean(cacheHydrated && definition && signature !== lastSavedSignatureRef.current),
     saveLocal,
     activateGraph,
+    createDraft,
     resetActiveGraph,
-    deleteActiveGraph,
+    deleteGraph,
     refreshGraphs,
   };
 }

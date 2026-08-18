@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Bot, Braces, Trash2, X } from "lucide-react";
+import { Braces, Trash2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
 import { Select } from "../../../components/ui/select";
@@ -7,6 +7,7 @@ import { Textarea } from "../../../components/ui/textarea";
 import { initialStateBindings } from "../../../lib/graphEditor";
 import { exampleConfigForSchema } from "../../../lib/jsonSchemaDefaults";
 import { formatTime, isPlainRecord, stringifyJSON } from "../../../lib/utils";
+import { runtimeFromSteps } from "../../../components/graphCanvasModel";
 import type {
   GraphDefinition,
   GraphNodeSpec,
@@ -17,13 +18,19 @@ import type {
   StepRecord,
   ToolDefinition,
 } from "../../../types";
-import { WorkbenchDialogOverlay } from "../shared";
+import { ModelSettingsDialog } from "./GraphSettingsEditor";
 import { JSONConfigEditor } from "./JSONConfigEditor";
 import { JsonSchemaForm } from "./schemaForm";
 import type { ModelAddHandler } from "./SchemaFormControls";
 import { CollapsibleInspectorBlock, Field } from "./shared";
 import { StateBindingsBlock } from "./StateBindingsEditor";
 import { analyzeNodeDetails, nodeTypeForType, schemaForNodeType } from "./nodeInspectorModel";
+import {
+  modelsFromSettings,
+  newEditableGraphModel,
+  nextModelID,
+  normalizeModelSettings,
+} from "./graphSettingsEditorModel";
 
 interface NodeInspectorProps {
   definition: GraphDefinition | null;
@@ -243,10 +250,19 @@ export function NodeInspector({
       </CollapsibleInspectorBlock>
 
       {modelAddRequest && runtimeSettings ? (
-        <AddModelDialog
-          request={modelAddRequest}
-          settings={runtimeSettings}
-          onChangeRuntimeSettings={onChangeRuntimeSettings}
+        <ModelSettingsDialog
+          mode="add"
+          model={newEditableGraphModel(
+            modelAddRequest.suggestedID || nextModelID(modelsFromSettings(runtimeSettings))
+          )}
+          existingModelIDs={runtimeSettings.models.map((model) => model.id)}
+          onSave={(model) => {
+            const nextModels = [...modelsFromSettings(runtimeSettings), model];
+            onChangeRuntimeSettings({ models: normalizeModelSettings(nextModels) });
+            modelAddRequest.onAdded(model.id);
+            setModelAddRequest(null);
+            return true;
+          }}
           onClose={() => setModelAddRequest(null)}
         />
       ) : null}
@@ -254,163 +270,74 @@ export function NodeInspector({
   );
 }
 
-interface ModelAddRequest {
-  suggestedID: string;
-  onAdded: (modelID: string) => void;
-}
-
-function AddModelDialog({
-  request,
-  settings,
-  onChangeRuntimeSettings,
-  onClose,
+export function NodeRuntimeInspector({
+  selectedNode,
+  selectedRunID,
+  steps,
 }: {
-  request: ModelAddRequest;
-  settings: RuntimeSettings;
-  onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
-  onClose: () => void;
+  selectedNode: GraphNodeSpec | null;
+  selectedRunID: string;
+  steps: StepRecord[];
 }) {
-  const [modelID, setModelID] = useState(request.suggestedID || nextQuickModelID(settings));
-  const [provider, setProvider] = useState("openai");
-  const [apiFormat, setAPIFormat] = useState("chat_completions");
-  const [modelName, setModelName] = useState("");
-  const [baseURL, setBaseURL] = useState("");
-  const [apiKey, setAPIKey] = useState("");
-  const [error, setError] = useState("");
-
-  function addModel() {
-    const id = modelID.trim();
-    if (!id) {
-      setError("Model ID is required.");
-      return;
-    }
-    if (settings.models.some((model) => model.id === id)) {
-      setError(`Model ID already exists: ${id}`);
-      return;
-    }
-
-    try {
-      onChangeRuntimeSettings({
-        models: [
-          ...settings.models.map(runtimeModelUpdate),
-          {
-            id,
-            enabled: true,
-            provider,
-            api_format: apiFormat,
-            model: modelName.trim(),
-            base_url: baseURL.trim(),
-            credential_value: apiKey.trim() || undefined,
-          },
-        ],
-      });
-      request.onAdded(id);
-      onClose();
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    }
+  if (!selectedNode) {
+    return (
+      <div className="flex min-h-24 items-center justify-center p-4 text-center text-xs text-muted-foreground">
+        Select a node on the canvas.
+      </div>
+    );
   }
 
+  const nodeSteps = steps
+    .filter((step) => step.node_id === selectedNode.id && (!selectedRunID || step.run_id === selectedRunID))
+    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
+  const runtime = runtimeFromSteps(nodeSteps, selectedRunID).get(selectedNode.id);
+  const latestStep = nodeSteps[0];
+  const latestError = nodeSteps.find((step) => Boolean(step.error_message));
+
   return (
-    <WorkbenchDialogOverlay onDismiss={onClose}>
-      <form
-        className="w-[min(560px,96vw)] overflow-hidden rounded-md border border-border bg-panel shadow-xl"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="add-model-dialog-title"
-        onSubmit={(event) => {
-          event.preventDefault();
-          addModel();
-        }}
-      >
-        <div className="flex h-14 items-center gap-3 border-b border-border px-4">
-          <Bot className="h-4 w-4 text-muted-foreground" />
-          <div id="add-model-dialog-title" className="text-sm font-semibold">Add model</div>
-          <Button type="button" variant="ghost" size="icon" className="ml-auto" onClick={onClose} aria-label="Close add model dialog">
-            <X className="h-4 w-4" />
-          </Button>
-        </div>
+    <div className="space-y-2.5 p-3">
+      <div className="grid grid-cols-2 gap-2">
+        <RuntimeMetric label="Status" value={latestStep?.status || "idle"} />
+        <RuntimeMetric label="Executions" value={String(runtime?.executionCount || 0)} />
+        <RuntimeMetric label="Attempt" value={String(latestStep?.attempt || 0)} />
+        <RuntimeMetric label="Updated" value={formatTime(latestStep?.updated_at)} />
+      </div>
 
-        <div className="grid gap-3 p-4 sm:grid-cols-2">
-          <Field label="Model ID" className="sm:col-span-2">
-            <Input
-              autoFocus
-              value={modelID}
-              onChange={(event) => {
-                setModelID(event.target.value);
-                setError("");
-              }}
-              placeholder="default"
-              className="font-mono text-xs"
-            />
-          </Field>
-          <Field label="Provider">
-            <Select value={provider} onChange={(event) => setProvider(event.target.value)}>
-              <option value="openai">OpenAI</option>
-              <option value="azure">Azure OpenAI</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="gemini">Gemini</option>
-              <option value="vllm">vLLM</option>
-              <option value="mistral">Mistral</option>
-              <option value="xai">xAI</option>
-              <option value="openrouter">OpenRouter</option>
-            </Select>
-          </Field>
-          <Field label="API format">
-            <Select value={apiFormat} onChange={(event) => setAPIFormat(event.target.value)}>
-              <option value="chat_completions">Chat Completions</option>
-              <option value="responses">Responses</option>
-            </Select>
-          </Field>
-          <Field label="Model name">
-            <Input value={modelName} onChange={(event) => setModelName(event.target.value)} placeholder="gpt-5" />
-          </Field>
-          <Field label="Base URL">
-            <Input value={baseURL} onChange={(event) => setBaseURL(event.target.value)} placeholder="https://api.openai.com/v1" />
-          </Field>
-          <Field label="API key" className="sm:col-span-2">
-            <Input
-              type="password"
-              autoComplete="new-password"
-              value={apiKey}
-              onChange={(event) => setAPIKey(event.target.value)}
-              placeholder="Optional"
-              className="font-mono text-xs"
-            />
-          </Field>
-          {error ? <div className="text-xs text-destructive sm:col-span-2">{error}</div> : null}
+      {latestError?.error_message ? (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 p-2 text-xs text-destructive">
+          <div className="mb-1 font-medium">Latest error</div>
+          <div className="whitespace-pre-wrap break-words">{latestError.error_message}</div>
         </div>
+      ) : null}
 
-        <div className="flex justify-end gap-2 border-t border-border px-4 py-3">
-          <Button type="button" variant="ghost" onClick={onClose}>Cancel</Button>
-          <Button type="submit">Add and select</Button>
+      {latestStep ? (
+        <div className="min-w-0 rounded-md border border-border bg-background/40 px-2.5 py-2">
+          <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Current step</div>
+          <div className="mt-1 truncate font-mono text-[10px] text-muted-foreground" title={latestStep.step_id}>
+            {latestStep.step_id}
+          </div>
         </div>
-      </form>
-    </WorkbenchDialogOverlay>
+      ) : (
+        <div className="rounded-md border border-dashed border-border p-3 text-center text-xs text-muted-foreground">
+          No execution in the selected run.
+        </div>
+      )}
+    </div>
   );
 }
 
-function runtimeModelUpdate(model: RuntimeSettings["models"][number]): NonNullable<RuntimeSettingsUpdate["models"]>[number] {
-  return {
-    id: model.id,
-    enabled: model.enabled,
-    provider: model.provider,
-    api_format: model.api_format,
-    model: model.model,
-    base_url: model.base_url,
-    extra_body: model.extra_body,
-    pricing: model.pricing,
-    credential_value: model.credential_value,
-    credential_clear: model.credential_clear,
-  };
+function RuntimeMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0 rounded-md border border-border bg-muted/50 p-2">
+      <div className="text-[10px] uppercase tracking-wide text-muted-foreground">{label}</div>
+      <div className="mt-0.5 truncate text-xs font-medium" title={value}>{value || "-"}</div>
+    </div>
+  );
 }
 
-function nextQuickModelID(settings: RuntimeSettings): string {
-  const modelIDs = new Set(settings.models.map((model) => model.id.trim()).filter(Boolean));
-  if (!modelIDs.has("default")) return "default";
-  let index = settings.models.length + 1;
-  while (modelIDs.has(`model-${index}`)) index += 1;
-  return `model-${index}`;
+interface ModelAddRequest {
+  suggestedID: string;
+  onAdded: (modelID: string) => void;
 }
 
 function DetailGroup({ title, rows }: { title: string; rows: Array<[string, string]> }) {

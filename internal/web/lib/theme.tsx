@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState, t
 
 const storageKey = "weaveflow:web:theme:v1";
 const themeQuery = "(prefers-color-scheme: dark)";
+const themeColors = { light: "#f8fafc", dark: "#101113" } as const;
 
 export const themePreferences = ["system", "light", "dark"] as const;
 export type ThemePreference = (typeof themePreferences)[number];
@@ -33,6 +34,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
     if (typeof document === "undefined") return;
     document.documentElement.dataset.theme = resolvedTheme;
     document.documentElement.dataset.themePreference = preference;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute("content", themeColors[resolvedTheme]);
     if (typeof window !== "undefined") {
       window.localStorage.setItem(storageKey, preference);
     }

@@ -4,6 +4,7 @@ import {
   eventListKey,
   eventMatchesFilters,
   fixedVirtualRange,
+  selectRunIOCheckpoints,
   stateHistoryEntries,
   summarizeRunMetrics,
   uniqueSorted,
@@ -116,6 +117,24 @@ describe("run status model", () => {
       cachedPromptTokens: 40,
       warningCount: 1,
       errorCount: 1,
+    });
+  });
+
+  test("selects the initial before-node checkpoint and prefers the final output checkpoint", () => {
+    const checkpoints = [
+      checkpointRecord("checkpoint-after", "after_node", "2026-07-30T02:00:02Z"),
+      checkpointRecord("checkpoint-final", "final", "2026-07-30T02:00:04Z"),
+      checkpointRecord("checkpoint-before", "before_node", "2026-07-30T02:00:00Z"),
+      checkpointRecord("checkpoint-late", "after_node", "2026-07-30T02:00:05Z"),
+    ];
+
+    expect(selectRunIOCheckpoints(checkpoints)).toEqual({
+      input: checkpoints[2],
+      output: checkpoints[1],
+    });
+    expect(selectRunIOCheckpoints(checkpoints.filter((checkpoint) => checkpoint.stage !== "final"))).toEqual({
+      input: checkpoints[2],
+      output: checkpoints[3],
     });
   });
 

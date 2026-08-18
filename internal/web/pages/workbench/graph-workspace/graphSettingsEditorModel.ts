@@ -26,6 +26,35 @@ export interface EditableEnvironmentVariable {
   secret_ref: string;
 }
 
+export function newEditableGraphModel(id: string): EditableGraphModel {
+  return {
+    id,
+    enabled: true,
+    provider: "openai",
+    api_format: "chat_completions",
+    model: "",
+    base_url: "",
+    extra_body: "",
+    credential_configured: false,
+    credential_input: "",
+    credential_value: "",
+    credential_clear: false,
+    pricing_currency: "USD",
+    input_per_million: "",
+    cached_input_per_million: "",
+    output_per_million: "",
+  };
+}
+
+export function modelIDValidationError(existingIDs: readonly string[], value: string): string {
+  const modelID = value.trim();
+  if (!modelID) return "Model ID is required.";
+  if (existingIDs.some((existingID) => existingID.trim() === modelID)) {
+    return `Model ID already exists: ${modelID}`;
+  }
+  return "";
+}
+
 export function modelsFromSettings(settings: RuntimeSettings | null): EditableGraphModel[] {
   const configured = Array.isArray(settings?.models) ? settings.models : [];
   return configured.map((model, index) => ({

@@ -104,6 +104,10 @@ export async function getGraphDetail(graphID: string): Promise<GraphDetail> {
   return validateGraphDetail(await apiFetch<unknown>(path), `GET ${path} response`);
 }
 
+export async function deleteGraph(graphID: string): Promise<void> {
+  await apiFetch<unknown>(graphPath(graphID), { method: "DELETE" });
+}
+
 export async function analyzeInitialStateRequirements(
   graphID: string,
   definition: GraphDefinition,

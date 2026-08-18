@@ -5,6 +5,7 @@ import type { CheckpointDetail, RunRecord, RunStatus, RuntimeEvent } from "../..
 import {
   RunStatusPanel,
   RunMetrics,
+  RunInputOutput,
   RunOverview,
   RunPanelTabs,
   StateDetailTabs,
@@ -38,6 +39,7 @@ describe("RunStatusPanel", () => {
     expect(markup).toContain('aria-label="Run history view"');
     expect(markup).toContain('role="tab" aria-selected="true"');
     expect(markup).toContain(">Overview</button>");
+    expect(markup).toContain(">Input / Output</button>");
     expect(markup).toContain(">Metrics</button>");
     expect(markup).toContain(">Event</button>");
     expect(markup).toContain(">State</button>");
@@ -91,7 +93,23 @@ describe("RunStatusPanel", () => {
     const tabs = renderToStaticMarkup(
       createElement(RunPanelTabs, { view: "metrics", onChange: () => undefined })
     );
-    const overview = renderToStaticMarkup(createElement(RunOverview, { run, metrics }));
+    const inputDetail = checkpointDetail();
+    const outputDetail = {
+      ...checkpointDetail(),
+      record: { ...checkpointDetail().record, checkpoint_id: "checkpoint-final", stage: "final" },
+      artifacts: [{ id: "artifact-1", type: "report" }],
+    };
+    const overview = renderToStaticMarkup(createElement(RunOverview, {
+      run,
+      metrics,
+    }));
+    const inputOutput = renderToStaticMarkup(createElement(RunInputOutput, {
+      run,
+      inputCheckpoint: inputDetail.record,
+      outputCheckpoint: outputDetail.record,
+      inputDetail,
+      outputDetail,
+    }));
     const metricMarkup = renderToStaticMarkup(createElement(RunMetrics, { metrics, partial: true }));
 
     expect(tabs).toContain('role="tab" aria-selected="true"');
@@ -99,7 +117,31 @@ describe("RunStatusPanel", () => {
     expect(overview).toContain('data-run-overview="run-overview"');
     expect(overview).toContain("Current node");
     expect(overview).toContain("review");
-    expect(overview).toContain("Return value");
+    expect(overview).not.toContain("Input / Output");
+    expect(overview).not.toContain("Open Input / Output");
+    expect(inputOutput).toContain('data-run-input-output="run-overview"');
+    expect(inputOutput).toContain("grid h-full min-h-0 gap-3 lg:grid-cols-2");
+    expect(inputOutput).toContain("h-full min-w-0 overflow-auto");
+    expect(inputOutput).toContain(">Input</span>");
+    expect(inputOutput).toContain(">Output</span>");
+    expect(inputOutput).toContain("07-30 02:00:02.000");
+    expect(inputOutput).not.toContain("checkpoint-after");
+    expect(inputOutput).not.toContain("checkpoint-final");
+    expect(inputOutput).not.toContain("after_node");
+    expect(inputOutput).toContain("artifact-1");
+    expect(inputOutput).toContain('aria-label="Input JSON view"');
+    expect(inputOutput).toContain('aria-label="Search input JSON"');
+    expect(inputOutput).toContain('aria-label="Input JSON tree"');
+    expect(inputOutput).toContain(">tree</button>");
+    expect(inputOutput).toContain(">raw</button>");
+    expect(inputOutput).toContain('aria-label="Expand all input nodes"');
+    expect(inputOutput).toContain("lucide-unfold-vertical");
+    expect(inputOutput.indexOf('aria-label="Search input JSON"')).toBeLessThan(
+      inputOutput.indexOf('aria-label="Input JSON view"')
+    );
+    expect(inputOutput).toContain(">return_value <span");
+    expect(inputOutput).toContain(">shared <span");
+    expect(inputOutput).not.toContain(">internal <span");
     expect(metricMarkup).toContain('data-run-metrics="true"');
     expect(metricMarkup).toContain("Model usage");
     expect(metricMarkup).toContain("Total tokens");

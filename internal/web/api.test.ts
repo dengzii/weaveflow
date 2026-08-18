@@ -3,6 +3,7 @@ import {
   ApiError,
   analyzeInitialStateRequirements,
   commitGraph,
+  deleteGraph,
   getRunInspection,
   listGraphs,
   listRuns,
@@ -82,6 +83,19 @@ describe("server API client", () => {
       mode: "create",
     });
     expect(commitBody.request_id).toMatch(/^graph-[0-9a-f]{8}$/);
+  });
+
+  test("deletes an encoded Graph resource", async () => {
+    let request: { url: string; init?: RequestInit } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      request = { url: String(input), init };
+      return jsonResponse({ graph_id: "graph a", deleted_trigger_count: 2 });
+    }) as typeof fetch;
+
+    await deleteGraph("graph a");
+
+    expect(request?.url).toBe("http://localhost:8080/graphs/graph%20a");
+    expect(request?.init?.method).toBe("DELETE");
   });
 
   test("replaces all Graph triggers in one request", async () => {

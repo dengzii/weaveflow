@@ -2,6 +2,7 @@ import { Panel } from "@xyflow/react";
 import { Focus, Lock, Maximize2, Network, Unlock, ZoomIn, ZoomOut } from "lucide-react";
 
 export function GraphCanvasControls({
+  showEditControls,
   interactive,
   canAutoLayout,
   hasSelection,
@@ -12,6 +13,7 @@ export function GraphCanvasControls({
   onZoomIn,
   onZoomOut,
 }: {
+  showEditControls: boolean;
   interactive: boolean;
   canAutoLayout: boolean;
   hasSelection: boolean;
@@ -33,16 +35,18 @@ export function GraphCanvasControls({
       <button type="button" className="react-flow__controls-button" title="Fit view" aria-label="Fit view" onClick={onFitView}>
         <Maximize2 className="h-3.5 w-3.5" />
       </button>
-      <button
-        type="button"
-        className="react-flow__controls-button"
-        title="Auto layout"
-        aria-label="Auto layout"
-        onClick={onAutoLayout}
-        disabled={!canAutoLayout || !onAutoLayout}
-      >
-        <Network className="h-3.5 w-3.5" />
-      </button>
+      {showEditControls ? (
+        <button
+          type="button"
+          className="react-flow__controls-button"
+          title="Auto layout"
+          aria-label="Auto layout"
+          onClick={onAutoLayout}
+          disabled={!canAutoLayout || !onAutoLayout}
+        >
+          <Network className="h-3.5 w-3.5" />
+        </button>
+      ) : null}
       <button
         type="button"
         className="react-flow__controls-button"
@@ -53,15 +57,17 @@ export function GraphCanvasControls({
       >
         <Focus className="h-3.5 w-3.5" />
       </button>
-      <button
-        type="button"
-        className="react-flow__controls-button"
-        title={interactive ? "Lock canvas" : "Unlock canvas"}
-        aria-label={interactive ? "Lock canvas" : "Unlock canvas"}
-        onClick={onToggleInteractive}
-      >
-        {interactive ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
-      </button>
+      {showEditControls ? (
+        <button
+          type="button"
+          className="react-flow__controls-button"
+          title={interactive ? "Lock canvas" : "Unlock canvas"}
+          aria-label={interactive ? "Lock canvas" : "Unlock canvas"}
+          onClick={onToggleInteractive}
+        >
+          {interactive ? <Unlock className="h-3.5 w-3.5" /> : <Lock className="h-3.5 w-3.5" />}
+        </button>
+      ) : null}
     </Panel>
   );
 }

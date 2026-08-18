@@ -4,6 +4,7 @@ import type {
   GraphDefinition,
   GraphNodeSpec,
   NodeTypeSchema,
+  RunStatus,
   TriggerCanvasNode,
 } from "../types";
 import {
@@ -21,9 +22,11 @@ import {
   isVirtualEndNodeID,
   isVirtualStartNodeID,
   layoutNodes,
+  triggerNodeRuntimeStatus,
   triggerTargetHandleID,
   virtualLoopLayouts,
   virtualNodeKind,
+  virtualNodeRuntimeStatus,
   virtualNodeSpec,
   type FlowNodeData,
   type RuntimeNodeState,
@@ -35,6 +38,12 @@ export interface VirtualGraphEdge {
   to: string;
   kind: "entry" | "finish";
   condition?: GraphConditionSpec;
+}
+
+export interface ConditionEdgeHoverInfo {
+  label: string;
+  state: Array<{ name: string; value: string }>;
+  config: Array<{ name: string; value: string }>;
 }
 
 export interface GraphCanvasElements {
@@ -50,6 +59,9 @@ export interface GraphCanvasElementOptions {
   highlightedNodeIDs: ReadonlySet<string>;
   nodeTypes: NodeTypeSchema[];
   runtime: ReadonlyMap<string, RuntimeNodeState>;
+  runtimeVisible: boolean;
+  runStatus?: RunStatus;
+  runTriggerID?: string;
   selectedEdgeID?: string;
   selectedLoopID?: string;
   selectedNodeID?: string;
@@ -68,6 +80,9 @@ export function buildGraphCanvasElements({
   highlightedNodeIDs,
   nodeTypes,
   runtime,
+  runtimeVisible,
+  runStatus,
+  runTriggerID,
   selectedEdgeID,
   selectedLoopID,
   selectedNodeID,
@@ -105,6 +120,7 @@ export function buildGraphCanvasElements({
         type: "loop",
         status: "idle",
         editable: interactive,
+        runtimeVisible,
         virtualKind: "loop",
         width: layout.width,
         height: layout.height,
@@ -125,8 +141,11 @@ export function buildGraphCanvasElements({
       data: {
         label: item.label,
         type: item.trigger.type,
-        status: item.trigger.enabled ? "enabled" : "disabled",
+        status: runtimeVisible && item.trigger.id === runTriggerID
+          ? triggerNodeRuntimeStatus(runStatus)
+          : "idle",
         editable: false,
+        runtimeVisible,
         virtualKind: "trigger",
         triggerID: item.trigger.id,
         triggerType: item.trigger.type,
@@ -137,7 +156,7 @@ export function buildGraphCanvasElements({
     ...displayNodes.map((node): Node<FlowNodeData> => {
       const virtualKind = virtualNodeKind(node.id);
       const nodeType = nodeTypes.find((item) => item.type === node.type);
-      const runtimeState = runtime.get(node.id);
+      const runtimeState = runtimeVisible ? runtime.get(node.id) : undefined;
       const statePorts = nodeType?.state_ports ?? [];
       const staticPortNames = new Set(statePorts.map((port) => port.name));
       const dynamicPortNames = Object.keys(node.state ?? {}).filter(
@@ -160,17 +179,22 @@ export function buildGraphCanvasElements({
         label: node.name || node.id,
         type: node.type || "node",
         typeLabel: nodeType?.title || node.type || "Node",
-        status: virtualKind ? "idle" : runtimeState?.status || "idle",
-        attempt: virtualKind ? 0 : runtimeState?.attempt || 0,
+        status: virtualKind && runtimeVisible
+          ? virtualNodeRuntimeStatus(virtualKind, runStatus)
+          : runtimeState?.status || "idle",
+        executionCount: virtualKind ? 0 : runtimeState?.executionCount || 0,
         editable: interactive,
+        runtimeVisible,
         highlighted: highlightedNodeIDs.has(node.id),
         bindingSummary: virtualKind || totalPortCount === 0
           ? undefined
           : `${boundPortCount}/${totalPortCount} state`,
+        stateBindingPreview: virtualKind ? undefined : stateBindingPreview(node, nodeType),
         missingBindings: missingBindings || missingDynamicBindings,
         configurationSummary: virtualKind ? undefined : importantConfigurationSummary(node, nodeType),
+        configurationPreview: virtualKind ? undefined : configurationPreview(node),
         configurationErrors: virtualKind ? undefined : configurationErrors.get(node.id),
-        errorSummary: virtualKind ? undefined : runtimeState?.errorMessage,
+        errorSummary: virtualKind || !runtimeVisible ? undefined : runtimeState?.errorMessage,
         virtualKind,
       };
       return {
@@ -210,15 +234,26 @@ export function buildGraphCanvasElements({
     const selected = selectionId === selectedEdgeID;
     const condition = Boolean(edge.condition);
     const failure = Boolean(edge.failure);
-	const label = edge.failure ? failureEdgeLabel(edge.failure) : edge.condition ? conditionDisplayLabel(edge.condition) : undefined;
+    const label = edge.failure
+      ? failureEdgeLabel(edge.failure)
+      : edge.condition
+        ? conditionDisplayLabel(edge.condition)
+        : undefined;
     return {
       id,
-      data: { selectionId },
+      data: {
+        selectionId,
+        conditionInfo: condition ? {
+          label: label || "Condition",
+          state: conditionStatePreview(edge.condition),
+          config: conditionConfigPreview(edge.condition),
+        } : undefined,
+      },
       source,
       target,
       sourceHandle,
       targetHandle,
-      type: contained ? "default" : undefined,
+      type: condition && !contained ? "condition" : contained ? "default" : undefined,
       label: showLabel ? label : undefined,
       labelStyle: showLabel && (condition || failure) ? {
         fill: "var(--foreground)",
@@ -264,6 +299,48 @@ export function buildGraphCanvasElements({
       }))
     : [];
   return { nodes, edges: [...flowEdges, ...triggerEdges] };
+}
+
+function stateBindingPreview(node: GraphNodeSpec, nodeType?: NodeTypeSchema) {
+  const preview: Array<{ name: string; value: string }> = [];
+  const staticPortNames = new Set<string>();
+  for (const port of nodeType?.state_ports ?? []) {
+    staticPortNames.add(port.name);
+    const path = node.state?.[port.name]?.path.trim()
+      || resolveDefaultStatePath(port.default_path, node.id);
+    if (path) preview.push({ name: port.name, value: path });
+  }
+  for (const name of Object.keys(node.state ?? {}).sort()) {
+    if (staticPortNames.has(name)) continue;
+    const path = node.state?.[name]?.path.trim();
+    if (path) preview.push({ name, value: path });
+  }
+  return preview;
+}
+
+function conditionStatePreview(condition?: GraphConditionSpec) {
+  return Object.entries(condition?.state ?? {})
+    .map(([name, binding]) => ({ name, value: binding.path.trim() }))
+    .filter((item) => item.value);
+}
+
+function conditionConfigPreview(condition?: GraphConditionSpec) {
+  return Object.entries(condition?.config ?? {})
+    .filter(([, value]) => value !== undefined)
+    .map(([name, value]) => ({ name, value: previewValue(value) }));
+}
+
+function configurationPreview(node: GraphNodeSpec) {
+  return Object.entries(node.config ?? {})
+    .filter(([, value]) => value !== undefined)
+    .map(([name, value]) => ({ name, value: previewValue(value) }));
+}
+
+function previewValue(value: unknown): string {
+  if (typeof value === "string") return value || '""';
+  if (value === null) return "null";
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  return JSON.stringify(value) ?? String(value);
 }
 
 function importantConfigurationSummary(node: GraphNodeSpec, nodeType?: NodeTypeSchema): string | undefined {

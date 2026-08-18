@@ -3,6 +3,7 @@ import {
   analyzeInitialStateRequirements,
   ApiError,
   commitGraph,
+  deleteGraph,
   getGraphDetail,
   getRegistry,
   getTools,
@@ -24,7 +25,7 @@ import { GraphWorkspace } from "./workbench/GraphWorkspace";
 import { RegistryDialog } from "./workbench/RegistryDialog";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
 import { SettingsDialog } from "./workbench/SettingsDialog";
-import { WorkbenchShell } from "./workbench/WorkbenchShell";
+import { WorkbenchShell, type WorkspaceMode } from "./workbench/WorkbenchShell";
 import { UserInputPromptDialog } from "./workbench/UserInputPromptDialog";
 import { useWorkbenchRuns } from "./workbench/useWorkbenchRuns";
 import type { ToastRecord, ToastTone } from "./workbench/graph-workspace/ToastStack";
@@ -104,6 +105,7 @@ export function WorkbenchPage() {
   const [serverGraphRevision, setServerGraphRevision] = useState(0);
   const [serverStateLoaded, setServerStateLoaded] = useState(false);
   const [serverGraphsLoaded, setServerGraphsLoaded] = useState(false);
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("edit");
   const initialRequirementsCacheRef = useRef<CachedInitialStateAnalysis | null>(null);
   const initialRequirementsRequestRef = useRef<PendingInitialStateAnalysis | null>(null);
   const toastSeqRef = useRef(0);
@@ -280,9 +282,25 @@ export function WorkbenchPage() {
     initialStateText,
     onNotify: pushToast,
   });
+  const selectedRun = useMemo(
+    () => runs.find((run) => run.run_id === selectedRunID),
+    [runs, selectedRunID]
+  );
   const workbenchBusy = busy || runBusy || runLaunchPending;
   const runControlsDisabled = runBusy || (busy && !runLaunchPending);
   const graphSwitchDisabled = workbenchBusy || graphSwitchLocked;
+  const enterDebugMode = useCallback(() => {
+    setWorkspaceMode("debug");
+    if (!runStatusVisible) toggleRunStatus();
+  }, [runStatusVisible, toggleRunStatus]);
+
+  const changeWorkspaceMode = useCallback((mode: WorkspaceMode) => {
+    if (mode === "debug") {
+      enterDebugMode();
+      return;
+    }
+    setWorkspaceMode("edit");
+  }, [enterDebugMode]);
 
   const loadServerState = useCallback(async () => {
     try {
@@ -407,6 +425,7 @@ export function WorkbenchPage() {
       }
       const result = await commitCurrentGraph(definition);
       if (!result) return;
+      enterDebugMode();
       await startConfiguredRun(initialState, {
         id: result.graph.id,
         version: result.graph.version,
@@ -556,9 +575,28 @@ export function WorkbenchPage() {
     setServerGraphRevision((revision) => revision + 1);
   }
 
+  async function deleteServerGraph(graphID: string) {
+    setBusy(true);
+    try {
+      await deleteGraph(graphID);
+      const summaries = await listGraphs();
+      cacheServerGraphs(summaries);
+      if (graphInfo?.id === graphID) {
+        setGraphInfo(null);
+        setInitialStateAnalysis(null);
+        setInitialRequirementsError("");
+        initialRequirementsCacheRef.current = null;
+      }
+      setServerGraphRevision((revision) => revision + 1);
+      pushToast("info", `Deleted ${graphID}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     const handleSaveShortcut = (event: KeyboardEvent) => {
-      if (settingsDialogOpen || !isSaveShortcut(event)) return;
+      if (workspaceMode !== "edit" || settingsDialogOpen || !isSaveShortcut(event)) return;
       event.preventDefault();
       if (event.repeat || workbenchBusy || !definition) return;
       void saveGraph();
@@ -577,18 +615,29 @@ export function WorkbenchPage() {
       unsaved={graphUnsaved}
       definition={definition}
       runControlMode={runControlMode}
+      workspaceMode={workspaceMode}
       canResume={canResumeSelectedRun}
       runControlsDisabled={runControlsDisabled}
       onRun={runGraph}
       onSave={() => void saveGraph()}
       onPause={() => void pauseSelectedRun()}
       onStop={() => void cancelSelectedRun()}
-      onResume={() => void resumeSelectedRun()}
+      onResume={() => {
+        enterDebugMode();
+        void resumeSelectedRun();
+      }}
       onShowRegistry={() => setRegistryDialogOpen(true)}
       onShowSettings={() => setSettingsDialogOpen(true)}
       hasRunStatus={runs.length > 0 || Boolean(selectedRunID)}
       runStatusVisible={runStatusVisible}
-      onToggleRunStatus={toggleRunStatus}
+      onToggleRunStatus={() => {
+        if (workspaceMode === "edit") {
+          enterDebugMode();
+          return;
+        }
+        toggleRunStatus();
+      }}
+      onWorkspaceModeChange={changeWorkspaceMode}
       runStatusPanel={
         <RunStatusPanel
           runs={runs}
@@ -596,7 +645,10 @@ export function WorkbenchPage() {
           selectedRunId={selectedRunID}
           runInspectionLoading={runInspectionLoading}
           runActionsDisabled={workbenchBusy}
-          onSelectRun={selectRun}
+          onSelectRun={(runID) => {
+            enterDebugMode();
+            selectRun(runID);
+          }}
           onDeleteRun={(runID) => void deleteRunRecord(runID)}
           steps={steps}
           checkpoints={checkpoints}
@@ -609,6 +661,7 @@ export function WorkbenchPage() {
       }
     >
       <GraphWorkspace
+        workspaceMode={workspaceMode}
         definition={definition}
         definitionText={definitionText}
         initialStateText={initialStateText}
@@ -617,6 +670,8 @@ export function WorkbenchPage() {
         initialRequirementsError={initialRequirementsError}
         steps={steps}
         selectedRunId={selectedRunID}
+        runStatus={selectedRun?.status}
+        runTriggerId={selectedRun?.origin?.trigger_id}
         registry={registry}
         toolDefinitions={toolDefinitions}
         runtimeSettings={runtimeSettings}
@@ -636,6 +691,7 @@ export function WorkbenchPage() {
         onDismissToast={dismissToast}
         onNotify={pushToast}
         onCommitGraphImport={commitImportedGraph}
+        onDeleteServerGraph={deleteServerGraph}
         onGraphSwitch={prepareGraphSwitch}
         onGraphDetailLoaded={handleGraphDetailLoaded}
       />

@@ -4,6 +4,8 @@ import {
   applyRuntimeSettingsUpdate,
   environmentRowsFromSettings,
   modelsFromSettings,
+  modelIDValidationError,
+  newEditableGraphModel,
   nextModelID,
   normalizeEnvironmentSettings,
   normalizeModelSettings,
@@ -106,6 +108,18 @@ describe("graph settings editor model", () => {
     ]);
     expect(nextModelID([])).toBe("default");
     expect(nextModelID(modelsFromSettings(graphSettings()))).toBe("model-2");
+  });
+
+  test("creates model drafts and validates trimmed identifiers", () => {
+    expect(newEditableGraphModel("model-2")).toMatchObject({
+      id: "model-2",
+      enabled: true,
+      provider: "openai",
+      api_format: "chat_completions",
+    });
+    expect(modelIDValidationError(["default"], " default ")).toBe("Model ID already exists: default");
+    expect(modelIDValidationError(["default"], " ")).toBe("Model ID is required.");
+    expect(modelIDValidationError(["default"], "reasoner")).toBe("");
   });
 
   test("keeps configured status local without uploading it", () => {

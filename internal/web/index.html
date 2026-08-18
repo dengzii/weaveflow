@@ -1,9 +1,48 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" dir="ltr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>WeaveFlow</title>
+    <meta
+      name="description"
+      content="WeaveFlow is a deterministic graph runtime for building, executing, and inspecting LLM agents in Go."
+    />
+    <meta name="application-name" content="WeaveFlow" />
+    <meta name="color-scheme" content="light dark" />
+    <meta id="theme-color" name="theme-color" content="#f8fafc" />
+    <meta name="referrer" content="strict-origin-when-cross-origin" />
+    <meta name="format-detection" content="telephone=no" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="WeaveFlow" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta property="og:type" content="website" />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:site_name" content="WeaveFlow" />
+    <meta property="og:title" content="WeaveFlow | Deterministic agent workflows in Go" />
+    <meta
+      property="og:description"
+      content="Build, execute, and inspect deterministic LLM agent workflows with a graph runtime written in Go."
+    />
+    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:title" content="WeaveFlow | Deterministic agent workflows in Go" />
+    <meta
+      name="twitter:description"
+      content="Build, execute, and inspect deterministic LLM agent workflows with a graph runtime written in Go."
+    />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="icon" type="image/png" sizes="64x64" href="/icon_64.png" />
+    <link rel="apple-touch-icon" href="/icon_128.png" />
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "SoftwareApplication",
+        "name": "WeaveFlow",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Cross-platform",
+        "description": "A deterministic graph runtime for building, executing, and inspecting LLM agents in Go."
+      }
+    </script>
     <script>
       (function () {
         var storageKey = "weaveflow:web:theme:v1";
@@ -18,14 +57,18 @@
         } catch (_error) {}
 
         var systemTheme = window.matchMedia && window.matchMedia(themeQuery).matches ? "dark" : "light";
-        root.dataset.theme = preference === "system" ? systemTheme : preference;
+        var resolvedTheme = preference === "system" ? systemTheme : preference;
+        root.dataset.theme = resolvedTheme;
         root.dataset.themePreference = preference;
+        var themeColor = document.getElementById("theme-color");
+        if (themeColor) themeColor.setAttribute("content", resolvedTheme === "dark" ? "#101113" : "#f8fafc");
       })();
     </script>
     <link rel="stylesheet" href="/app.css" />
     <script src="/config.js"></script>
   </head>
   <body>
+    <noscript>WeaveFlow requires JavaScript to run.</noscript>
     <div id="root"></div>
     <script type="module" src="/app.js"></script>
   </body>

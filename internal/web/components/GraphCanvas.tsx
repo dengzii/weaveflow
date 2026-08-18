@@ -1,27 +1,36 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Background,
+  BaseEdge,
+  EdgeLabelRenderer,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
+  getBezierPath,
   useEdgesState,
   useNodesState,
   useReactFlow,
   useStoreApi,
   type Connection,
   type Edge,
+  type EdgeProps,
   type Node,
   type Viewport,
 } from "@xyflow/react";
-import type { GraphDefinition, NodeTypeSchema, StepRecord, TriggerCanvasNode } from "../types";
+import type { GraphDefinition, NodeTypeSchema, RunStatus, StepRecord, TriggerCanvasNode } from "../types";
 import { END_NODE_REF, START_NODE_REF, type NodePosition } from "../lib/graphEditor";
 import type { VirtualGraphLoop } from "../lib/loopPresentation";
 import { subscribeRuntimeEvents } from "../lib/runtimeEvents";
 import { GraphCanvasControls } from "./GraphCanvasControls";
 import { GraphLoopNode, GraphNode, GraphTriggerNode } from "./GraphCanvasNodes";
-import { buildGraphCanvasElements, type VirtualGraphEdge } from "./graphCanvasElements";
+import {
+  buildGraphCanvasElements,
+  type ConditionEdgeHoverInfo,
+  type VirtualGraphEdge,
+} from "./graphCanvasElements";
 import {
   applyRuntime,
+  applyRuntimeStep,
   applyRuntimeSnapshot,
   eventAttempt,
   eventErrorMessage,
@@ -61,12 +70,19 @@ const graphCanvasNodeTypes = {
   debugLoop: GraphLoopNode,
   debugTrigger: GraphTriggerNode,
 };
+const graphCanvasEdgeTypes = {
+  condition: ConditionEdge,
+};
 const emptyConfigurationErrors = new Map<string, readonly string[]>();
+const emptyRuntime = new Map<string, RuntimeNodeState>();
 
 export function GraphCanvas({
   definition,
   steps,
   selectedRunId,
+  runtimeVisible = true,
+  runStatus,
+  runTriggerId,
   editable = false,
   selectedNodeId,
   selectedEdgeId,
@@ -100,6 +116,9 @@ export function GraphCanvas({
   definition: GraphDefinition | null;
   steps: StepRecord[];
   selectedRunId?: string;
+  runtimeVisible?: boolean;
+  runStatus?: RunStatus;
+  runTriggerId?: string;
   editable?: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
@@ -136,6 +155,9 @@ export function GraphCanvas({
         definition={definition}
         steps={steps}
         selectedRunId={selectedRunId}
+        runtimeVisible={runtimeVisible}
+        runStatus={runStatus}
+        runTriggerId={runTriggerId}
         editable={editable}
         selectedNodeId={selectedNodeId}
         selectedEdgeId={selectedEdgeId}
@@ -174,6 +196,9 @@ function GraphCanvasInner({
   definition,
   steps,
   selectedRunId,
+  runtimeVisible,
+  runStatus,
+  runTriggerId,
   editable,
   selectedNodeId,
   selectedEdgeId,
@@ -207,6 +232,9 @@ function GraphCanvasInner({
   definition: GraphDefinition | null;
   steps: StepRecord[];
   selectedRunId?: string;
+  runtimeVisible: boolean;
+  runStatus?: RunStatus;
+  runTriggerId?: string;
   editable: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
@@ -270,18 +298,18 @@ function GraphCanvasInner({
     if (runtimeRunIdRef.current === nextRunId) return;
     runtimeRunIdRef.current = nextRunId;
     runtimeRef.current = new Map();
-    setNodes((current) => resetRuntimeNodes(current));
-  }, [selectedRunId, setNodes]);
+    if (runtimeVisible) setNodes((current) => resetRuntimeNodes(current));
+  }, [runtimeVisible, selectedRunId, setNodes]);
 
   useLayoutEffect(() => {
     if (stepRuntime.size === 0) return;
     const next = new Map(runtimeRef.current);
     for (const [nodeId, runtime] of stepRuntime) {
-      applyRuntime(next, nodeId, runtime.status, runtime.attempt, runtime.at, runtime.errorMessage);
+      applyRuntime(next, nodeId, runtime);
     }
     runtimeRef.current = next;
-    setNodes((current) => applyRuntimeSnapshot(current, next));
-  }, [setNodes, stepRuntime]);
+    if (runtimeVisible) setNodes((current) => applyRuntimeSnapshot(current, next));
+  }, [runtimeVisible, setNodes, stepRuntime]);
 
   useEffect(() => subscribeRuntimeEvents((event) => {
     if (selectedRunId && event.run_id && event.run_id !== selectedRunId) return;
@@ -292,7 +320,7 @@ function GraphCanvasInner({
       switchedRun = true;
     }
     if (!event.node_id) {
-      if (switchedRun) setNodes((current) => resetRuntimeNodes(current));
+      if (switchedRun && runtimeVisible) setNodes((current) => resetRuntimeNodes(current));
       return;
     }
     const nodeId = event.node_id;
@@ -300,22 +328,24 @@ function GraphCanvasInner({
     if (!status) return;
 
     const next = new Map(runtimeRef.current);
-    const changed = applyRuntime(
+    const changed = applyRuntimeStep(
       next,
       nodeId,
+      event.step_id || `${nodeId}:current`,
       status,
-      eventAttempt(event.payload),
+      eventAttempt(event.type, event.payload),
       timeRank(event.timestamp),
       eventErrorMessage(event.payload)
     );
     if (!changed && !switchedRun) return;
     runtimeRef.current = next;
+    if (!runtimeVisible) return;
     const runtime = next.get(nodeId);
     setNodes((current) => {
       const base = switchedRun ? resetRuntimeNodes(current) : current;
       return updateRuntimeNode(base, nodeId, runtime);
     });
-  }), [selectedRunId, setNodes]);
+  }), [runtimeVisible, selectedRunId, setNodes]);
 
   const buildCanvasElements = useCallback(
     () => buildGraphCanvasElements({
@@ -325,7 +355,10 @@ function GraphCanvasInner({
       highlightedNodeIDs: highlightedNodeSet,
       nodeTypes,
       configurationErrors,
-      runtime: runtimeRef.current,
+      runtime: runtimeVisible ? runtimeRef.current : emptyRuntime,
+      runtimeVisible,
+      runStatus: runtimeVisible ? runStatus : undefined,
+      runTriggerID: runtimeVisible ? runTriggerId : undefined,
       selectedEdgeID: selectedEdgeId,
       selectedLoopID: selectedLoopId,
       selectedNodeID: selectedNodeId,
@@ -342,6 +375,9 @@ function GraphCanvasInner({
       isInteractive,
       nodeTypes,
       configurationErrors,
+      runtimeVisible,
+      runStatus,
+      runTriggerId,
       selectedEdgeId,
       selectedLoopId,
       selectedNodeId,
@@ -456,6 +492,7 @@ function GraphCanvasInner({
         nodes={nodes}
         edges={edges}
         nodeTypes={graphCanvasNodeTypes}
+        edgeTypes={graphCanvasEdgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onConnect={handleConnect}
@@ -602,7 +639,7 @@ function GraphCanvasInner({
         selectionOnDrag={interactive}
         nodesDraggable={isInteractive}
         nodesConnectable={isInteractive}
-        elementsSelectable={interactive}
+        elementsSelectable={editable ? interactive : true}
         edgesReconnectable={false}
         proOptions={{ hideAttribution: true }}
         className={`debug-flow ${isInteractive ? "debug-flow-editable" : "debug-flow-locked"}`}
@@ -625,6 +662,7 @@ function GraphCanvasInner({
           offsetScale={8}
         />
         <GraphCanvasControls
+          showEditControls={editable}
           interactive={interactive}
           canAutoLayout={Boolean(definition)}
           hasSelection={Boolean(selectedNodeId || selectedEdgeId || selectedLoopId || selectedTriggerId)}
@@ -684,6 +722,120 @@ function flowEdgeSelectionId(edge: Edge): string {
     ? edge.data.selectionId
     : undefined;
   return typeof selectionId === "string" ? selectionId : edge.id;
+}
+
+type ConditionEdgeData = {
+  conditionInfo?: ConditionEdgeHoverInfo;
+  selectionId?: string;
+};
+
+type ConditionFlowEdge = Edge<ConditionEdgeData, "condition">;
+
+function ConditionEdge({
+  id,
+  sourceX,
+  sourceY,
+  sourcePosition,
+  targetX,
+  targetY,
+  targetPosition,
+  data,
+  label,
+  style,
+  markerStart,
+  markerEnd,
+  interactionWidth,
+}: EdgeProps<ConditionFlowEdge>) {
+  const [hovered, setHovered] = useState(false);
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+  const info = data?.conditionInfo;
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        style={style}
+        markerStart={markerStart}
+        markerEnd={markerEnd}
+        interactionWidth={interactionWidth}
+      />
+      <path
+        d={edgePath}
+        fill="none"
+        stroke="transparent"
+        strokeWidth={interactionWidth ?? 24}
+        pointerEvents="stroke"
+        aria-hidden="true"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      />
+      {info && label ? (
+        <EdgeLabelRenderer>
+          <div
+            className={`debug-condition-edge-label nodrag nopan${hovered ? " debug-condition-edge-label-active" : ""}`}
+            style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
+            aria-label={info.label}
+            onMouseEnter={() => setHovered(true)}
+            onMouseLeave={() => setHovered(false)}
+          >
+            <span>{label}</span>
+            <ConditionEdgePanel info={info} />
+          </div>
+        </EdgeLabelRenderer>
+      ) : null}
+    </>
+  );
+}
+
+function ConditionEdgePanel({ info }: { info: ConditionEdgeHoverInfo }) {
+  return (
+    <div className="debug-condition-edge-panel" aria-hidden="true">
+      <div className="debug-condition-edge-panel-header">
+        <span className="debug-condition-edge-panel-name">{info.label}</span>
+      </div>
+      <ConditionEdgePanelSection title="State" items={info.state} />
+      <ConditionEdgePanelSection title="Config" items={info.config} />
+    </div>
+  );
+}
+
+function ConditionEdgePanelSection({
+  title,
+  items,
+}: {
+  title: string;
+  items: readonly { name: string; value: string }[];
+}) {
+  if (items.length === 0) return null;
+  const visibleItems = items.slice(0, 4);
+  return (
+    <div className="debug-condition-edge-panel-section">
+      <div className="debug-condition-edge-panel-heading">{title}</div>
+      {visibleItems.map((item) => (
+        <ConditionEdgePanelRow key={item.name} name={item.name} value={item.value} />
+      ))}
+      {items.length > visibleItems.length ? (
+        <div className="debug-condition-edge-panel-more">+{items.length - visibleItems.length} more</div>
+      ) : null}
+    </div>
+  );
+}
+
+function ConditionEdgePanelRow({ name, value }: { name: string; value: string }) {
+  return (
+    <div className="debug-condition-edge-panel-row">
+      <span className="debug-condition-edge-panel-key" title={name}>{name}</span>
+      <span className="debug-condition-edge-panel-value" title={value}>{value}</span>
+    </div>
+  );
 }
 
 function positionChangesForNodes(nodes: Node<FlowNodeData>[]): GraphCanvasPositionChanges {

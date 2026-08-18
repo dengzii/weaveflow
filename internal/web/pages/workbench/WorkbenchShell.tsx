@@ -2,7 +2,6 @@ import type { ComponentType, ReactNode } from "react";
 import {
   Braces,
   ChevronUp,
-  GitBranch,
   LayoutDashboard,
   Loader2,
   Pause,
@@ -33,6 +32,7 @@ interface StreamDiagnostics {
   handlingDurationMS: number;
 }
 type RunControlMode = "run" | "active" | "resume";
+export type WorkspaceMode = "edit" | "debug";
 
 export function WorkbenchShell({
   streamStatus,
@@ -42,6 +42,7 @@ export function WorkbenchShell({
   unsaved,
   definition,
   runControlMode,
+  workspaceMode,
   canResume,
   runControlsDisabled,
   children,
@@ -57,6 +58,7 @@ export function WorkbenchShell({
   onShowSettings,
   onReconnectEventStream,
   onToggleRunStatus,
+  onWorkspaceModeChange,
 }: {
   streamStatus: StreamStatus;
   streamDiagnostics: StreamDiagnostics;
@@ -65,6 +67,7 @@ export function WorkbenchShell({
   unsaved: boolean;
   definition: GraphDefinition | null;
   runControlMode: RunControlMode;
+  workspaceMode: WorkspaceMode;
   canResume: boolean;
   runControlsDisabled: boolean;
   children: ReactNode;
@@ -80,14 +83,34 @@ export function WorkbenchShell({
   onShowSettings: () => void;
   onReconnectEventStream: () => void;
   onToggleRunStatus: () => void;
+  onWorkspaceModeChange: (mode: WorkspaceMode) => void;
 }) {
   const backendBaseUrl = getBackendBaseUrl();
+  const runPanelShown = workspaceMode === "debug" && runStatusVisible;
 
   return (
     <div className="flex h-screen min-h-0 bg-background text-foreground">
       <aside className="flex w-16 shrink-0 flex-col items-center border-r border-border bg-sidebar py-3">
-        <div className="mb-4 flex h-9 w-9 items-center justify-center rounded-md bg-primary text-primary-foreground">
-          <GitBranch className="h-4 w-4" />
+        <div
+          className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary"
+          title="WeaveFlow"
+          aria-label="WeaveFlow"
+        >
+          <span
+            aria-hidden="true"
+            className="h-6 w-6"
+            style={{
+              backgroundColor: "currentColor",
+              maskImage: 'url("/icon.svg")',
+              maskPosition: "center",
+              maskRepeat: "no-repeat",
+              maskSize: "contain",
+              WebkitMaskImage: 'url("/icon.svg")',
+              WebkitMaskPosition: "center",
+              WebkitMaskRepeat: "no-repeat",
+              WebkitMaskSize: "contain",
+            }}
+          />
         </div>
         <NavButton icon={LayoutDashboard} active onClick={() => undefined} label="Graph" />
         <div className="flex-1" />
@@ -97,18 +120,38 @@ export function WorkbenchShell({
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
           <div id="graph-title-slot" className="min-w-0" />
+          <div className="inline-flex h-8 shrink-0 items-center rounded-md border border-border bg-muted/60 p-0.5" role="group" aria-label="Workspace mode">
+            {(["edit", "debug"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={cn(
+                  "h-6 rounded px-2.5 text-xs font-medium capitalize transition-colors",
+                  workspaceMode === mode
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                aria-pressed={workspaceMode === mode}
+                onClick={() => onWorkspaceModeChange(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
           <div className="flex-1" />
-          <Button
-            variant="outline"
-            size="sm"
-            className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
-            onClick={onSave}
-            disabled={busy || !definition}
-            title="Save graph"
-          >
-            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-            Save
-          </Button>
+          {workspaceMode === "edit" ? (
+            <Button
+              variant="outline"
+              size="sm"
+              className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
+              onClick={onSave}
+              disabled={busy || !definition}
+              title="Save graph"
+            >
+              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+              Save
+            </Button>
+          ) : null}
           {runControlMode === "active" ? (
             <>
               <Button variant="outline" size="sm" onClick={onPause} disabled={runControlsDisabled || !hasRunStatus} title="Pause run">
@@ -170,7 +213,7 @@ export function WorkbenchShell({
 
         <section className="relative isolate min-h-0 flex-1 overflow-hidden">{children}</section>
 
-        {runStatusVisible ? runStatusPanel : null}
+        {runPanelShown ? runStatusPanel : null}
 
         <footer className="flex h-9 items-center gap-3 border-t border-border bg-muted/40 px-4 text-xs text-muted-foreground">
           <div
@@ -187,9 +230,9 @@ export function WorkbenchShell({
             <button
               className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={onToggleRunStatus}
-              title={runStatusVisible ? "Hide run panel" : "Show run panel"}
+              title={runPanelShown ? "Hide run panel" : "Show run panel"}
             >
-              <ChevronUp className={`h-3.5 w-3.5 transition-transform ${runStatusVisible ? "rotate-180" : ""}`} />
+              <ChevronUp className={`h-3.5 w-3.5 transition-transform ${runPanelShown ? "rotate-180" : ""}`} />
               Run
             </button>
           ) : null}

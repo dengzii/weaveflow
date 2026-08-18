@@ -6,10 +6,15 @@ import type {
   ReactNode,
 } from "react";
 import {
+  Check,
   ChevronDown,
   ChevronRight,
+  Copy,
+  FoldVertical,
   ListTree,
   LoaderCircle,
+  Search,
+  UnfoldVertical,
 } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { getCheckpoint } from "../../api";
@@ -40,6 +45,7 @@ import {
   readStoredEventFilters,
   readStoredPanelHeight,
   resizeRunPanelColumnRatios,
+  selectRunIOCheckpoints,
   summarizeRunMetrics,
   stateHistoryEntries,
   timeRank,
@@ -55,7 +61,7 @@ export { resizeRunPanelColumnRatios } from "./runStatusModel";
 const COLUMN_KEYBOARD_STEP_RATIO = 0.03;
 const MAX_CACHED_CHECKPOINTS = 6;
 const snapshotJSONCache = new WeakMap<object, string>();
-type RunPanelView = "overview" | "metrics" | "events" | "state";
+type RunPanelView = "overview" | "io" | "metrics" | "events" | "state";
 type StateDetailView = "diff" | "snapshot";
 type EventHistoryItem = { event: RuntimeEvent; key: string };
 type StateHistoryItem = StateHistoryEntry & { key: string };
@@ -150,6 +156,12 @@ export function RunStatusPanel({
     () => summarizeRunMetrics(selectedRun, steps, checkpoints, events),
     [checkpoints, events, selectedRun, steps]
   );
+  const runIOCheckpoints = useMemo(
+    () => selectRunIOCheckpoints(
+      checkpoints?.filter((checkpoint) => checkpoint.run_id === selectedRunId)
+    ),
+    [checkpoints, selectedRunId]
+  );
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
 
   useLayoutEffect(() => {
@@ -189,7 +201,7 @@ export function RunStatusPanel({
     return () => window.removeEventListener("resize", clampPanelHeight);
   }, []);
 
-  const isSummaryView = panelView === "overview" || panelView === "metrics";
+  const isSummaryView = panelView === "overview" || panelView === "io" || panelView === "metrics";
   const visibleItems = panelView === "events" ? filteredEventItems : stateHistoryItems;
   const effectiveKey =
     selectedKey && visibleItems.some((item) => item.key === selectedKey)
@@ -203,48 +215,55 @@ export function RunStatusPanel({
     : null;
   const deferredStateEntry = useDeferredValue(selectedStateEntry);
   const selectedCheckpointID = selectedStateEntry?.checkpointID ?? "";
-  const selectedGraphID = runs.find((run) => run.run_id === selectedRunId)?.graph_id;
+  const selectedGraphID = selectedRun?.graph_id;
   const selectedCheckpointDetail = selectedCheckpointID ? checkpointDetails[selectedCheckpointID] : undefined;
   const selectedCheckpointError = selectedCheckpointID ? checkpointErrors[selectedCheckpointID] : undefined;
+  const inputCheckpointID = runIOCheckpoints.input?.checkpoint_id ?? "";
+  const outputCheckpointID = runIOCheckpoints.output?.checkpoint_id ?? "";
+  const inputCheckpointDetail = inputCheckpointID ? checkpointDetails[inputCheckpointID] : undefined;
+  const outputCheckpointDetail = outputCheckpointID ? checkpointDetails[outputCheckpointID] : undefined;
+  const inputCheckpointError = inputCheckpointID ? checkpointErrors[inputCheckpointID] : undefined;
+  const outputCheckpointError = outputCheckpointID ? checkpointErrors[outputCheckpointID] : undefined;
   const deferredCheckpointID = deferredStateEntry?.checkpointID ?? "";
   const deferredCheckpointDetail = deferredCheckpointID ? checkpointDetails[deferredCheckpointID] : undefined;
   const deferredCheckpointError = deferredCheckpointID ? checkpointErrors[deferredCheckpointID] : undefined;
 
   useEffect(() => {
-    if (
-      panelView !== "state" ||
-      !selectedCheckpointID ||
-      !selectedGraphID ||
-      !selectedRunId ||
-      selectedCheckpointDetail ||
-      selectedCheckpointError ||
-      checkpointRequestIDsRef.current.has(selectedCheckpointID)
-    ) {
-      return;
-    }
+    if (!selectedGraphID || !selectedRunId) return;
+    const checkpointIDs = panelView === "state"
+      ? [selectedCheckpointID]
+      : panelView === "io"
+        ? [inputCheckpointID, outputCheckpointID]
+        : [];
     const contextVersion = checkpointContextVersionRef.current;
-    checkpointRequestIDsRef.current.add(selectedCheckpointID);
-    void getCheckpoint(selectedGraphID, selectedRunId, selectedCheckpointID)
-      .then((detail) => {
-        if (checkpointContextVersionRef.current !== contextVersion) return;
-        startTransition(() => {
-          setCheckpointDetails((current) => cacheCheckpointDetail(current, {
-            record: detail.record,
-            snapshot: detail.snapshot,
-          }));
+    for (const checkpointID of [...new Set(checkpointIDs.filter(Boolean))]) {
+      if (
+        checkpointDetails[checkpointID] ||
+        checkpointErrors[checkpointID] ||
+        checkpointRequestIDsRef.current.has(checkpointID)
+      ) {
+        continue;
+      }
+      checkpointRequestIDsRef.current.add(checkpointID);
+      void getCheckpoint(selectedGraphID, selectedRunId, checkpointID)
+        .then((detail) => {
+          if (checkpointContextVersionRef.current !== contextVersion) return;
+          startTransition(() => {
+            setCheckpointDetails((current) => cacheCheckpointDetail(current, detail));
+          });
+        })
+        .catch((error: unknown) => {
+          if (checkpointContextVersionRef.current !== contextVersion) return;
+          const message = error instanceof Error ? error.message : String(error);
+          setCheckpointErrors((current) => ({ ...current, [checkpointID]: message }));
+        })
+        .finally(() => {
+          if (checkpointContextVersionRef.current === contextVersion) {
+            checkpointRequestIDsRef.current.delete(checkpointID);
+          }
         });
-      })
-      .catch((error: unknown) => {
-        if (checkpointContextVersionRef.current !== contextVersion) return;
-        const message = error instanceof Error ? error.message : String(error);
-        setCheckpointErrors((current) => ({ ...current, [selectedCheckpointID]: message }));
-      })
-      .finally(() => {
-        if (checkpointContextVersionRef.current === contextVersion) {
-          checkpointRequestIDsRef.current.delete(selectedCheckpointID);
-        }
-      });
-  }, [panelView, selectedCheckpointDetail, selectedCheckpointError, selectedCheckpointID, selectedGraphID, selectedRunId]);
+    }
+  }, [checkpointDetails, checkpointErrors, inputCheckpointID, outputCheckpointID, panelView, selectedCheckpointID, selectedGraphID, selectedRunId]);
 
   function startResizeHeight(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -358,15 +377,30 @@ export function RunStatusPanel({
 
         {isSummaryView ? (
           <div
-            aria-label={panelView === "overview" ? "Run overview" : "Run metrics"}
+            aria-label={panelView === "overview" ? "Run overview" : panelView === "io" ? "Run input and output" : "Run metrics"}
             className="col-span-3 flex min-h-0 min-w-0 flex-col"
           >
             <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
               <RunPanelTabs view={panelView} onChange={setPanelView} />
             </div>
-            <div className="min-h-0 flex-1 overflow-auto p-3">
+            <div className={cn("min-h-0 flex-1 p-3", panelView === "io" ? "overflow-hidden" : "overflow-auto")}>
               {panelView === "overview" ? (
-                <RunOverview run={selectedRun} metrics={runMetrics} loading={runInspectionLoading} />
+                <RunOverview
+                  run={selectedRun}
+                  metrics={runMetrics}
+                  loading={runInspectionLoading}
+                />
+              ) : panelView === "io" ? (
+                <RunInputOutput
+                  run={selectedRun}
+                  inputCheckpoint={runIOCheckpoints.input}
+                  outputCheckpoint={runIOCheckpoints.output}
+                  inputDetail={inputCheckpointDetail}
+                  outputDetail={outputCheckpointDetail}
+                  inputError={inputCheckpointError}
+                  outputError={outputCheckpointError}
+                  loading={runInspectionLoading}
+                />
               ) : !selectedRun ? (
                 <EmptyDetail>{runInspectionLoading ? "Loading run metrics…" : "Select a run"}</EmptyDetail>
               ) : (
@@ -488,6 +522,7 @@ export function RunPanelTabs({
 }) {
   const tabs: Array<{ id: RunPanelView; label: string }> = [
     { id: "overview", label: "Overview" },
+    { id: "io", label: "Input / Output" },
     { id: "metrics", label: "Metrics" },
     { id: "events", label: "Event" },
     { id: "state", label: "State" },
@@ -536,7 +571,7 @@ export function RunOverview({
           <StatusText tone={eventTone(`run.${run.status}`)}>{run.status}</StatusText>
         </SummaryCard>
         <SummaryCard label={run.finished_at ? "Duration" : "Elapsed"} value={formatDuration(metrics.durationMs)} />
-        <SummaryCard label="Steps" value={`${metrics.succeededSteps} / ${metrics.stepCount}`} hint="succeeded / total" />
+        <SummaryCard label="Steps" value={`${metrics.succeededSteps} / ${metrics.stepCount}`}/>
         <SummaryCard label="Current node" value={currentNodes} mono />
       </div>
 
@@ -577,14 +612,299 @@ export function RunOverview({
         </OverviewSection>
       </div>
 
-      {run.return_value !== undefined ? (
-        <OverviewSection title="Return value">
-          <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-background p-2 text-[11px]">
-            {stringifyJSON(run.return_value)}
-          </pre>
-        </OverviewSection>
-      ) : null}
     </div>
+  );
+}
+
+export function RunInputOutput({
+  run,
+  inputCheckpoint,
+  outputCheckpoint,
+  inputDetail,
+  outputDetail,
+  inputError,
+  outputError,
+  loading = false,
+}: {
+  run?: RunRecord;
+  inputCheckpoint?: CheckpointRecord;
+  outputCheckpoint?: CheckpointRecord;
+  inputDetail?: CheckpointDetail;
+  outputDetail?: CheckpointDetail;
+  inputError?: string;
+  outputError?: string;
+  loading?: boolean;
+}) {
+  if (!run) return <EmptyDetail>{loading ? "Loading run input and output…" : "Select a run"}</EmptyDetail>;
+  if (loading && !inputCheckpoint && !outputCheckpoint && !inputDetail && !outputDetail) {
+    return <EmptyDetail>Loading run input and output…</EmptyDetail>;
+  }
+  const inputValue = businessSnapshot(inputDetail);
+  const outputValue = runOutputDocument(run, outputDetail);
+
+  return (
+    <div className="grid h-full min-h-0 gap-3 lg:grid-cols-2" data-run-input-output={run.run_id}>
+      <IODocument
+        title="Input"
+        checkpoint={inputDetail?.record ?? inputCheckpoint}
+        value={inputValue}
+        error={inputError}
+        loading={Boolean(inputCheckpoint && !inputDetail && !inputError)}
+        empty="No initial checkpoint was recorded"
+      />
+      <IODocument
+        title="Output"
+        checkpoint={outputDetail?.record ?? outputCheckpoint}
+        value={outputValue}
+        error={outputError}
+        loading={Boolean(outputCheckpoint && !outputDetail && !outputError)}
+        empty="No output was recorded"
+      />
+    </div>
+  );
+}
+
+function runOutputDocument(run: RunRecord, detail?: CheckpointDetail): Record<string, unknown> | undefined {
+  const output: Record<string, unknown> = {};
+  if (run.return_value !== undefined) output.return_value = run.return_value;
+  const state = businessSnapshot(detail);
+  if (state) output.state = state;
+  if (detail?.artifacts?.length) output.artifacts = detail.artifacts;
+  return Object.keys(output).length > 0 ? output : undefined;
+}
+
+function IODocument({
+  title,
+  checkpoint,
+  value,
+  error,
+  loading = false,
+  empty,
+}: {
+  title: string;
+  checkpoint?: CheckpointRecord;
+  value?: unknown;
+  error?: string;
+  loading?: boolean;
+  empty: string;
+}) {
+  const [copied, setCopied] = useState(false);
+  const [view, setView] = useState<"tree" | "raw">("tree");
+  const [query, setQuery] = useState("");
+  const [expandAll, setExpandAll] = useState(false);
+  const hasValue = value !== undefined;
+  const serialized = hasValue ? stringifyJSON(value) : "";
+  const matchCount = query.trim() ? jsonMatchCount(value, query) : 0;
+  const treeExpanded = expandAll || Boolean(query.trim());
+
+  async function copyValue() {
+    if (!serialized || typeof navigator === "undefined" || !navigator.clipboard) return;
+    try {
+      await navigator.clipboard.writeText(serialized);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_500);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <section className="flex h-full min-h-0 min-w-0 flex-col rounded-md border border-border bg-muted/20 p-3">
+      <div className="mb-2 flex min-w-0 shrink-0 items-center gap-2">
+        <span className="text-xs font-semibold">{title}</span>
+        {checkpoint ? (
+          <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">
+            {formatDateTimeMs(checkpoint.created_at)}
+          </span>
+        ) : null}
+        {hasValue ? (
+          <Button variant="ghost" size="sm" className={cn("h-7 px-2 text-xs", !checkpoint && "ml-auto")} onClick={() => void copyValue()}>
+            {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+            {copied ? "Copied" : "Copy"}
+          </Button>
+        ) : null}
+      </div>
+      {hasValue ? (
+        <div className="mb-2 flex shrink-0 flex-wrap items-center gap-2">
+          <label className="relative min-w-40 flex-1">
+            <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+            <input
+              aria-label={`Search ${title.toLowerCase()} JSON`}
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Search JSON"
+              className="h-8 w-full rounded-md border border-input bg-background pl-7 pr-16 text-xs outline-none focus:border-ring"
+            />
+            {query.trim() ? (
+              <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] tabular-nums text-muted-foreground">
+                {matchCount} {matchCount === 1 ? "match" : "matches"}
+              </span>
+            ) : null}
+          </label>
+          <div className="ml-auto flex items-center gap-1.5">
+            <div role="tablist" aria-label={`${title} JSON view`} className="flex rounded border border-border bg-background p-0.5">
+              {(["tree", "raw"] as const).map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  role="tab"
+                  aria-selected={view === option}
+                  onClick={() => setView(option)}
+                  className={cn(
+                    "rounded px-2 py-1 text-[11px] capitalize text-muted-foreground hover:text-foreground",
+                    view === option && "bg-accent text-foreground"
+                  )}
+                >
+                  {option}
+                </button>
+              ))}
+            </div>
+            {view === "tree" ? (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-8 w-8"
+                title={treeExpanded ? "Collapse all" : "Expand all"}
+                aria-label={treeExpanded ? `Collapse all ${title.toLowerCase()} nodes` : `Expand all ${title.toLowerCase()} nodes`}
+                onClick={() => {
+                  if (treeExpanded) {
+                    setExpandAll(false);
+                    setQuery("");
+                  } else {
+                    setExpandAll(true);
+                  }
+                }}
+              >
+                {treeExpanded ? <FoldVertical className="h-4 w-4" /> : <UnfoldVertical className="h-4 w-4" />}
+              </Button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      <div className="min-h-0 flex-1 overflow-hidden">
+        {error ? (
+          <div className="h-full overflow-auto rounded border border-destructive/40 bg-destructive/10 p-2 text-xs text-destructive">
+            Checkpoint load failed: {error}
+          </div>
+        ) : loading ? (
+          <div className="flex h-full items-center justify-center gap-2 text-xs text-muted-foreground">
+            <LoaderCircle className="h-3.5 w-3.5 animate-spin" />
+            Loading checkpoint…
+          </div>
+        ) : hasValue ? (
+          view === "tree" ? (
+            <JSONTree value={value} query={query} label={`${title} JSON tree`} expandAll={expandAll} />
+          ) : (
+            <pre
+              aria-label={`${title} raw JSON`}
+              className="h-full min-w-0 overflow-auto whitespace-pre-wrap break-words rounded border border-border bg-background p-2 text-[11px] [overflow-wrap:anywhere]"
+            >
+              {serialized}
+            </pre>
+          )
+        ) : (
+          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">{empty}</div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function JSONTree({
+  value,
+  query,
+  label,
+  expandAll,
+}: {
+  value: unknown;
+  query: string;
+  label: string;
+  expandAll: boolean;
+}) {
+  return (
+    <div
+      role="tree"
+      aria-label={label}
+      className="h-full min-w-0 overflow-auto rounded border border-border bg-background p-2 font-mono text-[11px]"
+    >
+      <JSONTreeValue value={value} query={query.trim().toLowerCase()} depth={0} expandAll={expandAll} />
+    </div>
+  );
+}
+
+function JSONTreeValue({
+  value,
+  query,
+  depth,
+  expandAll,
+}: {
+  value: unknown;
+  query: string;
+  depth: number;
+  expandAll: boolean;
+}) {
+  if (!value || typeof value !== "object") {
+    return <span className="break-words text-foreground">{stringifyJSON(value)}</span>;
+  }
+  if (depth >= 8) {
+    return <span className="break-words text-muted-foreground">{valuePreview(value)}</span>;
+  }
+  const entries = Array.isArray(value)
+    ? value.map((item, index) => [String(index), item] as const)
+    : Object.entries(value as Record<string, unknown>);
+  const filteredEntries = query
+    ? entries.filter(([key, item]) => key.toLowerCase().includes(query) || jsonValueMatches(item, query))
+    : entries;
+  if (filteredEntries.length === 0) {
+    return <span className="text-muted-foreground">{query ? "No matching values" : Array.isArray(value) ? "[]" : "{}"}</span>;
+  }
+  return (
+    <div className="grid gap-0.5">
+      {filteredEntries.map(([key, item]) => {
+        const expandable = Boolean(item) && typeof item === "object";
+        if (!expandable) {
+          return (
+            <div key={key} role="treeitem" className="grid grid-cols-[minmax(5rem,auto)_minmax(0,1fr)] gap-2 pl-1">
+              <span className="break-all text-primary">{key}</span>
+              <span className="break-words">{stringifyJSON(item)}</span>
+            </div>
+          );
+        }
+        return (
+          <details key={key} open={Boolean(query) || expandAll} className="pl-1">
+            <summary className="cursor-pointer break-all text-primary hover:text-foreground">
+              {key} <span className="text-muted-foreground">{valuePreview(item)}</span>
+            </summary>
+            <div role="group" className="ml-3 border-l border-border pl-2">
+              <JSONTreeValue value={item} query={query} depth={depth + 1} expandAll={expandAll} />
+            </div>
+          </details>
+        );
+      })}
+    </div>
+  );
+}
+
+function jsonValueMatches(value: unknown, query: string): boolean {
+  if (value === null || value === undefined) return String(value).includes(query);
+  if (typeof value !== "object") return String(value).toLowerCase().includes(query);
+  if (Array.isArray(value)) return value.some((item) => jsonValueMatches(item, query));
+  return Object.entries(value).some(
+    ([key, item]) => key.toLowerCase().includes(query) || jsonValueMatches(item, query)
+  );
+}
+
+function jsonMatchCount(value: unknown, query: string): number {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) return 0;
+  if (value === null || value === undefined) return String(value).includes(normalizedQuery) ? 1 : 0;
+  if (typeof value !== "object") return String(value).toLowerCase().includes(normalizedQuery) ? 1 : 0;
+  const entries = Array.isArray(value)
+    ? value.map((item, index) => [String(index), item] as const)
+    : Object.entries(value as Record<string, unknown>);
+  return entries.reduce(
+    (total, [key, item]) => total + Number(key.toLowerCase().includes(normalizedQuery)) + jsonMatchCount(item, normalizedQuery),
+    0
   );
 }
 
@@ -694,6 +1014,25 @@ function MetricSectionTitle({ children }: { children: ReactNode }) {
 
 function formatMetric(value: number): string {
   return new Intl.NumberFormat("en-US").format(value);
+}
+
+function businessSnapshot(detail?: CheckpointDetail): Record<string, unknown> | undefined {
+  const state = recordValue(detail?.business) ?? recordValue(detail?.snapshot);
+  if (!state) return undefined;
+  return {
+    shared: state.shared ?? {},
+    scopes: state.scopes ?? {},
+  };
+}
+
+function valuePreview(value: unknown): string {
+  if (value === null) return "null";
+  if (typeof value === "string") return value.length > 120 ? `${value.slice(0, 117)}…` : value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (Array.isArray(value)) return `Array(${value.length})`;
+  const record = recordValue(value);
+  if (record) return `Object(${Object.keys(record).length})`;
+  return typeof value;
 }
 
 function formatDuration(durationMs: number): string {

@@ -17,13 +17,16 @@ import {
 
 export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: boolean }) {
   const status = String(data.status || "idle");
+  const runtimeVisible = Boolean(data.runtimeVisible);
   const editable = Boolean(data.editable);
   const virtualKind = data.virtualKind;
-  const attempt = typeof data.attempt === "number" && data.attempt > 0 ? data.attempt : 0;
+  const executionCount = typeof data.executionCount === "number" && data.executionCount > 0 ? data.executionCount : 0;
   const highlighted = Boolean(data.highlighted);
   const configurationErrors = data.configurationErrors ?? [];
   const configurationInvalid = configurationErrors.length > 0;
-  const className = `debug-node debug-node-${status}${virtualKind ? ` debug-node-virtual debug-node-virtual-${virtualKind}` : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}${configurationInvalid ? " debug-node-config-invalid" : ""}`;
+  const showMissingBindings = Boolean(data.bindingSummary && data.missingBindings);
+  const showMeta = configurationInvalid || showMissingBindings;
+  const className = `debug-node${runtimeVisible ? ` debug-node-${status}` : ""}${virtualKind ? ` debug-node-virtual debug-node-virtual-${virtualKind}` : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}${configurationInvalid ? " debug-node-config-invalid" : ""}${showMeta ? "" : " debug-node-single-line"}`;
   if (virtualKind === "start" || virtualKind === "end") {
     return (
       <div className={className} role="group" aria-label={flowNodeAriaLabel(data)}>
@@ -33,7 +36,17 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
         {virtualKind === "end" ? (
           <Handle type="target" position={Position.Left} isConnectable={editable} />
         ) : null}
-        <div className="debug-node-virtual-label">{data.label}</div>
+        <div className="debug-node-virtual-content">
+          {runtimeVisible ? (
+            <span
+              className="debug-node-status-dot"
+              role="img"
+              aria-label={`Execution status: ${status}`}
+              title={`Execution status: ${status}`}
+            />
+          ) : null}
+          <div className="debug-node-virtual-label">{data.label}</div>
+        </div>
         {virtualKind === "start" ? (
           <Handle type="source" position={Position.Right} isConnectable={editable} />
         ) : null}
@@ -42,21 +55,18 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
   }
 
   const typeLabel = data.typeLabel || humanizeNodeType(data.type);
-  const fallbackType = shouldShowNodeType(data.label, typeLabel) ? typeLabel : "";
-  const configurationDetails = configurationInvalid
-    ? "configuration error"
-    : data.configurationSummary;
-  const metaText = configurationDetails || fallbackType;
   return (
     <div className={className} role="group" aria-label={flowNodeAriaLabel(data)}>
       <Handle type="target" position={Position.Left} isConnectable={editable} />
       <div className="debug-node-header">
-        <span
-          className="debug-node-status-dot"
-          role="img"
-          aria-label={`Execution status: ${status}`}
-          title={`Execution status: ${status}`}
-        />
+        {runtimeVisible ? (
+          <span
+            className="debug-node-status-dot"
+            role="img"
+            aria-label={`Execution status: ${status}`}
+            title={`Execution status: ${status}`}
+          />
+        ) : null}
         <div className="debug-node-label min-w-0 flex-1 truncate">
           {data.label}
         </div>
@@ -66,28 +76,30 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
             aria-hidden="true"
           />
         ) : null}
+        {runtimeVisible && executionCount ? <span className="debug-node-attempt">#{executionCount}</span> : null}
       </div>
-      <div className="debug-node-meta">
-        <span className="debug-node-meta-main">
-          {metaText ? (
+      {showMeta ? (
+        <div className="debug-node-meta">
+          <span className="debug-node-meta-main">
+            {configurationInvalid ? (
+              <span
+                className="debug-node-type debug-node-config-label"
+                title={configurationErrors.join("\n")}
+              >
+                configuration error
+              </span>
+            ) : null}
+          </span>
+          {showMissingBindings ? (
             <span
-              className={`debug-node-type${configurationInvalid ? " debug-node-config-label" : ""}`}
-              title={configurationInvalid ? configurationErrors.join("\n") : metaText}
+              className="debug-node-binding debug-node-binding-missing"
+              title={`State bindings: ${data.bindingSummary}`}
             >
-              {metaText}
+              {data.bindingSummary}
             </span>
           ) : null}
-        </span>
-        {data.bindingSummary && data.missingBindings ? (
-          <span
-            className="debug-node-binding debug-node-binding-missing"
-            title={`State bindings: ${data.bindingSummary}`}
-          >
-            {data.bindingSummary}
-          </span>
-        ) : null}
-        {attempt ? <span className="debug-node-attempt">#{attempt}</span> : null}
-      </div>
+        </div>
+      ) : null}
       <Handle type="source" position={Position.Right} isConnectable={editable} />
       <NodeHoverCard
         data={data}
@@ -101,20 +113,32 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
 export function GraphTriggerNode({ data, selected }: { data: FlowNodeData; selected?: boolean }) {
   const enabled = Boolean(data.triggerEnabled);
   const valid = data.triggerValid !== false;
+  const status = String(data.status || "idle");
+  const runtimeVisible = Boolean(data.runtimeVisible);
   const TriggerIcon = data.triggerType === "schedule" ? Clock3 : data.triggerType === "chat" ? MessageCircle : Webhook;
-  const className = `debug-node debug-node-virtual debug-node-virtual-trigger${valid ? "" : " debug-node-trigger-invalid"}${enabled ? "" : " debug-node-trigger-disabled"}${selected ? " debug-node-selected" : ""}`;
+  const className = `debug-node${runtimeVisible ? ` debug-node-${status}` : ""} debug-node-single-line debug-node-virtual debug-node-virtual-trigger ${enabled ? "debug-node-trigger-enabled" : "debug-node-trigger-disabled"}${valid ? "" : " debug-node-trigger-invalid"}${selected ? " debug-node-selected" : ""}`;
   return (
     <div className={className} role="group" aria-label={flowNodeAriaLabel(data)}>
       <div className="debug-node-header">
         <TriggerIcon className="h-4 w-4 shrink-0 text-muted-foreground" />
+        {runtimeVisible ? (
+          <span
+            className="debug-node-status-dot"
+            role="img"
+            aria-label={`Execution status: ${status}`}
+            title={`Execution status: ${status}`}
+          />
+        ) : null}
         <div className="debug-node-label min-w-0 flex-1 truncate">
           {data.label}
         </div>
-        {!valid ? <span className="debug-node-status-dot" title="Invalid configuration" /> : null}
-      </div>
-      <div className="debug-node-meta">
-        <span className="debug-node-type">{data.triggerType}</span>
-        <span>{valid ? (enabled ? "enabled" : "disabled") : "invalid"}</span>
+        {!valid ? (
+          <TriangleAlert
+            className="debug-node-trigger-invalid-icon"
+            role="img"
+            aria-label="Invalid trigger configuration"
+          />
+        ) : null}
       </div>
       <Handle type="source" position={Position.Right} isConnectable={false} />
       <NodeHoverCard data={data} typeLabel={data.triggerType || "trigger"} configurationErrors={[]} />
@@ -195,14 +219,18 @@ function NodeHoverCard({
   typeLabel: string;
   configurationErrors: readonly string[];
 }) {
-  const failed = data.status === "failed";
+  const failed = data.runtimeVisible && data.status === "failed";
+  const stateBindings = data.stateBindingPreview ?? [];
+  const configuration = data.configurationPreview ?? [];
+  const hoverType = shouldShowNodeType(data.label, typeLabel) ? typeLabel : "";
   return (
     <div className="debug-node-hover-card" aria-hidden="true">
-      <div className="debug-node-hover-name">{data.label}</div>
-      <div className="debug-node-hover-type">{typeLabel}</div>
-      {!configurationErrors.length && data.configurationSummary ? (
-        <div className="debug-node-hover-detail">{data.configurationSummary}</div>
-      ) : null}
+      <div className="debug-node-hover-header">
+        <div className="debug-node-hover-name">{data.label}</div>
+        {hoverType ? <div className="debug-node-hover-type">{hoverType}</div> : null}
+      </div>
+      <NodePreviewSection title="State" items={stateBindings} />
+      <NodePreviewSection title="Config" items={configuration} />
       {configurationErrors.length > 0 ? (
         <div className="debug-node-hover-error">
           <div className="debug-node-hover-heading">Configuration error</div>
@@ -220,6 +248,33 @@ function NodeHoverCard({
   );
 }
 
+function NodePreviewSection({
+  title,
+  items,
+}: {
+  title: string;
+  items: readonly { name: string; value: string }[];
+}) {
+  if (items.length === 0) return null;
+  const visibleItems = items.slice(0, 4);
+  return (
+    <div className="debug-node-hover-section">
+      <div className="debug-node-hover-heading">{title}</div>
+      <div className="debug-node-hover-preview">
+        {visibleItems.map((item) => (
+          <div className="debug-node-hover-row" key={item.name}>
+            <span className="debug-node-hover-key" title={item.name}>{item.name}</span>
+            <span className="debug-node-hover-value" title={item.value}>{item.value}</span>
+          </div>
+        ))}
+      </div>
+      {items.length > visibleItems.length ? (
+        <div className="debug-node-hover-more">+{items.length - visibleItems.length} more</div>
+      ) : null}
+    </div>
+  );
+}
+
 function humanizeNodeType(value: string): string {
   return value
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
@@ -231,5 +286,6 @@ function humanizeNodeType(value: string): string {
 
 function shouldShowNodeType(label: string, typeLabel: string): boolean {
   const normalizedLabel = humanizeNodeType(label).replace(/\s+node$/, "");
-  return Boolean(typeLabel) && !normalizedLabel.includes(typeLabel);
+  const normalizedType = humanizeNodeType(typeLabel).replace(/\s+node$/, "");
+  return Boolean(normalizedType) && !normalizedLabel.includes(normalizedType);
 }

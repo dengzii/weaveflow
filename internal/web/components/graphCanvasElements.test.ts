@@ -19,6 +19,7 @@ function options(
     highlightedNodeIDs: new Set(),
     nodeTypes: [],
     runtime: new Map(),
+    runtimeVisible: true,
     triggerNodes: [],
     virtualEdges: [],
     virtualLoops: [],
@@ -54,7 +55,9 @@ describe("graph canvas elements", () => {
     };
     const elements = buildGraphCanvasElements(options(definition, {
       highlightedNodeIDs: new Set(["task"]),
-      runtime: new Map([["task", { status: "running", attempt: 2, at: 1 }]]),
+      runtime: new Map([["task", { status: "running", executionCount: 2, at: 1 }]]),
+      runStatus: "running",
+      runTriggerID: "trigger-1",
       selectedNodeID: "task",
       selectedTriggerID: "trigger-1",
       triggerNodes: [triggerNode()],
@@ -63,7 +66,7 @@ describe("graph canvas elements", () => {
     expect(elements.nodes).toHaveLength(4);
     expect(elements.nodes.find((node) => node.id === START_NODE_REF)?.data).toMatchObject({
       label: "Start",
-      status: "idle",
+      status: "running",
       virtualKind: "start",
     });
     expect(elements.nodes.find((node) => node.id === "task")).toMatchObject({
@@ -72,7 +75,7 @@ describe("graph canvas elements", () => {
       data: {
         label: "Process request",
         status: "running",
-        attempt: 2,
+        executionCount: 2,
         highlighted: true,
       },
     });
@@ -82,12 +85,42 @@ describe("graph canvas elements", () => {
       selected: true,
       data: {
         label: "Inbound webhook",
+        status: "running",
         virtualKind: "trigger",
         triggerID: "trigger-1",
         triggerEnabled: true,
         triggerValid: true,
       },
     });
+  });
+
+  test("leaves unrelated Trigger cards idle", () => {
+    const definition: GraphDefinition = {
+      entry_point: "task",
+      nodes: [{ id: "task", type: "task" }],
+    };
+    const elements = buildGraphCanvasElements(options(definition, {
+      runStatus: "failed",
+      runTriggerID: "another-trigger",
+      triggerNodes: [triggerNode()],
+    }));
+
+    expect(elements.nodes.find((node) => node.data.virtualKind === "trigger")?.data.status).toBe("idle");
+  });
+
+  test("projects the selected run status onto Start and End nodes", () => {
+    const definition: GraphDefinition = {
+      entry_point: "task",
+      finish_point: "task",
+      nodes: [{ id: "task", type: "task" }],
+    };
+    const running = buildGraphCanvasElements(options(definition, { runStatus: "running" }));
+    const failed = buildGraphCanvasElements(options(definition, { runStatus: "failed" }));
+
+    expect(running.nodes.find((node) => node.id === START_NODE_REF)?.data.status).toBe("running");
+    expect(running.nodes.find((node) => node.id === END_NODE_REF)?.data.status).toBe("running");
+    expect(failed.nodes.find((node) => node.id === START_NODE_REF)?.data.status).toBe("succeeded");
+    expect(failed.nodes.find((node) => node.id === END_NODE_REF)?.data.status).toBe("failed");
   });
 
   test("summarizes static and dynamic state bindings and flags missing requirements", () => {
@@ -118,6 +151,10 @@ describe("graph canvas elements", () => {
 
     expect(elements.nodes[0].data).toMatchObject({
       bindingSummary: "2/3 state",
+      stateBindingPreview: [
+        { name: "result", value: "scopes.worker.result" },
+        { name: "input_1", value: "shared.items.first" },
+      ],
       missingBindings: true,
     });
   });
@@ -146,7 +183,7 @@ describe("graph canvas elements", () => {
       }],
       runtime: new Map([[
         "agent",
-        { status: "failed", attempt: 2, at: 1, errorMessage: "provider request timed out" },
+        { status: "failed", executionCount: 2, at: 1, errorMessage: "provider request timed out" },
       ]]),
       virtualNodeIDs: [],
     }));
@@ -156,14 +193,47 @@ describe("graph canvas elements", () => {
       data: {
         typeLabel: "Agent",
         configurationSummary: "model: reasoner · tools: 3",
+        configurationPreview: [
+          { name: "model_id", value: "reasoner" },
+          { name: "tool_ids", value: '["search","read","write"]' },
+        ],
         configurationErrors: ["Config prompt: Required field."],
         errorSummary: "provider request timed out",
       },
     });
   });
 
+  test("keeps configuration feedback while hiding runtime projection in edit mode", () => {
+    const definition: GraphDefinition = {
+      nodes: [{ id: "agent", type: "agent" }],
+    };
+    const elements = buildGraphCanvasElements(options(definition, {
+      configurationErrors: new Map([["agent", ["Config model_id: Required field."]]]),
+      runtime: new Map([["agent", {
+        status: "failed",
+        executionCount: 4,
+        at: 1,
+        errorMessage: "provider request timed out",
+      }]]),
+      runtimeVisible: false,
+      virtualNodeIDs: [],
+    }));
+
+    expect(elements.nodes[0].data).toMatchObject({
+      status: "idle",
+      executionCount: 0,
+      runtimeVisible: false,
+      configurationErrors: ["Config model_id: Required field."],
+    });
+    expect(elements.nodes[0].data.errorSummary).toBeUndefined();
+  });
+
   test("adds labels and visual emphasis to conditional edges", () => {
-    const condition = { type: "status_equals", config: { status: "ready" } };
+    const condition = {
+      type: "status_equals",
+      config: { status: "ready" },
+      state: { actual: { path: "shared.status" } },
+    };
     const definition: GraphDefinition = {
       nodes: [
         { id: "source", type: "task" },
@@ -180,9 +250,18 @@ describe("graph canvas elements", () => {
 
     expect(unselected).toMatchObject({
       id: edgeID,
+      type: "condition",
       label: "status = ready",
       animated: false,
       selected: false,
+      data: {
+        selectionId: edgeID,
+        conditionInfo: {
+          label: "status = ready",
+          state: [{ name: "actual", value: "shared.status" }],
+          config: [{ name: "status", value: "ready" }],
+        },
+      },
       style: { stroke: "#8b5cf6", strokeWidth: 1.4 },
     });
     expect(unselected.labelBgPadding).toEqual([7, 4]);

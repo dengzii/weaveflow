@@ -26,8 +26,8 @@ export function GraphTitleMenu({
   open: boolean;
   graphSwitchDisabled: boolean;
   onCreateGraph: () => void;
-  onDeleteGraph: () => void;
-  onExportGraph: () => void;
+  onDeleteGraph: (graph: LocalGraph) => void;
+  onExportGraph: (graph: LocalGraph) => void;
   onImportGraph: () => void;
   onLoadGraph: (graph: LocalGraph) => void;
   onOpenChange: (open: boolean) => void;
@@ -68,30 +68,6 @@ export function GraphTitleMenu({
             >
               <FileUp className="h-4 w-4" />
             </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              className="h-8 w-8"
-              onClick={onExportGraph}
-              disabled={!definition}
-              title="Export graph"
-              aria-label="Export graph"
-            >
-              <Download className="h-4 w-4" />
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              size="icon"
-              onClick={onDeleteGraph}
-              disabled={!activeCacheID}
-              title="Delete graph"
-              aria-label="Delete graph"
-              className="ml-auto"
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
           </div>
 
           <div className="max-h-80 overflow-auto">
@@ -101,23 +77,48 @@ export function GraphTitleMenu({
               graphs.map((graph) => {
                 const graphBadgeCount = graph.definition ? graphScriptBadgeCount(graph.definition) : 0;
                 return (
-                  <button
+                  <div
                     key={graph.id}
-                    type="button"
-                    className={`grid w-full gap-1 border-b border-border px-3 py-2 text-left last:border-b-0 hover:bg-accent ${
+                    className={`group grid grid-cols-[minmax(0,1fr)_auto] border-b border-border last:border-b-0 hover:bg-accent ${
                       graph.id === activeCacheID ? "bg-accent" : ""
                     } ${graphSwitchDisabled ? "cursor-not-allowed opacity-50 hover:bg-transparent" : ""}`}
-                    onClick={() => onLoadGraph(graph)}
-                    disabled={graphSwitchDisabled}
                   >
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-sm font-medium">{graph.title}</span>
-                      <ScriptCountBadge count={graphBadgeCount} />
+                    <button
+                      type="button"
+                      className="grid min-w-0 gap-1 px-3 py-2 text-left"
+                      onClick={() => onLoadGraph(graph)}
+                      disabled={graphSwitchDisabled}
+                    >
+                      <div className="flex min-w-0 items-center gap-2">
+                        <span className="truncate text-sm font-medium">{graph.title}</span>
+                        <ScriptCountBadge count={graphBadgeCount} />
+                      </div>
+                      <div className="truncate text-xs text-muted-foreground">
+                        {graph.nodeCount} nodes / {formatTime(graph.updatedAt)}
+                      </div>
+                    </button>
+                    <div className="flex items-center gap-0.5 pr-2 opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto">
+                      <button
+                        type="button"
+                        className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
+                        onClick={() => onExportGraph(graph)}
+                        title={`Export ${graph.title}`}
+                        aria-label={`Export ${graph.title}`}
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive disabled:pointer-events-none disabled:opacity-50"
+                        onClick={() => onDeleteGraph(graph)}
+                        disabled={graphSwitchDisabled}
+                        title={`Delete ${graph.title}`}
+                        aria-label={`Delete ${graph.title}`}
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
-                    <div className="truncate text-xs text-muted-foreground">
-                      {graph.nodeCount} nodes / {formatTime(graph.updatedAt)}
-                    </div>
-                  </button>
+                  </div>
                 );
               })
             )}

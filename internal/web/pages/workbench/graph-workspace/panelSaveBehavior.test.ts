@@ -4,7 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { RuntimeSettings, Trigger } from "../../../types";
 import { TriggerEditorForm } from "../TriggerEditorForm";
 import { triggerEditorValues } from "../triggerEditor";
-import { RuntimeSettingsEditor } from "./GraphSettingsEditor";
+import { ModelSettingsDialog, RuntimeSettingsEditor } from "./GraphSettingsEditor";
+import { newEditableGraphModel } from "./graphSettingsEditorModel";
 
 describe("inspector save behavior", () => {
   test("keeps runtime settings local without a panel save button", () => {
@@ -18,7 +19,7 @@ describe("inspector save behavior", () => {
     expect(markup).not.toContain("Save settings");
   });
 
-  test("shows only the simple API key controls", () => {
+  test("shows compact model information and edits through the shared dialog", () => {
     const settings = runtimeSettings();
     settings.models = [{
       id: "default",
@@ -26,16 +27,43 @@ describe("inspector save behavior", () => {
       provider: "openai",
       credential_configured: true,
     }];
-    const markup = renderToStaticMarkup(createElement(RuntimeSettingsEditor, {
+    const settingsMarkup = renderToStaticMarkup(createElement(RuntimeSettingsEditor, {
       settings,
       toolDefinitions: [],
       onChangeRuntimeSettings: () => settings,
     }));
 
-    expect(markup).toContain('type="password"');
-    expect(markup).toContain("Replace");
-    expect(markup).toContain("Clear");
-    expect(markup).not.toContain("Advanced credential reference");
+    expect(settingsMarkup).toContain('aria-label="Edit model default"');
+    expect(settingsMarkup).toContain("openai · chat_completions · model name not set");
+    expect(settingsMarkup).toContain("API key set");
+    expect(settingsMarkup).not.toContain('type="password"');
+
+    const dialogMarkup = renderToStaticMarkup(createElement(ModelSettingsDialog, {
+      mode: "edit",
+      model: { ...newEditableGraphModel("default"), credential_configured: true },
+      existingModelIDs: [],
+      onSave: () => true,
+      onClose: () => undefined,
+    }));
+    expect(dialogMarkup).toContain("Edit model");
+    expect(dialogMarkup).toContain('type="password"');
+    expect(dialogMarkup).toContain("Replace");
+    expect(dialogMarkup).toContain("Clear");
+    expect(dialogMarkup).not.toContain("Advanced credential reference");
+  });
+
+  test("shows duplicate model identifiers in the shared dialog", () => {
+    const markup = renderToStaticMarkup(createElement(ModelSettingsDialog, {
+      mode: "add",
+      model: newEditableGraphModel("default"),
+      existingModelIDs: ["default"],
+      onSave: () => true,
+      onClose: () => undefined,
+    }));
+
+    expect(markup).toContain("Model ID already exists: default");
+    expect(markup).toContain('<button class="');
+    expect(markup).toContain("disabled");
   });
 
   test("keeps trigger editing local without a panel save button", () => {

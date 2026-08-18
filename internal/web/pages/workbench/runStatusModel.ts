@@ -52,6 +52,11 @@ export interface RunMetricsSummary {
   errorCount: number;
 }
 
+export interface RunIOCheckpoints {
+  input?: CheckpointRecord;
+  output?: CheckpointRecord;
+}
+
 export const MIN_PANEL_HEIGHT = 180;
 export const DEFAULT_COLUMN_RATIOS: ColumnRatios = [1, 1.5, 2];
 export const COLUMN_SEPARATOR_WIDTH = 1;
@@ -311,6 +316,14 @@ export function summarizeRunMetrics(
     warningCount,
     errorCount,
   };
+}
+
+export function selectRunIOCheckpoints(checkpoints: CheckpointRecord[] = []): RunIOCheckpoints {
+  const sorted = [...checkpoints].sort(compareCheckpointTime);
+  const input = sorted.find((checkpoint) => checkpoint.stage === "before_node") ?? sorted[0];
+  const finalCheckpoints = sorted.filter((checkpoint) => checkpoint.stage === "final");
+  const output = finalCheckpoints.at(-1) ?? sorted.at(-1);
+  return { input, output };
 }
 
 function recordPayload(value: unknown): Record<string, unknown> | null {

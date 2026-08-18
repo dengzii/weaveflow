@@ -4,7 +4,9 @@ import type { GraphDefinition, StepRecord } from "../types";
 import { END_NODE_REF, START_NODE_REF } from "../lib/graphEditor";
 import {
   applyRuntime,
+  applyRuntimeStep,
   applyRuntimeSnapshot,
+  eventAttempt,
   eventErrorMessage,
   isVirtualEndNodeID,
   isVirtualStartNodeID,
@@ -56,8 +58,21 @@ describe("graph canvas model", () => {
     );
     expect(runtime.get("node-1")).toEqual({
       status: "succeeded",
-      attempt: 2,
+      executionCount: 2,
       at: Date.parse("2026-01-01T00:02:00Z"),
+      stepAttempts: new Map([["step-1", 2]]),
+    });
+  });
+
+  test("totals attempts across repeated executions of the same node", () => {
+    const runtime = runtimeFromSteps([
+      step({ step_id: "step-1", status: "succeeded", attempt: 1, updated_at: "2026-01-01T00:01:00Z" }),
+      step({ step_id: "step-2", status: "succeeded", attempt: 2, updated_at: "2026-01-01T00:02:00Z" }),
+      step({ step_id: "step-3", status: "running", attempt: 1, updated_at: "2026-01-01T00:03:00Z" }),
+    ]);
+    expect(runtime.get("node-1")).toMatchObject({
+      status: "running",
+      executionCount: 4,
     });
   });
 
@@ -79,11 +94,41 @@ describe("graph canvas model", () => {
 
   test("ignores stale runtime status while retaining a newer attempt", () => {
     const runtime = new Map<string, RuntimeNodeState>([
-      ["node-1", { status: "succeeded", attempt: 1, at: 20 }],
+      ["node-1", {
+        status: "succeeded",
+        executionCount: 1,
+        at: 20,
+        stepAttempts: new Map([["step-1", 1]]),
+      }],
     ]);
-    expect(applyRuntime(runtime, "node-1", "running", 2, 10)).toBe(true);
-    expect(runtime.get("node-1")).toEqual({ status: "succeeded", attempt: 2, at: 20 });
-    expect(applyRuntime(runtime, "node-1", "running", 2, 10)).toBe(false);
+    expect(applyRuntimeStep(runtime, "node-1", "step-1", "running", 2, 10)).toBe(true);
+    expect(runtime.get("node-1")).toEqual({
+      status: "succeeded",
+      executionCount: 2,
+      at: 20,
+      stepAttempts: new Map([["step-1", 2]]),
+    });
+    expect(applyRuntimeStep(runtime, "node-1", "step-1", "running", 2, 10)).toBe(false);
+  });
+
+  test("merges step attempts without double counting snapshots", () => {
+    const runtime = runtimeFromSteps([
+      step({ step_id: "step-1", attempt: 1 }),
+    ]);
+    expect(applyRuntime(runtime, "node-1", runtimeFromSteps([
+      step({ step_id: "step-1", attempt: 1 }),
+      step({ step_id: "step-2", attempt: 2 }),
+    ]).get("node-1")!)).toBe(true);
+    expect(runtime.get("node-1")?.executionCount).toBe(3);
+  });
+
+  test("accumulates live executions by step without replay duplicates", () => {
+    const runtime = new Map<string, RuntimeNodeState>();
+    expect(applyRuntimeStep(runtime, "node-1", "step-1", "running", 1, 1)).toBe(true);
+    expect(applyRuntimeStep(runtime, "node-1", "step-1", "running", 1, 1)).toBe(false);
+    expect(applyRuntimeStep(runtime, "node-1", "step-1", "running", 2, 2)).toBe(true);
+    expect(applyRuntimeStep(runtime, "node-1", "step-2", "running", 1, 3)).toBe(true);
+    expect(runtime.get("node-1")?.executionCount).toBe(3);
   });
 
   test("applies runtime snapshots only to real nodes", () => {
@@ -92,11 +137,11 @@ describe("graph canvas model", () => {
     const updated = applyRuntimeSnapshot(
       [real, virtual],
       new Map([
-        ["node-1", { status: "failed", attempt: 2, at: 1 }],
-        [START_NODE_REF, { status: "failed", attempt: 2, at: 1 }],
+        ["node-1", { status: "failed", executionCount: 2, at: 1 }],
+        [START_NODE_REF, { status: "failed", executionCount: 2, at: 1 }],
       ])
     );
-    expect(updated[0].data).toMatchObject({ status: "failed", attempt: 2 });
+    expect(updated[0].data).toMatchObject({ status: "failed", executionCount: 2 });
     expect(updated[1]).toBe(virtual);
   });
 
@@ -125,5 +170,7 @@ describe("graph canvas model", () => {
     expect(runtimeStatusFromEvent("nodes.retry")).toBe("running");
     expect(runtimeStatusFromEvent("nodes.canceled")).toBe("canceled");
     expect(runtimeStatusFromEvent("run.finished")).toBe("");
+    expect(eventAttempt("nodes.started", { node_name: "Node 1" })).toBe(1);
+    expect(eventAttempt("nodes.retry", { attempt: 1, next_attempt: 2 })).toBe(2);
   });
 });

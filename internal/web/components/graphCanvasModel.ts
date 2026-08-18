@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react";
-import type { GraphDefinition, GraphNodeSpec, StepRecord, StepStatus, TriggerType } from "../types";
+import type { GraphDefinition, GraphNodeSpec, RunStatus, StepRecord, StepStatus, TriggerType } from "../types";
 import {
   END_NODE_REF,
   START_NODE_REF,
@@ -14,11 +14,14 @@ export interface FlowNodeData extends Record<string, unknown> {
   typeLabel?: string;
   status: FlowNodeStatus;
   editable: boolean;
-  attempt?: number;
+  runtimeVisible?: boolean;
+  executionCount?: number;
   highlighted?: boolean;
   bindingSummary?: string;
+  stateBindingPreview?: NodePreviewItem[];
   missingBindings?: boolean;
   configurationSummary?: string;
+  configurationPreview?: NodePreviewItem[];
   configurationErrors?: readonly string[];
   errorSummary?: string;
   virtualKind?: "start" | "end" | "loop" | "trigger";
@@ -30,14 +33,47 @@ export interface FlowNodeData extends Record<string, unknown> {
   height?: number;
 }
 
+export interface NodePreviewItem {
+  name: string;
+  value: string;
+}
+
 export type RuntimeNodeStatus = "idle" | Exclude<StepStatus, "scheduled">;
-export type FlowNodeStatus = RuntimeNodeStatus | "enabled" | "disabled";
+export type FlowNodeStatus = RuntimeNodeStatus;
+
+export function triggerNodeRuntimeStatus(runStatus?: RunStatus): RuntimeNodeStatus {
+  switch (runStatus) {
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "failed":
+      return "failed";
+    case "canceled":
+      return "canceled";
+    case "completed":
+      return "succeeded";
+    default:
+      return "idle";
+  }
+}
+
+export function virtualNodeRuntimeStatus(
+  kind: "start" | "end",
+  runStatus?: RunStatus
+): RuntimeNodeStatus {
+  if (!runStatus) return "idle";
+  if (runStatus === "pending") return "idle";
+  if (kind === "start") return runStatus === "running" ? "running" : "succeeded";
+  return triggerNodeRuntimeStatus(runStatus);
+}
 
 export interface RuntimeNodeState {
   status: RuntimeNodeStatus;
-  attempt: number;
+  executionCount: number;
   at: number;
   errorMessage?: string;
+  stepAttempts?: ReadonlyMap<string, number>;
 }
 
 export interface VirtualLoopLayout {
@@ -70,9 +106,9 @@ export function flowNodeAriaLabel(data: FlowNodeData): string {
     if (data.configurationSummary) parts.push(data.configurationSummary);
     if (data.bindingSummary) parts.push(data.bindingSummary);
   }
-  if (data.status && data.status !== "idle") parts.push(`execution status ${data.status}`);
-  if (data.attempt) parts.push(`attempt ${data.attempt}`);
-  if (data.errorSummary) parts.push(`error: ${data.errorSummary}`);
+  if (data.runtimeVisible && data.status && data.status !== "idle") parts.push(`execution status ${data.status}`);
+  if (data.runtimeVisible && data.executionCount) parts.push(`executions ${data.executionCount}`);
+  if (data.runtimeVisible && data.errorSummary) parts.push(`error: ${data.errorSummary}`);
   return parts.join(". ");
 }
 
@@ -81,9 +117,10 @@ export function runtimeFromSteps(steps: StepRecord[], runID?: string): Map<strin
   for (const step of steps) {
     if (!step.node_id) continue;
     if (runID && step.run_id && step.run_id !== runID) continue;
-    applyRuntime(
+    applyRuntimeStep(
       runtime,
       step.node_id,
+      step.step_id,
       normalizeRuntimeStatus(step.status),
       Number.isFinite(step.attempt) ? step.attempt : 0,
       timeRank(step.updated_at || step.finished_at || step.started_at),
@@ -96,30 +133,79 @@ export function runtimeFromSteps(steps: StepRecord[], runID?: string): Map<strin
 export function applyRuntime(
   runtime: Map<string, RuntimeNodeState>,
   nodeID: string,
+  update: RuntimeNodeState
+): boolean {
+  const current = runtime.get(nodeID);
+  if (!current) {
+    runtime.set(nodeID, {
+      ...update,
+      stepAttempts: new Map(update.stepAttempts),
+    });
+    return true;
+  }
+
+  const stepAttempts = new Map(current.stepAttempts);
+  for (const [stepID, attempt] of update.stepAttempts ?? []) {
+    stepAttempts.set(stepID, Math.max(stepAttempts.get(stepID) ?? 0, attempt));
+  }
+  const executionCount = Math.max(
+    totalExecutions(stepAttempts),
+    current.executionCount,
+    update.executionCount
+  );
+  const latest = update.at >= current.at ? update : current;
+  const next: RuntimeNodeState = {
+    status: latest.status,
+    executionCount,
+    at: latest.at,
+    stepAttempts,
+  };
+  const nextErrorMessage = latest.status === "failed" ? latest.errorMessage?.trim() : "";
+  if (nextErrorMessage) next.errorMessage = nextErrorMessage;
+  if (
+    current.status === next.status
+    && current.executionCount === next.executionCount
+    && current.at === next.at
+    && (current.errorMessage ?? "") === (next.errorMessage ?? "")
+  ) {
+    return false;
+  }
+  runtime.set(nodeID, next);
+  return true;
+}
+
+export function applyRuntimeStep(
+  runtime: Map<string, RuntimeNodeState>,
+  nodeID: string,
+  stepID: string,
   status: RuntimeNodeStatus,
   attempt: number,
   at: number,
   errorMessage = ""
 ): boolean {
   const current = runtime.get(nodeID);
-  const nextAttempt = Math.max(current?.attempt ?? 0, attempt);
-  if (current && current.at > at) {
-    if (nextAttempt === current.attempt) return false;
-    runtime.set(nodeID, { ...current, attempt: nextAttempt });
-    return true;
-  }
-
+  const stepAttempts = new Map(current?.stepAttempts);
+  const normalizedAttempt = Number.isFinite(attempt) ? Math.max(0, Math.trunc(attempt)) : 0;
+  const previousAttempt = stepAttempts.get(stepID) ?? 0;
+  if (normalizedAttempt > previousAttempt) stepAttempts.set(stepID, normalizedAttempt);
+  const trackedExecutions = totalExecutions(current?.stepAttempts ?? new Map());
+  const untrackedExecutions = Math.max(0, (current?.executionCount ?? 0) - trackedExecutions);
+  const executionCount = untrackedExecutions + totalExecutions(stepAttempts);
+  const latest = !current || at >= current.at;
   const next: RuntimeNodeState = {
-    status,
-    attempt: nextAttempt,
-    at,
+    status: latest ? status : current.status,
+    executionCount,
+    at: latest ? at : current.at,
+    stepAttempts,
   };
-  const nextErrorMessage = status === "failed" ? errorMessage.trim() : "";
+  const nextErrorMessage = latest
+    ? status === "failed" ? errorMessage.trim() : ""
+    : current.errorMessage ?? "";
   if (nextErrorMessage) next.errorMessage = nextErrorMessage;
   if (
     current
     && current.status === next.status
-    && current.attempt === next.attempt
+    && current.executionCount === next.executionCount
     && current.at === next.at
     && (current.errorMessage ?? "") === (next.errorMessage ?? "")
   ) {
@@ -165,20 +251,20 @@ export function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeDat
   let changed = false;
   const next = nodes.map((node) => {
     if (node.data.virtualKind) return node;
-    if ((node.data.status || "idle") === "idle" && !node.data.attempt && !node.data.errorSummary) return node;
+    if ((node.data.status || "idle") === "idle" && !node.data.executionCount && !node.data.errorSummary) return node;
     changed = true;
     return {
       ...node,
       data: {
         ...node.data,
         status: "idle",
-        attempt: 0,
+        executionCount: 0,
         errorSummary: undefined,
       },
       ariaLabel: flowNodeAriaLabel({
         ...node.data,
         status: "idle",
-        attempt: 0,
+        executionCount: 0,
         errorSummary: undefined,
       }),
     };
@@ -202,10 +288,14 @@ export function runtimeStatusFromEvent(type: string): RuntimeNodeStatus | "" {
   }
 }
 
-export function eventAttempt(payload: unknown): number {
-  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return 0;
-  const value = (payload as Record<string, unknown>).attempt;
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+export function eventAttempt(type: string, payload: unknown): number {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return type === "nodes.started" ? 1 : 0;
+  }
+  const record = payload as Record<string, unknown>;
+  const value = type === "nodes.retry" ? record.next_attempt ?? record.attempt : record.attempt;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  return type === "nodes.started" ? 1 : 0;
 }
 
 export function eventErrorMessage(payload: unknown): string {
@@ -326,19 +416,25 @@ export function isVirtualEndNodeID(nodeID: string): boolean {
 }
 
 function updateRuntimeNodeData(node: Node<FlowNodeData>, runtime: RuntimeNodeState): Node<FlowNodeData> {
-  const attempt = runtime.attempt || 0;
+  const executionCount = runtime.executionCount || 0;
   const errorSummary = runtime.status === "failed" ? runtime.errorMessage || undefined : undefined;
   if (
     node.data.status === runtime.status
-    && node.data.attempt === attempt
+    && node.data.executionCount === executionCount
     && node.data.errorSummary === errorSummary
   ) return node;
-  const data = { ...node.data, status: runtime.status, attempt, errorSummary };
+  const data = { ...node.data, status: runtime.status, executionCount, errorSummary };
   return {
     ...node,
     data,
     ariaLabel: flowNodeAriaLabel(data),
   };
+}
+
+function totalExecutions(stepAttempts: ReadonlyMap<string, number>): number {
+  let total = 0;
+  for (const attempt of stepAttempts.values()) total += attempt;
+  return total;
 }
 
 function normalizeRuntimeStatus(status: StepStatus): RuntimeNodeStatus {

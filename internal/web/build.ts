@@ -7,13 +7,19 @@ const DEV_IDLE_TIMEOUT = parseInt(process.env.DEV_IDLE_TIMEOUT ?? "255");
 const distDir = resolve(import.meta.dir, "dist");
 
 const twBin = resolve(import.meta.dir, "node_modules/.bin/tailwindcss");
-const staticAssets = ["index.html", "config.js"];
+const staticAssets = [
+  { output: "index.html", source: resolve(import.meta.dir, "index.html") },
+  { output: "config.js", source: resolve(import.meta.dir, "config.js") },
+  { output: "icon.svg", source: resolve(import.meta.dir, "../../assets/icon.svg") },
+  { output: "icon_64.png", source: resolve(import.meta.dir, "../../assets/icon_64.png") },
+  { output: "icon_128.png", source: resolve(import.meta.dir, "../../assets/icon_128.png") },
+];
 
 async function copyStaticAssets(): Promise<boolean> {
   try {
     await Promise.all(
-      staticAssets.map((filename) =>
-        Bun.write(resolve(distDir, filename), Bun.file(resolve(import.meta.dir, filename)))
+      staticAssets.map((asset) =>
+        Bun.write(resolve(distDir, asset.output), Bun.file(asset.source))
       )
     );
     return true;
@@ -103,7 +109,7 @@ if (isDev) {
 
   watch(import.meta.dir, { recursive: true }, async (_event, filename) => {
     if (!filename) return;
-    if (staticAssets.includes(filename)) {
+    if (staticAssets.some((asset) => asset.output === filename)) {
       await copyStaticAssets();
       return;
     }

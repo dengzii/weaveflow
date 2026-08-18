@@ -6,11 +6,32 @@ import { GraphTitleMenu } from "./GraphTitleMenu";
 import { GraphTransferDialog } from "./GraphTransferDialog";
 
 describe("graph transfer UI", () => {
-  test("offers import and export from the graph title menu", () => {
+  test("shows graph actions at the end of local and server graph items", () => {
     const markup = renderToStaticMarkup(createElement(GraphTitleMenu, {
-      activeCacheID: "",
+      activeCacheID: "local-demo",
       definition: graphDefinition(),
-      graphs: [],
+      graphs: [{
+        id: "local-demo",
+        title: "demo",
+        graphId: "demo",
+        graphVersion: "v1",
+        definition: graphDefinition(),
+        runtimeSettings: runtimeSettings(),
+        nodeCount: 1,
+        serverGraph: false,
+        createdAt: "2026-01-01T00:00:00Z",
+        updatedAt: "2026-01-01T00:00:00Z",
+      }, {
+        id: "server:remote:session",
+        title: "remote",
+        graphId: "remote",
+        graphVersion: "v1",
+        nodeCount: 2,
+        serverGraph: true,
+        latestSession: "session",
+        createdAt: "2026-01-02T00:00:00Z",
+        updatedAt: "2026-01-02T00:00:00Z",
+      }],
       graphID: "demo",
       open: true,
       graphSwitchDisabled: false,
@@ -22,8 +43,11 @@ describe("graph transfer UI", () => {
       onOpenChange: () => undefined,
     }));
 
+    expect(markup).toContain('aria-label="Export demo"');
+    expect(markup).toContain('aria-label="Delete demo"');
+    expect(markup).toContain('aria-label="Delete remote"');
+    expect(markup).toContain("New graph");
     expect(markup).toContain("Import graph");
-    expect(markup).toContain("Export graph");
     expect(markup).not.toContain("*demo");
   });
 

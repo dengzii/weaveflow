@@ -37,6 +37,7 @@ import type {
   RegistryInfo,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  RunStatus,
   StepRecord,
   ToolDefinition,
   Trigger,
@@ -49,6 +50,7 @@ import { autoLayoutGraph } from "./graph-workspace/layout";
 import { buildGraphLintIssues, type GraphLintIssue } from "./graph-workspace/lint";
 import { ToastStack, type ToastRecord } from "./graph-workspace/ToastStack";
 import { GraphInspectorPanel } from "./graph-workspace/GraphInspectorPanel";
+import { NodeRuntimeInspector } from "./graph-workspace/NodeInspector";
 import { GraphTitleMenu } from "./graph-workspace/GraphTitleMenu";
 import {
   GraphTransferDialog,
@@ -106,8 +108,10 @@ import {
   realNodeTypes,
   virtualNodeSpec,
 } from "./graph-workspace/utils";
+import type { WorkspaceMode } from "./WorkbenchShell";
 
 interface GraphWorkspaceProps {
+  workspaceMode: WorkspaceMode;
   definition: GraphDefinition | null;
   definitionText: string;
   initialStateText: string;
@@ -116,6 +120,8 @@ interface GraphWorkspaceProps {
   initialRequirementsError: string;
   steps: StepRecord[];
   selectedRunId: string;
+  runStatus?: RunStatus;
+  runTriggerId?: string;
   registry: RegistryInfo | null;
   toolDefinitions: ToolDefinition[];
   runtimeSettings: RuntimeSettings;
@@ -143,11 +149,13 @@ interface GraphWorkspaceProps {
     mode: "create" | "overwrite";
     expectedGraphSessionID?: string;
   }) => Promise<GraphLoadResult>;
+  onDeleteServerGraph: (graphID: string) => Promise<void>;
   onGraphSwitch: () => boolean;
   onGraphDetailLoaded: (detail: GraphDetail) => void;
 }
 
 export const GraphWorkspace = memo(function GraphWorkspace({
+  workspaceMode,
   definition,
   definitionText,
   initialStateText,
@@ -156,6 +164,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   initialRequirementsError,
   steps,
   selectedRunId,
+  runStatus,
+  runTriggerId,
   registry,
   toolDefinitions,
   runtimeSettings,
@@ -175,9 +185,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   onDismissToast,
   onNotify,
   onCommitGraphImport,
+  onDeleteServerGraph,
   onGraphSwitch,
   onGraphDetailLoaded,
 }: GraphWorkspaceProps) {
+  const editing = workspaceMode === "edit";
   const [nodeConfigText, setNodeConfigText] = useState("{}");
   const [edgeConfigText, setEdgeConfigText] = useState("{}");
   const [, setLocalStatus] = useState("local ready");
@@ -260,6 +272,11 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   }, [contextMenu]);
 
   useEffect(() => {
+    if (editing) return;
+    setContextMenu(null);
+  }, [editing]);
+
+  useEffect(() => {
     const handleKey = (event: KeyboardEvent) => {
       const key = event.key.toLowerCase();
       if ((event.ctrlKey || event.metaKey) && key === "f") {
@@ -267,6 +284,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         canvasSearch.setOpen(true);
         return;
       }
+      if (!editing) return;
       if (isEditableKeyboardTarget(event.target)) return;
       if ((event.ctrlKey || event.metaKey) && key === "d") {
         event.preventDefault();
@@ -360,8 +378,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     cacheHydrated,
     activeCacheID,
     activateGraph,
+    createDraft,
     resetActiveGraph,
-    deleteActiveGraph,
+    deleteGraph,
     refreshGraphs,
   } = useLocalGraphs({
     snapshot: {
@@ -408,7 +427,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     [displayVirtualLoops, selectedLoopId]
   );
   const inspectorMode = selectedEdge || selectedVirtualEdge ? "edge" : selectedVirtualLoop ? "loop" : selectedVirtualNode ? "virtual" : selectedNode ? "node" : "graph";
-  const triggerInspectorOpen = Boolean(selectedTrigger);
+  const triggerInspectorOpen = editing && Boolean(selectedTrigger);
   const searchableNodes = useMemo(
     () => [...visibleVirtualNodes, ...(definition?.nodes ?? [])],
     [definition, visibleVirtualNodes]
@@ -471,13 +490,26 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       setLocalStatus("run active");
       return;
     }
+    createGraphWithoutGuard();
+  }
+
+  function createGraphWithoutGuard() {
     const nextName = createGraphID();
     const next = createGraphDefinition(nextName, undefined, registry?.state_modules);
+    createDraft({
+      definition: next,
+      graphID: next.name || nextName,
+      graphVersion: defaultGraphVersion,
+      runtimeSettings,
+      virtualNodeIDs: defaultVirtualNodeIds,
+      virtualEdges: [],
+      virtualLoops: [],
+      validTriggerIDs: [],
+    });
     onGraphId(next.name || nextName);
     onGraphVersion(defaultGraphVersion);
     onDefinitionText(stringifyJSON(next));
     graphLoadGenerationRef.current += 1;
-    resetActiveGraph();
     clearSelection();
     setVirtualNodeIds(defaultVirtualNodeIds);
     setVirtualEdges([]);
@@ -495,26 +527,26 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     void activateCachedGraph(graph);
   }
 
-  async function activateCachedGraph(graph: LocalGraph) {
+  async function activateCachedGraph(graph: LocalGraph): Promise<boolean> {
     const generation = ++graphLoadGenerationRef.current;
     let resolvedGraph = graph;
     if (graph.serverGraph || !isHydratedLocalGraph(resolvedGraph)) {
       setLocalStatus(`loading ${graph.title}`);
       try {
         const detail = await getGraphDetail(graph.graphId);
-        if (generation !== graphLoadGenerationRef.current) return;
+        if (generation !== graphLoadGenerationRef.current) return false;
         resolvedGraph = hydrateServerGraph(graph, detail);
         onGraphDetailLoaded(detail);
       } catch (error) {
-        if (generation !== graphLoadGenerationRef.current) return;
+        if (generation !== graphLoadGenerationRef.current) return false;
         const message = error instanceof Error ? error.message : String(error);
         setLocalStatus(message);
         onNotify("error", message);
-        return;
+        return false;
       }
     }
-    if (generation !== graphLoadGenerationRef.current) return;
-    if (!isHydratedLocalGraph(resolvedGraph)) return;
+    if (generation !== graphLoadGenerationRef.current) return false;
+    if (!isHydratedLocalGraph(resolvedGraph)) return false;
     const activation = activateGraph(resolvedGraph);
     const savedState = activation.workspaceState;
     onGraphId(resolvedGraph.graphId);
@@ -536,16 +568,69 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     if (!hasStoredGraphCanvasViewport(viewportKey)) {
       setFitViewSignal((value) => value + 1);
     }
+    return true;
   }
 
-  function deleteCurrentGraph() {
-    deleteActiveGraph();
+  async function deleteCachedGraph(graph: LocalGraph) {
+    const deletingActiveGraph = graph.id === activeCacheID || (graph.serverGraph && graph.graphId === graphId);
+    const confirmation = graph.serverGraph
+      ? `Delete server graph ${graph.title}? This permanently deletes its triggers and run history.`
+      : `Delete local graph ${graph.title}?`;
+    if (!window.confirm(confirmation)) return;
+    if (deletingActiveGraph && !onGraphSwitch()) {
+      setLocalStatus("run active");
+      return;
+    }
+    graphLoadGenerationRef.current += 1;
+    if (graph.serverGraph) {
+      try {
+        await onDeleteServerGraph(graph.graphId);
+        refreshGraphs();
+        setLocalStatus(`deleted ${graph.title}`);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setLocalStatus(message);
+        onNotify("error", message);
+        return;
+      }
+      if (!deletingActiveGraph) return;
+      setGraphMenuOpen(false);
+      const fallbackGraph = readLocalGraphs()[0];
+      if (fallbackGraph) {
+        await activateCachedGraph(fallbackGraph);
+        return;
+      }
+      createGraphWithoutGuard();
+      return;
+    }
+    const result = deleteGraph(graph.id);
+    if (!result) return;
+    if (!result.deletedActiveGraph) return;
     setGraphMenuOpen(false);
+    const fallbackGraph = result.remainingGraphs[0];
+    if (fallbackGraph) {
+      void activateCachedGraph(fallbackGraph);
+      return;
+    }
+    createGraphWithoutGuard();
   }
 
-  function openGraphTransfer(mode: GraphTransferMode) {
+  async function exportCachedGraph(graph: LocalGraph) {
+    if (graph.id !== activeCacheID) {
+      if (!onGraphSwitch()) {
+        setLocalStatus("run active");
+        return;
+      }
+      const activated = await activateCachedGraph(graph);
+      if (!activated) return;
+    }
     setGraphMenuOpen(false);
-    setGraphTransferMode(mode);
+    setGraphTransferMode("export");
+  }
+
+  function importGraphFromMenu() {
+    setGraphMenuOpen(false);
+    setGraphTransferMode("import");
   }
 
   async function importGraph(graph: ParsedGraphImport, options: GraphImportOptions): Promise<boolean> {
@@ -903,9 +988,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
               open={graphMenuOpen}
               graphSwitchDisabled={graphSwitchDisabled}
               onCreateGraph={createGraph}
-              onDeleteGraph={deleteCurrentGraph}
-              onExportGraph={() => openGraphTransfer("export")}
-              onImportGraph={() => openGraphTransfer("import")}
+              onDeleteGraph={(graph) => void deleteCachedGraph(graph)}
+              onExportGraph={(graph) => void exportCachedGraph(graph)}
+              onImportGraph={importGraphFromMenu}
               onLoadGraph={loadCachedGraph}
               onOpenChange={setGraphMenuOpen}
             />,
@@ -918,7 +1003,10 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           definition={definition}
           steps={steps}
           selectedRunId={selectedRunId}
-          editable
+          runStatus={runStatus}
+          runTriggerId={runTriggerId}
+          editable={editing}
+          runtimeVisible={!editing}
           selectedNodeId={selectedNodeId ?? undefined}
           selectedEdgeId={selectedEdgeId ?? undefined}
           selectedLoopId={selectedLoopId ?? undefined}
@@ -934,15 +1022,15 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           onSelectEdge={setSelectedEdgeId}
           onSelectLoop={setSelectedLoopId}
           onSelectTrigger={selectTrigger}
-          onPositionChanges={moveCanvasNodes}
-          onAutoLayout={applyAutoLayout}
-          onConnectNodes={connectNodes}
-          onCreateNodeAt={openCreateMenu}
-          onNodeContextMenu={openNodeMenu}
-          onEdgeContextMenu={openEdgeMenu}
-          onLoopContextMenu={openLoopMenu}
-          onTriggerContextMenu={openTriggerMenu}
-          onLoopDrag={handleLoopDrag}
+          onPositionChanges={editing ? moveCanvasNodes : undefined}
+          onAutoLayout={editing ? applyAutoLayout : undefined}
+          onConnectNodes={editing ? connectNodes : undefined}
+          onCreateNodeAt={editing ? openCreateMenu : undefined}
+          onNodeContextMenu={editing ? openNodeMenu : undefined}
+          onEdgeContextMenu={editing ? openEdgeMenu : undefined}
+          onLoopContextMenu={editing ? openLoopMenu : undefined}
+          onTriggerContextMenu={editing ? openTriggerMenu : undefined}
+          onLoopDrag={editing ? handleLoopDrag : undefined}
           virtualNodeIds={virtualNodeIds}
           virtualEdges={displayVirtualEdges}
           virtualLoops={displayVirtualLoops}
@@ -954,6 +1042,19 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           </div>
         ) : null}
         <CanvasSearch search={canvasSearch} />
+        {!editing ? (
+          <aside className="absolute left-4 top-4 z-30 w-[min(320px,calc(100%-2rem))] overflow-hidden rounded-md border border-border bg-panel/95 shadow-xl backdrop-blur">
+            <div className="flex h-9 min-w-0 items-center gap-2 border-b border-border px-3">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Node status</span>
+              {selectedNode ? (
+                <span className="min-w-0 flex-1 truncate text-right text-xs font-medium" title={selectedNode.name || selectedNode.id}>
+                  {selectedNode.name || selectedNode.id}
+                </span>
+              ) : null}
+            </div>
+            <NodeRuntimeInspector selectedNode={selectedNode} selectedRunID={selectedRunId} steps={steps} />
+          </aside>
+        ) : null}
         <ToastStack toasts={toasts} onDismiss={onDismissToast} />
       </section>
 
@@ -1025,7 +1126,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       />
       )}
 
-      {contextMenu ? (
+      {editing && contextMenu ? (
         <CanvasContextMenu
           boundaryRef={canvasRef}
           contextMenu={contextMenu}
