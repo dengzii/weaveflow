@@ -341,6 +341,9 @@ func (s *Server) reconcileCachedRuns(ctx context.Context, reader *graphCacheRead
 			return err
 		}
 		for _, run := range runs {
+			if runtime.IsExecutionLeaseActive(run, time.Now()) {
+				continue
+			}
 			if !run.StartedAt.IsZero() && run.StartedAt.After(cutoff) {
 				continue
 			}

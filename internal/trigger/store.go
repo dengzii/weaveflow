@@ -25,6 +25,7 @@ type DefinitionStore interface {
 	Get(context.Context, string) (Trigger, error)
 	List(context.Context) ([]Trigger, error)
 	Delete(context.Context, string) error
+	DeleteGraph(context.Context, string) ([]Trigger, error)
 	ReplaceGraph(context.Context, string, []Trigger) error
 }
 
@@ -308,6 +309,95 @@ func (s *FileStore) Delete(ctx context.Context, id string) error {
 		return ErrNotFound
 	}
 	return err
+}
+
+func (s *FileStore) DeleteGraph(ctx context.Context, graphID string) ([]Trigger, error) {
+	if s == nil {
+		return nil, fmt.Errorf("trigger store is nil")
+	}
+	graphID = strings.TrimSpace(graphID)
+	if graphID == "" {
+		return nil, fmt.Errorf("graph_id is required")
+	}
+	if err := storeContextError(ctx); err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]Trigger, 0)
+	ids := make(map[string]struct{})
+	for _, entry := range entries {
+		if err := storeContextError(ctx); err != nil {
+			return nil, err
+		}
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		id := strings.TrimSuffix(entry.Name(), ".json")
+		item, err := s.getLocked(id)
+		if err != nil {
+			return nil, err
+		}
+		if item.Target.GraphID != graphID {
+			continue
+		}
+		items = append(items, item)
+		ids[item.ID] = struct{}{}
+	}
+	if len(items) == 0 {
+		return []Trigger{}, nil
+	}
+
+	records, err := os.ReadDir(s.recordsDir())
+	if err != nil {
+		return nil, err
+	}
+	for _, entry := range records {
+		if err := storeContextError(ctx); err != nil {
+			return nil, err
+		}
+		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			continue
+		}
+		path := filepath.Join(s.recordsDir(), entry.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		var record Record
+		if err := decodeStoredJSON(data, &record); err != nil {
+			return nil, fmt.Errorf("decode trigger record %q: %w", entry.Name(), err)
+		}
+		_, remove := ids[record.TriggerID]
+		if !remove && record.Target.GraphID != graphID {
+			continue
+		}
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+
+	for id := range ids {
+		if err := storeContextError(ctx); err != nil {
+			return nil, err
+		}
+		if err := os.RemoveAll(filepath.Join(s.dir, "history", chatHistoryPathSegment(id))); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range items {
+		if err := os.Remove(filepath.Join(s.dir, item.ID+".json")); err != nil && !os.IsNotExist(err) {
+			return nil, err
+		}
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].ID < items[j].ID })
+	return items, nil
 }
 
 func (s *FileStore) CreateRecord(ctx context.Context, record Record) error {

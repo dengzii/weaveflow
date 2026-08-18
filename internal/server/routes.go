@@ -21,6 +21,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 func (s *Server) registerGraphRoutes(group *gin.RouterGroup) {
 	group.GET("/graphs", s.handleListGraphs)
 	group.GET("/graphs/:graph_id", s.handleGetGraphDetail)
+	group.DELETE("/graphs/:graph_id", s.handleDeleteGraph)
 	group.GET("/graphs/:graph_id/retention-audit", s.handleGetRetentionAudit)
 	group.POST("/graphs/:graph_id/sessions", s.handleCreateGraphSession)
 	group.POST("/graphs/:graph_id/analysis/initial-state-requirements", s.handleAnalyzeGraphInitialStateRequirements)
@@ -59,6 +60,7 @@ func (s *Server) registerRunRoutes(group *gin.RouterGroup) {
 	group.DELETE("/graphs/:graph_id/runs/:run_id", s.handleDeleteRun)
 	group.POST("/graphs/:graph_id/runs/:run_id/pause", s.handlePauseRun)
 	group.POST("/graphs/:graph_id/runs/:run_id/resume", s.handleResumeRun)
+	group.POST("/graphs/:graph_id/runs/:run_id/steps/:step_id/effect-resolution", s.handleResolveEffect)
 	group.POST("/graphs/:graph_id/runs/:run_id/cancel", s.handleCancelRun)
 	group.GET("/graphs/:graph_id/runs/:run_id/events", s.handleListEvents)
 	group.GET("/graphs/:graph_id/runs/:run_id/artifacts", s.handleListArtifacts)

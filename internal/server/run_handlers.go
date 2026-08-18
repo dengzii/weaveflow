@@ -47,6 +47,15 @@ type runInspectionResponse struct {
 	Interrupt   *runInterrupt              `json:"interrupt,omitempty"`
 }
 
+type effectResolutionRequest struct {
+	ResolutionID string                         `json:"resolution_id"`
+	Action       runtime.EffectResolutionAction `json:"action"`
+	Actor        string                         `json:"actor"`
+	Reason       string                         `json:"reason"`
+	Continue     bool                           `json:"continue"`
+	Input        map[string]any                 `json:"input,omitempty"`
+}
+
 const (
 	defaultEventPageLimit = 500
 	maximumEventPageLimit = 2000
@@ -115,6 +124,59 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 	writeData(c, http.StatusOK, result)
 }
 
+func (s *Server) handleResolveEffect(c *gin.Context) {
+	runID, ok := requireRecordIDPathParam(c, "run_id")
+	if !ok {
+		return
+	}
+	stepID, ok := requireRecordIDPathParam(c, "step_id")
+	if !ok {
+		return
+	}
+	request, input, err := decodeEffectResolutionRequest(c, stepID)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	session, ok := s.requireRunControlSession(c, runID)
+	if !ok {
+		return
+	}
+	ctx, cancel := deriveRunContextFromBase(c.Request.Context(), session.baseContext)
+	defer cancel()
+	result, err := session.runner.ResolveEffect(ctx, runID, request, input)
+	if err != nil {
+		writeErrorData(c, statusForError(err), err, result)
+		return
+	}
+	writeData(c, http.StatusOK, result)
+}
+
+func decodeEffectResolutionRequest(c *gin.Context, stepID string) (runtime.EffectResolutionRequest, *state.State, error) {
+	var payload effectResolutionRequest
+	if err := decodeRunRequest(c, &payload); err != nil {
+		return runtime.EffectResolutionRequest{}, nil, err
+	}
+	if payload.Input != nil {
+		if err := validateExternalRunState(payload.Input); err != nil {
+			return runtime.EffectResolutionRequest{}, nil, err
+		}
+	}
+	request := runtime.EffectResolutionRequest{
+		ResolutionID: payload.ResolutionID,
+		StepID:       stepID,
+		Action:       payload.Action,
+		Actor:        payload.Actor,
+		Reason:       payload.Reason,
+		Continue:     payload.Continue,
+	}
+	input := state.NewState()
+	if payload.Input != nil {
+		input = state.FromMap(payload.Input)
+	}
+	return request, input, nil
+}
+
 func (s *Server) handlePauseRun(c *gin.Context) {
 	runID, ok := requireRecordIDPathParam(c, "run_id")
 	if !ok {
@@ -181,7 +243,7 @@ func (s *Server) runControlRunner(ctx context.Context, graphID string, runID str
 		return nil, err
 	}
 	if runner != nil {
-		if (run.Status == runtime.RunStatusPending || run.Status == runtime.RunStatusRunning) && !runner.IsRunActive(runID) && isRunPastRegistrationGrace(run) {
+		if (run.Status == runtime.RunStatusPending || run.Status == runtime.RunStatusRunning) && !runner.IsRunActive(runID) && !runtime.IsExecutionLeaseActive(run, time.Now()) && isRunPastRegistrationGrace(run) {
 			if _, err := runner.MarkRunExecutionLost(ctx, runID); err != nil {
 				return nil, err
 			}
@@ -209,7 +271,7 @@ func (s *Server) runControlRunner(ctx context.Context, graphID string, runID str
 			return nil, err
 		}
 		return nil, fmt.Errorf("%w: run %q execution is no longer active", runtime.ErrRunControlNotAllowed, runID)
-	case runtime.RunStatusPaused:
+	case runtime.RunStatusPaused, runtime.RunStatusFailed:
 		session, err := s.loadGraphSession(graphID, run.GraphSessionID)
 		if err != nil {
 			return nil, err

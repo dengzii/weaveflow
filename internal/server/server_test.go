@@ -1166,7 +1166,12 @@ func TestDeleteCachedRunWithoutConfiguredGraph(t *testing.T) {
 
 	uploaded := putGraphForHashTest(t, engine, graphBody)
 	started := startGraphRunForTest(t, engine, uploaded, `{}`)
-	waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, started.RunID)
+	activeRunner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
+	waitForRunTerminalStatus(t, activeRunner, started.RunID)
+	waitForRunInactive(t, activeRunner, started.RunID)
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Server.Close() error = %v", err)
+	}
 
 	cacheOnlyServer, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {
@@ -1215,16 +1220,32 @@ func TestDeleteCachedActiveRunWithoutConfiguredGraphIsRejected(t *testing.T) {
 	active := startGraphRunForTest(t, engine, uploaded, `{}`)
 	activeRunner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
 	active = waitForRunTerminalStatus(t, activeRunner, active.RunID)
+	waitForRunInactive(t, activeRunner, active.RunID)
+	deadline := time.Now().Add(2 * time.Second)
+	for active.ExecutionLease != nil && active.ExecutionLease.Status == runtime.ExecutionLeaseActive && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		active, err = activeRunner.GetRun(context.Background(), active.RunID)
+		if err != nil {
+			t.Fatalf("GetRun() error = %v", err)
+		}
+	}
+	if active.ExecutionLease != nil && active.ExecutionLease.Status == runtime.ExecutionLeaseActive {
+		t.Fatalf("terminal run retained active execution lease: %#v", active.ExecutionLease)
+	}
 	active.Status = runtime.RunStatusRunning
 	active.FinishedAt = nil
 	if _, err := activeRunner.ExecutionStore().CompareAndSwapRun(context.Background(), active.Revision, active); err != nil {
 		t.Fatalf("mark cached run active: %v", err)
+	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Server.Close() error = %v", err)
 	}
 
 	cacheOnlyServer, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {
 		t.Fatalf("New cache-only server error = %v", err)
 	}
+	t.Cleanup(func() { _ = cacheOnlyServer.Close() })
 	cacheOnlyEngine := gin.New()
 	cacheOnlyServer.RegisterRoutes(cacheOnlyEngine.Group(""))
 
@@ -1397,10 +1418,14 @@ func TestRunResourceReadersKeepSessionOwnership(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("publish second-session event: %v", err)
 	}
-	if _, err := secondStore.ArtifactStore().Save(ctx, runtime.Artifact{
+	artifactStage, err := secondStore.ArtifactStore().Stage(ctx, "second-session-artifact-transaction", runtime.Artifact{
 		RunID: runID, ID: artifactID, Data: []byte("second"),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("save second-session artifact: %v", err)
+	}
+	if err := secondStore.ArtifactStore().Finalize(ctx, artifactStage.TransactionID, []runtime.ArtifactStage{artifactStage}); err != nil {
+		t.Fatalf("finalize second-session artifact: %v", err)
 	}
 
 	aggregated := &graphCacheReader{
@@ -1726,11 +1751,15 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 	if pausedRun.Status != runtime.RunStatusPaused {
 		t.Fatalf("start status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
 	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Close() before cache-only restart error = %v", err)
+	}
 
 	cacheOnlyServer, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {
 		t.Fatalf("New cache-only server error = %v", err)
 	}
+	t.Cleanup(func() { _ = cacheOnlyServer.Close() })
 	cacheOnlyEngine := gin.New()
 	cacheOnlyServer.RegisterRoutes(cacheOnlyEngine.Group(""))
 
@@ -1774,6 +1803,7 @@ func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1821,6 +1851,7 @@ func TestPauseRunCancelsActiveContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1853,6 +1884,7 @@ func TestResumeRunAfterActivePauseCompletes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1893,6 +1925,7 @@ func TestResumeRunStopsWhenRequestIsCanceled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1949,6 +1982,7 @@ func TestCancelRunDoesNotWaitForUncooperativeNode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1983,6 +2017,7 @@ func TestCancelRunCancelsActiveContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -2013,6 +2048,7 @@ func TestCancelRunUsesTriggerSessionRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
 		GraphVersion:   "1.0",
@@ -2116,6 +2152,7 @@ func TestPauseAndResumeRunUseTriggerSessionRunner(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	runner := mustNewDefaultRunner(t, graph, Config{
 		GraphID:        "trigger-graph",
 		GraphVersion:   "1.0",
@@ -2173,6 +2210,7 @@ func TestPauseRunMarksLostExecutionFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	runner := srv.Runner()
 	startedAt := time.Now().Add(-time.Minute)
 	run := runtime.RunRecord{
@@ -2218,6 +2256,61 @@ func TestPauseRunMarksLostExecutionFailed(t *testing.T) {
 	}
 }
 
+func TestResolveEffectEndpointConfirmsNotAppliedAndContinues(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	var attempts int
+	workflow := wfgraph.NewGraph(nil)
+	target := node.NewFuncNode(node.Spec{ID: "writer", Name: "writer"}, func(core.Context, *state.Access) (core.NodeResult, error) {
+		attempts++
+		if attempts == 1 {
+			return core.NodeResult{}, core.NewExecutionError(core.ErrorSideEffectFailed, "request rejected", nil, nil)
+		}
+		return core.Success(), nil
+	})
+	target.Base.Effect = core.EffectNonIdempotentWrite
+	if err := workflow.AddNode(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetNodeSpec(dsl.GraphNodeSpec{ID: "writer", Type: "test", Name: "writer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetEntryPoint("writer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("writer"); err != nil {
+		t.Fatal(err)
+	}
+	srv, err := New(context.Background(), Config{Graph: workflow, GraphID: "graph", BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	failed, _, err := srv.Runner().Start(context.Background(), state.NewState())
+	if err == nil || failed.Status != runtime.RunStatusFailed {
+		t.Fatalf("Start() run = %#v, error = %v", failed, err)
+	}
+	steps, err := srv.Runner().ListSteps(context.Background(), failed.RunID)
+	if err != nil || len(steps) != 1 {
+		t.Fatalf("ListSteps() = %#v, %v", steps, err)
+	}
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	body := `{"resolution_id":"resolution-http-1","action":"confirm_not_applied","actor":"operator-1","reason":"provider audit proves rejection","continue":true}`
+	response := serveHTTP(engine, http.MethodPost, "/graphs/graph/runs/"+failed.RunID+"/steps/"+steps[0].StepID+"/effect-resolution", body)
+	if response.Code != http.StatusOK {
+		t.Fatalf("effect resolution status = %d, body = %s", response.Code, response.Body.String())
+	}
+	var decoded struct {
+		Data runtime.EffectResolutionResult `json:"data"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded.Data.Run.Status != runtime.RunStatusCompleted || !decoded.Data.Continued || attempts != 2 {
+		t.Fatalf("effect resolution response = %#v, attempts = %d", decoded.Data, attempts)
+	}
+}
+
 func TestPauseRunUsesOwningHistoricalSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -2225,6 +2318,7 @@ func TestPauseRunUsesOwningHistoricalSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	started := make(chan struct{})
 	release := make(chan struct{})
 	defer close(release)
@@ -2296,6 +2390,20 @@ func TestListRunsReconcilesOrphanedCachedExecution(t *testing.T) {
 	}
 	if runner.IsRunActive(started.RunID) {
 		t.Fatal("run remained active after reaching terminal status")
+	}
+	deadline = time.Now().Add(time.Second)
+	for {
+		started, err = runner.GetRun(context.Background(), started.RunID)
+		if err != nil {
+			t.Fatalf("GetRun() after execution release error = %v", err)
+		}
+		if !runtime.IsExecutionLeaseActive(started, time.Now()) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("execution lease remained active after run completed")
+		}
+		time.Sleep(time.Millisecond)
 	}
 
 	executionStore := runner.ExecutionStore()

@@ -263,6 +263,7 @@ func TestChatTriggerRunControlUpdatesReplyChannel(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
+			t.Cleanup(func() { _ = srv.Close() })
 			if _, err := srv.triggers.Create(context.Background(), trigger.Trigger{
 				ID:      "controlled-chat",
 				Type:    trigger.TypeChat,

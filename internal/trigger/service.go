@@ -308,6 +308,24 @@ func (s *Service) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
+func (s *Service) DeleteGraph(ctx context.Context, graphID string) ([]Trigger, error) {
+	if s == nil {
+		return nil, fmt.Errorf("trigger service is nil")
+	}
+	s.operationMu.Lock()
+	defer s.operationMu.Unlock()
+
+	items, err := s.triggerStore.DeleteGraph(ctx, graphID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		s.replaceSchedule(item.ID, nil)
+		s.replaceChatChannel(item.ID, nil, nil)
+	}
+	return items, nil
+}
+
 func (s *Service) Start(ctx context.Context) error {
 	if s == nil {
 		return fmt.Errorf("trigger service is nil")

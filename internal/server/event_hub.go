@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -206,6 +207,29 @@ func (h *EventHub) PublishBatch(_ context.Context, events []runtime.Event) error
 		h.publishLocked(event)
 	}
 	return nil
+}
+
+func (h *EventHub) DeleteGraph(graphID string) {
+	if h == nil {
+		return
+	}
+	graphID = strings.TrimSpace(graphID)
+	if graphID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for key := range h.partitions {
+		if key.GraphID == graphID {
+			delete(h.partitions, key)
+		}
+	}
+	for id, subscriber := range h.subscribers {
+		if subscriber.filter.GraphID == graphID {
+			h.closeSubscriberLocked(id, "graph_deleted")
+		}
+	}
+	h.recalculateHistoryMetricsLocked()
 }
 
 func (h *EventHub) publishLocked(event runtime.Event) {

@@ -155,6 +155,7 @@ func TestListCachedGraphsPreservesPortableGraphID(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph.with.dots", "v1", "hello"))
@@ -174,6 +175,7 @@ func TestListCachedGraphsIgnoresIncompleteSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
@@ -199,6 +201,7 @@ func TestListCachedGraphsLoadsLatestDefinition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = srv.Close() })
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "first"))
@@ -306,26 +309,21 @@ func TestGraphCacheSurfacesCorruptRunRecords(t *testing.T) {
 		"/graphs/graph-a/sessions/"+uploaded.Graph.GraphSessionID+"/runs",
 		`{}`,
 	), http.StatusAccepted)
-	waitForRunTerminalStatus(t, srv.runtime.session("graph-a", uploaded.Graph.GraphSessionID).runner, started.RunID)
+	activeRunner := srv.runtime.session("graph-a", uploaded.Graph.GraphSessionID).runner
+	waitForRunTerminalStatus(t, activeRunner, started.RunID)
+	waitForRunInactive(t, activeRunner, started.RunID)
 	runPath := filepath.Join(srv.graphHistoryBaseDir("graph-a"), "execution", "runs", started.RunID+".json")
 	if err := os.WriteFile(runPath, []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	cacheOnly, err := New(context.Background(), Config{BaseDir: baseDir})
-	if err != nil {
+	if err := srv.Close(); err != nil {
 		t.Fatal(err)
 	}
-	cacheEngine := gin.New()
-	cacheOnly.RegisterRoutes(cacheEngine.Group(""))
-	for _, path := range []string{
-		"/graphs/graph-a/runs/" + started.RunID + "/inspection",
-		"/graphs/graph-a/runs",
-	} {
-		response := serveHTTP(cacheEngine, http.MethodGet, path, "")
-		if response.Code != http.StatusInternalServerError {
-			t.Fatalf("GET %s status = %d, body = %s", path, response.Code, response.Body.String())
-		}
+
+	cacheOnly, err := New(context.Background(), Config{BaseDir: baseDir})
+	if err == nil {
+		_ = cacheOnly.Close()
+		t.Fatal("New() succeeded with a corrupt durable run record")
 	}
 }
 
