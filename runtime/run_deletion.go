@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+	"sort"
 	"strings"
 	"time"
 )
@@ -209,6 +210,7 @@ func (coordinator *RunDeletionCoordinator) ReconcileRunDeletions(ctx context.Con
 	if err != nil {
 		return err
 	}
+	runsByDeletionID := make(map[string][]RunRecord)
 	for _, run := range runs {
 		if run.Deletion == nil {
 			continue
@@ -216,27 +218,46 @@ func (coordinator *RunDeletionCoordinator) ReconcileRunDeletions(ctx context.Con
 		if err := validateRunDeletionState(run.Deletion); err != nil {
 			return fmt.Errorf("run %q deletion state: %w", run.RunID, err)
 		}
-		deletionID := run.Deletion.ID
+		runsByDeletionID[run.Deletion.ID] = append(runsByDeletionID[run.Deletion.ID], run)
+	}
+	deletionIDs := make([]string, 0, len(runsByDeletionID))
+	for deletionID := range runsByDeletionID {
+		deletionIDs = append(deletionIDs, deletionID)
+	}
+	sort.Strings(deletionIDs)
+	for _, deletionID := range deletionIDs {
+		reservedRuns := runsByDeletionID[deletionID]
 		manifest, exists := manifestByID[deletionID]
 		if exists && manifest.Phase == RunDeletionDeleted {
-			return fmt.Errorf("completed deletion manifest %q retains run %q", deletionID, run.RunID)
-		}
-		if run.Deletion.RootRunID != run.RunID {
-			if !exists {
-				return fmt.Errorf("run %q has orphan deletion reservation %q", run.RunID, deletionID)
-			}
-			if !manifestContainsRun(manifest, run.RunID) {
-				return fmt.Errorf("deletion manifest %q omits reserved run %q", deletionID, run.RunID)
-			}
-			continue
+			return fmt.Errorf("completed deletion manifest %q retains run %q", deletionID, reservedRuns[0].RunID)
 		}
 		if exists {
-			if err := validateRunDeletionManifestMatchesRun(manifest, run); err != nil {
-				return err
+			for _, run := range reservedRuns {
+				if !manifestContainsRun(manifest, run.RunID) {
+					return fmt.Errorf("deletion manifest %q omits reserved run %q", deletionID, run.RunID)
+				}
+				if run.Deletion.RootRunID == run.RunID {
+					if err := validateRunDeletionManifestMatchesRun(manifest, run); err != nil {
+						return err
+					}
+				}
 			}
 			continue
 		}
-		deletion, err := prepareRunDeletion(ctx, coordinator.executionStore, run.RunID)
+		var root *RunRecord
+		for index := range reservedRuns {
+			run := &reservedRuns[index]
+			if run.Deletion.RootRunID == run.RunID {
+				if root != nil {
+					return fmt.Errorf("deletion reservation %q has multiple roots %q and %q", deletionID, root.RunID, run.RunID)
+				}
+				root = run
+			}
+		}
+		if root == nil {
+			return fmt.Errorf("run %q has orphan deletion reservation %q", reservedRuns[0].RunID, deletionID)
+		}
+		deletion, err := prepareRunDeletion(ctx, coordinator.executionStore, root.RunID)
 		if err != nil {
 			return err
 		}
@@ -1079,13 +1100,8 @@ func validateNewRunParent(run, parent RunRecord) error {
 }
 
 func validateRunChildState(run RunRecord) error {
-	if run.ExecutionClaimID != "" {
-		if err := validateRunnerStorageID("execution claim ID", run.ExecutionClaimID); err != nil {
-			return fmt.Errorf("run %q: %w", run.RunID, err)
-		}
-		if strings.TrimSpace(run.ChildRequestKey) == "" {
-			return fmt.Errorf("run %q execution claim requires child request identity", run.RunID)
-		}
+	if err := validateExecutionLease(run.ExecutionLease); err != nil {
+		return fmt.Errorf("run %q: %w", run.RunID, err)
 	}
 	linked := make(map[string]struct{}, len(run.ChildRunIDs))
 	for _, childRunID := range run.ChildRunIDs {

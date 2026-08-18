@@ -1,8 +1,8 @@
 package file
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/google/uuid"
 )
@@ -21,19 +22,31 @@ type artifactStore struct {
 	writer  *writerState
 }
 
+type artifactReconciliationRecord struct {
+	TransactionID string    `json:"transaction_id"`
+	RunID         string    `json:"run_id"`
+	Action        string    `json:"action"`
+	ArtifactCount int       `json:"artifact_count"`
+	ReconciledAt  time.Time `json:"reconciled_at"`
+}
+
 func newArtifactStore(baseDir string, shared *sync.Mutex) *artifactStore {
 	baseDir = strings.TrimSpace(baseDir)
 	baseDir = namespacedFileStoreBase(baseDir, "artifacts")
 	return &artifactStore{baseDir: baseDir, mu: storeMutex{shared: shared}}
 }
 
-func (s *artifactStore) Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
+func (s *artifactStore) Stage(ctx context.Context, transactionID string, artifact Artifact) (ArtifactStage, error) {
+	stage := ArtifactStage{TransactionID: transactionID}
 	if err := storeContextErr(ctx); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return stage, err
 	}
 	runID := artifact.RunID
 	if err := validateRunID(runID); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
 	}
 
 	id := artifact.ID
@@ -41,21 +54,16 @@ func (s *artifactStore) Save(ctx context.Context, artifact Artifact) (state.Arti
 		id = uuid.NewString()
 	}
 	if err := validateRunnerStorageID("artifact ID", id); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := requireWritable(s.writer); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
 	}
 	if err := ensureRunNotDeletingLocked(s.baseDir, runID, "save an artifact"); err != nil {
-		return state.ArtifactRef{}, err
-	}
-
-	metadataPath := s.metadataPath(runID, id)
-	if err := ensureRunnerRecordDoesNotExist(metadataPath, "artifact", id); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
 	}
 
 	createdAt := artifact.CreatedAt
@@ -70,11 +78,12 @@ func (s *artifactStore) Save(ctx context.Context, artifact Artifact) (state.Arti
 	artifact.MIMEType = mimeType
 	artifact = sanitizeArtifact(ctx, artifact)
 
-	ref := state.ArtifactRef{
+	stage.Ref = state.ArtifactRef{
 		ID:           id,
 		RunID:        runID,
 		StepID:       strings.TrimSpace(artifact.StepID),
 		NodeID:       strings.TrimSpace(artifact.NodeID),
+		OperationKey: strings.TrimSpace(artifact.OperationKey),
 		ParentRunID:  strings.TrimSpace(artifact.ParentRunID),
 		ParentStepID: strings.TrimSpace(artifact.ParentStepID),
 		ParentTaskID: strings.TrimSpace(artifact.ParentTaskID),
@@ -86,21 +95,235 @@ func (s *artifactStore) Save(ctx context.Context, artifact Artifact) (state.Arti
 		Location:     s.payloadPath(runID, id),
 		CreatedAt:    createdAt,
 	}
-
-	metadata, err := marshalRunnerJSONFile(ref)
+	metadata, err := marshalRunnerJSONFile(stage)
 	if err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
 	}
-	if err := writeRunnerBinaryFile(ref.Location, artifact.Data); err != nil {
-		return state.ArtifactRef{}, err
+	if err := s.validateFinalizedArtifact(stage.Ref); err == nil {
+		return stage, fmt.Errorf("artifact %q already exists", id)
+	} else if !os.IsNotExist(err) {
+		return stage, err
 	}
-	if err := writeRunnerBinaryFile(metadataPath, metadata); err != nil {
-		if cleanupErr := removeRunnerFile(ref.Location); cleanupErr != nil {
-			return state.ArtifactRef{}, errors.Join(err, fmt.Errorf("cleanup artifact payload: %w", cleanupErr))
+	stageMetadataPath := s.stageMetadataPath(runID, transactionID, id)
+	stagePayloadPath := s.stagePayloadPath(runID, transactionID, id)
+	if _, readErr := os.Stat(stageMetadataPath); readErr == nil {
+		var existingStage ArtifactStage
+		if err := readRunnerJSONFile(stageMetadataPath, &existingStage); err != nil {
+			return stage, err
 		}
-		return state.ArtifactRef{}, err
+		existingPayload, payloadErr := os.ReadFile(stagePayloadPath)
+		if payloadErr != nil {
+			return stage, payloadErr
+		}
+		comparable := stage
+		comparable.Ref.CreatedAt = existingStage.Ref.CreatedAt
+		if !artifactStagesEqual(existingStage, comparable) || !bytes.Equal(existingPayload, artifact.Data) {
+			return stage, fmt.Errorf("artifact stage %q payload mismatch", id)
+		}
+		return existingStage, nil
+	} else if !os.IsNotExist(readErr) {
+		return stage, readErr
 	}
-	return ref, nil
+	if err := writeRunnerBinaryFile(stagePayloadPath, artifact.Data); err != nil {
+		return stage, err
+	}
+	if err := writeRunnerBinaryFile(stageMetadataPath, metadata); err != nil {
+		return stage, err
+	}
+	return stage, nil
+}
+
+func (s *artifactStore) Finalize(ctx context.Context, transactionID string, stages []ArtifactStage) error {
+	if err := storeContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := requireWritable(s.writer); err != nil {
+		return err
+	}
+	return s.finalizeLocked(transactionID, stages)
+}
+
+func (s *artifactStore) finalizeLocked(transactionID string, stages []ArtifactStage) error {
+	runIDs := make(map[string]struct{})
+	for _, expected := range stages {
+		if expected.TransactionID != transactionID {
+			return fmt.Errorf("artifact stage transaction %q does not match %q", expected.TransactionID, transactionID)
+		}
+		if err := validateRunID(expected.Ref.RunID); err != nil {
+			return err
+		}
+		if err := validateRunnerStorageID("artifact ID", expected.Ref.ID); err != nil {
+			return err
+		}
+		if err := ensureRunNotDeletingLocked(s.baseDir, expected.Ref.RunID, "finalize an artifact"); err != nil {
+			return err
+		}
+		runIDs[expected.Ref.RunID] = struct{}{}
+		var stored ArtifactStage
+		if err := readRunnerJSONFile(s.stageMetadataPath(expected.Ref.RunID, transactionID, expected.Ref.ID), &stored); err != nil {
+			if os.IsNotExist(err) {
+				if finalErr := s.validateFinalizedArtifact(expected.Ref); finalErr == nil {
+					continue
+				}
+			}
+			return err
+		}
+		if !artifactStagesEqual(stored, expected) {
+			return fmt.Errorf("artifact stage %q identity mismatch", expected.Ref.ID)
+		}
+		payload, err := os.ReadFile(s.stagePayloadPath(expected.Ref.RunID, transactionID, expected.Ref.ID))
+		if err != nil {
+			return err
+		}
+		if finalErr := s.validateFinalizedArtifact(expected.Ref); finalErr != nil {
+			if !os.IsNotExist(finalErr) {
+				return finalErr
+			}
+			metadata, err := marshalRunnerJSONFile(expected.Ref)
+			if err != nil {
+				return err
+			}
+			if err := writeRunnerBinaryFile(s.payloadPath(expected.Ref.RunID, expected.Ref.ID), payload); err != nil {
+				return err
+			}
+			if err := writeRunnerBinaryFile(s.metadataPath(expected.Ref.RunID, expected.Ref.ID), metadata); err != nil {
+				return err
+			}
+		} else {
+			finalPayload, err := os.ReadFile(s.payloadPath(expected.Ref.RunID, expected.Ref.ID))
+			if err != nil {
+				return err
+			}
+			if !bytes.Equal(finalPayload, payload) {
+				return fmt.Errorf("artifact %q payload mismatch", expected.Ref.ID)
+			}
+		}
+	}
+	for runID := range runIDs {
+		if err := removeRunnerDirectory(s.stageTransactionDir(runID, transactionID)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *artifactStore) validateFinalizedArtifact(ref state.ArtifactRef) error {
+	var stored state.ArtifactRef
+	if err := readRunnerJSONFile(s.metadataPath(ref.RunID, ref.ID), &stored); err != nil {
+		return err
+	}
+	if !artifactRefsEqual(stored, ref) {
+		return fmt.Errorf("artifact %q metadata identity mismatch", ref.ID)
+	}
+	if _, err := os.Stat(s.payloadPath(ref.RunID, ref.ID)); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (s *artifactStore) Discard(ctx context.Context, transactionID string) error {
+	if err := storeContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := requireWritable(s.writer); err != nil {
+		return err
+	}
+	return s.discardLocked(transactionID)
+}
+
+func (s *artifactStore) discardLocked(transactionID string) error {
+	runs, err := os.ReadDir(s.baseDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if !run.IsDir() || strings.HasPrefix(run.Name(), ".") {
+			continue
+		}
+		if err := removeRunnerDirectory(s.stageTransactionDir(run.Name(), transactionID)); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *artifactStore) reconcileLocked(resolve func(string) (transactionResultRecord, bool, error)) error {
+	runs, err := os.ReadDir(s.baseDir)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	for _, run := range runs {
+		if !run.IsDir() || strings.HasPrefix(run.Name(), ".") {
+			continue
+		}
+		stages, err := os.ReadDir(s.stagesDir(run.Name()))
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		for _, stageDir := range stages {
+			if !stageDir.IsDir() {
+				continue
+			}
+			transactionID := stageDir.Name()
+			if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+				return err
+			}
+			stored, found, err := resolve(transactionID)
+			if err != nil {
+				return err
+			}
+			if !found || stored.Result.Outcome != fruntime.TransactionCommitted {
+				if err := s.recordReconciliationLocked(artifactReconciliationRecord{
+					TransactionID: transactionID, RunID: run.Name(), Action: "discarded", ReconciledAt: time.Now().UTC(),
+				}); err != nil {
+					return err
+				}
+				if err := removeRunnerDirectory(s.stageTransactionDir(run.Name(), transactionID)); err != nil && !os.IsNotExist(err) {
+					return err
+				}
+				continue
+			}
+			artifactCount := 0
+			for _, stage := range stored.Result.Artifacts {
+				if stage.Ref.RunID == run.Name() {
+					artifactCount++
+				}
+			}
+			if err := s.finalizeLocked(transactionID, stored.Result.Artifacts); err != nil {
+				return err
+			}
+			if err := s.recordReconciliationLocked(artifactReconciliationRecord{
+				TransactionID: transactionID, RunID: run.Name(), Action: "finalized", ArtifactCount: artifactCount, ReconciledAt: time.Now().UTC(),
+			}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func (s *artifactStore) recordReconciliationLocked(record artifactReconciliationRecord) error {
+	path := filepath.Join(filepath.Dir(s.baseDir), ".transactions", "artifact-reconciliation", record.TransactionID+"-"+record.RunID+".json")
+	return writeRunnerJSONFile(path, record)
 }
 
 func (s *artifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Artifact, error) {
@@ -139,6 +362,7 @@ func (s *artifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Artifa
 		RunID:        stored.RunID,
 		StepID:       stored.StepID,
 		NodeID:       stored.NodeID,
+		OperationKey: stored.OperationKey,
 		ParentRunID:  stored.ParentRunID,
 		ParentStepID: stored.ParentStepID,
 		ParentTaskID: stored.ParentTaskID,
@@ -240,6 +464,22 @@ func (s *artifactStore) artifactsDir(runID string) string {
 	return filepath.Join(s.baseDir, runID)
 }
 
+func (s *artifactStore) stagesDir(runID string) string {
+	return filepath.Join(s.artifactsDir(runID), ".stages")
+}
+
+func (s *artifactStore) stageTransactionDir(runID, transactionID string) string {
+	return filepath.Join(s.stagesDir(runID), transactionID)
+}
+
+func (s *artifactStore) stageMetadataPath(runID, transactionID, artifactID string) string {
+	return filepath.Join(s.stageTransactionDir(runID, transactionID), artifactID+".json")
+}
+
+func (s *artifactStore) stagePayloadPath(runID, transactionID, artifactID string) string {
+	return filepath.Join(s.stageTransactionDir(runID, transactionID), artifactID+".bin")
+}
+
 func (s *artifactStore) payloadDir(runID string) string {
 	return filepath.Join(s.baseDir, runID, "payloads")
 }
@@ -254,4 +494,16 @@ func (s *artifactStore) payloadPath(runID, artifactID string) string {
 
 func (s *artifactStore) deletionPath(runID string) string {
 	return runDeletionPath(s.baseDir, runID)
+}
+
+func artifactStagesEqual(left, right ArtifactStage) bool {
+	leftJSON, leftErr := marshalRunnerJSONFile(left)
+	rightJSON, rightErr := marshalRunnerJSONFile(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
+func artifactRefsEqual(left, right state.ArtifactRef) bool {
+	leftJSON, leftErr := marshalRunnerJSONFile(left)
+	rightJSON, rightErr := marshalRunnerJSONFile(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
 }

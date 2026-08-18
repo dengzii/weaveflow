@@ -212,6 +212,31 @@ func (g *runtimeGraph) AfterInterruptNodes(breakpoints []fruntime.Breakpoint) ([
 	return nodes, nil
 }
 
+func (g *runtimeGraph) CompensateEffect(ctx context.Context, nodeID string, request core.EffectCompensationRequest, currentState *state.State) error {
+	if g == nil || g.graph == nil {
+		return fmt.Errorf("graph runner graph is nil")
+	}
+	resolvedNodeID, err := g.graph.resolveNodeID(nodeID)
+	if err != nil {
+		return err
+	}
+	targetNode := g.graph.nodes[resolvedNodeID]
+	if targetNode == nil {
+		return fmt.Errorf("node %q is not found", resolvedNodeID)
+	}
+	if core.NodeEffectClass(targetNode) != core.EffectCompensatable {
+		return fmt.Errorf("node %q does not declare compensatable effects", resolvedNodeID)
+	}
+	compensator, ok := targetNode.(core.EffectCompensator)
+	if !ok {
+		return fmt.Errorf("node %q does not implement effect compensation", resolvedNodeID)
+	}
+	if currentState == nil {
+		currentState = state.NewState()
+	}
+	return compensator.CompensateEffect(core.NewContext(ctx), request, state.NewAccess(currentState))
+}
+
 func buildRunnerWarnings(diagnostics []core.ContractDiagnostic) []fruntime.WarningRecord {
 	if len(diagnostics) == 0 {
 		return nil

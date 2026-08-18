@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 	"sync"
@@ -69,6 +70,99 @@ type mutatingHierarchyExecutionStore struct {
 	once        sync.Once
 	hook        func(context.Context) error
 	err         error
+}
+
+type deletionCrashController struct {
+	point   string
+	crashed bool
+}
+
+func (controller *deletionCrashController) after(point string) error {
+	if controller == nil || controller.crashed || controller.point != point {
+		return nil
+	}
+	controller.crashed = true
+	return fmt.Errorf("injected crash after %s", point)
+}
+
+type crashingDeletionRuntimeStore struct {
+	*MemoryRuntimeStore
+	controller *deletionCrashController
+}
+
+func (store *crashingDeletionRuntimeStore) CompareAndSwapRun(ctx context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error) {
+	updated, err := store.MemoryRuntimeStore.CompareAndSwapRun(ctx, expectedRevision, run)
+	if err != nil {
+		return updated, err
+	}
+	if _, ok := ctx.Value(runDeletionUnlinkMutationKey{}).(runDeletionUnlinkMutation); ok {
+		if crashErr := store.controller.after("parent unlink"); crashErr != nil {
+			return updated, crashErr
+		}
+	}
+	if run.Deletion == nil {
+		return updated, nil
+	}
+	point := ""
+	switch {
+	case run.RunID == "deletion-root" && run.Deletion.Phase == RunDeletionReserved:
+		point = "root reservation"
+	case run.RunID == "descendant" && run.Deletion.Phase == RunDeletionReserved:
+		point = "descendant reservation"
+	case run.RunID == "deletion-root" && run.Deletion.Phase == RunDeletionPlanned:
+		point = "plan"
+	}
+	if crashErr := store.controller.after(point); crashErr != nil {
+		return updated, crashErr
+	}
+	return updated, nil
+}
+
+func (store *crashingDeletionRuntimeStore) SaveRunDeletionManifest(ctx context.Context, manifest RunDeletionManifest) error {
+	if err := store.MemoryRuntimeStore.SaveRunDeletionManifest(ctx, manifest); err != nil {
+		return err
+	}
+	point := ""
+	switch manifest.Phase {
+	case RunDeletionPlanned:
+		point = "planned manifest"
+	case RunDeletionUnlinked:
+		point = "unlinked manifest"
+	case RunDeletionDeleted:
+		point = "completion manifest"
+	}
+	return store.controller.after(point)
+}
+
+func (store *crashingDeletionRuntimeStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := store.MemoryRuntimeStore.FenceRunDeletion(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	return store.controller.after("execution fence")
+}
+
+func (store *crashingDeletionRuntimeStore) DeleteRun(ctx context.Context, runID string) error {
+	if err := store.MemoryRuntimeStore.DeleteRun(ctx, runID); err != nil {
+		return err
+	}
+	if runID != "deletion-root" {
+		return nil
+	}
+	return store.controller.after("execution delete")
+}
+
+type crashingRunDeletionStore struct {
+	RunDeleter
+	fencer     RunDeletionFencer
+	name       string
+	controller *deletionCrashController
+}
+
+func (store *crashingRunDeletionStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := store.fencer.FenceRunDeletion(ctx, runID, deletionID); err != nil {
+		return err
+	}
+	return store.controller.after(store.name + " fence")
 }
 
 func (store *mutatingHierarchyExecutionStore) GetRun(ctx context.Context, runID string) (RunRecord, error) {
@@ -328,6 +422,133 @@ func TestRunDeletionCoordinatorReconcilesDurableManifestAfterInterruption(t *tes
 	}
 	if err := coordinator.ReconcileRunDeletions(ctx); err != nil {
 		t.Fatalf("second ReconcileRunDeletions() error = %v", err)
+	}
+}
+
+func TestRunDeletionReconciliationResumesReservedHierarchyBeforeManifest(t *testing.T) {
+	ctx := context.Background()
+	runtimeStore := NewMemoryRuntimeStore()
+	root := RunRecord{
+		RunID: "z-root", RootRunID: "z-root", Status: RunStatusCompleted,
+		ChildRunIDs: []string{"a-child"},
+	}
+	child := RunRecord{
+		RunID: "a-child", ParentRunID: root.RunID, RootRunID: root.RunID, Status: RunStatusCompleted,
+	}
+	for _, run := range []RunRecord{root, child} {
+		if err := runtimeStore.CreateRun(ctx, run); err != nil {
+			t.Fatalf("CreateRun(%q) error = %v", run.RunID, err)
+		}
+	}
+	deletionID := "interrupted-deletion"
+	root.Deletion = &RunDeletionState{ID: deletionID, RootRunID: root.RunID, Phase: RunDeletionReserved}
+	if _, err := runtimeStore.CompareAndSwapRun(withRunDeletionMutation(ctx, deletionID), root.Revision, root); err != nil {
+		t.Fatalf("reserve root deletion error = %v", err)
+	}
+	child.Deletion = &RunDeletionState{ID: deletionID, RootRunID: root.RunID, Phase: RunDeletionReserved}
+	if _, err := runtimeStore.CompareAndSwapRun(withRunDeletionMutation(ctx, deletionID), child.Revision, child); err != nil {
+		t.Fatalf("reserve child deletion error = %v", err)
+	}
+
+	coordinator := NewRunDeletionCoordinator(runtimeStore, nil, nil, nil)
+	if err := coordinator.ReconcileRunDeletions(ctx); err != nil {
+		t.Fatalf("ReconcileRunDeletions() error = %v", err)
+	}
+	for _, runID := range []string{root.RunID, child.RunID} {
+		if _, err := runtimeStore.GetRun(ctx, runID); !errors.Is(err, ErrRunnerRecordNotFound) {
+			t.Fatalf("GetRun(%q) after reconciliation error = %v, want not found", runID, err)
+		}
+	}
+	manifest, err := runtimeStore.LoadRunDeletionManifest(ctx, deletionID)
+	if err != nil {
+		t.Fatalf("LoadRunDeletionManifest() error = %v", err)
+	}
+	if manifest.Phase != RunDeletionDeleted {
+		t.Fatalf("manifest phase = %q, want deleted", manifest.Phase)
+	}
+}
+
+func TestRunDeletionReconciliationResumesEveryDurableStage(t *testing.T) {
+	crashPoints := []string{
+		"root reservation",
+		"descendant reservation",
+		"plan",
+		"planned manifest",
+		"checkpoint fence",
+		"artifact fence",
+		"event fence",
+		"execution fence",
+		"parent unlink",
+		"unlinked manifest",
+		"execution delete",
+		"completion manifest",
+	}
+	for _, crashPoint := range crashPoints {
+		t.Run(crashPoint, func(t *testing.T) {
+			ctx := context.Background()
+			baseStore := NewMemoryRuntimeStore()
+			parent := RunRecord{
+				RunID: "parent", RootRunID: "parent", Status: RunStatusCompleted,
+				ChildRunIDs: []string{"deletion-root"},
+			}
+			root := RunRecord{
+				RunID: "deletion-root", ParentRunID: parent.RunID, RootRunID: parent.RunID,
+				Status: RunStatusCompleted, ChildRunIDs: []string{"descendant"},
+			}
+			descendant := RunRecord{
+				RunID: "descendant", ParentRunID: root.RunID, RootRunID: parent.RunID, Status: RunStatusCompleted,
+			}
+			for _, run := range []RunRecord{parent, root, descendant} {
+				if err := baseStore.CreateRun(ctx, run); err != nil {
+					t.Fatalf("CreateRun(%q) error = %v", run.RunID, err)
+				}
+			}
+			controller := &deletionCrashController{point: crashPoint}
+			executionStore := &crashingDeletionRuntimeStore{MemoryRuntimeStore: baseStore, controller: controller}
+			checkpointBase := NewMemoryCheckpointStore()
+			checkpointStore := &crashingRunDeletionStore{
+				RunDeleter: checkpointBase, fencer: checkpointBase, name: "checkpoint", controller: controller,
+			}
+			artifactBase := NewMemoryArtifactStore()
+			artifactStore := &crashingRunDeletionStore{
+				RunDeleter: artifactBase, fencer: artifactBase, name: "artifact", controller: controller,
+			}
+			eventBase := NewMemoryEventSink()
+			eventStore := &crashingRunDeletionStore{
+				RunDeleter: eventBase, fencer: eventBase, name: "event", controller: controller,
+			}
+			coordinator := NewRunDeletionCoordinator(executionStore, checkpointStore, eventStore, artifactStore)
+			if err := coordinator.DeleteRun(ctx, root.RunID); err == nil || !strings.Contains(err.Error(), "injected crash") {
+				t.Fatalf("DeleteRun() error = %v, want injected crash", err)
+			}
+			if !controller.crashed {
+				t.Fatalf("crash point %q was not reached", crashPoint)
+			}
+
+			reconciler := NewRunDeletionCoordinator(baseStore, checkpointBase, eventBase, artifactBase)
+			if err := reconciler.ReconcileRunDeletions(ctx); err != nil {
+				t.Fatalf("ReconcileRunDeletions() after %q error = %v", crashPoint, err)
+			}
+			for _, runID := range []string{root.RunID, descendant.RunID} {
+				if _, err := baseStore.GetRun(ctx, runID); !errors.Is(err, ErrRunnerRecordNotFound) {
+					t.Fatalf("GetRun(%q) after reconciliation error = %v, want not found", runID, err)
+				}
+			}
+			persistedParent, err := baseStore.GetRun(ctx, parent.RunID)
+			if err != nil {
+				t.Fatalf("GetRun(parent) error = %v", err)
+			}
+			if len(persistedParent.ChildRunIDs) != 0 {
+				t.Fatalf("parent child links = %#v, want empty", persistedParent.ChildRunIDs)
+			}
+			manifests, err := baseStore.ListRunDeletionManifests(ctx)
+			if err != nil || len(manifests) != 1 || manifests[0].Phase != RunDeletionDeleted {
+				t.Fatalf("deletion manifests = %#v, error = %v", manifests, err)
+			}
+			if err := reconciler.ReconcileRunDeletions(ctx); err != nil {
+				t.Fatalf("second ReconcileRunDeletions() error = %v", err)
+			}
+		})
 	}
 }
 

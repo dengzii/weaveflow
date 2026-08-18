@@ -36,6 +36,7 @@ func NewCalculator() Tool {
 			},
 		},
 		Handler: calculatorTool,
+		Effect:  EffectPure,
 	}
 }
 

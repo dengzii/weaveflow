@@ -23,6 +23,10 @@ func (store *cancelAfterCommitTransactionStore) Commit(ctx context.Context, comm
 	return result, err
 }
 
+func (store *cancelAfterCommitTransactionStore) ResolveCommit(ctx context.Context, transactionID string) (CommitResult, error) {
+	return store.store.ResolveCommit(ctx, transactionID)
+}
+
 type committedObserverSink struct {
 	calls      int
 	contextErr error

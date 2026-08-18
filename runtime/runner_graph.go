@@ -117,6 +117,7 @@ type SchedulerConfig struct {
 
 type GraphTask struct {
 	TaskID           string          `json:"task_id"`
+	OperationID      string          `json:"operation_id,omitempty"`
 	NodeID           string          `json:"node_id"`
 	Input            state.Patch     `json:"input,omitempty"`
 	CorrelationKey   string          `json:"correlation_key,omitempty"`
@@ -125,6 +126,10 @@ type GraphTask struct {
 	Dynamic          bool            `json:"dynamic,omitempty"`
 	ParallelWaveSize int             `json:"parallel_wave_size,omitempty"`
 	Failure          *FailureContext `json:"failure,omitempty"`
+}
+
+func NewTaskOperationID() string {
+	return newRunnerID()
 }
 
 type FailureContext core.FailureContext
@@ -465,6 +470,11 @@ func graphScheduleTasks(field string, value any, present bool) ([]GraphTask, err
 			return nil, fmt.Errorf("graph scheduler field %q has duplicate task ID %q", field, task.TaskID)
 		}
 		seenTaskIDs[task.TaskID] = struct{}{}
+		if task.OperationID != "" {
+			if err := validateRunnerStorageID("task operation ID", task.OperationID); err != nil {
+				return nil, fmt.Errorf("graph scheduler field %q task %d: %w", field, index, err)
+			}
+		}
 		if strings.TrimSpace(task.NodeID) == "" || task.NodeID != strings.TrimSpace(task.NodeID) {
 			return nil, fmt.Errorf("graph scheduler field %q task %d has invalid node ID %q", field, index, task.NodeID)
 		}

@@ -149,6 +149,7 @@ func NewGrep() Tool {
 			},
 		},
 		Handler:     grepTool,
+		Effect:      EffectReadOnly,
 		Permissions: []string{"filesystem.read"},
 	}
 }

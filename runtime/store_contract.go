@@ -10,6 +10,26 @@ func ValidateCommit(commit Commit) error {
 	return validateRuntimeCommit(commit)
 }
 
+func CommitFingerprint(commit Commit) (string, error) {
+	return commitFingerprint(commit)
+}
+
+func CloneArtifactStages(stages []ArtifactStage) []ArtifactStage {
+	return cloneArtifactStages(stages)
+}
+
+func ValidateArtifactStages(transactionID string, stages []ArtifactStage) error {
+	return validateArtifactStages(transactionID, stages)
+}
+
+func ValidateStepEffect(step StepRecord) error {
+	return validateStepEffect(step)
+}
+
+func ValidateStepEffectTransition(existing, next StepRecord) error {
+	return validateStepEffectTransition(existing, next)
+}
+
 func ValidateNewRunDeletion(run RunRecord) error {
 	return validateNewRunDeletion(run)
 }
@@ -32,6 +52,22 @@ func ValidateRunDeletionManifest(manifest RunDeletionManifest) error {
 
 func ValidateRunDeletionTransition(ctx context.Context, existing, next RunRecord) error {
 	return validateRunDeletionTransition(ctx, existing, next)
+}
+
+func ValidateRunExecutionLeaseTransition(ctx context.Context, existing, next RunRecord) error {
+	return validateRunExecutionLeaseTransition(ctx, existing, next)
+}
+
+func ValidateExecutionLeaseGuard(run RunRecord, guard ExecutionLeaseGuard) error {
+	return validateExecutionLeaseGuard(run, guard)
+}
+
+func ValidateCommitExecutionLease(run RunRecord, commit Commit) error {
+	return validateCommitExecutionLease(run, commit)
+}
+
+func ExecutionLeasesEqual(left, right *ExecutionLease) bool {
+	return executionLeasesEqual(left, right)
 }
 
 func EnsureRunNotDeleting(run RunRecord, action string) error {

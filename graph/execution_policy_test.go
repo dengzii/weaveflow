@@ -10,6 +10,7 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
@@ -197,7 +198,7 @@ func TestExecutionPolicyRoundTripsGraphAndNodeOverrides(t *testing.T) {
 		t.Fatalf("node policy serialized inherited retry fields: %#v", definition.Nodes[0].Policy)
 	}
 	nodePolicy := workflow.nodeExecutionPolicy("target")
-	if retryable(nodePolicy.Retry, core.NewExecutionError(core.ErrorTimeout, "timeout", nil, nil)) {
+	if retryable(nodePolicy.Retry, core.NewExecutionError(core.ErrorTimeout, "timeout", nil, nil), core.EffectOperation{Class: core.EffectPure}) {
 		t.Fatalf("node non-retryable override did not remove inherited retry class: %#v", nodePolicy.Retry)
 	}
 }
@@ -212,7 +213,7 @@ func TestExecutionPolicyRetryableOverrideRemovesInheritedNonRetryableClass(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !retryable(policy.Retry, core.NewExecutionError(core.ErrorCanceled, "retry cancellation", nil, nil)) {
+	if !retryable(policy.Retry, core.NewExecutionError(core.ErrorCanceled, "retry cancellation", nil, nil), core.EffectOperation{Class: core.EffectPure}) {
 		t.Fatalf("retryable override did not remove inherited non-retryable class: %#v", policy.Retry)
 	}
 
@@ -229,11 +230,11 @@ func TestExecutionPolicyRetryableOverrideRemovesInheritedNonRetryableClass(t *te
 
 func TestExecutionPolicyDoesNotRetryAbandonedSchedulerTimeout(t *testing.T) {
 	policy := fruntime.DefaultGraphExecutionPolicy().NodeDefaults
-	if !retryable(policy.Retry, core.NewExecutionError(core.ErrorTimeout, "node timeout", nil, nil)) {
+	if !retryable(policy.Retry, core.NewExecutionError(core.ErrorTimeout, "node timeout", nil, nil), core.EffectOperation{Class: core.EffectPure}) {
 		t.Fatalf("completed node timeout is not retryable: %#v", policy.Retry)
 	}
 	abandoned := core.NewExecutionError(core.ErrorTimeout, "scheduler timeout", nil, map[string]any{"attempt_abandoned": true})
-	if retryable(policy.Retry, abandoned) {
+	if retryable(policy.Retry, abandoned, core.EffectOperation{Class: core.EffectPure}) {
 		t.Fatalf("abandoned scheduler timeout is retryable: %#v", policy.Retry)
 	}
 
@@ -243,8 +244,134 @@ func TestExecutionPolicyDoesNotRetryAbandonedSchedulerTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retryable node timeout override: %v", err)
 	}
-	if !retryable(override.Retry, core.NewExecutionError(core.ErrorTimeout, "node timeout", nil, nil)) || retryable(override.Retry, abandoned) {
+	if !retryable(override.Retry, core.NewExecutionError(core.ErrorTimeout, "node timeout", nil, nil), core.EffectOperation{Class: core.EffectPure}) || retryable(override.Retry, abandoned, core.EffectOperation{Class: core.EffectPure}) {
 		t.Fatalf("timeout override did not preserve scheduler abandonment boundary: %#v", override.Retry)
+	}
+}
+
+func TestSideEffectFailureRetryRequiresIdempotentDeclarationAndStableKey(t *testing.T) {
+	policy := fruntime.DefaultGraphExecutionPolicy().NodeDefaults.Retry
+	err := core.NewExecutionError(core.ErrorSideEffectFailed, "provider response lost", nil, nil)
+	testCases := []struct {
+		name      string
+		operation core.EffectOperation
+		want      bool
+	}{
+		{name: "undeclared", operation: core.EffectOperation{Class: core.EffectUnspecified}},
+		{name: "idempotent without key", operation: core.EffectOperation{Class: core.EffectIdempotentWrite}},
+		{name: "non idempotent", operation: core.EffectOperation{Class: core.EffectNonIdempotentWrite, IdempotencyKey: "operation-key"}},
+		{name: "idempotent with key", operation: core.EffectOperation{Class: core.EffectIdempotentWrite, IdempotencyKey: "operation-key"}, want: true},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			if got := retryable(policy, err, testCase.operation); got != testCase.want {
+				t.Fatalf("retryable() = %v, want %v", got, testCase.want)
+			}
+		})
+	}
+}
+
+func TestDeclaredUnsafeWriteDoesNotRetryUnavailableFailure(t *testing.T) {
+	policy := fruntime.DefaultGraphExecutionPolicy().NodeDefaults.Retry
+	err := core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, nil)
+	for _, effectClass := range []core.EffectClass{core.EffectNonIdempotentWrite, core.EffectCompensatable} {
+		if retryable(policy, err, core.EffectOperation{Class: effectClass, IdempotencyKey: "operation-key"}) {
+			t.Fatalf("effect class %q retried unavailable failure", effectClass)
+		}
+	}
+	if !retryable(policy, err, core.EffectOperation{Class: core.EffectUnspecified}) {
+		t.Fatal("unspecified node no longer preserves existing retry behavior")
+	}
+}
+
+func TestNonIdempotentNodeDoesNotRetryUnavailableFailure(t *testing.T) {
+	workflow := NewGraph(nil)
+	var attempts int
+	target := node.NewFuncNode(node.Spec{ID: "writer", Name: "writer"}, func(core.Context, *state.Access) (core.NodeResult, error) {
+		attempts++
+		return core.NodeResult{}, core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, nil)
+	})
+	target.Base.Effect = core.EffectNonIdempotentWrite
+	if err := workflow.AddNode(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetNodeSpec(dsl.GraphNodeSpec{ID: "writer", Type: "test", Name: "writer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetEntryPoint("writer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("writer"); err != nil {
+		t.Fatal(err)
+	}
+	policy := workflow.ExecutionPolicy()
+	policy.NodeDefaults.Retry.MaxAttempts = 2
+	policy.NodeDefaults.Retry.InitialInterval = 0
+	policy.NodeDefaults.Retry.MaxInterval = 0
+	policy.NodeDefaults.Retry.Jitter = 0
+	if err := workflow.SetExecutionPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	store := fruntime.NewMemoryRuntimeStore()
+	runner := mustNewGraphRunner(t, workflow, store, store, state.NewJSONStateCodec(""), store)
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err == nil || run.Status != fruntime.RunStatusFailed || attempts != 1 {
+		t.Fatalf("run = %#v, attempts = %d, error = %v", run, attempts, err)
+	}
+}
+
+func TestIdempotentNodeRetryReusesStableOperationKey(t *testing.T) {
+	workflow := NewGraph(nil)
+	var attempts int
+	var keys []string
+	target := node.NewFuncNode(node.Spec{ID: "writer", Name: "writer"}, func(ctx core.Context, _ *state.Access) (core.NodeResult, error) {
+		attempts++
+		key, ok := core.IdempotencyKeyFromContext(ctx)
+		if !ok {
+			return core.NodeResult{}, errors.New("missing idempotency key")
+		}
+		keys = append(keys, key)
+		if attempts == 1 {
+			return core.NodeResult{}, core.NewExecutionError(core.ErrorSideEffectFailed, "provider response lost", nil, nil)
+		}
+		return core.Success(), nil
+	})
+	target.Base.Effect = core.EffectIdempotentWrite
+	if err := workflow.AddNode(target); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetNodeSpec(dsl.GraphNodeSpec{ID: "writer", Type: "test", Name: "writer"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetEntryPoint("writer"); err != nil {
+		t.Fatal(err)
+	}
+	if err := workflow.SetFinishPoint("writer"); err != nil {
+		t.Fatal(err)
+	}
+	policy := workflow.ExecutionPolicy()
+	policy.NodeDefaults.Retry.MaxAttempts = 2
+	policy.NodeDefaults.Retry.InitialInterval = 0
+	policy.NodeDefaults.Retry.MaxInterval = 0
+	policy.NodeDefaults.Retry.Jitter = 0
+	if err := workflow.SetExecutionPolicy(policy); err != nil {
+		t.Fatal(err)
+	}
+	store := fruntime.NewMemoryRuntimeStore()
+	runner := mustNewGraphRunner(t, workflow, store, store, state.NewJSONStateCodec(""), store)
+	run, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil || run.Status != fruntime.RunStatusCompleted {
+		t.Fatalf("run = %#v, error = %v", run, err)
+	}
+	if attempts != 2 || len(keys) != 2 || keys[0] == "" || keys[0] != keys[1] {
+		t.Fatalf("attempts = %d, keys = %#v", attempts, keys)
+	}
+	steps, err := runner.ListSteps(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(steps) != 1 || steps[0].OperationKey != keys[0] || steps[0].EffectClass != core.EffectIdempotentWrite || steps[0].EffectStatus != core.EffectSucceeded || steps[0].Attempt != 2 {
+		t.Fatalf("steps = %#v", steps)
 	}
 }
 

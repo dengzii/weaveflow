@@ -51,6 +51,7 @@ func NewRead() Tool {
 			},
 		},
 		Handler:     readTool,
+		Effect:      EffectReadOnly,
 		Permissions: []string{"filesystem.read"},
 	}
 }

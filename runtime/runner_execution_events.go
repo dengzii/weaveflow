@@ -33,7 +33,7 @@ func modelCallEventObserver(runner *GraphRunner, runID, stepID, nodeID string) c
 		case core.ModelCallFailed:
 			payload := map[string]any{"call_id": event.Request.CallID, "model": modelLabel(event.Request, event.Response), "calls": 1}
 			if event.Response != nil {
-				payload = buildModelCallPayload(event.Request, event.Response)
+				payload = buildModelCallPayload(ctx, event.Request, event.Response)
 			}
 			if event.Err != nil {
 				payload["error"] = event.Err.Error()
@@ -70,10 +70,10 @@ func publishModelResponseEvents(ctx context.Context, request llms.ModelRequest, 
 			}
 		}
 	}
-	publishRunnerContextEventBestEffort(ctx, EventLLMCall, buildModelCallPayload(request, response))
+	publishRunnerContextEventBestEffort(ctx, EventLLMCall, buildModelCallPayload(ctx, request, response))
 }
 
-func buildModelCallPayload(request llms.ModelRequest, response *llms.ModelResponse) map[string]any {
+func buildModelCallPayload(ctx context.Context, request llms.ModelRequest, response *llms.ModelResponse) map[string]any {
 	usage := response.Usage.Normalized()
 	payload := map[string]any{
 		"call_id":              request.CallID,
@@ -86,6 +86,9 @@ func buildModelCallPayload(request llms.ModelRequest, response *llms.ModelRespon
 		"reasoning_tokens":     usage.ReasoningTokens,
 		"prompt_cached_tokens": usage.CachedInputTokens,
 	}
+	if strings.TrimSpace(response.ID) != "" {
+		payload["provider_request_id"] = strings.TrimSpace(response.ID)
+	}
 	if len(response.Choices) > 0 && response.Choices[0] != nil {
 		payload["stop_reason"] = strings.TrimSpace(response.Choices[0].StopReason)
 	}
@@ -93,6 +96,12 @@ func buildModelCallPayload(request llms.ModelRequest, response *llms.ModelRespon
 		payload["cost"] = response.Cost
 		payload["cost_total"] = response.Cost.Total
 		payload["cost_currency"] = response.Cost.Currency
+	}
+	if parent, ok := core.EffectOperationFromContext(ctx); ok {
+		operation := core.ChildEffectOperation(parent, "model", modelLabel(request, response), request.CallID, core.EffectReadOnly)
+		payload["operation_key"] = operation.Key
+		payload["parent_operation_key"] = operation.ParentKey
+		payload["effect_class"] = operation.Class
 	}
 	return payload
 }
@@ -140,10 +149,15 @@ func toolExecutionEventObserver(runner *GraphRunner, runID, stepID, nodeID strin
 
 func toolExecutionEventPayload(event core.ToolExecutionEvent) map[string]any {
 	payload := map[string]any{
-		"tool_call_id":  event.Call.ID,
-		"name":          event.Tool.Name(),
-		"permissions":   event.Tool.Permissions,
-		"approval_mode": event.Tool.Approval,
+		"tool_call_id":         event.Call.ID,
+		"name":                 event.Tool.Name(),
+		"permissions":          event.Tool.Permissions,
+		"approval_mode":        event.Tool.Approval,
+		"operation_key":        event.Operation.Key,
+		"parent_operation_key": event.Operation.ParentKey,
+		"idempotency_key":      event.Operation.IdempotencyKey,
+		"effect_class":         event.Operation.Class,
+		"effect_status":        event.Operation.Status,
 	}
 	if event.Call.FunctionCall != nil {
 		payload["arguments"] = event.Call.FunctionCall.Arguments
@@ -158,6 +172,9 @@ func toolExecutionEventPayload(event core.ToolExecutionEvent) map[string]any {
 		payload["is_error"] = true
 		payload["error_code"] = event.Result.ErrorCode
 		payload["error"] = event.Result.ErrorMessage
+	}
+	if event.Result.ProviderRequestID != "" {
+		payload["provider_request_id"] = event.Result.ProviderRequestID
 	}
 	if event.Err != nil {
 		payload["error"] = event.Err.Error()

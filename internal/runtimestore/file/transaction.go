@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 
+	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/google/uuid"
 )
 
@@ -22,6 +23,7 @@ type Store struct {
 	events      *eventSink
 	artifacts   *artifactStore
 	journalDir  string
+	resultDir   string
 	writer      *writerLock
 	writerState *writerState
 	failure     transactionFailurePoint
@@ -39,6 +41,13 @@ const (
 )
 
 var errInjectedTransactionFailure = errors.New("injected file transaction failure")
+
+func ensureFileCommitTransactionID(commit Commit) Commit {
+	if strings.TrimSpace(commit.TransactionID) == "" {
+		commit.TransactionID = uuid.NewString()
+	}
+	return commit
+}
 
 func Open(baseDir string) (*Store, error) {
 	baseDir = strings.TrimSpace(baseDir)
@@ -62,6 +71,7 @@ func Open(baseDir string) (*Store, error) {
 		events:      newEventSink(filepath.Join(absolute, "events"), shared),
 		artifacts:   newArtifactStore(filepath.Join(absolute, "artifacts"), shared),
 		journalDir:  filepath.Join(absolute, ".transactions"),
+		resultDir:   filepath.Join(absolute, ".transactions", "results"),
 		writer:      writer,
 		writerState: state,
 	}
@@ -72,6 +82,10 @@ func Open(baseDir string) (*Store, error) {
 	unlock := store.lockComponents()
 	defer unlock()
 	if err := store.recoverLocked(); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	if err := store.artifacts.reconcileLocked(store.loadTransactionResultLocked); err != nil {
 		_ = writer.Close()
 		return nil, err
 	}
@@ -104,7 +118,7 @@ func (store *Store) CheckpointStore() CheckpointStore {
 }
 
 func (store *Store) EventSink() EventSink {
-	return store.events
+	return store
 }
 
 func (store *Store) ArtifactStore() ArtifactStore {
@@ -313,9 +327,16 @@ const (
 )
 
 type transactionJournal struct {
-	ID        string                `json:"id"`
-	Phase     transactionPhase      `json:"phase"`
-	Mutations []transactionMutation `json:"mutations"`
+	ID          string                `json:"id"`
+	Fingerprint string                `json:"fingerprint"`
+	Phase       transactionPhase      `json:"phase"`
+	Result      CommitResult          `json:"result"`
+	Mutations   []transactionMutation `json:"mutations"`
+}
+
+type transactionResultRecord struct {
+	Fingerprint string       `json:"fingerprint"`
+	Result      CommitResult `json:"result"`
 }
 
 type transactionMutation struct {
@@ -327,74 +348,154 @@ type transactionMutation struct {
 }
 
 func (store *Store) Commit(ctx context.Context, commit Commit) (CommitResult, error) {
+	commit = ensureFileCommitTransactionID(commit)
+	result := CommitResult{TransactionID: commit.TransactionID, Outcome: fruntime.TransactionNotStarted}
 	if store == nil {
-		return CommitResult{}, errors.New("file runtime store is nil")
+		return result, errors.New("file runtime store is nil")
 	}
 	if err := storeContextErr(ctx); err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	commit = sanitizeCommit(ctx, commit)
 	if err := validateRuntimeCommit(commit); err != nil {
-		return CommitResult{}, err
+		return result, err
+	}
+	fingerprint, err := fruntime.CommitFingerprint(commit)
+	if err != nil {
+		return result, err
 	}
 	unlock := store.lockComponents()
 	defer unlock()
 	if err := requireWritable(store.writerState); err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	if err := store.recoverLocked(); err != nil {
-		return CommitResult{}, err
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
 	}
-	journal, result, err := store.prepareJournalLocked(ctx, commit)
+	if stored, found, err := store.loadTransactionResultLocked(commit.TransactionID); err != nil {
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
+	} else if found {
+		if stored.Fingerprint != fingerprint {
+			return result, fmt.Errorf("runtime transaction %q fingerprint mismatch", commit.TransactionID)
+		}
+		return stored.Result, nil
+	}
+	journal, applied, err := store.prepareJournalLocked(ctx, commit)
 	if err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
+	result.Run = applied.Run
+	result.Artifacts = fruntime.CloneArtifactStages(commit.Artifacts)
+	journal.ID = commit.TransactionID
+	journal.Fingerprint = fingerprint
+	journal.Result = result
 	if len(journal.Mutations) == 0 {
+		result.Outcome = fruntime.TransactionCommitted
+		journal.Result = result
+		if err := store.saveTransactionResultLocked(journal); err != nil {
+			result.Outcome = fruntime.TransactionOutcomeUnknown
+			return result, err
+		}
 		return result, nil
 	}
 	if err := ensureRunnerDirectory(store.journalDir); err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	journalPath := filepath.Join(store.journalDir, journal.ID+".json")
 	if err := store.validateJournal(journalPath, journal); err != nil {
 		return CommitResult{}, err
 	}
 	if err := writeRunnerJSONFile(journalPath, journal); err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	if err := store.injectFailure(failureAfterPreparedJournal, 0); err != nil {
-		return CommitResult{}, err
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
 	}
 	if err := store.applyCommitMutations(journal.Mutations); err != nil {
 		if errors.Is(err, errInjectedTransactionFailure) {
-			return CommitResult{}, err
+			result.Outcome = fruntime.TransactionOutcomeUnknown
+			return result, err
 		}
 		rollbackErr := applyTransactionMutations(journal.Mutations, false)
-		return CommitResult{}, errors.Join(err, rollbackErr)
+		if rollbackErr != nil {
+			result.Outcome = fruntime.TransactionOutcomeUnknown
+		}
+		return result, errors.Join(err, rollbackErr)
 	}
 	journal.Phase = transactionCommitted
+	result.Outcome = fruntime.TransactionCommitted
+	journal.Result = result
 	if err := writeRunnerJSONFile(journalPath, journal); err != nil {
 		rollbackErr := applyTransactionMutations(journal.Mutations, false)
-		return CommitResult{}, errors.Join(err, rollbackErr)
+		result.Outcome = fruntime.TransactionNotStarted
+		if rollbackErr != nil {
+			result.Outcome = fruntime.TransactionOutcomeUnknown
+		}
+		return result, errors.Join(err, rollbackErr)
 	}
 	if err := store.injectFailure(failureAfterCommittedJournal, 0); err != nil {
-		return CommitResult{}, err
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
+	}
+	if err := store.saveTransactionResultLocked(journal); err != nil {
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
 	}
 	if err := store.injectFailure(failureBeforeJournalRemoval, 0); err != nil {
-		return CommitResult{}, err
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
 	}
 	if err := removeRunnerFile(journalPath); err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	return result, nil
 }
 
+func (store *Store) ResolveCommit(ctx context.Context, transactionID string) (CommitResult, error) {
+	result := CommitResult{TransactionID: transactionID, Outcome: fruntime.TransactionNotStarted}
+	if store == nil {
+		return result, errors.New("file runtime store is nil")
+	}
+	if err := storeContextErr(ctx); err != nil {
+		return result, err
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return result, err
+	}
+	unlock := store.lockComponents()
+	defer unlock()
+	if err := requireWritable(store.writerState); err != nil {
+		return result, err
+	}
+	if err := store.recoverLocked(); err != nil {
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
+	}
+	stored, found, err := store.loadTransactionResultLocked(transactionID)
+	if err != nil {
+		result.Outcome = fruntime.TransactionOutcomeUnknown
+		return result, err
+	}
+	if !found {
+		return result, nil
+	}
+	return stored.Result, nil
+}
+
 func (store *Store) prepareJournalLocked(ctx context.Context, commit Commit) (transactionJournal, CommitResult, error) {
+	commit = ensureFileCommitTransactionID(commit)
 	if err := validateRuntimeCommit(commit); err != nil {
 		return transactionJournal{}, CommitResult{}, err
 	}
-	journal := transactionJournal{ID: uuid.NewString(), Phase: transactionPrepared}
-	result := CommitResult{}
+	fingerprint, err := fruntime.CommitFingerprint(commit)
+	if err != nil {
+		return transactionJournal{}, CommitResult{}, err
+	}
+	result := CommitResult{TransactionID: commit.TransactionID, Outcome: fruntime.TransactionNotStarted}
+	journal := transactionJournal{ID: commit.TransactionID, Fingerprint: fingerprint, Phase: transactionPrepared, Result: result}
 	mutations := map[string]transactionMutation{}
 	addMutation := func(path string, after []byte) error {
 		absolute, err := filepath.Abs(path)
@@ -456,6 +557,12 @@ func (store *Store) prepareJournalLocked(ctx context.Context, commit Commit) (tr
 			if existing.Revision != run.Revision {
 				return transactionJournal{}, CommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
 			}
+			if err := validateCommitExecutionLease(existing, commit); err != nil {
+				return transactionJournal{}, CommitResult{}, err
+			}
+			if !fruntimeExecutionLeasesEqual(existing, run) {
+				return transactionJournal{}, CommitResult{}, fmt.Errorf("%w: runtime commit cannot change run %q execution lease", ErrRunControlNotAllowed, run.RunID)
+			}
 			if commit.Run.Mode == RunWriteCheck {
 				if err := ensureRunNotDeletingLocked(store.execution.baseDir, run.RunID, "write runtime records"); err != nil {
 					return transactionJournal{}, CommitResult{}, err
@@ -505,6 +612,9 @@ func (store *Store) prepareJournalLocked(ctx context.Context, commit Commit) (tr
 			}
 			if existing.RunID != step.RunID || existing.StepID != step.StepID {
 				return transactionJournal{}, CommitResult{}, fmt.Errorf("step %q metadata identity mismatch", step.StepID)
+			}
+			if err := validateStepEffectTransition(existing, step); err != nil {
+				return transactionJournal{}, CommitResult{}, err
 			}
 		default:
 			return transactionJournal{}, CommitResult{}, fmt.Errorf("invalid step write mode %q", write.Mode)
@@ -576,6 +686,11 @@ func (store *Store) prepareJournalLocked(ctx context.Context, commit Commit) (tr
 			return transactionJournal{}, CommitResult{}, err
 		}
 	}
+	for _, stage := range commit.Artifacts {
+		if err := store.ensureCommitRunLocked(commit, stage.Ref.RunID, "finalize an artifact"); err != nil {
+			return transactionJournal{}, CommitResult{}, err
+		}
+	}
 
 	mutationPaths := make([]string, 0, len(mutations))
 	for path := range mutations {
@@ -598,7 +713,13 @@ func (store *Store) ensureCommitRunLocked(commit Commit, runID, action string) e
 			if err := ensureRunNotDeletingLocked(store.execution.baseDir, runID, action); err != nil {
 				return err
 			}
+			if err := validateCommitExecutionLease(referencedRun, commit); err != nil {
+				return err
+			}
 			return ensureRunNotDeleting(referencedRun, action)
+		}
+		if err := validateCommitExecutionLease(commit.Run.Run, commit); err != nil {
+			return err
 		}
 		return ensureRunNotDeleting(commit.Run.Run, action)
 	}
@@ -614,6 +735,9 @@ func (store *Store) ensureCommitRunLocked(commit Commit, runID, action string) e
 		return fmt.Errorf("run %q metadata identity mismatch", runID)
 	}
 	if err := ensureRunNotDeletingLocked(store.execution.baseDir, runID, action); err != nil {
+		return err
+	}
+	if err := validateCommitExecutionLease(referencedRun, commit); err != nil {
 		return err
 	}
 	return ensureRunNotDeleting(referencedRun, action)
@@ -643,6 +767,11 @@ func (store *Store) recoverLocked() error {
 		if err := applyTransactionMutations(journal.Mutations, useAfter); err != nil {
 			return err
 		}
+		if useAfter {
+			if err := store.saveTransactionResultLocked(journal); err != nil {
+				return err
+			}
+		}
 		if err := removeRunnerFile(path); err != nil {
 			return err
 		}
@@ -657,8 +786,21 @@ func (store *Store) validateJournal(path string, journal transactionJournal) err
 	if filepath.Base(path) != journal.ID+".json" {
 		return fmt.Errorf("transaction journal %q identity mismatch", path)
 	}
+	if strings.TrimSpace(journal.Fingerprint) == "" {
+		return fmt.Errorf("transaction journal %q has no fingerprint", journal.ID)
+	}
+	if journal.Result.TransactionID != journal.ID {
+		return fmt.Errorf("transaction journal %q result identity mismatch", journal.ID)
+	}
 	switch journal.Phase {
-	case transactionPrepared, transactionCommitted:
+	case transactionPrepared:
+		if journal.Result.Outcome != fruntime.TransactionNotStarted {
+			return fmt.Errorf("prepared transaction journal %q has outcome %q", journal.ID, journal.Result.Outcome)
+		}
+	case transactionCommitted:
+		if journal.Result.Outcome != fruntime.TransactionCommitted {
+			return fmt.Errorf("committed transaction journal %q has outcome %q", journal.ID, journal.Result.Outcome)
+		}
 	default:
 		return fmt.Errorf("transaction journal %q has unknown phase %q", journal.ID, journal.Phase)
 	}
@@ -687,6 +829,44 @@ func (store *Store) validateJournal(path string, journal transactionJournal) err
 		}
 	}
 	return nil
+}
+
+func (store *Store) transactionResultPath(transactionID string) string {
+	return filepath.Join(store.resultDir, transactionID+".json")
+}
+
+func (store *Store) loadTransactionResultLocked(transactionID string) (transactionResultRecord, bool, error) {
+	var record transactionResultRecord
+	if err := readRunnerJSONFile(store.transactionResultPath(transactionID), &record); err != nil {
+		if os.IsNotExist(err) {
+			return transactionResultRecord{}, false, nil
+		}
+		return transactionResultRecord{}, false, err
+	}
+	if strings.TrimSpace(record.Fingerprint) == "" {
+		return transactionResultRecord{}, false, fmt.Errorf("runtime transaction %q result has no fingerprint", transactionID)
+	}
+	if record.Result.TransactionID != transactionID || record.Result.Outcome != fruntime.TransactionCommitted {
+		return transactionResultRecord{}, false, fmt.Errorf("runtime transaction %q result identity mismatch", transactionID)
+	}
+	if err := fruntime.ValidateArtifactStages(transactionID, record.Result.Artifacts); err != nil {
+		return transactionResultRecord{}, false, fmt.Errorf("runtime transaction %q result artifacts: %w", transactionID, err)
+	}
+	return record, true, nil
+}
+
+func (store *Store) saveTransactionResultLocked(journal transactionJournal) error {
+	record := transactionResultRecord{Fingerprint: journal.Fingerprint, Result: journal.Result}
+	path := store.transactionResultPath(journal.ID)
+	if existing, found, err := store.loadTransactionResultLocked(journal.ID); err != nil {
+		return err
+	} else if found {
+		if existing.Fingerprint != record.Fingerprint {
+			return fmt.Errorf("runtime transaction %q result fingerprint mismatch", journal.ID)
+		}
+		return nil
+	}
+	return writeRunnerJSONFile(path, record)
 }
 
 func (store *Store) validateJournalMutation(relative string, mutation transactionMutation) error {
@@ -738,7 +918,7 @@ func (store *Store) validateJournalMutation(relative string, mutation transactio
 			if step.RunID != runID || step.StepID != stepID {
 				return fmt.Errorf("step %q metadata identity mismatch", stepID)
 			}
-			return nil
+			return fruntime.ValidateStepEffect(step)
 		})
 	case len(parts) == 3 && parts[0] == "checkpoints" && strings.EqualFold(filepath.Ext(parts[2]), ".json"):
 		runID := parts[1]

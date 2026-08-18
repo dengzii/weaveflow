@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -338,6 +339,106 @@ func TestFindToolRejectsAmbiguousFallbackMatches(t *testing.T) {
 	}
 	if tool, ok := FindTool(available, "first"); !ok || tool.Name() != "shared" {
 		t.Fatalf("FindTool() lost exact-key lookup: %#v, %v", tool, ok)
+	}
+}
+
+func TestExecuteToolUsesStableIdempotencyKeyAndJournalsOutcome(t *testing.T) {
+	parent := EffectOperation{Key: "run-task-operation", Kind: "node", Name: "writer", Class: EffectIdempotentWrite, IdempotencyKey: "run-task-operation"}
+	records := make([]EffectOperation, 0, 4)
+	effects := map[string]int{}
+	ctx := WithEffectOperation(context.Background(), parent)
+	ctx = WithEffectJournal(ctx, EffectJournalFunc(func(_ context.Context, operation EffectOperation) error {
+		records = append(records, operation)
+		return nil
+	}))
+	tool := Tool{
+		Function: &llms.FunctionDefinition{Name: "write_once"},
+		Effect:   EffectIdempotentWrite,
+		Handler: func(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+			key, ok := IdempotencyKeyFromContext(ctx)
+			if !ok {
+				t.Fatal("tool handler has no idempotency key")
+			}
+			if effects[key] == 0 {
+				effects[key]++
+			}
+			return llms.ToolResult{ToolCallID: call.ID, Name: "write_once", ProviderRequestID: "provider-1"}, nil
+		},
+	}
+	call := testToolCall("write_once", `{}`)
+	for attempt := 0; attempt < 2; attempt++ {
+		if _, err := ExecuteTool(ctx, tool, call); err != nil {
+			t.Fatalf("ExecuteTool() attempt %d error = %v", attempt+1, err)
+		}
+	}
+	if len(effects) != 1 {
+		t.Fatalf("business effects = %#v, want one stable key", effects)
+	}
+	if len(records) != 4 {
+		t.Fatalf("effect records = %#v", records)
+	}
+	if records[0].Key == "" || records[0].IdempotencyKey != records[2].IdempotencyKey {
+		t.Fatalf("idempotency keys changed across retries: %#v", records)
+	}
+	if records[1].Status != EffectSucceeded || records[1].ProviderRequestID != "provider-1" {
+		t.Fatalf("successful outcome = %#v", records[1])
+	}
+}
+
+func TestExecuteToolRecordsUnknownWriteOutcome(t *testing.T) {
+	var records []EffectOperation
+	ctx := WithEffectOperation(context.Background(), EffectOperation{Key: "run-task-operation", Kind: "node", Name: "writer"})
+	ctx = WithEffectJournal(ctx, EffectJournalFunc(func(_ context.Context, operation EffectOperation) error {
+		records = append(records, operation)
+		return nil
+	}))
+	tool := Tool{
+		Function: &llms.FunctionDefinition{Name: "uncertain_write"},
+		Effect:   EffectNonIdempotentWrite,
+		Handler: func(context.Context, llms.ToolCall) (llms.ToolResult, error) {
+			return llms.ToolResult{ProviderRequestID: "provider-unknown"}, NewExecutionError(ErrorSideEffectFailed, "response lost", nil, nil)
+		},
+	}
+	if _, err := ExecuteTool(ctx, tool, testToolCall("uncertain_write", `{}`)); err == nil {
+		t.Fatal("ExecuteTool() error = nil")
+	}
+	if len(records) != 2 || records[1].Status != EffectUnknown || records[1].ProviderRequestID != "provider-unknown" {
+		t.Fatalf("effect records = %#v", records)
+	}
+}
+
+func TestExecuteToolClassifiesUnavailableWriteAsSideEffectFailure(t *testing.T) {
+	ctx := WithEffectOperation(context.Background(), EffectOperation{Key: "run-task-operation", Kind: "node", Name: "writer"})
+	tool := Tool{
+		Function: &llms.FunctionDefinition{Name: "uncertain_write"},
+		Effect:   EffectNonIdempotentWrite,
+		Handler: func(context.Context, llms.ToolCall) (llms.ToolResult, error) {
+			return llms.ToolResult{}, NewExecutionError(ErrorUnavailable, "provider unavailable", nil, nil)
+		},
+	}
+	_, err := ExecuteTool(ctx, tool, testToolCall("uncertain_write", `{}`))
+	if err == nil || ClassifyError(err) != ErrorSideEffectFailed {
+		t.Fatalf("ExecuteTool() error = %v", err)
+	}
+}
+
+func TestExecuteToolDoesNotCallHandlerWhenIntentPersistenceFails(t *testing.T) {
+	handled := false
+	ctx := WithEffectOperation(context.Background(), EffectOperation{Key: "run-task-operation", Kind: "node", Name: "writer"})
+	ctx = WithEffectJournal(ctx, EffectJournalFunc(func(context.Context, EffectOperation) error {
+		return errors.New("intent persistence failed")
+	}))
+	tool := Tool{
+		Function: &llms.FunctionDefinition{Name: "protected_write"},
+		Effect:   EffectIdempotentWrite,
+		Handler: func(context.Context, llms.ToolCall) (llms.ToolResult, error) {
+			handled = true
+			return llms.ToolResult{}, nil
+		},
+	}
+	_, err := ExecuteTool(ctx, tool, testToolCall("protected_write", `{}`))
+	if err == nil || ClassifyError(err) != ErrorSideEffectFailed || handled {
+		t.Fatalf("ExecuteTool() error = %v, handled = %v", err, handled)
 	}
 }
 

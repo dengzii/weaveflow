@@ -112,6 +112,7 @@ func NewWebSearch() Tool {
 			},
 		},
 		Handler:     webSearchTool,
+		Effect:      EffectReadOnly,
 		Permissions: []string{"network.search"},
 	}
 }

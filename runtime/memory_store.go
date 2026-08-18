@@ -93,6 +93,9 @@ func (store *MemoryExecutionStore) CompareAndSwapRun(ctx context.Context, expect
 	if err := validateRunDeletionTransition(ctx, existing, run); err != nil {
 		return RunRecord{}, err
 	}
+	if err := validateRunExecutionLeaseTransition(ctx, existing, run); err != nil {
+		return RunRecord{}, err
+	}
 	run.Revision = expectedRevision + 1
 	store.runs[run.RunID] = cloneRunRecord(run)
 	return cloneRunRecord(run), nil
@@ -165,6 +168,9 @@ func (store *MemoryExecutionStore) AppendStep(ctx context.Context, step StepReco
 		return err
 	}
 	step = sanitizeStepRecord(ctx, step)
+	if err := validateStepEffect(step); err != nil {
+		return err
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	store.ensureInitialized()
@@ -212,6 +218,9 @@ func (store *MemoryExecutionStore) UpdateStep(ctx context.Context, step StepReco
 	existing, exists := store.steps[step.StepID]
 	if !exists || existing.RunID != step.RunID {
 		return ErrRunnerRecordNotFound
+	}
+	if err := validateStepEffectTransition(existing, step); err != nil {
+		return err
 	}
 	store.steps[step.StepID] = cloneStepRecord(step)
 	return nil
@@ -553,28 +562,34 @@ func (sink *MemoryEventSink) DeleteRun(ctx context.Context, runID string) error 
 type MemoryArtifactStore struct {
 	mu        sync.RWMutex
 	artifacts map[string]Artifact
+	stages    map[string]map[string]Artifact
 	deletions map[string]string
 }
 
 func NewMemoryArtifactStore() *MemoryArtifactStore {
 	return &MemoryArtifactStore{
 		artifacts: map[string]Artifact{},
+		stages:    map[string]map[string]Artifact{},
 		deletions: map[string]string{},
 	}
 }
 
-func (store *MemoryArtifactStore) Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
+func (store *MemoryArtifactStore) Stage(ctx context.Context, transactionID string, artifact Artifact) (ArtifactStage, error) {
+	stage := ArtifactStage{TransactionID: transactionID}
 	if err := fileStoreContextErr(ctx); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return stage, err
 	}
 	if err := validateRunnerStorageID("run ID", artifact.RunID); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
 	}
 	if artifact.ID == "" {
 		artifact.ID = uuid.NewString()
 	}
 	if err := validateRunnerStorageID("artifact ID", artifact.ID); err != nil {
-		return state.ArtifactRef{}, err
+		return stage, err
 	}
 	if artifact.CreatedAt.IsZero() {
 		artifact.CreatedAt = time.Now().UTC()
@@ -588,20 +603,83 @@ func (store *MemoryArtifactStore) Save(ctx context.Context, artifact Artifact) (
 	}
 	artifact = sanitizeArtifact(ctx, artifact)
 	artifact.Location = "memory/" + artifact.RunID + "/" + artifact.ID
+	stage.Ref = artifactRef(artifact)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if err := ensureMemoryRunWritable(store.deletions, artifact.RunID); err != nil {
+		return stage, err
+	}
+	if store.stages == nil {
+		store.stages = make(map[string]map[string]Artifact)
+	}
+	transactionStages := store.stages[transactionID]
+	if transactionStages == nil {
+		transactionStages = make(map[string]Artifact)
+		store.stages[transactionID] = transactionStages
+	}
 	key := memoryArtifactKey(artifact.RunID, artifact.ID)
+	if existing, exists := transactionStages[key]; exists {
+		comparable := artifact
+		comparable.CreatedAt = existing.CreatedAt
+		if !artifactsEqual(existing, comparable) {
+			return stage, fmt.Errorf("artifact stage %q payload mismatch", artifact.ID)
+		}
+		stage.Ref = artifactRef(existing)
+		return stage, nil
+	}
+	transactionStages[key] = cloneArtifact(artifact)
+	return stage, nil
+}
+
+func (store *MemoryArtifactStore) Finalize(ctx context.Context, transactionID string, stages []ArtifactStage) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return err
+	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.artifacts == nil {
-		store.artifacts = map[string]Artifact{}
+		store.artifacts = make(map[string]Artifact)
 	}
-	if err := ensureMemoryRunWritable(store.deletions, artifact.RunID); err != nil {
-		return state.ArtifactRef{}, err
+	transactionStages := store.stages[transactionID]
+	for _, stage := range stages {
+		if stage.TransactionID != transactionID {
+			return fmt.Errorf("artifact stage transaction %q does not match %q", stage.TransactionID, transactionID)
+		}
+		key := memoryArtifactKey(stage.Ref.RunID, stage.Ref.ID)
+		artifact, exists := transactionStages[key]
+		if !exists {
+			if _, finalized := store.artifacts[key]; finalized {
+				continue
+			}
+			return fmt.Errorf("artifact stage %q: %w", stage.Ref.ID, ErrRunnerRecordNotFound)
+		}
+		if err := ensureMemoryRunWritable(store.deletions, artifact.RunID); err != nil {
+			return err
+		}
+		if existing, exists := store.artifacts[key]; exists && !artifactsEqual(existing, artifact) {
+			return fmt.Errorf("artifact %q already exists with different content", artifact.ID)
+		}
+		store.artifacts[key] = cloneArtifact(artifact)
+		delete(transactionStages, key)
 	}
-	if _, exists := store.artifacts[key]; exists {
-		return state.ArtifactRef{}, fmt.Errorf("artifact %q already exists", artifact.ID)
+	delete(store.stages, transactionID)
+	return nil
+}
+
+func (store *MemoryArtifactStore) Discard(ctx context.Context, transactionID string) error {
+	if err := fileStoreContextErr(ctx); err != nil {
+		return err
 	}
-	store.artifacts[key] = cloneArtifact(artifact)
-	return artifactRef(artifact), nil
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return err
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	delete(store.stages, transactionID)
+	return nil
 }
 
 func (store *MemoryArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
@@ -682,6 +760,16 @@ func (store *MemoryArtifactStore) DeleteRun(ctx context.Context, runID string) e
 			delete(store.artifacts, key)
 		}
 	}
+	for transactionID, stages := range store.stages {
+		for key, artifact := range stages {
+			if artifact.RunID == runID {
+				delete(stages, key)
+			}
+		}
+		if len(stages) == 0 {
+			delete(store.stages, transactionID)
+		}
+	}
 	return nil
 }
 
@@ -729,14 +817,30 @@ func validateMemoryRunFenceDeletion(ctx context.Context, fences map[string]strin
 func artifactRef(artifact Artifact) state.ArtifactRef {
 	return state.ArtifactRef{
 		ID: artifact.ID, RunID: artifact.RunID, StepID: artifact.StepID, NodeID: artifact.NodeID,
-		ParentRunID: artifact.ParentRunID, ParentStepID: artifact.ParentStepID, ParentTaskID: artifact.ParentTaskID,
+		OperationKey: artifact.OperationKey,
+		ParentRunID:  artifact.ParentRunID, ParentStepID: artifact.ParentStepID, ParentTaskID: artifact.ParentTaskID,
 		RootRunID: artifact.RootRunID, RunPath: append([]string(nil), artifact.RunPath...), Namespace: artifact.Namespace,
 		Type: artifact.Type, MIMEType: artifact.MIMEType, Location: artifact.Location, CreatedAt: artifact.CreatedAt,
 	}
 }
 
+func artifactsEqual(left, right Artifact) bool {
+	if !bytes.Equal(left.Data, right.Data) {
+		return false
+	}
+	left.Data = nil
+	right.Data = nil
+	leftJSON, leftErr := json.Marshal(left)
+	rightJSON, rightErr := json.Marshal(right)
+	return leftErr == nil && rightErr == nil && bytes.Equal(leftJSON, rightJSON)
+}
+
 func cloneRunRecord(run RunRecord) RunRecord {
 	cloned := run
+	if run.ExecutionLease != nil {
+		lease := *run.ExecutionLease
+		cloned.ExecutionLease = &lease
+	}
 	cloned.RunPath = append([]string(nil), run.RunPath...)
 	cloned.ChildRunIDs = append([]string(nil), run.ChildRunIDs...)
 	cloned.PendingChildRuns = append([]PendingChildRun(nil), run.PendingChildRuns...)
@@ -780,6 +884,14 @@ func cloneRunValue(value any) any {
 func cloneStepRecord(step StepRecord) StepRecord {
 	cloned := step
 	cloned.RunPath = append([]string(nil), step.RunPath...)
+	if step.EffectResolution != nil {
+		resolution := *step.EffectResolution
+		if step.EffectResolution.ResolvedAt != nil {
+			resolvedAt := *step.EffectResolution.ResolvedAt
+			resolution.ResolvedAt = &resolvedAt
+		}
+		cloned.EffectResolution = &resolution
+	}
 	if step.FinishedAt != nil {
 		finishedAt := *step.FinishedAt
 		cloned.FinishedAt = &finishedAt

@@ -115,7 +115,7 @@ func ClassifyError(err error) ErrorClass {
 
 func IsRetryableErrorClass(class ErrorClass) bool {
 	switch normalizeErrorClass(class) {
-	case ErrorTimeout, ErrorRateLimited, ErrorUnavailable, ErrorSideEffectFailed:
+	case ErrorTimeout, ErrorRateLimited, ErrorUnavailable:
 		return true
 	default:
 		return false

@@ -214,9 +214,11 @@ var _ ArtifactStore = (*NoopArtifactStore)(nil)
 var _ RunDeleter = (*NoopArtifactStore)(nil)
 var _ RunDeletionFencer = (*NoopArtifactStore)(nil)
 
-func (*NoopArtifactStore) Save(context.Context, Artifact) (state.ArtifactRef, error) {
-	return state.ArtifactRef{}, nil
+func (*NoopArtifactStore) Stage(_ context.Context, transactionID string, _ Artifact) (ArtifactStage, error) {
+	return ArtifactStage{TransactionID: transactionID}, nil
 }
+func (*NoopArtifactStore) Finalize(context.Context, string, []ArtifactStage) error { return nil }
+func (*NoopArtifactStore) Discard(context.Context, string) error                   { return nil }
 func (*NoopArtifactStore) Load(context.Context, state.ArtifactRef) (Artifact, error) {
 	return Artifact{}, ErrRunnerRecordNotFound
 }

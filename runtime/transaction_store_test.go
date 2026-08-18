@@ -34,11 +34,15 @@ type recordingRuntimeTransactionStore struct {
 func (store *recordingRuntimeTransactionStore) Commit(_ context.Context, commit Commit) (CommitResult, error) {
 	store.commits = append(store.commits, commit)
 	if commit.Run == nil || commit.Run.Mode == RunWriteCheck {
-		return CommitResult{}, nil
+		return CommitResult{TransactionID: commit.TransactionID, Outcome: TransactionCommitted}, nil
 	}
 	run := commit.Run.Run
 	run.Revision++
-	return CommitResult{Run: &run}, nil
+	return CommitResult{TransactionID: commit.TransactionID, Outcome: TransactionCommitted, Run: &run}, nil
+}
+
+func (store *recordingRuntimeTransactionStore) ResolveCommit(_ context.Context, transactionID string) (CommitResult, error) {
+	return CommitResult{TransactionID: transactionID, Outcome: TransactionNotStarted}, nil
 }
 
 func TestMemoryRuntimeStoreCommitRejectsStaleRunRevision(t *testing.T) {

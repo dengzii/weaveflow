@@ -447,12 +447,18 @@ func (runnable *scheduledRunnable) notifyNode(ctx context.Context, event NodeEve
 }
 
 func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, config fruntime.SchedulerConfig, budget *executionBudget, task fruntime.GraphTask, currentState *state.State) (core.ExecutionResult, error) {
+	if strings.TrimSpace(task.OperationID) == "" {
+		task.OperationID = fruntime.NewTaskOperationID()
+	}
 	policy := runnable.graph.nodeExecutionPolicy(task.NodeID)
+	effectClass := core.NodeEffectClass(runnable.graph.nodes[task.NodeID])
 	var lastResult core.ExecutionResult
 	var lastErr error
+	var operation core.EffectOperation
 	for attempt := 1; attempt <= policy.Retry.MaxAttempts; attempt++ {
 		lastErr = nil
 		executionCtx := fruntime.WithGraphExecutionBudgetProvider(ctx, budget.snapshot)
+		executionCtx = core.WithEffectOperation(executionCtx, core.EffectOperation{Kind: "node", Name: task.NodeID, Class: effectClass, Status: core.EffectIntent})
 		nodeAttempt := fruntime.NewNodeAttempt()
 		executionCtx = fruntime.WithNodeAttempt(executionCtx, nodeAttempt)
 		if runnable.prepareNode != nil {
@@ -462,6 +468,7 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 				lastErr = err
 			}
 		}
+		operation, _ = core.EffectOperationFromContext(executionCtx)
 		if lastErr == nil {
 			if err := budget.claimNodeExecution(); err != nil {
 				return lastResult, runnable.notifyLimitExceeded(ctx, config, task.NodeID, err)
@@ -524,7 +531,7 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 		}
 		var nodeInterrupt *core.NodeInterrupt
 		var graphInterrupt *fruntime.GraphInterrupt
-		if errors.As(lastErr, &nodeInterrupt) || errors.As(lastErr, &graphInterrupt) || !retryable(policy.Retry, lastErr) || attempt == policy.Retry.MaxAttempts {
+		if errors.As(lastErr, &nodeInterrupt) || errors.As(lastErr, &graphInterrupt) || !retryable(policy.Retry, lastErr, operation) || attempt == policy.Retry.MaxAttempts {
 			return lastResult, lastErr
 		}
 		delay := retryDelay(policy.Retry, attempt)
@@ -532,12 +539,14 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 			Type:   fruntime.SchedulerEventRetryScheduled,
 			NodeID: task.NodeID,
 			Payload: map[string]any{
-				"task_id":      task.TaskID,
-				"attempt":      attempt,
-				"next_attempt": attempt + 1,
-				"delay":        delay.String(),
-				"error_class":  core.ClassifyError(lastErr),
-				"error":        lastErr.Error(),
+				"task_id":       task.TaskID,
+				"attempt":       attempt,
+				"next_attempt":  attempt + 1,
+				"delay":         delay.String(),
+				"error_class":   core.ClassifyError(lastErr),
+				"error":         lastErr.Error(),
+				"operation_key": operation.Key,
+				"effect_class":  operation.Class,
 			},
 		}); err != nil {
 			return lastResult, err
@@ -569,7 +578,7 @@ func (runnable *scheduledRunnable) executionContextError(ctx context.Context, co
 	return ctx.Err()
 }
 
-func retryable(policy fruntime.RetryPolicy, err error) bool {
+func retryable(policy fruntime.RetryPolicy, err error, operation core.EffectOperation) bool {
 	if err == nil {
 		return false
 	}
@@ -581,6 +590,26 @@ func retryable(policy fruntime.RetryPolicy, err error) bool {
 		}
 	}
 	class := core.ClassifyError(err)
+	if class == core.ErrorSideEffectFailed {
+		var executionErr core.ExecutionError
+		if errors.As(err, &executionErr) {
+			details := executionErr.Details()
+			switch declared := details["effect_class"].(type) {
+			case string:
+				operation.Class = core.EffectClass(declared)
+			case core.EffectClass:
+				operation.Class = declared
+			}
+			if key, ok := details["idempotency_key"].(string); ok {
+				operation.IdempotencyKey = key
+			}
+		}
+		return core.NormalizeEffectClass(operation.Class) == core.EffectIdempotentWrite && strings.TrimSpace(operation.IdempotencyKey) != ""
+	}
+	switch core.NormalizeEffectClass(operation.Class) {
+	case core.EffectNonIdempotentWrite, core.EffectCompensatable:
+		return false
+	}
 	for _, blocked := range policy.NonRetryableErrorClasses {
 		if class == blocked {
 			return false

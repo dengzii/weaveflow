@@ -13,6 +13,13 @@ import (
 type Tool = core.Tool
 type ToolHandler = core.ToolHandler
 
+const (
+	EffectPure               = core.EffectPure
+	EffectReadOnly           = core.EffectReadOnly
+	EffectIdempotentWrite    = core.EffectIdempotentWrite
+	EffectNonIdempotentWrite = core.EffectNonIdempotentWrite
+)
+
 func decodeToolArguments(call llms.ToolCall, target any) error {
 	return core.DecodeToolArguments(call, target)
 }

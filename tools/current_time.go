@@ -21,6 +21,7 @@ func NewCurrentTime() Tool {
 			},
 		},
 		Handler: currentTimeTool,
+		Effect:  EffectPure,
 	}
 }
 

@@ -211,7 +211,7 @@ func TestArtifactStoresRedactDirectJSONWrites(t *testing.T) {
 			ctx := core.WithModelConfigs(context.Background(), map[string]core.ModelConfig{
 				"default": {APIKey: "artifact-context-secret"},
 			})
-			ref, err := store.Save(ctx, Artifact{
+			ref, err := stageAndFinalizeTestArtifact(ctx, store, "artifact-direct-transaction", Artifact{
 				ID:       "artifact-direct",
 				RunID:    "run-direct",
 				MIMEType: "application/octet-stream",
@@ -229,7 +229,7 @@ func TestArtifactStoresRedactDirectJSONWrites(t *testing.T) {
 					t.Fatalf("persisted JSON artifact contains %q: %s", secret, artifact.Data)
 				}
 			}
-			textRef, err := store.Save(ctx, Artifact{
+			textRef, err := stageAndFinalizeTestArtifact(ctx, store, "artifact-text-transaction", Artifact{
 				ID:       "artifact-text",
 				RunID:    "run-direct",
 				MIMEType: "text/plain",
@@ -251,24 +251,29 @@ func TestArtifactStoresRedactDirectJSONWrites(t *testing.T) {
 
 func TestRecordArtifactBindsRunnerLineage(t *testing.T) {
 	store := NewMemoryArtifactStore()
-	runner := &GraphRunner{artifactStore: store}
+	executionStore := NewMemoryRuntimeStore()
+	runner := &GraphRunner{artifactStore: store, executionStore: executionStore}
 	metadata := RunnerMetadata{
 		RunID: "run-1", StepID: "step-1", TaskID: "task-1", NodeID: "node-1",
 		ParentRunID: "parent-1", ParentStepID: "parent-step-1", ParentTaskID: "parent-task-1",
 		RootRunID: "root-1", RunPath: []string{"root-1", "run-1"}, Namespace: "root/child",
 	}
+	if err := executionStore.CreateRun(context.Background(), RunRecord{RunID: metadata.RunID, Status: RunStatusRunning}); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
 	ctx := WithRunnerMetadata(context.Background(), metadata)
-	if _, err := runner.recordArtifact(ctx, Artifact{RunID: "other-run", Type: "test", Data: []byte("value")}); err == nil || !strings.Contains(err.Error(), "does not match runner metadata") {
+	if _, err := runner.recordArtifact(ctx, "spoofed-artifact-transaction", Artifact{RunID: "other-run", Type: "test", Data: []byte("value")}); err == nil || !strings.Contains(err.Error(), "does not match runner metadata") {
 		t.Fatalf("recordArtifact() spoofed lineage error = %v", err)
 	}
 	if refs, err := store.List(context.Background(), metadata.RunID); err != nil || len(refs) != 0 {
 		t.Fatalf("spoofed artifact was persisted: refs=%#v error=%v", refs, err)
 	}
 
-	ref, err := runner.recordArtifact(ctx, Artifact{Type: "test", Data: []byte("value")})
+	stage, err := runner.recordArtifact(ctx, "bound-artifact-transaction", Artifact{Type: "test", Data: []byte("value")})
 	if err != nil {
 		t.Fatalf("recordArtifact() error = %v", err)
 	}
+	ref := stage.Ref
 	if ref.RunID != metadata.RunID || ref.StepID != metadata.StepID || ref.NodeID != metadata.NodeID ||
 		ref.ParentRunID != metadata.ParentRunID || ref.RootRunID != metadata.RootRunID ||
 		ref.Namespace != metadata.Namespace || len(ref.RunPath) != len(metadata.RunPath) {

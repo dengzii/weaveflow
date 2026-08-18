@@ -100,6 +100,7 @@ func NewOutline() Tool {
 			},
 		},
 		Handler:     outlineTool,
+		Effect:      EffectReadOnly,
 		Permissions: []string{"filesystem.read"},
 	}
 }

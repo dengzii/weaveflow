@@ -7,6 +7,7 @@ import (
 )
 
 type Artifact = fruntime.Artifact
+type ArtifactStage = fruntime.ArtifactStage
 type CheckpointRecord = fruntime.CheckpointRecord
 type Commit = fruntime.Commit
 type CommitResult = fruntime.CommitResult
@@ -110,6 +111,26 @@ func validateRunDeletionState(deletion *fruntime.RunDeletionState) error {
 
 func validateRunDeletionTransition(ctx context.Context, existing, next RunRecord) error {
 	return fruntime.ValidateRunDeletionTransition(ctx, existing, next)
+}
+
+func validateRunExecutionLeaseTransition(ctx context.Context, existing, next RunRecord) error {
+	return fruntime.ValidateRunExecutionLeaseTransition(ctx, existing, next)
+}
+
+func validateStepEffectTransition(existing, next StepRecord) error {
+	return fruntime.ValidateStepEffectTransition(existing, next)
+}
+
+func validateStepEffect(step StepRecord) error {
+	return fruntime.ValidateStepEffect(step)
+}
+
+func validateCommitExecutionLease(run RunRecord, commit Commit) error {
+	return fruntime.ValidateCommitExecutionLease(run, commit)
+}
+
+func fruntimeExecutionLeasesEqual(existing, next RunRecord) bool {
+	return fruntime.ExecutionLeasesEqual(existing.ExecutionLease, next.ExecutionLease)
 }
 
 func validateRuntimeCommit(commit Commit) error {

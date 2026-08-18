@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/state"
 )
 
@@ -75,49 +76,53 @@ const (
 type EventType string
 
 const (
-	EventRunCreated         EventType = "run.created"
-	EventRunStarted         EventType = "run.started"
-	EventRunPauseRequested  EventType = "run.pause_requested"
-	EventRunPaused          EventType = "run.paused"
-	EventRunResumed         EventType = "run.resumed"
-	EventRunCancelRequested EventType = "run.cancel_requested"
-	EventRunCanceled        EventType = "run.canceled"
-	EventRunFinished        EventType = "run.finished"
-	EventRunFailed          EventType = "run.failed"
-	EventRunLimitExceeded   EventType = "run.limit_exceeded"
-	EventRunBackpressure    EventType = "run.backpressure"
-	EventNodeStarted        EventType = "nodes.started"
-	EventNodeFinished       EventType = "nodes.finished"
-	EventNodeFailed         EventType = "nodes.failed"
-	EventNodeCanceled       EventType = "nodes.canceled"
-	EventNodeRetry          EventType = "nodes.retry"
-	EventConditionFailed    EventType = "condition.failed"
-	EventConditionEvaluated EventType = "condition.evaluated"
-	EventFailureRouted      EventType = "failure.routed"
-	EventNodeCustom         EventType = "nodes.custom"
-	EventLLMReasoningChunk  EventType = "llm.reasoning_chunk"
-	EventLLMContentChunk    EventType = "llm.content_chunk"
-	EventLLMReasoning       EventType = "llm.reasoning"
-	EventLLMContent         EventType = "llm.content"
-	EventLLMFunctionCall    EventType = "llm.function_call"
-	EventLLMUsage           EventType = "llm.usage"
-	EventLLMCall            EventType = "llm.call"
-	EventToolStarted        EventType = "tool.started"
-	EventToolCalled         EventType = "tool.called"
-	EventToolApprovalNeeded EventType = "tool.approval_needed"
-	EventToolApproved       EventType = "tool.approved"
-	EventToolDenied         EventType = "tool.denied"
-	EventToolReturned       EventType = "tool.returned"
-	EventToolFailed         EventType = "tool.failed"
-	EventSubgraphStarted    EventType = "subgraph.started"
-	EventSubgraphFinished   EventType = "subgraph.finished"
-	EventSubgraphFailed     EventType = "subgraph.failed"
-	EventCheckpointCreated  EventType = "checkpoint.created"
-	EventArtifactCreated    EventType = "artifact.created"
-	EventBreakpointHit      EventType = "breakpoint.hit"
-	EventStateChanged       EventType = "state.changed"
-	EventContractViolation  EventType = "contract.violation"
-	EventWarning            EventType = "warning"
+	EventRunCreated                EventType = "run.created"
+	EventRunStarted                EventType = "run.started"
+	EventRunPauseRequested         EventType = "run.pause_requested"
+	EventRunPaused                 EventType = "run.paused"
+	EventRunResumed                EventType = "run.resumed"
+	EventRunCancelRequested        EventType = "run.cancel_requested"
+	EventRunCanceled               EventType = "run.canceled"
+	EventRunFinished               EventType = "run.finished"
+	EventRunFailed                 EventType = "run.failed"
+	EventRunLimitExceeded          EventType = "run.limit_exceeded"
+	EventRunBackpressure           EventType = "run.backpressure"
+	EventNodeStarted               EventType = "nodes.started"
+	EventNodeFinished              EventType = "nodes.finished"
+	EventNodeFailed                EventType = "nodes.failed"
+	EventNodeCanceled              EventType = "nodes.canceled"
+	EventNodeRetry                 EventType = "nodes.retry"
+	EventConditionFailed           EventType = "condition.failed"
+	EventConditionEvaluated        EventType = "condition.evaluated"
+	EventFailureRouted             EventType = "failure.routed"
+	EventNodeCustom                EventType = "nodes.custom"
+	EventLLMReasoningChunk         EventType = "llm.reasoning_chunk"
+	EventLLMContentChunk           EventType = "llm.content_chunk"
+	EventLLMReasoning              EventType = "llm.reasoning"
+	EventLLMContent                EventType = "llm.content"
+	EventLLMFunctionCall           EventType = "llm.function_call"
+	EventLLMUsage                  EventType = "llm.usage"
+	EventLLMCall                   EventType = "llm.call"
+	EventToolStarted               EventType = "tool.started"
+	EventToolCalled                EventType = "tool.called"
+	EventToolApprovalNeeded        EventType = "tool.approval_needed"
+	EventToolApproved              EventType = "tool.approved"
+	EventToolDenied                EventType = "tool.denied"
+	EventToolReturned              EventType = "tool.returned"
+	EventToolFailed                EventType = "tool.failed"
+	EventEffectIntent              EventType = "effect.intent"
+	EventEffectOutcome             EventType = "effect.outcome"
+	EventEffectResolutionRequested EventType = "effect.resolution_requested"
+	EventEffectResolutionOutcome   EventType = "effect.resolution_outcome"
+	EventSubgraphStarted           EventType = "subgraph.started"
+	EventSubgraphFinished          EventType = "subgraph.finished"
+	EventSubgraphFailed            EventType = "subgraph.failed"
+	EventCheckpointCreated         EventType = "checkpoint.created"
+	EventArtifactCreated           EventType = "artifact.created"
+	EventBreakpointHit             EventType = "breakpoint.hit"
+	EventStateChanged              EventType = "state.changed"
+	EventContractViolation         EventType = "contract.violation"
+	EventWarning                   EventType = "warning"
 )
 
 func IsStreamingEvent(event EventType) bool {
@@ -132,7 +137,7 @@ type RunRecord struct {
 	ParentTaskID      string            `json:"parent_task_id,omitempty"`
 	ChildRequestKey   string            `json:"child_request_key,omitempty"`
 	ChildInputHash    string            `json:"child_input_hash,omitempty"`
-	ExecutionClaimID  string            `json:"execution_claim_id,omitempty"`
+	ExecutionLease    *ExecutionLease   `json:"execution_lease,omitempty"`
 	RootRunID         string            `json:"root_run_id"`
 	RunPath           []string          `json:"run_path"`
 	Namespace         string            `json:"namespace"`
@@ -237,27 +242,31 @@ type ChildRunInterrupt struct {
 }
 
 type StepRecord struct {
-	StepID             string     `json:"step_id"`
-	RunID              string     `json:"run_id"`
-	TaskID             string     `json:"task_id"`
-	ParentRunID        string     `json:"parent_run_id,omitempty"`
-	ParentStepID       string     `json:"parent_step_id,omitempty"`
-	ParentTaskID       string     `json:"parent_task_id,omitempty"`
-	RootRunID          string     `json:"root_run_id,omitempty"`
-	RunPath            []string   `json:"run_path,omitempty"`
-	Namespace          string     `json:"namespace,omitempty"`
-	NodeID             string     `json:"node_id"`
-	NodeName           string     `json:"node_name"`
-	WaveID             string     `json:"wave_id,omitempty"`
-	Attempt            int        `json:"attempt"`
-	Status             StepStatus `json:"status"`
-	CheckpointBeforeID string     `json:"checkpoint_before_id,omitempty"`
-	CheckpointAfterID  string     `json:"checkpoint_after_id,omitempty"`
-	ErrorCode          string     `json:"error_code,omitempty"`
-	ErrorMessage       string     `json:"error_message,omitempty"`
-	StartedAt          time.Time  `json:"started_at"`
-	UpdatedAt          time.Time  `json:"updated_at"`
-	FinishedAt         *time.Time `json:"finished_at,omitempty"`
+	StepID             string            `json:"step_id"`
+	RunID              string            `json:"run_id"`
+	TaskID             string            `json:"task_id"`
+	ParentRunID        string            `json:"parent_run_id,omitempty"`
+	ParentStepID       string            `json:"parent_step_id,omitempty"`
+	ParentTaskID       string            `json:"parent_task_id,omitempty"`
+	RootRunID          string            `json:"root_run_id,omitempty"`
+	RunPath            []string          `json:"run_path,omitempty"`
+	Namespace          string            `json:"namespace,omitempty"`
+	NodeID             string            `json:"node_id"`
+	NodeName           string            `json:"node_name"`
+	OperationKey       string            `json:"operation_key,omitempty"`
+	EffectClass        core.EffectClass  `json:"effect_class,omitempty"`
+	EffectStatus       core.EffectStatus `json:"effect_status,omitempty"`
+	EffectResolution   *EffectResolution `json:"effect_resolution,omitempty"`
+	WaveID             string            `json:"wave_id,omitempty"`
+	Attempt            int               `json:"attempt"`
+	Status             StepStatus        `json:"status"`
+	CheckpointBeforeID string            `json:"checkpoint_before_id,omitempty"`
+	CheckpointAfterID  string            `json:"checkpoint_after_id,omitempty"`
+	ErrorCode          string            `json:"error_code,omitempty"`
+	ErrorMessage       string            `json:"error_message,omitempty"`
+	StartedAt          time.Time         `json:"started_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
+	FinishedAt         *time.Time        `json:"finished_at,omitempty"`
 }
 
 type CheckpointRecord struct {
@@ -292,6 +301,7 @@ type Artifact struct {
 	RunID        string    `json:"run_id,omitempty"`
 	StepID       string    `json:"step_id,omitempty"`
 	NodeID       string    `json:"node_id,omitempty"`
+	OperationKey string    `json:"operation_key,omitempty"`
 	ParentRunID  string    `json:"parent_run_id,omitempty"`
 	ParentStepID string    `json:"parent_step_id,omitempty"`
 	ParentTaskID string    `json:"parent_task_id,omitempty"`
@@ -319,6 +329,7 @@ type Event struct {
 	StepID         string          `json:"step_id,omitempty"`
 	TaskID         string          `json:"task_id,omitempty"`
 	NodeID         string          `json:"node_id,omitempty"`
+	OperationKey   string          `json:"operation_key,omitempty"`
 	Type           EventType       `json:"type"`
 	Timestamp      time.Time       `json:"timestamp"`
 	Payload        json.RawMessage `json:"payload,omitempty"`
@@ -392,5 +403,7 @@ type ArtifactReader interface {
 
 type ArtifactStore interface {
 	ArtifactReader
-	Save(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
+	Stage(ctx context.Context, transactionID string, artifact Artifact) (ArtifactStage, error)
+	Finalize(ctx context.Context, transactionID string, stages []ArtifactStage) error
+	Discard(ctx context.Context, transactionID string) error
 }

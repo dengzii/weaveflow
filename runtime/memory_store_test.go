@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/dengzii/weaveflow/state"
 )
 
 func TestMemoryStoresRoundTripCloneAndDeleteRun(t *testing.T) {
@@ -51,7 +53,7 @@ func TestMemoryStoresRoundTripCloneAndDeleteRun(t *testing.T) {
 	}
 
 	artifactData := []byte("artifact")
-	ref, err := artifactStore.Save(ctx, Artifact{ID: "artifact-1", RunID: "run-1", Type: "text", Data: artifactData})
+	ref, err := stageAndFinalizeTestArtifact(ctx, artifactStore, "artifact-transaction-1", Artifact{ID: "artifact-1", RunID: "run-1", Type: "text", Data: artifactData})
 	if err != nil {
 		t.Fatalf("Save() artifact error = %v", err)
 	}
@@ -209,11 +211,11 @@ func TestMemoryRunDataStoresEnforceDeletionFence(t *testing.T) {
 		assertMemoryRunDeletionFence(t,
 			store.FenceRunDeletion,
 			func(ctx context.Context) error {
-				_, err := store.Save(ctx, Artifact{ID: "artifact-before", RunID: "run-fenced", Data: []byte("before")})
+				_, err := stageAndFinalizeTestArtifact(ctx, store, "artifact-before-transaction", Artifact{ID: "artifact-before", RunID: "run-fenced", Data: []byte("before")})
 				return err
 			},
 			func(ctx context.Context) error {
-				_, err := store.Save(ctx, Artifact{ID: "artifact-after", RunID: "run-fenced", Data: []byte("after")})
+				_, err := stageAndFinalizeTestArtifact(ctx, store, "artifact-after-transaction", Artifact{ID: "artifact-after", RunID: "run-fenced", Data: []byte("after")})
 				return err
 			},
 			store.DeleteRun,
@@ -223,6 +225,17 @@ func TestMemoryRunDataStoresEnforceDeletionFence(t *testing.T) {
 			},
 		)
 	})
+}
+
+func stageAndFinalizeTestArtifact(ctx context.Context, store ArtifactStore, transactionID string, artifact Artifact) (state.ArtifactRef, error) {
+	stage, err := store.Stage(ctx, transactionID, artifact)
+	if err != nil {
+		return state.ArtifactRef{}, err
+	}
+	if err := store.Finalize(ctx, transactionID, []ArtifactStage{stage}); err != nil {
+		return state.ArtifactRef{}, err
+	}
+	return stage.Ref, nil
 }
 
 func assertMemoryRunDeletionFence(

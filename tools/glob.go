@@ -102,6 +102,7 @@ func NewGlob() Tool {
 			},
 		},
 		Handler:     globTool,
+		Effect:      EffectReadOnly,
 		Permissions: []string{"filesystem.read"},
 	}
 }

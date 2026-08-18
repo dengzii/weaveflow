@@ -2,11 +2,16 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
+	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/state"
 	"go.uber.org/zap"
 )
 
@@ -40,35 +45,133 @@ type CheckpointWrite struct {
 	Payload []byte
 }
 
+type TransactionOutcome string
+
+const (
+	TransactionNotStarted     TransactionOutcome = "not_started"
+	TransactionCommitted      TransactionOutcome = "committed"
+	TransactionOutcomeUnknown TransactionOutcome = "outcome_unknown"
+)
+
+type ArtifactStage struct {
+	TransactionID string            `json:"transaction_id"`
+	Ref           state.ArtifactRef `json:"ref"`
+}
+
 type Commit struct {
-	Run         *RunWrite
-	Steps       []StepWrite
-	Checkpoints []CheckpointWrite
-	Events      []Event
+	TransactionID string
+	Lease         *ExecutionLeaseGuard
+	Run           *RunWrite
+	Steps         []StepWrite
+	Checkpoints   []CheckpointWrite
+	Events        []Event
+	Artifacts     []ArtifactStage
 }
 
 type CommitResult struct {
-	Run *RunRecord
+	TransactionID string             `json:"transaction_id"`
+	Outcome       TransactionOutcome `json:"outcome"`
+	Run           *RunRecord         `json:"run,omitempty"`
+	Artifacts     []ArtifactStage    `json:"artifacts,omitempty"`
 }
 
 type TransactionStore interface {
 	Commit(ctx context.Context, commit Commit) (CommitResult, error)
+	ResolveCommit(ctx context.Context, transactionID string) (CommitResult, error)
+}
+
+var ErrTransactionOutcomeUnknown = errors.New("runtime transaction outcome is unknown")
+
+func ensureCommitTransactionID(commit Commit) Commit {
+	if strings.TrimSpace(commit.TransactionID) == "" {
+		commit.TransactionID = newRunnerID()
+	}
+	return commit
+}
+
+func commitFingerprint(commit Commit) (string, error) {
+	commit.TransactionID = ""
+	data, err := json.Marshal(commit)
+	if err != nil {
+		return "", fmt.Errorf("encode runtime transaction fingerprint: %w", err)
+	}
+	return fmt.Sprintf("%x", sha256.Sum256(data)), nil
+}
+
+func cloneCommitResult(result CommitResult) CommitResult {
+	if result.Run != nil {
+		run := cloneRunRecord(*result.Run)
+		result.Run = &run
+	}
+	result.Artifacts = cloneArtifactStages(result.Artifacts)
+	return result
+}
+
+func cloneArtifactStages(stages []ArtifactStage) []ArtifactStage {
+	if len(stages) == 0 {
+		return nil
+	}
+	cloned := make([]ArtifactStage, len(stages))
+	for index, stage := range stages {
+		cloned[index] = stage
+		cloned[index].Ref = state.CloneArtifactRefs([]state.ArtifactRef{stage.Ref})[0]
+	}
+	return cloned
+}
+
+func commitAndResolve(ctx context.Context, store TransactionStore, commit Commit) (CommitResult, Commit, error) {
+	commit = ensureCommitTransactionID(commit)
+	result, commitErr := store.Commit(ctx, commit)
+	if result.TransactionID == "" {
+		result.TransactionID = commit.TransactionID
+	}
+	if result.Outcome == TransactionCommitted {
+		return result, commit, nil
+	}
+	if result.Outcome == TransactionOutcomeUnknown {
+		resolved, resolveErr := store.ResolveCommit(context.WithoutCancel(normalizeRunnerContext(ctx)), commit.TransactionID)
+		if resolveErr == nil && resolved.Outcome == TransactionCommitted {
+			return resolved, commit, nil
+		}
+		if resolveErr != nil {
+			return result, commit, errors.Join(commitErr, fmt.Errorf("resolve runtime transaction %q: %w", commit.TransactionID, resolveErr), ErrTransactionOutcomeUnknown)
+		}
+		if resolved.Outcome == TransactionOutcomeUnknown {
+			return resolved, commit, errors.Join(commitErr, ErrTransactionOutcomeUnknown)
+		}
+		if commitErr == nil {
+			commitErr = fmt.Errorf("runtime transaction %q resolved to %q", commit.TransactionID, resolved.Outcome)
+		}
+		return resolved, commit, commitErr
+	}
+	if commitErr != nil {
+		return result, commit, commitErr
+	}
+	return result, commit, fmt.Errorf("runtime transaction %q returned outcome %q without an error", commit.TransactionID, result.Outcome)
 }
 
 type MemoryRuntimeStore struct {
-	execution   *MemoryExecutionStore
-	checkpoints *MemoryCheckpointStore
-	events      *MemoryEventSink
-	manifestMu  sync.Mutex
-	manifests   map[string]RunDeletionManifest
+	execution     *MemoryExecutionStore
+	checkpoints   *MemoryCheckpointStore
+	events        *MemoryEventSink
+	manifestMu    sync.Mutex
+	manifests     map[string]RunDeletionManifest
+	transactionMu sync.Mutex
+	transactions  map[string]memoryTransactionResult
+}
+
+type memoryTransactionResult struct {
+	Fingerprint string
+	Result      CommitResult
 }
 
 func NewMemoryRuntimeStore() *MemoryRuntimeStore {
 	return &MemoryRuntimeStore{
-		execution:   NewMemoryExecutionStore(),
-		checkpoints: NewMemoryCheckpointStore(),
-		events:      NewMemoryEventSink(),
-		manifests:   make(map[string]RunDeletionManifest),
+		execution:    NewMemoryExecutionStore(),
+		checkpoints:  NewMemoryCheckpointStore(),
+		events:       NewMemoryEventSink(),
+		manifests:    make(map[string]RunDeletionManifest),
+		transactions: make(map[string]memoryTransactionResult),
 	}
 }
 
@@ -78,7 +181,7 @@ func newMemoryRuntimeStore(execution *MemoryExecutionStore, checkpoints *MemoryC
 	}
 	return &MemoryRuntimeStore{
 		execution: execution, checkpoints: checkpoints, events: events,
-		manifests: make(map[string]RunDeletionManifest),
+		manifests: make(map[string]RunDeletionManifest), transactions: make(map[string]memoryTransactionResult),
 	}
 }
 
@@ -284,15 +387,29 @@ func (store *MemoryRuntimeStore) FenceRunDeletion(ctx context.Context, runID, de
 }
 
 func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit Commit) (CommitResult, error) {
+	commit = ensureCommitTransactionID(commit)
+	result := CommitResult{TransactionID: commit.TransactionID, Outcome: TransactionNotStarted}
 	if store == nil || store.execution == nil || store.checkpoints == nil || store.events == nil {
-		return CommitResult{}, errors.New("memory runtime store is nil")
+		return result, errors.New("memory runtime store is nil")
 	}
 	if err := fileStoreContextErr(ctx); err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	commit = sanitizeCommit(ctx, commit)
 	if err := validateRuntimeCommit(commit); err != nil {
-		return CommitResult{}, err
+		return result, err
+	}
+	fingerprint, err := commitFingerprint(commit)
+	if err != nil {
+		return result, err
+	}
+	store.transactionMu.Lock()
+	defer store.transactionMu.Unlock()
+	if existing, ok := store.transactions[commit.TransactionID]; ok {
+		if existing.Fingerprint != fingerprint {
+			return result, fmt.Errorf("runtime transaction %q fingerprint mismatch", commit.TransactionID)
+		}
+		return cloneCommitResult(existing.Result), nil
 	}
 	store.execution.mu.Lock()
 	defer store.execution.mu.Unlock()
@@ -307,15 +424,42 @@ func (store *MemoryRuntimeStore) Commit(ctx context.Context, commit Commit) (Com
 	checkpoints := cloneMemoryCheckpoints(store.checkpoints.checkpoints)
 	events := cloneMemoryEvents(store.events.events)
 
-	result, err := applyMemoryCommit(ctx, commit, runs, steps, checkpoints, events, store.execution.deletions)
+	applied, err := applyMemoryCommit(ctx, commit, runs, steps, checkpoints, events, store.execution.deletions)
 	if err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
 	store.execution.runs = runs
 	store.execution.steps = steps
 	store.checkpoints.checkpoints = checkpoints
 	store.events.events = events
+	result.Run = applied.Run
+	result.Artifacts = cloneArtifactStages(commit.Artifacts)
+	result.Outcome = TransactionCommitted
+	if store.transactions == nil {
+		store.transactions = make(map[string]memoryTransactionResult)
+	}
+	store.transactions[commit.TransactionID] = memoryTransactionResult{Fingerprint: fingerprint, Result: cloneCommitResult(result)}
 	return result, nil
+}
+
+func (store *MemoryRuntimeStore) ResolveCommit(ctx context.Context, transactionID string) (CommitResult, error) {
+	result := CommitResult{TransactionID: transactionID, Outcome: TransactionNotStarted}
+	if store == nil {
+		return result, errors.New("memory runtime store is nil")
+	}
+	if err := fileStoreContextErr(ctx); err != nil {
+		return result, err
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return result, err
+	}
+	store.transactionMu.Lock()
+	defer store.transactionMu.Unlock()
+	stored, ok := store.transactions[transactionID]
+	if !ok {
+		return result, nil
+	}
+	return cloneCommitResult(stored.Result), nil
 }
 
 func applyMemoryCommit(
@@ -329,6 +473,15 @@ func applyMemoryCommit(
 ) (CommitResult, error) {
 	if err := validateRuntimeCommit(commit); err != nil {
 		return CommitResult{}, err
+	}
+	if commit.Lease != nil {
+		run, exists := runs[commit.Lease.RunID]
+		if !exists {
+			return CommitResult{}, ErrRunnerRecordNotFound
+		}
+		if err := validateExecutionLeaseGuard(run, *commit.Lease); err != nil {
+			return CommitResult{}, err
+		}
 	}
 	result := CommitResult{}
 	if commit.Run != nil {
@@ -367,6 +520,12 @@ func applyMemoryCommit(
 			if existing.Revision != run.Revision {
 				return CommitResult{}, &RunRevisionConflictError{RunID: run.RunID, Expected: run.Revision, Actual: existing.Revision}
 			}
+			if err := validateCommitExecutionLease(existing, commit); err != nil {
+				return CommitResult{}, err
+			}
+			if !executionLeasesEqual(existing.ExecutionLease, run.ExecutionLease) {
+				return CommitResult{}, fmt.Errorf("%w: runtime commit cannot change run %q execution lease", ErrRunControlNotAllowed, run.RunID)
+			}
 			if commit.Run.Mode == RunWriteCheck {
 				if err := ensureMemoryRunWritable(deletions, run.RunID); err != nil {
 					return CommitResult{}, err
@@ -398,6 +557,9 @@ func applyMemoryCommit(
 		if !exists {
 			return CommitResult{}, ErrRunnerRecordNotFound
 		}
+		if err := validateCommitExecutionLease(run, commit); err != nil {
+			return CommitResult{}, err
+		}
 		if err := ensureMemoryRunWritable(deletions, step.RunID); err != nil {
 			return CommitResult{}, err
 		}
@@ -413,6 +575,9 @@ func applyMemoryCommit(
 		case StepWriteUpdate:
 			if !exists || existing.RunID != step.RunID {
 				return CommitResult{}, ErrRunnerRecordNotFound
+			}
+			if err := validateStepEffectTransition(existing, step); err != nil {
+				return CommitResult{}, err
 			}
 		default:
 			return CommitResult{}, fmt.Errorf("invalid step write mode %q", write.Mode)
@@ -430,6 +595,9 @@ func applyMemoryCommit(
 		run, exists := runs[record.RunID]
 		if !exists {
 			return CommitResult{}, ErrRunnerRecordNotFound
+		}
+		if err := validateCommitExecutionLease(run, commit); err != nil {
+			return CommitResult{}, err
 		}
 		if err := ensureMemoryRunWritable(deletions, record.RunID); err != nil {
 			return CommitResult{}, err
@@ -451,6 +619,9 @@ func applyMemoryCommit(
 		if !exists {
 			return CommitResult{}, ErrRunnerRecordNotFound
 		}
+		if err := validateCommitExecutionLease(run, commit); err != nil {
+			return CommitResult{}, err
+		}
 		if err := ensureMemoryRunWritable(deletions, event.RunID); err != nil {
 			return CommitResult{}, err
 		}
@@ -459,10 +630,46 @@ func applyMemoryCommit(
 		}
 		events[event.RunID] = append(events[event.RunID], cloneEvent(event))
 	}
+	for _, stage := range commit.Artifacts {
+		run, exists := runs[stage.Ref.RunID]
+		if !exists {
+			return CommitResult{}, ErrRunnerRecordNotFound
+		}
+		if err := validateCommitExecutionLease(run, commit); err != nil {
+			return CommitResult{}, err
+		}
+		if err := ensureMemoryRunWritable(deletions, stage.Ref.RunID); err != nil {
+			return CommitResult{}, err
+		}
+		if err := ensureRunNotDeleting(run, "finalize an artifact"); err != nil {
+			return CommitResult{}, err
+		}
+	}
 	return result, nil
 }
 
 func validateRuntimeCommit(commit Commit) error {
+	if err := validateRunnerStorageID("transaction ID", commit.TransactionID); err != nil {
+		return err
+	}
+	if commit.Lease != nil {
+		if err := validateRunnerStorageID("execution lease guard run ID", commit.Lease.RunID); err != nil {
+			return err
+		}
+		if err := validateRunnerStorageID("execution lease guard token", commit.Lease.Token); err != nil {
+			return err
+		}
+		if commit.Lease.Epoch == 0 {
+			return errors.New("execution lease guard epoch must be greater than zero")
+		}
+		runID, err := singleCommitRunID(commit)
+		if err != nil {
+			return err
+		}
+		if runID != commit.Lease.RunID {
+			return fmt.Errorf("execution lease guard run %q does not match commit run %q", commit.Lease.RunID, runID)
+		}
+	}
 	if commit.Run != nil {
 		if err := validateRunnerStorageID("run ID", commit.Run.Run.RunID); err != nil {
 			return err
@@ -481,6 +688,9 @@ func validateRuntimeCommit(commit Commit) error {
 			return err
 		}
 		if err := validateRunnerStorageID("step ID", write.Step.StepID); err != nil {
+			return err
+		}
+		if err := validateStepEffect(write.Step); err != nil {
 			return err
 		}
 		switch write.Mode {
@@ -505,6 +715,45 @@ func validateRuntimeCommit(commit Commit) error {
 			return err
 		}
 		if err := validateRunnerStorageID("event ID", event.ID); err != nil {
+			return err
+		}
+	}
+	if err := validateArtifactStages(commit.TransactionID, commit.Artifacts); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateStepEffect(step StepRecord) error {
+	if step.OperationKey == "" {
+		if step.EffectClass != "" || step.EffectStatus != "" {
+			return fmt.Errorf("step %q effect metadata requires an operation key", step.StepID)
+		}
+		return nil
+	}
+	if err := validateRunnerStorageID("step operation key", step.OperationKey); err != nil {
+		return err
+	}
+	if core.NormalizeEffectClass(step.EffectClass) != step.EffectClass {
+		return fmt.Errorf("step %q has invalid effect class %q", step.StepID, step.EffectClass)
+	}
+	switch step.EffectStatus {
+	case core.EffectIntent, core.EffectSucceeded, core.EffectFailed, core.EffectUnknown, core.EffectNotApplied, core.EffectCompensated:
+	default:
+		return fmt.Errorf("step %q has invalid effect status %q", step.StepID, step.EffectStatus)
+	}
+	return validateEffectResolution(step)
+}
+
+func validateArtifactStages(transactionID string, stages []ArtifactStage) error {
+	for _, stage := range stages {
+		if stage.TransactionID != transactionID {
+			return fmt.Errorf("artifact stage transaction %q does not match transaction %q", stage.TransactionID, transactionID)
+		}
+		if err := validateRunnerStorageID("run ID", stage.Ref.RunID); err != nil {
+			return err
+		}
+		if err := validateRunnerStorageID("artifact ID", stage.Ref.ID); err != nil {
 			return err
 		}
 	}

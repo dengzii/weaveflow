@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	"github.com/dengzii/weaveflow/state"
+	"github.com/google/uuid"
 )
 
 func TestStoresRejectUnsafeRecordIDs(t *testing.T) {
@@ -35,15 +36,15 @@ func TestStoresRejectUnsafeRecordIDs(t *testing.T) {
 			return checkpointStore.Save(context.Background(), CheckpointRecord{RunID: unsafeID, CheckpointID: "checkpoint"}, nil)
 		}},
 		{name: "save artifact", run: func() error {
-			_, err := artifactStore.Save(context.Background(), Artifact{RunID: unsafeID, ID: "artifact"})
+			_, err := stageAndFinalizeFileArtifact(context.Background(), artifactStore, Artifact{RunID: unsafeID, ID: "artifact"})
 			return err
 		}},
 		{name: "save artifact with padded run ID", run: func() error {
-			_, err := artifactStore.Save(context.Background(), Artifact{RunID: " run", ID: "artifact"})
+			_, err := stageAndFinalizeFileArtifact(context.Background(), artifactStore, Artifact{RunID: " run", ID: "artifact"})
 			return err
 		}},
 		{name: "save artifact with padded artifact ID", run: func() error {
-			_, err := artifactStore.Save(context.Background(), Artifact{RunID: "run", ID: "artifact "})
+			_, err := stageAndFinalizeFileArtifact(context.Background(), artifactStore, Artifact{RunID: "run", ID: "artifact "})
 			return err
 		}},
 		{name: "publish event", run: func() error {
@@ -56,7 +57,7 @@ func TestStoresRejectUnsafeRecordIDs(t *testing.T) {
 			return checkpointStore.Save(context.Background(), CheckpointRecord{RunID: runDeletionDirName, CheckpointID: "checkpoint"}, nil)
 		}},
 		{name: "save artifact for reserved run", run: func() error {
-			_, err := artifactStore.Save(context.Background(), Artifact{RunID: runDeletionDirName, ID: "artifact"})
+			_, err := stageAndFinalizeFileArtifact(context.Background(), artifactStore, Artifact{RunID: runDeletionDirName, ID: "artifact"})
 			return err
 		}},
 		{name: "publish event for reserved run", run: func() error {
@@ -139,7 +140,7 @@ func TestStoresDerivePayloadPathsFromRecordIdentity(t *testing.T) {
 	}
 
 	artifactStore := newArtifactTestStore(filepath.Join(baseDir, "artifacts"))
-	artifactRef, err := artifactStore.Save(ctx, Artifact{RunID: "run", ID: "artifact", Data: []byte("artifact payload")})
+	artifactRef, err := stageAndFinalizeFileArtifact(ctx, artifactStore, Artifact{RunID: "run", ID: "artifact", Data: []byte("artifact payload")})
 	if err != nil {
 		t.Fatalf("save artifact: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestPayloadStoresUseDistinctNamespaces(t *testing.T) {
 	if err := checkpointStore.Save(ctx, checkpoint, []byte("checkpoint payload")); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
 	}
-	artifactRef, err := artifactStore.Save(ctx, artifact)
+	artifactRef, err := stageAndFinalizeFileArtifact(ctx, artifactStore, artifact)
 	if err != nil {
 		t.Fatalf("save artifact: %v", err)
 	}
@@ -244,7 +245,7 @@ func TestPayloadStoresCommitMetadataAfterPayload(t *testing.T) {
 		if err := os.MkdirAll(store.payloadPath(artifact.RunID, artifact.ID), 0o755); err != nil {
 			t.Fatalf("block artifact payload path: %v", err)
 		}
-		if _, err := store.Save(ctx, artifact); err == nil {
+		if _, err := stageAndFinalizeFileArtifact(ctx, store, artifact); err == nil {
 			t.Fatal("Save() error = nil, want payload write failure")
 		}
 		if _, err := os.Stat(store.metadataPath(artifact.RunID, artifact.ID)); !os.IsNotExist(err) {
@@ -292,12 +293,12 @@ func TestPayloadStoresRejectDuplicateRecordIDs(t *testing.T) {
 	t.Run("artifact", func(t *testing.T) {
 		store := newArtifactTestStore(t.TempDir())
 		artifact := Artifact{RunID: "run", ID: "artifact", Data: []byte("original")}
-		ref, err := store.Save(ctx, artifact)
+		ref, err := stageAndFinalizeFileArtifact(ctx, store, artifact)
 		if err != nil {
 			t.Fatalf("save original artifact: %v", err)
 		}
 		artifact.Data = []byte("replacement")
-		if _, err := store.Save(ctx, artifact); err == nil {
+		if _, err := stageAndFinalizeFileArtifact(ctx, store, artifact); err == nil {
 			t.Fatal("duplicate Save() error = nil")
 		}
 		stored, err := store.Load(ctx, ref)
@@ -478,7 +479,7 @@ func TestPayloadStoresPersistRunDeletionFences(t *testing.T) {
 	t.Run("artifact", func(t *testing.T) {
 		baseDir := filepath.Join(t.TempDir(), "artifacts")
 		store := newArtifactTestStore(baseDir)
-		if _, err := store.Save(ctx, Artifact{RunID: runID, ID: "before", Data: []byte("payload")}); err != nil {
+		if _, err := stageAndFinalizeFileArtifact(ctx, store, Artifact{RunID: runID, ID: "before", Data: []byte("payload")}); err != nil {
 			t.Fatalf("Save() before fence error = %v", err)
 		}
 		if err := store.FenceRunDeletion(deletionCtx, runID, deletionID); err != nil {
@@ -486,7 +487,7 @@ func TestPayloadStoresPersistRunDeletionFences(t *testing.T) {
 		}
 
 		reopened := newArtifactTestStore(baseDir)
-		if _, err := reopened.Save(ctx, Artifact{RunID: runID, ID: "late"}); !errors.Is(err, ErrRunControlNotAllowed) {
+		if _, err := stageAndFinalizeFileArtifact(ctx, reopened, Artifact{RunID: runID, ID: "late"}); !errors.Is(err, ErrRunControlNotAllowed) {
 			t.Fatalf("Save() after fence error = %v, want control rejection", err)
 		}
 		if err := reopened.DeleteRun(ctx, runID); !errors.Is(err, ErrRunControlNotAllowed) {
@@ -495,10 +496,22 @@ func TestPayloadStoresPersistRunDeletionFences(t *testing.T) {
 		if err := reopened.DeleteRun(deletionCtx, runID); err != nil {
 			t.Fatalf("authorized DeleteRun() error = %v", err)
 		}
-		if _, err := reopened.Save(ctx, Artifact{RunID: runID, ID: "after-delete"}); !errors.Is(err, ErrRunControlNotAllowed) {
+		if _, err := stageAndFinalizeFileArtifact(ctx, reopened, Artifact{RunID: runID, ID: "after-delete"}); !errors.Is(err, ErrRunControlNotAllowed) {
 			t.Fatalf("Save() after physical deletion error = %v, want control rejection", err)
 		}
 	})
+}
+
+func stageAndFinalizeFileArtifact(ctx context.Context, store *artifactStore, artifact Artifact) (state.ArtifactRef, error) {
+	transactionID := uuid.NewString()
+	stage, err := store.Stage(ctx, transactionID, artifact)
+	if err != nil {
+		return state.ArtifactRef{}, err
+	}
+	if err := store.Finalize(ctx, transactionID, []ArtifactStage{stage}); err != nil {
+		return state.ArtifactRef{}, err
+	}
+	return stage.Ref, nil
 }
 
 func TestEventSinkPublishBatchValidatesBeforeWriting(t *testing.T) {

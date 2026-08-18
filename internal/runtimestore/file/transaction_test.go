@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	fruntime "github.com/dengzii/weaveflow/runtime"
 )
@@ -76,6 +77,8 @@ func TestStoreRecoveryUsesJournalPhase(t *testing.T) {
 			t.Fatalf("prepareJournalLocked() error = %v", err)
 		}
 		journal.Phase = transactionCommitted
+		journal.Result.Outcome = fruntime.TransactionCommitted
+		journal.Result.Run = result.Run
 		journalPath := persistJournal(t, store, journal)
 		if err := store.Close(); err != nil {
 			t.Fatalf("Close() error = %v", err)
@@ -157,8 +160,12 @@ func TestStoreCrashInjectionRecoversWholeTransaction(t *testing.T) {
 			store, original, commit := prepareTransaction(t, directory)
 			store.failure = testCase.point
 			store.failureAt = 0
-			if _, err := store.Commit(context.Background(), commit); !errors.Is(err, errInjectedTransactionFailure) {
+			result, err := store.Commit(context.Background(), commit)
+			if !errors.Is(err, errInjectedTransactionFailure) {
 				t.Fatalf("Commit() error = %v, want injected failure", err)
+			}
+			if result.TransactionID != commit.TransactionID || result.Outcome != fruntime.TransactionOutcomeUnknown {
+				t.Fatalf("Commit() result = %#v, want outcome_unknown", result)
 			}
 			if err := store.Close(); err != nil {
 				t.Fatalf("Close() error = %v", err)
@@ -177,6 +184,17 @@ func TestStoreCrashInjectionRecoversWholeTransaction(t *testing.T) {
 				t.Fatalf("recovered run = %#v, want complete before-state", persisted)
 			}
 			assertTransactionRecords(t, recovered, commit, testCase.wantAfter)
+			resolved, err := recovered.ResolveCommit(context.Background(), commit.TransactionID)
+			if err != nil {
+				t.Fatalf("ResolveCommit() error = %v", err)
+			}
+			wantOutcome := fruntime.TransactionNotStarted
+			if testCase.wantAfter {
+				wantOutcome = fruntime.TransactionCommitted
+			}
+			if resolved.Outcome != wantOutcome {
+				t.Fatalf("ResolveCommit() outcome = %q, want %q", resolved.Outcome, wantOutcome)
+			}
 		})
 	}
 }
@@ -234,10 +252,11 @@ func prepareTransaction(t *testing.T, directory string) (*Store, RunRecord, frun
 		Stage: fruntime.CheckpointAfterNode,
 	}
 	commit := fruntime.Commit{
-		Run:         &fruntime.RunWrite{Mode: fruntime.RunWriteUpdate, Run: updated},
-		Steps:       []fruntime.StepWrite{{Mode: fruntime.StepWriteAppend, Step: step}},
-		Checkpoints: []fruntime.CheckpointWrite{{Record: checkpoint, Payload: []byte("checkpoint payload")}},
-		Events:      []fruntime.Event{{ID: "event-file-transaction", RunID: original.RunID, Type: fruntime.EventNodeFinished}},
+		TransactionID: "file-transaction",
+		Run:           &fruntime.RunWrite{Mode: fruntime.RunWriteUpdate, Run: updated},
+		Steps:         []fruntime.StepWrite{{Mode: fruntime.StepWriteAppend, Step: step}},
+		Checkpoints:   []fruntime.CheckpointWrite{{Record: checkpoint, Payload: []byte("checkpoint payload")}},
+		Events:        []fruntime.Event{{ID: "event-file-transaction", RunID: original.RunID, Type: fruntime.EventNodeFinished}},
 	}
 	return store, original, commit
 }
@@ -308,6 +327,34 @@ func openTestStore(t *testing.T, directory string) *Store {
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	return store
+}
+
+func TestStoreCommitFencesExecutionLeaseOwner(t *testing.T) {
+	ctx := context.Background()
+	store := openTestStore(t, t.TempDir())
+	now := time.Unix(1_000, 0).UTC()
+	run := RunRecord{
+		RunID: "leased-run", RootRunID: "leased-run", RunPath: []string{"leased-run"}, Namespace: "leased-run",
+		Status: fruntime.RunStatusRunning,
+		ExecutionLease: &fruntime.ExecutionLease{
+			OwnerID: "owner", Token: "token", Epoch: 1, Status: fruntime.ExecutionLeaseActive,
+			AcquiredAt: now, HeartbeatAt: now, ExpiresAt: now.Add(time.Minute),
+		},
+	}
+	if err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if _, err := store.Commit(ctx, Commit{Run: &fruntime.RunWrite{Mode: RunWriteCheck, Run: run}}); !errors.Is(err, fruntime.ErrExecutionLeaseLost) {
+		t.Fatalf("Commit() without lease guard error = %v, want lease lost", err)
+	}
+	wrongGuard := fruntime.ExecutionLeaseGuard{RunID: run.RunID, Token: "other-token", Epoch: 1}
+	if _, err := store.Commit(ctx, Commit{Lease: &wrongGuard, Run: &fruntime.RunWrite{Mode: RunWriteCheck, Run: run}}); !errors.Is(err, fruntime.ErrExecutionLeaseLost) {
+		t.Fatalf("Commit() with stale lease guard error = %v, want lease lost", err)
+	}
+	guard := fruntime.ExecutionLeaseGuard{RunID: run.RunID, Token: "token", Epoch: 1}
+	if _, err := store.Commit(ctx, Commit{Lease: &guard, Run: &fruntime.RunWrite{Mode: RunWriteCheck, Run: run}}); err != nil {
+		t.Fatalf("Commit() with current lease guard error = %v", err)
+	}
 }
 
 func snapshotFiles(t *testing.T, directory string) map[string][]byte {

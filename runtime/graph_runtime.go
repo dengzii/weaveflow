@@ -57,6 +57,9 @@ type runnerActiveStep struct {
 	step               StepRecord
 	task               GraphTask
 	attempts           int
+	transactionID      string
+	artifactSequence   int
+	artifactStages     []ArtifactStage
 	beforeCheckpointID string
 	beforeInterrupted  bool
 	lastError          error
@@ -165,7 +168,7 @@ func (e *graphRunnerExecution) persistRunChecked(ctx context.Context, update fun
 		if err != nil {
 			return RunRecord{}, false, err
 		}
-		if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+		if err := validateRunExecutionOwner(ctx, run); err != nil {
 			return RunRecord{}, false, err
 		}
 		changed := run.PauseRequested != (run.PauseRequested || localRun.PauseRequested) ||
@@ -243,7 +246,12 @@ func (e *graphRunnerExecution) persistControlRequest(ctx context.Context, kind r
 
 	e.mu.Lock()
 	runID := e.run.RunID
+	guard, guarded := executionLeaseGuard(e.run)
 	e.mu.Unlock()
+	if !guarded {
+		return RunRecord{}, fmt.Errorf("%w: active run %q has no execution lease", ErrExecutionLeaseLost, runID)
+	}
+	ctx = withExecutionLeaseGuard(ctx, guard)
 	revisionConflicts := 0
 	for {
 		run, err := e.runner.executionStore.GetRun(ctx, runID)
@@ -639,6 +647,8 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 	active := e.active[task.TaskID]
 	runID := e.run.RunID
 	e.mu.Unlock()
+	declaredOperation, _ := core.EffectOperationFromContext(ctx)
+	declaredOperation.Class = core.NormalizeEffectClass(declaredOperation.Class)
 	if active == nil || active.step.TaskID != task.TaskID {
 		checkpointState := currentState.Clone()
 		schedule, _, err := LoadGraphSchedule(currentState)
@@ -694,15 +704,18 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 				RunID:       runID,
 				TaskID:      task.TaskID,
 				ParentRunID: run.ParentRunID, ParentStepID: run.ParentStepID, ParentTaskID: run.ParentTaskID,
-				RootRunID: run.RootRunID,
-				RunPath:   append([]string(nil), run.RunPath...),
-				Namespace: run.Namespace,
-				NodeID:    task.NodeID,
-				NodeName:  e.runner.nodeName(task.NodeID),
-				Status:    StepStatusRunning,
-				StartedAt: startedAt,
-				UpdatedAt: e.runner.currentTime(),
-				Attempt:   1,
+				RootRunID:    run.RootRunID,
+				RunPath:      append([]string(nil), run.RunPath...),
+				Namespace:    run.Namespace,
+				NodeID:       task.NodeID,
+				NodeName:     e.runner.nodeName(task.NodeID),
+				OperationKey: stableRuntimeID("operation", run.RunID, task.OperationID, "node"),
+				EffectClass:  declaredOperation.Class,
+				EffectStatus: core.EffectIntent,
+				Status:       StepStatusRunning,
+				StartedAt:    startedAt,
+				UpdatedAt:    e.runner.currentTime(),
+				Attempt:      1,
 			}
 			run.CurrentNodeID = step.NodeID
 			run.LastStepID = step.StepID
@@ -722,7 +735,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 			events := []Event{checkpointEvent}
 			if !run.PauseRequested && setupHit == nil {
 				startedEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeStarted, map[string]any{
-					"node_name": step.NodeName,
+					"node_name": step.NodeName, "operation_key": step.OperationKey, "effect_class": step.EffectClass,
 				})
 				if buildErr != nil {
 					e.runPersistMu.Unlock()
@@ -755,6 +768,7 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 				step:               step,
 				task:               task,
 				attempts:           1,
+				transactionID:      stableRuntimeID("transaction", step.OperationKey, "result"),
 				beforeCheckpointID: step.CheckpointBeforeID,
 				beforeInterrupted:  run.PauseRequested || setupHit != nil,
 			}
@@ -798,6 +812,8 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 			active.attempts++
 		}
 		active.lastError = nil
+		active.artifactSequence = 0
+		active.artifactStages = nil
 		e.mu.Unlock()
 		logStep := active.step
 		logStep.Attempt = active.attempts
@@ -816,7 +832,13 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 	taskID := step.TaskID
 	runID = run.RunID
 	attempt := logStep.Attempt
-	nodeCtx := WithRunnerEventPublisher(ctx, func(eventType EventType, payload any) error {
+	operation := core.EffectOperation{
+		Key: step.OperationKey, Kind: "node", Name: nodeID, Class: step.EffectClass,
+		Status: core.EffectIntent, Attempt: attempt, IdempotencyKey: step.OperationKey,
+	}
+	nodeCtx := core.WithEffectOperation(ctx, operation)
+	nodeCtx = core.WithEffectJournal(nodeCtx, core.EffectJournalFunc(e.recordEffect))
+	nodeCtx = WithRunnerEventPublisher(nodeCtx, func(eventType EventType, payload any) error {
 		return e.runner.publishEventWithTask(ctx, run, stepID, taskID, nodeID, eventType, payload)
 	})
 	if task.Failure != nil {
@@ -831,12 +853,24 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 	nodeCtx = WithGraphRunner(nodeCtx, e.runner)
 	nodeCtx = WithChildRunController(nodeCtx, e)
 	nodeCtx = WithRunnerArtifactRecorder(nodeCtx, func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
-		ref, err := e.runner.recordArtifact(ctx, artifact)
+		transactionID, artifactID, err := e.nextArtifactStageIdentity(task.TaskID, artifact.Type)
 		if err != nil {
 			return state.ArtifactRef{}, err
 		}
-		e.appendArtifact(ref)
-		return ref, nil
+		if artifact.ID == "" {
+			if operation, ok := core.EffectOperationFromContext(ctx); ok && operation.Key != "" && operation.Key != step.OperationKey {
+				artifactID = stableRuntimeID("artifact", transactionID, operation.Key, strings.TrimSpace(artifact.Type))
+			}
+			artifact.ID = artifactID
+		}
+		stage, err := e.runner.recordArtifact(ctx, transactionID, artifact)
+		if err != nil {
+			return state.ArtifactRef{}, err
+		}
+		if err := e.appendArtifactStage(task.TaskID, stage); err != nil {
+			return state.ArtifactRef{}, err
+		}
+		return stage.Ref, nil
 	})
 	return withRunnerEventContext(nodeCtx, e.runner, runID, stepID, nodeID), nil
 }
@@ -852,9 +886,8 @@ func validateNodeExecutionRun(localRun, persistedRun RunRecord) error {
 	default:
 		return fmt.Errorf("%w: run %q has unsupported status %q", ErrRunControlNotAllowed, persistedRun.RunID, persistedRun.Status)
 	}
-	if localRun.ExecutionClaimID != persistedRun.ExecutionClaimID &&
-		(localRun.ExecutionClaimID != "" || persistedRun.ExecutionClaimID != "") {
-		return fmt.Errorf("%w: run %q execution claim changed", ErrRunControlNotAllowed, persistedRun.RunID)
+	if !executionLeaseIdentitiesEqual(localRun.ExecutionLease, persistedRun.ExecutionLease) {
+		return fmt.Errorf("%w: run %q execution lease changed", ErrExecutionLeaseLost, persistedRun.RunID)
 	}
 	return nil
 }
@@ -924,7 +957,7 @@ func (e *graphRunnerExecution) OnFailureRouted(ctx context.Context, source Graph
 		if err != nil {
 			return err
 		}
-		if err := validateChildRunExecutionOwner(ctx, latestRun); err != nil {
+		if err := validateRunExecutionOwner(ctx, latestRun); err != nil {
 			return err
 		}
 		latestRun.PauseRequested = latestRun.PauseRequested || run.PauseRequested
@@ -937,6 +970,7 @@ func (e *graphRunnerExecution) OnFailureRouted(ctx context.Context, source Graph
 			now := e.runner.currentTime()
 			step.Attempt = active.attempts
 			step.Status = StepStatusFailed
+			step.EffectStatus = effectFailureStatus(step.EffectClass)
 			step.ErrorCode = string(core.ClassifyError(cause))
 			step.ErrorMessage = cause.Error()
 			step.FinishedAt = &now
@@ -1050,7 +1084,7 @@ func (e *graphRunnerExecution) OnGraphStep(ctx context.Context, completedTasks [
 		if err != nil {
 			return err
 		}
-		if err := validateChildRunExecutionOwner(ctx, latestRun); err != nil {
+		if err := validateRunExecutionOwner(ctx, latestRun); err != nil {
 			return err
 		}
 		latestRun.PauseRequested = latestRun.PauseRequested || localRun.PauseRequested
@@ -1173,7 +1207,7 @@ func (e *graphRunnerExecution) OnParallelWave(ctx context.Context, base *state.S
 			e.runPersistMu.Unlock()
 			return err
 		}
-		if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+		if err := validateRunExecutionOwner(ctx, run); err != nil {
 			e.runPersistMu.Unlock()
 			return err
 		}
@@ -1247,6 +1281,60 @@ func (e *graphRunnerExecution) recordTaskError(taskID string, taskErr error) {
 
 func (e *graphRunnerExecution) OnTaskError(task GraphTask, taskErr error) {
 	e.recordTaskError(task.TaskID, taskErr)
+	e.mu.Lock()
+	active := e.active[task.TaskID]
+	transactionID := ""
+	if active != nil {
+		transactionID = active.transactionID
+		active.artifactStages = nil
+	}
+	e.mu.Unlock()
+	if transactionID != "" {
+		if err := e.runner.artifactStore.Discard(context.Background(), transactionID); err != nil {
+			logger.Warn("discard failed node artifact stages", zap.String("transaction_id", transactionID), zap.Error(err))
+		}
+	}
+}
+
+func (e *graphRunnerExecution) recordEffect(ctx context.Context, operation core.EffectOperation) error {
+	if strings.TrimSpace(operation.Key) == "" {
+		return errors.New("effect operation key is required")
+	}
+	metadata, ok := RunnerMetadataFromContext(ctx)
+	if !ok || metadata.RunID == "" || metadata.TaskID == "" {
+		return errors.New("effect operation runner metadata is required")
+	}
+	eventType := EventEffectOutcome
+	if operation.Status == core.EffectIntent {
+		eventType = EventEffectIntent
+	}
+	transactionID := stableRuntimeID("effect", operation.Key, string(operation.Status), fmt.Sprintf("%d", operation.Attempt))
+	eventID := stableRuntimeID("effect-event", operation.Key, string(operation.Status), fmt.Sprintf("%d", operation.Attempt))
+	for retry := 0; retry < runRevisionRetryLimit; retry++ {
+		run, err := e.runner.executionStore.GetRun(ctx, metadata.RunID)
+		if err != nil {
+			return err
+		}
+		if err := validateRunExecutionOwner(ctx, run); err != nil {
+			return err
+		}
+		event, err := e.runner.buildEvent(run, metadata.StepID, metadata.TaskID, metadata.NodeID, eventType, operation)
+		if err != nil {
+			return err
+		}
+		event.ID = eventID
+		event.OperationKey = operation.Key
+		_, err = e.runner.commitRuntime(ctx, Commit{
+			TransactionID: transactionID,
+			Run:           &RunWrite{Mode: RunWriteCheck, Run: run},
+			Events:        []Event{event},
+		})
+		if errors.Is(err, ErrRunRevisionConflict) {
+			continue
+		}
+		return err
+	}
+	return runRevisionRetriesExceeded("record effect operation")
 }
 
 func (e *graphRunnerExecution) isActiveAttempt(taskID, stepID string, attempts int) bool {
@@ -1302,7 +1390,7 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 		if err != nil {
 			return err
 		}
-		if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+		if err := validateRunExecutionOwner(ctx, run); err != nil {
 			return err
 		}
 		run.PauseRequested = run.PauseRequested || localRun.PauseRequested
@@ -1319,12 +1407,19 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 			}
 			persistResult = nil
 		}
+		artifactStages := e.snapshotArtifactStages(task.TaskID)
+		checkpointArtifacts := e.snapshotArtifacts()
+		for _, stage := range artifactStages {
+			if stage.Ref.ID != "" {
+				checkpointArtifacts = append(checkpointArtifacts, stage.Ref)
+			}
+		}
 
 		checkpointState := currentState.Clone()
 		if buildErr := storeAfterNodeCommand(checkpointState, task, command); buildErr != nil {
 			return buildErr
 		}
-		checkpointWrite, checkpointEvent, buildErr := e.runner.buildCheckpointWrite(ctx, run, step, task.NodeID, CheckpointAfterNode, checkpointState, attempts, nil, e.snapshotArtifacts())
+		checkpointWrite, checkpointEvent, buildErr := e.runner.buildCheckpointWrite(ctx, run, step, task.NodeID, CheckpointAfterNode, checkpointState, attempts, nil, checkpointArtifacts)
 		if buildErr != nil {
 			return buildErr
 		}
@@ -1332,6 +1427,7 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 		now := e.runner.currentTime()
 		step.Attempt = attempts
 		step.Status = StepStatusSucceeded
+		step.EffectStatus = core.EffectSucceeded
 		step.CheckpointAfterID = afterID
 		step.FinishedAt = &now
 		step.UpdatedAt = now
@@ -1355,16 +1451,20 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 			}
 			events = append(events, draftEvent)
 		}
-		finishedEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeFinished, map[string]any{"attempt": attempts})
+		finishedEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeFinished, map[string]any{
+			"attempt": attempts, "operation_key": step.OperationKey, "effect_class": step.EffectClass, "effect_status": step.EffectStatus,
+		})
 		if buildErr != nil {
 			return buildErr
 		}
 		events = append(events, finishedEvent)
 		commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
-			Run:         &RunWrite{Mode: RunWriteUpdate, Run: run},
-			Steps:       []StepWrite{{Mode: StepWriteUpdate, Step: step}},
-			Checkpoints: []CheckpointWrite{checkpointWrite},
-			Events:      events,
+			TransactionID: active.transactionID,
+			Run:           &RunWrite{Mode: RunWriteUpdate, Run: run},
+			Steps:         []StepWrite{{Mode: StepWriteUpdate, Step: step}},
+			Checkpoints:   []CheckpointWrite{checkpointWrite},
+			Events:        events,
+			Artifacts:     artifactStages,
 		})
 		if errors.Is(commitErr, ErrRunRevisionConflict) {
 			revisionConflicts++
@@ -1378,6 +1478,9 @@ func (e *graphRunnerExecution) afterNode(ctx context.Context, task GraphTask, be
 		}
 		if commitResult.Run != nil {
 			run = *commitResult.Run
+		}
+		for _, stage := range artifactStages {
+			e.appendArtifact(stage.Ref)
 		}
 		break
 	}
@@ -1463,6 +1566,7 @@ func (e *graphRunnerExecution) prepareFailedSteps(err error) (runnerStepTransiti
 		now := e.runner.currentTime()
 		step.Attempt = attempts
 		step.Status = StepStatusFailed
+		step.EffectStatus = effectFailureStatus(step.EffectClass)
 		step.ErrorCode = string(core.ClassifyError(stepErr))
 		if step.ErrorCode == string(core.ErrorUnknown) {
 			step.ErrorCode = "node_failed"
@@ -1471,9 +1575,12 @@ func (e *graphRunnerExecution) prepareFailedSteps(err error) (runnerStepTransiti
 		step.FinishedAt = &now
 		step.UpdatedAt = now
 		failedEvent, buildErr := e.runner.buildEvent(run, step.StepID, step.TaskID, step.NodeID, EventNodeFailed, map[string]any{
-			"error":       stepErr.Error(),
-			"error_class": core.ClassifyError(stepErr),
-			"attempt":     attempts,
+			"error":         stepErr.Error(),
+			"error_class":   core.ClassifyError(stepErr),
+			"attempt":       attempts,
+			"operation_key": step.OperationKey,
+			"effect_class":  step.EffectClass,
+			"effect_status": step.EffectStatus,
 		})
 		if buildErr != nil {
 			return runnerStepTransition{}, buildErr
@@ -1504,6 +1611,7 @@ func (e *graphRunnerExecution) prepareCanceledSteps() (runnerStepTransition, err
 		now := e.runner.currentTime()
 		step.Attempt = attempts
 		step.Status = StepStatusCanceled
+		step.EffectStatus = effectFailureStatus(step.EffectClass)
 		step.ErrorCode = "run_canceled"
 		step.ErrorMessage = "run canceled"
 		step.FinishedAt = &now
@@ -1521,6 +1629,13 @@ func (e *graphRunnerExecution) prepareCanceledSteps() (runnerStepTransition, err
 		transition.steps = append(transition.steps, step)
 	}
 	return transition, nil
+}
+
+func effectFailureStatus(class core.EffectClass) core.EffectStatus {
+	if core.IsWriteEffect(class) {
+		return core.EffectUnknown
+	}
+	return core.EffectFailed
 }
 
 func (e *graphRunnerExecution) consumeActiveSteps() (RunRecord, []runnerActiveStep) {
@@ -1777,6 +1892,39 @@ func (e *graphRunnerExecution) appendArtifact(ref state.ArtifactRef) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	e.artifacts = append(e.artifacts, ref)
+}
+
+func (e *graphRunnerExecution) nextArtifactStageIdentity(taskID, artifactType string) (string, string, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	active := e.active[taskID]
+	if active == nil || active.transactionID == "" {
+		return "", "", errors.New("node artifact transaction is unavailable")
+	}
+	active.artifactSequence++
+	artifactID := stableRuntimeID("artifact", active.transactionID, fmt.Sprintf("%d", active.artifactSequence), strings.TrimSpace(artifactType))
+	return active.transactionID, artifactID, nil
+}
+
+func (e *graphRunnerExecution) appendArtifactStage(taskID string, stage ArtifactStage) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	active := e.active[taskID]
+	if active == nil || active.transactionID != stage.TransactionID {
+		return errors.New("node artifact transaction changed while staging")
+	}
+	active.artifactStages = append(active.artifactStages, stage)
+	return nil
+}
+
+func (e *graphRunnerExecution) snapshotArtifactStages(taskID string) []ArtifactStage {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	active := e.active[taskID]
+	if active == nil {
+		return nil
+	}
+	return cloneArtifactStages(active.artifactStages)
 }
 
 func (e *graphRunnerExecution) snapshotArtifacts() []state.ArtifactRef {

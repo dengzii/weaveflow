@@ -67,6 +67,7 @@ func NewEdit() Tool {
 			},
 		},
 		Handler:     editTool,
+		Effect:      EffectIdempotentWrite,
 		Permissions: []string{"filesystem.write"},
 		Approval:    core.ToolApprovalRequired,
 	}

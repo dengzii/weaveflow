@@ -70,6 +70,7 @@ func NewTree() Tool {
 			},
 		},
 		Handler:     treeTool,
+		Effect:      EffectReadOnly,
 		Permissions: []string{"filesystem.read"},
 	}
 }

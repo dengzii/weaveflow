@@ -58,6 +58,7 @@ func NewWrite() Tool {
 			},
 		},
 		Handler:     writeTool,
+		Effect:      EffectIdempotentWrite,
 		Permissions: []string{"filesystem.write"},
 		Approval:    core.ToolApprovalRequired,
 	}

@@ -106,6 +106,7 @@ func NewBash() Tool {
 			},
 		},
 		Handler:     bashTool,
+		Effect:      EffectNonIdempotentWrite,
 		Permissions: []string{"process.execute"},
 		Approval:    core.ToolApprovalRequired,
 	}

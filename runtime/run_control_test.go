@@ -40,6 +40,10 @@ func (s failingRuntimeTransactionStore) Commit(context.Context, Commit) (CommitR
 	return CommitResult{}, s.err
 }
 
+func (s failingRuntimeTransactionStore) ResolveCommit(_ context.Context, transactionID string) (CommitResult, error) {
+	return CommitResult{TransactionID: transactionID, Outcome: TransactionNotStarted}, nil
+}
+
 type runControlHookTransactionStore struct {
 	TransactionStore
 	once              sync.Once
@@ -132,6 +136,73 @@ func TestRunControlServiceMarksLostExecutionFailed(t *testing.T) {
 	}
 	if len(sink.events) != 1 || sink.events[0].Type != EventRunFailed {
 		t.Fatalf("events = %#v", sink.events)
+	}
+}
+
+func TestRunControlServicePreservesValidExecutionLease(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryRuntimeStore()
+	now := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	run := RunRecord{
+		RunID: "leased-run", GraphID: "graph-1", Status: RunStatusRunning,
+		ExecutionLease: &ExecutionLease{
+			OwnerID: "other-server", Token: "token", Epoch: 4, Status: ExecutionLeaseActive,
+			AcquiredAt: now.Add(-time.Minute), HeartbeatAt: now, ExpiresAt: now.Add(time.Minute),
+		},
+	}
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	control, err := NewRunControlService(store, store, &runControlEventSink{}, nil)
+	if err != nil {
+		t.Fatalf("NewRunControlService() error = %v", err)
+	}
+	control, err = control.WithNow(func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("WithNow() error = %v", err)
+	}
+	persisted, err := control.MarkRunExecutionLost(context.Background(), run.RunID)
+	if !errors.Is(err, ErrRunControlNotAllowed) {
+		t.Fatalf("MarkRunExecutionLost() error = %v, want control not allowed", err)
+	}
+	if persisted.Status != RunStatusRunning || persisted.ExecutionLease == nil || persisted.ExecutionLease.Epoch != 4 {
+		t.Fatalf("persisted leased run = %#v", persisted)
+	}
+}
+
+func TestRunControlServiceReleasesExpiredLeaseBeforeMarkingExecutionLost(t *testing.T) {
+	t.Parallel()
+
+	store := NewMemoryRuntimeStore()
+	now := time.Date(2026, 8, 18, 9, 0, 0, 0, time.UTC)
+	run := RunRecord{
+		RunID: "expired-lease-run", GraphID: "graph-1", Status: RunStatusRunning,
+		ExecutionLease: &ExecutionLease{
+			OwnerID: "stopped-server", Token: "token", Epoch: 3, Status: ExecutionLeaseActive,
+			AcquiredAt: now.Add(-2 * time.Minute), HeartbeatAt: now.Add(-2 * time.Minute), ExpiresAt: now.Add(-time.Minute),
+		},
+	}
+	if err := store.CreateRun(context.Background(), run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	control, err := NewRunControlService(store, store, store, nil)
+	if err != nil {
+		t.Fatalf("NewRunControlService() error = %v", err)
+	}
+	control, err = control.WithNow(func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("WithNow() error = %v", err)
+	}
+	failed, err := control.MarkRunExecutionLost(context.Background(), run.RunID)
+	if err != nil {
+		t.Fatalf("MarkRunExecutionLost() error = %v", err)
+	}
+	if failed.Status != RunStatusFailed || failed.ErrorCode != "run_execution_lost" {
+		t.Fatalf("failed run = %#v", failed)
+	}
+	if failed.ExecutionLease == nil || failed.ExecutionLease.Status != ExecutionLeaseReleased || failed.ExecutionLease.Epoch != 3 {
+		t.Fatalf("released expired lease = %#v", failed.ExecutionLease)
 	}
 }
 

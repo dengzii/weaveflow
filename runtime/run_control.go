@@ -67,6 +67,26 @@ func (s *RunControlService) MarkRunExecutionLost(ctx context.Context, runID stri
 			return run, nil
 		}
 		now := s.now()
+		if IsExecutionLeaseActive(run, now) {
+			return run, fmt.Errorf("%w: run %q is owned by execution lease %d until %s", ErrRunControlNotAllowed, run.RunID, run.ExecutionLease.Epoch, run.ExecutionLease.ExpiresAt.Format(time.RFC3339Nano))
+		}
+		if run.ExecutionLease != nil && run.ExecutionLease.Status == ExecutionLeaseActive {
+			lease := *run.ExecutionLease
+			lease.Status = ExecutionLeaseReleased
+			lease.HeartbeatAt = now
+			lease.ExpiresAt = now
+			run.ExecutionLease = &lease
+			if _, err := s.executionStore.CompareAndSwapRun(withExecutionLeaseMutation(ctx, executionLeaseRelease, now), run.Revision, run); errors.Is(err, ErrRunRevisionConflict) {
+				revisionConflicts++
+				if revisionConflicts >= runRevisionRetryLimit {
+					return RunRecord{}, runRevisionRetriesExceeded("release expired execution lease")
+				}
+				continue
+			} else if err != nil {
+				return RunRecord{}, err
+			}
+			continue
+		}
 		run.Status = RunStatusFailed
 		run.PauseRequested = false
 		run.CancelRequested = false
@@ -255,10 +275,15 @@ func (s *RunControlService) buildEvent(run RunRecord, eventType EventType, paylo
 
 func (s *RunControlService) commit(ctx context.Context, commit Commit) (CommitResult, error) {
 	commit = sanitizeCommit(ctx, commit)
-	result, err := s.transactionStore.Commit(ctx, commit)
-	if err != nil {
-		return CommitResult{}, err
+	if commit.Run != nil && commit.Run.Mode != RunWriteCreate {
+		if guard, ok := executionLeaseGuard(commit.Run.Run); ok {
+			commit.Lease = &guard
+		}
 	}
-	observeCommittedEvents(ctx, s.eventSink, s.transactionStore, commit.Events)
+	result, committed, err := commitAndResolve(ctx, s.transactionStore, commit)
+	if err != nil {
+		return result, err
+	}
+	observeCommittedEvents(ctx, s.eventSink, s.transactionStore, committed.Events)
 	return result, nil
 }

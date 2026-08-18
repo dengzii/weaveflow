@@ -73,6 +73,7 @@ func NewWebFetch() Tool {
 			},
 		},
 		Handler:     webFetchTool,
+		Effect:      EffectReadOnly,
 		Permissions: []string{"network.http"},
 	}
 }

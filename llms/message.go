@@ -116,13 +116,14 @@ type ToolCall struct {
 func (ToolCall) isContentPart() {}
 
 type ToolResult struct {
-	ToolCallID   string `json:"tool_call_id"`
-	Name         string `json:"name"`
-	Content      string `json:"content,omitempty"`
-	Value        any    `json:"value,omitempty"`
-	IsError      bool   `json:"is_error,omitempty"`
-	ErrorCode    string `json:"error_code,omitempty"`
-	ErrorMessage string `json:"error_message,omitempty"`
+	ToolCallID        string `json:"tool_call_id"`
+	Name              string `json:"name"`
+	Content           string `json:"content,omitempty"`
+	Value             any    `json:"value,omitempty"`
+	IsError           bool   `json:"is_error,omitempty"`
+	ErrorCode         string `json:"error_code,omitempty"`
+	ErrorMessage      string `json:"error_message,omitempty"`
+	ProviderRequestID string `json:"provider_request_id,omitempty"`
 }
 
 func (ToolResult) isContentPart() {}

@@ -258,6 +258,9 @@ func (s *executionStore) CompareAndSwapRun(ctx context.Context, expectedRevision
 	if err := validateRunDeletionTransition(ctx, existing, run); err != nil {
 		return RunRecord{}, err
 	}
+	if err := validateRunExecutionLeaseTransition(ctx, existing, run); err != nil {
+		return RunRecord{}, err
+	}
 	run.Revision = expectedRevision + 1
 	if err := writeRunnerJSONFile(path, run); err != nil {
 		return RunRecord{}, err
@@ -308,6 +311,9 @@ func (s *executionStore) AppendStep(ctx context.Context, step StepRecord) error 
 		return err
 	}
 	step = sanitizeStepRecord(ctx, step)
+	if err := validateStepEffect(step); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := requireWritable(s.writer); err != nil {
@@ -359,6 +365,13 @@ func (s *executionStore) UpdateStep(ctx context.Context, step StepRecord) error 
 	}
 	path := s.stepPath(step.RunID, step.StepID)
 	if err := ensureRunnerRecordExists(path, "step", step.StepID); err != nil {
+		return err
+	}
+	var existing StepRecord
+	if err := readRunnerJSONFile(path, &existing); err != nil {
+		return err
+	}
+	if err := validateStepEffectTransition(existing, step); err != nil {
 		return err
 	}
 	return writeRunnerJSONFile(path, step)

@@ -117,7 +117,8 @@ func (s NodeSpec) Validate() error {
 }
 
 type NodeBase struct {
-	Spec NodeSpec
+	Spec   NodeSpec
+	Effect EffectClass
 }
 
 type NodeOption func(*NodeBase)
@@ -134,6 +135,14 @@ func WithName(name string) NodeOption {
 	return func(base *NodeBase) {
 		if base != nil {
 			base.Spec.Name = strings.TrimSpace(name)
+		}
+	}
+}
+
+func WithEffectClass(class EffectClass) NodeOption {
+	return func(base *NodeBase) {
+		if base != nil {
+			base.Effect = NormalizeEffectClass(class)
 		}
 	}
 }
@@ -189,6 +198,13 @@ func (b *NodeBase) Description() string {
 		return ""
 	}
 	return b.Spec.Description
+}
+
+func (b *NodeBase) EffectClass() EffectClass {
+	if b == nil {
+		return EffectUnspecified
+	}
+	return NormalizeEffectClass(b.Effect)
 }
 
 type ContractProvider interface {

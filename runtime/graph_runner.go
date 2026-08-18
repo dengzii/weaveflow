@@ -44,11 +44,15 @@ type GraphRunner struct {
 	stateSchemas       map[string]state.JSONSchema
 	reducers           map[string]state.Reducer
 	now                func() time.Time
+	leaseOwnerID       string
+	leaseTTL           time.Duration
+	leaseHeartbeat     time.Duration
 	eventDiagnosticsMu sync.Mutex
 	eventDiagnostics   EventPublicationDiagnostics
 	activeMu           sync.Mutex
 	activeExecutions   map[string]*graphRunnerExecution
-	executionClaims    map[string]struct{}
+	effectResolutionMu sync.Mutex
+	activeResolutions  map[string]string
 	childRunMu         sync.Mutex
 	closer             io.Closer
 	closeOnce          sync.Once
@@ -84,6 +88,9 @@ type graphRunnerConfig struct {
 	transactionStore   TransactionStore
 	closer             io.Closer
 	now                func() time.Time
+	leaseOwnerID       string
+	leaseTTL           time.Duration
+	leaseHeartbeat     time.Duration
 }
 
 func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpointStore CheckpointStore, codec state.Codec, eventSink EventSink, options ...GraphRunnerOption) (*GraphRunner, error) {
@@ -106,6 +113,9 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 		contractValidation: core.ContractValidationStrict,
 		artifactStore:      NewNoopArtifactStore(),
 		now:                time.Now,
+		leaseOwnerID:       newRunnerID(),
+		leaseTTL:           30 * time.Second,
+		leaseHeartbeat:     10 * time.Second,
 	}
 	for _, option := range options {
 		if option == nil {
@@ -177,11 +187,14 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 		stateSchemas:       cloneSchemas(cfg.stateSchemas),
 		reducers:           cloneReducers(cfg.reducers),
 		now:                cfg.now,
+		leaseOwnerID:       cfg.leaseOwnerID,
+		leaseTTL:           cfg.leaseTTL,
+		leaseHeartbeat:     cfg.leaseHeartbeat,
 		eventDiagnostics: EventPublicationDiagnostics{
 			BestEffortFailures: map[EventType]EventPublicationFailure{},
 		},
-		activeExecutions: make(map[string]*graphRunnerExecution),
-		executionClaims:  make(map[string]struct{}),
+		activeExecutions:  make(map[string]*graphRunnerExecution),
+		activeResolutions: make(map[string]string),
 	}, nil
 }
 
@@ -338,6 +351,25 @@ func WithNow(now func() time.Time) GraphRunnerOption {
 			return fmt.Errorf("now function is required")
 		}
 		cfg.now = now
+		return nil
+	}
+}
+
+func WithExecutionLeasePolicy(ownerID string, ttl, heartbeatInterval time.Duration) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		ownerID = strings.TrimSpace(ownerID)
+		if err := validateRunnerStorageID("execution lease owner ID", ownerID); err != nil {
+			return err
+		}
+		if ttl <= 0 {
+			return errors.New("execution lease TTL must be greater than zero")
+		}
+		if heartbeatInterval <= 0 || heartbeatInterval >= ttl {
+			return errors.New("execution lease heartbeat interval must be greater than zero and less than TTL")
+		}
+		cfg.leaseOwnerID = ownerID
+		cfg.leaseTTL = ttl
+		cfg.leaseHeartbeat = heartbeatInterval
 		return nil
 	}
 }
@@ -537,7 +569,12 @@ func (r *GraphRunner) Start(ctx context.Context, initialState *state.State) (Run
 	if err != nil {
 		return RunRecord{}, initialState, err
 	}
-	return r.continueStartedRun(ctx, run, initialState)
+	guard, _ := executionLeaseGuard(run)
+	executionCtx, heartbeat := r.startLeaseHeartbeat(ctx, guard)
+	finishedRun, finalState, runErr := r.continueStartedRun(executionCtx, run, initialState)
+	leaseErr := r.finishExecutionLease(executionCtx, guard, heartbeat)
+	finishedRun, leaseErr = r.refreshRunAfterLease(executionCtx, finishedRun, leaseErr)
+	return finishedRun, finalState, errors.Join(runErr, leaseErr)
 }
 
 func (r *GraphRunner) RunChild(ctx context.Context, request ChildRunRequest, input *state.State) (ChildRunResult, error) {
@@ -667,20 +704,8 @@ func (r *GraphRunner) RunChild(ctx context.Context, request ChildRunRequest, inp
 		return ChildRunResult{Run: run, State: initialState}, err
 	}
 	r.childRunMu.Unlock()
-	return r.continueChildRun(childCtx, request, run, initialState, false)
-}
-
-type childRunExecutionTakeoverKey struct{}
-type childRunExecutionOwnerKey struct{}
-
-// RecoverChildRun explicitly takes over an abandoned child execution claim.
-func (r *GraphRunner) RecoverChildRun(ctx context.Context, request ChildRunRequest, input *state.State, abandonedClaimID string) (ChildRunResult, error) {
-	abandonedClaimID = strings.TrimSpace(abandonedClaimID)
-	if err := validateRunnerStorageID("abandoned child execution claim ID", abandonedClaimID); err != nil {
-		return ChildRunResult{}, err
-	}
-	ctx = context.WithValue(normalizeRunnerContext(ctx), childRunExecutionTakeoverKey{}, abandonedClaimID)
-	return r.RunChild(ctx, request, input)
+	guard, _ := executionLeaseGuard(run)
+	return r.continueChildRun(withExecutionLeaseGuard(childCtx, guard), request, run, initialState, false)
 }
 
 func (r *GraphRunner) findChildRun(ctx context.Context, request ChildRunRequest, requestKey string) (*RunRecord, error) {
@@ -1017,121 +1042,18 @@ func validateChildRunRecordIdentity(run RunRecord) error {
 	return nil
 }
 
-func validateChildRunExecutionOwner(ctx context.Context, run RunRecord) error {
-	if strings.TrimSpace(run.ChildRequestKey) == "" {
-		return nil
-	}
+func validateRunExecutionOwner(ctx context.Context, run RunRecord) error {
 	if err := validateChildRunRecordIdentity(run); err != nil {
 		return err
 	}
-	claimID := strings.TrimSpace(run.ExecutionClaimID)
-	if claimID == "" {
-		return fmt.Errorf("%w: child run %q has no execution claim", ErrRunControlNotAllowed, run.RunID)
+	guard, ok := executionLeaseGuardFromContext(ctx)
+	if ok {
+		return validateExecutionLeaseGuard(run, guard)
 	}
-	ownerClaimID, _ := ctx.Value(childRunExecutionOwnerKey{}).(string)
-	if ownerClaimID != claimID {
-		return fmt.Errorf("%w: child run %q execution claim is owned by another caller", ErrRunControlNotAllowed, run.RunID)
+	if run.ExecutionLease != nil && run.ExecutionLease.Status == ExecutionLeaseActive {
+		return fmt.Errorf("%w: run %q has no execution lease guard", ErrExecutionLeaseLost, run.RunID)
 	}
 	return nil
-}
-
-func (r *GraphRunner) claimChildRunExecution(ctx context.Context, runID string) (RunRecord, string, error) {
-	ctx = normalizeRunnerContext(ctx)
-	claimID := newRunnerID()
-	takeoverClaimID, _ := ctx.Value(childRunExecutionTakeoverKey{}).(string)
-	revisionConflicts := 0
-	for {
-		run, err := r.executionStore.GetRun(ctx, runID)
-		if err != nil {
-			return RunRecord{}, "", err
-		}
-		if err := validateChildRunRecordIdentity(run); err != nil {
-			return run, "", err
-		}
-		switch run.Status {
-		case RunStatusCompleted, RunStatusFailed, RunStatusCanceled:
-			if takeoverClaimID != "" {
-				if run.ExecutionClaimID != takeoverClaimID {
-					return run, "", fmt.Errorf("child run %q execution claim is %q, not abandoned claim %q", run.RunID, run.ExecutionClaimID, takeoverClaimID)
-				}
-				run.ExecutionClaimID = ""
-				run.UpdatedAt = r.currentTime()
-				cleared, clearErr := compareAndSwapRun(ctx, r.executionStore, run)
-				if errors.Is(clearErr, ErrRunRevisionConflict) {
-					revisionConflicts++
-					if revisionConflicts >= runRevisionRetryLimit {
-						return run, "", runRevisionRetriesExceeded("claim child run execution")
-					}
-					continue
-				}
-				if clearErr != nil {
-					return run, "", clearErr
-				}
-				return cleared, "", nil
-			}
-			return run, "", nil
-		case RunStatusPending, RunStatusRunning, RunStatusPaused:
-		default:
-			return run, "", fmt.Errorf("child run %q has unsupported status %q", run.RunID, run.Status)
-		}
-		if run.Deletion != nil {
-			return run, "", fmt.Errorf("child run %q is reserved for deletion", run.RunID)
-		}
-		existingClaimID := strings.TrimSpace(run.ExecutionClaimID)
-		if takeoverClaimID != "" {
-			if existingClaimID != takeoverClaimID {
-				return run, "", fmt.Errorf("child run %q execution claim is %q, not abandoned claim %q", run.RunID, existingClaimID, takeoverClaimID)
-			}
-		} else if existingClaimID != "" {
-			return run, "", fmt.Errorf("%w: child run %q already has execution claim %q", ErrRunControlNotAllowed, run.RunID, run.ExecutionClaimID)
-		}
-		run.ExecutionClaimID = claimID
-		run.UpdatedAt = r.currentTime()
-		claimed, err := compareAndSwapRun(ctx, r.executionStore, run)
-		if errors.Is(err, ErrRunRevisionConflict) {
-			revisionConflicts++
-			if revisionConflicts >= runRevisionRetryLimit {
-				return run, "", runRevisionRetriesExceeded("claim child run execution")
-			}
-			continue
-		}
-		if err != nil {
-			return run, "", err
-		}
-		return claimed, claimID, nil
-	}
-}
-
-func (r *GraphRunner) releaseChildRunExecution(ctx context.Context, runID, claimID string) error {
-	ctx = normalizeRunnerContext(ctx)
-	if strings.TrimSpace(claimID) == "" {
-		return errors.New("child execution claim ID is required")
-	}
-	revisionConflicts := 0
-	for {
-		run, err := r.executionStore.GetRun(ctx, runID)
-		if err != nil {
-			return err
-		}
-		if run.ExecutionClaimID == "" {
-			return nil
-		}
-		if run.ExecutionClaimID != claimID {
-			return fmt.Errorf("child run %q execution claim changed from %q to %q", runID, claimID, run.ExecutionClaimID)
-		}
-		run.ExecutionClaimID = ""
-		run.UpdatedAt = r.currentTime()
-		if _, err := compareAndSwapRun(ctx, r.executionStore, run); errors.Is(err, ErrRunRevisionConflict) {
-			revisionConflicts++
-			if revisionConflicts >= runRevisionRetryLimit {
-				return runRevisionRetriesExceeded("release child run execution")
-			}
-			continue
-		} else if err != nil {
-			return err
-		}
-		return nil
-	}
 }
 
 func (r *GraphRunner) continueChildRun(ctx context.Context, request ChildRunRequest, run RunRecord, input *state.State, resumed bool) (result ChildRunResult, resultErr error) {
@@ -1140,18 +1062,18 @@ func (r *GraphRunner) continueChildRun(ctx context.Context, request ChildRunRequ
 		controller.RegisterChildRun(request.ParentTaskID, r, run.RunID)
 		defer controller.UnregisterChildRun(request.ParentTaskID, run.RunID)
 	}
-	claimedRun, executionClaimID, err := r.claimChildRunExecution(ctx, run.RunID)
+	claimedRun, guard, _, err := r.ensureExecutionLease(ctx, run.RunID)
 	if err != nil {
 		return ChildRunResult{Run: claimedRun, State: input, Resumed: resumed}, err
 	}
 	run = claimedRun
-	if executionClaimID != "" {
-		ctx = context.WithValue(ctx, childRunExecutionOwnerKey{}, executionClaimID)
+	if guard.RunID != "" {
+		var heartbeat *leaseHeartbeat
+		ctx, heartbeat = r.startLeaseHeartbeat(ctx, guard)
 		defer func() {
-			releaseErr := r.releaseChildRunExecution(context.WithoutCancel(ctx), run.RunID, executionClaimID)
-			if releaseErr != nil {
-				resultErr = errors.Join(resultErr, fmt.Errorf("release child run execution claim: %w", releaseErr))
-			}
+			leaseErr := r.finishExecutionLease(ctx, guard, heartbeat)
+			result.Run, leaseErr = r.refreshRunAfterLease(ctx, result.Run, leaseErr)
+			resultErr = errors.Join(resultErr, leaseErr)
 		}()
 	}
 
@@ -1208,25 +1130,28 @@ func (r *GraphRunner) StartAsync(ctx context.Context, initialState *state.State)
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
-	if err := r.reserveExecution(run.RunID); err != nil {
-		return RunRecord{}, nil, r.abortStartedRun(ctx, run, "async_execution_reservation_failed", err)
-	}
+	guard, _ := executionLeaseGuard(run)
 
 	done := make(chan struct{})
 	go func() {
-		defer r.releaseExecutionClaim(run.RunID)
 		defer close(done)
+		executionCtx, heartbeat := r.startLeaseHeartbeat(ctx, guard)
 		defer func() {
-			if recovered := recover(); recovered != nil {
-				r.failAsyncExecution(context.WithoutCancel(ctx), run, initialState, "async_execution_panic", fmt.Sprintf("panic: %v", recovered))
+			if finishErr := r.finishExecutionLease(executionCtx, guard, heartbeat); finishErr != nil {
+				logger.Error("finish async execution lease", append(runLogFields(executionCtx, run), zap.Error(finishErr))...)
 			}
 		}()
-		finishedRun, finalState, runErr := r.continueStartedRun(ctx, run, initialState)
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				r.failAsyncExecution(context.WithoutCancel(executionCtx), run, initialState, "async_execution_panic", fmt.Sprintf("panic: %v", recovered))
+			}
+		}()
+		finishedRun, finalState, runErr := r.continueStartedRun(executionCtx, run, initialState)
 		if runErr != nil && finishedRun.RunID == "" {
 			if finalState == nil {
 				finalState = initialState
 			}
-			r.failAsyncExecution(context.WithoutCancel(ctx), run, finalState, "async_execution_failed", runErr.Error())
+			r.failAsyncExecution(context.WithoutCancel(executionCtx), run, finalState, "async_execution_failed", runErr.Error())
 		}
 	}()
 	return run, done, nil
@@ -1276,6 +1201,7 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State, r
 		EntryNodeID:       entryPoint,
 		StartedAt:         now,
 		UpdatedAt:         now,
+		ExecutionLease:    r.newExecutionLease(nil, now),
 	}
 	if reservation != nil {
 		run.ChildRequestKey = reservation.RequestKey
@@ -1332,9 +1258,19 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State, r
 	if err != nil {
 		return RunRecord{}, initialState, err
 	}
+	checkpointState := initialState.Clone()
+	if err := StoreGraphSchedule(checkpointState, GraphSchedule{CurrentTasks: []GraphTask{NewStaticGraphTask(run.EntryNodeID, 0)}}); err != nil {
+		return RunRecord{}, initialState, fmt.Errorf("store initial graph schedule: %w", err)
+	}
+	checkpointWrite, checkpointEvent, err := r.buildCheckpointWrite(ctx, run, StepRecord{TaskID: run.EntryNodeID}, run.EntryNodeID, CheckpointBeforeNode, checkpointState, 0, nil, nil)
+	if err != nil {
+		return RunRecord{}, initialState, err
+	}
+	run.LastCheckpointID = checkpointWrite.Record.CheckpointID
 	commitResult, err := r.commitRuntime(ctx, Commit{
-		Run:    &RunWrite{Mode: RunWriteCreate, Run: run},
-		Events: []Event{createdEvent, startedEvent},
+		Run:         &RunWrite{Mode: RunWriteCreate, Run: run},
+		Checkpoints: []CheckpointWrite{checkpointWrite},
+		Events:      []Event{createdEvent, startedEvent, checkpointEvent},
 	})
 	if err != nil {
 		return RunRecord{}, initialState, err
@@ -1353,26 +1289,35 @@ func (r *GraphRunner) continueStartedRun(ctx context.Context, run RunRecord, ini
 	return r.execute(ctx, run, initialState.Clone(), []GraphTask{NewStaticGraphTask(run.EntryNodeID, 0)}, nil, nil)
 }
 
-func (r *GraphRunner) Resume(ctx context.Context, runID string, input *state.State) (RunRecord, *state.State, error) {
+func (r *GraphRunner) Resume(ctx context.Context, runID string, input *state.State) (result RunRecord, finalState *state.State, resultErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if err := r.validate(); err != nil {
 		return RunRecord{}, nil, err
 	}
-	if err := r.claimExecution(runID); err != nil {
-		return RunRecord{}, nil, err
-	}
-	defer r.releaseExecutionClaim(runID)
-
-	run, err := r.executionStore.GetRun(ctx, runID)
+	run, guard, acquired, err := r.ensureExecutionLease(ctx, runID)
 	if err != nil {
 		return RunRecord{}, nil, err
+	}
+	if acquired {
+		var heartbeat *leaseHeartbeat
+		ctx, heartbeat = r.startLeaseHeartbeat(ctx, guard)
+		defer func() {
+			leaseErr := r.finishExecutionLease(ctx, guard, heartbeat)
+			result, leaseErr = r.refreshRunAfterLease(ctx, result, leaseErr)
+			resultErr = errors.Join(resultErr, leaseErr)
+		}()
+	} else if guard.RunID != "" {
+		ctx = withExecutionLeaseGuard(ctx, guard)
 	}
 	if err := r.validateRunGraphHash(run); err != nil {
 		return RunRecord{}, nil, err
 	}
-	if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+	if err := validateRunExecutionOwner(ctx, run); err != nil {
+		return RunRecord{}, nil, err
+	}
+	if err := r.ensureRunEffectsResolved(ctx, run); err != nil {
 		return RunRecord{}, nil, err
 	}
 	if strings.TrimSpace(run.LastCheckpointID) == "" {
@@ -1409,7 +1354,7 @@ func (r *GraphRunner) Resume(ctx context.Context, runID string, input *state.Sta
 	}
 }
 
-func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID string, input *state.State) (RunRecord, *state.State, error) {
+func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID string, input *state.State) (result RunRecord, finalState *state.State, resultErr error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -1430,19 +1375,28 @@ func (r *GraphRunner) ResumeFromCheckpoint(ctx context.Context, checkpointID str
 	if strings.TrimSpace(checkpoint.Record.RunID) == "" {
 		return RunRecord{}, nil, fmt.Errorf("checkpoint %q has no run id", checkpointID)
 	}
-	if err := r.claimExecution(checkpoint.Record.RunID); err != nil {
-		return RunRecord{}, nil, err
-	}
-	defer r.releaseExecutionClaim(checkpoint.Record.RunID)
-
-	run, err := r.executionStore.GetRun(ctx, checkpoint.Record.RunID)
+	run, guard, acquired, err := r.ensureExecutionLease(ctx, checkpoint.Record.RunID)
 	if err != nil {
 		return RunRecord{}, nil, err
+	}
+	if acquired {
+		var heartbeat *leaseHeartbeat
+		ctx, heartbeat = r.startLeaseHeartbeat(ctx, guard)
+		defer func() {
+			leaseErr := r.finishExecutionLease(ctx, guard, heartbeat)
+			result, leaseErr = r.refreshRunAfterLease(ctx, result, leaseErr)
+			resultErr = errors.Join(resultErr, leaseErr)
+		}()
+	} else if guard.RunID != "" {
+		ctx = withExecutionLeaseGuard(ctx, guard)
 	}
 	if err := r.validateRunGraphHash(run); err != nil {
 		return RunRecord{}, nil, err
 	}
-	if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+	if err := validateRunExecutionOwner(ctx, run); err != nil {
+		return RunRecord{}, nil, err
+	}
+	if err := r.ensureRunEffectsResolved(ctx, run); err != nil {
 		return RunRecord{}, nil, err
 	}
 	if err := validateCheckpointRun(run, checkpoint); err != nil {
@@ -1514,7 +1468,7 @@ func isContinuableRunStatus(status RunStatus) bool {
 }
 
 func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *state.State, startTasks []GraphTask, skip *breakpointSkip, artifacts []state.ArtifactRef) (RunRecord, *state.State, error) {
-	if err := validateChildRunExecutionOwner(ctx, run); err != nil {
+	if err := validateRunExecutionOwner(ctx, run); err != nil {
 		return RunRecord{}, currentState, err
 	}
 	invokeCtx, cancelInvoke := context.WithCancel(ctx)
@@ -1934,7 +1888,7 @@ func (r *GraphRunner) Pause(ctx context.Context, runID string) error {
 	}
 	execution := r.activeExecution(runID)
 	if execution == nil {
-		if r.hasExecutionClaim(runID) {
+		if r.hasActiveExecution(runID) {
 			run, err = r.persistReservedControlRequest(ctx, runID, runnerControlPause)
 			if err != nil {
 				return err
@@ -1992,7 +1946,7 @@ func (r *GraphRunner) Cancel(ctx context.Context, runID string) error {
 	}
 	execution := r.activeExecution(runID)
 	if execution == nil {
-		if r.hasExecutionClaim(runID) {
+		if r.hasActiveExecution(runID) {
 			run, err = r.persistReservedControlRequest(ctx, runID, runnerControlCancel)
 			if err != nil {
 				return err
@@ -2031,7 +1985,7 @@ func (r *GraphRunner) DeleteRun(ctx context.Context, runID string) (RunRecord, e
 	if err := r.validateRunGraphHash(run); err != nil {
 		return RunRecord{}, err
 	}
-	if isActiveDeleteRunStatus(run.Status) || r.hasExecutionClaim(runID) {
+	if isActiveDeleteRunStatus(run.Status) || r.hasActiveExecution(runID) {
 		return RunRecord{}, fmt.Errorf("%w: run %q status %q must be stopped before deletion", ErrRunControlNotAllowed, runID, run.Status)
 	}
 	if r.runDeleter == nil {
@@ -2066,44 +2020,6 @@ func (r *GraphRunner) registerActiveExecution(runID string, execution *graphRunn
 		r.activeExecutions = map[string]*graphRunnerExecution{}
 	}
 	r.activeExecutions[runID] = execution
-}
-
-func (r *GraphRunner) reserveExecution(runID string) error {
-	if r == nil || strings.TrimSpace(runID) == "" {
-		return ErrRunControlNotAllowed
-	}
-	r.activeMu.Lock()
-	defer r.activeMu.Unlock()
-	if r.activeExecutions != nil && r.activeExecutions[runID] != nil {
-		return fmt.Errorf("%w: run %q already has an active execution", ErrRunControlNotAllowed, runID)
-	}
-	if r.executionClaims == nil {
-		r.executionClaims = map[string]struct{}{}
-	}
-	if _, exists := r.executionClaims[runID]; exists {
-		return fmt.Errorf("%w: run %q already has an execution reservation", ErrRunControlNotAllowed, runID)
-	}
-	r.executionClaims[runID] = struct{}{}
-	return nil
-}
-
-func (r *GraphRunner) claimExecution(runID string) error {
-	if r == nil || strings.TrimSpace(runID) == "" {
-		return ErrRunControlNotAllowed
-	}
-	r.activeMu.Lock()
-	defer r.activeMu.Unlock()
-	if r.activeExecutions != nil && r.activeExecutions[runID] != nil {
-		return fmt.Errorf("%w: run %q already has an active execution", ErrRunControlNotAllowed, runID)
-	}
-	if r.executionClaims == nil {
-		r.executionClaims = map[string]struct{}{}
-	}
-	if _, exists := r.executionClaims[runID]; exists {
-		return fmt.Errorf("%w: run %q is already being resumed", ErrRunControlNotAllowed, runID)
-	}
-	r.executionClaims[runID] = struct{}{}
-	return nil
 }
 
 func (r *GraphRunner) persistReservedControlRequest(ctx context.Context, runID string, kind runnerControlKind) (RunRecord, error) {
@@ -2156,15 +2072,6 @@ func (r *GraphRunner) persistReservedControlRequest(ctx context.Context, runID s
 	}
 }
 
-func (r *GraphRunner) releaseExecutionClaim(runID string) {
-	if r == nil {
-		return
-	}
-	r.activeMu.Lock()
-	defer r.activeMu.Unlock()
-	delete(r.executionClaims, runID)
-}
-
 func (r *GraphRunner) unregisterActiveExecution(runID string, execution *graphRunnerExecution) {
 	if r == nil || strings.TrimSpace(runID) == "" {
 		return
@@ -2189,21 +2096,17 @@ func (r *GraphRunner) activeExecution(runID string) *graphRunnerExecution {
 	return r.activeExecutions[runID]
 }
 
-func (r *GraphRunner) hasExecutionClaim(runID string) bool {
+func (r *GraphRunner) hasActiveExecution(runID string) bool {
 	if r == nil || strings.TrimSpace(runID) == "" {
 		return false
 	}
 	r.activeMu.Lock()
 	defer r.activeMu.Unlock()
-	if r.activeExecutions != nil && r.activeExecutions[runID] != nil {
-		return true
-	}
-	_, claimed := r.executionClaims[runID]
-	return claimed
+	return r.activeExecutions != nil && r.activeExecutions[runID] != nil
 }
 
 func (r *GraphRunner) IsRunActive(runID string) bool {
-	return r.hasExecutionClaim(runID)
+	return r.hasActiveExecution(runID)
 }
 
 func (r *GraphRunner) ActiveRunCount() int {
@@ -2227,10 +2130,18 @@ func (r *GraphRunner) MarkRunExecutionLost(ctx context.Context, runID string) (R
 	if run.Status != RunStatusPending && run.Status != RunStatusRunning {
 		return run, nil
 	}
-	if r.hasExecutionClaim(runID) {
+	if r.hasActiveExecution(runID) {
 		return run, fmt.Errorf("%w: run %q still has an active execution", ErrRunControlNotAllowed, runID)
 	}
-	return r.persistRunFailure(ctx, run, nil, "run_execution_lost", "run execution is no longer active in this server process")
+	control, err := NewRunControlService(r.executionStore, r.transactionStore, r.eventSink, nil)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	control, err = control.WithNow(r.currentTime)
+	if err != nil {
+		return RunRecord{}, err
+	}
+	return control.MarkRunExecutionLost(ctx, runID)
 }
 
 func isActiveDeleteRunStatus(status RunStatus) bool {
@@ -2457,15 +2368,14 @@ func (r *GraphRunner) loadRunForUpdate(ctx context.Context, expectedRun RunRecor
 	if err != nil {
 		return RunRecord{}, err
 	}
-	if err := validateChildRunExecutionOwner(ctx, latestRun); err != nil {
+	if err := validateRunExecutionOwner(ctx, latestRun); err != nil {
 		return latestRun, err
 	}
 	if latestRun.Deletion != nil {
 		return latestRun, fmt.Errorf("%w: run %q is reserved for deletion", ErrRunControlNotAllowed, latestRun.RunID)
 	}
-	if expectedRun.ExecutionClaimID != latestRun.ExecutionClaimID &&
-		(expectedRun.ExecutionClaimID != "" || latestRun.ExecutionClaimID != "") {
-		return latestRun, fmt.Errorf("%w: run %q execution claim changed", ErrRunControlNotAllowed, latestRun.RunID)
+	if !executionLeaseIdentitiesEqual(expectedRun.ExecutionLease, latestRun.ExecutionLease) {
+		return latestRun, fmt.Errorf("%w: run %q execution lease changed", ErrExecutionLeaseLost, latestRun.RunID)
 	}
 	latestRun.PauseRequested = latestRun.PauseRequested || expectedRun.PauseRequested
 	latestRun.CancelRequested = latestRun.CancelRequested || expectedRun.CancelRequested
@@ -2565,7 +2475,7 @@ func (r *GraphRunner) saveCheckpoint(ctx context.Context, run RunRecord, step St
 		if err != nil {
 			return "", run, err
 		}
-		if err := validateChildRunExecutionOwner(ctx, persistedRun); err != nil {
+		if err := validateRunExecutionOwner(ctx, persistedRun); err != nil {
 			return "", persistedRun, err
 		}
 		if err := validateNodeExecutionRun(run, persistedRun); err != nil {
@@ -2802,7 +2712,7 @@ func (r *GraphRunner) loadPauseRun(ctx context.Context, expectedRun RunRecord) (
 	if err != nil {
 		return RunRecord{}, err
 	}
-	if err := validateChildRunExecutionOwner(ctx, persistedRun); err != nil {
+	if err := validateRunExecutionOwner(ctx, persistedRun); err != nil {
 		return persistedRun, err
 	}
 	if err := validateNodeExecutionRun(expectedRun, persistedRun); err != nil {
@@ -3209,45 +3119,47 @@ func (r *GraphRunner) commitRuntime(ctx context.Context, commit Commit) (CommitR
 		return CommitResult{}, errors.New("runtime transaction store is nil")
 	}
 	commit = sanitizeCommit(ctx, commit)
-	guardedCommit, _, err := r.fenceChildExecutionCommit(ctx, commit)
+	guardedCommit, err := r.guardExecutionCommit(ctx, commit)
 	if err != nil {
 		return CommitResult{}, err
 	}
-	result, err := r.transactionStore.Commit(ctx, guardedCommit)
+	result, committed, err := commitAndResolve(ctx, r.transactionStore, guardedCommit)
 	if err != nil {
-		return CommitResult{}, err
+		return result, err
 	}
-	observeCommittedEvents(ctx, r.eventSink, r.transactionStore, guardedCommit.Events)
+	if len(committed.Artifacts) > 0 {
+		finalizeCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
+		if finalizeErr := r.artifactStore.Finalize(finalizeCtx, committed.TransactionID, committed.Artifacts); finalizeErr != nil {
+			logger.Error("artifact finalize pending reconciliation",
+				zap.String("transaction_id", committed.TransactionID),
+				zap.Int("artifact_count", len(committed.Artifacts)),
+				zap.Error(finalizeErr),
+			)
+		} else {
+			r.observeFinalizedArtifacts(finalizeCtx, committed.Artifacts)
+		}
+	}
+	observeCommittedEvents(ctx, r.eventSink, r.transactionStore, committed.Events)
 	return result, nil
 }
 
-func (r *GraphRunner) fenceChildExecutionCommit(ctx context.Context, commit Commit) (Commit, bool, error) {
-	ownerClaimID, _ := normalizeRunnerContext(ctx).Value(childRunExecutionOwnerKey{}).(string)
-	if strings.TrimSpace(ownerClaimID) == "" {
-		return commit, false, nil
+func (r *GraphRunner) guardExecutionCommit(ctx context.Context, commit Commit) (Commit, error) {
+	if commit.Run != nil && commit.Run.Mode == RunWriteCreate {
+		return commit, nil
 	}
 	runID, err := singleCommitRunID(commit)
 	if err != nil {
-		return Commit{}, false, err
+		return Commit{}, err
 	}
-	persistedRun, err := r.executionStore.GetRun(ctx, runID)
-	if err != nil {
-		return Commit{}, false, err
+	guard, guarded := executionLeaseGuardFromContext(ctx)
+	if guarded && guard.RunID != runID {
+		return Commit{}, fmt.Errorf("%w: execution lease guard for run %q cannot commit run %q", ErrExecutionLeaseLost, guard.RunID, runID)
 	}
-	if err := validateChildRunExecutionOwner(ctx, persistedRun); err != nil {
-		return Commit{}, false, err
+	if !guarded {
+		return commit, nil
 	}
-	if commit.Run == nil {
-		commit.Run = &RunWrite{Mode: RunWriteCheck, Run: persistedRun}
-		return commit, true, nil
-	}
-	if commit.Run.Mode != RunWriteUpdate && commit.Run.Mode != RunWriteCheck {
-		return Commit{}, false, fmt.Errorf("child execution commit for run %q must reference the existing run", runID)
-	}
-	if err := validateChildRunExecutionOwner(ctx, commit.Run.Run); err != nil {
-		return Commit{}, false, err
-	}
-	return commit, false, nil
+	commit.Lease = &guard
+	return commit, nil
 }
 
 func singleCommitRunID(commit Commit) (string, error) {
@@ -3262,7 +3174,7 @@ func singleCommitRunID(commit Commit) (string, error) {
 			return nil
 		}
 		if runID != candidate {
-			return fmt.Errorf("child execution commit spans runs %q and %q", runID, candidate)
+			return fmt.Errorf("runtime commit spans runs %q and %q", runID, candidate)
 		}
 		return nil
 	}
@@ -3286,8 +3198,13 @@ func singleCommitRunID(commit Commit) (string, error) {
 			return "", err
 		}
 	}
+	for _, stage := range commit.Artifacts {
+		if err := addRunID(stage.Ref.RunID); err != nil {
+			return "", err
+		}
+	}
 	if runID == "" {
-		return "", errors.New("child execution commit requires a run ID")
+		return "", errors.New("runtime commit requires a run ID")
 	}
 	return runID, nil
 }
@@ -3396,18 +3313,29 @@ func projectBusinessState(input *state.State) *state.State {
 	return state.FromMap(business)
 }
 
-func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
+func (r *GraphRunner) recordArtifact(ctx context.Context, transactionID string, artifact Artifact) (ArtifactStage, error) {
+	stage := ArtifactStage{TransactionID: transactionID}
 	if r == nil || r.artifactStore == nil {
-		return state.ArtifactRef{}, ErrArtifactRecorderUnavailable
+		return stage, ErrArtifactRecorderUnavailable
+	}
+	if err := validateRunnerStorageID("transaction ID", transactionID); err != nil {
+		return stage, err
 	}
 
 	metadata, _ := RunnerMetadataFromContext(ctx)
 	if strings.TrimSpace(metadata.RunID) != "" {
 		boundArtifact, err := bindArtifactRunnerMetadata(artifact, metadata)
 		if err != nil {
-			return state.ArtifactRef{}, err
+			return stage, err
 		}
 		artifact = boundArtifact
+	}
+	if operation, ok := core.EffectOperationFromContext(ctx); ok && strings.TrimSpace(operation.Key) != "" {
+		provided := strings.TrimSpace(artifact.OperationKey)
+		if provided != "" && provided != operation.Key {
+			return stage, fmt.Errorf("artifact operation key %q does not match execution operation %q", provided, operation.Key)
+		}
+		artifact.OperationKey = operation.Key
 	}
 	if artifact.CreatedAt.IsZero() {
 		artifact.CreatedAt = r.currentTime()
@@ -3415,26 +3343,43 @@ func (r *GraphRunner) recordArtifact(ctx context.Context, artifact Artifact) (st
 	if artifact.ID == "" {
 		artifact.ID = newRunnerID()
 	}
-
-	ref, err := r.artifactStore.Save(ctx, artifact)
-	if err != nil {
-		return state.ArtifactRef{}, err
-	}
-	fields := append(artifactLogFields(ref), zap.Int("bytes", len(artifact.Data)))
-	logger.Debug("artifact recorded", fields...)
 	if artifact.RunID != "" {
+		run, err := r.executionStore.GetRun(ctx, artifact.RunID)
+		if err != nil {
+			return stage, err
+		}
+		if err := validateRunExecutionOwner(ctx, run); err != nil {
+			return stage, err
+		}
+	}
+
+	stage, err := r.artifactStore.Stage(ctx, transactionID, artifact)
+	if err != nil {
+		return stage, err
+	}
+	fields := append(artifactLogFields(stage.Ref), zap.String("transaction_id", transactionID), zap.Int("bytes", len(artifact.Data)))
+	logger.Debug("artifact staged", fields...)
+	return stage, nil
+}
+
+func (r *GraphRunner) observeFinalizedArtifacts(ctx context.Context, stages []ArtifactStage) {
+	for _, stage := range stages {
+		ref := stage.Ref
+		if ref.RunID == "" || ref.ID == "" {
+			continue
+		}
 		r.publishBestEffortEvent(ctx, RunRecord{
-			RunID: artifact.RunID, ParentRunID: artifact.ParentRunID,
-			ParentStepID: artifact.ParentStepID, ParentTaskID: artifact.ParentTaskID, RootRunID: artifact.RootRunID,
-			RunPath: append([]string(nil), artifact.RunPath...), Namespace: artifact.Namespace,
-		}, artifact.StepID, artifact.NodeID, EventArtifactCreated, map[string]any{
-			"artifact_id": ref.ID,
-			"type":        ref.Type,
-			"mime_type":   ref.MIMEType,
-			"location":    ref.Location,
+			RunID: ref.RunID, ParentRunID: ref.ParentRunID,
+			ParentStepID: ref.ParentStepID, ParentTaskID: ref.ParentTaskID, RootRunID: ref.RootRunID,
+			RunPath: append([]string(nil), ref.RunPath...), Namespace: ref.Namespace,
+		}, ref.StepID, ref.NodeID, EventArtifactCreated, map[string]any{
+			"artifact_id":    ref.ID,
+			"transaction_id": stage.TransactionID,
+			"type":           ref.Type,
+			"mime_type":      ref.MIMEType,
+			"location":       ref.Location,
 		})
 	}
-	return ref, nil
 }
 
 func bindArtifactRunnerMetadata(artifact Artifact, metadata RunnerMetadata) (Artifact, error) {
@@ -3659,6 +3604,16 @@ func (r *GraphRunner) currentTime() time.Time {
 
 func newRunnerID() string {
 	return uuid.NewString()
+}
+
+func stableRuntimeID(kind string, parts ...string) string {
+	hash := sha256.New()
+	_, _ = hash.Write([]byte(strings.TrimSpace(kind)))
+	for _, part := range parts {
+		_, _ = hash.Write([]byte{0})
+		_, _ = hash.Write([]byte(strings.TrimSpace(part)))
+	}
+	return strings.TrimSpace(kind) + "-" + fmt.Sprintf("%x", hash.Sum(nil)[:16])
 }
 
 type breakpointSkip struct {

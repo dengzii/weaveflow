@@ -53,6 +53,7 @@ type ArtifactRef struct {
 	RunID        string    `json:"run_id,omitempty"`
 	StepID       string    `json:"step_id,omitempty"`
 	NodeID       string    `json:"node_id,omitempty"`
+	OperationKey string    `json:"operation_key,omitempty"`
 	ParentRunID  string    `json:"parent_run_id,omitempty"`
 	ParentStepID string    `json:"parent_step_id,omitempty"`
 	ParentTaskID string    `json:"parent_task_id,omitempty"`

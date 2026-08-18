@@ -69,7 +69,7 @@ func TestAnalyzeGraphRunnerAggregatesRunStats(t *testing.T) {
 	}, []byte(`{}`)); err != nil {
 		t.Fatalf("save checkpoint: %v", err)
 	}
-	if _, err := artifactStore.Save(ctx, fruntime.Artifact{
+	stage, err := artifactStore.Stage(ctx, "analysis-artifact-transaction", fruntime.Artifact{
 		ID:        "artifact-1",
 		RunID:     run.RunID,
 		StepID:    "step-1",
@@ -77,8 +77,12 @@ func TestAnalyzeGraphRunnerAggregatesRunStats(t *testing.T) {
 		Type:      "tool.output",
 		Data:      []byte("ok"),
 		CreatedAt: nodeFinishedAt,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("save artifact: %v", err)
+	}
+	if err := artifactStore.Finalize(ctx, stage.TransactionID, []fruntime.ArtifactStage{stage}); err != nil {
+		t.Fatalf("finalize artifact: %v", err)
 	}
 
 	publish := func(event fruntime.Event) {

@@ -1523,8 +1523,8 @@ func TestRunnerRejectsConcurrentResumeOfSameRun(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for resumed node")
 	}
-	if _, _, err := runner.Resume(context.Background(), pausedRun.RunID, nil); !errors.Is(err, fruntime.ErrRunControlNotAllowed) {
-		t.Fatalf("concurrent Resume() error = %v, want ErrRunControlNotAllowed", err)
+	if _, _, err := runner.Resume(context.Background(), pausedRun.RunID, nil); !errors.Is(err, fruntime.ErrExecutionLeaseHeld) {
+		t.Fatalf("concurrent Resume() error = %v, want ErrExecutionLeaseHeld", err)
 	}
 	close(release)
 	resumed := waitForRunnerResult(t, firstDone)
@@ -2056,6 +2056,10 @@ func (store failBarrierTransactionStore) Commit(ctx context.Context, commit frun
 		}
 	}
 	return store.inner.Commit(ctx, commit)
+}
+
+func (store failBarrierTransactionStore) ResolveCommit(ctx context.Context, transactionID string) (fruntime.CommitResult, error) {
+	return store.inner.ResolveCommit(ctx, transactionID)
 }
 
 func newFailureRouteUnevenJoin(t *testing.T, slowTailCalls, fallbackCalls *atomic.Int32) *Graph {

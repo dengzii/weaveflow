@@ -219,6 +219,13 @@ func redactPersistedValue(ctx context.Context, value any) any {
 
 func sanitizeStepRecord(ctx context.Context, step StepRecord) StepRecord {
 	step.ErrorMessage = redactSensitiveString(ctx, step.ErrorMessage)
+	if step.EffectResolution != nil {
+		resolution := *step.EffectResolution
+		resolution.Actor = redactSensitiveString(ctx, resolution.Actor)
+		resolution.Reason = redactSensitiveString(ctx, resolution.Reason)
+		resolution.Error = redactSensitiveString(ctx, resolution.Error)
+		step.EffectResolution = &resolution
+	}
 	return step
 }
 

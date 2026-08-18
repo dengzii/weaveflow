@@ -38,6 +38,7 @@ type Tool struct {
 	ExecutionMode ToolExecutionMode
 	Permissions   []string
 	Approval      ToolApprovalMode
+	Effect        EffectClass
 }
 
 func NewTool(function *llms.FunctionDefinition, handler ToolHandler) Tool {
@@ -156,6 +157,7 @@ type ToolExecutionEvent struct {
 	// CloneError reports observer fields omitted because they could not be
 	// safely deep-cloned. It never changes the tool's actual returned value.
 	CloneError error
+	Operation  EffectOperation
 }
 
 type ToolExecutionObserver func(context.Context, ToolExecutionEvent)
@@ -178,6 +180,9 @@ func ExecuteTool(ctx context.Context, tool Tool, call llms.ToolCall) (llms.ToolR
 	}
 	tool = cloneTool(tool)
 	call = normalizeToolCall(tool, cloneToolCall(call))
+	parentOperation, _ := EffectOperationFromContext(ctx)
+	operation := ChildEffectOperation(parentOperation, "tool", tool.Name(), call.ID+"\x00"+string(callArguments(call)), tool.Effect)
+	ctx = WithEffectOperation(ctx, operation)
 	startedAt := time.Now().UTC()
 	notifyToolObserver(ctx, ToolExecutionEvent{Stage: ToolExecutionRequested, Tool: tool, Call: call, StartedAt: startedAt})
 	if tool.Function == nil || strings.TrimSpace(tool.Function.Name) == "" {
@@ -207,19 +212,41 @@ func ExecuteTool(ctx context.Context, tool Tool, call llms.ToolCall) (llms.ToolR
 		return failToolExecution(ctx, tool, call, startedAt, ClassifyError(err), err.Error(), err)
 	}
 	defer release()
+	if err := recordEffect(executionCtx, operation); err != nil {
+		return failToolExecution(executionCtx, tool, call, startedAt, ErrorSideEffectFailed, "persist tool effect intent", err)
+	}
 	notifyToolObserver(executionCtx, ToolExecutionEvent{Stage: ToolExecutionStarted, Tool: tool, Call: call, Approval: approval, StartedAt: startedAt})
 	result, err := tool.Handler(executionCtx, call)
 	result = normalizeToolResult(call, result)
 	if err != nil {
 		finishedAt := time.Now().UTC()
-		notifyToolObserver(executionCtx, ToolExecutionEvent{Stage: ToolExecutionFailed, Tool: tool, Call: call, Result: result, Approval: approval, Err: err, StartedAt: startedAt, FinishedAt: finishedAt})
+		operation.Status = EffectFailed
+		if IsWriteEffect(operation.Class) {
+			operation.Status = EffectUnknown
+		}
+		operation.ProviderRequestID = strings.TrimSpace(result.ProviderRequestID)
+		operation.Error = err.Error()
+		if journalErr := recordEffect(context.WithoutCancel(executionCtx), operation); journalErr != nil {
+			err = NewExecutionError(ErrorSideEffectFailed, "persist tool effect outcome", errors.Join(err, journalErr), effectErrorDetails(operation))
+		} else if IsWriteEffect(operation.Class) || ClassifyError(err) == ErrorSideEffectFailed {
+			err = NewExecutionError(ErrorSideEffectFailed, err.Error(), err, effectErrorDetails(operation))
+		}
+		outcomeCtx := WithEffectOperation(executionCtx, operation)
+		notifyToolObserver(outcomeCtx, ToolExecutionEvent{Stage: ToolExecutionFailed, Tool: tool, Call: call, Result: result, Approval: approval, Err: err, StartedAt: startedAt, FinishedAt: finishedAt, Operation: operation})
 		return result, err
+	}
+	operation.Status = EffectSucceeded
+	operation.ProviderRequestID = strings.TrimSpace(result.ProviderRequestID)
+	if err := recordEffect(context.WithoutCancel(executionCtx), operation); err != nil {
+		operation.Status = EffectUnknown
+		outcomeCtx := WithEffectOperation(executionCtx, operation)
+		return failToolExecution(outcomeCtx, tool, call, startedAt, ErrorSideEffectFailed, "persist tool effect outcome", NewExecutionError(ErrorSideEffectFailed, "tool effect outcome is unknown", err, effectErrorDetails(operation)))
 	}
 	if err := validateToolResult(tool, result); err != nil {
 		return failToolExecution(executionCtx, tool, call, startedAt, ErrorNonRetryable, err.Error(), err)
 	}
 	finishedAt := time.Now().UTC()
-	notifyToolObserver(executionCtx, ToolExecutionEvent{Stage: ToolExecutionReturned, Tool: tool, Call: call, Result: result, Approval: approval, StartedAt: startedAt, FinishedAt: finishedAt})
+	notifyToolObserver(WithEffectOperation(executionCtx, operation), ToolExecutionEvent{Stage: ToolExecutionReturned, Tool: tool, Call: call, Result: result, Approval: approval, StartedAt: startedAt, FinishedAt: finishedAt, Operation: operation})
 	return result, nil
 }
 
@@ -384,6 +411,9 @@ func denyToolExecution(ctx context.Context, tool Tool, call llms.ToolCall, start
 func notifyToolObserver(ctx context.Context, event ToolExecutionEvent) {
 	observer, _ := ctx.Value(toolExecutionObserverKey{}).(ToolExecutionObserver)
 	if observer != nil {
+		if event.Operation.Key == "" {
+			event.Operation, _ = EffectOperationFromContext(ctx)
+		}
 		clonedTool, toolErr := cloneToolForObserver(event.Tool)
 		event.Tool = clonedTool
 		event.Call = cloneToolCall(event.Call)
@@ -397,6 +427,26 @@ func notifyToolObserver(ctx context.Context, event ToolExecutionEvent) {
 		}
 		event.CloneError = errors.Join(event.CloneError, toolErr, resultErr, errorCloneErr)
 		observer(ctx, event)
+	}
+}
+
+func recordEffect(ctx context.Context, operation EffectOperation) error {
+	if strings.TrimSpace(operation.Key) == "" {
+		return nil
+	}
+	journal := EffectJournalFromContext(ctx)
+	if journal == nil {
+		return nil
+	}
+	return journal.RecordEffect(ctx, operation)
+}
+
+func effectErrorDetails(operation EffectOperation) map[string]any {
+	return map[string]any{
+		"operation_key":   operation.Key,
+		"idempotency_key": operation.IdempotencyKey,
+		"effect_class":    operation.Class,
+		"effect_status":   operation.Status,
 	}
 }
 
