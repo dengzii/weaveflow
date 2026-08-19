@@ -17,7 +17,7 @@ import (
 
 const NodeType = "agent"
 
-const defaultPromptMaxChars = 1000000
+const defaultPromptMaxChars = 800_000
 
 var _ dsl.GraphNodeSpecProvider = (*Node)(nil)
 
@@ -34,9 +34,13 @@ type Config struct {
 type Node struct {
 	core.NodeBase
 	Config
-	TaskPath         state.Path
-	ConversationPath state.Path
-	ResultPath       state.Path
+	OutputSchema            state.JSONSchema
+	ResponseName            string
+	OutputJSON              bool
+	OutputJSONCompatibility bool
+	TaskPath                state.Path
+	ConversationPath        state.Path
+	ResultPath              state.Path
 }
 
 func NewNode(options ...core.NodeOption) *Node {
@@ -45,7 +49,8 @@ func NewNode(options ...core.NodeOption) *Node {
 			Name:        NodeType,
 			Description: "Run a self-contained ReAct loop with configurable prompt and tools.",
 		}),
-		Config: Config{Parallel: true},
+		Config:                  Config{Parallel: true},
+		OutputJSONCompatibility: true,
 	}
 	core.ApplyNodeOptions(&target.NodeBase, options)
 	target.ApplyDefaultStatePaths()
@@ -61,6 +66,9 @@ func (node *Node) Validate() error {
 	}
 	if node.TaskPath.Empty() || node.ConversationPath.Empty() || node.ResultPath.Empty() {
 		return fmt.Errorf("agent node %q requires task, conversation, and result paths", node.ID())
+	}
+	if err := state.ValidateJSONSchemaDefinition(node.OutputSchema); err != nil {
+		return fmt.Errorf("agent node %q output schema: %w", node.ID(), err)
 	}
 	return nil
 }
@@ -103,6 +111,14 @@ func (node *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 	if node.PromptMaxChars > 0 {
 		configMap["prompt_max_chars"] = node.PromptMaxChars
 	}
+	if len(node.OutputSchema) > 0 {
+		configMap["output_schema"] = node.OutputSchema.Clone()
+	}
+	if strings.TrimSpace(node.ResponseName) != "" {
+		configMap["response_name"] = node.ResponseName
+	}
+	configMap["output_json"] = node.OutputJSON
+	configMap["output_json_compatibility"] = node.OutputJSONCompatibility
 	return basenode.NewGraphNodeSpec(node.NodeBase, NodeType, configMap, map[string]state.Path{
 		"task": node.TaskPath, "conversation": node.ConversationPath, "result": node.ResultPath,
 	})
@@ -117,16 +133,41 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id": dsl.JSONSchema{"type": "string"},
-					"tool_ids": dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
+					"tool_ids": dsl.JSONSchema{"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"}},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",
 						"x-control": "textarea",
 					},
-					"max_iterations":   dsl.JSONSchema{"type": "integer", "minimum": 1},
-					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "minimum": 1},
-					"parallel":         dsl.JSONSchema{"type": "boolean"},
+					"max_iterations": dsl.JSONSchema{
+						"type": "integer", "title": "Max Agent Iterations", "minimum": 1, "default": 10,
+						"description": "Maximum model and tool loop iterations before the agent stops.",
+					},
+					"prompt_max_chars": dsl.JSONSchema{
+						"type": "integer", "title": "Prompt Character Limit", "minimum": 1,
+						"description": "Maximum character budget for conversation messages sent to the model; older messages are trimmed when exceeded.",
+					},
+					"parallel": dsl.JSONSchema{
+						"type": "boolean", "title": "Parallel Tool Calls",
+						"description": "Execute multiple tool calls from the same model response concurrently.",
+					},
+					"output_schema": dsl.JSONSchema{
+						"type": "object", "title": "Output Schema",
+						"description": "JSON Schema used to request and validate the final response. Setting it also enables JSON output.",
+					},
+					"response_name": dsl.JSONSchema{
+						"type": "string", "title": "Response Name",
+						"description": "Provider-facing name for the requested response format.",
+					},
+					"output_json": dsl.JSONSchema{
+						"type": "boolean", "title": "Require JSON Output",
+						"description": "Require the final answer to be a single JSON value even when no output schema is set.",
+					},
+					"output_json_compatibility": dsl.JSONSchema{
+						"type": "boolean", "title": "JSON Compatibility Mode",
+						"description": "Accept JSON embedded in Markdown fences or surrounding text instead of requiring the entire response to be one JSON value.",
+					},
 				},
 				"additionalProperties": false,
 			},
@@ -139,7 +180,15 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 				dsl.RelativeStateFieldRef{Path: conversationcap.FieldIterationCount, Mode: dsl.StateAccessReadWrite},
 				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMaxIterations, Mode: dsl.StateAccessReadWrite},
 			),
-			basenode.PrimitivePort("result", "Final answer produced by the agent.", "string", dsl.StateAccessWrite, true),
+			{
+				Name:          "result",
+				Description:   "Final answer produced by the agent.",
+				DefaultPath:   "shared.final.answer",
+				Required:      true,
+				Schema:        dsl.JSONSchema{"type": []string{"string", "object", "array", "number", "integer", "boolean", "null"}},
+				Mode:          dsl.StateAccessWrite,
+				MergeStrategy: dsl.StateMergeReplace,
+			},
 		},
 		Build: func(_ *registry.BuildContext, resolved registry.ResolvedNodeSpec) (core.Node, error) {
 			spec := resolved.Spec
@@ -165,8 +214,22 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 			target.ResultPath = resultPath
 			target.MaxIterations, _ = config.Int(spec.Config, "max_iterations")
 			target.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			target.OutputSchema, err = outputSchemaFromConfig(spec.Config)
+			if err != nil {
+				return nil, fmt.Errorf("agent node %q output schema: %w", spec.ID, err)
+			}
+			target.ResponseName = config.String(spec.Config, "response_name")
+			if outputJSON, ok := config.Bool(spec.Config, "output_json"); ok {
+				target.OutputJSON = outputJSON
+			}
+			if compatibility, ok := config.Bool(spec.Config, "output_json_compatibility"); ok {
+				target.OutputJSONCompatibility = compatibility
+			}
 			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
 				target.Parallel = parallel
+			}
+			if err := target.Validate(); err != nil {
+				return nil, err
 			}
 			return target, nil
 		},
@@ -202,7 +265,15 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	if err := node.RunLoop(ctx, conversation); err != nil {
 		return err
 	}
-	return state.Replace(access, state.NewRef[string](node.ResultPath), strings.TrimSpace(conversation.FinalAnswer()))
+	outputJSON := node.outputJSONEnabled()
+	answer, value, err := normalizeFinalOutput(conversation.FinalAnswer(), node.OutputSchema, outputJSON, node.OutputJSONCompatibility)
+	if err != nil {
+		return err
+	}
+	if !outputJSON {
+		return state.Replace(access, state.NewRef[string](node.ResultPath), answer)
+	}
+	return state.Replace(access, state.NewRef[any](node.ResultPath), value)
 }
 
 func (node *Node) SeedConversation(conversation *conversationcap.View, task string) error {
@@ -217,14 +288,47 @@ func (node *Node) Contract() state.Contract {
 	if node == nil {
 		return state.Contract{}
 	}
+	resultType := "string"
+	resultSchema := state.JSONSchema{"type": "string"}
+	if node.OutputJSON && len(node.OutputSchema) == 0 {
+		resultType = ""
+		resultSchema = state.JSONSchema{"type": []string{"string", "object", "array", "number", "integer", "boolean", "null"}}
+	} else if len(node.OutputSchema) > 0 {
+		resultType = node.OutputSchema.Type()
+		resultSchema = node.OutputSchema.Clone()
+	}
 	return state.NewContract(
 		state.FieldAccess{Path: node.TaskPath, Mode: state.AccessRead, Required: true, Merge: state.MergeReplace, Type: "string"},
 		state.FieldAccess{Path: node.ConversationPath.MustChild(conversationcap.FieldMessages), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "array"},
 		state.FieldAccess{Path: node.ConversationPath.MustChild(conversationcap.FieldFinalAnswer), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "string"},
 		state.FieldAccess{Path: node.ConversationPath.MustChild(conversationcap.FieldIterationCount), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "integer"},
 		state.FieldAccess{Path: node.ConversationPath.MustChild(conversationcap.FieldMaxIterations), Mode: state.AccessReadWrite, Merge: state.MergeReplace, Type: "integer"},
-		state.FieldAccess{Path: node.ResultPath, Mode: state.AccessWrite, Merge: state.MergeReplace, Type: "string"},
+		state.FieldAccess{Path: node.ResultPath, Mode: state.AccessWrite, Merge: state.MergeReplace, Type: resultType, Schema: resultSchema},
 	)
+}
+
+func (node *Node) outputJSONEnabled() bool {
+	return node != nil && (node.OutputJSON || len(node.OutputSchema) > 0)
+}
+
+func outputSchemaFromConfig(values map[string]any) (state.JSONSchema, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	raw, exists := values["output_schema"]
+	if !exists {
+		return nil, nil
+	}
+	switch schema := raw.(type) {
+	case state.JSONSchema:
+		return schema.Clone(), nil
+	case dsl.JSONSchema:
+		return state.JSONSchema(schema.Clone()), nil
+	case map[string]any:
+		return state.JSONSchema(schema).Clone(), nil
+	default:
+		return nil, fmt.Errorf("must be an object, got %T", raw)
+	}
 }
 
 type toolArtifact struct {
@@ -233,34 +337,46 @@ type toolArtifact struct {
 }
 
 type promptArtifact struct {
-	AgentNodeID      string                    `json:"agent_node_id,omitempty"`
-	AgentToolName    string                    `json:"agent_tool_name,omitempty"`
-	ConversationPath string                    `json:"conversation_path,omitempty"`
-	Iteration        int                       `json:"agent_iteration"`
-	MaxIterations    int                       `json:"max_iterations,omitempty"`
-	Messages         []conversationcap.Message `json:"messages,omitempty"`
-	Tools            []toolArtifact            `json:"tools,omitempty"`
+	AgentNodeID             string                    `json:"agent_node_id,omitempty"`
+	AgentToolName           string                    `json:"agent_tool_name,omitempty"`
+	ConversationPath        string                    `json:"conversation_path,omitempty"`
+	Iteration               int                       `json:"agent_iteration"`
+	MaxIterations           int                       `json:"max_iterations,omitempty"`
+	Messages                []conversationcap.Message `json:"messages,omitempty"`
+	Tools                   []toolArtifact            `json:"tools,omitempty"`
+	ResponseName            string                    `json:"response_name,omitempty"`
+	OutputSchema            state.JSONSchema          `json:"output_schema,omitempty"`
+	OutputJSON              bool                      `json:"output_json"`
+	OutputJSONCompatibility bool                      `json:"output_json_compatibility"`
 }
 
 type responseArtifact struct {
-	AgentNodeID   string                               `json:"agent_node_id,omitempty"`
-	AgentToolName string                               `json:"agent_tool_name,omitempty"`
-	Iteration     int                                  `json:"agent_iteration"`
-	Choices       []basenode.LLMResponseArtifactChoice `json:"choices,omitempty"`
+	AgentNodeID             string                               `json:"agent_node_id,omitempty"`
+	AgentToolName           string                               `json:"agent_tool_name,omitempty"`
+	Iteration               int                                  `json:"agent_iteration"`
+	Choices                 []basenode.LLMResponseArtifactChoice `json:"choices,omitempty"`
+	ResponseName            string                               `json:"response_name,omitempty"`
+	OutputSchema            state.JSONSchema                     `json:"output_schema,omitempty"`
+	OutputJSON              bool                                 `json:"output_json"`
+	OutputJSONCompatibility bool                                 `json:"output_json_compatibility"`
 }
 
-func buildPromptArtifact(identity executionIdentity, messages []llms.MessageContent, tools []llms.ToolDefinition, iteration, maxIterations int) (promptArtifact, error) {
+func buildPromptArtifact(identity executionIdentity, messages []llms.MessageContent, tools []llms.ToolDefinition, iteration, maxIterations int, responseName string, outputSchema state.JSONSchema, outputJSON, outputJSONCompatibility bool) (promptArtifact, error) {
 	serialized, err := conversationcap.SerializeMessages(messages)
 	if err != nil {
 		return promptArtifact{}, err
 	}
 	payload := promptArtifact{
-		AgentNodeID:      identity.NodeID,
-		AgentToolName:    identity.ToolName,
-		ConversationPath: identity.ConversationPath,
-		Iteration:        iteration,
-		MaxIterations:    maxIterations,
-		Messages:         serialized,
+		AgentNodeID:             identity.NodeID,
+		AgentToolName:           identity.ToolName,
+		ConversationPath:        identity.ConversationPath,
+		Iteration:               iteration,
+		MaxIterations:           maxIterations,
+		Messages:                serialized,
+		ResponseName:            strings.TrimSpace(responseName),
+		OutputSchema:            outputSchema.Clone(),
+		OutputJSON:              outputJSON,
+		OutputJSONCompatibility: outputJSONCompatibility,
 	}
 	if len(tools) > 0 {
 		payload.Tools = make([]toolArtifact, 0, len(tools))
@@ -271,15 +387,19 @@ func buildPromptArtifact(identity executionIdentity, messages []llms.MessageCont
 	return payload, nil
 }
 
-func buildResponseArtifact(identity executionIdentity, response *llms.ModelResponse, iteration int) responseArtifact {
+func buildResponseArtifact(identity executionIdentity, response *llms.ModelResponse, iteration int, responseName string, outputSchema state.JSONSchema, outputJSON, outputJSONCompatibility bool) responseArtifact {
 	if response == nil {
 		return responseArtifact{}
 	}
 	inner := basenode.BuildLLMResponseArtifact(response)
 	return responseArtifact{
-		AgentNodeID:   identity.NodeID,
-		AgentToolName: identity.ToolName,
-		Iteration:     iteration,
-		Choices:       inner.Choices,
+		AgentNodeID:             identity.NodeID,
+		AgentToolName:           identity.ToolName,
+		Iteration:               iteration,
+		Choices:                 inner.Choices,
+		ResponseName:            strings.TrimSpace(responseName),
+		OutputSchema:            outputSchema.Clone(),
+		OutputJSON:              outputJSON,
+		OutputJSONCompatibility: outputJSONCompatibility,
 	}
 }

@@ -13,6 +13,7 @@ type ErrorClass string
 const (
 	ErrorUnknown           ErrorClass = "unknown"
 	ErrorInvalidInput      ErrorClass = "invalid_input"
+	ErrorInvalidOutput     ErrorClass = "invalid_output"
 	ErrorTimeout           ErrorClass = "timeout"
 	ErrorCanceled          ErrorClass = "canceled"
 	ErrorRateLimited       ErrorClass = "rate_limited"

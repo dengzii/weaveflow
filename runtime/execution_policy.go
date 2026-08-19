@@ -82,6 +82,7 @@ func DefaultGraphExecutionPolicy() GraphExecutionPolicy {
 				},
 				NonRetryableErrorClasses: []core.ErrorClass{
 					core.ErrorInvalidInput,
+					core.ErrorInvalidOutput,
 					core.ErrorCanceled,
 					core.ErrorPermissionDenied,
 					core.ErrorResourceExhausted,

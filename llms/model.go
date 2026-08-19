@@ -40,29 +40,31 @@ const (
 )
 
 type ModelRequest struct {
-	CallID           string             `json:"call_id,omitempty"`
-	ModelID          string             `json:"model_id,omitempty"`
-	Model            string             `json:"model,omitempty"`
-	Mode             ModelMode          `json:"mode,omitempty"`
-	Prompt           string             `json:"prompt,omitempty"`
-	Messages         []MessageContent   `json:"-"`
-	Tools            []ToolDefinition   `json:"tools,omitempty"`
-	ToolChoice       any                `json:"tool_choice,omitempty"`
-	MaxTokens        int                `json:"max_tokens,omitempty"`
-	Temperature      *float64           `json:"temperature,omitempty"`
-	TopP             *float64           `json:"top_p,omitempty"`
-	CandidateCount   int                `json:"candidate_count,omitempty"`
-	StopWords        []string           `json:"stop_words,omitempty"`
-	Seed             *int               `json:"seed,omitempty"`
-	FrequencyPenalty *float64           `json:"frequency_penalty,omitempty"`
-	PresencePenalty  *float64           `json:"presence_penalty,omitempty"`
-	Thinking         ThinkingMode       `json:"thinking,omitempty"`
-	ResponseName     string             `json:"response_name,omitempty"`
-	ResponseSchema   state.JSONSchema   `json:"response_schema,omitempty"`
-	StrictResponse   bool               `json:"strict_response,omitempty"`
-	Metadata         map[string]any     `json:"metadata,omitempty"`
-	ProviderOptions  map[string]any     `json:"provider_options,omitempty"`
-	Stream           ModelStreamHandler `json:"-"`
+	CallID                    string             `json:"call_id,omitempty"`
+	ModelID                   string             `json:"model_id,omitempty"`
+	Model                     string             `json:"model,omitempty"`
+	Mode                      ModelMode          `json:"mode,omitempty"`
+	Prompt                    string             `json:"prompt,omitempty"`
+	Messages                  []MessageContent   `json:"-"`
+	Tools                     []ToolDefinition   `json:"tools,omitempty"`
+	ToolChoice                any                `json:"tool_choice,omitempty"`
+	MaxTokens                 int                `json:"max_tokens,omitempty"`
+	Temperature               *float64           `json:"temperature,omitempty"`
+	TopP                      *float64           `json:"top_p,omitempty"`
+	CandidateCount            int                `json:"candidate_count,omitempty"`
+	StopWords                 []string           `json:"stop_words,omitempty"`
+	Seed                      *int               `json:"seed,omitempty"`
+	FrequencyPenalty          *float64           `json:"frequency_penalty,omitempty"`
+	PresencePenalty           *float64           `json:"presence_penalty,omitempty"`
+	Thinking                  ThinkingMode       `json:"thinking,omitempty"`
+	ResponseName              string             `json:"response_name,omitempty"`
+	ResponseSchema            state.JSONSchema   `json:"response_schema,omitempty"`
+	StrictResponse            bool               `json:"strict_response,omitempty"`
+	ResponseJSON              bool               `json:"response_json,omitempty"`
+	ResponseJSONCompatibility bool               `json:"response_json_compatibility,omitempty"`
+	Metadata                  map[string]any     `json:"metadata,omitempty"`
+	ProviderOptions           map[string]any     `json:"provider_options,omitempty"`
+	Stream                    ModelStreamHandler `json:"-"`
 }
 
 type ModelResponse struct {
