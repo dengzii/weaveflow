@@ -40,6 +40,8 @@ export interface ParsedGraphImport {
   contents: GraphExportContent[];
 }
 
+export type GraphImportModelCredentials = Record<string, string>;
+
 export function buildGraphExportBundle({
   definition,
   graphID,
@@ -199,6 +201,53 @@ function parseGraphEnvelope(
           stringValue(envelope.graph_id) || stringValue(definition.name)
         ),
     contents,
+  };
+}
+
+export function importedModelIDsRequiringCredentials(
+  settings: RuntimeSettings | undefined,
+  reusableSettings: RuntimeSettings | null | undefined
+): string[] {
+  return (settings?.models ?? [])
+    .filter((model) => model.enabled && !reusableModelCredential(model, reusableSettings))
+    .map((model) => model.id);
+}
+
+export function prepareImportedRuntimeSettings(
+  settings: RuntimeSettings,
+  reusableSettings: RuntimeSettings | null | undefined,
+  credentials: GraphImportModelCredentials
+): RuntimeSettings {
+  return {
+    ...settings,
+    models: settings.models.map((model) => {
+      if (!model.enabled) return model;
+      const credentialValue = credentials[model.id]?.trim() ?? "";
+      if (credentialValue) {
+        return {
+          ...model,
+          credential_configured: true,
+          credential_value: credentialValue,
+          credential_clear: undefined,
+        };
+      }
+      const reusableCredential = reusableModelCredential(model, reusableSettings);
+      if (reusableCredential) {
+        return {
+          ...model,
+          credential_configured: true,
+          credential_value: reusableCredential.credential_value?.trim() || undefined,
+          credential_clear: undefined,
+        };
+      }
+      return {
+        ...model,
+        enabled: false,
+        credential_configured: false,
+        credential_value: undefined,
+        credential_clear: undefined,
+      };
+    }),
   };
 }
 
@@ -606,6 +655,25 @@ function isSensitiveSettingName(value: string): boolean {
 
 function stringValue(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
+}
+
+function reusableModelCredential(
+  model: RuntimeSettings["models"][number],
+  reusableSettings: RuntimeSettings | null | undefined
+): RuntimeSettings["models"][number] | undefined {
+  const modelID = model.id.trim();
+  const provider = model.provider.trim().toLowerCase();
+  const baseURL = normalizedModelBaseURL(model.base_url);
+  return (reusableSettings?.models ?? []).find((candidate) => (
+    candidate.credential_configured
+    && candidate.id.trim() === modelID
+    && candidate.provider.trim().toLowerCase() === provider
+    && normalizedModelBaseURL(candidate.base_url) === baseURL
+  ));
+}
+
+function normalizedModelBaseURL(value: string | undefined): string {
+  return (value ?? "").trim().replace(/\/+$/, "");
 }
 
 function assertKnownFields(value: Record<string, unknown>, allowed: readonly string[], label: string) {
