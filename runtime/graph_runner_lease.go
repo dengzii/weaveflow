@@ -118,7 +118,15 @@ func (r *GraphRunner) heartbeatExecutionLease(ctx context.Context, guard Executi
 			}
 			continue
 		}
-		return err
+		if err != nil {
+			return err
+		}
+		if execution := r.activeExecution(guard.RunID); execution != nil {
+			if err := execution.heartbeatNodeTaskLeases(context.WithoutCancel(ctx), now, r.executionLeaseTTL()); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
 }
 

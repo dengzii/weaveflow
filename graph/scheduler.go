@@ -32,6 +32,7 @@ type scheduledRunnable struct {
 	observeNode   func(context.Context, NodeEvent, string, *state.State, error, time.Duration)
 	recordFailure func(context.Context, fruntime.GraphTask, error, []fruntime.GraphTask) error
 	recordTaskErr func(fruntime.GraphTask, error)
+	recordAttempt func(context.Context, fruntime.GraphTask, core.ExecutionResult, error, bool) error
 	joinNodes     map[string]struct{}
 	reachability  map[string]map[string]bool
 }
@@ -523,15 +524,25 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 					"attempt":           attempt,
 					"attempt_abandoned": true,
 				})
+				if err := runnable.recordTaskAttempt(ctx, task, lastResult, lastErr, false); err != nil {
+					return lastResult, err
+				}
 				return lastResult, lastErr
 			}
 		}
 		if lastErr == nil {
+			if err := runnable.recordTaskAttempt(ctx, task, lastResult, nil, false); err != nil {
+				return lastResult, err
+			}
 			return lastResult, nil
 		}
 		var nodeInterrupt *core.NodeInterrupt
 		var graphInterrupt *fruntime.GraphInterrupt
-		if errors.As(lastErr, &nodeInterrupt) || errors.As(lastErr, &graphInterrupt) || !retryable(policy.Retry, lastErr, operation) || attempt == policy.Retry.MaxAttempts {
+		willRetry := !errors.As(lastErr, &nodeInterrupt) && !errors.As(lastErr, &graphInterrupt) && retryable(policy.Retry, lastErr, operation) && attempt < policy.Retry.MaxAttempts
+		if err := runnable.recordTaskAttempt(ctx, task, lastResult, lastErr, willRetry); err != nil {
+			return lastResult, err
+		}
+		if !willRetry {
 			return lastResult, lastErr
 		}
 		delay := retryDelay(policy.Retry, attempt)
@@ -560,6 +571,13 @@ func (runnable *scheduledRunnable) executeTaskWithRetry(ctx context.Context, con
 		}
 	}
 	return lastResult, lastErr
+}
+
+func (runnable *scheduledRunnable) recordTaskAttempt(ctx context.Context, task fruntime.GraphTask, result core.ExecutionResult, attemptErr error, retry bool) error {
+	if runnable.recordAttempt == nil {
+		return nil
+	}
+	return runnable.recordAttempt(ctx, task, result, attemptErr, retry)
 }
 
 type attemptResult struct {

@@ -2,15 +2,18 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	wfgraph "github.com/dengzii/weaveflow/graph"
-	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
+	workerpkg "github.com/dengzii/weaveflow/internal/worker"
 	"github.com/dengzii/weaveflow/runtime"
+	"github.com/google/uuid"
 )
 
 type graphRuntimeSession struct {
@@ -34,6 +37,8 @@ type graphRuntimeManager struct {
 	triggerSessions map[string]graphRuntimeSession
 	sessions        map[graphRuntimeSessionKey]graphRuntimeSession
 	stores          map[string]graphRuntimeStore
+	workers         map[string]context.CancelFunc
+	workerDone      map[string]<-chan struct{}
 }
 
 func newGraphRuntimeManager(
@@ -57,12 +62,116 @@ func newGraphRuntimeManager(
 		triggerSessions: make(map[string]graphRuntimeSession),
 		sessions:        make(map[graphRuntimeSessionKey]graphRuntimeSession),
 		stores:          make(map[string]graphRuntimeStore),
+		workers:         make(map[string]context.CancelFunc),
+		workerDone:      make(map[string]<-chan struct{}),
 	}
 	if runner != nil {
 		manager.triggerSessions[effectiveRunnerGraphID(runner)] = manager.current
 		manager.rememberSessionLocked(manager.current)
 	}
 	return manager
+}
+
+func (manager *graphRuntimeManager) taskQueue(graphID string) runtime.AtomicTaskQueue {
+	if manager == nil {
+		return nil
+	}
+	manager.mu.RLock()
+	defer manager.mu.RUnlock()
+	stored := manager.stores[strings.TrimSpace(graphID)]
+	provider, ok := stored.store.(interface{ TaskQueue() runtime.TaskQueue })
+	if !ok {
+		return nil
+	}
+	queue, _ := provider.TaskQueue().(runtime.AtomicTaskQueue)
+	return queue
+}
+
+func (manager *graphRuntimeManager) ensureWorker(graphID string) error {
+	graphID = strings.TrimSpace(graphID)
+	manager.mu.Lock()
+	if _, exists := manager.workers[graphID]; exists {
+		manager.mu.Unlock()
+		return nil
+	}
+	stored := manager.stores[graphID]
+	provider, ok := stored.store.(interface{ TaskQueue() runtime.TaskQueue })
+	if !ok {
+		manager.mu.Unlock()
+		return nil
+	}
+	queue, ok := provider.TaskQueue().(runtime.AtomicTaskQueue)
+	if !ok {
+		manager.mu.Unlock()
+		return errors.New("runtime store task queue is not atomic")
+	}
+	baseContext := manager.defaultContext
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+	workerContext, cancel := context.WithCancel(baseContext)
+	durableWorker, err := workerpkg.New(queue, graphRunTaskHandler{manager: manager}, workerpkg.Config{
+		Identity: runtime.WorkerIdentity{ID: "server-" + uuid.NewString()}, Kinds: []string{runtime.TaskKindGraphRun},
+		LeaseTTL: 30 * time.Second, HeartbeatInterval: 10 * time.Second, PollInterval: 250 * time.Millisecond,
+	})
+	if err != nil {
+		cancel()
+		manager.mu.Unlock()
+		return err
+	}
+	done := make(chan struct{})
+	manager.workers[graphID] = cancel
+	manager.workerDone[graphID] = done
+	manager.mu.Unlock()
+	go func() {
+		defer close(done)
+		_ = durableWorker.Run(workerContext)
+	}()
+	return nil
+}
+
+type graphRunTaskHandler struct {
+	manager *graphRuntimeManager
+}
+
+func (handler graphRunTaskHandler) HandleTask(ctx context.Context, task runtime.Task) (runtime.TaskResult, error) {
+	session := handler.manager.session(task.GraphID, task.GraphSessionID)
+	if session.runner == nil {
+		return runtime.TaskResult{}, fmt.Errorf("graph session %q for task %q is not loaded", task.GraphSessionID, task.ID)
+	}
+	run, err := session.runner.GetRun(ctx, task.RunID)
+	if err != nil {
+		return runtime.TaskResult{}, err
+	}
+	if !isTerminalRuntimeStatus(run.Status) {
+		runContext, cancel := deriveRunContextFromBase(ctx, session.baseContext)
+		defer cancel()
+		resumed, _, resumeErr := session.runner.Resume(runContext, task.RunID, nil)
+		if resumed.RunID != "" {
+			run = resumed
+		}
+		if resumeErr != nil && !isTerminalRuntimeStatus(run.Status) {
+			return runtime.TaskResult{}, resumeErr
+		}
+	}
+	payload, err := json.Marshal(map[string]any{"run_id": run.RunID, "status": run.Status})
+	if err != nil {
+		return runtime.TaskResult{}, err
+	}
+	return runtime.TaskResult{Payload: payload}, nil
+}
+
+func (handler graphRunTaskHandler) RetryTask(err error) bool {
+	return errors.Is(err, runtime.ErrExecutionLeaseHeld) || errors.Is(err, runtime.ErrRunRevisionConflict)
+}
+
+func isTerminalRuntimeStatus(status runtime.RunStatus) bool {
+	switch status {
+	case runtime.RunStatusCompleted, runtime.RunStatusFailed, runtime.RunStatusCanceled:
+		return true
+	default:
+		return false
+	}
 }
 
 func (manager *graphRuntimeManager) newRunner(
@@ -85,7 +194,7 @@ func (manager *graphRuntimeManager) defaultStore(
 	graphID string,
 	baseDir string,
 	cfg Config,
-) (*filestore.Store, error) {
+) (defaultRuntimeStore, error) {
 	if !needsDefaultRuntimeStore(cfg) {
 		return nil, nil
 	}
@@ -321,6 +430,24 @@ func (manager *graphRuntimeManager) Close() error {
 		return nil
 	}
 	manager.mu.Lock()
+	workerCancels := make([]context.CancelFunc, 0, len(manager.workers))
+	workerDone := make([]<-chan struct{}, 0, len(manager.workerDone))
+	for _, cancel := range manager.workers {
+		workerCancels = append(workerCancels, cancel)
+	}
+	for _, done := range manager.workerDone {
+		workerDone = append(workerDone, done)
+	}
+	manager.workers = make(map[string]context.CancelFunc)
+	manager.workerDone = make(map[string]<-chan struct{})
+	manager.mu.Unlock()
+	for _, cancel := range workerCancels {
+		cancel()
+	}
+	for _, done := range workerDone {
+		<-done
+	}
+	manager.mu.Lock()
 	runners := make(map[*runtime.GraphRunner]struct{}, len(manager.sessions)+len(manager.triggerSessions)+1)
 	if manager.current.runner != nil {
 		runners[manager.current.runner] = struct{}{}
@@ -341,7 +468,7 @@ func (manager *graphRuntimeManager) Close() error {
 			return fmt.Errorf("cannot close graph runtime manager with %d active executions", active)
 		}
 	}
-	stores := make([]*filestore.Store, 0, len(manager.stores))
+	stores := make([]defaultRuntimeStore, 0, len(manager.stores))
 	for _, runtimeStore := range manager.stores {
 		if runtimeStore.store != nil {
 			stores = append(stores, runtimeStore.store)

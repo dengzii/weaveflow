@@ -129,6 +129,9 @@ func (g *Graph) compileForRunner(execution fruntime.RunnerExecution) (fruntime.R
 	if recorder, ok := execution.(fruntime.TaskErrorRecorder); ok {
 		scheduled.recordTaskErr = recorder.OnTaskError
 	}
+	if recorder, ok := execution.(fruntime.TaskAttemptRecorder); ok {
+		scheduled.recordAttempt = recorder.OnTaskAttempt
+	}
 	return scheduled, nil
 }
 

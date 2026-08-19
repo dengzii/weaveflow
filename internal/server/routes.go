@@ -25,6 +25,7 @@ func (s *Server) registerGraphRoutes(group *gin.RouterGroup) {
 	group.DELETE("/graphs/:graph_id", s.handleDeleteGraph)
 	group.GET("/graphs/:graph_id/retention-audit", s.handleGetRetentionAudit)
 	group.POST("/graphs/:graph_id/sessions", s.handleCreateGraphSession)
+	group.GET("/graphs/:graph_id/sessions/:session_id", s.handleGetGraphSessionDetail)
 	group.POST("/graphs/:graph_id/analysis/initial-state-requirements", s.handleAnalyzeGraphInitialStateRequirements)
 }
 

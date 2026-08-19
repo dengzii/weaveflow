@@ -17,7 +17,6 @@ import (
 
 	"github.com/dengzii/weaveflow/dsl"
 	wfgraph "github.com/dengzii/weaveflow/graph"
-	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
@@ -978,11 +977,14 @@ func (s *Server) resumableRunSessionIDs(graphID string) (map[string]struct{}, er
 		}
 	}
 	for _, storeDir := range storeDirs {
-		reader, openErr := filestore.OpenReader(storeDir)
+		reader, openErr := openCachedRuntimeReader(storeDir)
 		if openErr != nil {
 			return nil, fmt.Errorf("open runtime store %q: %w", storeDir, openErr)
 		}
-		runs, listErr := reader.ExecutionReader().ListRuns(context.Background(), runtime.RunFilter{Statuses: []runtime.RunStatus{
+		if reader == nil {
+			continue
+		}
+		runs, listErr := reader.ListRuns(context.Background(), runtime.RunFilter{Statuses: []runtime.RunStatus{
 			runtime.RunStatusPending,
 			runtime.RunStatusRunning,
 			runtime.RunStatusPaused,

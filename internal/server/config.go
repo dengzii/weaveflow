@@ -17,6 +17,7 @@ import (
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
 	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
+	sqlitestore "github.com/dengzii/weaveflow/internal/runtimestore/sqlite"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
@@ -29,10 +30,11 @@ type Config struct {
 	Graph    *wfgraph.Graph
 	Registry *wfregistry.Registry
 
-	BaseDir         string
-	SecretDirectory string
-	SecretResolver  SecretResolver
-	ManagementToken string
+	BaseDir             string
+	RuntimeStoreBackend string
+	SecretDirectory     string
+	SecretResolver      SecretResolver
+	ManagementToken     string
 
 	RuntimeContextDecorators []RuntimeContextDecorator
 
@@ -76,7 +78,25 @@ type Server struct {
 
 type graphRuntimeStore struct {
 	baseDir string
-	store   *filestore.Store
+	store   defaultRuntimeStore
+}
+
+const (
+	RuntimeStoreFile   = "file"
+	RuntimeStoreSQLite = "sqlite"
+)
+
+type defaultRuntimeStore interface {
+	Close() error
+	ExecutionStore() runtime.ExecutionStore
+	CheckpointStore() runtime.CheckpointStore
+	ArtifactStore() runtime.ArtifactStore
+	EventSink() runtime.EventSink
+	TransactionStore() runtime.TransactionStore
+	ExecutionDeletionStore() runtime.RunDeletionExecutionStore
+	CheckpointDeleter() runtime.RunDeleter
+	EventDeleter() runtime.RunDeleter
+	ArtifactDeleter() runtime.RunDeleter
 }
 
 func NewServer(ctx context.Context, cfg Config) (*Server, error) {
@@ -186,7 +206,30 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		_ = srv.Close()
 		return nil, err
 	}
+	if err := srv.startDurableWorkers(ctx); err != nil {
+		_ = srv.Close()
+		return nil, err
+	}
 	return srv, nil
+}
+
+func (s *Server) startDurableWorkers(ctx context.Context) error {
+	if s == nil || strings.TrimSpace(s.cfg.RuntimeStoreBackend) != RuntimeStoreSQLite {
+		return nil
+	}
+	graphs, err := s.listCachedGraphs()
+	if err != nil {
+		return err
+	}
+	for _, graph := range graphs {
+		if _, err := s.loadTriggerSession(graph.ID); err != nil {
+			return fmt.Errorf("load graph %q for durable worker: %w", graph.ID, err)
+		}
+		if err := s.runtime.ensureWorker(graph.ID); err != nil {
+			return fmt.Errorf("start durable worker for graph %q: %w", graph.ID, err)
+		}
+	}
+	return nil
 }
 
 func applyRuntimeContextDecorators(ctx context.Context, decorators []RuntimeContextDecorator) context.Context {
@@ -226,11 +269,18 @@ func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *Eve
 	return runner, err
 }
 
-func openDefaultRuntimeStore(cfg Config, baseDir string) (*filestore.Store, error) {
+func openDefaultRuntimeStore(cfg Config, baseDir string) (defaultRuntimeStore, error) {
 	if !needsDefaultRuntimeStore(cfg) {
 		return nil, nil
 	}
-	return filestore.Open(baseDir)
+	switch strings.TrimSpace(cfg.RuntimeStoreBackend) {
+	case "", RuntimeStoreFile:
+		return filestore.Open(baseDir)
+	case RuntimeStoreSQLite:
+		return sqlitestore.Open(filepath.Join(baseDir, "runtime.db"))
+	default:
+		return nil, fmt.Errorf("unsupported runtime store backend %q", cfg.RuntimeStoreBackend)
+	}
 }
 
 func needsDefaultRuntimeStore(cfg Config) bool {
@@ -242,7 +292,7 @@ func newRunnerWithStore(
 	cfg Config,
 	baseDir string,
 	hub *EventHub,
-	defaultStore *filestore.Store,
+	defaultStore defaultRuntimeStore,
 	closeDefaultStore bool,
 ) (*runtime.GraphRunner, error) {
 	usesDefaultRunStores := cfg.ExecutionStore == nil &&
@@ -311,6 +361,9 @@ func newRunnerWithStore(
 	}
 	if transactionStore != nil {
 		options = append(options, runtime.WithRuntimeTransactionStore(transactionStore))
+	}
+	if provider, ok := defaultStore.(interface{ TaskQueue() runtime.TaskQueue }); ok {
+		options = append(options, runtime.WithTaskQueue(provider.TaskQueue()))
 	}
 	if closeDefaultStore && defaultStore != nil {
 		options = append(options, runtime.WithStoreCloser(defaultStore))
