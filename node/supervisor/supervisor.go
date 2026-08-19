@@ -179,8 +179,14 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 							"additionalProperties": false,
 						},
 					},
-					"max_turns":      dsl.JSONSchema{"type": "integer", "title": "Max Delegations", "minimum": 1, "default": defaultSupervisorMaxTurns},
-					"route_attempts": dsl.JSONSchema{"type": "integer", "title": "Route Attempts", "minimum": 1, "maximum": 5, "default": defaultSupervisorRouteAttempts},
+					"max_turns": dsl.JSONSchema{
+						"type": "integer", "title": "Max Delegations", "minimum": 1, "default": defaultSupervisorMaxTurns,
+						"description": "Maximum worker delegations before the supervisor must finish.",
+					},
+					"route_attempts": dsl.JSONSchema{
+						"type": "integer", "title": "Route Attempts", "minimum": 1, "maximum": 5, "default": defaultSupervisorRouteAttempts,
+						"description": "Maximum attempts to correct an invalid worker routing response.",
+					},
 				},
 				"required":             []string{"members"},
 				"additionalProperties": false,

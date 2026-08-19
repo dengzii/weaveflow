@@ -80,7 +80,10 @@ func StepNodeTypeDefinition() registry.NodeTypeDefinition {
 						"title":     "System Prompt",
 						"x-control": "textarea",
 					},
-					"max_iterations": dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"max_iterations": dsl.JSONSchema{
+						"type": "integer", "title": "Max Agent Iterations", "minimum": 1,
+						"description": "Maximum model and tool loop iterations allowed for the current plan step.",
+					},
 				},
 				"additionalProperties": false,
 			},

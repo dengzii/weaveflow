@@ -1,4 +1,4 @@
-import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Plus, Trash2, X } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
@@ -6,6 +6,7 @@ import { Textarea } from "../../../components/ui/textarea";
 import { exampleConfigForSchema } from "../../../lib/jsonSchemaDefaults";
 import { cn, isPlainRecord } from "../../../lib/utils";
 import type { ToolDefinition } from "../../../types";
+import { InputSuggestion } from "./shared";
 import {
   formatJSONControlValue,
   parseJSONControlText,
@@ -33,23 +34,20 @@ export function ModelIDControl({
   onAddModel?: ModelAddHandler;
   onChange: (value: unknown) => void;
 }) {
-  const suggestionsID = useId();
   const suggestions = uniqueStrings(modelIDs);
   const currentValue = typeof value === "string" ? value : value == null ? "" : String(value);
   const controlClass = invalid ? "border-destructive focus:border-destructive" : undefined;
 
   return (
     <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] gap-2">
-      <Input
-        list={suggestionsID}
+      <InputSuggestion
+        aria-label="Model ID"
         value={currentValue}
-        onChange={(event) => onChange(event.target.value)}
+        options={suggestions.map((modelID) => ({ value: modelID }))}
+        onChange={onChange}
         placeholder={suggestions.length > 0 ? "Select or enter model ID" : "Enter model ID"}
-        className={cn("font-mono text-xs", controlClass)}
+        inputClassName={cn("font-mono text-xs", controlClass)}
       />
-      <datalist id={suggestionsID}>
-        {suggestions.map((modelID) => <option key={modelID} value={modelID} />)}
-      </datalist>
       {onAddModel ? (
         <Button
           type="button"

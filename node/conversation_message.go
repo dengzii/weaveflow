@@ -67,8 +67,14 @@ func ConversationMessageNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"role":    dsl.JSONSchema{"type": "string", "enum": []string{"human", "system", "ai", "tool"}, "default": "human"},
-					"content": dsl.JSONSchema{"type": "string"},
+					"role": dsl.JSONSchema{
+						"type": "string", "title": "Role", "enum": []string{"human", "system", "ai", "tool"}, "default": "human",
+						"description": "Conversation role assigned to the appended message.",
+					},
+					"content": dsl.JSONSchema{
+						"type": "string", "title": "Content",
+						"description": "Fixed message text. Leave blank to read from the input state port.",
+					},
 				},
 				"additionalProperties": false,
 			},

@@ -16,12 +16,11 @@ import type {
   StateBinding,
   StatePortDefinition,
 } from "../../../types";
-import { CollapsibleInspectorBlock } from "./shared";
+import { CollapsibleInspectorBlock, InputSuggestion } from "./shared";
 import {
   bindingPathMetadata,
   compatibleBindingPaths,
   dynamicStateAliasError,
-  sanitizeHTMLID,
   stateSchemaType,
 } from "./stateBindingsModel";
 
@@ -68,7 +67,6 @@ function StateBindingsEditor({
         const defaultPath = resolveDefaultStatePath(port.default_path, ownerID);
         const effectiveBinding = binding ?? (defaultPath ? { path: defaultPath } : undefined);
         const options = compatibleBindingPaths(port, ownerID, definition, registry);
-        const listID = `state-path-${sanitizeHTMLID(ownerID)}-${sanitizeHTMLID(port.name)}`;
         const resolvedContract = resolvedStatePortContract(port, effectiveBinding, registry);
         const bindingMetadata = effectiveBinding?.path.trim()
           ? bindingPathMetadata(effectiveBinding.path.trim(), port, definition, registry, false, false, false)
@@ -106,26 +104,20 @@ function StateBindingsEditor({
 
             {effectiveBinding || port.required ? (
               <div className="flex min-w-0 items-center gap-1.5">
-                <Input
-                  list={listID}
+                <InputSuggestion
                   aria-label={`${port.name} state path`}
                   value={effectiveBinding?.path ?? ""}
+                  options={options.map((path) => ({
+                    value: path,
+                    detail: bindingPathMetadata(path, port, definition, registry),
+                  }))}
                   placeholder={options[0] ?? "shared.path"}
-                  className={!effectiveBinding?.path.trim() && port.required ? "border-destructive focus:border-destructive" : undefined}
-                  onChange={(event) => onChange({
+                  inputClassName={!effectiveBinding?.path.trim() && port.required ? "border-destructive focus:border-destructive" : undefined}
+                  onChange={(path) => onChange({
                     ...(bindings ?? {}),
-                    [port.name]: { ...effectiveBinding, path: event.target.value },
+                    [port.name]: { ...effectiveBinding, path },
                   })}
                 />
-                <datalist id={listID}>
-                  {options.map((path) => (
-                    <option
-                      key={path}
-                      value={path}
-                      label={bindingPathMetadata(path, port, definition, registry)}
-                    />
-                  ))}
-                </datalist>
                 {!port.required ? (
                   <Button
                     type="button"
@@ -294,7 +286,6 @@ function DynamicStateBindingEditor({
     merge_strategy: dynamicPorts.merge_strategy,
   };
   const options = compatibleBindingPaths(port, ownerID, definition, registry);
-  const listID = `state-path-${sanitizeHTMLID(ownerID)}-${sanitizeHTMLID(name)}`;
   const commitAlias = () => {
     if (aliasError || normalizedAlias === name) return;
     const next = { ...bindings };
@@ -347,17 +338,17 @@ function DynamicStateBindingEditor({
         </div>
         <div className="min-w-0">
           <div className="mb-1 text-[10px] font-medium uppercase text-muted-foreground">State Path</div>
-          <Input
-            list={listID}
+          <InputSuggestion
             aria-label={`${name} state path`}
             value={binding.path}
+            options={options.map((path) => ({
+              value: path,
+              detail: bindingPathMetadata(path, port, definition, registry),
+            }))}
             placeholder={options[0] ?? "shared.path"}
-            className={!binding.path.trim() ? "border-destructive focus:border-destructive" : undefined}
-            onChange={(event) => onChange({ ...bindings, [name]: { path: event.target.value } })}
+            inputClassName={!binding.path.trim() ? "border-destructive focus:border-destructive" : undefined}
+            onChange={(path) => onChange({ ...bindings, [name]: { path } })}
           />
-          <datalist id={listID}>
-            {options.map((path) => <option key={path} value={path} label={bindingPathMetadata(path, port, definition, registry)} />)}
-          </datalist>
         </div>
       </div>
     </div>

@@ -96,7 +96,7 @@ export function JsonSchemaForm({
 function SchemaControlField({ label, children }: { label: string; children: ReactNode }) {
   return (
     <div className="grid min-w-0 gap-1 text-sm">
-      <span className="break-words text-xs font-medium text-muted-foreground">{label}</span>
+      <span className="break-words text-xs font-medium text-foreground/80">{label}</span>
       {children}
     </div>
   );
@@ -189,7 +189,11 @@ function SchemaField({
           <span>{issue.message}</span>
         </div>
       ))}
-      {description ? <div className="text-xs text-muted-foreground">{description}</div> : null}
+      {description ? (
+        <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+          {description}
+        </div>
+      ) : null}
     </div>
   );
 }

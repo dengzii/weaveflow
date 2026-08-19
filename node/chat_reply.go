@@ -62,8 +62,14 @@ func ChatReplyNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"kind":    dsl.JSONSchema{"type": "string", "enum": []string{string(chatcap.ReplyUpdate), string(chatcap.ReplyMessage)}, "default": string(chatcap.ReplyMessage)},
-					"content": dsl.JSONSchema{"type": "string"},
+					"kind": dsl.JSONSchema{
+						"type": "string", "title": "Reply Type", "enum": []string{string(chatcap.ReplyUpdate), string(chatcap.ReplyMessage)}, "default": string(chatcap.ReplyMessage),
+						"description": "Use update for streaming output or message for a separate chat reply.",
+					},
+					"content": dsl.JSONSchema{
+						"type": "string", "title": "Content",
+						"description": "Reply text. Leave blank to read from the input state port.",
+					},
 				},
 				"additionalProperties": false,
 			},
