@@ -1,0 +1,56 @@
+:root {
+  --vp-font-family-base: Bahnschrift, "Avenir Next", "Segoe UI Variable", sans-serif;
+  --vp-font-family-mono: "Cascadia Code", "SFMono-Regular", Consolas, monospace;
+  --vp-c-brand-1: #566579;
+  --vp-c-brand-2: #465568;
+  --vp-c-brand-3: #303743;
+  --vp-c-brand-soft: #dfe4ea;
+  --vp-c-bg: #f8f9fa;
+  --vp-c-bg-alt: #f0f2f5;
+  --vp-c-bg-soft: #e9edf1;
+  --vp-c-text-1: #313640;
+  --vp-c-text-2: #59616d;
+  --vp-c-divider: #ccd1d8;
+  --vp-code-block-color: #e1e4e8;
+  --vp-code-block-bg: #252931;
+  --vp-code-block-divider-color: #424a56;
+  --vp-code-lang-color: #aeb7c3;
+  --vp-code-line-number-color: #8c96a3;
+  --vp-code-copy-code-border-color: #596271;
+  --vp-code-copy-code-bg: #303641;
+  --vp-code-copy-code-hover-border-color: #788391;
+  --vp-code-copy-code-hover-bg: #3a414d;
+  --vp-code-copy-code-active-text: #e1e4e8;
+  --vp-button-brand-border: #566579;
+  --vp-button-brand-bg: #566579;
+  --vp-button-brand-hover-border: #303743;
+  --vp-button-brand-hover-bg: #303743;
+  --vp-home-hero-name-color: #303743;
+}
+
+.VPNavBarTitle .title,
+.VPHero .name,
+.VPHero .text,
+.vp-doc h1,
+.vp-doc h2,
+.vp-doc h3 {
+  font-family: Bahnschrift, "Avenir Next Condensed", "Avenir Next", sans-serif;
+  font-stretch: semi-condensed;
+}
+
+.VPHero .text {
+  max-width: 720px;
+}
+
+.VPFeature {
+  border-radius: 4px !important;
+}
+
+.vp-doc div[class*="language-"] {
+  border-radius: 4px;
+}
+
+.vp-doc div[class*="language-"] pre,
+.vp-doc div[class*="language-"] code {
+  color: var(--vp-code-block-color);
+}
