@@ -7,7 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-const defaultCORSOrigins = "http://localhost:3031,http://127.0.0.1:3031"
+const defaultCORSOrigins = "*"
 
 func corsMiddleware(configuredOrigins string) gin.HandlerFunc {
 	allowedOrigins := make(map[string]struct{})
