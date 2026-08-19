@@ -65,8 +65,11 @@ func ToolExecutionNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"tool_ids": dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
-					"parallel": dsl.JSONSchema{"type": "boolean"},
+					"tool_ids": dsl.JSONSchema{"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"}},
+					"parallel": dsl.JSONSchema{
+						"type": "boolean", "title": "Parallel Tool Calls",
+						"description": "Execute multiple tool calls from the same model response concurrently.",
+					},
 				},
 				"additionalProperties": false,
 			},

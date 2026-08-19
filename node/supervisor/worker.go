@@ -106,9 +106,15 @@ func WorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 					"system_prompt": dsl.JSONSchema{
 						"type": "string", "title": "System Prompt", "x-control": "textarea", "default": defaultSupervisorWorkerSystemPrompt,
 					},
-					"max_iterations":   dsl.JSONSchema{"type": "integer", "title": "Max Agent Iterations", "minimum": 1, "default": defaultSupervisorWorkerMaxIterations},
-					"prompt_max_chars": dsl.JSONSchema{"type": "integer", "title": "Prompt Character Limit", "minimum": 1},
-					"parallel":         dsl.JSONSchema{"type": "boolean", "title": "Parallel Tool Calls", "default": true},
+					"max_iterations": dsl.JSONSchema{"type": "integer", "title": "Max Agent Iterations", "minimum": 1, "default": defaultSupervisorWorkerMaxIterations},
+					"prompt_max_chars": dsl.JSONSchema{
+						"type": "integer", "title": "Prompt Character Limit", "minimum": 1,
+						"description": "Maximum character budget for conversation messages sent to the model; older messages are trimmed when exceeded.",
+					},
+					"parallel": dsl.JSONSchema{
+						"type": "boolean", "title": "Parallel Tool Calls", "default": true,
+						"description": "Execute multiple tool calls from the same model response concurrently.",
+					},
 				},
 				"required":             []string{"worker_id"},
 				"additionalProperties": false,

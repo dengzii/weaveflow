@@ -97,12 +97,27 @@ func ExploreAgentNodeTypeDefinition() registry.NodeTypeDefinition {
 			Type: NodeTypeExploreAgent, Title: "Explore Agent", Description: "Run an isolated file-reading loop and return a structured summary.",
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object", "properties": dsl.JSONSchema{
-					"max_iterations":      dsl.JSONSchema{"type": "integer", "minimum": 1},
-					"tool_ids":            dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
-					"system_prompt":       dsl.JSONSchema{"type": "string", "x-control": "textarea"},
-					"tool_result_cap":     dsl.JSONSchema{"type": "integer", "minimum": 1},
-					"include_environment": dsl.JSONSchema{"type": "boolean"},
-					"environment_heading": dsl.JSONSchema{"type": "string"},
+					"max_iterations": dsl.JSONSchema{
+						"type": "integer", "title": "Max Agent Iterations", "minimum": 1,
+						"description": "Maximum model and tool loop iterations before the exploration stops.",
+					},
+					"tool_ids": dsl.JSONSchema{
+						"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"},
+						"description": "Tools available to the exploration loop; blank uses read, grep, and glob.",
+					},
+					"system_prompt": dsl.JSONSchema{"type": "string", "title": "System Prompt", "x-control": "textarea"},
+					"tool_result_cap": dsl.JSONSchema{
+						"type": "integer", "title": "Tool Result Character Limit", "minimum": 1,
+						"description": "Maximum characters kept from each tool result before truncation.",
+					},
+					"include_environment": dsl.JSONSchema{
+						"type": "boolean", "title": "Include Environment Context",
+						"description": "Append the bound environment state to the exploration system prompt.",
+					},
+					"environment_heading": dsl.JSONSchema{
+						"type": "string", "title": "Environment Heading",
+						"description": "Heading inserted before environment context; blank uses the default heading.",
+					},
 				}, "additionalProperties": false,
 			},
 			StatePorts: []dsl.StatePortDefinition{

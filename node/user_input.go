@@ -63,7 +63,10 @@ func UserInputNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"prompt": dsl.JSONSchema{"type": "string", "default": "Waiting for user input."},
+					"prompt": dsl.JSONSchema{
+						"type": "string", "title": "Prompt", "default": "Waiting for user input.",
+						"description": "Message shown when the run pauses for user input.",
+					},
 				},
 				"additionalProperties": false,
 			},

@@ -110,15 +110,24 @@ func GeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id": dsl.JSONSchema{"type": "string"},
-					"tool_ids": dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
+					"tool_ids": dsl.JSONSchema{
+						"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"},
+						"description": "Tools the planner may assign to generated plan steps.",
+					},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",
 						"x-control": "textarea",
 					},
-					"max_steps":   dsl.JSONSchema{"type": "integer", "minimum": 1},
-					"max_replans": dsl.JSONSchema{"type": "integer", "minimum": 0},
+					"max_steps": dsl.JSONSchema{
+						"type": "integer", "title": "Max Plan Steps", "minimum": 1,
+						"description": "Maximum number of steps retained in each generated plan.",
+					},
+					"max_replans": dsl.JSONSchema{
+						"type": "integer", "title": "Max Replans", "minimum": 0,
+						"description": "Maximum number of plan revisions allowed after execution requests a replan.",
+					},
 				},
 				"additionalProperties": false,
 			},

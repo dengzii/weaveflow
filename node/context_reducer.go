@@ -89,10 +89,22 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"max_messages":    dsl.JSONSchema{"type": "integer", "minimum": 2},
-					"preserve_system": dsl.JSONSchema{"type": "boolean"},
-					"preserve_recent": dsl.JSONSchema{"type": "integer", "minimum": 0},
-					"summary_prefix":  dsl.JSONSchema{"type": "string"},
+					"max_messages": dsl.JSONSchema{
+						"type": "integer", "title": "Max Messages", "minimum": 2,
+						"description": "Summarize older context when the conversation exceeds this message count.",
+					},
+					"preserve_system": dsl.JSONSchema{
+						"type": "boolean", "title": "Preserve System Messages",
+						"description": "Keep leading system messages unchanged instead of including them in the summary.",
+					},
+					"preserve_recent": dsl.JSONSchema{
+						"type": "integer", "title": "Preserve Recent Messages", "minimum": 0,
+						"description": "Number of recent non-system messages kept verbatim after summarization.",
+					},
+					"summary_prefix": dsl.JSONSchema{
+						"type": "string", "title": "Summary Prefix",
+						"description": "Text prepended to the generated summary system message.",
+					},
 				},
 				"additionalProperties": false,
 			},

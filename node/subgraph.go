@@ -55,7 +55,10 @@ func SubgraphNodeTypeDefinition() registry.NodeTypeDefinition {
 			Type: NodeTypeSubgraph, Title: "Subgraph",
 			Description: "Invoke another graph using an explicitly bound JSON state snapshot.",
 			ConfigSchema: dsl.JSONSchema{
-				"type": "object", "properties": dsl.JSONSchema{"graph_ref": dsl.JSONSchema{"type": "string"}},
+				"type": "object", "properties": dsl.JSONSchema{"graph_ref": dsl.JSONSchema{
+					"type": "string", "title": "Graph Reference",
+					"description": "Registered graph reference resolved and executed as a child run.",
+				}},
 				"required": []string{"graph_ref"}, "additionalProperties": false,
 			},
 			StatePorts: []dsl.StatePortDefinition{

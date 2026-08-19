@@ -69,7 +69,7 @@ func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id": dsl.JSONSchema{"type": "string"},
+					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",

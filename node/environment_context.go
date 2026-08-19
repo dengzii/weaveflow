@@ -85,10 +85,22 @@ func EnvironmentContextNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"workspace_root":   dsl.JSONSchema{"type": "string"},
-					"include_git":      dsl.JSONSchema{"type": "boolean"},
-					"include_project":  dsl.JSONSchema{"type": "boolean"},
-					"git_status_limit": dsl.JSONSchema{"type": "integer", "minimum": 1},
+					"workspace_root": dsl.JSONSchema{
+						"type": "string", "title": "Workspace Root",
+						"description": "Workspace to inspect. Blank uses WEAVEFLOW_TOOL_WORKDIR, then the server process working directory.",
+					},
+					"include_git": dsl.JSONSchema{
+						"type": "boolean", "title": "Include Git Context",
+						"description": "Collect the repository root, branch, commit, and working-tree status.",
+					},
+					"include_project": dsl.JSONSchema{
+						"type": "boolean", "title": "Include Project Context",
+						"description": "Collect project metadata from go.mod, package.json, and README.",
+					},
+					"git_status_limit": dsl.JSONSchema{
+						"type": "integer", "title": "Git Status Limit", "minimum": 1,
+						"description": "Maximum changed-file entries included in Git context; the total count remains available.",
+					},
 				},
 				"additionalProperties": false,
 			},

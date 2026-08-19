@@ -90,15 +90,16 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"model_id": dsl.JSONSchema{"type": "string"},
-					"tool_ids": dsl.JSONSchema{"type": "array", "items": dsl.JSONSchema{"type": "string"}},
+					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
+					"tool_ids": dsl.JSONSchema{"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"}},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",
 						"x-control": "textarea",
 					},
 					"prompt_max_chars": dsl.JSONSchema{
-						"type": "integer", "minimum": 1, "default": defaultLLMTurnPromptMaxChars,
+						"type": "integer", "title": "Prompt Character Limit", "minimum": 1, "default": defaultLLMTurnPromptMaxChars,
+						"description": "Maximum character budget for conversation messages sent to the model; older messages are trimmed when exceeded.",
 					},
 					"reasoning_effort": reasoningEffortSchema(),
 				},

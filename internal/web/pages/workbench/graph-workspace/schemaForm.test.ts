@@ -124,7 +124,7 @@ describe("JSON schema controls", () => {
     expect(html).toContain('value="**********"');
   });
 
-  test("renders model ID suggestions and quick add for model fields", () => {
+  test("renders the model ID suggestion combobox and quick add", () => {
     const html = renderToStaticMarkup(createElement(JsonSchemaForm, {
       schema: {
         type: "object",
@@ -138,8 +138,10 @@ describe("JSON schema controls", () => {
       onChange: () => {},
     }));
 
-    expect(html).toContain('<option value="default"></option>');
-    expect(html).toContain('<option value="reviewer"></option>');
+    expect(html).toContain('role="combobox"');
+    expect(html).toContain('aria-label="Model ID"');
+    expect(html).toContain('aria-label="Show Model ID options"');
+    expect(html).toContain('value="default"');
     expect(html).toContain('aria-label="Add model"');
   });
 });
