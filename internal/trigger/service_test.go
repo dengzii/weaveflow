@@ -1100,6 +1100,44 @@ type asyncRecordingStarter struct {
 	done <-chan struct{}
 }
 
+type queuedAsyncRecordingStarter struct {
+	asyncRecordingStarter
+	queuedCalls int
+}
+
+func (starter *queuedAsyncRecordingStarter) Enqueue(_ context.Context, initial *state.State) (runtime.RunRecord, error) {
+	starter.initial = initial.Clone()
+	starter.queuedCalls++
+	return runtime.RunRecord{RunID: "run-queued", Status: runtime.RunStatusPending}, nil
+}
+
+func TestServicePrefersDurableEnqueue(t *testing.T) {
+	store, err := NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	starter := &queuedAsyncRecordingStarter{}
+	service, err := NewService(store, RunnerResolverFunc(func(context.Context, Target) (RunStarter, error) {
+		return starter, nil
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.Create(context.Background(), Trigger{
+		ID: "webhook-queued", Type: TypeWebhook, Enabled: true,
+		Target: Target{GraphID: "graph-1"}, Webhook: &WebhookSpec{},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	run, err := service.InvokeWebhook(context.Background(), "webhook-queued", []byte(`{}`), nil)
+	if err != nil {
+		t.Fatalf("InvokeWebhook() error = %v", err)
+	}
+	if run.RunID != "run-queued" || starter.queuedCalls != 1 || starter.calls != 0 {
+		t.Fatalf("queued run = %#v, queued calls = %d, direct calls = %d", run, starter.queuedCalls, starter.calls)
+	}
+}
+
 func (r *asyncRecordingStarter) StartAsync(_ context.Context, initial *state.State) (runtime.RunRecord, <-chan struct{}, error) {
 	r.initial = initial.Clone()
 	r.calls++

@@ -26,6 +26,10 @@ type AsyncRunStarter interface {
 	StartAsync(context.Context, *state.State) (runtime.RunRecord, <-chan struct{}, error)
 }
 
+type QueuedRunStarter interface {
+	Enqueue(context.Context, *state.State) (runtime.RunRecord, error)
+}
+
 type RunnerResolver interface {
 	Resolve(context.Context, Target) (RunStarter, error)
 }
@@ -240,6 +244,9 @@ func (s *Service) invokeRun(ctx context.Context, definition Trigger, input any, 
 		Type:      triggerType,
 		TriggerID: definition.ID,
 	})
+	if queuedRunner, ok := runner.(QueuedRunStarter); ok {
+		return queuedRunner.Enqueue(executionCtx, initial)
+	}
 	if asyncRunner, ok := runner.(AsyncRunStarter); ok {
 		run, done, err := asyncRunner.StartAsync(executionCtx, initial)
 		if err != nil {

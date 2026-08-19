@@ -104,6 +104,10 @@ type TaskErrorRecorder interface {
 	OnTaskError(task GraphTask, err error)
 }
 
+type TaskAttemptRecorder interface {
+	OnTaskAttempt(context.Context, GraphTask, core.ExecutionResult, error, bool) error
+}
+
 type BranchPatchRecorderSetter interface {
 	SetBranchPatchRecorder(recorder BranchPatchRecorder)
 }

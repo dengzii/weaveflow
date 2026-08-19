@@ -31,6 +31,7 @@ type GraphRunner struct {
 	codec              state.Codec
 	eventSink          EventSink
 	transactionStore   TransactionStore
+	taskQueue          TaskQueue
 	graphID            string
 	graphVersion       string
 	graphHash          string
@@ -86,6 +87,7 @@ type graphRunnerConfig struct {
 	stateSchemas       map[string]state.JSONSchema
 	reducers           map[string]state.Reducer
 	transactionStore   TransactionStore
+	taskQueue          TaskQueue
 	closer             io.Closer
 	now                func() time.Time
 	leaseOwnerID       string
@@ -173,6 +175,7 @@ func NewGraphRunner(graph RunnerGraph, executionStore ExecutionStore, checkpoint
 		codec:              codec,
 		eventSink:          eventSink,
 		transactionStore:   transactionStore,
+		taskQueue:          cfg.taskQueue,
 		closer:             cfg.closer,
 		graphID:            strings.TrimSpace(cfg.graphID),
 		graphVersion:       strings.TrimSpace(cfg.graphVersion),
@@ -315,6 +318,13 @@ func WithRuntimeTransactionStore(store TransactionStore) GraphRunnerOption {
 			return fmt.Errorf("runtime transaction store is required")
 		}
 		cfg.transactionStore = store
+		return nil
+	}
+}
+
+func WithTaskQueue(queue TaskQueue) GraphRunnerOption {
+	return func(cfg *graphRunnerConfig) error {
+		cfg.taskQueue = queue
 		return nil
 	}
 }
@@ -1157,30 +1167,77 @@ func (r *GraphRunner) StartAsync(ctx context.Context, initialState *state.State)
 	return run, done, nil
 }
 
+func (r *GraphRunner) EnqueueStart(ctx context.Context, initialState *state.State, queue AtomicTaskQueue) (RunRecord, Task, error) {
+	if queue == nil {
+		return RunRecord{}, Task{}, errors.New("atomic task queue is required")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if initialState != nil {
+		initialState = initialState.Clone()
+	}
+	run, _, commit, err := r.prepareRun(ctx, initialState, nil, false)
+	if err != nil {
+		return RunRecord{}, Task{}, err
+	}
+	now := r.currentTime()
+	task := Task{
+		ID: run.RunID, Kind: TaskKindGraphRun, RunID: run.RunID, GraphTaskID: run.EntryNodeID,
+		GraphID: run.GraphID, GraphSessionID: run.GraphSessionID, CheckpointID: run.LastCheckpointID,
+		Status: TaskStatusQueued, MaxAttempts: 3, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+	queued, result, err := queue.EnqueueWithCommit(ctx, task, commit)
+	if err != nil {
+		return RunRecord{}, Task{}, err
+	}
+	if result.Run != nil {
+		run = *result.Run
+	}
+	logger.Info("run queued", append(runLogFields(ctx, run), state.SummaryFields(initialState)...)...)
+	return run, queued, nil
+}
+
 func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State, reservation *PendingChildRun) (RunRecord, *state.State, error) {
-	if err := r.validate(); err != nil {
+	run, initialState, commit, err := r.prepareRun(ctx, initialState, reservation, true)
+	if err != nil {
 		return RunRecord{}, initialState, err
+	}
+	commitResult, err := r.commitRuntime(ctx, commit)
+	if err != nil {
+		return RunRecord{}, initialState, err
+	}
+	if commitResult.Run != nil {
+		run = *commitResult.Run
+	}
+	logger.Info("run started", append(runLogFields(ctx, run), state.SummaryFields(initialState)...)...)
+	return run, initialState, nil
+}
+
+func (r *GraphRunner) prepareRun(ctx context.Context, initialState *state.State, reservation *PendingChildRun, active bool) (RunRecord, *state.State, Commit, error) {
+	if err := r.validate(); err != nil {
+		return RunRecord{}, initialState, Commit{}, err
 	}
 	if reservation != nil {
 		if err := validatePendingChildRun(*reservation); err != nil {
-			return RunRecord{}, initialState, err
+			return RunRecord{}, initialState, Commit{}, err
 		}
 	}
 
 	var err error
 	initialState, err = normalizeExternalState(initialState)
 	if err != nil {
-		return RunRecord{}, initialState, fmt.Errorf("entry state: %w", err)
+		return RunRecord{}, initialState, Commit{}, fmt.Errorf("entry state: %w", err)
 	}
 	if initialState == nil {
 		initialState = state.NewState()
 	}
 	if issues := state.ValidateStateBySchemas(initialState, r.stateSchemas); len(issues) > 0 {
-		return RunRecord{}, initialState, state.NewValidationError("entry", issues)
+		return RunRecord{}, initialState, Commit{}, state.NewValidationError("entry", issues)
 	}
 	if validator, ok := r.graph.(interface{ ValidateInitialState(*state.State) error }); ok {
 		if err := validator.ValidateInitialState(initialState); err != nil {
-			return RunRecord{}, initialState, fmt.Errorf("graph initial state: %w", err)
+			return RunRecord{}, initialState, Commit{}, fmt.Errorf("graph initial state: %w", err)
 		}
 	}
 
@@ -1201,7 +1258,9 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State, r
 		EntryNodeID:       entryPoint,
 		StartedAt:         now,
 		UpdatedAt:         now,
-		ExecutionLease:    r.newExecutionLease(nil, now),
+	}
+	if active {
+		run.ExecutionLease = r.newExecutionLease(nil, now)
 	}
 	if reservation != nil {
 		run.ChildRequestKey = reservation.RequestKey
@@ -1227,7 +1286,7 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State, r
 	}
 	if reservation != nil {
 		if err := validateReservedChildRun(run, *reservation); err != nil {
-			return RunRecord{}, initialState, err
+			return RunRecord{}, initialState, Commit{}, err
 		}
 	}
 	if origin, ok := RunOriginFromContext(ctx); ok {
@@ -1248,38 +1307,39 @@ func (r *GraphRunner) startRun(ctx context.Context, initialState *state.State, r
 	}
 	createdEvent, err := r.buildEvent(run, "", "", "", EventRunCreated, payload)
 	if err != nil {
-		return RunRecord{}, initialState, err
+		return RunRecord{}, initialState, Commit{}, err
 	}
 
-	run.Status = RunStatusRunning
+	if active {
+		run.Status = RunStatusRunning
+	}
 	run.CurrentNodeID = run.EntryNodeID
 	run.UpdatedAt = r.currentTime()
-	startedEvent, err := r.buildEvent(run, "", "", "", EventRunStarted, nil)
-	if err != nil {
-		return RunRecord{}, initialState, err
+	events := []Event{createdEvent}
+	if active {
+		startedEvent, err := r.buildEvent(run, "", "", "", EventRunStarted, nil)
+		if err != nil {
+			return RunRecord{}, initialState, Commit{}, err
+		}
+		events = append(events, startedEvent)
 	}
 	checkpointState := initialState.Clone()
 	if err := StoreGraphSchedule(checkpointState, GraphSchedule{CurrentTasks: []GraphTask{NewStaticGraphTask(run.EntryNodeID, 0)}}); err != nil {
-		return RunRecord{}, initialState, fmt.Errorf("store initial graph schedule: %w", err)
+		return RunRecord{}, initialState, Commit{}, fmt.Errorf("store initial graph schedule: %w", err)
 	}
 	checkpointWrite, checkpointEvent, err := r.buildCheckpointWrite(ctx, run, StepRecord{TaskID: run.EntryNodeID}, run.EntryNodeID, CheckpointBeforeNode, checkpointState, 0, nil, nil)
 	if err != nil {
-		return RunRecord{}, initialState, err
+		return RunRecord{}, initialState, Commit{}, err
 	}
 	run.LastCheckpointID = checkpointWrite.Record.CheckpointID
-	commitResult, err := r.commitRuntime(ctx, Commit{
-		Run:         &RunWrite{Mode: RunWriteCreate, Run: run},
-		Checkpoints: []CheckpointWrite{checkpointWrite},
-		Events:      []Event{createdEvent, startedEvent, checkpointEvent},
-	})
-	if err != nil {
-		return RunRecord{}, initialState, err
+	events = append(events, checkpointEvent)
+	commit := Commit{
+		TransactionID: newRunnerID(),
+		Run:           &RunWrite{Mode: RunWriteCreate, Run: run},
+		Checkpoints:   []CheckpointWrite{checkpointWrite},
+		Events:        events,
 	}
-	if commitResult.Run != nil {
-		run = *commitResult.Run
-	}
-	logger.Info("run started", append(runLogFields(ctx, run), state.SummaryFields(initialState)...)...)
-	return run, initialState, nil
+	return run, initialState, commit, nil
 }
 
 func (r *GraphRunner) continueStartedRun(ctx context.Context, run RunRecord, initialState *state.State) (RunRecord, *state.State, error) {
@@ -1528,7 +1588,11 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 		if err != nil {
 			return RunRecord{}, finalState, err
 		}
-		return r.failRunWithTransition(ctx, execution.currentRun(), finalState, "callback_failed", callbackErr.Error(), transition)
+		failedRun, failedState, failErr := r.failRunWithTransition(ctx, execution.currentRun(), finalState, "callback_failed", callbackErr.Error(), transition)
+		if failedRun.Status == RunStatusFailed {
+			execution.deleteNodeTaskFailureLeases(transition.taskFailures)
+		}
+		return failedRun, failedState, failErr
 	}
 	if invokeErr == nil {
 		return r.completeRun(ctx, execution.currentRun(), finalState, execution.snapshotArtifacts())
@@ -1551,6 +1615,7 @@ func (r *GraphRunner) execute(ctx context.Context, run RunRecord, currentState *
 	if persistErr != nil {
 		return failedRun, finalState, persistErr
 	}
+	execution.deleteNodeTaskFailureLeases(transition.taskFailures)
 	if failedRun.Status != RunStatusFailed {
 		return failedRun, finalState, nil
 	}
@@ -2329,8 +2394,9 @@ func (r *GraphRunner) cancelRunWithTransition(ctx context.Context, run RunRecord
 }
 
 type runUpdatePreparation struct {
-	run    RunRecord
-	commit *Commit
+	run          RunRecord
+	commit       *Commit
+	taskFailures []TaskFailureTransition
 }
 
 func (r *GraphRunner) commitRunUpdateWithRetry(ctx context.Context, expectedRun RunRecord, action string, prepare func(RunRecord) (runUpdatePreparation, error)) (RunRecord, error) {
@@ -2348,7 +2414,11 @@ func (r *GraphRunner) commitRunUpdateWithRetry(ctx context.Context, expectedRun 
 		if prepared.commit == nil {
 			return prepared.run, nil
 		}
-		commitResult, commitErr := r.commitRuntime(ctx, *prepared.commit)
+		commitCtx := ctx
+		if len(prepared.taskFailures) > 0 {
+			commitCtx = withTaskFailures(ctx, prepared.taskFailures)
+		}
+		commitResult, commitErr := r.commitRuntime(commitCtx, *prepared.commit)
 		if errors.Is(commitErr, ErrRunRevisionConflict) {
 			continue
 		}
@@ -2843,7 +2913,7 @@ func (r *GraphRunner) persistRunFailureWithTransition(ctx context.Context, run R
 			Steps:  transition.writes,
 			Events: events,
 		}
-		return runUpdatePreparation{run: latestRun, commit: &commit}, nil
+		return runUpdatePreparation{run: latestRun, commit: &commit, taskFailures: transition.taskFailures}, nil
 	})
 	if err != nil {
 		return updatedRun, err
@@ -3123,7 +3193,23 @@ func (r *GraphRunner) commitRuntime(ctx context.Context, commit Commit) (CommitR
 	if err != nil {
 		return CommitResult{}, err
 	}
-	result, committed, err := commitAndResolve(ctx, r.transactionStore, guardedCommit)
+	var result CommitResult
+	committed := guardedCommit
+	if failures := taskFailuresFromContext(ctx); len(failures) > 0 {
+		queue, atomic := r.taskQueue.(AtomicTaskQueue)
+		if !atomic {
+			return CommitResult{}, errors.New("node task failure requires an atomic task queue")
+		}
+		_, result, err = queue.FailWithCommit(ctx, failures, guardedCommit)
+	} else if lease, ok := taskCompletionFromContext(ctx); ok {
+		queue, atomic := r.taskQueue.(AtomicTaskQueue)
+		if !atomic {
+			return CommitResult{}, errors.New("node task completion requires an atomic task queue")
+		}
+		_, result, err = queue.CompleteWithCommit(ctx, lease, TaskResult{}, guardedCommit)
+	} else {
+		result, committed, err = commitAndResolve(ctx, r.transactionStore, guardedCommit)
+	}
 	if err != nil {
 		return result, err
 	}

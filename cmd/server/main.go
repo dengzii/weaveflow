@@ -70,10 +70,11 @@ func main() {
 	ctx := core.WithTools(context.Background(), defaultTools())
 
 	srv, err := server.New(ctx, server.Config{
-		Graph:           graph,
-		BaseDir:         *dataDir,
-		SecretDirectory: *secretDir,
-		ManagementToken: managementToken,
+		Graph:               graph,
+		BaseDir:             *dataDir,
+		RuntimeStoreBackend: server.RuntimeStoreSQLite,
+		SecretDirectory:     *secretDir,
+		ManagementToken:     managementToken,
 		RuntimeContextDecorators: []server.RuntimeContextDecorator{
 			func(ctx context.Context) context.Context {
 				return claudenode.WithRunner(ctx, claudeRunner)

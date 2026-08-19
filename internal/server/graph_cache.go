@@ -12,9 +12,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	wfgraph "github.com/dengzii/weaveflow/graph"
 	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
+	sqlitestore "github.com/dengzii/weaveflow/internal/runtimestore/sqlite"
+	wfregistry "github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
@@ -66,6 +70,7 @@ type graphDetailResponse struct {
 	InitialStateRequirements core.InitialStateRequirements `json:"initial_state_requirements"`
 	LatestSession            graphSessionSummary           `json:"latest_session"`
 	Active                   graphActiveState              `json:"active"`
+	ContextWarnings          []string                      `json:"context_warnings,omitempty"`
 }
 
 func (s *Server) handleGetRetentionAudit(c *gin.Context) {
@@ -84,6 +89,7 @@ func (s *Server) handleGetRetentionAudit(c *gin.Context) {
 
 type graphCacheReader struct {
 	storeDirs        []string
+	storeBackends    []string
 	executionStores  []runtime.ExecutionReader
 	checkpointStores []runtime.CheckpointReader
 	artifactStores   []runtime.ArtifactReader
@@ -202,6 +208,100 @@ func (s *Server) handleGetGraphDetail(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleGetGraphSessionDetail(c *gin.Context) {
+	graphID, ok := requireGraphIDPathParam(c)
+	if !ok {
+		return
+	}
+	sessionID, ok := requirePathParam(c, "session_id")
+	if !ok {
+		return
+	}
+	stored, err := s.storedGraphSession(graphID, sessionID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeError(c, http.StatusNotFound, errTriggerGraphNotFound)
+			return
+		}
+		writeError(c, statusForError(err), err)
+		return
+	}
+	s.writeGraphSessionDetail(c, stored)
+}
+
+func (s *Server) writeGraphSessionDetail(c *gin.Context, stored triggerGraphSession) {
+	detail, err := s.readGraphSessionDetail(stored)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	writeData(c, http.StatusOK, detail)
+}
+
+func (s *Server) readGraphSessionDetail(stored triggerGraphSession) (graphDetailResponse, error) {
+	definition, err := wfgraph.LoadGraphDefinitionFile(stored.definitionPath)
+	if err != nil {
+		return graphDetailResponse{}, err
+	}
+	settings, found, err := loadGraphRuntimeSettings(stored.baseDir)
+	if err != nil {
+		return graphDetailResponse{}, err
+	}
+	if !found {
+		return graphDetailResponse{}, fmt.Errorf("graph session %q settings are missing", stored.manifest.GraphSessionID)
+	}
+	graphHash := stored.manifest.GraphHash
+	graphSnapshotHash := stored.manifest.GraphSnapshotHash
+	initialStateRequirements := core.InitialStateRequirements{}
+	var contextWarnings []string
+	registry := s.registry
+	if registry == nil {
+		registry = builtin.NewDefaultRegistry()
+	}
+	compiledGraph, err := wfgraph.NewBuilder(registry).Build(definition, &wfregistry.BuildContext{})
+	if err != nil {
+		contextWarnings = append(contextWarnings, "session definition is not compatible with the current registry: "+err.Error())
+	} else {
+		initialStateRequirements = compiledGraph.InitialStateRequirements()
+		compiledGraphHash, hashErr := compiledGraph.SemanticHash()
+		if hashErr != nil {
+			contextWarnings = append(contextWarnings, "session semantic hash could not be recomputed: "+hashErr.Error())
+		} else if compiledGraphHash != graphHash {
+			contextWarnings = append(contextWarnings, "session semantic hash differs under the current registry")
+		}
+		compiledSnapshotHash, snapshotErr := compiledGraph.SnapshotHash()
+		if snapshotErr != nil {
+			contextWarnings = append(contextWarnings, "session snapshot hash could not be recomputed: "+snapshotErr.Error())
+		} else if compiledSnapshotHash != graphSnapshotHash {
+			contextWarnings = append(contextWarnings, "session snapshot hash differs under the current registry")
+		}
+	}
+	latestStored, err := s.latestGraphSession(stored.manifest.GraphID)
+	if err != nil {
+		return graphDetailResponse{}, err
+	}
+	return graphDetailResponse{
+		Graph: graphInfo{
+			ID:                stored.manifest.GraphID,
+			Version:           stored.manifest.GraphVersion,
+			GraphHash:         graphHash,
+			GraphSnapshotHash: graphSnapshotHash,
+			GraphSessionID:    stored.manifest.GraphSessionID,
+			EntryPoint:        definition.EntryPoint,
+			FinishPoint:       definition.FinishPoint,
+		},
+		Definition:               definition,
+		Settings:                 s.graphSettingsResponse(settings),
+		InitialStateRequirements: initialStateRequirements,
+		LatestSession: graphSessionSummary{
+			ID:        latestStored.manifest.GraphSessionID,
+			CreatedAt: latestStored.manifest.CreatedAt,
+		},
+		Active:          s.runtime.graphActiveState(stored.manifest.GraphID),
+		ContextWarnings: contextWarnings,
+	}, nil
+}
+
 func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
 	graphsDir := filepath.Join(s.baseDir, "graphs")
 	entries, err := os.ReadDir(graphsDir)
@@ -314,11 +414,34 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 }
 
 func (reader *graphCacheReader) appendStore(baseDir string) error {
+	sqlitePath := filepath.Join(baseDir, "runtime.db")
+	if _, err := os.Stat(sqlitePath); err == nil {
+		storeReader, err := sqlitestore.OpenReader(sqlitePath)
+		if err != nil {
+			return err
+		}
+		reader.storeDirs = append(reader.storeDirs, baseDir)
+		reader.storeBackends = append(reader.storeBackends, RuntimeStoreSQLite)
+		reader.executionStores = append(reader.executionStores, storeReader.ExecutionReader())
+		reader.checkpointStores = append(reader.checkpointStores, storeReader.CheckpointReader())
+		reader.artifactStores = append(reader.artifactStores, storeReader.ArtifactReader())
+		reader.eventReaders = append(reader.eventReaders, storeReader.EventReader())
+		reader.eventPageReaders = append(reader.eventPageReaders, storeReader.EventPageReader())
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, "execution")); os.IsNotExist(err) {
+		return nil
+	} else if err != nil {
+		return err
+	}
 	storeReader, err := filestore.OpenReader(baseDir)
 	if err != nil {
 		return err
 	}
 	reader.storeDirs = append(reader.storeDirs, baseDir)
+	reader.storeBackends = append(reader.storeBackends, RuntimeStoreFile)
 	reader.executionStores = append(reader.executionStores, storeReader.ExecutionReader())
 	reader.checkpointStores = append(reader.checkpointStores, storeReader.CheckpointReader())
 	reader.artifactStores = append(reader.artifactStores, storeReader.ArtifactReader())
@@ -383,7 +506,7 @@ func (s *Server) markCachedRunExecutionLost(ctx context.Context, reader *graphCa
 	if index >= len(reader.storeDirs) {
 		return runtime.RunRecord{}, fmt.Errorf("runtime store directory %d is missing", index)
 	}
-	store, err := filestore.Open(reader.storeDirs[index])
+	store, err := openCachedRuntimeStore(reader.storeDirs[index], reader.storeBackends[index])
 	if err != nil {
 		return runtime.RunRecord{}, err
 	}
@@ -583,7 +706,7 @@ func (r *graphCacheReader) cancelPausedRun(ctx context.Context, runID string, ex
 			if index >= len(r.storeDirs) {
 				return runtime.RunRecord{}, fmt.Errorf("runtime store directory %d is missing", index)
 			}
-			writer, err := filestore.Open(r.storeDirs[index])
+			writer, err := openCachedRuntimeStore(r.storeDirs[index], r.storeBackends[index])
 			if errors.Is(err, filestore.ErrWriterLocked) {
 				return runtime.RunRecord{}, fmt.Errorf("%w: run %q is owned by another writer", runtime.ErrRunControlNotAllowed, runID)
 			}
@@ -613,7 +736,7 @@ func (r *graphCacheReader) deleteRun(ctx context.Context, runID string) (runtime
 		if index >= len(r.storeDirs) {
 			return runtime.RunRecord{}, fmt.Errorf("runtime store directory %d is missing", index)
 		}
-		writer, err := filestore.Open(r.storeDirs[index])
+		writer, err := openCachedRuntimeStore(r.storeDirs[index], r.storeBackends[index])
 		if errors.Is(err, filestore.ErrWriterLocked) {
 			return runtime.RunRecord{}, fmt.Errorf("%w: run %q is owned by another writer", runtime.ErrRunControlNotAllowed, runID)
 		}

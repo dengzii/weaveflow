@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/state"
@@ -71,9 +72,10 @@ type runnerCompletedStep struct {
 }
 
 type runnerStepTransition struct {
-	writes []StepWrite
-	events []Event
-	steps  []StepRecord
+	writes       []StepWrite
+	events       []Event
+	steps        []StepRecord
+	taskFailures []TaskFailureTransition
 }
 
 type runnerChildRun struct {
@@ -103,6 +105,7 @@ type graphRunnerExecution struct {
 	mu             sync.Mutex
 	nodeMu         sync.Mutex
 	nodeLocks      map[string]*sync.Mutex
+	nodeTaskLeases map[string]TaskLease
 	runPersistMu   sync.Mutex
 }
 
@@ -122,6 +125,7 @@ func newGraphRunnerExecution(runner *GraphRunner, run RunRecord, initialState *s
 		children:       map[string]map[string]runnerChildRun{},
 		waves:          map[*state.State]string{},
 		nodeLocks:      map[string]*sync.Mutex{},
+		nodeTaskLeases: map[string]TaskLease{},
 		contractPolicy: runner.effectiveContractPolicy(),
 		nodeContracts:  cloneContracts(runner.nodeContracts),
 		cancelInvoke:   cancelInvoke,
@@ -413,7 +417,11 @@ func (e *graphRunnerExecution) ExecuteNode(ctx context.Context, task GraphTask, 
 		e.recordNodeOutputObservations(nodeCtx, task, contract, patchView, mergedState, writeViolations)
 		return e.recordNodeResultArtifacts(nodeCtx, result.Node.Artifacts)
 	}
-	if err := e.afterNode(ctx, task, baseState, mergedState, result.Node.Command, result.Node.Events, persistResult); err != nil {
+	completionCtx := ctx
+	if lease, ok := e.nodeTaskLease(task.OperationID); ok {
+		completionCtx = withTaskCompletion(ctx, lease)
+	}
+	if err := e.afterNode(completionCtx, task, baseState, mergedState, result.Node.Command, result.Node.Events, persistResult); err != nil {
 		return core.ExecutionResult{}, err
 	}
 	return result, nil
@@ -491,7 +499,148 @@ func (e *graphRunnerExecution) recordNodeResultArtifacts(ctx context.Context, dr
 
 func (e *graphRunnerExecution) PrepareNode(ctx context.Context, task GraphTask, currentState *state.State) (context.Context, error) {
 	nodeCtx, err := e.beforeNode(ctx, task, currentState)
-	return nodeCtx, err
+	if err != nil || e.runner.taskQueue == nil {
+		return nodeCtx, err
+	}
+	metadata, ok := RunnerMetadataFromContext(nodeCtx)
+	if !ok {
+		return nodeCtx, errors.New("node task metadata is required")
+	}
+	now := e.runner.currentTime()
+	queueTaskID := stableRuntimeID("task", metadata.RunID, task.OperationID)
+	queued, enqueueErr := e.runner.taskQueue.GetTask(nodeCtx, queueTaskID)
+	if enqueueErr != nil {
+		return nodeCtx, enqueueErr
+	}
+	if queued.Status != TaskStatusQueued && queued.Status != TaskStatusRunning {
+		return nodeCtx, fmt.Errorf("%w: node task %q status %q cannot start an attempt", ErrTaskConflict, queued.ID, queued.Status)
+	}
+	claimed, _, claimErr := e.runner.taskQueue.Claim(nodeCtx, WorkerIdentity{ID: e.runner.executionLeaseOwnerID()}, TaskClaimOptions{
+		TaskID: queueTaskID, Kinds: []string{TaskKindGraphNode}, Now: now, TTL: e.runner.executionLeaseTTL(),
+	})
+	if claimErr != nil {
+		return nodeCtx, claimErr
+	}
+	if claimed.ID != queueTaskID || claimed.Lease == nil {
+		return nodeCtx, fmt.Errorf("claimed node task %q instead of %q", claimed.ID, queueTaskID)
+	}
+	e.mu.Lock()
+	e.nodeTaskLeases[task.OperationID] = *claimed.Lease
+	e.mu.Unlock()
+	return nodeCtx, nil
+}
+
+func (e *graphRunnerExecution) nodeQueueTask(run RunRecord, step StepRecord, task GraphTask, now time.Time) Task {
+	return Task{
+		ID: stableRuntimeID("task", run.RunID, task.OperationID), Kind: TaskKindGraphNode,
+		RunID: run.RunID, StepID: step.StepID, GraphTaskID: task.TaskID, OperationID: task.OperationID,
+		GraphID: run.GraphID, GraphSessionID: run.GraphSessionID, CheckpointID: step.CheckpointBeforeID,
+		Status: TaskStatusQueued, MaxAttempts: 100, AvailableAt: now, CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+func (e *graphRunnerExecution) OnTaskAttempt(ctx context.Context, task GraphTask, _ core.ExecutionResult, attemptErr error, retry bool) error {
+	if e == nil || e.runner == nil || e.runner.taskQueue == nil {
+		return nil
+	}
+	e.mu.Lock()
+	lease, ok := e.nodeTaskLeases[task.OperationID]
+	e.mu.Unlock()
+	if !ok {
+		queueTaskID := stableRuntimeID("task", e.run.RunID, task.OperationID)
+		persisted, err := e.runner.taskQueue.GetTask(ctx, queueTaskID)
+		if err == nil && persisted.Status == TaskStatusCompleted && attemptErr == nil {
+			return nil
+		}
+		if errors.Is(err, ErrTaskNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		return fmt.Errorf("node task %q lease is missing with task %q status %q", task.OperationID, queueTaskID, persisted.Status)
+	}
+	if attemptErr == nil {
+		persisted, err := e.runner.taskQueue.GetTask(context.WithoutCancel(ctx), lease.TaskID)
+		if err == nil && persisted.Status == TaskStatusCompleted {
+			e.deleteNodeTaskLease(task.OperationID, lease)
+			return nil
+		}
+		_, err = e.runner.taskQueue.Complete(context.WithoutCancel(ctx), lease, TaskResult{})
+		if err == nil {
+			e.deleteNodeTaskLease(task.OperationID, lease)
+		}
+		return err
+	}
+	if !retry {
+		var nodeInterrupt *core.NodeInterrupt
+		var graphInterrupt *GraphInterrupt
+		if !errors.As(attemptErr, &nodeInterrupt) && !errors.As(attemptErr, &graphInterrupt) {
+			return nil
+		}
+	}
+	_, err := e.runner.taskQueue.Fail(context.WithoutCancel(ctx), lease, TaskFailure{
+		Message: attemptErr.Error(), Retryable: retry, RetryAt: e.runner.currentTime(),
+	})
+	if err == nil {
+		e.deleteNodeTaskLease(task.OperationID, lease)
+	}
+	return err
+}
+
+func (e *graphRunnerExecution) deleteNodeTaskLease(operationID string, lease TaskLease) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	current, ok := e.nodeTaskLeases[operationID]
+	if ok && current.Token == lease.Token && current.Epoch == lease.Epoch {
+		delete(e.nodeTaskLeases, operationID)
+	}
+}
+
+func (e *graphRunnerExecution) deleteNodeTaskFailureLeases(failures []TaskFailureTransition) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for operationID, current := range e.nodeTaskLeases {
+		for _, failure := range failures {
+			lease := failure.Lease
+			if current.TaskID == lease.TaskID && current.Token == lease.Token && current.Epoch == lease.Epoch {
+				delete(e.nodeTaskLeases, operationID)
+				break
+			}
+		}
+	}
+}
+
+func (e *graphRunnerExecution) nodeTaskLease(operationID string) (TaskLease, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	lease, ok := e.nodeTaskLeases[operationID]
+	return lease, ok
+}
+
+func (e *graphRunnerExecution) heartbeatNodeTaskLeases(ctx context.Context, now time.Time, ttl time.Duration) error {
+	if e == nil || e.runner == nil || e.runner.taskQueue == nil {
+		return nil
+	}
+	e.mu.Lock()
+	leases := make(map[string]TaskLease, len(e.nodeTaskLeases))
+	for operationID, lease := range e.nodeTaskLeases {
+		leases[operationID] = lease
+	}
+	e.mu.Unlock()
+	for operationID, lease := range leases {
+		updated, err := e.runner.taskQueue.Heartbeat(ctx, lease, now, ttl)
+		if err != nil {
+			return err
+		}
+		e.mu.Lock()
+		current, exists := e.nodeTaskLeases[operationID]
+		if exists && current.Token == lease.Token && current.Epoch == lease.Epoch {
+			e.nodeTaskLeases[operationID] = updated
+		}
+		e.mu.Unlock()
+	}
+	return nil
 }
 
 func contractOption(contract state.Contract, ok bool) *state.Contract {
@@ -743,12 +892,29 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 				}
 				events = append(events, startedEvent)
 			}
-			commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
+			commit := Commit{
 				Run:         &RunWrite{Mode: RunWriteUpdate, Run: run},
 				Steps:       []StepWrite{{Mode: StepWriteAppend, Step: step}},
 				Checkpoints: []CheckpointWrite{checkpointWrite},
 				Events:      events,
-			})
+			}
+			var commitResult CommitResult
+			var commitErr error
+			if e.runner.taskQueue != nil {
+				queue, ok := e.runner.taskQueue.(AtomicTaskQueue)
+				if !ok {
+					e.runPersistMu.Unlock()
+					return core.NewContext(ctx), errors.New("node task enqueue requires an atomic task queue")
+				}
+				guardedCommit, guardErr := e.runner.guardExecutionCommit(ctx, commit)
+				if guardErr != nil {
+					e.runPersistMu.Unlock()
+					return core.NewContext(ctx), guardErr
+				}
+				_, commitResult, commitErr = queue.EnqueueWithCommit(ctx, e.nodeQueueTask(run, step, task, startedAt), guardedCommit)
+			} else {
+				commitResult, commitErr = e.runner.commitRuntime(ctx, commit)
+			}
 			if errors.Is(commitErr, ErrRunRevisionConflict) {
 				revisionConflicts++
 				if revisionConflicts >= runRevisionRetryLimit {
@@ -991,7 +1157,18 @@ func (e *graphRunnerExecution) OnFailureRouted(ctx context.Context, source Graph
 			return buildErr
 		}
 		events = append(events, routedEvent)
-		commitResult, commitErr := e.runner.commitRuntime(ctx, Commit{
+		commitCtx := ctx
+		var failedLease TaskLease
+		if markFailed {
+			if lease, ok := e.nodeTaskLease(source.OperationID); ok {
+				failedLease = lease
+				commitCtx = withTaskFailures(ctx, []TaskFailureTransition{{
+					Lease:   lease,
+					Failure: TaskFailure{Message: cause.Error()},
+				}})
+			}
+		}
+		commitResult, commitErr := e.runner.commitRuntime(commitCtx, Commit{
 			Run:    &RunWrite{Mode: RunWriteUpdate, Run: latestRun},
 			Steps:  stepWrites,
 			Events: events,
@@ -1005,6 +1182,9 @@ func (e *graphRunnerExecution) OnFailureRouted(ctx context.Context, source Graph
 		}
 		if commitErr != nil {
 			return commitErr
+		}
+		if failedLease.TaskID != "" {
+			e.deleteNodeTaskLease(source.OperationID, failedLease)
 		}
 		if commitResult.Run != nil {
 			latestRun = *commitResult.Run
@@ -1588,6 +1768,12 @@ func (e *graphRunnerExecution) prepareFailedSteps(err error) (runnerStepTransiti
 		transition.writes = append(transition.writes, StepWrite{Mode: StepWriteUpdate, Step: step})
 		transition.events = append(transition.events, failedEvent)
 		transition.steps = append(transition.steps, step)
+		if lease, ok := e.nodeTaskLease(item.task.OperationID); ok {
+			transition.taskFailures = append(transition.taskFailures, TaskFailureTransition{
+				Lease:   lease,
+				Failure: TaskFailure{Message: stepErr.Error()},
+			})
+		}
 	}
 	return transition, nil
 }

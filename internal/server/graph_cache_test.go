@@ -236,6 +236,48 @@ func TestListCachedGraphsLoadsLatestDefinition(t *testing.T) {
 	}
 }
 
+func TestGetGraphSessionDetailLoadsExactSession(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	first := putGraphForHashTest(t, engine, graphUploadBodyWithSettings(
+		"graph-a",
+		"v1",
+		"first",
+		`{"environment":{"MODE":"first"},"models":[]}`,
+	))
+	time.Sleep(time.Millisecond)
+	putGraphForHashTest(t, engine, graphUploadBodyWithSettings(
+		"graph-a",
+		"v2",
+		"latest",
+		`{"environment":{"MODE":"latest"},"models":[]}`,
+	))
+
+	detail := decodeGraphDetailResponse(
+		t,
+		serveHTTP(engine, http.MethodGet, "/graphs/graph-a/sessions/"+first.Graph.GraphSessionID, ""),
+		http.StatusOK,
+	)
+	if detail.Graph.GraphSessionID != first.Graph.GraphSessionID || detail.Graph.Version != "v1" {
+		t.Fatalf("graph detail identity = %#v, want session %q version v1", detail.Graph, first.Graph.GraphSessionID)
+	}
+	if detail.LatestSession.ID == first.Graph.GraphSessionID {
+		t.Fatalf("graph detail latest session = %#v, want a different latest session", detail.LatestSession)
+	}
+	if detail.Settings.Environment["MODE"] != "first" {
+		t.Fatalf("graph detail settings = %#v, want MODE=first", detail.Settings)
+	}
+	if len(detail.Definition.Nodes) != 1 || detail.Definition.Nodes[0].Config["content"] != "first" {
+		t.Fatalf("graph detail definition = %#v, want first content", detail.Definition)
+	}
+}
+
 func TestGraphRoutesRejectNonPortableGraphIDs(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
