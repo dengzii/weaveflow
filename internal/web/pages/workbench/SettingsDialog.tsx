@@ -5,6 +5,7 @@ import { Input, SensitiveInput } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
 import {
   getBackendBaseUrl,
+  getStoredBackendBaseUrls,
   getManagementToken,
   hasStoredBackendBaseUrl,
   resetStoredBackendBaseUrl,
@@ -52,6 +53,7 @@ export function SettingsDialog({
   const [managementToken, setManagementToken] = useState(getManagementToken);
   const [backendError, setBackendError] = useState("");
   const hasBackendOverride = hasStoredBackendBaseUrl();
+  const rememberedBackendBaseUrls = getStoredBackendBaseUrls();
 
   useEffect(() => {
     if (!open) return;
@@ -120,6 +122,7 @@ export function SettingsDialog({
                 managementToken={managementToken}
                 backendError={backendError}
                 hasBackendOverride={hasBackendOverride}
+                rememberedBackendBaseUrls={rememberedBackendBaseUrls}
                 onBackendBaseUrlChange={(value) => {
                   setBackendBaseUrl(value);
                   setBackendError("");
@@ -180,6 +183,7 @@ function ServerSettings({
   managementToken,
   backendError,
   hasBackendOverride,
+  rememberedBackendBaseUrls,
   onBackendBaseUrlChange,
   onManagementTokenChange,
   onSave,
@@ -189,6 +193,7 @@ function ServerSettings({
   managementToken: string;
   backendError: string;
   hasBackendOverride: boolean;
+  rememberedBackendBaseUrls: string[];
   onBackendBaseUrlChange: (value: string) => void;
   onManagementTokenChange: (value: string) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
@@ -208,7 +213,11 @@ function ServerSettings({
             spellCheck={false}
             autoCapitalize="none"
             aria-invalid={backendError ? true : undefined}
+            list="remembered-backend-base-urls"
           />
+          <datalist id="remembered-backend-base-urls">
+            {rememberedBackendBaseUrls.map((value) => <option key={value} value={value} />)}
+          </datalist>
         </label>
         <label className="grid gap-1.5 text-sm">
           <span className="font-medium">Token</span>

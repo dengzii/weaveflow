@@ -3,7 +3,6 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { runtimeEventTypes } from "./constants";
 import {
-  reconnectDelayMS,
   RuntimeEventStreamClient,
   SSEFrameDecoder,
   parseRuntimeEventFrame,
@@ -39,12 +38,6 @@ describe("runtime event stream model", () => {
     expect(decoder.push('ta: {"type":"extension.progress"}\n\n')).toEqual([
       { eventID: "event-1", data: '{"type":"extension.progress"}' },
     ]);
-  });
-
-  test("uses bounded exponential backoff with jitter", () => {
-    expect(reconnectDelayMS(1, () => 0)).toBe(800);
-    expect(reconnectDelayMS(2, () => 0.5)).toBe(2_000);
-    expect(reconnectDelayMS(20, () => 1)).toBe(30_000);
   });
 
   test("invokes the default fetch with the global receiver", async () => {
@@ -83,7 +76,6 @@ describe("runtime event stream model", () => {
       onGap: (gap) => gaps.push(gap.reason),
       onState: (state) => states.push(state),
       fetcher: async () => streamResponse(stream),
-      random: () => 0.5,
       setTimer: (callback) => {
         timers.push(callback);
         return timers.length;
@@ -107,7 +99,7 @@ describe("runtime event stream model", () => {
     client.stop(false);
   });
 
-  test("stops on 4xx and retries 5xx", async () => {
+  test("stops on 4xx and 5xx without automatic retries", async () => {
     const clientStates: RuntimeEventStreamState[] = [];
     const clientTimers: Array<() => void> = [];
     const client = new RuntimeEventStreamClient({
@@ -135,7 +127,6 @@ describe("runtime event stream model", () => {
       onGap: () => undefined,
       onState: (state) => serverStates.push(state),
       fetcher: async () => new Response(null, { status: 503 }),
-      random: () => 0.5,
       setTimer: (callback) => {
         serverTimers.push(callback);
         return serverTimers.length;
@@ -144,22 +135,15 @@ describe("runtime event stream model", () => {
     });
     server.start("graph-1");
     await flushAsyncWork();
-    expect(serverStates.at(-1)?.status).toBe("reconnecting");
+    expect(serverStates.at(-1)?.status).toBe("failed");
     expect(serverStates.at(-1)?.diagnostics).toMatchObject({
       lastErrorKind: "server_error",
-      retryAttempt: 1,
-      retryDelayMS: 1_000,
     });
-    expect(serverTimers).toHaveLength(1);
-    serverTimers[0]?.();
-    expect(serverStates.at(-1)).toMatchObject({
-      status: "connecting",
-      diagnostics: { retryDelayMS: 0 },
-    });
+    expect(serverTimers).toHaveLength(0);
     server.stop(false);
   });
 
-  test("retries immediately on demand and resets the backoff", async () => {
+  test("retries only when requested", async () => {
     let requests = 0;
     const states: RuntimeEventStreamState[] = [];
     const timers: Array<() => void> = [];
@@ -172,7 +156,6 @@ describe("runtime event stream model", () => {
         requests += 1;
         return new Response(null, { status: 503 });
       },
-      random: () => 0.5,
       setTimer: (callback) => {
         timers.push(callback);
         return timers.length;
@@ -183,21 +166,18 @@ describe("runtime event stream model", () => {
     client.start("graph-1");
     await flushAsyncWork();
     expect(requests).toBe(1);
-    expect(states.at(-1)?.status).toBe("reconnecting");
+    expect(states.at(-1)?.status).toBe("failed");
 
     client.reconnectNow();
-    expect(clearedTimers).toContain(1);
     expect(states.at(-1)).toMatchObject({
       status: "connecting",
-      diagnostics: { retryAttempt: 0, retryDelayMS: 0, lastError: "" },
+      diagnostics: { lastError: "" },
     });
     await flushAsyncWork();
 
     expect(requests).toBe(2);
-    expect(states.at(-1)).toMatchObject({
-      status: "reconnecting",
-      diagnostics: { retryAttempt: 1, retryDelayMS: 1_000 },
-    });
+    expect(states.at(-1)?.status).toBe("failed");
+    expect(clearedTimers).toHaveLength(0);
     client.stop(false);
   });
 

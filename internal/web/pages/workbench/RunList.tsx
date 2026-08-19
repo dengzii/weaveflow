@@ -19,6 +19,7 @@ export function RunList({
   runs,
   runTriggerTypes,
   selectedRunID,
+  loading = false,
   actionsDisabled = false,
   onSelectRun,
   onDeleteRun,
@@ -26,6 +27,7 @@ export function RunList({
   runs: RunRecord[];
   runTriggerTypes?: Partial<Record<string, TriggerType>>;
   selectedRunID?: string;
+  loading?: boolean;
   actionsDisabled?: boolean;
   onSelectRun?: (runID: string) => void;
   onDeleteRun?: (runID: string) => void;
@@ -34,10 +36,16 @@ export function RunList({
     <div aria-label="Run list" className="flex min-h-0 min-w-0 flex-col">
       <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
         <span className="text-xs font-semibold">Run</span>
-        <span className="ml-auto text-xs text-muted-foreground">{runs.length}</span>
+        {loading ? (
+          <span className="workbench-status-skeleton ml-auto h-3 w-5 rounded" aria-hidden="true" />
+        ) : (
+          <span className="ml-auto text-xs text-muted-foreground">{runs.length}</span>
+        )}
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        {runs.length === 0 ? (
+        {loading ? (
+          <RunListSkeleton />
+        ) : runs.length === 0 ? (
           <div className="p-3 text-sm text-muted-foreground">No runs</div>
         ) : (
           <ul className="divide-y divide-border">
@@ -93,6 +101,20 @@ export function RunList({
           </ul>
         )}
       </div>
+    </div>
+  );
+}
+
+function RunListSkeleton() {
+  return (
+    <div className="grid gap-1 p-2" aria-label="Loading runs">
+      {["first", "second", "third", "fourth"].map((item) => (
+        <div key={item} className="flex h-8 items-center gap-2 rounded-md px-2">
+          <div className="workbench-status-skeleton h-5 w-5 rounded-md" />
+          <div className="workbench-status-skeleton h-3 flex-1 rounded" />
+          <div className="workbench-status-skeleton h-3 w-12 rounded" />
+        </div>
+      ))}
     </div>
   );
 }

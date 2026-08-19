@@ -1,12 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_BACKEND_BASE_URL,
+  getStoredBackendBaseUrls,
   getManagementToken,
   joinBackendUrl,
   managementHeaders,
   normalizeBackendBaseUrl,
   resetStoredManagementToken,
   resolveBackendUrl,
+  resetStoredBackendBaseUrl,
+  setStoredBackendBaseUrl,
   setStoredManagementToken,
 } from "./backend";
 
@@ -59,6 +62,31 @@ describe("management token configuration", () => {
         .toBe("Bearer token-value");
       resetStoredManagementToken();
       expect(getManagementToken()).toBe("");
+    } finally {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+});
+
+describe("backend URL history", () => {
+  test("remembers unique normalized URLs with the newest first", () => {
+    const values = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => values.set(key, value),
+      removeItem: (key: string) => values.delete(key),
+    };
+    Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: storage } });
+    try {
+      setStoredBackendBaseUrl("localhost:9090///");
+      setStoredBackendBaseUrl("https://api.example.com");
+      setStoredBackendBaseUrl("localhost:9090");
+      expect(getStoredBackendBaseUrls()).toEqual([
+        "http://localhost:9090",
+        "https://api.example.com",
+      ]);
+      resetStoredBackendBaseUrl();
+      expect(getStoredBackendBaseUrls()).toEqual([]);
     } finally {
       Reflect.deleteProperty(globalThis, "window");
     }
