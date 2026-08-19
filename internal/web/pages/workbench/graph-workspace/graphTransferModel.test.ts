@@ -3,7 +3,9 @@ import type { GraphDefinition, RuntimeSettings, Trigger } from "../../../types";
 import {
   buildGraphExportBundle,
   graphExportFilename,
+  importedModelIDsRequiringCredentials,
   parseGraphImport,
+  prepareImportedRuntimeSettings,
   resolveGraphImport,
 } from "./graphTransferModel";
 
@@ -181,6 +183,55 @@ describe("graph transfer model", () => {
     expect(imported.triggers?.[0].credential).toEqual({ source: "env", ref: "TRIGGER_TOKEN" });
     expect(imported.triggers?.map((trigger) => trigger.target.graph_id)).toEqual(["demo", "demo"]);
     expect(imported.triggers?.map((trigger) => trigger.enabled)).toEqual([false, false]);
+  });
+
+  test("prepares imported models with explicit or reusable credentials", () => {
+    const imported = parseGraphImport(JSON.stringify(buildGraphExportBundle({
+      definition: graphDefinition(),
+      graphID: "demo",
+      graphVersion: "v1",
+      runtimeSettings: runtimeSettings(),
+      triggers: [],
+      includeConfig: true,
+      includeSettings: true,
+      includeTriggers: false,
+      includeUI: false,
+    })));
+    const settings = imported.settings!;
+
+    expect(importedModelIDsRequiringCredentials(settings, undefined)).toEqual(["default"]);
+    expect(prepareImportedRuntimeSettings(settings, undefined, {}).models[0]).toMatchObject({
+      id: "default",
+      enabled: false,
+      credential_configured: false,
+    });
+    expect(prepareImportedRuntimeSettings(settings, undefined, { default: " imported-key " }).models[0]).toMatchObject({
+      id: "default",
+      enabled: true,
+      credential_configured: true,
+      credential_value: "imported-key",
+    });
+
+    const reusable = runtimeSettings();
+    reusable.models[0].base_url = "https://api.example.test/v1/";
+    reusable.models[0].credential_value = "pending-reusable-key";
+    expect(importedModelIDsRequiringCredentials(settings, reusable)).toEqual([]);
+    expect(prepareImportedRuntimeSettings(settings, reusable, {}).models[0]).toMatchObject({
+      id: "default",
+      enabled: true,
+      credential_configured: true,
+      credential_value: "pending-reusable-key",
+    });
+  });
+
+  test("does not reuse a managed credential for a different endpoint", () => {
+    const settings = runtimeSettings();
+    settings.models[0].credential_configured = false;
+    const reusable = runtimeSettings();
+    reusable.models[0].base_url = "https://other.example.test/v1";
+
+    expect(importedModelIDsRequiringCredentials(settings, reusable)).toEqual(["default"]);
+    expect(prepareImportedRuntimeSettings(settings, reusable, {}).models[0].enabled).toBe(false);
   });
 
   test("rejects removed plaintext webhook credentials during import", () => {

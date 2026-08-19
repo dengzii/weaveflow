@@ -58,6 +58,7 @@ import {
   type GraphTransferMode,
 } from "./graph-workspace/GraphTransferDialog";
 import {
+  prepareImportedRuntimeSettings,
   resolveGraphImport,
   type ParsedGraphImport,
 } from "./graph-workspace/graphTransferModel";
@@ -655,7 +656,13 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     });
     const nextGraphID = resolvedGraph.graphID;
     const nextGraphVersion = resolvedGraph.graphVersion || defaultGraphVersion;
-    const settings = resolvedGraph.settings ?? targetDetail?.settings ?? emptyImportedRuntimeSettings;
+    const settings = resolvedGraph.settings
+      ? prepareImportedRuntimeSettings(
+          resolvedGraph.settings,
+          targetDetail?.settings ?? runtimeSettings,
+          options.modelCredentials
+        )
+      : targetDetail?.settings ?? emptyImportedRuntimeSettings;
     const triggers = resolvedGraph.contents.includes("triggers")
       ? resolvedGraph.triggers ?? []
       : targetTriggers;

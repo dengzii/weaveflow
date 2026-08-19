@@ -5,6 +5,7 @@ import {
   FileJson2,
   FileUp,
   GitBranch,
+  KeyRound,
   LayoutDashboard,
   LoaderCircle,
   LockKeyhole,
@@ -13,13 +14,16 @@ import {
   X,
 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
+import { Input } from "../../../components/ui/input";
 import { getGraphDetail } from "../../../api";
 import type { GraphDefinition, GraphDetail, RuntimeSettings, Trigger } from "../../../types";
 import { WorkbenchDialogOverlay } from "../shared";
 import {
   buildGraphExportBundle,
   graphExportFilename,
+  importedModelIDsRequiringCredentials,
   parseGraphImport,
+  type GraphImportModelCredentials,
   type GraphImportStrategy,
   type ParsedGraphImport,
 } from "./graphTransferModel";
@@ -28,6 +32,7 @@ export type GraphTransferMode = "import" | "export";
 
 export interface GraphImportOptions {
   strategy: GraphImportStrategy;
+  modelCredentials: GraphImportModelCredentials;
 }
 
 const maxImportFileBytes = 8 * 1024 * 1024;
@@ -66,6 +71,7 @@ export function GraphTransferDialog({
   const [overwriteTarget, setOverwriteTarget] = useState<GraphDetail | null>(null);
   const [targetLoading, setTargetLoading] = useState(false);
   const [targetReloadRevision, setTargetReloadRevision] = useState(0);
+  const [modelCredentials, setModelCredentials] = useState<GraphImportModelCredentials>({});
   const [error, setError] = useState("");
 
   useEffect(() => {
@@ -82,6 +88,7 @@ export function GraphTransferDialog({
     setOverwriteTarget(null);
     setTargetLoading(false);
     setTargetReloadRevision(0);
+    setModelCredentials({});
     setError("");
   }, [mode]);
 
@@ -123,6 +130,7 @@ export function GraphTransferDialog({
     setFileName(file.name);
     setParsedImport(null);
     setOverwriteExisting(false);
+    setModelCredentials({});
     setError("");
     if (file.size > maxImportFileBytes) {
       setError("Graph file exceeds the 8 MB limit.");
@@ -143,7 +151,13 @@ export function GraphTransferDialog({
     setImporting(true);
     setError("");
     try {
-      if (await onImport(parsedImport, { strategy: overwriteExisting ? "overwrite" : "copy" })) onClose();
+      const requiredCredentials = Object.fromEntries(
+        modelIDsRequiringCredentials.map((modelID) => [modelID, modelCredentials[modelID] ?? ""])
+      );
+      if (await onImport(parsedImport, {
+        strategy: overwriteExisting ? "overwrite" : "copy",
+        modelCredentials: requiredCredentials,
+      })) onClose();
     } catch (importError) {
       setError(importError instanceof Error ? importError.message : String(importError));
     } finally {
@@ -180,6 +194,8 @@ export function GraphTransferDialog({
   const importedGraphID = parsedImport?.graphID.trim() ?? "";
   const existingGraphIDSet = new Set(existingGraphIDs.map((value) => value.trim()).filter(Boolean));
   const hasGraphIDConflict = Boolean(importedGraphID && existingGraphIDSet.has(importedGraphID));
+  const reusableSettings = overwriteExisting ? overwriteTarget?.settings : runtimeSettings;
+  const modelIDsRequiringCredentials = importedModelIDsRequiringCredentials(parsedImport?.settings, reusableSettings);
   return (
     <WorkbenchDialogOverlay onDismiss={onClose}>
       <div
@@ -267,6 +283,35 @@ export function GraphTransferDialog({
                 {parsedImport.contents.includes("triggers") ? (
                   <div className="mt-1 text-xs text-muted-foreground">
                     Imported Triggers remain disabled; managed credentials, pending values, Bot IDs, and plaintext API keys are not imported.
+                  </div>
+                ) : null}
+                {modelIDsRequiringCredentials.length > 0 ? (
+                  <div className="mt-2 grid gap-3 rounded-md border border-border bg-background p-3">
+                    <div className="flex items-start gap-2">
+                      <KeyRound className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+                      <div className="grid gap-1">
+                        <span className="text-xs font-medium">Model API keys</span>
+                        <span className="text-xs text-muted-foreground">
+                          Exports do not contain API keys. Enter a key to keep a model enabled; models left blank are imported disabled.
+                        </span>
+                      </div>
+                    </div>
+                    {modelIDsRequiringCredentials.map((modelID) => (
+                      <label key={modelID} className="grid gap-1 text-xs">
+                        <span className="font-medium">{modelID}</span>
+                        <Input
+                          type="password"
+                          autoComplete="new-password"
+                          value={modelCredentials[modelID] ?? ""}
+                          onChange={(event) => setModelCredentials((current) => ({
+                            ...current,
+                            [modelID]: event.target.value,
+                          }))}
+                          placeholder="Enter API key or import disabled"
+                          className="font-mono text-xs"
+                        />
+                      </label>
+                    ))}
                   </div>
                 ) : null}
               </div>
