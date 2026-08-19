@@ -108,7 +108,7 @@ export function GraphInspectorPanel({
   onSelectLintIssue,
 }: GraphInspectorPanelProps) {
   return (
-    <section className="min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel pb-[45vh] [overflow-wrap:anywhere]">
+    <section className="h-full min-h-0 min-w-0 overflow-x-hidden overflow-y-auto border-l border-border bg-panel pb-[45vh] [overflow-wrap:anywhere]">
       <PanelHeader icon={FileJson} title={inspectorTitle} />
       <LintPanel issues={lintIssues} onSelectIssue={onSelectLintIssue} />
       {inspectorMode === "graph" ? (

@@ -6,7 +6,6 @@ import type { RuntimeEvent } from "../../types";
 export type RuntimeEventStreamStatus =
   | "connecting"
   | "connected"
-  | "reconnecting"
   | "gap"
   | "failed"
   | "closed";
@@ -23,8 +22,6 @@ export interface RuntimeEventStreamGap {
 
 export interface RuntimeEventStreamDiagnostics {
   lastEventID: string;
-  retryAttempt: number;
-  retryDelayMS: number;
   lastErrorKind: "" | "cursor_gap" | "client_error" | "server_error" | "network_error" | "stream_ended";
   lastError: string;
   receivedEvents: number;
@@ -54,15 +51,12 @@ interface RuntimeEventStreamClientOptions {
   onGap: (gap: RuntimeEventStreamGap) => void;
   onState: (state: RuntimeEventStreamState) => void;
   fetcher?: typeof fetch;
-  random?: () => number;
   setTimer?: (callback: () => void, delay: number) => number;
   clearTimer?: (timer: number) => void;
 }
 
 const initialDiagnostics: RuntimeEventStreamDiagnostics = {
   lastEventID: "",
-  retryAttempt: 0,
-  retryDelayMS: 0,
   lastErrorKind: "",
   lastError: "",
   receivedEvents: 0,
@@ -100,11 +94,6 @@ export function parseRuntimeEventFrame(data: string): RuntimeEventStreamFrame | 
   }
 }
 
-export function reconnectDelayMS(attempt: number, random: () => number = Math.random): number {
-  const exponential = Math.min(30_000, 1_000 * 2 ** Math.max(0, attempt - 1));
-  return Math.min(30_000, Math.round(exponential * (0.8 + random() * 0.4)));
-}
-
 export class SSEFrameDecoder {
   private buffer = "";
 
@@ -128,14 +117,11 @@ export class RuntimeEventStreamClient {
   private readonly onGap: (gap: RuntimeEventStreamGap) => void;
   private readonly onState: (state: RuntimeEventStreamState) => void;
   private readonly fetcher: typeof fetch;
-  private readonly random: () => number;
   private readonly setTimer: (callback: () => void, delay: number) => number;
   private readonly clearTimer: (timer: number) => void;
   private graphID = "";
   private cursor = "";
   private generation = 0;
-  private retryAttempt = 0;
-  private retryTimer: number | null = null;
   private diagnosticsTimer: number | null = null;
   private controller: AbortController | null = null;
   private status: RuntimeEventStreamStatus = "closed";
@@ -148,7 +134,6 @@ export class RuntimeEventStreamClient {
     this.onGap = options.onGap;
     this.onState = options.onState;
     this.fetcher = options.fetcher ?? ((input, init) => globalThis.fetch(input, init));
-    this.random = options.random ?? Math.random;
     this.setTimer = options.setTimer ?? ((callback, delay) => window.setTimeout(callback, delay));
     this.clearTimer = options.clearTimer ?? ((timer) => window.clearTimeout(timer));
   }
@@ -157,7 +142,6 @@ export class RuntimeEventStreamClient {
     this.stop(false);
     this.graphID = graphID.trim();
     this.cursor = "";
-    this.retryAttempt = 0;
     this.diagnostics = { ...initialDiagnostics };
     this.sampledReceivedEvents = 0;
     this.sampledDiscardedFrames = 0;
@@ -171,7 +155,6 @@ export class RuntimeEventStreamClient {
 
   stop(emitState = true): void {
     this.generation += 1;
-    this.clearRetry();
     if (this.diagnosticsTimer !== null) {
       this.clearTimer(this.diagnosticsTimer);
       this.diagnosticsTimer = null;
@@ -183,12 +166,9 @@ export class RuntimeEventStreamClient {
 
   reconnectNow(): void {
     if (!this.graphID) return;
-    this.clearRetry();
+    this.generation += 1;
     this.controller?.abort();
     this.controller = null;
-    this.retryAttempt = 0;
-    this.diagnostics.retryAttempt = 0;
-    this.diagnostics.retryDelayMS = 0;
     this.diagnostics.lastErrorKind = "";
     this.diagnostics.lastError = "";
     this.setStatus("connecting");
@@ -224,7 +204,6 @@ export class RuntimeEventStreamClient {
         this.diagnostics.lastError = gap.reason;
         this.setStatus("gap");
         this.onGap(gap);
-        this.scheduleReconnect(generation, "cursor_gap", gap.reason, true);
         return;
       }
       if (response.status >= 400 && response.status < 500) {
@@ -234,7 +213,7 @@ export class RuntimeEventStreamClient {
         return;
       }
       if (!response.ok) {
-        this.scheduleReconnect(generation, "server_error", `HTTP ${response.status}`);
+        this.fail(generation, "server_error", `HTTP ${response.status}`);
         return;
       }
       const contentType = response.headers.get("Content-Type")?.toLowerCase() ?? "";
@@ -244,19 +223,16 @@ export class RuntimeEventStreamClient {
         this.setStatus("failed");
         return;
       }
-      this.retryAttempt = 0;
-      this.diagnostics.retryAttempt = 0;
-      this.diagnostics.retryDelayMS = 0;
       this.diagnostics.lastErrorKind = "";
       this.diagnostics.lastError = "";
       this.setStatus("connected");
       await this.consume(response.body, generation, controller);
       if (this.isCurrent(generation, controller)) {
-        this.scheduleReconnect(generation, "stream_ended", "runtime event stream ended");
+        this.fail(generation, "stream_ended", "runtime event stream ended");
       }
     } catch (error) {
       if (!this.isCurrent(generation, controller) || isAbortError(error)) return;
-      this.scheduleReconnect(generation, "network_error", errorMessage(error));
+      this.fail(generation, "network_error", errorMessage(error));
     }
   }
 
@@ -311,39 +287,16 @@ export class RuntimeEventStreamClient {
     this.onEvent(parsed);
   }
 
-  private scheduleReconnect(
+  private fail(
     generation: number,
     kind: RuntimeEventStreamDiagnostics["lastErrorKind"],
-    message: string,
-    preserveStatus = false
+    message: string
   ): void {
     if (generation !== this.generation) return;
     this.controller = null;
-    this.retryAttempt += 1;
-    const delay = reconnectDelayMS(this.retryAttempt, this.random);
-    this.diagnostics.retryAttempt = this.retryAttempt;
-    this.diagnostics.retryDelayMS = delay;
     this.diagnostics.lastErrorKind = kind;
     this.diagnostics.lastError = message;
-    if (preserveStatus) {
-      this.emitState();
-    } else {
-      this.setStatus("reconnecting");
-    }
-    if (this.retryTimer !== null) this.clearTimer(this.retryTimer);
-    this.retryTimer = this.setTimer(() => {
-      this.retryTimer = null;
-      if (generation !== this.generation) return;
-      this.diagnostics.retryDelayMS = 0;
-      this.setStatus("connecting");
-      void this.connect(generation);
-    }, delay);
-  }
-
-  private clearRetry(): void {
-    if (this.retryTimer === null) return;
-    this.clearTimer(this.retryTimer);
-    this.retryTimer = null;
+    this.setStatus("failed");
   }
 
   private scheduleDiagnostics(): void {

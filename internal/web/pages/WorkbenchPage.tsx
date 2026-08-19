@@ -286,9 +286,10 @@ export function WorkbenchPage() {
     () => runs.find((run) => run.run_id === selectedRunID),
     [runs, selectedRunID]
   );
+  const initializing = !serverStateLoaded;
   const workbenchBusy = busy || runBusy || runLaunchPending;
-  const runControlsDisabled = runBusy || (busy && !runLaunchPending);
-  const graphSwitchDisabled = workbenchBusy || graphSwitchLocked;
+  const runControlsDisabled = runBusy || (busy && !runLaunchPending) || initializing;
+  const graphSwitchDisabled = workbenchBusy || graphSwitchLocked || initializing;
   const enterDebugMode = useCallback(() => {
     setWorkspaceMode("debug");
     if (!runStatusVisible) toggleRunStatus();
@@ -596,7 +597,7 @@ export function WorkbenchPage() {
 
   useEffect(() => {
     const handleSaveShortcut = (event: KeyboardEvent) => {
-      if (workspaceMode !== "edit" || settingsDialogOpen || !isSaveShortcut(event)) return;
+      if (workspaceMode !== "edit" || initializing || settingsDialogOpen || !isSaveShortcut(event)) return;
       event.preventDefault();
       if (event.repeat || workbenchBusy || !definition) return;
       void saveGraph();
@@ -611,6 +612,7 @@ export function WorkbenchPage() {
       streamDiagnostics={streamDiagnostics}
       onReconnectEventStream={reconnectEventStream}
       busy={workbenchBusy}
+      initializing={initializing}
       saving={saving}
       unsaved={graphUnsaved}
       definition={definition}
@@ -643,6 +645,7 @@ export function WorkbenchPage() {
           runs={runs}
           runTriggerTypes={runTriggerTypes}
           selectedRunId={selectedRunID}
+          loading={initializing}
           runInspectionLoading={runInspectionLoading}
           runActionsDisabled={workbenchBusy}
           onSelectRun={(runID) => {
@@ -662,6 +665,7 @@ export function WorkbenchPage() {
     >
       <GraphWorkspace
         workspaceMode={workspaceMode}
+        initializing={initializing}
         definition={definition}
         definitionText={definitionText}
         initialStateText={initialStateText}

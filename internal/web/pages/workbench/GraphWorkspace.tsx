@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { LoaderCircle } from "lucide-react";
 import { getGraphDetail, listTriggers } from "../../api";
 import {
   GraphCanvas,
@@ -24,7 +25,7 @@ import {
   readLocalGraphs,
   type LocalGraph,
 } from "../../lib/localGraphs";
-import { stringifyJSON } from "../../lib/utils";
+import { cn, stringifyJSON } from "../../lib/utils";
 import { detectVirtualGraphLoops, mergeVirtualGraphLoops } from "../../lib/loopPresentation";
 import type {
   GraphDefinition,
@@ -113,6 +114,7 @@ import type { WorkspaceMode } from "./WorkbenchShell";
 
 interface GraphWorkspaceProps {
   workspaceMode: WorkspaceMode;
+  initializing: boolean;
   definition: GraphDefinition | null;
   definitionText: string;
   initialStateText: string;
@@ -157,6 +159,7 @@ interface GraphWorkspaceProps {
 
 export const GraphWorkspace = memo(function GraphWorkspace({
   workspaceMode,
+  initializing,
   definition,
   definitionText,
   initialStateText,
@@ -202,6 +205,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   const [virtualEdges, setVirtualEdges] = useState<VirtualGraphEdge[]>([]);
   const [virtualLoops, setVirtualLoops] = useState<VirtualGraphLoop[]>([]);
   const [fitViewSignal, setFitViewSignal] = useState(0);
+  const [graphLoadingTitle, setGraphLoadingTitle] = useState("");
+  const [inspectorTransitioning, setInspectorTransitioning] = useState(false);
   const autoLoadedGraphRef = useRef(false);
   const graphLoadGenerationRef = useRef(0);
   const canvasRef = useRef<HTMLElement | null>(null);
@@ -531,7 +536,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   async function activateCachedGraph(graph: LocalGraph): Promise<boolean> {
     const generation = ++graphLoadGenerationRef.current;
     let resolvedGraph = graph;
-    if (graph.serverGraph || !isHydratedLocalGraph(resolvedGraph)) {
+    const needsDetail = graph.serverGraph || !isHydratedLocalGraph(resolvedGraph);
+    if (needsDetail) {
+      setGraphLoadingTitle(graph.title);
       setLocalStatus(`loading ${graph.title}`);
       try {
         const detail = await getGraphDetail(graph.graphId);
@@ -541,6 +548,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       } catch (error) {
         if (generation !== graphLoadGenerationRef.current) return false;
         const message = error instanceof Error ? error.message : String(error);
+        setGraphLoadingTitle("");
         setLocalStatus(message);
         onNotify("error", message);
         return false;
@@ -560,6 +568,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     clearSelection();
     setLocalStatus(`loaded ${resolvedGraph.title}`);
     setGraphMenuOpen(false);
+    setGraphLoadingTitle("");
     const viewportKey = graphCanvasViewportStorageKey(
       resolvedGraph.graphId,
       resolvedGraph.graphVersion,
@@ -973,16 +982,23 @@ export const GraphWorkspace = memo(function GraphWorkspace({
       ? "Edge Properties"
       : inspectorMode === "loop"
         ? selectedVirtualLoop?.name || "Loop Properties"
-      : inspectorMode === "virtual"
-        ? selectedVirtualNode?.name ?? "Virtual Node"
+        : inspectorMode === "virtual"
+          ? selectedVirtualNode?.name ?? "Virtual Node"
         : inspectorMode === "node"
           ? selectedNode?.name || selectedNode?.id || "Node Properties"
           : "Graph Properties";
+  const canvasLoading = initializing || Boolean(graphLoadingTitle);
+
+  useEffect(() => {
+    setInspectorTransitioning(true);
+    const frame = window.requestAnimationFrame(() => setInspectorTransitioning(false));
+    return () => window.cancelAnimationFrame(frame);
+  }, [inspectorMode, selectedEdgeId, selectedLoopId, selectedNodeId, selectedTriggerId]);
 
   return (
     <div
       ref={workspaceRef}
-      className="relative grid h-full min-h-0"
+      className="graph-workspace-surface relative grid h-full min-h-0 overflow-hidden"
       style={{ gridTemplateColumns: `minmax(0,1fr) 6px ${inspectorWidth}px` }}
     >
       {titleSlot
@@ -991,6 +1007,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
               activeCacheID={activeCacheID}
               definition={definition}
               graphs={graphs}
+              graphsLoading={!serverGraphsLoaded}
+              loading={initializing || Boolean(graphLoadingTitle)}
               graphID={graphId}
               open={graphMenuOpen}
               graphSwitchDisabled={graphSwitchDisabled}
@@ -1005,63 +1023,72 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           )
         : null}
 
-      <section ref={canvasRef} className="relative min-h-0 bg-canvas">
-        <GraphCanvas
-          definition={definition}
-          steps={steps}
-          selectedRunId={selectedRunId}
-          runStatus={runStatus}
-          runTriggerId={runTriggerId}
-          editable={editing}
-          runtimeVisible={!editing}
-          selectedNodeId={selectedNodeId ?? undefined}
-          selectedEdgeId={selectedEdgeId ?? undefined}
-          selectedLoopId={selectedLoopId ?? undefined}
-          selectedTriggerId={selectedTriggerId ?? undefined}
-          fitViewSignal={fitViewSignal}
-          focusNodeId={canvasSearch.focusNodeID}
-          focusNodeSignal={canvasSearch.focusNodeSignal}
-          viewportStorageKey={graphCanvasViewportStorageKey(graphId, graphVersion, activeCacheID, definition)}
-          highlightedNodeIds={canvasSearch.highlightedNodeIDs}
-          nodeTypes={paletteNodeTypes}
-          configurationErrors={nodeConfigurationErrors}
-          onSelectNode={setSelectedNodeId}
-          onSelectEdge={setSelectedEdgeId}
-          onSelectLoop={setSelectedLoopId}
-          onSelectTrigger={selectTrigger}
-          onPositionChanges={editing ? moveCanvasNodes : undefined}
-          onAutoLayout={editing ? applyAutoLayout : undefined}
-          onConnectNodes={editing ? connectNodes : undefined}
-          onCreateNodeAt={editing ? openCreateMenu : undefined}
-          onNodeContextMenu={editing ? openNodeMenu : undefined}
-          onEdgeContextMenu={editing ? openEdgeMenu : undefined}
-          onLoopContextMenu={editing ? openLoopMenu : undefined}
-          onTriggerContextMenu={editing ? openTriggerMenu : undefined}
-          onLoopDrag={editing ? handleLoopDrag : undefined}
-          virtualNodeIds={virtualNodeIds}
-          virtualEdges={displayVirtualEdges}
-          virtualLoops={displayVirtualLoops}
-          triggerNodes={triggerCanvasNodes}
-        />
-        {triggerLoadError ? (
-          <div className="absolute right-4 top-4 z-30 max-w-sm rounded border border-destructive/40 bg-panel p-2 text-xs text-destructive shadow-sm">
-            Trigger unavailable: {triggerLoadError}
-          </div>
-        ) : null}
-        <CanvasSearch search={canvasSearch} />
-        {!editing ? (
-          <aside className="absolute left-4 top-4 z-30 w-[min(320px,calc(100%-2rem))] overflow-hidden rounded-md border border-border bg-panel/95 shadow-xl backdrop-blur">
-            <div className="flex h-9 min-w-0 items-center gap-2 border-b border-border px-3">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Node status</span>
-              {selectedNode ? (
-                <span className="min-w-0 flex-1 truncate text-right text-xs font-medium" title={selectedNode.name || selectedNode.id}>
-                  {selectedNode.name || selectedNode.id}
-                </span>
-              ) : null}
-            </div>
-            <NodeRuntimeInspector selectedNode={selectedNode} selectedRunID={selectedRunId} steps={steps} />
-          </aside>
-        ) : null}
+      <section
+        ref={canvasRef}
+        className="graph-canvas-shell relative min-h-0 bg-canvas"
+      >
+        {canvasLoading ? (
+          <CanvasLoadingState />
+        ) : (
+          <>
+            <GraphCanvas
+              definition={definition}
+              steps={steps}
+              selectedRunId={selectedRunId}
+              runStatus={runStatus}
+              runTriggerId={runTriggerId}
+              editable={editing}
+              runtimeVisible={!editing}
+              selectedNodeId={selectedNodeId ?? undefined}
+              selectedEdgeId={selectedEdgeId ?? undefined}
+              selectedLoopId={selectedLoopId ?? undefined}
+              selectedTriggerId={selectedTriggerId ?? undefined}
+              fitViewSignal={fitViewSignal}
+              focusNodeId={canvasSearch.focusNodeID}
+              focusNodeSignal={canvasSearch.focusNodeSignal}
+              viewportStorageKey={graphCanvasViewportStorageKey(graphId, graphVersion, activeCacheID, definition)}
+              highlightedNodeIds={canvasSearch.highlightedNodeIDs}
+              nodeTypes={paletteNodeTypes}
+              configurationErrors={nodeConfigurationErrors}
+              onSelectNode={setSelectedNodeId}
+              onSelectEdge={setSelectedEdgeId}
+              onSelectLoop={setSelectedLoopId}
+              onSelectTrigger={selectTrigger}
+              onPositionChanges={editing ? moveCanvasNodes : undefined}
+              onAutoLayout={editing ? applyAutoLayout : undefined}
+              onConnectNodes={editing ? connectNodes : undefined}
+              onCreateNodeAt={editing ? openCreateMenu : undefined}
+              onNodeContextMenu={editing ? openNodeMenu : undefined}
+              onEdgeContextMenu={editing ? openEdgeMenu : undefined}
+              onLoopContextMenu={editing ? openLoopMenu : undefined}
+              onTriggerContextMenu={editing ? openTriggerMenu : undefined}
+              onLoopDrag={editing ? handleLoopDrag : undefined}
+              virtualNodeIds={virtualNodeIds}
+              virtualEdges={displayVirtualEdges}
+              virtualLoops={displayVirtualLoops}
+              triggerNodes={triggerCanvasNodes}
+            />
+            {triggerLoadError ? (
+              <div className="absolute right-4 top-4 z-30 max-w-sm rounded border border-destructive/40 bg-panel p-2 text-xs text-destructive shadow-sm">
+                Trigger unavailable: {triggerLoadError}
+              </div>
+            ) : null}
+            <CanvasSearch search={canvasSearch} />
+            {!editing ? (
+              <aside className="absolute left-4 top-4 z-30 w-[min(320px,calc(100%-2rem))] overflow-hidden rounded-md border border-border bg-panel/95 shadow-xl backdrop-blur">
+                <div className="flex h-9 min-w-0 items-center gap-2 border-b border-border px-3">
+                  <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Node status</span>
+                  {selectedNode ? (
+                    <span className="min-w-0 flex-1 truncate text-right text-xs font-medium" title={selectedNode.name || selectedNode.id}>
+                      {selectedNode.name || selectedNode.id}
+                    </span>
+                  ) : null}
+                </div>
+                <NodeRuntimeInspector selectedNode={selectedNode} selectedRunID={selectedRunId} steps={steps} />
+              </aside>
+            ) : null}
+          </>
+        )}
         <ToastStack toasts={toasts} onDismiss={onDismissToast} />
       </section>
 
@@ -1076,62 +1103,69 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         <span className="absolute inset-y-0 -left-2 -right-2" />
       </div>
 
-      {triggerInspectorOpen ? (
-        <TriggerInspector
-          graphID={graphId}
-          trigger={selectedTrigger}
-          values={selectedTriggerDraft!.values}
-          persisted={selectedTriggerDraft!.persisted}
-          chatSetupChannelID={selectedTriggerDraft!.chatSetupChannelID}
-          chatSetupSessionID={selectedTriggerDraft!.chatSetupSessionID}
-          statePathSuggestions={triggerStatePaths}
-          chatChannels={registry?.chat_channels ?? []}
-          onChange={handleTriggerChanged}
-        />
-      ) : (
-      <GraphInspectorPanel
-        conditions={conditions}
-        definition={definition}
-        definitionText={definitionText}
-        edgeConfigText={edgeConfigText}
-        initialRequirements={initialRequirements}
-        directInitialRequirements={directInitialRequirements}
-        initialRequirementsError={initialRequirementsError}
-        initialStateText={initialStateText}
-        inspectorMode={inspectorMode}
-        inspectorTitle={inspectorTitle}
-        lintIssues={lintIssues}
-        nodeConfigText={nodeConfigText}
-        paletteNodeTypes={paletteNodeTypes}
-        registry={registry}
-        registryLoaded={Boolean(registry)}
-        toolDefinitions={toolDefinitions}
-        runtimeSettings={runtimeSettings}
-        onChangeRuntimeSettings={onChangeRuntimeSettings}
-        selectedEdge={selectedEdge}
-        selectedNode={selectedNode}
-        selectedVirtualLoop={selectedVirtualLoop}
-        selectedVirtualEdge={selectedVirtualEdge}
-        steps={steps}
-        visibleVirtualNodes={visibleVirtualNodes}
-        onApplyEdgeConfig={applyEdgeConfig}
-        onApplyNodeConfig={applyNodeConfig}
-        onChangeDefinitionText={onDefinitionText}
-        onChangeEdge={changeSelectedEdge}
-        onChangeEdgeConfigText={setEdgeConfigText}
-        onChangeVirtualLoop={changeSelectedVirtualLoop}
-        onChangeVirtualEdge={changeSelectedVirtualEdge}
-        onChangeGraphField={changeGraphField}
-        onChangeInitialStateText={onInitialStateText}
-        onChangeNode={changeSelectedNode}
-        onChangeNodeConfigText={setNodeConfigText}
-        onChangeNodeId={changeSelectedNodeId}
-        onDeleteEdge={deleteSelectedEdge}
-        onDeleteLoop={deleteVirtualLoop}
-        onDeleteNode={deleteSelectedNode}
-        onSelectLintIssue={selectLintIssue}
-      />
-      )}
+      <div className={cn(
+        "graph-inspector-shell h-full min-h-0 min-w-0 overflow-hidden transition-opacity duration-200 ease-out",
+        inspectorTransitioning ? "opacity-70" : "opacity-100"
+      )}>
+        {canvasLoading ? (
+          <InspectorLoadingState />
+        ) : triggerInspectorOpen ? (
+          <TriggerInspector
+            graphID={graphId}
+            trigger={selectedTrigger}
+            values={selectedTriggerDraft!.values}
+            persisted={selectedTriggerDraft!.persisted}
+            chatSetupChannelID={selectedTriggerDraft!.chatSetupChannelID}
+            chatSetupSessionID={selectedTriggerDraft!.chatSetupSessionID}
+            statePathSuggestions={triggerStatePaths}
+            chatChannels={registry?.chat_channels ?? []}
+            onChange={handleTriggerChanged}
+          />
+        ) : (
+          <GraphInspectorPanel
+            conditions={conditions}
+            definition={definition}
+            definitionText={definitionText}
+            edgeConfigText={edgeConfigText}
+            initialRequirements={initialRequirements}
+            directInitialRequirements={directInitialRequirements}
+            initialRequirementsError={initialRequirementsError}
+            initialStateText={initialStateText}
+            inspectorMode={inspectorMode}
+            inspectorTitle={inspectorTitle}
+            lintIssues={lintIssues}
+            nodeConfigText={nodeConfigText}
+            paletteNodeTypes={paletteNodeTypes}
+            registry={registry}
+            registryLoaded={Boolean(registry)}
+            toolDefinitions={toolDefinitions}
+            runtimeSettings={runtimeSettings}
+            onChangeRuntimeSettings={onChangeRuntimeSettings}
+            selectedEdge={selectedEdge}
+            selectedNode={selectedNode}
+            selectedVirtualLoop={selectedVirtualLoop}
+            selectedVirtualEdge={selectedVirtualEdge}
+            steps={steps}
+            visibleVirtualNodes={visibleVirtualNodes}
+            onApplyEdgeConfig={applyEdgeConfig}
+            onApplyNodeConfig={applyNodeConfig}
+            onChangeDefinitionText={onDefinitionText}
+            onChangeEdge={changeSelectedEdge}
+            onChangeEdgeConfigText={setEdgeConfigText}
+            onChangeVirtualLoop={changeSelectedVirtualLoop}
+            onChangeVirtualEdge={changeSelectedVirtualEdge}
+            onChangeGraphField={changeGraphField}
+            onChangeInitialStateText={onInitialStateText}
+            onChangeNode={changeSelectedNode}
+            onChangeNodeConfigText={setNodeConfigText}
+            onChangeNodeId={changeSelectedNodeId}
+            onDeleteEdge={deleteSelectedEdge}
+            onDeleteLoop={deleteVirtualLoop}
+            onDeleteNode={deleteSelectedNode}
+            onSelectLintIssue={selectLintIssue}
+          />
+        )}
+      </div>
 
       {editing && contextMenu ? (
         <CanvasContextMenu
@@ -1166,9 +1200,31 @@ export const GraphWorkspace = memo(function GraphWorkspace({
           onImport={importGraph}
         />
       ) : null}
+
     </div>
   );
 });
+
+function CanvasLoadingState() {
+  return (
+    <div className="graph-canvas-loading-state" role="status" aria-label="Loading graph canvas">
+      <LoaderCircle className="graph-canvas-loading-spinner h-4 w-4" aria-hidden="true" />
+    </div>
+  );
+}
+
+function InspectorLoadingState() {
+  return (
+    <section className="graph-inspector-loading min-h-0 min-w-0 overflow-hidden border-l border-border bg-panel" role="status" aria-label="Loading graph inspector">
+      <div className="grid gap-3 p-4">
+        <div className="graph-loading-skeleton h-4 w-28 rounded" />
+        <div className="graph-loading-skeleton h-8 w-full rounded" />
+        <div className="graph-loading-skeleton h-8 w-5/6 rounded" />
+        <div className="graph-loading-skeleton h-24 w-full rounded" />
+      </div>
+    </section>
+  );
+}
 
 function isEditableKeyboardTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;

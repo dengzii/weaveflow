@@ -70,6 +70,7 @@ export function RunStatusPanel({
   runs,
   runTriggerTypes,
   selectedRunId,
+  loading = false,
   runInspectionLoading = false,
   runActionsDisabled = false,
   onSelectRun,
@@ -85,6 +86,7 @@ export function RunStatusPanel({
   runs: RunRecord[];
   runTriggerTypes?: Partial<Record<string, TriggerType>>;
   selectedRunId?: string;
+  loading?: boolean;
   runInspectionLoading?: boolean;
   runActionsDisabled?: boolean;
   onSelectRun?: (runId: string) => void;
@@ -116,6 +118,7 @@ export function RunStatusPanel({
     () => [...(runs ?? [])].sort((a, b) => timeRank(b.started_at) - timeRank(a.started_at)),
     [runs]
   );
+  const inspectionLoading = loading || runInspectionLoading;
   const selectedRun = useMemo(
     () => runOptions.find((run) => run.run_id === selectedRunId),
     [runOptions, selectedRunId]
@@ -363,6 +366,7 @@ export function RunStatusPanel({
           runs={runOptions}
           runTriggerTypes={runTriggerTypes}
           selectedRunID={selectedRunId}
+          loading={loading}
           actionsDisabled={runActionsDisabled}
           onSelectRun={onSelectRun}
           onDeleteRun={onDeleteRun}
@@ -388,7 +392,7 @@ export function RunStatusPanel({
                 <RunOverview
                   run={selectedRun}
                   metrics={runMetrics}
-                  loading={runInspectionLoading}
+                  loading={inspectionLoading}
                 />
               ) : panelView === "io" ? (
                 <RunInputOutput
@@ -399,12 +403,12 @@ export function RunStatusPanel({
                   outputDetail={outputCheckpointDetail}
                   inputError={inputCheckpointError}
                   outputError={outputCheckpointError}
-                  loading={runInspectionLoading}
+                  loading={inspectionLoading}
                 />
               ) : !selectedRun ? (
-                <EmptyDetail>{runInspectionLoading ? "Loading run metrics…" : "Select a run"}</EmptyDetail>
+                <EmptyDetail>{inspectionLoading ? "Loading run metrics…" : "Select a run"}</EmptyDetail>
               ) : (
-                <RunMetrics metrics={runMetrics} loading={runInspectionLoading} partial={hasOlderEvents} />
+                <RunMetrics metrics={runMetrics} loading={inspectionLoading} partial={hasOlderEvents} />
               )}
             </div>
           </div>
@@ -451,7 +455,7 @@ export function RunStatusPanel({
                     effectiveKey={effectiveKey}
                     onSelect={setSelectedKey}
                     hasEvents={events.length > 0}
-                    inspectionLoading={runInspectionLoading}
+                    inspectionLoading={inspectionLoading}
                     hasOlderEvents={hasOlderEvents}
                     loading={olderEventsLoading}
                     onLoadOlder={onLoadOlderEvents}
@@ -482,7 +486,7 @@ export function RunStatusPanel({
                 {panelView === "events" ? (
                   selectedEvent ? (
                     <RunEventDetail event={selectedEvent} />
-                  ) : runInspectionLoading ? (
+                  ) : inspectionLoading ? (
                     <EmptyDetail>Loading event detail…</EmptyDetail>
                   ) : (
                     <EmptyDetail>Select an event</EmptyDetail>

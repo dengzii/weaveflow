@@ -51,6 +51,29 @@ describe("graph transfer UI", () => {
     expect(markup).not.toContain("*demo");
   });
 
+  test("keeps the graph list shape stable while server graphs load", () => {
+    const markup = renderToStaticMarkup(createElement(GraphTitleMenu, {
+      activeCacheID: "",
+      definition: null,
+      graphs: [],
+      graphsLoading: true,
+      loading: true,
+      graphID: "debug_graph",
+      open: true,
+      graphSwitchDisabled: true,
+      onCreateGraph: () => undefined,
+      onDeleteGraph: () => undefined,
+      onExportGraph: () => undefined,
+      onImportGraph: () => undefined,
+      onLoadGraph: () => undefined,
+      onOpenChange: () => undefined,
+    }));
+
+    expect(markup).toContain("Loading graph…");
+    expect(markup).toContain('aria-label="Loading graphs"');
+    expect(markup).not.toContain("No graphs.");
+  });
+
   test("renders export contents as a checkbox list", () => {
     const markup = renderToStaticMarkup(createElement(GraphTransferDialog, {
       mode: "export",

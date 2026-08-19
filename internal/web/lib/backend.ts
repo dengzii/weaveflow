@@ -1,7 +1,9 @@
 export const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
 
 const storageKey = "weaveflow:web:backend-base-url:v1";
+const historyStorageKey = "weaveflow:web:backend-base-url-history:v1";
 const managementTokenStorageKey = "weaveflow:web:management-token:v1";
+const maxRememberedBackendBaseURLs = 8;
 
 export function normalizeBackendBaseUrl(value: string): string {
   let candidate = value.trim();
@@ -55,11 +57,17 @@ export function resolveBackendUrl(path: string): string {
 export function setStoredBackendBaseUrl(value: string): string {
   const normalized = normalizeBackendBaseUrl(value);
   window.localStorage.setItem(storageKey, normalized);
+  const history = getStoredBackendBaseUrls().filter((item) => item !== normalized);
+  window.localStorage.setItem(
+    historyStorageKey,
+    JSON.stringify([normalized, ...history].slice(0, maxRememberedBackendBaseURLs))
+  );
   return normalized;
 }
 
 export function resetStoredBackendBaseUrl(): void {
   window.localStorage.removeItem(storageKey);
+  window.localStorage.removeItem(historyStorageKey);
 }
 
 export function hasStoredBackendBaseUrl(): boolean {
@@ -68,6 +76,26 @@ export function hasStoredBackendBaseUrl(): boolean {
     return window.localStorage.getItem(storageKey) !== null;
   } catch {
     return false;
+  }
+}
+
+export function getStoredBackendBaseUrls(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(historyStorageKey) ?? "null") as unknown;
+    const history = Array.isArray(parsed) ? parsed.flatMap((item) => {
+      if (typeof item !== "string") return [];
+      try {
+        return [normalizeBackendBaseUrl(item)];
+      } catch {
+        return [];
+      }
+    }) : [];
+    const current = window.localStorage.getItem(storageKey);
+    const values = current ? [current, ...history] : history;
+    return values.map((item) => normalizeBackendBaseUrl(item)).filter((item, index, items) => items.indexOf(item) === index);
+  } catch {
+    return [];
   }
 }
 

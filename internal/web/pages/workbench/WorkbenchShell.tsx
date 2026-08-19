@@ -15,11 +15,9 @@ import { cn } from "../../lib/utils";
 import { getBackendBaseUrl } from "../../lib/backend";
 import type { GraphDefinition } from "../../types";
 
-type StreamStatus = "connecting" | "connected" | "reconnecting" | "gap" | "failed" | "closed";
+type StreamStatus = "connecting" | "connected" | "gap" | "failed" | "closed";
 interface StreamDiagnostics {
   lastEventID: string;
-  retryAttempt: number;
-  retryDelayMS: number;
   lastErrorKind: string;
   lastError: string;
   receivedEvents: number;
@@ -38,6 +36,7 @@ export function WorkbenchShell({
   streamStatus,
   streamDiagnostics,
   busy,
+  initializing,
   saving,
   unsaved,
   definition,
@@ -63,6 +62,7 @@ export function WorkbenchShell({
   streamStatus: StreamStatus;
   streamDiagnostics: StreamDiagnostics;
   busy: boolean;
+  initializing: boolean;
   saving: boolean;
   unsaved: boolean;
   definition: GraphDefinition | null;
@@ -86,10 +86,11 @@ export function WorkbenchShell({
   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
 }) {
   const backendBaseUrl = getBackendBaseUrl();
+  const displayedBackendBaseUrl = backendBaseUrl.replace(/^https?:\/\//, "");
   const runPanelShown = workspaceMode === "debug" && runStatusVisible;
 
   return (
-    <div className="flex h-screen min-h-0 bg-background text-foreground">
+    <div className="workbench-shell-enter flex h-screen min-h-0 overflow-hidden bg-background text-foreground">
       <aside className="flex w-16 shrink-0 flex-col items-center border-r border-border bg-sidebar py-3">
         <div
           className="mb-4 flex h-10 w-10 items-center justify-center rounded-xl bg-primary/10 text-primary"
@@ -120,24 +121,6 @@ export function WorkbenchShell({
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
           <div id="graph-title-slot" className="min-w-0" />
-          <div className="inline-flex h-8 shrink-0 items-center rounded-md border border-border bg-muted/60 p-0.5" role="group" aria-label="Workspace mode">
-            {(["edit", "debug"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                className={cn(
-                  "h-6 rounded px-2.5 text-xs font-medium capitalize transition-colors",
-                  workspaceMode === mode
-                    ? "bg-background text-foreground shadow-sm"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-                aria-pressed={workspaceMode === mode}
-                onClick={() => onWorkspaceModeChange(mode)}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
           <div className="flex-1" />
           {workspaceMode === "edit" ? (
             <Button
@@ -145,7 +128,7 @@ export function WorkbenchShell({
               size="sm"
               className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
               onClick={onSave}
-              disabled={busy || !definition}
+              disabled={busy || initializing || !definition}
               title="Save graph"
             >
               {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
@@ -165,7 +148,7 @@ export function WorkbenchShell({
             </>
           ) : runControlMode === "resume" ? (
             <>
-              <Button size="sm" onClick={onResume} disabled={busy || !canResume} title="Resume paused run">
+              <Button size="sm" onClick={onResume} disabled={busy || initializing || !canResume} title="Resume paused run">
                 {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 Resume
               </Button>
@@ -175,12 +158,12 @@ export function WorkbenchShell({
               </Button>
             </>
           ) : (
-            <Button size="sm" onClick={onRun} disabled={busy || !definition} title="Run graph">
+            <Button size="sm" onClick={onRun} disabled={busy || initializing || !definition} title="Run graph">
               {busy && !saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
               Run
             </Button>
           )}
-          <Button variant="outline" size="sm" onClick={onShowRegistry} title="View registry">
+          <Button variant="outline" size="sm" onClick={onShowRegistry} disabled={initializing} title="View registry">
             <Braces className="h-4 w-4" />
             Registry
           </Button>
@@ -199,11 +182,10 @@ export function WorkbenchShell({
               Retry now
             </Button>
           </div>
-        ) : streamStatus === "reconnecting" || streamStatus === "closed" ? (
+        ) : streamStatus === "closed" ? (
           <div className="flex items-center gap-3 border-b border-amber-500/30 bg-amber-500/10 px-4 py-2 text-sm text-amber-800 dark:text-amber-200">
             <span className="min-w-0 flex-1">
               Runtime event stream disconnected. {streamErrorSummary(streamDiagnostics)}
-              {streamStatus === "reconnecting" ? ` ${retryBackoffSummary(streamDiagnostics.retryDelayMS)}` : ""}
             </span>
             <Button variant="outline" size="sm" className="shrink-0" onClick={onReconnectEventStream}>
               Retry now
@@ -215,21 +197,55 @@ export function WorkbenchShell({
 
         {runPanelShown ? runStatusPanel : null}
 
-        <footer className="flex h-9 items-center gap-3 border-t border-border bg-muted/40 px-4 text-xs text-muted-foreground">
-          <div
-            className="flex min-w-0 items-center gap-1.5"
-            title={streamDiagnosticsTitle(streamStatus, streamDiagnostics, backendBaseUrl)}
-            aria-label={streamDiagnosticsTitle(streamStatus, streamDiagnostics, backendBaseUrl)}
-          >
-            <span className={cn("h-2 w-2 shrink-0 rounded-full", streamStatusDotClass(streamStatus))} aria-hidden="true" />
-            <span className="truncate">{backendBaseUrl}</span>
+        <footer
+          className="flex h-9 items-center gap-3 border-t border-border bg-muted/40 px-4 text-xs text-muted-foreground"
+          aria-busy={initializing}
+        >
+          <div className="inline-flex h-7 shrink-0 items-center rounded-md border border-border bg-muted/60 p-0.5" role="group" aria-label="Workspace mode">
+            {(["edit", "debug"] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                className={cn(
+                  "h-5 rounded px-2.5 text-xs font-medium capitalize transition-colors",
+                  workspaceMode === mode
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                aria-pressed={workspaceMode === mode}
+                onClick={() => onWorkspaceModeChange(mode)}
+                disabled={initializing}
+              >
+                {mode}
+              </button>
+            ))}
           </div>
-          <span>{definition ? `${definition.nodes.length} nodes` : "invalid graph"}</span>
-          <span>{definition?.edges?.length ?? 0} edges</span>
+          {initializing ? (
+            <div className="ml-auto flex min-w-0 items-center gap-2" role="status" aria-label="Loading workspace status">
+              <span className="h-2 w-2 shrink-0 rounded-full bg-muted-foreground/30 workbench-status-pulse" aria-hidden="true" />
+              <span className="workbench-status-skeleton h-3 w-32 rounded" aria-hidden="true" />
+              <span className="workbench-status-skeleton h-3 w-12 rounded" aria-hidden="true" />
+              <span className="workbench-status-skeleton h-3 w-10 rounded" aria-hidden="true" />
+            </div>
+          ) : (
+            <>
+              <div
+                className="flex min-w-0 items-center gap-1.5"
+                title={streamDiagnosticsTitle(streamStatus, streamDiagnostics, backendBaseUrl)}
+                aria-label={streamDiagnosticsTitle(streamStatus, streamDiagnostics, backendBaseUrl)}
+              >
+                <span className={cn("h-2 w-2 shrink-0 rounded-full", streamStatusDotClass(streamStatus))} aria-hidden="true" />
+                <span className="truncate">{displayedBackendBaseUrl}</span>
+              </div>
+              <span>{definition ? `${definition.nodes.length} nodes` : "invalid graph"}</span>
+              <span>{definition?.edges?.length ?? 0} edges</span>
+            </>
+          )}
           {hasRunStatus ? (
             <button
               className="ml-auto inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               onClick={onToggleRunStatus}
+              disabled={initializing}
               title={runPanelShown ? "Hide run panel" : "Show run panel"}
             >
               <ChevronUp className={`h-3.5 w-3.5 transition-transform ${runPanelShown ? "rotate-180" : ""}`} />
@@ -248,8 +264,6 @@ function streamStatusLabel(status: StreamStatus): string {
       return "Server connected";
     case "connecting":
       return "Server connecting";
-    case "reconnecting":
-      return "Server reconnecting";
     case "gap":
       return "Server event gap";
     case "failed":
@@ -264,7 +278,6 @@ function streamStatusDotClass(status: StreamStatus): string {
     case "connected":
       return "bg-emerald-600 dark:bg-emerald-300";
     case "connecting":
-    case "reconnecting":
     case "gap":
       return "bg-amber-600 dark:bg-amber-300";
     case "failed":
@@ -301,13 +314,6 @@ function streamErrorSummary(diagnostics: StreamDiagnostics): string {
   if (diagnostics.lastError) return `${diagnostics.lastError}.`;
   if (kind) return `${kind}.`;
   return "Connection is not available.";
-}
-
-function retryBackoffSummary(delayMS: number): string {
-  if (delayMS <= 0) return "Reconnecting now.";
-  const seconds = delayMS / 1_000;
-  const displaySeconds = seconds < 10 ? seconds.toFixed(1) : Math.round(seconds).toString();
-  return `Automatic retry backoff: ${displaySeconds} s.`;
 }
 
 function NavButton({

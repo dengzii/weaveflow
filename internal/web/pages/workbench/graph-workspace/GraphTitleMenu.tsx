@@ -9,6 +9,8 @@ export function GraphTitleMenu({
   activeCacheID,
   definition,
   graphs,
+  graphsLoading = false,
+  loading = false,
   graphID,
   open,
   graphSwitchDisabled,
@@ -22,6 +24,8 @@ export function GraphTitleMenu({
   activeCacheID: string;
   definition: GraphDefinition | null;
   graphs: LocalGraph[];
+  graphsLoading?: boolean;
+  loading?: boolean;
   graphID: string;
   open: boolean;
   graphSwitchDisabled: boolean;
@@ -32,15 +36,16 @@ export function GraphTitleMenu({
   onLoadGraph: (graph: LocalGraph) => void;
   onOpenChange: (open: boolean) => void;
 }) {
-  const title = definition?.name || graphID || "Untitled graph";
-  const scriptBadgeCount = graphScriptBadgeCount(definition);
+  const title = loading ? "Loading graph…" : definition?.name || graphID || "Untitled graph";
+  const scriptBadgeCount = loading ? 0 : graphScriptBadgeCount(definition);
 
   return (
     <div data-graph-title-menu className="relative min-w-0">
       <button
         type="button"
-        className="flex max-w-[360px] min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left hover:bg-accent"
+        className="flex max-w-[360px] min-w-0 items-center gap-2 rounded-md px-2 py-1 text-left transition-opacity hover:bg-accent disabled:cursor-wait disabled:opacity-70"
         onClick={() => onOpenChange(!open)}
+        disabled={loading}
         aria-expanded={open}
         title={scriptBadgeCount > 0 ? `${title} (${scriptBadgeCount} scripts)` : title}
       >
@@ -50,7 +55,7 @@ export function GraphTitleMenu({
       </button>
 
       {open ? (
-        <div className="absolute left-0 top-12 z-50 w-80 overflow-hidden rounded-md border border-border bg-panel shadow-lg">
+        <div className="graph-title-menu-panel absolute left-0 top-12 z-50 w-80 overflow-hidden rounded-md border border-border bg-panel shadow-lg">
           <div className="flex items-center gap-2 border-b border-border p-2">
             <Button type="button" variant="outline" size="sm" onClick={onCreateGraph} disabled={graphSwitchDisabled}>
               <FilePlus2 className="h-4 w-4" />
@@ -71,7 +76,9 @@ export function GraphTitleMenu({
           </div>
 
           <div className="max-h-80 overflow-auto">
-            {graphs.length === 0 ? (
+            {graphsLoading ? (
+              <GraphListSkeleton />
+            ) : graphs.length === 0 ? (
               <div className="px-3 py-3 text-sm text-muted-foreground">No graphs.</div>
             ) : (
               graphs.map((graph) => {
@@ -125,6 +132,19 @@ export function GraphTitleMenu({
           </div>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function GraphListSkeleton() {
+  return (
+    <div className="grid gap-1 p-2" aria-label="Loading graphs">
+      {["first", "second", "third"].map((item) => (
+        <div key={item} className="grid h-[58px] gap-2 rounded-md border border-border/60 p-2.5">
+          <div className="graph-list-skeleton-pulse h-3 w-2/3 rounded bg-muted-foreground/15" />
+          <div className="graph-list-skeleton-pulse h-2.5 w-1/2 rounded bg-muted-foreground/10" />
+        </div>
+      ))}
     </div>
   );
 }
