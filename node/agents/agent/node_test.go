@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,8 +13,10 @@ import (
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/llms"
 	basenode "github.com/dengzii/weaveflow/node"
+	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 )
 
@@ -38,6 +41,277 @@ func TestNodeUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
 	view, _ := conversationcap.Bind(state.NewAccess(result.State), conversationPath)
 	if len(view.Messages()) != 2 {
 		t.Fatalf("conversation = %#v", view.Messages())
+	}
+}
+
+func TestNodeWritesStructuredFinalOutput(t *testing.T) {
+	t.Parallel()
+
+	outputSchema := state.JSONSchema{
+		"type": "object",
+		"properties": state.JSONSchema{
+			"answer": state.JSONSchema{"type": "integer"},
+		},
+		"required":             []string{"answer"},
+		"additionalProperties": false,
+	}
+	target := NewNode(core.WithID("structured"))
+	target.OutputSchema = outputSchema
+	target.ResponseName = "agent_answer"
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "  {\n  \"answer\": 7\n}  "}}}}}
+	result, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "return an object"},
+	}), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, ok := state.ReadPath(result.State, target.ResultPath.String())
+	if !ok || !reflect.DeepEqual(value, map[string]any{"answer": json.Number("7")}) {
+		t.Fatalf("result = %#v", value)
+	}
+	view, bindErr := conversationcap.Bind(state.NewAccess(result.State), target.ConversationPath)
+	if bindErr != nil {
+		t.Fatalf("bind conversation: %v", bindErr)
+	}
+	if view.FinalAnswer() != `{"answer":7}` {
+		t.Fatalf("final answer = %q", view.FinalAnswer())
+	}
+	if len(model.requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(model.requests))
+	}
+	request := model.requests[0]
+	if request.ResponseName != "agent_answer" || !request.StrictResponse || !request.ResponseJSON || !request.ResponseJSONCompatibility || !reflect.DeepEqual(request.ResponseSchema, outputSchema) {
+		t.Fatalf("structured request = %#v", request)
+	}
+	contract := target.Contract()
+	resultField := contract.Fields[len(contract.Fields)-1]
+	if resultField.Type != "object" || !reflect.DeepEqual(resultField.Schema, outputSchema) {
+		t.Fatalf("result contract = %#v", resultField)
+	}
+}
+
+func TestNodeRequiresJSONOutputWithoutSchema(t *testing.T) {
+	t.Parallel()
+
+	target := NewNode(core.WithID("json_output"))
+	target.OutputJSON = true
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{
+		Content: "Final result:\n```json\n[1, true, null]\n```",
+	}}}}}
+	result, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "return JSON"},
+	}), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, _ := state.ReadPath(result.State, target.ResultPath.String())
+	if !reflect.DeepEqual(value, []any{json.Number("1"), true, nil}) {
+		t.Fatalf("result = %#v", value)
+	}
+	view, _ := conversationcap.Bind(state.NewAccess(result.State), target.ConversationPath)
+	if view.FinalAnswer() != `[1,true,null]` {
+		t.Fatalf("final answer = %q", view.FinalAnswer())
+	}
+	if len(model.requests) != 1 || !model.requests[0].ResponseJSON || len(model.requests[0].ResponseSchema) != 0 || model.requests[0].StrictResponse != false {
+		t.Fatalf("model request = %#v", model.requests)
+	}
+	resultField := target.Contract().Fields[len(target.Contract().Fields)-1]
+	if resultField.Type != "" || len(resultField.Schema) == 0 {
+		t.Fatalf("result contract = %#v", resultField)
+	}
+}
+
+func TestNodeJSONOutputRequiresExtractableResult(t *testing.T) {
+	t.Parallel()
+
+	target := NewNode(core.WithID("missing_json_output"))
+	target.OutputJSON = true
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "No result was produced."}}}}}
+	_, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "return JSON"},
+	}), target)
+	if err == nil || core.ClassifyError(err) != core.ErrorInvalidOutput {
+		t.Fatalf("execute error = %v, want invalid_output", err)
+	}
+}
+
+func TestNodeExtractsCompatibleStructuredFinalOutputByDefault(t *testing.T) {
+	t.Parallel()
+
+	target := NewNode(core.WithID("compatible_structured"))
+	target.OutputSchema = state.JSONSchema{
+		"type": "object",
+		"properties": state.JSONSchema{
+			"answer": state.JSONSchema{"type": "string"},
+		},
+		"required": []string{"answer"},
+	}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{
+		Content: "I used the available context.\n```json\n{\"answer\":\"ready\"}\n```\nThat is the final result.",
+	}}}}}
+	result, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "return status"},
+	}), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, _ := state.ReadPath(result.State, target.ResultPath.String())
+	if !reflect.DeepEqual(value, map[string]any{"answer": "ready"}) {
+		t.Fatalf("result = %#v", value)
+	}
+	view, _ := conversationcap.Bind(state.NewAccess(result.State), target.ConversationPath)
+	if view.FinalAnswer() != `{"answer":"ready"}` {
+		t.Fatalf("final answer = %q", view.FinalAnswer())
+	}
+}
+
+func TestNodeCanDisableCompatibleStructuredOutputExtraction(t *testing.T) {
+	t.Parallel()
+
+	target := NewNode(core.WithID("strict_structured"))
+	target.OutputSchema = state.JSONSchema{"type": "object"}
+	target.OutputJSONCompatibility = false
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "Result: {}"}}}}}
+	_, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "return an object"},
+	}), target)
+	if err == nil || core.ClassifyError(err) != core.ErrorInvalidOutput {
+		t.Fatalf("execute error = %v, want invalid_output", err)
+	}
+	if len(model.requests) != 1 || !model.requests[0].ResponseJSON || model.requests[0].ResponseJSONCompatibility {
+		t.Fatalf("model request = %#v, want strict JSON extraction", model.requests)
+	}
+}
+
+func TestStructuredNodeContinuesAfterToolCall(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedModel{responses: []*llms.ModelResponse{
+		{Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{{
+			ID:   "lookup-call",
+			Type: "function",
+			FunctionCall: &llms.FunctionCall{
+				Name:      "lookup",
+				Arguments: json.RawMessage(`{"query":"status"}`),
+			},
+		}}}}},
+		{Choices: []*llms.ModelChoice{{Content: `{"answer":"ready"}`}}},
+	}}
+	target := NewNode(core.WithID("structured_tool_user"))
+	target.ToolIDs = []string{"lookup"}
+	target.OutputSchema = state.JSONSchema{
+		"type": "object",
+		"properties": state.JSONSchema{
+			"answer": state.JSONSchema{"type": "string"},
+		},
+		"required": []string{"answer"},
+	}
+	lookup := core.NewTool(&llms.FunctionDefinition{
+		Name:       "lookup",
+		Parameters: state.JSONSchema{"type": "object"},
+	}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+		return llms.ToolResult{ToolCallID: call.ID, Content: "ready"}, nil
+	})
+	ctx := core.WithTools(core.WithModel(context.Background(), model), map[string]core.Tool{"lookup": lookup})
+	result, err := core.ExecuteNode(ctx, state.FromShared(map[string]any{
+		"request": map[string]any{"input": "check status"},
+	}), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, _ := state.ReadPath(result.State, target.ResultPath.String())
+	if !reflect.DeepEqual(value, map[string]any{"answer": "ready"}) {
+		t.Fatalf("result = %#v", value)
+	}
+	if len(model.requests) != 2 || !model.requests[0].StrictResponse || !model.requests[1].StrictResponse {
+		t.Fatalf("model requests = %#v", model.requests)
+	}
+}
+
+func TestStructuredNodeRejectsInvalidTerminalOutput(t *testing.T) {
+	t.Parallel()
+
+	target := NewNode(core.WithID("invalid_structured"))
+	target.OutputSchema = state.JSONSchema{"type": "object"}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "not JSON"}}}}}
+	result, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "return an object"},
+	}), target)
+	if err == nil || core.ClassifyError(err) != core.ErrorInvalidOutput {
+		t.Fatalf("execute error = %v, want invalid_output", err)
+	}
+	if result.State != nil {
+		t.Fatalf("result state = %#v, want nil", result.State)
+	}
+}
+
+func TestNodeStructuredConfigRoundTripClonesSchema(t *testing.T) {
+	t.Parallel()
+
+	schema := state.JSONSchema{
+		"type": "object",
+		"properties": state.JSONSchema{
+			"answer": state.JSONSchema{"type": "string"},
+		},
+	}
+	target := NewNode(core.WithID("round_trip"))
+	target.OutputSchema = schema
+	target.ResponseName = "agent_answer"
+	target.OutputJSON = true
+	target.OutputJSONCompatibility = false
+	spec := target.GraphNodeSpec()
+	schema["properties"].(state.JSONSchema)["answer"].(state.JSONSchema)["type"] = "integer"
+	specSchema := spec.Config["output_schema"].(state.JSONSchema)
+	if specSchema["properties"].(state.JSONSchema)["answer"].(state.JSONSchema)["type"] != "string" {
+		t.Fatalf("graph spec schema retained node alias: %#v", specSchema)
+	}
+
+	definition := NodeTypeDefinition()
+	if err := registry.NewRegistry().RegisterNodeType(definition); err != nil {
+		t.Fatalf("register node type: %v", err)
+	}
+	built, err := definition.Build(&registry.BuildContext{}, registry.ResolvedNodeSpec{
+		Spec: dsl.GraphNodeSpec{ID: spec.ID, Type: spec.Type, Config: spec.Config},
+		State: map[string]registry.ResolvedStateBinding{
+			"task":         {Path: target.TaskPath},
+			"conversation": {Path: target.ConversationPath},
+			"result":       {Path: target.ResultPath},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build: %v", err)
+	}
+	builtNode := built.(*Node)
+	specSchema["properties"].(state.JSONSchema)["answer"].(state.JSONSchema)["type"] = "boolean"
+	if builtNode.ResponseName != "agent_answer" || !builtNode.OutputJSON || builtNode.OutputJSONCompatibility || builtNode.OutputSchema["properties"].(state.JSONSchema)["answer"].(state.JSONSchema)["type"] != "string" {
+		t.Fatalf("built node = %#v", builtNode)
+	}
+
+	invalidSpec := spec
+	invalidSpec.Config = map[string]any{"output_schema": map[string]any{"type": "invalid"}}
+	_, err = definition.Build(&registry.BuildContext{}, registry.ResolvedNodeSpec{
+		Spec: invalidSpec,
+		State: map[string]registry.ResolvedStateBinding{
+			"task":         {Path: target.TaskPath},
+			"conversation": {Path: target.ConversationPath},
+			"result":       {Path: target.ResultPath},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "output schema") {
+		t.Fatalf("invalid schema build error = %v", err)
+	}
+
+	invalidSpec.Config = map[string]any{"output_schema": "object"}
+	_, err = definition.Build(&registry.BuildContext{}, registry.ResolvedNodeSpec{
+		Spec: invalidSpec,
+		State: map[string]registry.ResolvedStateBinding{
+			"task":         {Path: target.TaskPath},
+			"conversation": {Path: target.ConversationPath},
+			"result":       {Path: target.ResultPath},
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "must be an object") {
+		t.Fatalf("non-object schema build error = %v", err)
 	}
 }
 

@@ -13,6 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/llms/parts"
 	basenode "github.com/dengzii/weaveflow/node"
 	executor "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
 
 	"github.com/dengzii/weaveflow/llms"
 )
@@ -24,9 +25,13 @@ type executionIdentity struct {
 }
 
 type loopRunner struct {
-	config        Config
-	identity      executionIdentity
-	strictToolIDs bool
+	config                  Config
+	identity                executionIdentity
+	strictToolIDs           bool
+	responseName            string
+	outputSchema            state.JSONSchema
+	outputJSON              bool
+	outputJSONCompatibility bool
 }
 
 func newNodeRuntime(target *Node) loopRunner {
@@ -39,6 +44,10 @@ func newNodeRuntime(target *Node) loopRunner {
 			NodeID:           target.ID(),
 			ConversationPath: target.ConversationPath.String(),
 		},
+		responseName:            target.ResponseName,
+		outputSchema:            target.OutputSchema.Clone(),
+		outputJSON:              target.outputJSONEnabled(),
+		outputJSONCompatibility: target.OutputJSONCompatibility,
 	}
 }
 
@@ -83,16 +92,21 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 		messages := conversation.Messages()
 		promptMessages := basenode.TrimLLMPromptMessages(messages, promptMaxChars)
 		iteration := conversation.IterationCount()
-		if payload, err := buildPromptArtifact(runtime.identity, promptMessages, toolSets, iteration, maxIterations); err == nil {
+		if payload, err := buildPromptArtifact(runtime.identity, promptMessages, toolSets, iteration, maxIterations, runtime.responseName, runtime.outputSchema, runtime.outputJSON, runtime.outputJSONCompatibility); err == nil {
 			_, _ = executor.SaveJSONArtifactBestEffort(ctx, "agent.llm.prompt", payload)
 		}
 
 		response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
-			ModelID:  effectiveModelID(runtime.config.ModelID),
-			Mode:     llms.ModelModeChat,
-			Messages: promptMessages,
-			Tools:    toolSets,
-			Thinking: llms.ThinkingModeHigh,
+			ModelID:                   effectiveModelID(runtime.config.ModelID),
+			Mode:                      llms.ModelModeChat,
+			Messages:                  promptMessages,
+			Tools:                     toolSets,
+			Thinking:                  llms.ThinkingModeHigh,
+			ResponseName:              strings.TrimSpace(runtime.responseName),
+			ResponseSchema:            runtime.outputSchema.Clone(),
+			StrictResponse:            len(runtime.outputSchema) > 0,
+			ResponseJSON:              runtime.outputJSON,
+			ResponseJSONCompatibility: runtime.outputJSONCompatibility,
 		})
 		if err != nil {
 			runtime.saveErrorArtifact(ctx, iteration, err)
@@ -103,7 +117,7 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 			runtime.saveErrorArtifact(ctx, iteration, err)
 			return err
 		}
-		if payload := buildResponseArtifact(runtime.identity, response, iteration); len(payload.Choices) > 0 {
+		if payload := buildResponseArtifact(runtime.identity, response, iteration, runtime.responseName, runtime.outputSchema, runtime.outputJSON, runtime.outputJSONCompatibility); len(payload.Choices) > 0 {
 			_, _ = executor.SaveJSONArtifactBestEffort(ctx, "agent.llm.response", payload)
 		}
 
@@ -135,7 +149,11 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 		}
 
 		if len(choice.ToolCalls) == 0 {
-			if err := conversation.SetFinalAnswer(basenode.ExtractText(aiMessage)); err != nil {
+			answer, _, err := normalizeFinalOutput(basenode.ExtractText(aiMessage), runtime.outputSchema, runtime.outputJSON, runtime.outputJSONCompatibility)
+			if err != nil {
+				return err
+			}
+			if err := conversation.SetFinalAnswer(answer); err != nil {
 				return err
 			}
 			runtime.publishLoopStopped(ctx, conversation.IterationCount(), "final_answer")
@@ -146,6 +164,14 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 			return err
 		}
 	}
+}
+
+func normalizeFinalOutput(content string, schema state.JSONSchema, outputJSON, compatibility bool) (string, any, error) {
+	content = strings.TrimSpace(content)
+	if !outputJSON {
+		return content, content, nil
+	}
+	return core.DecodeStructuredOutput(content, schema, compatibility)
 }
 
 func (runtime loopRunner) selectTools(available map[string]core.Tool) (map[string]core.Tool, error) {

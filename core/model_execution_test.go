@@ -95,7 +95,7 @@ func TestGenerateModelRejectsTrailingStructuredJSONAndReportsCost(t *testing.T) 
 			"additionalProperties": false,
 		},
 	})
-	if err == nil || !strings.Contains(err.Error(), "multiple JSON values") {
+	if err == nil || ClassifyError(err) != ErrorInvalidOutput || !strings.Contains(err.Error(), "multiple JSON values") {
 		t.Fatalf("GenerateModel() error = %v, want multiple JSON values", err)
 	}
 	if got != response || got.Cost == nil {
@@ -106,6 +106,129 @@ func TestGenerateModelRejectsTrailingStructuredJSONAndReportsCost(t *testing.T) 
 	}
 	if failedEvent.Response == nil || failedEvent.Response == response || failedEvent.Response.Cost == nil || failedEvent.Err == nil {
 		t.Fatalf("failed observer event = %#v", failedEvent)
+	}
+}
+
+func TestGenerateModelAllowsStructuredToolCallChoiceWithoutContent(t *testing.T) {
+	response := &llms.ModelResponse{Choices: []*llms.ModelChoice{{
+		ToolCalls: []llms.ToolCall{{
+			ID:   "lookup",
+			Type: "function",
+			FunctionCall: &llms.FunctionCall{
+				Name:      "lookup",
+				Arguments: []byte(`{"query":"status"}`),
+			},
+		}},
+	}}}
+	got, err := GenerateModel(context.Background(), modelFunc(func(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+		return response, nil
+	}), llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "use a tool")},
+		Tools: []llms.ToolDefinition{{Function: &llms.FunctionDefinition{
+			Name:       "lookup",
+			Parameters: state.JSONSchema{"type": "object"},
+		}}},
+		ResponseSchema: state.JSONSchema{
+			"type": "object",
+			"properties": state.JSONSchema{
+				"answer": state.JSONSchema{"type": "string"},
+			},
+			"required": []string{"answer"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("GenerateModel() error = %v", err)
+	}
+	if got != response {
+		t.Fatalf("GenerateModel() response = %#v, want original response", got)
+	}
+}
+
+func TestDecodeStructuredOutputCompatibility(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		content    string
+		schema     state.JSONSchema
+		normalized string
+	}{
+		{
+			name:    "markdown JSON fence",
+			content: "Here is the result:\n```json\n{\n  \"answer\": 7\n}\n```\nDone.",
+			schema: state.JSONSchema{
+				"type": "object",
+				"properties": state.JSONSchema{
+					"answer": state.JSONSchema{"type": "integer"},
+				},
+				"required": []string{"answer"},
+			},
+			normalized: `{"answer":7}`,
+		},
+		{
+			name:       "prefixed and suffixed array",
+			content:    "Result follows: [1, 2, 3]\nThis is the final list.",
+			schema:     state.JSONSchema{"type": "array", "items": state.JSONSchema{"type": "integer"}},
+			normalized: `[1,2,3]`,
+		},
+		{
+			name:       "labeled scalar",
+			content:    "The final value is 7.",
+			schema:     state.JSONSchema{"type": "integer"},
+			normalized: `7`,
+		},
+		{
+			name:       "labeled null",
+			content:    "Final result: null",
+			schema:     state.JSONSchema{"type": "null"},
+			normalized: `null`,
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			normalized, _, err := DecodeStructuredOutput(testCase.content, testCase.schema, true)
+			if err != nil {
+				t.Fatalf("DecodeStructuredOutput() error = %v", err)
+			}
+			if normalized != testCase.normalized {
+				t.Fatalf("DecodeStructuredOutput() = %q, want %q", normalized, testCase.normalized)
+			}
+		})
+	}
+}
+
+func TestDecodeStructuredOutputStrictModeRejectsExtraText(t *testing.T) {
+	t.Parallel()
+
+	_, _, err := DecodeStructuredOutput("Result: {\"answer\":7}", state.JSONSchema{
+		"type": "object",
+		"properties": state.JSONSchema{
+			"answer": state.JSONSchema{"type": "integer"},
+		},
+	}, false)
+	if err == nil || ClassifyError(err) != ErrorInvalidOutput {
+		t.Fatalf("DecodeStructuredOutput() error = %v, want invalid_output", err)
+	}
+}
+
+func TestGenerateModelRequiresJSONWithoutResponseSchema(t *testing.T) {
+	t.Parallel()
+
+	response := &llms.ModelResponse{Choices: []*llms.ModelChoice{{Content: "Result: [1, 2]"}}}
+	got, err := GenerateModel(context.Background(), modelFunc(func(context.Context, llms.ModelRequest) (*llms.ModelResponse, error) {
+		return response, nil
+	}), llms.ModelRequest{
+		Mode:                      llms.ModelModeChat,
+		Messages:                  []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "return JSON")},
+		ResponseJSON:              true,
+		ResponseJSONCompatibility: true,
+	})
+	if err != nil {
+		t.Fatalf("GenerateModel() error = %v", err)
+	}
+	if got != response {
+		t.Fatalf("GenerateModel() response = %#v, want original response", got)
 	}
 }
 
