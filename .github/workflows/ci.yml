@@ -61,7 +61,7 @@ jobs:
     name: Go lint
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' }}
+    if: ${{ github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
