@@ -43,7 +43,7 @@ with Cosign, and receives a GitHub build attestation. Verify a stable image with
 
 ```bash
 cosign verify \
-  --certificate-identity-regexp='https://github.com/lazy-banana/weaveflow/.github/workflows/release.yml@refs/tags/v.*' \
+  --certificate-identity-regexp='https://github.com/dengzii/weaveflow/.github/workflows/release.yml@refs/tags/v.*' \
   --certificate-oidc-issuer=https://token.actions.githubusercontent.com \
   "$DOCKERHUB_IMAGE@sha256:<digest>"
 docker buildx imagetools inspect "$DOCKERHUB_IMAGE:1.2.3"

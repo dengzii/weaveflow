@@ -75,23 +75,6 @@ jobs:
         working-directory: internal/web
         run: bun run build
 
-  github-release:
-    name: Publish GitHub Release
-    needs: verify
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    environment: release
-    permissions:
-      contents: write
-    steps:
-      - name: Publish release notes
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        with:
-          tag_name: ${{ env.RELEASE_TAG }}
-          name: ${{ env.RELEASE_TAG }}
-          generate_release_notes: true
-          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
-
   release-assets:
     name: Build ${{ matrix.goos }}/${{ matrix.goarch }} release asset
     needs: verify
@@ -180,6 +163,9 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
+      - name: Compute VCS reference
+        run: echo "VCS_REF=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Validate Docker Hub configuration
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
@@ -228,7 +214,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             VERSION=${{ env.RELEASE_VERSION }}
-            VCS_REF=${{ github.sha }}
+            VCS_REF=${{ env.VCS_REF }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: mode=max
@@ -276,12 +262,29 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  github-release:
+    name: Publish GitHub Release
+    needs:
+      - release-assets
+      - dockerhub
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Publish release notes
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+
   publish-release-assets:
     name: Attach release assets
     needs:
       - github-release
-      - release-assets
-      - dockerhub
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
