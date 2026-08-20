@@ -70,7 +70,7 @@ func (o *LLM) Generate(ctx context.Context, request llms.ModelRequest) (*llms.Mo
 	case llms.ModelModeCompletion:
 		return o.generateCompletion(ctx, request)
 	default:
-		return nil, fmt.Errorf("OpenAI model request mode %q is unsupported", request.Mode)
+		return nil, fmt.Errorf("openai model request mode %q is unsupported", request.Mode)
 	}
 }
 
@@ -343,7 +343,7 @@ func (o *LLM) generateResponse(
 		return nil, fmt.Errorf("responses API does not support seed")
 	}
 	if modelRequest.FrequencyPenalty != nil || modelRequest.PresencePenalty != nil {
-		return nil, fmt.Errorf("Responses API does not support frequency or presence penalties")
+		return nil, fmt.Errorf("responses API does not support frequency or presence penalties")
 	}
 
 	effectiveModel := modelRequest.Model
@@ -497,7 +497,7 @@ func responseInputsFromMessages(messages []llms.MessageContent, useDeveloperRole
 				})
 			case llms.BinaryContent:
 				if !strings.HasPrefix(strings.ToLower(value.MIMEType), "image/") {
-					return nil, fmt.Errorf("Responses API binary content type %q is unsupported", value.MIMEType)
+					return nil, fmt.Errorf("responses API binary content type %q is unsupported", value.MIMEType)
 				}
 				content = append(content, openaiclient.ResponseContent{
 					Type:     "input_image",
@@ -506,7 +506,7 @@ func responseInputsFromMessages(messages []llms.MessageContent, useDeveloperRole
 			case llms.ToolCall:
 				toolCalls = append(toolCalls, value)
 			default:
-				return nil, fmt.Errorf("Responses API content part %T is unsupported", part)
+				return nil, fmt.Errorf("responses API content part %T is unsupported", part)
 			}
 		}
 		if len(content) > 0 || len(toolCalls) == 0 {
@@ -551,7 +551,7 @@ func responseRole(role llms.ChatMessageType, useDeveloperRole bool) (string, err
 
 func responseToolFromTool(tool llms.ToolDefinition) (openaiclient.ResponseTool, error) {
 	if tool.Type != string(openaiclient.ToolTypeFunction) || tool.Function == nil {
-		return openaiclient.ResponseTool{}, fmt.Errorf("Responses API tool type %q is unsupported", tool.Type)
+		return openaiclient.ResponseTool{}, fmt.Errorf("responses API tool type %q is unsupported", tool.Type)
 	}
 	return openaiclient.ResponseTool{
 		Type:        openaiclient.ToolTypeFunction,
@@ -646,7 +646,7 @@ func contentChoiceFromResponse(response *openaiclient.Response) (*llms.ModelChoi
 	}
 	if content.Len() == 0 && len(toolCalls) == 0 {
 		if response.Status == "failed" && response.Error != nil {
-			return nil, fmt.Errorf("Responses API returned %v: %s", response.Error.Code, response.Error.Message)
+			return nil, fmt.Errorf("responses API returned %v: %s", response.Error.Code, response.Error.Message)
 		}
 		return nil, ErrEmptyResponse
 	}
