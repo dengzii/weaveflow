@@ -388,7 +388,7 @@ func (s *artifactStore) List(ctx context.Context, runID string) ([]state.Artifac
 	defer s.mu.Unlock()
 
 	dir := s.artifactsDir(runID)
-	files, err := os.ReadDir(dir)
+	files, err := runnerRootedReadDir(dir)
 	if os.IsNotExist(err) {
 		return []state.ArtifactRef{}, nil
 	}

@@ -43,7 +43,7 @@ func (s *FileStore) ReplaceGraph(ctx context.Context, graphID string, items []Tr
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	entries, err := os.ReadDir(s.dir)
+	entries, err := rootedReadDir(s.dir)
 	if err != nil {
 		return err
 	}
@@ -265,7 +265,7 @@ func (s *FileStore) List(ctx context.Context) ([]Trigger, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entries, err := os.ReadDir(s.dir)
+	entries, err := rootedReadDir(s.dir)
 	if err != nil {
 		return nil, err
 	}
@@ -354,7 +354,7 @@ func (s *FileStore) DeleteGraph(ctx context.Context, graphID string) ([]Trigger,
 		return []Trigger{}, nil
 	}
 
-	records, err := os.ReadDir(s.recordsDir())
+	records, err := rootedReadDir(s.recordsDir())
 	if err != nil {
 		return nil, err
 	}
@@ -464,7 +464,7 @@ func (s *FileStore) ListRecords(ctx context.Context, triggerID string, limit int
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	entries, err := os.ReadDir(s.recordsDir())
+	entries, err := rootedReadDir(s.recordsDir())
 	if err != nil {
 		return nil, err
 	}
@@ -527,11 +527,10 @@ func (s *FileStore) writeLocked(ctx context.Context, path string, definition Tri
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(s.dir, ".trigger-*.tmp")
+	temp, tempPath, err := rootedCreateTemp(s.dir, ".trigger-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
@@ -568,11 +567,10 @@ func (s *FileStore) writeRecordLocked(ctx context.Context, path string, record R
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(s.recordsDir(), ".record-*.tmp")
+	temp, tempPath, err := rootedCreateTemp(s.recordsDir(), ".record-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()

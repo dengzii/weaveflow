@@ -164,7 +164,7 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	dir := s.chatHistoryDir(filter.TriggerID, filter.UserID, filter.ChannelConversationID, filter.ConversationID)
-	entries, err := os.ReadDir(dir)
+	entries, err := rootedReadDir(dir)
 	if os.IsNotExist(err) {
 		return []ChatHistory{}, nil
 	}
@@ -237,11 +237,10 @@ func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, his
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(path), ".chat-history-*.tmp")
+	temp, tempPath, err := rootedCreateTemp(filepath.Dir(path), ".chat-history-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()

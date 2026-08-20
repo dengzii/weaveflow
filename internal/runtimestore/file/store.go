@@ -433,7 +433,7 @@ func (s *executionStore) ListSteps(ctx context.Context, runID string) ([]StepRec
 	defer s.mu.Unlock()
 
 	dir := s.stepsDir(runID)
-	files, err := os.ReadDir(dir)
+	files, err := runnerRootedReadDir(dir)
 	if os.IsNotExist(err) {
 		return []StepRecord{}, nil
 	}
@@ -561,7 +561,7 @@ func (s *executionStore) readRunLocked(runID string) (RunRecord, error) {
 
 func (s *executionStore) listRunsLocked(filter RunFilter) ([]RunRecord, error) {
 	dir := s.runsDir()
-	files, err := os.ReadDir(dir)
+	files, err := runnerRootedReadDir(dir)
 	if os.IsNotExist(err) {
 		return []RunRecord{}, nil
 	}
@@ -1212,11 +1212,10 @@ func writeRunnerBinaryFile(path string, data []byte) error {
 	if err := ensureRunnerDirectory(directory); err != nil {
 		return err
 	}
-	temp, err := os.CreateTemp(directory, "tmp-*")
+	temp, tempPath, err := runnerRootedCreateTemp(directory, "tmp-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
 	defer func() { _ = runnerRootedRemove(tempPath) }()
 
 	if _, err := temp.Write(data); err != nil {
@@ -1243,7 +1242,7 @@ func ensureRunnerDirectory(path string) error {
 	path = filepath.Clean(path)
 	missing := make([]string, 0, 2)
 	for current := path; ; current = filepath.Dir(current) {
-		info, err := os.Stat(current)
+		info, err := runnerRootedStat(current)
 		if err == nil {
 			if !info.IsDir() {
 				return fmt.Errorf("runtime store path is not a directory: %s", current)

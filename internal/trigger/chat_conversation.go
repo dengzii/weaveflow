@@ -137,11 +137,10 @@ func (s *FileStore) writeChatConversationLocked(ctx context.Context, path string
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(path), ".chat-conversation-*.tmp")
+	temp, tempPath, err := rootedCreateTemp(filepath.Dir(path), ".chat-conversation-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
 	defer func() { _ = os.Remove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()

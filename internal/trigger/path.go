@@ -1,6 +1,8 @@
 package trigger
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 )
@@ -21,6 +23,43 @@ func rootedReadFile(path string) ([]byte, error) {
 	}
 	defer func() { _ = root.Close() }()
 	return root.ReadFile(name)
+}
+
+func rootedReadDir(path string) ([]os.DirEntry, error) {
+	root, name, err := rootedPath(path)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = root.Close() }()
+	directory, err := root.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = directory.Close() }()
+	return directory.ReadDir(-1)
+}
+
+func rootedCreateTemp(directory, prefix string) (*os.File, string, error) {
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return nil, "", err
+	}
+	defer func() { _ = root.Close() }()
+	for attempt := 0; attempt < 10; attempt++ {
+		var random [16]byte
+		if _, err := rand.Read(random[:]); err != nil {
+			return nil, "", err
+		}
+		name := prefix + hex.EncodeToString(random[:]) + ".tmp"
+		file, err := root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		if err == nil {
+			return file, filepath.Join(directory, name), nil
+		}
+		if !os.IsExist(err) {
+			return nil, "", err
+		}
+	}
+	return nil, "", os.ErrExist
 }
 
 func rootedWriteFile(path string, data []byte, mode os.FileMode) error {
