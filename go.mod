@@ -52,7 +52,7 @@ require (
 	golang.org/x/crypto v0.51.0 // indirect
 	golang.org/x/exp v0.0.0-20240823005443-9b4947da3948 // indirect
 	golang.org/x/net v0.55.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20241209162323-e6fa225c2576 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20250122153221-138b5a5a4fd4 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
