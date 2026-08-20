@@ -3,11 +3,14 @@ package core
 import (
 	"context"
 	"fmt"
+	"sync"
 )
 
 type ConcurrencyLimiter struct {
-	limit int
-	slots chan struct{}
+	limit   int
+	mu      sync.Mutex
+	active  int
+	waiters []chan struct{}
 }
 
 type ConcurrencyWaitObserver func(limit int)
@@ -21,7 +24,7 @@ func NewConcurrencyLimiter(limit int) *ConcurrencyLimiter {
 	if limit > maxConcurrencyLimiterSize {
 		limit = maxConcurrencyLimiterSize
 	}
-	return &ConcurrencyLimiter{limit: limit, slots: make(chan struct{}, limit)}
+	return &ConcurrencyLimiter{limit: limit}
 }
 
 func (limiter *ConcurrencyLimiter) Limit() int {
@@ -38,10 +41,17 @@ func (limiter *ConcurrencyLimiter) Acquire(ctx context.Context) (func(), error) 
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	waiter := limiter.acquireWaiter()
+	if waiter == nil {
+		return limiter.permitRelease(), nil
+	}
 	select {
-	case limiter.slots <- struct{}{}:
-		return func() { <-limiter.slots }, nil
+	case <-waiter:
+		return limiter.permitRelease(), nil
 	case <-ctx.Done():
+		if !limiter.cancelWaiter(waiter) {
+			limiter.release()
+		}
 		return nil, ctx.Err()
 	}
 }
@@ -50,12 +60,60 @@ func (limiter *ConcurrencyLimiter) TryAcquire() (func(), bool) {
 	if limiter == nil {
 		return func() {}, true
 	}
-	select {
-	case limiter.slots <- struct{}{}:
-		return func() { <-limiter.slots }, true
-	default:
+	limiter.mu.Lock()
+	if limiter.active >= limiter.limit {
+		limiter.mu.Unlock()
 		return nil, false
 	}
+	limiter.active++
+	limiter.mu.Unlock()
+	return limiter.permitRelease(), true
+}
+
+func (limiter *ConcurrencyLimiter) acquireWaiter() chan struct{} {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if limiter.active < limiter.limit {
+		limiter.active++
+		return nil
+	}
+	waiter := make(chan struct{})
+	limiter.waiters = append(limiter.waiters, waiter)
+	return waiter
+}
+
+func (limiter *ConcurrencyLimiter) cancelWaiter(waiter chan struct{}) bool {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	for index, candidate := range limiter.waiters {
+		if candidate != waiter {
+			continue
+		}
+		copy(limiter.waiters[index:], limiter.waiters[index+1:])
+		limiter.waiters = limiter.waiters[:len(limiter.waiters)-1]
+		return true
+	}
+	return false
+}
+
+func (limiter *ConcurrencyLimiter) permitRelease() func() {
+	var once sync.Once
+	return func() {
+		once.Do(limiter.release)
+	}
+}
+
+func (limiter *ConcurrencyLimiter) release() {
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if len(limiter.waiters) == 0 {
+		limiter.active--
+		return
+	}
+	waiter := limiter.waiters[0]
+	copy(limiter.waiters, limiter.waiters[1:])
+	limiter.waiters = limiter.waiters[:len(limiter.waiters)-1]
+	close(waiter)
 }
 
 type toolConcurrencyConfigKey struct{}

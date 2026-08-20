@@ -551,7 +551,12 @@ func (s *FileStore) writeLocked(ctx context.Context, path string, definition Tri
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	root, err := os.OpenRoot(s.dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Rename(filepath.Base(tempPath), filepath.Base(path))
 }
 
 func (s *FileStore) writeRecordLocked(ctx context.Context, path string, record Record) error {
@@ -587,7 +592,12 @@ func (s *FileStore) writeRecordLocked(ctx context.Context, path string, record R
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	root, err := os.OpenRoot(s.recordsDir())
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Rename(filepath.Base(tempPath), filepath.Base(path))
 }
 
 func validateStoredTrigger(definition Trigger) error {
@@ -642,7 +652,7 @@ func storeID(id string) (string, error) {
 	if err := validateTriggerID(id); err != nil {
 		return "", err
 	}
-	return id, nil
+	return filepath.Base(id), nil
 }
 
 func safeTriggerPath(base string, components ...string) string {
@@ -652,7 +662,7 @@ func safeTriggerPath(base string, components ...string) string {
 	safeComponents := make([]string, len(components))
 	for index, component := range components {
 		baseComponent := filepath.Base(component)
-		if component == "" || component == "." || component == ".." || baseComponent != component {
+		if component == "" || component == ".." || strings.Contains(component, "../") || strings.Contains(component, `..\`) || strings.Contains(component, "/") || strings.Contains(component, "\\") || baseComponent != component {
 			return ""
 		}
 		safeComponents[index] = baseComponent

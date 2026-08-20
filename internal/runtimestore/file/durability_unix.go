@@ -2,7 +2,10 @@
 
 package file
 
-import "os"
+import (
+	"os"
+	"path/filepath"
+)
 
 func replaceFile(source, target string) error {
 	if err := validateRunnerPath(source); err != nil {
@@ -11,14 +14,27 @@ func replaceFile(source, target string) error {
 	if err := validateRunnerPath(target); err != nil {
 		return err
 	}
-	return os.Rename(source, target)
+	if filepath.Dir(source) != filepath.Dir(target) {
+		return os.ErrInvalid
+	}
+	root, err := os.OpenRoot(filepath.Dir(source))
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	return root.Rename(filepath.Base(source), filepath.Base(target))
 }
 
 func syncDirectory(path string) error {
 	if err := validateRunnerPath(path); err != nil {
 		return err
 	}
-	directory, err := os.Open(path)
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	directory, err := root.Open(".")
 	if err != nil {
 		return err
 	}

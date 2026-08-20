@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -16,16 +17,21 @@ func invalidRequestf(format string, args ...any) error {
 }
 
 func requirePathParam(c *gin.Context, name string) (string, bool) {
-	value := optionalPathParam(c, name)
-	if value == "" {
+	rawValue := strings.TrimSpace(c.Param(name))
+	if rawValue == "" {
 		writeError(c, 400, invalidRequestf("%s is required", name))
+		return "", false
+	}
+	value := filepath.Base(rawValue)
+	if !filepath.IsLocal(rawValue) || rawValue == ".." || strings.Contains(rawValue, "../") || strings.Contains(rawValue, `..\`) || strings.Contains(rawValue, "/") || strings.Contains(rawValue, "\\") || value != rawValue {
+		writeError(c, 400, invalidRequestf("%s must be a single path segment", name))
 		return "", false
 	}
 	return value, true
 }
 
 func optionalPathParam(c *gin.Context, name string) string {
-	return strings.TrimSpace(c.Param(name))
+	return filepath.Base(strings.TrimSpace(c.Param(name)))
 }
 
 func optionalStringQuery(c *gin.Context, name string) (string, error) {
@@ -67,16 +73,21 @@ func stringListQuery(c *gin.Context, name string) ([]string, error) {
 }
 
 func requireRecordIDPathParam(c *gin.Context, name string) (string, bool) {
-	value := c.Param(name)
-	if strings.TrimSpace(value) == "" {
+	rawValue := c.Param(name)
+	if strings.TrimSpace(rawValue) == "" {
 		writeError(c, 400, invalidRequestf("%s is required", name))
+		return "", false
+	}
+	value := filepath.Base(rawValue)
+	if !filepath.IsLocal(rawValue) || rawValue == ".." || strings.Contains(rawValue, "../") || strings.Contains(rawValue, `..\`) || strings.Contains(rawValue, "/") || strings.Contains(rawValue, "\\") || value != rawValue {
+		writeError(c, 400, invalidRequestf("%s must be a single path segment", name))
 		return "", false
 	}
 	if !isPortableRecordID(value) {
 		writeError(c, 400, invalidRequestf("%s must be a portable record ID", name))
 		return "", false
 	}
-	return value, true
+	return filepath.Base(value), true
 }
 
 func requireGraphIDPathParam(c *gin.Context) (string, bool) {

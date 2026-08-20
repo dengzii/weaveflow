@@ -525,7 +525,7 @@ func (s *Server) markCachedRunExecutionLost(ctx context.Context, reader *graphCa
 
 func readCachedGraphSession(graphDir string, sessionID string) (graphSessionManifest, bool, error) {
 	baseSessionID := filepath.Base(sessionID)
-	if strings.TrimSpace(sessionID) == "" || sessionID == "." || sessionID == ".." || baseSessionID != sessionID {
+	if !filepath.IsLocal(sessionID) || sessionID == ".." || strings.Contains(sessionID, "../") || strings.Contains(sessionID, `..\`) || strings.Contains(sessionID, "/") || strings.Contains(sessionID, "\\") || baseSessionID != sessionID {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session id is invalid")
 	}
 	sessionID = baseSessionID
@@ -533,8 +533,17 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 	if err != nil {
 		return graphSessionManifest{}, false, err
 	}
+	absoluteGraphDir = filepath.Clean("/" + absoluteGraphDir)
 	baseDir := filepath.Join(absoluteGraphDir, sessionID)
-	manifestData, err := os.ReadFile(filepath.Join(baseDir, "graph.json"))
+	root, err := os.OpenRoot(baseDir)
+	if os.IsNotExist(err) {
+		return graphSessionManifest{}, false, nil
+	}
+	if err != nil {
+		return graphSessionManifest{}, false, err
+	}
+	defer root.Close()
+	manifestData, err := root.ReadFile("graph.json")
 	if os.IsNotExist(err) {
 		return graphSessionManifest{}, false, nil
 	}
@@ -573,7 +582,7 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q definition path is missing", sessionID)
 	}
 	definitionName := filepath.Clean(definitionPath)
-	if filepath.IsAbs(definitionName) || definitionName != filepath.Base(definitionName) {
+	if !filepath.IsLocal(definitionName) || definitionName == ".." || strings.Contains(definitionName, "../") || strings.Contains(definitionName, `..\`) || strings.Contains(definitionName, "/") || strings.Contains(definitionName, "\\") || definitionName != filepath.Base(definitionName) {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q definition path is invalid", sessionID)
 	}
 	definitionName = filepath.Base(definitionName)
@@ -586,7 +595,7 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q settings path is missing", sessionID)
 	}
 	settingsName := filepath.Clean(settingsPath)
-	if filepath.IsAbs(settingsName) || settingsName != filepath.Base(settingsName) {
+	if !filepath.IsLocal(settingsName) || settingsName == ".." || strings.Contains(settingsName, "../") || strings.Contains(settingsName, `..\`) || strings.Contains(settingsName, "/") || strings.Contains(settingsName, "\\") || settingsName != filepath.Base(settingsName) {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q settings path is invalid", sessionID)
 	}
 	settingsName = filepath.Base(settingsName)
@@ -595,12 +604,12 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 	if manifest.RuntimeSettingsHash == "" {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q runtime settings hash is missing", sessionID)
 	}
-	if _, err := os.Stat(filepath.Join(baseDir, definitionName)); os.IsNotExist(err) {
+	if _, err := root.Stat(filepath.Base(definitionName)); os.IsNotExist(err) {
 		return graphSessionManifest{}, false, nil
 	} else if err != nil {
 		return graphSessionManifest{}, false, err
 	}
-	settingsData, err := os.ReadFile(filepath.Join(baseDir, settingsName))
+	settingsData, err := root.ReadFile(filepath.Base(settingsName))
 	if os.IsNotExist(err) {
 		return graphSessionManifest{}, false, nil
 	}

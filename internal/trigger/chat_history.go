@@ -368,9 +368,9 @@ func validChatHistoryMessage(message ChatHistoryMessage) bool {
 func chatHistoryPathSegment(value string) string {
 	value = strings.TrimSpace(value)
 	if value != "." && value != ".." && isPlainChatHistoryPathSegment(value) {
-		return value
+		return filepath.Base(value)
 	}
-	return "~" + base64.RawURLEncoding.EncodeToString([]byte(value))
+	return filepath.Base("~" + base64.RawURLEncoding.EncodeToString([]byte(value)))
 }
 
 func safeChatHistoryPath(base string, components ...string) string {
@@ -380,7 +380,7 @@ func safeChatHistoryPath(base string, components ...string) string {
 	safeComponents := make([]string, len(components))
 	for index, component := range components {
 		baseComponent := filepath.Base(component)
-		if component == "" || component == "." || component == ".." || baseComponent != component {
+		if component == "" || component == ".." || strings.Contains(component, "../") || strings.Contains(component, `..\`) || strings.Contains(component, "/") || strings.Contains(component, "\\") || baseComponent != component {
 			return ""
 		}
 		safeComponents[index] = baseComponent
