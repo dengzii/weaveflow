@@ -79,6 +79,9 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	if err := os.Unsetenv("WEAVEFLOW_PERSISTED_SETTING"); err != nil {
 		t.Fatal(err)
 	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Server.Close() before restart error = %v", err)
+	}
 
 	restored, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {

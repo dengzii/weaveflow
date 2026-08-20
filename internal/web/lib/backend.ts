@@ -10,6 +10,16 @@ export function normalizeBackendBaseUrl(value: string): string {
   if (!candidate) {
     throw new Error("Backend base URL is required");
   }
+  if (candidate.startsWith("/")) {
+    if (candidate.startsWith("//")) {
+      throw new Error("Backend base URL must not be protocol-relative");
+    }
+    const relative = new URL(candidate, "http://weaveflow.invalid");
+    if (relative.search || relative.hash) {
+      throw new Error("Backend base URL must not contain a query or fragment");
+    }
+    return relative.pathname.replace(/\/+$/, "") || "/";
+  }
   if (!/^[a-z][a-z\d+.-]*:\/\//i.test(candidate)) {
     candidate = `http://${candidate}`;
   }
@@ -30,7 +40,8 @@ export function normalizeBackendBaseUrl(value: string): string {
 
 export function joinBackendUrl(baseUrl: string, path: string): string {
   const suffix = path.startsWith("/") ? path : `/${path}`;
-  return `${normalizeBackendBaseUrl(baseUrl)}${suffix}`;
+  const normalized = normalizeBackendBaseUrl(baseUrl);
+  return normalized === "/" ? suffix : `${normalized}${suffix}`;
 }
 
 export function getBackendBaseUrl(): string {

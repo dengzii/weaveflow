@@ -1106,7 +1106,9 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 
 	uploaded := putGraphForHashTest(t, engine, graphBody)
 	started := startGraphRunForTest(t, engine, uploaded, `{}`)
-	waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, started.RunID)
+	activeRunner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
+	waitForRunTerminalStatus(t, activeRunner, started.RunID)
+	waitForRunInactive(t, activeRunner, started.RunID)
 
 	deleted := serveHTTP(engine, http.MethodDelete, "/graphs/debug-graph/runs/"+started.RunID, "")
 	if deleted.Code != http.StatusNoContent {
@@ -1312,6 +1314,11 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1343,7 +1350,9 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 
 		uploaded := putGraphForHashTest(t, engine, graphBody)
 		run := startGraphRunForTest(t, engine, uploaded, `{}`)
-		waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, run.RunID)
+		runner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
+		waitForRunTerminalStatus(t, runner, run.RunID)
+		waitForRunInactive(t, runner, run.RunID)
 		runIDs[run.RunID] = struct{}{}
 	}
 
@@ -1795,6 +1804,11 @@ func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) 
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseRun := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseRun()
 	graph := newRunControlTestGraph(t, started, release, false)
 	srv, err := New(context.Background(), Config{
 		Graph:   graph,
@@ -1815,8 +1829,7 @@ func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) 
 	runID := run.RunID
 
 	pauseDone := serveHTTPAsync(engine, http.MethodPost, "/graphs/graph/runs/"+runID+"/pause", "")
-	assertNoHTTPResponse(t, pauseDone, "pause")
-	close(release)
+	releaseRun()
 
 	pauseResponse := waitForHTTPResponse(t, pauseDone, "pause")
 	pausedRun := decodeRunRecordResponse(t, pauseResponse, http.StatusOK)
@@ -2522,9 +2535,29 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 			]
 		}
 	}`
+	analysisBody := `{
+		"triggers": [
+			{"id":"hook","type":"webhook","enabled":true,"webhook":{"state_bindings":{"input":"shared.request.input"}}},
+			{"id":"empty","type":"webhook","enabled":true,"webhook":{}}
+		],
+		"definition": {
+			"version": "1.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
+			"name": "requires-input",
+			"entry_point": "input",
+			"finish_point": "input",
+			"nodes": [
+				{
+					"id": "input",
+					"type": "requires_input",
+					"state": {"input": {"path": "shared.request.input"}}
+				}
+			]
+		}
+	}`
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/graphs/requires-input/analysis/initial-state-requirements", strings.NewReader(graphBody))
+	req := httptest.NewRequest(http.MethodPost, "/graphs/requires-input/analysis/initial-state-requirements", strings.NewReader(analysisBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

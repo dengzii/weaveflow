@@ -46,12 +46,14 @@ func (s *Server) resolveTriggerRunner(_ context.Context, target trigger.Target) 
 		return nil, fmt.Errorf("build runtime context for graph session %q: %w", session.runner.GraphSessionID(), err)
 	}
 	queue := s.runtime.taskQueue(graphID)
-	if queue != nil {
-		if err := s.runtime.ensureWorker(graphID); err != nil {
-			return nil, err
-		}
+	starter := &triggerRunStarter{baseContext: baseContext, graph: session.graph, runner: session.runner}
+	if queue == nil {
+		return starter, nil
 	}
-	return &triggerRunStarter{baseContext: baseContext, graph: session.graph, runner: session.runner, queue: queue}, nil
+	if err := s.runtime.ensureWorker(graphID); err != nil {
+		return nil, err
+	}
+	return &queuedTriggerRunStarter{triggerRunStarter: starter, queue: queue}, nil
 }
 
 // triggerRunStarter keeps graph execution and runtime settings on the same
@@ -60,11 +62,15 @@ type triggerRunStarter struct {
 	baseContext context.Context
 	graph       *wfgraph.Graph
 	runner      trigger.RunStarter
-	queue       runtime.AtomicTaskQueue
 }
 
-func (s *triggerRunStarter) Enqueue(ctx context.Context, initial *state.State) (runtime.RunRecord, error) {
-	if s == nil || s.runner == nil || s.queue == nil {
+type queuedTriggerRunStarter struct {
+	*triggerRunStarter
+	queue runtime.AtomicTaskQueue
+}
+
+func (s *queuedTriggerRunStarter) Enqueue(ctx context.Context, initial *state.State) (runtime.RunRecord, error) {
+	if s == nil || s.triggerRunStarter == nil || s.runner == nil || s.queue == nil {
 		return runtime.RunRecord{}, fmt.Errorf("trigger durable queue is not configured")
 	}
 	queuedRunner, ok := s.runner.(interface {

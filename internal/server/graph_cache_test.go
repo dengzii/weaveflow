@@ -321,6 +321,9 @@ func TestGraphStorageSupportsWindowsReservedGraphID(t *testing.T) {
 	if len(graphs) != 1 || graphs[0].ID != "CON" {
 		t.Fatalf("listCachedGraphs() = %#v, want graph ID CON", graphs)
 	}
+	if err := srv.Close(); err != nil {
+		t.Fatalf("Server.Close() before resolver restart error = %v", err)
+	}
 
 	resolver, err := New(context.Background(), Config{BaseDir: baseDir})
 	if err != nil {

@@ -1,0 +1,311 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing semantic version tag to release, for example v1.2.3
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+  DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE || format('{0}/weaveflow', secrets.DOCKERHUB_USERNAME) }}
+
+jobs:
+  verify:
+    name: Verify release
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Validate semantic version tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "Release tag must follow vMAJOR.MINOR.PATCH or vMAJOR.MINOR.PATCH-prerelease." >&2
+            exit 1
+          fi
+
+      - name: Check out release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Verify VERSION matches release tag
+        env:
+          TAG: ${{ env.RELEASE_TAG }}
+        run: |
+          expected="${TAG#v}"
+          actual="$(tr -d '[:space:]' < VERSION)"
+          if [ "$actual" != "$expected" ]; then
+            echo "VERSION ($actual) must match release tag ($expected)." >&2
+            exit 1
+          fi
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build Go packages
+        run: go build ./...
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.3.4
+
+      - name: Install web dependencies
+        working-directory: internal/web
+        run: bun install --frozen-lockfile
+
+      - name: Build web application
+        working-directory: internal/web
+        run: bun run build
+
+  release-assets:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }} release asset
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: darwin
+            goarch: arm64
+          - goos: windows
+            goarch: amd64
+          - goos: windows
+            goarch: arm64
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build server archive
+        env:
+          CGO_ENABLED: 0
+          GOARCH: ${{ matrix.goarch }}
+          GOOS: ${{ matrix.goos }}
+          RELEASE_VERSION: ${{ env.RELEASE_TAG }}
+        run: |
+          set -eu
+          version="${RELEASE_VERSION#v}"
+          archive_name="weaveflow-server-${version}-${GOOS}-${GOARCH}"
+          package_dir="dist/${archive_name}"
+          mkdir -p "$package_dir"
+          binary_name="weaveflow-server"
+          if [ "$GOOS" = windows ]; then
+            binary_name="${binary_name}.exe"
+          fi
+          go build -buildvcs=false -trimpath -ldflags="-s -w" \
+            -o "$package_dir/$binary_name" ./cmd/server
+          cp LICENSE README.md "$package_dir/"
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr "${archive_name}.zip" "$archive_name")
+          else
+            tar -C dist -czf "dist/${archive_name}.tar.gz" "$archive_name"
+          fi
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist
+          if-no-files-found: error
+          retention-days: 7
+
+  dockerhub:
+    name: Publish Docker Hub image
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: release
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Compute VCS reference
+        run: echo "VCS_REF=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Validate Docker Hub configuration
+        env:
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          if [[ -z "$DOCKERHUB_USERNAME" || -z "$DOCKERHUB_TOKEN" ]]; then
+            echo "DOCKERHUB_USERNAME and DOCKERHUB_TOKEN Actions secrets are required." >&2
+            exit 1
+          fi
+          if [[ -z "$DOCKERHUB_IMAGE" ]]; then
+            echo "Set DOCKERHUB_IMAGE or provide DOCKERHUB_USERNAME for the default image name." >&2
+            exit 1
+          fi
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Generate image metadata
+        id: meta
+        uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
+        with:
+          images: ${{ env.DOCKERHUB_IMAGE }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ env.RELEASE_TAG }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ env.RELEASE_TAG }},enable=${{ !contains(env.RELEASE_TAG, '-') }}
+            type=semver,pattern={{major}},value=${{ env.RELEASE_TAG }},enable=${{ !contains(env.RELEASE_TAG, '-') }}
+            type=raw,value=latest,enable=${{ !contains(env.RELEASE_TAG, '-') }}
+
+      - name: Normalize release version
+        env:
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+
+      - name: Build and push image
+        id: push
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: scripts/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ env.RELEASE_VERSION }}
+            VCS_REF=${{ env.VCS_REF }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: mode=max
+          sbom: true
+
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+
+      - name: Sign Docker image
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: cosign sign --yes "docker.io/${DOCKERHUB_IMAGE}@${IMAGE_DIGEST}"
+
+      - name: Attest Docker image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: docker.io/${{ env.DOCKERHUB_IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+
+      - name: Update Docker Hub description
+        uses: peter-evans/dockerhub-description@432a30c9e07499fd01da9f8a49f0faf9e0ca5b77 # v4
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ env.DOCKERHUB_IMAGE }}
+          short-description: Graph-based runtime for building, executing, and inspecting LLM agents in Go.
+          readme-filepath: ./README.md
+
+      - name: Record image digest
+        env:
+          IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          {
+            printf 'image=%s\n' "$DOCKERHUB_IMAGE"
+            printf 'digest=%s\n' "$IMAGE_DIGEST"
+            printf 'tag=%s\n' "$RELEASE_TAG"
+          } > image-digest.txt
+
+      - name: Upload image digest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-image-digest
+          path: image-digest.txt
+          if-no-files-found: error
+          retention-days: 7
+
+  publish-release:
+    name: Publish GitHub Release
+    needs:
+      - release-assets
+      - dockerhub
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Download release artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: release-files
+          merge-multiple: true
+
+      - name: Generate combined checksums
+        working-directory: release-files
+        run: sha256sum *.tar.gz *.zip > checksums.txt
+
+      - name: Prepare release upload directory
+        run: |
+          set -eu
+          mkdir -p release-upload
+          find release-files -maxdepth 1 -type f \
+            \( -name '*.tar.gz' -o -name '*.zip' -o -name 'image-digest.txt' \) \
+            -exec cp {} release-upload/ \;
+          cp release-files/checksums.txt release-upload/
+
+      - name: Create draft and upload assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          name: ${{ env.RELEASE_TAG }}
+          generate_release_notes: true
+          draft: true
+          prerelease: ${{ contains(env.RELEASE_TAG, '-') }}
+          fail_on_unmatched_files: true
+          files: release-upload/*
+
+      - name: Publish completed release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ env.RELEASE_TAG }}
+        run: gh release edit "$RELEASE_TAG" --draft=false

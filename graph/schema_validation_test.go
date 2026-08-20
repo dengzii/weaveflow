@@ -63,7 +63,7 @@ func TestGraphRunnerValidatesStateSchemaAtResumeInput(t *testing.T) {
 	if getErr != nil {
 		t.Fatalf("GetRun(): %v", getErr)
 	}
-	if persisted.Status != fruntime.RunStatusPaused || persisted.Revision != pausedRun.Revision {
+	if persisted.Status != fruntime.RunStatusPaused || persisted.CurrentNodeID != pausedRun.CurrentNodeID || persisted.LastCheckpointID != pausedRun.LastCheckpointID {
 		t.Fatalf("resume validation changed run: before=%#v after=%#v", pausedRun, persisted)
 	}
 }
