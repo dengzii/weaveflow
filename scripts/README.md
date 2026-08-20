@@ -28,7 +28,7 @@ docker run --detach --init --name weaveflow \
 ```
 
 If `.env` is not present, remove the `--env-file .env` option. Put model credentials and
-`WEAVEFLOW_MANAGEMENT_TOKEN` in that file instead of writing them in the shell history. The `.dockerignore` excludes
+`WEAVEFLOW_MANAGEMENT_TOKEN` in that file instead of exposing them in shell history. The `.dockerignore` excludes
 `.env` and common key files from the image build context.
 
 The repository also provides a Docker CLI-only helper, which does not require the Compose plugin:
@@ -61,7 +61,7 @@ docker compose --env-file scripts/.env -f scripts/compose.yaml logs -f weaveflow
 docker compose --env-file scripts/.env -f scripts/compose.yaml down
 ```
 
-This Compose file only runs a prebuilt image; it does not access the source tree to build an image. The current local
+This Compose file runs a prebuilt image; it never accesses the source tree to build one. The current local
 version is recorded in `VERSION` and defaults to `weaveflow:0.1.0`; set `WEAVEFLOW_IMAGE` in `scripts/.env` when the
 image uses another tag. Compose uses the same loopback-only binding,
 read-only root filesystem, non-root image, health check, data volume, and workspace mount as `scripts/deploy.sh`. Set
@@ -91,7 +91,7 @@ writable in the examples because agent tools may edit files; use `:ro` when the 
 writes.
 
 The image exposes `GET /healthz` for container health checks. It does not require the management token and returns only
-a small status envelope. The WebUI configuration is generated under `/tmp` at startup, so the image can run with a
+basic status information. The WebUI configuration is generated under `/tmp` at startup, so the image can run with a
 read-only root filesystem.
 
 For a published release, create a Git tag such as `v0.1.0` after committing the release changes. The GitHub Release
