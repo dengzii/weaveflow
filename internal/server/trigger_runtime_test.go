@@ -214,6 +214,11 @@ func TestTriggerRunOriginIsReturnedByRunList(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("origin-graph", "v1", "origin"))
@@ -258,7 +263,9 @@ func TestTriggerRunOriginIsReturnedByRunList(t *testing.T) {
 		if run.Origin == nil || run.Origin.Type != "webhook" || run.Origin.TriggerID != "hook" {
 			t.Fatalf("listed run origin = %#v, want webhook trigger hook", run.Origin)
 		}
-		waitForRunTerminalStatus(t, srv.runtime.session("origin-graph", uploaded.Graph.GraphSessionID).runner, runID)
+		runner := srv.runtime.session("origin-graph", uploaded.Graph.GraphSessionID).runner
+		waitForRunTerminalStatus(t, runner, runID)
+		waitForRunInactive(t, runner, runID)
 		return
 	}
 	t.Fatalf("trigger run %q was not returned by run list", runID)

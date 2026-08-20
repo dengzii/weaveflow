@@ -1314,6 +1314,11 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1345,7 +1350,9 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 
 		uploaded := putGraphForHashTest(t, engine, graphBody)
 		run := startGraphRunForTest(t, engine, uploaded, `{}`)
-		waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, run.RunID)
+		runner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
+		waitForRunTerminalStatus(t, runner, run.RunID)
+		waitForRunInactive(t, runner, run.RunID)
 		runIDs[run.RunID] = struct{}{}
 	}
 
@@ -1699,6 +1706,125 @@ func TestRunInterruptResponseAndResume(t *testing.T) {
 	}
 }
 
+func TestForkAndCompareRunEndpoints(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+
+	reg := wfregistry.NewRegistry()
+	if err := reg.RegisterStateModule(builtin.ProtocolsStateModuleDefinition()); err != nil {
+		t.Fatalf("register state module: %v", err)
+	}
+	if err := reg.RegisterNodeType(wfregistry.NodeTypeDefinition{
+		NodeTypeSchema: dsl.NodeTypeSchema{
+			Type:  "interrupt_once",
+			Title: "Interrupt Once",
+			StatePorts: []dsl.StatePortDefinition{{
+				Name: "resume", Schema: dsl.JSONSchema{"type": "string"}, Mode: dsl.StateAccessRead, MergeStrategy: dsl.StateMergeReplace,
+			}},
+		},
+		Build: func(_ *wfregistry.BuildContext, resolved wfregistry.ResolvedNodeSpec) (core.Node, error) {
+			return newInterruptTestNode(resolved.Spec, resolved.State["resume"].Path), nil
+		},
+	}); err != nil {
+		t.Fatalf("register node type: %v", err)
+	}
+
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir(), Registry: reg})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	}()
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	graphBody := `{
+		"graph_id": "fork-compare-graph",
+		"settings": {"environment": {}, "models": []},
+		"definition": {
+			"version": "1.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
+			"name": "fork-compare-graph",
+			"entry_point": "wait",
+			"finish_point": "wait",
+			"nodes": [
+				{"id": "wait", "type": "interrupt_once", "state": {"resume": {"path": "shared.resume"}}}
+			]
+		}
+	}`
+	uploaded := putGraphForHashTest(t, engine, graphBody)
+	started := startGraphRunForTest(t, engine, uploaded, `{}`)
+	runner := srv.runtime.session("fork-compare-graph", uploaded.Graph.GraphSessionID).runner
+	paused := waitForRunTerminalStatus(t, runner, started.RunID)
+	if paused.Status != runtime.RunStatusPaused || paused.LastCheckpointID == "" {
+		t.Fatalf("source run = %#v, want paused run with checkpoint", paused)
+	}
+
+	forkResponse := serveHTTP(engine, http.MethodPost, "/graphs/fork-compare-graph/runs/"+paused.RunID+"/forks", `{
+		"checkpoint_id": "`+paused.LastCheckpointID+`",
+		"request_key": "fork-http-once",
+		"input": {"shared": {"resume": "ok"}}
+	}`)
+	if forkResponse.Code != http.StatusAccepted {
+		t.Fatalf("fork status = %d, body = %s", forkResponse.Code, forkResponse.Body.String())
+	}
+	var forkEnvelope struct {
+		Data  runtime.ForkResult `json:"data"`
+		Error *apiError          `json:"error"`
+	}
+	if err := json.Unmarshal(forkResponse.Body.Bytes(), &forkEnvelope); err != nil {
+		t.Fatalf("decode fork response: %v", err)
+	}
+	if forkEnvelope.Error != nil {
+		t.Fatalf("fork response error = %#v", forkEnvelope.Error)
+	}
+	forked := forkEnvelope.Data.Run
+	if forked.RunID == "" || forked.RunID == paused.RunID || forked.SourceRunID != paused.RunID || forked.SourceCheckpointID != paused.LastCheckpointID {
+		t.Fatalf("fork result = %#v", forkEnvelope.Data)
+	}
+	completed := waitForRunTerminalStatus(t, runner, forked.RunID)
+	if completed.Status != runtime.RunStatusCompleted {
+		t.Fatalf("fork run status = %q, want completed", completed.Status)
+	}
+	waitForRunInactive(t, runner, forked.RunID)
+
+	repeated := serveHTTP(engine, http.MethodPost, "/graphs/fork-compare-graph/runs/"+paused.RunID+"/forks", `{
+		"checkpoint_id": "`+paused.LastCheckpointID+`",
+		"request_key": "fork-http-once",
+		"input": {"shared": {"resume": "ok"}}
+	}`)
+	if repeated.Code != http.StatusAccepted {
+		t.Fatalf("repeat fork status = %d, body = %s", repeated.Code, repeated.Body.String())
+	}
+	var repeatedEnvelope struct {
+		Data runtime.ForkResult `json:"data"`
+	}
+	if err := json.Unmarshal(repeated.Body.Bytes(), &repeatedEnvelope); err != nil {
+		t.Fatalf("decode repeat fork response: %v", err)
+	}
+	if repeatedEnvelope.Data.Run.RunID != forked.RunID {
+		t.Fatalf("repeat fork run ID = %q, want %q", repeatedEnvelope.Data.Run.RunID, forked.RunID)
+	}
+
+	compareResponse := serveHTTP(engine, http.MethodGet, "/graphs/fork-compare-graph/runs/"+paused.RunID+"/compare/"+forked.RunID, "")
+	if compareResponse.Code != http.StatusOK {
+		t.Fatalf("compare status = %d, body = %s", compareResponse.Code, compareResponse.Body.String())
+	}
+	var compareEnvelope struct {
+		Data runtime.RunComparison `json:"data"`
+	}
+	if err := json.Unmarshal(compareResponse.Body.Bytes(), &compareEnvelope); err != nil {
+		t.Fatalf("decode compare response: %v", err)
+	}
+	if compareEnvelope.Data.Left.RunID != paused.RunID || compareEnvelope.Data.Right.RunID != forked.RunID {
+		t.Fatalf("compare runs = %#v", compareEnvelope.Data)
+	}
+	if len(compareEnvelope.Data.StateChanges) == 0 {
+		t.Fatal("compare response has no state changes")
+	}
+}
+
 func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
@@ -1797,6 +1923,11 @@ func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) 
 
 	started := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseRun := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	defer releaseRun()
 	graph := newRunControlTestGraph(t, started, release, false)
 	srv, err := New(context.Background(), Config{
 		Graph:   graph,
@@ -1818,7 +1949,7 @@ func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) 
 
 	pauseDone := serveHTTPAsync(engine, http.MethodPost, "/graphs/graph/runs/"+runID+"/pause", "")
 	assertNoHTTPResponse(t, pauseDone, "pause")
-	close(release)
+	releaseRun()
 
 	pauseResponse := waitForHTTPResponse(t, pauseDone, "pause")
 	pausedRun := decodeRunRecordResponse(t, pauseResponse, http.StatusOK)

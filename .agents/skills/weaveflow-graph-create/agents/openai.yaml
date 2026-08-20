@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeaveFlow Graph Create"
+  short_description: "Author Graphs from public API context"
+  default_prompt: "Use $weaveflow-graph-create to understand the API-exposed Graph context, validate its definition, and create an immutable Session."

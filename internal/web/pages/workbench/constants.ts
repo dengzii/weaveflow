@@ -38,6 +38,7 @@ export const defaultInitialState = {
 export const runtimeEventTypes = [
   "run.created",
   "run.started",
+  "run.forked",
   "run.pause_requested",
   "run.paused",
   "run.resumed",

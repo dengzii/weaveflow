@@ -10,6 +10,7 @@ import (
 	"github.com/dengzii/weaveflow/internal/config"
 	basenode "github.com/dengzii/weaveflow/node"
 	"github.com/dengzii/weaveflow/registry"
+	executor "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 
 	"github.com/dengzii/weaveflow/llms"
@@ -27,6 +28,9 @@ type Config struct {
 	ToolIDs        []string
 	SystemPrompt   string
 	MaxIterations  int
+	MaxToolCalls   int
+	MaxTokens      int
+	MaxCost        float64
 	PromptMaxChars int
 	Parallel       bool
 }
@@ -66,6 +70,9 @@ func (node *Node) Validate() error {
 	}
 	if node.TaskPath.Empty() || node.ConversationPath.Empty() || node.ResultPath.Empty() {
 		return fmt.Errorf("agent node %q requires task, conversation, and result paths", node.ID())
+	}
+	if node.MaxIterations < 0 || node.MaxToolCalls < 0 || node.MaxTokens < 0 || node.MaxCost < 0 {
+		return fmt.Errorf("agent node %q budget values cannot be negative", node.ID())
 	}
 	if err := state.ValidateJSONSchemaDefinition(node.OutputSchema); err != nil {
 		return fmt.Errorf("agent node %q output schema: %w", node.ID(), err)
@@ -108,6 +115,15 @@ func (node *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 	if node.MaxIterations > 0 {
 		configMap["max_iterations"] = node.MaxIterations
 	}
+	if node.MaxToolCalls > 0 {
+		configMap["max_tool_calls"] = node.MaxToolCalls
+	}
+	if node.MaxTokens > 0 {
+		configMap["max_tokens"] = node.MaxTokens
+	}
+	if node.MaxCost > 0 {
+		configMap["max_cost"] = node.MaxCost
+	}
 	if node.PromptMaxChars > 0 {
 		configMap["prompt_max_chars"] = node.PromptMaxChars
 	}
@@ -143,6 +159,18 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 					"max_iterations": dsl.JSONSchema{
 						"type": "integer", "title": "Max Agent Iterations", "minimum": 1, "default": 10,
 						"description": "Maximum model and tool loop iterations before the agent stops.",
+					},
+					"max_tool_calls": dsl.JSONSchema{
+						"type": "integer", "title": "Max Tool Calls", "minimum": 1,
+						"description": "Maximum accepted tool calls across this Agent Run, including resumed execution.",
+					},
+					"max_tokens": dsl.JSONSchema{
+						"type": "integer", "title": "Max Model Tokens", "minimum": 1,
+						"description": "Maximum model tokens across this Agent Run, including resumed execution.",
+					},
+					"max_cost": dsl.JSONSchema{
+						"type": "number", "title": "Max Model Cost", "minimum": 0,
+						"description": "Maximum reported model cost across this Agent Run.",
 					},
 					"prompt_max_chars": dsl.JSONSchema{
 						"type": "integer", "title": "Prompt Character Limit", "minimum": 1,
@@ -213,6 +241,9 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 			target.ConversationPath = conversationPath
 			target.ResultPath = resultPath
 			target.MaxIterations, _ = config.Int(spec.Config, "max_iterations")
+			target.MaxToolCalls, _ = config.Int(spec.Config, "max_tool_calls")
+			target.MaxTokens, _ = config.Int(spec.Config, "max_tokens")
+			target.MaxCost, _ = config.Float(spec.Config, "max_cost")
 			target.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
 			target.OutputSchema, err = outputSchemaFromConfig(spec.Config)
 			if err != nil {
@@ -262,7 +293,12 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	if err := node.SeedConversation(conversation, strings.TrimSpace(task)); err != nil {
 		return err
 	}
-	if err := node.RunLoop(ctx, conversation); err != nil {
+	ctx = core.NewContext(executor.WithAgentStateProvider(ctx, func() *state.State {
+		return access.State()
+	}))
+	runtime := newNodeRuntime(node)
+	runtime.resumePhase = executor.AgentResumePhaseFromContext(ctx)
+	if err := runtime.runLoop(ctx, conversation); err != nil {
 		return err
 	}
 	outputJSON := node.outputJSONEnabled()

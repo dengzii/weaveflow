@@ -6,12 +6,14 @@ import type {
   CachedGraphSummary,
   ChatChannelSetupResult,
   CheckpointDetail,
+  ForkResult,
   GraphDefinition,
   GraphDetail,
   GraphInitialStateAnalysis,
   GraphLoadResult,
   RegistryInfo,
   RunInspection,
+  RunComparison,
   RunRecord,
   RunResult,
   RuntimeEventPage,
@@ -24,8 +26,10 @@ import {
   validateGraphDetail,
   validateGraphListPage,
   validateGraphLoadResult,
+  validateForkResult,
   validateRegistryInfo,
   validateRunInspection,
+  validateRunComparison,
   validateRunListPage,
   validateRunRecord,
   validateRunResult,
@@ -271,6 +275,30 @@ export async function getRunInspection(
   if (eventCursor) query.set("event_cursor", eventCursor);
   const path = `${runPath(graphID, runID)}/inspection?${query.toString()}`;
   return validateRunInspection(await apiFetch<unknown>(path), `GET ${path} response`);
+}
+
+export async function forkRun(
+  graphID: string,
+  runID: string,
+  checkpointID: string,
+  requestKey: string,
+  input: unknown = {}
+): Promise<ForkResult> {
+  const path = `${runPath(graphID, runID)}/forks`;
+  return validateForkResult(await apiFetch<unknown>(path, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ checkpoint_id: checkpointID, request_key: requestKey, input }),
+  }), `POST ${path} response`);
+}
+
+export async function compareRuns(
+  graphID: string,
+  runID: string,
+  otherRunID: string
+): Promise<RunComparison> {
+  const path = `${runPath(graphID, runID)}/compare/${encodeURIComponent(otherRunID)}`;
+  return validateRunComparison(await apiFetch<unknown>(path), `GET ${path} response`);
 }
 
 export async function pauseRun(graphID: string, runID: string): Promise<RunRecord> {

@@ -1700,6 +1700,14 @@ func (r *GraphRunner) resumeExistingRun(ctx context.Context, run RunRecord, chec
 	if err != nil {
 		return RunRecord{}, nil, err
 	}
+	if phase, found, phaseErr := LoadAgentResumeState(checkpoint.Business); phaseErr != nil {
+		return RunRecord{}, nil, phaseErr
+	} else if found {
+		ctx = WithAgentResumePhase(ctx, phase)
+		if err := ClearAgentResumeState(checkpoint.Business); err != nil {
+			return RunRecord{}, nil, err
+		}
+	}
 
 	expectedRun := run
 	desiredRun := run
@@ -3063,6 +3071,17 @@ func (r *GraphRunner) resumeTarget(ctx context.Context, checkpoint CheckpointRec
 		return CloneGraphTasks(nextTasks), nil, nil, nil
 	case CheckpointAfterWave:
 		return CloneGraphTasks(schedule.NextTasks), nil, nil, nil
+	case CheckpointAgent:
+		taskID := checkpoint.TaskID
+		for _, task := range schedule.CurrentTasks {
+			if task.TaskID == taskID {
+				return []GraphTask{task}, nil, nil, nil
+			}
+		}
+		if len(schedule.CurrentTasks) == 1 {
+			return []GraphTask{schedule.CurrentTasks[0]}, nil, nil, nil
+		}
+		return nil, nil, nil, fmt.Errorf("agent checkpoint %q has no current task", checkpoint.CheckpointID)
 	case CheckpointFinal:
 		return nil, nil, nil, fmt.Errorf("final checkpoint %q is not resumable", checkpoint.CheckpointID)
 	default:

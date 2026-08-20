@@ -11,6 +11,12 @@ type runnerEventPublisher func(eventType EventType, payload any) error
 type runnerEventFailureReporter func(context.Context, EventType, error)
 type runnerArtifactRecorder func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error)
 
+type AgentInvocationRecorder interface {
+	Start(context.Context, AgentInvocation) (AgentInvocation, error)
+	Checkpoint(context.Context, AgentInvocation, string) (AgentInvocation, error)
+	Finish(context.Context, AgentInvocation, error) error
+}
+
 // EventObserver synchronously observes fully populated events from one run.
 type EventObserver interface {
 	Observe(context.Context, Event) error
@@ -27,6 +33,9 @@ type runnerEventPublisherKey struct{}
 type runnerEventFailureReporterKey struct{}
 type runnerMetadataKey struct{}
 type runnerArtifactRecorderKey struct{}
+type agentInvocationRecorderKey struct{}
+type agentStateProviderKey struct{}
+type agentResumePhaseKey struct{}
 type runnerEventObserverKey struct{}
 type runOriginKey struct{}
 type graphExecutionBudgetProviderKey struct{}
@@ -214,6 +223,60 @@ func WithRunnerArtifactRecorder(ctx context.Context, recorder func(context.Conte
 		return ctx
 	}
 	return context.WithValue(ctx, runnerArtifactRecorderKey{}, runnerArtifactRecorder(recorder))
+}
+
+func WithAgentInvocationRecorder(ctx context.Context, recorder AgentInvocationRecorder) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if recorder == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, agentInvocationRecorderKey{}, recorder)
+}
+
+func AgentInvocationRecorderFromContext(ctx context.Context) (AgentInvocationRecorder, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	recorder, ok := ctx.Value(agentInvocationRecorderKey{}).(AgentInvocationRecorder)
+	return recorder, ok && recorder != nil
+}
+
+func WithAgentStateProvider(ctx context.Context, provider func() *state.State) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if provider == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, agentStateProviderKey{}, provider)
+}
+
+func AgentStateFromContext(ctx context.Context) (*state.State, bool) {
+	if ctx == nil {
+		return nil, false
+	}
+	provider, ok := ctx.Value(agentStateProviderKey{}).(func() *state.State)
+	if !ok || provider == nil {
+		return nil, false
+	}
+	return provider(), true
+}
+
+func WithAgentResumePhase(ctx context.Context, phase string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, agentResumePhaseKey{}, phase)
+}
+
+func AgentResumePhaseFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	phase, _ := ctx.Value(agentResumePhaseKey{}).(string)
+	return phase
 }
 
 func PublishRunnerContextEvent(ctx context.Context, eventType EventType, payload any) error {

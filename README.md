@@ -11,6 +11,9 @@
   <a href="https://pkg.go.dev/github.com/dengzii/weaveflow"><img src="https://pkg.go.dev/badge/github.com/dengzii/weaveflow.svg" alt="Go Reference"></a>
   <a href="https://goreportcard.com/report/github.com/dengzii/weaveflow"><img src="https://goreportcard.com/badge/github.com/dengzii/weaveflow" alt="Go Report Card"></a>
   <a href="https://github.com/dengzii/weaveflow/releases"><img src="https://img.shields.io/github/v/release/dengzii/weaveflow?logo=github" alt="Release"></a>
+  <a href="https://codecov.io/gh/dengzii/weaveflow"><img src="https://codecov.io/gh/dengzii/weaveflow/branch/master/graph/badge.svg" alt="Codecov"></a>
+  <a href="https://golangci-lint.run/"><img src="https://img.shields.io/badge/lint-golangci--lint-00ADD8" alt="golangci-lint"></a>
+  <a href="https://hub.docker.com/r/dengzii/weaveflow"><img src="https://img.shields.io/badge/Docker-dengzii%2Fweaveflow-2496ED?logo=docker&logoColor=white" alt="Docker Image"></a>
 </p>
 
 <p align="center">
@@ -20,7 +23,6 @@
   <a href="https://playground.weaveflow.space">Playground</a> ·
   <a href="https://github.com/dengzii/weaveflow">Source</a>
 </p>
-
 WeaveFlow is a Go-native graph runtime for building, executing, inspecting, and recovering LLM agent workflows.
 
 Build workflows with explicit topology, explicit state contracts, checkpointed execution, and runtime records that remain
@@ -31,7 +33,9 @@ available for inspection after a run finishes.
 - [Key Features](#key-features)
 - [Graph Definition](#graph-definition)
 - [Debug Server and Workbench](#debug-server-and-workbench)
+- [Container Deployment](#container-deployment)
 - [Examples and Documentation](#examples-and-documentation)
+- [Agent Skills](#agent-skills)
 
 Agent workflows become difficult to understand when topology, state access, and control flow are hidden inside an
 implicit loop. WeaveFlow keeps those boundaries explicit:
@@ -82,7 +86,6 @@ Graph Definition
 | Failure handling | Classified errors, failure routes, and fallback results | `failure_fallback.go` |
 | Human intervention | Suspend, checkpoint-backed resume, and dynamic control | `human_approval.go` |
 | Multi-agent workflow | Supervisor routing, handoff, and isolated conversation roots | `supervisor_mode/`, `two_agent_handoff/` |
-
 These examples demonstrate the current runtime and are not a claim that WeaveFlow is already a complete distributed
 production control plane.
 
@@ -331,6 +334,15 @@ For WebUI-specific development and deployment notes, see [`internal/web/README.m
 Configure model credentials through Graph Settings or the server-managed credential mechanism. Credentials should not be
 stored in Graph Definitions, events, artifacts, logs, or API responses.
 
+## Container Deployment
+
+The packaged container runs the compiled WebUI and API behind one non-root Nginx process. It includes a health check,
+supports a read-only root filesystem, and binds to `127.0.0.1:8080` by default. Configure
+`WEAVEFLOW_MANAGEMENT_TOKEN` before exposing it beyond the local machine.
+
+See [`scripts/README.md`](scripts/README.md) for Docker, Compose, and deployment-helper instructions. The local image
+version is recorded in [`VERSION`](VERSION).
+
 ## Examples and Documentation
 
 Start from the goal that matches your task:
@@ -342,6 +354,21 @@ Start from the goal that matches your task:
 - **Use the Workbench:** [`internal/web/README.md`](internal/web/README.md).
 - **Review current capabilities and gaps:** [`docs/weaveflow-capability-gap-analysis.md`](docs/weaveflow-capability-gap-analysis.md).
 - **Review public website positioning:** [`docs/project-website-plan.md`](docs/project-website-plan.md).
+
+## Agent Skills
+
+The repository includes focused Agent Skills under [`.agents/skills/`](.agents/skills/) for working with WeaveFlow.
+Choose the skill that matches the task so API operations and repository changes remain clearly separated:
+
+| Skill                                                                      | Use it for                                                                                                                              | Boundary                                                                                                                 |
+|----------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------|
+| [`weaveflow-graph-create`](.agents/skills/weaveflow-graph-create/SKILL.md) | Understanding, authoring, validating, installing, and configuring Graph Definitions, Sessions, settings, Chat, and Triggers             | Uses only the public Debug Server HTTP API and bundled references; it does not inspect source code                       |
+| [`weaveflow-graph-debug`](.agents/skills/weaveflow-graph-debug/SKILL.md)   | Reconstructing Run context, inspecting persisted evidence, diagnosing failures or pauses, and performing explicitly authorized recovery | Uses only the public Debug Server HTTP API and the exact historical Graph Session; investigation is read-only by default |
+| [`weaveflow-graph-code`](.agents/skills/weaveflow-graph-code/SKILL.md)     | Implementing, reviewing, and validating repository source or documentation changes                                                      | Works in the repository and does not create Sessions, start Runs, or mutate live runtime data                            |
+
+Use `weaveflow-graph-create` before a Run, hand the resulting Graph ID, Session ID, and Run ID to
+`weaveflow-graph-debug` for runtime diagnosis, and use `weaveflow-graph-code` only when the remedy requires a repository
+change. Agents that support repository-local skills can load these definitions directly from the checkout.
 
 ## Development
 

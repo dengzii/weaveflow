@@ -12,9 +12,14 @@ type ConcurrencyLimiter struct {
 
 type ConcurrencyWaitObserver func(limit int)
 
+const maxConcurrencyLimiterSize = 100_000
+
 func NewConcurrencyLimiter(limit int) *ConcurrencyLimiter {
 	if limit <= 0 {
 		return nil
+	}
+	if limit > maxConcurrencyLimiterSize {
+		limit = maxConcurrencyLimiterSize
 	}
 	return &ConcurrencyLimiter{limit: limit, slots: make(chan struct{}, limit)}
 }

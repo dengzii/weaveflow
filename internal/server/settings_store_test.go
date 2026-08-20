@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/dengzii/weaveflow/core"
+	"github.com/dengzii/weaveflow/internal/memory"
 	"github.com/dengzii/weaveflow/llms"
 
 	"github.com/gin-gonic/gin"
@@ -232,6 +233,9 @@ func TestGraphRuntimeSettingsRebuildsModelPricingAndToolGovernance(t *testing.T)
 	permissions, configured := core.ToolPermissionsFromContext(runtimeContext)
 	if !configured || strings.Join(permissions, ",") != "filesystem.write" {
 		t.Fatalf("rebuilt tool permissions = %#v, configured=%v", permissions, configured)
+	}
+	if configuredMemory, ok := memory.StoreFromContext(runtimeContext); !ok || configuredMemory != srv.MemoryStore() {
+		t.Fatalf("rebuilt memory store = %#v, configured=%v", configuredMemory, ok)
 	}
 	model := core.NewContext(runtimeContext).Model()
 	if model == nil {

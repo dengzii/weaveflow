@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dengzii/weaveflow/internal/memory"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/dengzii/weaveflow/runtime"
 
@@ -19,6 +20,7 @@ var (
 	errRunnerNotConfigured      = errors.New("graph runner is not configured")
 	errRegistryNotConfigured    = errors.New("registry is not configured")
 	errEventStreamNotConfigured = errors.New("event stream is not configured")
+	errMemoryStoreNotConfigured = errors.New("memory store is not configured")
 	errInvalidGraphDefinition   = errors.New("invalid graph definition")
 	errTriggerGraphNotFound     = errors.New("trigger graph not found")
 	errTriggerPayloadRequired   = errors.New("trigger payload is required")
@@ -112,6 +114,12 @@ func statusForError(err error) int {
 		return http.StatusOK
 	case errors.Is(err, runtime.ErrRunnerRecordNotFound):
 		return http.StatusNotFound
+	case errors.Is(err, memory.ErrRecordNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, memory.ErrVersionConflict):
+		return http.StatusConflict
+	case errors.Is(err, memory.ErrInvalidRecord), errors.Is(err, memory.ErrInvalidMemoryPage):
+		return http.StatusBadRequest
 	case errors.Is(err, trigger.ErrNotFound):
 		return http.StatusNotFound
 	case errors.Is(err, errTriggerGraphNotFound):
@@ -136,6 +144,8 @@ func statusForError(err error) int {
 		errors.Is(err, errRunnerNotConfigured),
 		errors.Is(err, errRegistryNotConfigured),
 		errors.Is(err, errEventStreamNotConfigured):
+		return http.StatusServiceUnavailable
+	case errors.Is(err, errMemoryStoreNotConfigured):
 		return http.StatusServiceUnavailable
 	case errors.Is(err, context.Canceled):
 		return http.StatusRequestTimeout

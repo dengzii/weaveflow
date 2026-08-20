@@ -15,6 +15,20 @@ import (
 	"github.com/dengzii/weaveflow/llms"
 )
 
+var ErrToolNotFound = errors.New("tool not found")
+
+type toolNotFoundError struct {
+	name string
+}
+
+func (err toolNotFoundError) Error() string {
+	return fmt.Sprintf("tool %q not found", err.name)
+}
+
+func (err toolNotFoundError) Unwrap() error {
+	return ErrToolNotFound
+}
+
 type ToolExecutionNode struct {
 	Base
 	ToolIDs          []string
@@ -170,12 +184,17 @@ func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (llms.ToolResult,
 	name := toolCall.FunctionCall.Name
 	tool, ok := core.FindTool(ctx.Tools(), name)
 	if !ok {
-		return llms.ToolResult{}, fmt.Errorf("tool %q not found", name)
+		return llms.ToolResult{}, toolNotFoundError{name: name}
 	}
 	if tool.Handler == nil {
 		return llms.ToolResult{}, fmt.Errorf("tool handler %q not found", name)
 	}
 	return core.ExecuteTool(ctx, tool, toolCall)
+}
+
+// ExecuteToolCall executes one provider tool call and preserves its structured result and error.
+func ExecuteToolCall(ctx core.Context, toolCall llms.ToolCall) (llms.ToolResult, error) {
+	return executeToolCall(ctx, toolCall)
 }
 
 func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {

@@ -322,7 +322,7 @@ func (s *artifactStore) reconcileLocked(resolve func(string) (transactionResultR
 }
 
 func (s *artifactStore) recordReconciliationLocked(record artifactReconciliationRecord) error {
-	path := filepath.Join(filepath.Dir(s.baseDir), ".transactions", "artifact-reconciliation", record.TransactionID+"-"+record.RunID+".json")
+	path := safeRunnerPath(filepath.Join(filepath.Dir(s.baseDir), ".transactions", "artifact-reconciliation"), record.TransactionID+"-"+record.RunID+".json")
 	return writeRunnerJSONFile(path, record)
 }
 
@@ -351,7 +351,7 @@ func (s *artifactStore) Load(ctx context.Context, ref state.ArtifactRef) (Artifa
 		return Artifact{}, fmt.Errorf("artifact %q metadata identity mismatch", ref.ID)
 	}
 	payloadPath := s.payloadPath(ref.RunID, ref.ID)
-	data, err := os.ReadFile(payloadPath)
+	data, err := readRunnerBinaryFile(payloadPath)
 	if err != nil {
 		return Artifact{}, err
 	}
@@ -402,7 +402,7 @@ func (s *artifactStore) List(ctx context.Context, runID string) ([]state.Artifac
 			continue
 		}
 		var ref state.ArtifactRef
-		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &ref); err != nil {
+		if err := readRunnerJSONFile(safeRunnerPath(dir, file.Name()), &ref); err != nil {
 			return nil, err
 		}
 		if err := validateRunnerStorageID("artifact ID", ref.ID); err != nil {
@@ -461,35 +461,35 @@ func (s *artifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID 
 }
 
 func (s *artifactStore) artifactsDir(runID string) string {
-	return filepath.Join(s.baseDir, runID)
+	return safeRunnerPath(s.baseDir, runID)
 }
 
 func (s *artifactStore) stagesDir(runID string) string {
-	return filepath.Join(s.artifactsDir(runID), ".stages")
+	return safeRunnerPath(s.artifactsDir(runID), ".stages")
 }
 
 func (s *artifactStore) stageTransactionDir(runID, transactionID string) string {
-	return filepath.Join(s.stagesDir(runID), transactionID)
+	return safeRunnerPath(s.stagesDir(runID), transactionID)
 }
 
 func (s *artifactStore) stageMetadataPath(runID, transactionID, artifactID string) string {
-	return filepath.Join(s.stageTransactionDir(runID, transactionID), artifactID+".json")
+	return safeRunnerPath(s.stageTransactionDir(runID, transactionID), artifactID+".json")
 }
 
 func (s *artifactStore) stagePayloadPath(runID, transactionID, artifactID string) string {
-	return filepath.Join(s.stageTransactionDir(runID, transactionID), artifactID+".bin")
+	return safeRunnerPath(s.stageTransactionDir(runID, transactionID), artifactID+".bin")
 }
 
 func (s *artifactStore) payloadDir(runID string) string {
-	return filepath.Join(s.baseDir, runID, "payloads")
+	return safeRunnerPath(s.baseDir, runID, "payloads")
 }
 
 func (s *artifactStore) metadataPath(runID, artifactID string) string {
-	return filepath.Join(s.artifactsDir(runID), artifactID+".json")
+	return safeRunnerPath(s.artifactsDir(runID), artifactID+".json")
 }
 
 func (s *artifactStore) payloadPath(runID, artifactID string) string {
-	return filepath.Join(s.payloadDir(runID), artifactID+".bin")
+	return safeRunnerPath(s.payloadDir(runID), artifactID+".bin")
 }
 
 func (s *artifactStore) deletionPath(runID string) string {

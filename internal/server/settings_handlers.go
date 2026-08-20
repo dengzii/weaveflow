@@ -9,6 +9,7 @@ import (
 
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/memory"
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/llms/openai"
 )
@@ -211,6 +212,7 @@ func (s *Server) buildRuntimeContext(settings graphRuntimeSettings) (context.Con
 	}
 	ctx = core.WithModelConfigs(ctx, modelConfigs)
 	ctx = core.WithToolPermissions(ctx, settings.ToolPermissions...)
+	ctx = memory.WithStore(ctx, s.memoryStore)
 	ctx = core.WithToolApprover(ctx, core.ToolApproverFunc(func(_ context.Context, request core.ToolApprovalRequest) (core.ToolApprovalDecision, error) {
 		name := ""
 		if request.ToolCall.FunctionCall != nil {

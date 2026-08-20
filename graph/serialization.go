@@ -68,18 +68,26 @@ func (g *Graph) SnapshotHash() (string, error) {
 }
 
 func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
-	data, err := os.ReadFile(path)
+	resolvedPath, err := resolveGraphFilePath(path)
+	if err != nil {
+		return dsl.GraphDefinition{}, err
+	}
+	data, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return dsl.GraphDefinition{}, err
 	}
 	definition, err := dsl.DeserializeGraphDefinition(data)
 	if err != nil {
-		return dsl.GraphDefinition{}, fmt.Errorf("load graph definition from %q: %w", path, err)
+		return dsl.GraphDefinition{}, fmt.Errorf("load graph definition from %q: %w", resolvedPath, err)
 	}
 	return definition, nil
 }
 
 func (g *Graph) WriteToFile(path string) error {
+	resolvedPath, err := resolveGraphFilePath(path)
+	if err != nil {
+		return err
+	}
 	definition, err := g.Definition()
 	if err != nil {
 		return err
@@ -88,7 +96,7 @@ func (g *Graph) WriteToFile(path string) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".graph-*")
+	temporary, err := os.CreateTemp(filepath.Dir(resolvedPath), ".graph-*")
 	if err != nil {
 		return err
 	}
@@ -101,7 +109,18 @@ func (g *Graph) WriteToFile(path string) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return os.Rename(temporaryPath, resolvedPath)
+}
+
+func resolveGraphFilePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" || strings.ContainsRune(path, 0) {
+		return "", fmt.Errorf("graph file path is required")
+	}
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve graph file path: %w", err)
+	}
+	return resolved, nil
 }
 
 func (g *Graph) DrawMermaid() (string, error) {

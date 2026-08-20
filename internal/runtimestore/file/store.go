@@ -39,6 +39,11 @@ type storeMutex struct {
 	shared *sync.Mutex
 }
 
+const (
+	maxRunnerJSONFileBytes = 64 << 20
+	maxEventPageLimit      = 10_000
+)
+
 func newExecutionStore(baseDir string, shared *sync.Mutex) *executionStore {
 	baseDir = strings.TrimSpace(baseDir)
 	return &executionStore{
@@ -180,7 +185,7 @@ func requireRunDeletionMutation(ctx context.Context, runID, deletionID string) e
 }
 
 func runDeletionPath(baseDir, runID string) string {
-	return filepath.Join(baseDir, runDeletionDirName, runID+".json")
+	return safeRunnerPath(baseDir, runDeletionDirName, runID+".json")
 }
 
 func (s *executionStore) CreateRun(ctx context.Context, run RunRecord) error {
@@ -442,7 +447,7 @@ func (s *executionStore) ListSteps(ctx context.Context, runID string) ([]StepRec
 			continue
 		}
 		var step StepRecord
-		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &step); err != nil {
+		if err := readRunnerJSONFile(safeRunnerPath(dir, file.Name()), &step); err != nil {
 			return nil, err
 		}
 		if err := validateRunnerStorageID("step ID", step.StepID); err != nil {
@@ -575,7 +580,7 @@ func (s *executionStore) listRunsLocked(filter RunFilter) ([]RunRecord, error) {
 			continue
 		}
 		var run RunRecord
-		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &run); err != nil {
+		if err := readRunnerJSONFile(safeRunnerPath(dir, file.Name()), &run); err != nil {
 			return nil, err
 		}
 		if err := validateRunID(run.RunID); err != nil {
@@ -614,19 +619,19 @@ func (s *executionStore) listRunsLocked(filter RunFilter) ([]RunRecord, error) {
 }
 
 func (s *executionStore) runPath(runID string) string {
-	return filepath.Join(s.runsDir(), runID+".json")
+	return safeRunnerPath(s.runsDir(), runID+".json")
 }
 
 func (s *executionStore) runsDir() string {
-	return filepath.Join(s.baseDir, "runs")
+	return safeRunnerPath(s.baseDir, "runs")
 }
 
 func (s *executionStore) stepPath(runID, stepID string) string {
-	return filepath.Join(s.stepsDir(runID), stepID+".json")
+	return safeRunnerPath(s.stepsDir(runID), stepID+".json")
 }
 
 func (s *executionStore) stepsDir(runID string) string {
-	return filepath.Join(s.baseDir, "steps", runID)
+	return safeRunnerPath(s.baseDir, "steps", runID)
 }
 
 func (s *executionStore) deletionPath(runID string) string {
@@ -703,7 +708,7 @@ func (s *checkpointStore) Load(ctx context.Context, checkpointID string) (Checkp
 		if !runDir.IsDir() || runDir.Name() == runDeletionDirName {
 			continue
 		}
-		metaPath := filepath.Join(s.baseDir, runDir.Name(), checkpointID+".json")
+		metaPath := safeRunnerPath(s.baseDir, runDir.Name(), checkpointID+".json")
 		var record CheckpointRecord
 		if err := readRunnerJSONFile(metaPath, &record); err != nil {
 			if os.IsNotExist(err) {
@@ -759,7 +764,7 @@ func (s *checkpointStore) List(ctx context.Context, runID string) ([]CheckpointR
 			continue
 		}
 		var record CheckpointRecord
-		if err := readRunnerJSONFile(filepath.Join(dir, file.Name()), &record); err != nil {
+		if err := readRunnerJSONFile(safeRunnerPath(dir, file.Name()), &record); err != nil {
 			return nil, err
 		}
 		if err := validateRunnerStorageID("checkpoint ID", record.CheckpointID); err != nil {
@@ -818,19 +823,19 @@ func (s *checkpointStore) FenceRunDeletion(ctx context.Context, runID, deletionI
 }
 
 func (s *checkpointStore) checkpointsDir(runID string) string {
-	return filepath.Join(s.baseDir, runID)
+	return safeRunnerPath(s.baseDir, runID)
 }
 
 func (s *checkpointStore) payloadDir(runID string) string {
-	return filepath.Join(s.baseDir, runID, "payloads")
+	return safeRunnerPath(s.baseDir, runID, "payloads")
 }
 
 func (s *checkpointStore) metadataPath(runID, checkpointID string) string {
-	return filepath.Join(s.checkpointsDir(runID), checkpointID+".json")
+	return safeRunnerPath(s.checkpointsDir(runID), checkpointID+".json")
 }
 
 func (s *checkpointStore) payloadPath(runID, checkpointID string) string {
-	return filepath.Join(s.payloadDir(runID), checkpointID+".bin")
+	return safeRunnerPath(s.payloadDir(runID), checkpointID+".bin")
 }
 
 func (s *checkpointStore) deletionPath(runID string) string {
@@ -946,8 +951,8 @@ func (s *eventSink) ListEvents(runID string) ([]Event, error) {
 }
 
 func (s *eventSink) ListEventPage(runID, cursor string, limit int) (EventPage, error) {
-	if limit <= 0 {
-		return EventPage{}, fmt.Errorf("event page limit must be positive")
+	if limit <= 0 || limit > maxEventPageLimit {
+		return EventPage{}, fmt.Errorf("event page limit must be between 1 and %d", maxEventPageLimit)
 	}
 	if err := validateRunID(runID); err != nil {
 		return EventPage{}, err
@@ -1115,7 +1120,7 @@ func (s *eventSink) FenceRunDeletion(ctx context.Context, runID, deletionID stri
 }
 
 func (s *eventSink) eventsPath(runID string) string {
-	return filepath.Join(s.baseDir, runID+".jsonl")
+	return safeRunnerPath(s.baseDir, runID+".jsonl")
 }
 
 func (s *eventSink) deletionPath(runID string) string {
@@ -1161,6 +1166,9 @@ func marshalRunnerJSONFile(value any) ([]byte, error) {
 }
 
 func readRunnerJSONFile(path string, out any) error {
+	if err := validateRunnerPath(path); err != nil {
+		return err
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -1168,7 +1176,24 @@ func readRunnerJSONFile(path string, out any) error {
 	return json.Unmarshal(data, out)
 }
 
+func readRunnerBinaryFile(path string) ([]byte, error) {
+	if err := validateRunnerPath(path); err != nil {
+		return nil, err
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxRunnerJSONFileBytes {
+		return nil, fmt.Errorf("runner binary file is too large")
+	}
+	return os.ReadFile(path)
+}
+
 func writeRunnerBinaryFile(path string, data []byte) error {
+	if err := validateRunnerPath(path); err != nil {
+		return err
+	}
 	directory := filepath.Dir(path)
 	if err := ensureRunnerDirectory(directory); err != nil {
 		return err
@@ -1200,6 +1225,9 @@ func writeRunnerBinaryFile(path string, data []byte) error {
 }
 
 func ensureRunnerDirectory(path string) error {
+	if err := validateRunnerPath(path); err != nil {
+		return err
+	}
 	path = filepath.Clean(path)
 	missing := make([]string, 0, 2)
 	for current := path; ; current = filepath.Dir(current) {
@@ -1234,6 +1262,9 @@ func ensureRunnerDirectory(path string) error {
 }
 
 func removeRunnerFile(path string) error {
+	if err := validateRunnerPath(path); err != nil {
+		return err
+	}
 	if err := os.Remove(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -1244,6 +1275,9 @@ func removeRunnerFile(path string) error {
 }
 
 func removeRunnerDirectory(path string) error {
+	if err := validateRunnerPath(path); err != nil {
+		return err
+	}
 	if err := os.RemoveAll(path); err != nil {
 		return err
 	}
@@ -1271,12 +1305,57 @@ func marshalRunnerJSONLine(value any) ([]byte, error) {
 }
 
 func appendRunnerJSONLineData(path string, data []byte) error {
+	if err := validateRunnerPath(path); err != nil {
+		return err
+	}
+	if len(data) > maxRunnerJSONFileBytes {
+		return fmt.Errorf("runner JSON line is too large")
+	}
+	info, statErr := os.Stat(path)
+	if statErr != nil && !os.IsNotExist(statErr) {
+		return statErr
+	}
+	if statErr == nil && info.Size() > maxRunnerJSONFileBytes-int64(len(data)) {
+		return fmt.Errorf("runner JSON file is too large")
+	}
 	existing, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	combined := make([]byte, 0, len(existing)+len(data))
+	if len(existing) > maxRunnerJSONFileBytes-len(data) {
+		return fmt.Errorf("runner JSON file is too large")
+	}
+	combined := make([]byte, 0)
 	combined = append(combined, existing...)
 	combined = append(combined, data...)
 	return writeRunnerBinaryFile(path, combined)
+}
+
+func validateRunnerPath(path string) error {
+	if strings.TrimSpace(path) == "" || strings.ContainsRune(path, 0) {
+		return fmt.Errorf("runner storage path is invalid")
+	}
+	for _, part := range strings.FieldsFunc(filepath.Clean(path), func(r rune) bool {
+		return r == '/' || r == '\\'
+	}) {
+		if part == ".." {
+			return fmt.Errorf("runner storage path escapes its root")
+		}
+	}
+	return nil
+}
+
+func safeRunnerPath(base string, components ...string) string {
+	if strings.TrimSpace(base) == "" {
+		return ""
+	}
+	safeComponents := make([]string, len(components))
+	for index, component := range components {
+		baseComponent := filepath.Base(component)
+		if component == "" || component == "." || component == ".." || baseComponent != component {
+			return ""
+		}
+		safeComponents[index] = baseComponent
+	}
+	return filepath.Join(append([]string{base}, safeComponents...)...)
 }

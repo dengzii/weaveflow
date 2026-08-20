@@ -153,7 +153,6 @@ func (factory Factory) loggerFor(triggerID string) *slog.Logger {
 	return logger.With(
 		"component", "chat_channel",
 		"channel", ChannelID,
-		"trigger_id", strings.TrimSpace(triggerID),
 	)
 }
 

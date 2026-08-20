@@ -107,7 +107,7 @@ func (s *FileStore) CreateChatHistory(ctx context.Context, history ChatHistory) 
 		return ChatHistory{}, err
 	}
 	for {
-		path := filepath.Join(dir, strconv.FormatInt(history.ID, 10)+".json")
+		path := safeChatHistoryPath(dir, strconv.FormatInt(history.ID, 10)+".json")
 		if _, err := os.Stat(path); os.IsNotExist(err) {
 			if err := s.writeChatHistoryLocked(ctx, path, history); err != nil {
 				return ChatHistory{}, err
@@ -192,7 +192,7 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 		if err := storeContextError(ctx); err != nil {
 			return nil, err
 		}
-		path := filepath.Join(dir, strconv.FormatInt(id, 10)+".json")
+		path := safeChatHistoryPath(dir, strconv.FormatInt(id, 10)+".json")
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
@@ -224,11 +224,11 @@ func (s *FileStore) ensureChatHistoryDir(triggerID, userID, channelConversationI
 }
 
 func (s *FileStore) chatHistoryDir(triggerID, userID, channelConversationID, conversationID string) string {
-	return filepath.Join(s.chatConversationDir(triggerID, userID, channelConversationID, conversationID), "turns")
+	return safeChatHistoryPath(s.chatConversationDir(triggerID, userID, channelConversationID, conversationID), "turns")
 }
 
 func (s *FileStore) chatHistoryPath(history ChatHistory) string {
-	return filepath.Join(s.chatHistoryDir(history.TriggerID, history.UserID, history.ChannelConversationID, history.ConversationID), strconv.FormatInt(history.ID, 10)+".json")
+	return safeChatHistoryPath(s.chatHistoryDir(history.TriggerID, history.UserID, history.ChannelConversationID, history.ConversationID), strconv.FormatInt(history.ID, 10)+".json")
 }
 
 func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, history ChatHistory) error {
@@ -371,6 +371,21 @@ func chatHistoryPathSegment(value string) string {
 		return value
 	}
 	return "~" + base64.RawURLEncoding.EncodeToString([]byte(value))
+}
+
+func safeChatHistoryPath(base string, components ...string) string {
+	if strings.TrimSpace(base) == "" {
+		return ""
+	}
+	safeComponents := make([]string, len(components))
+	for index, component := range components {
+		baseComponent := filepath.Base(component)
+		if component == "" || component == "." || component == ".." || baseComponent != component {
+			return ""
+		}
+		safeComponents[index] = baseComponent
+	}
+	return filepath.Join(append([]string{base}, safeComponents...)...)
 }
 
 func isPlainChatHistoryPathSegment(value string) bool {

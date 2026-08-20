@@ -158,6 +158,12 @@ type resumeRunRequest struct {
 	Input map[string]any `json:"input,omitempty"`
 }
 
+type forkRunRequest struct {
+	CheckpointID string         `json:"checkpoint_id"`
+	RequestKey   string         `json:"request_key"`
+	Input        map[string]any `json:"input,omitempty"`
+}
+
 func decodeStartRunRequest(c *gin.Context) (*state.State, error) {
 	var request startRunRequest
 	if err := decodeRunRequest(c, &request); err != nil {
@@ -184,6 +190,25 @@ func decodeResumeRunRequest(c *gin.Context) (*state.State, error) {
 		return nil, err
 	}
 	return state.FromMap(request.Input), nil
+}
+
+func decodeForkRunRequest(c *gin.Context) (forkRunRequest, *state.State, error) {
+	var request forkRunRequest
+	if err := decodeRunRequest(c, &request); err != nil {
+		return forkRunRequest{}, nil, err
+	}
+	request.CheckpointID = strings.TrimSpace(request.CheckpointID)
+	request.RequestKey = strings.TrimSpace(request.RequestKey)
+	if request.CheckpointID == "" || request.RequestKey == "" {
+		return forkRunRequest{}, nil, invalidRequestf("checkpoint_id and request_key are required")
+	}
+	if request.Input == nil {
+		return request, state.NewState(), nil
+	}
+	if err := validateExternalRunState(request.Input); err != nil {
+		return forkRunRequest{}, nil, err
+	}
+	return request, state.FromMap(request.Input), nil
 }
 
 func validateExternalRunState(values map[string]any) error {

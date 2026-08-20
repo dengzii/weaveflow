@@ -195,6 +195,9 @@ func appendValue(existing any, value any) (any, error) {
 	right := reflect.ValueOf(value)
 	if left.IsValid() && left.Kind() == reflect.Slice {
 		if right.IsValid() && right.Kind() == reflect.Slice && right.Type() == left.Type() {
+			if right.Len() > maxInt()-left.Len() {
+				return nil, fmt.Errorf("append result is too large")
+			}
 			combined := reflect.MakeSlice(left.Type(), left.Len(), left.Len()+right.Len())
 			reflect.Copy(combined, left)
 			combined = reflect.AppendSlice(combined, right)
@@ -216,7 +219,10 @@ func appendValue(existing any, value any) (any, error) {
 	if !ok {
 		rightItems = []any{value}
 	}
-	combined := make([]any, 0, len(leftItems)+len(rightItems))
+	if len(rightItems) > maxInt()-len(leftItems) {
+		return nil, fmt.Errorf("append result is too large")
+	}
+	combined := make([]any, 0)
 	combined = append(combined, leftItems...)
 	combined = append(combined, rightItems...)
 	return combined, nil
@@ -231,7 +237,7 @@ func normalizeAppendSeed(value any) any {
 
 func anySlice(value any) ([]any, bool) {
 	reflected := reflect.ValueOf(value)
-	if !reflected.IsValid() || reflected.Kind() != reflect.Slice {
+	if !reflected.IsValid() || reflected.Kind() != reflect.Slice || reflected.Len() > maxCollectionSize {
 		return nil, false
 	}
 	items := make([]any, 0, reflected.Len())
@@ -239,6 +245,12 @@ func anySlice(value any) ([]any, bool) {
 		items = append(items, reflected.Index(i).Interface())
 	}
 	return items, true
+}
+
+const maxCollectionSize = 1_000_000
+
+func maxInt() int {
+	return int(^uint(0) >> 1)
 }
 
 func clonePatchOps(ops []PatchOp) []PatchOp {

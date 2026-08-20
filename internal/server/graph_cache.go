@@ -318,7 +318,7 @@ func (s *Server) listCachedGraphs() ([]cachedGraphSummary, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		graphDir := filepath.Join(graphsDir, entry.Name())
+		graphDir := filepath.Join(graphsDir, filepath.Base(entry.Name()))
 		sessions, err := os.ReadDir(graphDir)
 		if err != nil {
 			return nil, fmt.Errorf("read graph storage %q: %w", entry.Name(), err)
@@ -405,7 +405,8 @@ func (s *Server) openGraphCache(graphID string) (*graphCacheReader, error) {
 		if !complete || manifest.GraphID != graphID {
 			continue
 		}
-		base := filepath.Join(graphDir, sess.Name())
+		sessionName := filepath.Base(sess.Name())
+		base := filepath.Join(graphDir, sessionName)
 		if err := reader.appendStore(base); err != nil {
 			return nil, err
 		}
@@ -523,7 +524,16 @@ func (s *Server) markCachedRunExecutionLost(ctx context.Context, reader *graphCa
 }
 
 func readCachedGraphSession(graphDir string, sessionID string) (graphSessionManifest, bool, error) {
-	baseDir := filepath.Join(graphDir, sessionID)
+	baseSessionID := filepath.Base(sessionID)
+	if strings.TrimSpace(sessionID) == "" || sessionID == "." || sessionID == ".." || baseSessionID != sessionID {
+		return graphSessionManifest{}, false, fmt.Errorf("graph session id is invalid")
+	}
+	sessionID = baseSessionID
+	absoluteGraphDir, err := filepath.Abs(graphDir)
+	if err != nil {
+		return graphSessionManifest{}, false, err
+	}
+	baseDir := filepath.Join(absoluteGraphDir, sessionID)
 	manifestData, err := os.ReadFile(filepath.Join(baseDir, "graph.json"))
 	if os.IsNotExist(err) {
 		return graphSessionManifest{}, false, nil
@@ -566,6 +576,7 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 	if filepath.IsAbs(definitionName) || definitionName != filepath.Base(definitionName) {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q definition path is invalid", sessionID)
 	}
+	definitionName = filepath.Base(definitionName)
 	if manifest.CreatedAt.IsZero() {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q created_at is missing", sessionID)
 	}
@@ -578,6 +589,7 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 	if filepath.IsAbs(settingsName) || settingsName != filepath.Base(settingsName) {
 		return graphSessionManifest{}, false, fmt.Errorf("graph session %q settings path is invalid", sessionID)
 	}
+	settingsName = filepath.Base(settingsName)
 	manifest.SettingsPath = settingsName
 	manifest.RuntimeSettingsHash = strings.TrimSpace(manifest.RuntimeSettingsHash)
 	if manifest.RuntimeSettingsHash == "" {
