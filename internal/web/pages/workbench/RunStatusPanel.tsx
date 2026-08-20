@@ -1,4 +1,4 @@
-import { memo, startTransition, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
   KeyboardEvent as ReactKeyboardEvent,
@@ -11,6 +11,8 @@ import {
   ChevronRight,
   Copy,
   FoldVertical,
+  GitBranch,
+  GitCompare,
   ListTree,
   LoaderCircle,
   Search,
@@ -23,6 +25,7 @@ import type {
   CheckpointDetail,
   CheckpointRecord,
   RunRecord,
+  RunComparison,
   RuntimeEvent,
   StepRecord,
   TriggerType,
@@ -61,7 +64,7 @@ export { resizeRunPanelColumnRatios } from "./runStatusModel";
 const COLUMN_KEYBOARD_STEP_RATIO = 0.03;
 const MAX_CACHED_CHECKPOINTS = 6;
 const snapshotJSONCache = new WeakMap<object, string>();
-type RunPanelView = "overview" | "io" | "metrics" | "events" | "state";
+type RunPanelView = "overview" | "io" | "metrics" | "events" | "state" | "compare";
 type StateDetailView = "diff" | "snapshot";
 type EventHistoryItem = { event: RuntimeEvent; key: string };
 type StateHistoryItem = StateHistoryEntry & { key: string };
@@ -75,6 +78,10 @@ export function RunStatusPanel({
   runActionsDisabled = false,
   onSelectRun,
   onDeleteRun,
+  onForkRun,
+  onCompareRuns,
+  runComparison,
+  runComparisonLoading = false,
   steps,
   checkpoints,
   events,
@@ -91,6 +98,10 @@ export function RunStatusPanel({
   runActionsDisabled?: boolean;
   onSelectRun?: (runId: string) => void;
   onDeleteRun?: (runId: string) => void;
+  onForkRun?: () => void;
+  onCompareRuns?: (runId: string) => void;
+  runComparison?: RunComparison | null;
+  runComparisonLoading?: boolean;
   steps?: StepRecord[];
   checkpoints?: CheckpointRecord[];
   events: RuntimeEvent[];
@@ -101,6 +112,8 @@ export function RunStatusPanel({
 }) {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [panelView, setPanelView] = useState<RunPanelView>("events");
+  const [compareRunID, setCompareRunID] = useState("");
+  const [pendingCheckpointJump, setPendingCheckpointJump] = useState<{ runID: string; checkpointID: string } | null>(null);
   const [stateDetailView, setStateDetailView] = useState<StateDetailView>("snapshot");
   const [checkpointDetails, setCheckpointDetails] = useState<Record<string, CheckpointDetail>>({});
   const [checkpointErrors, setCheckpointErrors] = useState<Record<string, string>>({});
@@ -165,7 +178,17 @@ export function RunStatusPanel({
     ),
     [checkpoints, selectedRunId]
   );
+  const forkCheckpoint = selectedRun?.last_checkpoint_id
+    ? checkpoints?.find((checkpoint) => checkpoint.checkpoint_id === selectedRun.last_checkpoint_id)
+    : undefined;
+  const canForkSelectedRun = Boolean(
+    selectedRun?.last_checkpoint_id && forkCheckpoint?.stage !== "final"
+  );
   const activeEventFilterCount = eventTypeFilters.length + eventNodeFilters.length + Number(Boolean(eventKeywordFilter.trim()));
+  const compareOptions = useMemo(
+    () => runOptions.filter((run) => run.run_id !== selectedRunId),
+    [runOptions, selectedRunId]
+  );
 
   useLayoutEffect(() => {
     checkpointContextVersionRef.current += 1;
@@ -174,6 +197,7 @@ export function RunStatusPanel({
     setStateDetailView("snapshot");
     setCheckpointDetails({});
     setCheckpointErrors({});
+    setCompareRunID("");
   }, [selectedRunId]);
 
   useEffect(() => () => {
@@ -204,7 +228,7 @@ export function RunStatusPanel({
     return () => window.removeEventListener("resize", clampPanelHeight);
   }, []);
 
-  const isSummaryView = panelView === "overview" || panelView === "io" || panelView === "metrics";
+  const isSummaryView = panelView === "overview" || panelView === "io" || panelView === "metrics" || panelView === "compare";
   const visibleItems = panelView === "events" ? filteredEventItems : stateHistoryItems;
   const effectiveKey =
     selectedKey && visibleItems.some((item) => item.key === selectedKey)
@@ -230,6 +254,22 @@ export function RunStatusPanel({
   const deferredCheckpointID = deferredStateEntry?.checkpointID ?? "";
   const deferredCheckpointDetail = deferredCheckpointID ? checkpointDetails[deferredCheckpointID] : undefined;
   const deferredCheckpointError = deferredCheckpointID ? checkpointErrors[deferredCheckpointID] : undefined;
+
+  useEffect(() => {
+    if (!pendingCheckpointJump || pendingCheckpointJump.runID !== selectedRunId || panelView !== "state") return;
+    const target = stateHistoryItems.find((entry) => entry.checkpointID === pendingCheckpointJump.checkpointID);
+    if (!target) return;
+    setSelectedKey(target.key);
+    setPendingCheckpointJump(null);
+  }, [panelView, pendingCheckpointJump, selectedRunId, stateHistoryItems]);
+
+  const jumpToCheckpoint = useCallback((runID: string, checkpointID: string) => {
+    setPanelView("state");
+    setPendingCheckpointJump({ runID, checkpointID });
+    if (runID !== selectedRunId) {
+      onSelectRun?.(runID);
+    }
+  }, [onSelectRun, selectedRunId]);
 
   useEffect(() => {
     if (!selectedGraphID || !selectedRunId) return;
@@ -346,6 +386,54 @@ export function RunStatusPanel({
           </div>
         </div>
         <div className="flex-1" />
+        {selectedRun && onForkRun ? (
+          <Button
+            variant="outline"
+            size="sm"
+            className="h-7 gap-1 px-2 text-xs"
+            onClick={onForkRun}
+            disabled={runActionsDisabled || !canForkSelectedRun}
+            title={!selectedRun.last_checkpoint_id
+              ? "No checkpoint available for fork"
+              : forkCheckpoint?.stage === "final"
+                ? "Final checkpoints cannot be forked"
+                : "Fork from the selected run checkpoint"}
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            Fork
+          </Button>
+        ) : null}
+        {onCompareRuns && compareOptions.length > 0 ? (
+          <div className="flex items-center gap-1">
+            <select
+              aria-label="Compare selected run with"
+              value={compareRunID}
+              onChange={(event) => setCompareRunID(event.target.value)}
+              disabled={runActionsDisabled || runComparisonLoading}
+              className="h-7 max-w-36 rounded border border-border bg-background px-2 text-[11px]"
+            >
+              <option value="">Compare with…</option>
+              {compareOptions.map((run) => (
+                <option key={run.run_id} value={run.run_id}>{run.run_id}</option>
+              ))}
+            </select>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-7 gap-1 px-2 text-xs"
+              onClick={() => {
+                if (!compareRunID) return;
+                setPanelView("compare");
+                onCompareRuns(compareRunID);
+              }}
+              disabled={runActionsDisabled || runComparisonLoading || !compareRunID}
+              title="Compare selected run"
+            >
+              <GitCompare className="h-3.5 w-3.5" />
+              Compare
+            </Button>
+          </div>
+        ) : null}
         <Button
           variant="ghost"
           size="icon"
@@ -381,7 +469,7 @@ export function RunStatusPanel({
 
         {isSummaryView ? (
           <div
-            aria-label={panelView === "overview" ? "Run overview" : panelView === "io" ? "Run input and output" : "Run metrics"}
+            aria-label={panelView === "overview" ? "Run overview" : panelView === "io" ? "Run input and output" : panelView === "metrics" ? "Run metrics" : "Run comparison"}
             className="col-span-3 flex min-h-0 min-w-0 flex-col"
           >
             <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
@@ -404,6 +492,12 @@ export function RunStatusPanel({
                   inputError={inputCheckpointError}
                   outputError={outputCheckpointError}
                   loading={inspectionLoading}
+                />
+              ) : panelView === "compare" ? (
+                <RunComparisonDetail
+                  comparison={runComparison}
+                  loading={runComparisonLoading}
+                  onSelectCheckpoint={jumpToCheckpoint}
                 />
               ) : !selectedRun ? (
                 <EmptyDetail>{inspectionLoading ? "Loading run metrics…" : "Select a run"}</EmptyDetail>
@@ -530,6 +624,7 @@ export function RunPanelTabs({
     { id: "metrics", label: "Metrics" },
     { id: "events", label: "Event" },
     { id: "state", label: "State" },
+    { id: "compare", label: "Compare" },
   ];
   return (
     <div role="tablist" aria-label="Run history view" className="flex h-full items-stretch gap-3">
@@ -616,6 +711,65 @@ export function RunOverview({
         </OverviewSection>
       </div>
 
+    </div>
+  );
+}
+
+export function RunComparisonDetail({
+  comparison,
+  loading,
+  onSelectCheckpoint,
+}: {
+  comparison?: RunComparison | null;
+  loading: boolean;
+  onSelectCheckpoint?: (runID: string, checkpointID: string) => void;
+}) {
+  if (loading) return <EmptyDetail>Loading run comparison…</EmptyDetail>;
+  if (!comparison) return <EmptyDetail>Select another run and choose Compare</EmptyDetail>;
+  return (
+    <div data-run-comparison="true" className="grid gap-4 text-xs">
+      <div className="grid gap-2 sm:grid-cols-2">
+        {[comparison.left, comparison.right].map((run, index) => {
+          const checkpointID = index === 0 ? comparison.checkpoint_id : comparison.other_checkpoint_id;
+          return (
+            <div key={run.run_id} className="rounded border border-border bg-muted/20 p-3">
+              <div className="mb-2 flex items-center justify-between gap-2">
+                <span className="font-semibold">{index === 0 ? "Source" : "Compared run"}</span>
+                <span className="truncate font-mono text-muted-foreground" title={run.run_id}>{run.run_id}</span>
+              </div>
+              <div className="text-muted-foreground">Status: <span className="text-foreground">{run.status}</span></div>
+              {checkpointID ? (
+                <button
+                  type="button"
+                  className="mt-2 truncate text-left font-mono text-primary hover:underline"
+                  onClick={() => onSelectCheckpoint?.(run.run_id, checkpointID)}
+                  title="Select this run to inspect its checkpoint"
+                >
+                  Checkpoint: {checkpointID}
+                </button>
+              ) : (
+                <div className="mt-2 text-muted-foreground">No comparable checkpoint</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+      <div>
+        <div className="mb-2 font-semibold">State changes ({comparison.state_changes.length})</div>
+        {comparison.state_changes.length === 0 ? (
+          <div className="text-muted-foreground">No state differences</div>
+        ) : (
+          <div className="divide-y divide-border rounded border border-border">
+            {comparison.state_changes.map((change) => (
+              <div key={change.path} className="grid gap-1 p-2 sm:grid-cols-[minmax(0,1fr)_1fr_1fr] sm:items-start">
+                <span className="font-mono text-primary" title={change.path}>{change.path}</span>
+                <span className="break-words text-muted-foreground">{valuePreview(change.before)}</span>
+                <span className="break-words">{valuePreview(change.after)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

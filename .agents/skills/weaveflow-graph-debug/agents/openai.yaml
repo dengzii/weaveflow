@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeaveFlow Graph Debug"
+  short_description: "Reconstruct and debug Runs via public API"
+  default_prompt: "Use $weaveflow-graph-debug to reconstruct a Run's exact Session context from public APIs, diagnose it, and recover it safely."

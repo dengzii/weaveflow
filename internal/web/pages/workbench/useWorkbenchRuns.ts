@@ -1,7 +1,9 @@
 import { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   cancelRun,
+  compareRuns,
   deleteRun,
+  forkRun,
   getRunInspection,
   listEvents,
   listRuns,
@@ -16,6 +18,7 @@ import type {
   GraphDefinition,
   RunInterrupt,
   RunInspection,
+  RunComparison,
   RunRecord,
   RuntimeEvent,
   StepRecord,
@@ -88,6 +91,8 @@ interface WorkbenchRunsController {
   runInspectionLoading: boolean;
   steps: StepRecord[];
   checkpoints: CheckpointRecord[];
+  runComparison: RunComparison | null;
+  runComparisonLoading: boolean;
   displayEvents: RuntimeEvent[];
   hasOlderEvents: boolean;
   olderEventsLoading: boolean;
@@ -118,6 +123,8 @@ interface WorkbenchRunsController {
   pauseSelectedRun: () => Promise<void>;
   cancelSelectedRun: () => Promise<void>;
   deleteRunRecord: (runID: string) => Promise<void>;
+  forkSelectedRun: () => Promise<void>;
+  compareSelectedRun: (otherRunID: string) => Promise<void>;
   resumeSelectedRun: () => Promise<void>;
   submitUserInputPrompt: () => Promise<void>;
   dismissUserInputPrompt: () => void;
@@ -135,6 +142,8 @@ export function useWorkbenchRuns({
   const [runInspectionLoading, setRunInspectionLoading] = useState(false);
   const [steps, setSteps] = useState<StepRecord[]>([]);
   const [checkpoints, setCheckpoints] = useState<CheckpointRecord[]>([]);
+  const [runComparison, setRunComparison] = useState<RunComparison | null>(null);
+  const [runComparisonLoading, setRunComparisonLoading] = useState(false);
   const [storedEvents, setStoredEvents] = useState<RuntimeEvent[]>([]);
   const [liveEvents, setLiveEvents] = useState<RuntimeEvent[]>([]);
   const [nextEventCursor, setNextEventCursor] = useState("");
@@ -327,6 +336,8 @@ export function useWorkbenchRuns({
     setSelectedRunID(runID);
     setRunInspectionLoading(Boolean(runID));
     clearSelectedRunInspection();
+    setRunComparison(null);
+    setRunComparisonLoading(false);
   }, [clearSelectedRunInspection]);
 
   const reportError = useCallback((error: unknown): string => {
@@ -653,6 +664,7 @@ export function useWorkbenchRuns({
       setRunInspectionLoading(false);
     }
     setRunStatusVisible(true);
+    setRunComparison(null);
   }, [applyRunInspection, updateSelectedRunID]);
 
   const startConfiguredRun = useCallback(async (
@@ -809,6 +821,50 @@ export function useWorkbenchRuns({
     }
   }, [beginRunOperation, clearLiveEvents, clearSelectedRunInspection, finishRunOperation, onNotify, refreshRuns, refreshSelectedRun, reportError, updateRuns, updateSelectedRunID]);
 
+  const forkSelectedRun = useCallback(async () => {
+    const sourceRunID = selectedRunIDRef.current;
+    const source = runsRef.current.find((run) => run.run_id === sourceRunID) ?? null;
+    const checkpointID = source?.last_checkpoint_id || "";
+    if (!source || !checkpointID || !beginRunOperation()) return;
+    const runContextVersion = runContextVersionRef.current;
+    try {
+      const identity = { id: source.graph_id || graphIdentityRef.current.id, version: source.graph_version || graphIdentityRef.current.version };
+      const requestKey = `workbench-${sourceRunID}-${checkpointID}-${Date.now()}`;
+      const result = await forkRun(identity.id, sourceRunID, checkpointID, requestKey);
+      if (runContextVersionRef.current !== runContextVersion) return;
+      updateRuns((current) => upsertInspectedRun(current, result.run));
+      await refreshRuns(identity, false);
+      if (runContextVersionRef.current !== runContextVersion) return;
+      updateSelectedRunID(result.run.run_id);
+      await refreshSelectedRun(result.run.run_id);
+      onNotify("info", `Fork created: ${result.run.run_id}`);
+    } catch (error) {
+      if (runContextVersionRef.current === runContextVersion) reportError(error);
+    } finally {
+      finishRunOperation(runContextVersion);
+    }
+  }, [beginRunOperation, finishRunOperation, onNotify, refreshRuns, refreshSelectedRun, reportError, updateRuns, updateSelectedRunID]);
+
+  const compareSelectedRun = useCallback(async (otherRunID: string) => {
+    const leftRunID = selectedRunIDRef.current;
+    if (!leftRunID || !otherRunID || leftRunID === otherRunID || !beginRunOperation()) return;
+    const left = runsRef.current.find((run) => run.run_id === leftRunID) ?? null;
+    const runContextVersion = runContextVersionRef.current;
+    setRunComparisonLoading(true);
+    try {
+      const graphID = left?.graph_id || graphIdentityRef.current.id;
+      const comparison = await compareRuns(graphID, leftRunID, otherRunID);
+      if (runContextVersionRef.current !== runContextVersion) return;
+      setRunComparison(comparison);
+      onNotify("info", `Compared ${leftRunID} with ${otherRunID}`);
+    } catch (error) {
+      if (runContextVersionRef.current === runContextVersion) reportError(error);
+    } finally {
+      if (runContextVersionRef.current === runContextVersion) setRunComparisonLoading(false);
+      finishRunOperation(runContextVersion);
+    }
+  }, [beginRunOperation, finishRunOperation, onNotify, reportError]);
+
   const refreshAfterResumeFailure = useCallback(async (runID: string, identity: GraphIdentity) => {
     try {
       await refreshRuns(identity, false);
@@ -931,6 +987,8 @@ export function useWorkbenchRuns({
     runInspectionLoading,
     steps,
     checkpoints,
+    runComparison,
+    runComparisonLoading,
     displayEvents,
     hasOlderEvents: Boolean(nextEventCursor),
     olderEventsLoading,
@@ -959,6 +1017,8 @@ export function useWorkbenchRuns({
     pauseSelectedRun,
     cancelSelectedRun,
     deleteRunRecord,
+    forkSelectedRun,
+    compareSelectedRun,
     resumeSelectedRun,
     submitUserInputPrompt,
     dismissUserInputPrompt,

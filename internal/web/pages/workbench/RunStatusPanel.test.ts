@@ -1,12 +1,13 @@
 import { describe, expect, test } from "bun:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { CheckpointDetail, RunRecord, RunStatus, RuntimeEvent } from "../../types";
+import type { CheckpointDetail, RunComparison, RunRecord, RunStatus, RuntimeEvent } from "../../types";
 import {
   RunStatusPanel,
   RunMetrics,
   RunInputOutput,
   RunOverview,
+  RunComparisonDetail,
   RunPanelTabs,
   StateDetailTabs,
   StateSnapshotDetail,
@@ -261,6 +262,44 @@ describe("RunStatusPanel", () => {
     expect(markup).toContain("Loading event detail…");
     expect(markup).not.toContain("No run events");
     expect(markup).not.toContain("Select an event");
+  });
+
+  test("exposes fork and compare controls with checkpoint navigation", () => {
+    const source = { ...runRecord("run-source", "paused", "2026-07-30T03:00:00Z"), last_checkpoint_id: "checkpoint-source" };
+    const comparison: RunComparison = {
+      left: source,
+      right: runRecord("run-fork", "completed", "2026-07-30T03:01:00Z"),
+      left_steps: [],
+      right_steps: [],
+      left_events: [],
+      right_events: [],
+      left_artifacts: [],
+      right_artifacts: [],
+      state_changes: [{ path: "shared.value", before: "source", after: "fork" }],
+      checkpoint_id: "checkpoint-source",
+      other_checkpoint_id: "checkpoint-fork",
+    };
+    const markup = renderToStaticMarkup(
+      createElement(RunStatusPanel, {
+        runs: [source, comparison.right],
+        selectedRunId: source.run_id,
+        onForkRun: () => undefined,
+        onCompareRuns: () => undefined,
+        runComparison: comparison,
+        events: [],
+        onHide: () => undefined,
+      })
+    );
+    const comparisonMarkup = renderToStaticMarkup(
+      createElement(RunComparisonDetail, { comparison, loading: false, onSelectCheckpoint: () => undefined })
+    );
+
+    expect(markup).toContain(">Fork</button>");
+    expect(markup).toContain('aria-label="Compare selected run with"');
+    expect(markup).toContain(">Compare</button>");
+    expect(comparisonMarkup).toContain('data-run-comparison="true"');
+    expect(comparisonMarkup).toContain("checkpoint-source");
+    expect(comparisonMarkup).toContain("shared.value");
   });
 });
 

@@ -103,6 +103,7 @@ func buildModelCallPayload(ctx context.Context, request llms.ModelRequest, respo
 		payload["parent_operation_key"] = operation.ParentKey
 		payload["effect_class"] = operation.Class
 	}
+	addAgentInvocationPayload(ctx, payload)
 	return payload
 }
 
@@ -122,7 +123,7 @@ func llmTextEventPayload(callID, text string) map[string]any {
 
 func toolExecutionEventObserver(runner *GraphRunner, runID, stepID, nodeID string) core.ToolExecutionObserver {
 	return func(ctx context.Context, event core.ToolExecutionEvent) {
-		payload := toolExecutionEventPayload(event)
+		payload := toolExecutionEventPayload(ctx, event)
 		switch event.Stage {
 		case core.ToolExecutionRequested:
 			runner.publishBestEffortEvent(ctx, RunRecord{RunID: runID}, stepID, nodeID, EventToolCalled, payload)
@@ -147,7 +148,7 @@ func toolExecutionEventObserver(runner *GraphRunner, runID, stepID, nodeID strin
 	}
 }
 
-func toolExecutionEventPayload(event core.ToolExecutionEvent) map[string]any {
+func toolExecutionEventPayload(ctx context.Context, event core.ToolExecutionEvent) map[string]any {
 	payload := map[string]any{
 		"tool_call_id":         event.Call.ID,
 		"name":                 event.Tool.Name(),
@@ -186,5 +187,22 @@ func toolExecutionEventPayload(event core.ToolExecutionEvent) map[string]any {
 	if !event.StartedAt.IsZero() && !event.FinishedAt.IsZero() {
 		payload["duration_ms"] = max(event.FinishedAt.Sub(event.StartedAt).Milliseconds(), 0)
 	}
+	addAgentInvocationPayload(ctx, payload)
 	return payload
+}
+
+func addAgentInvocationPayload(ctx context.Context, payload map[string]any) {
+	invocation, ok := AgentInvocationFromContext(ctx)
+	if !ok || payload == nil {
+		return
+	}
+	payload["agent_invocation_id"] = invocation.ID
+	payload["agent_invocation_kind"] = invocation.Kind
+	payload["agent_invocation_iteration"] = invocation.Iteration
+	if invocation.OperationID != "" {
+		payload["agent_invocation_operation_id"] = invocation.OperationID
+	}
+	if invocation.ToolCallID != "" {
+		payload["agent_invocation_tool_call_id"] = invocation.ToolCallID
+	}
 }

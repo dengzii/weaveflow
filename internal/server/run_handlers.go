@@ -501,6 +501,59 @@ func (s *Server) handleGetRunInspection(c *gin.Context) {
 	})
 }
 
+func (s *Server) handleForkRun(c *gin.Context) {
+	sourceRunID, ok := requireRecordIDPathParam(c, "run_id")
+	if !ok {
+		return
+	}
+	request, input, err := decodeForkRunRequest(c)
+	if err != nil {
+		writeError(c, statusForRequestError(err), err)
+		return
+	}
+	session, ok := s.requireRunControlSession(c, sourceRunID)
+	if !ok {
+		return
+	}
+	ctx, cancel := deriveRunContextFromBase(context.Background(), session.baseContext)
+	result, done, err := session.runner.ForkFromCheckpointAsync(ctx, runtime.ForkRequest{
+		SourceRunID: sourceRunID, SourceCheckpointID: request.CheckpointID, RequestKey: request.RequestKey, Input: input,
+	})
+	if err != nil {
+		cancel()
+		writeError(c, statusForError(err), err)
+		return
+	}
+	go func() {
+		if done != nil {
+			<-done
+		}
+		cancel()
+	}()
+	writeData(c, http.StatusAccepted, result)
+}
+
+func (s *Server) handleCompareRuns(c *gin.Context) {
+	leftRunID, ok := requireRecordIDPathParam(c, "run_id")
+	if !ok {
+		return
+	}
+	rightRunID, ok := requireRecordIDPathParam(c, "other_run_id")
+	if !ok {
+		return
+	}
+	session, ok := s.requireRunControlSession(c, leftRunID)
+	if !ok {
+		return
+	}
+	comparison, err := session.runner.CompareRuns(c.Request.Context(), leftRunID, rightRunID)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
+	writeData(c, http.StatusOK, comparison)
+}
+
 func (s *Server) handleGetCheckpoint(c *gin.Context) {
 	runID, ok := requireRecordIDPathParam(c, "run_id")
 	if !ok {

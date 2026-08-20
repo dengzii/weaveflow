@@ -248,6 +248,8 @@ export function WorkbenchPage() {
     runInspectionLoading,
     steps,
     checkpoints,
+    runComparison,
+    runComparisonLoading,
     displayEvents,
     hasOlderEvents,
     olderEventsLoading,
@@ -273,6 +275,8 @@ export function WorkbenchPage() {
     pauseSelectedRun,
     cancelSelectedRun,
     deleteRunRecord,
+    forkSelectedRun,
+    compareSelectedRun,
     resumeSelectedRun,
     submitUserInputPrompt,
     dismissUserInputPrompt,
@@ -653,6 +657,10 @@ export function WorkbenchPage() {
             selectRun(runID);
           }}
           onDeleteRun={(runID) => void deleteRunRecord(runID)}
+          onForkRun={() => void forkSelectedRun()}
+          onCompareRuns={(runID) => void compareSelectedRun(runID)}
+          runComparison={runComparison}
+          runComparisonLoading={runComparisonLoading}
           steps={steps}
           checkpoints={checkpoints}
           events={displayEvents}

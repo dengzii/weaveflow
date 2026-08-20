@@ -178,6 +178,11 @@ func executeToolCall(ctx core.Context, toolCall llms.ToolCall) (llms.ToolResult,
 	return core.ExecuteTool(ctx, tool, toolCall)
 }
 
+// ExecuteToolCall executes one provider tool call and preserves its structured result and error.
+func ExecuteToolCall(ctx core.Context, toolCall llms.ToolCall) (llms.ToolResult, error) {
+	return executeToolCall(ctx, toolCall)
+}
+
 func executeToolCallMessage(ctx core.Context, toolCall llms.ToolCall) llms.MessageContent {
 	name := toolCallName(toolCall)
 	result, err := executeToolCall(ctx, toolCall)

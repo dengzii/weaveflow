@@ -1018,6 +1018,9 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 	})
 	nodeCtx = WithGraphRunner(nodeCtx, e.runner)
 	nodeCtx = WithChildRunController(nodeCtx, e)
+	nodeCtx = WithAgentInvocationRecorder(nodeCtx, e.agentInvocationRecorder(task, currentState))
+	nodeCtx = WithAgentStateProvider(nodeCtx, func() *state.State { return currentState })
+	nodeCtx = WithAgentBudgetGuard(nodeCtx, &sync.Mutex{})
 	nodeCtx = WithRunnerArtifactRecorder(nodeCtx, func(ctx context.Context, artifact Artifact) (state.ArtifactRef, error) {
 		transactionID, artifactID, err := e.nextArtifactStageIdentity(task.TaskID, artifact.Type)
 		if err != nil {

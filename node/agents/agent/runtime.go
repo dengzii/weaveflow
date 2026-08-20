@@ -32,6 +32,7 @@ type loopRunner struct {
 	outputSchema            state.JSONSchema
 	outputJSON              bool
 	outputJSONCompatibility bool
+	resumePhase             string
 }
 
 func newNodeRuntime(target *Node) loopRunner {
@@ -78,15 +79,22 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 
 	for {
 		if conversation.IterationCount() >= maxIterations {
-			message := "Maximum agent iterations reached. The agent stopped before producing a final answer."
-			if err := conversation.SetMessages(append(conversation.Messages(), llms.TextParts(llms.ChatMessageTypeAI, message))); err != nil {
-				return err
-			}
-			if err := conversation.SetFinalAnswer(message); err != nil {
-				return err
-			}
+			limitErr := core.NewExecutionError(core.ErrorResourceExhausted, "agent iteration budget exceeded", nil, map[string]any{
+				"kind": "iterations", "limit": maxIterations, "actual": conversation.IterationCount(),
+			})
 			runtime.publishLoopStopped(ctx, conversation.IterationCount(), "max_iterations")
-			return nil
+			runtime.saveErrorArtifact(ctx, conversation.IterationCount(), limitErr)
+			return limitErr
+		}
+		if runtime.resumePhase == executor.AgentResumePhaseToolCalls {
+			runtime.resumePhase = ""
+			pendingCalls := pendingToolCalls(conversation)
+			if len(pendingCalls) > 0 {
+				if err := runtime.executeToolCalls(ctx, conversation, pendingCalls, max(conversation.IterationCount()-1, 0)); err != nil {
+					return err
+				}
+				continue
+			}
 		}
 
 		messages := conversation.Messages()
@@ -96,7 +104,21 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 			_, _ = executor.SaveJSONArtifactBestEffort(ctx, "agent.llm.prompt", payload)
 		}
 
-		response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+		modelInvocation := executor.AgentInvocation{
+			Kind: executor.AgentInvocationModel, Iteration: iteration,
+			OperationID: runtime.identity.NodeID + ":model:" + fmt.Sprint(iteration),
+		}
+		modelCtx, finishModelInvocation := executor.BeginAgentInvocation(ctx, modelInvocation)
+		modelInvocationRecord, _ := executor.AgentInvocationFromContext(modelCtx)
+		if _, budgetErr := executor.ConsumeAgentBudget(modelCtx, runtime.budgetLimits(maxIterations), executor.AgentBudgetUsage{Iterations: 1}); budgetErr != nil {
+			if finishErr := finishModelInvocation(budgetErr); finishErr != nil {
+				budgetErr = errors.Join(budgetErr, finishErr)
+			}
+			runtime.saveErrorArtifact(ctx, iteration, budgetErr)
+			return budgetErr
+		}
+		response, err := core.GenerateModel(modelCtx, model, llms.ModelRequest{
+			CallID:                    modelInvocationRecord.ID,
 			ModelID:                   effectiveModelID(runtime.config.ModelID),
 			Mode:                      llms.ModelModeChat,
 			Messages:                  promptMessages,
@@ -109,13 +131,38 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 			ResponseJSONCompatibility: runtime.outputJSONCompatibility,
 		})
 		if err != nil {
+			if finishErr := finishModelInvocation(err); finishErr != nil {
+				err = errors.Join(err, finishErr)
+			}
 			runtime.saveErrorArtifact(ctx, iteration, err)
 			return err
 		}
 		if response == nil || len(response.Choices) == 0 || response.Choices[0] == nil {
 			err := errors.New("agent: llm returned no choices")
+			if finishErr := finishModelInvocation(err); finishErr != nil {
+				err = errors.Join(err, finishErr)
+			}
 			runtime.saveErrorArtifact(ctx, iteration, err)
 			return err
+		}
+		usage := response.Usage.Normalized()
+		cost := 0.0
+		if response.Cost != nil {
+			cost = response.Cost.Total
+		}
+		if _, budgetErr := executor.ConsumeAgentBudget(modelCtx, runtime.budgetLimits(maxIterations), executor.AgentBudgetUsage{
+			TotalTokens: usage.TotalTokens,
+			Cost:        cost,
+		}); budgetErr != nil {
+			if finishErr := finishModelInvocation(budgetErr); finishErr != nil {
+				budgetErr = errors.Join(budgetErr, finishErr)
+			}
+			runtime.saveErrorArtifact(ctx, iteration, budgetErr)
+			return budgetErr
+		}
+		if finishErr := finishModelInvocation(nil); finishErr != nil {
+			runtime.saveErrorArtifact(ctx, iteration, finishErr)
+			return finishErr
 		}
 		if payload := buildResponseArtifact(runtime.identity, response, iteration, runtime.responseName, runtime.outputSchema, runtime.outputJSON, runtime.outputJSONCompatibility); len(payload.Choices) > 0 {
 			_, _ = executor.SaveJSONArtifactBestEffort(ctx, "agent.llm.response", payload)
@@ -147,6 +194,9 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 		if err := conversation.IncrementIteration(); err != nil {
 			return err
 		}
+		if checkpointErr := executor.CheckpointAgentInvocation(modelCtx, executor.AgentResumePhaseToolCalls); checkpointErr != nil {
+			return checkpointErr
+		}
 
 		if len(choice.ToolCalls) == 0 {
 			answer, _, err := normalizeFinalOutput(basenode.ExtractText(aiMessage), runtime.outputSchema, runtime.outputJSON, runtime.outputJSONCompatibility)
@@ -160,10 +210,47 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 			return nil
 		}
 
-		if err := runtime.executeToolCalls(ctx, conversation, choice.ToolCalls); err != nil {
+		if err := runtime.executeToolCalls(ctx, conversation, choice.ToolCalls, iteration); err != nil {
 			return err
 		}
 	}
+}
+
+func pendingToolCalls(conversation *conversationcap.View) []llms.ToolCall {
+	if conversation == nil {
+		return nil
+	}
+	messages := conversation.Messages()
+	if len(messages) == 0 {
+		return nil
+	}
+	last := messages[len(messages)-1]
+	if last.Role != llms.ChatMessageTypeAI {
+		return nil
+	}
+	completed := make(map[string]struct{})
+	for _, message := range messages {
+		if message.Role != llms.ChatMessageTypeTool {
+			continue
+		}
+		for _, part := range message.Parts {
+			result, ok := part.(llms.ToolResult)
+			if ok && strings.TrimSpace(result.ToolCallID) != "" {
+				completed[result.ToolCallID] = struct{}{}
+			}
+		}
+	}
+	calls := make([]llms.ToolCall, 0)
+	for _, part := range last.Parts {
+		call, ok := part.(llms.ToolCall)
+		if ok && (strings.TrimSpace(call.ID) == "" || func() bool {
+			_, found := completed[call.ID]
+			return !found
+		}()) {
+			calls = append(calls, call)
+		}
+	}
+	return calls
 }
 
 func normalizeFinalOutput(content string, schema state.JSONSchema, outputJSON, compatibility bool) (string, any, error) {
@@ -199,12 +286,22 @@ func (runtime loopRunner) selectTools(available map[string]core.Tool) (map[strin
 	return selected, nil
 }
 
-func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conversationcap.View, toolCalls []llms.ToolCall) error {
+func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conversationcap.View, toolCalls []llms.ToolCall, iteration int) error {
 	if len(toolCalls) == 0 {
 		return nil
 	}
+	if _, err := executor.ConsumeAgentBudget(ctx, runtime.budgetLimits(runtime.effectiveMaxIterations(conversation)), executor.AgentBudgetUsage{ToolCalls: len(toolCalls)}); err != nil {
+		return err
+	}
 
-	toolMessages := make([]llms.MessageContent, len(toolCalls))
+	type toolExecution struct {
+		message       llms.MessageContent
+		invocationCtx context.Context
+		finish        func(error) error
+		toolErr       error
+	}
+	toolExecutions := make([]toolExecution, len(toolCalls))
+	var executionErrors []error
 	if runtime.config.Parallel && len(toolCalls) > 1 {
 		type toolTask struct {
 			index int
@@ -221,7 +318,7 @@ func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conve
 			go func() {
 				defer waitGroup.Done()
 				for task := range tasks {
-					toolMessages[task.index] = basenode.ExecuteToolCallMessage(ctx, task.call)
+					toolExecutions[task.index] = runtime.executeToolCall(ctx, task.call, iteration, task.index)
 				}
 			}()
 		}
@@ -232,11 +329,66 @@ func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conve
 		waitGroup.Wait()
 	} else {
 		for index, toolCall := range toolCalls {
-			toolMessages[index] = basenode.ExecuteToolCallMessage(ctx, toolCall)
+			toolExecutions[index] = runtime.executeToolCall(ctx, toolCall, iteration, index)
 		}
 	}
 
-	return conversation.SetMessages(append(conversation.Messages(), toolMessages...))
+	for _, execution := range toolExecutions {
+		if err := conversation.SetMessages(append(conversation.Messages(), execution.message)); err != nil {
+			executionErrors = append(executionErrors, err)
+			continue
+		}
+		if err := executor.CheckpointAgentInvocation(execution.invocationCtx, "tool_result"); err != nil {
+			executionErrors = append(executionErrors, err)
+		}
+		if err := execution.finish(execution.toolErr); err != nil {
+			executionErrors = append(executionErrors, err)
+		}
+	}
+	return errors.Join(executionErrors...)
+}
+
+func (runtime loopRunner) budgetLimits(maxIterations int) executor.AgentBudgetLimits {
+	return executor.AgentBudgetLimits{
+		MaxIterations: maxIterations,
+		MaxToolCalls:  runtime.config.MaxToolCalls,
+		MaxTokens:     runtime.config.MaxTokens,
+		MaxCost:       runtime.config.MaxCost,
+	}
+}
+
+func (runtime loopRunner) executeToolCall(ctx core.Context, toolCall llms.ToolCall, iteration, index int) (toolExecution struct {
+	message       llms.MessageContent
+	invocationCtx context.Context
+	finish        func(error) error
+	toolErr       error
+}) {
+	toolName := ""
+	if toolCall.FunctionCall != nil {
+		toolName = toolCall.FunctionCall.Name
+	}
+	invocation := executor.AgentInvocation{
+		Kind: executor.AgentInvocationTool, Iteration: iteration, ToolCallID: toolCall.ID, ToolName: toolName,
+		OperationID: runtime.identity.NodeID + ":tool:" + fmt.Sprint(iteration) + ":" + fmt.Sprint(index),
+	}
+	toolCtx, finish := executor.BeginAgentInvocation(ctx, invocation)
+	result, toolErr := basenode.ExecuteToolCall(core.NewContext(toolCtx), toolCall)
+	if toolErr != nil {
+		result.ToolCallID = toolCall.ID
+		result.Name = toolName
+		result.IsError = true
+		result.ErrorCode = string(core.ClassifyError(toolErr))
+		result.ErrorMessage = toolErr.Error()
+	}
+	return struct {
+		message       llms.MessageContent
+		invocationCtx context.Context
+		finish        func(error) error
+		toolErr       error
+	}{
+		message: llms.MessageContent{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{result}}, invocationCtx: toolCtx,
+		finish: finish, toolErr: toolErr,
+	}
 }
 
 func (runtime loopRunner) seedConversation(conversation *conversationcap.View, task string) error {

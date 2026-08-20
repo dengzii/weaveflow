@@ -19,10 +19,16 @@ type toolInput struct {
 
 // ToolConfig defines the external tool contract and its internal agent execution.
 type ToolConfig struct {
-	Name        string
-	Description string
-	Agent       Config
+	Name                    string
+	Description             string
+	Agent                   Config
+	OutputSchema            state.JSONSchema
+	ResponseName            string
+	OutputJSON              bool
+	OutputJSONCompatibility *bool
 }
+
+const defaultToolResponseName = "agent_tool_answer"
 
 // NewTool creates an isolated agent exposed through the runtime tool contract.
 func NewTool(config ToolConfig) (core.Tool, error) {
@@ -35,8 +41,13 @@ func NewTool(config ToolConfig) (core.Tool, error) {
 		identity: executionIdentity{
 			ToolName: normalized.Name,
 		},
-		strictToolIDs: true,
+		strictToolIDs:           true,
+		responseName:            normalized.ResponseName,
+		outputSchema:            normalized.OutputSchema.Clone(),
+		outputJSON:              normalized.outputJSONEnabled(),
+		outputJSONCompatibility: normalized.outputJSONCompatibility(),
 	}
+	outputSchema := normalized.toolOutputSchema()
 	tool := core.Tool{
 		Function: &llms.FunctionDefinition{
 			Name:        normalized.Name,
@@ -52,7 +63,7 @@ func NewTool(config ToolConfig) (core.Tool, error) {
 				"required":             []string{"task"},
 				"additionalProperties": false,
 			},
-			OutputSchema: state.JSONSchema{"type": "string"},
+			OutputSchema: outputSchema,
 		},
 		ExecutionMode: core.ToolExecutionComposite,
 		Handler: func(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
@@ -85,7 +96,14 @@ func NewTool(config ToolConfig) (core.Tool, error) {
 				return llms.ToolResult{}, err
 			}
 			answer := conversation.FinalAnswer()
-			return llms.ToolResult{Content: answer, Value: answer}, nil
+			if !runner.outputJSON {
+				return llms.ToolResult{Content: answer, Value: answer}, nil
+			}
+			normalizedAnswer, value, err := normalizeFinalOutput(answer, runner.outputSchema, true, runner.outputJSONCompatibility)
+			if err != nil {
+				return llms.ToolResult{}, err
+			}
+			return llms.ToolResult{Content: normalizedAnswer, Value: value}, nil
 		},
 	}
 	return tool, nil
@@ -105,6 +123,14 @@ func normalizeToolConfig(config ToolConfig) (ToolConfig, error) {
 	}
 	if config.Agent.PromptMaxChars < 0 {
 		return ToolConfig{}, errors.New("agent tool: prompt max chars cannot be negative")
+	}
+	if err := state.ValidateJSONSchemaDefinition(config.OutputSchema); err != nil {
+		return ToolConfig{}, fmt.Errorf("agent tool %q output schema: %w", config.Name, err)
+	}
+	config.OutputSchema = config.OutputSchema.Clone()
+	config.ResponseName = strings.TrimSpace(config.ResponseName)
+	if config.ResponseName == "" && len(config.OutputSchema) > 0 {
+		config.ResponseName = defaultToolResponseName
 	}
 
 	toolIDs := make([]string, 0, len(config.Agent.ToolIDs))
@@ -126,4 +152,25 @@ func normalizeToolConfig(config ToolConfig) (ToolConfig, error) {
 	}
 	config.Agent.ToolIDs = toolIDs
 	return config, nil
+}
+
+func (config ToolConfig) outputJSONEnabled() bool {
+	return config.OutputJSON || len(config.OutputSchema) > 0
+}
+
+func (config ToolConfig) outputJSONCompatibility() bool {
+	if config.OutputJSONCompatibility == nil {
+		return true
+	}
+	return *config.OutputJSONCompatibility
+}
+
+func (config ToolConfig) toolOutputSchema() state.JSONSchema {
+	if !config.outputJSONEnabled() {
+		return state.JSONSchema{"type": "string"}
+	}
+	if len(config.OutputSchema) > 0 {
+		return config.OutputSchema.Clone()
+	}
+	return state.JSONSchema{"type": []string{"string", "object", "array", "number", "integer", "boolean", "null"}}
 }

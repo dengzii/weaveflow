@@ -70,6 +70,7 @@ const (
 	CheckpointBeforeNode CheckpointStage = "before_node"
 	CheckpointAfterNode  CheckpointStage = "after_node"
 	CheckpointAfterWave  CheckpointStage = "after_wave"
+	CheckpointAgent      CheckpointStage = "agent_invocation"
 	CheckpointFinal      CheckpointStage = "final"
 )
 
@@ -78,6 +79,7 @@ type EventType string
 const (
 	EventRunCreated                EventType = "run.created"
 	EventRunStarted                EventType = "run.started"
+	EventRunForked                 EventType = "run.forked"
 	EventRunPauseRequested         EventType = "run.pause_requested"
 	EventRunPaused                 EventType = "run.paused"
 	EventRunResumed                EventType = "run.resumed"
@@ -130,43 +132,46 @@ func IsStreamingEvent(event EventType) bool {
 }
 
 type RunRecord struct {
-	RunID             string            `json:"run_id"`
-	Revision          uint64            `json:"revision"`
-	ParentRunID       string            `json:"parent_run_id,omitempty"`
-	ParentStepID      string            `json:"parent_step_id,omitempty"`
-	ParentTaskID      string            `json:"parent_task_id,omitempty"`
-	ChildRequestKey   string            `json:"child_request_key,omitempty"`
-	ChildInputHash    string            `json:"child_input_hash,omitempty"`
-	ExecutionLease    *ExecutionLease   `json:"execution_lease,omitempty"`
-	RootRunID         string            `json:"root_run_id"`
-	RunPath           []string          `json:"run_path"`
-	Namespace         string            `json:"namespace"`
-	ChildRunIDs       []string          `json:"child_run_ids,omitempty"`
-	PendingChildRuns  []PendingChildRun `json:"pending_child_runs,omitempty"`
-	Deletion          *RunDeletionState `json:"deletion,omitempty"`
-	ReturnValue       any               `json:"return_value,omitempty"`
-	GraphID           string            `json:"graph_id"`
-	GraphVersion      string            `json:"graph_version"`
-	GraphHash         string            `json:"graph_hash,omitempty"`
-	GraphSnapshotHash string            `json:"graph_snapshot_hash,omitempty"`
-	GraphSessionID    string            `json:"graph_session_id,omitempty"`
-	Origin            *RunOrigin        `json:"origin,omitempty"`
-	Status            RunStatus         `json:"status"`
-	EntryNodeID       string            `json:"entry_node_id"`
-	CurrentNodeID     string            `json:"current_node_id,omitempty"`
-	CurrentNodeIDs    []string          `json:"current_node_ids,omitempty"`
-	CurrentStepIDs    []string          `json:"current_step_ids,omitempty"`
-	NextNodeIDs       []string          `json:"next_node_ids,omitempty"`
-	ParallelWaveID    string            `json:"parallel_wave_id,omitempty"`
-	LastStepID        string            `json:"last_step_id,omitempty"`
-	LastCheckpointID  string            `json:"last_checkpoint_id,omitempty"`
-	PauseRequested    bool              `json:"pause_requested,omitempty"`
-	CancelRequested   bool              `json:"cancel_requested,omitempty"`
-	ErrorCode         string            `json:"error_code,omitempty"`
-	ErrorMessage      string            `json:"error_message,omitempty"`
-	StartedAt         time.Time         `json:"started_at"`
-	UpdatedAt         time.Time         `json:"updated_at"`
-	FinishedAt        *time.Time        `json:"finished_at,omitempty"`
+	RunID              string            `json:"run_id"`
+	Revision           uint64            `json:"revision"`
+	ParentRunID        string            `json:"parent_run_id,omitempty"`
+	ParentStepID       string            `json:"parent_step_id,omitempty"`
+	ParentTaskID       string            `json:"parent_task_id,omitempty"`
+	ChildRequestKey    string            `json:"child_request_key,omitempty"`
+	ChildInputHash     string            `json:"child_input_hash,omitempty"`
+	ExecutionLease     *ExecutionLease   `json:"execution_lease,omitempty"`
+	RootRunID          string            `json:"root_run_id"`
+	RunPath            []string          `json:"run_path"`
+	Namespace          string            `json:"namespace"`
+	ChildRunIDs        []string          `json:"child_run_ids,omitempty"`
+	PendingChildRuns   []PendingChildRun `json:"pending_child_runs,omitempty"`
+	Deletion           *RunDeletionState `json:"deletion,omitempty"`
+	ReturnValue        any               `json:"return_value,omitempty"`
+	GraphID            string            `json:"graph_id"`
+	GraphVersion       string            `json:"graph_version"`
+	GraphHash          string            `json:"graph_hash,omitempty"`
+	GraphSnapshotHash  string            `json:"graph_snapshot_hash,omitempty"`
+	GraphSessionID     string            `json:"graph_session_id,omitempty"`
+	SourceRunID        string            `json:"source_run_id,omitempty"`
+	SourceCheckpointID string            `json:"source_checkpoint_id,omitempty"`
+	ForkRequestKey     string            `json:"fork_request_key,omitempty"`
+	Origin             *RunOrigin        `json:"origin,omitempty"`
+	Status             RunStatus         `json:"status"`
+	EntryNodeID        string            `json:"entry_node_id"`
+	CurrentNodeID      string            `json:"current_node_id,omitempty"`
+	CurrentNodeIDs     []string          `json:"current_node_ids,omitempty"`
+	CurrentStepIDs     []string          `json:"current_step_ids,omitempty"`
+	NextNodeIDs        []string          `json:"next_node_ids,omitempty"`
+	ParallelWaveID     string            `json:"parallel_wave_id,omitempty"`
+	LastStepID         string            `json:"last_step_id,omitempty"`
+	LastCheckpointID   string            `json:"last_checkpoint_id,omitempty"`
+	PauseRequested     bool              `json:"pause_requested,omitempty"`
+	CancelRequested    bool              `json:"cancel_requested,omitempty"`
+	ErrorCode          string            `json:"error_code,omitempty"`
+	ErrorMessage       string            `json:"error_message,omitempty"`
+	StartedAt          time.Time         `json:"started_at"`
+	UpdatedAt          time.Time         `json:"updated_at"`
+	FinishedAt         *time.Time        `json:"finished_at,omitempty"`
 }
 
 type PendingChildRun struct {
@@ -216,6 +221,34 @@ type RunDeletionManifest struct {
 type RunOrigin struct {
 	Type      string `json:"type"`
 	TriggerID string `json:"trigger_id,omitempty"`
+}
+
+type ForkRequest struct {
+	SourceRunID        string
+	SourceCheckpointID string
+	RequestKey         string
+	Input              *state.State
+}
+
+type ForkResult struct {
+	Run                RunRecord
+	SourceRunID        string
+	SourceCheckpointID string
+	RequestKey         string
+}
+
+type RunComparison struct {
+	Left              RunRecord           `json:"left"`
+	Right             RunRecord           `json:"right"`
+	LeftSteps         []StepRecord        `json:"left_steps"`
+	RightSteps        []StepRecord        `json:"right_steps"`
+	LeftEvents        []Event             `json:"left_events"`
+	RightEvents       []Event             `json:"right_events"`
+	LeftArtifacts     []state.ArtifactRef `json:"left_artifacts"`
+	RightArtifacts    []state.ArtifactRef `json:"right_artifacts"`
+	StateChanges      []state.Change      `json:"state_changes"`
+	CheckpointID      string              `json:"checkpoint_id,omitempty"`
+	OtherCheckpointID string              `json:"other_checkpoint_id,omitempty"`
 }
 
 type ChildRunRequest struct {

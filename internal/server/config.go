@@ -16,6 +16,7 @@ import (
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
+	"github.com/dengzii/weaveflow/internal/memory"
 	filestore "github.com/dengzii/weaveflow/internal/runtimestore/file"
 	sqlitestore "github.com/dengzii/weaveflow/internal/runtimestore/sqlite"
 	"github.com/dengzii/weaveflow/internal/trigger"
@@ -37,6 +38,7 @@ type Config struct {
 	ManagementToken     string
 
 	RuntimeContextDecorators []RuntimeContextDecorator
+	MemoryStore              memory.Store
 
 	ExecutionStore   runtime.ExecutionStore
 	CheckpointStore  runtime.CheckpointStore
@@ -74,6 +76,7 @@ type Server struct {
 	managedSecrets  *managedSecretStore
 	secretResolver  SecretResolver
 	managementToken string
+	memoryStore     memory.Store
 }
 
 type graphRuntimeStore struct {
@@ -115,6 +118,12 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		return nil, err
 	}
 	cfg.BaseDir = baseDir
+	if cfg.MemoryStore == nil {
+		cfg.MemoryStore, err = memory.NewFileStore(filepath.Join(baseDir, "memory", "records.json"))
+		if err != nil {
+			return nil, err
+		}
+	}
 	externalSecretResolver := cfg.SecretResolver
 	if externalSecretResolver == nil {
 		externalSecretResolver, err = newLocalSecretResolver(cfg.SecretDirectory)
@@ -135,6 +144,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		reg = builtin.NewDefaultRegistry()
 	}
 	cfg.RuntimeContextDecorators = append([]RuntimeContextDecorator(nil), cfg.RuntimeContextDecorators...)
+	ctx = memory.WithStore(ctx, cfg.MemoryStore)
 	ctx = applyRuntimeContextDecorators(ctx, cfg.RuntimeContextDecorators)
 	initialSettings := graphRuntimeSettingsFromContext(ctx)
 	ctx = core.WithEnvironment(ctx, initialSettings.Environment)
@@ -163,6 +173,7 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		managedSecrets:  managedSecrets,
 		secretResolver:  secretResolver,
 		managementToken: cfg.ManagementToken,
+		memoryStore:     cfg.MemoryStore,
 	}
 	if err := srv.reconcileCachedRunDeletions(ctx); err != nil {
 		_ = srv.Close()
@@ -424,6 +435,13 @@ func (s *Server) TriggerService() *trigger.Service {
 		return nil
 	}
 	return s.triggers
+}
+
+func (s *Server) MemoryStore() memory.Store {
+	if s == nil {
+		return nil
+	}
+	return s.memoryStore
 }
 
 func (s *Server) Start(ctx context.Context) error {

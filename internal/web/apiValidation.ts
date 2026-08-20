@@ -1,6 +1,7 @@
 import type {
   CachedGraphSummary,
   CheckpointRecord,
+  ForkResult,
   GraphDefinition,
   GraphDetail,
   GraphInfo,
@@ -8,6 +9,7 @@ import type {
   GraphLoadResult,
   RegistryInfo,
   RunInspection,
+  RunComparison,
   RunInterrupt,
   RunListPage,
   RunRecord,
@@ -89,6 +91,9 @@ export function validateRunRecord(value: unknown, source: string): RunRecord {
   requireOptionalStringArray(run.current_node_ids, `${source}.current_node_ids`);
   requireOptionalStringArray(run.current_step_ids, `${source}.current_step_ids`);
   requireOptionalStringArray(run.next_node_ids, `${source}.next_node_ids`);
+  requireOptionalString(run.source_run_id, `${source}.source_run_id`);
+  requireOptionalString(run.source_checkpoint_id, `${source}.source_checkpoint_id`);
+  requireOptionalString(run.fork_request_key, `${source}.fork_request_key`);
   return value as RunRecord;
 }
 
@@ -111,6 +116,38 @@ export function validateRunInspection(value: unknown, source: string): RunInspec
   validateRuntimeEventPage(inspection.events, `${source}.events`);
   if (inspection.interrupt !== undefined) validateRunInterrupt(inspection.interrupt, `${source}.interrupt`);
   return value as RunInspection;
+}
+
+export function validateForkResult(value: unknown, source: string): ForkResult {
+  const result = requireRecord(value, source);
+  validateRunRecord(result.run, `${source}.run`);
+  requireString(result.source_run_id, `${source}.source_run_id`, false);
+  requireString(result.source_checkpoint_id, `${source}.source_checkpoint_id`, false);
+  requireString(result.request_key, `${source}.request_key`, false);
+  return value as ForkResult;
+}
+
+export function validateRunComparison(value: unknown, source: string): RunComparison {
+  const comparison = requireRecord(value, source);
+  validateRunRecord(comparison.left, `${source}.left`);
+  validateRunRecord(comparison.right, `${source}.right`);
+  requireArray(comparison.left_steps, `${source}.left_steps`).forEach((step, index) => {
+    validateStepRecord(step, `${source}.left_steps[${index}]`);
+  });
+  requireArray(comparison.right_steps, `${source}.right_steps`).forEach((step, index) => {
+    validateStepRecord(step, `${source}.right_steps[${index}]`);
+  });
+  requireArray(comparison.left_events, `${source}.left_events`).forEach((event, index) => {
+    validateRuntimeEvent(event, `${source}.left_events[${index}]`);
+  });
+  requireArray(comparison.right_events, `${source}.right_events`).forEach((event, index) => {
+    validateRuntimeEvent(event, `${source}.right_events[${index}]`);
+  });
+  requireArray(comparison.state_changes, `${source}.state_changes`).forEach((change, index) => {
+    const item = requireRecord(change, `${source}.state_changes[${index}]`);
+    requireString(item.path, `${source}.state_changes[${index}].path`, false);
+  });
+  return value as RunComparison;
 }
 
 export function validateRuntimeEventPage(value: unknown, source: string): RuntimeEventPage {

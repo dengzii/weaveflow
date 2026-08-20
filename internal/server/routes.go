@@ -12,11 +12,21 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	management.Use(s.requireManagementAuth)
 	s.registerGraphRoutes(management)
 	s.registerRuntimeRoutes(management)
+	s.registerMemoryRoutes(management)
 	s.registerRegistryRoutes(management)
 	s.registerChatChannelRoutes(management)
 	s.registerTriggerManagementRoutes(management)
 	s.registerRunRoutes(management)
 	s.registerPublicTriggerRoutes(group)
+}
+
+func (s *Server) registerMemoryRoutes(group *gin.RouterGroup) {
+	group.POST("/memory/purge-expired", s.handlePurgeExpiredMemory)
+	group.GET("/memory/:namespace/search", s.handleSearchMemory)
+	group.GET("/memory/:namespace", s.handleListMemory)
+	group.PUT("/memory/:namespace/:key", s.handlePutMemory)
+	group.GET("/memory/:namespace/:key", s.handleGetMemory)
+	group.DELETE("/memory/:namespace/:key", s.handleDeleteMemory)
 }
 
 func (s *Server) registerGraphRoutes(group *gin.RouterGroup) {
@@ -59,6 +69,8 @@ func (s *Server) registerRunRoutes(group *gin.RouterGroup) {
 	group.POST("/graphs/:graph_id/sessions/:session_id/runs", s.handleStartRun)
 	group.GET("/graphs/:graph_id/runs", s.handleListRuns)
 	group.GET("/graphs/:graph_id/runs/:run_id/inspection", s.handleGetRunInspection)
+	group.POST("/graphs/:graph_id/runs/:run_id/forks", s.handleForkRun)
+	group.GET("/graphs/:graph_id/runs/:run_id/compare/:other_run_id", s.handleCompareRuns)
 	group.DELETE("/graphs/:graph_id/runs/:run_id", s.handleDeleteRun)
 	group.POST("/graphs/:graph_id/runs/:run_id/pause", s.handlePauseRun)
 	group.POST("/graphs/:graph_id/runs/:run_id/resume", s.handleResumeRun)

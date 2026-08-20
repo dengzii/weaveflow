@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeaveFlow Graph Code"
+  short_description: "Implement and validate Graph runtime code"
+  default_prompt: "Use $weaveflow-graph-code to implement and validate a focused WeaveFlow Graph runtime change."

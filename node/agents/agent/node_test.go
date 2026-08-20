@@ -315,6 +315,102 @@ func TestNodeStructuredConfigRoundTripClonesSchema(t *testing.T) {
 	}
 }
 
+func TestAgentStatePortAndGovernanceContractRemainStable(t *testing.T) {
+	t.Parallel()
+	target := NewNode(core.WithID("contract"))
+	target.MaxIterations = 3
+	target.MaxToolCalls = 4
+	target.MaxTokens = 256
+	target.MaxCost = 1.25
+	target.ToolIDs = []string{"lookup"}
+	spec := target.GraphNodeSpec()
+	if spec.State["task"].Path != target.TaskPath.String() || spec.State["conversation"].Path != target.ConversationPath.String() || spec.State["result"].Path != target.ResultPath.String() {
+		t.Fatalf("state bindings changed = %#v", spec.State)
+	}
+	for key := range spec.Config {
+		if strings.Contains(key, "state") || strings.Contains(key, "path") {
+			t.Fatalf("state path leaked into config key %q", key)
+		}
+	}
+	definition := NodeTypeDefinition()
+	var conversationPort *dsl.StatePortDefinition
+	for index := range definition.StatePorts {
+		port := &definition.StatePorts[index]
+		if port.Name == "conversation" {
+			conversationPort = port
+			break
+		}
+	}
+	if conversationPort == nil {
+		t.Fatal("conversation State Port is missing")
+	}
+	wantFields := map[string]dsl.StateAccessMode{
+		conversationcap.FieldMessages:       dsl.StateAccessReadWrite,
+		conversationcap.FieldFinalAnswer:    dsl.StateAccessReadWrite,
+		conversationcap.FieldIterationCount: dsl.StateAccessReadWrite,
+		conversationcap.FieldMaxIterations:  dsl.StateAccessReadWrite,
+	}
+	if len(conversationPort.Contract.Fields) != len(wantFields) {
+		t.Fatalf("conversation fields = %#v", conversationPort.Contract.Fields)
+	}
+	for _, field := range conversationPort.Contract.Fields {
+		if want, ok := wantFields[field.Path]; !ok || field.Mode != want {
+			t.Fatalf("conversation field = %#v", field)
+		}
+	}
+	if _, ok := spec.Config["max_tool_calls"]; !ok {
+		t.Fatal("agent budget config was not serialized")
+	}
+	built, err := NodeTypeDefinition().Build(&registry.BuildContext{}, registry.ResolvedNodeSpec{
+		Spec: dsl.GraphNodeSpec{ID: spec.ID, Type: spec.Type, Config: spec.Config},
+		State: map[string]registry.ResolvedStateBinding{
+			"task":         {Path: target.TaskPath},
+			"conversation": {Path: target.ConversationPath},
+			"result":       {Path: target.ResultPath},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build agent snapshot: %v", err)
+	}
+	builtNode := built.(*Node)
+	if builtNode.MaxIterations != target.MaxIterations || builtNode.MaxToolCalls != target.MaxToolCalls || builtNode.MaxTokens != target.MaxTokens || builtNode.MaxCost != target.MaxCost {
+		t.Fatalf("budget config round trip = %#v, want %#v", builtNode.Config, target.Config)
+	}
+}
+
+func TestAgentNodePreservesToolPermissionAndApprovalGovernance(t *testing.T) {
+	t.Parallel()
+	tool := core.NewTool(&llms.FunctionDefinition{Name: "protected"}, func(_ context.Context, _ llms.ToolCall) (llms.ToolResult, error) {
+		t.Fatal("protected tool executed despite governance failure")
+		return llms.ToolResult{}, nil
+	})
+	tool.Permissions = []string{"filesystem.write"}
+	tool.Approval = core.ToolApprovalRequired
+	cases := []struct {
+		name string
+		ctx  context.Context
+	}{
+		{name: "missing permission", ctx: context.Background()},
+		{name: "missing approval", ctx: core.WithToolPermissions(context.Background(), "filesystem.write")},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			model := &scriptedModel{
+				responses: []*llms.ModelResponse{
+					{Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{toolCall("protected", `{}`)}}}},
+				},
+			}
+			target := NewNode(core.WithID("governed"))
+			target.ToolIDs = []string{"protected"}
+			ctx := core.WithTools(core.WithModel(testCase.ctx, model), map[string]core.Tool{"protected": tool})
+			_, err := core.ExecuteNode(ctx, state.FromShared(map[string]any{"request": map[string]any{"input": "run protected"}}), target)
+			if err == nil || core.ClassifyError(err) != core.ErrorPermissionDenied {
+				t.Fatalf("ExecuteNode() error = %v, want permission_denied", err)
+			}
+		})
+	}
+}
+
 func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
 	t.Parallel()
 
@@ -348,6 +444,93 @@ func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
 	}
 }
 
+func TestToolWritesStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	outputSchema := state.JSONSchema{
+		"type": "object",
+		"properties": state.JSONSchema{
+			"answer": state.JSONSchema{"type": "integer"},
+		},
+		"required":             []string{"answer"},
+		"additionalProperties": false,
+	}
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "Result: {\"answer\":7}"}}}}}
+	tool, err := NewTool(ToolConfig{
+		Name:         "research_agent",
+		Description:  "Delegate research to a specialist.",
+		OutputSchema: outputSchema,
+		Agent:        Config{SystemPrompt: "Return a JSON result."},
+	})
+	if err != nil {
+		t.Fatalf("new agent tool: %v", err)
+	}
+	if !reflect.DeepEqual(tool.Function.OutputSchema, outputSchema) {
+		t.Fatalf("tool output schema = %#v, want %#v", tool.Function.OutputSchema, outputSchema)
+	}
+	result, err := core.ExecuteTool(core.WithModel(context.Background(), model), tool, toolCall("research_agent", `{"task":"research this"}`))
+	if err != nil {
+		t.Fatalf("execute agent tool: %v", err)
+	}
+	if result.Content != `{"answer":7}` || !reflect.DeepEqual(result.Value, map[string]any{"answer": json.Number("7")}) {
+		t.Fatalf("result = %#v, want normalized structured result", result)
+	}
+	if len(model.requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(model.requests))
+	}
+	request := model.requests[0]
+	if request.ResponseName != defaultToolResponseName || !request.StrictResponse || !request.ResponseJSON || !request.ResponseJSONCompatibility || !reflect.DeepEqual(request.ResponseSchema, outputSchema) {
+		t.Fatalf("structured request = %#v", request)
+	}
+}
+
+func TestToolCanRequireJSONWithoutOutputSchema(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "```json\n[1,2,3]\n```"}}}}}
+	tool, err := NewTool(ToolConfig{
+		Name:        "json_agent",
+		Description: "Return a JSON result.",
+		OutputJSON:  true,
+	})
+	if err != nil {
+		t.Fatalf("new agent tool: %v", err)
+	}
+	result, err := core.ExecuteTool(core.WithModel(context.Background(), model), tool, toolCall("json_agent", `{"task":"return JSON"}`))
+	if err != nil {
+		t.Fatalf("execute agent tool: %v", err)
+	}
+	if result.Content != `[1,2,3]` || !reflect.DeepEqual(result.Value, []any{json.Number("1"), json.Number("2"), json.Number("3")}) {
+		t.Fatalf("result = %#v, want normalized JSON result", result)
+	}
+	if len(model.requests) != 1 || !model.requests[0].ResponseJSON || len(model.requests[0].ResponseSchema) != 0 {
+		t.Fatalf("structured request = %#v", model.requests)
+	}
+}
+
+func TestToolCanRequireStrictStructuredOutput(t *testing.T) {
+	t.Parallel()
+
+	compatibility := false
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "Result: {\"answer\":7}"}}}}}
+	tool, err := NewTool(ToolConfig{
+		Name:                    "strict_agent",
+		Description:             "Return a structured result.",
+		OutputSchema:            state.JSONSchema{"type": "object"},
+		OutputJSONCompatibility: &compatibility,
+	})
+	if err != nil {
+		t.Fatalf("new agent tool: %v", err)
+	}
+	_, err = core.ExecuteTool(core.WithModel(context.Background(), model), tool, toolCall("strict_agent", `{"task":"return JSON"}`))
+	if err == nil || core.ClassifyError(err) != core.ErrorInvalidOutput {
+		t.Fatalf("execute error = %v, want invalid_output", err)
+	}
+	if len(model.requests) != 1 || model.requests[0].ResponseJSONCompatibility {
+		t.Fatalf("structured request = %#v", model.requests)
+	}
+}
+
 func TestToolRejectsUnsafeConfiguration(t *testing.T) {
 	t.Parallel()
 
@@ -360,6 +543,7 @@ func TestToolRejectsUnsafeConfiguration(t *testing.T) {
 		{name: "empty tool id", config: ToolConfig{Name: "worker", Description: "Delegate work.", Agent: Config{ToolIDs: []string{" "}}}},
 		{name: "duplicate tool id", config: ToolConfig{Name: "worker", Description: "Delegate work.", Agent: Config{ToolIDs: []string{"read", "READ"}}}},
 		{name: "self reference", config: ToolConfig{Name: "worker", Description: "Delegate work.", Agent: Config{ToolIDs: []string{"worker"}}}},
+		{name: "invalid output schema", config: ToolConfig{Name: "worker", Description: "Delegate work.", OutputSchema: state.JSONSchema{"type": "unsupported"}}},
 	}
 	for _, testCase := range tests {
 		t.Run(testCase.name, func(t *testing.T) {

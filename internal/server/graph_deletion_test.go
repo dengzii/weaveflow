@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/dengzii/weaveflow/internal/memory"
 	"github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 	"github.com/gin-gonic/gin"
@@ -37,6 +38,11 @@ func TestDeleteGraphCascadesStoredRuntimeAndTriggers(t *testing.T) {
 	}
 	if activeRunner.ActiveRunCount() != 0 {
 		t.Fatal("run remained active after reaching terminal status")
+	}
+	if _, err := testServer.MemoryStore().Put(context.Background(), memory.Namespace("user"), memory.MemoryRecord{
+		Key: "profile", Content: "retained", SourceRunID: started.RunID,
+	}, ""); err != nil {
+		t.Fatalf("store source memory: %v", err)
 	}
 
 	response := serveHTTP(engine, http.MethodDelete, "/graphs/delete-graph", "")
@@ -75,6 +81,9 @@ func TestDeleteGraphCascadesStoredRuntimeAndTriggers(t *testing.T) {
 	}
 	if inspection := serveHTTP(engine, http.MethodGet, "/graphs/delete-graph/runs/"+started.RunID+"/inspection", ""); inspection.Code != http.StatusNotFound {
 		t.Fatalf("deleted run inspection status = %d, body = %s", inspection.Code, inspection.Body.String())
+	}
+	if _, err := testServer.MemoryStore().Get(context.Background(), memory.Namespace("user"), "profile"); err != nil {
+		t.Fatalf("source memory after graph deletion = %v, want retained record", err)
 	}
 }
 

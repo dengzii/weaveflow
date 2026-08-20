@@ -99,6 +99,9 @@ export interface GraphInfo {
   graph_hash?: string;
   graph_snapshot_hash?: string;
   graph_session_id?: string;
+  source_run_id?: string;
+  source_checkpoint_id?: string;
+  fork_request_key?: string;
   entry_point?: string;
   finish_point?: string;
 }
@@ -609,6 +612,33 @@ export interface RunInspection {
   checkpoints: CheckpointRecord[];
   events: RuntimeEventPage;
   interrupt?: RunInterrupt;
+}
+
+export interface ForkResult {
+  run: RunRecord;
+  source_run_id: string;
+  source_checkpoint_id: string;
+  request_key: string;
+}
+
+export interface StateChange {
+  path: string;
+  before?: unknown;
+  after?: unknown;
+}
+
+export interface RunComparison {
+  left: RunRecord;
+  right: RunRecord;
+  left_steps: StepRecord[];
+  right_steps: StepRecord[];
+  left_events: RuntimeEvent[];
+  right_events: RuntimeEvent[];
+  left_artifacts: ArtifactRef[];
+  right_artifacts: ArtifactRef[];
+  state_changes: StateChange[];
+  checkpoint_id?: string;
+  other_checkpoint_id?: string;
 }
 
 export interface RunListPage {
