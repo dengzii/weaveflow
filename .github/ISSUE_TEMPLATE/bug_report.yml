@@ -1,0 +1,73 @@
+name: Bug report
+description: Report a reproducible problem in WeaveFlow
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for helping improve WeaveFlow. Please remove secrets and private data from logs and examples.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Describe what happened and what you expected instead.
+      placeholder: A clear and concise description of the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest graph, code sample, or command sequence that reproduces the issue.
+      placeholder: |
+        1. Configure ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: Describe the result you expected.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: WeaveFlow version
+      description: Provide a release tag, commit SHA, or Docker image tag.
+      placeholder: v1.2.3 or commit SHA
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the operating system, architecture, Go or Docker version, and browser when relevant.
+      placeholder: Ubuntu 24.04, amd64, Docker 27, Chrome 128
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and additional context
+      description: Paste relevant logs, stack traces, screenshots, or configuration after removing secrets.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Checklist
+      options:
+        - label: I searched existing issues for duplicates.
+          required: true
+        - label: I removed credentials and sensitive data from this report.
+          required: true

@@ -1,0 +1,5 @@
+# Default owners for every file. Update this account if repository ownership changes.
+* @lazy-banana
+
+/.github/ @lazy-banana
+/scripts/ @lazy-banana
