@@ -867,6 +867,9 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 		if err != nil {
 			return state.ArtifactRef{}, err
 		}
+		if stage.Ref.ID == "" {
+			return state.ArtifactRef{}, nil
+		}
 		if err := e.appendArtifactStage(task.TaskID, stage); err != nil {
 			return state.ArtifactRef{}, err
 		}

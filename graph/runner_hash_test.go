@@ -72,7 +72,7 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	}
 
 	dir := t.TempDir()
-	runner, _ := mustNewFileGraphRunner(t, g, dir)
+	runner, store := mustNewFileGraphRunner(t, g, dir)
 	run, _, err := runner.Start(context.Background(), state.NewState())
 	if err != nil {
 		t.Fatalf("start runner: %v", err)
@@ -80,11 +80,11 @@ func TestGraphRunnerRejectsResumeWhenGraphHashChanged(t *testing.T) {
 	if run.LastCheckpointID == "" {
 		t.Fatal("run has no checkpoint")
 	}
-	snapshotRunner := mustNewGraphRunner(t, g, runner.ExecutionStore(), runner.CheckpointStore(), state.NewJSONStateCodec(""), runner.EventSink(), fruntime.WithGraphMetadata("", "", runner.GraphHash(), "sha256:changed-snapshot", runner.GraphSessionID()))
+	snapshotRunner := mustNewGraphRunner(t, g, runner.ExecutionStore(), runner.CheckpointStore(), state.NewJSONStateCodec(""), runner.EventSink(), fruntime.WithRuntimeTransactionStore(store), fruntime.WithGraphMetadata("", "", runner.GraphHash(), "sha256:changed-snapshot", runner.GraphSessionID()))
 	if _, _, err := snapshotRunner.Resume(context.Background(), run.RunID, nil); err == nil || !strings.Contains(err.Error(), "graph snapshot hash mismatch") {
 		t.Fatalf("Resume() error = %v, want graph snapshot hash mismatch", err)
 	}
-	runner = mustNewGraphRunner(t, g, runner.ExecutionStore(), runner.CheckpointStore(), state.NewJSONStateCodec(""), runner.EventSink(), fruntime.WithGraphMetadata("", "", "sha256:changed", runner.GraphSnapshotHash(), runner.GraphSessionID()))
+	runner = mustNewGraphRunner(t, g, runner.ExecutionStore(), runner.CheckpointStore(), state.NewJSONStateCodec(""), runner.EventSink(), fruntime.WithRuntimeTransactionStore(store), fruntime.WithGraphMetadata("", "", "sha256:changed", runner.GraphSnapshotHash(), runner.GraphSessionID()))
 
 	if _, _, err := runner.Resume(context.Background(), run.RunID, nil); err == nil || !strings.Contains(err.Error(), "graph hash mismatch") {
 		t.Fatalf("Resume() error = %v, want graph hash mismatch", err)

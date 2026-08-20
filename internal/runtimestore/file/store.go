@@ -1247,7 +1247,11 @@ func removeRunnerDirectory(path string) error {
 	if err := os.RemoveAll(path); err != nil {
 		return err
 	}
-	return syncDirectory(filepath.Dir(path))
+	parent := filepath.Dir(path)
+	if _, err := os.Stat(parent); os.IsNotExist(err) {
+		return nil
+	}
+	return syncDirectory(parent)
 }
 
 func appendRunnerJSONLine(path string, value any) error {

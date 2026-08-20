@@ -20,10 +20,15 @@ import (
 
 type replaceGraphFailureStore struct {
 	trigger.Store
-	err error
+	err      error
+	failures int
 }
 
-func (store *replaceGraphFailureStore) ReplaceGraph(context.Context, string, []trigger.Trigger) error {
+func (store *replaceGraphFailureStore) ReplaceGraph(ctx context.Context, graphID string, items []trigger.Trigger) error {
+	if store.failures > 0 {
+		store.failures--
+		return store.Store.ReplaceGraph(ctx, graphID, items)
+	}
 	return store.err
 }
 
@@ -200,14 +205,18 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Close() })
 	engine := srv.Engine()
 
-	putGraphForHashTest(t, engine, graphUploadBodyWithSettings("managed-rollback", "v1", "valid", `{
+	first := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("managed-rollback", "v1", "valid", `{
 		"environment":{},
 		"models":[{"id":"default","enabled":true,"provider":"openai","credential_value":"existing-key"}]
 	}`))
-	_, requestBody := graphSessionRequestBodyForTest(t, graphUploadBodyWithSettings("managed-rollback", "v1", "invalid", `{
+	requestBody := graphCommitBodyForTest(t, graphUploadBodyWithSettings("managed-rollback", "v1", "invalid", `{
 		"environment":{},
 		"models":[{"id":"default","enabled":true,"provider":"unsupported","credential_value":"failed-key"}]
-	}`))
+	}`), map[string]any{
+		"mode":                      "overwrite",
+		"expected_graph_session_id": first.Graph.GraphSessionID,
+		"triggers":                  []any{},
+	})
 	response := serveHTTP(engine, http.MethodPost, "/graphs/managed-rollback/sessions", requestBody)
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("failed rotation status = %d, body = %s", response.Code, response.Body.String())
@@ -223,10 +232,14 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 		t.Fatalf("credential after failed rotation = %q, want existing-key", value)
 	}
 
-	_, clearBody := graphSessionRequestBodyForTest(t, graphUploadBodyWithSettings("managed-rollback", "v1", "invalid-clear", `{
+	clearBody := graphCommitBodyForTest(t, graphUploadBodyWithSettings("managed-rollback", "v1", "invalid-clear", `{
 		"environment":{},
 		"models":[{"id":"default","enabled":true,"provider":"unsupported","credential_clear":true}]
-	}`))
+	}`), map[string]any{
+		"mode":                      "overwrite",
+		"expected_graph_session_id": first.Graph.GraphSessionID,
+		"triggers":                  []any{},
+	})
 	cleared := serveHTTP(engine, http.MethodPost, "/graphs/managed-rollback/sessions", clearBody)
 	if cleared.Code != http.StatusBadRequest {
 		t.Fatalf("failed clear status = %d, body = %s", cleared.Code, cleared.Body.String())
@@ -239,13 +252,17 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 		t.Fatalf("credential after failed clear = %q, want existing-key", value)
 	}
 
-	_, duplicateBody := graphSessionRequestBodyForTest(t, graphUploadBodyWithSettings("managed-rollback", "v1", "duplicate", `{
+	duplicateBody := graphCommitBodyForTest(t, graphUploadBodyWithSettings("managed-rollback", "v1", "duplicate", `{
 		"environment":{},
 		"models":[
 			{"id":"default","enabled":true,"provider":"openai","credential_value":"first-duplicate-key"},
 			{"id":"default","enabled":true,"provider":"openai","credential_value":"second-duplicate-key"}
 		]
-	}`))
+	}`), map[string]any{
+		"mode":                      "overwrite",
+		"expected_graph_session_id": first.Graph.GraphSessionID,
+		"triggers":                  []any{},
+	})
 	duplicate := serveHTTP(engine, http.MethodPost, "/graphs/managed-rollback/sessions", duplicateBody)
 	if duplicate.Code != http.StatusBadRequest {
 		t.Fatalf("duplicate model status = %d, body = %s", duplicate.Code, duplicate.Body.String())
@@ -451,7 +468,7 @@ func TestReplaceTriggersFailureRollsBackManagedSecretWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	failingStore := &replaceGraphFailureStore{Store: fileStore, err: errors.New("replace failed")}
+	failingStore := &replaceGraphFailureStore{Store: fileStore, err: errors.New("replace failed"), failures: 1}
 	service := managedSecretTestService(t, failingStore, channels)
 	srv, err := New(context.Background(), Config{BaseDir: baseDirectory, TriggerService: service})
 	if err != nil {

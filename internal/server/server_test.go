@@ -1106,7 +1106,9 @@ func TestDeleteRunRemovesDebugRecords(t *testing.T) {
 
 	uploaded := putGraphForHashTest(t, engine, graphBody)
 	started := startGraphRunForTest(t, engine, uploaded, `{}`)
-	waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, started.RunID)
+	activeRunner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
+	waitForRunTerminalStatus(t, activeRunner, started.RunID)
+	waitForRunInactive(t, activeRunner, started.RunID)
 
 	deleted := serveHTTP(engine, http.MethodDelete, "/graphs/debug-graph/runs/"+started.RunID, "")
 	if deleted.Code != http.StatusNoContent {
@@ -2522,9 +2524,29 @@ func TestGraphInitialStateRequirementsEndpoint(t *testing.T) {
 			]
 		}
 	}`
+	analysisBody := `{
+		"triggers": [
+			{"id":"hook","type":"webhook","enabled":true,"webhook":{"state_bindings":{"input":"shared.request.input"}}},
+			{"id":"empty","type":"webhook","enabled":true,"webhook":{}}
+		],
+		"definition": {
+			"version": "1.0",
+			"state_modules": [{"name":"weaveflow.protocols","version":"1"}],
+			"name": "requires-input",
+			"entry_point": "input",
+			"finish_point": "input",
+			"nodes": [
+				{
+					"id": "input",
+					"type": "requires_input",
+					"state": {"input": {"path": "shared.request.input"}}
+				}
+			]
+		}
+	}`
 
 	w := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodPost, "/graphs/requires-input/analysis/initial-state-requirements", strings.NewReader(graphBody))
+	req := httptest.NewRequest(http.MethodPost, "/graphs/requires-input/analysis/initial-state-requirements", strings.NewReader(analysisBody))
 	req.Header.Set("Content-Type", "application/json")
 	engine.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

@@ -210,6 +210,9 @@ func (s *Server) commitGraph(ctx context.Context, setupOwner string, req graphUp
 	})
 	if err != nil {
 		_ = s.removeGraphCommitJournal(req.GraphID)
+		if receipt, found, loadErr := s.loadGraphCommitReceipt(req.GraphID, req.RequestID); loadErr == nil && found {
+			return receipt, nil
+		}
 		return graphLoadResponse{}, err
 	}
 	response.Triggers = make([]trigger.Trigger, 0, len(replacement.Items()))
