@@ -217,6 +217,12 @@ func (s *Server) startDurableWorkers(ctx context.Context) error {
 	if s == nil || strings.TrimSpace(s.cfg.RuntimeStoreBackend) != RuntimeStoreSQLite {
 		return nil
 	}
+	current := s.runtime.currentSession()
+	if current.runner != nil {
+		if err := s.runtime.ensureWorker(effectiveRunnerGraphID(current.runner)); err != nil {
+			return fmt.Errorf("start durable worker for current graph: %w", err)
+		}
+	}
 	graphs, err := s.listCachedGraphs()
 	if err != nil {
 		return err

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
 	workerpkg "github.com/dengzii/weaveflow/internal/worker"
 	"github.com/dengzii/weaveflow/runtime"
@@ -142,6 +143,17 @@ func (handler graphRunTaskHandler) HandleTask(ctx context.Context, task runtime.
 	run, err := session.runner.GetRun(ctx, task.RunID)
 	if err != nil {
 		return runtime.TaskResult{}, err
+	}
+	if run.Status == runtime.RunStatusFailed {
+		steps, err := session.runner.ListSteps(ctx, run.RunID)
+		if err != nil {
+			return runtime.TaskResult{}, err
+		}
+		for _, step := range steps {
+			if step.EffectStatus == core.EffectUnknown {
+				return runtime.TaskResult{}, fmt.Errorf("%w: run %q step %q has an unresolved effect", runtime.ErrRunControlNotAllowed, run.RunID, step.StepID)
+			}
+		}
 	}
 	if !isTerminalRuntimeStatus(run.Status) {
 		runContext, cancel := deriveRunContextFromBase(ctx, session.baseContext)
