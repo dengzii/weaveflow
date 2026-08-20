@@ -1,0 +1,3 @@
+window.__WEAVEFLOW_CONFIG__ = {
+  backendBaseUrl: "${WEAVEFLOW_WEB_BACKEND_URL}",
+};

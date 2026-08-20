@@ -362,6 +362,14 @@ server. Local WebUI origins on port `3031` are allowed by default; configure oth
 WEAVEFLOW_MANAGEMENT_TOKEN=<management-token> go run ./cmd/server -addr 0.0.0.0:8080 -prefix /debug -cors-origins https://web.example.com
 ```
 
+### Container deployment
+
+The combined WebUI and API image, non-root runtime, health check, and Docker CLI deployment helper are documented in
+[`scripts/README.md`](scripts/README.md). The helper binds the service to `127.0.0.1` by default; configure
+`WEAVEFLOW_MANAGEMENT_TOKEN` before exposing it beyond the local machine. Packaged-image deployments can copy
+`scripts/.env.example` to `scripts/.env` and run the Compose file from `scripts/`.
+The current local image version is recorded in [`VERSION`](VERSION) and is `0.1.0`.
+
 ## Examples
 
 | Path                          | Description                                                                                       |

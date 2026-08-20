@@ -1,0 +1,58 @@
+services:
+  weaveflow:
+    image: ${WEAVEFLOW_IMAGE:-weaveflow:0.1.0}
+    container_name: ${WEAVEFLOW_CONTAINER:-weaveflow}
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    ports:
+      - target: ${WEAVEFLOW_WEB_PORT:-8080}
+        published: ${WEAVEFLOW_PUBLISH_PORT:-8080}
+        host_ip: ${WEAVEFLOW_PUBLISH_HOST:-127.0.0.1}
+        protocol: tcp
+    env_file:
+      - path: ${WEAVEFLOW_ENV_FILE:-.env}
+        required: false
+    environment:
+      WEAVEFLOW_WEB_PORT: ${WEAVEFLOW_WEB_PORT:-8080}
+      WEAVEFLOW_SERVER_PORT: ${WEAVEFLOW_SERVER_PORT:-8081}
+      WEAVEFLOW_WEB_BACKEND_URL: ${WEAVEFLOW_WEB_BACKEND_URL:-/api}
+      WEAVEFLOW_DATA_DIR: ${WEAVEFLOW_DATA_DIR:-/data/server}
+      WEAVEFLOW_SECRET_DIR: ${WEAVEFLOW_SECRET_DIR:-/data/secrets}
+      WEAVEFLOW_LOG_LEVEL: ${WEAVEFLOW_LOG_LEVEL:-info}
+      WEAVEFLOW_TOOL_WORKDIR: ${WEAVEFLOW_TOOL_WORKDIR:-/workspace}
+      WEAVEFLOW_CODEX_WORKSPACE_ROOTS: ${WEAVEFLOW_CODEX_WORKSPACE_ROOTS:-/workspace}
+      WEAVEFLOW_CLAUDE_WORKSPACE_ROOTS: ${WEAVEFLOW_CLAUDE_WORKSPACE_ROOTS:-/workspace}
+      WEAVEFLOW_MANAGEMENT_TOKEN: ${WEAVEFLOW_MANAGEMENT_TOKEN:-}
+    volumes:
+      - type: volume
+        source: weaveflow-data
+        target: /data
+      - type: bind
+        source: ${WEAVEFLOW_WORKSPACE:-..}
+        target: /workspace
+        read_only: ${WEAVEFLOW_WORKSPACE_READ_ONLY:-false}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - 'wget -q -O /dev/null "http://127.0.0.1:$${WEAVEFLOW_WEB_PORT}/healthz" || exit 1'
+      interval: 30s
+      timeout: 5s
+      start_period: 15s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+volumes:
+  weaveflow-data:
+    name: ${WEAVEFLOW_DATA_VOLUME:-weaveflow-data}
