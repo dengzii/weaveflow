@@ -39,7 +39,12 @@ func Open(path string) (*Store, error) {
 	if filepath.VolumeName(absolute) != "" {
 		uriPath = "/" + uriPath
 	}
-	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: "_txlock=immediate"}).String()
+	query := url.Values{}
+	query.Set("_txlock", "immediate")
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "foreign_keys(ON)")
+	query.Add("_pragma", "synchronous(FULL)")
+	dsn := (&url.URL{Scheme: "file", Path: uriPath, RawQuery: query.Encode()}).String()
 	database, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -57,9 +62,6 @@ func Open(path string) (*Store, error) {
 func (store *Store) initialize(ctx context.Context) error {
 	for _, statement := range []string{
 		"PRAGMA journal_mode=WAL",
-		"PRAGMA synchronous=FULL",
-		"PRAGMA foreign_keys=ON",
-		"PRAGMA busy_timeout=5000",
 	} {
 		if _, err := store.db.ExecContext(ctx, statement); err != nil {
 			return fmt.Errorf("configure sqlite runtime store: %w", err)

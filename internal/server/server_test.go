@@ -1314,6 +1314,11 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -1345,7 +1350,9 @@ func TestListRunsWithGraphIDAggregatesGraphSessions(t *testing.T) {
 
 		uploaded := putGraphForHashTest(t, engine, graphBody)
 		run := startGraphRunForTest(t, engine, uploaded, `{}`)
-		waitForRunTerminalStatus(t, srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner, run.RunID)
+		runner := srv.runtime.session("debug-graph", uploaded.Graph.GraphSessionID).runner
+		waitForRunTerminalStatus(t, runner, run.RunID)
+		waitForRunInactive(t, runner, run.RunID)
 		runIDs[run.RunID] = struct{}{}
 	}
 
