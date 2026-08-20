@@ -21,7 +21,7 @@ const (
 	processWaitDelay   = 5 * time.Second
 )
 
-var errCodexOutputLimit = errors.New("Codex output exceeded configured limit")
+var errCodexOutputLimit = errors.New("codex output exceeded configured limit")
 
 type RunRequest struct {
 	ModelID string
@@ -92,7 +92,7 @@ func newProcessRunner(config RunnerConfig, checkReadiness bool) (*ProcessRunner,
 
 func (runner *ProcessRunner) ensureReady() (string, error) {
 	if runner == nil {
-		return "", fmt.Errorf("Codex runner is not configured")
+		return "", fmt.Errorf("codex runner is not configured")
 	}
 	runner.readyMu.Lock()
 	defer runner.readyMu.Unlock()
@@ -129,7 +129,7 @@ func validateCodexHelp(rootHelp, execHelp string) error {
 	}
 	for _, option := range []string{"--json", "--ephemeral", "--ignore-user-config", "--ignore-rules", "--strict-config", "--sandbox", "--cd", "--model"} {
 		if !strings.Contains(execHelp, option) {
-			return fmt.Errorf("Codex exec option %s is not supported", option)
+			return fmt.Errorf("codex exec option %s is not supported", option)
 		}
 	}
 	return nil
@@ -149,18 +149,18 @@ func help(ctx context.Context, executable string, arguments ...string) (string, 
 
 func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunResult, error) {
 	if runner == nil {
-		return RunResult{}, fmt.Errorf("Codex runner is not configured")
+		return RunResult{}, fmt.Errorf("codex runner is not configured")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	modelID := strings.TrimSpace(request.ModelID)
 	if strings.TrimSpace(request.Prompt) == "" {
-		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex prompt is empty")
+		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("codex prompt is empty")
 	}
 	modelConfig, ok := core.ModelConfigByIDFromContext(ctx, modelID)
 	if !ok {
-		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex model %q is not configured in Graph Settings", effectiveCodexModelID(modelID))
+		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("codex model %q is not configured in Graph Settings", effectiveCodexModelID(modelID))
 	}
 	modelID = strings.TrimSpace(modelConfig.ID)
 	if modelID == "" {
@@ -171,10 +171,10 @@ func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunRe
 	}
 	baseURL, err := normalizeCodexBaseURL(modelConfig.BaseURL)
 	if err != nil {
-		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex model %q base_url: %w", modelID, err)
+		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("codex model %q base_url: %w", modelID, err)
 	}
 	if strings.ContainsAny(modelConfig.APIKey, "\x00\r\n") {
-		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex model %q api_key contains an invalid control character", modelID)
+		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("codex model %q api_key contains an invalid control character", modelID)
 	}
 	workspacePath, err := resolveCodexWorkspace(ctx, runner.config)
 	if err != nil {
@@ -182,11 +182,11 @@ func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunRe
 	}
 	environment, secretValues, err := environment(ctx, runner.config, modelConfig.APIKey)
 	if err != nil {
-		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex environment: %w", err)
+		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("codex environment: %w", err)
 	}
 	executable, err := runner.ensureReady()
 	if err != nil {
-		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("Codex runtime check: %w", err)
+		return RunResult{ModelID: modelID, ExitCode: -1}, fmt.Errorf("codex runtime check: %w", err)
 	}
 	runConfig := resolvedCodexRun{
 		resolvedCodexRunConfig: resolvedCodexRunConfig{
@@ -331,21 +331,21 @@ func runCodexProcess(ctx context.Context, config resolvedCodexRun, request RunRe
 	}
 	if waitErr != nil {
 		if result.Stderr != "" {
-			return result, fmt.Errorf("Codex exited with code %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+			return result, fmt.Errorf("codex exited with code %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 		}
-		return result, fmt.Errorf("Codex exited with code %d: %w", result.ExitCode, waitErr)
+		return result, fmt.Errorf("codex exited with code %d: %w", result.ExitCode, waitErr)
 	}
 	if outputRead.parser == nil || !outputRead.parser.completed {
 		if outputRead.parser != nil && outputRead.parser.diagnostic != "" {
-			return result, fmt.Errorf("Codex completed without turn.completed after error: %s", redactor.text(outputRead.parser.diagnostic))
+			return result, fmt.Errorf("codex completed without turn.completed after error: %s", redactor.text(outputRead.parser.diagnostic))
 		}
-		return result, fmt.Errorf("Codex completed without turn.completed")
+		return result, fmt.Errorf("codex completed without turn.completed")
 	}
 	if closeErr := processTree.Close(); closeErr != nil {
 		return result, fmt.Errorf("close Codex process tree: %w", closeErr)
 	}
 	if strings.TrimSpace(result.Output) == "" {
-		return result, fmt.Errorf("Codex completed without an agent message")
+		return result, fmt.Errorf("codex completed without an agent message")
 	}
 	return result, nil
 }

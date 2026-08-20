@@ -110,7 +110,7 @@ func (parser *eventParser) parse(line []byte) error {
 		if message == "" {
 			message = event.Type
 		}
-		parser.failed = fmt.Errorf("Codex reported %s: %s", event.Type, message)
+		parser.failed = fmt.Errorf("codex reported %s: %s", event.Type, message)
 	case "error":
 		message := strings.TrimSpace(event.Message)
 		if message == "" {

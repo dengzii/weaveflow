@@ -164,31 +164,31 @@ func resolveCodexRunnerConfig(config RunnerConfig) (resolvedCodexRunnerConfig, e
 	switch config.Sandbox {
 	case SandboxReadOnly, SandboxWorkspaceWrite:
 	default:
-		return resolvedCodexRunnerConfig{}, fmt.Errorf("Codex sandbox must be %q or %q", SandboxReadOnly, SandboxWorkspaceWrite)
+		return resolvedCodexRunnerConfig{}, fmt.Errorf("codex sandbox must be %q or %q", SandboxReadOnly, SandboxWorkspaceWrite)
 	}
 	if config.TimeoutSeconds == 0 {
 		config.TimeoutSeconds = defaults.TimeoutSeconds
 	}
 	if config.TimeoutSeconds < 1 {
-		return resolvedCodexRunnerConfig{}, fmt.Errorf("Codex timeout_seconds must be positive")
+		return resolvedCodexRunnerConfig{}, fmt.Errorf("codex timeout_seconds must be positive")
 	}
 	if config.MaxStdoutBytes == 0 {
 		config.MaxStdoutBytes = defaults.MaxStdoutBytes
 	}
 	if config.MaxStdoutBytes < 1 {
-		return resolvedCodexRunnerConfig{}, fmt.Errorf("Codex max_stdout_bytes must be positive")
+		return resolvedCodexRunnerConfig{}, fmt.Errorf("codex max_stdout_bytes must be positive")
 	}
 	if config.MaxStderrBytes == 0 {
 		config.MaxStderrBytes = defaults.MaxStderrBytes
 	}
 	if config.MaxStderrBytes < 1 {
-		return resolvedCodexRunnerConfig{}, fmt.Errorf("Codex max_stderr_bytes must be positive")
+		return resolvedCodexRunnerConfig{}, fmt.Errorf("codex max_stderr_bytes must be positive")
 	}
 	if config.MaxConcurrency == 0 {
 		config.MaxConcurrency = defaults.MaxConcurrency
 	}
 	if config.MaxConcurrency < 1 {
-		return resolvedCodexRunnerConfig{}, fmt.Errorf("Codex max_concurrency must be positive")
+		return resolvedCodexRunnerConfig{}, fmt.Errorf("codex max_concurrency must be positive")
 	}
 	if config.AllowedWorkspaceRoots == nil {
 		config.AllowedWorkspaceRoots = append([]string(nil), defaults.AllowedWorkspaceRoots...)
@@ -206,12 +206,12 @@ func resolveCodexRunnerConfig(config RunnerConfig) (resolvedCodexRunnerConfig, e
 	for _, root := range config.AllowedWorkspaceRoots {
 		rootPath, err := canonicalDirectory(root)
 		if err != nil {
-			return resolvedCodexRunnerConfig{}, fmt.Errorf("Codex allowed workspace root %q: %w", root, err)
+			return resolvedCodexRunnerConfig{}, fmt.Errorf("codex allowed workspace root %q: %w", root, err)
 		}
 		allowedRoots = append(allowedRoots, rootPath)
 	}
 	if len(allowedRoots) == 0 {
-		return resolvedCodexRunnerConfig{}, fmt.Errorf("Codex allowed_workspace_roots must contain at least one directory")
+		return resolvedCodexRunnerConfig{}, fmt.Errorf("codex allowed_workspace_roots must contain at least one directory")
 	}
 	config.AllowedWorkspaceRoots = append([]string(nil), allowedRoots...)
 	return resolvedCodexRunnerConfig{RunnerConfig: config, allowedWorkspaceRoots: allowedRoots}, nil
@@ -226,7 +226,7 @@ func normalizeCodexEnvironmentNames(values []string) ([]string, error) {
 			continue
 		}
 		if strings.ContainsAny(name, "=\x00\r\n ") {
-			return nil, fmt.Errorf("Codex environment_names contains invalid name %q", name)
+			return nil, fmt.Errorf("codex environment_names contains invalid name %q", name)
 		}
 		if _, ok := seen[name]; ok {
 			continue
@@ -248,7 +248,7 @@ func resolveCodexWorkspace(ctx context.Context, config resolvedCodexRunnerConfig
 	}
 	workspacePath, err := canonicalDirectory(workspace)
 	if err != nil {
-		return "", fmt.Errorf("Codex workspace: %w", err)
+		return "", fmt.Errorf("codex workspace: %w", err)
 	}
 	if len(config.allowedWorkspaceRoots) > 0 {
 		allowed := false
@@ -259,7 +259,7 @@ func resolveCodexWorkspace(ctx context.Context, config resolvedCodexRunnerConfig
 			}
 		}
 		if !allowed {
-			return "", fmt.Errorf("Codex workspace %q is outside allowed roots", workspacePath)
+			return "", fmt.Errorf("codex workspace %q is outside allowed roots", workspacePath)
 		}
 	}
 	return workspacePath, nil
@@ -294,11 +294,11 @@ func validateCodexModelConfig(modelID string, config core.ModelConfig) error {
 		provider = openai.ProviderOpenAI
 	}
 	if provider != openai.ProviderOpenAI {
-		return fmt.Errorf("Codex model %q provider %q is not supported; expected %q", modelID, provider, openai.ProviderOpenAI)
+		return fmt.Errorf("codex model %q provider %q is not supported; expected %q", modelID, provider, openai.ProviderOpenAI)
 	}
 	apiFormat := openai.APIFormat(strings.ToLower(strings.TrimSpace(config.APIFormat)))
 	if apiFormat != openai.APIFormatResponses {
-		return fmt.Errorf("Codex model %q api_format %q is not supported; expected %q", modelID, apiFormat, openai.APIFormatResponses)
+		return fmt.Errorf("codex model %q api_format %q is not supported; expected %q", modelID, apiFormat, openai.APIFormatResponses)
 	}
 	return nil
 }
