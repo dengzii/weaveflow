@@ -1,4 +1,4 @@
-ARG GO_VERSION=1.26.1
+ARG GO_VERSION=1.26.6
 ARG BUN_VERSION=1.3.4
 ARG GOPROXY=https://goproxy.cn,direct
 ARG VERSION=dev
@@ -37,7 +37,7 @@ LABEL org.opencontainers.image.title="WeaveFlow" \
       org.opencontainers.image.description="Graph-based runtime for building, executing, and inspecting LLM agents in Go" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
-      org.opencontainers.image.source="https://github.com/lazy-banana/weaveflow"
+      org.opencontainers.image.source="https://github.com/dengzii/weaveflow"
 
 RUN apk add --no-cache gettext \
     && mkdir -p /app /data/server /data/secrets /workspace /tmp/weaveflow /tmp/nginx-client-body /tmp/nginx-proxy-temp /tmp/nginx-fastcgi-temp /tmp/nginx-uwsgi-temp /tmp/nginx-scgi-temp \
