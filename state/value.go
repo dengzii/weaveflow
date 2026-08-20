@@ -105,7 +105,7 @@ func (cloner *valueCloner) clone(src reflect.Value) (reflect.Value, bool) {
 		return src, true
 	}
 	switch src.Kind() {
-	case reflect.Ptr:
+	case reflect.Pointer:
 		if src.IsNil() {
 			return src, true
 		}

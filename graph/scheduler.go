@@ -992,7 +992,7 @@ func (runnable *scheduledRunnable) scheduleNext(nextTasks []fruntime.GraphTask, 
 		storePreferredTask(readyStatic, task)
 	}
 	runnable.releasePendingFanIn(readyStatic, pendingFanIn)
-	ready := make([]fruntime.GraphTask, 0, len(readyStatic)+len(readyDynamic))
+	ready := make([]fruntime.GraphTask, 0)
 	for _, nodeID := range sortedGraphTaskNodeIDs(readyStatic) {
 		ready = append(ready, readyStatic[nodeID])
 	}
@@ -1015,7 +1015,7 @@ func (runnable *scheduledRunnable) resumeSchedule(startTasks []fruntime.GraphTas
 		}
 	}
 	runnable.releasePendingFanIn(readyStatic, pendingFanIn)
-	ready := make([]fruntime.GraphTask, 0, len(readyStatic)+len(readyDynamic))
+	ready := make([]fruntime.GraphTask, 0)
 	for _, nodeID := range sortedGraphTaskNodeIDs(readyStatic) {
 		ready = append(ready, readyStatic[nodeID])
 	}

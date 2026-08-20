@@ -85,10 +85,10 @@ func main() {
 		},
 	})
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal("failed to initialize server")
 	}
 	if err := srv.Start(ctx); err != nil {
-		log.Fatal(err)
+		log.Fatal("failed to start server")
 	}
 	defer func() { _ = srv.Close() }()
 

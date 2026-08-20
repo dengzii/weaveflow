@@ -140,7 +140,7 @@ func DiffSnapshots(before, after Snapshot) ([]Change, error) {
 		return nil, err
 	}
 
-	paths := make(map[string]struct{}, len(beforeFlat)+len(afterFlat))
+	paths := make(map[string]struct{})
 	for path := range beforeFlat {
 		paths[path] = struct{}{}
 	}

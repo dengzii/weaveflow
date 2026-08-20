@@ -124,7 +124,7 @@ func publishAgentInvocationEvent(ctx context.Context, eventName string, invocati
 	if detail != "" {
 		payload["detail"] = detail
 	}
-	PublishRunnerContextEvent(ctx, EventNodeCustom, payload)
+	_ = PublishRunnerContextEvent(ctx, EventNodeCustom, payload)
 }
 
 func operationIdentity(ctx context.Context) (string, bool) {

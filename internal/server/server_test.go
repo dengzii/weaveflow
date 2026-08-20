@@ -2399,7 +2399,7 @@ func TestResolveEffectEndpointConfirmsNotAppliedAndContinues(t *testing.T) {
 		}
 		return core.Success(), nil
 	})
-	target.Base.Effect = core.EffectNonIdempotentWrite
+	target.Effect = core.EffectNonIdempotentWrite
 	if err := workflow.AddNode(target); err != nil {
 		t.Fatal(err)
 	}
@@ -2770,7 +2770,8 @@ func putGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoa
 		t.Fatal(err)
 	}
 	detailResponse := serveHTTP(engine, http.MethodGet, "/graphs/"+graphID, "")
-	if detailResponse.Code == http.StatusOK {
+	switch detailResponse.Code {
+	case http.StatusOK:
 		var detailEnvelope struct {
 			Data graphDetailResponse `json:"data"`
 		}
@@ -2779,9 +2780,9 @@ func putGraphForHashTest(t *testing.T, engine *gin.Engine, body string) graphLoa
 		}
 		envelope["mode"] = string(graphCommitOverwrite)
 		envelope["expected_graph_session_id"] = detailEnvelope.Data.Graph.GraphSessionID
-	} else if detailResponse.Code == http.StatusNotFound {
+	case http.StatusNotFound:
 		envelope["mode"] = string(graphCommitCreate)
-	} else {
+	default:
 		t.Fatalf("inspect graph head status = %d, body = %s", detailResponse.Code, detailResponse.Body.String())
 	}
 	envelope["triggers"] = []any{}

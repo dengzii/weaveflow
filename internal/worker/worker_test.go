@@ -27,13 +27,13 @@ func TestRunOneHeartbeatsLongRunningTask(t *testing.T) {
 		select {
 		case <-ctx.Done():
 			return runtime.TaskResult{}, ctx.Err()
-		case <-time.After(150 * time.Millisecond):
+		case <-time.After(750 * time.Millisecond):
 			return runtime.TaskResult{Payload: []byte(`{"ok":true}`)}, nil
 		}
 	})
 	durableWorker, err := New(store, handler, Config{
 		Identity: runtime.WorkerIdentity{ID: "worker-1"}, Kinds: []string{"test"},
-		LeaseTTL: 90 * time.Millisecond, HeartbeatInterval: 20 * time.Millisecond,
+		LeaseTTL: 500 * time.Millisecond, HeartbeatInterval: 50 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)

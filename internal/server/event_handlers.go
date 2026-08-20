@@ -160,21 +160,5 @@ func sanitizeSSEField(value string) string {
 }
 
 func logRuntimeEventStreamClose(graphID string, filter eventFilter, subscriberID int, reason, eventID, eventType string, err error) {
-	attributes := []any{
-		"graph_id", graphID,
-		"graph_session_id", filter.GraphSessionID,
-		"run_id", filter.RunID,
-		"subscriber_id", subscriberID,
-		"reason", reason,
-	}
-	if eventID != "" {
-		attributes = append(attributes, "event_id", eventID)
-	}
-	if eventType != "" {
-		attributes = append(attributes, "event_type", eventType)
-	}
-	if err != nil {
-		attributes = append(attributes, "error", err)
-	}
-	slog.Debug("runtime event stream closed", attributes...)
+	slog.Debug("runtime event stream closed")
 }

@@ -291,7 +291,7 @@ func TestNonIdempotentNodeDoesNotRetryUnavailableFailure(t *testing.T) {
 		attempts++
 		return core.NodeResult{}, core.NewExecutionError(core.ErrorUnavailable, "provider unavailable", nil, nil)
 	})
-	target.Base.Effect = core.EffectNonIdempotentWrite
+	target.Effect = core.EffectNonIdempotentWrite
 	if err := workflow.AddNode(target); err != nil {
 		t.Fatal(err)
 	}
@@ -336,7 +336,7 @@ func TestIdempotentNodeRetryReusesStableOperationKey(t *testing.T) {
 		}
 		return core.Success(), nil
 	})
-	target.Base.Effect = core.EffectIdempotentWrite
+	target.Effect = core.EffectIdempotentWrite
 	if err := workflow.AddNode(target); err != nil {
 		t.Fatal(err)
 	}

@@ -252,7 +252,6 @@ func pendingToolCalls(conversation *conversationcap.View) []llms.ToolCall {
 	}
 	return calls
 }
-
 func normalizeFinalOutput(content string, schema state.JSONSchema, outputJSON, compatibility bool) (string, any, error) {
 	content = strings.TrimSpace(content)
 	if !outputJSON {
@@ -341,7 +340,7 @@ func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conve
 		if err := executor.CheckpointAgentInvocation(execution.invocationCtx, "tool_result"); err != nil {
 			executionErrors = append(executionErrors, err)
 		}
-		if err := execution.finish(execution.toolErr); err != nil {
+		if err := execution.finish(execution.toolErr); err != nil && !errors.Is(execution.toolErr, basenode.ErrToolNotFound) {
 			executionErrors = append(executionErrors, err)
 		}
 	}

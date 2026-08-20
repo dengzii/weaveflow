@@ -91,9 +91,10 @@ func defaultNodeStatePath(nodeID, nodeType, port string) state.Path {
 			template = "scopes.{node_id}." + port
 		}
 	case NodeTypeTextGeneration:
-		if port == "prompt" {
+		switch port {
+		case "prompt":
 			template = "shared.text_generation.prompt"
-		} else if port == "output" {
+		case "output":
 			template = "shared.text_generation.result"
 		}
 	case NodeTypeUserInput:

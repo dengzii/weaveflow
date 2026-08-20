@@ -2879,10 +2879,6 @@ func (r *GraphRunner) failRunWithTransition(ctx context.Context, run RunRecord, 
 	return failedRun, currentState, nil
 }
 
-func (r *GraphRunner) persistRunFailure(ctx context.Context, run RunRecord, currentState *state.State, code string, message string) (RunRecord, error) {
-	return r.persistRunFailureWithTransition(ctx, run, currentState, code, message, runnerStepTransition{})
-}
-
 func (r *GraphRunner) persistRunFailureWithTransition(ctx context.Context, run RunRecord, currentState *state.State, code string, message string, transition runnerStepTransition) (RunRecord, error) {
 	persistenceCtx := context.WithoutCancel(normalizeRunnerContext(ctx))
 	updatedRun, err := r.commitRunUpdateWithRetry(persistenceCtx, run, "fail run", func(latestRun RunRecord) (runUpdatePreparation, error) {

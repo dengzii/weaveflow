@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -121,7 +120,7 @@ func (store *Store) ListRuns(ctx context.Context, filter fruntime.RunFilter) ([]
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	statuses := make(map[fruntime.RunStatus]struct{}, len(filter.Statuses))
 	for _, status := range filter.Statuses {
 		statuses[status] = struct{}{}
@@ -226,7 +225,7 @@ func (store *Store) ListSteps(ctx context.Context, runID string) ([]fruntime.Ste
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var steps []fruntime.StepRecord
 	for rows.Next() {
 		var data []byte
@@ -296,7 +295,7 @@ func (store *Store) List(ctx context.Context, runID string) ([]fruntime.Checkpoi
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var records []fruntime.CheckpointRecord
 	for rows.Next() {
 		var data []byte
@@ -342,7 +341,7 @@ func (store *Store) ListEvents(runID string) ([]fruntime.Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var events []fruntime.Event
 	for rows.Next() {
 		var data []byte
@@ -692,10 +691,4 @@ func loadTransaction(ctx context.Context, query rowQuerier, transactionID string
 		return "", fruntime.CommitResult{}, false, err
 	}
 	return fingerprint, result, true, nil
-}
-
-func sortedStrings(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	return result
 }

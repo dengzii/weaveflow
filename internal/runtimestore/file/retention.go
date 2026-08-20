@@ -15,6 +15,8 @@ type RetentionAuditSink struct {
 	mu   storeMutex
 }
 
+const maxRetentionAuditBytes = 64 << 20
+
 func NewRetentionAuditSink(path string) *RetentionAuditSink {
 	path = filepath.Clean(strings.TrimSpace(path))
 	return &RetentionAuditSink{path: path, mu: storeMutex{shared: &sync.Mutex{}}}
@@ -37,7 +39,10 @@ func (sink *RetentionAuditSink) RecordRetention(ctx context.Context, record Rete
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}
-	combined := make([]byte, 0, len(existing)+len(data)+1)
+	if len(existing) > maxRetentionAuditBytes || len(data) > maxRetentionAuditBytes-len(existing)-1 {
+		return fmt.Errorf("retention audit log is too large")
+	}
+	combined := make([]byte, 0)
 	combined = append(combined, existing...)
 	combined = append(combined, data...)
 	combined = append(combined, '\n')

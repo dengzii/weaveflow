@@ -265,13 +265,17 @@ func ensureBaseDir(baseDir string) (string, error) {
 	if strings.TrimSpace(baseDir) == "" {
 		return os.MkdirTemp("", "weaveflow-server-*")
 	}
-	if err := os.MkdirAll(baseDir, 0o700); err != nil {
+	absolute, err := filepath.Abs(baseDir)
+	if err != nil {
 		return "", err
 	}
-	if err := os.Chmod(baseDir, 0o700); err != nil {
+	if err := os.MkdirAll(absolute, 0o700); err != nil {
 		return "", err
 	}
-	return baseDir, nil
+	if err := os.Chmod(absolute, 0o700); err != nil {
+		return "", err
+	}
+	return absolute, nil
 }
 
 func newDefaultRunner(graph *wfgraph.Graph, cfg Config, baseDir string, hub *EventHub) (*runtime.GraphRunner, error) {

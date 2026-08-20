@@ -214,7 +214,7 @@ func TestLLMTurnDefaultPromptMaxChars(t *testing.T) {
 	if got := NewLLMTurnNode().effectivePromptMaxChars(); got != 200000 {
 		t.Fatalf("default prompt max chars = %d, want 200000", got)
 	}
-	properties := LLMTurnNodeTypeDefinition().NodeTypeSchema.ConfigSchema["properties"].(dsl.JSONSchema)
+	properties := LLMTurnNodeTypeDefinition().ConfigSchema["properties"].(dsl.JSONSchema)
 	promptSchema := properties["prompt_max_chars"].(dsl.JSONSchema)
 	if got := promptSchema["default"]; got != 200000 {
 		t.Fatalf("prompt_max_chars schema default = %#v, want 200000", got)
@@ -335,7 +335,7 @@ func TestTextGenerationDefaultsAndSchema(t *testing.T) {
 		t.Fatalf("reasoning effort = %q, want %q", target.ReasoningEffort, defaultReasoningEffort)
 	}
 	definition := TextGenerationNodeTypeDefinition()
-	properties := definition.NodeTypeSchema.ConfigSchema["properties"].(dsl.JSONSchema)
+	properties := definition.ConfigSchema["properties"].(dsl.JSONSchema)
 	temperatureSchema := properties["temperature"].(dsl.JSONSchema)
 	if got := temperatureSchema["default"]; got != defaultTextGenerationTemperature {
 		t.Fatalf("temperature schema default = %#v", got)

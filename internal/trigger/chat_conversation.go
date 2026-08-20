@@ -49,33 +49,33 @@ func (s *FileStore) CreateChatConversation(ctx context.Context, conversation Cha
 		return ChatConversation{}, err
 	}
 	root := s.chatConversationRoot(conversation.TriggerID, conversation.UserID, conversation.ChannelConversationID)
-	if err := os.MkdirAll(filepath.Join(root, "conversations"), 0o700); err != nil {
+	if err := rootedMkdirAll(safeChatHistoryPath(root, "conversations"), 0o700); err != nil {
 		return ChatConversation{}, err
 	}
 	baseID, _ := strconv.ParseInt(conversation.ID, 10, 64)
 	for {
 		conversation.ID = strconv.FormatInt(baseID, 10)
 		dir := s.chatConversationDir(conversation.TriggerID, conversation.UserID, conversation.ChannelConversationID, conversation.ID)
-		if _, err := os.Stat(dir); err == nil {
+		if _, err := rootedStat(dir); err == nil {
 			baseID++
 			continue
 		} else if !os.IsNotExist(err) {
 			return ChatConversation{}, err
 		}
-		turnsDir := filepath.Join(dir, "turns")
-		if err := os.MkdirAll(turnsDir, 0o700); err != nil {
+		turnsDir := safeChatHistoryPath(dir, "turns")
+		if err := rootedMkdirAll(turnsDir, 0o700); err != nil {
 			return ChatConversation{}, err
 		}
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := rootedChmod(dir, 0o700); err != nil {
 			return ChatConversation{}, err
 		}
-		if err := os.Chmod(turnsDir, 0o700); err != nil {
+		if err := rootedChmod(turnsDir, 0o700); err != nil {
 			return ChatConversation{}, err
 		}
-		if err := s.writeChatConversationLocked(ctx, filepath.Join(dir, "conversation.json"), conversation); err != nil {
+		if err := s.writeChatConversationLocked(ctx, safeChatHistoryPath(dir, "conversation.json"), conversation); err != nil {
 			return ChatConversation{}, err
 		}
-		if err := s.writeChatConversationLocked(ctx, filepath.Join(root, "current.json"), conversation); err != nil {
+		if err := s.writeChatConversationLocked(ctx, safeChatHistoryPath(root, "current.json"), conversation); err != nil {
 			return ChatConversation{}, err
 		}
 		return conversation, nil
@@ -96,8 +96,8 @@ func (s *FileStore) CurrentChatConversation(ctx context.Context, identity ChatCo
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	path := filepath.Join(s.chatConversationRoot(identity.TriggerID, identity.UserID, identity.ChannelConversationID), "current.json")
-	data, err := os.ReadFile(path)
+	path := safeChatHistoryPath(s.chatConversationRoot(identity.TriggerID, identity.UserID, identity.ChannelConversationID), "current.json")
+	data, err := rootedReadFile(path)
 	if os.IsNotExist(err) {
 		return ChatConversation{}, ErrNotFound
 	}
@@ -118,7 +118,7 @@ func (s *FileStore) CurrentChatConversation(ctx context.Context, identity ChatCo
 }
 
 func (s *FileStore) chatConversationRoot(triggerID, userID, channelConversationID string) string {
-	return filepath.Join(
+	return safeChatHistoryPath(
 		s.dir,
 		"history",
 		chatHistoryPathSegment(triggerID),
@@ -128,7 +128,7 @@ func (s *FileStore) chatConversationRoot(triggerID, userID, channelConversationI
 }
 
 func (s *FileStore) chatConversationDir(triggerID, userID, channelConversationID, conversationID string) string {
-	return filepath.Join(s.chatConversationRoot(triggerID, userID, channelConversationID), "conversations", chatHistoryPathSegment(conversationID))
+	return safeChatHistoryPath(s.chatConversationRoot(triggerID, userID, channelConversationID), "conversations", chatHistoryPathSegment(conversationID))
 }
 
 func (s *FileStore) writeChatConversationLocked(ctx context.Context, path string, conversation ChatConversation) error {
@@ -137,12 +137,11 @@ func (s *FileStore) writeChatConversationLocked(ctx context.Context, path string
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(path), ".chat-conversation-*.tmp")
+	temp, tempPath, err := rootedCreateTemp(filepath.Dir(path), ".chat-conversation-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
-	defer func() { _ = os.Remove(tempPath) }()
+	defer func() { _ = rootedRemove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return err
@@ -161,7 +160,7 @@ func (s *FileStore) writeChatConversationLocked(ctx context.Context, path string
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	return rootedRename(tempPath, path)
 }
 
 func normalizeChatConversation(conversation ChatConversation) ChatConversation {

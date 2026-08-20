@@ -513,27 +513,6 @@ func newPauseTestRunner(store *MemoryRuntimeStore, transactionStore TransactionS
 	}
 }
 
-func createPauseTestChildRun(t *testing.T, store *MemoryRuntimeStore, run RunRecord, now time.Time) {
-	t.Helper()
-
-	reservation := PendingChildRun{
-		RequestKey: run.ChildRequestKey, ChildRunID: run.RunID,
-		ParentRunID: run.ParentRunID, ParentStepID: run.ParentStepID, ParentTaskID: run.ParentTaskID,
-		GraphRef: "child-ref", GraphID: run.GraphID, GraphVersion: run.GraphVersion,
-		Namespace: run.Namespace, InputHash: run.ChildInputHash, ReservedAt: now,
-	}
-	parent := RunRecord{
-		RunID: run.ParentRunID, RootRunID: run.ParentRunID, RunPath: []string{run.ParentRunID}, Status: RunStatusRunning,
-		PendingChildRuns: []PendingChildRun{reservation}, StartedAt: now, UpdatedAt: now,
-	}
-	if err := store.CreateRun(context.Background(), parent); err != nil {
-		t.Fatalf("CreateRun(parent) error = %v", err)
-	}
-	if err := store.CreateRun(context.Background(), run); err != nil {
-		t.Fatalf("CreateRun(child) error = %v", err)
-	}
-}
-
 type pauseHookTransactionStore struct {
 	TransactionStore
 	once              sync.Once

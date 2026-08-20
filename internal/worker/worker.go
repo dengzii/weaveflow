@@ -43,6 +43,11 @@ type Worker struct {
 	running bool
 }
 
+type heartbeatResult struct {
+	lease runtime.TaskLease
+	err   error
+}
+
 func New(queue runtime.TaskQueue, handler Handler, config Config) (*Worker, error) {
 	if queue == nil {
 		return nil, errors.New("task queue is required")
@@ -107,7 +112,7 @@ func (worker *Worker) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("claim task: %w", err)
 		}
-		worker.execute(ctx, claimed)
+		_ = worker.execute(ctx, claimed)
 	}
 }
 
@@ -129,41 +134,45 @@ func (worker *Worker) execute(ctx context.Context, task runtime.Task) error {
 		return runtime.ErrTaskLeaseLost
 	}
 	executionCtx, cancel := context.WithCancelCause(ctx)
-	heartbeatDone := make(chan error, 1)
+	heartbeatDone := make(chan heartbeatResult, 1)
 	go worker.heartbeat(executionCtx, cancel, *task.Lease, heartbeatDone)
 	result, handleErr := worker.handler.HandleTask(executionCtx, task)
 	cancel(context.Canceled)
-	heartbeatErr := <-heartbeatDone
-	if heartbeatErr != nil {
-		return heartbeatErr
+	heartbeat := <-heartbeatDone
+	if heartbeat.err != nil {
+		return heartbeat.err
+	}
+	lease := heartbeat.lease
+	if lease.TaskID == "" {
+		lease = *task.Lease
 	}
 	if handleErr == nil {
-		_, err := worker.queue.Complete(context.WithoutCancel(ctx), *task.Lease, result)
+		_, err := worker.queue.Complete(context.WithoutCancel(ctx), lease, result)
 		return err
 	}
 	retryable := false
 	if classifier, ok := worker.handler.(RetryClassifier); ok {
 		retryable = classifier.RetryTask(handleErr)
 	}
-	_, failErr := worker.queue.Fail(context.WithoutCancel(ctx), *task.Lease, runtime.TaskFailure{
+	_, failErr := worker.queue.Fail(context.WithoutCancel(ctx), lease, runtime.TaskFailure{
 		Message: handleErr.Error(), Retryable: retryable, RetryAt: worker.now().Add(worker.config.RetryDelay),
 	})
 	return errors.Join(handleErr, failErr)
 }
 
-func (worker *Worker) heartbeat(ctx context.Context, cancel context.CancelCauseFunc, lease runtime.TaskLease, done chan<- error) {
+func (worker *Worker) heartbeat(ctx context.Context, cancel context.CancelCauseFunc, lease runtime.TaskLease, done chan<- heartbeatResult) {
 	ticker := time.NewTicker(worker.config.HeartbeatInterval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			done <- nil
+			done <- heartbeatResult{lease: lease}
 			return
 		case <-ticker.C:
 			updated, err := worker.queue.Heartbeat(context.WithoutCancel(ctx), lease, worker.now(), worker.config.LeaseTTL)
 			if err != nil {
 				cancel(err)
-				done <- err
+				done <- heartbeatResult{lease: lease, err: err}
 				return
 			}
 			lease = updated
