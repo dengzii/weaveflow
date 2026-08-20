@@ -141,7 +141,7 @@ func (s *FileStore) writeChatConversationLocked(ctx context.Context, path string
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(tempPath) }()
+	defer func() { _ = rootedRemove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return err

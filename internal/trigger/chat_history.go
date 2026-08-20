@@ -241,7 +241,7 @@ func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, his
 	if err != nil {
 		return err
 	}
-	defer func() { _ = os.Remove(tempPath) }()
+	defer func() { _ = rootedRemove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return err

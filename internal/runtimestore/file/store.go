@@ -750,7 +750,7 @@ func (s *checkpointStore) List(ctx context.Context, runID string) ([]CheckpointR
 	defer s.mu.Unlock()
 
 	dir := s.checkpointsDir(runID)
-	files, err := os.ReadDir(dir)
+	files, err := runnerRootedReadDir(dir)
 	if os.IsNotExist(err) {
 		return []CheckpointRecord{}, nil
 	}
