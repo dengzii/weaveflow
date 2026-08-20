@@ -99,7 +99,7 @@ func IsNilReducer(reducer Reducer) bool {
 	}
 	value := reflect.ValueOf(reducer)
 	switch value.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Ptr, reflect.Slice:
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
 		return value.IsNil()
 	default:
 		return false
@@ -117,10 +117,6 @@ func (p Patch) ApplyWithReducers(base *State, reducers map[string]Reducer) (*Sta
 		}
 	}
 	return target, nil
-}
-
-func applyPatchOp(target *State, op PatchOp) error {
-	return applyPatchOpWithReducers(target, op, nil)
 }
 
 func applyPatchOpWithReducers(target *State, op PatchOp, reducers map[string]Reducer) error {

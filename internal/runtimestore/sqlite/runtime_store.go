@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -692,10 +691,4 @@ func loadTransaction(ctx context.Context, query rowQuerier, transactionID string
 		return "", fruntime.CommitResult{}, false, err
 	}
 	return fingerprint, result, true, nil
-}
-
-func sortedStrings(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	return result
 }

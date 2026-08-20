@@ -492,10 +492,6 @@ func (s *artifactStore) payloadPath(runID, artifactID string) string {
 	return safeRunnerPath(s.payloadDir(runID), artifactID+".bin")
 }
 
-func (s *artifactStore) deletionPath(runID string) string {
-	return runDeletionPath(s.baseDir, runID)
-}
-
 func artifactStagesEqual(left, right ArtifactStage) bool {
 	leftJSON, leftErr := marshalRunnerJSONFile(left)
 	rightJSON, rightErr := marshalRunnerJSONFile(right)

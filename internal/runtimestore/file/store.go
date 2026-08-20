@@ -930,7 +930,7 @@ func (s *eventSink) ListEvents(runID string) ([]Event, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	items := make([]Event, 0)
 	decoder := json.NewDecoder(bufio.NewReader(f))
@@ -968,7 +968,7 @@ func (s *eventSink) ListEventPage(runID, cursor string, limit int) (EventPage, e
 	if err != nil {
 		return EventPage{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -1121,10 +1121,6 @@ func (s *eventSink) FenceRunDeletion(ctx context.Context, runID, deletionID stri
 
 func (s *eventSink) eventsPath(runID string) string {
 	return safeRunnerPath(s.baseDir, runID+".jsonl")
-}
-
-func (s *eventSink) deletionPath(runID string) string {
-	return runDeletionPath(s.baseDir, runID)
 }
 
 func writeRunnerJSONFile(path string, value any) error {
@@ -1352,7 +1348,7 @@ func safeRunnerPath(base string, components ...string) string {
 	safeComponents := make([]string, len(components))
 	for index, component := range components {
 		baseComponent := filepath.Base(component)
-		if component == "" || component == "." || component == ".." || baseComponent != component {
+		if component == "" || component == ".." || strings.Contains(component, "../") || strings.Contains(component, `..\`) || strings.Contains(component, "/") || strings.Contains(component, "\\") || baseComponent != component {
 			return ""
 		}
 		safeComponents[index] = baseComponent

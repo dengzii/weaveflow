@@ -57,7 +57,7 @@ func (c *Client) createEmbedding(ctx context.Context, payload *embeddingPayload)
 	if err != nil {
 		return nil, sanitizeHTTPError(err)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	if r.StatusCode != http.StatusOK {
 		return nil, decodeHTTPStatusError(r.StatusCode, r.Body)

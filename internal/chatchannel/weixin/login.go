@@ -335,7 +335,7 @@ func doSetupJSON(ctx context.Context, client *http.Client, method, baseURL, path
 		}
 		return fmt.Errorf("%s request failed", path)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("%s returned HTTP %d", path, response.StatusCode)
 	}

@@ -46,7 +46,7 @@ func New(opts ...Option) (*LLM, error) {
 		return nil, fmt.Errorf("unsupported OpenAI API format %q", opt.apiFormat)
 	}
 	if opt.apiFormat == APIFormatResponses && openaiclient.IsAzure(openaiclient.APIType(opt.apiType)) && !isAzureV1URL(opt.baseURL) {
-		return nil, fmt.Errorf("Azure Responses API requires a base URL ending in /openai/v1")
+		return nil, fmt.Errorf("azure Responses API requires a base URL ending in /openai/v1")
 	}
 	return &LLM{
 		client:    c,
@@ -334,13 +334,13 @@ func (o *LLM) generateResponse(
 	modelRequest llms.ModelRequest,
 ) (*llms.ModelResponse, error) {
 	if modelRequest.CandidateCount > 1 {
-		return nil, fmt.Errorf("Responses API does not support multiple choices")
+		return nil, fmt.Errorf("responses API does not support multiple choices")
 	}
 	if len(modelRequest.StopWords) > 0 {
-		return nil, fmt.Errorf("Responses API does not support stop sequences")
+		return nil, fmt.Errorf("responses API does not support stop sequences")
 	}
 	if modelRequest.Seed != nil {
-		return nil, fmt.Errorf("Responses API does not support seed")
+		return nil, fmt.Errorf("responses API does not support seed")
 	}
 	if modelRequest.FrequencyPenalty != nil || modelRequest.PresencePenalty != nil {
 		return nil, fmt.Errorf("Responses API does not support frequency or presence penalties")
@@ -775,7 +775,6 @@ func (o *LLM) CreateEmbedding(ctx context.Context, inputTexts []string) ([][]flo
 // is returned unchanged and reasoning is "".
 func extractReasoningParts(in []llms.ContentPart) ([]llms.ContentPart, string) {
 	var reasoning strings.Builder
-	kept := in
 	hasReasoning := false
 	for _, p := range in {
 		if _, ok := p.(llms.ReasoningContent); ok {
@@ -786,7 +785,7 @@ func extractReasoningParts(in []llms.ContentPart) ([]llms.ContentPart, string) {
 	if !hasReasoning {
 		return in, ""
 	}
-	kept = make([]llms.ContentPart, 0, len(in))
+	kept := make([]llms.ContentPart, 0, len(in))
 	for _, p := range in {
 		if rp, ok := p.(llms.ReasoningContent); ok {
 			if reasoning.Len() > 0 {

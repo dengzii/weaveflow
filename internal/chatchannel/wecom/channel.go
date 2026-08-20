@@ -120,7 +120,6 @@ func (factory Factory) New(instance chatchannel.InstanceConfig) (chatchannel.Ins
 	logger = logger.With(
 		"component", "chat_channel",
 		"channel", ChannelID,
-		"trigger_id", triggerID,
 	)
 	dialer := factory.Dialer
 	if dialer == nil {
@@ -323,7 +322,7 @@ func (*connectionReplacedError) Error() string {
 }
 
 func (channel *Channel) serveConnection(ctx context.Context, conn *websocket.Conn) error {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	conn.SetReadLimit(maxMessageSize)
 	if err := subscribe(conn, channel.config); err != nil {
 		return err
@@ -374,7 +373,7 @@ func subscribe(conn *websocket.Conn, config Config) error {
 	if err := conn.SetReadDeadline(time.Now().Add(subscribeTimeout)); err != nil {
 		return fmt.Errorf("set subscription deadline: %w", err)
 	}
-	defer conn.SetReadDeadline(time.Time{})
+	defer func() { _ = conn.SetReadDeadline(time.Time{}) }()
 	var response incomingFrame
 	if err := conn.ReadJSON(&response); err != nil {
 		return fmt.Errorf("read subscription response: %w", err)

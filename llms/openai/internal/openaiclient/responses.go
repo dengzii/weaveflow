@@ -165,7 +165,7 @@ func (c *Client) createResponse(ctx context.Context, payload *ResponseRequest) (
 	if err != nil {
 		return nil, sanitizeHTTPError(err)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 	if httpResponse.StatusCode != http.StatusOK {
 		return nil, decodeHTTPStatusError(httpResponse.StatusCode, httpResponse.Body)
 	}

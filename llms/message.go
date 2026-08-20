@@ -258,11 +258,11 @@ func ToolResultText(result ToolResult) string {
 }
 
 func ShowMessageContents(writer io.Writer, messages []MessageContent) {
-	fmt.Fprintf(writer, "MessageContent (len=%v)\n", len(messages))
+	_, _ = fmt.Fprintf(writer, "MessageContent (len=%v)\n", len(messages))
 	for messageIndex, message := range messages {
-		fmt.Fprintf(writer, "[%d]: Role=%s\n", messageIndex, message.Role)
+		_, _ = fmt.Fprintf(writer, "[%d]: Role=%s\n", messageIndex, message.Role)
 		for partIndex, part := range message.Parts {
-			fmt.Fprintf(writer, "  Parts[%d]: %T %v\n", partIndex, part, part)
+			_, _ = fmt.Fprintf(writer, "  Parts[%d]: %T %v\n", partIndex, part, part)
 		}
 	}
 }

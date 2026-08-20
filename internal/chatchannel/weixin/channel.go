@@ -628,7 +628,7 @@ func (channel *Channel) doJSON(ctx context.Context, path string, body any, resul
 	if err != nil {
 		return fmt.Errorf("%s request failed: %w", path, err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		if response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden {
 			return &tokenError{Code: response.StatusCode}

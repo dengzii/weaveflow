@@ -109,7 +109,7 @@ func webFetchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, err
 	if err != nil {
 		return llms.ToolResult{}, fmt.Errorf("fetch failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxFetchLimit+1024)))
 	if err != nil {

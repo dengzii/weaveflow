@@ -37,7 +37,7 @@ func TestChannelRoutesStreamingAndMultipleReplies(t *testing.T) {
 			results <- serverResult{err: err}
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		var subscription wireFrame
 		if err := conn.ReadJSON(&subscription); err != nil {
 			results <- serverResult{err: err}
@@ -203,7 +203,7 @@ func TestChannelPropagatesRejectedReplyAndSendsFailure(t *testing.T) {
 			results <- serverResult{err: err}
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		var subscription wireFrame
 		if err := conn.ReadJSON(&subscription); err != nil {
 			results <- serverResult{err: err}
@@ -336,7 +336,7 @@ func TestChannelReplyAckTimeoutSendsFailure(t *testing.T) {
 			results <- serverResult{err: err}
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		var subscription wireFrame
 		if err := conn.ReadJSON(&subscription); err != nil {
 			results <- serverResult{err: err}

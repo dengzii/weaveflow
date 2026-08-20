@@ -112,7 +112,7 @@ func (worker *Worker) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("claim task: %w", err)
 		}
-		worker.execute(ctx, claimed)
+		_ = worker.execute(ctx, claimed)
 	}
 }
 
