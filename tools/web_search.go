@@ -68,7 +68,7 @@ func (search *tavilySearch) Call(ctx context.Context, query string) (string, err
 	if err != nil {
 		return "", fmt.Errorf("send tavily request: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("tavily api returned status: %d", response.StatusCode)
 	}

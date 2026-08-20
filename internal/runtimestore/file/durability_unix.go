@@ -21,7 +21,7 @@ func replaceFile(source, target string) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	return root.Rename(filepath.Base(source), filepath.Base(target))
 }
 
@@ -33,7 +33,7 @@ func syncDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	directory, err := root.Open(".")
 	if err != nil {
 		return err

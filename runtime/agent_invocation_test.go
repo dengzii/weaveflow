@@ -29,7 +29,7 @@ func TestAgentInvocationPublishesStableLifecycle(t *testing.T) {
 	ctx = core.WithEffectOperation(ctx, core.EffectOperation{Key: "node-operation", Kind: "node"})
 	invocationCtx, finish := BeginAgentInvocation(ctx, AgentInvocation{Kind: AgentInvocationModel, Iteration: 2})
 	_ = CheckpointAgentInvocation(invocationCtx, "response")
-	finish(nil)
+	_ = finish(nil)
 	if len(payloads) != 3 {
 		t.Fatalf("lifecycle events = %d, want 3", len(payloads))
 	}

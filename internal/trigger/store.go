@@ -555,7 +555,7 @@ func (s *FileStore) writeLocked(ctx context.Context, path string, definition Tri
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	return root.Rename(filepath.Base(tempPath), filepath.Base(path))
 }
 
@@ -596,7 +596,7 @@ func (s *FileStore) writeRecordLocked(ctx context.Context, path string, record R
 	if err != nil {
 		return err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	return root.Rename(filepath.Base(tempPath), filepath.Base(path))
 }
 

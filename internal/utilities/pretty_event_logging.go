@@ -661,7 +661,7 @@ func eventTypeSet(types []fruntime.EventType) map[fruntime.EventType]struct{} {
 // Color helpers
 
 func (p *PrettyEventLogging) printf(format string, args ...any) {
-	fmt.Fprintf(p.w, format, args...)
+	_, _ = fmt.Fprintf(p.w, format, args...)
 }
 
 func (p *PrettyEventLogging) bold(s string) string {
