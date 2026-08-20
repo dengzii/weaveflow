@@ -498,7 +498,7 @@ func (httpFactory) Definition() Definition {
 
 func (httpFactory) ValidateConfig(config map[string]any) error {
 	if len(config) != 0 {
-		return errors.New("HTTP channel does not accept configuration")
+		return errors.New("http channel does not accept configuration")
 	}
 	return nil
 }

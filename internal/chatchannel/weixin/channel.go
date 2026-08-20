@@ -235,7 +235,7 @@ type typingSession struct {
 
 func (channel *Channel) Run(ctx context.Context) error {
 	if channel == nil || channel.handler == nil {
-		return errors.New("WeChat channel handler is unavailable")
+		return errors.New("wechat channel handler is unavailable")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -364,7 +364,7 @@ func (channel *Channel) handleMessage(ctx context.Context, incoming inboundMessa
 	recipient := strings.TrimSpace(incoming.FromUserID)
 	if recipient == "" {
 		channel.logger.Error("WeChat message rejected", "message_id", messageID, "reason", "missing_sender")
-		return errors.New("WeChat message is missing from_user_id")
+		return errors.New("wechat message is missing from_user_id")
 	}
 	if strings.TrimSpace(incoming.GroupID) != "" {
 		err := channel.sendText(ctx, recipient, incoming.ContextToken, channel.config.UnsupportedMessage)
@@ -390,7 +390,7 @@ func (channel *Channel) handleMessage(ctx context.Context, incoming inboundMessa
 	}
 	if strings.TrimSpace(incoming.ContextToken) == "" {
 		channel.logger.Error("WeChat message rejected", "message_id", messageID, "reason", "missing_context_token")
-		return errors.New("WeChat message is missing context_token")
+		return errors.New("wechat message is missing context_token")
 	}
 
 	sink := newReplySink(channel, recipient, incoming.ContextToken)
@@ -565,7 +565,7 @@ func (channel *Channel) sendText(ctx context.Context, recipient, contextToken, c
 		return nil
 	}
 	if strings.TrimSpace(contextToken) == "" {
-		return errors.New("WeChat reply context_token is required")
+		return errors.New("wechat reply context_token is required")
 	}
 	request := sendMessageRequest{
 		Message: sendMessage{

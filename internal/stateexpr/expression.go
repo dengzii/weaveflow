@@ -49,7 +49,7 @@ func Compile(expression string, options CompileOptions) (*Program, error) {
 		return nil, fmt.Errorf("compile CEL expression: %w", issues.Err())
 	}
 	if options.RequireBoolean && ast.OutputType() != cel.BoolType && ast.OutputType() != cel.DynType {
-		return nil, fmt.Errorf("CEL expression result type %q is not boolean", ast.OutputType())
+		return nil, fmt.Errorf("cel expression result type %q is not boolean", ast.OutputType())
 	}
 	compiled, err := environment.Program(ast,
 		cel.CostLimit(MaxRuntimeCost),
@@ -64,7 +64,7 @@ func Compile(expression string, options CompileOptions) (*Program, error) {
 
 func (p *Program) EvalJSON(ctx context.Context, inputs map[string]any) (any, error) {
 	if p == nil || p.program == nil {
-		return nil, fmt.Errorf("CEL expression is not compiled")
+		return nil, fmt.Errorf("cel expression is not compiled")
 	}
 	activation := map[string]any{"inputs": inputs}
 	if activation["inputs"] == nil {
@@ -141,10 +141,10 @@ func normalizeJSON(value any) (any, int, error) {
 
 func valueToJSON(value ref.Val) (any, error) {
 	if value == nil {
-		return nil, fmt.Errorf("CEL returned no value")
+		return nil, fmt.Errorf("cel returned no value")
 	}
 	if types.IsError(value) {
-		return nil, fmt.Errorf("CEL returned error: %s", value)
+		return nil, fmt.Errorf("cel returned error: %s", value)
 	}
 	if mapper, ok := value.(traits.Mapper); ok {
 		result := map[string]any{}
@@ -157,15 +157,15 @@ func valueToJSON(value ref.Val) (any, error) {
 			}
 			keyText, ok := keyValue.(string)
 			if !ok {
-				return nil, fmt.Errorf("CEL object key must be a string, got %T", keyValue)
+				return nil, fmt.Errorf("cel object key must be a string, got %T", keyValue)
 			}
 			item, found := mapper.Find(key)
 			if !found {
-				return nil, fmt.Errorf("CEL object key %q disappeared during evaluation", keyText)
+				return nil, fmt.Errorf("cel object key %q disappeared during evaluation", keyText)
 			}
 			converted, err := valueToJSON(item)
 			if err != nil {
-				return nil, fmt.Errorf("CEL object key %q: %w", keyText, err)
+				return nil, fmt.Errorf("cel object key %q: %w", keyText, err)
 			}
 			result[keyText] = converted
 		}
@@ -177,7 +177,7 @@ func valueToJSON(value ref.Val) (any, error) {
 		for iteratorHasNext(iterator) {
 			converted, err := valueToJSON(iterator.Next())
 			if err != nil {
-				return nil, fmt.Errorf("CEL list item %d: %w", len(result), err)
+				return nil, fmt.Errorf("cel list item %d: %w", len(result), err)
 			}
 			result = append(result, converted)
 		}
@@ -189,7 +189,7 @@ func valueToJSON(value ref.Val) (any, error) {
 	case types.BoolType, types.IntType, types.UintType, types.DoubleType, types.StringType:
 		return value.Value(), nil
 	default:
-		return nil, fmt.Errorf("CEL result type %q is not JSON compatible", value.Type().TypeName())
+		return nil, fmt.Errorf("cel result type %q is not JSON compatible", value.Type().TypeName())
 	}
 }
 

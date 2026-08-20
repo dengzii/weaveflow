@@ -208,7 +208,7 @@ type Channel struct {
 
 func (channel *Channel) Run(ctx context.Context) error {
 	if channel == nil || channel.handler == nil {
-		return errors.New("WeCom channel handler is unavailable")
+		return errors.New("wecom channel handler is unavailable")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -329,7 +329,7 @@ func (channel *Channel) serveConnection(ctx context.Context, conn *websocket.Con
 	}
 	channel.logger.Info("WeCom channel subscription accepted")
 	writer := newConnectionWriter(conn, channel.ackTimeout, channel.logger)
-	defer writer.Close(errors.New("WeCom connection closed"))
+	defer writer.Close(errors.New("wecom connection closed"))
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	messages := make(chan []byte, 1)
@@ -461,7 +461,7 @@ func newConnectionWriter(conn *websocket.Conn, ackTimeout time.Duration, logger 
 
 func (writer *connectionWriter) WriteFrame(frame outgoingFrame) error {
 	if writer == nil || writer.conn == nil {
-		return errors.New("WeCom connection is unavailable")
+		return errors.New("wecom connection is unavailable")
 	}
 	writer.writeMu.Lock()
 	defer writer.writeMu.Unlock()
@@ -470,7 +470,7 @@ func (writer *connectionWriter) WriteFrame(frame outgoingFrame) error {
 
 func (writer *connectionWriter) WriteReply(ctx context.Context, frame outgoingFrame) error {
 	if writer == nil || writer.conn == nil {
-		return errors.New("WeCom connection is unavailable")
+		return errors.New("wecom connection is unavailable")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -478,7 +478,7 @@ func (writer *connectionWriter) WriteReply(ctx context.Context, frame outgoingFr
 	requestID := strings.TrimSpace(frame.Headers.RequestID)
 	if requestID == "" {
 		writer.logger.Error("WeCom reply rejected before send", "reason", "missing_request_id")
-		return errors.New("WeCom reply req_id is required")
+		return errors.New("wecom reply req_id is required")
 	}
 	release, err := writer.acquireRequestGate(ctx, requestID)
 	if err != nil {
@@ -516,11 +516,11 @@ func (writer *connectionWriter) WriteReply(ctx context.Context, frame outgoingFr
 		}
 		if result.frame.ErrorCode == nil {
 			writer.logger.Error("WeCom reply ACK was invalid", "reason", "missing_error_code")
-			return errors.New("WeCom reply ACK is missing errcode")
+			return errors.New("wecom reply ACK is missing errcode")
 		}
 		if *result.frame.ErrorCode != 0 {
 			writer.logger.Error("WeCom reply rejected by platform")
-			return fmt.Errorf("WeCom reply rejected: errcode=%d errmsg=%s", *result.frame.ErrorCode, result.frame.ErrorMsg)
+			return fmt.Errorf("wecom reply rejected: errcode=%d errmsg=%s", *result.frame.ErrorCode, result.frame.ErrorMsg)
 		}
 		if finalReply {
 			writer.logger.Info("WeCom final reply acknowledged")
@@ -530,7 +530,7 @@ func (writer *connectionWriter) WriteReply(ctx context.Context, frame outgoingFr
 		return nil
 	case <-timer.C:
 		writer.logger.Error("WeCom reply ACK timed out", "timeout", writer.ackTimeout)
-		return fmt.Errorf("WeCom reply ACK timeout after %s for req_id %q", writer.ackTimeout, requestID)
+		return fmt.Errorf("wecom reply ACK timeout after %s for req_id %q", writer.ackTimeout, requestID)
 	case <-ctx.Done():
 		writer.logger.Debug("WeCom reply canceled")
 		return ctx.Err()
@@ -571,7 +571,7 @@ func (writer *connectionWriter) Close(err error) {
 		return
 	}
 	if err == nil {
-		err = errors.New("WeCom connection closed")
+		err = errors.New("wecom connection closed")
 	}
 	writer.pendingMu.Lock()
 	if writer.closedErr != nil {
@@ -648,7 +648,7 @@ func (writer *connectionWriter) closeError() error {
 	if writer.closedErr != nil {
 		return writer.closedErr
 	}
-	return errors.New("WeCom connection closed")
+	return errors.New("wecom connection closed")
 }
 
 func (channel *Channel) handleIncomingFrame(ctx context.Context, writer frameWriter, payload []byte, workerErrors chan<- error) error {
@@ -801,7 +801,7 @@ func newReplySink(ctx context.Context, writer frameWriter, requestID, failureMes
 
 func (sink *replySink) Emit(ctx context.Context, reply chatcap.Reply) error {
 	if sink == nil || sink.writer == nil {
-		return errors.New("WeCom reply writer is unavailable")
+		return errors.New("wecom reply writer is unavailable")
 	}
 	switch reply.Kind {
 	case chatcap.ReplyUpdate:
@@ -989,7 +989,7 @@ func (sink *replySink) sendStream(ctx context.Context, streamID, content string,
 
 func validateStreamContent(content string) error {
 	if len([]byte(content)) > maxStreamContentBytes {
-		return fmt.Errorf("WeCom stream content exceeds %d bytes", maxStreamContentBytes)
+		return fmt.Errorf("wecom stream content exceeds %d bytes", maxStreamContentBytes)
 	}
 	return nil
 }

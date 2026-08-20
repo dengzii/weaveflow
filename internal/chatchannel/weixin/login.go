@@ -124,7 +124,7 @@ func (factory Factory) StartSetup(ctx context.Context, config chatchannel.SetupS
 
 func (session *loginSession) Poll(ctx context.Context, input chatchannel.SetupPollInput) (chatchannel.SetupResult, error) {
 	if session == nil {
-		return chatchannel.SetupResult{}, errors.New("WeChat setup session is unavailable")
+		return chatchannel.SetupResult{}, errors.New("wechat setup session is unavailable")
 	}
 	logger := session.logger
 	if logger == nil {
@@ -270,7 +270,7 @@ func validVerificationCode(value string) bool {
 func validateSetupBaseURL(raw string, allowInsecure bool) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "", errors.New("URL is empty")
+		return "", errors.New("url is empty")
 	}
 	if !strings.Contains(raw, "://") {
 		raw = "https://" + raw
@@ -280,7 +280,7 @@ func validateSetupBaseURL(raw string, allowInsecure bool) (string, error) {
 		return "", err
 	}
 	if parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
-		return "", fmt.Errorf("URL must contain only an origin: %q", raw)
+		return "", fmt.Errorf("url must contain only an origin: %q", raw)
 	}
 	if allowInsecure {
 		if parsed.Scheme != "http" && parsed.Scheme != "https" {
@@ -288,7 +288,7 @@ func validateSetupBaseURL(raw string, allowInsecure bool) (string, error) {
 		}
 	} else {
 		if parsed.Scheme != "https" {
-			return "", errors.New("URL must use https")
+			return "", errors.New("url must use https")
 		}
 		hostname := strings.ToLower(parsed.Hostname())
 		if hostname != "weixin.qq.com" && !strings.HasSuffix(hostname, ".weixin.qq.com") {
