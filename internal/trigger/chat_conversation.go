@@ -49,27 +49,27 @@ func (s *FileStore) CreateChatConversation(ctx context.Context, conversation Cha
 		return ChatConversation{}, err
 	}
 	root := s.chatConversationRoot(conversation.TriggerID, conversation.UserID, conversation.ChannelConversationID)
-	if err := os.MkdirAll(safeChatHistoryPath(root, "conversations"), 0o700); err != nil {
+	if err := rootedMkdirAll(safeChatHistoryPath(root, "conversations"), 0o700); err != nil {
 		return ChatConversation{}, err
 	}
 	baseID, _ := strconv.ParseInt(conversation.ID, 10, 64)
 	for {
 		conversation.ID = strconv.FormatInt(baseID, 10)
 		dir := s.chatConversationDir(conversation.TriggerID, conversation.UserID, conversation.ChannelConversationID, conversation.ID)
-		if _, err := os.Stat(dir); err == nil {
+		if _, err := rootedStat(dir); err == nil {
 			baseID++
 			continue
 		} else if !os.IsNotExist(err) {
 			return ChatConversation{}, err
 		}
 		turnsDir := safeChatHistoryPath(dir, "turns")
-		if err := os.MkdirAll(turnsDir, 0o700); err != nil {
+		if err := rootedMkdirAll(turnsDir, 0o700); err != nil {
 			return ChatConversation{}, err
 		}
-		if err := os.Chmod(dir, 0o700); err != nil {
+		if err := rootedChmod(dir, 0o700); err != nil {
 			return ChatConversation{}, err
 		}
-		if err := os.Chmod(turnsDir, 0o700); err != nil {
+		if err := rootedChmod(turnsDir, 0o700); err != nil {
 			return ChatConversation{}, err
 		}
 		if err := s.writeChatConversationLocked(ctx, safeChatHistoryPath(dir, "conversation.json"), conversation); err != nil {
@@ -97,7 +97,7 @@ func (s *FileStore) CurrentChatConversation(ctx context.Context, identity ChatCo
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	path := safeChatHistoryPath(s.chatConversationRoot(identity.TriggerID, identity.UserID, identity.ChannelConversationID), "current.json")
-	data, err := os.ReadFile(path)
+	data, err := rootedReadFile(path)
 	if os.IsNotExist(err) {
 		return ChatConversation{}, ErrNotFound
 	}
@@ -161,7 +161,7 @@ func (s *FileStore) writeChatConversationLocked(ctx context.Context, path string
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	return rootedRename(tempPath, path)
 }
 
 func normalizeChatConversation(conversation ChatConversation) ChatConversation {

@@ -202,37 +202,37 @@ func resolveClaudeRunnerConfig(config RunnerConfig) (resolvedClaudeRunnerConfig,
 		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude access must be %q or %q", WorkspaceAccessReadOnly, WorkspaceAccessWrite)
 	}
 	if config.Access == WorkspaceAccessWrite && runtime.GOOS == "windows" {
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude workspace_write is unavailable on native Windows; run the server in WSL2, a container, or a VM")
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude workspace_write is unavailable on native Windows; run the server in WSL2, a container, or a VM")
 	}
 	if config.TimeoutSeconds == 0 {
 		config.TimeoutSeconds = defaults.TimeoutSeconds
 	}
 	if config.TimeoutSeconds < 1 {
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude timeout_seconds must be positive")
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude timeout_seconds must be positive")
 	}
 	if config.MaxStdoutBytes == 0 {
 		config.MaxStdoutBytes = defaults.MaxStdoutBytes
 	}
 	if config.MaxStdoutBytes < 1 {
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude max_stdout_bytes must be positive")
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude max_stdout_bytes must be positive")
 	}
 	if config.MaxStderrBytes == 0 {
 		config.MaxStderrBytes = defaults.MaxStderrBytes
 	}
 	if config.MaxStderrBytes < 1 {
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude max_stderr_bytes must be positive")
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude max_stderr_bytes must be positive")
 	}
 	if config.MaxConcurrency == 0 {
 		config.MaxConcurrency = defaults.MaxConcurrency
 	}
 	if config.MaxConcurrency < 1 {
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude max_concurrency must be positive")
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude max_concurrency must be positive")
 	}
 	if config.MaxBudgetUSD == 0 {
 		config.MaxBudgetUSD = defaults.MaxBudgetUSD
 	}
 	if config.MaxBudgetUSD < 0 {
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude max_budget_usd must be positive")
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude max_budget_usd must be positive")
 	}
 	if config.AllowedWorkspaceRoots == nil {
 		config.AllowedWorkspaceRoots = append([]string(nil), defaults.AllowedWorkspaceRoots...)
@@ -256,12 +256,12 @@ func resolveClaudeRunnerConfig(config RunnerConfig) (resolvedClaudeRunnerConfig,
 	for _, root := range config.AllowedWorkspaceRoots {
 		rootPath, err := canonicalDirectory(root)
 		if err != nil {
-			return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude allowed workspace root %q: %w", root, err)
+			return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude allowed workspace root %q: %w", root, err)
 		}
 		allowedRoots = append(allowedRoots, rootPath)
 	}
 	if len(allowedRoots) == 0 {
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude allowed_workspace_roots must contain at least one directory")
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude allowed_workspace_roots must contain at least one directory")
 	}
 	config.AllowedWorkspaceRoots = append([]string(nil), allowedRoots...)
 	return resolvedClaudeRunnerConfig{RunnerConfig: config, allowedWorkspaceRoots: allowedRoots}, nil
@@ -319,14 +319,14 @@ func resolveClaudeWorkspace(ctx context.Context, config resolvedClaudeRunnerConf
 	}
 	workspacePath, err := canonicalDirectory(workspace)
 	if err != nil {
-		return "", fmt.Errorf("Claude workspace: %w", err)
+		return "", fmt.Errorf("claude workspace: %w", err)
 	}
 	for _, root := range config.allowedWorkspaceRoots {
 		if pathWithinRoot(workspacePath, root) {
 			return workspacePath, nil
 		}
 	}
-	return "", fmt.Errorf("Claude workspace %q is outside allowed roots", workspacePath)
+	return "", fmt.Errorf("claude workspace %q is outside allowed roots", workspacePath)
 }
 
 func resolveClaudeExecutable(executable string) (string, error) {
@@ -352,7 +352,7 @@ func environment(config resolvedClaudeRunnerConfig) ([]string, []string, error) 
 		}
 	}
 	if config.EnvironmentNames == nil {
-		return nil, nil, fmt.Errorf("Claude environment_names contains an invalid name")
+		return nil, nil, fmt.Errorf("claude environment_names contains an invalid name")
 	}
 	for _, name := range config.EnvironmentNames {
 		if value, ok := os.LookupEnv(name); ok {

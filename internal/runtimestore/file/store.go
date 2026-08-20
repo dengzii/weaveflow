@@ -923,14 +923,23 @@ func (s *eventSink) ListEvents(runID string) ([]Event, error) {
 	defer s.mu.Unlock()
 
 	path := s.eventsPath(runID)
-	f, err := os.Open(path)
+	root, name, err := runnerRootedPath(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []Event{}, nil
+		}
+		return nil, err
+	}
+	f, err := root.Open(name)
 	if os.IsNotExist(err) {
+		_ = root.Close()
 		return []Event{}, nil
 	}
 	if err != nil {
+		_ = root.Close()
 		return nil, err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close(); _ = root.Close() }()
 
 	items := make([]Event, 0)
 	decoder := json.NewDecoder(bufio.NewReader(f))
@@ -961,14 +970,23 @@ func (s *eventSink) ListEventPage(runID, cursor string, limit int) (EventPage, e
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	f, err := os.Open(s.eventsPath(runID))
+	root, name, err := runnerRootedPath(s.eventsPath(runID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return EventPage{Items: []Event{}}, nil
+		}
+		return EventPage{}, err
+	}
+	f, err := root.Open(name)
 	if os.IsNotExist(err) {
+		_ = root.Close()
 		return EventPage{Items: []Event{}}, nil
 	}
 	if err != nil {
+		_ = root.Close()
 		return EventPage{}, err
 	}
-	defer func() { _ = f.Close() }()
+	defer func() { _ = f.Close(); _ = root.Close() }()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -1165,7 +1183,7 @@ func readRunnerJSONFile(path string, out any) error {
 	if err := validateRunnerPath(path); err != nil {
 		return err
 	}
-	data, err := os.ReadFile(path)
+	data, err := runnerRootedReadFile(path)
 	if err != nil {
 		return err
 	}
@@ -1176,14 +1194,14 @@ func readRunnerBinaryFile(path string) ([]byte, error) {
 	if err := validateRunnerPath(path); err != nil {
 		return nil, err
 	}
-	info, err := os.Stat(path)
+	info, err := runnerRootedStat(path)
 	if err != nil {
 		return nil, err
 	}
 	if info.Size() > maxRunnerJSONFileBytes {
 		return nil, fmt.Errorf("runner binary file is too large")
 	}
-	return os.ReadFile(path)
+	return runnerRootedReadFile(path)
 }
 
 func writeRunnerBinaryFile(path string, data []byte) error {
@@ -1199,9 +1217,7 @@ func writeRunnerBinaryFile(path string, data []byte) error {
 		return err
 	}
 	tempPath := temp.Name()
-	defer func() {
-		_ = os.Remove(tempPath)
-	}()
+	defer func() { _ = runnerRootedRemove(tempPath) }()
 
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()
@@ -1243,12 +1259,18 @@ func ensureRunnerDirectory(path string) error {
 			break
 		}
 	}
-	if err := os.MkdirAll(path, 0o700); err != nil {
+	if err := runnerRootedMkdirAll(path, 0o700); err != nil {
 		return err
 	}
-	if err := os.Chmod(path, 0o700); err != nil {
+	root, name, err := runnerRootedPath(path)
+	if err != nil {
 		return err
 	}
+	if err := root.Chmod(name, 0o700); err != nil {
+		_ = root.Close()
+		return err
+	}
+	_ = root.Close()
 	for index := len(missing) - 1; index >= 0; index-- {
 		if err := syncDirectory(filepath.Dir(missing[index])); err != nil {
 			return err
@@ -1261,7 +1283,7 @@ func removeRunnerFile(path string) error {
 	if err := validateRunnerPath(path); err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil {
+	if err := runnerRootedRemove(path); err != nil {
 		if os.IsNotExist(err) {
 			return nil
 		}
@@ -1274,11 +1296,11 @@ func removeRunnerDirectory(path string) error {
 	if err := validateRunnerPath(path); err != nil {
 		return err
 	}
-	if err := os.RemoveAll(path); err != nil {
+	if err := runnerRootedRemoveAll(path); err != nil {
 		return err
 	}
 	parent := filepath.Dir(path)
-	if _, err := os.Stat(parent); os.IsNotExist(err) {
+	if _, err := runnerRootedStat(parent); os.IsNotExist(err) {
 		return nil
 	}
 	return syncDirectory(parent)
@@ -1307,14 +1329,14 @@ func appendRunnerJSONLineData(path string, data []byte) error {
 	if len(data) > maxRunnerJSONFileBytes {
 		return fmt.Errorf("runner JSON line is too large")
 	}
-	info, statErr := os.Stat(path)
+	info, statErr := runnerRootedStat(path)
 	if statErr != nil && !os.IsNotExist(statErr) {
 		return statErr
 	}
 	if statErr == nil && info.Size() > maxRunnerJSONFileBytes-int64(len(data)) {
 		return fmt.Errorf("runner JSON file is too large")
 	}
-	existing, err := os.ReadFile(path)
+	existing, err := runnerRootedReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
 		return err
 	}

@@ -108,7 +108,7 @@ func (s *FileStore) CreateChatHistory(ctx context.Context, history ChatHistory) 
 	}
 	for {
 		path := safeChatHistoryPath(dir, strconv.FormatInt(history.ID, 10)+".json")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		if _, err := rootedStat(path); os.IsNotExist(err) {
 			if err := s.writeChatHistoryLocked(ctx, path, history); err != nil {
 				return ChatHistory{}, err
 			}
@@ -138,7 +138,7 @@ func (s *FileStore) UpdateChatHistory(ctx context.Context, history ChatHistory) 
 		return err
 	}
 	path := s.chatHistoryPath(history)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := rootedStat(path); os.IsNotExist(err) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -193,7 +193,7 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 			return nil, err
 		}
 		path := safeChatHistoryPath(dir, strconv.FormatInt(id, 10)+".json")
-		data, err := os.ReadFile(path)
+		data, err := rootedReadFile(path)
 		if err != nil {
 			return nil, err
 		}
@@ -214,10 +214,10 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 
 func (s *FileStore) ensureChatHistoryDir(triggerID, userID, channelConversationID, conversationID string) (string, error) {
 	dir := s.chatHistoryDir(triggerID, userID, channelConversationID, conversationID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := rootedMkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := rootedChmod(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
@@ -261,7 +261,7 @@ func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, his
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	return rootedRename(tempPath, path)
 }
 
 func normalizeChatHistory(history ChatHistory) ChatHistory {

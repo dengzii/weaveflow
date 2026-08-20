@@ -60,7 +60,7 @@ func (s *FileStore) ReplaceGraph(ctx context.Context, graphID string, items []Tr
 		}
 		path := safeTriggerPath(s.dir, entry.Name())
 		if item.Target.GraphID == graphID {
-			data, err := os.ReadFile(path)
+			data, err := rootedReadFile(path)
 			if err != nil {
 				return err
 			}
@@ -91,10 +91,10 @@ func (s *FileStore) ReplaceGraph(ctx context.Context, graphID string, items []Tr
 
 	rollback := func() {
 		for path := range nextPaths {
-			_ = os.Remove(path)
+			_ = rootedRemove(path)
 		}
 		for path, data := range existingGraphPaths {
-			_ = os.WriteFile(path, data, 0o600)
+			_ = rootedWriteFile(path, data, 0o600)
 		}
 	}
 	for path, item := range nextPaths {
@@ -107,7 +107,7 @@ func (s *FileStore) ReplaceGraph(ctx context.Context, graphID string, items []Tr
 		if _, keep := nextPaths[path]; keep {
 			continue
 		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if err := rootedRemove(path); err != nil && !os.IsNotExist(err) {
 			rollback()
 			return err
 		}
@@ -182,7 +182,7 @@ func (s *FileStore) Create(ctx context.Context, definition Trigger) error {
 		return err
 	}
 	path := safeTriggerPath(s.dir, id+".json")
-	if _, err := os.Stat(path); err == nil {
+	if _, err := rootedStat(path); err == nil {
 		return ErrExists
 	} else if !os.IsNotExist(err) {
 		return err
@@ -207,7 +207,7 @@ func (s *FileStore) Update(ctx context.Context, definition Trigger) error {
 		return err
 	}
 	path := safeTriggerPath(s.dir, id+".json")
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := rootedStat(path); os.IsNotExist(err) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -235,7 +235,7 @@ func (s *FileStore) Get(ctx context.Context, id string) (Trigger, error) {
 }
 
 func (s *FileStore) getLocked(id string) (Trigger, error) {
-	data, err := os.ReadFile(safeTriggerPath(s.dir, id+".json"))
+	data, err := rootedReadFile(safeTriggerPath(s.dir, id+".json"))
 	if os.IsNotExist(err) {
 		return Trigger{}, ErrNotFound
 	}
@@ -304,7 +304,7 @@ func (s *FileStore) Delete(ctx context.Context, id string) error {
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	err = os.Remove(safeTriggerPath(s.dir, id+".json"))
+	err = rootedRemove(safeTriggerPath(s.dir, id+".json"))
 	if os.IsNotExist(err) {
 		return ErrNotFound
 	}
@@ -366,7 +366,7 @@ func (s *FileStore) DeleteGraph(ctx context.Context, graphID string) ([]Trigger,
 			continue
 		}
 		path := safeTriggerPath(s.recordsDir(), entry.Name())
-		data, err := os.ReadFile(path)
+		data, err := rootedReadFile(path)
 		if err != nil {
 			return nil, err
 		}
@@ -378,7 +378,7 @@ func (s *FileStore) DeleteGraph(ctx context.Context, graphID string) ([]Trigger,
 		if !remove && record.Target.GraphID != graphID {
 			continue
 		}
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		if err := rootedRemove(path); err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
 	}
@@ -387,12 +387,12 @@ func (s *FileStore) DeleteGraph(ctx context.Context, graphID string) ([]Trigger,
 		if err := storeContextError(ctx); err != nil {
 			return nil, err
 		}
-		if err := os.RemoveAll(safeChatHistoryPath(s.dir, "history", chatHistoryPathSegment(id))); err != nil {
+		if err := rootedRemoveAll(safeChatHistoryPath(s.dir, "history", chatHistoryPathSegment(id))); err != nil {
 			return nil, err
 		}
 	}
 	for _, item := range items {
-		if err := os.Remove(safeTriggerPath(s.dir, item.ID+".json")); err != nil && !os.IsNotExist(err) {
+		if err := rootedRemove(safeTriggerPath(s.dir, item.ID+".json")); err != nil && !os.IsNotExist(err) {
 			return nil, err
 		}
 	}
@@ -416,7 +416,7 @@ func (s *FileStore) CreateRecord(ctx context.Context, record Record) error {
 		return err
 	}
 	path := s.recordPath(record.ID)
-	if _, err := os.Stat(path); err == nil {
+	if _, err := rootedStat(path); err == nil {
 		return ErrExists
 	} else if !os.IsNotExist(err) {
 		return err
@@ -440,7 +440,7 @@ func (s *FileStore) UpdateRecord(ctx context.Context, record Record) error {
 		return err
 	}
 	path := s.recordPath(record.ID)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := rootedStat(path); os.IsNotExist(err) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -476,7 +476,7 @@ func (s *FileStore) ListRecords(ctx context.Context, triggerID string, limit int
 		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
 			continue
 		}
-		data, err := os.ReadFile(safeTriggerPath(s.recordsDir(), entry.Name()))
+		data, err := rootedReadFile(safeTriggerPath(s.recordsDir(), entry.Name()))
 		if err != nil {
 			return nil, err
 		}
