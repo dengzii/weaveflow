@@ -39,6 +39,12 @@ docker build --build-arg VERSION=0.1.0 -t weaveflow:0.1.0 -f scripts/Dockerfile 
 
 Go toolchain is pinned via `go.mod` (`go 1.26.1`); Bun is pinned to `1.3.4` in CI. There is no Makefile. CI runs on pushes/PRs against `master` (`.github/workflows/ci.yml`).
 
+## Git and GitHub operations
+
+- Use `origin` (`git@github.com:lazy-banana/weaveflow.git`) for all Git fetch, pull, branch, commit, and push operations.
+- Use `origin`'s repository (`lazy-banana/weaveflow`) for all `gh` operations, including workflow dispatches, run inspection, issues, and pull requests; pass `--repo lazy-banana/weaveflow` when repository auto-detection could resolve `upstream`.
+- Treat `upstream` (`https://github.com/dengzii/weaveflow.git`) as read-only reference material unless the user explicitly requests otherwise.
+
 ## Repository layout
 
 | Path | Responsibility |
