@@ -2,6 +2,11 @@
 
 [![Go Version](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![CI](https://img.shields.io/github/actions/workflow/status/dengzii/weaveflow/ci.yml?branch=master&logo=github&label=CI)](https://github.com/dengzii/weaveflow/actions)
+[![codecov](https://img.shields.io/codecov/c/github/dengzii/weaveflow?logo=codecov)](https://codecov.io/gh/dengzii/weaveflow)
+[![Go Reference](https://pkg.go.dev/badge/github.com/dengzii/weaveflow.svg)](https://pkg.go.dev/github.com/dengzii/weaveflow)
+[![Go Report Card](https://goreportcard.com/badge/github.com/dengzii/weaveflow)](https://goreportcard.com/report/github.com/dengzii/weaveflow)
+[![Release](https://img.shields.io/github/v/release/dengzii/weaveflow?logo=github)](https://github.com/dengzii/weaveflow/releases)
 
 WeaveFlow is a graph-based runtime for building, executing, and inspecting LLM agents in Go.
 
