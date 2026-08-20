@@ -91,7 +91,7 @@ func newProcessRunner(config RunnerConfig, checkReadiness bool) (*ProcessRunner,
 
 func (runner *ProcessRunner) ensureReady() (string, error) {
 	if runner == nil {
-		return "", fmt.Errorf("Claude runner is not configured")
+		return "", fmt.Errorf("claude runner is not configured")
 	}
 	runner.readyMu.Lock()
 	defer runner.readyMu.Unlock()
@@ -139,7 +139,7 @@ func validateClaudeHelp(help string) error {
 		"--settings",
 	} {
 		if !strings.Contains(help, option) {
-			return fmt.Errorf("Claude option %s is not supported", option)
+			return fmt.Errorf("claude option %s is not supported", option)
 		}
 	}
 	return nil
@@ -147,13 +147,13 @@ func validateClaudeHelp(help string) error {
 
 func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunResult, error) {
 	if runner == nil {
-		return RunResult{}, fmt.Errorf("Claude runner is not configured")
+		return RunResult{}, fmt.Errorf("claude runner is not configured")
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	if strings.TrimSpace(request.Prompt) == "" {
-		return RunResult{ExitCode: -1}, fmt.Errorf("Claude prompt is empty")
+		return RunResult{ExitCode: -1}, fmt.Errorf("claude prompt is empty")
 	}
 	workspacePath, err := resolveClaudeWorkspace(ctx, runner.config)
 	if err != nil {
@@ -161,11 +161,11 @@ func (runner *ProcessRunner) Run(ctx context.Context, request RunRequest) (RunRe
 	}
 	environment, secretValues, err := environment(runner.config)
 	if err != nil {
-		return RunResult{ExitCode: -1}, fmt.Errorf("Claude environment: %w", err)
+		return RunResult{ExitCode: -1}, fmt.Errorf("claude environment: %w", err)
 	}
 	executable, err := runner.ensureReady()
 	if err != nil {
-		return RunResult{ExitCode: -1}, fmt.Errorf("Claude runtime check: %w", err)
+		return RunResult{ExitCode: -1}, fmt.Errorf("claude runtime check: %w", err)
 	}
 	runConfig := resolvedClaudeRun{
 		resolvedClaudeRunConfig: resolvedClaudeRunConfig{
@@ -312,18 +312,18 @@ func runClaudeProcess(ctx context.Context, config resolvedClaudeRun, request Run
 	}
 	if waitErr != nil {
 		if result.Stderr != "" {
-			return result, fmt.Errorf("Claude exited with code %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
+			return result, fmt.Errorf("claude exited with code %d: %s", result.ExitCode, strings.TrimSpace(result.Stderr))
 		}
-		return result, fmt.Errorf("Claude exited with code %d: %w", result.ExitCode, waitErr)
+		return result, fmt.Errorf("claude exited with code %d: %w", result.ExitCode, waitErr)
 	}
 	if outputRead.parser == nil || !outputRead.parser.completed {
-		return result, fmt.Errorf("Claude completed without a successful result event")
+		return result, fmt.Errorf("claude completed without a successful result event")
 	}
 	if closeErr := processTree.Close(); closeErr != nil {
 		return result, fmt.Errorf("close Claude process tree: %w", closeErr)
 	}
 	if strings.TrimSpace(result.Output) == "" {
-		return result, fmt.Errorf("Claude completed without a result")
+		return result, fmt.Errorf("claude completed without a result")
 	}
 	return result, nil
 }
