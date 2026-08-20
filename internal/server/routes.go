@@ -8,6 +8,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	}
 
 	management := group.Group("")
+	group.GET("/healthz", s.handleHealth)
 	management.Use(s.requireManagementAuth)
 	s.registerGraphRoutes(management)
 	s.registerRuntimeRoutes(management)

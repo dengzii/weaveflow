@@ -7,6 +7,10 @@
 <p align="center">
   <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go" alt="Go 1.26+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
+  <a href="https://github.com/dengzii/weaveflow/actions"><img src="https://img.shields.io/github/actions/workflow/status/dengzii/weaveflow/ci.yml?branch=master&logo=github&label=CI" alt="CI"></a>
+  <a href="https://pkg.go.dev/github.com/dengzii/weaveflow"><img src="https://pkg.go.dev/badge/github.com/dengzii/weaveflow.svg" alt="Go Reference"></a>
+  <a href="https://goreportcard.com/report/github.com/dengzii/weaveflow"><img src="https://goreportcard.com/badge/github.com/dengzii/weaveflow" alt="Go Report Card"></a>
+  <a href="https://github.com/dengzii/weaveflow/releases"><img src="https://img.shields.io/github/v/release/dengzii/weaveflow?logo=github" alt="Release"></a>
 </p>
 
 <p align="center">
@@ -27,6 +31,7 @@ available for inspection after a run finishes.
 - [Key Features](#key-features)
 - [Graph Definition](#graph-definition)
 - [Debug Server and Workbench](#debug-server-and-workbench)
+- [Container Deployment](#container-deployment)
 - [Examples and Documentation](#examples-and-documentation)
 
 ## Why WeaveFlow
@@ -296,6 +301,15 @@ For WebUI-specific development and deployment notes, see [`internal/web/README.m
 
 Configure model credentials through Graph Settings or the server-managed credential mechanism. Credentials should not be
 stored in Graph Definitions, events, artifacts, logs, or API responses.
+
+## Container Deployment
+
+The packaged container runs the compiled WebUI and API behind one non-root Nginx process. It includes a health check,
+supports a read-only root filesystem, and binds to `127.0.0.1:8080` by default. Configure
+`WEAVEFLOW_MANAGEMENT_TOKEN` before exposing it beyond the local machine.
+
+See [`scripts/README.md`](scripts/README.md) for Docker, Compose, and deployment-helper instructions. The local image
+version is recorded in [`VERSION`](VERSION).
 
 ## Examples and Documentation
 

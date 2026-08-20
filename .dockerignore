@@ -1,0 +1,16 @@
+.git
+.github
+.local
+_config_local
+coverage.*
+*.log
+.env*
+!.env.example
+*.key
+*.pem
+data
+secrets
+internal/web/dist
+internal/web/node_modules
+node_modules
+tmp

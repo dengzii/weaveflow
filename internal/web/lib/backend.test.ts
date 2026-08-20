@@ -28,8 +28,15 @@ describe("backend URL configuration", () => {
     );
   });
 
+  test("supports same-origin backend paths", () => {
+    expect(normalizeBackendBaseUrl("/api///")).toBe("/api");
+    expect(joinBackendUrl("/api", "/runs")).toBe("/api/runs");
+    expect(joinBackendUrl("/", "/runs")).toBe("/runs");
+  });
+
   test("rejects unsupported or ambiguous base URLs", () => {
     expect(() => normalizeBackendBaseUrl("file:///tmp/api")).toThrow("http or https");
+    expect(() => normalizeBackendBaseUrl("//api.example.com")).toThrow("protocol-relative");
     expect(() => normalizeBackendBaseUrl("https://api.example.com?tenant=one")).toThrow("query or fragment");
     expect(() => normalizeBackendBaseUrl("https://user:secret@api.example.com")).toThrow("credentials");
   });
