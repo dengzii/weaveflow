@@ -46,7 +46,7 @@ func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error
 	if err != nil {
 		return graphRuntimeSettings{}, false, fmt.Errorf("open graph runtime settings directory: %w", err)
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	data, err := root.ReadFile(filepath.Base(path))
 	if os.IsNotExist(err) {
 		return graphRuntimeSettings{}, false, nil

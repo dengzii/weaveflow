@@ -199,7 +199,7 @@ func resolveClaudeRunnerConfig(config RunnerConfig) (resolvedClaudeRunnerConfig,
 	switch config.Access {
 	case WorkspaceAccessReadOnly, WorkspaceAccessWrite:
 	default:
-		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude access must be %q or %q", WorkspaceAccessReadOnly, WorkspaceAccessWrite)
+		return resolvedClaudeRunnerConfig{}, fmt.Errorf("claude access must be %q or %q", WorkspaceAccessReadOnly, WorkspaceAccessWrite)
 	}
 	if config.Access == WorkspaceAccessWrite && runtime.GOOS == "windows" {
 		return resolvedClaudeRunnerConfig{}, fmt.Errorf("Claude workspace_write is unavailable on native Windows; run the server in WSL2, a container, or a VM")

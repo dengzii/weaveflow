@@ -39,7 +39,7 @@ func (c *Client) createEmbedding(ctx context.Context, payload *embeddingPayload)
 		c.baseURL = defaultBaseURL
 	}
 	if IsAzure(c.apiType) && !c.isAzureV1() && c.EmbeddingModel == "" {
-		return nil, errors.New("Azure embedding deployment is required")
+		return nil, errors.New("azure embedding deployment is required")
 	}
 
 	payloadBytes, err := json.Marshal(payload)

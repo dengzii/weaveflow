@@ -19,7 +19,7 @@ const (
 	processWaitDelay    = 5 * time.Second
 )
 
-var errClaudeOutputLimit = errors.New("Claude output exceeded configured limit")
+var errClaudeOutputLimit = errors.New("claude output exceeded configured limit")
 
 type RunRequest struct {
 	Prompt  string

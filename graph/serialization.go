@@ -76,7 +76,7 @@ func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
 	if err != nil {
 		return dsl.GraphDefinition{}, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	data, err := root.ReadFile(filepath.Base(resolvedPath))
 	if err != nil {
 		return dsl.GraphDefinition{}, err

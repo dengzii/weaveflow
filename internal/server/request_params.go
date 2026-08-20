@@ -30,10 +30,6 @@ func requirePathParam(c *gin.Context, name string) (string, bool) {
 	return value, true
 }
 
-func optionalPathParam(c *gin.Context, name string) string {
-	return filepath.Base(strings.TrimSpace(c.Param(name)))
-}
-
 func optionalStringQuery(c *gin.Context, name string) (string, error) {
 	values, exists := c.GetQueryArray(name)
 	if !exists {

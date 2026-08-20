@@ -178,7 +178,7 @@ func htmlToText(raw []byte) (title string, text string, err error) {
 				linkText := strings.TrimSpace(child.Text())
 				href, exists := child.Attr("href")
 				if exists && linkText != "" {
-					sb.WriteString(fmt.Sprintf("[%s](%s)", linkText, href))
+					fmt.Fprintf(&sb, "[%s](%s)", linkText, href)
 					sb.WriteByte(' ')
 					return
 				}

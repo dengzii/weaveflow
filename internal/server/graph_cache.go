@@ -542,7 +542,7 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 	if err != nil {
 		return graphSessionManifest{}, false, err
 	}
-	defer root.Close()
+	defer func() { _ = root.Close() }()
 	manifestData, err := root.ReadFile("graph.json")
 	if os.IsNotExist(err) {
 		return graphSessionManifest{}, false, nil
