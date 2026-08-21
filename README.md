@@ -34,7 +34,7 @@ available for inspection after a run finishes.
 - [Graph Definition](#graph-definition)
 - [Debug Server and Workbench](#debug-server-and-workbench)
 - [Container Deployment](#container-deployment)
-- [Examples](#examples)
+- [Examples and Documentation](#examples-and-documentation)
 - [Agent Skills](#agent-skills)
 
 Agent workflows become difficult to understand when topology, state access, and control flow are hidden inside an
@@ -153,15 +153,47 @@ developer can move from a definition change to an observed execution without bui
 ### Build from source
 
 ```bash
-git clone https://github.com/dengzii/weaveflow.git
-cd weaveflow
+go run ./cmd/server -addr 127.0.0.1:8080 -data .local/server -graph examples/graph/agent-simple.json
+```
+
+Then visit [http://127.0.0.1:8080](http://127.0.0.1:8080) to open the Workbench.
+
+.
+  [Getting started](https://weaveflow.space/docs/getting-started.html) .
+  [Documentation](https://weaveflow.space/docs/) .
+  [Contributing](CONTRIBUTING.md) .
+  [License](LICENSE)
+
+## Features
+
+- **Graph-native execution** — nodes, edges, conditions, and built-in core node types for conversation, planning, and
+  tool orchestration.
+- **State-driven architecture** — typed `state.Path` bindings with access control patterns, custom reducers, and
+  deterministic snapshot hashing.
+- **Serialisable graphs** — portable `dsl.GraphDefinition` JSON with strict validation independently of the execution
+  engine; every resolved graph carries a verifiable semantic hash.
+- **Full lifecycle control** — pause, resume, cancel, inspect, and get checkpoints on any active run; runs are
+  resumable from checkpoints after a crash or restart.
+- **Runtime diagnostics** — live SSE event streaming for LLM calls, tool invocations, node progress, and state
+  transitions; attach to a running session from the Workbench or the event API.
+- **Extensible registry** — register custom node types, conditions, state reducers, and capabilities.
+- **Web-based Workbench** — visual graph editor, run inspector, state browser, and session manager.
+
+## Quick start
+
+**Prerequisites:** [Go 1.26+](https://go.dev/dl/), [Bun 1.3+](https://bun.sh/).
+
+```bash
+# Build all packages and run tests
 go build ./...
+go test ./...
+go vet ./...
 ```
 
 Use WeaveFlow as a Go module dependency:
 
 ```bash
-go get github.com/dengzii/weaveflow
+go run ./cmd/server -addr 127.0.0.1:8080 -data .local/server -graph examples/graph/agent-simple.json
 ```
 
 For more information, see [Getting started](https://weaveflow.space/docs/getting-started.html),
@@ -314,7 +346,7 @@ supports a read-only root filesystem, and binds to `127.0.0.1:8080` by default. 
 See [`scripts/README.md`](scripts/README.md) for Docker, Compose, and deployment-helper instructions. The local image
 version is recorded in [`VERSION`](VERSION).
 
-## Examples
+## Examples and Documentation
 
 Start from the goal that matches your task:
 
@@ -323,6 +355,8 @@ Start from the goal that matches your task:
 - **Learn Graph JSON and state operations:** [`examples/dsl/`](examples/dsl/) and
   [`examples/state_operations/`](examples/state_operations/).
 - **Use the Workbench:** [`internal/web/README.md`](internal/web/README.md).
+- **Review current capabilities and gaps:** [`docs/weaveflow-capability-gap-analysis.md`](docs/weaveflow-capability-gap-analysis.md).
+- **Review public website positioning:** [`docs/project-website-plan.md`](docs/project-website-plan.md).
 
 ## Agent Skills
 
