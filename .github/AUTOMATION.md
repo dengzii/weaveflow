@@ -8,6 +8,19 @@ compilation, and a container health check for changes on `master`, pull requests
 `workflows/codeql.yml` performs CodeQL analysis for Go and JavaScript/TypeScript. `workflows/security.yml` runs
 `govulncheck` and reviews dependency changes in pull requests.
 
+`workflows/codespaces-demo.yml` builds and publishes `ghcr.io/dengzii/weaveflow-codespaces:main` when files used by the
+demo image change on `master`. It uses a dedicated GitHub Actions BuildKit cache scope so the Codespaces demo image
+does not evict the production image cache. CI reads the stable production scope;
+pull requests write an isolated `production-pr-*` scope, and releases write a tag-specific `production-release-*`
+scope. The GHCR package must be public for anonymous users to launch the one-click Codespaces profile.
+
+`workflows/deploy-sites.yml` builds and deploys the website, the bundled English and Chinese documentation, and the
+Playground to AWS EC2 after a successful `CI` run for relevant changes on `master`. It uses the protected
+`production-sites` Environment, a
+dedicated SSH identity with pinned host keys, and the root-owned atomic deployer documented in
+[`scripts/ec2/README.md`](../scripts/ec2/README.md). Configure the EC2 host before enabling this workflow; the first run
+fails closed if the deployer, Environment variables, or secrets are missing.
+
 ## Releases and Docker Hub
 
 Configure these repository Actions secrets under **Settings > Secrets and variables > Actions**:
