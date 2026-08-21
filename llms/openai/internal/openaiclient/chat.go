@@ -415,7 +415,7 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 	if err != nil {
 		return nil, sanitizeHTTPError(err)
 	}
-	defer r.Body.Close()
+	defer func() { _ = r.Body.Close() }()
 
 	if r.StatusCode != http.StatusOK {
 		return nil, decodeHTTPStatusError(r.StatusCode, r.Body)

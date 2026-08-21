@@ -39,7 +39,15 @@ type graphModelSettingsFile struct {
 
 func loadGraphRuntimeSettings(baseDir string) (graphRuntimeSettings, bool, error) {
 	path := graphRuntimeSettingsPath(baseDir)
-	data, err := os.ReadFile(path)
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if os.IsNotExist(err) {
+		return graphRuntimeSettings{}, false, nil
+	}
+	if err != nil {
+		return graphRuntimeSettings{}, false, fmt.Errorf("open graph runtime settings directory: %w", err)
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(filepath.Base(path))
 	if os.IsNotExist(err) {
 		return graphRuntimeSettings{}, false, nil
 	}
@@ -165,7 +173,11 @@ func encodeGraphRuntimeSettings(settings graphRuntimeSettings) ([]byte, error) {
 }
 
 func graphRuntimeSettingsPath(baseDir string) string {
-	return filepath.Join(baseDir, graphRuntimeSettingsFileName)
+	absolute, err := filepath.Abs(baseDir)
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(filepath.Clean("/"+absolute), graphRuntimeSettingsFileName)
 }
 
 func writeGraphRuntimeSettingsFile(path string, data []byte) error {

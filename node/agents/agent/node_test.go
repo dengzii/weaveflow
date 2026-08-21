@@ -410,7 +410,6 @@ func TestAgentNodePreservesToolPermissionAndApprovalGovernance(t *testing.T) {
 		})
 	}
 }
-
 func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
 	t.Parallel()
 

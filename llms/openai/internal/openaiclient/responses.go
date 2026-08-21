@@ -140,7 +140,7 @@ func (c *Client) CreateResponse(ctx context.Context, request *ResponseRequest) (
 		return nil, err
 	}
 	if response.Error != nil {
-		return nil, fmt.Errorf("Responses API returned %v: %s", response.Error.Code, response.Error.Message)
+		return nil, fmt.Errorf("responses API returned %v: %s", response.Error.Code, response.Error.Message)
 	}
 	return response, nil
 }
@@ -165,7 +165,7 @@ func (c *Client) createResponse(ctx context.Context, payload *ResponseRequest) (
 	if err != nil {
 		return nil, sanitizeHTTPError(err)
 	}
-	defer httpResponse.Body.Close()
+	defer func() { _ = httpResponse.Body.Close() }()
 	if httpResponse.StatusCode != http.StatusOK {
 		return nil, decodeHTTPStatusError(httpResponse.StatusCode, httpResponse.Body)
 	}

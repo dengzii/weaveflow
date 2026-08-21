@@ -146,16 +146,6 @@ func (e *graphRunnerExecution) lockForTask(taskID string) *sync.Mutex {
 	return lock
 }
 
-func (e *graphRunnerExecution) persistRun(ctx context.Context, update func(*RunRecord)) (RunRecord, error) {
-	run, _, err := e.persistRunChecked(ctx, func(run *RunRecord) (bool, error) {
-		if update != nil {
-			update(run)
-		}
-		return true, nil
-	})
-	return run, err
-}
-
 func (e *graphRunnerExecution) persistRunChecked(ctx context.Context, update func(*RunRecord) (bool, error)) (RunRecord, bool, error) {
 	if ctx == nil {
 		ctx = context.Background()

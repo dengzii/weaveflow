@@ -68,18 +68,31 @@ func (g *Graph) SnapshotHash() (string, error) {
 }
 
 func LoadGraphDefinitionFile(path string) (dsl.GraphDefinition, error) {
-	data, err := os.ReadFile(path)
+	resolvedPath, err := resolveGraphFilePath(path)
+	if err != nil {
+		return dsl.GraphDefinition{}, err
+	}
+	root, err := os.OpenRoot(filepath.Dir(resolvedPath))
+	if err != nil {
+		return dsl.GraphDefinition{}, err
+	}
+	defer func() { _ = root.Close() }()
+	data, err := root.ReadFile(filepath.Base(resolvedPath))
 	if err != nil {
 		return dsl.GraphDefinition{}, err
 	}
 	definition, err := dsl.DeserializeGraphDefinition(data)
 	if err != nil {
-		return dsl.GraphDefinition{}, fmt.Errorf("load graph definition from %q: %w", path, err)
+		return dsl.GraphDefinition{}, fmt.Errorf("load graph definition from %q: %w", resolvedPath, err)
 	}
 	return definition, nil
 }
 
 func (g *Graph) WriteToFile(path string) error {
+	resolvedPath, err := resolveGraphFilePath(path)
+	if err != nil {
+		return err
+	}
 	definition, err := g.Definition()
 	if err != nil {
 		return err
@@ -88,7 +101,7 @@ func (g *Graph) WriteToFile(path string) error {
 	if err != nil {
 		return err
 	}
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".graph-*")
+	temporary, err := os.CreateTemp(filepath.Dir(resolvedPath), ".graph-*")
 	if err != nil {
 		return err
 	}
@@ -101,7 +114,18 @@ func (g *Graph) WriteToFile(path string) error {
 	if err := temporary.Close(); err != nil {
 		return err
 	}
-	return os.Rename(temporaryPath, path)
+	return os.Rename(temporaryPath, resolvedPath)
+}
+
+func resolveGraphFilePath(path string) (string, error) {
+	if strings.TrimSpace(path) == "" || strings.ContainsRune(path, 0) {
+		return "", fmt.Errorf("graph file path is required")
+	}
+	resolved, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve graph file path: %w", err)
+	}
+	return filepath.Clean("/" + resolved), nil
 }
 
 func (g *Graph) DrawMermaid() (string, error) {
@@ -110,15 +134,15 @@ func (g *Graph) DrawMermaid() (string, error) {
 	}
 	var builder strings.Builder
 	builder.WriteString("flowchart TD\n")
-	builder.WriteString(fmt.Sprintf("    %s[[\"%s\"]]\n", g.entryPoint, g.entryPoint))
-	builder.WriteString(fmt.Sprintf("    START --> %s\n", g.entryPoint))
+	fmt.Fprintf(&builder, "    %s[[\"%s\"]]\n", g.entryPoint, g.entryPoint)
+	fmt.Fprintf(&builder, "    START --> %s\n", g.entryPoint)
 	builder.WriteString("    START([\"START\"])\n")
 	builder.WriteString("    style START fill:#90EE90\n")
 	for _, nodeID := range g.sortedNodeIDs() {
 		if nodeID == g.entryPoint {
 			continue
 		}
-		builder.WriteString(fmt.Sprintf("    %s[\"%s\"]\n", nodeID, nodeID))
+		fmt.Fprintf(&builder, "    %s[\"%s\"]\n", nodeID, nodeID)
 	}
 	builder.WriteString("    END([\"END\"])\n")
 	builder.WriteString("    style END fill:#FFB6C1\n")
@@ -128,15 +152,15 @@ func (g *Graph) DrawMermaid() (string, error) {
 			target = "END"
 		}
 		if edge.Condition != nil {
-			builder.WriteString(fmt.Sprintf("    %s -.-> %s\n", edge.From, target))
+			fmt.Fprintf(&builder, "    %s -.-> %s\n", edge.From, target)
 			continue
 		}
-		builder.WriteString(fmt.Sprintf("    %s --> %s\n", edge.From, target))
+		fmt.Fprintf(&builder, "    %s --> %s\n", edge.From, target)
 	}
 	if g.finishPoint != "" && len(g.defaultEdges[g.finishPoint]) == 0 && len(g.conditionalEdges[g.finishPoint]) == 0 {
-		builder.WriteString(fmt.Sprintf("    %s --> END\n", g.finishPoint))
+		fmt.Fprintf(&builder, "    %s --> END\n", g.finishPoint)
 	}
-	builder.WriteString(fmt.Sprintf("    style %s fill:#87CEEB\n", g.entryPoint))
+	fmt.Fprintf(&builder, "    style %s fill:#87CEEB\n", g.entryPoint)
 	return builder.String(), nil
 }
 

@@ -403,7 +403,7 @@ func (store *Store) Commit(ctx context.Context, commit Commit) (CommitResult, er
 	if err := ensureRunnerDirectory(store.journalDir); err != nil {
 		return result, err
 	}
-	journalPath := filepath.Join(store.journalDir, journal.ID+".json")
+	journalPath := safeRunnerPath(store.journalDir, journal.ID+".json")
 	if err := store.validateJournal(journalPath, journal); err != nil {
 		return CommitResult{}, err
 	}
@@ -755,7 +755,7 @@ func (store *Store) recoverLocked() error {
 		if file.IsDir() || !strings.EqualFold(filepath.Ext(file.Name()), ".json") {
 			continue
 		}
-		path := filepath.Join(store.journalDir, file.Name())
+		path := safeRunnerPath(store.journalDir, file.Name())
 		var journal transactionJournal
 		if err := readRunnerJSONFile(path, &journal); err != nil {
 			return err
@@ -832,7 +832,7 @@ func (store *Store) validateJournal(path string, journal transactionJournal) err
 }
 
 func (store *Store) transactionResultPath(transactionID string) string {
-	return filepath.Join(store.resultDir, transactionID+".json")
+	return safeRunnerPath(store.resultDir, transactionID+".json")
 }
 
 func (store *Store) loadTransactionResultLocked(transactionID string) (transactionResultRecord, bool, error) {

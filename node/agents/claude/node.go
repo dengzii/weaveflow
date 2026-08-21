@@ -60,13 +60,13 @@ func NewNode(options ...core.NodeOption) *Node {
 
 func (node *Node) Validate() error {
 	if node == nil {
-		return fmt.Errorf("Claude node is nil")
+		return fmt.Errorf("claude node is nil")
 	}
 	if err := node.NodeBase.Validate(); err != nil {
 		return err
 	}
 	if node.PromptPath.Empty() || node.OutputPath.Empty() {
-		return fmt.Errorf("Claude node %q requires prompt and output paths", node.ID())
+		return fmt.Errorf("claude node %q requires prompt and output paths", node.ID())
 	}
 	return nil
 }
@@ -135,21 +135,21 @@ func (node *Node) Execute(ctx core.Context, access *state.Access) (core.NodeResu
 func (node *Node) execute(ctx core.Context, access *state.Access) error {
 	prompt, err := state.Get(access, state.NewRef[string](node.PromptPath).Required())
 	if err != nil {
-		return fmt.Errorf("Claude node %q prompt: %w", node.ID(), err)
+		return fmt.Errorf("claude node %q prompt: %w", node.ID(), err)
 	}
 	if strings.TrimSpace(prompt) == "" {
-		return fmt.Errorf("Claude node %q prompt is empty", node.ID())
+		return fmt.Errorf("claude node %q prompt is empty", node.ID())
 	}
 	runner := RunnerFromContext(ctx)
 	if runner == nil {
-		return fmt.Errorf("Claude node %q runner is not configured", node.ID())
+		return fmt.Errorf("claude node %q runner is not configured", node.ID())
 	}
 	if err := node.publishProgress(ctx, progressEvent{
 		Event:   claudeProgressStarted,
 		Status:  "started",
 		Message: "Claude Code execution started",
 	}); err != nil {
-		return fmt.Errorf("Claude node %q publish start progress: %w", node.ID(), err)
+		return fmt.Errorf("claude node %q publish start progress: %w", node.ID(), err)
 	}
 
 	result, runErr := runner.Run(ctx, RunRequest{
@@ -175,7 +175,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 			Message:    runErr.Error(),
 			DurationMS: result.Duration.Milliseconds(),
 		})
-		return fmt.Errorf("Claude node %q: %w", node.ID(), runErr)
+		return fmt.Errorf("claude node %q: %w", node.ID(), runErr)
 	}
 	if err := state.Replace(access, state.NewRef[string](node.OutputPath), result.Output); err != nil {
 		_ = node.publishProgress(ctx, progressEvent{
@@ -200,7 +200,7 @@ func (node *Node) execute(ctx core.Context, access *state.Access) error {
 		NumTurns:   result.NumTurns,
 		DurationMS: result.Duration.Milliseconds(),
 	}); err != nil {
-		return fmt.Errorf("Claude node %q publish completion progress: %w", node.ID(), err)
+		return fmt.Errorf("claude node %q publish completion progress: %w", node.ID(), err)
 	}
 	return nil
 }

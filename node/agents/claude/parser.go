@@ -119,7 +119,7 @@ func (parser *eventParser) parse(line []byte) error {
 			if message == "" {
 				message = "unknown provider error"
 			}
-			parser.failed = fmt.Errorf("Claude reported %s: %s", firstNonEmpty(envelope.Subtype, "error"), message)
+			parser.failed = fmt.Errorf("claude reported %s: %s", firstNonEmpty(envelope.Subtype, "error"), message)
 			return nil
 		}
 		parser.completed = true

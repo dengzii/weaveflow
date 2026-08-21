@@ -101,7 +101,7 @@ func (store *Store) ListRunDeletionManifests(ctx context.Context) ([]fruntime.Ru
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var manifests []fruntime.RunDeletionManifest
 	for rows.Next() {
 		var data []byte
@@ -134,7 +134,7 @@ func (store *Store) ValidateRunDeletionFences(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	for rows.Next() {
 		var runID, deletionID string
 		if err := rows.Scan(&runID, &deletionID); err != nil {

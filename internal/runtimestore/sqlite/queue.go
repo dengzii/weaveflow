@@ -525,7 +525,7 @@ func (store *Store) ListTasks(ctx context.Context, filter fruntime.TaskFilter) (
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	statuses := make(map[fruntime.TaskStatus]struct{}, len(filter.Statuses))
 	for _, status := range filter.Statuses {
 		statuses[status] = struct{}{}
@@ -573,7 +573,7 @@ func (store *Store) ListAttempts(ctx context.Context, taskID string) ([]fruntime
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var attempts []fruntime.Attempt
 	for rows.Next() {
 		var data []byte

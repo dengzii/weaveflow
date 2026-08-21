@@ -19,7 +19,7 @@ func (r JSONSchema) WriteToFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	data, err := json.MarshalIndent(r, "", "  ")
 	if err != nil {
 		return err

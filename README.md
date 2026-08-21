@@ -8,10 +8,11 @@
   <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go" alt="Go 1.26+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://github.com/dengzii/weaveflow/actions"><img src="https://img.shields.io/github/actions/workflow/status/dengzii/weaveflow/ci.yml?branch=master&logo=github&label=CI" alt="CI"></a>
-  <a href="https://codecov.io/gh/dengzii/weaveflow"><img src="https://codecov.io/gh/dengzii/weaveflow/branch/master/graph/badge.svg" alt="Codecov"></a>
   <a href="https://pkg.go.dev/github.com/dengzii/weaveflow"><img src="https://pkg.go.dev/badge/github.com/dengzii/weaveflow.svg" alt="Go Reference"></a>
-  <a href="https://golangci-lint.run/"><img src="https://img.shields.io/badge/lint-golangci--lint-00ADD8" alt="golangci-lint"></a>
+  <a href="https://goreportcard.com/report/github.com/dengzii/weaveflow"><img src="https://goreportcard.com/badge/github.com/dengzii/weaveflow" alt="Go Report Card"></a>
   <a href="https://github.com/dengzii/weaveflow/releases"><img src="https://img.shields.io/github/v/release/dengzii/weaveflow?logo=github" alt="Release"></a>
+  <a href="https://codecov.io/gh/dengzii/weaveflow"><img src="https://codecov.io/gh/dengzii/weaveflow/branch/master/graph/badge.svg" alt="Codecov"></a>
+  <a href="https://golangci-lint.run/"><img src="https://img.shields.io/badge/lint-golangci--lint-00ADD8" alt="golangci-lint"></a>
   <a href="https://hub.docker.com/r/dengzii/weaveflow"><img src="https://img.shields.io/badge/Docker-dengzii%2Fweaveflow-2496ED?logo=docker&logoColor=white" alt="Docker Image"></a>
 </p>
 
@@ -22,11 +23,9 @@
   <a href="https://playground.weaveflow.space">Playground</a> ·
   <a href="https://github.com/dengzii/weaveflow">Source</a>
 </p>
-
 WeaveFlow is a Go-native graph runtime for building, executing, inspecting, and recovering LLM agent workflows.
 
-Build workflows with explicit topology, explicit state contracts, checkpointed execution, and runtime records that
-remain
+Build workflows with explicit topology, explicit state contracts, checkpointed execution, and runtime records that remain
 available for inspection after a run finishes.
 
 - [Quick Start](#quick-start)
@@ -35,10 +34,8 @@ available for inspection after a run finishes.
 - [Graph Definition](#graph-definition)
 - [Debug Server and Workbench](#debug-server-and-workbench)
 - [Container Deployment](#container-deployment)
-- [Examples](#examples)
+- [Examples and Documentation](#examples-and-documentation)
 - [Agent Skills](#agent-skills)
-
-## Why WeaveFlow
 
 Agent workflows become difficult to understand when topology, state access, and control flow are hidden inside an
 implicit loop. WeaveFlow keeps those boundaries explicit:
@@ -81,15 +78,14 @@ Graph Definition
 
 ## What You Can Build
 
-| Scenario             | Runtime capability                                            | Example                                      |
-|----------------------|---------------------------------------------------------------|----------------------------------------------|
-| Agent loop           | LLM calls, tool execution, conditions, and conversation state | `examples/graph/`                            |
-| Structured workflow  | Serial nodes, conditional routing, and fallback branches      | `conditional_routing.go`                     |
-| Parallel workflow    | Fan-out, fan-in, reducers, and wave checkpoints               | `fan_in_fan_out.go`, `dynamic_map_reduce.go` |
-| Failure handling     | Classified errors, failure routes, and fallback results       | `failure_fallback.go`                        |
-| Human intervention   | Suspend, checkpoint-backed resume, and dynamic control        | `human_approval.go`                          |
-| Multi-agent workflow | Supervisor routing, handoff, and isolated conversation roots  | `supervisor_mode/`, `two_agent_handoff/`     |
-
+| Scenario | Runtime capability | Example |
+|---|---|---|
+| Agent loop | LLM calls, tool execution, conditions, and conversation state | `examples/graph/` |
+| Structured workflow | Serial nodes, conditional routing, and fallback branches | `conditional_routing.go` |
+| Parallel workflow | Fan-out, fan-in, reducers, and wave checkpoints | `fan_in_fan_out.go`, `dynamic_map_reduce.go` |
+| Failure handling | Classified errors, failure routes, and fallback results | `failure_fallback.go` |
+| Human intervention | Suspend, checkpoint-backed resume, and dynamic control | `human_approval.go` |
+| Multi-agent workflow | Supervisor routing, handoff, and isolated conversation roots | `supervisor_mode/`, `two_agent_handoff/` |
 These examples demonstrate the current runtime and are not a claim that WeaveFlow is already a complete distributed
 production control plane.
 
@@ -110,12 +106,9 @@ detected before a run starts.
 
 ### Deterministic execution and control flow
 
-The runtime supports ordinary edges, conditional routing, structured route decisions, bounded parallel waves, fan-out
-and
-fan-in, reducers, and dynamic control commands. Nodes can request `Goto`, `Send`, `Suspend`, or `Return`, allowing a
-graph
-to express retries, approvals, dynamic task lists, and explicit early results without introducing an opaque
-orchestration
+The runtime supports ordinary edges, conditional routing, structured route decisions, bounded parallel waves, fan-out and
+fan-in, reducers, and dynamic control commands. Nodes can request `Goto`, `Send`, `Suspend`, or `Return`, allowing a graph
+to express retries, approvals, dynamic task lists, and explicit early results without introducing an opaque orchestration
 loop.
 
 ### Checkpointed pause and recovery
@@ -127,31 +120,26 @@ glue code.
 
 ### Runtime observability
 
-Run, Step, Event, Checkpoint, and Artifact records are first-class runtime data. Events cover node execution, model
-calls,
-tool calls, state changes, routing, checkpoints, warnings, failures, and nested execution. Applications can consume
-these
+Run, Step, Event, Checkpoint, and Artifact records are first-class runtime data. Events cover node execution, model calls,
+tool calls, state changes, routing, checkpoints, warnings, failures, and nested execution. Applications can consume these
 records through the runtime APIs, while the Debug Server and Workbench provide an interactive inspection path.
 
 ### Model and tool integration
 
-Built-in nodes cover model turns, conversation messages, tool execution, planning, replanning, verification, routing,
-and
+Built-in nodes cover model turns, conversation messages, tool execution, planning, replanning, verification, routing, and
 user input. The runtime includes an OpenAI-compatible adapter, bundled local tools, structured model output support, and
 explicit model and tool configuration through the registry and Graph Settings.
 
 ### Failure routes and bounded execution
 
-Execution failures can be classified and routed to dedicated fallback nodes. Runtime policies provide limits for
-execution
+Execution failures can be classified and routed to dedicated fallback nodes. Runtime policies provide limits for execution
 time, state size, concurrency, and related resource usage, so failure behavior and operational boundaries remain visible
 in the graph and in runtime records.
 
 ### Local-first debugging workflow
 
 The Debug Server provides graph upload, immutable session creation, run control, event streaming, state and checkpoint
-inspection, artifact access, and trigger-backed execution. The Workbench combines graph editing with run diagnostics so
-a
+inspection, artifact access, and trigger-backed execution. The Workbench combines graph editing with run diagnostics so a
 developer can move from a definition change to an observed execution without building a separate control plane.
 
 ## Quick Start
@@ -165,15 +153,47 @@ developer can move from a definition change to an observed execution without bui
 ### Build from source
 
 ```bash
-git clone https://github.com/dengzii/weaveflow.git
-cd weaveflow
+go run ./cmd/server -addr 127.0.0.1:8080 -data .local/server -graph examples/graph/agent-simple.json
+```
+
+Then visit [http://127.0.0.1:8080](http://127.0.0.1:8080) to open the Workbench.
+
+.
+  [Getting started](https://weaveflow.space/docs/getting-started.html) .
+  [Documentation](https://weaveflow.space/docs/) .
+  [Contributing](CONTRIBUTING.md) .
+  [License](LICENSE)
+
+## Features
+
+- **Graph-native execution** — nodes, edges, conditions, and built-in core node types for conversation, planning, and
+  tool orchestration.
+- **State-driven architecture** — typed `state.Path` bindings with access control patterns, custom reducers, and
+  deterministic snapshot hashing.
+- **Serialisable graphs** — portable `dsl.GraphDefinition` JSON with strict validation independently of the execution
+  engine; every resolved graph carries a verifiable semantic hash.
+- **Full lifecycle control** — pause, resume, cancel, inspect, and get checkpoints on any active run; runs are
+  resumable from checkpoints after a crash or restart.
+- **Runtime diagnostics** — live SSE event streaming for LLM calls, tool invocations, node progress, and state
+  transitions; attach to a running session from the Workbench or the event API.
+- **Extensible registry** — register custom node types, conditions, state reducers, and capabilities.
+- **Web-based Workbench** — visual graph editor, run inspector, state browser, and session manager.
+
+## Quick start
+
+**Prerequisites:** [Go 1.26+](https://go.dev/dl/), [Bun 1.3+](https://bun.sh/).
+
+```bash
+# Build all packages and run tests
 go build ./...
+go test ./...
+go vet ./...
 ```
 
 Use WeaveFlow as a Go module dependency:
 
 ```bash
-go get github.com/dengzii/weaveflow
+go run ./cmd/server -addr 127.0.0.1:8080 -data .local/server -graph examples/graph/agent-simple.json
 ```
 
 ### Run a model-free example
@@ -233,33 +253,15 @@ Graph Definition files are serializable JSON documents. The smallest useful shap
 {
   "version": "1.0",
   "name": "two_step",
-  "state_modules": [
-    {
-      "name": "weaveflow.protocols",
-      "version": "1"
-    }
-  ],
+  "state_modules": [{"name": "weaveflow.protocols", "version": "1"}],
   "entry_point": "input",
-  "nodes": [
-    {
-      "id": "llm",
-      "type": "llm_turn",
-      "config": {
-        "model_id": "default"
-      },
-      "state": {
-        "conversation": {
-          "path": "scopes.first.conversation"
-        }
-      }
-    }
-  ],
-  "edges": [
-    {
-      "from": "input",
-      "to": "llm"
-    }
-  ]
+  "nodes": [{
+    "id": "llm",
+    "type": "llm_turn",
+    "config": {"model_id": "default"},
+    "state": {"conversation": {"path": "scopes.first.conversation"}}
+  }],
+  "edges": [{"from": "input", "to": "llm"}]
 }
 ```
 
@@ -341,7 +343,7 @@ supports a read-only root filesystem, and binds to `127.0.0.1:8080` by default. 
 See [`scripts/README.md`](scripts/README.md) for Docker, Compose, and deployment-helper instructions. The local image
 version is recorded in [`VERSION`](VERSION).
 
-## Examples
+## Examples and Documentation
 
 Start from the goal that matches your task:
 
@@ -350,6 +352,8 @@ Start from the goal that matches your task:
 - **Learn Graph JSON and state operations:** [`examples/dsl/`](examples/dsl/) and
   [`examples/state_operations/`](examples/state_operations/).
 - **Use the Workbench:** [`internal/web/README.md`](internal/web/README.md).
+- **Review current capabilities and gaps:** [`docs/weaveflow-capability-gap-analysis.md`](docs/weaveflow-capability-gap-analysis.md).
+- **Review public website positioning:** [`docs/project-website-plan.md`](docs/project-website-plan.md).
 
 ## Agent Skills
 
@@ -392,6 +396,12 @@ and update the relevant example or documentation when a public workflow changes.
 WeaveFlow is under active development. The graph model, state contracts, execution runtime, local persistence, run
 inspection, and example workflows are usable for experimentation and non-trivial local applications. Public APIs,
 server surfaces, and production-hardening boundaries may continue to evolve.
+
+The current project should not be read as a claim that it already provides:
+
+- A complete multi-tenant authorization, quota, audit, and production control plane.
+- Cross-worker durable execution and automatic failure takeover.
+- A hosted cloud service, online Playground, or commercial SLA.
 
 ## License
 

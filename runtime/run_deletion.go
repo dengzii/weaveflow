@@ -47,10 +47,6 @@ type runDeletionStoreTarget struct {
 	store RunDeleter
 }
 
-type runHierarchyReader interface {
-	GetRun(context.Context, string) (RunRecord, error)
-}
-
 type runDeletionMutationKey struct{}
 
 type runDeletionUnlinkMutation struct {
@@ -1008,8 +1004,8 @@ func validateRunDeletionManifestIdentity(manifest RunDeletionManifest, deletion 
 		return fmt.Errorf("deletion manifest %q run plan mismatch", manifest.ID)
 	}
 	if manifest.Phase != deletion.Phase &&
-		!((manifest.Phase == RunDeletionPlanned || manifest.Phase == RunDeletionUnlinked) &&
-			(deletion.Phase == RunDeletionPlanned || deletion.Phase == RunDeletionUnlinked || deletion.Phase == RunDeletionDeleted)) {
+		((manifest.Phase != RunDeletionPlanned && manifest.Phase != RunDeletionUnlinked) ||
+			(deletion.Phase != RunDeletionPlanned && deletion.Phase != RunDeletionUnlinked && deletion.Phase != RunDeletionDeleted)) {
 		return fmt.Errorf("deletion manifest %q phase mismatch: %q versus %q", manifest.ID, manifest.Phase, deletion.Phase)
 	}
 	return nil

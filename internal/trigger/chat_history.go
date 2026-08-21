@@ -107,8 +107,8 @@ func (s *FileStore) CreateChatHistory(ctx context.Context, history ChatHistory) 
 		return ChatHistory{}, err
 	}
 	for {
-		path := filepath.Join(dir, strconv.FormatInt(history.ID, 10)+".json")
-		if _, err := os.Stat(path); os.IsNotExist(err) {
+		path := safeChatHistoryPath(dir, strconv.FormatInt(history.ID, 10)+".json")
+		if _, err := rootedStat(path); os.IsNotExist(err) {
 			if err := s.writeChatHistoryLocked(ctx, path, history); err != nil {
 				return ChatHistory{}, err
 			}
@@ -138,7 +138,7 @@ func (s *FileStore) UpdateChatHistory(ctx context.Context, history ChatHistory) 
 		return err
 	}
 	path := s.chatHistoryPath(history)
-	if _, err := os.Stat(path); os.IsNotExist(err) {
+	if _, err := rootedStat(path); os.IsNotExist(err) {
 		return ErrNotFound
 	} else if err != nil {
 		return err
@@ -164,7 +164,7 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	dir := s.chatHistoryDir(filter.TriggerID, filter.UserID, filter.ChannelConversationID, filter.ConversationID)
-	entries, err := os.ReadDir(dir)
+	entries, err := rootedReadDir(dir)
 	if os.IsNotExist(err) {
 		return []ChatHistory{}, nil
 	}
@@ -192,8 +192,8 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 		if err := storeContextError(ctx); err != nil {
 			return nil, err
 		}
-		path := filepath.Join(dir, strconv.FormatInt(id, 10)+".json")
-		data, err := os.ReadFile(path)
+		path := safeChatHistoryPath(dir, strconv.FormatInt(id, 10)+".json")
+		data, err := rootedReadFile(path)
 		if err != nil {
 			return nil, err
 		}
@@ -214,21 +214,21 @@ func (s *FileStore) ListChatHistory(ctx context.Context, filter ChatHistoryFilte
 
 func (s *FileStore) ensureChatHistoryDir(triggerID, userID, channelConversationID, conversationID string) (string, error) {
 	dir := s.chatHistoryDir(triggerID, userID, channelConversationID, conversationID)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := rootedMkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	if err := os.Chmod(dir, 0o700); err != nil {
+	if err := rootedChmod(dir, 0o700); err != nil {
 		return "", err
 	}
 	return dir, nil
 }
 
 func (s *FileStore) chatHistoryDir(triggerID, userID, channelConversationID, conversationID string) string {
-	return filepath.Join(s.chatConversationDir(triggerID, userID, channelConversationID, conversationID), "turns")
+	return safeChatHistoryPath(s.chatConversationDir(triggerID, userID, channelConversationID, conversationID), "turns")
 }
 
 func (s *FileStore) chatHistoryPath(history ChatHistory) string {
-	return filepath.Join(s.chatHistoryDir(history.TriggerID, history.UserID, history.ChannelConversationID, history.ConversationID), strconv.FormatInt(history.ID, 10)+".json")
+	return safeChatHistoryPath(s.chatHistoryDir(history.TriggerID, history.UserID, history.ChannelConversationID, history.ConversationID), strconv.FormatInt(history.ID, 10)+".json")
 }
 
 func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, history ChatHistory) error {
@@ -237,12 +237,11 @@ func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, his
 		return err
 	}
 	data = append(data, '\n')
-	temp, err := os.CreateTemp(filepath.Dir(path), ".chat-history-*.tmp")
+	temp, tempPath, err := rootedCreateTemp(filepath.Dir(path), ".chat-history-")
 	if err != nil {
 		return err
 	}
-	tempPath := temp.Name()
-	defer func() { _ = os.Remove(tempPath) }()
+	defer func() { _ = rootedRemove(tempPath) }()
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return err
@@ -261,7 +260,7 @@ func (s *FileStore) writeChatHistoryLocked(ctx context.Context, path string, his
 	if err := storeContextError(ctx); err != nil {
 		return err
 	}
-	return os.Rename(tempPath, path)
+	return rootedRename(tempPath, path)
 }
 
 func normalizeChatHistory(history ChatHistory) ChatHistory {
@@ -368,9 +367,24 @@ func validChatHistoryMessage(message ChatHistoryMessage) bool {
 func chatHistoryPathSegment(value string) string {
 	value = strings.TrimSpace(value)
 	if value != "." && value != ".." && isPlainChatHistoryPathSegment(value) {
-		return value
+		return filepath.Base(value)
 	}
-	return "~" + base64.RawURLEncoding.EncodeToString([]byte(value))
+	return filepath.Base("~" + base64.RawURLEncoding.EncodeToString([]byte(value)))
+}
+
+func safeChatHistoryPath(base string, components ...string) string {
+	if strings.TrimSpace(base) == "" {
+		return ""
+	}
+	safeComponents := make([]string, len(components))
+	for index, component := range components {
+		baseComponent := filepath.Base(component)
+		if component == "" || component == ".." || strings.Contains(component, "../") || strings.Contains(component, `..\`) || strings.Contains(component, "/") || strings.Contains(component, "\\") || baseComponent != component {
+			return ""
+		}
+		safeComponents[index] = baseComponent
+	}
+	return filepath.Join(append([]string{base}, safeComponents...)...)
 }
 
 func isPlainChatHistoryPathSegment(value string) bool {

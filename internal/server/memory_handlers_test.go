@@ -19,7 +19,7 @@ func TestMemoryRoutesProvideExplicitNamespacedCASAndSearch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() = %v", err)
 	}
-	defer srv.Close()
+	defer func() { _ = srv.Close() }()
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 

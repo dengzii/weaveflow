@@ -67,7 +67,7 @@ func (c *Client) createCompletion(ctx context.Context, payload *CompletionReques
 	if err != nil {
 		return nil, sanitizeHTTPError(err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 
 	if response.StatusCode != http.StatusOK {
 		return nil, decodeHTTPStatusError(response.StatusCode, response.Body)

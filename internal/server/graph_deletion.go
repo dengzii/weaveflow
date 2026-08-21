@@ -60,7 +60,7 @@ func (s *Server) handleDeleteGraph(c *gin.Context) {
 		s.events.DeleteGraph(graphID)
 	}
 	if err := s.sweepManagedSecrets(c.Request.Context()); err != nil {
-		slog.Warn("managed secret cleanup failed after graph deletion", "graph_id", graphID, "error", err)
+		slog.Warn("managed secret cleanup failed after graph deletion")
 	}
 	writeData(c, http.StatusOK, graphDeletionResponse{GraphID: graphID, DeletedTriggerCount: len(deletedTriggers)})
 }

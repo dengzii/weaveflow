@@ -336,7 +336,7 @@ func decodeStrictJSON(data []byte, target any) error {
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("JSON body contains multiple values")
+			return fmt.Errorf("json body contains multiple values")
 		}
 		return err
 	}

@@ -169,7 +169,7 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 		release(true)
 	}
 	if err := s.sweepManagedSecrets(context.WithoutCancel(c.Request.Context())); err != nil {
-		slog.Warn("managed secret cleanup failed after trigger replacement", "graph_id", graphID, "error", err)
+		slog.Warn("managed secret cleanup failed after trigger replacement")
 	}
 	result := make([]trigger.Trigger, 0, len(items))
 	for _, item := range items {

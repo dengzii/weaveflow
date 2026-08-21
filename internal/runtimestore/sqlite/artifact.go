@@ -191,7 +191,7 @@ func (artifacts artifactStore) List(ctx context.Context, runID string) ([]state.
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var refs []state.ArtifactRef
 	for rows.Next() {
 		var metadata []byte

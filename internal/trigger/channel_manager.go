@@ -134,7 +134,7 @@ func (s *Service) replaceChatChannel(id string, spec *ChatSpec, channel chatchan
 func (s *Service) runChatChannel(id string, channel chatchannel.Instance, entry *chatChannelEntry) {
 	err := channel.Run(entry.ctx)
 	if err != nil && entry.ctx.Err() == nil {
-		log.Printf("chat channel %q for trigger %q stopped: %v", entry.channel, id, err)
+		log.Print("chat channel stopped")
 	}
 	close(entry.done)
 	s.mu.Lock()
