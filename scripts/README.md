@@ -90,9 +90,9 @@ The data volume stores graphs, runs, checkpoints, artifacts, triggers, and manag
 writable in the examples because agent tools may edit files; use `:ro` when the deployed workflow does not need file
 writes.
 
-The image exposes `GET /healthz` for container health checks. It does not require the management token and returns only
-basic status information. The WebUI configuration is generated under `/tmp` at startup, so the image can run with a
-read-only root filesystem.
+The image exposes `GET /healthz` for container health checks. It does not require the management token and returns the
+server status, version, and UTC build time. The WebUI configuration is generated under `/tmp` at startup, so the image
+can run with a read-only root filesystem.
 
 For a published release, create a Git tag such as `v0.1.0` after committing the release changes. The GitHub Release
 workflow removes the leading `v` and publishes matching Docker tags such as `0.1.0`, `0.1`, `0`, and `latest` for a

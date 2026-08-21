@@ -3,6 +3,8 @@ import { Palette, RotateCcw, Save, Server, Settings, X } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input, SensitiveInput } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
+import { getServerInfo } from "../../api";
+import type { ServerInfo } from "../../types";
 import {
   getBackendBaseUrl,
   getStoredBackendBaseUrls,
@@ -52,16 +54,32 @@ export function SettingsDialog({
   const [backendBaseUrl, setBackendBaseUrl] = useState(getBackendBaseUrl);
   const [managementToken, setManagementToken] = useState(getManagementToken);
   const [backendError, setBackendError] = useState("");
+  const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
+  const [serverInfoError, setServerInfoError] = useState("");
   const hasBackendOverride = hasStoredBackendBaseUrl();
   const rememberedBackendBaseUrls = getStoredBackendBaseUrls();
 
   useEffect(() => {
     if (!open) return;
+    let active = true;
+    setServerInfo(null);
+    setServerInfoError("");
+    getServerInfo().then(
+      (info) => {
+        if (active) setServerInfo(info);
+      },
+      (error) => {
+        if (active) setServerInfoError(error instanceof Error ? error.message : String(error));
+      }
+    );
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      active = false;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
   }, [onClose, open]);
 
   function saveBackend(event: FormEvent<HTMLFormElement>) {
@@ -121,6 +139,8 @@ export function SettingsDialog({
                 backendBaseUrl={backendBaseUrl}
                 managementToken={managementToken}
                 backendError={backendError}
+                serverInfo={serverInfo}
+                serverInfoError={serverInfoError}
                 hasBackendOverride={hasBackendOverride}
                 rememberedBackendBaseUrls={rememberedBackendBaseUrls}
                 onBackendBaseUrlChange={(value) => {
@@ -182,6 +202,8 @@ function ServerSettings({
   backendBaseUrl,
   managementToken,
   backendError,
+  serverInfo,
+  serverInfoError,
   hasBackendOverride,
   rememberedBackendBaseUrls,
   onBackendBaseUrlChange,
@@ -192,6 +214,8 @@ function ServerSettings({
   backendBaseUrl: string;
   managementToken: string;
   backendError: string;
+  serverInfo: ServerInfo | null;
+  serverInfoError: string;
   hasBackendOverride: boolean;
   rememberedBackendBaseUrls: string[];
   onBackendBaseUrlChange: (value: string) => void;
@@ -229,6 +253,9 @@ function ServerSettings({
           />
         </label>
         {backendError ? <div className="text-xs text-destructive">{backendError}</div> : null}
+        <div className="text-xs text-muted-foreground">
+          {formatServerInfo(serverInfo, serverInfoError)}
+        </div>
         <div className="flex gap-2 border-t border-border pt-4">
           <Button type="submit" size="sm">
             <Save className="h-3.5 w-3.5" />
@@ -242,6 +269,16 @@ function ServerSettings({
       </form>
     </div>
   );
+}
+
+function formatServerInfo(info: ServerInfo | null, error: string): string {
+  if (error) return "Server version: Unavailable";
+  if (!info) return "Server version: Loading...";
+  const version = info.version || "Unknown";
+  if (!info.build_time) return `Server version: ${version}`;
+  const timestamp = Date.parse(info.build_time);
+  const buildTime = Number.isNaN(timestamp) ? info.build_time : new Date(timestamp).toLocaleString();
+  return `Server version: ${version} · Built ${buildTime}`;
 }
 
 function AppearanceSettings({

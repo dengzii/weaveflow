@@ -22,6 +22,11 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+var (
+	version   = "dev"
+	buildTime = "unknown"
+)
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
 	dataDir := flag.String("data", ".local/server", "data directory for graph debug runs")
@@ -71,6 +76,8 @@ func main() {
 
 	srv, err := server.New(ctx, server.Config{
 		Graph:               graph,
+		Version:             version,
+		BuildTime:           buildTime,
 		BaseDir:             *dataDir,
 		RuntimeStoreBackend: server.RuntimeStoreSQLite,
 		SecretDirectory:     *secretDir,

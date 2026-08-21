@@ -21,6 +21,7 @@ concurrency:
 env:
   RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
   DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE || format('{0}/weaveflow', secrets.DOCKERHUB_USERNAME) }}
+  CONTAINER_CACHE_SCOPE: production-release-${{ github.event.inputs.tag || github.ref_name }}
 
 jobs:
   verify:
@@ -124,7 +125,9 @@ jobs:
           if [ "$GOOS" = windows ]; then
             binary_name="${binary_name}.exe"
           fi
-          go build -buildvcs=false -trimpath -ldflags="-s -w" \
+          build_time="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          go build -buildvcs=false -trimpath \
+            -ldflags="-s -w -X main.version=${version} -X main.buildTime=${build_time}" \
             -o "$package_dir/$binary_name" ./cmd/server
           cp LICENSE README.md "$package_dir/"
           if [ "$GOOS" = windows ]; then
@@ -200,7 +203,9 @@ jobs:
       - name: Normalize release version
         env:
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
-        run: echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+        run: |
+          echo "RELEASE_VERSION=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
 
       - name: Build and push image
         id: push
@@ -215,8 +220,11 @@ jobs:
           build-args: |
             VERSION=${{ env.RELEASE_VERSION }}
             VCS_REF=${{ env.VCS_REF }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+            BUILD_TIME=${{ env.BUILD_TIME }}
+          cache-from: |
+            type=gha,scope=production-image
+            type=gha,scope=${{ env.CONTAINER_CACHE_SCOPE }}
+          cache-to: type=gha,mode=max,scope=${{ env.CONTAINER_CACHE_SCOPE }},ignore-error=true
           provenance: mode=max
           sbom: true
 

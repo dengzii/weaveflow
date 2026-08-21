@@ -3,6 +3,7 @@ ARG BUN_VERSION=1.3.4
 ARG GOPROXY=https://goproxy.cn,direct
 ARG VERSION=dev
 ARG VCS_REF=unknown
+ARG BUILD_TIME=unknown
 
 FROM oven/bun:${BUN_VERSION} AS web-builder
 
@@ -26,7 +27,11 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . ./
-RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath -ldflags="-s -w" -o /out/weaveflow-server ./cmd/server
+ARG VERSION
+ARG BUILD_TIME
+RUN CGO_ENABLED=0 go build -buildvcs=false -trimpath \
+      -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
+      -o /out/weaveflow-server ./cmd/server
 
 FROM nginx:alpine
 

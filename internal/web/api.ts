@@ -19,6 +19,7 @@ import type {
   RuntimeEventPage,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  ServerInfo,
   ToolsInfo,
   Trigger,
 } from "./types";
@@ -77,6 +78,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     headers: managementHeaders(init?.headers),
   });
   return readResponse<T>(response);
+}
+
+export async function getServerInfo(): Promise<ServerInfo> {
+  return apiFetch<ServerInfo>("/healthz");
 }
 
 function graphPath(graphID: string): string {

@@ -28,8 +28,10 @@ import (
 type RuntimeContextDecorator func(context.Context) context.Context
 
 type Config struct {
-	Graph    *wfgraph.Graph
-	Registry *wfregistry.Registry
+	Graph     *wfgraph.Graph
+	Registry  *wfregistry.Registry
+	Version   string
+	BuildTime string
 
 	BaseDir             string
 	RuntimeStoreBackend string

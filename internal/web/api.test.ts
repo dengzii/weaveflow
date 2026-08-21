@@ -4,6 +4,7 @@ import {
   analyzeInitialStateRequirements,
   commitGraph,
   deleteGraph,
+  getServerInfo,
   getRunInspection,
   listGraphs,
   listRuns,
@@ -18,6 +19,21 @@ afterEach(() => {
 });
 
 describe("server API client", () => {
+  test("loads public server build information", async () => {
+    let request: { url: string; init?: RequestInit } | undefined;
+    globalThis.fetch = (async (input, init) => {
+      request = { url: String(input), init };
+      return jsonResponse({ status: "ok", version: "0.1.0", build_time: "2026-08-21T04:05:06Z" });
+    }) as typeof fetch;
+
+    await expect(getServerInfo()).resolves.toEqual({
+      status: "ok",
+      version: "0.1.0",
+      build_time: "2026-08-21T04:05:06Z",
+    });
+    expect(request?.url).toBe("http://localhost:8080/healthz");
+  });
+
   test("consumes Graph and Run pagination without legacy list requests", async () => {
     const requests: string[] = [];
     globalThis.fetch = (async (input) => {

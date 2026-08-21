@@ -8,6 +8,12 @@ export interface ApiErrorPayload {
   message: string;
 }
 
+export interface ServerInfo {
+  status: string;
+  version: string;
+  build_time: string;
+}
+
 export interface GraphDefinition {
   version?: string;
   name?: string;
