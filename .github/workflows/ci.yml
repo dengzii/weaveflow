@@ -13,6 +13,9 @@ permissions:
   contents: read
   pull-requests: read
 
+env:
+  CONTAINER_CACHE_SCOPE: ${{ github.event_name == 'pull_request' && format('production-pr-{0}', github.event.pull_request.number) || 'production-image' }}
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -178,8 +181,10 @@ jobs:
           push: false
           load: true
           tags: weaveflow:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: |
+            type=gha,scope=production-image
+            ${{ github.event_name == 'pull_request' && format('type=gha,scope={0}', env.CONTAINER_CACHE_SCOPE) || '' }}
+          cache-to: type=gha,mode=max,scope=${{ env.CONTAINER_CACHE_SCOPE }},ignore-error=true
 
       - name: Smoke test container health endpoint
         run: |

@@ -1,0 +1,24 @@
+{
+  "name": "WeaveFlow Demo",
+  "image": "ghcr.io/dengzii/weaveflow-codespaces:main",
+  "overrideCommand": false,
+  "remoteUser": "codespace",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [8080],
+  "portsAttributes": {
+    "8080": {
+      "label": "WeaveFlow Workbench",
+      "protocol": "http",
+      "onAutoForward": "openBrowser"
+    }
+  },
+  "otherPortsAttributes": {
+    "onAutoForward": "silent"
+  },
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "4gb",
+    "storage": "16gb"
+  }
+}

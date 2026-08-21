@@ -1,0 +1,115 @@
+{
+  "version": "1.0",
+  "name": "codespaces_demo",
+  "description": "A credential-free Graph for exploring the Workbench, state changes, conditions, and Run inspection.",
+  "state_modules": [
+    {
+      "name": "weaveflow.protocols",
+      "version": "1"
+    }
+  ],
+  "entry_point": "seed_features",
+  "nodes": [
+    {
+      "id": "seed_features",
+      "name": "Seed Features",
+      "type": "state_set",
+      "config": {
+        "value": [
+          {
+            "name": "Graph Sessions",
+            "enabled": true
+          },
+          {
+            "name": "Run Events",
+            "enabled": true
+          },
+          {
+            "name": "External Model",
+            "enabled": false
+          }
+        ]
+      },
+      "state": {
+        "target": {
+          "path": "shared.demo.features"
+        }
+      }
+    },
+    {
+      "id": "select_ready_features",
+      "name": "Select Ready Features",
+      "type": "state_transform",
+      "config": {
+        "expression": "inputs.features.filter(item, item.enabled).map(item, {'name': item.name})"
+      },
+      "state": {
+        "features": {
+          "path": "shared.demo.features"
+        },
+        "output": {
+          "path": "shared.demo.ready_features"
+        }
+      }
+    },
+    {
+      "id": "ready",
+      "name": "Demo Ready",
+      "type": "state_set",
+      "config": {
+        "value": "WeaveFlow Codespaces demo completed. Inspect State, Events, Steps, and Checkpoints for this Run."
+      },
+      "state": {
+        "target": {
+          "path": "shared.final.answer"
+        }
+      }
+    },
+    {
+      "id": "empty",
+      "name": "No Features Ready",
+      "type": "state_set",
+      "config": {
+        "value": "No demo features were selected."
+      },
+      "state": {
+        "target": {
+          "path": "shared.final.answer"
+        }
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "seed_features",
+      "to": "select_ready_features"
+    },
+    {
+      "from": "select_ready_features",
+      "to": "ready",
+      "condition": {
+        "type": "state_expression",
+        "config": {
+          "expression": "inputs.features.size() > 0"
+        },
+        "state": {
+          "features": {
+            "path": "shared.demo.ready_features"
+          }
+        }
+      }
+    },
+    {
+      "from": "select_ready_features",
+      "to": "empty"
+    },
+    {
+      "from": "ready",
+      "to": "__end__"
+    },
+    {
+      "from": "empty",
+      "to": "__end__"
+    }
+  ]
+}

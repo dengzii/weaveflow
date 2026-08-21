@@ -21,6 +21,7 @@
   <a href="https://weaveflow.space/docs/">Documentation</a> ·
   <a href="https://weaveflow.space/docs/zh/">中文文档</a> ·
   <a href="https://playground.weaveflow.space">Playground</a> ·
+  <a href="https://codespaces.new/dengzii/weaveflow?quickstart=1&amp;devcontainer_path=.devcontainer%2Fdemo%2Fdevcontainer.json">Codespaces Demo</a> ·
   <a href="https://github.com/dengzii/weaveflow">Source</a>
 </p>
 WeaveFlow is a Go-native graph runtime for building, executing, inspecting, and recovering LLM agent workflows.
@@ -143,6 +144,18 @@ inspection, artifact access, and trigger-backed execution. The Workbench combine
 developer can move from a definition change to an observed execution without building a separate control plane.
 
 ## Quick Start
+
+### One-click Workbench demo
+
+<a href="https://codespaces.new/dengzii/weaveflow?quickstart=1&amp;devcontainer_path=.devcontainer%2Fdemo%2Fdevcontainer.json"><img src="https://github.com/codespaces/badge.svg" alt="Open in GitHub Codespaces"></a>
+
+The Codespaces profile pulls a prebuilt WebUI and server image, creates a ready-to-run Session for a credential-free
+Graph, then opens the private forwarded Workbench. Select `codespaces_demo`, click **Run**, and keep the default empty
+initial State to inspect its Steps, Events, State, and Checkpoints. The demo uses disposable local data and does not
+require a model provider. The repository is mounted at `/workspace`, so bundled file tools resolve against the checked-out
+source. The image is rebuilt with a GitHub Actions cache when files used by the demo image change on `master`.
+
+Keep port `8080` private. Configure `WEAVEFLOW_MANAGEMENT_TOKEN` before making the forwarded port public.
 
 ### Requirements
 
