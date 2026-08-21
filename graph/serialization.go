@@ -125,7 +125,7 @@ func resolveGraphFilePath(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve graph file path: %w", err)
 	}
-	return filepath.Clean("/" + resolved), nil
+	return filepath.Clean(resolved), nil
 }
 
 func (g *Graph) DrawMermaid() (string, error) {

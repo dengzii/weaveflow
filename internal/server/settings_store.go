@@ -177,7 +177,7 @@ func graphRuntimeSettingsPath(baseDir string) string {
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(filepath.Clean("/"+absolute), graphRuntimeSettingsFileName)
+	return filepath.Join(filepath.Clean(absolute), graphRuntimeSettingsFileName)
 }
 
 func writeGraphRuntimeSettingsFile(path string, data []byte) error {

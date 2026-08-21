@@ -565,9 +565,16 @@ func (e *graphRunnerExecution) OnTaskAttempt(ctx context.Context, task GraphTask
 	if !retry {
 		var nodeInterrupt *core.NodeInterrupt
 		var graphInterrupt *GraphInterrupt
-		if !errors.As(attemptErr, &nodeInterrupt) && !errors.As(attemptErr, &graphInterrupt) {
-			return nil
+		if errors.As(attemptErr, &nodeInterrupt) || errors.As(attemptErr, &graphInterrupt) {
+			_, err := e.runner.taskQueue.Fail(context.WithoutCancel(ctx), lease, TaskFailure{
+				Message: attemptErr.Error(), Retryable: true, RetryAt: e.runner.currentTime(),
+			})
+			if err == nil {
+				e.deleteNodeTaskLease(task.OperationID, lease)
+			}
+			return err
 		}
+		return nil
 	}
 	_, err := e.runner.taskQueue.Fail(context.WithoutCancel(ctx), lease, TaskFailure{
 		Message: attemptErr.Error(), Retryable: retry, RetryAt: e.runner.currentTime(),
@@ -896,12 +903,23 @@ func (e *graphRunnerExecution) beforeNode(ctx context.Context, task GraphTask, c
 					e.runPersistMu.Unlock()
 					return core.NewContext(ctx), errors.New("node task enqueue requires an atomic task queue")
 				}
-				guardedCommit, guardErr := e.runner.guardExecutionCommit(ctx, commit)
-				if guardErr != nil {
-					e.runPersistMu.Unlock()
-					return core.NewContext(ctx), guardErr
+				queueTask := e.nodeQueueTask(run, step, task, startedAt)
+				existingTask, taskErr := queue.GetTask(ctx, queueTask.ID)
+				switch {
+				case errors.Is(taskErr, ErrTaskNotFound):
+					guardedCommit, guardErr := e.runner.guardExecutionCommit(ctx, commit)
+					if guardErr != nil {
+						e.runPersistMu.Unlock()
+						return core.NewContext(ctx), guardErr
+					}
+					_, commitResult, commitErr = queue.EnqueueWithCommit(ctx, queueTask, guardedCommit)
+				case taskErr != nil:
+					commitErr = taskErr
+				case existingTask.Status == TaskStatusQueued || existingTask.Status == TaskStatusRunning:
+					commitResult, commitErr = e.runner.commitRuntime(ctx, commit)
+				default:
+					commitErr = fmt.Errorf("%w: node task %q status %q cannot resume", ErrTaskConflict, queueTask.ID, existingTask.Status)
 				}
-				_, commitResult, commitErr = queue.EnqueueWithCommit(ctx, e.nodeQueueTask(run, step, task, startedAt), guardedCommit)
 			} else {
 				commitResult, commitErr = e.runner.commitRuntime(ctx, commit)
 			}

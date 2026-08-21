@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -16,6 +17,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+func TestGraphRuntimeSettingsPathPreservesAbsoluteBaseDirectory(t *testing.T) {
+	baseDir := t.TempDir()
+	path := graphRuntimeSettingsPath(baseDir)
+	if filepath.Dir(path) != filepath.Clean(baseDir) {
+		t.Fatalf("graphRuntimeSettingsPath() directory = %q, want %q", filepath.Dir(path), filepath.Clean(baseDir))
+	}
+}
 
 func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	gin.SetMode(gin.TestMode)
@@ -88,6 +97,11 @@ func TestGraphSessionSettingsPersistAcrossServerRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() after settings save error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := restored.Close(); err != nil {
+			t.Errorf("restored Server.Close() error = %v", err)
+		}
+	})
 	graphs, err := restored.listCachedGraphs()
 	if err != nil {
 		t.Fatal(err)

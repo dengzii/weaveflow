@@ -135,6 +135,62 @@ func TestSQLiteWorkerFailsNodeTaskWithRun(t *testing.T) {
 	t.Fatalf("queued run did not fail: run=%#v node_tasks=%#v", persistedRun, nodeTasks)
 }
 
+func TestSQLiteUserInputInterruptResumeReusesQueuedNodeTask(t *testing.T) {
+	srv, err := New(context.Background(), Config{
+		Graph: newMinimalTestGraph(t), GraphID: "graph", GraphVersion: "v1", GraphSessionID: "session-1",
+		BaseDir: t.TempDir(), RuntimeStoreBackend: RuntimeStoreSQLite,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Close() error = %v", err)
+		}
+	})
+	queue := srv.runtime.taskQueue("graph")
+	if queue == nil {
+		t.Fatal("SQLite task queue is nil")
+	}
+	runner := srv.Runner()
+	pausedRun, _, err := runner.Start(context.Background(), state.NewState())
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if pausedRun.Status != runtime.RunStatusPaused {
+		t.Fatalf("paused run status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
+	}
+	nodeTasks, err := queue.ListTasks(context.Background(), runtime.TaskFilter{Kinds: []string{runtime.TaskKindGraphNode}, RunID: pausedRun.RunID})
+	if err != nil {
+		t.Fatalf("ListTasks() error = %v", err)
+	}
+	if len(nodeTasks) != 1 || nodeTasks[0].Status != runtime.TaskStatusQueued || nodeTasks[0].Lease != nil {
+		t.Fatalf("paused node tasks = %#v, want one queued task without lease", nodeTasks)
+	}
+	resumeInput := state.NewState()
+	if err := state.SetPath(resumeInput, state.Shared("request", "pending_input").String(), "hello"); err != nil {
+		t.Fatalf("SetPath() error = %v", err)
+	}
+	completedRun, finalState, err := runner.Resume(context.Background(), pausedRun.RunID, resumeInput)
+	if err != nil {
+		t.Fatalf("Resume() error = %v", err)
+	}
+	if completedRun.Status != runtime.RunStatusCompleted {
+		t.Fatalf("resumed run status = %q, want %q", completedRun.Status, runtime.RunStatusCompleted)
+	}
+	value, ok := state.ReadPath(finalState, state.Shared("request", "input").String())
+	if !ok || value != "hello" {
+		t.Fatalf("final input = %#v, found = %v, want hello", value, ok)
+	}
+	nodeTasks, err = queue.ListTasks(context.Background(), runtime.TaskFilter{Kinds: []string{runtime.TaskKindGraphNode}, RunID: pausedRun.RunID})
+	if err != nil {
+		t.Fatalf("ListTasks(completed) error = %v", err)
+	}
+	if len(nodeTasks) != 1 || nodeTasks[0].Status != runtime.TaskStatusCompleted || nodeTasks[0].AttemptCount != 2 {
+		t.Fatalf("completed node tasks = %#v, want one task completed on second attempt", nodeTasks)
+	}
+}
+
 func TestSQLiteWorkerRestartsAndTakesOverExpiredRun(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	baseDir := t.TempDir()

@@ -533,7 +533,7 @@ func readCachedGraphSession(graphDir string, sessionID string) (graphSessionMani
 	if err != nil {
 		return graphSessionManifest{}, false, err
 	}
-	absoluteGraphDir = filepath.Clean("/" + absoluteGraphDir)
+	absoluteGraphDir = filepath.Clean(absoluteGraphDir)
 	baseDir := filepath.Join(absoluteGraphDir, sessionID)
 	root, err := os.OpenRoot(baseDir)
 	if os.IsNotExist(err) {
