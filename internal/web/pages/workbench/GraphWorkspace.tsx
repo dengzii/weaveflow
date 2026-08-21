@@ -110,10 +110,10 @@ import {
   realNodeTypes,
   virtualNodeSpec,
 } from "./graph-workspace/utils";
-import type { WorkspaceMode } from "./WorkbenchShell";
+import type { ActiveWorkspaceMode } from "./workspaceModeModel";
 
 interface GraphWorkspaceProps {
-  workspaceMode: WorkspaceMode;
+  workspaceMode: ActiveWorkspaceMode;
   initializing: boolean;
   definition: GraphDefinition | null;
   definitionText: string;

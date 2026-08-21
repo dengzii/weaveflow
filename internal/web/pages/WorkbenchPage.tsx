@@ -25,7 +25,11 @@ import { GraphWorkspace } from "./workbench/GraphWorkspace";
 import { RegistryDialog } from "./workbench/RegistryDialog";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
 import { SettingsDialog } from "./workbench/SettingsDialog";
-import { WorkbenchShell, type WorkspaceMode } from "./workbench/WorkbenchShell";
+import { WorkbenchShell } from "./workbench/WorkbenchShell";
+import {
+  resolveWorkspaceMode,
+  type WorkspaceMode,
+} from "./workbench/workspaceModeModel";
 import { UserInputPromptDialog } from "./workbench/UserInputPromptDialog";
 import { useWorkbenchRuns } from "./workbench/useWorkbenchRuns";
 import type { ToastRecord, ToastTone } from "./workbench/graph-workspace/ToastStack";
@@ -294,18 +298,16 @@ export function WorkbenchPage() {
   const workbenchBusy = busy || runBusy || runLaunchPending;
   const runControlsDisabled = runBusy || (busy && !runLaunchPending) || initializing;
   const graphSwitchDisabled = workbenchBusy || graphSwitchLocked || initializing;
-  const enterDebugMode = useCallback(() => {
-    setWorkspaceMode("debug");
+  const activeWorkspaceMode = resolveWorkspaceMode(workspaceMode, runStatusVisible);
+  const showAutoRunPanel = useCallback(() => {
+    if (workspaceMode !== "auto") return;
     if (!runStatusVisible) toggleRunStatus();
-  }, [runStatusVisible, toggleRunStatus]);
+  }, [runStatusVisible, toggleRunStatus, workspaceMode]);
 
   const changeWorkspaceMode = useCallback((mode: WorkspaceMode) => {
-    if (mode === "debug") {
-      enterDebugMode();
-      return;
-    }
-    setWorkspaceMode("edit");
-  }, [enterDebugMode]);
+    setWorkspaceMode(mode);
+    if (mode === "debug" && !runStatusVisible) toggleRunStatus();
+  }, [runStatusVisible, toggleRunStatus]);
 
   const loadServerState = useCallback(async () => {
     try {
@@ -430,7 +432,7 @@ export function WorkbenchPage() {
       }
       const result = await commitCurrentGraph(definition);
       if (!result) return;
-      enterDebugMode();
+      showAutoRunPanel();
       await startConfiguredRun(initialState, {
         id: result.graph.id,
         version: result.graph.version,
@@ -475,6 +477,7 @@ export function WorkbenchPage() {
 
   async function saveGraph() {
     if (savingRef.current) return;
+    if (!graphUnsaved) return;
     savingRef.current = true;
     setBusy(true);
     setSaving(true);
@@ -601,7 +604,7 @@ export function WorkbenchPage() {
 
   useEffect(() => {
     const handleSaveShortcut = (event: KeyboardEvent) => {
-      if (workspaceMode !== "edit" || initializing || settingsDialogOpen || !isSaveShortcut(event)) return;
+      if (initializing || settingsDialogOpen || !isSaveShortcut(event) || !graphUnsaved) return;
       event.preventDefault();
       if (event.repeat || workbenchBusy || !definition) return;
       void saveGraph();
@@ -629,20 +632,14 @@ export function WorkbenchPage() {
       onPause={() => void pauseSelectedRun()}
       onStop={() => void cancelSelectedRun()}
       onResume={() => {
-        enterDebugMode();
+        showAutoRunPanel();
         void resumeSelectedRun();
       }}
       onShowRegistry={() => setRegistryDialogOpen(true)}
       onShowSettings={() => setSettingsDialogOpen(true)}
       hasRunStatus={runs.length > 0 || Boolean(selectedRunID)}
       runStatusVisible={runStatusVisible}
-      onToggleRunStatus={() => {
-        if (workspaceMode === "edit") {
-          enterDebugMode();
-          return;
-        }
-        toggleRunStatus();
-      }}
+      onToggleRunStatus={toggleRunStatus}
       onWorkspaceModeChange={changeWorkspaceMode}
       runStatusPanel={
         <RunStatusPanel
@@ -653,7 +650,7 @@ export function WorkbenchPage() {
           runInspectionLoading={runInspectionLoading}
           runActionsDisabled={workbenchBusy}
           onSelectRun={(runID) => {
-            enterDebugMode();
+            showAutoRunPanel();
             selectRun(runID);
           }}
           onDeleteRun={(runID) => void deleteRunRecord(runID)}
@@ -672,7 +669,7 @@ export function WorkbenchPage() {
       }
     >
       <GraphWorkspace
-        workspaceMode={workspaceMode}
+        workspaceMode={activeWorkspaceMode}
         initializing={initializing}
         definition={definition}
         definitionText={definitionText}

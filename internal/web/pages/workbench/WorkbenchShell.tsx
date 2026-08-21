@@ -14,6 +14,7 @@ import { Button } from "../../components/ui/button";
 import { cn } from "../../lib/utils";
 import { getBackendBaseUrl } from "../../lib/backend";
 import type { GraphDefinition } from "../../types";
+import type { WorkspaceMode } from "./workspaceModeModel";
 
 type StreamStatus = "connecting" | "connected" | "gap" | "failed" | "closed";
 interface StreamDiagnostics {
@@ -30,7 +31,7 @@ interface StreamDiagnostics {
   handlingDurationMS: number;
 }
 type RunControlMode = "run" | "active" | "resume";
-export type WorkspaceMode = "edit" | "debug";
+export type { WorkspaceMode } from "./workspaceModeModel";
 
 export function WorkbenchShell({
   streamStatus,
@@ -87,7 +88,7 @@ export function WorkbenchShell({
 }) {
   const backendBaseUrl = getBackendBaseUrl();
   const displayedBackendBaseUrl = backendBaseUrl.replace(/^https?:\/\//, "");
-  const runPanelShown = workspaceMode === "debug" && runStatusVisible;
+  const runPanelShown = runStatusVisible;
 
   return (
     <div className="workbench-shell-enter flex h-screen min-h-0 overflow-hidden bg-background text-foreground">
@@ -122,19 +123,17 @@ export function WorkbenchShell({
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
           <div id="graph-title-slot" className="min-w-0" />
           <div className="flex-1" />
-          {workspaceMode === "edit" ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
-              onClick={onSave}
-              disabled={busy || initializing || !definition}
-              title="Save graph"
-            >
-              {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
-              Save
-            </Button>
-          ) : null}
+          <Button
+            variant="outline"
+            size="sm"
+            className={cn(unsaved && "border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25")}
+            onClick={onSave}
+            disabled={busy || initializing || !definition || !unsaved}
+            title={unsaved ? "Save graph" : "No changes to save"}
+          >
+            {saving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />}
+            Save
+          </Button>
           {runControlMode === "active" ? (
             <>
               <Button variant="outline" size="sm" onClick={onPause} disabled={runControlsDisabled || !hasRunStatus} title="Pause run">
@@ -202,7 +201,7 @@ export function WorkbenchShell({
           aria-busy={initializing}
         >
           <div className="inline-flex h-7 shrink-0 items-center rounded-md border border-border bg-muted/60 p-0.5" role="group" aria-label="Workspace mode">
-            {(["edit", "debug"] as const).map((mode) => (
+            {(["auto", "edit", "debug"] as const).map((mode) => (
               <button
                 key={mode}
                 type="button"

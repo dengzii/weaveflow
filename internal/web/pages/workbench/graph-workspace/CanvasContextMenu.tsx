@@ -1,4 +1,5 @@
 import { useState, type RefObject } from "react";
+import { createPortal } from "react-dom";
 import { ChevronRight } from "lucide-react";
 import type { NodePosition } from "../../../lib/graphEditor";
 import { partitionNodeTypes } from "../../../lib/nodeGroups";
@@ -62,7 +63,7 @@ export function CanvasContextMenu({
     setOpenGroupName(name);
   };
 
-  return (
+  const menu = (
     <>
       <div
         ref={menuRef}
@@ -217,6 +218,8 @@ export function CanvasContextMenu({
       ) : null}
     </>
   );
+
+  return typeof document === "undefined" ? null : createPortal(menu, document.body);
 }
 
 function ContextMenuTitle({ children }: { children: string }) {

@@ -635,14 +635,14 @@ function GraphCanvasInner({
         }}
         minZoom={minGraphCanvasZoom}
         maxZoom={maxGraphCanvasZoom}
-        panOnDrag={[1]}
-        selectionOnDrag={interactive}
+        panOnDrag={editable ? [1] : [0, 1]}
+        selectionOnDrag={isInteractive}
         nodesDraggable={isInteractive}
         nodesConnectable={isInteractive}
         elementsSelectable={editable ? interactive : true}
         edgesReconnectable={false}
         proOptions={{ hideAttribution: true }}
-        className={`debug-flow ${isInteractive ? "debug-flow-editable" : "debug-flow-locked"}`}
+        className={`debug-flow ${isInteractive ? "debug-flow-editable" : "debug-flow-locked"}${editable ? "" : " debug-flow-left-pan"}`}
       >
         <MiniMap<Node<FlowNodeData>>
           pannable

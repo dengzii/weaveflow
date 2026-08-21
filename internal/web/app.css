@@ -190,6 +190,14 @@
   cursor: grabbing;
 }
 
+.debug-flow-left-pan .react-flow__pane {
+  cursor: grab;
+}
+
+.debug-flow-left-pan .react-flow__pane.dragging {
+  cursor: grabbing;
+}
+
 .debug-flow .react-flow__controls {
   overflow: hidden;
   border: 1px solid var(--border);
