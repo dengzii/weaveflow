@@ -23,10 +23,12 @@ Do not mention internal routing, worker ids, or the supervisor process unless th
 
 type SynthesisNode struct {
 	core.NodeBase
-	ModelID        string
-	SystemPrompt   string
-	SupervisorPath state.Path
-	ResultPath     state.Path
+	ModelID          string
+	SystemPrompt     string
+	PreferredWorker  string
+	PreferredWorkers []string
+	SupervisorPath   state.Path
+	ResultPath       state.Path
 }
 
 func NewSynthesisNode(options ...core.NodeOption) *SynthesisNode {
@@ -56,9 +58,15 @@ func (n *SynthesisNode) Validate() error {
 }
 
 func (n *SynthesisNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisorSynthesis, map[string]any{
-		"model_id": n.ModelID, "system_prompt": n.SystemPrompt,
-	}, map[string]state.Path{"supervisor": n.SupervisorPath, "result": n.ResultPath})
+	configMap := map[string]any{"model_id": n.ModelID, "system_prompt": n.SystemPrompt}
+	if strings.TrimSpace(n.PreferredWorker) != "" {
+		configMap["preferred_worker"] = strings.TrimSpace(n.PreferredWorker)
+	}
+	if len(n.PreferredWorkers) > 0 {
+		configMap["preferred_workers"] = append([]string(nil), n.PreferredWorkers...)
+	}
+	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisorSynthesis, configMap,
+		map[string]state.Path{"supervisor": n.SupervisorPath, "result": n.ResultPath})
 }
 
 func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -73,6 +81,14 @@ func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
 					"system_prompt": dsl.JSONSchema{
 						"type": "string", "title": "System Prompt", "x-control": "textarea", "default": defaultSupervisorSynthesisSystemPrompt,
+					},
+					"preferred_worker": dsl.JSONSchema{
+						"type": "string", "title": "Preferred Worker",
+						"description": "Use the latest non-empty result from this worker directly instead of making another model call.",
+					},
+					"preferred_workers": dsl.JSONSchema{
+						"type": "array", "title": "Preferred Workers", "items": dsl.JSONSchema{"type": "string"},
+						"description": "Concatenate the latest non-empty results from these workers in order instead of making another model call.",
 					},
 				},
 				"additionalProperties": false,
@@ -101,6 +117,8 @@ func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 			target := NewSynthesisNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
+			target.PreferredWorker = config.String(spec.Config, "preferred_worker")
+			target.PreferredWorkers = config.StringSlice(spec.Config, "preferred_workers")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
 				target.SystemPrompt = prompt
 			}
@@ -116,10 +134,6 @@ func (n *SynthesisNode) Execute(ctx core.Context, access *state.Access) (core.No
 }
 
 func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
-	model := ctx.Model(n.ModelID)
-	if model == nil {
-		return fmt.Errorf("supervisor synthesis node: model %q not available", effectiveModelID(n.ModelID))
-	}
 	supervisorView, err := supervisorcap.Bind(access, n.SupervisorPath)
 	if err != nil {
 		return err
@@ -130,6 +144,20 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 		return fmt.Errorf("supervisor synthesis node %q requires an objective", n.ID())
 	}
 	history := historyFromValue(current[SupervisorFieldHistory])
+	if len(n.PreferredWorkers) > 0 {
+		answer, resultErr := combinedWorkerResults(history, n.PreferredWorkers)
+		if resultErr != nil {
+			return fmt.Errorf("supervisor synthesis node %q: %w", n.ID(), resultErr)
+		}
+		return n.storeAnswer(ctx, access, supervisorView, current, answer)
+	}
+	if answer := latestWorkerResult(history, n.PreferredWorker); answer != "" {
+		return n.storeAnswer(ctx, access, supervisorView, current, answer)
+	}
+	model := ctx.Model(n.ModelID)
+	if model == nil {
+		return fmt.Errorf("supervisor synthesis node: model %q not available", effectiveModelID(n.ModelID))
+	}
 	historyJSON, _ := json.MarshalIndent(history, "", "  ")
 	messages := []llms.MessageContent{
 		llms.TextParts(llms.ChatMessageTypeSystem, n.effectiveSystemPrompt()),
@@ -155,6 +183,23 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 		return fmt.Errorf("supervisor synthesis node: llm returned an empty answer")
 	}
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "supervisor.synthesis.response", map[string]any{"content": answer})
+	return n.storeAnswer(ctx, access, supervisorView, current, answer)
+}
+
+func combinedWorkerResults(history []supervisorcap.Turn, workerIDs []string) (string, error) {
+	results := make([]string, 0, len(workerIDs))
+	for _, workerID := range workerIDs {
+		workerID = strings.TrimSpace(workerID)
+		result := latestWorkerResult(history, workerID)
+		if workerID == "" || result == "" {
+			return "", fmt.Errorf("preferred worker %q has no result", workerID)
+		}
+		results = append(results, result)
+	}
+	return strings.Join(results, "\n\n"), nil
+}
+
+func (n *SynthesisNode) storeAnswer(ctx core.Context, access *state.Access, supervisorView *supervisorcap.View, current map[string]any, answer string) error {
 	if err := state.Replace(access, state.NewRef[string](n.ResultPath), answer); err != nil {
 		return err
 	}
@@ -169,6 +214,19 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 		"event": "supervisor.synthesized", "turn_count": intValue(current, SupervisorFieldTurnCount), "answer": answer,
 	})
 	return nil
+}
+
+func latestWorkerResult(history []supervisorcap.Turn, workerID string) string {
+	workerID = strings.TrimSpace(workerID)
+	if workerID == "" {
+		return ""
+	}
+	for index := len(history) - 1; index >= 0; index-- {
+		if strings.EqualFold(strings.TrimSpace(history[index].WorkerID), workerID) {
+			return strings.TrimSpace(history[index].Result)
+		}
+	}
+	return ""
 }
 
 func (n *SynthesisNode) effectiveSystemPrompt() string {

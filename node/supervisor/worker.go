@@ -1,6 +1,7 @@
 package supervisor
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -9,6 +10,7 @@ import (
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/config"
+	"github.com/dengzii/weaveflow/llms"
 	agentnode "github.com/dengzii/weaveflow/node/agents/agent"
 	"github.com/dengzii/weaveflow/registry"
 	fruntime "github.com/dengzii/weaveflow/runtime"
@@ -23,16 +25,20 @@ Return a concise, evidence-based result to the supervisor; do not address the en
 
 type WorkerNode struct {
 	core.NodeBase
-	WorkerID         string
-	Role             string
-	ModelID          string
-	ToolIDs          []string
-	SystemPrompt     string
-	MaxIterations    int
-	PromptMaxChars   int
-	Parallel         bool
-	SupervisorPath   state.Path
-	ConversationPath state.Path
+	WorkerID               string
+	Role                   string
+	ModelID                string
+	ToolIDs                []string
+	SystemPrompt           string
+	ReasoningEffort        string
+	MaxIterations          int
+	MaxOutputTokens        int
+	PromptMaxChars         int
+	HistoryTurns           int
+	Parallel               bool
+	RequireToolFinalAnswer bool
+	SupervisorPath         state.Path
+	ConversationPath       state.Path
 }
 
 func NewWorkerNode(options ...core.NodeOption) *WorkerNode {
@@ -66,6 +72,18 @@ func (n *WorkerNode) Validate() error {
 	if n.effectiveMaxIterations() < 1 {
 		return fmt.Errorf("supervisor worker node %q max_iterations must be positive", n.ID())
 	}
+	if n.MaxOutputTokens < 0 {
+		return fmt.Errorf("supervisor worker node %q max_output_tokens cannot be negative", n.ID())
+	}
+	if !validWorkerReasoningEffort(n.effectiveReasoningEffort()) {
+		return fmt.Errorf("supervisor worker node %q reasoning_effort is invalid", n.ID())
+	}
+	if n.HistoryTurns < 0 {
+		return fmt.Errorf("supervisor worker node %q history_turns cannot be negative", n.ID())
+	}
+	if n.RequireToolFinalAnswer && len(n.ToolIDs) == 0 {
+		return fmt.Errorf("supervisor worker node %q require_tool_final_answer requires at least one tool_id", n.ID())
+	}
 	if n.SupervisorPath.Empty() || n.ConversationPath.Empty() {
 		return fmt.Errorf("supervisor worker node %q requires supervisor and conversation paths", n.ID())
 	}
@@ -74,16 +92,26 @@ func (n *WorkerNode) Validate() error {
 
 func (n *WorkerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	configMap := map[string]any{
-		"worker_id":      n.WorkerID,
-		"role":           n.Role,
-		"model_id":       n.ModelID,
-		"tool_ids":       n.ToolIDs,
-		"system_prompt":  n.SystemPrompt,
-		"max_iterations": n.effectiveMaxIterations(),
-		"parallel":       n.Parallel,
+		"worker_id":                 n.WorkerID,
+		"role":                      n.Role,
+		"model_id":                  n.ModelID,
+		"tool_ids":                  n.ToolIDs,
+		"system_prompt":             n.SystemPrompt,
+		"max_iterations":            n.effectiveMaxIterations(),
+		"parallel":                  n.Parallel,
+		"require_tool_final_answer": n.RequireToolFinalAnswer,
 	}
 	if n.PromptMaxChars > 0 {
 		configMap["prompt_max_chars"] = n.PromptMaxChars
+	}
+	if n.MaxOutputTokens > 0 {
+		configMap["max_output_tokens"] = n.MaxOutputTokens
+	}
+	if strings.TrimSpace(n.ReasoningEffort) != "" {
+		configMap["reasoning_effort"] = strings.TrimSpace(n.ReasoningEffort)
+	}
+	if n.HistoryTurns > 0 {
+		configMap["history_turns"] = n.HistoryTurns
 	}
 	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisorWorker, configMap, map[string]state.Path{
 		"supervisor": n.SupervisorPath, "conversation": n.ConversationPath,
@@ -107,13 +135,30 @@ func WorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 						"type": "string", "title": "System Prompt", "x-control": "textarea", "default": defaultSupervisorWorkerSystemPrompt,
 					},
 					"max_iterations": dsl.JSONSchema{"type": "integer", "title": "Max Agent Iterations", "minimum": 1, "default": defaultSupervisorWorkerMaxIterations},
+					"max_output_tokens": dsl.JSONSchema{
+						"type": "integer", "title": "Max Output Tokens", "minimum": 1,
+						"description": "Maximum tokens requested from the model for each worker response.",
+					},
+					"reasoning_effort": dsl.JSONSchema{
+						"type": "string", "title": "Reasoning Effort",
+						"enum":    []string{"auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"},
+						"default": "high", "description": "Controls model reasoning effort when supported.",
+					},
 					"prompt_max_chars": dsl.JSONSchema{
 						"type": "integer", "title": "Prompt Character Limit", "minimum": 1,
 						"description": "Maximum character budget for conversation messages sent to the model; older messages are trimmed when exceeded.",
 					},
+					"history_turns": dsl.JSONSchema{
+						"type": "integer", "title": "History Turns", "minimum": 0,
+						"description": "Number of recent completed delegations included with the worker task. Zero keeps tasks isolated.",
+					},
 					"parallel": dsl.JSONSchema{
 						"type": "boolean", "title": "Parallel Tool Calls", "default": true,
 						"description": "Execute multiple tool calls from the same model response concurrently.",
+					},
+					"require_tool_final_answer": dsl.JSONSchema{
+						"type": "boolean", "title": "Require Tool Final Answer", "default": false,
+						"description": "Continue the worker loop until a trusted tool supplies its final answer.",
 					},
 				},
 				"required":             []string{"worker_id"},
@@ -122,6 +167,7 @@ func WorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 		},
 		StatePorts: []dsl.StatePortDefinition{
 			capabilityPort("supervisor", "Selected task and shared worker history.", supervisorcap.CapabilityID, true,
+				capabilityField(supervisorcap.FieldObjective, dsl.StateAccessRead),
 				capabilityField(supervisorcap.FieldRoute, dsl.StateAccessReadWrite),
 				capabilityField(supervisorcap.FieldTask, dsl.StateAccessReadWrite),
 				capabilityField(supervisorcap.FieldStatus, dsl.StateAccessWrite),
@@ -150,17 +196,27 @@ func WorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 			target.Role = config.String(spec.Config, "role")
 			target.ModelID = config.String(spec.Config, "model_id")
 			target.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
+			target.ReasoningEffort = config.String(spec.Config, "reasoning_effort")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
 				target.SystemPrompt = prompt
 			}
 			if value, ok := config.Int(spec.Config, "max_iterations"); ok {
 				target.MaxIterations = value
 			}
+			if value, ok := config.Int(spec.Config, "max_output_tokens"); ok {
+				target.MaxOutputTokens = value
+			}
 			if value, ok := config.Int(spec.Config, "prompt_max_chars"); ok {
 				target.PromptMaxChars = value
 			}
+			if value, ok := config.Int(spec.Config, "history_turns"); ok {
+				target.HistoryTurns = value
+			}
 			if value, ok := config.Bool(spec.Config, "parallel"); ok {
 				target.Parallel = value
+			}
+			if value, ok := config.Bool(spec.Config, "require_tool_final_answer"); ok {
+				target.RequireToolFinalAnswer = value
 			}
 			target.SupervisorPath = supervisorPath
 			target.ConversationPath = conversationPath
@@ -202,9 +258,12 @@ func (n *WorkerNode) execute(ctx core.Context, access *state.Access) error {
 	workerAgent.ModelID = n.ModelID
 	workerAgent.ToolIDs = append([]string(nil), n.ToolIDs...)
 	workerAgent.SystemPrompt = n.effectiveSystemPrompt()
+	workerAgent.ReasoningEffort = n.effectiveReasoningEffort()
 	workerAgent.MaxIterations = n.effectiveMaxIterations()
+	workerAgent.MaxOutputTokens = n.MaxOutputTokens
 	workerAgent.PromptMaxChars = n.PromptMaxChars
 	workerAgent.Parallel = n.Parallel
+	workerAgent.RequireToolFinalAnswer = n.RequireToolFinalAnswer
 	if err := conversation.SetMessages(nil); err != nil {
 		return err
 	}
@@ -217,7 +276,13 @@ func (n *WorkerNode) execute(ctx core.Context, access *state.Access) error {
 	if err := conversation.SetMaxIterations(workerAgent.MaxIterations); err != nil {
 		return err
 	}
-	if err := workerAgent.SeedConversation(conversation, task); err != nil {
+	workerTask := taskWithSupervisorContext(
+		stringValue(current, SupervisorFieldObjective),
+		task,
+		historyFromValue(current[SupervisorFieldHistory]),
+		n.HistoryTurns,
+	)
+	if err := workerAgent.SeedConversation(conversation, workerTask); err != nil {
 		return err
 	}
 	if err := workerAgent.RunLoop(ctx, conversation); err != nil {
@@ -248,6 +313,19 @@ func (n *WorkerNode) execute(ctx core.Context, access *state.Access) error {
 	return nil
 }
 
+func taskWithSupervisorContext(objective, task string, history []supervisorcap.Turn, historyTurns int) string {
+	task = strings.TrimSpace(task)
+	if historyTurns <= 0 {
+		return task
+	}
+	if len(history) > historyTurns {
+		history = history[len(history)-historyTurns:]
+	}
+	encodedHistory, _ := json.MarshalIndent(history, "", "  ")
+	return fmt.Sprintf("Overall objective:\n%s\n\nRecent completed delegations:\n%s\n\nCurrent delegated task:\n%s",
+		strings.TrimSpace(objective), encodedHistory, task)
+}
+
 func (n *WorkerNode) effectiveSystemPrompt() string {
 	prompt := strings.TrimSpace(n.SystemPrompt)
 	if prompt == "" {
@@ -264,4 +342,21 @@ func (n *WorkerNode) effectiveMaxIterations() int {
 		return defaultSupervisorWorkerMaxIterations
 	}
 	return n.MaxIterations
+}
+
+func (n *WorkerNode) effectiveReasoningEffort() string {
+	if n == nil || strings.TrimSpace(n.ReasoningEffort) == "" {
+		return string(llms.ThinkingModeHigh)
+	}
+	return strings.TrimSpace(n.ReasoningEffort)
+}
+
+func validWorkerReasoningEffort(value string) bool {
+	switch llms.ThinkingMode(value) {
+	case llms.ThinkingModeAuto, llms.ThinkingModeNone, llms.ThinkingModeMinimal, llms.ThinkingModeLow,
+		llms.ThinkingModeMedium, llms.ThinkingModeHigh, llms.ThinkingModeXHigh, llms.ThinkingModeMax:
+		return true
+	default:
+		return false
+	}
 }

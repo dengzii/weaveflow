@@ -48,6 +48,8 @@ const (
 const (
 	defaultSupervisorMaxTurns      = 8
 	defaultSupervisorRouteAttempts = 2
+	SupervisorRoutingModel         = "model"
+	SupervisorRoutingSequential    = "sequential"
 )
 
 const defaultSupervisorSystemPrompt = `You are a supervisor coordinating specialist workers.
@@ -64,13 +66,16 @@ type Member struct {
 
 type Node struct {
 	core.NodeBase
-	ModelID        string
-	SystemPrompt   string
-	Members        []Member
-	MaxTurns       int
-	RouteAttempts  int
-	ObjectivePath  state.Path
-	SupervisorPath state.Path
+	ModelID         string
+	SystemPrompt    string
+	RoutingStrategy string
+	Members         []Member
+	MaxTurns        int
+	RouteAttempts   int
+	FinishWorker    string
+	FinishMarkers   []string
+	ObjectivePath   state.Path
+	SupervisorPath  state.Path
 }
 
 type routeOutput struct {
@@ -128,6 +133,18 @@ func (n *Node) Validate() error {
 	if n.effectiveRouteAttempts() < 1 {
 		return fmt.Errorf("supervisor node %q route_attempts must be positive", n.ID())
 	}
+	if strategy := n.effectiveRoutingStrategy(); strategy != SupervisorRoutingModel && strategy != SupervisorRoutingSequential {
+		return fmt.Errorf("supervisor node %q routing_strategy %q is invalid", n.ID(), strategy)
+	}
+	if n.effectiveRoutingStrategy() == SupervisorRoutingSequential && n.effectiveMaxTurns() < len(n.Members) {
+		return fmt.Errorf("supervisor node %q sequential routing requires max_turns >= member count %d", n.ID(), len(n.Members))
+	}
+	if len(n.FinishMarkers) > 0 && strings.TrimSpace(n.FinishWorker) == "" {
+		return fmt.Errorf("supervisor node %q finish_worker is required when finish_markers are configured", n.ID())
+	}
+	if strings.TrimSpace(n.FinishWorker) != "" && n.FinishWorker != "*" && canonicalSupervisorRoute(n.FinishWorker, n.Members) == "" {
+		return fmt.Errorf("supervisor node %q finish_worker %q must name a configured member", n.ID(), n.FinishWorker)
+	}
 	if n.ObjectivePath.Empty() || n.SupervisorPath.Empty() {
 		return fmt.Errorf("supervisor node %q requires objective and supervisor paths", n.ID())
 	}
@@ -144,13 +161,22 @@ func (n *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 		}
 		members = append(members, item)
 	}
-	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisor, map[string]any{
-		"model_id":       n.ModelID,
-		"system_prompt":  n.SystemPrompt,
-		"members":        members,
-		"max_turns":      n.effectiveMaxTurns(),
-		"route_attempts": n.effectiveRouteAttempts(),
-	}, map[string]state.Path{"objective": n.ObjectivePath, "supervisor": n.SupervisorPath})
+	configMap := map[string]any{
+		"model_id":         n.ModelID,
+		"system_prompt":    n.SystemPrompt,
+		"routing_strategy": n.effectiveRoutingStrategy(),
+		"members":          members,
+		"max_turns":        n.effectiveMaxTurns(),
+		"route_attempts":   n.effectiveRouteAttempts(),
+	}
+	if strings.TrimSpace(n.FinishWorker) != "" {
+		configMap["finish_worker"] = strings.TrimSpace(n.FinishWorker)
+	}
+	if len(n.FinishMarkers) > 0 {
+		configMap["finish_markers"] = append([]string(nil), n.FinishMarkers...)
+	}
+	return newGraphNodeSpec(n.NodeBase, NodeTypeSupervisor, configMap,
+		map[string]state.Path{"objective": n.ObjectivePath, "supervisor": n.SupervisorPath})
 }
 
 func NodeTypeDefinition() registry.NodeTypeDefinition {
@@ -165,6 +191,11 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
 					"system_prompt": dsl.JSONSchema{
 						"type": "string", "title": "System Prompt", "x-control": "textarea", "default": defaultSupervisorSystemPrompt,
+					},
+					"routing_strategy": dsl.JSONSchema{
+						"type": "string", "title": "Routing Strategy",
+						"enum": []string{SupervisorRoutingModel, SupervisorRoutingSequential}, "default": SupervisorRoutingModel,
+						"description": "Use model-selected routing or visit configured members once in order.",
 					},
 					"members": dsl.JSONSchema{
 						"type": "array", "title": "Members", "minItems": 1, "x-control": "object-list", "x-item-title": "Member",
@@ -186,6 +217,14 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 					"route_attempts": dsl.JSONSchema{
 						"type": "integer", "title": "Route Attempts", "minimum": 1, "maximum": 5, "default": defaultSupervisorRouteAttempts,
 						"description": "Maximum attempts to correct an invalid worker routing response.",
+					},
+					"finish_worker": dsl.JSONSchema{
+						"type": "string", "title": "Finish Worker",
+						"description": "Worker whose latest result must satisfy finish markers before the supervisor can finish.",
+					},
+					"finish_markers": dsl.JSONSchema{
+						"type": "array", "title": "Finish Markers", "items": dsl.JSONSchema{"type": "string"},
+						"description": "Required substrings in the finish worker's latest result.",
 					},
 				},
 				"required":             []string{"members"},
@@ -217,6 +256,7 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 			target := NewNode(core.WithID(spec.ID))
 			applyNodeMetadata(&target.NodeBase, spec)
 			target.ModelID = config.String(spec.Config, "model_id")
+			target.RoutingStrategy = config.String(spec.Config, "routing_strategy")
 			if prompt := config.String(spec.Config, "system_prompt"); strings.TrimSpace(prompt) != "" {
 				target.SystemPrompt = prompt
 			}
@@ -231,6 +271,8 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 			if value, ok := config.Int(spec.Config, "route_attempts"); ok {
 				target.RouteAttempts = value
 			}
+			target.FinishWorker = config.String(spec.Config, "finish_worker")
+			target.FinishMarkers = config.StringSlice(spec.Config, "finish_markers")
 			target.ObjectivePath = objectivePath
 			target.SupervisorPath = supervisorPath
 			if err := target.Validate(); err != nil {
@@ -248,10 +290,6 @@ func (n *Node) Execute(ctx core.Context, access *state.Access) (core.NodeResult,
 func (n *Node) execute(ctx core.Context, access *state.Access) error {
 	if err := n.Validate(); err != nil {
 		return err
-	}
-	model := ctx.Model(n.ModelID)
-	if model == nil {
-		return fmt.Errorf("supervisor node: model %q not available", effectiveModelID(n.ModelID))
 	}
 	supervisorView, err := supervisorcap.Bind(access, n.SupervisorPath)
 	if err != nil {
@@ -275,17 +313,37 @@ func (n *Node) execute(ctx core.Context, access *state.Access) error {
 	current := supervisorView.Value()
 	turnCount := intValue(current, SupervisorFieldTurnCount)
 	maxTurns := n.effectiveMaxTurns()
+	history := historyFromValue(current[SupervisorFieldHistory])
 	if err := supervisorView.SetField(SupervisorFieldMaxTurns, maxTurns); err != nil {
 		return err
 	}
 	if turnCount >= maxTurns {
+		if err := n.validateFinish(history); err != nil {
+			return fmt.Errorf("supervisor node %q reached maximum delegation count %d without satisfying finish requirements: %w", n.ID(), maxTurns, err)
+		}
 		return n.setRoute(ctx, supervisorView, routeOutput{
 			NextWorker: SupervisorRouteFinish,
 			Reason:     fmt.Sprintf("maximum delegation count %d reached", maxTurns),
 		}, turnCount)
 	}
+	if n.effectiveRoutingStrategy() == SupervisorRoutingSequential {
+		route, routeErr := n.selectSequentialRoute(turnCount)
+		if routeErr != nil {
+			return routeErr
+		}
+		if route.NextWorker == SupervisorRouteFinish {
+			if err := n.validateFinish(history); err != nil {
+				return fmt.Errorf("supervisor node %q completed its sequential routes without satisfying finish requirements: %w", n.ID(), err)
+			}
+			return n.setRoute(ctx, supervisorView, route, turnCount)
+		}
+		turnCount++
+		return n.setRoute(ctx, supervisorView, route, turnCount)
+	}
+	if ctx.Model(n.ModelID) == nil {
+		return fmt.Errorf("supervisor node: model %q not available", effectiveModelID(n.ModelID))
+	}
 
-	history := historyFromValue(current[SupervisorFieldHistory])
 	route, err := n.selectRoute(ctx, objective, history, turnCount, maxTurns)
 	if err != nil {
 		return err
@@ -294,6 +352,21 @@ func (n *Node) execute(ctx core.Context, access *state.Access) error {
 		turnCount++
 	}
 	return n.setRoute(ctx, supervisorView, route, turnCount)
+}
+
+func (n *Node) selectSequentialRoute(turnCount int) (routeOutput, error) {
+	if turnCount < 0 {
+		return routeOutput{}, fmt.Errorf("sequential supervisor turn count cannot be negative")
+	}
+	if turnCount >= len(n.Members) {
+		return routeOutput{NextWorker: SupervisorRouteFinish, Reason: "configured member sequence completed"}, nil
+	}
+	member := normalizeSupervisorMember(n.Members[turnCount])
+	return routeOutput{
+		NextWorker: member.ID,
+		Task:       member.Description,
+		Reason:     fmt.Sprintf("next configured member in sequence (%d/%d)", turnCount+1, len(n.Members)),
+	}, nil
 }
 
 func (n *Node) selectRoute(ctx core.Context, objective string, history []supervisorcap.Turn, turnCount, maxTurns int) (routeOutput, error) {
@@ -334,6 +407,9 @@ func (n *Node) selectRoute(ctx core.Context, objective string, history []supervi
 			if err != nil {
 				parseErr = err
 			}
+			if parseErr == nil && route.NextWorker == SupervisorRouteFinish {
+				parseErr = n.validateFinish(history)
+			}
 			if parseErr == nil {
 				return route, nil
 			}
@@ -345,6 +421,39 @@ func (n *Node) selectRoute(ctx core.Context, objective string, history []supervi
 		}
 	}
 	return routeOutput{}, fmt.Errorf("supervisor node %q could not select a valid route after %d attempts: %w", n.ID(), n.effectiveRouteAttempts(), lastErr)
+}
+
+func (n *Node) validateFinish(history []supervisorcap.Turn) error {
+	if len(n.FinishMarkers) == 0 {
+		return nil
+	}
+	workerID := strings.TrimSpace(n.FinishWorker)
+	result := ""
+	if workerID == "*" {
+		parts := make([]string, 0, len(history))
+		for _, turn := range history {
+			if value := strings.TrimSpace(turn.Result); value != "" {
+				parts = append(parts, value)
+			}
+		}
+		result = strings.Join(parts, "\n")
+	} else {
+		result = latestWorkerResult(history, workerID)
+	}
+	if result == "" {
+		return fmt.Errorf("cannot finish before worker %q returns a result", workerID)
+	}
+	missing := make([]string, 0)
+	for _, marker := range n.FinishMarkers {
+		marker = strings.TrimSpace(marker)
+		if marker != "" && !strings.Contains(result, marker) {
+			missing = append(missing, marker)
+		}
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("cannot finish because worker %q result is incomplete; missing markers: %s", workerID, strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 func (n *Node) setRoute(ctx context.Context, supervisorView *supervisorcap.View, route routeOutput, turnCount int) error {
@@ -396,6 +505,13 @@ func (n *Node) effectiveRouteAttempts() int {
 		return defaultSupervisorRouteAttempts
 	}
 	return n.RouteAttempts
+}
+
+func (n *Node) effectiveRoutingStrategy() string {
+	if n == nil || strings.TrimSpace(n.RoutingStrategy) == "" {
+		return SupervisorRoutingModel
+	}
+	return strings.ToLower(strings.TrimSpace(n.RoutingStrategy))
 }
 
 func RouteEquals(supervisorPath state.Path, workerID string) registry.EdgeCondition {
