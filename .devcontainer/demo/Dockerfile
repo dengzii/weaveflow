@@ -38,7 +38,7 @@ RUN --mount=type=cache,target=/go/pkg/mod \
       -ldflags="-s -w -X main.version=${VERSION} -X main.buildTime=${BUILD_TIME}" \
       -o /out/weaveflow-server ./cmd/server
 
-FROM nginx:alpine
+FROM alpine:3.24
 
 ARG VERSION
 
@@ -47,7 +47,17 @@ LABEL org.opencontainers.image.title="WeaveFlow Codespaces Demo" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.source="https://github.com/dengzii/weaveflow"
 
-RUN apk add --no-cache bash gettext git openssh-client \
+RUN apk add --no-cache \
+      bash \
+      ca-certificates \
+      curl \
+      gettext-envsubst \
+      git \
+      gcompat \
+      libgcc \
+      libstdc++ \
+      nginx \
+      openssh-client \
     && adduser -D -s /bin/bash codespace \
     && mkdir -p /app/demos /workspace /tmp/weaveflow /tmp/weaveflow-codespaces/server /tmp/weaveflow-codespaces/secrets /tmp/nginx-client-body /tmp/nginx-proxy-temp /tmp/nginx-fastcgi-temp /tmp/nginx-uwsgi-temp /tmp/nginx-scgi-temp \
     && chown -R codespace:codespace /app /workspace /tmp/weaveflow /tmp/weaveflow-codespaces /tmp/nginx-client-body /tmp/nginx-proxy-temp /tmp/nginx-fastcgi-temp /tmp/nginx-uwsgi-temp /tmp/nginx-scgi-temp
@@ -64,6 +74,7 @@ COPY --chown=codespace:codespace scripts/web-config.js.template /etc/weaveflow/w
 RUN chmod 0755 /usr/local/bin/codespaces-entrypoint.sh
 
 ENV HOME=/home/codespace \
+    GIN_MODE=release \
     WEAVEFLOW_WEB_PORT=8080 \
     WEAVEFLOW_SERVER_PORT=8081 \
     WEAVEFLOW_DATA_DIR=/tmp/weaveflow-codespaces/server \
@@ -78,7 +89,7 @@ ENV HOME=/home/codespace \
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --start-interval=1s --retries=3 \
     CMD wget -q -O /dev/null "http://127.0.0.1:$WEAVEFLOW_WEB_PORT/healthz" || exit 1
 
 USER codespace

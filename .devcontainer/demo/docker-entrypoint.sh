@@ -57,8 +57,8 @@ wait_for_server() {
       fail "server exited before becoming ready (status ${server_status})"
     fi
     attempts=$((attempts + 1))
-    [ "${attempts}" -lt 60 ] || fail "server did not become ready within 60 seconds"
-    sleep 1
+    [ "${attempts}" -lt 600 ] || fail "server did not become ready within 60 seconds"
+    sleep 0.1
   done
 }
 
@@ -197,7 +197,7 @@ bootstrap_graph_session \
   "${WEAVEFLOW_BOOTSTRAP_GRAPH_ID}" \
   "${WEAVEFLOW_BOOTSTRAP_GRAPH_VERSION}"
 
-nginx -c /tmp/nginx.conf -g 'daemon off;' &
+nginx -e /dev/stderr -c /tmp/nginx.conf -g 'daemon off;' &
 nginx_pid=$!
 
 while :; do

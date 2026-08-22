@@ -18,6 +18,21 @@ The repository is mounted at `/workspace`, which is also the workspace root for 
 managed secrets are stored under `/tmp/weaveflow-codespaces`; they are intended to be disposable and are not a
 persistent deployment volume. The demo does not require a model provider.
 
+## Startup performance
+
+The profile does not run dependency installation in Codespaces lifecycle hooks. The WebUI and server are already in the
+image, and the container probes health every second while starting. If creating a Codespace is still slow:
+
+- Choose the closest Codespaces region. For example, use `--location SouthEastAsia` with `gh codespace create` when it
+  is the nearest available region.
+- Repository administrators can configure a Codespaces prebuild for `master` and
+  `.devcontainer/demo/devcontainer.json` under **Settings > Codespaces > Prebuild configuration**. Configure it on the
+  canonical `dengzii/weaveflow` repository, which is the target of the public Codespaces link, rather than on a fork.
+- Keep the prebuild machine at the current minimum (`2` CPUs and `4gb` memory); this profile has no dependency-install
+  lifecycle hooks, so a larger machine does not improve its startup path.
+- Check that the Codespaces Demo Image workflow succeeded for the current `master` commit and that the GHCR package is
+  public. A private or stale image forces the launch path to fail or wait before the container entrypoint can run.
+
 ## Bootstrap settings
 
 The image can publish a different definition that is packaged into the image by setting:
