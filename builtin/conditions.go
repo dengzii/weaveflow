@@ -56,6 +56,7 @@ func registerCoreConditions(r *registry.Registry) error {
 		expressionConditionsConditionDefinition(),
 		stateExpressionConditionDefinition(),
 		planStatusEqualsConditionDefinition(),
+		planIterationsRemainingConditionDefinition(),
 		supervisorRouteEqualsConditionDefinition(),
 	} {
 		if err := r.RegisterCondition(def); err != nil {
@@ -63,6 +64,32 @@ func registerCoreConditions(r *registry.Registry) error {
 		}
 	}
 	return nil
+}
+
+func planIterationsRemainingConditionDefinition() registry.ConditionDefinition {
+	return registry.ConditionDefinition{
+		ConditionSchema: dsl.ConditionSchema{
+			Type:         plannode.ConditionTypePlanIterationsRemaining,
+			Title:        "Plan Iterations Remaining",
+			Description:  "Routes while the current plan worker conversation remains within its iteration budget.",
+			ConfigSchema: dsl.JSONSchema{"type": "object", "additionalProperties": false},
+			StatePorts: []dsl.StatePortDefinition{{
+				Name: "conversation", Required: true, Capability: conversationcap.CapabilityID,
+				Contract: dsl.RelativeStateContract{Fields: []dsl.RelativeStateFieldRef{
+					{Path: conversationcap.FieldIterationCount, Mode: dsl.StateAccessRead, Required: true},
+					{Path: conversationcap.FieldMaxIterations, Mode: dsl.StateAccessRead, Required: true},
+				}},
+			}},
+		},
+		Resolve: func(resolved registry.ResolvedConditionSpec) (registry.EdgeCondition, error) {
+			path, err := resolvedConditionPath(resolved, "conversation")
+			if err != nil {
+				return registry.EdgeCondition{}, err
+			}
+			condition, _ := plannode.IterationsRemaining(path)
+			return condition, nil
+		},
+	}
 }
 
 func stateExpressionConditionDefinition() registry.ConditionDefinition {
@@ -212,6 +239,7 @@ func planStatusEqualsConditionDefinition() registry.ConditionDefinition {
 							plannode.PlanStatusReplan,
 							plannode.PlanStatusFinalizing,
 							plannode.PlanStatusDone,
+							plannode.PlanStatusFailed,
 						},
 					},
 				},

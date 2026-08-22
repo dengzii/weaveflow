@@ -9,22 +9,31 @@ import (
 	plancap "github.com/dengzii/weaveflow/capability/plan"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/internal/config"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 )
 
 type ReviewNode struct {
 	core.NodeBase
-	PlanPath         state.Path
-	ExecutionPath    state.Path
-	ConversationPath state.Path
+	MaxAttempts          int
+	RetryExhaustedAction string
+	FailureAction        string
+	PlanPath             state.Path
+	ExecutionPath        state.Path
+	ConversationPath     state.Path
 }
+
+const (
+	ReviewActionReplan   = "replan"
+	ReviewActionFinalize = "finalize"
+)
 
 func NewReviewNode(options ...core.NodeOption) *ReviewNode {
 	target := &ReviewNode{NodeBase: core.NewNodeBase(core.NodeSpec{
 		Name:        NodeTypePlanReview,
 		Description: "Record a step result and decide whether to continue, replan, or finish.",
-	})}
+	}), MaxAttempts: 2, RetryExhaustedAction: ReviewActionReplan, FailureAction: ReviewActionFinalize}
 	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
 	return target
@@ -40,20 +49,32 @@ func (n *ReviewNode) Validate() error {
 	if n.PlanPath.Empty() || n.ExecutionPath.Empty() || n.ConversationPath.Empty() {
 		return fmt.Errorf("plan review node %q requires plan, execution, and conversation paths", n.ID())
 	}
+	if n.MaxAttempts <= 0 {
+		return fmt.Errorf("plan review node %q max_attempts must be greater than zero", n.ID())
+	}
+	if !validReviewAction(n.RetryExhaustedAction) || !validReviewAction(n.FailureAction) {
+		return fmt.Errorf("plan review node %q has invalid failure action", n.ID())
+	}
 	return nil
 }
 
 func (n *ReviewNode) GraphNodeSpec() dsl.GraphNodeSpec {
-	return newGraphNodeSpec(n.NodeBase, NodeTypePlanReview, nil, map[string]state.Path{"plan": n.PlanPath, "execution": n.ExecutionPath, "conversation": n.ConversationPath})
+	return newGraphNodeSpec(n.NodeBase, NodeTypePlanReview, map[string]any{
+		"max_attempts": n.MaxAttempts, "retry_exhausted_action": n.RetryExhaustedAction, "failure_action": n.FailureAction,
+	}, map[string]state.Path{"plan": n.PlanPath, "execution": n.ExecutionPath, "conversation": n.ConversationPath})
 }
 
 func ReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 	return registry.NodeTypeDefinition{
 		NodeTypeSchema: dsl.NodeTypeSchema{
-			Type:         NodeTypePlanReview,
-			Title:        "Plan Review",
-			Description:  "Record a step result and decide whether to continue, replan, or finish.",
-			ConfigSchema: dsl.JSONSchema{"type": "object", "additionalProperties": false},
+			Type:        NodeTypePlanReview,
+			Title:       "Plan Review",
+			Description: "Record a step result and decide whether to continue, replan, or finish.",
+			ConfigSchema: dsl.JSONSchema{"type": "object", "properties": dsl.JSONSchema{
+				"max_attempts":           dsl.JSONSchema{"type": "integer", "minimum": 1},
+				"retry_exhausted_action": dsl.JSONSchema{"type": "string", "enum": []string{ReviewActionReplan, ReviewActionFinalize}},
+				"failure_action":         dsl.JSONSchema{"type": "string", "enum": []string{ReviewActionReplan, ReviewActionFinalize}},
+			}, "additionalProperties": false},
 			StatePorts: []dsl.StatePortDefinition{
 				capabilityPort("plan", "Plan status and step results.", plancap.CapabilityID, true,
 					capabilityField(plancap.FieldStatus, dsl.StateAccessWrite),
@@ -87,6 +108,18 @@ func ReviewNodeTypeDefinition() registry.NodeTypeDefinition {
 			target.PlanPath = planPath
 			target.ExecutionPath = executionPath
 			target.ConversationPath = conversationPath
+			if value, ok := config.Int(spec.Config, "max_attempts"); ok {
+				target.MaxAttempts = value
+			}
+			if value := config.String(spec.Config, "retry_exhausted_action"); value != "" {
+				target.RetryExhaustedAction = value
+			}
+			if value := config.String(spec.Config, "failure_action"); value != "" {
+				target.FailureAction = value
+			}
+			if !validReviewAction(target.RetryExhaustedAction) || !validReviewAction(target.FailureAction) {
+				return nil, fmt.Errorf("build plan review node %q: invalid failure action", spec.ID)
+			}
 			return target, nil
 		},
 	}
@@ -118,14 +151,25 @@ func (n *ReviewNode) execute(_ core.Context, access *state.Access) error {
 	}
 	step := steps[index]
 	result := strings.TrimSpace(conversation.FinalAnswer())
-	if result == "" {
-		step.Status = PlanStepStatusFailed
-		step.Error = "step completed without a result"
-		step.Result = ""
-	} else {
-		step.Status = PlanStepStatusDone
+	if result != "" {
 		step.Result = result
+	}
+	switch step.VerificationStatus {
+	case VerificationStatusPassed:
+		step.Status = PlanStepStatusDone
 		step.Error = ""
+	case VerificationStatusRetry:
+		step.Status = PlanStepStatusPending
+		step.Error = step.VerificationSummary
+	case VerificationStatusReplan:
+		step.Status = PlanStepStatusFailed
+		step.Error = step.VerificationSummary
+	case VerificationStatusFailed:
+		step.Status = PlanStepStatusFailed
+		step.Error = step.VerificationSummary
+	default:
+		step.Status = PlanStepStatusFailed
+		step.Error = "step has no verifier decision"
 	}
 	steps[index] = step
 	if err := planner.SetField(planFieldSteps, stepMaps(steps)); err != nil {
@@ -135,12 +179,13 @@ func (n *ReviewNode) execute(_ core.Context, access *state.Access) error {
 	if err := execution.SetStepResult(step.ID, stepResult); err != nil {
 		return err
 	}
-	nextIndex := index + 1
-	if err := planner.SetField(planFieldCurrentIndex, nextIndex); err != nil {
-		return err
+	if step.VerificationStatus == VerificationStatusRetry && step.VerificationAttempts < n.MaxAttempts {
+		return planner.SetField(planFieldStatus, PlanStatusExecuting)
 	}
-
-	if step.Status == PlanStepStatusFailed {
+	shouldReplan := step.VerificationStatus == VerificationStatusReplan ||
+		(step.VerificationStatus == VerificationStatusRetry && n.RetryExhaustedAction == ReviewActionReplan) ||
+		(step.VerificationStatus == VerificationStatusFailed && n.FailureAction == ReviewActionReplan)
+	if shouldReplan {
 		replanCount := intValue(planValue[planFieldReplanCount])
 		maxReplans := intValue(planValue[planFieldMaxReplans])
 		if replanCount < maxReplans {
@@ -151,8 +196,19 @@ func (n *ReviewNode) execute(_ core.Context, access *state.Access) error {
 		}
 		return planner.SetField(planFieldStatus, PlanStatusFinalizing)
 	}
+	if step.Status == PlanStepStatusFailed {
+		return planner.SetField(planFieldStatus, PlanStatusFinalizing)
+	}
+	nextIndex := index + 1
+	if err := planner.SetField(planFieldCurrentIndex, nextIndex); err != nil {
+		return err
+	}
 	if nextIndex < len(steps) {
 		return planner.SetField(planFieldStatus, PlanStatusExecuting)
 	}
 	return planner.SetField(planFieldStatus, PlanStatusFinalizing)
+}
+
+func validReviewAction(value string) bool {
+	return value == ReviewActionReplan || value == ReviewActionFinalize
 }

@@ -14,6 +14,7 @@ func RegisterNodeTypes(target *registry.Registry) error {
 	definitions := []registry.NodeTypeDefinition{
 		GeneratorNodeTypeDefinition(),
 		StepNodeTypeDefinition(),
+		VerifierNodeTypeDefinition(),
 		ReviewNodeTypeDefinition(),
 		SynthesisNodeTypeDefinition(),
 	}

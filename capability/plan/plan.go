@@ -44,13 +44,41 @@ type View struct {
 }
 
 type Step struct {
-	ID          string   `json:"id"`
-	Title       string   `json:"title"`
-	Description string   `json:"description"`
-	ToolIDs     []string `json:"tool_ids,omitempty"`
-	Status      string   `json:"status,omitempty"`
-	Result      string   `json:"result,omitempty"`
-	Error       string   `json:"error,omitempty"`
+	ID                   string     `json:"id"`
+	Title                string     `json:"title"`
+	Description          string     `json:"description"`
+	ToolIDs              []string   `json:"tool_ids,omitempty"`
+	Deliverables         []string   `json:"deliverables,omitempty"`
+	AcceptanceCriteria   []string   `json:"acceptance_criteria,omitempty"`
+	VerificationStrategy string     `json:"verification_strategy,omitempty"`
+	VerificationStatus   string     `json:"verification_status,omitempty"`
+	VerificationSummary  string     `json:"verification_summary,omitempty"`
+	VerificationAttempts int        `json:"verification_attempts,omitempty"`
+	Evidence             []Evidence `json:"evidence,omitempty"`
+	AttemptHistory       []Attempt  `json:"attempt_history,omitempty"`
+	StartedAt            string     `json:"started_at,omitempty"`
+	DurationMillis       int64      `json:"duration_ms,omitempty"`
+	ModelCalls           int        `json:"model_calls,omitempty"`
+	ToolCalls            int        `json:"tool_calls,omitempty"`
+	Status               string     `json:"status,omitempty"`
+	Result               string     `json:"result,omitempty"`
+	Error                string     `json:"error,omitempty"`
+}
+
+type Evidence struct {
+	ToolID     string `json:"tool_id"`
+	Status     string `json:"status"`
+	Summary    string `json:"summary,omitempty"`
+	Error      string `json:"error,omitempty"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+}
+
+type Attempt struct {
+	Number             int        `json:"number"`
+	Result             string     `json:"result,omitempty"`
+	VerificationStatus string     `json:"verification_status,omitempty"`
+	Summary            string     `json:"summary,omitempty"`
+	Evidence           []Evidence `json:"evidence,omitempty"`
 }
 
 func Definition() dsl.StateCapabilityDefinition {
@@ -173,15 +201,40 @@ func DecodeSteps(value any) []Step {
 	}
 	steps := make([]Step, 0, len(raw))
 	for _, item := range raw {
-		steps = append(steps, Step{
-			ID:          stringValue(item["id"]),
-			Title:       stringValue(item["title"]),
-			Description: stringValue(item["description"]),
-			ToolIDs:     stringSliceValue(item["tool_ids"]),
-			Status:      stringValue(item["status"]),
-			Result:      stringValue(item["result"]),
-			Error:       stringValue(item["error"]),
-		})
+		step := Step{
+			ID:                   stringValue(item["id"]),
+			Title:                stringValue(item["title"]),
+			Description:          stringValue(item["description"]),
+			ToolIDs:              stringSliceValue(item["tool_ids"]),
+			Deliverables:         stringSliceValue(item["deliverables"]),
+			AcceptanceCriteria:   stringSliceValue(item["acceptance_criteria"]),
+			VerificationStrategy: stringValue(item["verification_strategy"]),
+			VerificationStatus:   stringValue(item["verification_status"]),
+			VerificationSummary:  stringValue(item["verification_summary"]),
+			VerificationAttempts: intValue(item["verification_attempts"]),
+			Evidence:             decodeEvidence(item["evidence"]),
+			AttemptHistory:       decodeAttempts(item["attempt_history"]),
+			StartedAt:            stringValue(item["started_at"]),
+			DurationMillis:       int64Value(item["duration_ms"]),
+			ModelCalls:           intValue(item["model_calls"]),
+			ToolCalls:            intValue(item["tool_calls"]),
+			Status:               stringValue(item["status"]),
+			Result:               stringValue(item["result"]),
+			Error:                stringValue(item["error"]),
+		}
+		if len(step.Deliverables) == 0 && step.Title != "" {
+			step.Deliverables = []string{step.Title}
+		}
+		if len(step.AcceptanceCriteria) == 0 {
+			step.AcceptanceCriteria = []string{"The step result must be supported by verification evidence."}
+		}
+		if step.VerificationStrategy == "" {
+			step.VerificationStrategy = "evidence"
+		}
+		if step.VerificationStatus == "" {
+			step.VerificationStatus = "pending"
+		}
+		steps = append(steps, step)
 	}
 	return steps
 }
@@ -193,12 +246,24 @@ func EncodeSteps(steps []Step) []map[string]any {
 	items := make([]map[string]any, 0, len(steps))
 	for _, step := range steps {
 		item := map[string]any{
-			"id":          step.ID,
-			"title":       step.Title,
-			"description": step.Description,
-			"tool_ids":    append([]string(nil), step.ToolIDs...),
-			"status":      step.Status,
-			"result":      step.Result,
+			"id":                    step.ID,
+			"title":                 step.Title,
+			"description":           step.Description,
+			"tool_ids":              append([]string(nil), step.ToolIDs...),
+			"deliverables":          append([]string(nil), step.Deliverables...),
+			"acceptance_criteria":   append([]string(nil), step.AcceptanceCriteria...),
+			"verification_strategy": step.VerificationStrategy,
+			"verification_status":   step.VerificationStatus,
+			"verification_summary":  step.VerificationSummary,
+			"verification_attempts": step.VerificationAttempts,
+			"evidence":              encodeEvidence(step.Evidence),
+			"attempt_history":       encodeAttempts(step.AttemptHistory),
+			"started_at":            step.StartedAt,
+			"duration_ms":           step.DurationMillis,
+			"model_calls":           step.ModelCalls,
+			"tool_calls":            step.ToolCalls,
+			"status":                step.Status,
+			"result":                step.Result,
 		}
 		if step.Error != "" {
 			item["error"] = step.Error
@@ -206,6 +271,95 @@ func EncodeSteps(steps []Step) []map[string]any {
 		items = append(items, item)
 	}
 	return items
+}
+
+func decodeEvidence(value any) []Evidence {
+	var raw []map[string]any
+	switch typed := value.(type) {
+	case []Evidence:
+		return append([]Evidence(nil), typed...)
+	case []map[string]any:
+		raw = typed
+	case []any:
+		for _, item := range typed {
+			if mapped, ok := item.(map[string]any); ok {
+				raw = append(raw, mapped)
+			}
+		}
+	}
+	if len(raw) == 0 {
+		return nil
+	}
+	result := make([]Evidence, 0, len(raw))
+	for _, item := range raw {
+		result = append(result, Evidence{
+			ToolID:     stringValue(item["tool_id"]),
+			Status:     stringValue(item["status"]),
+			Summary:    stringValue(item["summary"]),
+			Error:      stringValue(item["error"]),
+			ToolCallID: stringValue(item["tool_call_id"]),
+		})
+	}
+	return result
+}
+
+func encodeEvidence(evidence []Evidence) []map[string]any {
+	if len(evidence) == 0 {
+		return []map[string]any{}
+	}
+	result := make([]map[string]any, 0, len(evidence))
+	for _, item := range evidence {
+		mapped := map[string]any{"tool_id": item.ToolID, "status": item.Status, "summary": item.Summary}
+		if item.Error != "" {
+			mapped["error"] = item.Error
+		}
+		if item.ToolCallID != "" {
+			mapped["tool_call_id"] = item.ToolCallID
+		}
+		result = append(result, mapped)
+	}
+	return result
+}
+
+func decodeAttempts(value any) []Attempt {
+	var raw []map[string]any
+	switch typed := value.(type) {
+	case []Attempt:
+		return append([]Attempt(nil), typed...)
+	case []map[string]any:
+		raw = typed
+	case []any:
+		for _, item := range typed {
+			if mapped, ok := item.(map[string]any); ok {
+				raw = append(raw, mapped)
+			}
+		}
+	}
+	result := make([]Attempt, 0, len(raw))
+	for _, item := range raw {
+		result = append(result, Attempt{
+			Number:             intValue(item["number"]),
+			Result:             stringValue(item["result"]),
+			VerificationStatus: stringValue(item["verification_status"]),
+			Summary:            stringValue(item["summary"]),
+			Evidence:           decodeEvidence(item["evidence"]),
+		})
+	}
+	return result
+}
+
+func encodeAttempts(attempts []Attempt) []map[string]any {
+	if len(attempts) == 0 {
+		return []map[string]any{}
+	}
+	result := make([]map[string]any, 0, len(attempts))
+	for _, item := range attempts {
+		result = append(result, map[string]any{
+			"number": item.Number, "result": item.Result, "verification_status": item.VerificationStatus,
+			"summary": item.Summary, "evidence": encodeEvidence(item.Evidence),
+		})
+	}
+	return result
 }
 
 func DecodeObjectList(value any) []map[string]any {
@@ -259,6 +413,36 @@ func stringSliceValue(value any) []string {
 		return values
 	default:
 		return nil
+	}
+}
+
+func intValue(value any) int {
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case float32:
+		return int(typed)
+	default:
+		return 0
+	}
+}
+
+func int64Value(value any) int64 {
+	switch typed := value.(type) {
+	case int:
+		return int64(typed)
+	case int64:
+		return typed
+	case float64:
+		return int64(typed)
+	case float32:
+		return int64(typed)
+	default:
+		return 0
 	}
 }
 
