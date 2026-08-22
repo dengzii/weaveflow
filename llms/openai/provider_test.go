@@ -67,6 +67,20 @@ func TestProviderSpecificChatRequestFields(t *testing.T) {
 			},
 		},
 		{
+			name:     "vllm reasoning compatibility",
+			provider: ProviderVLLM,
+			request:  llms.ModelRequest{MaxTokens: 96, Thinking: llms.ThinkingModeHigh},
+			assert: func(t *testing.T, request map[string]any) {
+				t.Helper()
+				if request["max_tokens"] != float64(96) || request["reasoning_effort"] != "medium" {
+					t.Fatalf("vLLM request = %#v", request)
+				}
+				if _, exists := request["max_completion_tokens"]; exists {
+					t.Fatalf("vLLM request contains max_completion_tokens: %#v", request)
+				}
+			},
+		},
+		{
 			name:     "openrouter reasoning",
 			provider: ProviderOpenRouter,
 			request:  llms.ModelRequest{Thinking: llms.ThinkingModeMedium},

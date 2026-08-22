@@ -15,10 +15,12 @@ type errorMapping struct {
 var errorMappings = []errorMapping{
 	{patterns: []string{"incorrect api key", "invalid api key", "api key not found", "authentication"}, class: core.ErrorPermissionDenied, message: "invalid or missing API key"},
 	{patterns: []string{"rate limit exceeded", "too many requests", "429"}, class: core.ErrorRateLimited, message: "model provider rate limit exceeded"},
+	{patterns: []string{"request timeout", "deadline exceeded", "status code: 408"}, class: core.ErrorTimeout, message: "model provider request timed out"},
 	{patterns: []string{"model not found", "no such model", "invalid request", "400"}, class: core.ErrorInvalidInput, message: "model request is invalid"},
 	{patterns: []string{"context length exceeded", "maximum context length", "quota exceeded", "billing hard limit"}, class: core.ErrorResourceExhausted, message: "model provider resource limit exceeded"},
 	{patterns: []string{"content filtering", "content policy violation"}, class: core.ErrorNonRetryable, message: "model response was filtered by policy"},
-	{patterns: []string{"service unavailable", "503", "bad gateway", "502"}, class: core.ErrorUnavailable, message: "model provider is unavailable"},
+	{patterns: []string{"service unavailable", "network error", "failed to reach api server", "connection reset", "unexpected eof", "status code: 500", "status code: 502", "status code: 503", "status code: 504", "bad gateway"}, class: core.ErrorUnavailable, message: "model provider is unavailable"},
+	{patterns: []string{"request cancelled", "request canceled"}, class: core.ErrorCanceled, message: "model provider request was canceled"},
 }
 
 func MapError(err error) error {

@@ -120,6 +120,7 @@ type ToolResult struct {
 	Name              string `json:"name"`
 	Content           string `json:"content,omitempty"`
 	Value             any    `json:"value,omitempty"`
+	FinalAnswer       string `json:"final_answer,omitempty"`
 	IsError           bool   `json:"is_error,omitempty"`
 	ErrorCode         string `json:"error_code,omitempty"`
 	ErrorMessage      string `json:"error_message,omitempty"`
