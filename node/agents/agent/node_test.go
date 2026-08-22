@@ -29,6 +29,8 @@ func TestNodeUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
 	target.TaskPath = taskPath
 	target.ConversationPath = conversationPath
 	target.ResultPath = resultPath
+	target.MaxOutputTokens = 256
+	target.ReasoningEffort = "none"
 	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "research result"}}}}}
 	result, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{"request": "research this"}), target)
 	if err != nil {
@@ -41,6 +43,32 @@ func TestNodeUsesExplicitTaskConversationAndResultPaths(t *testing.T) {
 	view, _ := conversationcap.Bind(state.NewAccess(result.State), conversationPath)
 	if len(view.Messages()) != 2 {
 		t.Fatalf("conversation = %#v", view.Messages())
+	}
+	if len(model.requests) != 1 || model.requests[0].MaxTokens != 256 || model.requests[0].Thinking != llms.ThinkingModeNone {
+		t.Fatalf("model request limits = %#v, want 256 output tokens and no reasoning", model.requests)
+	}
+}
+
+func TestNodeRetriesReasoningOnlyResponse(t *testing.T) {
+	t.Parallel()
+	model := &scriptedModel{responses: []*llms.ModelResponse{
+		{Choices: []*llms.ModelChoice{{ReasoningContent: "analysis", StopReason: "length"}}},
+		{Choices: []*llms.ModelChoice{{Content: "final answer", StopReason: "stop"}}},
+	}}
+	target := NewNode(core.WithID("reasoning_retry"))
+	target.MaxIterations = 2
+	result, err := core.ExecuteNode(core.WithModel(context.Background(), model), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "answer"},
+	}), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, _ := state.ReadPath(result.State, target.ResultPath.String())
+	if value != "final answer" || len(model.requests) != 2 {
+		t.Fatalf("result = %#v, requests = %d", value, len(model.requests))
+	}
+	if got := model.requests[1].Messages[len(model.requests[1].Messages)-1]; got.Role != llms.ChatMessageTypeHuman {
+		t.Fatalf("retry message = %#v", got)
 	}
 }
 
@@ -228,6 +256,113 @@ func TestStructuredNodeContinuesAfterToolCall(t *testing.T) {
 	}
 }
 
+func TestNodeStopsOnToolFinalAnswer(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{toolCall("validate", `{}`)}}}}}}
+	target := NewNode(core.WithID("tool_final_answer"))
+	target.ToolIDs = []string{"validate"}
+	validate := core.NewTool(&llms.FunctionDefinition{Name: "validate"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+		return llms.ToolResult{
+			ToolCallID:  call.ID,
+			Name:        "validate",
+			Content:     "validation passed",
+			FinalAnswer: "validation passed\nSOURCE_VERIFIED",
+		}, nil
+	})
+	ctx := core.WithTools(core.WithModel(context.Background(), model), map[string]core.Tool{"validate": validate})
+	result, err := core.ExecuteNode(ctx, state.FromShared(map[string]any{
+		"request": map[string]any{"input": "validate the package"},
+	}), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, _ := state.ReadPath(result.State, target.ResultPath.String())
+	if value != "validation passed\nSOURCE_VERIFIED" {
+		t.Fatalf("result = %#v", value)
+	}
+	if len(model.requests) != 1 {
+		t.Fatalf("model requests = %d, want 1", len(model.requests))
+	}
+}
+
+func TestNodeCanRequireToolFinalAnswer(t *testing.T) {
+	t.Parallel()
+
+	model := &scriptedModel{responses: []*llms.ModelResponse{
+		{Choices: []*llms.ModelChoice{{Content: "Everything is complete."}}},
+		{Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{
+			toolCallWithID("write-call", "write", `{}`),
+		}}}},
+		{Choices: []*llms.ModelChoice{{ToolCalls: []llms.ToolCall{
+			toolCallWithID("inspect-call", "inspect", `{}`),
+			toolCallWithID("validate-call", "validate", `{}`),
+			toolCallWithID("after-call", "after", `{}`),
+		}}}},
+	}}
+	target := NewNode(core.WithID("required_tool_final_answer"))
+	target.ToolIDs = []string{"write", "inspect", "validate", "after"}
+	target.RequireToolFinalAnswer = true
+	write := core.NewTool(&llms.FunctionDefinition{
+		Name: "write",
+		Parameters: state.JSONSchema{
+			"type": "object",
+			"properties": state.JSONSchema{
+				"content": state.JSONSchema{"type": "string"},
+			},
+			"required": []string{"content"},
+		},
+	}, func(_ context.Context, _ llms.ToolCall) (llms.ToolResult, error) {
+		t.Fatal("invalid write tool call reached the handler")
+		return llms.ToolResult{}, nil
+	})
+	inspect := core.NewTool(&llms.FunctionDefinition{Name: "inspect"}, func(_ context.Context, _ llms.ToolCall) (llms.ToolResult, error) {
+		return llms.ToolResult{}, errors.New("optional file is missing")
+	})
+	validate := core.NewTool(&llms.FunctionDefinition{Name: "validate"}, func(_ context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+		return llms.ToolResult{
+			ToolCallID:  call.ID,
+			Name:        "validate",
+			Content:     "validation passed",
+			FinalAnswer: "validation passed\nPACKAGE_VERIFIED",
+		}, nil
+	})
+	after := core.NewTool(&llms.FunctionDefinition{Name: "after"}, func(_ context.Context, _ llms.ToolCall) (llms.ToolResult, error) {
+		t.Fatal("tool after trusted final answer executed")
+		return llms.ToolResult{}, nil
+	})
+	ctx := core.WithTools(core.WithModel(context.Background(), model), map[string]core.Tool{
+		"write": write, "inspect": inspect, "validate": validate, "after": after,
+	})
+	result, err := core.ExecuteNode(ctx, state.FromShared(map[string]any{
+		"request": map[string]any{"input": "validate the package"},
+	}), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	value, _ := state.ReadPath(result.State, target.ResultPath.String())
+	if value != "validation passed\nPACKAGE_VERIFIED" {
+		t.Fatalf("result = %#v", value)
+	}
+	if len(model.requests) != 3 {
+		t.Fatalf("model requests = %d, want 3", len(model.requests))
+	}
+	retry := model.requests[1].Messages[len(model.requests[1].Messages)-1]
+	if retry.Role != llms.ChatMessageTypeHuman || !strings.Contains(basenode.ExtractText(retry), "trusted tool result") {
+		t.Fatalf("retry message = %#v", retry)
+	}
+}
+
+func TestNodeRequireToolFinalAnswerRequiresTool(t *testing.T) {
+	t.Parallel()
+
+	target := NewNode(core.WithID("missing_completion_tool"))
+	target.RequireToolFinalAnswer = true
+	if err := target.Validate(); err == nil || !strings.Contains(err.Error(), "requires at least one tool_id") {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestStructuredNodeRejectsInvalidTerminalOutput(t *testing.T) {
 	t.Parallel()
 
@@ -321,6 +456,9 @@ func TestAgentStatePortAndGovernanceContractRemainStable(t *testing.T) {
 	target.MaxIterations = 3
 	target.MaxToolCalls = 4
 	target.MaxTokens = 256
+	target.MaxOutputTokens = 128
+	target.ReasoningEffort = "low"
+	target.RequireToolFinalAnswer = true
 	target.MaxCost = 1.25
 	target.ToolIDs = []string{"lookup"}
 	spec := target.GraphNodeSpec()
@@ -373,7 +511,7 @@ func TestAgentStatePortAndGovernanceContractRemainStable(t *testing.T) {
 		t.Fatalf("build agent snapshot: %v", err)
 	}
 	builtNode := built.(*Node)
-	if builtNode.MaxIterations != target.MaxIterations || builtNode.MaxToolCalls != target.MaxToolCalls || builtNode.MaxTokens != target.MaxTokens || builtNode.MaxCost != target.MaxCost {
+	if builtNode.MaxIterations != target.MaxIterations || builtNode.MaxToolCalls != target.MaxToolCalls || builtNode.MaxTokens != target.MaxTokens || builtNode.MaxOutputTokens != target.MaxOutputTokens || builtNode.MaxCost != target.MaxCost || !builtNode.RequireToolFinalAnswer {
 		t.Fatalf("budget config round trip = %#v, want %#v", builtNode.Config, target.Config)
 	}
 }
@@ -731,8 +869,12 @@ func (model *scriptedModel) Generate(_ context.Context, request llms.ModelReques
 }
 
 func toolCall(name, arguments string) llms.ToolCall {
+	return toolCallWithID("test-call", name, arguments)
+}
+
+func toolCallWithID(id, name, arguments string) llms.ToolCall {
 	return llms.ToolCall{
-		ID:   "test-call",
+		ID:   id,
 		Type: "function",
 		FunctionCall: &llms.FunctionCall{
 			Name:      name,

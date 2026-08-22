@@ -9,12 +9,27 @@ import (
 	"sort"
 	"strings"
 
+	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	plancap "github.com/dengzii/weaveflow/capability/plan"
 	"github.com/dengzii/weaveflow/core"
 	"github.com/dengzii/weaveflow/dsl"
+	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/registry"
 	"github.com/dengzii/weaveflow/state"
 )
+
+func validPlanThinkingMode(value llms.ThinkingMode) bool {
+	if value == "" {
+		return true
+	}
+	switch value {
+	case llms.ThinkingModeAuto, llms.ThinkingModeNone, llms.ThinkingModeMinimal, llms.ThinkingModeLow,
+		llms.ThinkingModeMedium, llms.ThinkingModeHigh, llms.ThinkingModeXHigh, llms.ThinkingModeMax:
+		return true
+	default:
+		return false
+	}
+}
 
 const (
 	NodeTypePlanGenerator = "plan_generator"
@@ -22,7 +37,8 @@ const (
 	NodeTypePlanReview    = "plan_review"
 	NodeTypePlanSynthesis = "plan_synthesis"
 
-	ConditionTypePlanStatusEquals = "plan_status_equals"
+	ConditionTypePlanStatusEquals        = "plan_status_equals"
+	ConditionTypePlanIterationsRemaining = "plan_iterations_remaining"
 )
 
 const (
@@ -31,11 +47,18 @@ const (
 	PlanStatusReplan     = "replan"
 	PlanStatusFinalizing = "finalizing"
 	PlanStatusDone       = "done"
+	PlanStatusFailed     = "failed"
 
 	PlanStepStatusPending = "pending"
 	PlanStepStatusRunning = "running"
 	PlanStepStatusDone    = "done"
 	PlanStepStatusFailed  = "failed"
+
+	VerificationStatusPassed  = "passed"
+	VerificationStatusRetry   = "retry_step"
+	VerificationStatusReplan  = "replan"
+	VerificationStatusFailed  = "failed"
+	VerificationStatusPending = "pending"
 )
 
 const (
@@ -66,12 +89,15 @@ func modelOutputSchema() state.JSONSchema {
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"id":          map[string]any{"type": "string"},
-						"title":       map[string]any{"type": "string"},
-						"description": map[string]any{"type": "string"},
-						"tool_ids":    map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"id":                    map[string]any{"type": "string"},
+						"title":                 map[string]any{"type": "string"},
+						"description":           map[string]any{"type": "string"},
+						"tool_ids":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+						"deliverables":          map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1},
+						"acceptance_criteria":   map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1},
+						"verification_strategy": map[string]any{"type": "string"},
 					},
-					"required":             []string{"id", "title", "description", "tool_ids"},
+					"required":             []string{"id", "title", "description", "tool_ids", "deliverables", "acceptance_criteria", "verification_strategy"},
 					"additionalProperties": false,
 				},
 			},
@@ -96,6 +122,27 @@ func StatusEquals(planPath state.Path, status string) registry.EdgeCondition {
 		matched := strings.EqualFold(strings.TrimSpace(actual), status)
 		return registry.RouteDecision{Matched: matched, Reason: "plan status compared"}, nil
 	})
+}
+
+func IterationsRemaining(conversationPath state.Path) (registry.EdgeCondition, state.Contract) {
+	iterationPath := conversationPath.MustChild(conversationcap.FieldIterationCount)
+	maxIterationsPath := conversationPath.MustChild(conversationcap.FieldMaxIterations)
+	condition := registry.NewEdgeCondition(dsl.GraphConditionSpec{
+		Type:  ConditionTypePlanIterationsRemaining,
+		State: map[string]dsl.StateBinding{"conversation": {Path: conversationPath.String()}},
+	}, func(_ context.Context, current *state.State) (registry.RouteDecision, error) {
+		conversation, err := conversationcap.Bind(state.NewAccess(current), conversationPath)
+		if err != nil {
+			return registry.RouteDecision{}, err
+		}
+		matched := conversation.IterationCount() < conversation.MaxIterations()
+		return registry.RouteDecision{Matched: matched, Reason: "plan step iteration limit checked"}, nil
+	})
+	contract := state.NewContract(
+		state.FieldAccess{Path: iterationPath, Mode: state.AccessRead, Required: true},
+		state.FieldAccess{Path: maxIterationsPath, Mode: state.AccessRead, Required: true},
+	)
+	return condition, contract
 }
 
 func parsePlanModelOutput(content string) (modelOutput, error) {
@@ -171,11 +218,88 @@ func normalizePlanSteps(steps []plancap.Step, maxSteps int, knownTools map[strin
 		}
 		step.ToolIDs = toolIDs
 		step.Status = PlanStepStatusPending
+		if len(step.Deliverables) == 0 {
+			step.Deliverables = []string{step.Title}
+		}
+		if len(step.AcceptanceCriteria) == 0 {
+			step.AcceptanceCriteria = []string{"The step's deliverable is produced and supported by tool evidence."}
+		}
+		if strings.TrimSpace(step.VerificationStrategy) == "" {
+			step.VerificationStrategy = "evidence"
+		}
+		step.VerificationStatus = VerificationStatusPending
+		step.VerificationSummary = ""
+		step.VerificationAttempts = 0
+		step.Evidence = nil
+		step.AttemptHistory = nil
 		step.Result = ""
 		step.Error = ""
 		normalized = append(normalized, step)
 	}
 	return normalized
+}
+
+func enforcePlanInvariants(objective string, verifierID string, steps []plancap.Step, knownTools map[string]struct{}) []plancap.Step {
+	if len(steps) == 0 {
+		return steps
+	}
+	final := &steps[len(steps)-1]
+	objective = strings.TrimSpace(objective)
+	if objective != "" {
+		appendUniquePlanText(&final.Deliverables, "Objective outcome: "+textLimit(objective, 500))
+		appendUniquePlanText(&final.AcceptanceCriteria, "The completed result directly satisfies the objective and every material factual claim is supported by observable evidence.")
+	}
+	if verifierID != "" {
+		appendUniquePlanText(&final.AcceptanceCriteria, fmt.Sprintf("The configured verifier %q passes with successful evidence.", verifierID))
+	}
+	if objectiveRequiresMutation(objective) {
+		prefix := "Complete the requested mutation before verification."
+		if !strings.Contains(strings.ToLower(final.Description), "mutation") {
+			final.Description = strings.TrimSpace(prefix + " " + final.Description)
+		}
+		for _, toolID := range []string{"edit", "write"} {
+			if _, available := knownTools[toolID]; available {
+				appendUniquePlanText(&final.ToolIDs, toolID)
+			}
+		}
+	}
+	return steps
+}
+
+func canonicalPlanSummary(steps []plancap.Step) string {
+	parts := make([]string, 0, len(steps))
+	for _, step := range steps {
+		parts = append(parts, fmt.Sprintf("[%s] %s", step.ID, step.Title))
+	}
+	return fmt.Sprintf("%d-step execution plan: %s", len(steps), strings.Join(parts, "; "))
+}
+
+func appendUniquePlanText(values *[]string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	for _, existing := range *values {
+		if strings.EqualFold(strings.TrimSpace(existing), value) {
+			return
+		}
+	}
+	*values = append(*values, value)
+}
+
+func objectiveRequiresMutation(objective string) bool {
+	objective = strings.ToLower(strings.TrimSpace(objective))
+	for _, negative := range []string{"do not modify", "do not edit", "do not write", "without modifying", "without editing", "read-only"} {
+		objective = strings.ReplaceAll(objective, negative, "")
+	}
+	for _, word := range strings.Fields(objective) {
+		word = strings.Trim(word, ".,:;!?()[]{}\"'")
+		switch word {
+		case "implement", "modify", "edit", "create", "write", "fix", "refactor", "update":
+			return true
+		}
+	}
+	return false
 }
 
 func stripPlanJSONFence(content string) string {

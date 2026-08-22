@@ -685,6 +685,16 @@ func providerReasoningOptions(provider Provider, effort string) (string, map[str
 			thinkingType = "disabled"
 		}
 		return "", map[string]any{"thinking": map[string]any{"type": thinkingType}}
+	case ProviderVLLM:
+		switch effort {
+		case string(llms.ThinkingModeMinimal):
+			effort = string(llms.ThinkingModeLow)
+		case string(llms.ThinkingModeHigh):
+			effort = string(llms.ThinkingModeMedium)
+		case string(llms.ThinkingModeMax):
+			effort = string(llms.ThinkingModeXHigh)
+		}
+		return effort, nil
 	case ProviderOpenRouter:
 		return "", map[string]any{"reasoning": map[string]any{"effort": effort}}
 	default:
@@ -694,7 +704,7 @@ func providerReasoningOptions(provider Provider, effort string) (string, map[str
 
 func usesMaxTokens(provider Provider) bool {
 	switch provider {
-	case ProviderDeepSeek, ProviderMistral, ProviderOpenRouter:
+	case ProviderDeepSeek, ProviderVLLM, ProviderMistral, ProviderOpenRouter:
 		return true
 	default:
 		return false

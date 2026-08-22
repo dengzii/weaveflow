@@ -12,7 +12,8 @@ compilation, and a container health check for changes on `master`, pull requests
 demo image change on `master`. It uses a dedicated GitHub Actions BuildKit cache scope so the Codespaces demo image
 does not evict the production image cache. CI reads the stable production scope;
 pull requests write an isolated `production-pr-*` scope, and releases write a tag-specific `production-release-*`
-scope. The GHCR package must be public for anonymous users to launch the one-click Codespaces profile.
+scope. The publish job runs only in the canonical `dengzii/weaveflow` repository because forks cannot write its GHCR
+package. The package must be public for anonymous users to launch the one-click Codespaces profile.
 
 `workflows/deploy-sites.yml` builds and deploys the website, the bundled English and Chinese documentation, and the
 Playground to AWS EC2 after a successful `CI` run for relevant changes on `master`. It uses the protected

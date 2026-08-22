@@ -44,6 +44,7 @@ env:
 
 jobs:
   publish:
+    if: github.repository == 'dengzii/weaveflow'
     name: Publish Codespaces Demo image
     runs-on: ubuntu-latest
     timeout-minutes: 30

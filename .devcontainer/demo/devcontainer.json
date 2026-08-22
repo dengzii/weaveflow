@@ -3,6 +3,7 @@
   "image": "ghcr.io/dengzii/weaveflow-codespaces:main",
   "overrideCommand": false,
   "remoteUser": "codespace",
+  "updateRemoteUserUID": false,
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
   "workspaceFolder": "/workspace",
   "forwardPorts": [8080],

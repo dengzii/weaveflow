@@ -14,6 +14,7 @@ var (
 	_ dsl.GraphNodeSpecProvider = (*GeneratorNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*StepNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ReviewNode)(nil)
+	_ dsl.GraphNodeSpecProvider = (*VerifierNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*SynthesisNode)(nil)
 )
 
@@ -48,6 +49,10 @@ func ApplyDefaultStatePaths(target core.Node) {
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ExecutionPath, "execution")
 		setScope(&typed.ConversationPath, nodeOwner(typed, NodeTypePlanReview), "conversation")
+	case *VerifierNode:
+		setShared(&typed.PlanPath, "plan")
+		setShared(&typed.ExecutionPath, "execution")
+		setScope(&typed.ConversationPath, nodeOwner(typed, NodeTypePlanVerifier), "conversation")
 	case *SynthesisNode:
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ResultPath, "final", "answer")
@@ -63,6 +68,10 @@ func (n *StepNode) ApplyDefaultStatePaths() {
 }
 
 func (n *ReviewNode) ApplyDefaultStatePaths() {
+	ApplyDefaultStatePaths(n)
+}
+
+func (n *VerifierNode) ApplyDefaultStatePaths() {
 	ApplyDefaultStatePaths(n)
 }
 

@@ -1,10 +1,11 @@
 {
   "version": "1.0",
   "name": "supervisor_mode",
-  "description": "A supervisor delegates to research and quantitative specialists, then synthesizes the final answer.",
+  "description": "A supervisor delegates language design, runtime implementation, testing, and integration work, then synthesizes a compile-ready typed mini-language implementation.",
   "state_modules": [{"name": "weaveflow.protocols", "version": "1"}],
   "entry_point": "supervisor",
   "finish_point": "synthesis",
+  "policy": {"limits": {"max_wall_time": "90m"}, "node_defaults": {"timeout": "5m"}},
   "nodes": [
     {
       "id": "supervisor",
@@ -12,115 +13,115 @@
       "type": "supervisor",
       "config": {
         "members": [
-          {
-            "id": "researcher",
-            "name": "Researcher",
-            "description": "Identify qualitative tradeoffs, assumptions, and evidence relevant to the decision."
-          },
-          {
-            "id": "quantitative_analyst",
-            "name": "Quantitative Analyst",
-            "description": "Perform exact calculations, compare numeric scenarios, and check quantitative claims."
-          }
+          {"id": "language_design", "name": "Language Architect", "description": "Define the compact grammar, AST/spans, type and runtime contracts, public API, and acceptance matrix in one implementation brief."},
+          {"id": "frontend", "name": "Frontend Engineer", "description": "Implement the module, lexer, AST, parser, spans, diagnostics, and expression precedence in workspace files."},
+          {"id": "integrator", "name": "Runtime Integrator", "description": "Inspect the frontend files, add static checking, evaluation, built-ins, and public API, then compile and repair the package."},
+          {"id": "packager", "name": "Packaging Tester", "description": "Read the implementation and test brief, then produce compile-ready table-driven tests, a CLI example, and exact validation commands."}
         ],
+        "routing_strategy": "sequential",
         "max_turns": 6,
-        "route_attempts": 2
+        "route_attempts": 3,
+        "finish_worker": "*",
+        "finish_markers": ["FRONTEND_READY", "SOURCE_VERIFIED", "PACKAGE_VERIFIED"],
+        "system_prompt": "You are the lead engineer supervising implementation of the typed mini scripting language in the objective. Route once to each worker in this order: language_design, frontend, integrator, packager; then choose __finish__ only if the combined history contains FRONTEND_READY, SOURCE_VERIFIED, and PACKAGE_VERIFIED. Ask language_design for one concise architecture/acceptance brief. Tell frontend to write go.mod plus complete AST/lexer/parser files with relative paths. Tell integrator to discover/read those files, add type checker/evaluator/API files, and repair with its source validation tool before SOURCE_VERIFIED. Tell packager to discover the package, create tests/CLI, and repair with its package validation tool before PACKAGE_VERIFIED. Never accept claimed validation without tool output. Return JSON only: {\"next_worker\":\"<worker id or __finish__>\",\"task\":\"<specific self-contained task>\",\"reason\":\"<brief reason>\"}."
       },
-      "state": {
-        "objective": {"path": "shared.request.input"},
-        "supervisor": {"path": "shared.supervisor"}
-      }
+      "state": {"objective": {"path": "shared.request.input"}, "supervisor": {"path": "shared.supervisor"}}
     },
     {
-      "id": "researcher",
-      "name": "Researcher",
+      "id": "language_design",
+      "name": "Language Architect",
       "type": "supervisor_worker",
       "config": {
-        "worker_id": "researcher",
-        "role": "Identify qualitative tradeoffs and return a concise evidence-oriented brief.",
-        "max_iterations": 4,
+        "worker_id": "language_design",
+        "role": "Define the entire language architecture and executable acceptance contract as one concise brief for implementation and packaging workers.",
+        "system_prompt": "You are the language architect. Return one complete brief under 900 words, not source files. Define exact syntax/precedence, AST and span rules, parser diagnostics, int/bool/string/function static-checking rules, lexical evaluator environments, returns and while safety, print/len/toInt built-ins, runtime errors, the required public Go API, and a table of success/error acceptance cases. Resolve ambiguities explicitly. End with ARCHITECTURE_COMPLETE. Do not use placeholders, TODOs, omitted sections, or unclosed fences.",
+        "max_iterations": 2,
+        "max_output_tokens": 2400,
+        "reasoning_effort": "none",
         "parallel": true
       },
-      "state": {
-        "supervisor": {"path": "shared.supervisor"},
-        "conversation": {"path": "scopes.supervisor_researcher.conversation"}
-      }
+      "state": {"supervisor": {"path": "shared.supervisor"}, "conversation": {"path": "scopes.supervisor_language_design.conversation"}}
     },
     {
-      "id": "quantitative_analyst",
-      "name": "Quantitative Analyst",
+      "id": "frontend",
+      "name": "Frontend Engineer",
       "type": "supervisor_worker",
       "config": {
-        "worker_id": "quantitative_analyst",
-        "role": "Use the calculator for exact arithmetic and explain the comparison succinctly.",
-        "tool_ids": ["calculator"],
-        "max_iterations": 4,
+        "worker_id": "frontend",
+        "role": "Create a complete syntactic frontend in several bounded workspace files for the runtime integrator.",
+        "system_prompt": "You are the frontend engineer in an isolated workspace. Read the objective and architecture brief. Every file must be written directly at the workspace root: use exact paths go.mod, ast.go, lexer.go, parser.go, with optional token.go and span.go. Never create subdirectories. go.mod must declare exactly module example.com/tiny and every Go source file must use package tiny. Implement typed let declarations, typed fn declarations/calls and first-class fn literals, tokens, source positions, AST, lexer, recursive-descent parser, if/else, while, return, reassignment, &&/|| and normal precedence with clear syntax errors. Critical Go AST contract: define `type Node interface { Span() Span }` and `type Expr interface { Node; exprNode() }`; every AST struct must store its position in an unexported field named `span Span` and implement `func (n *X) Span() Span { return n.span }`. Never declare an exported field named Span on a type that also has Span(); never define duplicate Type/String/Span methods or receivers; use `expr.Span()` consistently. Keep files complete and under 700 lines. Do not implement checker, evaluator, tests, or CLI. Use only relative paths. Write each file completely, then call go_validate_frontend with an empty object. Fix only reported compile errors and repeat validation until passed=true. Once passed=true, stop tools and return FRONTEND_READY only; do not paste source.",
+        "tool_ids": ["write", "read", "edit", "go_validate_frontend"],
+        "history_turns": 1,
+        "prompt_max_chars": 80000,
+        "max_iterations": 72,
+        "max_output_tokens": 7000,
+        "reasoning_effort": "none",
+        "require_tool_final_answer": true,
         "parallel": true
       },
-      "state": {
-        "supervisor": {"path": "shared.supervisor"},
-        "conversation": {"path": "scopes.supervisor_quantitative_analyst.conversation"}
-      }
+      "policy": {"timeout": "25m"},
+      "state": {"supervisor": {"path": "shared.supervisor"}, "conversation": {"path": "scopes.supervisor_frontend.conversation"}}
+    },
+    {
+      "id": "integrator",
+      "name": "Runtime Integrator",
+      "type": "supervisor_worker",
+      "config": {
+        "worker_id": "integrator",
+        "role": "Inspect the frontend package, add all semantic/runtime files, and repair the complete source package until compilation passes.",
+        "system_prompt": "You are the runtime integrator in the same isolated workspace. Use glob to discover root Go files, then read the frontend implementation, using multiple independent read calls in one response when supported. Use only relative paths. Add checker.go, evaluator.go, and api.go in package tiny; edit frontend files when necessary. Program execution starts with top-level statements; never require or synthesize fn main. Top-level typed functions must be callable recursively and usable as first-class values. Implement two-pass function/static checking, lexical scopes, exact assignment/call/operator/condition/return errors, Value, evaluator, recursion, return signals, configurable while loop limit, and the exact safe built-in names print, len, and toInt. Implement runtime errors, Parse/Check/Eval/Run, Value.String, WithOutput(io.Writer), and WithLoopLimit; print must actually write to the configured writer. Never panic for any user source including malformed input and empty function bodies. Call go_validate_source with an empty object, inspect output, and repair until passed is true. Do not create tests or CLI. After passed=true, immediately return a concise validation summary followed by SOURCE_VERIFIED; do not paste source.",
+        "tool_ids": ["glob", "write", "read", "edit", "go_validate_source"],
+        "history_turns": 2,
+        "prompt_max_chars": 120000,
+        "max_iterations": 64,
+        "max_output_tokens": 11000,
+        "reasoning_effort": "none",
+        "require_tool_final_answer": true,
+        "parallel": true
+      },
+      "policy": {"timeout": "35m"},
+      "state": {"supervisor": {"path": "shared.supervisor"}, "conversation": {"path": "scopes.supervisor_integrator.conversation"}}
+    },
+    {
+      "id": "packager",
+      "name": "Packaging Tester",
+      "type": "supervisor_worker",
+      "config": {
+        "worker_id": "packager",
+        "role": "Inspect the actual implementation files, add exhaustive tests and a CLI, and repair the workspace until every validation command succeeds.",
+        "system_prompt": "Read parser.go, api.go, checker.go, evaluator.go, and ast.go before editing. Top-level statements execute directly: never require or test a main function and never use mainOf. API is Parse(string) (*Program,error), Check(*Program) error, Eval(*Program, opts ...Option) error, Run(string, opts ...Option) error, WithOutput(io.Writer), WithLoopLimit(int); no Value return. Exact syntax: let name: int = expr; and fn add(a int, b int) -> int; assignments name = expr; inferred first-class values use let f = fn(x int) -> int { ... }; do not use fn(int) -> int annotations. print accepts int/bool/string and writes io.Writer; len/toInt accept string. Do not create cmd/scratch. Write tests for top-level execution, static/runtime errors, recursion, inferred first-class functions, boolean precedence, reassignment, malformed input, empty functions, output, loop limit. Write cmd/tiny/main.go and root example.tiny. Run go_validate_package until passed=true, then return PACKAGE_VERIFIED only.",
+        "tool_ids": ["glob", "write", "read", "edit", "go_validate_package"],
+        "history_turns": 0,
+        "prompt_max_chars": 80000,
+        "max_iterations": 100,
+        "max_output_tokens": 6000,
+        "reasoning_effort": "none",
+        "require_tool_final_answer": true,
+        "parallel": true
+      },
+        "policy": {"timeout": "35m"},
+      "state": {"supervisor": {"path": "shared.supervisor"}, "conversation": {"path": "scopes.supervisor_packager.conversation"}}
     },
     {
       "id": "synthesis",
-      "name": "Final Synthesis",
+      "name": "Final Implementation",
       "type": "supervisor_synthesis",
-      "config": {},
-      "state": {
-        "supervisor": {"path": "shared.supervisor"},
-        "result": {"path": "shared.final.answer"}
-      }
+      "config": {
+        "preferred_workers": ["integrator", "packager"]
+      },
+      "state": {"supervisor": {"path": "shared.supervisor"}, "result": {"path": "shared.final.answer"}}
     }
   ],
   "edges": [
-    {
-      "from": "supervisor",
-      "to": "researcher",
-      "condition": {
-        "type": "supervisor_route_equals",
-        "config": {
-          "worker_id": "researcher"
-        },
-        "state": {
-          "supervisor": {"path": "shared.supervisor"}
-        }
-      }
-    },
-    {
-      "from": "supervisor",
-      "to": "quantitative_analyst",
-      "condition": {
-        "type": "supervisor_route_equals",
-        "config": {
-          "worker_id": "quantitative_analyst"
-        },
-        "state": {
-          "supervisor": {"path": "shared.supervisor"}
-        }
-      }
-    },
-    {
-      "from": "supervisor",
-      "to": "synthesis"
-    },
-    {
-      "from": "researcher",
-      "to": "supervisor"
-    },
-    {
-      "from": "quantitative_analyst",
-      "to": "supervisor"
-    }
+    {"from": "supervisor", "to": "language_design", "condition": {"type": "supervisor_route_equals", "config": {"worker_id": "language_design"}, "state": {"supervisor": {"path": "shared.supervisor"}}}},
+    {"from": "supervisor", "to": "frontend", "condition": {"type": "supervisor_route_equals", "config": {"worker_id": "frontend"}, "state": {"supervisor": {"path": "shared.supervisor"}}}},
+    {"from": "supervisor", "to": "integrator", "condition": {"type": "supervisor_route_equals", "config": {"worker_id": "integrator"}, "state": {"supervisor": {"path": "shared.supervisor"}}}},
+    {"from": "supervisor", "to": "packager", "condition": {"type": "supervisor_route_equals", "config": {"worker_id": "packager"}, "state": {"supervisor": {"path": "shared.supervisor"}}}},
+    {"from": "supervisor", "to": "synthesis"},
+    {"from": "language_design", "to": "supervisor"},
+    {"from": "frontend", "to": "supervisor"},
+    {"from": "integrator", "to": "supervisor"},
+    {"from": "packager", "to": "supervisor"}
   ],
-  "metadata": {
-    "web": {
-      "positions": {
-        "supervisor": {"x": 360, "y": 40},
-        "researcher": {"x": 80, "y": 240},
-        "quantitative_analyst": {"x": 640, "y": 240},
-        "synthesis": {"x": 360, "y": 460}
-      }
-    }
-  }
+  "metadata": {"web": {"positions": {"supervisor": {"x": 525, "y": 40}, "language_design": {"x": 0, "y": 240}, "frontend": {"x": 350, "y": 240}, "integrator": {"x": 700, "y": 240}, "packager": {"x": 1050, "y": 240}, "synthesis": {"x": 525, "y": 500}}}}
 }
