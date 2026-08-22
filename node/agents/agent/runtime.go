@@ -123,12 +123,13 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 			Mode:                      llms.ModelModeChat,
 			Messages:                  promptMessages,
 			Tools:                     toolSets,
-			Thinking:                  llms.ThinkingModeHigh,
+			Thinking:                  runtime.effectiveReasoningEffort(),
 			ResponseName:              strings.TrimSpace(runtime.responseName),
 			ResponseSchema:            runtime.outputSchema.Clone(),
 			StrictResponse:            len(runtime.outputSchema) > 0,
 			ResponseJSON:              runtime.outputJSON,
 			ResponseJSONCompatibility: runtime.outputJSONCompatibility,
+			MaxTokens:                 runtime.config.MaxOutputTokens,
 		})
 		if err != nil {
 			if finishErr := finishModelInvocation(err); finishErr != nil {
@@ -199,7 +200,24 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 		}
 
 		if len(choice.ToolCalls) == 0 {
-			answer, _, err := normalizeFinalOutput(basenode.ExtractText(aiMessage), runtime.outputSchema, runtime.outputJSON, runtime.outputJSONCompatibility)
+			content := basenode.ExtractText(aiMessage)
+			if strings.TrimSpace(content) == "" {
+				messages = append(conversation.Messages(), llms.TextParts(llms.ChatMessageTypeHuman,
+					"The response contained no final answer. Return the requested result in the answer content now; do not return reasoning without an answer."))
+				if err := conversation.SetMessages(messages); err != nil {
+					return err
+				}
+				continue
+			}
+			if runtime.config.RequireToolFinalAnswer {
+				messages = append(conversation.Messages(), llms.TextParts(llms.ChatMessageTypeHuman,
+					"This task requires a trusted tool result as the final answer. Do not finish with an unverified summary or claim. Call the required validation or completion tool now, repair any reported failure, and continue until that tool supplies the final answer."))
+				if err := conversation.SetMessages(messages); err != nil {
+					return err
+				}
+				continue
+			}
+			answer, _, err := normalizeFinalOutput(content, runtime.outputSchema, runtime.outputJSON, runtime.outputJSONCompatibility)
 			if err != nil {
 				return err
 			}
@@ -212,6 +230,10 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 
 		if err := runtime.executeToolCalls(ctx, conversation, choice.ToolCalls, iteration); err != nil {
 			return err
+		}
+		if strings.TrimSpace(conversation.FinalAnswer()) != "" {
+			runtime.publishLoopStopped(ctx, conversation.IterationCount(), "tool_final_answer")
+			return nil
 		}
 	}
 }
@@ -301,7 +323,9 @@ func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conve
 	}
 	toolExecutions := make([]toolExecution, len(toolCalls))
 	var executionErrors []error
-	if runtime.config.Parallel && len(toolCalls) > 1 {
+	var completionErrors []error
+	finalAnswer := ""
+	if runtime.config.Parallel && len(toolCalls) > 1 && !runtime.config.RequireToolFinalAnswer {
 		type toolTask struct {
 			index int
 			call  llms.ToolCall
@@ -329,22 +353,85 @@ func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conve
 	} else {
 		for index, toolCall := range toolCalls {
 			toolExecutions[index] = runtime.executeToolCall(ctx, toolCall, iteration, index)
+			if runtime.config.RequireToolFinalAnswer && toolExecutionFinalAnswer(toolExecutions[index]) != "" {
+				toolExecutions = toolExecutions[:index+1]
+				break
+			}
 		}
 	}
 
 	for _, execution := range toolExecutions {
+		executionFinalAnswer := toolExecutionFinalAnswer(execution)
 		if err := conversation.SetMessages(append(conversation.Messages(), execution.message)); err != nil {
-			executionErrors = append(executionErrors, err)
+			completionErrors = append(completionErrors, err)
 			continue
 		}
 		if err := executor.CheckpointAgentInvocation(execution.invocationCtx, "tool_result"); err != nil {
-			executionErrors = append(executionErrors, err)
+			completionErrors = append(completionErrors, err)
 		}
 		if err := execution.finish(execution.toolErr); err != nil && !errors.Is(execution.toolErr, basenode.ErrToolNotFound) {
-			executionErrors = append(executionErrors, err)
+			if executionFinalAnswer != "" || execution.toolErr == nil {
+				completionErrors = append(completionErrors, err)
+			} else if !repairableRequiredToolError(runtime.config.RequireToolFinalAnswer, execution.toolErr) {
+				executionErrors = append(executionErrors, err)
+			}
+		}
+		if execution.toolErr == nil {
+			for _, part := range execution.message.Parts {
+				result, ok := part.(llms.ToolResult)
+				if !ok {
+					continue
+				}
+				candidate := strings.TrimSpace(result.FinalAnswer)
+				if candidate == "" {
+					continue
+				}
+				if finalAnswer != "" && finalAnswer != candidate {
+					completionErrors = append(completionErrors, errors.New("agent tools returned conflicting final answers"))
+					continue
+				}
+				finalAnswer = candidate
+			}
 		}
 	}
-	return errors.Join(executionErrors...)
+	if finalAnswer != "" {
+		if err := conversation.SetFinalAnswer(finalAnswer); err != nil {
+			completionErrors = append(completionErrors, err)
+		} else if runtime.config.RequireToolFinalAnswer {
+			return errors.Join(completionErrors...)
+		}
+	}
+	return errors.Join(append(completionErrors, executionErrors...)...)
+}
+
+func repairableRequiredToolError(required bool, toolErr error) bool {
+	if !required || toolErr == nil {
+		return false
+	}
+	switch core.ClassifyError(toolErr) {
+	case core.ErrorInvalidInput, core.ErrorInvalidOutput, core.ErrorUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+func toolExecutionFinalAnswer(execution struct {
+	message       llms.MessageContent
+	invocationCtx context.Context
+	finish        func(error) error
+	toolErr       error
+}) string {
+	if execution.toolErr != nil {
+		return ""
+	}
+	for _, part := range execution.message.Parts {
+		result, ok := part.(llms.ToolResult)
+		if ok && strings.TrimSpace(result.FinalAnswer) != "" {
+			return strings.TrimSpace(result.FinalAnswer)
+		}
+	}
+	return ""
 }
 
 func (runtime loopRunner) budgetLimits(maxIterations int) executor.AgentBudgetLimits {
@@ -428,6 +515,13 @@ func (runtime loopRunner) effectiveMaxIterations(conversation *conversationcap.V
 		}
 	}
 	return conversationcap.DefaultMaxIterations
+}
+
+func (runtime loopRunner) effectiveReasoningEffort() llms.ThinkingMode {
+	if strings.TrimSpace(runtime.config.ReasoningEffort) == "" {
+		return llms.ThinkingModeHigh
+	}
+	return llms.ThinkingMode(strings.TrimSpace(runtime.config.ReasoningEffort))
 }
 
 func (runtime loopRunner) effectivePromptMaxChars() int {

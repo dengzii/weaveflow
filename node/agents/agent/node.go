@@ -24,15 +24,18 @@ var _ dsl.GraphNodeSpecProvider = (*Node)(nil)
 
 // Config defines model, prompt, tool access, and execution limits shared by agent nodes and agent tools.
 type Config struct {
-	ModelID        string
-	ToolIDs        []string
-	SystemPrompt   string
-	MaxIterations  int
-	MaxToolCalls   int
-	MaxTokens      int
-	MaxCost        float64
-	PromptMaxChars int
-	Parallel       bool
+	ModelID                string
+	ToolIDs                []string
+	SystemPrompt           string
+	ReasoningEffort        string
+	MaxIterations          int
+	MaxToolCalls           int
+	MaxTokens              int
+	MaxOutputTokens        int
+	MaxCost                float64
+	PromptMaxChars         int
+	Parallel               bool
+	RequireToolFinalAnswer bool
 }
 
 type Node struct {
@@ -71,8 +74,14 @@ func (node *Node) Validate() error {
 	if node.TaskPath.Empty() || node.ConversationPath.Empty() || node.ResultPath.Empty() {
 		return fmt.Errorf("agent node %q requires task, conversation, and result paths", node.ID())
 	}
-	if node.MaxIterations < 0 || node.MaxToolCalls < 0 || node.MaxTokens < 0 || node.MaxCost < 0 {
+	if node.MaxIterations < 0 || node.MaxToolCalls < 0 || node.MaxTokens < 0 || node.MaxOutputTokens < 0 || node.MaxCost < 0 {
 		return fmt.Errorf("agent node %q budget values cannot be negative", node.ID())
+	}
+	if !validReasoningEffort(node.effectiveReasoningEffort()) {
+		return fmt.Errorf("agent node %q reasoning_effort is invalid", node.ID())
+	}
+	if node.RequireToolFinalAnswer && len(node.ToolIDs) == 0 {
+		return fmt.Errorf("agent node %q require_tool_final_answer requires at least one tool_id", node.ID())
 	}
 	if err := state.ValidateJSONSchemaDefinition(node.OutputSchema); err != nil {
 		return fmt.Errorf("agent node %q output schema: %w", node.ID(), err)
@@ -112,6 +121,9 @@ func (node *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 	if strings.TrimSpace(node.ModelID) != "" {
 		configMap["model_id"] = node.ModelID
 	}
+	if strings.TrimSpace(node.ReasoningEffort) != "" {
+		configMap["reasoning_effort"] = strings.TrimSpace(node.ReasoningEffort)
+	}
 	if node.MaxIterations > 0 {
 		configMap["max_iterations"] = node.MaxIterations
 	}
@@ -120,6 +132,9 @@ func (node *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 	if node.MaxTokens > 0 {
 		configMap["max_tokens"] = node.MaxTokens
+	}
+	if node.MaxOutputTokens > 0 {
+		configMap["max_output_tokens"] = node.MaxOutputTokens
 	}
 	if node.MaxCost > 0 {
 		configMap["max_cost"] = node.MaxCost
@@ -135,6 +150,7 @@ func (node *Node) GraphNodeSpec() dsl.GraphNodeSpec {
 	}
 	configMap["output_json"] = node.OutputJSON
 	configMap["output_json_compatibility"] = node.OutputJSONCompatibility
+	configMap["require_tool_final_answer"] = node.RequireToolFinalAnswer
 	return basenode.NewGraphNodeSpec(node.NodeBase, NodeType, configMap, map[string]state.Path{
 		"task": node.TaskPath, "conversation": node.ConversationPath, "result": node.ResultPath,
 	})
@@ -156,6 +172,11 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 						"title":     "System Prompt",
 						"x-control": "textarea",
 					},
+					"reasoning_effort": dsl.JSONSchema{
+						"type": "string", "title": "Reasoning Effort",
+						"enum":    []string{"auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"},
+						"default": "high", "description": "Controls model reasoning effort when supported.",
+					},
 					"max_iterations": dsl.JSONSchema{
 						"type": "integer", "title": "Max Agent Iterations", "minimum": 1, "default": 10,
 						"description": "Maximum model and tool loop iterations before the agent stops.",
@@ -168,6 +189,10 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 						"type": "integer", "title": "Max Model Tokens", "minimum": 1,
 						"description": "Maximum model tokens across this Agent Run, including resumed execution.",
 					},
+					"max_output_tokens": dsl.JSONSchema{
+						"type": "integer", "title": "Max Output Tokens", "minimum": 1,
+						"description": "Maximum tokens requested from the model for each response.",
+					},
 					"max_cost": dsl.JSONSchema{
 						"type": "number", "title": "Max Model Cost", "minimum": 0,
 						"description": "Maximum reported model cost across this Agent Run.",
@@ -179,6 +204,10 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 					"parallel": dsl.JSONSchema{
 						"type": "boolean", "title": "Parallel Tool Calls",
 						"description": "Execute multiple tool calls from the same model response concurrently.",
+					},
+					"require_tool_final_answer": dsl.JSONSchema{
+						"type": "boolean", "title": "Require Tool Final Answer", "default": false,
+						"description": "Reject ordinary assistant text as terminal output and continue until a trusted tool supplies the final answer.",
 					},
 					"output_schema": dsl.JSONSchema{
 						"type": "object", "title": "Output Schema",
@@ -237,12 +266,14 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 			target.ModelID = config.String(spec.Config, "model_id")
 			target.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			target.SystemPrompt = config.String(spec.Config, "system_prompt")
+			target.ReasoningEffort = config.String(spec.Config, "reasoning_effort")
 			target.TaskPath = taskPath
 			target.ConversationPath = conversationPath
 			target.ResultPath = resultPath
 			target.MaxIterations, _ = config.Int(spec.Config, "max_iterations")
 			target.MaxToolCalls, _ = config.Int(spec.Config, "max_tool_calls")
 			target.MaxTokens, _ = config.Int(spec.Config, "max_tokens")
+			target.MaxOutputTokens, _ = config.Int(spec.Config, "max_output_tokens")
 			target.MaxCost, _ = config.Float(spec.Config, "max_cost")
 			target.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
 			target.OutputSchema, err = outputSchemaFromConfig(spec.Config)
@@ -258,6 +289,9 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 			}
 			if parallel, ok := config.Bool(spec.Config, "parallel"); ok {
 				target.Parallel = parallel
+			}
+			if requireToolFinalAnswer, ok := config.Bool(spec.Config, "require_tool_final_answer"); ok {
+				target.RequireToolFinalAnswer = requireToolFinalAnswer
 			}
 			if err := target.Validate(); err != nil {
 				return nil, err
@@ -345,6 +379,23 @@ func (node *Node) Contract() state.Contract {
 
 func (node *Node) outputJSONEnabled() bool {
 	return node != nil && (node.OutputJSON || len(node.OutputSchema) > 0)
+}
+
+func (node *Node) effectiveReasoningEffort() llms.ThinkingMode {
+	if node == nil || strings.TrimSpace(node.ReasoningEffort) == "" {
+		return llms.ThinkingModeHigh
+	}
+	return llms.ThinkingMode(strings.TrimSpace(node.ReasoningEffort))
+}
+
+func validReasoningEffort(value llms.ThinkingMode) bool {
+	switch value {
+	case llms.ThinkingModeAuto, llms.ThinkingModeNone, llms.ThinkingModeMinimal, llms.ThinkingModeLow,
+		llms.ThinkingModeMedium, llms.ThinkingModeHigh, llms.ThinkingModeXHigh, llms.ThinkingModeMax:
+		return true
+	default:
+		return false
+	}
 }
 
 func outputSchemaFromConfig(values map[string]any) (state.JSONSchema, error) {
