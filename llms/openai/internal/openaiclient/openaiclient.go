@@ -8,6 +8,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
+	"sort"
 	"strings"
 )
 
@@ -20,12 +22,73 @@ var ErrEmptyResponse = errors.New("empty response")
 
 type errorMessage struct {
 	Error struct {
-		Message string `json:"message"`
-		Type    string `json:"type"`
-		Code    any    `json:"code"`
+		Message   string `json:"message"`
+		Type      string `json:"type"`
+		Code      any    `json:"code"`
+		Param     any    `json:"param"`
+		RequestID string `json:"request_id"`
 	} `json:"error"`
-	Message string `json:"message"`
-	Detail  any    `json:"detail"`
+	Message   string `json:"message"`
+	Detail    any    `json:"detail"`
+	RequestID string `json:"request_id"`
+}
+
+type HTTPStatusError struct {
+	StatusCode      int
+	ProviderMessage string
+	ProviderType    string
+	ProviderCode    string
+	ProviderParam   string
+	RequestID       string
+}
+
+type sanitizedError struct {
+	message string
+	cause   error
+}
+
+func (sanitizedErr *sanitizedError) Error() string {
+	if sanitizedErr == nil {
+		return "model API request failed"
+	}
+	return sanitizedErr.message
+}
+
+func (sanitizedErr *sanitizedError) Unwrap() error {
+	if sanitizedErr == nil {
+		return nil
+	}
+	return sanitizedErr.cause
+}
+
+func (statusErr *HTTPStatusError) Error() string {
+	if statusErr == nil {
+		return "model API request failed"
+	}
+	message := fmt.Sprintf("model API returned HTTP %d", statusErr.StatusCode)
+	if statusText := http.StatusText(statusErr.StatusCode); statusText != "" {
+		message += " " + statusText
+	}
+	if statusErr.ProviderMessage != "" {
+		message += ": " + statusErr.ProviderMessage
+	}
+	attributes := make([]string, 0, 4)
+	if statusErr.ProviderType != "" {
+		attributes = append(attributes, "type="+statusErr.ProviderType)
+	}
+	if statusErr.ProviderCode != "" {
+		attributes = append(attributes, "code="+statusErr.ProviderCode)
+	}
+	if statusErr.ProviderParam != "" {
+		attributes = append(attributes, "param="+statusErr.ProviderParam)
+	}
+	if statusErr.RequestID != "" {
+		attributes = append(attributes, "request_id="+statusErr.RequestID)
+	}
+	if len(attributes) > 0 {
+		message += " (" + strings.Join(attributes, ", ") + ")"
+	}
+	return message
 }
 
 type APIType string
@@ -138,7 +201,7 @@ func (c *Client) CreateEmbedding(ctx context.Context, r *EmbeddingRequest) ([][]
 
 	resp, err := c.createEmbedding(ctx, c.makeEmbeddingPayload(r))
 	if err != nil {
-		return nil, err
+		return nil, c.sanitizeError(err)
 	}
 
 	if len(resp.Data) == 0 {
@@ -164,7 +227,7 @@ func (c *Client) CreateChat(ctx context.Context, r *ChatRequest) (*ChatCompletio
 	}
 	resp, err := c.createChat(ctx, r)
 	if err != nil {
-		return nil, err
+		return nil, c.sanitizeError(err)
 	}
 	if len(resp.Choices) == 0 {
 		return nil, ErrEmptyResponse
@@ -183,7 +246,7 @@ func (c *Client) CreateCompletion(ctx context.Context, r *CompletionRequest) (*C
 	}
 	resp, err := c.createCompletion(ctx, r)
 	if err != nil {
-		return nil, err
+		return nil, c.sanitizeError(err)
 	}
 	if len(resp.Choices) == 0 {
 		return nil, ErrEmptyResponse
@@ -238,72 +301,171 @@ func (c *Client) buildAzureURL(suffix string, model string) string {
 	)
 }
 
-// sanitizeHTTPError sanitizes HTTP client errors to prevent leaking sensitive information.
-// It checks for context deadline/cancellation errors and returns generic timeout messages
-// instead of potentially exposing request details, headers, or other sensitive data.
+// sanitizeHTTPError removes the request URL, which may contain credentials, while
+// preserving the underlying DNS, TLS, connection, timeout, or cancellation cause.
 func sanitizeHTTPError(err error) error {
 	if err == nil {
 		return nil
 	}
 
-	// Check for context deadline exceeded
 	if errors.Is(err, context.DeadlineExceeded) {
-		return errors.New("request timeout: API call exceeded deadline")
+		return fmt.Errorf("model API request exceeded its deadline: %w", context.DeadlineExceeded)
 	}
-
-	// Check for context cancellation
 	if errors.Is(err, context.Canceled) {
-		return errors.New("request cancelled")
+		return fmt.Errorf("model API request was canceled: %w", context.Canceled)
 	}
 
-	// Check for network timeout errors
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) && urlErr.Err != nil {
+		operation := strings.TrimSpace(urlErr.Op)
+		if operation == "" {
+			operation = "send"
+		}
+		return fmt.Errorf("model API network request failed during %s: %w", operation, urlErr.Err)
+	}
+
 	var netErr net.Error
 	if errors.As(err, &netErr) && netErr.Timeout() {
-		return errors.New("request timeout: network operation exceeded timeout")
+		return fmt.Errorf("model API network request timed out: %w", err)
 	}
-
-	// For other network errors, provide generic message without exposing details
-	if _, ok := err.(net.Error); ok {
-		return errors.New("network error: failed to reach API server")
+	if errors.As(err, &netErr) {
+		return fmt.Errorf("model API network request failed: %w", err)
 	}
-
-	// Return original error if it's not a sensitive type
 	return err
 }
 
-func decodeHTTPStatusError(statusCode int, body io.Reader) error {
-	message := fmt.Sprintf("API returned unexpected status code: %d", statusCode)
-	payload, err := io.ReadAll(io.LimitReader(body, 1<<20))
+func (c *Client) decodeHTTPStatusError(response *http.Response) error {
+	statusErr := &HTTPStatusError{}
+	if response == nil {
+		return statusErr
+	}
+	statusErr.StatusCode = response.StatusCode
+	statusErr.RequestID = c.redactErrorText(responseRequestID(response.Header))
+	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil || len(payload) == 0 {
-		return errors.New(message)
+		return statusErr
 	}
 
-	var response errorMessage
-	if err := json.Unmarshal(payload, &response); err == nil {
-		providerMessage := strings.TrimSpace(response.Error.Message)
+	var payloadError errorMessage
+	if err := json.Unmarshal(payload, &payloadError); err == nil {
+		providerMessage := strings.TrimSpace(payloadError.Error.Message)
 		if providerMessage == "" {
-			providerMessage = strings.TrimSpace(response.Message)
+			providerMessage = strings.TrimSpace(payloadError.Message)
 		}
-		if providerMessage == "" && response.Detail != nil {
-			if detail, ok := response.Detail.(string); ok {
+		if providerMessage == "" && payloadError.Detail != nil {
+			if detail, ok := payloadError.Detail.(string); ok {
 				providerMessage = strings.TrimSpace(detail)
-			} else if encoded, marshalErr := json.Marshal(response.Detail); marshalErr == nil {
+			} else if encoded, marshalErr := json.Marshal(payloadError.Detail); marshalErr == nil {
 				providerMessage = string(encoded)
 			}
 		}
-		if providerMessage != "" {
-			return fmt.Errorf("%s: %s", message, providerMessage)
+		statusErr.ProviderMessage = truncateErrorText(c.redactErrorText(providerMessage), 4096)
+		statusErr.ProviderType = c.redactErrorText(strings.TrimSpace(payloadError.Error.Type))
+		statusErr.ProviderCode = c.redactErrorText(errorFieldText(payloadError.Error.Code))
+		statusErr.ProviderParam = c.redactErrorText(errorFieldText(payloadError.Error.Param))
+		if statusErr.RequestID == "" {
+			statusErr.RequestID = firstNonEmptyString(payloadError.Error.RequestID, payloadError.RequestID)
+		}
+		statusErr.RequestID = c.redactErrorText(statusErr.RequestID)
+		if statusErr.ProviderMessage != "" || statusErr.ProviderType != "" || statusErr.ProviderCode != "" || statusErr.ProviderParam != "" {
+			return statusErr
 		}
 	}
 
-	plainText := strings.TrimSpace(string(payload))
-	if len(plainText) > 512 {
-		plainText = plainText[:512]
+	statusErr.ProviderMessage = truncateErrorText(c.redactErrorText(string(payload)), 4096)
+	return statusErr
+}
+
+func (c *Client) redactErrorText(value string) string {
+	if c == nil || value == "" {
+		return value
 	}
-	if plainText == "" {
-		return errors.New(message)
+	sensitiveValues := []string{c.token, c.organization}
+	for _, headerValue := range c.ExtraHeaders {
+		sensitiveValues = append(sensitiveValues, headerValue)
 	}
-	return fmt.Errorf("%s: %s", message, plainText)
+	if parsed, err := url.Parse(c.baseURL); err == nil {
+		if parsed.User != nil {
+			sensitiveValues = append(sensitiveValues, parsed.User.String())
+			if password, exists := parsed.User.Password(); exists {
+				sensitiveValues = append(sensitiveValues, password)
+			}
+		}
+		for name, values := range parsed.Query() {
+			name = strings.ToLower(strings.TrimSpace(name))
+			if !strings.Contains(name, "key") && !strings.Contains(name, "token") && !strings.Contains(name, "secret") && !strings.Contains(name, "password") && !strings.Contains(name, "signature") && !strings.Contains(name, "credential") {
+				continue
+			}
+			sensitiveValues = append(sensitiveValues, values...)
+		}
+	}
+	sort.SliceStable(sensitiveValues, func(left, right int) bool {
+		return len(sensitiveValues[left]) > len(sensitiveValues[right])
+	})
+	for _, sensitive := range sensitiveValues {
+		sensitive = strings.TrimSpace(sensitive)
+		if len(sensitive) < 4 {
+			continue
+		}
+		value = strings.ReplaceAll(value, sensitive, "[REDACTED]")
+	}
+	return value
+}
+
+func (c *Client) sanitizeError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := c.redactErrorText(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return &sanitizedError{message: message, cause: err}
+}
+
+func responseRequestID(header http.Header) string {
+	for _, name := range []string{"x-request-id", "request-id", "x-ms-request-id", "cf-ray"} {
+		if value := strings.TrimSpace(header.Get(name)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func errorFieldText(value any) string {
+	switch typed := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(typed)
+	default:
+		encoded, err := json.Marshal(typed)
+		if err != nil {
+			return strings.TrimSpace(fmt.Sprint(typed))
+		}
+		return strings.TrimSpace(string(encoded))
+	}
+}
+
+func truncateErrorText(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit]) + "..."
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func mergeExtraBodyFields(payload []byte, extraBody map[string]any, requestName string) ([]byte, error) {

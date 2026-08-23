@@ -105,7 +105,7 @@ func (o *LLM) generateCompletion(ctx context.Context, request llms.ModelRequest)
 		ExtraBody:        mergeExtraBody(o.client.ExtraBody, requestOptions.ExtraBody),
 	})
 	if err != nil {
-		return nil, MapError(err)
+		return nil, o.mapError("text completion", firstNonEmpty(request.Model, o.model), err)
 	}
 	choices := make([]*llms.ModelChoice, len(result.Choices))
 	for index, choice := range result.Choices {
@@ -268,7 +268,7 @@ func (o *LLM) generateChat(ctx context.Context, request llms.ModelRequest) (*llm
 
 	result, err := o.client.CreateChat(ctx, req)
 	if err != nil {
-		return nil, MapError(err)
+		return nil, o.mapError("chat completion", effectiveModel, err)
 	}
 	if len(result.Choices) == 0 {
 		return nil, ErrEmptyResponse
@@ -421,7 +421,7 @@ func (o *LLM) generateResponse(
 
 	result, err := o.client.CreateResponse(ctx, providerRequest)
 	if err != nil {
-		return nil, MapError(err)
+		return nil, o.mapError("responses API", effectiveModel, err)
 	}
 	choice, err := contentChoiceFromResponse(result)
 	if err != nil {
@@ -768,7 +768,7 @@ func (o *LLM) CreateEmbedding(ctx context.Context, inputTexts []string) ([][]flo
 		Model: o.client.EmbeddingModel,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("failed to create OpenAI embeddings: %w", err)
+		return nil, o.mapError("embeddings", o.client.EmbeddingModel, err)
 	}
 	if len(embeddings) == 0 {
 		return nil, ErrEmptyResponse

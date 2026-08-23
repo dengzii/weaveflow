@@ -1,5 +1,8 @@
 import type {
   ApiErrorPayload,
+  AssistantJob,
+  AssistantSession,
+  AssistantStatus,
   ApiResponse,
   ArtifactDetail,
   ArtifactRef,
@@ -82,6 +85,122 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
 
 export async function getServerInfo(): Promise<ServerInfo> {
   return apiFetch<ServerInfo>("/healthz");
+}
+
+export async function getAssistantStatus(): Promise<AssistantStatus> {
+  return apiFetch<AssistantStatus>("/assistant/status");
+}
+
+export async function getAssistantSession(sessionID: string): Promise<AssistantSession> {
+  return apiFetch<AssistantSession>(`/assistant/sessions/${encodeURIComponent(sessionID)}`);
+}
+
+export async function submitAssistantMessage(
+  sessionID: string,
+  message: string,
+  context: {
+    graph_id?: string;
+    graph_version?: string;
+    definition?: GraphDefinition | null;
+    selected_run_id?: string;
+    workspace_mode?: string;
+  }
+): Promise<AssistantJob> {
+  return apiFetch<AssistantJob>(`/assistant/sessions/${encodeURIComponent(sessionID)}/messages`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ message, context }),
+  });
+}
+
+export async function getAssistantJob(jobID: string): Promise<AssistantJob> {
+  return apiFetch<AssistantJob>(`/assistant/jobs/${encodeURIComponent(jobID)}`);
+}
+
+export async function streamAssistantJob(
+  jobID: string,
+  onUpdate: (job: AssistantJob) => void,
+  signal?: AbortSignal
+): Promise<AssistantJob> {
+  const response = await globalThis.fetch(
+    resolveBackendUrl(`/assistant/jobs/${encodeURIComponent(jobID)}/stream`),
+    {
+      headers: managementHeaders({ Accept: "text/event-stream" }),
+      signal,
+    }
+  );
+  if (!response.ok) return readResponse<never>(response);
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("text/event-stream") || !response.body) {
+    throw new Error("Assistant job response is not an event stream");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let latest: AssistantJob | undefined;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+      const frames = readSSEDataFrames(buffer);
+      buffer = frames.remainder;
+      for (const data of frames.data) {
+        latest = parseAssistantJobEvent(data);
+        onUpdate(latest);
+      }
+      if (done) break;
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  if (latest?.status === "completed" || latest?.status === "failed") return latest;
+  throw new Error("Assistant job stream ended before the job completed");
+}
+
+function readSSEDataFrames(buffer: string): { data: string[]; remainder: string } {
+  const data: string[] = [];
+  while (true) {
+    const boundary = buffer.match(/\r?\n\r?\n/);
+    if (!boundary || boundary.index === undefined) break;
+    const block = buffer.slice(0, boundary.index);
+    buffer = buffer.slice(boundary.index + boundary[0].length);
+    const lines: string[] = [];
+    for (const line of block.split(/\r?\n/)) {
+      if (!line || line.startsWith(":")) continue;
+      const separator = line.indexOf(":");
+      const field = separator < 0 ? line : line.slice(0, separator);
+      let value = separator < 0 ? "" : line.slice(separator + 1);
+      if (value.startsWith(" ")) value = value.slice(1);
+      if (field === "data") lines.push(value);
+    }
+    if (lines.length > 0) data.push(lines.join("\n"));
+  }
+  return { data, remainder: buffer };
+}
+
+function parseAssistantJobEvent(data: string): AssistantJob {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    throw new Error("Assistant job stream returned invalid JSON");
+  }
+  if (
+    typeof parsed !== "object" || parsed === null || Array.isArray(parsed) ||
+    typeof (parsed as AssistantJob).job_id !== "string" ||
+    typeof (parsed as AssistantJob).session_id !== "string" ||
+    !["queued", "running", "completed", "failed"].includes((parsed as AssistantJob).status) ||
+    typeof (parsed as AssistantJob).created_at !== "string" ||
+    typeof (parsed as AssistantJob).updated_at !== "string" ||
+    ((parsed as AssistantJob).activities !== undefined && !Array.isArray((parsed as AssistantJob).activities))
+  ) {
+    throw new Error("Assistant job stream returned an invalid job snapshot");
+  }
+  return parsed as AssistantJob;
 }
 
 function graphPath(graphID: string): string {

@@ -418,7 +418,7 @@ func (c *Client) createChat(ctx context.Context, payload *ChatRequest) (*ChatCom
 	defer func() { _ = r.Body.Close() }()
 
 	if r.StatusCode != http.StatusOK {
-		return nil, decodeHTTPStatusError(r.StatusCode, r.Body)
+		return nil, c.decodeHTTPStatusError(r)
 	}
 	if payload.StreamingFunc != nil || payload.StreamingReasoningFunc != nil {
 		return parseStreamingChatResponse(ctx, r, payload)

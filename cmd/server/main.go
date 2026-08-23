@@ -1,19 +1,23 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"flag"
 	"fmt"
 	"log"
 	"log/slog"
 	"net"
+	"net/http/httptest"
 	"os"
 	"strings"
 
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/internal/assistant"
 	"github.com/dengzii/weaveflow/internal/server"
+	"github.com/dengzii/weaveflow/llms/openai"
 	claudenode "github.com/dengzii/weaveflow/node/agents/claude"
 	codexnode "github.com/dengzii/weaveflow/node/agents/codex"
 	wfregistry "github.com/dengzii/weaveflow/registry"
@@ -73,6 +77,10 @@ func main() {
 	}
 
 	ctx := core.WithTools(context.Background(), defaultTools())
+	assistantConfig, err := assistantConfigFromEnvironment()
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	srv, err := server.New(ctx, server.Config{
 		Graph:               graph,
@@ -82,6 +90,7 @@ func main() {
 		RuntimeStoreBackend: server.RuntimeStoreSQLite,
 		SecretDirectory:     *secretDir,
 		ManagementToken:     managementToken,
+		Assistant:           assistantConfig,
 		RuntimeContextDecorators: []server.RuntimeContextDecorator{
 			func(ctx context.Context) context.Context {
 				return claudenode.WithRunner(ctx, claudeRunner)
@@ -103,6 +112,18 @@ func main() {
 	engine.Use(corsMiddleware(*corsOrigins))
 	routePrefix := normalizePrefix(*prefix)
 	srv.RegisterRoutes(engine.Group(routePrefix))
+	if srv.Assistant() != nil {
+		srv.SetAssistantAPICaller(func(ctx context.Context, call assistant.APICall) (assistant.APIResult, error) {
+			request := httptest.NewRequestWithContext(ctx, call.Method, routePrefix+call.Path, bytes.NewReader(call.Body))
+			request.Header.Set("Content-Type", "application/json")
+			if managementToken != "" {
+				request.Header.Set("Authorization", "Bearer "+managementToken)
+			}
+			response := httptest.NewRecorder()
+			engine.ServeHTTP(response, request)
+			return assistant.APIResult{Status: response.Code, Body: response.Body.Bytes()}, nil
+		})
+	}
 
 	display := *addr
 	if strings.HasPrefix(display, ":") {
@@ -153,6 +174,36 @@ func parseLogLevel(value string) (slog.Level, error) {
 	default:
 		return slog.LevelInfo, fmt.Errorf("unsupported log level %q: expected debug, info, or error", value)
 	}
+}
+
+func assistantConfigFromEnvironment() (*assistant.Config, error) {
+	modelID := strings.TrimSpace(os.Getenv("WEAVEFLOW_ASSISTANT_MODEL"))
+	apiKey := strings.TrimSpace(os.Getenv("WEAVEFLOW_ASSISTANT_API_KEY"))
+	if modelID == "" && apiKey == "" {
+		return nil, nil
+	}
+	if modelID == "" || apiKey == "" {
+		return nil, fmt.Errorf("WEAVEFLOW_ASSISTANT_MODEL and WEAVEFLOW_ASSISTANT_API_KEY must be configured together")
+	}
+	provider := openai.Provider(strings.TrimSpace(os.Getenv("WEAVEFLOW_ASSISTANT_PROVIDER")))
+	if provider == "" {
+		provider = openai.ProviderOpenAI
+	}
+	apiFormat := openai.APIFormat(strings.TrimSpace(os.Getenv("WEAVEFLOW_ASSISTANT_API_FORMAT")))
+	if apiFormat == "" {
+		apiFormat = openai.APIFormatResponses
+	}
+	model, err := openai.New(
+		openai.WithToken(apiKey),
+		openai.WithModel(modelID),
+		openai.WithBaseURL(strings.TrimSpace(os.Getenv("WEAVEFLOW_ASSISTANT_BASE_URL"))),
+		openai.WithProvider(provider),
+		openai.WithAPIFormat(apiFormat),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("configure assistant model: %w", err)
+	}
+	return &assistant.Config{Model: model, ModelID: modelID}, nil
 }
 
 func defaultTools() map[string]core.Tool {

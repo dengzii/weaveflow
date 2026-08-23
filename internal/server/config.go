@@ -13,6 +13,7 @@ import (
 	"github.com/dengzii/weaveflow/builtin"
 	"github.com/dengzii/weaveflow/core"
 	wfgraph "github.com/dengzii/weaveflow/graph"
+	"github.com/dengzii/weaveflow/internal/assistant"
 	"github.com/dengzii/weaveflow/internal/chatchannel"
 	"github.com/dengzii/weaveflow/internal/chatchannel/wecom"
 	"github.com/dengzii/weaveflow/internal/chatchannel/weixin"
@@ -63,6 +64,7 @@ type Config struct {
 	TriggerStore   trigger.Store
 	TriggerService *trigger.Service
 	ChatChannels   *chatchannel.Registry
+	Assistant      *assistant.Config
 }
 
 type Server struct {
@@ -79,6 +81,7 @@ type Server struct {
 	secretResolver  SecretResolver
 	managementToken string
 	memoryStore     memory.Store
+	assistant       *assistant.Service
 }
 
 type graphRuntimeStore struct {
@@ -176,6 +179,18 @@ func New(ctx context.Context, cfg Config) (*Server, error) {
 		secretResolver:  secretResolver,
 		managementToken: cfg.ManagementToken,
 		memoryStore:     cfg.MemoryStore,
+	}
+	if cfg.Assistant != nil {
+		assistantService, assistantErr := assistant.New(*cfg.Assistant)
+		if assistantErr != nil {
+			_ = srv.Close()
+			return nil, fmt.Errorf("initialize assistant: %w", assistantErr)
+		}
+		srv.assistant = assistantService
+		if assistantErr := assistantService.Start(ctx); assistantErr != nil {
+			_ = srv.Close()
+			return nil, fmt.Errorf("start assistant: %w", assistantErr)
+		}
 	}
 	if err := srv.reconcileCachedRunDeletions(ctx); err != nil {
 		_ = srv.Close()
@@ -450,6 +465,19 @@ func (s *Server) MemoryStore() memory.Store {
 	return s.memoryStore
 }
 
+func (s *Server) Assistant() *assistant.Service {
+	if s == nil {
+		return nil
+	}
+	return s.assistant
+}
+
+func (s *Server) SetAssistantAPICaller(caller assistant.APICaller) {
+	if s != nil && s.assistant != nil {
+		s.assistant.SetAPICaller(caller)
+	}
+}
+
 func (s *Server) Start(ctx context.Context) error {
 	if s == nil || s.triggers == nil {
 		return nil
@@ -472,6 +500,9 @@ func (s *Server) Close() error {
 	var err error
 	if s.triggers != nil {
 		err = s.triggers.Close()
+	}
+	if s.assistant != nil {
+		err = errors.Join(err, s.assistant.Close())
 	}
 	if s.runtime != nil {
 		err = errors.Join(err, s.runtime.Close())

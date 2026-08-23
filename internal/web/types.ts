@@ -14,6 +14,40 @@ export interface ServerInfo {
   build_time: string;
 }
 
+export interface AssistantStatus {
+  enabled: boolean;
+}
+
+export interface AssistantActivity {
+  round: number;
+  content: string;
+  api_call_count: number;
+  created_at: string;
+}
+
+export interface AssistantJob {
+  job_id: string;
+  session_id: string;
+  status: "queued" | "running" | "completed" | "failed";
+  activities?: AssistantActivity[];
+  mutated?: boolean;
+  reply?: string;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AssistantMessage {
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+}
+
+export interface AssistantSession {
+  session_id: string;
+  messages: AssistantMessage[];
+}
+
 export interface GraphDefinition {
   version?: string;
   name?: string;

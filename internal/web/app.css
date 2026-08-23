@@ -141,12 +141,119 @@
     background: var(--background);
     color: var(--foreground);
     font-family: var(--font-sans);
+    font-size: 13px;
   }
   button,
   input,
   textarea {
     font: inherit;
   }
+}
+
+.assistant-markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.assistant-markdown > :first-child {
+  margin-top: 0;
+}
+
+.assistant-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.assistant-markdown p,
+.assistant-markdown ul,
+.assistant-markdown ol,
+.assistant-markdown blockquote,
+.assistant-markdown pre,
+.assistant-markdown table {
+  margin: 0.55rem 0;
+}
+
+.assistant-markdown ul,
+.assistant-markdown ol {
+  padding-left: 1.15rem;
+}
+
+.assistant-markdown ul {
+  list-style: disc;
+}
+
+.assistant-markdown ol {
+  list-style: decimal;
+}
+
+.assistant-markdown li + li {
+  margin-top: 0.2rem;
+}
+
+.assistant-markdown a {
+  color: var(--ring);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.assistant-markdown strong {
+  font-weight: 650;
+}
+
+.assistant-markdown blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.7rem;
+  color: var(--muted-foreground);
+}
+
+.assistant-markdown code {
+  border-radius: 0.3rem;
+  background: var(--muted);
+  padding: 0.12rem 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.assistant-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--background);
+  padding: 0.65rem 0.75rem;
+}
+
+.assistant-markdown pre code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.assistant-markdown hr {
+  margin: 0.75rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.assistant-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.assistant-markdown th,
+.assistant-markdown td {
+  border: 1px solid var(--border);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+}
+
+.assistant-markdown th {
+  background: var(--muted);
+  font-weight: 600;
 }
 
 ::-webkit-scrollbar {
@@ -493,6 +600,10 @@
   .graph-list-skeleton-pulse,
   .graph-title-menu-panel {
     animation: none;
+  }
+
+  .assistant-panel {
+    transition: none;
   }
 
   .graph-inspector-shell {

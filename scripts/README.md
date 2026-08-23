@@ -8,7 +8,7 @@ root so the Docker build can access `internal/web`, `assets`, and the Go package
 Build the image directly:
 
 ```bash
-docker build --build-arg VERSION=0.1.0 -t weaveflow:0.1.0 -f scripts/Dockerfile .
+docker build --build-arg VERSION=0.1.1 -t weaveflow:0.1.1 -f scripts/Dockerfile .
 ```
 
 For a local deployment, keep the port bound to loopback:
@@ -48,7 +48,7 @@ Install the Docker Compose plugin, tag or load the packaged image, then copy `sc
 `scripts/.env`:
 
 ```bash
-docker tag <IMAGE_ID> weaveflow:0.1.0
+docker tag <IMAGE_ID> weaveflow:0.1.1
 cp scripts/.env.example scripts/.env
 docker compose --env-file scripts/.env -f scripts/compose.yaml up -d
 docker compose --env-file scripts/.env -f scripts/compose.yaml ps
@@ -62,7 +62,7 @@ docker compose --env-file scripts/.env -f scripts/compose.yaml down
 ```
 
 This Compose file runs a prebuilt image; it never accesses the source tree to build one. The current local
-version is recorded in `VERSION` and defaults to `weaveflow:0.1.0`; set `WEAVEFLOW_IMAGE` in `scripts/.env` when the
+version is recorded in `VERSION` and defaults to `weaveflow:0.1.1`; set `WEAVEFLOW_IMAGE` in `scripts/.env` when the
 image uses another tag. Compose uses the same loopback-only binding,
 read-only root filesystem, non-root image, health check, data volume, and workspace mount as `scripts/deploy.sh`. Set
 `WEAVEFLOW_PUBLISH_HOST=0.0.0.0` in `scripts/.env` only behind a trusted network boundary and keep
@@ -94,6 +94,6 @@ The image exposes `GET /healthz` for container health checks. It does not requir
 server status, version, and UTC build time. The WebUI configuration is generated under `/tmp` at startup, so the image
 can run with a read-only root filesystem.
 
-For a published release, create a Git tag such as `v0.1.0` after committing the release changes. The GitHub Release
-workflow removes the leading `v` and publishes matching Docker tags such as `0.1.0`, `0.1`, `0`, and `latest` for a
+For a published release, create a Git tag such as `v0.1.1` after committing the release changes. The GitHub Release
+workflow removes the leading `v` and publishes matching Docker tags such as `0.1.1`, `0.1`, `0`, and `latest` for a
 stable release.

@@ -10,6 +10,7 @@ import {
   listRuns,
   replaceTriggers,
   startRun,
+  streamAssistantJob,
 } from "./api";
 
 const originalFetch = globalThis.fetch;
@@ -150,6 +151,51 @@ describe("server API client", () => {
       definition: { nodes: [] },
       triggers: [{ id: "hook", type: "webhook", webhook: {} }],
     });
+  });
+
+  test("streams fragmented Assistant job updates until the terminal snapshot", async () => {
+    let request: { url: string; init?: RequestInit } | undefined;
+    const createdAt = "2026-08-22T00:00:00Z";
+    const snapshots = [
+      { job_id: "job/1", session_id: "session", status: "queued", created_at: createdAt, updated_at: createdAt },
+      {
+        job_id: "job/1",
+        session_id: "session",
+        status: "running",
+        activities: [{ round: 1, content: "Inspecting the Graph.", api_call_count: 1, created_at: createdAt }],
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+      {
+        job_id: "job/1",
+        session_id: "session",
+        status: "completed",
+        reply: "done",
+        created_at: createdAt,
+        updated_at: createdAt,
+      },
+    ];
+    const payload = `: heartbeat\n\n${snapshots.map((snapshot) => `data: ${JSON.stringify(snapshot)}\n\n`).join("")}`;
+    const encoded = new TextEncoder().encode(payload);
+    globalThis.fetch = (async (input, init) => {
+      request = { url: String(input), init };
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoded.slice(0, 37));
+          controller.enqueue(encoded.slice(37, 113));
+          controller.enqueue(encoded.slice(113));
+          controller.close();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    }) as typeof fetch;
+
+    const updates: string[] = [];
+    const completed = await streamAssistantJob("job/1", (job) => updates.push(job.status));
+
+    expect(request?.url).toBe("http://localhost:8080/assistant/jobs/job%2F1/stream");
+    expect(new Headers(request?.init?.headers).get("Accept")).toBe("text/event-stream");
+    expect(updates).toEqual(["queued", "running", "completed"]);
+    expect(completed).toMatchObject({ status: "completed", reply: "done" });
   });
 
   test("preserves HTTP status and server error code", async () => {

@@ -1,6 +1,6 @@
 services:
   weaveflow:
-    image: ${WEAVEFLOW_IMAGE:-weaveflow:0.1.0}
+    image: ${WEAVEFLOW_IMAGE:-weaveflow:0.1.1}
     container_name: ${WEAVEFLOW_CONTAINER:-weaveflow}
     init: true
     restart: unless-stopped

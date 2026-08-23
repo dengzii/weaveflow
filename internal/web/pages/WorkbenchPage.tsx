@@ -26,6 +26,7 @@ import { RegistryDialog } from "./workbench/RegistryDialog";
 import { RunStatusPanel } from "./workbench/RunStatusPanel";
 import { SettingsDialog } from "./workbench/SettingsDialog";
 import { WorkbenchShell } from "./workbench/WorkbenchShell";
+import { AssistantPanel } from "./workbench/AssistantPanel";
 import {
   resolveWorkspaceMode,
   type WorkspaceMode,
@@ -475,6 +476,15 @@ export function WorkbenchPage() {
     );
   }, [recordSavedGraph]);
 
+  const refreshAssistantGraph = useCallback(async () => {
+    const detail = await getGraphDetail(graphId);
+    setGraphId(detail.graph.id);
+    setGraphVersion(detail.graph.version);
+    setDefinitionText(stringifyJSON(detail.definition));
+    setRuntimeSettings(detail.settings);
+    handleGraphDetailLoaded(detail);
+  }, [graphId, handleGraphDetailLoaded]);
+
   async function saveGraph() {
     if (savingRef.current) return;
     if (!graphUnsaved) return;
@@ -721,6 +731,14 @@ export function WorkbenchPage() {
       <SettingsDialog
         open={settingsDialogOpen}
         onClose={() => setSettingsDialogOpen(false)}
+      />
+      <AssistantPanel
+        graphID={graphId}
+        graphVersion={graphVersion}
+        definition={definition}
+        selectedRunID={selectedRunID}
+        workspaceMode={activeWorkspaceMode}
+        onGraphRefresh={refreshAssistantGraph}
       />
     </WorkbenchShell>
   );

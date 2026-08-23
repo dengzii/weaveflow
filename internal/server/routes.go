@@ -12,6 +12,7 @@ func (s *Server) RegisterRoutes(group *gin.RouterGroup) {
 	management.Use(s.requireManagementAuth)
 	s.registerGraphRoutes(management)
 	s.registerRuntimeRoutes(management)
+	s.registerAssistantRoutes(management)
 	s.registerMemoryRoutes(management)
 	s.registerRegistryRoutes(management)
 	s.registerChatChannelRoutes(management)
