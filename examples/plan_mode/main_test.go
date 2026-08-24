@@ -96,9 +96,46 @@ func TestNewPlanGraphUsesProfileConfiguration(t *testing.T) {
 	}
 }
 
+func TestProfileAndVerifierRegistriesAllowExtensions(t *testing.T) {
+	verifiers := NewVerifierRegistry()
+	if err := verifiers.Register("fixture", func(VerifierConfig) (Verifier, error) {
+		return verifierFunc{id: "fixture", verify: func(context.Context, plan.VerificationRequest) (plan.VerificationResult, error) {
+			return plan.VerificationResult{Status: plan.VerificationStatusPassed, Summary: "fixture passed"}, nil
+		}}, nil
+	}); err != nil {
+		t.Fatalf("register verifier: %v", err)
+	}
+	if _, err := verifiers.Build("fixture", VerifierConfig{}); err != nil {
+		t.Fatalf("build verifier: %v", err)
+	}
+	if err := verifiers.Register("fixture", func(VerifierConfig) (Verifier, error) { return nil, nil }); err == nil {
+		t.Fatal("duplicate verifier registration was accepted")
+	}
+
+	base, err := profileByID("analysis")
+	if err != nil {
+		t.Fatalf("analysis profile: %v", err)
+	}
+	base.ID = "fixture-profile"
+	base.Description = "Registry test profile"
+	base.VerifierID = "fixture"
+	registry := NewProfileRegistry(verifiers)
+	if err := registry.Register(base); err != nil {
+		t.Fatalf("register profile: %v", err)
+	}
+	loaded, err := registry.Lookup("fixture-profile")
+	if err != nil || loaded.VerifierID != "fixture" {
+		t.Fatalf("loaded profile = %#v, err = %v", loaded, err)
+	}
+	if err := registry.Register(base); err == nil {
+		t.Fatal("duplicate profile registration was accepted")
+	}
+}
+
 func TestProfilesExposeDistinctAuthorizedToolsAndBudgetsToFakeModel(t *testing.T) {
 	tinyScript, _ := profileByID("tiny-script")
 	analysis, _ := profileByID("analysis")
+	multiStep, _ := profileByID("multi-step")
 	tinyRequest := executeGeneratorWithCapture(t, tinyScript)
 	analysisRequest := executeGeneratorWithCapture(t, analysis)
 	tinyPrompt := requestText(tinyRequest)
@@ -118,11 +155,15 @@ func TestProfilesExposeDistinctAuthorizedToolsAndBudgetsToFakeModel(t *testing.T
 	if tinyScript.MaxSteps == analysis.MaxSteps || tinyScript.MaxIterations == analysis.MaxIterations {
 		t.Fatalf("profile budgets are not distinct: tiny=%d/%d analysis=%d/%d", tinyScript.MaxSteps, tinyScript.MaxIterations, analysis.MaxSteps, analysis.MaxIterations)
 	}
+	if multiStep.MaxSteps <= analysis.MaxSteps || multiStep.MaxIterations <= analysis.MaxIterations {
+		t.Fatalf("multi-step profile does not expose a larger budget: multi=%d/%d analysis=%d/%d", multiStep.MaxSteps, multiStep.MaxIterations, analysis.MaxSteps, analysis.MaxIterations)
+	}
 }
 
 func TestWorkerRequestOmitsUnauthorizedTools(t *testing.T) {
 	analysis, _ := profileByID("analysis")
 	tinyScript, _ := profileByID("tiny-script")
+	tinyScript.AllowedPaths = []string{"."}
 	allTools, err := toolsForProfile(tinyScript, t.TempDir())
 	if err != nil {
 		t.Fatalf("all tools: %v", err)
@@ -229,23 +270,41 @@ func TestVerificationToolSchemas(t *testing.T) {
 	}
 }
 
-func TestWorkspaceGuardRejectsEscapeAndSymlink(t *testing.T) {
+func TestProfileAllowlistRejectsWorkspaceSiblingsAndUnscopedSearch(t *testing.T) {
 	workspace := t.TempDir()
-	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(workspace, "outside")); err != nil {
-		t.Fatalf("symlink: %v", err)
+	allowed := filepath.Join(workspace, "allowed")
+	blocked := filepath.Join(workspace, "blocked")
+	if err := os.MkdirAll(allowed, 0o755); err != nil {
+		t.Fatalf("allowed directory: %v", err)
 	}
-	outsideFile := filepath.Join(outside, "target.txt")
-	if err := os.WriteFile(outsideFile, []byte("outside"), 0o600); err != nil {
-		t.Fatalf("outside file: %v", err)
+	if err := os.MkdirAll(blocked, 0o755); err != nil {
+		t.Fatalf("blocked directory: %v", err)
 	}
-	if err := os.Symlink(outsideFile, filepath.Join(workspace, "outside-file")); err != nil {
-		t.Fatalf("file symlink: %v", err)
+	if err := os.WriteFile(filepath.Join(allowed, "inside.txt"), []byte("inside"), 0o600); err != nil {
+		t.Fatalf("allowed fixture: %v", err)
 	}
-	for _, path := range []string{"../escape.txt", filepath.Join("outside", "escape.txt"), "outside-file"} {
-		if _, err := secureWorkspacePath(workspace, path, false); err == nil {
-			t.Fatalf("path %q was accepted", path)
-		}
+	if err := os.WriteFile(filepath.Join(blocked, "outside.txt"), []byte("outside"), 0o600); err != nil {
+		t.Fatalf("blocked fixture: %v", err)
+	}
+	profile, err := profileByID("analysis")
+	if err != nil {
+		t.Fatalf("analysis profile: %v", err)
+	}
+	profile.AllowedPaths = []string{"allowed"}
+	available, err := toolsForProfile(profile, workspace)
+	if err != nil {
+		t.Fatalf("profile tools: %v", err)
+	}
+	ctx := core.WithEnvironment(context.Background(), map[string]string{"WEAVEFLOW_TOOL_WORKDIR": workspace})
+	ctx = core.WithToolPermissions(ctx, profile.Permissions...)
+	if _, err := core.ExecuteTool(ctx, available["read"], toolCall("read", map[string]any{"file_path": "blocked/outside.txt"})); err == nil {
+		t.Fatal("read outside allowlist was accepted")
+	}
+	if _, err := core.ExecuteTool(ctx, available["read"], toolCall("read", map[string]any{"file_path": "allowed/inside.txt"})); err != nil {
+		t.Fatalf("read inside allowlist: %v", err)
+	}
+	if _, err := core.ExecuteTool(ctx, available["glob"], toolCall("glob", map[string]any{"pattern": "*.txt"})); err == nil {
+		t.Fatal("unscoped glob was accepted")
 	}
 }
 
@@ -323,6 +382,7 @@ func TestRetryingModelEnforcesRetryAndTimeoutBudgets(t *testing.T) {
 
 func executeGeneratorWithCapture(t *testing.T, profile TaskProfile) llms.ModelRequest {
 	t.Helper()
+	profile.AllowedPaths = []string{"."}
 	model := &capturingPlanModel{}
 	target := plan.NewGeneratorNode(core.WithID("generator"))
 	target.ToolIDs = append([]string(nil), profile.ToolIDs...)

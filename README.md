@@ -5,15 +5,13 @@
 </p>
 
 <p align="center">
-  <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go" alt="Go 1.26+"></a>
+  <a href="https://go.dev"><img src="https://img.shields.io/badge/Go-1.26.6%2B-00ADD8?logo=go" alt="Go 1.26.6+"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License"></a>
   <a href="https://github.com/dengzii/weaveflow/actions"><img src="https://img.shields.io/github/actions/workflow/status/dengzii/weaveflow/ci.yml?branch=master&logo=github&label=CI" alt="CI"></a>
   <a href="https://pkg.go.dev/github.com/dengzii/weaveflow"><img src="https://pkg.go.dev/badge/github.com/dengzii/weaveflow.svg" alt="Go Reference"></a>
-  <a href="https://goreportcard.com/report/github.com/dengzii/weaveflow"><img src="https://goreportcard.com/badge/github.com/dengzii/weaveflow" alt="Go Report Card"></a>
   <a href="https://github.com/dengzii/weaveflow/releases"><img src="https://img.shields.io/github/v/release/dengzii/weaveflow?logo=github" alt="Release"></a>
   <a href="https://codecov.io/gh/dengzii/weaveflow"><img src="https://codecov.io/gh/dengzii/weaveflow/branch/master/graph/badge.svg" alt="Codecov"></a>
-  <a href="https://golangci-lint.run/"><img src="https://img.shields.io/badge/lint-golangci--lint-00ADD8" alt="golangci-lint"></a>
-  <a href="https://hub.docker.com/r/dengzii/weaveflow"><img src="https://img.shields.io/badge/Docker-dengzii%2Fweaveflow-2496ED?logo=docker&logoColor=white" alt="Docker Image"></a>
+  <a href="https://hub.docker.com/r/dengzixx/weaveflow/tags?name=0.1.0"><img src="https://img.shields.io/docker/v/dengzixx/weaveflow/0.1.0?logo=docker&label=Docker" alt="Docker Image 0.1.0"></a>
 </p>
 
 <p align="center">

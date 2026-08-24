@@ -33,6 +33,72 @@ type Verifier interface {
 	Verify(context.Context, plannode.VerificationRequest) (plannode.VerificationResult, error)
 }
 
+type VerifierFactory func(VerifierConfig) (Verifier, error)
+
+type VerifierRegistry struct {
+	factories map[string]VerifierFactory
+}
+
+func NewVerifierRegistry() *VerifierRegistry {
+	return &VerifierRegistry{factories: make(map[string]VerifierFactory)}
+}
+
+func (registry *VerifierRegistry) Register(id string, factory VerifierFactory) error {
+	if registry == nil {
+		return errors.New("verifier registry is nil")
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return errors.New("verifier ID is required")
+	}
+	if factory == nil {
+		return fmt.Errorf("verifier %q factory is required", id)
+	}
+	if registry.factories == nil {
+		registry.factories = make(map[string]VerifierFactory)
+	}
+	if _, exists := registry.factories[id]; exists {
+		return fmt.Errorf("verifier %q is already registered", id)
+	}
+	registry.factories[id] = factory
+	return nil
+}
+
+func (registry *VerifierRegistry) Build(id string, config VerifierConfig) (Verifier, error) {
+	if registry == nil {
+		return nil, errors.New("verifier registry is nil")
+	}
+	id = strings.TrimSpace(id)
+	factory, ok := registry.factories[id]
+	if !ok {
+		return nil, fmt.Errorf("unknown verifier %q", id)
+	}
+	verifier, err := factory(config)
+	if err != nil {
+		return nil, err
+	}
+	if verifier == nil {
+		return nil, fmt.Errorf("verifier %q factory returned nil", id)
+	}
+	if strings.TrimSpace(verifier.ID()) != id {
+		return nil, fmt.Errorf("verifier %q factory returned %q", id, verifier.ID())
+	}
+	return verifier, nil
+}
+
+func defaultVerifierRegistry() *VerifierRegistry {
+	registry := NewVerifierRegistry()
+	for _, id := range []string{"go-test", "go-format-test", "file-exists", "content-match", "no-op"} {
+		verifierID := id
+		if err := registry.Register(verifierID, func(config VerifierConfig) (Verifier, error) {
+			return newBuiltinVerifier(verifierID, config)
+		}); err != nil {
+			panic(err)
+		}
+	}
+	return registry
+}
+
 type verifierFunc struct {
 	id     string
 	verify func(context.Context, plannode.VerificationRequest) (plannode.VerificationResult, error)
@@ -44,112 +110,35 @@ func (verifier verifierFunc) Verify(ctx context.Context, request plannode.Verifi
 	return verifier.verify(ctx, request)
 }
 
-func safeToolFactories() map[string]func() core.Tool {
-	return map[string]func() core.Tool{
-		"read":    tools.NewRead,
-		"outline": tools.NewOutline,
-		"write":   tools.NewWrite,
-		"edit":    tools.NewEdit,
-		"grep":    tools.NewGrep,
-		"glob":    tools.NewGlob,
-		"verify":  func() core.Tool { return core.Tool{} },
-	}
-}
-
 func toolsForProfile(profile TaskProfile, workspace string) (map[string]core.Tool, error) {
 	verifier, err := newVerifier(profile.VerifierID, profile.VerifierConfig)
 	if err != nil {
 		return nil, err
 	}
-	factories := safeToolFactories()
+	allowedPaths, err := tools.ResolveAllowedPaths(workspace, profile.AllowedPaths)
+	if err != nil {
+		return nil, fmt.Errorf("profile %q allowed paths: %w", profile.ID, err)
+	}
+	factories := tools.BuiltinFactories()
 	available := make(map[string]core.Tool, len(profile.ToolIDs))
 	for _, toolID := range profile.ToolIDs {
-		factory, ok := factories[toolID]
-		if !ok {
-			return nil, fmt.Errorf("unknown profile tool %q", toolID)
-		}
 		var tool core.Tool
 		if toolID == "verify" {
 			tool = newVerificationTool(verifier)
 		} else {
+			factory, ok := factories[toolID]
+			if !ok {
+				return nil, fmt.Errorf("unknown profile tool %q", toolID)
+			}
 			tool = factory()
 		}
 		if toolID == "read" && profile.MaxReadLines > 0 {
-			tool = boundReadTool(tool, profile.MaxReadLines, profile.MaxReadOutputBytes)
+			tool = tools.WithReadLimits(tool, profile.MaxReadLines, profile.MaxReadOutputBytes)
 		}
-		available[toolID] = guardWorkspaceTool(tool, workspace)
+		tool = tools.WithPathScope(tool, profile.AllowedPaths)
+		available[toolID] = tools.GuardWorkspaceTool(tool, workspace, allowedPaths)
 	}
 	return available, nil
-}
-
-func boundReadTool(tool core.Tool, maxLines int, maxOutputBytes int) core.Tool {
-	if maxLines <= 0 {
-		return tool
-	}
-	if tool.Function != nil {
-		definition := *tool.Function
-		definition.Description = strings.TrimSpace(definition.Description) + fmt.Sprintf("\nProfile limit: at most %d lines per call.", maxLines)
-		if properties, ok := definition.Parameters["properties"].(map[string]any); ok {
-			if limitSchema, ok := properties["limit"].(map[string]any); ok {
-				limitSchema["maximum"] = maxLines
-			}
-		}
-		tool.Function = &definition
-	}
-	handler := tool.Handler
-	tool.Handler = func(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
-		if call.FunctionCall == nil {
-			return llms.ToolResult{}, errors.New("read call has no function payload")
-		}
-		var arguments map[string]any
-		if err := json.Unmarshal(call.FunctionCall.Arguments, &arguments); err != nil {
-			return llms.ToolResult{}, fmt.Errorf("decode bounded read arguments: %w", err)
-		}
-		limit := intArgument(arguments["limit"])
-		if limit <= 0 {
-			arguments["limit"] = maxLines
-		} else if limit > maxLines {
-			return llms.ToolResult{}, fmt.Errorf("read limit %d exceeds profile maximum %d", limit, maxLines)
-		}
-		encoded, err := json.Marshal(arguments)
-		if err != nil {
-			return llms.ToolResult{}, fmt.Errorf("encode bounded read arguments: %w", err)
-		}
-		functionCall := *call.FunctionCall
-		functionCall.Arguments = encoded
-		call.FunctionCall = &functionCall
-		result, err := handler(ctx, call)
-		if maxOutputBytes > 0 {
-			result.Content = limitProfileToolOutput(result.Content, maxOutputBytes)
-			if _, ok := result.Value.(string); ok {
-				result.Value = result.Content
-			}
-		}
-		return result, err
-	}
-	return tool
-}
-
-func intArgument(value any) int {
-	switch typed := value.(type) {
-	case int:
-		return typed
-	case float64:
-		return int(typed)
-	case json.Number:
-		parsed, _ := typed.Int64()
-		return int(parsed)
-	default:
-		return 0
-	}
-}
-
-func limitProfileToolOutput(value string, maximum int) string {
-	if maximum <= 0 || len(value) <= maximum {
-		return value
-	}
-	prefix := strings.ToValidUTF8(value[:maximum], "")
-	return strings.TrimSpace(prefix) + "\n[truncated by profile output limit]"
 }
 
 func newVerificationTool(verifier Verifier) core.Tool {
@@ -202,6 +191,10 @@ func newVerificationTool(verifier Verifier) core.Tool {
 }
 
 func newVerifier(id string, config VerifierConfig) (Verifier, error) {
+	return defaultVerifierRegistry().Build(id, config)
+}
+
+func newBuiltinVerifier(id string, config VerifierConfig) (Verifier, error) {
 	switch strings.TrimSpace(id) {
 	case "go-test":
 		if err := validatePackages(config.Packages, config.AllowedPackages); err != nil {
@@ -237,12 +230,12 @@ func newVerifier(id string, config VerifierConfig) (Verifier, error) {
 			return nil, errors.New("file-exists requires files")
 		}
 		return verifierFunc{id: id, verify: func(ctx context.Context, _ plannode.VerificationRequest) (plannode.VerificationResult, error) {
-			workspace, err := workspaceFromContext(ctx)
+			workspace, err := tools.WorkspaceFromContext(ctx)
 			if err != nil {
 				return failedVerification(id, err, false), nil
 			}
 			for _, configured := range config.Files {
-				target, err := secureWorkspacePath(workspace, configured, true)
+				target, err := tools.SecureWorkspacePath(workspace, configured, true)
 				if err != nil {
 					return failedVerification(id, err, false), nil
 				}
@@ -257,11 +250,11 @@ func newVerifier(id string, config VerifierConfig) (Verifier, error) {
 			return nil, errors.New("content-match requires one file and at least one pattern")
 		}
 		return verifierFunc{id: id, verify: func(ctx context.Context, _ plannode.VerificationRequest) (plannode.VerificationResult, error) {
-			workspace, err := workspaceFromContext(ctx)
+			workspace, err := tools.WorkspaceFromContext(ctx)
 			if err != nil {
 				return failedVerification(id, err, false), nil
 			}
-			target, err := secureWorkspacePath(workspace, config.Files[0], true)
+			target, err := tools.SecureWorkspacePath(workspace, config.Files[0], true)
 			if err != nil {
 				return failedVerification(id, err, false), nil
 			}
@@ -366,7 +359,7 @@ func validatePackages(packages, allowed []string) error {
 }
 
 func resolveConfiguredFiles(ctx context.Context, patterns []string) ([]string, error) {
-	workspace, err := workspaceFromContext(ctx)
+	workspace, err := tools.WorkspaceFromContext(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -383,7 +376,7 @@ func resolveConfiguredFiles(ctx context.Context, patterns []string) ([]string, e
 			return nil, fmt.Errorf("file pattern %q matched no files", pattern)
 		}
 		for _, match := range matches {
-			target, err := secureWorkspacePath(workspace, match, true)
+			target, err := tools.SecureWorkspacePath(workspace, match, true)
 			if err != nil {
 				return nil, err
 			}
@@ -391,111 +384,6 @@ func resolveConfiguredFiles(ctx context.Context, patterns []string) ([]string, e
 		}
 	}
 	return files, nil
-}
-
-func guardWorkspaceTool(tool core.Tool, workspace string) core.Tool {
-	handler := tool.Handler
-	tool.Handler = func(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
-		if err := validateToolPaths(workspace, call); err != nil {
-			return llms.ToolResult{}, err
-		}
-		return handler(ctx, call)
-	}
-	return tool
-}
-
-func validateToolPaths(workspace string, call llms.ToolCall) error {
-	if call.FunctionCall == nil {
-		return errors.New("tool call has no function payload")
-	}
-	var arguments map[string]any
-	if err := json.Unmarshal(call.FunctionCall.Arguments, &arguments); err != nil {
-		return fmt.Errorf("decode tool paths: %w", err)
-	}
-	for _, key := range []string{"file_path", "path"} {
-		value, _ := arguments[key].(string)
-		if strings.TrimSpace(value) == "" {
-			continue
-		}
-		mustExist := call.FunctionCall.Name != "write"
-		if _, err := secureWorkspacePath(workspace, value, mustExist); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func secureWorkspacePath(workspace, value string, mustExist bool) (string, error) {
-	root, err := filepath.Abs(workspace)
-	if err != nil {
-		return "", err
-	}
-	root, err = filepath.EvalSymlinks(root)
-	if err != nil {
-		return "", err
-	}
-	target := filepath.Clean(value)
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(root, target)
-	}
-	target, err = filepath.Abs(target)
-	if err != nil {
-		return "", err
-	}
-	if !pathWithin(root, target) {
-		return "", errors.New("path escapes workspace")
-	}
-	resolved := target
-	if mustExist {
-		resolved, err = filepath.EvalSymlinks(target)
-		if err != nil {
-			return "", err
-		}
-	} else {
-		if _, statErr := os.Lstat(target); statErr == nil {
-			resolved, err = filepath.EvalSymlinks(target)
-			if err != nil {
-				return "", err
-			}
-			if !pathWithin(root, resolved) {
-				return "", errors.New("path resolves outside workspace")
-			}
-			return target, nil
-		}
-		ancestor := filepath.Dir(target)
-		for {
-			if _, statErr := os.Lstat(ancestor); statErr == nil {
-				break
-			}
-			parent := filepath.Dir(ancestor)
-			if parent == ancestor {
-				return "", errors.New("cannot resolve workspace path")
-			}
-			ancestor = parent
-		}
-		resolvedAncestor, resolveErr := filepath.EvalSymlinks(ancestor)
-		if resolveErr != nil {
-			return "", resolveErr
-		}
-		resolved = filepath.Join(resolvedAncestor, strings.TrimPrefix(target, ancestor+string(os.PathSeparator)))
-	}
-	if !pathWithin(root, resolved) {
-		return "", errors.New("path resolves outside workspace")
-	}
-	return target, nil
-}
-
-func pathWithin(root, target string) bool {
-	relative, err := filepath.Rel(root, target)
-	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
-}
-
-func workspaceFromContext(ctx context.Context) (string, error) {
-	workspace := strings.TrimSpace(core.EnvironmentVariableFromContext(ctx, "WEAVEFLOW_TOOL_WORKDIR"))
-	if workspace == "" {
-		return os.Getwd()
-	}
-	return filepath.Abs(workspace)
 }
 
 func limitToolOutput(value string) string {

@@ -432,6 +432,7 @@ export function ModelSettingsDialog({
       credential_input: "",
       credential_value: value,
       credential_clear: false,
+      credential_dirty: true,
     });
   }
 
@@ -441,6 +442,7 @@ export function ModelSettingsDialog({
       credential_input: "",
       credential_value: "",
       credential_clear: true,
+      credential_dirty: true,
     });
   }
 
@@ -450,13 +452,15 @@ export function ModelSettingsDialog({
       return;
     }
     const credentialValue = draft.credential_input.trim();
+    const credentialDirty = Boolean(draft.credential_dirty || credentialValue);
     const nextDraft: EditableGraphModel = {
       ...draft,
       id: draft.id.trim(),
-      credential_configured: credentialValue ? true : draft.credential_configured,
+      credential_configured: credentialDirty && credentialValue ? true : draft.credential_configured,
       credential_input: "",
-      credential_value: credentialValue || draft.credential_value,
-      credential_clear: credentialValue ? false : draft.credential_clear,
+      credential_value: credentialDirty ? credentialValue || draft.credential_value : "",
+      credential_clear: credentialDirty ? (credentialValue ? false : draft.credential_clear) : false,
+      credential_dirty: credentialDirty,
     };
     try {
       normalizeModelSettings([nextDraft]);

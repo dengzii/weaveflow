@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Loader2, Send, Sparkles, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -37,8 +38,13 @@ export function AssistantPanel({
   const [activities, setActivities] = useState<AssistantActivity[]>([]);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
+  const [triggerSlot, setTriggerSlot] = useState<HTMLElement | null>(null);
   const sessionID = useMemo(() => assistantSessionID(graphID), [graphID]);
   const endRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setTriggerSlot(document.getElementById("workbench-assistant-trigger-slot"));
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -116,17 +122,20 @@ export function AssistantPanel({
 
   return (
     <>
-      <button
-        type="button"
-        aria-label={open ? "Close Assistant" : "Open Assistant"}
-        title={open ? "Close Assistant" : "Assistant"}
-        onClick={() => setOpen((value) => !value)}
-        className="fixed bottom-6 right-6 z-[300] flex h-12 w-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-xl transition hover:scale-105 hover:shadow-2xl"
-      >
-        <span className={cn("transition-transform duration-200", open ? "rotate-90" : "rotate-0")}>
-          {open ? <X className="h-5 w-5" /> : <Sparkles className="h-5 w-5" />}
-        </span>
-      </button>
+      {triggerSlot ? createPortal(
+        <button
+          type="button"
+          aria-label={open ? "Close Assistant" : "Open Assistant"}
+          title={open ? "Close Assistant" : "Assistant"}
+          onClick={() => setOpen((value) => !value)}
+          className="flex h-9 w-9 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-lg transition hover:scale-105 hover:shadow-xl"
+        >
+          <span className={cn("transition-transform duration-200", open ? "rotate-90" : "rotate-0")}>
+            {open ? <X className="h-4 w-4" /> : <Sparkles className="h-4 w-4" />}
+          </span>
+        </button>,
+        triggerSlot
+      ) : null}
       <section
         aria-hidden={!open}
         className={cn(

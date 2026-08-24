@@ -29,6 +29,7 @@ describe("graph settings editor model", () => {
         credential_input: "",
         credential_value: "",
         credential_clear: false,
+        credential_dirty: false,
         pricing_currency: "USD",
         input_per_million: "",
         cached_input_per_million: "",
@@ -72,6 +73,18 @@ describe("graph settings editor model", () => {
     ]);
   });
 
+  test("only uploads credentials after an explicit edit", () => {
+    const model = modelsFromSettings(graphSettings())[0];
+    const unchanged = normalizeModelSettings([{ ...model, credential_value: "stale-key" }])[0];
+    expect(unchanged.credential_value).toBeUndefined();
+    expect(unchanged.credential_clear).toBeUndefined();
+    expect(JSON.stringify(unchanged)).not.toContain("credential_value");
+    expect(JSON.stringify(unchanged)).not.toContain("credential_clear");
+
+    const changed = normalizeModelSettings([{ ...model, credential_value: "new-key", credential_dirty: true }])[0];
+    expect(changed).toMatchObject({ credential_value: "new-key" });
+  });
+
   test("rejects duplicate model and environment identifiers", () => {
     const model = {
       id: "default",
@@ -85,6 +98,7 @@ describe("graph settings editor model", () => {
       credential_input: "",
       credential_value: "",
       credential_clear: false,
+      credential_dirty: false,
       pricing_currency: "USD",
       input_per_million: "",
       cached_input_per_million: "",
@@ -199,6 +213,7 @@ function graphSettings(): RuntimeSettings {
         model: "gpt-5",
         base_url: "https://api.example.test/v1",
         credential_configured: true,
+        credential_value: "server-should-not-expose",
       },
     ],
     tool_permissions: [],

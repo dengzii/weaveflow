@@ -171,8 +171,8 @@ describe("RunStatusPanel", () => {
     expect(detail).toContain('aria-label="scopes state snapshot"');
     expect(detail).not.toContain('aria-label="internal state snapshot"');
     expect(detail).not.toContain('aria-label="runtime state snapshot"');
-    expect(detail).toContain("Preparing snapshot…");
-    expect(detail).not.toContain("ready");
+    expect(detail).toContain('role="tree" aria-label="shared state snapshot"');
+    expect(detail).toContain("ready");
     expect(detail).toContain("overflow-wrap:anywhere");
   });
 
@@ -180,7 +180,11 @@ describe("RunStatusPanel", () => {
     const markup = renderToStaticMarkup(
       createElement(RunStatusPanel, {
         runs: [
-          runRecord("run-webhook", "failed", "2026-07-30T01:00:00Z"),
+          {
+            ...runRecord("run-webhook", "failed", "2026-07-30T01:00:00Z"),
+            finished_at: "2026-07-30T01:00:05Z",
+            updated_at: "2026-07-30T01:00:05Z",
+          },
           runRecord("run-chat", "paused", "2026-07-30T02:00:00Z"),
           runRecord("run-direct", "running", "2026-07-30T03:00:00Z"),
         ],
@@ -204,15 +208,19 @@ describe("RunStatusPanel", () => {
     expect(markup).toContain('data-run-status="failed"');
     expect(markup).toContain('data-run-status="paused"');
     expect(markup).toContain('data-run-status="running"');
+    expect(markup).toContain('title="Run duration: 5s">5s</span>');
 
     const sourceIndex = markup.indexOf('data-run-source="direct"');
     const runIDIndex = markup.indexOf('title="run-direct"');
     const deleteIndex = markup.indexOf('aria-label="Delete run run-direct"');
     const statusIndex = markup.indexOf('data-run-status="running"');
+    const durationIndex = markup.indexOf('title="Run duration: 5s"');
+    const dateIndex = markup.indexOf('title="2026-07-30T01:00:00Z"');
     expect(sourceIndex).toBeLessThan(runIDIndex);
     expect(sourceIndex).toBeLessThan(statusIndex);
     expect(statusIndex).toBeLessThan(runIDIndex);
     expect(runIDIndex).toBeLessThan(deleteIndex);
+    expect(durationIndex).toBeLessThan(dateIndex);
     expect(runStatusMarkup(markup, "running")).toContain("<svg");
   });
 

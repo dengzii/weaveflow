@@ -1,5 +1,5 @@
 import { type ComponentType, type FormEvent, useEffect, useState } from "react";
-import { Palette, RotateCcw, Save, Server, Settings, X } from "lucide-react";
+import { Palette, Repeat2, RotateCcw, Save, Server, Settings, X } from "lucide-react";
 import { Button } from "../../components/ui/button";
 import { Input, SensitiveInput } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
@@ -20,7 +20,7 @@ import { cn } from "../../lib/utils";
 import { WorkbenchDialogOverlay } from "./shared";
 import { themePreferenceLabel } from "./utils";
 
-type SettingsSection = "server" | "appearance";
+type SettingsSection = "server" | "appearance" | "graph";
 
 const settingsSections: Array<{
   key: SettingsSection;
@@ -40,14 +40,24 @@ const settingsSections: Array<{
     description: "Theme",
     icon: Palette,
   },
+  {
+    key: "graph",
+    label: "Graph",
+    description: "Canvas",
+    icon: Repeat2,
+  },
 ];
 
 export function SettingsDialog({
   open,
   onClose,
+  autoDetectLoops,
+  onAutoDetectLoopsChange,
 }: {
   open: boolean;
   onClose: () => void;
+  autoDetectLoops: boolean;
+  onAutoDetectLoopsChange: (enabled: boolean) => void;
 }) {
   const { preference, setPreference } = useTheme();
   const [activeSection, setActiveSection] = useState<SettingsSection>("server");
@@ -154,10 +164,15 @@ export function SettingsDialog({
                 onSave={saveBackend}
                 onReset={resetBackend}
               />
-            ) : (
+            ) : activeSection === "appearance" ? (
               <AppearanceSettings
                 preference={preference}
                 onPreferenceChange={setPreference}
+              />
+            ) : (
+              <GraphSettings
+                autoDetectLoops={autoDetectLoops}
+                onAutoDetectLoopsChange={onAutoDetectLoopsChange}
               />
             )}
           </section>
@@ -305,6 +320,36 @@ function AppearanceSettings({
             </option>
           ))}
         </Select>
+      </label>
+    </div>
+  );
+}
+
+function GraphSettings({
+  autoDetectLoops,
+  onAutoDetectLoopsChange,
+}: {
+  autoDetectLoops: boolean;
+  onAutoDetectLoopsChange: (enabled: boolean) => void;
+}) {
+  return (
+    <div className="mx-auto w-full max-w-xl">
+      <div className="border-b border-border pb-4">
+        <div className="text-base font-semibold">Graph</div>
+      </div>
+      <label className="mt-5 flex max-w-xl items-start justify-between gap-4 rounded-md border border-border bg-muted/20 p-3 text-sm">
+        <span className="min-w-0">
+          <span className="block font-medium">Automatically detect loops</span>
+          <span className="mt-1 block text-xs leading-5 text-muted-foreground">
+            Show loop groups derived from reachable graph cycles. Manual loop groups remain visible.
+          </span>
+        </span>
+        <input
+          type="checkbox"
+          checked={autoDetectLoops}
+          onChange={(event) => onAutoDetectLoopsChange(event.target.checked)}
+          className="mt-0.5 h-4 w-4 shrink-0 accent-primary"
+        />
       </label>
     </div>
   );

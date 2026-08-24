@@ -63,7 +63,6 @@ export { resizeRunPanelColumnRatios } from "./runStatusModel";
 
 const COLUMN_KEYBOARD_STEP_RATIO = 0.03;
 const MAX_CACHED_CHECKPOINTS = 6;
-const snapshotJSONCache = new WeakMap<object, string>();
 type RunPanelView = "overview" | "io" | "metrics" | "events" | "state" | "compare";
 type StateDetailView = "diff" | "snapshot";
 type EventHistoryItem = { event: RuntimeEvent; key: string };
@@ -983,7 +982,7 @@ function JSONTree({
     <div
       role="tree"
       aria-label={label}
-      className="h-full min-w-0 overflow-auto rounded border border-border bg-background p-2 font-mono text-[11px]"
+      className="h-full min-w-0 overflow-auto rounded border border-border bg-background p-2 font-mono text-[11px] [overflow-wrap:anywhere]"
     >
       <JSONTreeValue value={value} query={query.trim().toLowerCase()} depth={0} expandAll={expandAll} />
     </div>
@@ -1561,15 +1560,6 @@ function StateSnapshotSection({
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
-  const [serialization, setSerialization] = useState<{ value: unknown; text: string } | null>(null);
-  const serializedValue = serialization && serialization.value === value ? serialization.text : null;
-
-  useEffect(() => {
-    if (!open || serializedValue !== null) return;
-    return scheduleSnapshotSerialization(() => {
-      setSerialization({ value, text: serializeSnapshotValue(value) });
-    });
-  }, [open, serializedValue, value]);
 
   return (
     <section className="min-w-0 rounded-md border border-border bg-background">
@@ -1583,48 +1573,12 @@ function StateSnapshotSection({
         <span className="truncate">{title}</span>
       </button>
       {open ? (
-        serializedValue === null ? (
-          <div
-            aria-label={`${title} state snapshot`}
-            className="border-t border-border p-2 text-[11px] text-muted-foreground [overflow-wrap:anywhere]"
-          >
-            Preparing snapshot…
-          </div>
-        ) : (
-          <pre
-            aria-label={`${title} state snapshot`}
-            className="min-w-0 whitespace-pre-wrap break-words border-t border-border p-2 text-[11px] [overflow-wrap:anywhere]"
-          >
-            {serializedValue}
-          </pre>
-        )
+        <div className="border-t border-border p-2">
+          <JSONTree value={value} query="" label={`${title} state snapshot`} expandAll={false} />
+        </div>
       ) : null}
     </section>
   );
-}
-
-function scheduleSnapshotSerialization(callback: () => void): () => void {
-  const idleWindow = window as Window & {
-    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
-    cancelIdleCallback?: (handle: number) => void;
-  };
-  if (idleWindow.requestIdleCallback && idleWindow.cancelIdleCallback) {
-    const handle = idleWindow.requestIdleCallback(callback, { timeout: 100 });
-    return () => idleWindow.cancelIdleCallback?.(handle);
-  }
-  const handle = window.setTimeout(callback, 0);
-  return () => window.clearTimeout(handle);
-}
-
-function serializeSnapshotValue(value: unknown): string {
-  if (value && typeof value === "object") {
-    const cached = snapshotJSONCache.get(value);
-    if (cached !== undefined) return cached;
-    const serialized = stringifyJSON(value) ?? "null";
-    snapshotJSONCache.set(value, serialized);
-    return serialized;
-  }
-  return stringifyJSON(value) ?? "null";
 }
 
 function recordValue(value: unknown): Record<string, unknown> | null {

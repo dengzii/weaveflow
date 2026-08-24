@@ -24,7 +24,7 @@ the repository-root `.env` before running them. Never commit `.env` or `.local/`
 | Command                                                                         | Demonstrates                                                                           |
 |---------------------------------------------------------------------------------|----------------------------------------------------------------------------------------|
 | `go run ./examples/graph`                                                       | ReAct tool loop, local persistence, checkpoints, and continuation with new user input. |
-| `go run ./examples/plan_mode -profile analysis`                                  | Profile-selected tools/budgets, bounded inspection, grounded semantic criticism, evidence refs, and checkpoint recovery. See `plan_mode/README.md`. |
+| `go run ./examples/plan_mode -profile multi-step`                                | Multi-step read-only Plan-Execute-Review routing with profile-selected tools/budgets, grounded criticism, evidence refs, and checkpoint recovery. See `plan_mode/README.md`. |
 | `go run ./examples/supervisor_mode`                                               | Supervisor-led design, implementation, tests, CLI and runnable `example.tiny`, with real validation in an isolated `.local` workspace. |
 | `go run ./examples/two_agent_handoff "Research explicit state bindings."`       | Agent-to-agent task handoff with isolated conversation roots.                          |
 | `go run ./examples/multi_llm_turns "Draft and review an explanation."`          | Separate models and conversation roots with an explicit output-to-input handoff.       |

@@ -17,6 +17,7 @@ import {
   rememberGraphID,
 } from "../lib/localGraphs";
 import { parseJSON, stringifyJSON } from "../lib/utils";
+import { readStoredAutoDetectLoops, writeStoredAutoDetectLoops } from "../lib/loopPreferences";
 import {
   defaultInitialState,
   sampleGraph,
@@ -111,6 +112,7 @@ export function WorkbenchPage() {
   const [serverStateLoaded, setServerStateLoaded] = useState(false);
   const [serverGraphsLoaded, setServerGraphsLoaded] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("edit");
+  const [autoDetectLoops, setAutoDetectLoops] = useState(readStoredAutoDetectLoops);
   const initialRequirementsCacheRef = useRef<CachedInitialStateAnalysis | null>(null);
   const initialRequirementsRequestRef = useRef<PendingInitialStateAnalysis | null>(null);
   const toastSeqRef = useRef(0);
@@ -119,6 +121,11 @@ export function WorkbenchPage() {
   const changeGraphID = useCallback((value: string, remember = true) => {
     setGraphId(value);
     if (remember) rememberGraphID(value);
+  }, []);
+
+  const changeAutoDetectLoops = useCallback((enabled: boolean) => {
+    setAutoDetectLoops(enabled);
+    writeStoredAutoDetectLoops(enabled);
   }, []);
 
   const definition = useMemo(() => {
@@ -694,6 +701,7 @@ export function WorkbenchPage() {
         registry={registry}
         toolDefinitions={toolDefinitions}
         runtimeSettings={runtimeSettings}
+        autoDetectLoops={autoDetectLoops}
         graphTriggers={graphTriggers}
         onChangeRuntimeSettings={changeRuntimeSettings}
         onReplaceRuntimeSettings={replaceRuntimeSettings}
@@ -731,6 +739,8 @@ export function WorkbenchPage() {
       <SettingsDialog
         open={settingsDialogOpen}
         onClose={() => setSettingsDialogOpen(false)}
+        autoDetectLoops={autoDetectLoops}
+        onAutoDetectLoopsChange={changeAutoDetectLoops}
       />
       <AssistantPanel
         graphID={graphId}

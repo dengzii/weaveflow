@@ -26,7 +26,7 @@ import {
   type LocalGraph,
 } from "../../lib/localGraphs";
 import { cn, stringifyJSON } from "../../lib/utils";
-import { detectVirtualGraphLoops, mergeVirtualGraphLoops } from "../../lib/loopPresentation";
+import { virtualGraphLoopsForDisplay } from "../../lib/loopPresentation";
 import type {
   GraphDefinition,
   GraphDetail,
@@ -128,6 +128,7 @@ interface GraphWorkspaceProps {
   registry: RegistryInfo | null;
   toolDefinitions: ToolDefinition[];
   runtimeSettings: RuntimeSettings;
+  autoDetectLoops: boolean;
   graphTriggers: GraphTriggerController;
   onChangeRuntimeSettings: (settings: RuntimeSettingsUpdate) => RuntimeSettings;
   onReplaceRuntimeSettings: (settings: RuntimeSettings) => void;
@@ -173,6 +174,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   registry,
   toolDefinitions,
   runtimeSettings,
+  autoDetectLoops,
   graphTriggers: graphTriggerController,
   onChangeRuntimeSettings,
   onReplaceRuntimeSettings,
@@ -325,8 +327,8 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   );
   const conditions = registry?.conditions ?? [];
   const displayVirtualLoops = useMemo(
-    () => mergeVirtualGraphLoops(virtualLoops, detectVirtualGraphLoops(definition)),
-    [definition, virtualLoops]
+    () => virtualGraphLoopsForDisplay(definition, virtualLoops, autoDetectLoops),
+    [autoDetectLoops, definition, virtualLoops]
   );
   const selectedNode = useMemo(
     () => definition?.nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -432,6 +434,9 @@ export const GraphWorkspace = memo(function GraphWorkspace({
     () => displayVirtualLoops.find((loop) => loop.id === selectedLoopId) ?? null,
     [displayVirtualLoops, selectedLoopId]
   );
+  useEffect(() => {
+    if (selectedLoopId && !selectedVirtualLoop) setSelectedLoopId(null);
+  }, [selectedLoopId, selectedVirtualLoop]);
   const inspectorMode = selectedEdge || selectedVirtualEdge ? "edge" : selectedVirtualLoop ? "loop" : selectedVirtualNode ? "virtual" : selectedNode ? "node" : "graph";
   const triggerInspectorOpen = editing && Boolean(selectedTrigger);
   const searchableNodes = useMemo(
@@ -1027,6 +1032,7 @@ export const GraphWorkspace = memo(function GraphWorkspace({
         ref={canvasRef}
         className="graph-canvas-shell relative min-h-0 bg-canvas"
       >
+        <div id="workbench-assistant-trigger-slot" className="absolute bottom-[173px] right-[15px] z-30" />
         {canvasLoading ? (
           <CanvasLoadingState />
         ) : (

@@ -88,8 +88,13 @@ export function detectVirtualGraphLoops(definition: GraphDefinition | null): Vir
     if (!indexByNode.has(node.id)) visit(node.id);
   }
 
+  const reachableNodeIds = reachableGraphNodeIds(definition, nodeIds, outgoing);
+
   return components
-    .filter((component) => component.length > 1 || selfLoopNodeIds.has(component[0]))
+    .filter((component) =>
+      (component.length > 1 || selfLoopNodeIds.has(component[0]))
+        && component.every((nodeID) => reachableNodeIds.has(nodeID))
+    )
     .map((component) => component.sort((left, right) => nodeOrder.get(left)! - nodeOrder.get(right)!))
     .sort((left, right) => nodeOrder.get(left[0])! - nodeOrder.get(right[0])!)
     .map((component) => {
@@ -117,6 +122,17 @@ export function mergeVirtualGraphLoops(
   ];
 }
 
+export function virtualGraphLoopsForDisplay(
+  definition: GraphDefinition | null,
+  explicitLoops: VirtualGraphLoop[],
+  autoDetectLoops = true
+): VirtualGraphLoop[] {
+  return mergeVirtualGraphLoops(
+    explicitLoops,
+    autoDetectLoops ? detectVirtualGraphLoops(definition) : []
+  );
+}
+
 export function analyzeVirtualGraphLoop(
   definition: GraphDefinition | null,
   loop: Pick<VirtualGraphLoop, "nodeIds">
@@ -129,8 +145,10 @@ export function analyzeVirtualGraphLoop(
   const incomingEdges = indexedEdges.filter(({ edge }) => !nodeIdSet.has(edge.from) && nodeIdSet.has(edge.to));
   const outgoingEdges = indexedEdges.filter(({ edge }) => nodeIdSet.has(edge.from) && !nodeIdSet.has(edge.to));
   const entryPoint = definition?.entry_point;
-  const loopStartId = incomingEdges[0]?.edge.to
-    || (entryPoint && nodeIdSet.has(entryPoint) ? entryPoint : "")
+  const reachableNodeIds = reachableGraphNodeIds(definition, graphNodeIds);
+  const loopStartId = (entryPoint && nodeIdSet.has(entryPoint) ? entryPoint : "")
+    || incomingEdges.find(({ edge }) => reachableNodeIds.has(edge.from))?.edge.to
+    || incomingEdges[0]?.edge.to
     || nodeIds[0]
     || "";
   const backEdgeIds = findBackEdgeIds(nodeIds, loopStartId, internalEdges);
@@ -348,6 +366,35 @@ function findBackEdgeIds(
     if (!state.has(nodeId)) visit(nodeId);
   }
   return backEdgeIds;
+}
+
+function reachableGraphNodeIds(
+  definition: GraphDefinition | null,
+  nodeIDs: Set<string>,
+  outgoingOverride?: Map<string, string[]>
+): Set<string> {
+  const entryPoint = definition?.entry_point;
+  if (!entryPoint || !nodeIDs.has(entryPoint)) return new Set(nodeIDs);
+
+  const outgoing = outgoingOverride ?? new Map<string, string[]>();
+  if (!outgoingOverride) {
+    for (const edge of definition?.edges ?? []) {
+      if (!nodeIDs.has(edge.from) || !nodeIDs.has(edge.to)) continue;
+      outgoing.set(edge.from, [...(outgoing.get(edge.from) ?? []), edge.to]);
+    }
+  }
+
+  const reachable = new Set<string>([entryPoint]);
+  const pending = [entryPoint];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    for (const next of outgoing.get(current) ?? []) {
+      if (reachable.has(next)) continue;
+      reachable.add(next);
+      pending.push(next);
+    }
+  }
+  return reachable;
 }
 
 function humanizeIdentifier(value: string): string {

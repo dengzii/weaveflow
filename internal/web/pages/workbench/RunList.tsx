@@ -53,6 +53,7 @@ export function RunList({
               const active = run.run_id === selectedRunID;
               const canDelete = Boolean(onDeleteRun) && !actionsDisabled && !isActiveRunStatus(run.status);
               const triggerType = runTriggerTypes?.[run.run_id];
+              const duration = formatRunDuration(run);
               return (
                 <li
                   key={run.run_id}
@@ -69,6 +70,9 @@ export function RunList({
                       <RunStatusIcon status={run.status} />
                       <span className="min-w-0 flex-1 truncate font-mono" title={run.run_id}>
                         {run.run_id}
+                      </span>
+                      <span className="shrink-0 tabular-nums text-muted-foreground" title={`Run duration: ${duration}`}>
+                        {duration}
                       </span>
                       <span className="shrink-0 tabular-nums text-muted-foreground" title={run.started_at}>
                         {formatDateTime(run.started_at)}
@@ -103,6 +107,16 @@ export function RunList({
       </div>
     </div>
   );
+}
+
+function formatRunDuration(run: RunRecord): string {
+  const startedAt = Date.parse(run.started_at);
+  const endedAt = Date.parse(run.finished_at || run.updated_at);
+  if (Number.isNaN(startedAt) || Number.isNaN(endedAt) || endedAt < startedAt) return "0s";
+
+  const totalSeconds = Math.floor((endedAt - startedAt) / 1_000);
+  const minutes = Math.floor(totalSeconds / 60);
+  return `${minutes > 0 ? `${minutes}m` : ""}${totalSeconds % 60}s`;
 }
 
 function RunListSkeleton() {

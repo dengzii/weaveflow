@@ -14,6 +14,7 @@ import {
   loopStartInnerHandleId,
   mergeVirtualGraphLoops,
   type VirtualGraphLoop,
+  virtualGraphLoopsForDisplay,
 } from "./loopPresentation";
 
 describe("loop presentation", () => {
@@ -97,10 +98,85 @@ describe("loop presentation", () => {
     expect(detectVirtualGraphLoops(definition)).toEqual([]);
   });
 
+  test("ignores cyclic components that cannot be reached from the graph entry", () => {
+    const definition: GraphDefinition = {
+      entry_point: "entry",
+      nodes: [
+        { id: "entry", type: "task", config: {} },
+        { id: "finish", type: "task", config: {} },
+        { id: "orphan_a", type: "task", config: {} },
+        { id: "orphan_b", type: "task", config: {} },
+      ],
+      edges: [
+        { from: "entry", to: "finish" },
+        { from: "orphan_a", to: "orphan_b" },
+        { from: "orphan_b", to: "orphan_a" },
+      ],
+    };
+
+    expect(detectVirtualGraphLoops(definition)).toEqual([]);
+  });
+
+  test("prefers the entry point over an unrelated incoming edge", () => {
+    const definition: GraphDefinition = {
+      entry_point: "header",
+      nodes: [
+        { id: "header", type: "task", config: {} },
+        { id: "body", type: "task", config: {} },
+        { id: "unrelated", type: "task", config: {} },
+        { id: "finish", type: "task", config: {} },
+      ],
+      edges: [
+        { from: "unrelated", to: "body" },
+        { from: "header", to: "body" },
+        { from: "body", to: "header" },
+        { from: "body", to: "finish" },
+      ],
+    };
+
+    const loops = detectVirtualGraphLoops(definition);
+    expect(loops).toHaveLength(1);
+    expect(loops[0]).toMatchObject({ id: "loop:auto:header", nodeIds: ["header", "body"] });
+    expect(analyzeVirtualGraphLoop(definition, loops[0]).loopStartId).toBe("header");
+  });
+
+  test("prefers a reachable incoming edge when the entry is outside the loop", () => {
+    const definition: GraphDefinition = {
+      entry_point: "entry",
+      nodes: [
+        { id: "entry", type: "task", config: {} },
+        { id: "header", type: "task", config: {} },
+        { id: "body", type: "task", config: {} },
+        { id: "unreachable", type: "task", config: {} },
+        { id: "finish", type: "task", config: {} },
+      ],
+      edges: [
+        { from: "unreachable", to: "body" },
+        { from: "entry", to: "header" },
+        { from: "header", to: "body" },
+        { from: "body", to: "header" },
+        { from: "body", to: "finish" },
+      ],
+    };
+
+    const loops = detectVirtualGraphLoops(definition);
+    expect(loops).toHaveLength(1);
+    expect(analyzeVirtualGraphLoop(definition, loops[0]).loopStartId).toBe("header");
+  });
+
   test("keeps explicit UI groups ahead of overlapping automatic groups", () => {
     const automatic = detectVirtualGraphLoops(toolLoopGraph());
     const explicit: VirtualGraphLoop = { id: "loop", name: "custom loop", nodeIds: ["llm", "tools"] };
     expect(mergeVirtualGraphLoops([explicit], automatic)).toEqual([explicit]);
+  });
+
+  test("can disable automatic groups without hiding explicit UI groups", () => {
+    const definition = toolLoopGraph();
+    const explicit: VirtualGraphLoop = { id: "manual", name: "Manual", nodeIds: ["llm"] };
+
+    expect(virtualGraphLoopsForDisplay(definition, [], false)).toEqual([]);
+    expect(virtualGraphLoopsForDisplay(definition, [explicit], false)).toEqual([explicit]);
+    expect(virtualGraphLoopsForDisplay(definition, [], true)).toHaveLength(1);
   });
 
   test("bridges virtual entry and finish edges through the loop ports", () => {

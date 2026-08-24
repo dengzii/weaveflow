@@ -3,9 +3,12 @@ package main
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/dengzii/weaveflow/tools"
 )
 
 type ApprovalPolicy string
@@ -36,6 +39,7 @@ type TaskProfile struct {
 	ModelRetries        int
 	MaxReadLines        int
 	MaxReadOutputBytes  int
+	AllowedPaths        []string
 	Permissions         []string
 	ApprovalPolicy      ApprovalPolicy
 	ApprovedTools       []string
@@ -43,7 +47,91 @@ type TaskProfile struct {
 	VerifierConfig      VerifierConfig
 }
 
+type ProfileRegistry struct {
+	profiles  map[string]TaskProfile
+	verifiers *VerifierRegistry
+}
+
+func NewProfileRegistry(verifiers *VerifierRegistry) *ProfileRegistry {
+	if verifiers == nil {
+		verifiers = defaultVerifierRegistry()
+	}
+	return &ProfileRegistry{profiles: make(map[string]TaskProfile), verifiers: verifiers}
+}
+
+func (registry *ProfileRegistry) Register(profile TaskProfile) error {
+	if registry == nil {
+		return errors.New("profile registry is nil")
+	}
+	if err := profile.ValidateWith(registry.verifiers); err != nil {
+		return err
+	}
+	if registry.profiles == nil {
+		registry.profiles = make(map[string]TaskProfile)
+	}
+	if _, exists := registry.profiles[profile.ID]; exists {
+		return fmt.Errorf("profile %q is already registered", profile.ID)
+	}
+	registry.profiles[profile.ID] = cloneProfile(profile)
+	return nil
+}
+
+func (registry *ProfileRegistry) Lookup(id string) (TaskProfile, error) {
+	if registry == nil {
+		return TaskProfile{}, errors.New("profile registry is nil")
+	}
+	id = strings.TrimSpace(id)
+	profile, ok := registry.profiles[id]
+	if !ok {
+		return TaskProfile{}, fmt.Errorf("unknown profile %q; available profiles: %s", id, strings.Join(registry.IDs(), ", "))
+	}
+	return cloneProfile(profile), nil
+}
+
+func (registry *ProfileRegistry) IDs() []string {
+	if registry == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(registry.profiles))
+	for id := range registry.profiles {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func (registry *ProfileRegistry) Profiles() map[string]TaskProfile {
+	if registry == nil {
+		return nil
+	}
+	profiles := make(map[string]TaskProfile, len(registry.profiles))
+	for id, profile := range registry.profiles {
+		profiles[id] = cloneProfile(profile)
+	}
+	return profiles
+}
+
+func cloneProfile(profile TaskProfile) TaskProfile {
+	profile.ToolIDs = append([]string(nil), profile.ToolIDs...)
+	profile.AllowedPaths = append([]string(nil), profile.AllowedPaths...)
+	profile.Permissions = append([]string(nil), profile.Permissions...)
+	profile.ApprovedTools = append([]string(nil), profile.ApprovedTools...)
+	profile.VerifierConfig.Packages = append([]string(nil), profile.VerifierConfig.Packages...)
+	profile.VerifierConfig.AllowedPackages = append([]string(nil), profile.VerifierConfig.AllowedPackages...)
+	profile.VerifierConfig.Files = append([]string(nil), profile.VerifierConfig.Files...)
+	profile.VerifierConfig.Contains = append([]string(nil), profile.VerifierConfig.Contains...)
+	profile.VerifierConfig.Absent = append([]string(nil), profile.VerifierConfig.Absent...)
+	return profile
+}
+
 func (profile TaskProfile) Validate() error {
+	return profile.ValidateWith(defaultVerifierRegistry())
+}
+
+func (profile TaskProfile) ValidateWith(verifiers *VerifierRegistry) error {
+	if verifiers == nil {
+		return errors.New("verifier registry is required")
+	}
 	if strings.TrimSpace(profile.ID) == "" {
 		return errors.New("profile ID is required")
 	}
@@ -65,11 +153,21 @@ func (profile TaskProfile) Validate() error {
 	if profile.MaxReadLines < 0 || profile.MaxReadOutputBytes < 0 {
 		return fmt.Errorf("profile %q has invalid read limits", profile.ID)
 	}
-	knownTools := safeToolFactories()
+	for _, allowedPath := range profile.AllowedPaths {
+		allowedPath = strings.TrimSpace(allowedPath)
+		if allowedPath == "" || filepath.IsAbs(allowedPath) {
+			return fmt.Errorf("profile %q has invalid allowed path %q", profile.ID, allowedPath)
+		}
+		cleaned := filepath.Clean(filepath.FromSlash(allowedPath))
+		if cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("profile %q allowed path %q escapes workspace", profile.ID, allowedPath)
+		}
+	}
+	knownTools := tools.BuiltinFactories()
 	toolSet := make(map[string]struct{}, len(profile.ToolIDs))
 	for _, toolID := range profile.ToolIDs {
 		toolID = strings.TrimSpace(toolID)
-		if _, ok := knownTools[toolID]; !ok {
+		if _, ok := knownTools[toolID]; !ok && toolID != "verify" {
 			return fmt.Errorf("profile %q references unknown tool %q", profile.ID, toolID)
 		}
 		toolSet[toolID] = struct{}{}
@@ -87,6 +185,9 @@ func (profile TaskProfile) Validate() error {
 		return fmt.Errorf("profile %q grants process.execute without a fixed Go verifier", profile.ID)
 	}
 	if _, writable := permissionSet["filesystem.write"]; writable {
+		if len(profile.AllowedPaths) == 0 {
+			return fmt.Errorf("profile %q requires allowed paths for filesystem.write", profile.ID)
+		}
 		if profile.ApprovalPolicy != ApprovalConfigured {
 			return fmt.Errorf("profile %q grants filesystem.write without configured approval", profile.ID)
 		}
@@ -101,7 +202,7 @@ func (profile TaskProfile) Validate() error {
 	if profile.ApprovalPolicy != ApprovalDeny && profile.ApprovalPolicy != ApprovalConfigured {
 		return fmt.Errorf("profile %q has unknown approval policy %q", profile.ID, profile.ApprovalPolicy)
 	}
-	verifier, err := newVerifier(profile.VerifierID, profile.VerifierConfig)
+	verifier, err := verifiers.Build(profile.VerifierID, profile.VerifierConfig)
 	if err != nil {
 		return fmt.Errorf("profile %q verifier: %w", profile.ID, err)
 	}
@@ -119,7 +220,7 @@ func (profile TaskProfile) Validate() error {
 	return nil
 }
 
-func profiles() map[string]TaskProfile {
+func defaultProfileRegistry() *ProfileRegistry {
 	base := TaskProfile{
 		PlannerPrompt:       defaultPlannerPrompt,
 		WorkerPrompt:        defaultWorkerPrompt,
@@ -143,6 +244,7 @@ func profiles() map[string]TaskProfile {
 	tinyScript.MaxSteps = 1
 	tinyScript.ToolIDs = []string{"read", "write", "edit", "grep", "glob", "verify"}
 	tinyScript.Permissions = []string{"filesystem.read", "filesystem.write", "process.execute"}
+	tinyScript.AllowedPaths = []string{"examples/plan_mode/tiny_script"}
 	tinyScript.ApprovalPolicy = ApprovalConfigured
 	tinyScript.ApprovedTools = []string{"write", "edit", "verify"}
 	tinyScript.VerifierID = "go-format-test"
@@ -160,6 +262,7 @@ func profiles() map[string]TaskProfile {
 	coding.MaxSteps = 1
 	coding.ToolIDs = []string{"read", "write", "edit", "grep", "glob", "verify"}
 	coding.Permissions = []string{"filesystem.read", "filesystem.write", "process.execute"}
+	coding.AllowedPaths = []string{"examples/plan_mode/fixtures/coding_go"}
 	coding.ApprovalPolicy = ApprovalConfigured
 	coding.ApprovedTools = []string{"write", "edit", "verify"}
 	coding.VerifierID = "go-test"
@@ -174,6 +277,7 @@ func profiles() map[string]TaskProfile {
 	documentation.MaxIterations = 5
 	documentation.ToolIDs = []string{"read", "write", "edit", "grep", "glob", "verify"}
 	documentation.Permissions = []string{"filesystem.read", "filesystem.write"}
+	documentation.AllowedPaths = []string{"examples/plan_mode"}
 	documentation.ApprovalPolicy = ApprovalConfigured
 	documentation.ApprovedTools = []string{"write", "edit", "verify"}
 	documentation.VerifierID = "content-match"
@@ -192,6 +296,7 @@ func profiles() map[string]TaskProfile {
 	analysis.TotalTimeout = 10 * time.Minute
 	analysis.ToolIDs = []string{"outline", "read", "grep", "glob"}
 	analysis.Permissions = []string{"filesystem.read"}
+	analysis.AllowedPaths = []string{"."}
 	analysis.ApprovalPolicy = ApprovalDeny
 	analysis.ApprovedTools = nil
 	analysis.VerifierID = "no-op"
@@ -200,26 +305,33 @@ func profiles() map[string]TaskProfile {
 	analysis.MaxReadLines = 240
 	analysis.MaxReadOutputBytes = 12 * 1024
 
-	return map[string]TaskProfile{
+	multiStep := analysis
+	multiStep.ID = "multi-step"
+	multiStep.Description = "Multi-step read-only repository review with grounded evidence."
+	multiStep.DefaultObjective = "Review examples/plan_mode as a reusable Plan-Execute-Review pattern. Use separate steps for graph topology, tool and permission boundaries, and checkpoint/replan behavior. Produce an evidence-backed report without modifying files."
+	multiStep.PlannerPrompt += "\nThis profile is intentionally multi-step: keep topology, safety, and recovery as separate steps when the objective supports them."
+	multiStep.MaxSteps = 4
+	multiStep.MaxIterations = 5
+	multiStep.TotalTimeout = 12 * time.Minute
+
+	profiles := map[string]TaskProfile{
 		tinyScript.ID:    tinyScript,
 		coding.ID:        coding,
 		documentation.ID: documentation,
 		analysis.ID:      analysis,
+		multiStep.ID:     multiStep,
 	}
+	registry := NewProfileRegistry(defaultVerifierRegistry())
+	for _, profile := range profiles {
+		if err := registry.Register(profile); err != nil {
+			panic(err)
+		}
+	}
+	return registry
 }
 
 func profileByID(id string) (TaskProfile, error) {
-	id = strings.TrimSpace(id)
-	profile, ok := profiles()[id]
-	if !ok {
-		available := make([]string, 0, len(profiles()))
-		for name := range profiles() {
-			available = append(available, name)
-		}
-		sort.Strings(available)
-		return TaskProfile{}, fmt.Errorf("unknown profile %q; available profiles: %s", id, strings.Join(available, ", "))
-	}
-	return profile, profile.Validate()
+	return defaultProfileRegistry().Lookup(id)
 }
 
 func stringSet(values []string) map[string]struct{} {

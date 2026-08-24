@@ -12,6 +12,7 @@ export interface EditableGraphModel {
   credential_input: string;
   credential_value: string;
   credential_clear: boolean;
+  credential_dirty?: boolean;
   pricing_currency: string;
   input_per_million: string;
   cached_input_per_million: string;
@@ -39,6 +40,7 @@ export function newEditableGraphModel(id: string): EditableGraphModel {
     credential_input: "",
     credential_value: "",
     credential_clear: false,
+    credential_dirty: false,
     pricing_currency: "USD",
     input_per_million: "",
     cached_input_per_million: "",
@@ -69,8 +71,9 @@ export function modelsFromSettings(settings: RuntimeSettings | null): EditableGr
       : "",
     credential_configured: Boolean(model.credential_configured),
     credential_input: "",
-    credential_value: model.credential_value ?? "",
+    credential_value: "",
     credential_clear: Boolean(model.credential_clear),
+    credential_dirty: false,
     pricing_currency: model.pricing?.currency ?? "USD",
     input_per_million: pricingRate(model.pricing?.input_per_million),
     cached_input_per_million: pricingRate(model.pricing?.cached_input_per_million),
@@ -102,8 +105,9 @@ export function normalizeModelSettings(models: EditableGraphModel[]): RuntimeSet
       throw new Error(`Duplicate model id: ${modelID}`);
     }
     seen.add(modelID);
-    const credentialValue = model.credential_value?.trim() ?? "";
-    const credentialClear = Boolean(model.credential_clear);
+    const credentialDirty = Boolean(model.credential_dirty);
+    const credentialValue = credentialDirty ? model.credential_value?.trim() ?? "" : "";
+    const credentialClear = credentialDirty && Boolean(model.credential_clear);
     return {
       id: modelID,
       enabled: model.enabled,

@@ -97,6 +97,7 @@ func TestLocalRunnerRestoresAfterVerifierWithoutRepeatingStep(t *testing.T) {
 
 func TestLocalRunnerDoesNotRepeatSuccessfulWriteAfterRestart(t *testing.T) {
 	profile, _ := profileByID("documentation")
+	profile.AllowedPaths = []string{"."}
 	profile.DefaultObjective = "Create result.md with the required recovery marker."
 	profile.VerifierConfig = VerifierConfig{Files: []string{"result.md"}, Contains: []string{"recovery-marker"}}
 	graph, err := newPlanGraph(profile)
