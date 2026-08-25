@@ -262,6 +262,8 @@ func TestDefaultSystemPromptDefinesOperatingProtocol(t *testing.T) {
 	for _, rule := range []string{
 		"Read before write",
 		"server_api is the only server-operation entry point",
+		"Treat explicit Graph mutation verbs",
+		"design, recommendation, JSON only",
 		"unsaved Workbench draft",
 		"effect_status=unknown",
 		"read-only",
