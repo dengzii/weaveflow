@@ -33,7 +33,7 @@ var (
 
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8080", "listen address")
-	dataDir := flag.String("data", ".local/server", "data directory for graph debug runs")
+	dataDir := flag.String("data", ".local/wf", "data directory for graph debug runs")
 	secretDir := flag.String("secret-dir", "", "directory for file-backed secret references")
 	prefix := flag.String("prefix", "", "route prefix")
 	corsOrigins := flag.String("cors-origins", defaultCORSOrigins, "comma-separated WebUI origins allowed by CORS; use * to allow all")
@@ -71,9 +71,10 @@ func main() {
 	if strings.TrimSpace(*graphPath) != "" {
 		loaded, err := wfgraph.NewBuilder(builtin.NewDefaultRegistry()).BuildFile(*graphPath, &wfregistry.BuildContext{})
 		if err != nil {
-			log.Fatal(err)
+			log.Printf("warning: failed to load graph %q: %v; continuing without preloaded graph", *graphPath, err)
+		} else {
+			graph = loaded
 		}
-		graph = loaded
 	}
 
 	ctx := core.WithTools(context.Background(), defaultTools())
@@ -82,7 +83,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	srv, err := server.New(ctx, server.Config{
+	serverConfig := server.Config{
 		Graph:               graph,
 		Version:             version,
 		BuildTime:           buildTime,
@@ -99,12 +100,18 @@ func main() {
 				return codexnode.WithRunner(ctx, codexRunner)
 			},
 		},
-	})
+	}
+	srv, err := server.New(ctx, serverConfig)
+	if err != nil && graph != nil {
+		log.Printf("warning: failed to initialize server with preloaded graph: %v; retrying without preloaded graph", err)
+		serverConfig.Graph = nil
+		srv, err = server.New(ctx, serverConfig)
+	}
 	if err != nil {
-		log.Fatal("failed to initialize server")
+		log.Fatalf("failed to initialize server: %v", err)
 	}
 	if err := srv.Start(ctx); err != nil {
-		log.Fatal("failed to start server")
+		log.Fatalf("failed to start server: %v", err)
 	}
 	defer func() { _ = srv.Close() }()
 
