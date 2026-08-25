@@ -33,6 +33,7 @@ import type {
 import { RunEventDetail } from "./RunEventDetail";
 import { RunEventFilterControls } from "./RunEventFilters";
 import { RunList } from "./RunList";
+import { JSONTree } from "./JSONTree";
 import {
   COLUMN_SEPARATOR_WIDTH,
   DEFAULT_COLUMN_RATIOS,
@@ -967,90 +968,6 @@ function IODocument({
   );
 }
 
-function JSONTree({
-  value,
-  query,
-  label,
-  expandAll,
-}: {
-  value: unknown;
-  query: string;
-  label: string;
-  expandAll: boolean;
-}) {
-  return (
-    <div
-      role="tree"
-      aria-label={label}
-      className="h-full min-w-0 overflow-auto rounded border border-border bg-background p-2 font-mono text-[11px] [overflow-wrap:anywhere]"
-    >
-      <JSONTreeValue value={value} query={query.trim().toLowerCase()} depth={0} expandAll={expandAll} />
-    </div>
-  );
-}
-
-function JSONTreeValue({
-  value,
-  query,
-  depth,
-  expandAll,
-}: {
-  value: unknown;
-  query: string;
-  depth: number;
-  expandAll: boolean;
-}) {
-  if (!value || typeof value !== "object") {
-    return <span className="break-words text-foreground">{stringifyJSON(value)}</span>;
-  }
-  if (depth >= 8) {
-    return <span className="break-words text-muted-foreground">{valuePreview(value)}</span>;
-  }
-  const entries = Array.isArray(value)
-    ? value.map((item, index) => [String(index), item] as const)
-    : Object.entries(value as Record<string, unknown>);
-  const filteredEntries = query
-    ? entries.filter(([key, item]) => key.toLowerCase().includes(query) || jsonValueMatches(item, query))
-    : entries;
-  if (filteredEntries.length === 0) {
-    return <span className="text-muted-foreground">{query ? "No matching values" : Array.isArray(value) ? "[]" : "{}"}</span>;
-  }
-  return (
-    <div className="grid gap-0.5">
-      {filteredEntries.map(([key, item]) => {
-        const expandable = Boolean(item) && typeof item === "object";
-        if (!expandable) {
-          return (
-            <div key={key} role="treeitem" className="grid grid-cols-[minmax(5rem,auto)_minmax(0,1fr)] gap-2 pl-1">
-              <span className="break-all text-primary">{key}</span>
-              <span className="break-words">{stringifyJSON(item)}</span>
-            </div>
-          );
-        }
-        return (
-          <details key={key} open={Boolean(query) || expandAll} className="pl-1">
-            <summary className="cursor-pointer break-all text-primary hover:text-foreground">
-              {key} <span className="text-muted-foreground">{valuePreview(item)}</span>
-            </summary>
-            <div role="group" className="ml-3 border-l border-border pl-2">
-              <JSONTreeValue value={item} query={query} depth={depth + 1} expandAll={expandAll} />
-            </div>
-          </details>
-        );
-      })}
-    </div>
-  );
-}
-
-function jsonValueMatches(value: unknown, query: string): boolean {
-  if (value === null || value === undefined) return String(value).includes(query);
-  if (typeof value !== "object") return String(value).toLowerCase().includes(query);
-  if (Array.isArray(value)) return value.some((item) => jsonValueMatches(item, query));
-  return Object.entries(value).some(
-    ([key, item]) => key.toLowerCase().includes(query) || jsonValueMatches(item, query)
-  );
-}
-
 function jsonMatchCount(value: unknown, query: string): number {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return 0;
@@ -1344,13 +1261,17 @@ const EventHistoryRow = memo(function EventHistoryRow({
   style: CSSProperties;
 }) {
   const { event, key } = item;
+  const toolName = eventToolName(event);
   return (
     <li className="w-full border-b border-border" style={style}>
       <button
         type="button"
         onClick={() => onSelect(key)}
         className={cn(
-          "grid h-7 w-full grid-cols-[minmax(0,8rem)_minmax(0,1fr)_8rem] items-center gap-2 px-3 text-left text-xs hover:bg-accent/40",
+          "grid h-7 w-full items-center gap-2 px-3 text-left text-xs hover:bg-accent/40",
+          event.type === "tool.called"
+            ? "grid-cols-[minmax(0,8rem)_minmax(0,1fr)_minmax(0,8rem)_8rem]"
+            : "grid-cols-[minmax(0,8rem)_minmax(0,1fr)_8rem]",
           selected && "bg-accent text-accent-foreground"
         )}
       >
@@ -1372,6 +1293,15 @@ const EventHistoryRow = memo(function EventHistoryRow({
             </span>
           </>
         )}
+        {event.type === "tool.called" ? (
+          <span
+            className="min-w-0 truncate font-mono"
+            title={toolName || "Tool name unavailable"}
+            aria-label={`Tool name: ${toolName || "unavailable"}`}
+          >
+            {toolName || "—"}
+          </span>
+        ) : null}
         <span className="truncate text-right tabular-nums text-muted-foreground" title={event.timestamp}>
           {formatDateTimeMs(event.timestamp)}
         </span>
@@ -1379,6 +1309,22 @@ const EventHistoryRow = memo(function EventHistoryRow({
     </li>
   );
 });
+
+function eventToolName(event: RuntimeEvent): string {
+  if (event.type !== "tool.called" || !event.payload || typeof event.payload !== "object" || Array.isArray(event.payload)) {
+    return "";
+  }
+  const payload = event.payload as Record<string, unknown>;
+  const names = typeof payload.name === "string" ? [payload.name] : [];
+  if (Array.isArray(payload.tools)) {
+    for (const tool of payload.tools) {
+      if (!tool || typeof tool !== "object" || Array.isArray(tool)) continue;
+      const name = (tool as Record<string, unknown>).name;
+      if (typeof name === "string") names.push(name);
+    }
+  }
+  return [...new Set(names.map((name) => name.trim()).filter(Boolean))].join(", ");
+}
 
 function StateHistoryList({
   items,

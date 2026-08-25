@@ -37,6 +37,8 @@ export function WorkbenchShell({
   streamStatus,
   streamDiagnostics,
   busy,
+  runBusy,
+  runLaunchPending,
   initializing,
   saving,
   unsaved,
@@ -63,6 +65,8 @@ export function WorkbenchShell({
   streamStatus: StreamStatus;
   streamDiagnostics: StreamDiagnostics;
   busy: boolean;
+  runBusy: boolean;
+  runLaunchPending: boolean;
   initializing: boolean;
   saving: boolean;
   unsaved: boolean;
@@ -89,6 +93,7 @@ export function WorkbenchShell({
   const backendBaseUrl = getBackendBaseUrl();
   const displayedBackendBaseUrl = backendBaseUrl.replace(/^https?:\/\//, "");
   const runPanelShown = runStatusVisible;
+  const resumeControlsDisabled = runControlsDisabled || runLaunchPending;
 
   return (
     <div className="workbench-shell-enter flex h-screen min-h-0 overflow-hidden bg-background text-foreground">
@@ -147,11 +152,11 @@ export function WorkbenchShell({
             </>
           ) : runControlMode === "resume" ? (
             <>
-              <Button size="sm" onClick={onResume} disabled={busy || initializing || !canResume} title="Resume paused run">
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+              <Button size="sm" onClick={onResume} disabled={resumeControlsDisabled || !canResume} title="Resume paused run">
+                {runBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
                 Resume
               </Button>
-              <Button variant="danger" size="sm" onClick={onStop} disabled={busy || !hasRunStatus} title="Stop run">
+              <Button variant="danger" size="sm" onClick={onStop} disabled={resumeControlsDisabled || !hasRunStatus} title="Stop run">
                 <Square className="h-4 w-4" />
                 Stop
               </Button>
@@ -246,6 +251,7 @@ export function WorkbenchShell({
               onClick={onToggleRunStatus}
               disabled={initializing}
               title={runPanelShown ? "Hide run panel" : "Show run panel"}
+              aria-keyshortcuts="Control+J Meta+J"
             >
               <ChevronUp className={`h-3.5 w-3.5 transition-transform ${runPanelShown ? "rotate-180" : ""}`} />
               Run

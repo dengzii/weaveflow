@@ -3,14 +3,16 @@ import type { ReactNode } from "react";
 import { ChevronDown } from "lucide-react";
 import { cn, formatDateTimeMs, stringifyJSON } from "../../lib/utils";
 import type { RuntimeEvent } from "../../types";
+import { JSONTree, parseJSONTreeValue } from "./JSONTree";
 import { eventTone } from "./runStatusModel";
 import { StatusText } from "./shared";
 
 export function RunEventDetail({ event }: { event: RuntimeEvent }) {
   const payload = payloadRecord(event.payload);
-  const fields = eventPayloadFields(event, payload);
-  const sections = eventPayloadSections(event, payload);
-  const hasPayload = event.payload !== undefined && event.payload !== null;
+  const details = eventPayloadDetails(event, payload);
+  const hasPayload = payload
+    ? Object.keys(payload).length > 0
+    : event.payload !== undefined && event.payload !== null;
 
   return (
     <div className="grid gap-2 text-xs">
@@ -21,15 +23,25 @@ export function RunEventDetail({ event }: { event: RuntimeEvent }) {
           {formatDateTimeMs(event.timestamp)}
         </span>
       </div>
+      <DetailRow label="Event" value={event.id} />
+      {event.graph_session_id ? <DetailRow label="Graph session" value={event.graph_session_id} /> : null}
       <DetailRow label="Run" value={event.run_id} />
+      {event.parent_run_id ? <DetailRow label="Parent run" value={event.parent_run_id} /> : null}
       {event.step_id ? <DetailRow label="Step" value={event.step_id} /> : null}
+      {event.task_id ? <DetailRow label="Task" value={event.task_id} /> : null}
       {event.node_id ? <DetailRow label="Node" value={event.node_id} /> : null}
-      {fields.length > 0 ? (
-        <DetailSection title="Payload">
-          <PayloadFields fields={fields} />
-      </DetailSection>
+      {event.namespace ? <DetailRow label="Namespace" value={event.namespace} /> : null}
+      {details.fields.length > 0 ? (
+        <DetailSection title="Details">
+          <PayloadFields fields={details.fields} />
+        </DetailSection>
       ) : null}
-      {sections}
+      {details.sections}
+      {details.additionalFields.length > 0 ? (
+        <DetailSection title="Additional details">
+          <PayloadFields fields={details.additionalFields} />
+        </DetailSection>
+      ) : null}
       {hasPayload ? <RawPayloadSection key={event.id} payload={event.payload} /> : null}
     </div>
   );
@@ -78,180 +90,364 @@ function DetailRow({ label, value }: { label: string; value: ReactNode }) {
 
 interface PayloadField {
   label: string;
-  value: ReactNode;
+  value: unknown;
   multiline?: boolean;
+}
+
+interface EventPayloadDetails {
+  fields: PayloadField[];
+  sections: ReactNode;
+  additionalFields: PayloadField[];
 }
 
 function PayloadFields({ fields }: { fields: PayloadField[] }) {
   return (
     <div className="grid gap-1">
-      {fields.map((field) => (
-        <div
-          key={field.label}
-          className={cn(
-            "grid gap-1 rounded border border-border bg-muted/30 px-2 py-1",
-            field.multiline ? "" : "grid-cols-[120px_minmax(0,1fr)] items-center"
-          )}
-        >
-          <span className="text-muted-foreground">{field.label}</span>
-          <span className={cn("min-w-0 font-mono", field.multiline ? "whitespace-pre-wrap break-words" : "truncate")}>
-            {field.value}
-          </span>
-        </div>
-      ))}
+      {fields.map((field) => {
+        const treeValue = parseJSONTreeValue(field.value);
+        const multiline = field.multiline || isMultilinePayloadValue(field.value);
+        return (
+          <div
+            key={field.label}
+            className={cn(
+              "grid gap-1 rounded border border-border bg-muted/30 px-2 py-1",
+              treeValue || multiline ? "" : "grid-cols-[120px_minmax(0,1fr)] items-center"
+            )}
+          >
+            <span className="text-muted-foreground">{field.label}</span>
+            {treeValue ? (
+              <JSONTree value={treeValue} label={`${field.label} JSON tree`} scrollable={false} />
+            ) : (
+              <span className={cn("min-w-0 font-mono", multiline ? "whitespace-pre-wrap break-words" : "truncate")}>
+                {formatPayloadValue(field.value)}
+              </span>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function eventPayloadFields(event: RuntimeEvent, payload: Record<string, unknown> | null): PayloadField[] {
-  if (!payload) return [];
+function eventPayloadDetails(event: RuntimeEvent, payload: Record<string, unknown> | null): EventPayloadDetails {
+  if (!payload) return { fields: [], sections: null, additionalFields: [] };
+  const consumedKeys = new Set<string>();
+  const fields = eventPayloadFields(event, payload, consumedKeys);
+  const sections = eventPayloadSections(event, payload, consumedKeys);
+  const additionalFields = Object.entries(payload)
+    .filter(([key]) => !consumedKeys.has(key))
+    .map(([key, value]) => ({
+      label: humanizePayloadKey(key),
+      value,
+      multiline: isMultilinePayloadValue(value),
+    }));
+  return { fields, sections, additionalFields };
+}
+
+function eventPayloadFields(
+  event: RuntimeEvent,
+  payload: Record<string, unknown>,
+  consumedKeys: Set<string>
+): PayloadField[] {
   const fields: PayloadField[] = [];
-  const add = (label: string, value: unknown, options: { multiline?: boolean } = {}) => {
+  const addKey = (label: string, key: string, options: { multiline?: boolean } = {}) => {
+    if (consumedKeys.has(key) || !hasOwnPayloadKey(payload, key)) return;
+    consumedKeys.add(key);
+    const value = payload[key];
     if (!hasPayloadValue(value)) return;
     fields.push({
       label,
-      value: formatPayloadValue(value),
+      value,
+      multiline: options.multiline,
+    });
+  };
+  const addFirst = (label: string, keys: string[], options: { multiline?: boolean } = {}) => {
+    const presentKeys = keys.filter((key) => hasOwnPayloadKey(payload, key));
+    for (const key of presentKeys) consumedKeys.add(key);
+    const key = presentKeys.find((candidate) => hasPayloadValue(payload[candidate]));
+    if (!key) return;
+    fields.push({
+      label,
+      value: payload[key],
       multiline: options.multiline,
     });
   };
 
   switch (event.type) {
     case "run.created":
-      add("Entry node", payload.entry_node_id);
+      addKey("Entry node", "entry_node_id");
+      addKey("Graph hash", "graph_hash");
+      addKey("Graph snapshot", "graph_snapshot_hash");
+      addKey("Graph session", "graph_session_id");
+      addKey("Source run", "source_run_id");
+      addKey("Source checkpoint", "source_checkpoint_id");
+      break;
+    case "run.started":
+      addKey("Fork request", "fork_request_key");
+      break;
+    case "run.forked":
+      addKey("Source run", "source_run_id");
+      addKey("Source checkpoint", "source_checkpoint_id");
+      addKey("Request key", "request_key");
       break;
     case "run.resumed":
-      add("Checkpoint", payload.checkpoint_id);
-      add("Node", payload.node_id);
-      add("Nodes", payload.node_ids);
+      addKey("Checkpoint", "checkpoint_id");
+      addKey("Node", "node_id");
+      addKey("Nodes", "node_ids");
       break;
     case "run.paused":
-      add("Checkpoint", payload.checkpoint_id);
-      add("Stage", payload.stage);
-      add("Node", payload.node_id);
-      add("Message", payload.message, { multiline: true });
+      addKey("Checkpoint", "checkpoint_id");
+      addKey("Stage", "stage");
+      addKey("Node", "node_id");
+      addKey("Message", "message", { multiline: true });
       break;
     case "run.failed":
-      add("Error code", payload.error_code);
-      add("Error", payload.error_message, { multiline: true });
+      addKey("Error code", "error_code");
+      addKey("Error", "error_message", { multiline: true });
+      break;
+    case "run.limit_exceeded":
+      addKey("Limit kind", "kind");
+      addKey("Limit", "limit");
+      addKey("Actual", "actual");
+      addKey("Error class", "error_class");
+      addKey("Error", "error", { multiline: true });
+      break;
+    case "run.backpressure":
+      addKey("Scope", "scope");
+      addKey("Limit", "limit");
       break;
     case "nodes.started":
-      add("Node name", payload.node_name);
+      addKey("Node name", "node_name");
       break;
     case "nodes.finished":
-    case "nodes.retry":
-      add("Attempt", payload.attempt);
+      addKey("Attempt", "attempt");
       break;
     case "nodes.failed":
-      add("Attempt", payload.attempt);
-      add("Error", payload.error, { multiline: true });
+      addKey("Attempt", "attempt");
       break;
     case "nodes.canceled":
-      add("Attempt", payload.attempt);
-      add("Error code", payload.error_code);
-      add("Message", payload.message, { multiline: true });
+      addKey("Attempt", "attempt");
+      addKey("Error code", "error_code");
+      addKey("Message", "message", { multiline: true });
+      break;
+    case "nodes.retry":
+      addKey("Task", "task_id");
+      addKey("Attempt", "attempt");
+      addKey("Next attempt", "next_attempt");
+      addKey("Delay", "delay");
+      break;
+    case "condition.failed":
+      addKey("Condition", "condition_id");
+      addKey("Condition type", "condition_type");
+      addKey("Source node", "source_node_id");
+      addKey("Target node", "target_node_id");
+      addKey("State paths", "state_paths");
+      break;
+    case "condition.evaluated":
+      addKey("Matched", "matched");
+      addKey("Targets", "targets");
+      addKey("Reason", "reason", { multiline: true });
+      break;
+    case "failure.routed":
+      addKey("Source task", "source_task_id");
+      addKey("Source node", "source_node_id");
+      addKey("Next nodes", "next_node_ids");
+      addKey("Stage", "stage");
       break;
     case "llm.call":
-      add("Model", payload.model);
-      add("Stop reason", payload.stop_reason);
-      add("Calls", payload.calls);
-      add("Total tokens", payload.total_tokens);
-      add("Prompt tokens", payload.prompt_tokens);
-      add("Completion tokens", payload.completion_tokens);
-      add("Reasoning tokens", payload.reasoning_tokens);
-      add("Cached prompt", payload.prompt_cached_tokens);
+    case "llm.usage":
+      addKey("Call", "call_id");
+      addKey("Model ID", "model_id");
+      addKey("Model", "model");
+      addKey("Stop reason", "stop_reason");
+      addKey("Calls", "calls");
+      addKey("Total tokens", "total_tokens");
+      addFirst("Prompt tokens", ["prompt_tokens", "input_tokens"]);
+      addFirst("Completion tokens", ["completion_tokens", "output_tokens"]);
+      addKey("Reasoning tokens", "reasoning_tokens");
+      addKey("Cached prompt", "prompt_cached_tokens");
+      addKey("Cost total", "cost_total");
+      addKey("Cost currency", "cost_currency");
       break;
     case "llm.function_call":
-      add("Name", firstPayloadValue(payload, "name", "function_name"));
-      add("Arguments", firstPayloadValue(payload, "arguments", "args"), { multiline: true });
+      addKey("Call", "call_id");
+      addKey("Tool call", "tool_call_id");
+      addFirst("Name", ["name", "function_name"]);
       break;
+    case "llm.content":
+    case "llm.content_chunk":
+    case "llm.reasoning":
+    case "llm.reasoning_chunk":
+      addKey("Call", "call_id");
+      break;
+    case "tool.started":
     case "tool.called":
-      add("Tool", payload.name);
-      add("Tool call", payload.tool_call_id);
-      add("Count", payload.count);
-      break;
+    case "tool.approval_needed":
+    case "tool.approved":
+    case "tool.denied":
     case "tool.returned":
-      add("Tool", payload.name);
-      add("Tool call", payload.tool_call_id);
-      break;
     case "tool.failed":
-      add("Tool", payload.name);
-      add("Tool call", payload.tool_call_id);
-      add("Error", payload.error, { multiline: true });
+      addKey("Tool", "name");
+      addKey("Tool call", "tool_call_id");
+      addKey("Permissions", "permissions");
+      addKey("Approval mode", "approval_mode");
+      addKey("Count", "count");
+      addKey("Parallel", "parallel");
+      addKey("Is error", "is_error");
       break;
     case "subgraph.started":
+      addKey("Graph ref", "graph_ref");
+      addKey("Parent run", "parent_run_id");
+      addKey("Parent step", "parent_step_id");
+      addKey("Parent task", "parent_task_id");
+      addKey("Namespace", "namespace");
+      break;
     case "subgraph.finished":
-      add("Graph ref", payload.graph_ref);
+      addKey("Graph ref", "graph_ref");
+      addKey("Child run", "child_run_id");
+      addKey("Namespace", "namespace");
       break;
     case "subgraph.failed":
-      add("Graph ref", payload.graph_ref);
-      add("Error", payload.error, { multiline: true });
+      addKey("Graph ref", "graph_ref");
+      addKey("Parent run", "parent_run_id");
+      break;
+    case "effect.intent":
+    case "effect.outcome":
+      addKey("Operation", "key");
+      addKey("Parent operation", "parent_key");
+      addKey("Kind", "kind");
+      addKey("Name", "name");
+      addKey("Effect class", "class");
+      addKey("Effect status", "status");
+      addKey("Attempt", "attempt");
+      addKey("Idempotency key", "idempotency_key");
+      addKey("Provider request", "provider_request_id");
+      break;
+    case "effect.resolution_requested":
+    case "effect.resolution_outcome":
+      addKey("Resolution", "id");
+      addKey("Attempt", "attempt_id");
+      addKey("Action", "action");
+      addKey("Status", "status");
+      addKey("Actor", "actor");
+      addKey("Reason", "reason", { multiline: true });
+      addKey("Compensation key", "compensation_key");
+      addKey("Requested at", "requested_at");
+      addKey("Resolved at", "resolved_at");
       break;
     case "checkpoint.created":
-      add("Checkpoint", payload.checkpoint_id);
-      add("Stage", payload.stage);
+      addKey("Checkpoint", "checkpoint_id");
+      addKey("Stage", "stage");
       break;
     case "artifact.created":
-      add("Artifact", firstPayloadValue(payload, "artifact_id", "id"));
-      add("Type", payload.type);
-      add("MIME", payload.mime_type);
-      add("Location", payload.location, { multiline: true });
+      addFirst("Artifact", ["artifact_id", "id"]);
+      addKey("Transaction", "transaction_id");
+      addKey("Type", "type");
+      addKey("MIME", "mime_type");
+      addKey("Location", "location", { multiline: true });
       break;
     case "breakpoint.hit":
-      add("Breakpoint", payload.breakpoint_id);
-      add("Stage", payload.stage);
-      add("Node", payload.node_id);
-      add("Hit at", payload.hit_at);
+      addKey("Breakpoint", "breakpoint_id");
+      addKey("Stage", "stage");
+      addKey("Node", "node_id");
+      addKey("Hit at", "hit_at");
       break;
     case "state.changed":
-      add("Changes", payloadArray(payload.changes)?.length);
+      if (hasOwnPayloadKey(payload, "changes")) {
+        consumedKeys.add("changes");
+        const changes = payloadArray(payload.changes);
+        if (changes) fields.push({ label: "Changes", value: String(changes.length) });
+      }
       break;
     case "contract.violation":
-      add("Violations", payloadArray(payload.violations)?.length);
+      if (hasOwnPayloadKey(payload, "violations")) {
+        consumedKeys.add("violations");
+        const violations = payloadArray(payload.violations);
+        if (violations) fields.push({ label: "Violations", value: String(violations.length) });
+      }
       break;
     case "warning":
-      add("Code", payload.code);
-      add("Node", payload.node_id ?? payload.node);
-      add("Message", payload.message, { multiline: true });
-      add("Path", payload.path);
-      add("Iteration", payload.iteration);
+      addKey("Code", "code");
+      addFirst("Node", ["node_id", "node"]);
+      addKey("Message", "message", { multiline: true });
+      addKey("Path", "path");
+      addFirst("Iteration", ["iteration", "agent_iteration"]);
       break;
     case "nodes.custom":
-      add("Kind", payload.kind);
-      add("Event", payload.event);
-      add("Message", payload.message, { multiline: true });
-      add("Next worker", payload.next_worker);
-      add("Worker", payload.worker_id);
-      add("Task", payload.task, { multiline: true });
-      add("Reason", payload.reason, { multiline: true });
-      add("Turn", payload.turn_count);
-      add("Result", payload.result, { multiline: true });
-      add("Answer", payload.answer, { multiline: true });
+      addKey("Kind", "kind");
+      addKey("Event", "event");
+      addKey("Provider", "provider");
+      addKey("Message", "message", { multiline: true });
+      addKey("Detail", "detail", { multiline: true });
+      addKey("Next worker", "next_worker");
+      addKey("Worker", "worker_id");
+      addKey("Task", "task", { multiline: true });
+      addKey("Reason", "reason", { multiline: true });
+      addFirst("Iteration", ["iteration", "iterations", "agent_iteration"]);
+      addKey("Turn", "turn_count");
+      addKey("Result", "result", { multiline: true });
+      addKey("Answer", "answer", { multiline: true });
       break;
   }
+
+  addKey("Operation", "operation_key");
+  addKey("Parent operation", "parent_operation_key");
+  addKey("Idempotency key", "idempotency_key");
+  addKey("Effect class", "effect_class");
+  addKey("Effect status", "effect_status");
+  addKey("Provider request", "provider_request_id");
+  addKey("Duration (ms)", "duration_ms");
+  addKey("Error code", "error_code");
+  addKey("Error class", "error_class");
+  addKey("Error", "error", { multiline: true });
+  addKey("Agent invocation", "agent_invocation_id");
+  addKey("Invocation kind", "agent_invocation_kind");
+  addKey("Agent iteration", "agent_invocation_iteration");
+  addKey("Invocation operation", "agent_invocation_operation_id");
+  addKey("Invocation tool call", "agent_invocation_tool_call_id");
+  addKey("Agent node", "agent_node_id");
+  addKey("Agent tool", "agent_tool_name");
 
   return fields;
 }
 
-function eventPayloadSections(event: RuntimeEvent, payload: Record<string, unknown> | null): ReactNode {
-  if (!payload) return null;
+function eventPayloadSections(
+  event: RuntimeEvent,
+  payload: Record<string, unknown>,
+  consumedKeys: Set<string>
+): ReactNode {
   const sections: ReactNode[] = [];
-  const text = payloadString(payload.text);
+  const addValueSection = (title: string, key: string) => {
+    if (consumedKeys.has(key) || !hasOwnPayloadKey(payload, key) || !hasPayloadValue(payload[key])) return;
+    consumedKeys.add(key);
+    sections.push(<PayloadValueSection key={key} title={title} value={payload[key]} />);
+  };
+  const addObjectRows = (title: string, key: string) => {
+    if (consumedKeys.has(key) || !hasOwnPayloadKey(payload, key)) return;
+    const items = payloadArray(payload[key]);
+    if (!items) return;
+    consumedKeys.add(key);
+    sections.push(<PayloadObjectRows key={key} title={title} items={items} />);
+  };
+  const addRecordRows = (title: string, key: string) => {
+    if (consumedKeys.has(key) || !hasOwnPayloadKey(payload, key)) return;
+    const record = payloadRecord(payload[key]);
+    if (!record) return;
+    consumedKeys.add(key);
+    sections.push(<PayloadObjectRows key={key} title={title} items={[record]} />);
+  };
 
-  if (text && (event.type === "llm.content" || event.type === "llm.content_chunk")) {
-    sections.push(<PayloadText key="content" title="Content" text={text} />);
-  }
-  if (text && (event.type === "llm.reasoning" || event.type === "llm.reasoning_chunk")) {
-    sections.push(<PayloadText key="reasoning" title="Reasoning" text={text} />);
-  }
-  if (event.type === "tool.called") {
-    const argumentsText = payloadString(payload.arguments);
-    if (argumentsText) sections.push(<PayloadText key="arguments" title="Arguments" text={argumentsText} />);
-    const tools = payloadArray(payload.tools);
-    if (tools) sections.push(<PayloadObjectRows key="tools" title="Tools" items={tools} />);
-  }
-  if (event.type === "tool.returned") {
-    const content = payloadString(payload.content);
-    if (content) sections.push(<PayloadText key="content" title="Content" text={content} />);
+  if (event.type === "llm.content" || event.type === "llm.content_chunk") addValueSection("Content", "text");
+  if (event.type === "llm.reasoning" || event.type === "llm.reasoning_chunk") addValueSection("Reasoning", "text");
+  if (event.type === "llm.function_call") addValueSection("Arguments", hasOwnPayloadKey(payload, "arguments") ? "arguments" : "args");
+  if (event.type === "run.resumed") addObjectRows("Tasks", "tasks");
+  if (event.type === "run.finished") addValueSection("Return value", "return_value");
+  if (event.type === "condition.evaluated") addObjectRows("Sends", "sends");
+  if (event.type === "tool.called") addObjectRows("Tools", "tools");
+  if (event.type.startsWith("tool.")) {
+    addValueSection("Arguments", "arguments");
+    addValueSection("Content", "content");
+    addValueSection("Result", "value");
   }
   if (event.type === "state.changed") {
     const changes = payloadArray(payload.changes);
@@ -263,10 +459,31 @@ function eventPayloadSections(event: RuntimeEvent, payload: Record<string, unkno
   }
   if (event.type === "run.paused") {
     const hit = payloadRecord(payload.breakpoint_hit);
-    if (hit) sections.push(<PayloadObjectRows key="breakpoint-hit" title="Breakpoint hit" items={[hit]} />);
+    if (hit) {
+      consumedKeys.add("breakpoint_hit");
+      sections.push(<PayloadObjectRows key="breakpoint-hit" title="Breakpoint hit" items={[hit]} />);
+    }
   }
 
+  addRecordRows("Details", "details");
+  addRecordRows("Cost", "cost");
+  addRecordRows("Approval", "approval");
+  addRecordRows("Agent invocation", "agent_invocation");
+  addRecordRows("Usage", "usage");
+
   return sections;
+}
+
+function PayloadValueSection({ title, value }: { title: string; value: unknown }) {
+  const treeValue = parseJSONTreeValue(value);
+  if (treeValue) {
+    return (
+      <DetailSection title={title}>
+        <JSONTree value={treeValue} label={`${title} JSON tree`} scrollable={false} />
+      </DetailSection>
+    );
+  }
+  return <PayloadText title={title} text={typeof value === "string" ? value : stringifyJSON(value)} />;
 }
 
 function PayloadText({ title, text }: { title: string; text: string }) {
@@ -315,12 +532,25 @@ function PayloadObjectRows({ title, items }: { title: string; items: unknown[] }
           if (!record) return <PayloadUnknownRow key={index} value={item} />;
           return (
             <div key={index} className="grid gap-1 rounded border border-border bg-muted/30 p-2">
-              {Object.entries(record).map(([key, value]) => (
-                <div key={key} className="grid grid-cols-[120px_minmax(0,1fr)] gap-2">
-                  <span className="text-muted-foreground">{key}</span>
-                  <span className="min-w-0 truncate font-mono">{formatPayloadValue(value)}</span>
-                </div>
-              ))}
+              {Object.entries(record).map(([key, value]) => {
+                const treeValue = parseJSONTreeValue(value);
+                const multiline = isMultilinePayloadValue(value);
+                return (
+                  <div
+                    key={key}
+                    className={cn("grid gap-1", treeValue || multiline ? "" : "grid-cols-[120px_minmax(0,1fr)] items-center gap-2")}
+                  >
+                    <span className="text-muted-foreground">{humanizePayloadKey(key)}</span>
+                    {treeValue ? (
+                      <JSONTree value={treeValue} label={`${humanizePayloadKey(key)} JSON tree`} scrollable={false} />
+                    ) : (
+                      <span className={cn("min-w-0 font-mono", multiline ? "whitespace-pre-wrap break-words" : "truncate")}>
+                        {formatPayloadValue(value)}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           );
         })}
@@ -330,15 +560,22 @@ function PayloadObjectRows({ title, items }: { title: string; items: unknown[] }
 }
 
 function PayloadMiniBlock({ label, value }: { label: string; value: unknown }) {
+  const treeValue = parseJSONTreeValue(value);
   return (
     <div className="mt-1 grid gap-1">
       <span className="text-muted-foreground">{label}</span>
-      <pre className="max-h-24 overflow-auto rounded bg-background p-2 text-[11px]">{stringifyJSON(value)}</pre>
+      {treeValue ? (
+        <JSONTree value={treeValue} label={`${label} JSON tree`} scrollable={false} />
+      ) : (
+        <pre className="max-h-24 overflow-auto rounded bg-background p-2 text-[11px]">{stringifyJSON(value)}</pre>
+      )}
     </div>
   );
 }
 
 function PayloadUnknownRow({ value }: { value: unknown }) {
+  const treeValue = parseJSONTreeValue(value);
+  if (treeValue) return <JSONTree value={treeValue} label="Payload JSON tree" scrollable={false} />;
   return (
     <pre className="max-h-32 overflow-auto rounded border border-border bg-background p-2 text-[11px]">
       {stringifyJSON(value)}
@@ -361,11 +598,8 @@ function payloadString(value: unknown): string {
   return "";
 }
 
-function firstPayloadValue(payload: Record<string, unknown>, ...keys: string[]): unknown {
-  for (const key of keys) {
-    if (hasPayloadValue(payload[key])) return payload[key];
-  }
-  return undefined;
+function hasOwnPayloadKey(payload: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(payload, key);
 }
 
 function hasPayloadValue(value: unknown): boolean {
@@ -386,6 +620,25 @@ function formatPayloadValue(value: unknown): string {
     return `${value.length} item${value.length === 1 ? "" : "s"}`;
   }
   return stringifyJSON(value);
+}
+
+function isMultilinePayloadValue(value: unknown): boolean {
+  if (value !== null && typeof value === "object") return true;
+  return typeof value === "string" && (value.includes("\n") || value.length > 120);
+}
+
+function humanizePayloadKey(key: string): string {
+  const words = key
+    .split("_")
+    .filter(Boolean)
+    .map((part) => part.toLowerCase())
+    .join(" ");
+  const label = words ? words.charAt(0).toUpperCase() + words.slice(1) : key;
+  return label
+    .replace(/\bid\b/gi, "ID")
+    .replace(/\bllm\b/gi, "LLM")
+    .replace(/\bmime\b/gi, "MIME")
+    .replace(/\busd\b/gi, "USD");
 }
 
 function changeKind(change: Record<string, unknown>): string {

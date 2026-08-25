@@ -1074,11 +1074,6 @@ export const GraphWorkspace = memo(function GraphWorkspace({
               virtualLoops={displayVirtualLoops}
               triggerNodes={triggerCanvasNodes}
             />
-            {triggerLoadError ? (
-              <div className="absolute right-4 top-4 z-30 max-w-sm rounded border border-destructive/40 bg-panel p-2 text-xs text-destructive shadow-sm">
-                Trigger unavailable: {triggerLoadError}
-              </div>
-            ) : null}
             <CanvasSearch search={canvasSearch} />
             {!editing ? (
               <aside className="absolute left-4 top-4 z-30 w-[min(320px,calc(100%-2rem))] overflow-hidden rounded-md border border-border bg-panel/95 shadow-xl backdrop-blur">
@@ -1095,7 +1090,16 @@ export const GraphWorkspace = memo(function GraphWorkspace({
             ) : null}
           </>
         )}
-        <ToastStack toasts={toasts} onDismiss={onDismissToast} />
+        <ToastStack
+          toasts={toasts}
+          persistentNotices={triggerLoadError ? [{
+            id: "trigger-load-error",
+            tone: "error",
+            title: "Trigger unavailable",
+            message: triggerLoadError,
+          }] : []}
+          onDismiss={onDismissToast}
+        />
       </section>
 
       <div

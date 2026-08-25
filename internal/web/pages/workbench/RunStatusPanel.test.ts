@@ -55,6 +55,25 @@ describe("RunStatusPanel", () => {
     expect(markup.indexOf('aria-label="Run history view"')).toBeLessThan(markup.indexOf('aria-label="Filter events"'));
   });
 
+  test("renders tool names in a separate column for tool called events", () => {
+    const markup = renderToStaticMarkup(
+      createElement(RunStatusPanel, {
+        runs: [runRecord("run-new", "running", "2026-07-30T02:00:00Z")],
+        selectedRunId: "run-new",
+        onSelectRun: () => undefined,
+        onDeleteRun: () => undefined,
+        events: [
+          toolCalledEvent("event-tool-1", { name: "web.search" }),
+          toolCalledEvent("event-tool-2", { tools: [{ name: "files.read" }, { name: "files.write" }] }),
+        ],
+        onHide: () => undefined,
+      })
+    );
+
+    expect(markup).toContain('aria-label="Tool name: web.search"');
+    expect(markup).toContain('aria-label="Tool name: files.read, files.write"');
+  });
+
   test("resizes adjacent columns while preserving the total ratio", () => {
     const resized = resizeRunPanelColumnRatios([1, 1.5, 2], 0, 30, 900);
 
@@ -351,6 +370,18 @@ function stateChangeEvent(): RuntimeEvent {
         { path: "shared.count", before: 1, after: 2 },
       ],
     },
+  };
+}
+
+function toolCalledEvent(id: string, payload: RuntimeEvent["payload"]): RuntimeEvent {
+  return {
+    id,
+    run_id: "run-new",
+    step_id: "step-tool",
+    node_id: "agent",
+    type: "tool.called",
+    timestamp: "2026-07-30T02:00:03Z",
+    payload,
   };
 }
 

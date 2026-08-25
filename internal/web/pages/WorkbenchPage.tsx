@@ -49,7 +49,7 @@ import {
   isGraphSavePending,
   missingTriggerStateRequirements,
 } from "./workbench/graphSyncModel";
-import { isSaveShortcut } from "./workbench/utils";
+import { isSaveShortcut, isToggleRunPanelShortcut } from "./workbench/utils";
 import { useGraphTriggers } from "./workbench/graph-workspace/useGraphTriggers";
 import type {
   GraphDefinition,
@@ -304,8 +304,9 @@ export function WorkbenchPage() {
   );
   const initializing = !serverStateLoaded;
   const workbenchBusy = busy || runBusy || runLaunchPending;
-  const runControlsDisabled = runBusy || (busy && !runLaunchPending) || initializing;
+  const runControlsDisabled = runBusy || initializing;
   const graphSwitchDisabled = workbenchBusy || graphSwitchLocked || initializing;
+  const hasRunStatus = runs.length > 0 || Boolean(selectedRunID);
   const activeWorkspaceMode = resolveWorkspaceMode(workspaceMode, runStatusVisible);
   const showAutoRunPanel = useCallback(() => {
     if (workspaceMode !== "auto") return;
@@ -630,12 +631,32 @@ export function WorkbenchPage() {
     return () => window.removeEventListener("keydown", handleSaveShortcut);
   });
 
+  useEffect(() => {
+    const handleToggleRunPanelShortcut = (event: KeyboardEvent) => {
+      if (
+        initializing ||
+        registryDialogOpen ||
+        settingsDialogOpen ||
+        humanPrompt ||
+        (!hasRunStatus && !runStatusVisible) ||
+        !isToggleRunPanelShortcut(event)
+      ) return;
+      event.preventDefault();
+      if (event.repeat) return;
+      toggleRunStatus();
+    };
+    window.addEventListener("keydown", handleToggleRunPanelShortcut);
+    return () => window.removeEventListener("keydown", handleToggleRunPanelShortcut);
+  }, [hasRunStatus, humanPrompt, initializing, registryDialogOpen, runStatusVisible, settingsDialogOpen, toggleRunStatus]);
+
   return (
     <WorkbenchShell
       streamStatus={streamStatus}
       streamDiagnostics={streamDiagnostics}
       onReconnectEventStream={reconnectEventStream}
       busy={workbenchBusy}
+      runBusy={runBusy}
+      runLaunchPending={runLaunchPending}
       initializing={initializing}
       saving={saving}
       unsaved={graphUnsaved}
@@ -654,7 +675,7 @@ export function WorkbenchPage() {
       }}
       onShowRegistry={() => setRegistryDialogOpen(true)}
       onShowSettings={() => setSettingsDialogOpen(true)}
-      hasRunStatus={runs.length > 0 || Boolean(selectedRunID)}
+      hasRunStatus={hasRunStatus}
       runStatusVisible={runStatusVisible}
       onToggleRunStatus={toggleRunStatus}
       onWorkspaceModeChange={changeWorkspaceMode}

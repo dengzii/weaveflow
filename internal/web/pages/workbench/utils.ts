@@ -9,6 +9,17 @@ export function isSaveShortcut(event: Pick<KeyboardEvent, "altKey" | "ctrlKey" |
   );
 }
 
+export function isToggleRunPanelShortcut(
+  event: Pick<KeyboardEvent, "altKey" | "ctrlKey" | "key" | "metaKey" | "shiftKey">
+): boolean {
+  return (
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.ctrlKey || event.metaKey) &&
+    event.key.toLowerCase() === "j"
+  );
+}
+
 export function themePreferenceLabel(preference: ThemePreference): string {
   switch (preference) {
     case "light":
