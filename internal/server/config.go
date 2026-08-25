@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
@@ -248,19 +249,21 @@ func (s *Server) startDurableWorkers(ctx context.Context) error {
 	current := s.runtime.currentSession()
 	if current.runner != nil {
 		if err := s.runtime.ensureWorker(effectiveRunnerGraphID(current.runner)); err != nil {
-			return fmt.Errorf("start durable worker for current graph: %w", err)
+			log.Printf("warning: failed to start durable worker for current graph: %v; continuing without durable worker", err)
 		}
 	}
 	graphs, err := s.listCachedGraphs()
 	if err != nil {
-		return err
+		log.Printf("warning: failed to list cached graphs for durable workers: %v; continuing without durable workers", err)
+		return nil
 	}
 	for _, graph := range graphs {
 		if _, err := s.loadTriggerSession(graph.ID); err != nil {
-			return fmt.Errorf("load graph %q for durable worker: %w", graph.ID, err)
+			log.Printf("warning: failed to load graph %q for durable worker: %v; continuing without durable worker", graph.ID, err)
+			continue
 		}
 		if err := s.runtime.ensureWorker(graph.ID); err != nil {
-			return fmt.Errorf("start durable worker for graph %q: %w", graph.ID, err)
+			log.Printf("warning: failed to start durable worker for graph %q: %v; continuing without durable worker", graph.ID, err)
 		}
 	}
 	return nil
