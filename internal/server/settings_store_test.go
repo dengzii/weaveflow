@@ -219,12 +219,12 @@ func TestGraphRuntimeSettingsRebuildsModelPricingAndToolGovernance(t *testing.T)
 	if !found {
 		t.Fatal("loadGraphRuntimeSettings() did not find persisted settings")
 	}
-	releaseCredential, err := srv.managedSecrets.SetModel(context.Background(), core.DefaultModelID, gotSettings.Models[0].Provider, gotSettings.Models[0].BaseURL, "test-key")
+	releaseCredential, err := srv.managedSecrets.SetModel(context.Background(), core.DefaultModelID, "test-key")
 	if err != nil {
 		t.Fatalf("store model credential: %v", err)
 	}
 	releaseCredential(true)
-	releaseFastCredential, err := srv.managedSecrets.SetModel(context.Background(), "fast", "openai", "", "test-key")
+	releaseFastCredential, err := srv.managedSecrets.SetModel(context.Background(), "fast", "test-key")
 	if err != nil {
 		t.Fatalf("store fast model credential: %v", err)
 	}
@@ -307,7 +307,7 @@ func TestBuildRuntimeContextWiresProviderAndExtraBody(t *testing.T) {
 		t.Fatalf("new server: %v", err)
 	}
 	t.Setenv("OPENAI_API_KEY", "test-key")
-	releaseCredential, err := srv.managedSecrets.SetModel(context.Background(), core.DefaultModelID, "deepseek", providerServer.URL+"/v1", "test-key")
+	releaseCredential, err := srv.managedSecrets.SetModel(context.Background(), core.DefaultModelID, "test-key")
 	if err != nil {
 		t.Fatalf("store model credential: %v", err)
 	}

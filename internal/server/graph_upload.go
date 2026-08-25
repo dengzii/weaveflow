@@ -396,7 +396,7 @@ func (s *Server) configureGraphWithPublish(
 	if err := applyGraphSettingsRequest(&nextSettings, settingsRequest); err != nil {
 		return graphLoadResponse{}, fmt.Errorf("%w: %v", errInvalidRequest, err)
 	}
-	credentialRelease, err := s.applyGraphModelCredentialChanges(ctx, req.Settings, nextSettings)
+	credentialRelease, err := s.applyGraphModelCredentialChanges(ctx, req.Settings)
 	if err != nil {
 		return graphLoadResponse{}, err
 	}

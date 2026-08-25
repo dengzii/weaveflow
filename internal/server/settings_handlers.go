@@ -242,7 +242,7 @@ func (s *Server) resolveSecret(ctx context.Context, ref dsl.SecretRef) (string, 
 func (s *Server) resolveModelCredential(ctx context.Context, model graphModelSettings) (string, error) {
 	modelID := strings.TrimSpace(model.ID)
 	if s != nil && s.managedSecrets != nil {
-		value, err := s.managedSecrets.ResolveModel(ctx, modelID, model.Provider, model.BaseURL)
+		value, err := s.managedSecrets.ResolveModel(ctx, modelID)
 		if err == nil {
 			return value, nil
 		}

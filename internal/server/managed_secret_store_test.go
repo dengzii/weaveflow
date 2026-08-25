@@ -106,7 +106,7 @@ func TestGraphModelCredentialLifecycle(t *testing.T) {
 		t.Fatal("first credential is not reported as configured")
 	}
 	credentialPath := modelCredentialTestPath(t, baseDirectory, "default")
-	firstData, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
+	firstData, err := srv.managedSecrets.ResolveModel(context.Background(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestGraphModelCredentialLifecycle(t *testing.T) {
 	if !preserved.Settings.Models[0].CredentialConfigured {
 		t.Fatal("blank credential value cleared the configured status")
 	}
-	preservedData, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
+	preservedData, err := srv.managedSecrets.ResolveModel(context.Background(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -144,7 +144,7 @@ func TestGraphModelCredentialLifecycle(t *testing.T) {
 		t.Fatal("rotated credential is not reported as configured")
 	}
 	assertGraphSessionOmitsCredentialValue(t, srv, rotated, "second-key")
-	rotatedData, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
+	rotatedData, err := srv.managedSecrets.ResolveModel(context.Background(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,6 +168,138 @@ func TestGraphModelCredentialLifecycle(t *testing.T) {
 	}
 }
 
+func TestGraphModelCredentialUsesModelIDOnly(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "")
+	baseDirectory := t.TempDir()
+	srv, err := New(context.Background(), Config{BaseDir: baseDirectory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	engine := srv.Engine()
+
+	first := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("managed-rebind", "v1", "initial", `{
+		"environment":{},
+		"models":[{"id":"jt","enabled":true,"provider":"openai","model":"gpt-test","base_url":"https://old.example.test/v1","credential_value":"jt-key"}]
+	}`))
+	if !first.Settings.Models[0].CredentialConfigured {
+		t.Fatal("initial credential is not reported as configured")
+	}
+	credentialData, err := os.ReadFile(modelCredentialTestPath(t, baseDirectory, "jt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var storedCredential map[string]any
+	if err := json.Unmarshal(credentialData, &storedCredential); err != nil {
+		t.Fatal(err)
+	}
+	if storedCredential["model_id"] != "jt" || storedCredential["version"] != float64(managedModelCredentialFormatVersion) {
+		t.Fatalf("stored credential identity = %#v", storedCredential)
+	}
+	if _, exists := storedCredential["provider"]; exists {
+		t.Fatal("stored credential still contains provider binding")
+	}
+	if _, exists := storedCredential["base_url"]; exists {
+		t.Fatal("stored credential still contains Base URL binding")
+	}
+
+	baseURLChanged := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("managed-rebind", "v1", "base-url-changed", `{
+		"environment":{},
+		"models":[{"id":"jt","enabled":true,"provider":"openai","model":"gpt-test","base_url":"https://new.example.test/v1"}]
+	}`))
+	if !baseURLChanged.Settings.Models[0].CredentialConfigured {
+		t.Fatal("credential is not configured after Base URL change")
+	}
+	value, err := srv.managedSecrets.ResolveModel(context.Background(), "jt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "jt-key" {
+		t.Fatalf("credential after Base URL change = %q, want jt-key", value)
+	}
+	providerChanged := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("managed-rebind", "v1", "provider-changed", `{
+		"environment":{},
+		"models":[{"id":"jt","enabled":true,"provider":"deepseek","model":"gpt-test","base_url":"https://new.example.test/v1"}]
+	}`))
+	if !providerChanged.Settings.Models[0].CredentialConfigured {
+		t.Fatal("credential is not configured after provider change")
+	}
+	value, err = srv.managedSecrets.ResolveModel(context.Background(), "jt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "jt-key" {
+		t.Fatalf("credential after provider change = %q, want jt-key", value)
+	}
+	modelConfig, ok := core.ModelConfigByIDFromContext(srv.runtime.runtimeContext(), "jt")
+	if !ok || modelConfig.APIKey != "jt-key" || modelConfig.Provider != "deepseek" || modelConfig.BaseURL != "https://new.example.test/v1" {
+		t.Fatalf("runtime model config after provider change = %#v", modelConfig)
+	}
+}
+
+func TestManagedModelCredentialReplacementRollsBackAndKeepsModelIDsIsolated(t *testing.T) {
+	store, err := newManagedSecretStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	jtRelease, err := store.SetModel(context.Background(), "jt", "jt-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	jtRelease(true)
+	otherRelease, err := store.SetModel(context.Background(), "other", "other-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherRelease(true)
+
+	release, err := store.SetModel(context.Background(), "jt", "new-jt-key")
+	if err != nil {
+		t.Fatal(err)
+	}
+	value, err := store.ResolveModel(context.Background(), "jt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "new-jt-key" {
+		t.Fatalf("replaced credential = %q, want new-jt-key", value)
+	}
+	otherValue, err := store.ResolveModel(context.Background(), "other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if otherValue != "other-key" {
+		t.Fatalf("other model credential = %q, want other-key", otherValue)
+	}
+
+	release(false)
+	value, err = store.ResolveModel(context.Background(), "jt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if value != "jt-key" {
+		t.Fatalf("rolled back credential = %q, want jt-key", value)
+	}
+}
+
+func TestManagedModelCredentialRejectsEndpointBoundFormat(t *testing.T) {
+	store, err := newManagedSecretStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := modelSecretFileName("jt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(store.dir, name)
+	if err := os.WriteFile(path, []byte(`{"version":1,"model_id":"jt","provider":"openai","base_url":"https://old.example.test/v1","value":"jt-key"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.ResolveModel(context.Background(), "jt"); err == nil {
+		t.Fatal("endpoint-bound credential format was accepted")
+	}
+}
+
 func TestGraphModelCredentialPersistsAcrossRestart(t *testing.T) {
 	baseDirectory := t.TempDir()
 	firstServer, err := New(context.Background(), Config{BaseDir: baseDirectory})
@@ -187,7 +319,7 @@ func TestGraphModelCredentialPersistsAcrossRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = restarted.Close() })
-	value, err := restarted.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
+	value, err := restarted.managedSecrets.ResolveModel(context.Background(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -224,7 +356,7 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 	if strings.Contains(response.Body.String(), "failed-key") {
 		t.Fatalf("failed rotation response leaked credential: %s", response.Body.String())
 	}
-	value, err := srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
+	value, err := srv.managedSecrets.ResolveModel(context.Background(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -244,7 +376,7 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 	if cleared.Code != http.StatusBadRequest {
 		t.Fatalf("failed clear status = %d, body = %s", cleared.Code, cleared.Body.String())
 	}
-	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
+	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +399,7 @@ func TestGraphModelCredentialFailureRollsBackChanges(t *testing.T) {
 	if duplicate.Code != http.StatusBadRequest {
 		t.Fatalf("duplicate model status = %d, body = %s", duplicate.Code, duplicate.Body.String())
 	}
-	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default", "openai", "")
+	value, err = srv.managedSecrets.ResolveModel(context.Background(), "default")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -322,7 +454,7 @@ func TestServerStartSweepsOnlyOrphanedManagedSecrets(t *testing.T) {
 		t.Fatal(err)
 	}
 	releaseOrphaned(true)
-	modelRelease, err := secretStore.SetModel(context.Background(), "default", "openai", "", "model-secret")
+	modelRelease, err := secretStore.SetModel(context.Background(), "default", "model-secret")
 	if err != nil {
 		t.Fatal(err)
 	}
