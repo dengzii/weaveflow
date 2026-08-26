@@ -357,11 +357,11 @@ func TestGraphCacheSurfacesCorruptRunRecords(t *testing.T) {
 	activeRunner := srv.runtime.session("graph-a", uploaded.Graph.GraphSessionID).runner
 	waitForRunTerminalStatus(t, activeRunner, started.RunID)
 	waitForRunInactive(t, activeRunner, started.RunID)
-	runPath := filepath.Join(srv.graphHistoryBaseDir("graph-a"), "execution", "runs", started.RunID+".json")
-	if err := os.WriteFile(runPath, []byte("{"), 0o644); err != nil {
+	if err := srv.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.Close(); err != nil {
+	runPath := filepath.Join(srv.graphHistoryBaseDir("graph-a"), "execution", "runs", started.RunID+".json")
+	if err := os.WriteFile(runPath, []byte("{"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
