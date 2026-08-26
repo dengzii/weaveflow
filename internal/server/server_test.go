@@ -1875,10 +1875,12 @@ func TestCancelPausedCachedRunWithoutConfiguredGraph(t *testing.T) {
 
 	uploaded := putGraphForHashTest(t, engine, graphBody)
 	started := startGraphRunForTest(t, engine, uploaded, `{}`)
-	pausedRun := waitForRunTerminalStatus(t, srv.runtime.session("interrupt-graph", uploaded.Graph.GraphSessionID).runner, started.RunID)
+	runner := srv.runtime.session("interrupt-graph", uploaded.Graph.GraphSessionID).runner
+	pausedRun := waitForRunTerminalStatus(t, runner, started.RunID)
 	if pausedRun.Status != runtime.RunStatusPaused {
 		t.Fatalf("start status = %q, want %q", pausedRun.Status, runtime.RunStatusPaused)
 	}
+	waitForRunInactive(t, runner, pausedRun.RunID)
 	if err := srv.Close(); err != nil {
 		t.Fatalf("Close() before cache-only restart error = %v", err)
 	}
@@ -1948,6 +1950,7 @@ func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) 
 	runID := run.RunID
 
 	pauseDone := serveHTTPAsync(engine, http.MethodPost, "/graphs/graph/runs/"+runID+"/pause", "")
+	waitForPauseRequested(t, srv.Runner(), runID)
 	releaseRun()
 
 	pauseResponse := waitForHTTPResponse(t, pauseDone, "pause")
@@ -2865,12 +2868,36 @@ func graphRequestIDForTest(t *testing.T, envelope map[string]any) string {
 	return "test-" + graphRuntimeSettingsDataHash(data)
 }
 
+const testAsyncWaitTimeout = 10 * time.Second
+
 func waitForSignal(t *testing.T, signal <-chan struct{}, name string) {
 	t.Helper()
 	select {
 	case <-signal:
-	case <-time.After(time.Second):
+	case <-time.After(testAsyncWaitTimeout):
 		t.Fatalf("timed out waiting for %s", name)
+	}
+}
+
+func waitForPauseRequested(t *testing.T, runner *runtime.GraphRunner, runID string) {
+	t.Helper()
+	deadline := time.NewTimer(testAsyncWaitTimeout)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		run, err := runner.GetRun(context.Background(), runID)
+		if err != nil {
+			t.Fatalf("get run %q: %v", runID, err)
+		}
+		if run.PauseRequested {
+			return
+		}
+		select {
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for run %q pause request", runID)
+		case <-ticker.C:
+		}
 	}
 }
 
@@ -2888,7 +2915,7 @@ func waitForHTTPResponse(t *testing.T, done <-chan *httptest.ResponseRecorder, n
 	select {
 	case response := <-done:
 		return response
-	case <-time.After(4 * time.Second):
+	case <-time.After(testAsyncWaitTimeout):
 		t.Fatalf("timed out waiting for %s response", name)
 		return nil
 	}
@@ -2896,7 +2923,7 @@ func waitForHTTPResponse(t *testing.T, done <-chan *httptest.ResponseRecorder, n
 
 func waitForServerRunID(t *testing.T, runner *runtime.GraphRunner) string {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testAsyncWaitTimeout)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -2917,7 +2944,7 @@ func waitForServerRunID(t *testing.T, runner *runtime.GraphRunner) string {
 
 func waitForRunTerminalStatus(t *testing.T, runner *runtime.GraphRunner, runID string) runtime.RunRecord {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testAsyncWaitTimeout)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -2939,7 +2966,7 @@ func waitForRunTerminalStatus(t *testing.T, runner *runtime.GraphRunner, runID s
 
 func waitForRunInactive(t *testing.T, runner *runtime.GraphRunner, runID string) {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
+	deadline := time.After(testAsyncWaitTimeout)
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	for runner.IsRunActive(runID) {

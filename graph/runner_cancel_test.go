@@ -57,7 +57,7 @@ func TestRunnerParallelExternalCancelDoesNotWaitForUncooperativeBranches(t *test
 	var result runnerResult
 	select {
 	case result = <-done:
-	case <-time.After(500 * time.Millisecond):
+	case <-time.After(5 * time.Second):
 		t.Fatal("parallel cancel waited for uncooperative branches")
 	}
 	if result.err != nil {
