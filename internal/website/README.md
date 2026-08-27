@@ -20,10 +20,18 @@ internal/website/dist/
 ├─ icon.svg
 └─ docs/
    ├─ index.html
+   ├─ introduction.html
    ├─ getting-started.html
+   ├─ concepts/
+   ├─ guides/
+   ├─ reference/
    ├─ zh/
    │  ├─ index.html
-   │  └─ getting-started.html
+   │  ├─ introduction.html
+   │  ├─ getting-started.html
+   │  ├─ concepts/
+   │  ├─ guides/
+   │  └─ reference/
    └─ assets/
 ```
 

@@ -32,6 +32,7 @@ const englishSidebar = [
     text: "Introduction",
     items: [
       { text: "Overview", link: "/" },
+      { text: "Why WeaveFlow", link: "/introduction" },
       { text: "Getting Started", link: "/getting-started" },
     ],
   },
@@ -41,6 +42,7 @@ const englishSidebar = [
       { text: "Graph Definition", link: "/concepts/graph-definition" },
       { text: "State Bindings", link: "/concepts/state-bindings" },
       { text: "Runtime Model", link: "/concepts/runtime" },
+      { text: "Nodes and Tools", link: "/concepts/nodes-and-tools" },
     ],
   },
   {
@@ -48,11 +50,20 @@ const englishSidebar = [
     items: [
       { text: "Workbench", link: "/guides/workbench" },
       { text: "Runnable Examples", link: "/guides/examples" },
+      { text: "Model Providers", link: "/guides/model-providers" },
+      { text: "Custom Nodes", link: "/guides/custom-nodes" },
+      { text: "Observability", link: "/guides/observability" },
     ],
   },
+  { text: "Deployment", items: [{ text: "Deploy the Server", link: "/deployment" }] },
   {
     text: "Reference",
-    items: [{ text: "Package Map", link: "/reference/packages" }],
+    items: [
+      { text: "Package Map", link: "/reference/packages" },
+      { text: "Configuration", link: "/reference/configuration" },
+      { text: "HTTP API", link: "/reference/http-api" },
+      { text: "Troubleshooting", link: "/troubleshooting" },
+    ],
   },
 ];
 
@@ -61,6 +72,7 @@ const chineseSidebar = [
     text: "介绍",
     items: [
       { text: "概览", link: "/zh/" },
+      { text: "为什么选择 WeaveFlow", link: "/zh/introduction" },
       { text: "快速开始", link: "/zh/getting-started" },
     ],
   },
@@ -70,6 +82,7 @@ const chineseSidebar = [
       { text: "图定义", link: "/zh/concepts/graph-definition" },
       { text: "状态绑定", link: "/zh/concepts/state-bindings" },
       { text: "运行时模型", link: "/zh/concepts/runtime" },
+      { text: "节点与工具", link: "/zh/concepts/nodes-and-tools" },
     ],
   },
   {
@@ -77,11 +90,20 @@ const chineseSidebar = [
     items: [
       { text: "Workbench", link: "/zh/guides/workbench" },
       { text: "可运行示例", link: "/zh/guides/examples" },
+      { text: "模型提供商", link: "/zh/guides/model-providers" },
+      { text: "自定义节点", link: "/zh/guides/custom-nodes" },
+      { text: "可观测性", link: "/zh/guides/observability" },
     ],
   },
+  { text: "部署", items: [{ text: "部署服务器", link: "/zh/deployment" }] },
   {
     text: "参考",
-    items: [{ text: "包结构", link: "/zh/reference/packages" }],
+    items: [
+      { text: "包结构", link: "/zh/reference/packages" },
+      { text: "配置参考", link: "/zh/reference/configuration" },
+      { text: "HTTP API", link: "/zh/reference/http-api" },
+      { text: "故障排查", link: "/zh/troubleshooting" },
+    ],
   },
 ];
 

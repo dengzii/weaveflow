@@ -482,6 +482,94 @@ func TestResumeDoesNotContinueConcurrentTerminalRun(t *testing.T) {
 	}
 }
 
+func TestResolvePendingControlHandlesCancelPauseAndDeferredCheckpoint(t *testing.T) {
+	t.Run("cancel", func(t *testing.T) {
+		ctx := context.Background()
+		now := time.Unix(620, 0)
+		store := NewMemoryRuntimeStore()
+		run := RunRecord{RunID: "pending-control-cancel", GraphID: "graph", Status: RunStatusRunning, StartedAt: now, UpdatedAt: now}
+		if err := store.CreateRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		runner := newPauseTestRunner(store, store, now)
+		execution := newGraphRunnerExecution(runner, run, state.NewState(), nil, nil, nil)
+		execution.pending = &runnerPendingControl{kind: runnerControlCancel}
+
+		resolved, _, handled, err := runner.resolvePendingControl(ctx, execution, state.NewState(), nil)
+		if err != nil || !handled || resolved.Status != RunStatusCanceled || resolved.FinishedAt == nil {
+			t.Fatalf("resolvePendingControl(cancel) = %#v, handled=%v, error=%v", resolved, handled, err)
+		}
+	})
+
+	t.Run("defer until checkpoint", func(t *testing.T) {
+		now := time.Unix(621, 0)
+		store := NewMemoryRuntimeStore()
+		runner := newPauseTestRunner(store, store, now)
+		run := RunRecord{RunID: "pending-control-defer", Status: RunStatusRunning}
+		execution := newGraphRunnerExecution(runner, run, state.NewState(), nil, nil, nil)
+		execution.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: "node"}
+
+		resolved, _, handled, err := runner.resolvePendingControl(context.Background(), execution, state.NewState(), nil)
+		if err != nil || handled || resolved.RunID != "" {
+			t.Fatalf("resolvePendingControl(defer) = %#v, handled=%v, error=%v", resolved, handled, err)
+		}
+		control, _ := execution.consumePendingControl()
+		if control == nil || control.kind != runnerControlPause || control.nodeID != "node" {
+			t.Fatalf("restored pending control = %#v", control)
+		}
+	})
+
+	t.Run("missing completed step", func(t *testing.T) {
+		ctx := context.Background()
+		now := time.Unix(622, 0)
+		store := NewMemoryRuntimeStore()
+		run := RunRecord{RunID: "pending-control-missing", GraphID: "graph", Status: RunStatusRunning, CurrentNodeID: "node", StartedAt: now, UpdatedAt: now}
+		if err := store.CreateRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		runner := newPauseTestRunner(store, store, now)
+		execution := newGraphRunnerExecution(runner, run, state.NewState(), nil, nil, nil)
+		execution.pending = &runnerPendingControl{kind: runnerControlPause, taskID: "task", nodeID: "node", checkpointID: "checkpoint"}
+
+		resolved, _, handled, err := runner.resolvePendingControl(ctx, execution, state.NewState(), nil)
+		if !handled || resolved.Status != RunStatusFailed || err == nil || !strings.Contains(err.Error(), "missing completed step") {
+			t.Fatalf("resolvePendingControl(missing) = %#v, handled=%v, error=%v", resolved, handled, err)
+		}
+	})
+
+	t.Run("wave checkpoint", func(t *testing.T) {
+		ctx := context.Background()
+		now := time.Unix(623, 0)
+		store := NewMemoryRuntimeStore()
+		run := RunRecord{RunID: "pending-control-wave", GraphID: "graph", Status: RunStatusRunning, StartedAt: now, UpdatedAt: now}
+		if err := store.CreateRun(ctx, run); err != nil {
+			t.Fatal(err)
+		}
+		checkpoint := CheckpointRecord{CheckpointID: "wave-checkpoint", RunID: run.RunID, NodeID: waveCheckpointNodeID, Stage: CheckpointAfterWave, CreatedAt: now}
+		if err := store.Save(ctx, checkpoint, []byte(`{}`)); err != nil {
+			t.Fatal(err)
+		}
+		runner := newPauseTestRunner(store, store, now)
+		execution := newGraphRunnerExecution(runner, run, state.NewState(), nil, nil, nil)
+		execution.pending = &runnerPendingControl{kind: runnerControlPause, nodeID: waveCheckpointNodeID, checkpointID: checkpoint.CheckpointID, message: "pause requested"}
+
+		resolved, _, handled, err := runner.resolvePendingControl(ctx, execution, state.NewState(), context.Canceled)
+		if err != nil || !handled || resolved.Status != RunStatusPaused || resolved.LastCheckpointID != checkpoint.CheckpointID {
+			t.Fatalf("resolvePendingControl(wave) = %#v, handled=%v, error=%v", resolved, handled, err)
+		}
+	})
+
+	if !pauseControlCanceledInvoke(&runnerPendingControl{kind: runnerControlPause}, context.Canceled) {
+		t.Fatal("pauseControlCanceledInvoke() did not recognize canceled pause")
+	}
+	if !pauseControlCanceledInvoke(&runnerPendingControl{kind: runnerControlPause, message: "pause requested"}, errors.New("stopped")) {
+		t.Fatal("pauseControlCanceledInvoke() did not recognize requested pause")
+	}
+	if pauseControlCanceledInvoke(&runnerPendingControl{kind: runnerControlCancel}, context.Canceled) || pauseControlCanceledInvoke(nil, context.Canceled) {
+		t.Fatal("pauseControlCanceledInvoke() accepted non-pause control")
+	}
+}
+
 func assertCancelWonPauseRace(t *testing.T, events []Event, wantNodeCanceled bool) {
 	t.Helper()
 

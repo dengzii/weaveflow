@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	fruntime "github.com/dengzii/weaveflow/runtime"
+	"github.com/dengzii/weaveflow/state"
 )
 
 func TestEnqueueWithCommitPersistsRunAndTaskAtomically(t *testing.T) {
@@ -447,6 +449,202 @@ func TestGraphRunTaskCannotCompleteBeforeRunIsTerminal(t *testing.T) {
 	persisted, err := store.GetTask(context.Background(), claimed.ID)
 	if err != nil || persisted.Status != fruntime.TaskStatusRunning || persisted.Lease == nil {
 		t.Fatalf("GetTask() = %#v, %v", persisted, err)
+	}
+}
+
+func TestSQLiteExecutionCheckpointEventAndArtifactRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "runtime.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	now := time.Unix(900, 0).UTC()
+	run := testRun("round-trip", now)
+	if err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	if err := store.CreateRun(ctx, run); err == nil {
+		t.Fatal("CreateRun() accepted duplicate run")
+	}
+	updated := run
+	updated.Status = fruntime.RunStatusRunning
+	updated.Revision = 0
+	updated.UpdatedAt = now.Add(time.Second)
+	updatedRun, err := store.CompareAndSwapRun(ctx, 0, updated)
+	if err != nil || updatedRun.Revision != 1 || updatedRun.Status != fruntime.RunStatusRunning {
+		t.Fatalf("CompareAndSwapRun() = %#v, %v", updatedRun, err)
+	}
+	var revisionErr *fruntime.RunRevisionConflictError
+	if _, err := store.CompareAndSwapRun(ctx, 0, updated); !errors.As(err, &revisionErr) {
+		t.Fatalf("stale CompareAndSwapRun() error = %v", err)
+	}
+	runs, err := store.ListRuns(ctx, fruntime.RunFilter{Statuses: []fruntime.RunStatus{fruntime.RunStatusRunning}})
+	if err != nil || len(runs) != 1 || runs[0].RunID != run.RunID {
+		t.Fatalf("ListRuns() = %#v, %v", runs, err)
+	}
+
+	step := fruntime.StepRecord{
+		StepID: "step-round-trip", RunID: run.RunID, TaskID: "task-round-trip", NodeID: "node", NodeName: "Node",
+		Status: fruntime.StepStatusRunning, Attempt: 1, StartedAt: now, UpdatedAt: now,
+	}
+	if err := store.AppendStep(ctx, step); err != nil {
+		t.Fatalf("AppendStep() error = %v", err)
+	}
+	if err := store.AppendStep(ctx, step); err == nil {
+		t.Fatal("AppendStep() accepted duplicate step")
+	}
+	step.Status = fruntime.StepStatusSucceeded
+	step.UpdatedAt = now.Add(2 * time.Second)
+	if err := store.UpdateStep(ctx, step); err != nil {
+		t.Fatalf("UpdateStep() error = %v", err)
+	}
+	persistedStep, err := store.GetStep(ctx, step.StepID)
+	if err != nil || persistedStep.Status != fruntime.StepStatusSucceeded {
+		t.Fatalf("GetStep() = %#v, %v", persistedStep, err)
+	}
+	steps, err := store.ListSteps(ctx, run.RunID)
+	if err != nil || len(steps) != 1 || steps[0].StepID != step.StepID {
+		t.Fatalf("ListSteps() = %#v, %v", steps, err)
+	}
+
+	checkpoint := fruntime.CheckpointRecord{
+		CheckpointID: "checkpoint-round-trip", RunID: run.RunID, StepID: step.StepID, TaskID: step.TaskID,
+		NodeID: step.NodeID, Stage: fruntime.CheckpointBeforeNode, StateCodec: "json", StateVersion: "state-v2", CreatedAt: now,
+	}
+	payload := []byte(`{"version":"state-v2","shared":{"answer":"hello"}}`)
+	if err := store.Save(ctx, checkpoint, payload); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+	loadedCheckpoint, loadedPayload, err := store.Load(ctx, checkpoint.CheckpointID)
+	if err != nil || loadedCheckpoint.CheckpointID != checkpoint.CheckpointID || string(loadedPayload) != string(payload) {
+		t.Fatalf("Load() = %#v, %q, %v", loadedCheckpoint, loadedPayload, err)
+	}
+	loadedPayload[0] = 'X'
+	_, copiedPayload, err := store.Load(ctx, checkpoint.CheckpointID)
+	if err != nil || copiedPayload[0] != '{' {
+		t.Fatalf("Load() returned aliased payload: %q, %v", copiedPayload, err)
+	}
+	checkpoints, err := store.List(ctx, run.RunID)
+	if err != nil || len(checkpoints) != 1 {
+		t.Fatalf("List checkpoints = %#v, %v", checkpoints, err)
+	}
+
+	events := []fruntime.Event{
+		{ID: "event-stream", RunID: run.RunID, Type: fruntime.EventLLMContentChunk, Timestamp: now},
+		{ID: "event-persisted", RunID: run.RunID, Type: fruntime.EventRunStarted, Timestamp: now.Add(time.Second), Payload: []byte(`{"ok":true}`)},
+	}
+	if err := store.PublishBatch(ctx, events); err != nil {
+		t.Fatalf("PublishBatch() error = %v", err)
+	}
+	persistedEvents, err := store.ListEvents(run.RunID)
+	if err != nil || len(persistedEvents) != 1 || persistedEvents[0].ID != "event-persisted" {
+		t.Fatalf("ListEvents() = %#v, %v", persistedEvents, err)
+	}
+	page, err := store.ListEventPage(run.RunID, "", 1)
+	if err != nil || len(page.Items) != 1 || page.Items[0].ID != "event-persisted" {
+		t.Fatalf("ListEventPage() = %#v, %v", page, err)
+	}
+
+	artifacts := store.ArtifactStore()
+	artifact := fruntime.Artifact{ID: "artifact-round-trip", RunID: run.RunID, StepID: step.StepID, NodeID: step.NodeID, Type: "text", MIMEType: "text/plain", Data: []byte("hello"), CreatedAt: now}
+	stage, err := artifacts.Stage(ctx, "artifact-transaction", artifact)
+	if err != nil {
+		t.Fatalf("Stage() error = %v", err)
+	}
+	stageAgain, err := artifacts.Stage(ctx, "artifact-transaction", artifact)
+	if err != nil || stageAgain.Ref.ID != stage.Ref.ID {
+		t.Fatalf("idempotent Stage() = %#v, %v", stageAgain, err)
+	}
+	if err := artifacts.Finalize(ctx, "artifact-transaction", []fruntime.ArtifactStage{stage}); err != nil {
+		t.Fatalf("Finalize() error = %v", err)
+	}
+	loadedArtifact, err := artifacts.Load(ctx, state.ArtifactRef{ID: artifact.ID, RunID: run.RunID})
+	if err != nil || string(loadedArtifact.Data) != "hello" || loadedArtifact.Location == "" {
+		t.Fatalf("Load artifact = %#v, %v", loadedArtifact, err)
+	}
+	refs, err := artifacts.List(ctx, run.RunID)
+	if err != nil || len(refs) != 1 || refs[0].ID != artifact.ID {
+		t.Fatalf("List artifacts = %#v, %v", refs, err)
+	}
+
+	reader, err := OpenReader(path)
+	if err != nil {
+		t.Fatalf("OpenReader() error = %v", err)
+	}
+	if got, err := reader.ExecutionReader().GetRun(ctx, run.RunID); err != nil || got.RunID != run.RunID {
+		t.Fatalf("reader GetRun() = %#v, %v", got, err)
+	}
+	if got, _, err := reader.CheckpointReader().Load(ctx, checkpoint.CheckpointID); err != nil || got.CheckpointID != checkpoint.CheckpointID {
+		t.Fatalf("reader Load checkpoint = %#v, %v", got, err)
+	}
+	if got, err := reader.EventReader().ListEvents(run.RunID); err != nil || len(got) != 1 {
+		t.Fatalf("reader ListEvents() = %#v, %v", got, err)
+	}
+	if got, err := reader.ArtifactReader().Load(ctx, state.ArtifactRef{ID: artifact.ID, RunID: run.RunID}); err != nil || string(got.Data) != "hello" {
+		t.Fatalf("reader Load artifact = %#v, %v", got, err)
+	}
+}
+
+func TestSQLiteDeletionManifestAndComponentFences(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = store.Close() }()
+	now := time.Unix(950, 0).UTC()
+	run := testRun("delete-round-trip", now)
+	if err := store.CreateRun(ctx, run); err != nil {
+		t.Fatalf("CreateRun() error = %v", err)
+	}
+	deletionID := "deletion-round-trip"
+	deletionCtx := fruntime.WithRunDeletionMutation(ctx, deletionID)
+	if err := store.FenceRunDeletion(deletionCtx, run.RunID, deletionID); err != nil {
+		t.Fatalf("FenceRunDeletion() error = %v", err)
+	}
+	if err := store.FenceRunDeletion(deletionCtx, run.RunID, deletionID); err != nil {
+		t.Fatalf("idempotent FenceRunDeletion() error = %v", err)
+	}
+	otherDeletionCtx := fruntime.WithRunDeletionMutation(ctx, "other-deletion")
+	if err := store.FenceRunDeletion(otherDeletionCtx, run.RunID, "other-deletion"); err == nil || !strings.Contains(err.Error(), "fenced by deletion") {
+		t.Fatalf("FenceRunDeletion() mismatched deletion error = %v", err)
+	}
+	manifest := fruntime.RunDeletionManifest{ID: deletionID, RootRunID: run.RunID, Phase: fruntime.RunDeletionPlanned, RunIDs: []string{run.RunID}, CreatedAt: now, UpdatedAt: now}
+	if err := store.SaveRunDeletionManifest(ctx, manifest); err != nil {
+		t.Fatalf("SaveRunDeletionManifest() error = %v", err)
+	}
+	manifest.Phase = fruntime.RunDeletionUnlinked
+	manifest.UpdatedAt = now.Add(time.Second)
+	if err := store.SaveRunDeletionManifest(ctx, manifest); err != nil {
+		t.Fatalf("update SaveRunDeletionManifest() error = %v", err)
+	}
+	loaded, err := store.LoadRunDeletionManifest(ctx, deletionID)
+	if err != nil || loaded.Phase != fruntime.RunDeletionUnlinked {
+		t.Fatalf("LoadRunDeletionManifest() = %#v, %v", loaded, err)
+	}
+	manifests, err := store.ListRunDeletionManifests(ctx)
+	if err != nil || len(manifests) != 1 {
+		t.Fatalf("ListRunDeletionManifests() = %#v, %v", manifests, err)
+	}
+	if err := store.ValidateRunDeletionFences(ctx); err != nil {
+		t.Fatalf("ValidateRunDeletionFences() error = %v", err)
+	}
+	if err := store.EventDeleter().DeleteRun(ctx, run.RunID); !errors.Is(err, fruntime.ErrRunControlNotAllowed) {
+		t.Fatalf("unauthorized component deletion = %v", err)
+	}
+	if err := store.EventDeleter().DeleteRun(deletionCtx, run.RunID); err != nil {
+		t.Fatalf("authorized component deletion = %v", err)
+	}
+	if err := store.DeleteRun(deletionCtx, run.RunID); err != nil {
+		t.Fatalf("DeleteRun() error = %v", err)
+	}
+	if _, err := store.GetRun(ctx, run.RunID); !errors.Is(err, fruntime.ErrRunnerRecordNotFound) {
+		t.Fatalf("deleted GetRun() error = %v", err)
+	}
+	if err := store.ValidateRunDeletionFences(ctx); err != nil {
+		t.Fatalf("ValidateRunDeletionFences() after delete = %v", err)
 	}
 }
 
