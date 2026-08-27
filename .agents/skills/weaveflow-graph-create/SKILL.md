@@ -30,10 +30,11 @@ Before writing or changing JSON, build a concise context model from API data:
 1. Resolve the exact base URL and management Bearer token from user-provided or configured connection context. Never print the token or start/reconfigure a server.
 2. Compose the definition only from the context model and live registry. Keep state paths in node/condition `state` bindings, never in `config`; do not invent node types, ports, conditions, schemas, or capabilities.
 3. Call `POST /graphs/:graph_id/analysis/initial-state-requirements` with the complete intended definition and Trigger candidates. Reconcile every schema, build, topology, binding, Trigger, and required-state finding into the context model.
-4. When installation is authorized, create one immutable Session with `POST /graphs/:graph_id/sessions`, including the definition, `graph_version`, unique `request_id`, complete settings, and create/overwrite head fields required by the API.
-5. Verify the response identity and re-read `GET /graphs/:graph_id/sessions/:session_id`. Confirm that the persisted definition, settings, required state, graph hash, and snapshot hash match the intended context.
-6. For Chat setup, use the Chat Channel setup-session API until confirmed, then atomically install the complete Trigger set. Preserve unrelated Triggers and use only sanitized API responses.
-7. Invoke a Trigger or start the exact Session only when requested. Pass the returned Run ID and Session ID to `weaveflow-graph-debug`.
+4. Before installation, run the tool-policy preflight from `references/graph-definition.md`: every declared tool must be registered, its permissions must be granted, and every `approval: required` tool must have an explicit approval entry in the intended settings. Treat `process.execute` tools as potentially mutating; approval for a different tool does not cover them.
+5. When installation is authorized, create one immutable Session with `POST /graphs/:graph_id/sessions`, including the definition, `graph_version`, unique `request_id`, complete settings, and create/overwrite head fields required by the API.
+6. Verify the response identity and re-read `GET /graphs/:graph_id/sessions/:session_id`. Confirm that the persisted definition, settings, required state, graph hash, and snapshot hash match the intended context. Re-run the same policy preflight against persisted settings.
+7. For Chat setup, use the Chat Channel setup-session API until confirmed, then atomically install the complete Trigger set. Preserve unrelated Triggers and use only sanitized API responses.
+8. Invoke a Trigger or start the exact Session only when requested. Pass the returned Run ID and Session ID to `weaveflow-graph-debug` for a four-part quality audit.
 
 ## Safety And Stop Conditions
 

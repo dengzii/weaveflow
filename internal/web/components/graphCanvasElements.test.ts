@@ -108,6 +108,57 @@ describe("graph canvas elements", () => {
     expect(elements.nodes.find((node) => node.data.virtualKind === "trigger")?.data.status).toBe("idle");
   });
 
+  test("marks the run's current node and projects its runtime", () => {
+    const definition: GraphDefinition = {
+      nodes: [{ id: "task", type: "task" }],
+    };
+    const elements = buildGraphCanvasElements(options(definition, {
+      runtime: new Map([[
+        "task",
+        {
+          status: "running",
+          executionCount: 1,
+          at: 1_000,
+          stepTimings: new Map([["attempt:1:step-1", {
+            stepID: "step-1",
+            attempt: 1,
+            startedAt: 1_000,
+          }]]),
+        },
+      ]]),
+      runtimeNow: 3_500,
+      currentNodeIDs: new Set(["task"]),
+      virtualNodeIDs: [],
+    }));
+
+    expect(elements.nodes[0].data).toMatchObject({
+      status: "running",
+      current: true,
+      runTimeMs: 2_500,
+      currentRunTimeMs: 2_500,
+    });
+  });
+
+  test("uses the run update as a fallback current-node timer anchor", () => {
+    const definition: GraphDefinition = {
+      nodes: [{ id: "task", type: "task" }],
+    };
+    const elements = buildGraphCanvasElements(options(definition, {
+      runtimeNow: 5_000,
+      currentNodeIDs: new Set(["task"]),
+      currentNodeStartedAt: 2_000,
+      runStatus: "running",
+      virtualNodeIDs: [],
+    }));
+
+    expect(elements.nodes[0].data).toMatchObject({
+      status: "running",
+      current: true,
+      runTimeMs: 3_000,
+      currentRunTimeMs: 3_000,
+    });
+  });
+
   test("projects the selected run status onto Start and End nodes", () => {
     const definition: GraphDefinition = {
       entry_point: "task",

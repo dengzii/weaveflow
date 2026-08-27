@@ -1,17 +1,21 @@
 import { describe, expect, test } from "bun:test";
 import type { Node } from "@xyflow/react";
-import type { GraphDefinition, StepRecord } from "../types";
+import type { GraphDefinition, RuntimeEvent, StepRecord } from "../types";
 import { END_NODE_REF, START_NODE_REF } from "../lib/graphEditor";
 import {
   applyRuntime,
   applyRuntimeStep,
   applyRuntimeSnapshot,
   eventAttempt,
+  eventAttemptStartedAt,
   eventErrorMessage,
+  formatRuntimeDuration,
   isVirtualEndNodeID,
   isVirtualStartNodeID,
   layoutNodes,
+  runtimeFromExecution,
   runtimeFromSteps,
+  runtimeDurations,
   runtimeStatusFromEvent,
   virtualNodeSpec,
   type FlowNodeData,
@@ -46,6 +50,18 @@ function flowNode(id: string, data?: Partial<FlowNodeData>): Node<FlowNodeData> 
   };
 }
 
+function runtimeEvent(overrides: Partial<RuntimeEvent>): RuntimeEvent {
+  return {
+    id: "event-1",
+    run_id: "run-1",
+    step_id: "step-1",
+    node_id: "node-1",
+    type: "nodes.started",
+    timestamp: new Date(1_000).toISOString(),
+    ...overrides,
+  };
+}
+
 describe("graph canvas model", () => {
   test("merges step snapshots by run, timestamp, and highest attempt", () => {
     const runtime = runtimeFromSteps(
@@ -61,6 +77,14 @@ describe("graph canvas model", () => {
       executionCount: 2,
       at: Date.parse("2026-01-01T00:02:00Z"),
       stepAttempts: new Map([["step-1", 2]]),
+      stepTimings: new Map([[
+        "step:step-1",
+        {
+          stepID: "step-1",
+          startedAt: Date.parse("2026-01-01T00:00:00Z"),
+          finishedAt: Date.parse("2026-01-01T00:02:00Z"),
+        },
+      ]]),
     });
   });
 
@@ -131,6 +155,68 @@ describe("graph canvas model", () => {
     expect(runtime.get("node-1")?.executionCount).toBe(3);
   });
 
+  test("calculates total and active runtime from per-step timings", () => {
+    const runtime = runtimeFromSteps([
+      step({
+        step_id: "step-1",
+        status: "succeeded",
+        started_at: "2026-01-01T00:00:00Z",
+        finished_at: "2026-01-01T00:00:02Z",
+        updated_at: "2026-01-01T00:00:02Z",
+      }),
+      step({
+        step_id: "step-2",
+        status: "running",
+        started_at: "2026-01-01T00:00:03Z",
+        updated_at: "2026-01-01T00:00:03Z",
+      }),
+    ]).get("node-1");
+
+    expect(runtime).toBeDefined();
+    expect(runtimeDurations(runtime, Date.parse("2026-01-01T00:00:05Z"))).toEqual({
+      totalMs: 4_000,
+      currentMs: 2_000,
+    });
+    expect(formatRuntimeDuration(4_000)).toBe("4.0s");
+  });
+
+  test("separates cumulative runtime from the current retry attempt", () => {
+    const runtime = runtimeFromExecution(
+      [step({
+        status: "running",
+        attempt: 1,
+        started_at: new Date(1_000).toISOString(),
+        updated_at: new Date(1_000).toISOString(),
+      })],
+      [
+        runtimeEvent({
+          id: "retry",
+          type: "nodes.retry",
+          timestamp: new Date(3_500).toISOString(),
+          payload: { attempt: 1, next_attempt: 2, delay: "1s" },
+        }),
+      ],
+      "run-1"
+    );
+
+    const runningDurations = runtimeDurations(runtime.get("node-1"), 5_500);
+    expect(runningDurations).toEqual({
+      totalMs: 3_500,
+      currentMs: 1_000,
+    });
+    expect(`${formatRuntimeDuration(runningDurations.totalMs)}/${formatRuntimeDuration(runningDurations.currentMs)}`)
+      .toBe("3.5s/1.0s");
+
+    applyRuntimeStep(runtime, "node-1", "step-1", "succeeded", 2, 7_000, "", {
+      scope: "attempt",
+      finishedAt: 7_000,
+    });
+    expect(runtimeDurations(runtime.get("node-1"), 8_000)).toEqual({
+      totalMs: 5_000,
+      currentMs: 0,
+    });
+  });
+
   test("applies runtime snapshots only to real nodes", () => {
     const real = flowNode("node-1");
     const virtual = flowNode(START_NODE_REF, { virtualKind: "start" });
@@ -172,5 +258,6 @@ describe("graph canvas model", () => {
     expect(runtimeStatusFromEvent("run.finished")).toBe("");
     expect(eventAttempt("nodes.started", { node_name: "Node 1" })).toBe(1);
     expect(eventAttempt("nodes.retry", { attempt: 1, next_attempt: 2 })).toBe(2);
+    expect(eventAttemptStartedAt("nodes.retry", { delay: "1m2.5s" }, 1_000)).toBe(63_500);
   });
 });

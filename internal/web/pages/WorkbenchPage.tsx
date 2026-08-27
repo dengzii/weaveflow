@@ -263,6 +263,7 @@ export function WorkbenchPage() {
     runComparison,
     runComparisonLoading,
     displayEvents,
+    runtimeEvents,
     hasOlderEvents,
     olderEventsLoading,
     humanPrompt,
@@ -301,6 +302,13 @@ export function WorkbenchPage() {
   const selectedRun = useMemo(
     () => runs.find((run) => run.run_id === selectedRunID),
     [runs, selectedRunID]
+  );
+  const selectedRunCurrentNodeIds = useMemo(
+    () => [...new Set([
+      ...(selectedRun?.current_node_ids ?? []),
+      ...(selectedRun?.current_node_id ? [selectedRun.current_node_id] : []),
+    ])],
+    [selectedRun?.current_node_id, selectedRun?.current_node_ids]
   );
   const initializing = !serverStateLoaded;
   const workbenchBusy = busy || runBusy || runLaunchPending;
@@ -716,9 +724,12 @@ export function WorkbenchPage() {
         directInitialRequirements={directInitialRequirements}
         initialRequirementsError={initialRequirementsError}
         steps={steps}
+        runtimeEvents={runtimeEvents}
         selectedRunId={selectedRunID}
         runStatus={selectedRun?.status}
         runTriggerId={selectedRun?.origin?.trigger_id}
+        currentNodeIds={selectedRunCurrentNodeIds}
+        runUpdatedAt={selectedRun?.updated_at}
         registry={registry}
         toolDefinitions={toolDefinitions}
         runtimeSettings={runtimeSettings}

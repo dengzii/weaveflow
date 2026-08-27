@@ -22,6 +22,7 @@ import {
   isVirtualEndNodeID,
   isVirtualStartNodeID,
   layoutNodes,
+  runtimeDurations,
   triggerNodeRuntimeStatus,
   triggerTargetHandleID,
   virtualLoopLayouts,
@@ -60,6 +61,9 @@ export interface GraphCanvasElementOptions {
   nodeTypes: NodeTypeSchema[];
   runtime: ReadonlyMap<string, RuntimeNodeState>;
   runtimeVisible: boolean;
+  runtimeNow?: number;
+  currentNodeIDs?: ReadonlySet<string>;
+  currentNodeStartedAt?: number;
   runStatus?: RunStatus;
   runTriggerID?: string;
   selectedEdgeID?: string;
@@ -81,6 +85,9 @@ export function buildGraphCanvasElements({
   nodeTypes,
   runtime,
   runtimeVisible,
+  runtimeNow = Date.now(),
+  currentNodeIDs = new Set(),
+  currentNodeStartedAt = 0,
   runStatus,
   runTriggerID,
   selectedEdgeID,
@@ -157,6 +164,19 @@ export function buildGraphCanvasElements({
       const virtualKind = virtualNodeKind(node.id);
       const nodeType = nodeTypes.find((item) => item.type === node.type);
       const runtimeState = runtimeVisible ? runtime.get(node.id) : undefined;
+      const currentFromRun = runtimeVisible && currentNodeIDs.has(node.id);
+      const currentProjectionStatus = currentFromRun && runStatus === "running"
+        ? "running"
+        : currentFromRun && runStatus === "paused"
+          ? "paused"
+          : "idle";
+      const status = runtimeState?.status || currentProjectionStatus;
+      const durations = runtimeVisible
+        ? runtimeDurations(runtimeState || (currentFromRun
+          ? { status: "running", executionCount: 0, at: currentNodeStartedAt || runtimeNow }
+          : undefined), runtimeNow)
+        : { totalMs: 0, currentMs: 0 };
+      const current = runtimeVisible && (status === "running" || (currentFromRun && !runtimeState && status === "paused"));
       const statePorts = nodeType?.state_ports ?? [];
       const staticPortNames = new Set(statePorts.map((port) => port.name));
       const dynamicPortNames = Object.keys(node.state ?? {}).filter(
@@ -181,8 +201,15 @@ export function buildGraphCanvasElements({
         typeLabel: nodeType?.title || node.type || "Node",
         status: virtualKind && runtimeVisible
           ? virtualNodeRuntimeStatus(virtualKind, runStatus)
-          : runtimeState?.status || "idle",
+          : status,
         executionCount: virtualKind ? 0 : runtimeState?.executionCount || 0,
+        runTimeMs: virtualKind || !runtimeVisible || (status === "idle" && durations.totalMs <= 0 && !runtimeState?.executionCount)
+          ? undefined
+          : durations.totalMs,
+        currentRunTimeMs: virtualKind || !runtimeVisible || status !== "running"
+          ? undefined
+          : durations.currentMs,
+        current: virtualKind ? undefined : current || undefined,
         editable: interactive,
         runtimeVisible,
         highlighted: highlightedNodeIDs.has(node.id),

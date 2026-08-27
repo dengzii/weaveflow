@@ -31,6 +31,16 @@ Read `GET /runtime/tools` when a graph uses tools. A listed tool is not permissi
 
 The registry validates whether a node accepts `config.model_id`; Graph Session settings validate whether that model is enabled and runnable. Check both surfaces. The current settings model includes provider, `api_format`, model ID, base URL, extra body, credential presence, tool permissions, and tool approvals. Keep Graph Settings as the source for model and credential configuration; do not introduce a duplicate Profile source.
 
+### Tool Permission Preflight
+
+Run this check after composing intended settings and again against the persisted Session:
+
+1. Collect tool IDs from every node's `config.tool_ids` and compare them with `/runtime/tools`.
+2. For each tool, require all registered `permissions` in Session `settings.tool_permissions`.
+3. For each tool whose registry record has `approval: required`, require an explicit truthy entry in Session `settings.tool_approvals`. An omitted entry is not an approval decision.
+4. Flag tools with `process.execute` as potentially mutating. A `bash` approval does not authorize `write`, and a `write` approval does not authorize a shell command.
+5. Stop before Session creation when a mismatch is found. Report the tool ID, missing permission or approval, and the exact settings/registry fields; do not assume a later Run will resolve it.
+
 For Codex-backed nodes, verify the server-side provider/API contract from the live registry and settings. Do not assume CLI `config.toml` is the Graph Session credential source.
 
 ## Validation Order

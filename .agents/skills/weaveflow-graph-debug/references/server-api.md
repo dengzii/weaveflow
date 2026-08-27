@@ -36,3 +36,13 @@ If exact Session detail returns `context_warnings`, keep the persisted definitio
 | `GET` | `/graphs/:graph_id/events/stream` | Observe bounded Graph events with optional `session_id`, `run_id`, `node_id`, `type`, `cursor`, or `Last-Event-ID` filters. |
 
 SSE is an observation aid, not durable evidence. A stream gap means recoverable events must be read from persistent Event pages. Close the stream after the observation window.
+
+## Repeatable Quality Report
+
+For a bounded, read-only summary of one Run, invoke the bundled helper after resolving the exact Graph and Run IDs:
+
+```text
+python scripts/run_quality_report.py --base-url http://127.0.0.1:8080 --graph-id <graph_id> --run-id <run_id>
+```
+
+Set `--token-env` to the name of the configured management-token environment variable when authentication is required. The helper never prints the token, sends only `GET` requests, follows persisted Event cursors, and reports runtime/business/evidence/side-effect quality plus tool-policy mismatches. It is a reporting aid, not a substitute for reading disputed Artifact or Checkpoint bodies.

@@ -94,6 +94,7 @@ interface WorkbenchRunsController {
   runComparison: RunComparison | null;
   runComparisonLoading: boolean;
   displayEvents: RuntimeEvent[];
+  runtimeEvents: RuntimeEvent[];
   hasOlderEvents: boolean;
   olderEventsLoading: boolean;
   humanPrompt: UserInputPrompt | null;
@@ -990,6 +991,7 @@ export function useWorkbenchRuns({
     runComparison,
     runComparisonLoading,
     displayEvents,
+    runtimeEvents: storedEvents,
     hasOlderEvents: Boolean(nextEventCursor),
     olderEventsLoading,
     humanPrompt,

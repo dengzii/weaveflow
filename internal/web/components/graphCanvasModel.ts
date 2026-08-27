@@ -1,5 +1,5 @@
 import type { Node } from "@xyflow/react";
-import type { GraphDefinition, GraphNodeSpec, RunStatus, StepRecord, StepStatus, TriggerType } from "../types";
+import type { GraphDefinition, GraphNodeSpec, RunStatus, RuntimeEvent, StepRecord, StepStatus, TriggerType } from "../types";
 import {
   END_NODE_REF,
   START_NODE_REF,
@@ -16,6 +16,9 @@ export interface FlowNodeData extends Record<string, unknown> {
   editable: boolean;
   runtimeVisible?: boolean;
   executionCount?: number;
+  runTimeMs?: number;
+  currentRunTimeMs?: number;
+  current?: boolean;
   highlighted?: boolean;
   bindingSummary?: string;
   stateBindingPreview?: NodePreviewItem[];
@@ -74,6 +77,25 @@ export interface RuntimeNodeState {
   at: number;
   errorMessage?: string;
   stepAttempts?: ReadonlyMap<string, number>;
+  stepTimings?: ReadonlyMap<string, RuntimeStepTiming>;
+}
+
+export interface RuntimeStepTiming {
+  stepID: string;
+  attempt?: number;
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+export interface RuntimeTimingUpdate {
+  scope: "step" | "attempt";
+  startedAt?: number;
+  finishedAt?: number;
+}
+
+export interface RuntimeDurations {
+  totalMs: number;
+  currentMs: number;
 }
 
 export interface VirtualLoopLayout {
@@ -108,6 +130,13 @@ export function flowNodeAriaLabel(data: FlowNodeData): string {
   }
   if (data.runtimeVisible && data.status && data.status !== "idle") parts.push(`execution status ${data.status}`);
   if (data.runtimeVisible && data.executionCount) parts.push(`executions ${data.executionCount}`);
+  if (data.runtimeVisible && data.current) parts.push("current node");
+  if (data.runtimeVisible && typeof data.runTimeMs === "number") {
+    parts.push(`runtime ${formatRuntimeDuration(data.runTimeMs)}`);
+  }
+  if (data.runtimeVisible && data.status === "running" && typeof data.currentRunTimeMs === "number") {
+    parts.push(`current ${formatRuntimeDuration(data.currentRunTimeMs)}`);
+  }
   if (data.runtimeVisible && data.errorSummary) parts.push(`error: ${data.errorSummary}`);
   return parts.join(". ");
 }
@@ -124,9 +153,26 @@ export function runtimeFromSteps(steps: StepRecord[], runID?: string): Map<strin
       normalizeRuntimeStatus(step.status),
       Number.isFinite(step.attempt) ? step.attempt : 0,
       timeRank(step.updated_at || step.finished_at || step.started_at),
-      step.error_message
+      step.error_message,
+      stepTimingFromRecord(step)
     );
   }
+  return runtime;
+}
+
+export function runtimeFromEvents(events: RuntimeEvent[], runID?: string): Map<string, RuntimeNodeState> {
+  const runtime = new Map<string, RuntimeNodeState>();
+  for (const event of orderedRuntimeEvents(events, runID)) applyRuntimeEvent(runtime, event);
+  return runtime;
+}
+
+export function runtimeFromExecution(
+  steps: StepRecord[],
+  events: RuntimeEvent[],
+  runID?: string
+): Map<string, RuntimeNodeState> {
+  const runtime = runtimeFromSteps(steps, runID);
+  for (const event of orderedRuntimeEvents(events, runID)) applyRuntimeEvent(runtime, event);
   return runtime;
 }
 
@@ -137,14 +183,17 @@ export function applyRuntime(
 ): boolean {
   const current = runtime.get(nodeID);
   if (!current) {
-    runtime.set(nodeID, {
+    const next: RuntimeNodeState = {
       ...update,
       stepAttempts: new Map(update.stepAttempts),
-    });
+    };
+    if (update.stepTimings) next.stepTimings = new Map(update.stepTimings);
+    runtime.set(nodeID, next);
     return true;
   }
 
   const stepAttempts = new Map(current.stepAttempts);
+  const stepTimings = mergeStepTimings(current.stepTimings, update.stepTimings);
   for (const [stepID, attempt] of update.stepAttempts ?? []) {
     stepAttempts.set(stepID, Math.max(stepAttempts.get(stepID) ?? 0, attempt));
   }
@@ -160,6 +209,7 @@ export function applyRuntime(
     at: latest.at,
     stepAttempts,
   };
+  if (stepTimings.size > 0) next.stepTimings = stepTimings;
   const nextErrorMessage = latest.status === "failed" ? latest.errorMessage?.trim() : "";
   if (nextErrorMessage) next.errorMessage = nextErrorMessage;
   if (
@@ -167,6 +217,7 @@ export function applyRuntime(
     && current.executionCount === next.executionCount
     && current.at === next.at
     && (current.errorMessage ?? "") === (next.errorMessage ?? "")
+    && sameStepTimings(current.stepTimings, next.stepTimings)
   ) {
     return false;
   }
@@ -181,12 +232,40 @@ export function applyRuntimeStep(
   status: RuntimeNodeStatus,
   attempt: number,
   at: number,
-  errorMessage = ""
+  errorMessage = "",
+  timing?: RuntimeTimingUpdate
 ): boolean {
   const current = runtime.get(nodeID);
   const stepAttempts = new Map(current?.stepAttempts);
   const normalizedAttempt = Number.isFinite(attempt) ? Math.max(0, Math.trunc(attempt)) : 0;
   const previousAttempt = stepAttempts.get(stepID) ?? 0;
+  let stepTimings = new Map(current?.stepTimings);
+  if (timing) {
+    if (timing.scope === "attempt" && normalizedAttempt > previousAttempt && previousAttempt > 0) {
+      const previousKey = attemptTimingKey(stepID, previousAttempt);
+      let previousTiming = stepTimings.get(previousKey);
+      if (!previousTiming) {
+        const stepTiming = stepTimings.get(stepTimingKey(stepID));
+        if (stepTiming?.startedAt) {
+          previousTiming = { stepID, attempt: previousAttempt, startedAt: stepTiming.startedAt };
+        }
+      }
+      if (previousTiming?.startedAt && !previousTiming.finishedAt && at >= previousTiming.startedAt) {
+        stepTimings.set(previousKey, { ...previousTiming, finishedAt: at });
+      }
+    }
+    const timingAttempt = normalizedAttempt || previousAttempt || 1;
+    const timingKey = timing.scope === "attempt"
+      ? attemptTimingKey(stepID, timingAttempt)
+      : stepTimingKey(stepID);
+    const nextTiming: RuntimeStepTiming = {
+      stepID,
+      attempt: timing.scope === "attempt" ? timingAttempt : undefined,
+      startedAt: timing.startedAt,
+      finishedAt: timing.finishedAt,
+    };
+    stepTimings = mergeStepTimings(stepTimings, new Map([[timingKey, nextTiming]]));
+  }
   if (normalizedAttempt > previousAttempt) stepAttempts.set(stepID, normalizedAttempt);
   const trackedExecutions = totalExecutions(current?.stepAttempts ?? new Map());
   const untrackedExecutions = Math.max(0, (current?.executionCount ?? 0) - trackedExecutions);
@@ -198,6 +277,7 @@ export function applyRuntimeStep(
     at: latest ? at : current.at,
     stepAttempts,
   };
+  if (stepTimings.size > 0) next.stepTimings = stepTimings;
   const nextErrorMessage = latest
     ? status === "failed" ? errorMessage.trim() : ""
     : current.errorMessage ?? "";
@@ -208,6 +288,7 @@ export function applyRuntimeStep(
     && current.executionCount === next.executionCount
     && current.at === next.at
     && (current.errorMessage ?? "") === (next.errorMessage ?? "")
+    && sameStepTimings(current.stepTimings, next.stepTimings)
   ) {
     return false;
   }
@@ -251,7 +332,14 @@ export function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeDat
   let changed = false;
   const next = nodes.map((node) => {
     if (node.data.virtualKind) return node;
-    if ((node.data.status || "idle") === "idle" && !node.data.executionCount && !node.data.errorSummary) return node;
+    if (
+      (node.data.status || "idle") === "idle"
+      && !node.data.executionCount
+      && !node.data.runTimeMs
+      && !node.data.currentRunTimeMs
+      && !node.data.current
+      && !node.data.errorSummary
+    ) return node;
     changed = true;
     return {
       ...node,
@@ -259,17 +347,90 @@ export function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeDat
         ...node.data,
         status: "idle",
         executionCount: 0,
+        runTimeMs: undefined,
+        currentRunTimeMs: undefined,
+        current: undefined,
         errorSummary: undefined,
       },
       ariaLabel: flowNodeAriaLabel({
         ...node.data,
         status: "idle",
         executionCount: 0,
+        runTimeMs: undefined,
+        currentRunTimeMs: undefined,
+        current: undefined,
         errorSummary: undefined,
       }),
     };
   });
   return changed ? next : nodes;
+}
+
+export function runtimeDurations(runtime?: RuntimeNodeState, now = Date.now()): RuntimeDurations {
+  if (!runtime) return { totalMs: 0, currentMs: 0 };
+  const timings = runtime.stepTimings;
+  if (!timings || timings.size === 0) {
+    if (runtime.status !== "running" || runtime.at <= 0) return { totalMs: 0, currentMs: 0 };
+    const currentMs = Math.max(0, now - runtime.at);
+    return { totalMs: currentMs, currentMs };
+  }
+
+  const attemptNumbersByStep = new Map<string, Set<number>>();
+  const activeAttemptStepIDs = new Set<string>();
+  for (const timing of timings.values()) {
+    if (!timing.attempt || !timing.startedAt || timing.startedAt <= 0) continue;
+    const attempts = attemptNumbersByStep.get(timing.stepID) ?? new Set<number>();
+    attempts.add(timing.attempt);
+    attemptNumbersByStep.set(timing.stepID, attempts);
+    if (!timing.finishedAt) activeAttemptStepIDs.add(timing.stepID);
+  }
+  const completeAttemptStepIDs = new Set<string>();
+  for (const [stepID, attempts] of attemptNumbersByStep) {
+    const expectedAttempts = runtime.stepAttempts?.get(stepID) ?? Math.max(...attempts);
+    if (expectedAttempts > 0 && attempts.size >= expectedAttempts) {
+      let complete = true;
+      for (let attempt = 1; attempt <= expectedAttempts; attempt++) {
+        if (!attempts.has(attempt)) {
+          complete = false;
+          break;
+        }
+      }
+      if (complete) completeAttemptStepIDs.add(stepID);
+    }
+  }
+
+  let totalMs = 0;
+  let currentMs = 0;
+  for (const timing of timings.values()) {
+    if (!timing.startedAt || timing.startedAt <= 0) continue;
+    const end = timing.finishedAt && timing.finishedAt >= timing.startedAt
+      ? timing.finishedAt
+      : runtime.status === "running"
+        ? now
+        : runtime.at;
+    const durationMs = Math.max(0, end - timing.startedAt);
+    const useAttemptTotal = timing.attempt && completeAttemptStepIDs.has(timing.stepID);
+    const useStepTotal = !timing.attempt && !completeAttemptStepIDs.has(timing.stepID);
+    if (useAttemptTotal || useStepTotal) totalMs += durationMs;
+    if (!timing.finishedAt && runtime.status === "running") {
+      const useAttemptCurrent = Boolean(timing.attempt);
+      const useStepCurrent = !timing.attempt && !activeAttemptStepIDs.has(timing.stepID);
+      if (useAttemptCurrent || useStepCurrent) currentMs = Math.max(currentMs, durationMs);
+    }
+  }
+  return { totalMs, currentMs };
+}
+
+export function formatRuntimeDuration(durationMs: number): string {
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return "0ms";
+  if (durationMs < 1_000) return `${Math.round(durationMs)}ms`;
+  const seconds = durationMs / 1_000;
+  if (seconds < 60) return `${seconds.toFixed(seconds < 10 ? 1 : 0)}s`;
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.floor(seconds % 60);
+  if (minutes < 60) return `${minutes}m${remainingSeconds}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${minutes % 60}m`;
 }
 
 export function runtimeStatusFromEvent(type: string): RuntimeNodeStatus | "" {
@@ -296,6 +457,33 @@ export function eventAttempt(type: string, payload: unknown): number {
   const value = type === "nodes.retry" ? record.next_attempt ?? record.attempt : record.attempt;
   if (typeof value === "number" && Number.isFinite(value)) return value;
   return type === "nodes.started" ? 1 : 0;
+}
+
+export function eventAttemptStartedAt(type: string, payload: unknown, eventAt: number): number {
+  if (type !== "nodes.retry" || !payload || typeof payload !== "object" || Array.isArray(payload)) {
+    return eventAt;
+  }
+  const delay = (payload as Record<string, unknown>).delay;
+  return eventAt + (typeof delay === "string" ? parseGoDurationMilliseconds(delay) : 0);
+}
+
+export function applyRuntimeEvent(runtime: Map<string, RuntimeNodeState>, event: RuntimeEvent): boolean {
+  if (!event.node_id) return false;
+  const status = runtimeStatusFromEvent(event.type);
+  if (!status) return false;
+  const eventAt = timeRank(event.timestamp);
+  return applyRuntimeStep(
+    runtime,
+    event.node_id,
+    event.step_id || `${event.node_id}:current`,
+    status,
+    eventAttempt(event.type, event.payload),
+    eventAt,
+    eventErrorMessage(event.payload),
+    event.type === "nodes.started" || event.type === "nodes.retry"
+      ? { scope: "attempt", startedAt: eventAttemptStartedAt(event.type, event.payload, eventAt) }
+      : { scope: "attempt", finishedAt: eventAt }
+  );
 }
 
 export function eventErrorMessage(payload: unknown): string {
@@ -417,13 +605,28 @@ export function isVirtualEndNodeID(nodeID: string): boolean {
 
 function updateRuntimeNodeData(node: Node<FlowNodeData>, runtime: RuntimeNodeState): Node<FlowNodeData> {
   const executionCount = runtime.executionCount || 0;
+  const durations = runtimeDurations(runtime);
+  const runTimeMs = durations.totalMs;
+  const currentRunTimeMs = runtime.status === "running" ? durations.currentMs : undefined;
+  const current = runtime.status === "running";
   const errorSummary = runtime.status === "failed" ? runtime.errorMessage || undefined : undefined;
   if (
     node.data.status === runtime.status
     && node.data.executionCount === executionCount
+    && node.data.runTimeMs === runTimeMs
+    && node.data.currentRunTimeMs === currentRunTimeMs
+    && node.data.current === current
     && node.data.errorSummary === errorSummary
   ) return node;
-  const data = { ...node.data, status: runtime.status, executionCount, errorSummary };
+  const data = {
+    ...node.data,
+    status: runtime.status,
+    executionCount,
+    runTimeMs,
+    currentRunTimeMs,
+    current,
+    errorSummary,
+  };
   return {
     ...node,
     data,
@@ -435,6 +638,97 @@ function totalExecutions(stepAttempts: ReadonlyMap<string, number>): number {
   let total = 0;
   for (const attempt of stepAttempts.values()) total += attempt;
   return total;
+}
+
+function stepTimingFromRecord(step: StepRecord): RuntimeTimingUpdate | undefined {
+  const startedAt = timeRank(step.started_at);
+  const finishedAt = step.status === "running"
+    ? undefined
+    : timeRank(step.finished_at || step.updated_at);
+  if (startedAt <= 0 && (!finishedAt || finishedAt <= 0)) return undefined;
+  return {
+    scope: "step",
+    startedAt: startedAt > 0 ? startedAt : undefined,
+    finishedAt: finishedAt > 0 ? finishedAt : undefined,
+  };
+}
+
+function mergeStepTimings(
+  current?: ReadonlyMap<string, RuntimeStepTiming>,
+  update?: ReadonlyMap<string, RuntimeStepTiming>
+): Map<string, RuntimeStepTiming> {
+  const merged = new Map(current);
+  for (const [stepID, timing] of update ?? []) {
+    const previous = merged.get(stepID);
+    const startedAt = previous?.startedAt || timing.startedAt;
+    const finishedAt = previous?.finishedAt && timing.finishedAt
+      ? Math.max(previous.finishedAt, timing.finishedAt)
+      : previous?.finishedAt || timing.finishedAt;
+    if (startedAt || finishedAt) {
+      merged.set(stepID, {
+        stepID: previous?.stepID || timing.stepID,
+        attempt: previous?.attempt || timing.attempt,
+        startedAt,
+        finishedAt,
+      });
+    }
+  }
+  return merged;
+}
+
+function sameStepTimings(
+  left?: ReadonlyMap<string, RuntimeStepTiming>,
+  right?: ReadonlyMap<string, RuntimeStepTiming>
+): boolean {
+  if ((left?.size ?? 0) !== (right?.size ?? 0)) return false;
+  for (const [stepID, timing] of left ?? []) {
+    const other = right?.get(stepID);
+    if (
+      !other
+      || timing.stepID !== other.stepID
+      || timing.attempt !== other.attempt
+      || timing.startedAt !== other.startedAt
+      || timing.finishedAt !== other.finishedAt
+    ) return false;
+  }
+  return true;
+}
+
+function stepTimingKey(stepID: string): string {
+  return `step:${stepID}`;
+}
+
+function attemptTimingKey(stepID: string, attempt: number): string {
+  return `attempt:${attempt}:${stepID}`;
+}
+
+function parseGoDurationMilliseconds(value: string): number {
+  const normalized = value.trim();
+  if (!normalized) return 0;
+  const units: Record<string, number> = {
+    h: 3_600_000,
+    m: 60_000,
+    s: 1_000,
+    ms: 1,
+    us: 0.001,
+    "µs": 0.001,
+    ns: 0.000_001,
+  };
+  let matched = "";
+  let durationMs = 0;
+  for (const token of normalized.matchAll(/(\d+(?:\.\d+)?)(ns|µs|us|ms|s|m|h)/g)) {
+    matched += token[0];
+    durationMs += Number(token[1]) * units[token[2]];
+  }
+  return matched === normalized && Number.isFinite(durationMs) ? Math.max(0, durationMs) : 0;
+}
+
+function orderedRuntimeEvents(events: RuntimeEvent[], runID?: string): RuntimeEvent[] {
+  return events
+    .map((event, index) => ({ event, index, at: timeRank(event.timestamp) }))
+    .filter(({ event }) => !runID || !event.run_id || event.run_id === runID)
+    .sort((left, right) => left.at - right.at || right.index - left.index)
+    .map(({ event }) => event);
 }
 
 function normalizeRuntimeStatus(status: StepStatus): RuntimeNodeStatus {

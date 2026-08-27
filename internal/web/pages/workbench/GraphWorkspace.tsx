@@ -38,6 +38,7 @@ import type {
   RegistryInfo,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  RuntimeEvent,
   RunStatus,
   StepRecord,
   ToolDefinition,
@@ -122,9 +123,12 @@ interface GraphWorkspaceProps {
   directInitialRequirements: InitialStateRequirements | null;
   initialRequirementsError: string;
   steps: StepRecord[];
+  runtimeEvents: RuntimeEvent[];
   selectedRunId: string;
   runStatus?: RunStatus;
   runTriggerId?: string;
+  currentNodeIds?: string[];
+  runUpdatedAt?: string;
   registry: RegistryInfo | null;
   toolDefinitions: ToolDefinition[];
   runtimeSettings: RuntimeSettings;
@@ -168,9 +172,12 @@ export const GraphWorkspace = memo(function GraphWorkspace({
   directInitialRequirements,
   initialRequirementsError,
   steps,
+  runtimeEvents,
   selectedRunId,
   runStatus,
   runTriggerId,
+  currentNodeIds = [],
+  runUpdatedAt,
   registry,
   toolDefinitions,
   runtimeSettings,
@@ -1040,9 +1047,12 @@ export const GraphWorkspace = memo(function GraphWorkspace({
             <GraphCanvas
               definition={definition}
               steps={steps}
+              events={runtimeEvents}
               selectedRunId={selectedRunId}
               runStatus={runStatus}
               runTriggerId={runTriggerId}
+              currentNodeIds={currentNodeIds}
+              runUpdatedAt={runUpdatedAt}
               editable={editing}
               runtimeVisible={!editing}
               selectedNodeId={selectedNodeId ?? undefined}
@@ -1085,7 +1095,15 @@ export const GraphWorkspace = memo(function GraphWorkspace({
                     </span>
                   ) : null}
                 </div>
-                <NodeRuntimeInspector selectedNode={selectedNode} selectedRunID={selectedRunId} steps={steps} />
+                <NodeRuntimeInspector
+                  selectedNode={selectedNode}
+                  selectedRunID={selectedRunId}
+                  currentNodeIDs={currentNodeIds}
+                  runStatus={runStatus}
+                  runUpdatedAt={runUpdatedAt}
+                  steps={steps}
+                  events={runtimeEvents}
+                />
               </aside>
             ) : null}
           </>

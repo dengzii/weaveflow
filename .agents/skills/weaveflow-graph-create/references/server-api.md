@@ -21,7 +21,7 @@ Analysis accepts the strict Graph upload envelope. It may include `definition`, 
 | --- | --- | --- |
 | `POST` | `/graphs/:graph_id/sessions` | Validate settings, install, and persist one complete immutable Session. |
 
-The request includes `definition`, `graph_version`, `settings`, and a required `request_id`; commit mode and `expected_graph_session_id` are used for create/overwrite concurrency when required by the API. Settings include models, environment, environment secrets, tool permissions, and tool approvals. Omitted settings may inherit from the latest complete Session or server defaults according to the API contract.
+The request includes `definition`, `graph_version`, `settings`, and a required `request_id`; commit mode and `expected_graph_session_id` are used for create/overwrite concurrency when required by the API. Settings include models, environment, environment secrets, tool permissions, and tool approvals. Omitted settings may inherit from the latest complete Session or server defaults according to the API contract; after persistence, inspect the effective settings and require explicit approval entries for tools whose registry record says `approval: required`.
 
 Session creation may persist model API keys and secret-named environment values in the Session directory. Responses redact them and expose only presence indicators. Treat creation as credential persistence, not a harmless configuration preview.
 

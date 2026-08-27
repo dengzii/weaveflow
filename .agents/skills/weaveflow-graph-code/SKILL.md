@@ -26,6 +26,9 @@ Use this skill for repository implementation and code-level diagnosis. It change
 ## Contract And Safety Boundaries
 
 - This skill does not create Sessions, replace Triggers, start Runs, or mutate live runtime data.
+- Keep code quality and live Run quality separate: focused tests prove the changed repository boundary only; they do not prove a deployed Session, tool approval policy, or business Run completed successfully.
+- If a change affects node tool declarations, runtime tool registration, permissions, approvals, Session serialization, or Run status semantics, hand off to `weaveflow-graph-create` for an authorized API preflight and then `weaveflow-graph-debug` for a separate persisted-Run quality audit.
+- Never repair a historical Run by changing its Session in source or storage. Implement the code fix locally, preserve the old Run evidence, and let the API skills create and verify a new immutable Session when authorized.
 - Dynamic/custom node reads and writes require registered types, matching State Ports, and matching `GraphNodeSpec` bindings. Keep strict initial-state validation unless the requested behavior changes that contract.
 - Parallel branches need disjoint output paths or declared reducers before merge. Effect-aware retries require stable idempotency keys; non-idempotent or compensatable writes must not retry automatically.
 - Treat credentials, `.local/` runtime data, generated frontend output, and deployment targets as local or sensitive unless explicitly included in scope.

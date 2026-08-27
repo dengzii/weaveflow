@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Braces, Trash2 } from "lucide-react";
 import { Button } from "../../../components/ui/button";
 import { Input } from "../../../components/ui/input";
@@ -7,7 +7,16 @@ import { Textarea } from "../../../components/ui/textarea";
 import { initialStateBindings } from "../../../lib/graphEditor";
 import { exampleConfigForSchema } from "../../../lib/jsonSchemaDefaults";
 import { formatTime, isPlainRecord, stringifyJSON } from "../../../lib/utils";
-import { runtimeFromSteps } from "../../../components/graphCanvasModel";
+import { subscribeRuntimeEvents } from "../../../lib/runtimeEvents";
+import {
+  applyRuntime,
+  applyRuntimeEvent,
+  formatRuntimeDuration,
+  runtimeDurations,
+  runtimeFromExecution,
+  timeRank,
+  type RuntimeNodeState,
+} from "../../../components/graphCanvasModel";
 import type {
   GraphDefinition,
   GraphNodeSpec,
@@ -15,6 +24,8 @@ import type {
   RegistryInfo,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  RuntimeEvent,
+  RunStatus,
   StepRecord,
   ToolDefinition,
 } from "../../../types";
@@ -22,6 +33,8 @@ import { ModelSettingsDialog } from "./GraphSettingsEditor";
 import { JSONConfigEditor } from "./JSONConfigEditor";
 import { JsonSchemaForm } from "./schemaForm";
 import type { ModelAddHandler } from "./SchemaFormControls";
+
+const emptyRuntimeEvents: RuntimeEvent[] = [];
 import { CollapsibleInspectorBlock, Field } from "./shared";
 import { StateBindingsBlock } from "./StateBindingsEditor";
 import { analyzeNodeDetails, nodeTypeForType, schemaForNodeType } from "./nodeInspectorModel";
@@ -273,12 +286,64 @@ export function NodeInspector({
 export function NodeRuntimeInspector({
   selectedNode,
   selectedRunID,
+  currentNodeIDs,
+  runStatus,
+  runUpdatedAt,
   steps,
+  events = emptyRuntimeEvents,
 }: {
   selectedNode: GraphNodeSpec | null;
   selectedRunID: string;
+  currentNodeIDs?: string[];
+  runStatus?: RunStatus;
+  runUpdatedAt?: string;
   steps: StepRecord[];
+  events?: RuntimeEvent[];
 }) {
+  const selectedNodeID = selectedNode?.id ?? "";
+  const nodeSteps = useMemo(
+    () => selectedNodeID
+      ? steps
+        .filter((step) => step.node_id === selectedNodeID && (!selectedRunID || step.run_id === selectedRunID))
+        .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at))
+      : [],
+    [selectedNodeID, selectedRunID, steps]
+  );
+  const runtimeSeed = useMemo(
+    () => runtimeFromExecution(nodeSteps, events, selectedRunID),
+    [events, nodeSteps, selectedRunID]
+  );
+  const [liveProjection, setLiveProjection] = useState<{
+    runID: string;
+    runtime: Map<string, RuntimeNodeState>;
+  }>(() => ({ runID: selectedRunID, runtime: new Map() }));
+  useEffect(() => subscribeRuntimeEvents((event) => {
+    if (!selectedNodeID || event.node_id !== selectedNodeID) return;
+    if (selectedRunID && event.run_id && event.run_id !== selectedRunID) return;
+    setLiveProjection((current) => {
+      const next = current.runID === selectedRunID ? new Map(current.runtime) : new Map<string, RuntimeNodeState>();
+      if (!applyRuntimeEvent(next, event)) return current;
+      return { runID: selectedRunID, runtime: next };
+    });
+  }), [selectedNodeID, selectedRunID]);
+  const runtime = useMemo(() => {
+    const merged = new Map(runtimeSeed);
+    if (liveProjection.runID === selectedRunID) {
+      for (const [nodeID, update] of liveProjection.runtime) applyRuntime(merged, nodeID, update);
+    }
+    return selectedNodeID ? merged.get(selectedNodeID) : undefined;
+  }, [liveProjection, runtimeSeed, selectedNodeID, selectedRunID]);
+  const current = Boolean(selectedNode && currentNodeIDs?.includes(selectedNode.id));
+  const status = runtime?.status || (current && runStatus === "running" ? "running" : current && runStatus === "paused" ? "paused" : "idle");
+  const [now, setNow] = useState(() => Date.now());
+  const runStartAt = timeRank(runUpdatedAt);
+
+  useEffect(() => {
+    if (status !== "running") return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [status, selectedNode?.id, selectedRunID]);
+
   if (!selectedNode) {
     return (
       <div className="flex min-h-24 items-center justify-center p-4 text-center text-xs text-muted-foreground">
@@ -287,18 +352,23 @@ export function NodeRuntimeInspector({
     );
   }
 
-  const nodeSteps = steps
-    .filter((step) => step.node_id === selectedNode.id && (!selectedRunID || step.run_id === selectedRunID))
-    .sort((left, right) => Date.parse(right.updated_at) - Date.parse(left.updated_at));
-  const runtime = runtimeFromSteps(nodeSteps, selectedRunID).get(selectedNode.id);
   const latestStep = nodeSteps[0];
   const latestError = nodeSteps.find((step) => Boolean(step.error_message));
+  const durationRuntime = runtime || (current && (status === "running" || status === "paused")
+    ? { status, executionCount: 0, at: runStartAt || now }
+    : undefined);
+  const durations = runtimeDurations(durationRuntime, now);
+  const statusValue = status === "running"
+    ? `running${current ? "/current" : ""}/${formatRuntimeDuration(durations.currentMs)}`
+    : current ? `${status}/current` : status;
 
   return (
     <div className="space-y-2.5 p-3">
       <div className="grid grid-cols-2 gap-2">
-        <RuntimeMetric label="Status" value={latestStep?.status || "idle"} />
+        <RuntimeMetric label="Status" value={statusValue} />
         <RuntimeMetric label="Executions" value={String(runtime?.executionCount || 0)} />
+        <RuntimeMetric label="Runtime" value={formatRuntimeDuration(durations.totalMs)} />
+        {status === "running" ? <RuntimeMetric label="Current" value={formatRuntimeDuration(durations.currentMs)} /> : null}
         <RuntimeMetric label="Attempt" value={String(latestStep?.attempt || 0)} />
         <RuntimeMetric label="Updated" value={formatTime(latestStep?.updated_at)} />
       </div>

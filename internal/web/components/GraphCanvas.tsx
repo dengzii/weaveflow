@@ -17,7 +17,7 @@ import {
   type Node,
   type Viewport,
 } from "@xyflow/react";
-import type { GraphDefinition, NodeTypeSchema, RunStatus, StepRecord, TriggerCanvasNode } from "../types";
+import type { GraphDefinition, NodeTypeSchema, RunStatus, RuntimeEvent, StepRecord, TriggerCanvasNode } from "../types";
 import { END_NODE_REF, START_NODE_REF, type NodePosition } from "../lib/graphEditor";
 import type { VirtualGraphLoop } from "../lib/loopPresentation";
 import { subscribeRuntimeEvents } from "../lib/runtimeEvents";
@@ -30,13 +30,10 @@ import {
 } from "./graphCanvasElements";
 import {
   applyRuntime,
-  applyRuntimeStep,
+  applyRuntimeEvent,
   applyRuntimeSnapshot,
-  eventAttempt,
-  eventErrorMessage,
   resetRuntimeNodes,
-  runtimeFromSteps,
-  runtimeStatusFromEvent,
+  runtimeFromExecution,
   timeRank,
   updateRuntimeNode,
   virtualNodeKind,
@@ -75,14 +72,18 @@ const graphCanvasEdgeTypes = {
 };
 const emptyConfigurationErrors = new Map<string, readonly string[]>();
 const emptyRuntime = new Map<string, RuntimeNodeState>();
+const emptyRuntimeEvents: RuntimeEvent[] = [];
 
 export function GraphCanvas({
   definition,
   steps,
+  events = emptyRuntimeEvents,
   selectedRunId,
   runtimeVisible = true,
   runStatus,
   runTriggerId,
+  currentNodeIds = [],
+  runUpdatedAt,
   editable = false,
   selectedNodeId,
   selectedEdgeId,
@@ -115,10 +116,13 @@ export function GraphCanvas({
 }: {
   definition: GraphDefinition | null;
   steps: StepRecord[];
+  events?: RuntimeEvent[];
   selectedRunId?: string;
   runtimeVisible?: boolean;
   runStatus?: RunStatus;
   runTriggerId?: string;
+  currentNodeIds?: string[];
+  runUpdatedAt?: string;
   editable?: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
@@ -154,10 +158,13 @@ export function GraphCanvas({
       <GraphCanvasInner
         definition={definition}
         steps={steps}
+        events={events}
         selectedRunId={selectedRunId}
         runtimeVisible={runtimeVisible}
         runStatus={runStatus}
         runTriggerId={runTriggerId}
+        currentNodeIds={currentNodeIds}
+        runUpdatedAt={runUpdatedAt}
         editable={editable}
         selectedNodeId={selectedNodeId}
         selectedEdgeId={selectedEdgeId}
@@ -195,10 +202,13 @@ export function GraphCanvas({
 function GraphCanvasInner({
   definition,
   steps,
+  events,
   selectedRunId,
   runtimeVisible,
   runStatus,
   runTriggerId,
+  currentNodeIds,
+  runUpdatedAt,
   editable,
   selectedNodeId,
   selectedEdgeId,
@@ -231,10 +241,13 @@ function GraphCanvasInner({
 }: {
   definition: GraphDefinition | null;
   steps: StepRecord[];
+  events: RuntimeEvent[];
   selectedRunId?: string;
   runtimeVisible: boolean;
   runStatus?: RunStatus;
   runTriggerId?: string;
+  currentNodeIds: string[];
+  runUpdatedAt?: string;
   editable: boolean;
   selectedNodeId?: string;
   selectedEdgeId?: string;
@@ -279,6 +292,7 @@ function GraphCanvasInner({
   const edgesRef = useRef<Edge[]>([]);
   const runtimeRef = useRef<Map<string, RuntimeNodeState>>(new Map());
   const runtimeRunIdRef = useRef("");
+  const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const loopDragRef = useRef<{
     groupId: string;
     startPosition: NodePosition;
@@ -290,8 +304,19 @@ function GraphCanvasInner({
     setInteractive(editable);
   }, [editable]);
 
-  const stepRuntime = useMemo(() => runtimeFromSteps(steps, selectedRunId), [selectedRunId, steps]);
+  const runtimeSeed = useMemo(
+    () => runtimeFromExecution(steps, events, selectedRunId),
+    [events, selectedRunId, steps]
+  );
   const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
+  const currentNodeSet = useMemo(() => new Set(currentNodeIds), [currentNodeIds]);
+  const currentNodeStartedAt = timeRank(runUpdatedAt);
+
+  useEffect(() => {
+    if (!runtimeVisible || runStatus !== "running") return;
+    const timer = window.setInterval(() => setRuntimeNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [runStatus, runtimeVisible]);
 
   useLayoutEffect(() => {
     const nextRunId = selectedRunId ?? "";
@@ -302,14 +327,14 @@ function GraphCanvasInner({
   }, [runtimeVisible, selectedRunId, setNodes]);
 
   useLayoutEffect(() => {
-    if (stepRuntime.size === 0) return;
+    if (runtimeSeed.size === 0) return;
     const next = new Map(runtimeRef.current);
-    for (const [nodeId, runtime] of stepRuntime) {
+    for (const [nodeId, runtime] of runtimeSeed) {
       applyRuntime(next, nodeId, runtime);
     }
     runtimeRef.current = next;
     if (runtimeVisible) setNodes((current) => applyRuntimeSnapshot(current, next));
-  }, [runtimeVisible, setNodes, stepRuntime]);
+  }, [runtimeSeed, runtimeVisible, setNodes]);
 
   useEffect(() => subscribeRuntimeEvents((event) => {
     if (selectedRunId && event.run_id && event.run_id !== selectedRunId) return;
@@ -324,19 +349,8 @@ function GraphCanvasInner({
       return;
     }
     const nodeId = event.node_id;
-    const status = runtimeStatusFromEvent(event.type);
-    if (!status) return;
-
     const next = new Map(runtimeRef.current);
-    const changed = applyRuntimeStep(
-      next,
-      nodeId,
-      event.step_id || `${nodeId}:current`,
-      status,
-      eventAttempt(event.type, event.payload),
-      timeRank(event.timestamp),
-      eventErrorMessage(event.payload)
-    );
+    const changed = applyRuntimeEvent(next, event);
     if (!changed && !switchedRun) return;
     runtimeRef.current = next;
     if (!runtimeVisible) return;
@@ -357,6 +371,9 @@ function GraphCanvasInner({
       configurationErrors,
       runtime: runtimeVisible ? runtimeRef.current : emptyRuntime,
       runtimeVisible,
+      runtimeNow,
+      currentNodeIDs: currentNodeSet,
+      currentNodeStartedAt,
       runStatus: runtimeVisible ? runStatus : undefined,
       runTriggerID: runtimeVisible ? runTriggerId : undefined,
       selectedEdgeID: selectedEdgeId,
@@ -376,6 +393,9 @@ function GraphCanvasInner({
       nodeTypes,
       configurationErrors,
       runtimeVisible,
+      runtimeNow,
+      currentNodeSet,
+      currentNodeStartedAt,
       runStatus,
       runTriggerId,
       selectedEdgeId,

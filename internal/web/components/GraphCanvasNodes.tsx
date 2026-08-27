@@ -12,6 +12,7 @@ import {
   minGraphLoopHeight,
   minGraphLoopWidth,
   triggerTargetHandleID,
+  formatRuntimeDuration,
   type FlowNodeData,
 } from "./graphCanvasModel";
 
@@ -21,12 +22,22 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
   const editable = Boolean(data.editable);
   const virtualKind = data.virtualKind;
   const executionCount = typeof data.executionCount === "number" && data.executionCount > 0 ? data.executionCount : 0;
+  const runTimeMs = typeof data.runTimeMs === "number" && data.runTimeMs >= 0 ? data.runTimeMs : 0;
+  const currentRunTimeMs = typeof data.currentRunTimeMs === "number" && data.currentRunTimeMs >= 0
+    ? data.currentRunTimeMs
+    : 0;
+  const current = Boolean(data.current);
   const highlighted = Boolean(data.highlighted);
   const configurationErrors = data.configurationErrors ?? [];
   const configurationInvalid = configurationErrors.length > 0;
   const showMissingBindings = Boolean(data.bindingSummary && data.missingBindings);
-  const showMeta = configurationInvalid || showMissingBindings;
-  const className = `debug-node${runtimeVisible ? ` debug-node-${status}` : ""}${virtualKind ? ` debug-node-virtual debug-node-virtual-${virtualKind}` : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}${configurationInvalid ? " debug-node-config-invalid" : ""}${showMeta ? "" : " debug-node-single-line"}`;
+  const showRuntime = runtimeVisible && (status !== "idle" || executionCount > 0 || runTimeMs > 0);
+  const runtimeText = status === "running"
+    ? `${formatRuntimeDuration(runTimeMs)}/${formatRuntimeDuration(currentRunTimeMs)}`
+    : formatRuntimeDuration(runTimeMs);
+  const statusLabel = current ? `Current node, execution status: ${status}` : `Execution status: ${status}`;
+  const showMeta = configurationInvalid || showMissingBindings || showRuntime;
+  const className = `debug-node${runtimeVisible ? ` debug-node-${status}` : ""}${current ? " debug-node-current" : ""}${virtualKind ? ` debug-node-virtual debug-node-virtual-${virtualKind}` : ""}${selected ? " debug-node-selected" : ""}${highlighted ? " debug-node-highlighted" : ""}${configurationInvalid ? " debug-node-config-invalid" : ""}${showMeta ? "" : " debug-node-single-line"}`;
   if (virtualKind === "start" || virtualKind === "end") {
     return (
       <div className={className} role="group" aria-label={flowNodeAriaLabel(data)}>
@@ -41,8 +52,8 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
             <span
               className="debug-node-status-dot"
               role="img"
-              aria-label={`Execution status: ${status}`}
-              title={`Execution status: ${status}`}
+              aria-label={statusLabel}
+              title={statusLabel}
             />
           ) : null}
           <div className="debug-node-virtual-label">{data.label}</div>
@@ -87,6 +98,15 @@ export function GraphNode({ data, selected }: { data: FlowNodeData; selected?: b
                 title={configurationErrors.join("\n")}
               >
                 configuration error
+              </span>
+            ) : null}
+            {showRuntime ? (
+              <span
+                className={`debug-node-runtime${current ? " debug-node-runtime-current" : ""}`}
+                aria-label={current ? `Current node, ${runtimeText}` : runtimeText}
+                title={current ? `Current node · ${runtimeText}` : runtimeText}
+              >
+                <span className="debug-node-runtime-value">{runtimeText}</span>
               </span>
             ) : null}
           </span>
@@ -223,6 +243,17 @@ function NodeHoverCard({
   const stateBindings = data.stateBindingPreview ?? [];
   const configuration = data.configurationPreview ?? [];
   const hoverType = shouldShowNodeType(data.label, typeLabel) ? typeLabel : "";
+  const runTimeMs = typeof data.runTimeMs === "number" ? data.runTimeMs : 0;
+  const currentRunTimeMs = typeof data.currentRunTimeMs === "number" ? data.currentRunTimeMs : 0;
+  const runtimeItems = data.runtimeVisible && (data.status !== "idle" || data.executionCount || runTimeMs > 0)
+    ? [
+        { name: "status", value: data.current ? `${String(data.status || "idle")} · current` : String(data.status || "idle") },
+        { name: "total", value: formatRuntimeDuration(runTimeMs) },
+        ...(data.status === "running"
+          ? [{ name: "current", value: formatRuntimeDuration(currentRunTimeMs) }]
+          : []),
+      ]
+    : [];
   return (
     <div className="debug-node-hover-card" aria-hidden="true">
       <div className="debug-node-hover-header">
@@ -231,6 +262,7 @@ function NodeHoverCard({
       </div>
       <NodePreviewSection title="State" items={stateBindings} />
       <NodePreviewSection title="Config" items={configuration} />
+      <NodePreviewSection title="Runtime" items={runtimeItems} />
       {configurationErrors.length > 0 ? (
         <div className="debug-node-hover-error">
           <div className="debug-node-hover-heading">Configuration error</div>

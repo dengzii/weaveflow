@@ -437,6 +437,23 @@
   flex: none;
 }
 
+.debug-node-runtime {
+  min-width: 0;
+  max-width: 100%;
+  color: var(--muted-foreground);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.debug-node-runtime-current {
+  color: var(--status-live-text);
+  font-weight: 600;
+}
+
+.debug-node-runtime-value {
+  font-family: var(--font-mono);
+}
+
 .debug-node-binding {
   display: inline-flex;
   align-items: center;
@@ -689,6 +706,11 @@
 .debug-node-running {
   border-color: var(--flow-edge-selected);
   box-shadow: var(--node-running-shadow);
+}
+
+.debug-node-current {
+  border-color: var(--status-live-text);
+  box-shadow: 0 0 0 2px var(--status-live-bg), var(--node-running-shadow);
 }
 
 .debug-node-succeeded {
