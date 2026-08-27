@@ -10,13 +10,13 @@
     <meta name="referrer" content="strict-origin-when-cross-origin"/>
     <meta data-i18n-content="meta.description"
             name="description"
-            content="WeaveFlow is a deterministic graph runtime for building, executing, and inspecting LLM agents in Go."
+            content="WeaveFlow is a graph runtime written in Go for building, executing, and inspecting LLM agent workflows."
     />
     <meta name="theme-color" content="#303743"/>
-    <meta data-i18n-content="meta.title" property="og:title" content="WeaveFlow | Deterministic agent workflows in Go"/>
+    <meta data-i18n-content="meta.title" property="og:title" content="WeaveFlow | Build inspectable agent workflows in Go"/>
     <meta data-i18n-content="meta.description"
             property="og:description"
-            content="WeaveFlow is a deterministic graph runtime for building, executing, and inspecting LLM agents in Go."
+            content="WeaveFlow is a graph runtime written in Go for building, executing, and inspecting LLM agent workflows."
     />
     <meta property="og:type" content="website"/>
     <meta property="og:url" content="https://weaveflow.space/"/>
@@ -26,13 +26,13 @@
     <meta property="og:image:height" content="630"/>
     <meta data-i18n-content="meta.imageAlt" property="og:image:alt" content="WeaveFlow graph runtime with inspectable execution paths"/>
     <meta name="twitter:card" content="summary_large_image"/>
-    <meta data-i18n-content="meta.title" name="twitter:title" content="WeaveFlow | Deterministic agent workflows in Go"/>
+    <meta data-i18n-content="meta.title" name="twitter:title" content="WeaveFlow | Build inspectable agent workflows in Go"/>
     <meta data-i18n-content="meta.twitterDescription"
             name="twitter:description"
             content="Explicit topology, checkpointed state, and inspectable runs for agent workflows in Go."
     />
     <meta name="twitter:image" content="https://weaveflow.space/og-image.svg"/>
-    <title>WeaveFlow | Deterministic agent workflows in Go</title>
+    <title>WeaveFlow | Build inspectable agent workflows in Go</title>
     <link rel="canonical" href="https://weaveflow.space/"/>
     <link rel="icon" href="icon.svg" type="image/svg+xml"/>
     <link rel="stylesheet" href="styles.css"/>
@@ -67,7 +67,7 @@
             <a href="#start" data-i18n="nav.start">Get started</a>
             <a href="https://playground.weaveflow.space" data-i18n="nav.playground">Playground</a>
             <a href="/docs/" data-docs-link data-i18n="nav.docs">Docs</a>
-            <button class="language-toggle" type="button" data-language-toggle aria-label="切换为中文">
+            <button class="language-toggle" type="button" data-language-toggle aria-label="Switch to Chinese">
                 <span data-language-label>中文</span>
             </button>
             <a class="nav-github" href="https://github.com/dengzii/weaveflow">
@@ -84,8 +84,8 @@
     <section class="hero-section" id="top" aria-labelledby="hero-title">
         <div class="hero shell">
             <div class="hero-copy">
-                <h1 id="hero-title" data-i18n="hero.title">Agent workflows you can inspect, control, and recover.</h1>
-                <p class="hero-lede" data-i18n="hero.lede">Build reliable LLM workflows with explicit topology, checkpointed state, and a deterministic runtime that keeps every decision inspectable.</p>
+                <h1 id="hero-title" data-i18n="hero.title">Build agent workflows you can inspect, control, and recover</h1>
+                <p class="hero-lede" data-i18n="hero.lede">Build reliable LLM workflows with explicit topology, checkpointed state, and a runtime that keeps every decision inspectable.</p>
                 <div class="hero-actions">
                     <a class="button button-primary" href="#start">
                         <span data-i18n="hero.start">Start building</span>
@@ -169,7 +169,7 @@
             <div class="section-heading">
                 <div class="section-title">
                     <span class="section-label" data-i18n="why.label">WHY WEAVEFLOW</span>
-                    <h2 id="why-title" data-i18n="why.title">Explicit by design. Inspectable by default.</h2>
+                    <h2 id="why-title" data-i18n="why.title">Explicit by design — inspectable by default</h2>
                 </div>
                 <p data-i18n="why.description">Agent workflow problems are not limited to whether a run completes. Control flow must be visible, state access must stay constrained, and failures must leave enough evidence to understand what happened.</p>
             </div>
@@ -177,17 +177,17 @@
             <div class="principle-list">
                 <article class="principle-item">
                     <span class="item-index">01</span>
-                    <h3 data-i18n="why.topologyTitle">Topology stays explicit.</h3>
+                    <h3 data-i18n="why.topologyTitle">Topology stays explicit</h3>
                     <p data-i18n="why.topologyDescription">Define nodes, edges, routes, and state bindings in a serializable Graph instead of an implicit loop.</p>
                 </article>
                 <article class="principle-item">
                     <span class="item-index">02</span>
-                    <h3 data-i18n="why.stateTitle">State has a contract.</h3>
+                    <h3 data-i18n="why.stateTitle">State has a contract</h3>
                     <p data-i18n="why.stateDescription">Use State Ports and explicit paths to catch invalid access and conflicting writes before execution.</p>
                 </article>
                 <article class="principle-item">
                     <span class="item-index">03</span>
-                    <h3 data-i18n="why.evidenceTitle">Every run leaves evidence.</h3>
+                    <h3 data-i18n="why.evidenceTitle">Every run leaves evidence</h3>
                     <p data-i18n="why.evidenceDescription">Events, steps, checkpoints, and Artifacts make runtime decisions inspectable after they occur.</p>
                 </article>
             </div>
@@ -198,7 +198,7 @@
         <div class="shell start-layout">
             <div class="start-copy">
                 <span class="section-label" data-i18n="start.label">GET STARTED</span>
-                <h2 id="start-title" data-i18n="start.title">A focused API for structured workflows.</h2>
+                <h2 id="start-title" data-i18n="start.title">A focused API for structured workflows</h2>
                 <p data-i18n="start.description">Install the module, connect nodes, and choose a Runner. Add checkpoints, approvals, and dynamic routing only where the workflow needs them.</p>
                 <ul class="start-list">
                     <li><span class="start-list-icon" aria-hidden="true">✓</span> <span class="start-list-text" data-i18n="start.contracts">Go-native contracts and Context</span></li>
@@ -273,7 +273,7 @@
         <div class="shell">
             <div class="runtime-heading">
                 <span class="section-label" data-i18n="runtime.label">RUNTIME</span>
-                <h2 id="runtime-title" data-i18n="runtime.title">Control where execution goes—and what it leaves behind.</h2>
+                <h2 id="runtime-title" data-i18n="runtime.title">Make execution paths explicit—and keep the evidence</h2>
             </div>
 
             <div class="capability-list">
@@ -285,7 +285,7 @@
                 <article class="capability-item">
                     <span class="item-index">02</span>
                     <h3 data-i18n="runtime.parallelTitle">Parallel execution</h3>
-                    <p data-i18n="runtime.parallelDescription">Bound fan-out and merge recorded patches in a deterministic order.</p>
+                    <p data-i18n="runtime.parallelDescription">Bound fan-out and merge recorded patches in a defined order.</p>
                 </article>
                 <article class="capability-item">
                     <span class="item-index">03</span>
@@ -315,7 +315,7 @@
     <section class="cta-section" aria-labelledby="cta-title">
         <div class="shell cta-content">
             <div>
-                <h2 id="cta-title" data-i18n="cta.title">Keep every workflow understandable.</h2>
+                <h2 id="cta-title" data-i18n="cta.title">Keep every workflow understandable</h2>
                 <p data-i18n="cta.description">Build agent systems with explicit execution paths, inspectable state, and controlled recovery.</p>
             </div>
             <a class="button button-primary" href="https://github.com/dengzii/weaveflow">
@@ -335,7 +335,7 @@
                 <img class="brand-mark" src="icon.svg" width="34" height="34" alt=""/>
                 <span>WeaveFlow</span>
             </a>
-            <p data-i18n="footer.tagline">Deterministic agent workflows in Go.</p>
+            <p data-i18n="footer.tagline">A Go runtime for inspectable agent workflows</p>
         </div>
         <nav class="footer-links" aria-label="Footer navigation" data-i18n-aria-label="accessibility.footerNav">
             <a href="/docs/" data-docs-link data-i18n="footer.docs">Documentation</a>

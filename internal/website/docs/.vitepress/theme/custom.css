@@ -26,6 +26,15 @@
   --vp-button-brand-hover-border: #303743;
   --vp-button-brand-hover-bg: #303743;
   --vp-home-hero-name-color: #303743;
+  --wf-nav-highlight: #0f766e;
+  --wf-outline-text: #687581;
+  --wf-outline-title: #46515f;
+}
+
+.dark {
+  --wf-nav-highlight: #5eead4;
+  --wf-outline-text: #a0a9b3;
+  --wf-outline-title: #d6dbe1;
 }
 
 .VPNavBarTitle .title,
@@ -44,6 +53,27 @@
 
 .VPFeature {
   border-radius: 4px !important;
+}
+
+.VPSidebarItem.is-active > .item > .link > .text {
+  color: var(--wf-nav-highlight) !important;
+}
+
+.VPDocAsideOutline .outline-title {
+  color: var(--wf-outline-title);
+}
+
+.VPDocAsideOutline .outline-link {
+  color: var(--wf-outline-text) !important;
+}
+
+.VPDocAsideOutline .outline-link:hover,
+.VPDocAsideOutline .outline-link.active {
+  color: var(--wf-nav-highlight) !important;
+}
+
+.VPDocAsideOutline .outline-marker {
+  background-color: var(--wf-nav-highlight) !important;
 }
 
 .vp-doc div[class*="language-"] {

@@ -17,5 +17,5 @@
 | `internal/server/` | Debug server API implementation. |
 | `internal/web/` | Workbench Graph editor and Run debugger. |
 
-For exported Go identifiers and signatures, use [pkg.go.dev](https://pkg.go.dev/github.com/dengzii/weaveflow) alongside
-these conceptual guides.
+Use this map to find the implementation behind each concept. For exported Go identifiers and signatures, refer to
+[pkg.go.dev](https://pkg.go.dev/github.com/dengzii/weaveflow) alongside these guides.
