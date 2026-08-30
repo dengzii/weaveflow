@@ -225,9 +225,9 @@ func (s contractReadSources) empty() bool {
 	return !s.runInput && len(s.entries) == 0 && len(s.nodes) == 0
 }
 
-func (s contractReadSources) diagnosticLabels() []string {
+func (s contractReadSources) diagnosticLabels(path string) []string {
 	labels := make([]string, 0, len(s.entries)+len(s.nodes)+1)
-	if s.runInput {
+	if s.runInput && path != "shared.request.input" {
 		labels = append(labels, "run_input")
 	}
 	labels = append(labels, s.entries...)
@@ -662,7 +662,7 @@ func requiredReadDiagnostics(input ContractAnalysisGraph, reachable []string, an
 				})
 				continue
 			}
-			diagnosticSources := sources.diagnosticLabels()
+			diagnosticSources := sources.diagnosticLabels(path)
 			if len(diagnosticSources) > 1 {
 				diagnostics = append(diagnostics, core.ContractDiagnostic{
 					Severity: core.ContractDiagnosticSeverityWarning,

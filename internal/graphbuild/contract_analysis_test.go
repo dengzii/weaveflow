@@ -143,11 +143,31 @@ func TestAnalyzeInitialStateRequirementsDistinguishesInputNodeFromRunInput(t *te
 	}
 
 	diagnostics := AnalyzeContractDiagnostics(analysis)
+	if len(diagnostics) != 0 {
+		t.Fatalf("diagnostics = %#v, want no run_input source warning", diagnostics)
+	}
+}
+
+func TestAnalyzeContractDiagnosticsKeepsRunInputSourceForOtherPaths(t *testing.T) {
+	t.Parallel()
+	path := state.Shared("request", "metadata")
+	analysis := ContractAnalysisGraph{
+		EntryPoint:        "writer",
+		EndNode:           "__end__",
+		InitialStatePaths: []string{path.String()},
+		Edges:             map[string][]string{"writer": {"reader"}, "reader": {"__end__"}},
+		NodeContracts: map[string]state.Contract{
+			"writer": state.NewContract(state.FieldAccess{Path: path, Mode: state.AccessWrite}),
+			"reader": state.NewContract(state.FieldAccess{Path: path, Mode: state.AccessRead, Required: true}),
+		},
+	}
+
+	diagnostics := AnalyzeContractDiagnostics(analysis)
 	if len(diagnostics) != 1 || diagnostics[0].Kind != "multiple_read_sources" {
 		t.Fatalf("diagnostics = %#v, want one multiple_read_sources warning", diagnostics)
 	}
-	if got := diagnostics[0].Sources; len(got) != 2 || got[0] != "run_input" || got[1] != "input" {
-		t.Fatalf("diagnostic sources = %#v, want [run_input input]", got)
+	if got := diagnostics[0].Sources; len(got) != 2 || got[0] != "run_input" || got[1] != "writer" {
+		t.Fatalf("diagnostic sources = %#v, want [run_input writer]", got)
 	}
 }
 
