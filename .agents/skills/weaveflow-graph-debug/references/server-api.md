@@ -6,12 +6,14 @@ Use Graph-scoped routes with the management Bearer token. Successful data is wra
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `GET` | `/graphs/:graph_id/runs` | List Runs; use the returned cursor when paging. |
+| `GET` | `/graphs/:graph_id/runs` | List Runs; page the cursor and optionally filter by `status`, `parent_run_id`, `parent_task_id`, `root_run_id`, or `namespace`. |
 | `GET` | `/graphs/:graph_id/runs/:run_id/inspection` | Read the primary Run, Step, Checkpoint, Event, and Interrupt view. |
 | `GET` | `/graphs/:graph_id/runs/:run_id/events` | Read persisted Event pages with cursor and limit. |
 | `GET` | `/graphs/:graph_id/runs/:run_id/artifacts` | List Run Artifacts. |
 | `GET` | `/graphs/:graph_id/runs/:run_id/artifacts/:artifact_id` | Read one referenced Artifact. |
 | `GET` | `/graphs/:graph_id/runs/:run_id/checkpoints/:checkpoint_id` | Read one referenced Checkpoint. |
+| `GET` | `/graphs/:graph_id/runs/:run_id/compare/:other_run_id` | Compare two existing Runs on the same Graph snapshot, including Steps, Events, Artifacts, and last-Checkpoint state changes. |
+| `GET` | `/graphs/:graph_id/retention-audit` | Read persisted Run-retention deletion intents for this Graph; an intent alone does not prove deletion completed. |
 | `GET` | `/graphs/:graph_id/sessions/:session_id` | Read the Run's exact immutable definition, settings, required state, hashes, and registry-drift warnings. |
 | `GET` | `/graphs/:graph_id` | Read the latest Session only, for drift comparison. |
 
@@ -20,12 +22,15 @@ Use Graph-scoped routes with the management Bearer token. Successful data is wra
 | Method | Route | Purpose |
 | --- | --- | --- |
 | `POST` | `/graphs/:graph_id/runs/:run_id/resume` | Resume the stored Session with an `input` state patch. |
+| `POST` | `/graphs/:graph_id/runs/:run_id/forks` | Create and asynchronously execute an independent Run from a safe non-final Checkpoint. |
 | `POST` | `/graphs/:graph_id/runs/:run_id/pause` | Request a safe-point pause. |
 | `POST` | `/graphs/:graph_id/runs/:run_id/cancel` | Request cancellation. |
 | `POST` | `/graphs/:graph_id/runs/:run_id/steps/:step_id/effect-resolution` | Resolve an unresolved side effect. |
 | `DELETE` | `/graphs/:graph_id/runs/:run_id` | Delete Run diagnostics; use only when explicitly requested. |
 
 Run start is asynchronous: `POST /graphs/:graph_id/sessions/:session_id/runs` returns `202` with a `RunRecord` and accepts `initial_state`. Trigger-started Runs include an origin; direct starts do not.
+
+Fork accepts `checkpoint_id`, stable `request_key`, and optional external `input`. It returns `202`; repeating the same source/checkpoint/request key is idempotent, while a conflicting identity is rejected. Fork is not allowed from a final or non-independent Checkpoint or while source effects are unresolved. Compare is read-only but rejects Runs from different Graph snapshots.
 
 If exact Session detail returns `context_warnings`, keep the persisted definition, settings, Session ID, and manifest hashes as historical context. Do not reinterpret missing derived requirements through the current registry or guess how the old Session behaved.
 

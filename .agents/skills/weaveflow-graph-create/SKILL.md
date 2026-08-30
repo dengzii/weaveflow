@@ -13,7 +13,7 @@ Read [references/graph-definition.md](references/graph-definition.md) before com
 
 - **Inputs**: server base URL, management authentication, a Graph ID or new-Graph intent, business goal, optional existing definition, expected inputs/outputs, model/tool needs, and explicit authorization for state-changing calls.
 - **Outputs**: a semantic Graph context summary, validated definition, initial-state contract, exact Session identity, sanitized settings, Trigger result, or a precise API-derived blocking error.
-- **Handoff**: use `weaveflow-graph-debug` after a Run starts. If the public API cannot express or expose the required capability, report an API capability gap without inspecting implementation code.
+- **Handoff**: use `weaveflow-graph-debug` after a Run starts for operational status, evidence, side effects, or recovery; use `weaveflow-graph-agent-quality` for decomposition, tool/evidence strategy, loop, efficiency, and completion-design evaluation. If the public API cannot express or expose the required capability, report an API capability gap without inspecting implementation code.
 
 ## Build The Graph Context
 
@@ -34,7 +34,7 @@ Before writing or changing JSON, build a concise context model from API data:
 5. When installation is authorized, create one immutable Session with `POST /graphs/:graph_id/sessions`, including the definition, `graph_version`, unique `request_id`, complete settings, and create/overwrite head fields required by the API.
 6. Verify the response identity and re-read `GET /graphs/:graph_id/sessions/:session_id`. Confirm that the persisted definition, settings, required state, graph hash, and snapshot hash match the intended context. Re-run the same policy preflight against persisted settings.
 7. For Chat setup, use the Chat Channel setup-session API until confirmed, then atomically install the complete Trigger set. Preserve unrelated Triggers and use only sanitized API responses.
-8. Invoke a Trigger or start the exact Session only when requested. Pass the returned Run ID and Session ID to `weaveflow-graph-debug` for a four-part quality audit.
+8. Invoke a Trigger or start the exact Session only when requested. Pass the returned Run ID and Session ID to `weaveflow-graph-debug` for an operational four-part quality audit, or to `weaveflow-graph-agent-quality` when the requested outcome is a design-quality evaluation.
 
 ## Safety And Stop Conditions
 

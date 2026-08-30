@@ -11,7 +11,7 @@ Use this skill for repository implementation and code-level diagnosis. It change
 
 - **Inputs**: requested behavior, affected package or symptom, applicable repository instructions, and any permitted test or documentation scope.
 - **Outputs**: focused source/doc diff, targeted validation results, explicit compatibility impact, and unresolved risks or unrelated failures.
-- **Handoff**: use `weaveflow-graph-create` for an API-level Session/Trigger check; use `weaveflow-graph-debug` for live Run evidence after implementation.
+- **Handoff**: use `weaveflow-graph-create` for an API-level Session/Trigger check, `weaveflow-graph-debug` for operational Run evidence or recovery, and `weaveflow-graph-agent-quality` for persisted Agent-design behavior after implementation.
 
 ## Workflow
 
@@ -27,7 +27,7 @@ Use this skill for repository implementation and code-level diagnosis. It change
 
 - This skill does not create Sessions, replace Triggers, start Runs, or mutate live runtime data.
 - Keep code quality and live Run quality separate: focused tests prove the changed repository boundary only; they do not prove a deployed Session, tool approval policy, or business Run completed successfully.
-- If a change affects node tool declarations, runtime tool registration, permissions, approvals, Session serialization, or Run status semantics, hand off to `weaveflow-graph-create` for an authorized API preflight and then `weaveflow-graph-debug` for a separate persisted-Run quality audit.
+- If a change affects node tool declarations, runtime tool registration, permissions, approvals, Session serialization, or Run status semantics, hand off to `weaveflow-graph-create` for an authorized API preflight and then `weaveflow-graph-debug` for a separate persisted operational audit. Use `weaveflow-graph-agent-quality` as an additional handoff only when the change is intended to alter Agent design behavior.
 - Never repair a historical Run by changing its Session in source or storage. Implement the code fix locally, preserve the old Run evidence, and let the API skills create and verify a new immutable Session when authorized.
 - Dynamic/custom node reads and writes require registered types, matching State Ports, and matching `GraphNodeSpec` bindings. Keep strict initial-state validation unless the requested behavior changes that contract.
 - Parallel branches need disjoint output paths or declared reducers before merge. Effect-aware retries require stable idempotency keys; non-idempotent or compensatable writes must not retry automatically.

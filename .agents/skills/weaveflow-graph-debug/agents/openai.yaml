@@ -1,4 +1,4 @@
 interface:
   display_name: "WeaveFlow Graph Debug"
-  short_description: "Audit and debug Runs via public API"
-  default_prompt: "Use $weaveflow-graph-debug to reconstruct a Run's exact Session context, produce a four-part persisted quality audit, diagnose it, and recover it safely only when authorized."
+  short_description: "Diagnose, compare, and recover persisted Runs"
+  default_prompt: "Use $weaveflow-graph-debug to reconstruct a Run's exact Session and lineage, produce a four-part persisted quality audit, compare or recover it safely only when authorized."

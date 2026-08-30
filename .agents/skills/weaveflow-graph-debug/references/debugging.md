@@ -6,7 +6,7 @@ Diagnose from the exact Run and immutable Graph Session. Reconstruct persisted c
 
 1. Capture the start/resume response, structured error, partial data, Run status, Graph ID, Session ID, and timestamps.
 2. Read `GET /graphs/:graph_id/runs/:run_id/inspection`.
-3. Identify failed or active Step, `step_id`, `node_id`, attempt, operation key, effect class/status, current stage, interrupt, checkpoint ID, and Artifact references.
+3. Identify root/parent/child/fork provenance, then the failed or active Step, `step_id`, `node_id`, attempt, operation key, effect class/status, current stage, interrupt, checkpoint ID, and Artifact references.
 4. Read persisted Event pages around the transition. Lifecycle events include `run.created`, `run.started`, `run.paused`, `run.resumed`, `run.failed`, `run.finished`, and `run.canceled`; effect events include intent, outcome, and resolution transitions.
 5. List Artifacts and read only relevant Artifact bodies. Read the referenced Checkpoint state when it explains a pause, missing input, or side-effect boundary.
 6. Read `GET /graphs/:graph_id/sessions/:graph_session_id` and compare the Run's exact definition, semantic graph hash, snapshot hash, settings, and required state. Read `GET /graphs/:graph_id` separately only to detect whether a newer Session exists.
@@ -68,6 +68,13 @@ For the failing path, record:
 
 Use this map to distinguish a contract error from a runtime dependency failure. If any required field is absent from the API, preserve it as an explicit unknown.
 
+## Run Lineage, Fork, And Compare
+
+- Use `GET /graphs/:graph_id/runs` with `parent_run_id`, `parent_task_id`, `root_run_id`, or `namespace` filters to reconstruct relevant Run lineage. A child Run or Agent invocation that affects the result belongs in the timeline rather than a footnote.
+- `GET /graphs/:graph_id/runs/:run_id/compare/:other_run_id` is read-only and requires both Runs to use the same Graph hash and snapshot hash. It reports Run, Step, Event, Artifact, and last-Checkpoint state differences; it does not replace complete Event pagination or independent inspection of each Run.
+- `POST /graphs/:graph_id/runs/:run_id/forks` is state-changing. Require explicit authorization, resolved source effects, a non-final independently resumable Checkpoint, a stable `request_key`, and an optional external `input` patch. The source Run remains immutable.
+- A `202` Fork response is admission only. Inspect the forked Run to terminal or requested stopping state, confirm its Session/snapshot provenance, and Compare it with the source before calling the recovery successful.
+
 ## Failure Map
 
 | Symptom | Evidence to compare | Safe next action |
@@ -79,7 +86,8 @@ Use this map to distinguish a contract error from a runtime dependency failure. 
 | Run pauses without an obvious prompt | Interrupt, last Checkpoint, latest `run.paused` event | Build the exact required `input` patch and resume the same Run only when authorized. |
 | Resume conflict | Run Session/hash, checkpoint stage, Session inventory | Verify stored Session availability; do not create a replacement first. |
 | Run has `effect_status=unknown` | Effect intent/outcome events, operation key, side-effect class | Do not retry blindly; resolve as not-applied or compensate only with evidence and authorization. |
-| Historical Run becomes `404` | Session inventory and upload history | Check five-Session retention; the inactive Session may have been pruned. |
+| Fork is rejected | Source effect state, Checkpoint stage/independence, request key, Session/hash | Resolve the exact safety or identity conflict; do not fall back to replaying the original effect. |
+| Historical Run becomes `404` | Session inventory, upload history, and `/graphs/:graph_id/retention-audit` | Determine whether retention selected the Run for deletion; an audit intent alone does not prove deletion completed. Do not reconstruct missing facts from source. |
 
 ## Resume And Effect Resolution
 
@@ -89,4 +97,4 @@ Effect resolution is `POST /graphs/:graph_id/runs/:run_id/steps/:step_id/effect-
 
 ## Completion Criteria
 
-Do not call a Run fixed merely because resume or effect resolution returned HTTP success. Confirm the resulting Run status, persisted lifecycle events, Step effect status, output/failure evidence, and any required Checkpoint or Artifact result.
+Do not call a Run fixed merely because resume, Fork, or effect resolution returned HTTP success. Confirm the resulting Run status, persisted lifecycle events, Step effect status, output/failure evidence, and any required Checkpoint or Artifact result. For a Fork, preserve the source verdict and report the forked verdict separately.

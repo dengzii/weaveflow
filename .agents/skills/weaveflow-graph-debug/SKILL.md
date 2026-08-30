@@ -1,6 +1,6 @@
 ---
 name: weaveflow-graph-debug
-description: "Understand, inspect, observe, diagnose, control, and resume WeaveFlow Graph Runs through the public debug server HTTP API, with optional read-only source inspection when API evidence leaves an observability gap or implementation behavior must be explained. Use for failed, paused, hanging, canceled, incomplete, historical, or side-effect-unknown Runs."
+description: "Understand, inspect, compare, diagnose, control, fork, and resume WeaveFlow Graph Runs through the public debug server HTTP API, with optional read-only source inspection when API evidence leaves an observability gap or implementation behavior must be explained. Use for failed, paused, hanging, canceled, incomplete, historical, branched, retention-related, or side-effect-unknown Runs. Use weaveflow-graph-agent-quality when the primary question is Agent/Graph design quality rather than operational health or recovery."
 ---
 
 # WeaveFlow Graph Debug
@@ -11,19 +11,20 @@ Read [references/debugging.md](references/debugging.md) for context reconstructi
 
 ## Inputs And Outputs
 
-- **Inputs**: server base URL, management authentication, Graph ID and Run ID when known, or criteria for selecting a Run; optional authorization for pause/cancel/resume/effect resolution.
-- **Outputs**: a reconstructed definition context, execution timeline, state evolution, failed/paused node contract, model/tool and side-effect context, a four-part quality assessment (`runtime`, `business`, `evidence`, `side_effects`) plus a tool-policy gate, evidence-backed diagnosis, and any explicitly authorized recovery result. Label persisted API evidence separately from source-derived explanations.
-- **Handoff**: use `weaveflow-graph-create` when the remedy is a new definition, Session, setting, or Trigger. Use `weaveflow-graph-code` for implementation fixes; `graph-debug` must not edit source. If the API lacks required evidence, report the observability/API gap even when source inspection explains a plausible cause.
+- **Inputs**: server base URL, management authentication, Graph ID and Run ID when known, or criteria for selecting a Run; optional comparison Run ID and authorization for pause/cancel/resume/Fork/effect resolution.
+- **Outputs**: a reconstructed definition context, Run lineage, execution timeline, state evolution, failed/paused node contract, model/tool and side-effect context, a four-part quality assessment (`runtime`, `business`, `evidence`, `side_effects`) plus a tool-policy gate, evidence-backed diagnosis, comparison findings, and any explicitly authorized recovery result. Label persisted API evidence separately from source-derived explanations.
+- **Handoff**: use `weaveflow-graph-agent-quality` for decomposition, loop, evidence-strategy, efficiency, or completion-design evaluation. Use `weaveflow-graph-create` when the remedy is a new definition, Session, setting, or Trigger. Use `weaveflow-graph-code` for implementation fixes; `graph-debug` must not edit source. If the API lacks required evidence, report the observability/API gap even when source inspection explains a plausible cause.
 
 ## Reconstruct The Exact Context
 
 1. Locate the Run through `GET /graphs/:graph_id/runs` if needed and record why it was selected.
-2. Read `GET /graphs/:graph_id/runs/:run_id/inspection`; capture Run identity, `graph_session_id`, origin, status, timestamps, current node, errors, Steps, attempts, effect state, Checkpoints, Interrupt, and first Event page.
+2. Read `GET /graphs/:graph_id/runs/:run_id/inspection`; capture Run identity, `graph_session_id`, origin, root/parent/child/fork provenance, namespace, status, timestamps, current node, errors, Steps, attempts, effect state, Checkpoints, Interrupt, and first Event page.
 3. Read `GET /graphs/:graph_id/sessions/:graph_session_id`. Use that exact historical Session—not the latest Graph—to understand the definition, node configs, State Ports, bindings, topology, conditions, state modules, initial-state requirements, settings, tool permissions, and hashes. Preserve any `context_warnings` as uncertainty.
 4. Read `GET /registry` and `GET /runtime/tools` only to interpret the Session's registered node/condition/tool contracts. Never substitute current registry behavior for missing historical Session data; record drift or uncertainty.
 5. Build a focused context map for the affected path: external input → state binding → node/condition → Step attempts/events → Checkpoint state → Artifact/output. Include expected versus observed values and the last known valid state.
-6. Page persisted Events until `next_cursor` is empty or repeats, deduplicate by Event ID, then list/read only relevant Artifacts and Checkpoints. Use SSE only for bounded live observation and reconcile it with persisted evidence.
-7. For repeatable audits, run `scripts/run_quality_report.py` with the same Graph and Run IDs. It performs only public `GET` requests and emits sanitized JSON; use the raw API responses for disputed fields.
+6. Page persisted Events until `next_cursor` is empty or repeats, deduplicate by Event ID, then list/read only relevant Artifacts and Checkpoints. Follow parent/child Runs when they materially affect the failing path. Use SSE only for bounded live observation and reconcile it with persisted evidence.
+7. When another existing Run on the same Graph snapshot is relevant, use the read-only Compare endpoint to locate state, Step, Event, and Artifact differences; inspect both Runs independently before concluding causality.
+8. For repeatable audits, run `scripts/run_quality_report.py` with the same Graph and Run IDs. It performs only public `GET` requests and emits sanitized JSON; use the raw API responses for disputed fields.
 
 ## Source-Assisted Diagnosis
 
@@ -39,7 +40,8 @@ Read [references/debugging.md](references/debugging.md) for context reconstructi
 2. For a paused Run, derive the minimal resume `input` from the Interrupt, exact Session contract, and Checkpoint state. Resume only when authorized and verify the resulting state and terminal status.
 3. For `effect_status=unknown`, trace effect intent/outcome events and operation identity. Resolve only with explicit evidence and authorization; never guess that a non-idempotent write was not applied.
 4. Use pause or cancel only when requested. Wait for safe-point transitions and re-inspect rather than repeating controls.
-5. When the remedy changes the definition/settings/Triggers, report the exact API-level change and hand off to `weaveflow-graph-create`; do not modify a historical Run's Session.
+5. Fork only when explicitly authorized, the source effects are resolved, and the selected Checkpoint is non-final and independently resumable. Use a stable `request_key`, preserve the source Run, inspect the new Run, then Compare it with the source when both use the same snapshot.
+6. When the remedy changes the definition/settings/Triggers, report the exact API-level change and hand off to `weaveflow-graph-create`; do not modify a historical Run's Session.
 
 ## Quality Assessment
 
@@ -49,10 +51,11 @@ Read [references/debugging.md](references/debugging.md) for context reconstructi
 - `evidence` requires the final output and material claims to be connected to persisted Artifact/Event/Checkpoint evidence. Treat unsupported final claims as a finding, not as a model-quality opinion.
 - `side_effects` fails or stops on `unknown`; warn on denied/failed effects or an intent without a matching outcome. Never retry a non-idempotent effect from a quality report.
 - Cross-check every Session-declared tool against `/runtime/tools`, `tool_permissions`, and `tool_approvals`. A required approval missing from Session settings is a blocking policy mismatch; approval for one tool does not cover a different mutating tool such as a `process.execute` shell.
+- Keep this operational assessment separate from Agent design quality. Hand design, efficiency, replanning, and completion-semantics questions to `weaveflow-graph-agent-quality` after the persisted path is complete.
 
 ## Safety And Stop Conditions
 
-- Investigation is read-only by default. Resume, effect resolution, pause, cancel, deletion, Session creation, and Trigger changes require explicit authorization.
+- Investigation, retention audit, and comparison are read-only by default. Resume, Fork, effect resolution, pause, cancel, deletion, Session creation, and Trigger changes require explicit authorization.
 - Stop when required Session detail, Event pages, Checkpoint, Artifact, registry contract, or settings are unavailable and the missing persisted fact cannot be established through the API. Name the missing API resource; source inspection may explain behavior but cannot fill that persisted-fact gap.
 - Stop when evidence is unchanged, impact grows, side effects are unresolved, or a high-risk decision needs user confirmation.
 - Stop a pass result when a declared tool/permission/approval mismatch can change whether the business step executes; report the mismatch and its exact API fields.
@@ -62,4 +65,4 @@ Read [references/debugging.md](references/debugging.md) for context reconstructi
 
 ## Report
 
-Report the exact Graph/Session/Run identity, reconstructed definition and execution context, timeline, failed/paused node contract, state and side-effect evidence, diagnosis confidence, recovery action/result, missing API evidence, and endpoints consulted.
+Report the exact Graph/Session/Run identity, lineage and fork provenance, reconstructed definition and execution context, timeline, failed/paused node contract, state and side-effect evidence, comparison findings, diagnosis confidence, recovery action/result, missing API evidence, and endpoints consulted.
