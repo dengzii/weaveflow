@@ -36,6 +36,7 @@ import {
   runtimeFromExecution,
   timeRank,
   updateRuntimeNode,
+  updateRuntimeNodeProjection,
   virtualNodeKind,
   type FlowNodeData,
   type RuntimeNodeState,
@@ -292,7 +293,6 @@ function GraphCanvasInner({
   const edgesRef = useRef<Edge[]>([]);
   const runtimeRef = useRef<Map<string, RuntimeNodeState>>(new Map());
   const runtimeRunIdRef = useRef("");
-  const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const loopDragRef = useRef<{
     groupId: string;
     startPosition: NodePosition;
@@ -311,12 +311,6 @@ function GraphCanvasInner({
   const highlightedNodeSet = useMemo(() => new Set(highlightedNodeIds), [highlightedNodeIds]);
   const currentNodeSet = useMemo(() => new Set(currentNodeIds), [currentNodeIds]);
   const currentNodeStartedAt = timeRank(runUpdatedAt);
-
-  useEffect(() => {
-    if (!runtimeVisible || runStatus !== "running") return;
-    const timer = window.setInterval(() => setRuntimeNow(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [runStatus, runtimeVisible]);
 
   useLayoutEffect(() => {
     const nextRunId = selectedRunId ?? "";
@@ -362,7 +356,7 @@ function GraphCanvasInner({
   }), [runtimeVisible, selectedRunId, setNodes]);
 
   const buildCanvasElements = useCallback(
-    () => buildGraphCanvasElements({
+    (runtimeNow = Date.now()) => buildGraphCanvasElements({
       definition,
       editable,
       interactive: isInteractive,
@@ -393,7 +387,6 @@ function GraphCanvasInner({
       nodeTypes,
       configurationErrors,
       runtimeVisible,
-      runtimeNow,
       currentNodeSet,
       currentNodeStartedAt,
       runStatus,
@@ -409,14 +402,32 @@ function GraphCanvasInner({
     ]
   );
 
+  const refreshRuntimeNodes = useCallback(() => {
+    if (!runtimeVisible) return;
+    const runtimeElements = buildCanvasElements(Date.now());
+    const runtimeByID = new Map(runtimeElements.nodes.map((node) => [node.id, node]));
+    setNodes((current) => updateRuntimeNodeProjection(current, runtimeByID));
+  }, [buildCanvasElements, runtimeVisible, setNodes]);
+
+  useEffect(() => {
+    if (!runtimeVisible || runStatus !== "running") return;
+    const timer = window.setInterval(refreshRuntimeNodes, 1_000);
+    return () => window.clearInterval(timer);
+  }, [refreshRuntimeNodes, runStatus, runtimeVisible]);
+
   useLayoutEffect(() => {
     const elements = buildCanvasElements();
     const retainedNodeIDs = retainedDraggedNodeIDsRef.current;
     retainedDraggedNodeIDsRef.current = null;
-    setNodes(retainedNodeIDs
-      ? elements.nodes.map((node) => ({ ...node, selected: retainedNodeIDs.has(node.id) }))
-      : elements.nodes);
-    setEdges(elements.edges);
+    setNodes((current) => {
+      if (runtimeVisible && !definition && current.length > 0 && elements.nodes.length === 0) return current;
+      return retainedNodeIDs
+        ? elements.nodes.map((node) => ({ ...node, selected: retainedNodeIDs.has(node.id) }))
+        : elements.nodes;
+    });
+    setEdges((current) => runtimeVisible && !definition && current.length > 0 && elements.edges.length === 0
+      ? current
+      : elements.edges);
   }, [buildCanvasElements, setEdges, setNodes]);
 
   useEffect(() => {

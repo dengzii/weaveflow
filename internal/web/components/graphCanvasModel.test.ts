@@ -17,6 +17,7 @@ import {
   runtimeFromSteps,
   runtimeDurations,
   runtimeStatusFromEvent,
+  updateRuntimeNodeProjection,
   virtualNodeSpec,
   type FlowNodeData,
   type RuntimeNodeState,
@@ -229,6 +230,38 @@ describe("graph canvas model", () => {
     );
     expect(updated[0].data).toMatchObject({ status: "failed", executionCount: 2 });
     expect(updated[1]).toBe(virtual);
+  });
+
+  test("updates runtime timing without replacing canvas layout state", () => {
+    const current = flowNode("node-1", {
+      status: "running",
+      executionCount: 1,
+      runTimeMs: 1_000,
+      currentRunTimeMs: 500,
+      current: true,
+    });
+    current.position = { x: 120, y: 240 };
+    current.selected = true;
+    const projection = flowNode("node-1", {
+      status: "running",
+      executionCount: 1,
+      runTimeMs: 2_000,
+      currentRunTimeMs: 1_500,
+      current: true,
+    });
+
+    const updated = updateRuntimeNodeProjection(
+      [current],
+      new Map([[projection.id, projection]])
+    );
+
+    expect(updated[0]).not.toBe(current);
+    expect(updated[0]).toMatchObject({
+      id: "node-1",
+      position: { x: 120, y: 240 },
+      selected: true,
+      data: { runTimeMs: 2_000, currentRunTimeMs: 1_500 },
+    });
   });
 
   test("lays out virtual boundaries around the graph and preserves saved positions", () => {

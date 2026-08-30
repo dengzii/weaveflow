@@ -328,6 +328,24 @@ export function updateRuntimeNode(
   return changed ? next : nodes;
 }
 
+export function updateRuntimeNodeProjection(
+  nodes: Node<FlowNodeData>[],
+  projections: ReadonlyMap<string, Node<FlowNodeData>>
+): Node<FlowNodeData>[] {
+  let changed = false;
+  const next = nodes.map((node) => {
+    const projection = projections.get(node.id);
+    if (!projection || sameRuntimeProjection(node.data, projection.data)) return node;
+    changed = true;
+    return {
+      ...node,
+      data: projection.data,
+      ariaLabel: projection.ariaLabel,
+    };
+  });
+  return changed ? next : nodes;
+}
+
 export function resetRuntimeNodes(nodes: Node<FlowNodeData>[]): Node<FlowNodeData>[] {
   let changed = false;
   const next = nodes.map((node) => {
@@ -692,6 +710,15 @@ function sameStepTimings(
     ) return false;
   }
   return true;
+}
+
+function sameRuntimeProjection(left: FlowNodeData, right: FlowNodeData): boolean {
+  return left.status === right.status
+    && left.executionCount === right.executionCount
+    && left.runTimeMs === right.runTimeMs
+    && left.currentRunTimeMs === right.currentRunTimeMs
+    && left.current === right.current
+    && left.errorSummary === right.errorSummary;
 }
 
 function stepTimingKey(stepID: string): string {
