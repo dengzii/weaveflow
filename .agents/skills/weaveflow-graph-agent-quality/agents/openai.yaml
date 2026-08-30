@@ -1,0 +1,4 @@
+interface:
+  display_name: "WeaveFlow Graph Agent Quality"
+  short_description: "Assess Agent design from persisted Run paths"
+  default_prompt: "Use $weaveflow-graph-agent-quality to evaluate a WeaveFlow Graph Agent's design and efficiency from its exact persisted Run path, separating design defects from service failures and untested branches."
