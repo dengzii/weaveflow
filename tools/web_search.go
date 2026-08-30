@@ -1,26 +1,15 @@
 package tools
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"strings"
 
 	"github.com/dengzii/weaveflow/core"
-
 	"github.com/dengzii/weaveflow/llms"
 )
 
-const tavilyAPIKeyEnvironment = "TAVILY_API_KEY"
-
 func webSearchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
-	search, err := tavilySearchFromContext(ctx)
-	if err != nil {
-		return llms.ToolResult{}, fmt.Errorf("web_search unavailable: %w", err)
-	}
-
 	var request struct {
 		Query string `json:"query"`
 	}
@@ -31,62 +20,24 @@ func webSearchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, er
 	if request.Query == "" {
 		return llms.ToolResult{}, fmt.Errorf("query is required")
 	}
-	content, err := search.Call(ctx, request.Query)
+	tavilyKey := core.EnvironmentVariableFromContext(ctx, tavilyAPIKeyEnvironment)
+	braveKey := core.EnvironmentVariableFromContext(ctx, braveAPIKeyEnvironment)
+	results, err := newWebSearcher(tavilyKey, braveKey).Search(ctx, request.Query, defaultSearchResultLimit)
 	if err != nil {
-		return llms.ToolResult{}, err
+		return llms.ToolResult{}, fmt.Errorf("web_search failed: %w", err)
 	}
-	return textToolResult(call, content), nil
+	return textToolResult(call, formatSearchResults(results)), nil
 }
 
-type tavilySearch struct {
-	apiKey string
-}
-
-func tavilySearchFromContext(ctx context.Context) (*tavilySearch, error) {
-	apiKey := strings.TrimSpace(core.EnvironmentVariableFromContext(ctx, tavilyAPIKeyEnvironment))
-	if apiKey == "" {
-		return nil, fmt.Errorf("%s not set", tavilyAPIKeyEnvironment)
-	}
-	return &tavilySearch{apiKey: apiKey}, nil
-}
-
-func (search *tavilySearch) Call(ctx context.Context, query string) (string, error) {
-	body, err := json.Marshal(map[string]any{
-		"query":        query,
-		"api_key":      search.apiKey,
-		"search_depth": "basic",
-	})
-	if err != nil {
-		return "", fmt.Errorf("encode tavily request: %w", err)
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "https://api.tavily.com/search", bytes.NewReader(body))
-	if err != nil {
-		return "", fmt.Errorf("create tavily request: %w", err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	response, err := http.DefaultClient.Do(request)
-	if err != nil {
-		return "", fmt.Errorf("send tavily request: %w", err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("tavily api returned status: %d", response.StatusCode)
-	}
-	var payload struct {
-		Results []struct {
-			Title   string `json:"title"`
-			URL     string `json:"url"`
-			Content string `json:"content"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&payload); err != nil {
-		return "", fmt.Errorf("decode tavily response: %w", err)
+func formatSearchResults(results []searchResult) string {
+	if len(results) == 0 {
+		return "No search results found."
 	}
 	var output strings.Builder
-	for _, result := range payload.Results {
-		fmt.Fprintf(&output, "Title: %s\nURL: %s\nContent: %s\n\n", result.Title, result.URL, result.Content)
+	for _, result := range results {
+		_, _ = fmt.Fprintf(&output, "Source: %s\nTitle: %s\nURL: %s\nContent: %s\n\n", result.Engine, result.Title, result.URL, result.Snippet)
 	}
-	return output.String(), nil
+	return output.String()
 }
 
 func NewWebSearch() Tool {

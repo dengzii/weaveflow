@@ -572,6 +572,7 @@ func TestHandleRuntimeToolsConcurrentWithGraphUploads(t *testing.T) {
 func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 	expected := map[string]string{
 		"TAVILY_API_KEY":                      "test-tavily-key",
+		"BRAVE_API_KEY":                       "test-brave-key",
 		"WEAVEFLOW_TOOL_WORKDIR":              t.TempDir(),
 		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": "false",
 		"WEAVEFLOW_BASH_TIMEOUT":              "120000",
@@ -586,7 +587,7 @@ func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 
 	settings := graphRuntimeSettingsFromContext(context.Background())
 	for key, value := range expected {
-		if key == "TAVILY_API_KEY" {
+		if key == "TAVILY_API_KEY" || key == "BRAVE_API_KEY" {
 			if ref := settings.EnvironmentSecrets[key]; ref.Source != "env" || ref.Ref != key {
 				t.Fatalf("%s secret ref = %#v", key, ref)
 			}
@@ -599,6 +600,7 @@ func TestRuntimeSettingsIncludesToolEnvironment(t *testing.T) {
 
 	expectedPresets := map[string]graphEnvironmentPreset{
 		"TAVILY_API_KEY":                      {Key: "TAVILY_API_KEY", Type: "string", Secret: true},
+		"BRAVE_API_KEY":                       {Key: "BRAVE_API_KEY", Type: "string", Secret: true},
 		"WEAVEFLOW_TOOL_WORKDIR":              {Key: "WEAVEFLOW_TOOL_WORKDIR", Type: "string"},
 		"WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK": {Key: "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", DefaultValue: "false", Type: "boolean"},
 		"WEAVEFLOW_BASH_TIMEOUT":              {Key: "WEAVEFLOW_BASH_TIMEOUT", DefaultValue: "120000", Type: "integer"},

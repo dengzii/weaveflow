@@ -41,6 +41,7 @@ func currentGraphEnvironmentSecrets() map[string]dsl.SecretRef {
 func graphEnvironmentPresets() []graphEnvironmentPreset {
 	return []graphEnvironmentPreset{
 		{Key: "TAVILY_API_KEY", Type: "string", Secret: true},
+		{Key: "BRAVE_API_KEY", Type: "string", Secret: true},
 		{Key: "WEAVEFLOW_TOOL_WORKDIR", Type: "string"},
 		{Key: "WEAVEFLOW_TOOL_SKIP_WORKSPACE_CHECK", DefaultValue: "false", Type: "boolean"},
 		{Key: "WEAVEFLOW_BASH_TIMEOUT", DefaultValue: "120000", Type: "integer"},
