@@ -56,6 +56,7 @@ import {
   runStatusFromEvent,
   runTriggerTypesFromRuns,
   selectedRunIDAfterDeletion,
+  shouldRefreshRunInspectionForEvent,
   shouldProjectRuntimeEventToRun,
   upsertInspectedRun,
   upsertRunFromEvent,
@@ -590,7 +591,7 @@ export function useWorkbenchRuns({
     if (checkpoint) {
       setCheckpoints((current) => upsertCheckpoint(current, checkpoint));
     }
-    if (event.run_id && event.type === "run.paused") {
+    if (event.run_id && shouldRefreshRunInspectionForEvent(event)) {
       void refreshSelectedRun(event.run_id).catch(reportError);
     }
   }, [enqueueLiveEvent, refreshSelectedRun, reportError]);

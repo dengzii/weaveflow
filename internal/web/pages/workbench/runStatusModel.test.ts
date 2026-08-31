@@ -120,6 +120,24 @@ describe("run status model", () => {
     });
   });
 
+  test("uses the supplied clock for active run elapsed time", () => {
+    const run: RunRecord = {
+      run_id: "run-active",
+      revision: 1,
+      root_run_id: "run-active",
+      run_path: ["run-active"],
+      namespace: "run-active",
+      graph_id: "graph",
+      graph_version: "1",
+      status: "running",
+      entry_node_id: "input",
+      started_at: "2026-07-30T02:00:00Z",
+      updated_at: "2026-07-30T02:00:02Z",
+    };
+
+    expect(summarizeRunMetrics(run, [], [], [], Date.parse("2026-07-30T02:00:05Z")).durationMs).toBe(5_000);
+  });
+
   test("selects the initial before-node checkpoint and prefers the final output checkpoint", () => {
     const checkpoints = [
       checkpointRecord("checkpoint-after", "after_node", "2026-07-30T02:00:02Z"),

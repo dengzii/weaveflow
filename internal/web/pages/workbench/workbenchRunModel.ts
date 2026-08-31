@@ -53,6 +53,18 @@ export function isActiveRunStatus(status: RunStatus): boolean {
   return status === "pending" || status === "running";
 }
 
+export function runDurationMilliseconds(run: RunRecord | null | undefined, now = Date.now()): number {
+  if (!run) return 0;
+  const startedAt = Date.parse(run.started_at);
+  const endedAt = run.finished_at
+    ? Date.parse(run.finished_at)
+    : isActiveRunStatus(run.status)
+      ? now
+      : Date.parse(run.updated_at);
+  if (Number.isNaN(startedAt) || Number.isNaN(endedAt) || endedAt < startedAt) return 0;
+  return endedAt - startedAt;
+}
+
 export function matchesGraphIdentity(run: RunRecord, identity: GraphIdentity): boolean {
   return run.graph_id === identity.id && run.graph_version === identity.version;
 }
@@ -89,6 +101,11 @@ export function partitionLaunchRuntimeEvents(
 
 export function shouldProjectRuntimeEventToRun(event: RuntimeEvent): boolean {
   return Boolean(runStatusFromEvent(event.type) || stringPayloadField(event.payload, "checkpoint_id"));
+}
+
+export function shouldRefreshRunInspectionForEvent(event: RuntimeEvent): boolean {
+  const status = runStatusFromEvent(event.type);
+  return event.type === "run.paused" || (status !== "" && isTerminalRunStatus(status));
 }
 
 export function mergeRefreshedRuns(

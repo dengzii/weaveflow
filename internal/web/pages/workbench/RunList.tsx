@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   Ban,
   Check,
@@ -13,7 +14,7 @@ import {
 } from "lucide-react";
 import { cn, formatDateTime } from "../../lib/utils";
 import type { RunRecord, RunStatus, TriggerType } from "../../types";
-import { isActiveRunStatus } from "./workbenchRunModel";
+import { isActiveRunStatus, runDurationMilliseconds } from "./workbenchRunModel";
 
 export function RunList({
   runs,
@@ -32,6 +33,15 @@ export function RunList({
   onSelectRun?: (runID: string) => void;
   onDeleteRun?: (runID: string) => void;
 }) {
+  const [now, setNow] = useState(() => initialRunListNow(runs));
+
+  useEffect(() => {
+    if (!runs.some((run) => isActiveRunStatus(run.status))) return;
+    setNow(Date.now());
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [runs]);
+
   return (
     <div aria-label="Run list" className="flex min-h-0 min-w-0 flex-col">
       <div className="flex h-9 shrink-0 items-center border-b border-border px-3">
@@ -53,7 +63,7 @@ export function RunList({
               const active = run.run_id === selectedRunID;
               const canDelete = Boolean(onDeleteRun) && !actionsDisabled && !isActiveRunStatus(run.status);
               const triggerType = runTriggerTypes?.[run.run_id];
-              const duration = formatRunDuration(run);
+              const duration = formatRunDuration(run, now);
               return (
                 <li
                   key={run.run_id}
@@ -109,12 +119,16 @@ export function RunList({
   );
 }
 
-function formatRunDuration(run: RunRecord): string {
-  const startedAt = Date.parse(run.started_at);
-  const endedAt = Date.parse(run.finished_at || run.updated_at);
-  if (Number.isNaN(startedAt) || Number.isNaN(endedAt) || endedAt < startedAt) return "0s";
+function initialRunListNow(runs: RunRecord[]): number {
+  const activeUpdatedAt = runs
+    .filter((run) => isActiveRunStatus(run.status))
+    .map((run) => Date.parse(run.updated_at))
+    .filter((updatedAt) => !Number.isNaN(updatedAt));
+  return activeUpdatedAt.length > 0 ? Math.max(...activeUpdatedAt) : Date.now();
+}
 
-  const totalSeconds = Math.floor((endedAt - startedAt) / 1_000);
+function formatRunDuration(run: RunRecord, now: number): string {
+  const totalSeconds = Math.floor(runDurationMilliseconds(run, now) / 1_000);
   const minutes = Math.floor(totalSeconds / 60);
   return `${minutes > 0 ? `${minutes}m` : ""}${totalSeconds % 60}s`;
 }

@@ -17,7 +17,9 @@ import {
   runStatusFromEvent,
   runTriggerTypesFromRuns,
   selectedRunIDAfterDeletion,
+  shouldRefreshRunInspectionForEvent,
   shouldProjectRuntimeEventToRun,
+  runDurationMilliseconds,
   upsertInspectedRun,
   upsertRunFromEvent,
 } from "./workbenchRunModel";
@@ -55,6 +57,21 @@ describe("workbench run model", () => {
         { run_id: "run-1", checkpoint_id: "checkpoint-2" }
       )
     ).toBe(true);
+  });
+
+  test("advances active run durations while preserving paused and terminal durations", () => {
+    const now = Date.parse("2026-01-01T00:00:10Z");
+    expect(runDurationMilliseconds({ ...baseRun, status: "running", updated_at: "2026-01-01T00:00:02Z" }, now)).toBe(10_000);
+    expect(runDurationMilliseconds({ ...baseRun, status: "paused", updated_at: "2026-01-01T00:00:02Z" }, now)).toBe(2_000);
+    expect(runDurationMilliseconds({ ...baseRun, status: "completed", finished_at: "2026-01-01T00:00:03Z" }, now)).toBe(3_000);
+  });
+
+  test("refreshes selected inspection after pause and terminal lifecycle events", () => {
+    expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("paused"), type: "run.paused" })).toBe(true);
+    expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("finished"), type: "run.finished" })).toBe(true);
+    expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("failed"), type: "run.failed" })).toBe(true);
+    expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("canceled"), type: "run.canceled" })).toBe(true);
+    expect(shouldRefreshRunInspectionForEvent(runtimeEventWithID("started"))).toBe(false);
   });
 
   test("updates known runs and creates unknown runs from events", () => {

@@ -1,6 +1,7 @@
 import { stringifyJSON } from "../../lib/utils";
 import type { CheckpointRecord, RunRecord, RuntimeEvent, StepRecord } from "../../types";
 import type { StatusTone } from "./shared";
+import { runDurationMilliseconds } from "./workbenchRunModel";
 
 export type EventFilterMode = "include" | "exclude";
 export type ColumnRatios = [number, number, number];
@@ -259,14 +260,13 @@ export function summarizeRunMetrics(
   run: RunRecord | undefined,
   steps: StepRecord[] = [],
   checkpoints: CheckpointRecord[] = [],
-  events: RuntimeEvent[] = []
+  events: RuntimeEvent[] = [],
+  now = Date.now()
 ): RunMetricsSummary {
   const runEvents = run ? events.filter((event) => event.run_id === run.run_id) : [];
   const runSteps = run ? steps.filter((step) => step.run_id === run.run_id) : [];
   const runCheckpoints = run ? checkpoints.filter((checkpoint) => checkpoint.run_id === run.run_id) : [];
-  const start = timeRank(run?.started_at);
-  const end = timeRank(run?.finished_at || run?.updated_at);
-  const durationMs = start > 0 && end >= start ? end - start : 0;
+  const durationMs = runDurationMilliseconds(run, now);
   let promptTokens = 0;
   let completionTokens = 0;
   let reasoningTokens = 0;

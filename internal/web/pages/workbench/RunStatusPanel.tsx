@@ -124,6 +124,7 @@ export function RunStatusPanel({
   const [eventTypeFilters, setEventTypeFilters] = useState<string[]>(() => readStoredEventFilters().types ?? []);
   const [eventNodeFilters, setEventNodeFilters] = useState<string[]>(() => readStoredEventFilters().nodes ?? []);
   const [eventKeywordFilter, setEventKeywordFilter] = useState(() => readStoredEventFilters().keyword ?? "");
+  const [runtimeNow, setRuntimeNow] = useState(() => Date.now());
   const columnsRef = useRef<HTMLDivElement | null>(null);
   const checkpointRequestIDsRef = useRef<Set<string>>(new Set());
   const checkpointContextVersionRef = useRef(0);
@@ -169,8 +170,8 @@ export function RunStatusPanel({
     [stateHistoryItems]
   );
   const runMetrics = useMemo(
-    () => summarizeRunMetrics(selectedRun, steps, checkpoints, events),
-    [checkpoints, events, selectedRun, steps]
+    () => summarizeRunMetrics(selectedRun, steps, checkpoints, events, runtimeNow),
+    [checkpoints, events, runtimeNow, selectedRun, steps]
   );
   const runIOCheckpoints = useMemo(
     () => selectRunIOCheckpoints(
@@ -199,6 +200,13 @@ export function RunStatusPanel({
     setCheckpointErrors({});
     setCompareRunID("");
   }, [selectedRunId]);
+
+  useEffect(() => {
+    if (!selectedRun || (selectedRun.status !== "pending" && selectedRun.status !== "running")) return;
+    setRuntimeNow(Date.now());
+    const timer = window.setInterval(() => setRuntimeNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [selectedRun]);
 
   useEffect(() => () => {
     checkpointContextVersionRef.current += 1;
