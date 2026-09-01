@@ -2,6 +2,47 @@ package dsl
 
 import "testing"
 
+func FuzzGraphDefinitionRoundTrip(f *testing.F) {
+	seed, err := GraphDefinition{
+		Version:      GraphDefinitionVersion,
+		StateModules: []StateModuleRef{{Name: "benchmark.protocols", Version: "1"}},
+		EntryPoint:   "start",
+		FinishPoint:  "done",
+		Nodes:        []GraphNodeSpec{{ID: "start", Type: "input"}, {ID: "done", Type: "output"}},
+		Edges:        []GraphEdgeSpec{{From: "start", To: "done"}},
+	}.Serialize()
+	if err != nil {
+		f.Fatalf("serialize fuzz seed: %v", err)
+	}
+	f.Add(seed)
+	f.Add([]byte(`{"version":"1.0","state_modules":[{"name":"x","version":"1"}],"nodes":[{"id":"n","type":"worker"}]}`))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		definition, err := DeserializeGraphDefinition(data)
+		if err != nil {
+			return
+		}
+		encoded, err := definition.Serialize()
+		if err != nil {
+			t.Fatalf("serialize normalized definition: %v", err)
+		}
+		restored, err := DeserializeGraphDefinition(encoded)
+		if err != nil {
+			t.Fatalf("deserialize serialized definition: %v", err)
+		}
+		left, err := SemanticGraphHash(definition)
+		if err != nil {
+			t.Fatalf("semantic hash definition: %v", err)
+		}
+		right, err := SemanticGraphHash(restored)
+		if err != nil {
+			t.Fatalf("semantic hash restored definition: %v", err)
+		}
+		if left != right {
+			t.Fatalf("round-trip semantic hash changed: %q != %q", left, right)
+		}
+	})
+}
+
 func TestSemanticGraphHashIgnoresMetadataAndNodeOrder(t *testing.T) {
 	base := GraphDefinition{
 		Version:      GraphDefinitionVersion,

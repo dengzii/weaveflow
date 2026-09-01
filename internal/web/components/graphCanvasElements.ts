@@ -15,6 +15,7 @@ import {
   conditionDisplayLabel,
   edgeSegmentsForLoopDisplay,
   graphEdgesForLoopDisplay,
+  type LoopDisplayEdge,
   type VirtualGraphLoop,
 } from "../lib/loopPresentation";
 import {
@@ -39,12 +40,6 @@ export interface VirtualGraphEdge {
   to: string;
   kind: "entry" | "finish";
   condition?: GraphConditionSpec;
-}
-
-export interface ConditionEdgeHoverInfo {
-  label: string;
-  state: Array<{ name: string; value: string }>;
-  config: Array<{ name: string; value: string }>;
 }
 
 export interface GraphCanvasElements {
@@ -247,7 +242,9 @@ export function buildGraphCanvasElements({
     )
   );
   const displayGraphEdges = graphEdgesForLoopDisplay(definition, virtualLoops);
-  const flowEdges: Edge[] = [...displayVirtualEdges, ...displayGraphEdges].map(({
+  const displayEdges = [...displayVirtualEdges, ...displayGraphEdges];
+  const edgeOffsets = parallelEdgeOffsets(displayEdges);
+  const flowEdges: Edge[] = displayEdges.map(({
     edge,
     id,
     selectionId = id,
@@ -257,7 +254,7 @@ export function buildGraphCanvasElements({
     targetHandle,
     showLabel = true,
     contained = false,
-  }): Edge => {
+  }, displayIndex): Edge => {
     const selected = selectionId === selectedEdgeID;
     const condition = Boolean(edge.condition);
     const failure = Boolean(edge.failure);
@@ -270,17 +267,13 @@ export function buildGraphCanvasElements({
       id,
       data: {
         selectionId,
-        conditionInfo: condition ? {
-          label: label || "Condition",
-          state: conditionStatePreview(edge.condition),
-          config: conditionConfigPreview(edge.condition),
-        } : undefined,
+        edgeOffset: edgeOffsets[displayIndex] ?? 0,
       },
       source,
       target,
       sourceHandle,
       targetHandle,
-      type: condition && !contained ? "condition" : contained ? "default" : undefined,
+      type: contained ? "default" : condition ? "condition" : failure ? undefined : "flow",
       label: showLabel ? label : undefined,
       labelStyle: showLabel && (condition || failure) ? {
         fill: "var(--foreground)",
@@ -328,6 +321,26 @@ export function buildGraphCanvasElements({
   return { nodes, edges: [...flowEdges, ...triggerEdges] };
 }
 
+const parallelEdgeSpacing = 48;
+
+function parallelEdgeOffsets(edges: readonly LoopDisplayEdge[]): number[] {
+  const groups = new Map<string, number[]>();
+  edges.forEach((item, index) => {
+    if (item.contained) return;
+    const key = [item.source, item.target].sort().join("\u0000");
+    groups.set(key, [...(groups.get(key) ?? []), index]);
+  });
+
+  const offsets = edges.map(() => 0);
+  for (const indexes of groups.values()) {
+    const center = (indexes.length - 1) / 2;
+    indexes.forEach((edgeIndex, index) => {
+      offsets[edgeIndex] = (index - center) * parallelEdgeSpacing;
+    });
+  }
+  return offsets;
+}
+
 function stateBindingPreview(node: GraphNodeSpec, nodeType?: NodeTypeSchema) {
   const preview: Array<{ name: string; value: string }> = [];
   const staticPortNames = new Set<string>();
@@ -343,18 +356,6 @@ function stateBindingPreview(node: GraphNodeSpec, nodeType?: NodeTypeSchema) {
     if (path) preview.push({ name, value: path });
   }
   return preview;
-}
-
-function conditionStatePreview(condition?: GraphConditionSpec) {
-  return Object.entries(condition?.state ?? {})
-    .map(([name, binding]) => ({ name, value: binding.path.trim() }))
-    .filter((item) => item.value);
-}
-
-function conditionConfigPreview(condition?: GraphConditionSpec) {
-  return Object.entries(condition?.config ?? {})
-    .filter(([, value]) => value !== undefined)
-    .map(([name, value]) => ({ name, value: previewValue(value) }));
 }
 
 function configurationPreview(node: GraphNodeSpec) {

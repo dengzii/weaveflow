@@ -148,14 +148,6 @@ jobs:
           path: internal/web/coverage/lcov.info
           if-no-files-found: error
 
-      - name: Upload WebUI coverage to Codecov
-        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f # v7.0.0
-        with:
-          token: ${{ secrets.CODECOV_TOKEN }}
-          files: internal/web/coverage/lcov.info
-          fail_ci_if_error: false
-          verbose: true
-
       - name: Build web application
         run: bun run build
 

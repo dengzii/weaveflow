@@ -1,0 +1,8 @@
+# Codecov configuration
+# https://docs.codecov.com/docs/codecov-yaml
+
+ignore:
+  - "internal/web/**/*"
+  - "internal/web/*"
+  - "internal/website/**/*"
+  - "internal/website/*"

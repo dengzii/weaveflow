@@ -307,11 +307,6 @@ describe("graph canvas elements", () => {
       selected: false,
       data: {
         selectionId: edgeID,
-        conditionInfo: {
-          label: "status = ready",
-          state: [{ name: "actual", value: "shared.status" }],
-          config: [{ name: "status", value: "ready" }],
-        },
       },
       style: { stroke: "#8b5cf6", strokeWidth: 1.4 },
     });
@@ -339,6 +334,41 @@ describe("graph canvas elements", () => {
         strokeDasharray: "7 4",
       },
     });
+  });
+
+  test("separates reverse edges between the same two nodes", () => {
+    const definition: GraphDefinition = {
+      nodes: [{ id: "source", type: "task" }, { id: "target", type: "task" }],
+      edges: [
+        { from: "source", to: "target" },
+        { from: "target", to: "source" },
+      ],
+    };
+    const edges = buildGraphCanvasElements(options(definition, { virtualNodeIDs: [] })).edges;
+
+    expect(edges).toHaveLength(2);
+    expect(edges[0].type).toBe("flow");
+    expect(edges[1].type).toBe("flow");
+    expect(edges[0].data?.edgeOffset).toBe(-24);
+    expect(edges[1].data?.edgeOffset).toBe(24);
+  });
+
+  test("separates labels for parallel conditional edges", () => {
+    const definition: GraphDefinition = {
+      nodes: [{ id: "source", type: "task" }, { id: "target", type: "task" }],
+      edges: [
+        { from: "source", to: "target", condition: { type: "status_equals", config: { status: "ready" } } },
+        { from: "source", to: "target", condition: { type: "status_equals", config: { status: "done" } } },
+      ],
+    };
+    const edges = buildGraphCanvasElements(options(definition, { virtualNodeIDs: [] })).edges;
+
+    expect(edges).toHaveLength(2);
+    expect(edges[0].type).toBe("condition");
+    expect(edges[1].type).toBe("condition");
+    expect(edges[0].data?.edgeOffset).toBe(-24);
+    expect(edges[1].data?.edgeOffset).toBe(24);
+    expect(edges[0].label).not.toBe(edges[1].label);
   });
 
   test("connects Trigger projections to the first visible Start node", () => {

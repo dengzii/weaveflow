@@ -105,7 +105,11 @@ export function shouldProjectRuntimeEventToRun(event: RuntimeEvent): boolean {
 
 export function shouldRefreshRunInspectionForEvent(event: RuntimeEvent): boolean {
   const status = runStatusFromEvent(event.type);
-  return event.type === "run.paused" || (status !== "" && isTerminalRunStatus(status));
+  return event.type === "run.paused"
+    || event.type === "nodes.finished"
+    || event.type === "nodes.failed"
+    || event.type === "nodes.canceled"
+    || (status !== "" && isTerminalRunStatus(status));
 }
 
 export function mergeRefreshedRuns(

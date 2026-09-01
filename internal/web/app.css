@@ -885,92 +885,11 @@
   white-space: nowrap;
 }
 
-.debug-condition-edge-panel {
-  position: absolute;
-  top: calc(100% + 8px);
-  left: 50%;
-  width: 280px;
-  visibility: hidden;
-  transform: translate(-50%, -3px);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
-  padding: 8px 9px;
-  box-shadow: var(--control-shadow);
-  color: var(--foreground);
-  font-family: var(--font-sans);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.35;
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 100ms ease, transform 100ms ease, visibility 100ms ease;
-  white-space: normal;
-}
-
-.debug-condition-edge-label:hover .debug-condition-edge-panel,
-.debug-condition-edge-label-active .debug-condition-edge-panel {
-  visibility: visible;
-  transform: translate(-50%, 0);
-  opacity: 1;
-}
-
-.debug-condition-edge-panel-header {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.debug-condition-edge-panel-name {
-  min-width: 0;
-  overflow-wrap: anywhere;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.debug-condition-edge-panel-section {
-  display: grid;
-  gap: 2px;
-  margin-top: 6px;
-  border-top: 1px solid var(--border);
-  padding-top: 5px;
-}
-
-.debug-condition-edge-panel-heading {
-  margin-bottom: 1px;
-  color: var(--muted-foreground);
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.debug-condition-edge-panel-row {
-  display: grid;
-  min-width: 0;
-  grid-template-columns: minmax(0, 0.75fr) minmax(0, 1.45fr);
-  gap: 8px;
-}
-
-.debug-condition-edge-panel-key,
-.debug-condition-edge-panel-value {
-  overflow: hidden;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.debug-condition-edge-panel-key,
-.debug-condition-edge-panel-more {
-  color: var(--muted-foreground);
-}
-
-.debug-condition-edge-panel-more {
-  margin-top: 2px;
-  font-size: 10px;
+.debug-condition-edge-label-selected {
+  border-color: var(--flow-edge-selected);
+  background: color-mix(in srgb, var(--flow-edge-selected) 14%, var(--panel));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--flow-edge-selected) 22%, transparent);
+  color: var(--flow-edge-selected);
 }
 
 .debug-loop {

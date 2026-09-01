@@ -71,6 +71,9 @@ describe("workbench run model", () => {
     expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("finished"), type: "run.finished" })).toBe(true);
     expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("failed"), type: "run.failed" })).toBe(true);
     expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("canceled"), type: "run.canceled" })).toBe(true);
+    expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("node-finished"), type: "nodes.finished" })).toBe(true);
+    expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("node-failed"), type: "nodes.failed" })).toBe(true);
+    expect(shouldRefreshRunInspectionForEvent({ ...runtimeEventWithID("node-canceled"), type: "nodes.canceled" })).toBe(true);
     expect(shouldRefreshRunInspectionForEvent(runtimeEventWithID("started"))).toBe(false);
   });
 

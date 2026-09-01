@@ -4,6 +4,7 @@ import {
   BaseEdge,
   EdgeLabelRenderer,
   MiniMap,
+  Position,
   ReactFlow,
   ReactFlowProvider,
   getBezierPath,
@@ -25,7 +26,6 @@ import { GraphCanvasControls } from "./GraphCanvasControls";
 import { GraphLoopNode, GraphNode, GraphTriggerNode } from "./GraphCanvasNodes";
 import {
   buildGraphCanvasElements,
-  type ConditionEdgeHoverInfo,
   type VirtualGraphEdge,
 } from "./graphCanvasElements";
 import {
@@ -69,7 +69,8 @@ const graphCanvasNodeTypes = {
   debugTrigger: GraphTriggerNode,
 };
 const graphCanvasEdgeTypes = {
-  condition: ConditionEdge,
+  condition: FlowEdge,
+  flow: FlowEdge,
 };
 const emptyConfigurationErrors = new Map<string, readonly string[]>();
 const emptyRuntime = new Map<string, RuntimeNodeState>();
@@ -755,14 +756,14 @@ function flowEdgeSelectionId(edge: Edge): string {
   return typeof selectionId === "string" ? selectionId : edge.id;
 }
 
-type ConditionEdgeData = {
-  conditionInfo?: ConditionEdgeHoverInfo;
+type FlowEdgeData = {
   selectionId?: string;
+  edgeOffset?: number;
 };
 
-type ConditionFlowEdge = Edge<ConditionEdgeData, "condition">;
+type GraphFlowEdge = Edge<FlowEdgeData, "condition" | "flow">;
 
-function ConditionEdge({
+function FlowEdge({
   id,
   sourceX,
   sourceY,
@@ -776,17 +777,18 @@ function ConditionEdge({
   markerStart,
   markerEnd,
   interactionWidth,
-}: EdgeProps<ConditionFlowEdge>) {
-  const [hovered, setHovered] = useState(false);
-  const [edgePath, labelX, labelY] = getBezierPath({
+  selected,
+}: EdgeProps<GraphFlowEdge>) {
+  const edgeOffset = data?.edgeOffset ?? 0;
+  const [edgePath, labelX, labelY] = offsetBezierPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
+    offset: edgeOffset,
   });
-  const info = data?.conditionInfo;
 
   return (
     <>
@@ -798,27 +800,14 @@ function ConditionEdge({
         markerEnd={markerEnd}
         interactionWidth={interactionWidth}
       />
-      <path
-        d={edgePath}
-        fill="none"
-        stroke="transparent"
-        strokeWidth={interactionWidth ?? 24}
-        pointerEvents="stroke"
-        aria-hidden="true"
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-      />
-      {info && label ? (
+      {label ? (
         <EdgeLabelRenderer>
           <div
-            className={`debug-condition-edge-label nodrag nopan${hovered ? " debug-condition-edge-label-active" : ""}`}
+            className={`debug-condition-edge-label nodrag nopan${selected ? " debug-condition-edge-label-selected" : ""}`}
             style={{ transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)` }}
-            aria-label={info.label}
-            onMouseEnter={() => setHovered(true)}
-            onMouseLeave={() => setHovered(false)}
+            aria-label={String(label)}
           >
             <span>{label}</span>
-            <ConditionEdgePanel info={info} />
           </div>
         </EdgeLabelRenderer>
       ) : null}
@@ -826,47 +815,90 @@ function ConditionEdge({
   );
 }
 
-function ConditionEdgePanel({ info }: { info: ConditionEdgeHoverInfo }) {
-  return (
-    <div className="debug-condition-edge-panel" aria-hidden="true">
-      <div className="debug-condition-edge-panel-header">
-        <span className="debug-condition-edge-panel-name">{info.label}</span>
-      </div>
-      <ConditionEdgePanelSection title="State" items={info.state} />
-      <ConditionEdgePanelSection title="Config" items={info.config} />
-    </div>
-  );
-}
-
-function ConditionEdgePanelSection({
-  title,
-  items,
+function offsetBezierPath({
+  sourceX,
+  sourceY,
+  sourcePosition,
+  targetX,
+  targetY,
+  targetPosition,
+  offset,
 }: {
-  title: string;
-  items: readonly { name: string; value: string }[];
-}) {
-  if (items.length === 0) return null;
-  const visibleItems = items.slice(0, 4);
-  return (
-    <div className="debug-condition-edge-panel-section">
-      <div className="debug-condition-edge-panel-heading">{title}</div>
-      {visibleItems.map((item) => (
-        <ConditionEdgePanelRow key={item.name} name={item.name} value={item.value} />
-      ))}
-      {items.length > visibleItems.length ? (
-        <div className="debug-condition-edge-panel-more">+{items.length - visibleItems.length} more</div>
-      ) : null}
-    </div>
+  sourceX: number;
+  sourceY: number;
+  sourcePosition: Position;
+  targetX: number;
+  targetY: number;
+  targetPosition: Position;
+  offset: number;
+}): [string, number, number] {
+  if (!offset) {
+    const [path, labelX, labelY] = getBezierPath({
+      sourceX,
+      sourceY,
+      sourcePosition,
+      targetX,
+      targetY,
+      targetPosition,
+    });
+    return [path, labelX, labelY];
+  }
+  const deltaX = targetX - sourceX;
+  const deltaY = targetY - sourceY;
+  const length = Math.hypot(deltaX, deltaY);
+  if (length < 0.001) {
+    return [`M${sourceX},${sourceY} C${sourceX + offset},${sourceY - offset} ${targetX + offset},${targetY - offset} ${targetX},${targetY}`, sourceX + offset, sourceY - offset];
+  }
+  const direction = sourceX < targetX || (sourceX === targetX && sourceY <= targetY) ? 1 : -1;
+  const normalX = -(deltaY * direction) / length;
+  const normalY = (deltaX * direction) / length;
+  const labelX = (sourceX + targetX) / 2 + normalX * offset;
+  const labelY = (sourceY + targetY) / 2 + normalY * offset;
+  const tangentScale = Math.min(length / 6, 60);
+  const tangentX = deltaX / length * tangentScale;
+  const tangentY = deltaY / length * tangentScale;
+  const [sourceControlX, sourceControlY] = edgeControlPoint(
+    sourcePosition,
+    sourceX,
+    sourceY,
+    targetX,
+    targetY
   );
+  const [targetControlX, targetControlY] = edgeControlPoint(
+    targetPosition,
+    targetX,
+    targetY,
+    sourceX,
+    sourceY
+  );
+  return [
+    `M${sourceX},${sourceY} C${sourceControlX},${sourceControlY} ${labelX - tangentX},${labelY - tangentY} ${labelX},${labelY} C${labelX + tangentX},${labelY + tangentY} ${targetControlX},${targetControlY} ${targetX},${targetY}`,
+    labelX,
+    labelY,
+  ];
 }
 
-function ConditionEdgePanelRow({ name, value }: { name: string; value: string }) {
-  return (
-    <div className="debug-condition-edge-panel-row">
-      <span className="debug-condition-edge-panel-key" title={name}>{name}</span>
-      <span className="debug-condition-edge-panel-value" title={value}>{value}</span>
-    </div>
-  );
+function edgeControlPoint(
+  position: Position,
+  x: number,
+  y: number,
+  otherX: number,
+  otherY: number
+): [number, number] {
+  switch (position) {
+    case Position.Left:
+      return [x - edgeControlOffset(x - otherX), y];
+    case Position.Right:
+      return [x + edgeControlOffset(otherX - x), y];
+    case Position.Top:
+      return [x, y - edgeControlOffset(y - otherY)];
+    case Position.Bottom:
+      return [x, y + edgeControlOffset(otherY - y)];
+  }
+}
+
+function edgeControlOffset(distance: number): number {
+  return distance >= 0 ? distance * 0.5 : 6.25 * Math.sqrt(-distance);
 }
 
 function positionChangesForNodes(nodes: Node<FlowNodeData>[]): GraphCanvasPositionChanges {

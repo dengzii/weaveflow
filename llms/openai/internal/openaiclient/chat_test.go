@@ -2,11 +2,88 @@ package openaiclient
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+func TestStreamingChatSkipsCommentsAndNonDataLines(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte(": keep-alive\n\n"))
+		_, _ = writer.Write([]byte("event: message\nretry: 1000\n\n"))
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"role\":\"assistant\",\"content\":\"hello\"}}]}\n\n"))
+		_, _ = writer.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := New("token", "test", server.URL, "", APITypeOpenAI, "", server.Client(), "", nil, "openai", nil, nil)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	response, err := client.CreateChat(context.Background(), &ChatRequest{
+		StreamingFunc: func(context.Context, []byte) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("create chat: %v", err)
+	}
+	if len(response.Choices) != 1 || response.Choices[0].Message.Role != "assistant" || response.Choices[0].Message.Content != "hello" {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestStreamingChatPropagatesCallbackCancellation(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/event-stream")
+		_, _ = writer.Write([]byte("data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"stop\"}}]}\n\n"))
+	}))
+	defer server.Close()
+
+	client, err := New("token", "test", server.URL, "", APITypeOpenAI, "", server.Client(), "", nil, "openai", nil, nil)
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	wantErr := errors.New("consumer canceled")
+	_, err = client.CreateChat(context.Background(), &ChatRequest{
+		StreamingFunc: func(context.Context, []byte) error { return wantErr },
+	})
+	if err == nil || !strings.Contains(err.Error(), wantErr.Error()) {
+		t.Fatalf("streaming callback error = %v, want %v", err, wantErr)
+	}
+}
+
+func FuzzUpdateToolCalls(f *testing.F) {
+	f.Add("search", `{"query":"status"}`, "call-1", 0)
+	f.Add("", "", "", -1)
+	f.Fuzz(func(t *testing.T, name, arguments, id string, index int) {
+		var indexPtr *int
+		if index >= 0 && index < 4 {
+			indexPtr = &index
+		}
+		delta := []*ToolCall{{
+			Index: indexPtr,
+			ID:    id,
+			Type:  ToolTypeFunction,
+			Function: ToolFunction{
+				Name:      name,
+				Arguments: arguments,
+			},
+		}}
+		chunk, calls := updateToolCalls(nil, delta)
+		if len(calls) > 0 && len(chunk) == 0 {
+			t.Fatal("tool call delta produced an empty chunk")
+		}
+		if len(calls) > 4 {
+			t.Fatalf("tool call count = %d, want at most 4", len(calls))
+		}
+	})
+}
 
 func TestStreamingChatAggregatesChoicesAndParallelToolCalls(t *testing.T) {
 	t.Parallel()
