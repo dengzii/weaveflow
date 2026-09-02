@@ -77,6 +77,8 @@ Trigger management lives at `/graphs/:graph_id/triggers` (`GET` to list and `PUT
 - `POST /graphs/:graph_id/triggers/:trigger_id/webhook`
 - `POST /graphs/:graph_id/triggers/:trigger_id/chat`
 
+Webhook credentials are optional. A webhook without `credential` accepts unauthenticated requests; when `credential` is configured, callers must send the matching `Authorization: Bearer <token>` header.
+
 Validate channel credentials through the setup workflow before replacing a graph's Trigger configuration.
 
 ## Health and errors

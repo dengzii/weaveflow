@@ -525,7 +525,7 @@
 }
 
 .graph-workspace-surface {
-  contain: layout paint;
+  contain: layout;
 }
 
 .graph-canvas-shell {

@@ -439,8 +439,9 @@ export function webhookTriggerURL(graphID: string, triggerID: string): string {
   );
 }
 
-export function webhookCurlCommand(url: string): string {
-  return `curl -X POST "${url}" -H "Authorization: Bearer $TRIGGER_TOKEN" -H "Content-Type: application/json" -d "{}"`;
+export function webhookCurlCommand(url: string, authenticated: boolean): string {
+  const authorization = authenticated ? ' -H "Authorization: Bearer $TRIGGER_TOKEN"' : "";
+  return `curl -X POST "${url}"${authorization} -H "Content-Type: application/json" -d "{}"`;
 }
 
 export function triggerTargetKey(target?: TriggerTarget): string {

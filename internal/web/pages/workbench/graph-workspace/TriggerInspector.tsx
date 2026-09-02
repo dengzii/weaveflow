@@ -64,7 +64,7 @@ export function TriggerInspector({
         <div className="grid gap-2 border-t border-border p-3 text-xs text-muted-foreground">
           <div className="font-medium">Test command</div>
           <code className="block break-all rounded border border-border bg-muted/40 p-2 font-mono text-[11px] text-foreground">
-            {webhookCurlCommand(webhookURL)}
+            {webhookCurlCommand(webhookURL, Boolean(trigger.credential))}
           </code>
         </div>
       ) : null}

@@ -422,9 +422,13 @@ function GraphCanvasInner({
     retainedDraggedNodeIDsRef.current = null;
     setNodes((current) => {
       if (runtimeVisible && !definition && current.length > 0 && elements.nodes.length === 0) return current;
+      const currentByID = new Map(current.map((node) => [node.id, node]));
       return retainedNodeIDs
-        ? elements.nodes.map((node) => ({ ...node, selected: retainedNodeIDs.has(node.id) }))
-        : elements.nodes;
+        ? elements.nodes.map((node) => preserveNodeMeasurement(
+            { ...node, selected: retainedNodeIDs.has(node.id) },
+            currentByID.get(node.id)
+          ))
+        : elements.nodes.map((node) => preserveNodeMeasurement(node, currentByID.get(node.id)));
     });
     setEdges((current) => runtimeVisible && !definition && current.length > 0 && elements.edges.length === 0
       ? current
@@ -899,6 +903,19 @@ function edgeControlPoint(
 
 function edgeControlOffset(distance: number): number {
   return distance >= 0 ? distance * 0.5 : 6.25 * Math.sqrt(-distance);
+}
+
+function preserveNodeMeasurement(
+  node: Node<FlowNodeData>,
+  previous?: Node<FlowNodeData>
+): Node<FlowNodeData> {
+  if (!previous) return node;
+  return {
+    ...node,
+    measured: previous.measured,
+    width: previous.width,
+    height: previous.height,
+  };
 }
 
 function positionChangesForNodes(nodes: Node<FlowNodeData>[]): GraphCanvasPositionChanges {

@@ -33,6 +33,9 @@ func normalizeTriggerCredential(item *trigger.Trigger) error {
 
 func (s *Server) authorizeTriggerInvocation(c *gin.Context, item trigger.Trigger) bool {
 	if item.Credential == nil {
+		if item.Type == trigger.TypeWebhook {
+			return true
+		}
 		writeError(c, http.StatusForbidden, errTriggerCredentialNotConfigured)
 		return false
 	}

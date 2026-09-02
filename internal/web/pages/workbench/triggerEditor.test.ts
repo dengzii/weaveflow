@@ -61,6 +61,14 @@ describe("trigger editor payload", () => {
     });
   });
 
+  test("omits webhook authentication when the token reference is blank", () => {
+    const values = triggerEditorValues(webhook, { graph_id: "fallback" });
+    values.credentialRef = "";
+
+    expect(buildTriggerPayload(values, webhook).credential).toBeUndefined();
+    expect(triggerDraftFromEditorValues(values, webhook).credential).toBeUndefined();
+  });
+
   test("rejects incomplete webhook mappings", () => {
     const values = triggerEditorValues(null, { graph_id: "graph-a" });
     values.id = "incoming";
@@ -346,9 +354,13 @@ describe("trigger editor payload", () => {
     );
   });
 
-  test("builds a curl webhook test command", () => {
-    expect(webhookCurlCommand("http://localhost:8080/graphs/graph-a/triggers/incoming/webhook")).toBe(
+  test("builds authenticated and unauthenticated curl webhook test commands", () => {
+    const url = "http://localhost:8080/graphs/graph-a/triggers/incoming/webhook";
+    expect(webhookCurlCommand(url, true)).toBe(
       'curl -X POST "http://localhost:8080/graphs/graph-a/triggers/incoming/webhook" -H "Authorization: Bearer $TRIGGER_TOKEN" -H "Content-Type: application/json" -d "{}"'
+    );
+    expect(webhookCurlCommand(url, false)).toBe(
+      'curl -X POST "http://localhost:8080/graphs/graph-a/triggers/incoming/webhook" -H "Content-Type: application/json" -d "{}"'
     );
   });
 

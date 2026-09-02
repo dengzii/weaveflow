@@ -393,7 +393,7 @@ func TestAuthenticatedWebhookExecutesAuthorizedTriggerSnapshot(t *testing.T) {
 	}
 }
 
-func TestPublicTriggerInvocationRejectsUnconfiguredCredentialWithoutCreatingRun(t *testing.T) {
+func TestWebhookInvocationAllowsUnconfiguredCredential(t *testing.T) {
 	store, err := trigger.NewFileStore(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -418,19 +418,19 @@ func TestPublicTriggerInvocationRejectsUnconfiguredCredentialWithoutCreatingRun(
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
-	response := requestWithHeader(engine, http.MethodPost, "/graphs/graph/triggers/private-hook/invocations", `{}`, "Authorization", "Bearer any-value")
-	if response.Code != http.StatusForbidden {
-		t.Fatalf("unconfigured credential status = %d, body = %s", response.Code, response.Body.String())
+	response := serveHTTP(engine, http.MethodPost, "/graphs/graph/triggers/private-hook/webhook", `{}`)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("unauthenticated webhook status = %d, body = %s", response.Code, response.Body.String())
 	}
-	if starter.calls != 0 {
-		t.Fatalf("unconfigured credential started %d runs", starter.calls)
+	if starter.calls != 1 {
+		t.Fatalf("unauthenticated webhook started %d runs, want 1", starter.calls)
 	}
 	records, err := service.ListRecords(context.Background(), "private-hook", 10)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(records) != 0 {
-		t.Fatalf("unconfigured credential created records: %#v", records)
+	if len(records) != 1 {
+		t.Fatalf("unauthenticated webhook records = %#v, want 1", records)
 	}
 }
 

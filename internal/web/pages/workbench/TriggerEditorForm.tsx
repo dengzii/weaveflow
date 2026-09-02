@@ -348,7 +348,7 @@ export function TriggerEditorForm({
             </Select>
           </label>
           <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Credential reference</span>
+            <span className="text-xs font-medium text-muted-foreground">Auth token reference (optional)</span>
             <Input
               value={values.credentialRef}
               onChange={(event) => change("credentialRef", event.target.value)}
@@ -356,6 +356,9 @@ export function TriggerEditorForm({
             />
           </label>
         </div>
+        {values.type === "webhook" ? (
+          <div className="text-[11px] text-muted-foreground">Leave the token reference blank to allow unauthenticated webhook requests.</div>
+        ) : null}
       </CollapsibleInspectorBlock>
 
       {values.type === "webhook" ? (

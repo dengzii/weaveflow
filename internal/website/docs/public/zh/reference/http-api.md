@@ -70,6 +70,8 @@ Authorization: Bearer <WEAVEFLOW_MANAGEMENT_TOKEN>
 Trigger 管理位于 `/graphs/:graph_id/triggers`（`GET` 列出，`PUT` 替换）；公开调用提供三种 POST 路径：`invocations`、
 `webhook` 和 `chat`。
 
+Webhook 的 `credential` 可选。未配置 `credential` 时，Webhook 接受未鉴权请求；配置后，调用方必须发送匹配的 `Authorization: Bearer <token>` 请求头。
+
 ## 健康检查与错误
 
 ```bash
