@@ -236,6 +236,44 @@ func TestListCachedGraphsLoadsLatestDefinition(t *testing.T) {
 	}
 }
 
+func TestGetGraphDetailSurfacesSessionHashDrift(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	engine := gin.New()
+	srv.RegisterRoutes(engine.Group(""))
+	uploaded := putGraphForHashTest(t, engine, triggerGraphUploadBody("graph-a", "v1", "hello"))
+
+	manifestPath := filepath.Join(uploaded.RunnerBaseDir, "graph.json")
+	manifestData, err := os.ReadFile(manifestPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var manifest graphSessionManifest
+	if err := json.Unmarshal(manifestData, &manifest); err != nil {
+		t.Fatal(err)
+	}
+	manifest.GraphHash = "sha256:stale-session-hash"
+	manifestData, err = json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(manifestPath, manifestData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	detail := decodeGraphDetailResponse(t, serveHTTP(engine, http.MethodGet, "/graphs/graph-a", ""), http.StatusOK)
+	if detail.Graph.GraphSessionID != uploaded.Graph.GraphSessionID {
+		t.Fatalf("graph detail session = %q, want %q", detail.Graph.GraphSessionID, uploaded.Graph.GraphSessionID)
+	}
+	if len(detail.ContextWarnings) != 1 || detail.ContextWarnings[0] != "session semantic hash differs under the current registry" {
+		t.Fatalf("graph detail context warnings = %#v, want semantic hash drift warning", detail.ContextWarnings)
+	}
+}
+
 func TestGetGraphSessionDetailLoadsExactSession(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	srv, err := New(context.Background(), Config{BaseDir: t.TempDir()})

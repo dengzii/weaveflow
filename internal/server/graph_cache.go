@@ -177,35 +177,7 @@ func (s *Server) handleGetGraphDetail(c *gin.Context) {
 		writeError(c, statusForError(err), err)
 		return
 	}
-	session, err := s.loadStoredGraphSession(stored, true)
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	definition, err := session.graph.Definition()
-	if err != nil {
-		writeError(c, statusForError(err), err)
-		return
-	}
-	writeData(c, http.StatusOK, graphDetailResponse{
-		Graph: graphInfo{
-			ID:                graphID,
-			Version:           stored.manifest.GraphVersion,
-			GraphHash:         stored.manifest.GraphHash,
-			GraphSnapshotHash: stored.manifest.GraphSnapshotHash,
-			GraphSessionID:    stored.manifest.GraphSessionID,
-			EntryPoint:        definition.EntryPoint,
-			FinishPoint:       definition.FinishPoint,
-		},
-		Definition:               definition,
-		Settings:                 s.graphSettingsResponse(session.settings),
-		InitialStateRequirements: session.graph.InitialStateRequirements(),
-		LatestSession: graphSessionSummary{
-			ID:        stored.manifest.GraphSessionID,
-			CreatedAt: stored.manifest.CreatedAt,
-		},
-		Active: s.runtime.graphActiveState(graphID),
-	})
+	s.writeGraphSessionDetail(c, stored)
 }
 
 func (s *Server) handleGetGraphSessionDetail(c *gin.Context) {
