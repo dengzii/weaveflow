@@ -3,6 +3,7 @@ package plan
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 
 	plancap "github.com/dengzii/weaveflow/capability/plan"
@@ -16,6 +17,7 @@ import (
 
 const defaultPlanSynthesisSystemPrompt = `Synthesize the final user-facing answer from the objective and plan step results.
 Use successful evidence, acknowledge material failures when necessary, and do not invent missing facts.
+Use only persisted source URLs and system-provided access timestamps; never invent publication or access dates.
 Answer directly in the same language as the objective.`
 
 type SynthesisNode struct {
@@ -116,7 +118,7 @@ func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 		StatePorts: []dsl.StatePortDefinition{
 			capabilityPort("plan", "Plan results and final status.", plancap.CapabilityID, true,
 				capabilityField(plancap.FieldObjective, dsl.StateAccessRead),
-				capabilityField(plancap.FieldStatus, dsl.StateAccessWrite),
+				capabilityField(plancap.FieldStatus, dsl.StateAccessReadWrite),
 				capabilityField(plancap.FieldSummary, dsl.StateAccessRead),
 				capabilityField(plancap.FieldSteps, dsl.StateAccessRead),
 				capabilityField(plancap.FieldFinalAnswer, dsl.StateAccessWrite)),
@@ -166,10 +168,6 @@ func (n *SynthesisNode) Execute(ctx core.Context, access *state.Access) (core.No
 }
 
 func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
-	model := ctx.Model(n.ModelID)
-	if model == nil {
-		return fmt.Errorf("plan synthesis node: model %q not available", effectiveModelID(n.ModelID))
-	}
 	planner, err := plancap.Bind(access, n.PlanPath)
 	if err != nil {
 		return err
@@ -180,7 +178,22 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	if objective == "" {
 		return errors.New("plan synthesis node: objective is empty")
 	}
+	if status := stringValue(planValue[planFieldStatus]); status != PlanStatusFinalizing {
+		return fmt.Errorf("plan synthesis node: plan status %q is not ready for synthesis", status)
+	}
+	if n.FailOnIncomplete {
+		if reason := incompletePlanReason(steps); reason != "" {
+			if err := planner.SetField(planFieldStatus, PlanStatusFailed); err != nil {
+				return err
+			}
+			return fmt.Errorf("plan synthesis node: refusing incomplete plan: %s", reason)
+		}
+	}
 
+	model := ctx.Model(n.ModelID)
+	if model == nil {
+		return fmt.Errorf("plan synthesis node: model %q not available", effectiveModelID(n.ModelID))
+	}
 	temperature := n.effectiveTemperature()
 	response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
 		ModelID: effectiveModelID(n.ModelID),
@@ -214,13 +227,6 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	}
 	if err := planner.SetField(planFieldFinalAnswer, answer); err != nil {
 		return err
-	}
-	if n.FailOnIncomplete {
-		for _, step := range steps {
-			if step.Status != PlanStepStatusDone || step.VerificationStatus != VerificationStatusPassed {
-				return planner.SetField(planFieldStatus, PlanStatusFailed)
-			}
-		}
 	}
 	return planner.SetField(planFieldStatus, PlanStatusDone)
 }
@@ -265,7 +271,17 @@ func buildPlanSynthesisPrompt(objective string, summary string, steps []plancap.
 		}
 		fmt.Fprintf(&builder, "  verification: %s - %s\n", step.VerificationStatus, textLimit(step.VerificationSummary, 1500))
 		for evidenceIndex, evidence := range step.Evidence {
-			fmt.Fprintf(&builder, "  evidence [S%d:E%d]: %s %s - %s\n", stepIndex+1, evidenceIndex+1, evidence.ToolID, evidence.Status, textLimit(evidence.Summary, 1000))
+			fmt.Fprintf(&builder, "  evidence [S%d:E%d]: %s %s - %s", stepIndex+1, evidenceIndex+1, evidence.ToolID, evidence.Status, textLimit(evidence.Summary, 1000))
+			if evidence.URL != "" {
+				fmt.Fprintf(&builder, " | url=%s", evidence.URL)
+			}
+			if evidence.HTTPStatus != 0 {
+				fmt.Fprintf(&builder, " | http_status=%d", evidence.HTTPStatus)
+			}
+			if evidence.AccessedAt != "" {
+				fmt.Fprintf(&builder, " | accessed_at=%s", evidence.AccessedAt)
+			}
+			builder.WriteByte('\n')
 		}
 	}
 	if requireEvidenceRefs {
@@ -280,23 +296,34 @@ func ensureFinalEvidenceReferences(answer string, steps []plancap.Step) (string,
 	if len(refs) == 0 {
 		return "", errors.New("final answer requires evidence refs but no successful evidence exists")
 	}
-	missing := make([]string, 0, len(refs))
-	for _, ref := range refs {
-		if !strings.Contains(answer, ref) {
-			missing = append(missing, ref)
+	allEvidence := make(map[string]plancap.Evidence)
+	for stepIndex, step := range steps {
+		for evidenceIndex, evidence := range step.Evidence {
+			allEvidence[fmt.Sprintf("[S%d:E%d]", stepIndex+1, evidenceIndex+1)] = evidence
 		}
 	}
-	if len(missing) == 0 {
-		return answer, nil
+	for _, rawRef := range evidenceReferencePattern.FindAllString(answer, -1) {
+		evidence, ok := allEvidence[rawRef]
+		if !ok || !evidenceIsSuccessful(evidence) {
+			return "", fmt.Errorf("final answer references invalid evidence %s", rawRef)
+		}
 	}
-	return strings.TrimSpace(answer) + "\n\nEvidence references: " + strings.Join(missing, ", "), nil
+	var builder strings.Builder
+	builder.WriteString(strings.TrimSpace(answer))
+	builder.WriteString("\n\nEvidence references:\n")
+	for _, ref := range refs {
+		evidence := allEvidence[ref]
+		fmt.Fprintf(&builder, "- %s %s", ref, evidenceReferenceDetails(evidence))
+		builder.WriteByte('\n')
+	}
+	return strings.TrimSpace(builder.String()), nil
 }
 
 func successfulEvidenceReferences(steps []plancap.Step) []string {
 	refs := make([]string, 0, 12)
 	for stepIndex, step := range steps {
 		for evidenceIndex, evidence := range step.Evidence {
-			if !strings.EqualFold(strings.TrimSpace(evidence.Status), "succeeded") {
+			if !evidenceIsSuccessful(evidence) {
 				continue
 			}
 			refs = append(refs, fmt.Sprintf("[S%d:E%d]", stepIndex+1, evidenceIndex+1))
@@ -306,4 +333,39 @@ func successfulEvidenceReferences(steps []plancap.Step) []string {
 		}
 	}
 	return refs
+}
+
+var evidenceReferencePattern = regexp.MustCompile(`\[S[0-9]+:E[0-9]+\]`)
+
+func evidenceIsSuccessful(evidence plancap.Evidence) bool {
+	return strings.EqualFold(strings.TrimSpace(evidence.Status), "succeeded") && evidence.Error == "" && validHTTPStatus(evidence.HTTPStatus)
+}
+
+func evidenceReferenceDetails(evidence plancap.Evidence) string {
+	parts := []string{evidence.ToolID}
+	if evidence.Title != "" {
+		parts = append(parts, evidence.Title)
+	}
+	if evidence.URL != "" {
+		parts = append(parts, evidence.URL)
+	}
+	if evidence.HTTPStatus != 0 {
+		parts = append(parts, fmt.Sprintf("HTTP %d", evidence.HTTPStatus))
+	}
+	if evidence.AccessedAt != "" {
+		parts = append(parts, "accessed "+evidence.AccessedAt)
+	}
+	return strings.Join(parts, " | ")
+}
+
+func incompletePlanReason(steps []plancap.Step) string {
+	if len(steps) == 0 {
+		return "plan has no steps"
+	}
+	for _, step := range steps {
+		if step.Status != PlanStepStatusDone || step.VerificationStatus != VerificationStatusPassed {
+			return fmt.Sprintf("step %q is %s/%s", step.ID, step.Status, step.VerificationStatus)
+		}
+	}
+	return ""
 }

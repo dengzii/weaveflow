@@ -164,8 +164,9 @@ func newPlanGraph(profile TaskProfile) (*wfgraph.Graph, error) {
 	synthesis.SystemPrompt = profile.SynthesisPrompt
 	synthesis.RequireEvidenceRefs = profile.RequireEvidenceRefs
 	synthesis.PlanPath, synthesis.ResultPath = planStatePath, planResultPath
+	routeFailure := plannode.NewRouteFailureNode(node.WithID("plan_route_failure"))
 
-	for _, target := range []node.Node{generator, step, execute, executeTools, finalizeStep, verifier, review, synthesis} {
+	for _, target := range []node.Node{generator, step, execute, executeTools, finalizeStep, verifier, review, synthesis, routeFailure} {
 		if err := graph.AddNode(target); err != nil {
 			return nil, err
 		}
@@ -182,7 +183,10 @@ func newPlanGraph(profile TaskProfile) (*wfgraph.Graph, error) {
 	if err := graph.AddConditionalEdge(step.ID(), execute.ID(), plannode.StatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
 		return nil, err
 	}
-	if err := graph.AddEdge(step.ID(), synthesis.ID()); err != nil {
+	if err := graph.AddConditionalEdge(step.ID(), synthesis.ID(), plannode.StatusEquals(planStatePath, plannode.PlanStatusFinalizing)); err != nil {
+		return nil, err
+	}
+	if err := graph.AddEdge(step.ID(), routeFailure.ID()); err != nil {
 		return nil, err
 	}
 	if err := graph.AddConditionalEdge(execute.ID(), executeTools.ID(), builtin.ConversationHasToolCalls(planConversationPath)); err != nil {
@@ -210,7 +214,13 @@ func newPlanGraph(profile TaskProfile) (*wfgraph.Graph, error) {
 	if err := graph.AddConditionalEdge(review.ID(), step.ID(), plannode.StatusEquals(planStatePath, plannode.PlanStatusExecuting)); err != nil {
 		return nil, err
 	}
-	if err := graph.AddEdge(review.ID(), synthesis.ID()); err != nil {
+	if err := graph.AddConditionalEdge(review.ID(), synthesis.ID(), plannode.StatusEquals(planStatePath, plannode.PlanStatusFinalizing)); err != nil {
+		return nil, err
+	}
+	if err := graph.AddEdge(review.ID(), routeFailure.ID()); err != nil {
+		return nil, err
+	}
+	if err := graph.AddEdge(routeFailure.ID(), synthesis.ID()); err != nil {
 		return nil, err
 	}
 	return graph, nil

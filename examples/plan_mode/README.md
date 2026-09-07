@@ -2,7 +2,7 @@
 
 This example builds one reusable Plan graph and configures its prompts, tools, permissions, budgets, approval policy, deterministic verifier, and optional source-grounded Critic through a `TaskProfile`. Profiles and verifiers are registered through `ProfileRegistry` and `VerifierRegistry`, so a new task family can extend the example without adding another graph topology. A step advances only after `plan_verifier` records a `passed` decision backed by tool evidence; a model's completion claim is not sufficient.
 
-The graph routes through generator, step executor, tool executor, finalizer, verifier, reviewer, and synthesis nodes. Each profile selects which tools, verifier, permissions, and limits apply at every stage.
+The graph routes through generator, step executor, tool executor, finalizer, verifier, reviewer, and synthesis nodes. Synthesis is reachable only from a `finalizing` plan state; invalid status transitions go to a registered failure node instead of producing an answer. Each profile selects which tools, verifier, permissions, and limits apply at every stage.
 
 ## Run
 
@@ -67,7 +67,7 @@ The Critic runs only after deterministic verification passes. It receives the ob
 
 The planner persists a canonical summary derived from the normalized steps instead of trusting a model-supplied step count. Every step can use the configured default verification strategy, and the final normalized step is always required to cover the objective, name an observable deliverable, and include the configured verifier in its acceptance criteria. Mutation objectives receive an available `edit` or `write` tool on that final step.
 
-Final synthesis numbers successful evidence as `[S1:E1]`, `[S1:E2]`, and so on. Material factual claims are prompted to cite those refs; failed evidence is never treated as a valid final reference. If the answer omits a successful ref, synthesis appends an explicit evidence-reference footer, and synthesis fails when no successful evidence exists.
+Final synthesis numbers successful evidence as `[S1:E1]`, `[S1:E2]`, and so on. Material factual claims are prompted to cite those refs; failed evidence, non-2xx `web_fetch` responses, and duplicate source URLs are never treated as valid independent references. Persisted web evidence includes the URL, HTTP status, title, source type, and system-generated access timestamp. Synthesis appends a traceable evidence-reference footer and refuses to write an answer when `fail_on_incomplete` is enabled and any step is not verified.
 
 The `analysis` profile exposes `outline` for structural inspection and limits each `read` call to 240 lines and 12 KiB of returned text. The `documentation` profile limits each `read` call to 320 lines and 16 KiB. A missing line limit gets the profile default, and an excessive requested limit is rejected.
 

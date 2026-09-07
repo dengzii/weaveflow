@@ -56,6 +56,13 @@ func TestGeneratorReplanPreservesSuccessfulStepEvidenceInHistory(t *testing.T) {
 	}
 }
 
+func TestGeneratorNormalizesUnicodeStepSeparators(t *testing.T) {
+	steps := normalizePlanSteps([]plancap.Step{{ID: "step‑1", Title: "Inspect", Description: "Inspect"}, {ID: "step-1", Title: "Verify", Description: "Verify"}}, 4, nil)
+	if len(steps) != 2 || steps[0].ID != "step-1" || steps[1].ID != "step-1_2" {
+		t.Fatalf("normalized steps = %#v", steps)
+	}
+}
+
 func TestGeneratorInitializesHistoryAsArray(t *testing.T) {
 	target := NewGeneratorNode(core.WithID("generate_plan"))
 	access := state.NewEditingAccess(state.FromShared(map[string]any{

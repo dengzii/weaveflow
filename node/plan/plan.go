@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode"
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	plancap "github.com/dengzii/weaveflow/capability/plan"
@@ -187,7 +188,7 @@ func normalizePlanSteps(steps []plancap.Step, maxSteps int, knownTools map[strin
 			continue
 		}
 
-		baseID := strings.TrimSpace(step.ID)
+		baseID := canonicalPlanStepID(step.ID)
 		if baseID == "" {
 			baseID = fmt.Sprintf("step_%d", len(normalized)+1)
 		}
@@ -237,6 +238,21 @@ func normalizePlanSteps(steps []plancap.Step, maxSteps int, knownTools map[strin
 		normalized = append(normalized, step)
 	}
 	return normalized
+}
+
+func canonicalPlanStepID(value string) string {
+	value = strings.TrimSpace(value)
+	value = strings.Map(func(character rune) rune {
+		switch character {
+		case '\u2010', '\u2011', '\u2012', '\u2013', '\u2014', '\u2015', '\u2212':
+			return '-'
+		}
+		if unicode.IsLetter(character) || unicode.IsDigit(character) || character == '_' || character == '-' {
+			return character
+		}
+		return '_'
+	}, value)
+	return strings.Trim(value, "_-")
 }
 
 func enforcePlanInvariants(objective string, verifierID string, steps []plancap.Step, knownTools map[string]struct{}) []plancap.Step {

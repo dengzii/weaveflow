@@ -83,6 +83,57 @@ func TestVerifierRejectsFailedToolEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifierRejectsNonSuccessfulHTTPEvidence(t *testing.T) {
+	target, access, conversation := verifierFixture(t, plancap.Step{
+		ID: "research", Title: "Research", Description: "Fetch a source.",
+		Deliverables: []string{"source-backed result"}, AcceptanceCriteria: []string{"source is reachable"}, VerificationStrategy: "evidence",
+	})
+	target.MinimumEvidence = 1
+	if err := conversation.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{llms.ToolResult{
+		ToolCallID: "fetch-403", Name: "web_fetch", Value: map[string]any{"url": "https://example.com/blocked", "status": 403, "title": "Blocked"},
+	}}}}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	if err := conversation.SetFinalAnswer("The source confirms the result."); err != nil {
+		t.Fatalf("set final answer: %v", err)
+	}
+	if _, err := target.Execute(core.NewContext(context.Background()), access); err != nil {
+		t.Fatalf("execute verifier: %v", err)
+	}
+	step := currentVerifierStep(t, target, access)
+	if step.VerificationStatus != VerificationStatusRetry || !strings.Contains(step.VerificationSummary, "HTTP status 403") {
+		t.Fatalf("verification = %s %q; evidence = %#v", step.VerificationStatus, step.VerificationSummary, step.Evidence)
+	}
+	if len(step.Evidence) != 1 || step.Evidence[0].URL != "https://example.com/blocked" || step.Evidence[0].HTTPStatus != 403 {
+		t.Fatalf("structured evidence = %#v", step.Evidence)
+	}
+}
+
+func TestVerifierRequiresIndependentSourceURLs(t *testing.T) {
+	target, access, conversation := verifierFixture(t, plancap.Step{
+		ID: "research", Title: "Research", Description: "Fetch independent sources.",
+		Deliverables: []string{"source-backed result"}, AcceptanceCriteria: []string{"two sources agree"}, VerificationStrategy: "evidence",
+	})
+	target.MinimumEvidence = 2
+	messages := []llms.MessageContent{{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+		llms.ToolResult{ToolCallID: "fetch-1", Name: "web_fetch", Value: map[string]any{"url": "https://example.com/source", "status": 200}},
+		llms.ToolResult{ToolCallID: "fetch-2", Name: "web_fetch", Value: map[string]any{"url": "https://example.com/source/", "status": 200}},
+	}}}
+	if err := conversation.SetMessages(messages); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	if err := conversation.SetFinalAnswer("Two sources support the result."); err != nil {
+		t.Fatalf("set final answer: %v", err)
+	}
+	if _, err := target.Execute(core.NewContext(context.Background()), access); err != nil {
+		t.Fatalf("execute verifier: %v", err)
+	}
+	step := currentVerifierStep(t, target, access)
+	if step.VerificationStatus != VerificationStatusRetry || !strings.Contains(step.VerificationSummary, "independent source URL") {
+		t.Fatalf("verification = %s %q", step.VerificationStatus, step.VerificationSummary)
+	}
+}
+
 func TestVerifierSanitizesAndLimitsEvidence(t *testing.T) {
 	target, access, conversation := verifierFixture(t, plancap.Step{
 		ID: "inspect", Title: "Inspect", Description: "Inspect a file.",

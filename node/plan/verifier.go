@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -487,15 +488,31 @@ func genericVerification(request VerificationRequest) VerificationResult {
 		}
 		return VerificationResult{Status: VerificationStatusPassed, Summary: "explicit no-op verification accepted the non-empty analysis result."}
 	}
-	if minimum := intConfig(request.Config, "minimum_evidence"); minimum > 0 && len(request.Evidence) < minimum {
-		return VerificationResult{Status: VerificationStatusRetry, Summary: fmt.Sprintf("verification requires at least %d evidence item(s)", minimum), Retryable: true}
+	for _, item := range request.Evidence {
+		if strings.EqualFold(item.Status, "failed") || item.Error != "" || !validHTTPStatus(item.HTTPStatus) {
+			summary := item.Error
+			if summary == "" {
+				summary = item.Summary
+			}
+			if summary == "" && item.HTTPStatus != 0 {
+				summary = fmt.Sprintf("HTTP status %d", item.HTTPStatus)
+			}
+			if summary != "" {
+				return VerificationResult{Status: VerificationStatusRetry, Summary: "tool evidence contains a failure: " + limitEvidenceText(summary), Retryable: true}
+			}
+		}
 	}
-	if len(request.Evidence) == 0 {
+	validEvidence := successfulEvidence(request.Evidence)
+	if minimum := intConfig(request.Config, "minimum_evidence"); minimum > 0 && len(validEvidence) < minimum {
+		return VerificationResult{Status: VerificationStatusRetry, Summary: fmt.Sprintf("verification requires at least %d successful evidence item(s)", minimum), Retryable: true}
+	}
+	if len(validEvidence) == 0 {
 		return VerificationResult{Status: VerificationStatusRetry, Summary: "no tool evidence was recorded", Retryable: true}
 	}
-	for _, item := range request.Evidence {
-		if strings.EqualFold(item.Status, "failed") || item.Error != "" {
-			return VerificationResult{Status: VerificationStatusRetry, Summary: "tool evidence contains a failure: " + limitEvidenceText(item.Error), Retryable: true}
+	if minimum := intConfig(request.Config, "minimum_evidence"); minimum > 1 {
+		urlEvidence := evidenceWithURLs(validEvidence)
+		if len(urlEvidence) > 0 && uniqueEvidenceURLs(urlEvidence) < minimum {
+			return VerificationResult{Status: VerificationStatusRetry, Summary: fmt.Sprintf("verification requires at least %d independent source URL(s)", minimum), Retryable: true}
 		}
 	}
 	if strings.TrimSpace(request.Step.Result) == "" {
@@ -513,6 +530,7 @@ func genericVerification(request VerificationRequest) VerificationResult {
 
 func collectEvidence(messages []llms.MessageContent) []plancap.Evidence {
 	result := make([]plancap.Evidence, 0)
+	accessedAt := time.Now().UTC().Format(time.RFC3339Nano)
 	for _, message := range messages {
 		if message.Role != llms.ChatMessageTypeTool {
 			continue
@@ -531,19 +549,110 @@ func collectEvidence(messages []llms.MessageContent) []plancap.Evidence {
 			if toolResult.IsError || toolResult.ErrorMessage != "" {
 				status = "failed"
 			}
+			metadata := decodeWebFetchEvidence(toolResult)
+			if metadata.Status != 0 && !validHTTPStatus(metadata.Status) {
+				status = "failed"
+				if toolResult.ErrorMessage == "" {
+					toolResult.ErrorMessage = fmt.Sprintf("HTTP status %d", metadata.Status)
+				}
+			}
 			summary := toolResult.Content
 			if summary == "" && toolResult.Value != nil {
 				if encoded, err := json.Marshal(toolResult.Value); err == nil {
 					summary = string(encoded)
 				}
 			}
-			result = append(result, plancap.Evidence{
+			evidence := plancap.Evidence{
 				ToolID: toolResult.Name, Status: status, Summary: sanitizeEvidence(summary),
 				Error: sanitizeEvidence(toolResult.ErrorMessage), ToolCallID: toolResult.ToolCallID,
-			})
+				URL: sanitizeEvidence(metadata.URL), HTTPStatus: metadata.Status, Title: sanitizeEvidence(metadata.Title),
+				AccessedAt: accessedAt,
+			}
+			if evidence.URL != "" {
+				evidence.SourceType = "web"
+			} else {
+				evidence.SourceType = "tool"
+			}
+			result = append(result, evidence)
 		}
 	}
 	return result
+}
+
+type webFetchEvidence struct {
+	URL    string `json:"url"`
+	Status int    `json:"status"`
+	Title  string `json:"title"`
+}
+
+func decodeWebFetchEvidence(toolResult llms.ToolResult) webFetchEvidence {
+	if toolResult.Name != "web_fetch" {
+		return webFetchEvidence{}
+	}
+	var metadata webFetchEvidence
+	if toolResult.Value != nil {
+		if encoded, err := json.Marshal(toolResult.Value); err == nil {
+			_ = json.Unmarshal(encoded, &metadata)
+		}
+	}
+	if metadata.URL == "" || metadata.Status == 0 {
+		var fromContent webFetchEvidence
+		if err := json.Unmarshal([]byte(toolResult.Content), &fromContent); err == nil {
+			if metadata.URL == "" {
+				metadata.URL = fromContent.URL
+			}
+			if metadata.Status == 0 {
+				metadata.Status = fromContent.Status
+			}
+			if metadata.Title == "" {
+				metadata.Title = fromContent.Title
+			}
+		}
+	}
+	return metadata
+}
+
+func validHTTPStatus(status int) bool {
+	return status == 0 || (status >= 200 && status < 300)
+}
+
+func successfulEvidence(evidence []plancap.Evidence) []plancap.Evidence {
+	result := make([]plancap.Evidence, 0, len(evidence))
+	for _, item := range evidence {
+		if strings.EqualFold(strings.TrimSpace(item.Status), "succeeded") && item.Error == "" && validHTTPStatus(item.HTTPStatus) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func evidenceWithURLs(evidence []plancap.Evidence) []plancap.Evidence {
+	result := make([]plancap.Evidence, 0, len(evidence))
+	for _, item := range evidence {
+		if strings.TrimSpace(item.URL) != "" {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func uniqueEvidenceURLs(evidence []plancap.Evidence) int {
+	seen := make(map[string]struct{}, len(evidence))
+	for _, item := range evidence {
+		value := strings.TrimSpace(item.URL)
+		if value == "" {
+			continue
+		}
+		if parsed, err := url.Parse(value); err == nil {
+			parsed.Scheme = strings.ToLower(parsed.Scheme)
+			parsed.Host = strings.ToLower(parsed.Host)
+			parsed.Path = strings.TrimRight(parsed.Path, "/")
+			parsed.Fragment = ""
+			value = parsed.String()
+		}
+		seen[value] = struct{}{}
+	}
+	return len(seen)
 }
 
 func executionCounts(messages []llms.MessageContent) (int, int) {

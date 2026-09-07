@@ -71,6 +71,11 @@ type Evidence struct {
 	Summary    string `json:"summary,omitempty"`
 	Error      string `json:"error,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
+	URL        string `json:"url,omitempty"`
+	HTTPStatus int    `json:"http_status,omitempty"`
+	Title      string `json:"title,omitempty"`
+	SourceType string `json:"source_type,omitempty"`
+	AccessedAt string `json:"accessed_at,omitempty"`
 }
 
 type Attempt struct {
@@ -298,6 +303,11 @@ func decodeEvidence(value any) []Evidence {
 			Summary:    stringValue(item["summary"]),
 			Error:      stringValue(item["error"]),
 			ToolCallID: stringValue(item["tool_call_id"]),
+			URL:        stringValue(item["url"]),
+			HTTPStatus: intValue(item["http_status"]),
+			Title:      stringValue(item["title"]),
+			SourceType: stringValue(item["source_type"]),
+			AccessedAt: stringValue(item["accessed_at"]),
 		})
 	}
 	return result
@@ -315,6 +325,21 @@ func encodeEvidence(evidence []Evidence) []map[string]any {
 		}
 		if item.ToolCallID != "" {
 			mapped["tool_call_id"] = item.ToolCallID
+		}
+		if item.URL != "" {
+			mapped["url"] = item.URL
+		}
+		if item.HTTPStatus != 0 {
+			mapped["http_status"] = item.HTTPStatus
+		}
+		if item.Title != "" {
+			mapped["title"] = item.Title
+		}
+		if item.SourceType != "" {
+			mapped["source_type"] = item.SourceType
+		}
+		if item.AccessedAt != "" {
+			mapped["accessed_at"] = item.AccessedAt
 		}
 		result = append(result, mapped)
 	}

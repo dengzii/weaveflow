@@ -94,6 +94,28 @@ func TestNewPlanGraphUsesProfileConfiguration(t *testing.T) {
 	if analysisGraph.NodeSpecs()["synthesize_plan"].Config["require_evidence_refs"] != true {
 		t.Fatal("analysis synthesis does not require evidence refs")
 	}
+	definition, err := analysisGraph.Definition()
+	if err != nil {
+		t.Fatalf("plan graph definition: %v", err)
+	}
+	synthesisEdges := 0
+	for _, edge := range definition.Edges {
+		if edge.To != "synthesize_plan" {
+			continue
+		}
+		if edge.From == "prepare_step" || edge.From == "review_step" {
+			synthesisEdges++
+		}
+		if edge.From == "generate_plan" || edge.From == "execute_step" || edge.From == "execute_tools" || edge.From == "finalize_step" {
+			t.Fatalf("unexpected direct synthesis edge: %#v", edge)
+		}
+		if (edge.From == "prepare_step" || edge.From == "review_step") && (edge.Condition == nil || edge.Condition.Type != plan.ConditionTypePlanStatusEquals || edge.Condition.Config["status"] != plan.PlanStatusFinalizing) {
+			t.Fatalf("synthesis edge is not finalizing-gated: %#v", edge)
+		}
+	}
+	if synthesisEdges != 2 {
+		t.Fatalf("synthesis edges = %d, want 2 finalizing-gated edges", synthesisEdges)
+	}
 }
 
 func TestProfileAndVerifierRegistriesAllowExtensions(t *testing.T) {

@@ -17,6 +17,7 @@ func RegisterNodeTypes(target *registry.Registry) error {
 		VerifierNodeTypeDefinition(),
 		ReviewNodeTypeDefinition(),
 		SynthesisNodeTypeDefinition(),
+		RouteFailureNodeTypeDefinition(),
 	}
 	for _, definition := range definitions {
 		if err := target.RegisterNodeTypeInGroup(basenode.NodeGroupOrchestration, definition); err != nil {
