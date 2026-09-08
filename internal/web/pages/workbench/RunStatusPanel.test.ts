@@ -191,6 +191,7 @@ describe("RunStatusPanel", () => {
     expect(detail).not.toContain('aria-label="internal state snapshot"');
     expect(detail).not.toContain('aria-label="runtime state snapshot"');
     expect(detail).toContain('role="tree" aria-label="shared state snapshot"');
+    expect(detail).toContain('aria-label="Open answer JSON string value text"');
     expect(detail).toContain("ready");
     expect(detail).toContain("overflow-wrap:anywhere");
   });

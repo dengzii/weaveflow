@@ -217,6 +217,23 @@ export interface TriggerChatStateBindings {
   message_id?: string;
 }
 
+export type ChatReplyKind = "update" | "message" | "finish";
+
+export interface ChatReply {
+  kind: ChatReplyKind;
+  content?: string;
+  error?: string;
+  node_id?: string;
+  sequence?: number;
+}
+
+export interface ChatResult {
+  run: RunRecord;
+  conversation_id?: string;
+  command?: string;
+  final_reply?: string;
+}
+
 export interface ChatChannelDefinition {
   id: string;
   title: string;
@@ -260,6 +277,7 @@ export interface Trigger {
   target?: TriggerTarget;
   concurrency?: TriggerConcurrency;
   credential?: SecretRef;
+  credential_configured?: boolean;
   initial_state?: Record<string, unknown>;
   webhook?: TriggerWebhookSpec;
   schedule?: TriggerScheduleSpec;

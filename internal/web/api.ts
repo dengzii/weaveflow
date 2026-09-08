@@ -9,6 +9,8 @@ import type {
   CachedGraphSummary,
   ChatChannelSetupResult,
   CheckpointDetail,
+  ChatReply,
+  ChatResult,
   ForkResult,
   GraphDefinition,
   GraphDetail,
@@ -41,6 +43,7 @@ import {
   validateToolsInfo,
 } from "./apiValidation";
 import { managementHeaders, resolveBackendUrl } from "./lib/backend";
+import { isPlainRecord } from "./lib/utils";
 
 export class ApiError extends Error {
   readonly status: number;
@@ -354,6 +357,189 @@ export async function replaceTriggers(
   });
   if (!Array.isArray(items)) throw new Error("invalid trigger replacement response");
   return items as Trigger[];
+}
+
+export interface ChatStreamHandlers {
+  onReply?: (reply: ChatReply) => void;
+  onResult?: (result: ChatResult) => void;
+  onError?: (error: string, result?: ChatResult) => void;
+}
+
+export interface ChatStreamOutcome {
+  result?: ChatResult;
+  error?: string;
+}
+
+export async function streamChatTrigger(
+  graphID: string,
+  triggerID: string,
+  message: {
+    message_id?: string;
+    user_id: string;
+    conversation_id: string;
+    content: string;
+    metadata?: Record<string, unknown>;
+  },
+  token: string,
+  handlers: ChatStreamHandlers = {},
+  signal?: AbortSignal
+): Promise<ChatStreamOutcome> {
+  const normalizedToken = normalizeTriggerToken(token);
+  if (!normalizedToken) throw new Error("Chat Trigger token is required");
+  const path = `${graphPath(graphID)}/triggers/${encodeURIComponent(triggerID)}/chat`;
+  const headers = new Headers({
+    Accept: "text/event-stream",
+    "content-type": "application/json",
+  });
+  headers.set("Authorization", `Bearer ${normalizedToken}`);
+  const response = await globalThis.fetch(resolveBackendUrl(path), {
+    method: "POST",
+    headers,
+    body: JSON.stringify(message),
+    signal,
+  });
+  if (!response.ok) throw await errorFromResponse(response);
+  const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
+  if (!contentType.includes("text/event-stream") || !response.body) {
+    throw new Error("Chat trigger response is not an event stream");
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const frameDecoder = new ChatSSEFrameDecoder();
+  let outcome: ChatStreamOutcome = {};
+  let terminalEventReceived = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      const text = done ? decoder.decode() : decoder.decode(value, { stream: true });
+      for (const frame of frameDecoder.push(text)) {
+        const parsed = parseChatStreamFrame(frame.event, frame.data);
+        if (parsed.kind === "reply") {
+          handlers.onReply?.(parsed.value);
+        } else if (parsed.kind === "result") {
+          terminalEventReceived = true;
+          outcome.result = parsed.value;
+          handlers.onResult?.(parsed.value);
+        } else if (parsed.kind === "error") {
+          terminalEventReceived = true;
+          outcome.error = parsed.error;
+          outcome.result = parsed.result;
+          handlers.onError?.(parsed.error, parsed.result);
+        }
+      }
+      if (done) break;
+    }
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+  if (!terminalEventReceived) {
+    outcome.error = "Chat trigger stream ended without a terminal result";
+    handlers.onError?.(outcome.error);
+  }
+  return outcome;
+}
+
+class ChatSSEFrameDecoder {
+  private buffer = "";
+
+  push(chunk: string): Array<{ event: string; data: string }> {
+    this.buffer += chunk;
+    const frames: Array<{ event: string; data: string }> = [];
+    while (true) {
+      const boundary = this.buffer.match(/\r?\n\r?\n/);
+      if (!boundary || boundary.index === undefined) break;
+      const block = this.buffer.slice(0, boundary.index);
+      this.buffer = this.buffer.slice(boundary.index + boundary[0].length);
+      const frame = parseChatSSEBlock(block);
+      if (frame) frames.push(frame);
+    }
+    return frames;
+  }
+}
+
+function parseChatSSEBlock(block: string): { event: string; data: string } | null {
+  let event = "message";
+  const data: string[] = [];
+  for (const line of block.split(/\r?\n/)) {
+    if (!line || line.startsWith(":")) continue;
+    const separator = line.indexOf(":");
+    const field = separator < 0 ? line : line.slice(0, separator);
+    let value = separator < 0 ? "" : line.slice(separator + 1);
+    if (value.startsWith(" ")) value = value.slice(1);
+    if (field === "event") event = value;
+    if (field === "data") data.push(value);
+  }
+  return data.length > 0 ? { event, data: data.join("\n") } : null;
+}
+
+function parseChatStreamFrame(
+  event: string,
+  data: string
+): { kind: "reply"; value: ChatReply } | { kind: "result"; value: ChatResult } | { kind: "error"; error: string; result?: ChatResult } {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(data);
+  } catch {
+    throw new Error(`Chat trigger ${event} event returned invalid JSON`);
+  }
+  if (event === "update" || event === "message" || event === "finish") {
+    if (!isChatReply(parsed) || parsed.kind !== event) {
+      throw new Error(`Chat trigger ${event} event returned an invalid reply`);
+    }
+    return { kind: "reply", value: parsed };
+  }
+  if (event === "result") {
+    if (!isChatResult(parsed)) throw new Error("Chat trigger result event returned an invalid result");
+    return { kind: "result", value: parsed };
+  }
+  if (event === "error") {
+    if (!isPlainRecord(parsed) || typeof parsed.error !== "string") {
+      throw new Error("Chat trigger error event returned an invalid error");
+    }
+    const result = isChatResult(parsed.result) ? parsed.result : undefined;
+    return { kind: "error", error: parsed.error, result };
+  }
+  return { kind: "error", error: `Chat trigger returned an unsupported event: ${event}` };
+}
+
+function isChatReply(value: unknown): value is ChatReply {
+  return isPlainRecord(value) && (value.kind === "update" || value.kind === "message" || value.kind === "finish");
+}
+
+function isChatResult(value: unknown): value is ChatResult {
+  return isPlainRecord(value) && isPlainRecord(value.run) &&
+    typeof value.run.run_id === "string" && value.run.run_id.trim() !== "";
+}
+
+export function normalizeTriggerToken(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  const parts = trimmed.split(/\s+/);
+  if (parts.length === 2 && parts[0].toLowerCase() === "bearer") {
+    return parts[1];
+  }
+  if (parts.length !== 1 || parts[0].toLowerCase() === "bearer") {
+    throw new Error("Chat Trigger token must be a single value or a Bearer token");
+  }
+  return parts[0];
+}
+
+async function errorFromResponse(response: Response): Promise<ApiError> {
+  const contentType = response.headers.get("content-type") ?? "";
+  const text = await response.text();
+  let payload: ApiResponse<unknown> | undefined;
+  if (contentType.includes("application/json") && text) {
+    try {
+      payload = JSON.parse(text) as ApiResponse<unknown>;
+    } catch {
+      payload = undefined;
+    }
+  }
+  return new ApiError(response.status, payload?.error, text || response.statusText);
 }
 
 export async function listRuns(graphID: string): Promise<RunRecord[]> {

@@ -147,6 +147,10 @@ func (s *Server) commitGraph(ctx context.Context, setupOwner string, req graphUp
 	}
 	s.chatSetupSaveMu.Lock()
 	defer s.chatSetupSaveMu.Unlock()
+	existingCredentials, err := s.graphTriggerCredentials(ctx, req.GraphID)
+	if err != nil {
+		return graphLoadResponse{}, err
+	}
 
 	items := make([]trigger.Trigger, 0, len(req.Triggers))
 	releases := make([]func(bool), 0, len(req.Triggers)*2)
@@ -158,9 +162,11 @@ func (s *Server) commitGraph(ctx context.Context, setupOwner string, req graphUp
 	}()
 	for _, itemPayload := range req.Triggers {
 		item := itemPayload.toTrigger(req.GraphID)
-		if err := normalizeTriggerCredential(&item); err != nil {
+		credentialRelease, err := s.applyTriggerCredential(ctx, itemPayload, &item, existingCredentials[item.ID])
+		if err != nil {
 			return graphLoadResponse{}, err
 		}
+		releases = append(releases, credentialRelease)
 		setupRelease, err := s.applyChatSetup(ctx, setupOwner, itemPayload.ChatSetupSessionID, &item)
 		if err != nil {
 			return graphLoadResponse{}, err

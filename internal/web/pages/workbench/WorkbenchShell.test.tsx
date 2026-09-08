@@ -75,4 +75,21 @@ describe("WorkbenchShell run controls", () => {
     expect(markup).toMatch(/disabled=""[^>]*title="Pause run"/);
     expect(markup).toMatch(/disabled=""[^>]*title="Stop run"/);
   });
+
+  test("shows the Chat navigation button when a Chat Trigger is available", () => {
+    const markup = renderToStaticMarkup(createElement(WorkbenchShell, {
+      ...baseProps,
+      hasChatTrigger: true,
+      chatPanel: createElement("aside", null, "Chat"),
+    }));
+
+    expect(markup).toContain('aria-label="Open Chat"');
+    const openMarkup = renderToStaticMarkup(createElement(WorkbenchShell, {
+      ...baseProps,
+      hasChatTrigger: true,
+      chatPanelOpen: true,
+      chatPanel: createElement("aside", null, "Chat"),
+    }));
+    expect(openMarkup).toContain(">Chat</aside>");
+  });
 });

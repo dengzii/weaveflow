@@ -155,6 +155,112 @@
   overflow-wrap: anywhere;
 }
 
+.detail-markdown {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.detail-markdown > :first-child {
+  margin-top: 0;
+}
+
+.detail-markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.detail-markdown p,
+.detail-markdown ul,
+.detail-markdown ol,
+.detail-markdown blockquote,
+.detail-markdown pre,
+.detail-markdown table {
+  margin: 0.7rem 0;
+}
+
+.detail-markdown ul,
+.detail-markdown ol {
+  padding-left: 1.35rem;
+}
+
+.detail-markdown ul {
+  list-style: disc;
+}
+
+.detail-markdown ol {
+  list-style: decimal;
+}
+
+.detail-markdown li + li {
+  margin-top: 0.25rem;
+}
+
+.detail-markdown a {
+  color: var(--ring);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.detail-markdown strong {
+  font-weight: 650;
+}
+
+.detail-markdown blockquote {
+  border-left: 2px solid var(--border);
+  padding-left: 0.8rem;
+  color: var(--muted-foreground);
+}
+
+.detail-markdown code {
+  border-radius: 0.3rem;
+  background: var(--muted);
+  padding: 0.12rem 0.3rem;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+}
+
+.detail-markdown pre {
+  max-width: 100%;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: 0.55rem;
+  background: var(--muted);
+  padding: 0.75rem 0.85rem;
+}
+
+.detail-markdown pre code {
+  display: block;
+  background: transparent;
+  padding: 0;
+  line-height: 1.55;
+  white-space: pre;
+}
+
+.detail-markdown hr {
+  margin: 0.85rem 0;
+  border: 0;
+  border-top: 1px solid var(--border);
+}
+
+.detail-markdown table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+  white-space: nowrap;
+}
+
+.detail-markdown th,
+.detail-markdown td {
+  border: 1px solid var(--border);
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+}
+
+.detail-markdown th {
+  background: var(--muted);
+  font-weight: 600;
+}
+
 .assistant-markdown > :first-child {
   margin-top: 0;
 }

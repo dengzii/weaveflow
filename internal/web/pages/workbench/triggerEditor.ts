@@ -26,8 +26,9 @@ export interface TriggerEditorValues {
   target: TriggerTarget;
   initialStateEntries: TriggerInitialStateEntry[];
   stateBindings: TriggerEditorStateBindings;
-  credentialSource: "env" | "file";
-  credentialRef: string;
+  credentialValue: string;
+  credentialConfigured: boolean;
+  credentialClear: boolean;
   mappings: WebhookStateMapping[];
   cron: string;
   timezone: string;
@@ -60,8 +61,9 @@ export function triggerEditorValues(
     target: trigger?.target ?? fallbackTarget,
     initialStateEntries: triggerInitialStateEntries(trigger?.initial_state),
     stateBindings: trigger ? triggerStateBindings(trigger) : defaultTriggerStateBindings(type),
-    credentialSource: trigger?.credential?.source ?? "env",
-    credentialRef: trigger?.credential?.ref ?? "",
+    credentialValue: "",
+    credentialConfigured: Boolean(trigger?.credential_configured || trigger?.credential?.ref),
+    credentialClear: false,
     mappings: (trigger?.webhook?.state_mappings ?? []).map((mapping) => ({ ...mapping })),
     cron: trigger?.schedule?.cron ?? "*/5 * * * *",
     timezone: trigger?.schedule?.timezone ?? "UTC",
@@ -88,10 +90,13 @@ export function buildTriggerPayload(
     enabled: values.enabled,
     concurrency: values.concurrency,
   };
-  const credentialRef = values.credentialRef.trim();
-  if (credentialRef) {
-    input.credential = { source: values.credentialSource, ref: credentialRef };
+  const credentialValue = values.credentialValue.trim();
+  const httpChat = values.type === "chat" && (values.chatChannel.trim().toLowerCase() || "http") === "http";
+  if (httpChat && values.enabled && !credentialValue && (!values.credentialConfigured || values.credentialClear)) {
+    throw new Error("enabled chat trigger requires an authentication token");
   }
+  if (credentialValue) input.credential_value = credentialValue;
+  if (values.credentialClear && !credentialValue) input.credential_clear = true;
   const initialState = buildTriggerInitialState(values.initialStateEntries);
   if (Object.keys(initialState).length > 0) input.initial_state = initialState;
   if (!values.id.trim()) throw new Error("trigger id is required");
@@ -181,9 +186,7 @@ export function triggerDraftFromEditorValues(
     enabled: values.enabled,
     concurrency: values.concurrency,
     target: { graph_id: values.target.graph_id.trim() },
-    credential: values.credentialRef.trim()
-      ? { source: values.credentialSource, ref: values.credentialRef.trim() }
-      : undefined,
+    credential_configured: Boolean(values.credentialValue.trim() || (values.credentialConfigured && !values.credentialClear)),
     initial_state: initialState,
     created_at: current?.created_at || timestamp,
     updated_at: current?.updated_at || timestamp,

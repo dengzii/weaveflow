@@ -27,6 +27,7 @@ describe("RunEventDetail", () => {
     expect(markup).toContain("operation-1");
     expect(markup).toContain(">Content</div>");
     expect(markup).toContain("read complete");
+    expect(markup).toContain('aria-label="Open Content text"');
     expect(markup).toContain(">Result</div>");
     expect(markup).toContain('aria-label="Result JSON tree"');
     expect(markup).toContain(">bytes</span>");

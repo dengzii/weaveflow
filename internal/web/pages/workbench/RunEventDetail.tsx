@@ -6,6 +6,7 @@ import type { RuntimeEvent } from "../../types";
 import { JSONTree, parseJSONTreeValue } from "./JSONTree";
 import { eventTone } from "./runStatusModel";
 import { StatusText } from "./shared";
+import { TextValuePreview } from "./TextValuePreview";
 
 export function RunEventDetail({ event }: { event: RuntimeEvent }) {
   const payload = payloadRecord(event.payload);
@@ -83,7 +84,9 @@ function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div className="flex items-center gap-2">
       <span className="text-muted-foreground">{label}</span>
-      <span className="truncate font-mono">{value}</span>
+      <span className="min-w-0 flex-1 truncate font-mono">
+        {typeof value === "string" ? <TextValuePreview value={value} label={label} className="block w-full" /> : value}
+      </span>
     </div>
   );
 }
@@ -117,6 +120,8 @@ function PayloadFields({ fields }: { fields: PayloadField[] }) {
             <span className="text-muted-foreground">{field.label}</span>
             {treeValue ? (
               <JSONTree value={treeValue} label={`${field.label} JSON tree`} scrollable={false} />
+            ) : typeof field.value === "string" ? (
+              <TextValuePreview value={field.value} label={field.label} multiline={multiline} />
             ) : (
               <span className={cn("min-w-0 font-mono", multiline ? "whitespace-pre-wrap break-words" : "truncate")}>
                 {formatPayloadValue(field.value)}
@@ -483,15 +488,30 @@ function PayloadValueSection({ title, value }: { title: string; value: unknown }
       </DetailSection>
     );
   }
-  return <PayloadText title={title} text={typeof value === "string" ? value : stringifyJSON(value)} />;
+  return (
+    <PayloadText
+      title={title}
+      text={typeof value === "string" ? value : stringifyJSON(value)}
+      markdown={typeof value === "string"}
+    />
+  );
 }
 
-function PayloadText({ title, text }: { title: string; text: string }) {
+function PayloadText({ title, text, markdown }: { title: string; text: string; markdown: boolean }) {
   return (
     <DetailSection title={title}>
-      <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-[11px]">
-        {text}
-      </pre>
+      {markdown ? (
+        <TextValuePreview
+          value={text}
+          label={title}
+          multiline
+          className="block max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-[11px]"
+        />
+      ) : (
+        <pre className="max-h-72 overflow-auto whitespace-pre-wrap rounded-md border border-border bg-background p-2 text-[11px]">
+          {text}
+        </pre>
+      )}
     </DetailSection>
   );
 }
@@ -543,6 +563,8 @@ function PayloadObjectRows({ title, items }: { title: string; items: unknown[] }
                     <span className="text-muted-foreground">{humanizePayloadKey(key)}</span>
                     {treeValue ? (
                       <JSONTree value={treeValue} label={`${humanizePayloadKey(key)} JSON tree`} scrollable={false} />
+                    ) : typeof value === "string" ? (
+                      <TextValuePreview value={value} label={humanizePayloadKey(key)} multiline={multiline} />
                     ) : (
                       <span className={cn("min-w-0 font-mono", multiline ? "whitespace-pre-wrap break-words" : "truncate")}>
                         {formatPayloadValue(value)}
@@ -566,6 +588,13 @@ function PayloadMiniBlock({ label, value }: { label: string; value: unknown }) {
       <span className="text-muted-foreground">{label}</span>
       {treeValue ? (
         <JSONTree value={treeValue} label={`${label} JSON tree`} scrollable={false} />
+      ) : typeof value === "string" ? (
+        <TextValuePreview
+          value={value}
+          label={label}
+          multiline
+          className="block max-h-24 overflow-auto rounded bg-background p-2 text-[11px]"
+        />
       ) : (
         <pre className="max-h-24 overflow-auto rounded bg-background p-2 text-[11px]">{stringifyJSON(value)}</pre>
       )}
@@ -576,6 +605,16 @@ function PayloadMiniBlock({ label, value }: { label: string; value: unknown }) {
 function PayloadUnknownRow({ value }: { value: unknown }) {
   const treeValue = parseJSONTreeValue(value);
   if (treeValue) return <JSONTree value={treeValue} label="Payload JSON tree" scrollable={false} />;
+  if (typeof value === "string") {
+    return (
+      <TextValuePreview
+        value={value}
+        label="Payload string value"
+        multiline
+        className="block max-h-32 overflow-auto rounded border border-border bg-background p-2 text-[11px]"
+      />
+    );
+  }
   return (
     <pre className="max-h-32 overflow-auto rounded border border-border bg-background p-2 text-[11px]">
       {stringifyJSON(value)}

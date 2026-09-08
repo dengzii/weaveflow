@@ -28,6 +28,7 @@ import { RunStatusPanel } from "./workbench/RunStatusPanel";
 import { SettingsDialog } from "./workbench/SettingsDialog";
 import { WorkbenchShell } from "./workbench/WorkbenchShell";
 import { AssistantPanel } from "./workbench/AssistantPanel";
+import { ChatPanel, isHTTPChatTrigger } from "./workbench/ChatPanel";
 import {
   resolveWorkspaceMode,
   type WorkspaceMode,
@@ -60,6 +61,7 @@ import type {
   RegistryInfo,
   RuntimeSettings,
   RuntimeSettingsUpdate,
+  RuntimeEvent,
   ToolDefinition,
   Trigger,
 } from "../types";
@@ -113,11 +115,29 @@ export function WorkbenchPage() {
   const [serverGraphsLoaded, setServerGraphsLoaded] = useState(false);
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("edit");
   const [autoDetectLoops, setAutoDetectLoops] = useState(readStoredAutoDetectLoops);
+  const [chatPanelOpen, setChatPanelOpen] = useState(false);
+  const [chatBusy, setChatBusy] = useState(false);
+  const [chatRuntimeEvents, setChatRuntimeEvents] = useState<RuntimeEvent[]>([]);
   const initialRequirementsCacheRef = useRef<CachedInitialStateAnalysis | null>(null);
   const initialRequirementsRequestRef = useRef<PendingInitialStateAnalysis | null>(null);
   const toastSeqRef = useRef(0);
   const savingRef = useRef(false);
+  const chatRuntimeEventsRef = useRef<RuntimeEvent[]>([]);
   const graphTriggers = useGraphTriggers(graphId);
+  const chatTriggers = useMemo(
+    () => graphTriggers.drafts
+      .filter((draft) => draft.persisted && isHTTPChatTrigger(draft.trigger))
+      .map((draft) => draft.trigger),
+    [graphTriggers.drafts]
+  );
+  const onChatRuntimeEvent = useCallback((event: RuntimeEvent) => {
+    if (event.graph_id && event.graph_id !== graphId) return;
+    const current = chatRuntimeEventsRef.current;
+    if (event.id && current.some((item) => item.id === event.id)) return;
+    const next = [...current, event].slice(-5_000);
+    chatRuntimeEventsRef.current = next;
+    setChatRuntimeEvents(next);
+  }, [graphId]);
   const changeGraphID = useCallback((value: string, remember = true) => {
     setGraphId(value);
     if (remember) rememberGraphID(value);
@@ -127,6 +147,12 @@ export function WorkbenchPage() {
     setAutoDetectLoops(enabled);
     writeStoredAutoDetectLoops(enabled);
   }, []);
+
+  useEffect(() => {
+    chatRuntimeEventsRef.current = [];
+    setChatRuntimeEvents([]);
+    setChatPanelOpen(false);
+  }, [graphId]);
 
   const definition = useMemo(() => {
     try {
@@ -298,6 +324,7 @@ export function WorkbenchPage() {
     definition,
     initialStateText,
     onNotify: pushToast,
+    onRuntimeEvent: onChatRuntimeEvent,
   });
   const selectedRun = useMemo(
     () => runs.find((run) => run.run_id === selectedRunID),
@@ -311,7 +338,7 @@ export function WorkbenchPage() {
     [selectedRun?.current_node_id, selectedRun?.current_node_ids]
   );
   const initializing = !serverStateLoaded;
-  const workbenchBusy = busy || runBusy || runLaunchPending;
+  const workbenchBusy = busy || runBusy || runLaunchPending || chatBusy;
   const runControlsDisabled = runBusy || initializing;
   const graphSwitchDisabled = workbenchBusy || graphSwitchLocked || initializing;
   const hasRunStatus = runs.length > 0 || Boolean(selectedRunID);
@@ -379,7 +406,10 @@ export function WorkbenchPage() {
             sessionID: selectedDetail.graph.graph_session_id,
           }
         : undefined;
-      await refreshRuns(loadIdentity, true).catch(() => undefined);
+      setServerStateLoaded(true);
+      void refreshRuns(loadIdentity, true).catch((err) => {
+        notifyError(err);
+      });
     } catch (err) {
       notifyError(err);
     } finally {
@@ -687,6 +717,20 @@ export function WorkbenchPage() {
       runStatusVisible={runStatusVisible}
       onToggleRunStatus={toggleRunStatus}
       onWorkspaceModeChange={changeWorkspaceMode}
+      hasChatTrigger={chatTriggers.length > 0}
+      chatPanelOpen={chatPanelOpen}
+      chatBusy={chatBusy}
+      onToggleChat={() => setChatPanelOpen((open) => !open)}
+      chatPanel={
+        <ChatPanel
+          graphID={graphId}
+          triggers={chatTriggers}
+          runtimeEvents={chatRuntimeEvents}
+          nodes={definition?.nodes ?? []}
+          onClose={() => setChatPanelOpen(false)}
+          onBusyChange={setChatBusy}
+        />
+      }
       runStatusPanel={
         <RunStatusPanel
           runs={runs}

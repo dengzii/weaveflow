@@ -99,19 +99,20 @@ type ChatStateBindings struct {
 }
 
 type Trigger struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name,omitempty"`
-	Type         Type              `json:"type"`
-	Enabled      bool              `json:"enabled"`
-	Target       Target            `json:"target"`
-	Concurrency  ConcurrencyPolicy `json:"concurrency,omitempty"`
-	Credential   *dsl.SecretRef    `json:"credential,omitempty"`
-	InitialState map[string]any    `json:"initial_state,omitempty"`
-	Webhook      *WebhookSpec      `json:"webhook,omitempty"`
-	Schedule     *ScheduleSpec     `json:"schedule,omitempty"`
-	Chat         *ChatSpec         `json:"chat,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	UpdatedAt    time.Time         `json:"updated_at"`
+	ID                   string            `json:"id"`
+	Name                 string            `json:"name,omitempty"`
+	Type                 Type              `json:"type"`
+	Enabled              bool              `json:"enabled"`
+	Target               Target            `json:"target"`
+	Concurrency          ConcurrencyPolicy `json:"concurrency,omitempty"`
+	Credential           *dsl.SecretRef    `json:"credential,omitempty"`
+	CredentialConfigured bool              `json:"credential_configured,omitempty"`
+	InitialState         map[string]any    `json:"initial_state,omitempty"`
+	Webhook              *WebhookSpec      `json:"webhook,omitempty"`
+	Schedule             *ScheduleSpec     `json:"schedule,omitempty"`
+	Chat                 *ChatSpec         `json:"chat,omitempty"`
+	CreatedAt            time.Time         `json:"created_at"`
+	UpdatedAt            time.Time         `json:"updated_at"`
 }
 
 // ProducedStateContract describes the state paths this Trigger writes before

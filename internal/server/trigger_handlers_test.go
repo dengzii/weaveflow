@@ -344,6 +344,56 @@ func TestTriggerRoutesReplaceListAndInvokeWebhook(t *testing.T) {
 	}
 }
 
+func TestTriggerCredentialValueIsManagedRedactedAndPreserved(t *testing.T) {
+	baseDirectory := t.TempDir()
+	srv, err := New(context.Background(), Config{BaseDir: baseDirectory})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = srv.Close() })
+	engine := srv.Engine()
+	putGraphForHashTest(t, engine, triggerGraphUploadBody("graph", "v1", "credential"))
+
+	created := serveHTTP(engine, http.MethodPut, "/graphs/graph/triggers", `{"triggers":[{
+		"id":"hook","type":"webhook","enabled":true,"credential_value":"direct-token","webhook":{}
+	}]}`)
+	if created.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", created.Code, created.Body.String())
+	}
+	if strings.Contains(created.Body.String(), "direct-token") || strings.Contains(created.Body.String(), `"credential":`) || !strings.Contains(created.Body.String(), `"credential_configured":true`) {
+		t.Fatalf("create response exposed or omitted credential state: %s", created.Body.String())
+	}
+	stored, err := srv.triggers.Get(context.Background(), "hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Credential == nil || stored.Credential.Source != managedSecretSource {
+		t.Fatalf("stored credential = %#v, want managed ref", stored.Credential)
+	}
+	resolved, err := srv.resolveSecret(context.Background(), *stored.Credential)
+	if err != nil || resolved != "direct-token" {
+		t.Fatalf("resolved credential = %q, err = %v", resolved, err)
+	}
+
+	preserved := serveHTTP(engine, http.MethodPut, "/graphs/graph/triggers", `{"triggers":[{
+		"id":"hook","name":"renamed","type":"webhook","enabled":true,"webhook":{}
+	}]}`)
+	if preserved.Code != http.StatusOK {
+		t.Fatalf("preserve status = %d, body = %s", preserved.Code, preserved.Body.String())
+	}
+	stored, err = srv.triggers.Get(context.Background(), "hook")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Credential == nil || stored.Credential.Ref == "" {
+		t.Fatal("updating trigger metadata cleared its managed credential")
+	}
+	resolved, err = srv.resolveSecret(context.Background(), *stored.Credential)
+	if err != nil || resolved != "direct-token" {
+		t.Fatalf("preserved credential = %q, err = %v", resolved, err)
+	}
+}
+
 func TestAuthenticatedWebhookExecutesAuthorizedTriggerSnapshot(t *testing.T) {
 	fileStore, err := trigger.NewFileStore(t.TempDir())
 	if err != nil {

@@ -59,6 +59,7 @@ import {
 } from "./runStatusModel";
 import type { ColumnRatios, EventFilterMode, RunMetricsSummary, StateChangeKind, StateHistoryEntry } from "./runStatusModel";
 import { StatusText } from "./shared";
+import { TextValuePreview } from "./TextValuePreview";
 
 export { resizeRunPanelColumnRatios } from "./runStatusModel";
 
@@ -1499,7 +1500,7 @@ function SnapshotMetaRow({ label, value }: { label: string; value: string }) {
   return (
     <div className="grid min-w-0 grid-cols-[5rem_minmax(0,1fr)] gap-2">
       <span className="text-muted-foreground">{label}</span>
-      <span className="min-w-0 break-all font-mono">{value}</span>
+      <TextValuePreview value={value} label={label} className="block w-full break-all" multiline />
     </div>
   );
 }

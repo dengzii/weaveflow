@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"errors"
@@ -8,9 +9,57 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/internal/trigger"
 	"github.com/gin-gonic/gin"
 )
+
+func (s *Server) graphTriggerCredentials(ctx context.Context, graphID string) (map[string]*dsl.SecretRef, error) {
+	credentials := make(map[string]*dsl.SecretRef)
+	items, err := s.triggers.List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range items {
+		if item.Target.GraphID != graphID || item.Credential == nil {
+			continue
+		}
+		credential := *item.Credential
+		credentials[item.ID] = &credential
+	}
+	return credentials, nil
+}
+
+func (s *Server) applyTriggerCredential(ctx context.Context, payload triggerPayload, item *trigger.Trigger, existing *dsl.SecretRef) (func(bool), error) {
+	noChange := func(bool) {}
+	value := strings.TrimSpace(payload.CredentialValue)
+	if payload.CredentialClear && value != "" {
+		return nil, invalidRequestf("trigger %q credential clear conflicts with a new credential", item.ID)
+	}
+	if value != "" {
+		if s == nil || s.managedSecrets == nil {
+			return nil, fmt.Errorf("managed trigger credential storage is unavailable")
+		}
+		credential, release, err := s.managedSecrets.Put(ctx, value)
+		if err != nil {
+			return nil, fmt.Errorf("store trigger %q credential: %w", item.ID, err)
+		}
+		item.Credential = &credential
+		return release, nil
+	}
+	if payload.CredentialClear {
+		item.Credential = nil
+		return noChange, nil
+	}
+	if item.Credential == nil && existing != nil {
+		credential := *existing
+		item.Credential = &credential
+	}
+	if err := normalizeTriggerCredential(item); err != nil {
+		return nil, err
+	}
+	return noChange, nil
+}
 
 var (
 	errTriggerAuthenticationRequired  = errors.New("trigger authentication is required")

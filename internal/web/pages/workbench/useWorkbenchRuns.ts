@@ -83,6 +83,7 @@ interface UseWorkbenchRunsOptions {
   definition: GraphDefinition | null;
   initialStateText: string;
   onNotify: (tone: RunNotificationTone, message: string) => void;
+  onRuntimeEvent?: (event: RuntimeEvent) => void;
 }
 
 interface WorkbenchRunsController {
@@ -137,6 +138,7 @@ export function useWorkbenchRuns({
   definition,
   initialStateText,
   onNotify,
+  onRuntimeEvent,
 }: UseWorkbenchRunsOptions): WorkbenchRunsController {
   const [runs, setRuns] = useState<RunRecord[]>([]);
   const [runTriggerTypes, setRunTriggerTypes] = useState<Partial<Record<string, TriggerType>>>({});
@@ -195,6 +197,8 @@ export function useWorkbenchRuns({
     handlingDurationMS: 0,
   });
   const eventHandlingMetricsTimerRef = useRef<number | null>(null);
+  const onRuntimeEventRef = useRef(onRuntimeEvent);
+  onRuntimeEventRef.current = onRuntimeEvent;
 
   const discardPendingLiveEvents = useCallback(() => {
     pendingLiveEventsRef.current = [];
@@ -597,6 +601,7 @@ export function useWorkbenchRuns({
   }, [enqueueLiveEvent, refreshSelectedRun, reportError]);
 
   const handleRuntimeEvent = useCallback((event: RuntimeEvent) => {
+    onRuntimeEventRef.current?.(event);
     const startedAt = performance.now();
     const listAction = runListEventActionForKnownRun(runsByIDRef.current.has(event.run_id), event);
     const nextStatus = runStatusFromEvent(event.type);

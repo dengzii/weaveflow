@@ -4,6 +4,7 @@ import {
   ChevronUp,
   LayoutDashboard,
   Loader2,
+  MessageCircle,
   Pause,
   Play,
   Save,
@@ -61,6 +62,11 @@ export function WorkbenchShell({
   onReconnectEventStream,
   onToggleRunStatus,
   onWorkspaceModeChange,
+  chatPanel,
+  chatPanelOpen = false,
+  hasChatTrigger = false,
+  chatBusy = false,
+  onToggleChat,
 }: {
   streamStatus: StreamStatus;
   streamDiagnostics: StreamDiagnostics;
@@ -89,6 +95,11 @@ export function WorkbenchShell({
   onReconnectEventStream: () => void;
   onToggleRunStatus: () => void;
   onWorkspaceModeChange: (mode: WorkspaceMode) => void;
+  chatPanel?: ReactNode;
+  chatPanelOpen?: boolean;
+  hasChatTrigger?: boolean;
+  chatBusy?: boolean;
+  onToggleChat?: () => void;
 }) {
   const backendBaseUrl = getBackendBaseUrl();
   const displayedBackendBaseUrl = backendBaseUrl.replace(/^https?:\/\//, "");
@@ -120,9 +131,27 @@ export function WorkbenchShell({
           />
         </div>
         <NavButton icon={LayoutDashboard} active onClick={() => undefined} label="Graph" />
+        {hasChatTrigger ? (
+          <NavButton
+            icon={MessageCircle}
+            active={chatPanelOpen}
+            onClick={() => onToggleChat?.()}
+            label={chatPanelOpen ? "Close Chat" : "Open Chat"}
+            disabled={chatBusy}
+          />
+        ) : null}
         <div className="flex-1" />
         <NavButton icon={Settings} onClick={onShowSettings} label="Settings" />
       </aside>
+
+      {chatPanel ? (
+        <div
+          className={cn("flex h-full min-h-0 shrink-0", !chatPanelOpen && "hidden")}
+          aria-hidden={!chatPanelOpen}
+        >
+          {chatPanel}
+        </div>
+      ) : null}
 
       <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         <header className="flex h-14 items-center gap-3 border-b border-border bg-background px-4">
@@ -326,11 +355,13 @@ function NavButton({
   active = false,
   label,
   onClick,
+  disabled = false,
 }: {
   icon: ComponentType<{ className?: string }>;
   active?: boolean;
   label: string;
   onClick: () => void;
+  disabled?: boolean;
 }) {
   return (
     <button
@@ -339,6 +370,7 @@ function NavButton({
         active && "bg-primary text-primary-foreground hover:bg-primary hover:text-primary-foreground"
       )}
       onClick={onClick}
+      disabled={disabled}
       title={label}
       aria-label={label}
     >

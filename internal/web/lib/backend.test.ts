@@ -3,14 +3,17 @@ import {
   DEFAULT_BACKEND_BASE_URL,
   getStoredBackendBaseUrls,
   getManagementToken,
+  getTriggerToken,
   joinBackendUrl,
   managementHeaders,
   normalizeBackendBaseUrl,
   resetStoredManagementToken,
+  resetStoredTriggerToken,
   resolveBackendUrl,
   resetStoredBackendBaseUrl,
   setStoredBackendBaseUrl,
   setStoredManagementToken,
+  setStoredTriggerToken,
 } from "./backend";
 
 describe("backend URL configuration", () => {
@@ -62,6 +65,34 @@ describe("management token configuration", () => {
         .toBe("Bearer token-value");
       resetStoredManagementToken();
       expect(getManagementToken()).toBe("");
+    } finally {
+      Reflect.deleteProperty(globalThis, "window");
+    }
+  });
+});
+
+describe("trigger token configuration", () => {
+  test("stores, trims, and clears the Chat Trigger token locally", () => {
+    const values = new Map<string, string>();
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        localStorage: {
+          getItem: (key: string) => values.get(key) ?? null,
+          setItem: (key: string, value: string) => values.set(key, value),
+          removeItem: (key: string) => values.delete(key),
+        },
+      },
+    });
+    try {
+      expect(setStoredTriggerToken(" Bearer trigger-token ")).toBe("Bearer trigger-token");
+      expect(getTriggerToken()).toBe("Bearer trigger-token");
+      expect(managementHeaders().get("Authorization")).toBeNull();
+      expect(setStoredTriggerToken("   ")).toBe("");
+      expect(getTriggerToken()).toBe("");
+      expect(setStoredTriggerToken("trigger-token")).toBe("trigger-token");
+      resetStoredTriggerToken();
+      expect(getTriggerToken()).toBe("");
     } finally {
       Reflect.deleteProperty(globalThis, "window");
     }

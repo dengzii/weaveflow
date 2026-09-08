@@ -83,6 +83,12 @@ func (s *Server) sweepManagedSecrets(ctx context.Context) error {
 	referenced := make(map[string]struct{})
 	if err := s.triggers.InspectDefinitions(ctx, func(items []trigger.Trigger) error {
 		for _, item := range items {
+			if item.Credential != nil && item.Credential.Source == managedSecretSource {
+				if !isManagedSecretID(item.Credential.Ref) {
+					return fmt.Errorf("trigger %q credential: managed secret ref is invalid", item.ID)
+				}
+				referenced[item.Credential.Ref] = struct{}{}
+			}
 			if item.Type != trigger.TypeChat || item.Chat == nil {
 				continue
 			}

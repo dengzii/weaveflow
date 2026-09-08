@@ -3,6 +3,7 @@ export const DEFAULT_BACKEND_BASE_URL = "http://localhost:8080";
 const storageKey = "weaveflow:web:backend-base-url:v1";
 const historyStorageKey = "weaveflow:web:backend-base-url-history:v1";
 const managementTokenStorageKey = "weaveflow:web:management-token:v1";
+const triggerTokenStorageKey = "weaveflow:web:trigger-token:v1";
 const maxRememberedBackendBaseURLs = 8;
 
 export function normalizeBackendBaseUrl(value: string): string {
@@ -128,6 +129,26 @@ export function setStoredManagementToken(value: string): string {
 
 export function resetStoredManagementToken(): void {
   window.localStorage.removeItem(managementTokenStorageKey);
+}
+
+export function getTriggerToken(): string {
+  if (typeof window === "undefined") return "";
+  try {
+    return window.localStorage.getItem(triggerTokenStorageKey)?.trim() ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function setStoredTriggerToken(value: string): string {
+  const token = value.trim();
+  if (token) window.localStorage.setItem(triggerTokenStorageKey, token);
+  else window.localStorage.removeItem(triggerTokenStorageKey);
+  return token;
+}
+
+export function resetStoredTriggerToken(): void {
+  window.localStorage.removeItem(triggerTokenStorageKey);
 }
 
 export function managementHeaders(input?: HeadersInit): Headers {

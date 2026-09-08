@@ -1,4 +1,5 @@
 import { cn, stringifyJSON } from "../../lib/utils";
+import { TextValuePreview } from "./TextValuePreview";
 
 export function JSONTree({
   value,
@@ -55,6 +56,17 @@ function JSONTreeValue({
   expandAll: boolean;
 }) {
   if (!value || typeof value !== "object") {
+    if (typeof value === "string") {
+      return (
+        <TextValuePreview
+          value={value}
+          label="JSON string value"
+          multiline
+          className="break-words text-foreground"
+          displayValue={stringifyJSON(value)}
+        />
+      );
+    }
     return <span className="break-words text-foreground">{stringifyJSON(value)}</span>;
   }
   if (depth >= 8) {
@@ -77,7 +89,17 @@ function JSONTreeValue({
           return (
             <div key={key} role="treeitem" className="grid grid-cols-[minmax(5rem,auto)_minmax(0,1fr)] gap-2 pl-1">
               <span className="break-all text-primary">{key}</span>
-              <span className="break-words">{stringifyJSON(item)}</span>
+              {typeof item === "string" ? (
+                <TextValuePreview
+                  value={item}
+                  label={`${key} JSON string value`}
+                  multiline
+                  className="break-words"
+                  displayValue={stringifyJSON(item)}
+                />
+              ) : (
+                <span className="break-words">{stringifyJSON(item)}</span>
+              )}
             </div>
           );
         }

@@ -8,9 +8,11 @@ import {
   getRunInspection,
   listGraphs,
   listRuns,
+  normalizeTriggerToken,
   replaceTriggers,
   startRun,
   streamAssistantJob,
+  streamChatTrigger,
 } from "./api";
 
 const originalFetch = globalThis.fetch;
@@ -196,6 +198,68 @@ describe("server API client", () => {
     expect(new Headers(request?.init?.headers).get("Accept")).toBe("text/event-stream");
     expect(updates).toEqual(["queued", "running", "completed"]);
     expect(completed).toMatchObject({ status: "completed", reply: "done" });
+  });
+
+  test("streams Chat Trigger replies and terminal result", async () => {
+    let request: { url: string; init?: RequestInit } | undefined;
+    const runRecord = run("chat-run");
+    const payload = [
+      `: ready\n\n`,
+      `event: update\ndata: ${JSON.stringify({ kind: "update", content: "hello", sequence: 1 })}\n\n`,
+      `event: message\ndata: ${JSON.stringify({ kind: "message", content: "done", sequence: 2 })}\n\n`,
+      `event: finish\ndata: ${JSON.stringify({ kind: "finish", sequence: 3 })}\n\n`,
+      `event: result\ndata: ${JSON.stringify({ run: runRecord, conversation_id: "conversation-1", final_reply: "done" })}\n\n`,
+    ].join("");
+    const encoded = new TextEncoder().encode(payload);
+    globalThis.fetch = (async (input, init) => {
+      request = { url: String(input), init };
+      return new Response(new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoded.slice(0, 79));
+          controller.enqueue(encoded.slice(79));
+          controller.close();
+        },
+      }), { headers: { "content-type": "text/event-stream" } });
+    }) as unknown as typeof fetch;
+
+    const replies: string[] = [];
+    const outcome = await streamChatTrigger(
+      "graph-a",
+      "chat/trigger",
+      { user_id: "user-1", conversation_id: "conversation-1", content: "hello" },
+      " Bearer secret-token ",
+      { onReply: (reply) => replies.push(reply.kind) }
+    );
+
+    expect(request?.url).toBe("http://localhost:8080/graphs/graph-a/triggers/chat%2Ftrigger/chat");
+    expect(new Headers(request?.init?.headers).get("Accept")).toBe("text/event-stream");
+    expect(new Headers(request?.init?.headers).get("Authorization")).toBe("Bearer secret-token");
+    expect(replies).toEqual(["update", "message", "finish"]);
+    expect(outcome.result).toMatchObject({ conversation_id: "conversation-1", final_reply: "done" });
+  });
+
+  test("reports a Chat Trigger stream that ends without a terminal event", async () => {
+    globalThis.fetch = (async () => new Response(": ready\n\n", {
+      headers: { "content-type": "text/event-stream" },
+    })) as unknown as typeof fetch;
+
+    let streamError = "";
+    const outcome = await streamChatTrigger(
+      "graph-a",
+      "chat",
+      { user_id: "user-1", conversation_id: "conversation-1", content: "hello" },
+      "secret-token",
+      { onError: (error) => { streamError = error; } }
+    );
+
+    expect(outcome).toEqual({ error: "Chat trigger stream ended without a terminal result" });
+    expect(streamError).toBe("Chat trigger stream ended without a terminal result");
+  });
+
+  test("normalizes a pasted Bearer token before sending the trigger request", async () => {
+    expect(normalizeTriggerToken("  Bearer  secret-token ")).toBe("secret-token");
+    expect(normalizeTriggerToken("secret-token")).toBe("secret-token");
+    expect(() => normalizeTriggerToken("Bearer secret token")).toThrow("single value");
   });
 
   test("preserves HTTP status and server error code", async () => {

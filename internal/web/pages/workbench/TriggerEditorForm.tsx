@@ -336,27 +336,36 @@ export function TriggerEditorForm({
             </Select>
           </label>
         </div>
-        <div className="grid grid-cols-[minmax(0,120px)_minmax(0,1fr)] gap-2">
+        <div className="grid gap-2">
           <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Credential source</span>
-            <Select
-              value={values.credentialSource}
-              onChange={(event) => change("credentialSource", event.target.value as TriggerEditorValues["credentialSource"])}
-            >
-              <option value="env">Environment</option>
-              <option value="file">File</option>
-            </Select>
-          </label>
-          <label className="grid gap-1 text-sm">
-            <span className="text-xs font-medium text-muted-foreground">Auth token reference (optional)</span>
+            <span className="text-xs font-medium text-muted-foreground">
+              Authentication token {values.type === "chat" && values.enabled && (values.chatChannel.trim().toLowerCase() || "http") === "http" ? "(required)" : "(optional)"}
+            </span>
             <Input
-              value={values.credentialRef}
-              onChange={(event) => change("credentialRef", event.target.value)}
-              placeholder={values.credentialSource === "env" ? "TRIGGER_TOKEN" : "trigger.token"}
+              type="password"
+              value={values.credentialValue}
+              onChange={(event) => publish({
+                ...values,
+                credentialValue: event.target.value,
+                credentialClear: false,
+              })}
+              autoComplete="new-password"
+              placeholder={values.credentialConfigured && !values.credentialClear ? "Token configured — enter a new value to replace it" : "Enter a token"}
             />
           </label>
+          {values.credentialConfigured && !values.credentialClear ? (
+            <div className="text-[11px] text-muted-foreground">A token is configured. Leave this field blank to keep it.</div>
+          ) : null}
+          {values.credentialConfigured && !values.credentialValue ? (
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input type="checkbox" checked={values.credentialClear} onChange={(event) => change("credentialClear", event.target.checked)} />
+              Clear the saved token
+            </label>
+          ) : null}
         </div>
-        {values.type === "webhook" ? (
+        {values.type === "chat" && (values.chatChannel.trim().toLowerCase() || "http") === "http" ? (
+          <div className="text-[11px] text-muted-foreground">This token is stored securely by the server. Enter the same token in the Chat panel when sending messages.</div>
+        ) : values.type === "webhook" ? (
           <div className="text-[11px] text-muted-foreground">Leave the token reference blank to allow unauthenticated webhook requests.</div>
         ) : null}
       </CollapsibleInspectorBlock>

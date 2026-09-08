@@ -25,6 +25,8 @@ type triggerPayload struct {
 	Enabled            *bool                     `json:"enabled,omitempty"`
 	Concurrency        trigger.ConcurrencyPolicy `json:"concurrency,omitempty"`
 	Credential         *dsl.SecretRef            `json:"credential,omitempty"`
+	CredentialValue    string                    `json:"credential_value,omitempty"`
+	CredentialClear    bool                      `json:"credential_clear,omitempty"`
 	InitialState       map[string]any            `json:"initial_state,omitempty"`
 	Webhook            *triggerWebhookPayload    `json:"webhook,omitempty"`
 	Schedule           *trigger.ScheduleSpec     `json:"schedule,omitempty"`
@@ -114,6 +116,11 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 
 	s.chatSetupSaveMu.Lock()
 	defer s.chatSetupSaveMu.Unlock()
+	existingCredentials, err := s.graphTriggerCredentials(c.Request.Context(), graphID)
+	if err != nil {
+		writeError(c, statusForError(err), err)
+		return
+	}
 	items := make([]trigger.Trigger, 0, len(payload.Triggers))
 	releases := make([]func(bool), 0, len(payload.Triggers))
 	committed := false
@@ -124,10 +131,12 @@ func (s *Server) handleReplaceTriggers(c *gin.Context) {
 	}()
 	for _, itemPayload := range payload.Triggers {
 		item := itemPayload.toTrigger(graphID)
-		if err := normalizeTriggerCredential(&item); err != nil {
+		credentialRelease, err := s.applyTriggerCredential(c.Request.Context(), itemPayload, &item, existingCredentials[item.ID])
+		if err != nil {
 			writeError(c, http.StatusBadRequest, err)
 			return
 		}
+		releases = append(releases, credentialRelease)
 		setupRelease, err := s.applyChatSetup(
 			c.Request.Context(),
 			setupRequestOwner(c),
@@ -298,6 +307,8 @@ func decodeTriggerReplacementPayload(c *gin.Context) (triggerReplacementPayload,
 }
 
 func (s *Server) publicTrigger(item trigger.Trigger) trigger.Trigger {
+	item.CredentialConfigured = item.Credential != nil
+	item.Credential = nil
 	if s != nil && s.triggers != nil {
 		item = s.triggers.RedactChatChannelConfig(item)
 	}

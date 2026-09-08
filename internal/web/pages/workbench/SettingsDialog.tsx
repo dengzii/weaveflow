@@ -3,17 +3,20 @@ import { Palette, Repeat2, RotateCcw, Save, Server, Settings, X } from "lucide-r
 import { Button } from "../../components/ui/button";
 import { Input, SensitiveInput } from "../../components/ui/input";
 import { Select } from "../../components/ui/select";
-import { getServerInfo } from "../../api";
+import { getServerInfo, normalizeTriggerToken } from "../../api";
 import type { ServerInfo } from "../../types";
 import {
   getBackendBaseUrl,
   getStoredBackendBaseUrls,
   getManagementToken,
+  getTriggerToken,
   hasStoredBackendBaseUrl,
   resetStoredBackendBaseUrl,
   resetStoredManagementToken,
+  resetStoredTriggerToken,
   setStoredBackendBaseUrl,
   setStoredManagementToken,
+  setStoredTriggerToken,
 } from "../../lib/backend";
 import { themePreferences, useTheme, type ThemePreference } from "../../lib/theme";
 import { cn } from "../../lib/utils";
@@ -63,10 +66,11 @@ export function SettingsDialog({
   const [activeSection, setActiveSection] = useState<SettingsSection>("server");
   const [backendBaseUrl, setBackendBaseUrl] = useState(getBackendBaseUrl);
   const [managementToken, setManagementToken] = useState(getManagementToken);
+  const [triggerToken, setTriggerToken] = useState(getTriggerToken);
   const [backendError, setBackendError] = useState("");
   const [serverInfo, setServerInfo] = useState<ServerInfo | null>(null);
   const [serverInfoError, setServerInfoError] = useState("");
-  const hasBackendOverride = hasStoredBackendBaseUrl();
+  const hasServerOverride = hasStoredBackendBaseUrl() || Boolean(getManagementToken()) || Boolean(getTriggerToken());
   const rememberedBackendBaseUrls = getStoredBackendBaseUrls();
 
   useEffect(() => {
@@ -95,8 +99,9 @@ export function SettingsDialog({
   function saveBackend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     try {
-      setStoredBackendBaseUrl(backendBaseUrl);
-      setStoredManagementToken(managementToken);
+      void setStoredBackendBaseUrl(backendBaseUrl);
+      void setStoredManagementToken(managementToken);
+      void setStoredTriggerToken(normalizeTriggerToken(triggerToken));
       window.location.reload();
     } catch (error) {
       setBackendError(error instanceof Error ? error.message : String(error));
@@ -107,6 +112,7 @@ export function SettingsDialog({
     try {
       resetStoredBackendBaseUrl();
       resetStoredManagementToken();
+      resetStoredTriggerToken();
       window.location.reload();
     } catch (error) {
       setBackendError(error instanceof Error ? error.message : String(error));
@@ -148,10 +154,11 @@ export function SettingsDialog({
               <ServerSettings
                 backendBaseUrl={backendBaseUrl}
                 managementToken={managementToken}
+                triggerToken={triggerToken}
                 backendError={backendError}
                 serverInfo={serverInfo}
                 serverInfoError={serverInfoError}
-                hasBackendOverride={hasBackendOverride}
+                hasServerOverride={hasServerOverride}
                 rememberedBackendBaseUrls={rememberedBackendBaseUrls}
                 onBackendBaseUrlChange={(value) => {
                   setBackendBaseUrl(value);
@@ -159,6 +166,10 @@ export function SettingsDialog({
                 }}
                 onManagementTokenChange={(value) => {
                   setManagementToken(value);
+                  setBackendError("");
+                }}
+                onTriggerTokenChange={(value) => {
+                  setTriggerToken(value);
                   setBackendError("");
                 }}
                 onSave={saveBackend}
@@ -216,25 +227,29 @@ function SettingsSectionButton({
 function ServerSettings({
   backendBaseUrl,
   managementToken,
+  triggerToken,
   backendError,
   serverInfo,
   serverInfoError,
-  hasBackendOverride,
+  hasServerOverride,
   rememberedBackendBaseUrls,
   onBackendBaseUrlChange,
   onManagementTokenChange,
+  onTriggerTokenChange,
   onSave,
   onReset,
 }: {
   backendBaseUrl: string;
   managementToken: string;
+  triggerToken: string;
   backendError: string;
   serverInfo: ServerInfo | null;
   serverInfoError: string;
-  hasBackendOverride: boolean;
+  hasServerOverride: boolean;
   rememberedBackendBaseUrls: string[];
   onBackendBaseUrlChange: (value: string) => void;
   onManagementTokenChange: (value: string) => void;
+  onTriggerTokenChange: (value: string) => void;
   onSave: (event: FormEvent<HTMLFormElement>) => void;
   onReset: () => void;
 }) {
@@ -259,13 +274,26 @@ function ServerSettings({
           </datalist>
         </label>
         <label className="grid gap-1.5 text-sm">
-          <span className="font-medium">Token</span>
+          <span className="font-medium">Management Token</span>
           <SensitiveInput
             value={managementToken}
             configured={Boolean(managementToken)}
             onValueChange={onManagementTokenChange}
             placeholder="WEAVEFLOW_MANAGEMENT_TOKEN"
           />
+        </label>
+        <label className="grid gap-1.5 text-sm">
+          <span className="font-medium">Chat Trigger Token</span>
+          <SensitiveInput
+            value={triggerToken}
+            configured={Boolean(triggerToken)}
+            onValueChange={onTriggerTokenChange}
+            placeholder="Trigger credential token"
+            autoComplete="off"
+          />
+          <span className="text-xs text-muted-foreground">
+            Used only for HTTP / SSE Chat Triggers. This is not the Management Token.
+          </span>
         </label>
         {backendError ? <div className="text-xs text-destructive">{backendError}</div> : null}
         <div className="text-xs text-muted-foreground">
@@ -276,7 +304,7 @@ function ServerSettings({
             <Save className="h-3.5 w-3.5" />
             Apply
           </Button>
-          <Button type="button" variant="outline" size="sm" onClick={onReset} disabled={!hasBackendOverride}>
+          <Button type="button" variant="outline" size="sm" onClick={onReset} disabled={!hasServerOverride}>
             <RotateCcw className="h-3.5 w-3.5" />
             Reset
           </Button>

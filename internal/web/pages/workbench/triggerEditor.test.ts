@@ -36,7 +36,7 @@ const webhook: Trigger = {
 };
 
 describe("trigger editor payload", () => {
-  test("preserves the full update contract with a credential reference", () => {
+  test("preserves a configured credential without exposing its value", () => {
     const values = triggerEditorValues(webhook, { graph_id: "fallback" });
     values.enabled = false;
     const payload = buildTriggerPayload(values, webhook);
@@ -47,7 +47,6 @@ describe("trigger editor payload", () => {
       type: "webhook",
       enabled: false,
       concurrency: "skip",
-      credential: { source: "env", ref: "TRIGGER_TOKEN" },
       initial_state: { shared: { tenant: "tenant-a" } },
       webhook: {
         state_bindings: {
@@ -61,12 +60,12 @@ describe("trigger editor payload", () => {
     });
   });
 
-  test("omits webhook authentication when the token reference is blank", () => {
+  test("can clear webhook authentication", () => {
     const values = triggerEditorValues(webhook, { graph_id: "fallback" });
-    values.credentialRef = "";
+    values.credentialClear = true;
 
-    expect(buildTriggerPayload(values, webhook).credential).toBeUndefined();
-    expect(triggerDraftFromEditorValues(values, webhook).credential).toBeUndefined();
+    expect(buildTriggerPayload(values, webhook)).toMatchObject({ credential_clear: true });
+    expect(triggerDraftFromEditorValues(values, webhook).credential_configured).toBe(false);
   });
 
   test("rejects incomplete webhook mappings", () => {
@@ -139,6 +138,7 @@ describe("trigger editor payload", () => {
   test("builds a registered HTTP chat channel trigger", () => {
     const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     values.id = "chat";
+    values.credentialValue = "secret-token";
     values.streamNodeIDs = "answer, reviewer answer";
 
     expect(buildTriggerPayload(values, null)).toEqual({
@@ -147,6 +147,7 @@ describe("trigger editor payload", () => {
       type: "chat",
       enabled: true,
       concurrency: "parallel",
+      credential_value: "secret-token",
       chat: {
         channel: "http",
         channel_config: {},
@@ -157,9 +158,19 @@ describe("trigger editor payload", () => {
     });
   });
 
+  test("rejects an enabled chat trigger without an authentication token", () => {
+    const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
+    values.id = "chat";
+
+    expect(() => buildTriggerPayload(values, null)).toThrow("requires an authentication token");
+    values.enabled = false;
+    expect(buildTriggerPayload(values, null)).not.toHaveProperty("credential");
+  });
+
   test("clears the chat input binding without a runtime fallback", () => {
     const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     values.id = "chat";
+    values.credentialValue = "secret-token";
     values.stateBindings.input = "";
 
     const payload = buildTriggerPayload(values, null);
@@ -170,6 +181,7 @@ describe("trigger editor payload", () => {
   test("builds optional chat history and metadata state bindings", () => {
     const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     values.id = "chat";
+    values.credentialValue = "secret-token";
     values.chatHistoryLimit = "10";
     values.stateBindings.conversation = " scopes.agent.conversation ";
     values.stateBindings.raw_history = " scopes.chat.raw_history ";
@@ -202,6 +214,7 @@ describe("trigger editor payload", () => {
       type: "chat",
       enabled: true,
       target: { graph_id: "graph-a" },
+      credential: { source: "env", ref: "TRIGGER_TOKEN" },
       chat: {
         history_limit: 25,
         state_bindings: {
@@ -226,28 +239,33 @@ describe("trigger editor payload", () => {
     for (const historyLimit of ["-1", "1.5", "501"]) {
       const values = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
       values.id = "chat";
+      values.credentialValue = "secret-token";
       values.chatHistoryLimit = historyLimit;
       expect(() => buildTriggerPayload(values, null)).toThrow("integer between 0 and 500");
     }
 
     const invalidSection = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     invalidSection.id = "chat";
+    invalidSection.credentialValue = "secret-token";
     invalidSection.stateBindings.raw_history = "runtime.chat.history";
     expect(() => buildTriggerPayload(invalidSection, null)).toThrow("section runtime is not allowed");
 
     const inputOverlap = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     inputOverlap.id = "chat";
+    inputOverlap.credentialValue = "secret-token";
     inputOverlap.stateBindings.user_id = "shared.request.input.user_id";
     expect(() => buildTriggerPayload(inputOverlap, null)).toThrow("overlaps input state path");
 
     const bindingOverlap = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     bindingOverlap.id = "chat";
+    bindingOverlap.credentialValue = "secret-token";
     bindingOverlap.stateBindings.raw_history = "scopes.chat";
     bindingOverlap.stateBindings.user_id = "scopes.chat.user_id";
     expect(() => buildTriggerPayload(bindingOverlap, null)).toThrow("overlaps raw history state path");
 
     const conversationOverlap = triggerEditorValues(null, { graph_id: "graph-a" }, "chat");
     conversationOverlap.id = "chat";
+    conversationOverlap.credentialValue = "secret-token";
     conversationOverlap.stateBindings.conversation = "scopes.chat";
     conversationOverlap.stateBindings.user_id = "scopes.chat.messages.user_id";
     expect(() => buildTriggerPayload(conversationOverlap, null)).toThrow("overlaps conversation state path");
