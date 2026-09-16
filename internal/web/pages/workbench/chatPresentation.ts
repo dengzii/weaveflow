@@ -9,11 +9,6 @@ export interface ChatNodePresentation {
   kind: ChatNodeKind;
 }
 
-export interface ChatReplyGroup {
-  node: ChatNodePresentation;
-  replies: ChatReply[];
-}
-
 export interface ChatNodeActivity {
   id: string;
   node: ChatNodePresentation;
@@ -23,9 +18,11 @@ export interface ChatNodeActivity {
 }
 
 export interface ChatExecutionStep extends ChatNodeActivity {
+  kind: "activity" | "message";
   action: string;
   result: string;
-  replies: ChatReply[];
+  content: string;
+  replyKind?: ChatReply["kind"];
 }
 
 export function chatNodePresentation(nodeID: string | undefined, nodes: GraphNodeSpec[]): ChatNodePresentation {
@@ -38,17 +35,6 @@ export function chatNodePresentation(nodeID: string | undefined, nodes: GraphNod
     type,
     kind: nodeKind(type),
   };
-}
-
-export function groupChatReplies(replies: ChatReply[], nodes: GraphNodeSpec[]): ChatReplyGroup[] {
-  const groups: ChatReplyGroup[] = [];
-  for (const reply of replies.filter((item) => item.kind === "message" && item.content?.trim())) {
-    const node = chatNodePresentation(reply.node_id, nodes);
-    const previous = groups.at(-1);
-    if (previous?.node.id === node.id) previous.replies.push(reply);
-    else groups.push({ node, replies: [reply] });
-  }
-  return groups;
 }
 
 export function buildChatNodeActivities(events: RuntimeEvent[], nodes: GraphNodeSpec[]): ChatNodeActivity[] {
@@ -85,59 +71,85 @@ export function buildChatNodeActivities(events: RuntimeEvent[], nodes: GraphNode
 }
 
 export function buildChatExecutionSteps(events: RuntimeEvent[], replies: ChatReply[], nodes: GraphNodeSpec[]): ChatExecutionStep[] {
-  const replyGroups = groupChatReplies(replies, nodes);
   const steps = buildChatNodeActivities(events, nodes).map((activity): ChatExecutionStep => ({
     ...activity,
+    kind: "activity",
     action: activityAction(activity),
     result: activityResult(activity),
-    replies: [],
+    content: "",
   }));
-  for (const group of replyGroups) {
-    const step = [...steps].reverse().find((candidate) => candidate.node.id === group.node.id);
-    if (step) {
-      step.replies.push(...group.replies);
-      continue;
-    }
-    steps.push({
-      id: `reply:${group.node.id}:${steps.length}`,
-      node: group.node,
+
+  for (const [replyIndex, reply] of replies.entries()) {
+    const content = reply.content?.trim();
+    if (!content || (reply.kind !== "message" && reply.kind !== "finish")) continue;
+    const node = replyPresentation(reply, nodes);
+    const replyStep: ChatExecutionStep = {
+      id: `reply:${reply.sequence ?? replyIndex}:${node.id}:${reply.kind}`,
+      node,
       status: "completed",
       tools: [],
       events: [],
-      action: "Generated a response",
-      result: "Response ready",
-      replies: group.replies,
-    });
+      kind: "message",
+      action: reply.kind === "finish" ? "Final answer" : "Message",
+      result: "",
+      content,
+      replyKind: reply.kind,
+    };
+    const nodeStepIndex = lastNodeStepIndex(steps, node.id);
+    if (nodeStepIndex < 0) {
+      steps.push(replyStep);
+      continue;
+    }
+    let insertionIndex = nodeStepIndex + 1;
+    while (insertionIndex < steps.length && steps[insertionIndex].kind === "message" && steps[insertionIndex].node.id === node.id) {
+      insertionIndex++;
+    }
+    steps.splice(insertionIndex, 0, replyStep);
   }
   return steps;
 }
 
+function lastNodeStepIndex(steps: ChatExecutionStep[], nodeID: string): number {
+  for (let index = steps.length - 1; index >= 0; index--) {
+    if (steps[index].node.id === nodeID) return index;
+  }
+  return -1;
+}
+
+function replyPresentation(reply: ChatReply, nodes: GraphNodeSpec[]): ChatNodePresentation {
+  const node = chatNodePresentation(reply.node_id, nodes);
+  if (reply.kind !== "finish" || reply.node_id?.trim()) return node;
+  return { ...node, label: "Final answer", type: "finish", kind: "reply" };
+}
+
 function activityAction(activity: ChatNodeActivity): string {
   const last = activity.events.at(-1);
-  if (!last) return "Working";
-  if (last.type === "nodes.retry") return "Retrying this step";
-  if (last.type === "nodes.failed" || last.type === "nodes.canceled") return "Step stopped";
-  if (last.type === "nodes.finished") return "Step completed";
-  if (last.type === "tool.approval_needed") return "Waiting for tool approval";
-  if (last.type === "tool.called" || last.type === "tool.started") return activity.tools.length > 0 ? `Using ${activity.tools.join(", ")}` : "Using tools";
-  if (last.type === "tool.returned") return activity.tools.length > 0 ? `Processed ${activity.tools.join(", ")}` : "Processing tool results";
-  if (last.type === "llm.reasoning" || last.type === "llm.reasoning_chunk") return "Thinking through the request";
-  if (last.type.startsWith("llm.")) return "Generating a response";
-  if (activity.node.kind === "tool") return "Running tools";
-  if (activity.node.kind === "agent") return "Working on the task";
-  if (activity.node.kind === "control") return "Preparing context";
-  return "Running this step";
+  if (!last) return "Running";
+  if (last.type === "nodes.retry") return "Retrying";
+  if (last.type === "nodes.failed") return "Failed";
+  if (last.type === "nodes.canceled") return "Canceled";
+  if (last.type === "nodes.finished") return toolAction("Completed", activity.tools);
+  if (last.type === "tool.approval_needed") return toolAction("Approval", activity.tools);
+  if (last.type === "tool.called" || last.type === "tool.started") return toolAction("Running", activity.tools);
+  if (last.type === "tool.returned") return toolAction("Returned", activity.tools);
+  if (last.type === "tool.failed") return toolAction("Failed", activity.tools);
+  if (last.type === "llm.reasoning" || last.type === "llm.reasoning_chunk") return "Reasoning";
+  if (last.type.startsWith("llm.")) return "Generating";
+  if (activity.node.kind === "control") return "Routing";
+  return "Running";
 }
 
 function activityResult(activity: ChatNodeActivity): string {
   if (activity.status === "failed") {
     const failure = [...activity.events].reverse().find((event) => event.type === "nodes.failed" || event.type === "tool.failed");
-    return payloadString(failure?.payload, "error") || "Step failed";
+    return payloadString(failure?.payload, "error") || "Failed";
   }
-  if (activity.status === "retrying") return "A retry was scheduled";
-  if (activity.status !== "completed") return "";
-  if (activity.tools.length > 0) return `Used ${activity.tools.join(", ")}`;
-  return "Completed successfully";
+  if (activity.status === "retrying") return "Retry scheduled";
+  return "";
+}
+
+function toolAction(action: string, tools: string[]): string {
+  return tools.length > 0 ? `${action} · ${tools.join(", ")}` : action;
 }
 
 function nodeKind(type: string): ChatNodeKind {

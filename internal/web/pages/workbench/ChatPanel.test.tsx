@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 describe("ChatPanel layout", () => {
-  test("uses compact labels and keeps the conversation controls shrinkable", () => {
+  test("keeps configuration and empty state concise", () => {
     installWindowStorage();
     expect(setStoredTriggerToken("trigger-token")).toBe("trigger-token");
 
@@ -34,13 +34,15 @@ describe("ChatPanel layout", () => {
 
     expect(markup).toContain("Primary chat");
     expect(markup).not.toContain("HTTP / SSE Trigger");
-    expect(markup).toContain("Conversation ID");
-    expect(markup).toContain("Trigger token");
-    expect(markup).toContain("Enter the token configured on this Trigger");
-    expect(markup).toContain('aria-label="New conversation"');
+    expect(markup).not.toContain("Conversation ID");
+    expect(markup).toContain(">User<");
+    expect(markup).toContain(">Token<");
+    expect(markup).toContain('placeholder="Trigger token"');
+    expect(markup).toContain(">New<");
     expect(markup).toContain('placeholder="发送消息…"');
-    expect(markup).toContain("Enter 发送 · Shift+Enter 换行");
-    expect(markup).toContain("w-[min(360px,calc(100vw-4rem))]");
+    expect(markup).not.toContain("Shift+Enter");
+    expect(markup).toContain("暂无消息");
+    expect(markup).toContain("w-[min(420px,calc(100vw-4rem))]");
     expect(markup).toContain("overflow-x-hidden");
     expect(markup).not.toContain("Token 已在");
   });

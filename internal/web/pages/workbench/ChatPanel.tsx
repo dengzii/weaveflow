@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Bot, Brain, CheckCircle2, CircleAlert, Loader2, MessageCircle, Plus, Route, Send, Sparkles, Wrench, X } from "lucide-react";
+import { Loader2, Send, X } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { getRunInspection, listEvents, normalizeTriggerToken, streamChatTrigger } from "../../api";
@@ -16,8 +16,7 @@ import type {
   RuntimeEvent,
   Trigger,
 } from "../../types";
-import { StatusText, type StatusTone } from "./shared";
-import { buildChatExecutionSteps, chatNodePresentation, type ChatExecutionStep, type ChatNodeKind } from "./chatPresentation";
+import { buildChatExecutionSteps, type ChatExecutionStep } from "./chatPresentation";
 
 interface ChatPanelProps {
   graphID: string;
@@ -40,7 +39,7 @@ interface ChatTurn {
   status: "connecting" | "running" | RunStatus;
 }
 
-const chatPanelClassName = "flex h-full min-h-0 min-w-0 w-[min(360px,calc(100vw-4rem))] max-w-full shrink-0 flex-col overflow-hidden border-r border-border bg-panel";
+const chatPanelClassName = "flex h-full min-h-0 min-w-0 w-[min(420px,calc(100vw-4rem))] max-w-full shrink-0 flex-col overflow-hidden border-r border-border bg-panel";
 
 export function isHTTPChatTrigger(trigger: Trigger): boolean {
   if (trigger.type !== "chat" || !trigger.enabled) return false;
@@ -251,7 +250,7 @@ export function ChatPanel({
   if (!selectedTrigger) {
     return (
       <aside aria-label="Chat panel" className={chatPanelClassName}>
-        <ChatPanelHeader subtitle="No trigger" onClose={onClose} />
+        <ChatPanelHeader title="No trigger" onClose={onClose} />
         <div className="p-4 text-sm text-muted-foreground">No Chat Trigger available.</div>
       </aside>
     );
@@ -259,11 +258,11 @@ export function ChatPanel({
 
   return (
     <aside aria-label="Chat panel" className={chatPanelClassName}>
-      <ChatPanelHeader subtitle={selectedTriggerLabel} onClose={onClose} />
-      <div className="grid min-w-0 shrink-0 gap-2.5 border-b border-border p-3">
+      <ChatPanelHeader title={selectedTriggerLabel} onClose={onClose} onNew={startNewConversation} newDisabled={pending} />
+      <div className="grid min-w-0 shrink-0 gap-2 border-b border-border p-3">
         {chatTriggers.length > 1 ? (
-          <label className="grid gap-1 text-xs font-medium">
-            Trigger
+          <label className="grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Trigger</span>
             <select
               value={selectedTrigger.id}
               onChange={(event) => setSelectedTriggerID(event.target.value)}
@@ -274,12 +273,12 @@ export function ChatPanel({
             </select>
           </label>
         ) : null}
-        <label className="grid gap-1 text-xs font-medium">
-          User ID
+        <label className="grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2 text-xs">
+          <span className="text-muted-foreground">User</span>
           <Input value={userID} onChange={(event) => setUserID(event.target.value)} disabled={pending} className="h-8 text-xs" />
         </label>
-        <label className="grid gap-1 text-xs font-medium">
-          Trigger token
+        <label className="grid grid-cols-[64px_minmax(0,1fr)] items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Token</span>
           <SensitiveInput
             value={triggerToken}
             onValueChange={(value) => {
@@ -295,35 +294,24 @@ export function ChatPanel({
                 setError(cause instanceof Error ? cause.message : String(cause));
               }
             }}
-            placeholder="Enter the token configured on this Trigger"
+            placeholder="Trigger token"
             disabled={pending}
             className="h-8 text-xs"
           />
         </label>
-        <div className="flex min-w-0 items-center gap-2 rounded-md border border-border bg-muted/25 px-2.5 py-2">
-          <div className="min-w-0 flex-1">
-            <div className="text-[10px] font-medium text-muted-foreground">Conversation ID</div>
-            <div className="truncate font-mono text-[10px] text-foreground/80" title={conversationID}>{conversationID}</div>
-          </div>
-          <Button type="button" variant="outline" size="sm" className="h-7 shrink-0 px-2 text-[11px]" aria-label="New conversation" title="New conversation" onClick={startNewConversation} disabled={pending}>
-            <Plus className="h-3 w-3" /> New
-          </Button>
-        </div>
         {!triggerCredentialConfigured ? (
-          <p className="text-[10px] text-destructive">Trigger credential 未配置。</p>
+          <p className="pl-[72px] text-[10px] text-destructive">缺少 Trigger 凭据</p>
         ) : !triggerTokenConfigured ? (
-          <p className="text-[10px] text-destructive">请输入 Trigger token。</p>
+          <p className="pl-[72px] text-[10px] text-destructive">请输入 Trigger token</p>
         ) : null}
       </div>
 
-      <div className="min-h-0 min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto bg-background/30 p-3">
+      <div className="min-h-0 min-w-0 flex-1 space-y-4 overflow-x-hidden overflow-y-auto bg-background p-3">
         {turns.length === 0 ? (
-          <div className="rounded-lg border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">
-            发送消息开始对话
-          </div>
+          <div className="py-6 text-center text-xs text-muted-foreground">暂无消息</div>
         ) : null}
         {turns.map((turn) => <ChatTurnView key={turn.id} turn={turn} nodes={nodes} />)}
-        {error ? <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{error}</div> : null}
+        {error ? <div className="text-xs text-destructive">{error}</div> : null}
         <div ref={endRef} />
       </div>
 
@@ -331,7 +319,7 @@ export function ChatPanel({
         className="min-w-0 shrink-0 border-t border-border p-3"
         onSubmit={(event) => { event.preventDefault(); void send(); }}
       >
-        <div className="flex min-w-0 items-end gap-2 rounded-lg border border-input bg-background p-2 focus-within:ring-2 focus-within:ring-ring">
+        <div className="flex min-w-0 items-end gap-2">
           <Textarea
             value={message}
             onChange={(event) => setMessage(event.target.value)}
@@ -344,26 +332,32 @@ export function ChatPanel({
             placeholder="发送消息…"
             rows={2}
             disabled={pending}
-            className="min-h-12 min-w-0 flex-1 overflow-y-auto border-0 bg-transparent px-1 py-1 font-sans text-xs shadow-none focus:border-0"
+            className="min-h-12 min-w-0 flex-1 overflow-y-auto px-2 py-2 font-sans text-xs"
           />
           <Button type="submit" size="sm" className="h-8 w-8 shrink-0 px-0" aria-label="Send message" title="Send" disabled={pending || !message.trim()}>
             {pending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Send className="h-3.5 w-3.5" />}
           </Button>
         </div>
-        <p className="mt-1.5 px-1 text-[10px] text-muted-foreground">Enter 发送 · Shift+Enter 换行</p>
       </form>
     </aside>
   );
 }
 
-function ChatPanelHeader({ subtitle, onClose }: { subtitle: string; onClose: () => void }) {
+function ChatPanelHeader({
+  title,
+  onClose,
+  onNew,
+  newDisabled = false,
+}: {
+  title: string;
+  onClose: () => void;
+  onNew?: () => void;
+  newDisabled?: boolean;
+}) {
   return (
-    <header className="flex h-12 shrink-0 items-center gap-2 border-b border-border px-3">
-      <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10 text-primary"><MessageCircle className="h-4 w-4" /></div>
-      <div className="min-w-0 flex-1">
-        <h2 className="text-sm font-semibold">Chat</h2>
-        <p className="truncate text-[10px] text-muted-foreground" title={subtitle}>{subtitle}</p>
-      </div>
+    <header className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-3">
+      <h2 className="min-w-0 flex-1 truncate text-sm font-semibold" title={title}>{title}</h2>
+      {onNew ? <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={onNew} disabled={newDisabled}>New</Button> : null}
       <button type="button" aria-label="Close Chat" title="Close Chat" onClick={onClose} className="rounded-md p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
         <X className="h-4 w-4" />
       </button>
@@ -373,98 +367,67 @@ function ChatPanelHeader({ subtitle, onClose }: { subtitle: string; onClose: () 
 
 function ChatTurnView({ turn, nodes }: { turn: ChatTurn; nodes: GraphNodeSpec[] }) {
   const updates = [...turn.replies].reverse().find((reply) => reply.kind === "update" && reply.content?.trim());
-  const finish = [...turn.replies].reverse().find((reply) => reply.kind === "finish" && reply.content?.trim());
-  const statusTone = chatStatusTone(turn.status);
-  const activeNode = [...turn.events].reverse().find((event) => event.node_id)?.node_id;
-  const activePresentation = chatNodePresentation(activeNode, nodes);
+  const running = turn.status === "connecting" || turn.status === "running";
 
   return (
-    <article className="min-w-0 space-y-2">
-      <div className="flex justify-end">
-        <div className="max-w-[88%] rounded-lg rounded-br-sm bg-primary px-3 py-2 text-xs text-primary-foreground shadow-sm whitespace-pre-wrap break-words">{turn.userContent}</div>
+    <article className="min-w-0 border-b border-border pb-4 last:border-b-0">
+      <div className="mb-3 grid grid-cols-[44px_minmax(0,1fr)] gap-2 text-xs">
+        <span className="font-medium text-muted-foreground">You</span>
+        <div className="whitespace-pre-wrap break-words text-foreground">{turn.userContent}</div>
       </div>
-      <div className="min-w-0 max-w-[96%] space-y-3 overflow-hidden rounded-xl rounded-bl-sm border border-border/70 bg-panel px-3 py-3 shadow-sm">
-        <div className="flex min-w-0 items-center gap-2 text-[10px]">
-          <StatusText tone={statusTone}>{turn.status}</StatusText>
-          {activeNode ? <span className="min-w-0 flex-1 truncate text-muted-foreground">{activePresentation.label}</span> : null}
-          {turn.run?.run_id ? <span className="ml-auto max-w-[45%] truncate font-mono text-muted-foreground" title={turn.run.run_id}>{turn.run.run_id}</span> : null}
-        </div>
-        <ChatStepList events={turn.events} replies={turn.replies} nodes={nodes} progress={updates?.content} />
-        {finish ? (
-          <div className="rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-3 py-2.5">
-            <div className="mb-1.5 flex items-center gap-1.5 text-[10px] font-semibold uppercase tracking-wide text-emerald-700 dark:text-emerald-300"><CheckCircle2 className="h-3 w-3" /> Final response</div>
-            <div className="assistant-markdown overflow-x-auto text-xs"><ReactMarkdown remarkPlugins={[remarkGfm]}>{finish.content ?? ""}</ReactMarkdown></div>
+      <div className="min-w-0">
+        <ChatStepList events={turn.events} replies={turn.replies} nodes={nodes} />
+        {running ? (
+          <div className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 py-1 text-[11px] text-muted-foreground">
+            <Loader2 className="mt-0.5 h-3 w-3 animate-spin" />
+            <span>{updates?.content?.trim() || (turn.status === "connecting" ? "Connecting" : "Running")}</span>
           </div>
         ) : null}
-        {turn.status === "connecting" || turn.status === "running" ? (
-          <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground"><Loader2 className="h-3 w-3 animate-spin" /> Graph is running…</div>
-        ) : null}
-        {turn.error ? <div className="rounded border border-destructive/30 bg-destructive/10 px-2 py-1 text-[10px] text-destructive">{turn.error}</div> : null}
+        {turn.error ? <div className="ml-8 mt-1 text-[11px] text-destructive">{turn.error}</div> : null}
+        <div className="ml-8 mt-1 flex min-w-0 gap-2 text-[9px] text-muted-foreground">
+          <span>{turn.status}</span>
+          {turn.run?.run_id ? <span className="truncate font-mono" title={turn.run.run_id}>{turn.run.run_id}</span> : null}
+        </div>
       </div>
     </article>
   );
 }
 
-function ChatStepList({ events, replies, nodes, progress }: { events: RuntimeEvent[]; replies: ChatReply[]; nodes: GraphNodeSpec[]; progress?: string }) {
+function ChatStepList({ events, replies, nodes }: { events: RuntimeEvent[]; replies: ChatReply[]; nodes: GraphNodeSpec[] }) {
   const steps = buildChatExecutionSteps(events, replies, nodes);
-  if (steps.length === 0 && !progress) return null;
+  if (steps.length === 0) return null;
   return (
-    <div className="space-y-0.5">
-      <div className="mb-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Steps</div>
-      {steps.map((step, index) => <ChatStep key={step.id} step={step} index={index} last={index === steps.length - 1} />)}
-      {progress && steps.length === 0 ? <div className="pl-6 text-xs text-muted-foreground">{progress}</div> : null}
+    <div>
+      {steps.map((step, index) => <ChatStep key={step.id} step={step} index={index} />)}
     </div>
   );
 }
 
-function ChatStep({ step, index, last }: { step: ChatExecutionStep; index: number; last: boolean }) {
-  const Icon = nodeKindIcon(step.node.kind);
+function ChatStep({ step, index }: { step: ChatExecutionStep; index: number }) {
   const active = step.status === "running" || step.status === "retrying";
+  const failed = step.status === "failed";
   return (
-    <section className="relative grid grid-cols-[18px_minmax(0,1fr)] gap-2 pb-2.5">
-      {!last ? <span className="absolute bottom-0 left-[8px] top-4 w-px bg-border" /> : null}
-      <span className={`relative z-10 flex h-[18px] w-[18px] items-center justify-center rounded-full border ${step.status === "failed" ? "border-destructive/50 bg-destructive/10 text-destructive" : active ? "border-primary/50 bg-primary/10 text-primary" : "border-emerald-500/40 bg-emerald-500/10 text-emerald-600"}`}>
-        {active ? <Loader2 className="h-3 w-3 animate-spin" /> : step.status === "failed" ? <CircleAlert className="h-3 w-3" /> : <CheckCircle2 className="h-3 w-3" />}
-      </span>
+    <section className="grid grid-cols-[24px_minmax(0,1fr)] gap-2 border-t border-border/70 py-2 first:border-t-0 first:pt-0">
+      <span className={`pt-0.5 text-right font-mono text-[10px] tabular-nums ${failed ? "text-destructive" : active ? "text-primary" : "text-muted-foreground"}`}>{index + 1}</span>
       <div className="min-w-0">
-        <div className="flex min-w-0 items-center gap-1.5">
-          <Icon className="h-3 w-3 shrink-0 text-muted-foreground" />
-          <span className="truncate text-[11px] font-semibold">{index + 1}. {step.node.label}</span>
-          <span className="shrink-0 text-[9px] text-muted-foreground">{step.node.type}</span>
+        <div className="flex min-w-0 items-baseline gap-2">
+          <span className="truncate text-[11px] font-medium">{step.node.label}</span>
+          <span className={`shrink-0 text-[10px] ${failed ? "text-destructive" : "text-muted-foreground"}`}>{step.action}</span>
         </div>
-        <div className={`mt-0.5 text-[11px] ${active ? "text-foreground" : "text-muted-foreground"}`}>{step.action}</div>
-        {step.result ? <div className={`mt-1 rounded-md px-2 py-1.5 text-[10px] ${step.status === "failed" ? "bg-destructive/10 text-destructive" : "bg-muted/40 text-muted-foreground"}`}>{step.result}</div> : null}
-        {step.replies.length > 0 ? (
-          <div className="mt-1.5 space-y-2 rounded-lg border border-border/70 bg-background/50 px-3 py-2.5">
-            {step.replies.map((reply, replyIndex) => <div key={reply.sequence ?? replyIndex} className="assistant-markdown overflow-x-auto text-xs leading-relaxed"><ReactMarkdown remarkPlugins={[remarkGfm]}>{reply.content ?? ""}</ReactMarkdown></div>)}
+        {step.content ? (
+          <div className="assistant-markdown mt-1 overflow-x-auto text-xs leading-5">
+            <ReactMarkdown remarkPlugins={[remarkGfm]}>{step.content}</ReactMarkdown>
           </div>
         ) : null}
+        {step.result ? <div className={`mt-1 text-[11px] ${failed ? "text-destructive" : "text-muted-foreground"}`}>{step.result}</div> : null}
       </div>
     </section>
   );
 }
 
-function nodeKindIcon(kind: ChatNodeKind) {
-  if (kind === "agent") return Brain;
-  if (kind === "model") return Sparkles;
-  if (kind === "tool") return Wrench;
-  if (kind === "reply") return Bot;
-  if (kind === "control") return Route;
-  return CircleAlert;
-}
-
 function mergeEvents(current: RuntimeEvent[], incoming: RuntimeEvent[]): RuntimeEvent[] {
   const seen = new Set(current.map((event) => event.id));
   return [...current, ...incoming.filter((event) => !seen.has(event.id))].slice(-300);
-}
-
-function chatStatusTone(status: ChatTurn["status"]): StatusTone {
-  if (status === "completed") return "ok";
-  if (status === "failed") return "danger";
-  if (status === "paused") return "warn";
-  if (status === "canceled") return "warn";
-  if (status === "connecting" || status === "running") return "live";
-  return "neutral";
 }
 
 function normalizedRunStatus(status: RunStatus): RunStatus {

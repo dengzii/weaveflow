@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { ChatReply, GraphNodeSpec, RuntimeEvent } from "../../types";
-import { buildChatExecutionSteps, buildChatNodeActivities, chatNodePresentation, groupChatReplies } from "./chatPresentation";
+import { buildChatExecutionSteps, buildChatNodeActivities, chatNodePresentation } from "./chatPresentation";
 
 const nodes: GraphNodeSpec[] = [
   { id: "research_agent", name: "Research agent", type: "agent" },
@@ -14,17 +14,19 @@ describe("chat presentation", () => {
     expect(chatNodePresentation("answer", nodes)).toMatchObject({ label: "Final answer", kind: "reply" });
   });
 
-  test("groups adjacent messages by producing node", () => {
+  test("renders every message as an independent step", () => {
     const replies: ChatReply[] = [
       { kind: "message", node_id: "research_agent", content: "First", sequence: 1 },
       { kind: "message", node_id: "research_agent", content: "Second", sequence: 2 },
-      { kind: "message", node_id: "answer", content: "Done", sequence: 3 },
+      { kind: "finish", content: "Done", sequence: 3 },
     ];
-    const groups = groupChatReplies(replies, nodes);
-    expect(groups.map((group) => [group.node.id, group.replies.length])).toEqual([
-      ["research_agent", 2],
-      ["answer", 1],
+    const steps = buildChatExecutionSteps([], replies, nodes);
+    expect(steps.map((step) => [step.node.label, step.action, step.content])).toEqual([
+      ["Research agent", "Message", "First"],
+      ["Research agent", "Message", "Second"],
+      ["Final answer", "Final answer", "Done"],
     ]);
+    expect(new Set(steps.map((step) => step.id)).size).toBe(3);
   });
 
   test("summarizes node status and tool activity from runtime events", () => {
@@ -40,23 +42,33 @@ describe("chat presentation", () => {
       tools: ["search", "fetch"],
       events,
     }]);
+    expect(buildChatExecutionSteps(events, [], nodes)[0].action).toBe("Completed · search, fetch");
   });
 
-  test("turns runtime events into readable execution steps and attaches node replies", () => {
+  test("keeps node activity and its message in separate precise steps", () => {
     const events: RuntimeEvent[] = [
       { ...event("1", "nodes.started", "research_agent", {}), step_id: "step-1" },
       { ...event("2", "llm.reasoning_chunk", "research_agent", { text: "thinking" }), step_id: "step-1" },
       { ...event("3", "nodes.finished", "research_agent", {}), step_id: "step-1" },
     ];
     const steps = buildChatExecutionSteps(events, [{ kind: "message", node_id: "research_agent", content: "Result" }], nodes);
-    expect(steps).toMatchObject([{
-      id: "step-1",
-      node: { label: "Research agent" },
-      status: "completed",
-      action: "Step completed",
-      result: "Completed successfully",
-      replies: [{ content: "Result" }],
-    }]);
+    expect(steps).toMatchObject([
+      {
+        id: "step-1",
+        kind: "activity",
+        node: { label: "Research agent" },
+        status: "completed",
+        action: "Completed",
+        result: "",
+        content: "",
+      },
+      {
+        kind: "message",
+        node: { label: "Research agent" },
+        action: "Message",
+        content: "Result",
+      },
+    ]);
   });
 });
 
