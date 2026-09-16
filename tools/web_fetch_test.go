@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,8 +12,14 @@ import (
 
 func TestWebFetchToolConvertsHTMLAndReturnsStructuredMetadata(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.Header.Get("User-Agent") == "" || !strings.Contains(request.Header.Get("Accept"), "text/html") {
+		userAgent := request.Header.Get("User-Agent")
+		if !strings.Contains(userAgent, "Mozilla/5.0") || strings.Contains(userAgent, "WeaveFlow") || !strings.Contains(request.Header.Get("Accept"), "text/html") {
 			t.Errorf("request headers = %#v", request.Header)
+		}
+		for _, header := range []string{"Accept-Language", "Sec-Fetch-Dest", "Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-User", "Upgrade-Insecure-Requests"} {
+			if request.Header.Get(header) == "" {
+				t.Errorf("request header %q is empty", header)
+			}
 		}
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 		writer.WriteHeader(http.StatusAccepted)
@@ -21,7 +28,7 @@ func TestWebFetchToolConvertsHTMLAndReturnsStructuredMetadata(t *testing.T) {
 	defer server.Close()
 
 	arguments := fmt.Sprintf(`{"url":%q,"description":"test page","prompt":"summarize"}`, server.URL)
-	result, err := webFetchTool(context.Background(), toolCallForTest("web_fetch", arguments))
+	result, err := webFetchToolWithFetcher(context.Background(), toolCallForTest("web_fetch", arguments), httpOnlyWebFetchPageFetcher())
 	if err != nil {
 		t.Fatalf("webFetchTool() error = %v", err)
 	}
@@ -37,6 +44,69 @@ func TestWebFetchToolConvertsHTMLAndReturnsStructuredMetadata(t *testing.T) {
 	}
 }
 
+func TestWebFetchToolReadsLargeHTMLBeforeExtractingText(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = fmt.Fprintf(writer, "<html><body><p>start</p><!--%s--><p>end marker</p></body></html>", strings.Repeat("x", maxFetchLimit+1024))
+	}))
+	defer server.Close()
+
+	arguments := fmt.Sprintf(`{"url":%q,"description":"large page","prompt":"read"}`, server.URL)
+	result, err := webFetchToolWithFetcher(context.Background(), toolCallForTest("web_fetch", arguments), httpOnlyWebFetchPageFetcher())
+	if err != nil {
+		t.Fatalf("webFetchTool() error = %v", err)
+	}
+	response := result.Value.(webFetchResponse)
+	if !strings.Contains(response.Content, "end marker") || response.Truncated {
+		t.Fatalf("large HTML response = %#v", response)
+	}
+}
+
+func TestWebFetchPageFetcherPrefersBrowserAndFallsBackToHTTP(t *testing.T) {
+	browserPage := newWebFetchPage(http.StatusOK, "text/html", []byte("browser"))
+	httpCalled := false
+	fetcher := webFetchPageFetcher{
+		browser: func(context.Context, string) (webFetchPage, error) {
+			return browserPage, nil
+		},
+		http: func(context.Context, string) (webFetchPage, error) {
+			httpCalled = true
+			return newWebFetchPage(http.StatusOK, "text/plain", []byte("http")), nil
+		},
+	}
+	page, err := fetcher.fetch(context.Background(), "https://example.com")
+	if err != nil || string(page.Body) != "browser" || httpCalled {
+		t.Fatalf("browser fetch = %#v, httpCalled = %t, error = %v", page, httpCalled, err)
+	}
+
+	fetcher.browser = func(context.Context, string) (webFetchPage, error) {
+		return webFetchPage{}, errors.New("Chrome is unavailable")
+	}
+	page, err = fetcher.fetch(context.Background(), "https://example.com")
+	if err != nil || string(page.Body) != "http" || !httpCalled {
+		t.Fatalf("fallback fetch = %#v, httpCalled = %t, error = %v", page, httpCalled, err)
+	}
+}
+
+func TestWebFetchPageFetcherDoesNotFallbackAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	httpCalled := false
+	fetcher := webFetchPageFetcher{
+		browser: func(ctx context.Context, _ string) (webFetchPage, error) {
+			return webFetchPage{}, ctx.Err()
+		},
+		http: func(context.Context, string) (webFetchPage, error) {
+			httpCalled = true
+			return webFetchPage{}, nil
+		},
+	}
+	_, err := fetcher.fetch(ctx, "https://example.com")
+	if !errors.Is(err, context.Canceled) || httpCalled {
+		t.Fatalf("fetch error = %v, httpCalled = %t", err, httpCalled)
+	}
+}
+
 func TestWebFetchToolHandlesPlainTextTruncationAndValidation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
 		writer.Header().Set("Content-Type", "text/plain")
@@ -45,7 +115,7 @@ func TestWebFetchToolHandlesPlainTextTruncationAndValidation(t *testing.T) {
 	defer server.Close()
 
 	arguments := fmt.Sprintf(`{"url":%q,"description":"plain text","prompt":"read","max_bytes":8}`, server.URL)
-	result, err := webFetchTool(context.Background(), toolCallForTest("web_fetch", arguments))
+	result, err := webFetchToolWithFetcher(context.Background(), toolCallForTest("web_fetch", arguments), httpOnlyWebFetchPageFetcher())
 	if err != nil {
 		t.Fatalf("webFetchTool() error = %v", err)
 	}
@@ -62,7 +132,7 @@ func TestWebFetchToolHandlesPlainTextTruncationAndValidation(t *testing.T) {
 		{arguments: `{"url":"example.com","description":" "}`, contains: "description is required"},
 		{arguments: `{"url":"http://[::1","description":"invalid"}`, contains: "invalid url"},
 	} {
-		if _, err := webFetchTool(context.Background(), toolCallForTest("web_fetch", testCase.arguments)); err == nil || !strings.Contains(err.Error(), testCase.contains) {
+		if _, err := webFetchToolWithFetcher(context.Background(), toolCallForTest("web_fetch", testCase.arguments), httpOnlyWebFetchPageFetcher()); err == nil || !strings.Contains(err.Error(), testCase.contains) {
 			t.Fatalf("webFetchTool(%s) error = %v, want %q", testCase.arguments, err, testCase.contains)
 		}
 	}
@@ -74,6 +144,10 @@ func TestWebFetchToolHandlesPlainTextTruncationAndValidation(t *testing.T) {
 	if !isBlockElement("section") || isBlockElement("span") {
 		t.Fatal("isBlockElement() classification is incorrect")
 	}
+}
+
+func httpOnlyWebFetchPageFetcher() webFetchPageFetcher {
+	return webFetchPageFetcher{http: fetchWebPageWithHTTP}
 }
 
 func TestHTMLToTextHandlesMalformedAndEmptyDocuments(t *testing.T) {

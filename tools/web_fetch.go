@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,8 +16,28 @@ import (
 const (
 	defaultFetchLimit = 64 * 1024
 	maxFetchLimit     = 256 * 1024
+	maxFetchBodyBytes = 4 * 1024 * 1024
 	fetchTimeout      = 30 * time.Second
 )
+
+type webFetchPage struct {
+	Status        int
+	ContentType   string
+	Body          []byte
+	BodyTruncated bool
+}
+
+type webFetchPageLoader func(context.Context, string) (webFetchPage, error)
+
+type webFetchPageFetcher struct {
+	browser webFetchPageLoader
+	http    webFetchPageLoader
+}
+
+var defaultWebFetchPageFetcher = webFetchPageFetcher{
+	browser: fetchWebPageWithBrowser,
+	http:    fetchWebPageWithHTTP,
+}
 
 type webFetchRequest struct {
 	URL         string `json:"url"`
@@ -79,6 +100,10 @@ func NewWebFetch() Tool {
 }
 
 func webFetchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, error) {
+	return webFetchToolWithFetcher(ctx, call, defaultWebFetchPageFetcher)
+}
+
+func webFetchToolWithFetcher(ctx context.Context, call llms.ToolCall, fetcher webFetchPageFetcher) (llms.ToolResult, error) {
 	var req webFetchRequest
 	if err := decodeToolArguments(call, &req); err != nil {
 		return llms.ToolResult{}, fmt.Errorf("web_fetch input: %w", err)
@@ -94,41 +119,30 @@ func webFetchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, err
 	if !strings.HasPrefix(req.URL, "http://") && !strings.HasPrefix(req.URL, "https://") {
 		req.URL = "https://" + req.URL
 	}
+	if _, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil); err != nil {
+		return llms.ToolResult{}, fmt.Errorf("invalid url: %w", err)
+	}
 
 	limit := normalizeFetchLimit(req.MaxBytes)
 
-	client := &http.Client{Timeout: fetchTimeout}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodGet, req.URL, nil)
-	if err != nil {
-		return llms.ToolResult{}, fmt.Errorf("invalid url: %w", err)
-	}
-	httpReq.Header.Set("User-Agent", "Mozilla/5.0 (compatible; WeaveFlow/1.0)")
-	httpReq.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7")
-
-	resp, err := client.Do(httpReq)
+	fetchCtx, cancelFetch := context.WithTimeout(ctx, fetchTimeout)
+	defer cancelFetch()
+	page, err := fetcher.fetch(fetchCtx, req.URL)
 	if err != nil {
 		return llms.ToolResult{}, fmt.Errorf("fetch failed: %w", err)
 	}
-	defer func() { _ = resp.Body.Close() }()
-
-	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(maxFetchLimit+1024)))
-	if err != nil {
-		return llms.ToolResult{}, fmt.Errorf("reading response: %w", err)
-	}
-
-	contentType := resp.Header.Get("Content-Type")
 
 	var title, text string
-	if strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/xhtml") {
-		title, text, err = htmlToText(body)
+	if strings.Contains(page.ContentType, "text/html") || strings.Contains(page.ContentType, "application/xhtml") {
+		title, text, err = htmlToText(page.Body)
 		if err != nil {
-			text = string(body)
+			text = string(page.Body)
 		}
 	} else {
-		text = string(body)
+		text = string(page.Body)
 	}
 
-	truncated := false
+	truncated := page.BodyTruncated
 	if len(text) > limit {
 		text = text[:limit]
 		truncated = true
@@ -136,13 +150,76 @@ func webFetchTool(ctx context.Context, call llms.ToolCall) (llms.ToolResult, err
 
 	result := webFetchResponse{
 		URL:       req.URL,
-		Status:    resp.StatusCode,
+		Status:    page.Status,
 		Title:     title,
 		Content:   text,
 		Truncated: truncated,
 	}
 
 	return structuredToolResult(call, result)
+}
+
+func (fetcher webFetchPageFetcher) fetch(ctx context.Context, rawURL string) (webFetchPage, error) {
+	var browserErr error
+	if fetcher.browser != nil {
+		page, err := fetcher.browser(ctx, rawURL)
+		if err == nil {
+			return page, nil
+		}
+		browserErr = fmt.Errorf("browser: %w", err)
+		if ctx.Err() != nil {
+			return webFetchPage{}, fmt.Errorf("browser: %w", ctx.Err())
+		}
+	}
+
+	if fetcher.http == nil {
+		if browserErr != nil {
+			return webFetchPage{}, browserErr
+		}
+		return webFetchPage{}, fmt.Errorf("no web fetch method is configured")
+	}
+	page, err := fetcher.http(ctx, rawURL)
+	if err != nil {
+		httpErr := fmt.Errorf("http: %w", err)
+		if browserErr != nil {
+			return webFetchPage{}, errors.Join(browserErr, httpErr)
+		}
+		return webFetchPage{}, httpErr
+	}
+	return page, nil
+}
+
+func fetchWebPageWithHTTP(ctx context.Context, rawURL string) (webFetchPage, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return webFetchPage{}, fmt.Errorf("create request: %w", err)
+	}
+	setBrowserNavigationHeaders(request, "")
+
+	client := &http.Client{Timeout: fetchTimeout}
+	response, err := client.Do(request)
+	if err != nil {
+		return webFetchPage{}, fmt.Errorf("send request: %w", err)
+	}
+	defer func() { _ = response.Body.Close() }()
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(maxFetchBodyBytes+1)))
+	if err != nil {
+		return webFetchPage{}, fmt.Errorf("read response: %w", err)
+	}
+	return newWebFetchPage(response.StatusCode, response.Header.Get("Content-Type"), body), nil
+}
+
+func newWebFetchPage(status int, contentType string, body []byte) webFetchPage {
+	bodyTruncated := len(body) > maxFetchBodyBytes
+	if bodyTruncated {
+		body = body[:maxFetchBodyBytes]
+	}
+	return webFetchPage{
+		Status:        status,
+		ContentType:   contentType,
+		Body:          body,
+		BodyTruncated: bodyTruncated,
+	}
 }
 
 func htmlToText(raw []byte) (title string, text string, err error) {

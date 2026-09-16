@@ -17,10 +17,14 @@ const liveWebToolsTestEnvironment = "WEAVEFLOW_LIVE_WEB_TEST"
 
 func TestWebSearchThenWebFetchFunctionalFlow(t *testing.T) {
 	pageServer := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/" {
+			writer.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if request.Method != http.MethodGet {
 			t.Errorf("fetch method = %s, want GET", request.Method)
 		}
-		if request.Header.Get("User-Agent") == "" || !strings.Contains(request.Header.Get("Accept"), "text/html") {
+		if request.Header.Get("User-Agent") == "" || strings.Contains(request.Header.Get("User-Agent"), "HeadlessChrome") || !strings.Contains(request.Header.Get("Accept"), "text/html") {
 			t.Errorf("fetch headers = %#v", request.Header)
 		}
 		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
