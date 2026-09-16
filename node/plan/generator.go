@@ -65,6 +65,8 @@ type GeneratorNode struct {
 	MaxTokens                   int
 	Temperature                 float64
 	Thinking                    llms.ThinkingMode
+	SimpleObjectiveFastPath     bool
+	RemoveSynthesisSteps        bool
 	ObjectivePath               state.Path
 	PlanPath                    state.Path
 	ExecutionPath               state.Path
@@ -76,9 +78,11 @@ func NewGeneratorNode(options ...core.NodeOption) *GeneratorNode {
 			Name:        NodeTypePlanGenerator,
 			Description: "Generate or revise a structured execution plan.",
 		}),
-		SystemPrompt: defaultPlanGeneratorSystemPrompt,
-		MaxSteps:     defaultPlanMaxSteps,
-		MaxReplans:   defaultPlanMaxReplans,
+		SystemPrompt:            defaultPlanGeneratorSystemPrompt,
+		MaxSteps:                defaultPlanMaxSteps,
+		MaxReplans:              defaultPlanMaxReplans,
+		SimpleObjectiveFastPath: true,
+		RemoveSynthesisSteps:    true,
 	}
 	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
@@ -106,16 +110,18 @@ func (n *GeneratorNode) Validate() error {
 
 func (n *GeneratorNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	nodeConfig := map[string]any{
-		"model_id":              n.ModelID,
-		"tool_ids":              n.ToolIDs,
-		"verifier_id":           n.VerifierID,
-		"verification_strategy": n.DefaultVerificationStrategy,
-		"system_prompt":         n.SystemPrompt,
-		"max_steps":             n.MaxSteps,
-		"max_replans":           n.MaxReplans,
-		"max_tokens":            n.MaxTokens,
-		"temperature":           n.Temperature,
-		"thinking":              string(n.Thinking),
+		"model_id":                   n.ModelID,
+		"tool_ids":                   n.ToolIDs,
+		"verifier_id":                n.VerifierID,
+		"verification_strategy":      n.DefaultVerificationStrategy,
+		"system_prompt":              n.SystemPrompt,
+		"max_steps":                  n.MaxSteps,
+		"max_replans":                n.MaxReplans,
+		"max_tokens":                 n.MaxTokens,
+		"temperature":                n.Temperature,
+		"thinking":                   string(n.Thinking),
+		"simple_objective_fast_path": n.SimpleObjectiveFastPath,
+		"remove_synthesis_steps":     n.RemoveSynthesisSteps,
 	}
 	return newGraphNodeSpec(n.NodeBase, NodeTypePlanGenerator, nodeConfig, map[string]state.Path{
 		"objective": n.ObjectivePath, "plan": n.PlanPath, "execution": n.ExecutionPath,
@@ -166,6 +172,14 @@ func GeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 					"thinking": dsl.JSONSchema{
 						"type": "string", "title": "Planner Reasoning Effort",
 						"enum": []string{"auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"},
+					},
+					"simple_objective_fast_path": dsl.JSONSchema{
+						"type": "boolean", "title": "Simple Objective Fast Path", "default": true,
+						"description": "Limit a short definitional objective to one executable step.",
+					},
+					"remove_synthesis_steps": dsl.JSONSchema{
+						"type": "boolean", "title": "Remove Redundant Synthesis Steps", "default": true,
+						"description": "Drop a model-generated final-answer-only step because plan synthesis runs separately.",
 					},
 				},
 				"additionalProperties": false,
@@ -224,6 +238,12 @@ func GeneratorNodeTypeDefinition() registry.NodeTypeDefinition {
 				target.Temperature = value
 			}
 			target.Thinking = llms.ThinkingMode(config.String(spec.Config, "thinking"))
+			if value, ok := config.Bool(spec.Config, "simple_objective_fast_path"); ok {
+				target.SimpleObjectiveFastPath = value
+			}
+			if value, ok := config.Bool(spec.Config, "remove_synthesis_steps"); ok {
+				target.RemoveSynthesisSteps = value
+			}
 			if !validPlanThinkingMode(target.Thinking) {
 				return nil, fmt.Errorf("build plan generator node %q: invalid thinking mode %q", spec.ID, target.Thinking)
 			}
@@ -282,16 +302,26 @@ func (n *GeneratorNode) execute(ctx core.Context, access *state.Access) error {
 	}
 
 	availableTools := ctx.FilterTools(n.ToolIDs)
+	previousStepsForPrompt := stepMaps(previousSteps)
+	if isReplan {
+		previousStepsForPrompt = compactPlanStepsForPrompt(previousSteps)
+	}
 	payload := map[string]any{
 		"objective":                     objective,
 		"is_replan":                     isReplan,
 		"replan_reason":                 stringValue(current[planFieldReplanReason]),
 		"previous_summary":              stringValue(current[planFieldSummary]),
-		"previous_steps":                stepMaps(previousSteps),
+		"previous_steps":                previousStepsForPrompt,
 		"available_tools":               toolDescriptions(availableTools),
 		"configured_verifier":           strings.TrimSpace(n.VerifierID),
 		"default_verification_strategy": strings.TrimSpace(n.DefaultVerificationStrategy),
 	}
+	maxSteps := n.effectiveMaxSteps()
+	if !isReplan && n.SimpleObjectiveFastPath && simpleDefinitionObjective(objective) {
+		maxSteps = 1
+	}
+	payload["maximum_steps"] = maxSteps
+	payload["final_synthesis_is_separate"] = n.RemoveSynthesisSteps
 	prompt, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
 		return fmt.Errorf("plan generator node: encode prompt: %w", err)
@@ -322,7 +352,10 @@ func (n *GeneratorNode) execute(ctx core.Context, access *state.Access) error {
 		return fmt.Errorf("plan generator node: parse response: %w", err)
 	}
 	knownTools := toolNames(availableTools)
-	steps := normalizePlanSteps(parsed.Steps, n.effectiveMaxSteps(), knownTools)
+	steps := normalizePlanSteps(parsed.Steps, maxSteps, knownTools)
+	if n.RemoveSynthesisSteps {
+		steps = removeRedundantSynthesisSteps(steps)
+	}
 	if len(steps) == 0 {
 		return errors.New("plan generator node: model produced no valid steps")
 	}
@@ -376,6 +409,45 @@ func (n *GeneratorNode) execute(ctx core.Context, access *state.Access) error {
 		return err
 	}
 	return nil
+}
+
+func compactPlanStepsForPrompt(steps []plancap.Step) []map[string]any {
+	const maxEvidenceItems = 16
+	result := make([]map[string]any, 0, len(steps))
+	for _, step := range steps {
+		start := max(len(step.Evidence)-maxEvidenceItems, 0)
+		evidence := make([]map[string]any, 0, len(step.Evidence)-start)
+		for index := start; index < len(step.Evidence); index++ {
+			item := step.Evidence[index]
+			evidence = append(evidence, map[string]any{
+				"ref":         fmt.Sprintf("E%d", index+1),
+				"tool_id":     item.ToolID,
+				"status":      item.Status,
+				"source_type": item.SourceType,
+				"url":         item.URL,
+				"http_status": item.HTTPStatus,
+				"title":       textLimit(item.Title, 256),
+				"error":       textLimit(item.Error, 512),
+			})
+		}
+		result = append(result, map[string]any{
+			"id":                    step.ID,
+			"title":                 step.Title,
+			"description":           step.Description,
+			"tool_ids":              step.ToolIDs,
+			"deliverables":          step.Deliverables,
+			"acceptance_criteria":   step.AcceptanceCriteria,
+			"verification_strategy": step.VerificationStrategy,
+			"verification_status":   step.VerificationStatus,
+			"verification_summary":  textLimit(step.VerificationSummary, 2000),
+			"verification_attempts": step.VerificationAttempts,
+			"status":                step.Status,
+			"result":                textLimit(step.Result, 2000),
+			"error":                 textLimit(step.Error, 1000),
+			"evidence":              evidence,
+		})
+	}
+	return result
 }
 
 func (n *GeneratorNode) effectiveSystemPrompt() string {

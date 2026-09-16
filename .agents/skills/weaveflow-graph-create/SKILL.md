@@ -1,11 +1,21 @@
 ---
 name: weaveflow-graph-create
-description: "Author, understand, validate, install, and configure WeaveFlow Graph Definition v2 through the public debug server HTTP API. Use for live registry discovery, graph JSON and State Port reasoning, initial-state analysis, model/tool settings, immutable Graph Sessions, Chat setup, and Trigger replacement or invocation. This skill is source-independent: do not inspect a code repository, implementation files, or repository instructions."
+description: "Author, understand, validate, install, and configure WeaveFlow Graph Definition v2 through the public debug server HTTP API. Use only in the WeaveFlow repository/workspace or when the user explicitly identifies WeaveFlow, a WeaveFlow server, or a WeaveFlow Graph/Session/Trigger. Do not use for graph or workflow work in unrelated products. This skill is source-independent: do not inspect implementation files."
 ---
 
 # WeaveFlow Graph Create
 
 Operate only through the public HTTP API and this skill's references. Treat `GET /registry`, Graph detail responses, analysis responses, and Session responses as the complete source of truth. Do not read source code, local project files, git history, or repository-specific instructions.
+
+## Activation Scope
+
+Use this skill only when at least one condition is true:
+
+- The current workspace is positively identified as the WeaveFlow project and the task concerns its public Graph API.
+- The user explicitly names WeaveFlow, a WeaveFlow debug server, or a WeaveFlow Graph, Session, Trigger, registry, or State Port.
+- The user explicitly invokes this skill.
+
+Do not activate it for generic graph JSON, workflow authoring, orchestration, state machines, chat setup, triggers, or API configuration in another product. Outside a WeaveFlow workspace, an explicit WeaveFlow product identity is required; if identity is ambiguous, do not use this skill.
 
 Read [references/graph-definition.md](references/graph-definition.md) before composing or interpreting a definition and [references/server-api.md](references/server-api.md) before making requests.
 

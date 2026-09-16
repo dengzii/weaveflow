@@ -2,6 +2,7 @@ package plan
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -53,6 +54,32 @@ func TestGeneratorReplanPreservesSuccessfulStepEvidenceInHistory(t *testing.T) {
 	archived := plancap.DecodeSteps(history[0]["steps"])
 	if len(archived) != 1 || len(archived[0].Evidence) != 1 || archived[0].Evidence[0].Summary != "inspected file" {
 		t.Fatalf("archived steps = %#v", archived)
+	}
+}
+
+func TestGeneratorCompactsPreviousStepsForReplanPrompt(t *testing.T) {
+	largeBody := "do-not-copy-full-evidence:" + strings.Repeat("x", 32*1024)
+	steps := []plancap.Step{{
+		ID: "research", Title: "Research", Description: "Fetch sources.", Status: PlanStepStatusPending,
+		Result: largeBody, VerificationSummary: largeBody,
+		Evidence: []plancap.Evidence{
+			{ToolID: "web_search", Status: "succeeded", Summary: largeBody},
+			{ToolID: "web_fetch", Status: "succeeded", Summary: largeBody, URL: "https://example.com/source", HTTPStatus: 200, Title: "Source"},
+		},
+		AttemptHistory: []plancap.Attempt{{Number: 1, Result: largeBody, Evidence: []plancap.Evidence{{ToolID: "web_fetch", Summary: largeBody}}}},
+	}}
+	encoded, err := json.Marshal(compactPlanStepsForPrompt(steps))
+	if err != nil {
+		t.Fatalf("encode compact steps: %v", err)
+	}
+	if len(encoded) > 8*1024 {
+		t.Fatalf("compact steps size = %d", len(encoded))
+	}
+	if strings.Count(string(encoded), "do-not-copy-full-evidence:") != 2 {
+		t.Fatalf("compact steps retained raw evidence or attempt history: %s", encoded)
+	}
+	if !strings.Contains(string(encoded), `"ref":"E2"`) || !strings.Contains(string(encoded), `"url":"https://example.com/source"`) {
+		t.Fatalf("compact steps lost evidence identity: %s", encoded)
 	}
 }
 
@@ -118,6 +145,35 @@ func TestGeneratorEnforcesObjectiveAndSummaryInvariants(t *testing.T) {
 	}
 	if !sliceContainsText(step.ToolIDs, "edit") || !sliceContainsText(step.ToolIDs, "write") {
 		t.Fatalf("tool IDs = %#v", step.ToolIDs)
+	}
+}
+
+func TestGeneratorUsesSingleStepFastPathForSimpleDefinition(t *testing.T) {
+	objective := "什么是 RWKV"
+	target := NewGeneratorNode(core.WithID("generate_plan"))
+	target.MaxSteps = 6
+	model := staticContentPlanModel{content: `{"summary":"research and synthesize","steps":[{"id":"scope","title":"Scope","description":"Fetch authoritative definitions.","tool_ids":["read"],"deliverables":["definition"],"acceptance_criteria":["definition is supported"],"verification_strategy":"evidence"},{"id":"synthesize","title":"Synthesize findings and produce final answer","description":"Produce final answer.","tool_ids":[],"deliverables":["answer"],"acceptance_criteria":["answer complete"],"verification_strategy":"evidence"}]}`}
+	available := map[string]core.Tool{"read": {Function: &llms.FunctionDefinition{Name: "read"}}}
+	access := state.NewEditingAccess(state.FromShared(map[string]any{"request": map[string]any{"input": objective}}))
+	ctx := core.NewContext(core.WithTools(core.WithModel(context.Background(), model), available))
+	if _, err := target.Execute(ctx, access); err != nil {
+		t.Fatalf("execute generator: %v", err)
+	}
+	planner, _ := plancap.Bind(access, target.PlanPath)
+	steps := planner.Steps()
+	if len(steps) != 1 || steps[0].ID != "scope" {
+		t.Fatalf("fast-path steps = %#v", steps)
+	}
+}
+
+func TestGeneratorRemovesRedundantFinalSynthesisStep(t *testing.T) {
+	steps := []plancap.Step{
+		{ID: "research", Title: "Research", Description: "Fetch sources."},
+		{ID: "synthesize", Title: "Synthesize findings and produce final answer", Description: "Write the final response."},
+	}
+	got := removeRedundantSynthesisSteps(steps)
+	if len(got) != 1 || got[0].ID != "research" {
+		t.Fatalf("steps = %#v", got)
 	}
 }
 

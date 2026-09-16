@@ -266,9 +266,55 @@ func buildPlanStepPrompt(planValue map[string]any, steps []plancap.Step, index i
 	if len(current.AcceptanceCriteria) > 0 {
 		fmt.Fprintf(&builder, "acceptance criteria:\n- %s\n", strings.Join(current.AcceptanceCriteria, "\n- "))
 	}
+	writeExistingEvidenceCatalog(&builder, current.Evidence)
 	if current.VerificationSummary != "" {
 		fmt.Fprintf(&builder, "previous verification feedback: %s\n", current.VerificationSummary)
 	}
 	builder.WriteString("\nReturn the concrete result for the current step.")
 	return builder.String()
+}
+
+func writeExistingEvidenceCatalog(builder *strings.Builder, evidence []plancap.Evidence) {
+	if builder == nil || len(evidence) == 0 {
+		return
+	}
+	const maxEvidenceItems = 6
+	selected := make([]int, 0, min(len(evidence), maxEvidenceItems))
+	seenURLs := make(map[string]struct{}, len(evidence))
+	for index, item := range evidence {
+		if !evidenceSupportsVerification(item) {
+			continue
+		}
+		if canonicalURL := canonicalEvidenceURL(item.URL); canonicalURL != "" {
+			if _, exists := seenURLs[canonicalURL]; exists {
+				continue
+			}
+			seenURLs[canonicalURL] = struct{}{}
+		}
+		selected = append(selected, index)
+		if len(selected) == maxEvidenceItems {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		return
+	}
+	builder.WriteString("existing verified-source candidates (plan-global refs; reuse these exact refs, never renumber them, and do not refetch successful URLs):\n")
+	for _, index := range selected {
+		item := evidence[index]
+		fmt.Fprintf(builder, "- E%d: tool=%s status=%s", index+1, item.ToolID, item.Status)
+		if item.HTTPStatus != 0 {
+			fmt.Fprintf(builder, " http_status=%d", item.HTTPStatus)
+		}
+		if title := strings.TrimSpace(item.Title); title != "" {
+			fmt.Fprintf(builder, " title=%q", textLimit(title, 256))
+		}
+		if sourceURL := strings.TrimSpace(item.URL); sourceURL != "" {
+			fmt.Fprintf(builder, " url=%s", sourceURL)
+		}
+		builder.WriteByte('\n')
+		if summary := strings.TrimSpace(item.Summary); summary != "" {
+			fmt.Fprintf(builder, "  excerpt: %s\n", textLimit(sanitizeEvidence(summary), 900))
+		}
+	}
 }

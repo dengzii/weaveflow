@@ -1,11 +1,20 @@
 ---
 name: weaveflow-graph-code
-description: Implement, review, and validate WeaveFlow repository changes across Go DSL, graph compilation, State Ports, node behavior, runtime scheduling, persistence, server handlers, WebUI Graph contracts, examples, tests, and durable design docs. Use when the requested solution changes source files or repository-local documentation. Do not use for API-level Graph Session/Trigger operations or diagnosing a live Run.
+description: Implement, review, and validate source or repository documentation for the WeaveFlow project. Use only when the current workspace is the WeaveFlow source repository, or the user explicitly asks about WeaveFlow source code. Do not use for unrelated repositories that merely contain graphs, workflows, nodes, agents, runs, tools, or state, nor for live WeaveFlow Session/Trigger/Run operations.
 ---
 
 # WeaveFlow Graph Code
 
 Use this skill for repository implementation and code-level diagnosis. It changes local source or documentation only; it does not call the live Graph API. Read [references/repository-map.md](references/repository-map.md) when the affected layer or contract is unclear.
+
+## Activation Scope
+
+Use this skill only when at least one condition is true:
+
+- The current workspace is positively identified as the WeaveFlow source repository, such as by its `github.com/dengzii/weaveflow` Go module or repository-local WeaveFlow instructions.
+- The user explicitly asks to inspect, change, review, or validate WeaveFlow source code or repository documentation.
+
+Do not activate it in another project merely because the request mentions a graph, workflow, node, agent, run, checkpoint, tool, state, DSL, or WebUI. If the product identity is ambiguous outside the WeaveFlow repository, do not use this skill.
 
 ## Inputs And Outputs
 

@@ -11,6 +11,7 @@ import (
 )
 
 var (
+	_ dsl.GraphNodeSpecProvider = (*ClarificationNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*GeneratorNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*StepNode)(nil)
 	_ dsl.GraphNodeSpecProvider = (*ReviewNode)(nil)
@@ -37,6 +38,12 @@ func ApplyDefaultStatePaths(target core.Node) {
 		}
 	}
 	switch typed := target.(type) {
+	case *ClarificationNode:
+		setShared(&typed.ObjectivePath, "request", "input")
+		setShared(&typed.PendingInputPath, "request", "pending_input")
+		setShared(&typed.OriginalObjectivePath, "plan_intake", "original_objective")
+		setShared(&typed.AnswerPath, "plan_intake", "answer")
+		setShared(&typed.AssumptionsPath, "plan_intake", "assumptions")
 	case *GeneratorNode:
 		setShared(&typed.ObjectivePath, "request", "input")
 		setShared(&typed.PlanPath, "plan")
@@ -57,6 +64,10 @@ func ApplyDefaultStatePaths(target core.Node) {
 		setShared(&typed.PlanPath, "plan")
 		setShared(&typed.ResultPath, "final", "answer")
 	}
+}
+
+func (n *ClarificationNode) ApplyDefaultStatePaths() {
+	ApplyDefaultStatePaths(n)
 }
 
 func (n *GeneratorNode) ApplyDefaultStatePaths() {
@@ -114,6 +125,14 @@ func defaultGraphStatePath(nodeID, nodeType, port string) state.Path {
 	switch port {
 	case "objective":
 		return state.Shared("request", "input")
+	case "pending_input":
+		return state.Shared("request", "pending_input")
+	case "original_objective":
+		return state.Shared("plan_intake", "original_objective")
+	case "answer":
+		return state.Shared("plan_intake", "answer")
+	case "assumptions":
+		return state.Shared("plan_intake", "assumptions")
 	case "plan":
 		return state.Shared("plan")
 	case "execution":

@@ -19,32 +19,33 @@ const (
 )
 
 type TaskProfile struct {
-	ID                  string
-	Description         string
-	DefaultObjective    string
-	PlannerPrompt       string
-	WorkerPrompt        string
-	FinalizerPrompt     string
-	SynthesisPrompt     string
-	CriticPrompt        string
-	GroundedCritic      bool
-	RequireEvidenceRefs bool
-	ToolIDs             []string
-	MaxSteps            int
-	MaxReplans          int
-	MaxIterations       int
-	MaxStepAttempts     int
-	TotalTimeout        time.Duration
-	ModelTimeout        time.Duration
-	ModelRetries        int
-	MaxReadLines        int
-	MaxReadOutputBytes  int
-	AllowedPaths        []string
-	Permissions         []string
-	ApprovalPolicy      ApprovalPolicy
-	ApprovedTools       []string
-	VerifierID          string
-	VerifierConfig      VerifierConfig
+	ID                   string
+	Description          string
+	DefaultObjective     string
+	PlannerPrompt        string
+	WorkerPrompt         string
+	FinalizerPrompt      string
+	SynthesisPrompt      string
+	CriticPrompt         string
+	GroundedCritic       bool
+	ClarificationEnabled bool
+	RequireEvidenceRefs  bool
+	ToolIDs              []string
+	MaxSteps             int
+	MaxReplans           int
+	MaxIterations        int
+	MaxStepAttempts      int
+	TotalTimeout         time.Duration
+	ModelTimeout         time.Duration
+	ModelRetries         int
+	MaxReadLines         int
+	MaxReadOutputBytes   int
+	AllowedPaths         []string
+	Permissions          []string
+	ApprovalPolicy       ApprovalPolicy
+	ApprovedTools        []string
+	VerifierID           string
+	VerifierConfig       VerifierConfig
 }
 
 type ProfileRegistry struct {
@@ -308,6 +309,7 @@ func defaultProfileRegistry() *ProfileRegistry {
 	multiStep := analysis
 	multiStep.ID = "multi-step"
 	multiStep.Description = "Multi-step read-only repository review with grounded evidence."
+	multiStep.ClarificationEnabled = true
 	multiStep.DefaultObjective = "Review examples/plan_mode as a reusable Plan-Execute-Review pattern. Use separate steps for graph topology, tool and permission boundaries, and checkpoint/replan behavior. Produce an evidence-backed report without modifying files."
 	multiStep.PlannerPrompt += "\nThis profile is intentionally multi-step: keep topology, safety, and recovery as separate steps when the objective supports them."
 	multiStep.MaxSteps = 4

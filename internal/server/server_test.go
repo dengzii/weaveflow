@@ -283,13 +283,17 @@ func newRunControlTestGraph(t *testing.T, started chan<- struct{}, release <-cha
 	return graph
 }
 
-func newCancelableResumeTestGraph(t *testing.T, attempts chan<- struct{}) *wfgraph.Graph {
+func newDetachedResumeTestGraph(t *testing.T, attempts chan<- struct{}, release <-chan struct{}) *wfgraph.Graph {
 	t.Helper()
 	graph := wfgraph.NewGraph(nil)
-	err := graph.AddNode(node.NewFuncNode(node.Spec{ID: "work", Name: "work"}, func(ctx core.Context, _ *state.Access) (core.NodeResult, error) {
+	err := graph.AddNode(node.NewFuncNode(node.Spec{ID: "work", Name: "work"}, func(ctx core.Context, access *state.Access) (core.NodeResult, error) {
 		attempts <- struct{}{}
-		<-ctx.Done()
-		return core.NodeResult{}, ctx.Err()
+		select {
+		case <-release:
+			return core.Success(), access.SetAny(state.Shared("done"), true)
+		case <-ctx.Done():
+			return core.NodeResult{}, ctx.Err()
+		}
 	}))
 	if err != nil {
 		t.Fatalf("add work node: %v", err)
@@ -2050,11 +2054,12 @@ func TestResumeRunAfterActivePauseCompletes(t *testing.T) {
 	}
 }
 
-func TestResumeRunStopsWhenRequestIsCanceled(t *testing.T) {
+func TestResumeRunContinuesWhenRequestIsCanceled(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 
 	attempts := make(chan struct{}, 2)
-	graph := newCancelableResumeTestGraph(t, attempts)
+	release := make(chan struct{})
+	graph := newDetachedResumeTestGraph(t, attempts, release)
 	srv, err := New(context.Background(), Config{
 		Graph:   graph,
 		BaseDir: t.TempDir(),
@@ -2085,23 +2090,19 @@ func TestResumeRunStopsWhenRequestIsCanceled(t *testing.T) {
 	}()
 	waitForSignal(t, attempts, "resumed run node start")
 	cancelRequest()
+	assertNoHTTPResponse(t, resumeDone, "request cancellation must not stop resumed run")
+	close(release)
 
 	resumeResponse := waitForHTTPResponse(t, resumeDone, "canceled resume")
-	if resumeResponse.Code != http.StatusRequestTimeout {
-		t.Fatalf("canceled resume status = %d, body = %s", resumeResponse.Code, resumeResponse.Body.String())
-	}
-	var response apiResponse
-	if err := json.Unmarshal(resumeResponse.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode canceled resume response: %v", err)
-	}
-	if response.Error == nil || response.Error.Code != "request_canceled" {
-		t.Fatalf("canceled resume error = %#v", response.Error)
+	resumeResult := decodeRunResultResponse(t, resumeResponse, http.StatusOK)
+	if resumeResult.Run.Status != runtime.RunStatusCompleted {
+		t.Fatalf("canceled resume status = %q, want %q", resumeResult.Run.Status, runtime.RunStatusCompleted)
 	}
 	persistedRun, err := srv.Runner().GetRun(context.Background(), run.RunID)
 	if err != nil {
 		t.Fatalf("GetRun(): %v", err)
 	}
-	if persistedRun.Status != runtime.RunStatusFailed || persistedRun.ErrorCode != string(core.ErrorCanceled) {
+	if persistedRun.Status != runtime.RunStatusCompleted || persistedRun.ErrorCode != "" {
 		t.Fatalf("persisted canceled resume = %#v", persistedRun)
 	}
 }

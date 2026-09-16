@@ -20,7 +20,7 @@ import (
 	"github.com/dengzii/weaveflow/state"
 )
 
-func TestPlanStepIterationConditionStopsAtLimit(t *testing.T) {
+func TestPlanStepIterationConditionAllowsFinalizationAtLimit(t *testing.T) {
 	condition, _ := hasPlanStepIterationsRemaining(planConversationPath)
 	tests := []struct {
 		name       string
@@ -29,7 +29,7 @@ func TestPlanStepIterationConditionStopsAtLimit(t *testing.T) {
 		want       bool
 	}{
 		{name: "below limit", iterations: 2, maximum: 3, want: true},
-		{name: "at limit", iterations: 3, maximum: 3, want: false},
+		{name: "at limit", iterations: 3, maximum: 3, want: true},
 		{name: "above limit", iterations: 4, maximum: 3, want: false},
 	}
 	for _, test := range tests {
@@ -59,6 +59,7 @@ func TestPlanStepIterationConditionStopsAtLimit(t *testing.T) {
 func TestNewPlanGraphUsesProfileConfiguration(t *testing.T) {
 	tinyScript, _ := profileByID("tiny-script")
 	analysis, _ := profileByID("analysis")
+	multiStep, _ := profileByID("multi-step")
 	tinyGraph, err := newPlanGraph(tinyScript)
 	if err != nil {
 		t.Fatalf("tiny graph: %v", err)
@@ -67,11 +68,28 @@ func TestNewPlanGraphUsesProfileConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analysis graph: %v", err)
 	}
+	multiStepGraph, err := newPlanGraph(multiStep)
+	if err != nil {
+		t.Fatalf("multi-step graph: %v", err)
+	}
 	if _, err := tinyGraph.Compile(); err != nil {
 		t.Fatalf("compile tiny graph: %v", err)
 	}
 	if _, err := analysisGraph.Compile(); err != nil {
 		t.Fatalf("compile analysis graph: %v", err)
+	}
+	if _, err := multiStepGraph.Compile(); err != nil {
+		t.Fatalf("compile multi-step graph: %v", err)
+	}
+	multiStepDefinition, err := multiStepGraph.Definition()
+	if err != nil {
+		t.Fatalf("multi-step definition: %v", err)
+	}
+	if multiStepDefinition.EntryPoint != "clarify_objective" {
+		t.Fatalf("multi-step entry point = %q", multiStepDefinition.EntryPoint)
+	}
+	if _, ok := multiStepGraph.NodeSpecs()["clarify_objective"]; !ok {
+		t.Fatal("multi-step clarification node is missing")
 	}
 	tinyGenerator := tinyGraph.NodeSpecs()["generate_plan"].Config
 	analysisGenerator := analysisGraph.NodeSpecs()["generate_plan"].Config

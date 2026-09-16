@@ -154,7 +154,6 @@ func ApplyDefaultStatePaths(targetNode Node) {
 		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeContextReducer), "conversation")
 	case *LLMTurnNode:
 		setScope(&typed.ConversationPath, defaultNodeOwner(typed, NodeTypeLLMTurn), "conversation")
-		setShared(&typed.OutputPath, "final", "answer")
 	case *TextGenerationNode:
 		setShared(&typed.PromptPath, "text_generation", "prompt")
 		setShared(&typed.OutputPath, "text_generation", "result")

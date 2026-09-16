@@ -26,8 +26,20 @@ func TestVerifierRejectsUnsupportedCompletionClaim(t *testing.T) {
 		t.Fatalf("execute verifier: %v", err)
 	}
 	step := currentVerifierStep(t, target, access)
-	if step.VerificationStatus != VerificationStatusRetry || !strings.Contains(step.VerificationSummary, "no tool evidence") {
+	if step.VerificationStatus != VerificationStatusRetry || !strings.Contains(step.VerificationSummary, "no claim-supporting tool evidence") {
 		t.Fatalf("verification = %s %q", step.VerificationStatus, step.VerificationSummary)
+	}
+}
+
+func TestVerifierDefaultsToGroundedCritic(t *testing.T) {
+	target := NewVerifierNode(core.WithID("verify"))
+	if !target.CriticEnabled {
+		t.Fatal("grounded critic is disabled by default")
+	}
+	properties := VerifierNodeTypeDefinition().ConfigSchema["properties"].(dsl.JSONSchema)
+	criticSchema := properties["critic_enabled"].(dsl.JSONSchema)
+	if criticSchema["default"] != true {
+		t.Fatalf("critic_enabled schema default = %#v", criticSchema["default"])
 	}
 }
 
@@ -68,9 +80,11 @@ func TestVerifierRejectsFailedToolEvidence(t *testing.T) {
 		ID: "write", Title: "Write", Description: "Write a file.",
 		Deliverables: []string{"file"}, AcceptanceCriteria: []string{"file written"}, VerificationStrategy: "evidence",
 	})
-	if err := conversation.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{llms.ToolResult{
-		ToolCallID: "write-1", Name: "write", IsError: true, ErrorMessage: "permission denied",
-	}}}}); err != nil {
+	target.MinimumEvidence = 1
+	if err := conversation.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+		llms.ToolResult{ToolCallID: "write-1", Name: "write", IsError: true, ErrorMessage: "permission denied"},
+		llms.ToolResult{ToolCallID: "read-1", Name: "read", Content: "existing file contents"},
+	}}}); err != nil {
 		t.Fatalf("set messages: %v", err)
 	}
 	_ = conversation.SetFinalAnswer("The file was written.")
@@ -109,6 +123,49 @@ func TestVerifierRejectsNonSuccessfulHTTPEvidence(t *testing.T) {
 	}
 }
 
+func TestVerifierAllowsRetryToSupersedeUnavailableWebSource(t *testing.T) {
+	target, access, conversation := verifierFixture(t, plancap.Step{
+		ID: "research", Title: "Research", Description: "Fetch independent sources.",
+		Deliverables: []string{"source-backed result"}, AcceptanceCriteria: []string{"two independent sources agree"}, VerificationStrategy: "evidence",
+	})
+	target.MinimumEvidence = 2
+	if err := conversation.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+		llms.ToolResult{ToolCallID: "fetch-403", Name: "web_fetch", Value: map[string]any{"url": "https://blocked.example.com/source", "status": 403}},
+	}}}); err != nil {
+		t.Fatalf("set first messages: %v", err)
+	}
+	if err := conversation.SetFinalAnswer("The first source was unavailable."); err != nil {
+		t.Fatalf("set first final answer: %v", err)
+	}
+	if _, err := target.Execute(core.NewContext(context.Background()), access); err != nil {
+		t.Fatalf("first verification: %v", err)
+	}
+
+	if err := conversation.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+		llms.ToolResult{ToolCallID: "fetch-1", Name: "web_fetch", Value: map[string]any{"url": "https://one.example.com/source", "status": 200}},
+		llms.ToolResult{ToolCallID: "fetch-2", Name: "web_fetch", Value: map[string]any{"url": "https://two.example.com/source", "status": 200}},
+	}}}); err != nil {
+		t.Fatalf("set retry messages: %v", err)
+	}
+	if err := conversation.SetFinalAnswer("Two independent sources support the result."); err != nil {
+		t.Fatalf("set retry final answer: %v", err)
+	}
+	if _, err := target.Execute(core.NewContext(context.Background()), access); err != nil {
+		t.Fatalf("retry verification: %v", err)
+	}
+
+	step := currentVerifierStep(t, target, access)
+	if step.VerificationStatus != VerificationStatusPassed || step.VerificationAttempts != 2 {
+		t.Fatalf("verification = %s attempts = %d summary = %q", step.VerificationStatus, step.VerificationAttempts, step.VerificationSummary)
+	}
+	if len(step.Evidence) != 3 || len(step.AttemptHistory) != 2 {
+		t.Fatalf("evidence = %#v; history = %#v", step.Evidence, step.AttemptHistory)
+	}
+	if !strings.Contains(step.VerificationSummary, "1 unavailable source attempt") {
+		t.Fatalf("verification summary = %q", step.VerificationSummary)
+	}
+}
+
 func TestVerifierRequiresIndependentSourceURLs(t *testing.T) {
 	target, access, conversation := verifierFixture(t, plancap.Step{
 		ID: "research", Title: "Research", Description: "Fetch independent sources.",
@@ -129,7 +186,34 @@ func TestVerifierRequiresIndependentSourceURLs(t *testing.T) {
 		t.Fatalf("execute verifier: %v", err)
 	}
 	step := currentVerifierStep(t, target, access)
-	if step.VerificationStatus != VerificationStatusRetry || !strings.Contains(step.VerificationSummary, "independent source URL") {
+	if step.VerificationStatus != VerificationStatusRetry || !strings.Contains(step.VerificationSummary, "at least 2 claim-supporting evidence") {
+		t.Fatalf("verification = %s %q", step.VerificationStatus, step.VerificationSummary)
+	}
+	if len(step.Evidence) != 1 {
+		t.Fatalf("canonical URL duplicates were retained: %#v", step.Evidence)
+	}
+}
+
+func TestVerifierDoesNotCountSearchOrClockMetadataAsEvidence(t *testing.T) {
+	target, access, conversation := verifierFixture(t, plancap.Step{
+		ID: "research", Title: "Research", Description: "Explain a topic from fetched sources.",
+		Deliverables: []string{"source-backed answer"}, AcceptanceCriteria: []string{"material claims cite fetched source URLs"}, VerificationStrategy: "evidence",
+	})
+	target.MinimumEvidence = 1
+	if err := conversation.SetMessages([]llms.MessageContent{{Role: llms.ChatMessageTypeTool, Parts: []llms.ContentPart{
+		llms.ToolResult{ToolCallID: "search-1", Name: "web_search", Content: "Title: uninspected result URL: https://example.com"},
+		llms.ToolResult{ToolCallID: "time-1", Name: "current_time", Content: "2026-09-11T07:42:03Z"},
+	}}}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	if err := conversation.SetFinalAnswer("The snippets prove the answer."); err != nil {
+		t.Fatalf("set final answer: %v", err)
+	}
+	if _, err := target.Execute(core.NewContext(context.Background()), access); err != nil {
+		t.Fatalf("execute verifier: %v", err)
+	}
+	step := currentVerifierStep(t, target, access)
+	if step.VerificationStatus != VerificationStatusRetry || !strings.Contains(step.VerificationSummary, "claim-supporting") {
 		t.Fatalf("verification = %s %q", step.VerificationStatus, step.VerificationSummary)
 	}
 }
@@ -212,6 +296,48 @@ func TestGroundedCriticAcceptsClaimsWithValidEvidenceRefs(t *testing.T) {
 	}
 }
 
+func TestGroundedCriticPreservesEvidencePositionsAfterFiltering(t *testing.T) {
+	payload, validRefs, err := groundedCriticPayload(VerificationRequest{
+		Objective: "explain the architecture",
+		Step:      plancap.Step{ID: "research", Title: "Research"},
+		Evidence: []plancap.Evidence{
+			{ToolID: "web_search", Status: "succeeded", Summary: "search lead"},
+			{ToolID: "web_fetch", Status: "succeeded", Summary: "official source", URL: "https://example.com/official", HTTPStatus: 200},
+			{ToolID: "web_fetch", Status: "succeeded", Summary: "duplicate official source", URL: "https://EXAMPLE.com/official#copy", HTTPStatus: 200},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build critic payload: %v", err)
+	}
+	if _, ok := validRefs["E2"]; !ok {
+		t.Fatalf("valid refs = %#v", validRefs)
+	}
+	if _, ok := validRefs["E3"]; ok || !strings.Contains(payload, `"ref": "E2"`) || strings.Contains(payload, "search lead") || strings.Contains(payload, "duplicate official source") {
+		t.Fatalf("payload = %s; valid refs = %#v", payload, validRefs)
+	}
+	if !strings.Contains(payload, `"url": "https://example.com/official"`) || !strings.Contains(payload, `"http_status": 200`) {
+		t.Fatalf("payload lacks explicit source metadata: %s", payload)
+	}
+}
+
+func TestMergeEvidenceReplacesCanonicalURLRetryWithoutRenumbering(t *testing.T) {
+	existing := []plancap.Evidence{
+		{ToolID: "web_search", ToolCallID: "search-1", Status: "succeeded", Summary: "lead"},
+		{ToolID: "web_fetch", ToolCallID: "fetch-1", Status: "failed", Error: "timeout", URL: "https://Example.com/source#old"},
+	}
+	incoming := []plancap.Evidence{
+		{ToolID: "web_fetch", ToolCallID: "fetch-2", Status: "succeeded", Summary: "recovered", URL: "https://example.com/source", HTTPStatus: 200},
+		{ToolID: "web_fetch", ToolCallID: "fetch-3", Status: "succeeded", Summary: "second", URL: "https://example.com/other", HTTPStatus: 200},
+	}
+	got := mergeEvidenceLimit(existing, incoming, 8)
+	if len(got) != 3 {
+		t.Fatalf("evidence = %#v", got)
+	}
+	if got[1].ToolCallID != "fetch-2" || got[1].Summary != "recovered" || got[2].ToolCallID != "fetch-3" {
+		t.Fatalf("evidence = %#v", got)
+	}
+}
+
 func TestDeterministicFailureSkipsGroundedCritic(t *testing.T) {
 	target, access, conversation := verifierFixture(t, plancap.Step{
 		ID: "verify", Title: "Verify", Description: "Verify the result.",
@@ -269,6 +395,7 @@ func (model *staticCriticModel) Generate(_ context.Context, _ llms.ModelRequest)
 func verifierFixture(t *testing.T, step plancap.Step) (*VerifierNode, *state.Access, *conversationcap.View) {
 	t.Helper()
 	target := NewVerifierNode(core.WithID("verify"))
+	target.CriticEnabled = false
 	target.VerifierID = "fixed"
 	access := state.NewEditingAccess(state.NewState())
 	planner, err := plancap.Bind(access, target.PlanPath)

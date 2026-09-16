@@ -21,17 +21,19 @@ const (
 	defaultLLMTurnPromptMaxChars = 200000
 	defaultReasoningEffort       = "auto"
 	reasoningEffortOptions       = "auto, none, minimal, low, medium, high, xhigh, or max"
+	finalIterationPrompt         = "The conversation has exhausted its tool-iteration budget. Do not call tools. Return the best supported final answer now using the tool results already present, and explicitly acknowledge any material limitation."
 )
 
 type LLMTurnNode struct {
 	Base
-	ModelID          string
-	ToolIDs          []string
-	SystemPrompt     string
-	PromptMaxChars   int
-	ReasoningEffort  string
-	ConversationPath state.Path
-	OutputPath       state.Path
+	ModelID                    string
+	ToolIDs                    []string
+	SystemPrompt               string
+	PromptMaxChars             int
+	ReasoningEffort            string
+	FinalizeAfterMaxIterations bool
+	ConversationPath           state.Path
+	OutputPath                 state.Path
 }
 
 func NewLLMTurnNode(options ...Option) *LLMTurnNode {
@@ -40,7 +42,8 @@ func NewLLMTurnNode(options ...Option) *LLMTurnNode {
 			Name:        NodeTypeLLMTurn,
 			Description: "Run one LLM inference turn against a bound conversation.",
 		}),
-		ReasoningEffort: defaultReasoningEffort,
+		ReasoningEffort:            defaultReasoningEffort,
+		FinalizeAfterMaxIterations: true,
 	}
 	applyNodeOptions(&target.Base, options)
 	ApplyDefaultStatePaths(target)
@@ -65,9 +68,10 @@ func (n *LLMTurnNode) Validate() error {
 
 func (n *LLMTurnNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	conf := map[string]any{
-		"tool_ids":         n.ToolIDs,
-		"system_prompt":    n.SystemPrompt,
-		"reasoning_effort": n.effectiveReasoningEffort(),
+		"tool_ids":                      n.ToolIDs,
+		"system_prompt":                 n.SystemPrompt,
+		"reasoning_effort":              n.effectiveReasoningEffort(),
+		"finalize_after_max_iterations": n.FinalizeAfterMaxIterations,
 	}
 	if strings.TrimSpace(n.ModelID) != "" {
 		conf["model_id"] = n.ModelID
@@ -75,10 +79,11 @@ func (n *LLMTurnNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	if n.PromptMaxChars > 0 {
 		conf["prompt_max_chars"] = n.PromptMaxChars
 	}
-	return newGraphNodeSpec(n.Base, NodeTypeLLMTurn, conf, map[string]state.Path{
-		"conversation": n.ConversationPath,
-		"output":       n.OutputPath,
-	})
+	statePaths := map[string]state.Path{"conversation": n.ConversationPath}
+	if !n.OutputPath.Empty() {
+		statePaths["output"] = n.OutputPath
+	}
+	return newGraphNodeSpec(n.Base, NodeTypeLLMTurn, conf, statePaths)
 }
 
 func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
@@ -102,6 +107,10 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 						"description": "Maximum character budget for conversation messages sent to the model; older messages are trimmed when exceeded.",
 					},
 					"reasoning_effort": reasoningEffortSchema(),
+					"finalize_after_max_iterations": dsl.JSONSchema{
+						"type": "boolean", "title": "Finalize After Max Iterations", "default": true,
+						"description": "When invoked after the tool-iteration limit, disable tools and require a final answer from the evidence already collected.",
+					},
 				},
 				"additionalProperties": false,
 			},
@@ -113,7 +122,7 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 				dsl.RelativeStateFieldRef{Path: conversationcap.FieldIterationCount, Mode: dsl.StateAccessReadWrite},
 				dsl.RelativeStateFieldRef{Path: conversationcap.FieldMaxIterations, Mode: dsl.StateAccessRead},
 			),
-			primitivePort("output", "Optional final text output.", "string", dsl.StateAccessWrite, false),
+			primitivePortWithDefault("output", "Optional text output. Bind this explicitly only when the turn owns a durable output field.", "string", dsl.StateAccessWrite, false, ""),
 		},
 		Build: func(ctx *registry.BuildContext, resolved registry.ResolvedNodeSpec) (Node, error) {
 			_ = ctx
@@ -128,6 +137,9 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 			llmTurnNode.ToolIDs = config.StringSlice(spec.Config, "tool_ids")
 			llmTurnNode.SystemPrompt = config.String(spec.Config, "system_prompt")
 			llmTurnNode.PromptMaxChars, _ = config.Int(spec.Config, "prompt_max_chars")
+			if value, ok := config.Bool(spec.Config, "finalize_after_max_iterations"); ok {
+				llmTurnNode.FinalizeAfterMaxIterations = value
+			}
 			if reasoningEffort := strings.TrimSpace(config.String(spec.Config, "reasoning_effort")); reasoningEffort != "" {
 				if !isReasoningEffort(reasoningEffort) {
 					return nil, fmt.Errorf("build llm turn node %q: reasoning_effort must be one of %s", spec.ID, reasoningEffortOptions)
@@ -164,6 +176,11 @@ func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 	}
 	messages := conversation.Messages()
 	promptMessages := trimLLMPromptMessages(messages, n.effectivePromptMaxChars())
+	forceFinalization := n.FinalizeAfterMaxIterations && len(n.ToolIDs) > 0 && conversation.IterationCount() >= conversation.MaxIterations()
+	if forceFinalization {
+		nodeTools = nil
+		promptMessages = append(promptMessages, llms.TextParts(llms.ChatMessageTypeHuman, finalIterationPrompt))
+	}
 
 	var toolSets []llms.ToolDefinition
 	for _, tool := range nodeTools {
@@ -205,7 +222,14 @@ func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 	if strings.TrimSpace(choice.Content) != "" {
 		aiMessage.Parts = append(aiMessage.Parts, llms.TextPart(choice.Content))
 	}
-	for _, toolCall := range choice.ToolCalls {
+	toolCalls := choice.ToolCalls
+	if forceFinalization && len(toolCalls) > 0 {
+		_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventWarning, map[string]any{
+			"message": "llm turn node ignored tool calls returned during forced finalization",
+		})
+		toolCalls = nil
+	}
+	for _, toolCall := range toolCalls {
 		if toolCall.Type == "" {
 			_ = fruntime.PublishRunnerContextEvent(ctx, fruntime.EventWarning, map[string]any{
 				"message": "llm turn node received a tool call with no type",
@@ -221,8 +245,11 @@ func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 	if err := conversation.IncrementIteration(); err != nil {
 		return err
 	}
-	if len(choice.ToolCalls) == 0 {
+	if len(toolCalls) == 0 {
 		answer := extractText(aiMessage)
+		if forceFinalization && strings.TrimSpace(answer) == "" {
+			return errors.New("llm turn: model returned no answer during forced finalization")
+		}
 		if err := conversation.SetFinalAnswer(answer); err != nil {
 			return err
 		}

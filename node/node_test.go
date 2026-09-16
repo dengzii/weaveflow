@@ -30,15 +30,23 @@ func TestUserInputRequiresResumePath(t *testing.T) {
 	}
 }
 
-func TestGraphNodeSpecUsesDefaultStatePaths(t *testing.T) {
+func TestGraphNodeSpecKeepsLLMTurnOutputExplicit(t *testing.T) {
 	t.Parallel()
 	target := NewLLMTurnNode(WithID("writer"))
 	spec := target.GraphNodeSpec()
 	if got := spec.State["conversation"].Path; got != "scopes.writer.conversation" {
 		t.Fatalf("conversation default path = %q", got)
 	}
-	if got := spec.State["output"].Path; got != "shared.final.answer" {
-		t.Fatalf("output default path = %q", got)
+	if _, exists := spec.State["output"]; exists {
+		t.Fatalf("unbound output was emitted: %#v", spec.State)
+	}
+	target.OutputPath = state.Shared("drafts", "writer")
+	if got := target.GraphNodeSpec().State["output"].Path; got != "shared.drafts.writer" {
+		t.Fatalf("explicit output path = %q", got)
+	}
+	definition := LLMTurnNodeTypeDefinition()
+	if len(definition.StatePorts) != 2 || definition.StatePorts[1].DefaultPath != "" {
+		t.Fatalf("output port must not have a default path: %#v", definition.StatePorts)
 	}
 }
 
@@ -208,6 +216,54 @@ func TestLLMTurnContinuesAfterConversationMaxIterations(t *testing.T) {
 	}
 }
 
+func TestLLMTurnFinalizesWithoutToolsAfterMaxIterations(t *testing.T) {
+	t.Parallel()
+
+	root := state.Scope("llm", "conversation")
+	access := state.NewEditingAccess(state.NewState())
+	view, err := conversationcap.Bind(access, root)
+	if err != nil {
+		t.Fatalf("bind conversation: %v", err)
+	}
+	if err := view.SetMessages([]llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "research")}); err != nil {
+		t.Fatalf("set messages: %v", err)
+	}
+	if err := view.SetMaxIterations(2); err != nil {
+		t.Fatalf("set max iterations: %v", err)
+	}
+	if err := view.SetIterationCount(2); err != nil {
+		t.Fatalf("set iteration count: %v", err)
+	}
+
+	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "supported final answer"}}}}}
+	availableTools := map[string]core.Tool{
+		"echo": core.NewTool(&llms.FunctionDefinition{Name: "echo"}, nil),
+	}
+	ctx := core.WithTools(core.WithModel(context.Background(), model), availableTools)
+	target := NewLLMTurnNode(WithID("llm"))
+	target.ConversationPath = root
+	target.ToolIDs = []string{"echo"}
+
+	result, err := Execute(ctx, access.State(), target)
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(model.requests) != 1 || len(model.requests[0].Tools) != 0 {
+		t.Fatalf("last-iteration request tools = %#v", model.requests)
+	}
+	requestText := extractText(model.requests[0].Messages[len(model.requests[0].Messages)-1])
+	if !strings.Contains(requestText, "exhausted its tool-iteration budget") {
+		t.Fatalf("finalization prompt = %q", requestText)
+	}
+	restored, err := conversationcap.Bind(state.NewAccess(result.State), root)
+	if err != nil {
+		t.Fatalf("bind result conversation: %v", err)
+	}
+	if restored.FinalAnswer() != "supported final answer" || restored.IterationCount() != 3 {
+		t.Fatalf("final answer = %q, iteration count = %d", restored.FinalAnswer(), restored.IterationCount())
+	}
+}
+
 func TestLLMTurnDefaultPromptMaxChars(t *testing.T) {
 	t.Parallel()
 
@@ -225,6 +281,10 @@ func TestLLMTurnDefaultPromptMaxChars(t *testing.T) {
 	}
 	if got := reasoningSchema["enum"]; !reflect.DeepEqual(got, []string{"auto", "none", "minimal", "low", "medium", "high", "xhigh", "max"}) {
 		t.Fatalf("reasoning_effort enum = %#v", got)
+	}
+	finalizeSchema := properties["finalize_after_max_iterations"].(dsl.JSONSchema)
+	if got := finalizeSchema["default"]; got != true {
+		t.Fatalf("finalize_after_max_iterations schema default = %#v, want true", got)
 	}
 }
 
@@ -399,6 +459,26 @@ func TestReasoningEffortBuildsFromGraphConfig(t *testing.T) {
 	}
 	if got := textGenerationNode.(*TextGenerationNode).ReasoningEffort; got != "none" {
 		t.Fatalf("text generation reasoning effort = %q, want none", got)
+	}
+}
+
+func TestLLMTurnBuildsFinalIterationControl(t *testing.T) {
+	t.Parallel()
+
+	built, err := LLMTurnNodeTypeDefinition().Build(&registry.BuildContext{}, registry.ResolvedNodeSpec{
+		Spec: dsl.GraphNodeSpec{
+			ID:     "llm",
+			Config: map[string]any{"finalize_after_max_iterations": false},
+		},
+		State: map[string]registry.ResolvedStateBinding{
+			"conversation": {Path: state.Scope("llm", "conversation")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("build llm turn: %v", err)
+	}
+	if built.(*LLMTurnNode).FinalizeAfterMaxIterations {
+		t.Fatal("finalize_after_max_iterations = true, want false")
 	}
 }
 

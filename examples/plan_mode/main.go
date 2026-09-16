@@ -26,11 +26,15 @@ import (
 )
 
 var (
-	planObjectivePath    = state.Shared("request", "input")
-	planStatePath        = state.Shared("plan")
-	planExecutionPath    = state.Shared("execution")
-	planConversationPath = state.Scope("plan_worker", "conversation")
-	planResultPath       = state.Shared("final", "answer")
+	planObjectivePath                = state.Shared("request", "input")
+	planPendingInputPath             = state.Shared("request", "pending_input")
+	planOriginalObjectivePath        = state.Shared("plan_intake", "original_objective")
+	planClarificationAnswerPath      = state.Shared("plan_intake", "answer")
+	planClarificationAssumptionsPath = state.Shared("plan_intake", "assumptions")
+	planStatePath                    = state.Shared("plan")
+	planExecutionPath                = state.Shared("execution")
+	planConversationPath             = state.Scope("plan_worker", "conversation")
+	planResultPath                   = state.Shared("final", "answer")
 )
 
 type cliOptions struct {
@@ -118,6 +122,12 @@ func newPlanGraph(profile TaskProfile) (*wfgraph.Graph, error) {
 		return nil, err
 	}
 	graph := weaveflow.NewGraph()
+	clarification := plannode.NewClarificationNode(node.WithID("clarify_objective"))
+	clarification.ObjectivePath = planObjectivePath
+	clarification.PendingInputPath = planPendingInputPath
+	clarification.OriginalObjectivePath = planOriginalObjectivePath
+	clarification.AnswerPath = planClarificationAnswerPath
+	clarification.AssumptionsPath = planClarificationAssumptionsPath
 
 	generator := plannode.NewGeneratorNode(node.WithID("generate_plan"))
 	generator.ToolIDs = append([]string(nil), profile.ToolIDs...)
@@ -166,16 +176,27 @@ func newPlanGraph(profile TaskProfile) (*wfgraph.Graph, error) {
 	synthesis.PlanPath, synthesis.ResultPath = planStatePath, planResultPath
 	routeFailure := plannode.NewRouteFailureNode(node.WithID("plan_route_failure"))
 
-	for _, target := range []node.Node{generator, step, execute, executeTools, finalizeStep, verifier, review, synthesis, routeFailure} {
+	targets := []node.Node{generator, step, execute, executeTools, finalizeStep, verifier, review, synthesis, routeFailure}
+	entryPoint := generator.ID()
+	if profile.ClarificationEnabled {
+		targets = append([]node.Node{clarification}, targets...)
+		entryPoint = clarification.ID()
+	}
+	for _, target := range targets {
 		if err := graph.AddNode(target); err != nil {
 			return nil, err
 		}
 	}
-	if err := graph.SetEntryPoint(generator.ID()); err != nil {
+	if err := graph.SetEntryPoint(entryPoint); err != nil {
 		return nil, err
 	}
 	if err := graph.SetFinishPoint(synthesis.ID()); err != nil {
 		return nil, err
+	}
+	if profile.ClarificationEnabled {
+		if err := graph.AddEdge(clarification.ID(), generator.ID()); err != nil {
+			return nil, err
+		}
 	}
 	if err := graph.AddEdge(generator.ID(), step.ID()); err != nil {
 		return nil, err

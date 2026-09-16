@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -33,6 +34,15 @@ type SynthesisNode struct {
 	ResultPath          state.Path
 }
 
+type synthesisOutput struct {
+	AnswerBlocks []synthesisAnswerBlock `json:"answer_blocks"`
+}
+
+type synthesisAnswerBlock struct {
+	Text         string   `json:"text"`
+	EvidenceRefs []string `json:"evidence_refs"`
+}
+
 func NewSynthesisNode(options ...core.NodeOption) *SynthesisNode {
 	target := &SynthesisNode{
 		NodeBase: core.NewNodeBase(core.NodeSpec{
@@ -41,6 +51,7 @@ func NewSynthesisNode(options ...core.NodeOption) *SynthesisNode {
 		}),
 		SystemPrompt:     defaultPlanSynthesisSystemPrompt,
 		FailOnIncomplete: true,
+		Temperature:      0.2,
 	}
 	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
@@ -105,7 +116,7 @@ func SynthesisNodeTypeDefinition() registry.NodeTypeDefinition {
 						"type": "integer", "title": "Synthesis Max Output Tokens", "minimum": 1,
 					},
 					"temperature": dsl.JSONSchema{
-						"type": "number", "title": "Synthesis Temperature", "minimum": 0, "maximum": 2,
+						"type": "number", "title": "Synthesis Temperature", "minimum": 0, "maximum": 2, "default": 0.2,
 					},
 					"thinking": dsl.JSONSchema{
 						"type": "string", "title": "Synthesis Reasoning Effort",
@@ -181,21 +192,14 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	if status := stringValue(planValue[planFieldStatus]); status != PlanStatusFinalizing {
 		return fmt.Errorf("plan synthesis node: plan status %q is not ready for synthesis", status)
 	}
-	if n.FailOnIncomplete {
-		if reason := incompletePlanReason(steps); reason != "" {
-			if err := planner.SetField(planFieldStatus, PlanStatusFailed); err != nil {
-				return err
-			}
-			return fmt.Errorf("plan synthesis node: refusing incomplete plan: %s", reason)
-		}
-	}
+	incompleteReason := incompletePlanReason(steps)
 
 	model := ctx.Model(n.ModelID)
 	if model == nil {
 		return fmt.Errorf("plan synthesis node: model %q not available", effectiveModelID(n.ModelID))
 	}
 	temperature := n.effectiveTemperature()
-	response, err := core.GenerateModel(ctx, model, llms.ModelRequest{
+	request := llms.ModelRequest{
 		ModelID: effectiveModelID(n.ModelID),
 		Mode:    llms.ModelModeChat,
 		Messages: []llms.MessageContent{
@@ -205,7 +209,13 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 		Temperature: &temperature,
 		MaxTokens:   n.MaxTokens,
 		Thinking:    n.effectiveThinking(),
-	})
+	}
+	if n.RequireEvidenceRefs {
+		request.ResponseName = "evidence_grounded_plan_synthesis"
+		request.ResponseSchema = synthesisOutputSchema()
+		request.StrictResponse = true
+	}
+	response, err := core.GenerateModel(ctx, model, request)
 	if err != nil {
 		return fmt.Errorf("plan synthesis node: synthesize answer: %w", err)
 	}
@@ -213,14 +223,17 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 		return errors.New("plan synthesis node: model returned no choices")
 	}
 	answer := strings.TrimSpace(response.Choices[0].Content)
-	if answer == "" {
-		return errors.New("plan synthesis node: model returned an empty answer")
-	}
 	if n.RequireEvidenceRefs {
-		answer, err = ensureFinalEvidenceReferences(answer, steps)
+		var output synthesisOutput
+		if err := json.Unmarshal([]byte(answer), &output); err != nil {
+			return fmt.Errorf("plan synthesis node: decode structured answer: %w", err)
+		}
+		answer, err = renderEvidenceGroundedSynthesis(output, steps)
 		if err != nil {
 			return fmt.Errorf("plan synthesis node: %w", err)
 		}
+	} else if answer == "" {
+		return errors.New("plan synthesis node: model returned an empty answer")
 	}
 	if err := state.Replace(access, state.NewRef[string](n.ResultPath), answer); err != nil {
 		return err
@@ -228,11 +241,15 @@ func (n *SynthesisNode) execute(ctx core.Context, access *state.Access) error {
 	if err := planner.SetField(planFieldFinalAnswer, answer); err != nil {
 		return err
 	}
-	return planner.SetField(planFieldStatus, PlanStatusDone)
+	status := PlanStatusDone
+	if n.FailOnIncomplete && incompleteReason != "" {
+		status = PlanStatusFailed
+	}
+	return planner.SetField(planFieldStatus, status)
 }
 
 func (n *SynthesisNode) effectiveTemperature() float64 {
-	if n == nil || n.Temperature <= 0 {
+	if n == nil {
 		return 0.2
 	}
 	return n.Temperature
@@ -271,6 +288,9 @@ func buildPlanSynthesisPrompt(objective string, summary string, steps []plancap.
 		}
 		fmt.Fprintf(&builder, "  verification: %s - %s\n", step.VerificationStatus, textLimit(step.VerificationSummary, 1500))
 		for evidenceIndex, evidence := range step.Evidence {
+			if requireEvidenceRefs && !evidenceCanBeCited(evidence) {
+				continue
+			}
 			fmt.Fprintf(&builder, "  evidence [S%d:E%d]: %s %s - %s", stepIndex+1, evidenceIndex+1, evidence.ToolID, evidence.Status, textLimit(evidence.Summary, 1000))
 			if evidence.URL != "" {
 				fmt.Fprintf(&builder, " | url=%s", evidence.URL)
@@ -284,27 +304,94 @@ func buildPlanSynthesisPrompt(objective string, summary string, steps []plancap.
 			builder.WriteByte('\n')
 		}
 	}
+	if reason := incompletePlanReason(steps); reason != "" {
+		fmt.Fprintf(&builder, "\nThe plan is incomplete: %s. Produce the best evidence-supported partial answer, clearly state that the objective was not fully completed, and identify the missing or unverified work. Do not present the answer as complete.\n", reason)
+	}
 	if requireEvidenceRefs {
-		builder.WriteString("\nEvery material factual claim must cite one or more listed evidence refs such as [S1:E1]. Do not cite nonexistent refs.")
+		builder.WriteString("\nReturn structured answer_blocks. Each block must contain concise user-facing text without inline citation syntax and an evidence_refs array containing one or more exact listed refs such as [S1:E1]. Every material factual claim must be placed in a block whose refs directly support it. Do not cite nonexistent refs. Split materially different claims into separate blocks.")
 	}
 	builder.WriteString("\nProduce the final answer now.")
 	return builder.String()
 }
 
-func ensureFinalEvidenceReferences(answer string, steps []plancap.Step) (string, error) {
-	refs := successfulEvidenceReferences(steps)
-	if len(refs) == 0 {
-		return "", errors.New("final answer requires evidence refs but no successful evidence exists")
+func synthesisOutputSchema() state.JSONSchema {
+	return state.JSONSchema{
+		"type": "object",
+		"properties": map[string]any{
+			"answer_blocks": map[string]any{
+				"type": "array", "minItems": 1, "maxItems": 24,
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"text": map[string]any{"type": "string", "minLength": 1},
+						"evidence_refs": map[string]any{
+							"type": "array", "items": map[string]any{"type": "string", "pattern": `^\[S[0-9]+:E[0-9]+\]$`}, "minItems": 1,
+						},
+					},
+					"required": []string{"text", "evidence_refs"}, "additionalProperties": false,
+				},
+			},
+		},
+		"required":             []string{"answer_blocks"},
+		"additionalProperties": false,
 	}
+}
+
+func renderEvidenceGroundedSynthesis(output synthesisOutput, steps []plancap.Step) (string, error) {
+	if len(output.AnswerBlocks) == 0 {
+		return "", errors.New("structured answer requires at least one answer block")
+	}
+	var builder strings.Builder
+	for index, block := range output.AnswerBlocks {
+		text := strings.TrimSpace(block.Text)
+		if text == "" {
+			return "", fmt.Errorf("answer block %d has empty text", index+1)
+		}
+		refs := uniqueStrings(block.EvidenceRefs)
+		if len(refs) == 0 {
+			return "", fmt.Errorf("answer block %d requires at least one evidence ref", index+1)
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString(text)
+		builder.WriteByte(' ')
+		builder.WriteString(strings.Join(refs, ""))
+	}
+	return ensureFinalEvidenceReferences(builder.String(), steps)
+}
+
+func uniqueStrings(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result
+}
+
+func ensureFinalEvidenceReferences(answer string, steps []plancap.Step) (string, error) {
 	allEvidence := make(map[string]plancap.Evidence)
 	for stepIndex, step := range steps {
 		for evidenceIndex, evidence := range step.Evidence {
 			allEvidence[fmt.Sprintf("[S%d:E%d]", stepIndex+1, evidenceIndex+1)] = evidence
 		}
 	}
-	for _, rawRef := range evidenceReferencePattern.FindAllString(answer, -1) {
+	refs := uniqueEvidenceReferences(answer)
+	if len(refs) == 0 {
+		return "", errors.New("final answer requires at least one evidence ref")
+	}
+	for _, rawRef := range refs {
 		evidence, ok := allEvidence[rawRef]
-		if !ok || !evidenceIsSuccessful(evidence) {
+		if !ok || !evidenceCanBeCited(evidence) {
 			return "", fmt.Errorf("final answer references invalid evidence %s", rawRef)
 		}
 	}
@@ -319,18 +406,16 @@ func ensureFinalEvidenceReferences(answer string, steps []plancap.Step) (string,
 	return strings.TrimSpace(builder.String()), nil
 }
 
-func successfulEvidenceReferences(steps []plancap.Step) []string {
-	refs := make([]string, 0, 12)
-	for stepIndex, step := range steps {
-		for evidenceIndex, evidence := range step.Evidence {
-			if !evidenceIsSuccessful(evidence) {
-				continue
-			}
-			refs = append(refs, fmt.Sprintf("[S%d:E%d]", stepIndex+1, evidenceIndex+1))
-			if len(refs) == 12 {
-				return refs
-			}
+func uniqueEvidenceReferences(answer string) []string {
+	matches := evidenceReferencePattern.FindAllString(answer, -1)
+	refs := make([]string, 0, len(matches))
+	seen := make(map[string]struct{}, len(matches))
+	for _, ref := range matches {
+		if _, exists := seen[ref]; exists {
+			continue
 		}
+		seen[ref] = struct{}{}
+		refs = append(refs, ref)
 	}
 	return refs
 }
@@ -339,6 +424,20 @@ var evidenceReferencePattern = regexp.MustCompile(`\[S[0-9]+:E[0-9]+\]`)
 
 func evidenceIsSuccessful(evidence plancap.Evidence) bool {
 	return strings.EqualFold(strings.TrimSpace(evidence.Status), "succeeded") && evidence.Error == "" && validHTTPStatus(evidence.HTTPStatus)
+}
+
+func evidenceCanBeCited(evidence plancap.Evidence) bool {
+	if !evidenceIsSuccessful(evidence) || strings.TrimSpace(evidence.Summary) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(evidence.ToolID)) {
+	case "web_search", "current_time":
+		return false
+	case "web_fetch":
+		return strings.TrimSpace(evidence.URL) != "" && evidence.HTTPStatus >= 200 && evidence.HTTPStatus < 300
+	default:
+		return true
+	}
 }
 
 func evidenceReferenceDetails(evidence plancap.Evidence) string {

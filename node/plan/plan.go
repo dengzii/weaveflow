@@ -33,13 +33,19 @@ func validPlanThinkingMode(value llms.ThinkingMode) bool {
 }
 
 const (
-	NodeTypePlanGenerator = "plan_generator"
-	NodeTypePlanStep      = "plan_step"
-	NodeTypePlanReview    = "plan_review"
-	NodeTypePlanSynthesis = "plan_synthesis"
+	NodeTypePlanClarification = "plan_clarification"
+	NodeTypePlanGenerator     = "plan_generator"
+	NodeTypePlanStep          = "plan_step"
+	NodeTypePlanReview        = "plan_review"
+	NodeTypePlanSynthesis     = "plan_synthesis"
 
 	ConditionTypePlanStatusEquals        = "plan_status_equals"
 	ConditionTypePlanIterationsRemaining = "plan_iterations_remaining"
+)
+
+const (
+	ClarificationDecisionReady      = "ready"
+	ClarificationDecisionNeedsInput = "needs_clarification"
 )
 
 const (
@@ -136,8 +142,8 @@ func IterationsRemaining(conversationPath state.Path) (registry.EdgeCondition, s
 		if err != nil {
 			return registry.RouteDecision{}, err
 		}
-		matched := conversation.IterationCount() < conversation.MaxIterations()
-		return registry.RouteDecision{Matched: matched, Reason: "plan step iteration limit checked"}, nil
+		matched := conversation.IterationCount() <= conversation.MaxIterations()
+		return registry.RouteDecision{Matched: matched, Reason: "plan step work or forced finalization iteration available"}, nil
 	})
 	contract := state.NewContract(
 		state.FieldAccess{Path: iterationPath, Mode: state.AccessRead, Required: true},
@@ -238,6 +244,48 @@ func normalizePlanSteps(steps []plancap.Step, maxSteps int, knownTools map[strin
 		normalized = append(normalized, step)
 	}
 	return normalized
+}
+
+func simpleDefinitionObjective(objective string) bool {
+	objective = strings.TrimSpace(objective)
+	if objective == "" || len([]rune(objective)) > 80 {
+		return false
+	}
+	lower := strings.ToLower(objective)
+	for _, marker := range []string{
+		" compare ", " versus ", " vs ", " and ", " analyze ", " research ", "deep dive",
+		"比较", "对比", "以及", "并且", "分析", "研究", "调研", "深入", "为什么", "如何",
+	} {
+		if strings.Contains(lower, marker) {
+			return false
+		}
+	}
+	for _, prefix := range []string{"what is ", "what are ", "who is ", "define ", "explain ", "什么是", "谁是", "何为"} {
+		if strings.HasPrefix(lower, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+func removeRedundantSynthesisSteps(steps []plancap.Step) []plancap.Step {
+	for len(steps) > 1 && redundantSynthesisStep(steps[len(steps)-1]) {
+		steps = steps[:len(steps)-1]
+	}
+	return steps
+}
+
+func redundantSynthesisStep(step plancap.Step) bool {
+	text := strings.ToLower(strings.TrimSpace(step.Title + " " + step.Description))
+	for _, marker := range []string{
+		"synthesize findings", "synthesize research", "produce final answer", "write final answer", "final synthesis",
+		"综合研究", "综合结论", "生成最终答案", "撰写最终答案", "最终综合",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalPlanStepID(value string) string {

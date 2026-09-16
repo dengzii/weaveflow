@@ -28,6 +28,7 @@ const defaultGroundedCriticPrompt = `You are a strict source-grounded critic.
 Audit the step result only against the enumerated evidence supplied in the payload.
 Reject material factual claims that are contradicted, unsupported, numerically imprecise, or based on topology or behavior not shown by evidence.
 Every supported claim must cite one or more valid evidence refs such as E1. Do not use outside knowledge.
+Each evidence_refs array item must be one bare ref copied exactly from the payload, such as "E2". Never combine refs or annotate them.
 Historical failed checks may be superseded only by later evidence that directly proves the same issue was corrected.
 Return strict JSON matching the response schema.`
 
@@ -87,9 +88,10 @@ func NewVerifierNode(options ...core.NodeOption) *VerifierNode {
 			Name:        NodeTypePlanVerifier,
 			Description: "Verify the current plan step using evidence and a deterministic verifier.",
 		}),
-		MaxAttempts: 2,
-		MaxEvidence: 64,
-		AllowNoOp:   true,
+		MaxAttempts:   2,
+		MaxEvidence:   64,
+		AllowNoOp:     true,
+		CriticEnabled: true,
 	}
 	applyNodeOptions(&target.NodeBase, options)
 	ApplyDefaultStatePaths(target)
@@ -145,8 +147,11 @@ func VerifierNodeTypeDefinition() registry.NodeTypeDefinition {
 					"max_evidence":          dsl.JSONSchema{"type": "integer", "minimum": 1},
 					"allow_no_op":           dsl.JSONSchema{"type": "boolean", "description": "Allow an explicit no-op strategy for evidence-backed analysis."},
 					"require_test_evidence": dsl.JSONSchema{"type": "boolean", "description": "Require a successful test or verification tool result."},
-					"critic_enabled":        dsl.JSONSchema{"type": "boolean"},
-					"critic_model_id":       dsl.JSONSchema{"type": "string"},
+					"critic_enabled": dsl.JSONSchema{
+						"type": "boolean", "default": true,
+						"description": "Run a source-grounded semantic audit after deterministic verification passes.",
+					},
+					"critic_model_id": dsl.JSONSchema{"type": "string"},
 					"critic_prompt": dsl.JSONSchema{
 						"type": "string", "title": "Grounded Critic Prompt", "x-control": "textarea",
 					},
@@ -378,15 +383,31 @@ func (n *VerifierNode) effectiveCriticPrompt() string {
 func groundedCriticPayload(request VerificationRequest) (string, map[string]struct{}, error) {
 	const evidenceBudget = 24 * 1024
 	start := max(len(request.Evidence)-12, 0)
-	selected := request.Evidence[start:]
-	perEvidence := min(8192, evidenceBudget/max(len(selected), 1))
-	evidence := make([]map[string]any, 0, len(selected))
-	validRefs := make(map[string]struct{}, len(selected))
-	for index, item := range selected {
-		ref := fmt.Sprintf("E%d", start+index+1)
+	selectedIndexes := make([]int, 0, len(request.Evidence)-start)
+	seenURLs := make(map[string]struct{}, len(request.Evidence)-start)
+	for index := start; index < len(request.Evidence); index++ {
+		item := request.Evidence[index]
+		if !evidenceSupportsVerification(item) {
+			continue
+		}
+		if canonicalURL := canonicalEvidenceURL(item.URL); canonicalURL != "" {
+			if _, exists := seenURLs[canonicalURL]; exists {
+				continue
+			}
+			seenURLs[canonicalURL] = struct{}{}
+		}
+		selectedIndexes = append(selectedIndexes, index)
+	}
+	perEvidence := min(8192, evidenceBudget/max(len(selectedIndexes), 1))
+	evidence := make([]map[string]any, 0, len(selectedIndexes))
+	validRefs := make(map[string]struct{}, len(selectedIndexes))
+	for _, index := range selectedIndexes {
+		item := request.Evidence[index]
+		ref := fmt.Sprintf("E%d", index+1)
 		validRefs[ref] = struct{}{}
 		evidence = append(evidence, map[string]any{
 			"ref": ref, "tool_id": item.ToolID, "status": item.Status,
+			"source_type": item.SourceType, "url": item.URL, "http_status": item.HTTPStatus, "title": item.Title,
 			"summary": textLimit(item.Summary, perEvidence), "error": textLimit(item.Error, perEvidence),
 		})
 	}
@@ -463,7 +484,7 @@ func groundedCriticSchema() state.JSONSchema {
 					"properties": map[string]any{
 						"claim": map[string]any{"type": "string"},
 						"evidence_refs": map[string]any{
-							"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1,
+							"type": "array", "items": map[string]any{"type": "string", "pattern": `^E[0-9]+$`}, "minItems": 1,
 						},
 					},
 					"required": []string{"claim", "evidence_refs"}, "additionalProperties": false,
@@ -488,26 +509,32 @@ func genericVerification(request VerificationRequest) VerificationResult {
 		}
 		return VerificationResult{Status: VerificationStatusPassed, Summary: "explicit no-op verification accepted the non-empty analysis result."}
 	}
+	// An unavailable source is useful audit history, but it does not invalidate
+	// independent successful sources. Other tool failures remain blocking because
+	// they may represent an incomplete test, write, or side effect.
+	unavailableSources := make([]plancap.Evidence, 0)
 	for _, item := range request.Evidence {
-		if strings.EqualFold(item.Status, "failed") || item.Error != "" || !validHTTPStatus(item.HTTPStatus) {
-			summary := item.Error
-			if summary == "" {
-				summary = item.Summary
-			}
-			if summary == "" && item.HTTPStatus != 0 {
-				summary = fmt.Sprintf("HTTP status %d", item.HTTPStatus)
-			}
-			if summary != "" {
-				return VerificationResult{Status: VerificationStatusRetry, Summary: "tool evidence contains a failure: " + limitEvidenceText(summary), Retryable: true}
-			}
+		if !failedEvidence(item) {
+			continue
 		}
+		if sourceRetrievalEvidence(item) {
+			unavailableSources = append(unavailableSources, item)
+			continue
+		}
+		return failedEvidenceResult(item)
 	}
-	validEvidence := successfulEvidence(request.Evidence)
+	validEvidence := verificationEvidence(request.Evidence)
 	if minimum := intConfig(request.Config, "minimum_evidence"); minimum > 0 && len(validEvidence) < minimum {
-		return VerificationResult{Status: VerificationStatusRetry, Summary: fmt.Sprintf("verification requires at least %d successful evidence item(s)", minimum), Retryable: true}
+		if len(unavailableSources) > 0 {
+			return failedEvidenceResult(unavailableSources[0])
+		}
+		return VerificationResult{Status: VerificationStatusRetry, Summary: fmt.Sprintf("verification requires at least %d claim-supporting evidence item(s)", minimum), Retryable: true}
 	}
 	if len(validEvidence) == 0 {
-		return VerificationResult{Status: VerificationStatusRetry, Summary: "no tool evidence was recorded", Retryable: true}
+		if len(unavailableSources) > 0 {
+			return failedEvidenceResult(unavailableSources[0])
+		}
+		return VerificationResult{Status: VerificationStatusRetry, Summary: "no claim-supporting tool evidence was recorded; search results and clock metadata are audit context only", Retryable: true}
 	}
 	if minimum := intConfig(request.Config, "minimum_evidence"); minimum > 1 {
 		urlEvidence := evidenceWithURLs(validEvidence)
@@ -525,7 +552,41 @@ func genericVerification(request VerificationRequest) VerificationResult {
 	if requiresTest && !hasTestEvidence(request.Evidence) {
 		return VerificationResult{Status: VerificationStatusRetry, Summary: "acceptance criteria require a successful test or verification result", Retryable: true}
 	}
-	return VerificationResult{Status: VerificationStatusPassed, Summary: "deliverable is supported by successful tool evidence."}
+	summary := "deliverable is supported by successful tool evidence."
+	if len(unavailableSources) > 0 {
+		summary = fmt.Sprintf("%s %d unavailable source attempt(s) retained for audit.", summary, len(unavailableSources))
+	}
+	return VerificationResult{Status: VerificationStatusPassed, Summary: summary}
+}
+
+func failedEvidence(item plancap.Evidence) bool {
+	return strings.EqualFold(strings.TrimSpace(item.Status), "failed") || item.Error != "" || !validHTTPStatus(item.HTTPStatus)
+}
+
+func sourceRetrievalEvidence(item plancap.Evidence) bool {
+	if strings.EqualFold(strings.TrimSpace(item.SourceType), "web") {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(item.ToolID)) {
+	case "web_fetch", "web_search":
+		return true
+	default:
+		return false
+	}
+}
+
+func failedEvidenceResult(item plancap.Evidence) VerificationResult {
+	summary := item.Error
+	if summary == "" {
+		summary = item.Summary
+	}
+	if summary == "" && item.HTTPStatus != 0 {
+		summary = fmt.Sprintf("HTTP status %d", item.HTTPStatus)
+	}
+	if summary == "" {
+		summary = "unknown tool failure"
+	}
+	return VerificationResult{Status: VerificationStatusRetry, Summary: "tool evidence contains a failure: " + limitEvidenceText(summary), Retryable: true}
 }
 
 func collectEvidence(messages []llms.MessageContent) []plancap.Evidence {
@@ -626,6 +687,30 @@ func successfulEvidence(evidence []plancap.Evidence) []plancap.Evidence {
 	return result
 }
 
+func verificationEvidence(evidence []plancap.Evidence) []plancap.Evidence {
+	result := make([]plancap.Evidence, 0, len(evidence))
+	for _, item := range evidence {
+		if evidenceSupportsVerification(item) {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
+func evidenceSupportsVerification(item plancap.Evidence) bool {
+	if !evidenceIsSuccessful(item) || strings.TrimSpace(item.Summary) == "" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(item.ToolID)) {
+	case "web_search", "current_time":
+		return false
+	case "web_fetch":
+		return strings.TrimSpace(item.URL) != "" && item.HTTPStatus >= 200 && item.HTTPStatus < 300
+	default:
+		return true
+	}
+}
+
 func evidenceWithURLs(evidence []plancap.Evidence) []plancap.Evidence {
 	result := make([]plancap.Evidence, 0, len(evidence))
 	for _, item := range evidence {
@@ -639,20 +724,28 @@ func evidenceWithURLs(evidence []plancap.Evidence) []plancap.Evidence {
 func uniqueEvidenceURLs(evidence []plancap.Evidence) int {
 	seen := make(map[string]struct{}, len(evidence))
 	for _, item := range evidence {
-		value := strings.TrimSpace(item.URL)
+		value := canonicalEvidenceURL(item.URL)
 		if value == "" {
 			continue
-		}
-		if parsed, err := url.Parse(value); err == nil {
-			parsed.Scheme = strings.ToLower(parsed.Scheme)
-			parsed.Host = strings.ToLower(parsed.Host)
-			parsed.Path = strings.TrimRight(parsed.Path, "/")
-			parsed.Fragment = ""
-			value = parsed.String()
 		}
 		seen[value] = struct{}{}
 	}
 	return len(seen)
+}
+
+func canonicalEvidenceURL(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if parsed, err := url.Parse(value); err == nil {
+		parsed.Scheme = strings.ToLower(parsed.Scheme)
+		parsed.Host = strings.ToLower(parsed.Host)
+		parsed.Path = strings.TrimRight(parsed.Path, "/")
+		parsed.Fragment = ""
+		value = parsed.String()
+	}
+	return value
 }
 
 func executionCounts(messages []llms.MessageContent) (int, int) {
@@ -705,8 +798,16 @@ func mergeEvidenceLimit(existing, incoming []plancap.Evidence, limit int) []plan
 	result := append([]plancap.Evidence(nil), existing...)
 	for _, item := range incoming {
 		duplicate := false
-		for _, previous := range result {
+		canonicalURL := canonicalEvidenceURL(item.URL)
+		for index, previous := range result {
 			if item.ToolCallID != "" && previous.ToolCallID == item.ToolCallID {
+				duplicate = true
+				break
+			}
+			if canonicalURL != "" && canonicalEvidenceURL(previous.URL) == canonicalURL {
+				if !evidenceIsSuccessful(previous) || evidenceIsSuccessful(item) {
+					result[index] = item
+				}
 				duplicate = true
 				break
 			}

@@ -112,7 +112,9 @@ func (s *Server) handleResumeRun(c *gin.Context) {
 	if !ok {
 		return
 	}
-	ctx, cancel := deriveRunContextFromBase(c.Request.Context(), session.baseContext)
+	// A resumed Run belongs to the runtime Session, not to the HTTP connection
+	// that submitted the command. The Session context still stops it on shutdown.
+	ctx, cancel := deriveRunContextFromBase(context.Background(), session.baseContext)
 	defer cancel()
 
 	run, finalState, err := session.runner.Resume(ctx, runID, input)
@@ -142,7 +144,9 @@ func (s *Server) handleResolveEffect(c *gin.Context) {
 	if !ok {
 		return
 	}
-	ctx, cancel := deriveRunContextFromBase(c.Request.Context(), session.baseContext)
+	// Effect resolution may continue the Run, so it must survive a disconnected
+	// control request just like an ordinary resume.
+	ctx, cancel := deriveRunContextFromBase(context.Background(), session.baseContext)
 	defer cancel()
 	result, err := session.runner.ResolveEffect(ctx, runID, request, input)
 	if err != nil {

@@ -18,7 +18,7 @@ export function userInputPromptFromInterrupt(
   if (!interrupt?.run_id || !interrupt.checkpoint_id || !interrupt.node_id || !definition) return null;
   if (interrupt.run_id !== run.run_id) return null;
   const node = definition.nodes.find((item) => item.id === interrupt.node_id);
-  if (node?.type !== "user_input") return null;
+  if (node?.type !== "user_input" && node?.type !== "plan_clarification") return null;
   const statePath = node.state?.pending_input?.path.trim() ?? "";
   if (!parseStatePath(statePath)) return null;
   return {

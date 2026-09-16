@@ -43,7 +43,7 @@ Never put a state path in `config`. Paths in `state` can be inspected and valida
 
 ## Model and tool loops
 
-An `llm_turn` appends a model response to a bound conversation. If the response contains tool calls, a conditional edge
+An `llm_turn` appends a model response to a bound conversation. By default, when it is invoked after exhausting the configured tool-iteration budget, it disables tools and requires the model to turn the evidence already collected into a final answer. If an earlier response contains tool calls, a conditional edge
 can route to `tool_execution`. That node runs the selected tools and appends their results to the same conversation. A
 second conditional edge routes back to `llm_turn` until the conversation has a final answer.
 

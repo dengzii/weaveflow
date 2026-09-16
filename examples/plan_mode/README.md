@@ -2,7 +2,7 @@
 
 This example builds one reusable Plan graph and configures its prompts, tools, permissions, budgets, approval policy, deterministic verifier, and optional source-grounded Critic through a `TaskProfile`. Profiles and verifiers are registered through `ProfileRegistry` and `VerifierRegistry`, so a new task family can extend the example without adding another graph topology. A step advances only after `plan_verifier` records a `passed` decision backed by tool evidence; a model's completion claim is not sufficient.
 
-The graph routes through generator, step executor, tool executor, finalizer, verifier, reviewer, and synthesis nodes. Synthesis is reachable only from a `finalizing` plan state; invalid status transitions go to a registered failure node instead of producing an answer. Each profile selects which tools, verifier, permissions, and limits apply at every stage.
+The graph routes through an optional clarification gate, generator, step executor, tool executor, finalizer, verifier, reviewer, and synthesis nodes. The `multi-step` profile enables clarification before planning: a materially ambiguous objective pauses the Run with a question, and resume input at `shared.request.pending_input` is folded into the normalized objective. Synthesis is reachable only from a `finalizing` plan state; invalid status transitions go to a registered failure node instead of producing an answer. Each profile selects which tools, verifier, permissions, and limits apply at every stage.
 
 ## Run
 
@@ -53,10 +53,12 @@ The CLI builds its built-in definitions through `defaultProfileRegistry()`. Add 
 The registered plan nodes are intentionally composable; state ports can be rebound without changing node code. Their configuration controls are:
 
 - `plan_generator`: `model_id`, `tool_ids`, `system_prompt`, `max_steps`, `max_replans`, `verification_strategy`, `max_tokens`, `temperature`, and `thinking`.
+- `plan_clarification`: `model_id`, `system_prompt`, `max_tokens`, `temperature`, and `thinking`. It asks at most one clarification round, preserves the original objective and answer under `shared.plan_intake`, and proceeds with explicit assumptions after the user responds.
 - `plan_step`: `system_prompt`, `max_iterations`, and `prompt_max_chars`.
 - `plan_verifier`: `verifier_id`, `config`, `max_attempts`, `minimum_evidence`, `max_evidence`, `allow_no_op`, `require_test_evidence`, and optional grounded Critic controls.
 - `plan_review`: `max_attempts`, `retry_exhausted_action` (`replan` or `finalize`), and `failure_action` (`replan` or `finalize`).
-- `plan_synthesis`: `model_id`, `system_prompt`, `require_evidence_refs`, `fail_on_incomplete`, `max_tokens`, `temperature`, and `thinking`.
+- `plan_synthesis`: `model_id`, `system_prompt`, `require_evidence_refs`, `fail_on_incomplete`, `max_tokens`, `temperature`, and `thinking`. When strict incomplete handling is enabled, synthesis writes an explicitly limited partial answer and marks the business plan failed without turning that business outcome into a failed Run.
+- `TaskProfile.ClarificationEnabled`: places `plan_clarification` before the generator for profiles that benefit from an ambiguity gate; `multi-step` enables it by default.
 - `TaskProfile.AllowedPaths`: relative workspace paths that every read, search, write, and edit tool call must remain within. An empty allowlist means the workspace root for read-only profiles; writable profiles must configure it explicitly.
 
 Use `verification_strategy` to select a registered deterministic verifier per step. Leave it empty to let the generated step choose `evidence`, `no-op`, or another handler-supported strategy. `plan_review` only advances a step after `passed`; all other outcomes remain observable and follow the configured failure action.
@@ -67,7 +69,7 @@ The Critic runs only after deterministic verification passes. It receives the ob
 
 The planner persists a canonical summary derived from the normalized steps instead of trusting a model-supplied step count. Every step can use the configured default verification strategy, and the final normalized step is always required to cover the objective, name an observable deliverable, and include the configured verifier in its acceptance criteria. Mutation objectives receive an available `edit` or `write` tool on that final step.
 
-Final synthesis numbers successful evidence as `[S1:E1]`, `[S1:E2]`, and so on. Material factual claims are prompted to cite those refs; failed evidence, non-2xx `web_fetch` responses, and duplicate source URLs are never treated as valid independent references. Persisted web evidence includes the URL, HTTP status, title, source type, and system-generated access timestamp. Synthesis appends a traceable evidence-reference footer and refuses to write an answer when `fail_on_incomplete` is enabled and any step is not verified.
+Final synthesis numbers successful evidence as `[S1:E1]`, `[S1:E2]`, and so on. Material factual claims are prompted to cite those refs; failed evidence, non-2xx `web_fetch` responses, and duplicate source URLs are never treated as valid independent references. Persisted web evidence includes the URL, HTTP status, title, source type, and system-generated access timestamp. Synthesis appends a traceable evidence-reference footer. When `fail_on_incomplete` is enabled and any step is not verified, it still writes a clearly marked partial answer but leaves the plan in `failed` status.
 
 The `analysis` profile exposes `outline` for structural inspection and limits each `read` call to 240 lines and 12 KiB of returned text. The `documentation` profile limits each `read` call to 320 lines and 16 KiB. A missing line limit gets the profile default, and an excessive requested limit is rejected.
 

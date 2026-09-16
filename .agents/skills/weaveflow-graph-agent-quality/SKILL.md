@@ -1,11 +1,21 @@
 ---
 name: weaveflow-graph-agent-quality
-description: "Evaluate a WeaveFlow Graph Agent's design from the exact persisted Run path, including decomposition, state contracts, tool and evidence strategy, loops, replanning, efficiency, and completion semantics. Use when the primary question is Agent/Graph design quality or behavior through execution. Do not use for operational Run health, recovery controls, or a static source-only review."
+description: "Evaluate a WeaveFlow Graph Agent's design from its exact persisted Run path. Use only in the WeaveFlow repository/workspace or when the user explicitly identifies WeaveFlow, a WeaveFlow server, or a WeaveFlow Graph Agent/Run. Do not use for agent, graph, workflow, tool, or evidence-quality reviews in unrelated products, nor for operational Run recovery or static source-only review."
 ---
 
 # WeaveFlow Graph Agent Quality
 
 Evaluate Agent and Graph design from persisted execution evidence. The goal is to explain whether the design produces a bounded, efficient, evidence-grounded, coherent workflow on the path that actually ran; do not collapse this into service health or terminal Run status. Use the public debug HTTP API with management authentication, unwrap successful `data` envelopes, and never print credentials or large state bodies.
+
+## Activation Scope
+
+Use this skill only when at least one condition is true:
+
+- The current workspace is positively identified as the WeaveFlow project and the task concerns a WeaveFlow Graph Agent's persisted behavior.
+- The user explicitly names WeaveFlow, a WeaveFlow debug server, or a WeaveFlow Graph Agent, Session, or Run.
+- The user explicitly invokes this skill.
+
+Do not activate it for generic agent evaluation, workflow design review, planning quality, tool strategy, evidence quality, loops, or efficiency in another product. Outside a WeaveFlow workspace, an explicit WeaveFlow product identity is required; if identity is ambiguous, do not use this skill.
 
 Read [references/agent-quality-method.md](references/agent-quality-method.md) for the full rubric and report template.
 

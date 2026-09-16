@@ -1,11 +1,21 @@
 ---
 name: weaveflow-graph-debug
-description: "Understand, inspect, compare, diagnose, control, fork, and resume WeaveFlow Graph Runs through the public debug server HTTP API, with optional read-only source inspection when API evidence leaves an observability gap or implementation behavior must be explained. Use for failed, paused, hanging, canceled, incomplete, historical, branched, retention-related, or side-effect-unknown Runs. Use weaveflow-graph-agent-quality when the primary question is Agent/Graph design quality rather than operational health or recovery."
+description: "Inspect, compare, diagnose, control, fork, and resume WeaveFlow Graph Runs through the public debug server HTTP API. Use only in the WeaveFlow repository/workspace or when the user explicitly identifies WeaveFlow, a WeaveFlow server, or a WeaveFlow Graph Run. Do not use for runs, jobs, workflows, or operational debugging in unrelated products. Use weaveflow-graph-agent-quality for WeaveFlow Agent design quality."
 ---
 
 # WeaveFlow Graph Debug
 
 Use the public HTTP API as the authority for persisted Run facts and this skill's references as the operating guide. Treat the exact immutable Graph Session plus persisted Run evidence as the primary debugging context. Bounded, read-only source inspection is permitted only under [Source-Assisted Diagnosis](#source-assisted-diagnosis); it may explain implementation behavior but cannot replace missing API evidence.
+
+## Activation Scope
+
+Use this skill only when at least one condition is true:
+
+- The current workspace is positively identified as the WeaveFlow project and the task concerns a WeaveFlow Graph Run.
+- The user explicitly names WeaveFlow, a WeaveFlow debug server, or a WeaveFlow Graph, Session, Run, Checkpoint, or Artifact.
+- The user explicitly invokes this skill.
+
+Do not activate it for generic run failures, background jobs, CI runs, workflow executions, checkpoints, retries, forks, or recovery in another product. Outside a WeaveFlow workspace, an explicit WeaveFlow product identity is required; if identity is ambiguous, do not use this skill.
 
 Read [references/debugging.md](references/debugging.md) for context reconstruction and triage, and [references/server-api.md](references/server-api.md) before making requests.
 

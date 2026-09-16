@@ -12,6 +12,7 @@ func RegisterNodeTypes(target *registry.Registry) error {
 		return fmt.Errorf("registry is nil")
 	}
 	definitions := []registry.NodeTypeDefinition{
+		ClarificationNodeTypeDefinition(),
 		GeneratorNodeTypeDefinition(),
 		StepNodeTypeDefinition(),
 		VerifierNodeTypeDefinition(),

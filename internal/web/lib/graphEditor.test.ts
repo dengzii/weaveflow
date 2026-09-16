@@ -253,6 +253,37 @@ describe("graph editor defaults", () => {
     expect(pendingUserInputState("scopes.__proto__.value", "unsafe")).toEqual({});
   });
 
+  test("recognizes plan clarification interrupts as resumable text input", () => {
+    const definition: GraphDefinition = {
+      version: "1.0",
+      state_modules: [{ name: "weaveflow.protocols", version: "1" }],
+      nodes: [{
+        id: "clarify",
+        type: "plan_clarification",
+        state: {
+          objective: { path: "shared.request.input" },
+          pending_input: { path: "shared.request.pending_input" },
+        },
+      }],
+    };
+    const prompt = userInputPromptFromInterrupt({
+      run_id: "run-clarify",
+      checkpoint_id: "checkpoint-clarify",
+      node_id: "clarify",
+      message: "Which market should the research cover?",
+    }, definition, {
+      run_id: "run-clarify",
+      status: "paused",
+    });
+    expect(prompt).toEqual({
+      runID: "run-clarify",
+      checkpointID: "checkpoint-clarify",
+      nodeID: "clarify",
+      statePath: "shared.request.pending_input",
+      message: "Which market should the research cover?",
+    });
+  });
+
   test("blocks user input without a pending input binding", () => {
     const userInput: NodeTypeSchema = {
       type: "user_input",
