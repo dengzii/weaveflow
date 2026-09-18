@@ -61,17 +61,65 @@ func (o *LLM) Name() string {
 }
 
 func (o *LLM) Generate(ctx context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {
+	effectiveModel := request.Model
+	if effectiveModel == "" {
+		effectiveModel = o.model
+	}
+	request.Stream = normalizeModelStream(effectiveModel, request.Stream)
+
+	var response *llms.ModelResponse
+	var err error
 	switch request.Mode {
 	case "", llms.ModelModeChat:
 		if o.apiFormat == APIFormatResponses {
-			return o.generateResponse(ctx, request)
+			response, err = o.generateResponse(ctx, request)
+		} else {
+			response, err = o.generateChat(ctx, request)
 		}
-		return o.generateChat(ctx, request)
 	case llms.ModelModeCompletion:
-		return o.generateCompletion(ctx, request)
+		response, err = o.generateCompletion(ctx, request)
 	default:
 		return nil, fmt.Errorf("openai model request mode %q is unsupported", request.Mode)
 	}
+	if err != nil {
+		return response, err
+	}
+	normalizeModelResponse(effectiveModel, response)
+	return response, nil
+}
+
+func normalizeModelResponse(model string, response *llms.ModelResponse) {
+	if response == nil || (!isRWKVModel(model) && !isRWKVModel(response.Model)) {
+		return
+	}
+	// RWKV OpenAI-compatible endpoints may prefix generated content with a
+	// spurious ">" token. Remove it before exposing the provider response.
+	for _, choice := range response.Choices {
+		if choice != nil {
+			choice.Content = strings.TrimPrefix(choice.Content, ">")
+		}
+	}
+}
+
+func normalizeModelStream(model string, stream llms.ModelStreamHandler) llms.ModelStreamHandler {
+	if stream == nil || !isRWKVModel(model) {
+		return stream
+	}
+	firstContent := true
+	return func(ctx context.Context, event llms.ModelStreamEvent) error {
+		if event.Type == llms.ModelStreamContent && firstContent {
+			firstContent = false
+			event.Text = strings.TrimPrefix(event.Text, ">")
+			if event.Text == "" {
+				return nil
+			}
+		}
+		return stream(ctx, event)
+	}
+}
+
+func isRWKVModel(model string) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(model)), "rwkv")
 }
 
 func (o *LLM) generateCompletion(ctx context.Context, request llms.ModelRequest) (*llms.ModelResponse, error) {

@@ -192,3 +192,86 @@ func TestGenerateContentSendsReasoningEffort(t *testing.T) {
 		t.Fatalf("response = %#v", response)
 	}
 }
+
+func TestGenerateNormalizesRWKVResponse(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id":"chatcmpl-rwkv",
+			"object":"chat.completion",
+			"model":"rwkv7-test",
+			"choices":[
+				{"index":0,"message":{"role":"assistant","content":">{\"answer\":7}"},"finish_reason":"stop"},
+				{"index":1,"message":{"role":"assistant","content":">second"},"finish_reason":"stop"}
+			],
+			"usage":{"prompt_tokens":3,"completion_tokens":2,"total_tokens":5}
+		}`))
+	}))
+	defer server.Close()
+
+	model, err := New(
+		WithToken("test-token"),
+		WithModel("rwkv7-test"),
+		WithBaseURL(server.URL+"/v1"),
+		WithHTTPClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	response, err := model.Generate(context.Background(), llms.ModelRequest{
+		ModelID: "default",
+		Mode:    llms.ModelModeChat,
+		Messages: []llms.MessageContent{
+			llms.TextParts(llms.ChatMessageTypeHuman, "question"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("generate content: %v", err)
+	}
+	if response == nil || len(response.Choices) != 2 {
+		t.Fatalf("response = %#v", response)
+	}
+	if response.Choices[0].Content != `{"answer":7}` || response.Choices[1].Content != "second" {
+		t.Fatalf("choices = %#v", response.Choices)
+	}
+}
+
+func TestNormalizeModelResponsePreservesOtherModels(t *testing.T) {
+	t.Parallel()
+
+	response := &llms.ModelResponse{
+		Model:   "gpt-test",
+		Choices: []*llms.ModelChoice{{Content: ">quoted content"}},
+	}
+	normalizeModelResponse("gpt-test", response)
+	if response.Choices[0].Content != ">quoted content" {
+		t.Fatalf("content = %q, want preserved Markdown quote", response.Choices[0].Content)
+	}
+}
+
+func TestNormalizeRWKVModelStream(t *testing.T) {
+	t.Parallel()
+
+	var events []llms.ModelStreamEvent
+	stream := normalizeModelStream("rwkv7-test", func(_ context.Context, event llms.ModelStreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	for _, event := range []llms.ModelStreamEvent{
+		{Type: llms.ModelStreamReasoning, Text: "thinking"},
+		{Type: llms.ModelStreamContent, Text: ">"},
+		{Type: llms.ModelStreamContent, Text: `{"answer":7}`},
+	} {
+		if err := stream(context.Background(), event); err != nil {
+			t.Fatalf("stream event: %v", err)
+		}
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %#v, want reasoning and normalized content", events)
+	}
+	if events[0].Text != "thinking" || events[1].Text != `{"answer":7}` {
+		t.Fatalf("events = %#v", events)
+	}
+}
