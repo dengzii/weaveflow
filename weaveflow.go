@@ -261,6 +261,17 @@ func WithArtifactStore(store runtime.ArtifactStore) RunnerOption {
 	})
 }
 
+func WithTransactionStore(store runtime.TransactionStore) RunnerOption {
+	return runnerOptionFunc(func(config *runnerConfig) error {
+		if store == nil {
+			return fmt.Errorf("transaction store is required")
+		}
+		config.transactionStore = store
+		config.transactionStoreOverridden = true
+		return nil
+	})
+}
+
 func WithStateCodec(codec state.Codec) RunnerOption {
 	return runnerOptionFunc(func(config *runnerConfig) error {
 		if codec == nil {
@@ -317,30 +328,32 @@ func WithNow(now func() time.Time) RunnerOption {
 }
 
 type runnerConfig struct {
-	executionStore            runtime.ExecutionStore
-	checkpointStore           runtime.CheckpointStore
-	eventSink                 runtime.EventSink
-	artifactStore             runtime.ArtifactStore
-	codec                     state.Codec
-	graphID                   string
-	graphVersion              string
-	breakpoints               []runtime.Breakpoint
-	contractValidation        core.ContractValidationMode
-	contractPolicy            runtime.ContractPolicy
-	transactionStore          runtime.TransactionStore
-	closer                    io.Closer
-	now                       func() time.Time
-	executionStoreOverridden  bool
-	checkpointStoreOverridden bool
-	eventSinkOverridden       bool
-	artifactStoreOverridden   bool
+	executionStore             runtime.ExecutionStore
+	checkpointStore            runtime.CheckpointStore
+	eventSink                  runtime.EventSink
+	artifactStore              runtime.ArtifactStore
+	codec                      state.Codec
+	graphID                    string
+	graphVersion               string
+	breakpoints                []runtime.Breakpoint
+	contractValidation         core.ContractValidationMode
+	contractPolicy             runtime.ContractPolicy
+	transactionStore           runtime.TransactionStore
+	closer                     io.Closer
+	now                        func() time.Time
+	executionStoreOverridden   bool
+	checkpointStoreOverridden  bool
+	eventSinkOverridden        bool
+	artifactStoreOverridden    bool
+	transactionStoreOverridden bool
 }
 
 func (config *runnerConfig) storageOverridden() bool {
 	return config.executionStoreOverridden ||
 		config.checkpointStoreOverridden ||
 		config.eventSinkOverridden ||
-		config.artifactStoreOverridden
+		config.artifactStoreOverridden ||
+		config.transactionStoreOverridden
 }
 
 func defaultRunnerConfig() runnerConfig {

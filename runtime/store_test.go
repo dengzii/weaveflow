@@ -142,6 +142,7 @@ func TestNoopStoresImplementStableEmptyContracts(t *testing.T) {
 	if steps, err := execution.ListSteps(ctx, "run"); err != nil || steps == nil || len(steps) != 0 {
 		t.Fatalf("ListSteps() = %#v, %v", steps, err)
 	}
+	assertNoopRunDeletion(t, execution)
 
 	checkpoints := NewNoopCheckpointStore()
 	if err := checkpoints.Save(ctx, CheckpointRecord{}, nil); err != nil {
@@ -153,6 +154,7 @@ func TestNoopStoresImplementStableEmptyContracts(t *testing.T) {
 	if records, err := checkpoints.List(ctx, "run"); err != nil || records == nil || len(records) != 0 {
 		t.Fatalf("checkpoint List() = %#v, %v", records, err)
 	}
+	assertNoopRunDeletion(t, checkpoints)
 
 	artifacts := NewNoopArtifactStore()
 	stage, err := artifacts.Stage(ctx, "transaction", Artifact{})
@@ -171,21 +173,31 @@ func TestNoopStoresImplementStableEmptyContracts(t *testing.T) {
 	if refs, err := artifacts.List(ctx, "run"); err != nil || refs == nil || len(refs) != 0 {
 		t.Fatalf("artifact List() = %#v, %v", refs, err)
 	}
-	if err := artifacts.DeleteRun(ctx, "run-1"); err != nil {
+	assertNoopRunDeletion(t, artifacts)
+	assertNoopRunDeletion(t, NoopEventSink{})
+}
+
+func assertNoopRunDeletion(t *testing.T, store interface {
+	RunDeleter
+	RunDeletionFencer
+}) {
+	t.Helper()
+	ctx := context.Background()
+	if err := store.DeleteRun(ctx, "run-1"); err != nil {
 		t.Fatalf("DeleteRun() error = %v", err)
 	}
-	if err := artifacts.FenceRunDeletion(ctx, "run-1", "deletion-1"); err != nil {
+	if err := store.FenceRunDeletion(ctx, "run-1", "deletion-1"); err != nil {
 		t.Fatalf("FenceRunDeletion() error = %v", err)
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
-	if err := artifacts.DeleteRun(canceled, "run-1"); !errors.Is(err, context.Canceled) {
+	if err := store.DeleteRun(canceled, "run-1"); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled DeleteRun() error = %v", err)
 	}
-	if err := artifacts.FenceRunDeletion(ctx, "bad/run", "deletion-1"); err == nil {
+	if err := store.FenceRunDeletion(ctx, "bad/run", "deletion-1"); err == nil {
 		t.Fatal("FenceRunDeletion() accepted invalid run ID")
 	}
-	if err := artifacts.FenceRunDeletion(ctx, "run-1", "bad/deletion"); err == nil {
+	if err := store.FenceRunDeletion(ctx, "run-1", "bad/deletion"); err == nil {
 		t.Fatal("FenceRunDeletion() accepted invalid deletion ID")
 	}
 }

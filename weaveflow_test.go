@@ -159,3 +159,65 @@ func TestNewRunnerRequiresDeletionCapableStores(t *testing.T) {
 		})
 	}
 }
+
+func TestNewRunnerUsesExplicitTransactionStore(t *testing.T) {
+	t.Parallel()
+
+	workflow := NewGraph()
+	input := node.NewUserInputNode(node.WithID("start"))
+	if err := workflow.AddNode(input); err != nil {
+		t.Fatalf("add node: %v", err)
+	}
+	if err := workflow.SetEntryPoint("start"); err != nil {
+		t.Fatalf("set entry: %v", err)
+	}
+	if err := workflow.AddEdge("start", EndNodeRef); err != nil {
+		t.Fatalf("add edge: %v", err)
+	}
+
+	store := runtime.NewMemoryRuntimeStore()
+	executionStore := struct {
+		runtime.ExecutionStore
+		runtime.RunDeleter
+		runtime.RunDeletionFencer
+	}{ExecutionStore: store, RunDeleter: store, RunDeletionFencer: store}
+	runner, err := NewRunner(
+		workflow,
+		WithExecutionStore(executionStore),
+		WithCheckpointStore(store),
+		WithEventSink(runtime.NoopEventSink{}),
+		WithTransactionStore(store),
+	)
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+	if runner.TransactionStore() != store {
+		t.Fatalf("TransactionStore() = %T, want %T", runner.TransactionStore(), store)
+	}
+	run, _, err := runner.Start(context.Background(), state.FromShared(map[string]any{
+		"request": map[string]any{"input": "ready"},
+	}))
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if run.Status != runtime.RunStatusCompleted {
+		t.Fatalf("run status = %q, want completed", run.Status)
+	}
+}
+
+func TestWithTransactionStoreRejectsNil(t *testing.T) {
+	t.Parallel()
+
+	if _, err := NewRunner(NewGraph(), WithTransactionStore(nil)); err == nil || !strings.Contains(err.Error(), "transaction store is required") {
+		t.Fatalf("NewRunner() error = %v, want transaction store requirement", err)
+	}
+}
+
+func TestNewLocalRunnerRejectsTransactionStoreOverride(t *testing.T) {
+	t.Parallel()
+
+	runner, err := NewLocalRunner(NewGraph(), t.TempDir(), WithTransactionStore(runtime.NewMemoryRuntimeStore()))
+	if runner != nil || err == nil || !strings.Contains(err.Error(), "local runner storage cannot be overridden") {
+		t.Fatalf("NewLocalRunner() = %#v, %v, want storage override rejection", runner, err)
+	}
+}

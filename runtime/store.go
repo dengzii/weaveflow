@@ -174,6 +174,10 @@ type NoopExecutionStore struct{}
 
 func NewNoopExecutionStore() *NoopExecutionStore { return &NoopExecutionStore{} }
 
+var _ ExecutionStore = (*NoopExecutionStore)(nil)
+var _ RunDeletionExecutionStore = (*NoopExecutionStore)(nil)
+var _ RunDeletionFencer = (*NoopExecutionStore)(nil)
+
 func (*NoopExecutionStore) CreateRun(context.Context, RunRecord) error { return nil }
 func (*NoopExecutionStore) CompareAndSwapRun(_ context.Context, expectedRevision uint64, run RunRecord) (RunRecord, error) {
 	run.Revision = expectedRevision + 1
@@ -193,10 +197,20 @@ func (*NoopExecutionStore) GetStep(context.Context, string) (StepRecord, error) 
 func (*NoopExecutionStore) ListSteps(context.Context, string) ([]StepRecord, error) {
 	return []StepRecord{}, nil
 }
+func (*NoopExecutionStore) DeleteRun(ctx context.Context, runID string) error {
+	return noopDeleteRun(ctx, runID)
+}
+func (*NoopExecutionStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	return noopFenceRunDeletion(ctx, runID, deletionID)
+}
 
 type NoopCheckpointStore struct{}
 
 func NewNoopCheckpointStore() *NoopCheckpointStore { return &NoopCheckpointStore{} }
+
+var _ CheckpointStore = (*NoopCheckpointStore)(nil)
+var _ RunDeleter = (*NoopCheckpointStore)(nil)
+var _ RunDeletionFencer = (*NoopCheckpointStore)(nil)
 
 func (*NoopCheckpointStore) Save(context.Context, CheckpointRecord, []byte) error { return nil }
 func (*NoopCheckpointStore) Load(context.Context, string) (CheckpointRecord, []byte, error) {
@@ -204,6 +218,12 @@ func (*NoopCheckpointStore) Load(context.Context, string) (CheckpointRecord, []b
 }
 func (*NoopCheckpointStore) List(context.Context, string) ([]CheckpointRecord, error) {
 	return []CheckpointRecord{}, nil
+}
+func (*NoopCheckpointStore) DeleteRun(ctx context.Context, runID string) error {
+	return noopDeleteRun(ctx, runID)
+}
+func (*NoopCheckpointStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	return noopFenceRunDeletion(ctx, runID, deletionID)
 }
 
 type NoopArtifactStore struct{}
@@ -226,16 +246,21 @@ func (*NoopArtifactStore) List(context.Context, string) ([]state.ArtifactRef, er
 	return []state.ArtifactRef{}, nil
 }
 func (*NoopArtifactStore) DeleteRun(ctx context.Context, runID string) error {
+	return noopDeleteRun(ctx, runID)
+}
+func (*NoopArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	return noopFenceRunDeletion(ctx, runID, deletionID)
+}
+
+func noopDeleteRun(ctx context.Context, runID string) error {
 	if err := fileStoreContextErr(ctx); err != nil {
 		return err
 	}
 	return validateRunnerStorageID("run ID", runID)
 }
-func (*NoopArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
-	if err := fileStoreContextErr(ctx); err != nil {
-		return err
-	}
-	if err := validateRunnerStorageID("run ID", runID); err != nil {
+
+func noopFenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	if err := noopDeleteRun(ctx, runID); err != nil {
 		return err
 	}
 	return validateRunnerStorageID("deletion ID", deletionID)
@@ -243,5 +268,15 @@ func (*NoopArtifactStore) FenceRunDeletion(ctx context.Context, runID, deletionI
 
 type NoopEventSink struct{}
 
+var _ EventSink = NoopEventSink{}
+var _ RunDeleter = NoopEventSink{}
+var _ RunDeletionFencer = NoopEventSink{}
+
 func (NoopEventSink) Publish(_ context.Context, _ Event) error        { return nil }
 func (NoopEventSink) PublishBatch(_ context.Context, _ []Event) error { return nil }
+func (NoopEventSink) DeleteRun(ctx context.Context, runID string) error {
+	return noopDeleteRun(ctx, runID)
+}
+func (NoopEventSink) FenceRunDeletion(ctx context.Context, runID, deletionID string) error {
+	return noopFenceRunDeletion(ctx, runID, deletionID)
+}
