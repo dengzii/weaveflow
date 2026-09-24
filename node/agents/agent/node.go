@@ -80,9 +80,6 @@ func (node *Node) Validate() error {
 	if !validReasoningEffort(node.effectiveReasoningEffort()) {
 		return fmt.Errorf("agent node %q reasoning_effort is invalid", node.ID())
 	}
-	if node.RequireToolFinalAnswer && len(node.ToolIDs) == 0 {
-		return fmt.Errorf("agent node %q require_tool_final_answer requires at least one tool_id", node.ID())
-	}
 	if err := state.ValidateJSONSchemaDefinition(node.OutputSchema); err != nil {
 		return fmt.Errorf("agent node %q output schema: %w", node.ID(), err)
 	}
@@ -166,7 +163,10 @@ func NodeTypeDefinition() registry.NodeTypeDefinition {
 				"type": "object",
 				"properties": dsl.JSONSchema{
 					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
-					"tool_ids": dsl.JSONSchema{"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"}},
+					"tool_ids": dsl.JSONSchema{
+						"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"},
+						"description": "Optional tool ID allowlist. When empty, all tools available in the runtime context are allowed.",
+					},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",

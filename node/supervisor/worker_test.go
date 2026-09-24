@@ -40,7 +40,7 @@ func TestWorkerToolFinalAnswerConfig(t *testing.T) {
 	}
 
 	target.ToolIDs = nil
-	if err := target.Validate(); err == nil || !strings.Contains(err.Error(), "requires at least one tool_id") {
-		t.Fatalf("Validate() without tools error = %v", err)
+	if err := target.Validate(); err != nil {
+		t.Fatalf("Validate() with context tools error = %v", err)
 	}
 }

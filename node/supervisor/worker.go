@@ -81,9 +81,6 @@ func (n *WorkerNode) Validate() error {
 	if n.HistoryTurns < 0 {
 		return fmt.Errorf("supervisor worker node %q history_turns cannot be negative", n.ID())
 	}
-	if n.RequireToolFinalAnswer && len(n.ToolIDs) == 0 {
-		return fmt.Errorf("supervisor worker node %q require_tool_final_answer requires at least one tool_id", n.ID())
-	}
 	if n.SupervisorPath.Empty() || n.ConversationPath.Empty() {
 		return fmt.Errorf("supervisor worker node %q requires supervisor and conversation paths", n.ID())
 	}
@@ -130,7 +127,10 @@ func WorkerNodeTypeDefinition() registry.NodeTypeDefinition {
 					"worker_id": dsl.JSONSchema{"type": "string", "title": "Worker ID", "description": "Must match the member id configured on the Supervisor node."},
 					"role":      dsl.JSONSchema{"type": "string", "title": "Role", "description": "Short capability description added to this worker's system prompt."},
 					"model_id":  dsl.JSONSchema{"type": "string", "title": "Model ID"},
-					"tool_ids":  dsl.JSONSchema{"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"}},
+					"tool_ids": dsl.JSONSchema{
+						"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"},
+						"description": "Optional tool ID allowlist. When empty, all tools available in the runtime context are allowed.",
+					},
 					"system_prompt": dsl.JSONSchema{
 						"type": "string", "title": "System Prompt", "x-control": "textarea", "default": defaultSupervisorWorkerSystemPrompt,
 					},

@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -121,6 +122,59 @@ func TestProviderSpecificChatRequestFields(t *testing.T) {
 			}
 			test.assert(t, captured)
 		})
+	}
+}
+
+func TestOpenAIProviderUsesEnvironmentDefaultsWithCustomBaseURL(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "environment-key")
+	t.Setenv("OPENAI_MODEL", "environment-model")
+	t.Setenv("OPENAI_BASE_URL", "")
+
+	var authorization string
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		authorization = request.Header.Get("Authorization")
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{
+			"id":"chatcmpl-1",
+			"object":"chat.completion",
+			"model":"environment-model",
+			"choices":[{"index":0,"message":{"role":"assistant","content":"answer"},"finish_reason":"stop"}]
+		}`))
+	}))
+	defer server.Close()
+
+	model, err := New(
+		WithBaseURL(server.URL+"/v1"),
+		WithHTTPClient(server.Client()),
+	)
+	if err != nil {
+		t.Fatalf("new model: %v", err)
+	}
+	if model.Name() != "environment-model" {
+		t.Fatalf("model name = %q, want environment-model", model.Name())
+	}
+	if _, err := model.Generate(context.Background(), llms.ModelRequest{
+		Mode:     llms.ModelModeChat,
+		Messages: []llms.MessageContent{llms.TextParts(llms.ChatMessageTypeHuman, "question")},
+	}); err != nil {
+		t.Fatalf("generate content: %v", err)
+	}
+	if authorization != "Bearer environment-key" {
+		t.Fatalf("Authorization = %q, want environment key", authorization)
+	}
+}
+
+func TestOtherProvidersDoNotUseOpenAIEnvironmentKey(t *testing.T) {
+	t.Setenv("OPENAI_API_KEY", "openai-environment-key")
+	t.Setenv("OPENAI_MODEL", "")
+	t.Setenv("OPENAI_BASE_URL", "")
+
+	_, err := New(
+		WithProvider(ProviderDeepSeek),
+		WithBaseURL("https://api.deepseek.example/v1"),
+	)
+	if !errors.Is(err, ErrMissingToken) {
+		t.Fatalf("New() error = %v, want ErrMissingToken", err)
 	}
 }
 

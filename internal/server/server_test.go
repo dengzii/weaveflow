@@ -427,6 +427,11 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
+	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Errorf("Server.Close() error = %v", err)
+		}
+	})
 	engine := gin.New()
 	srv.RegisterRoutes(engine.Group(""))
 
@@ -442,16 +447,14 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 				"enabled": true,
 				"provider": "openai",
 				"model": "gpt-test",
-				"base_url": "http://127.0.0.1:9999/v1",
-				"credential_value": "test-key"
+				"base_url": "http://127.0.0.1:9999/v1"
 			},
 			{
 				"id": "fast",
 				"enabled": true,
 				"provider": "openai",
 				"model": "gpt-fast",
-				"base_url": "http://127.0.0.1:9999/v1",
-				"credential_value": "test-key"
+				"base_url": "http://127.0.0.1:9999/v1"
 			}
 		]
 	}`
@@ -507,8 +510,7 @@ func TestGraphUploadUpdatesSessionRuntimeSettings(t *testing.T) {
 	}
 
 	t.Setenv("OPENAI_API_KEY", "rotated-key")
-	rotatedSettings := strings.ReplaceAll(settings, "test-key", "rotated-key")
-	refreshed := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", rotatedSettings))
+	refreshed := putGraphForHashTest(t, engine, graphUploadBodyWithSettings("settings-graph", "v1", "settings", settings))
 	if refreshed.Graph.GraphSessionID != uploaded.Graph.GraphSessionID {
 		t.Fatalf("secret rotation created session %q, want %q", refreshed.Graph.GraphSessionID, uploaded.Graph.GraphSessionID)
 	}
@@ -1956,7 +1958,7 @@ func TestPauseRunBlocksUntilPausedStatusAndPausedRunCanBeCanceled(t *testing.T) 
 	runID := run.RunID
 
 	pauseDone := serveHTTPAsync(engine, http.MethodPost, "/graphs/graph/runs/"+runID+"/pause", "")
-	waitForPauseRequested(t, srv.Runner(), runID)
+	waitForPauseRequested(t, srv.Runner(), runID, pauseDone)
 	releaseRun()
 
 	pauseResponse := waitForHTTPResponse(t, pauseDone, "pause")
@@ -2744,7 +2746,7 @@ func assertInitialStateRequirements(t *testing.T, requirements core.InitialState
 
 func serveHTTPAsync(engine *gin.Engine, method string, path string, body string) <-chan *httptest.ResponseRecorder {
 	done := make(chan *httptest.ResponseRecorder, 1)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), testAsyncWaitTimeout)
 	go func() {
 		defer cancel()
 		done <- serveHTTPWithContext(ctx, engine, method, path, body)
@@ -2882,7 +2884,7 @@ func waitForSignal(t *testing.T, signal <-chan struct{}, name string) {
 	}
 }
 
-func waitForPauseRequested(t *testing.T, runner *runtime.GraphRunner, runID string) {
+func waitForPauseRequested(t *testing.T, runner *runtime.GraphRunner, runID string, requestDone <-chan *httptest.ResponseRecorder) {
 	t.Helper()
 	deadline := time.NewTimer(testAsyncWaitTimeout)
 	defer deadline.Stop()
@@ -2897,6 +2899,8 @@ func waitForPauseRequested(t *testing.T, runner *runtime.GraphRunner, runID stri
 			return
 		}
 		select {
+		case response := <-requestDone:
+			t.Fatalf("pause request returned before run %q recorded the request: status=%d body=%s", runID, response.Code, response.Body.String())
 		case <-deadline.C:
 			t.Fatalf("timed out waiting for run %q pause request", runID)
 		case <-ticker.C:

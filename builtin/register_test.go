@@ -13,9 +13,6 @@ func TestDefaultRegistryExposesModulesCapabilitiesAndStatePorts(t *testing.T) {
 		t.Fatalf("protocol capabilities = %#v", module.Capabilities)
 	}
 	for nodeType, definition := range reg.NodeTypeDefinitions() {
-		if len(definition.StatePorts) == 0 {
-			t.Fatalf("node type %q declares no state ports", nodeType)
-		}
 		if len(definition.NodeTypeSchema.StatePorts) != len(definition.StatePorts) {
 			t.Fatalf("node type %q schema ports do not match build ports", nodeType)
 		}

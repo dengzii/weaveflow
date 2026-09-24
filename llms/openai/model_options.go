@@ -79,8 +79,8 @@ type ResponseFormatJSONSchemaProperty = openaiclient.ResponseFormatJSONSchemaPro
 // ResponseFormatJSON is the JSON response format.
 var ResponseFormatJSON = &ResponseFormat{Type: "json_object"} //nolint:gochecknoglobals
 
-// WithToken passes the OpenAI API token to the client. If not set, the token
-// is read from OPENAI_API_KEY only when the default OpenAI endpoint is used.
+// WithToken passes the OpenAI API token to the client. If not set, OpenAI
+// providers read the token from OPENAI_API_KEY, including with a custom base URL.
 func WithToken(token string) Option {
 	return func(opts *clientOptions) {
 		opts.token = token

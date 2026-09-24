@@ -284,7 +284,13 @@ func normalizeFinalOutput(content string, schema state.JSONSchema, outputJSON, c
 
 func (runtime loopRunner) selectTools(available map[string]core.Tool) (map[string]core.Tool, error) {
 	if len(runtime.config.ToolIDs) == 0 {
-		return nil, nil
+		selected := core.FilterTools(available, nil)
+		for toolID, tool := range selected {
+			if runtime.isSelfTool(toolID, tool) {
+				delete(selected, toolID)
+			}
+		}
+		return selected, nil
 	}
 	selected := make(map[string]core.Tool, len(runtime.config.ToolIDs))
 	for _, configuredID := range runtime.config.ToolIDs {
@@ -296,7 +302,7 @@ func (runtime loopRunner) selectTools(available map[string]core.Tool) (map[strin
 			}
 			continue
 		}
-		if runtime.identity.ToolName != "" && (strings.EqualFold(toolID, runtime.identity.ToolName) || strings.EqualFold(tool.Name(), runtime.identity.ToolName)) {
+		if runtime.isSelfTool(toolID, tool) {
 			return nil, fmt.Errorf("agent tool %q cannot call itself", runtime.identity.ToolName)
 		}
 		selected[toolID] = tool
@@ -305,6 +311,11 @@ func (runtime loopRunner) selectTools(available map[string]core.Tool) (map[strin
 		return nil, nil
 	}
 	return selected, nil
+}
+
+func (runtime loopRunner) isSelfTool(toolID string, tool core.Tool) bool {
+	return runtime.identity.ToolName != "" &&
+		(strings.EqualFold(toolID, runtime.identity.ToolName) || strings.EqualFold(tool.Name(), runtime.identity.ToolName))
 }
 
 func (runtime loopRunner) executeToolCalls(ctx core.Context, conversation *conversationcap.View, toolCalls []llms.ToolCall, iteration int) error {

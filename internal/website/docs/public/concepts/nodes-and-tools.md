@@ -47,8 +47,9 @@ An `llm_turn` appends a model response to a bound conversation. By default, when
 can route to `tool_execution`. That node runs the selected tools and appends their results to the same conversation. A
 second conditional edge routes back to `llm_turn` until the conversation has a final answer.
 
-Set `tool_ids` to the smallest allowlist needed by a node. Tool execution can be parallel for independent calls, but
-parallel calls must still obey their state contracts and side-effect policy.
+When `tool_ids` is omitted or empty, LLM and Agent nodes may use every tool available in the runtime context. Set
+`tool_ids` to the smallest explicit allowlist needed when a node should have narrower access. Tool execution can be
+parallel for independent calls, but parallel calls must still obey their state contracts and side-effect policy.
 
 ## State operation nodes
 

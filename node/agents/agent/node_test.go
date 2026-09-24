@@ -301,7 +301,6 @@ func TestNodeCanRequireToolFinalAnswer(t *testing.T) {
 		}}}},
 	}}
 	target := NewNode(core.WithID("required_tool_final_answer"))
-	target.ToolIDs = []string{"write", "inspect", "validate", "after"}
 	target.RequireToolFinalAnswer = true
 	write := core.NewTool(&llms.FunctionDefinition{
 		Name: "write",
@@ -353,12 +352,12 @@ func TestNodeCanRequireToolFinalAnswer(t *testing.T) {
 	}
 }
 
-func TestNodeRequireToolFinalAnswerRequiresTool(t *testing.T) {
+func TestNodeRequireToolFinalAnswerAllowsContextTools(t *testing.T) {
 	t.Parallel()
 
-	target := NewNode(core.WithID("missing_completion_tool"))
+	target := NewNode(core.WithID("context_completion_tool"))
 	target.RequireToolFinalAnswer = true
-	if err := target.Validate(); err == nil || !strings.Contains(err.Error(), "requires at least one tool_id") {
+	if err := target.Validate(); err != nil {
 		t.Fatalf("Validate() error = %v", err)
 	}
 }
@@ -548,7 +547,7 @@ func TestAgentNodePreservesToolPermissionAndApprovalGovernance(t *testing.T) {
 		})
 	}
 }
-func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
+func TestToolUsesExplicitMetadataAndAllContextTools(t *testing.T) {
 	t.Parallel()
 
 	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "research result"}}}}}
@@ -567,7 +566,8 @@ func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
 		t.Fatalf("tool function = %#v", tool.Function)
 	}
 	ctx := core.WithTools(core.WithModel(context.Background(), model), map[string]core.Tool{
-		"unconfigured": core.NewTool(&llms.FunctionDefinition{Name: "unconfigured"}, nil),
+		"research_agent": tool,
+		"available":      core.NewTool(&llms.FunctionDefinition{Name: "available"}, nil),
 	})
 	result, err := tool.Handler(ctx, toolCall("research_agent", `{"task":"research this"}`))
 	if err != nil {
@@ -576,8 +576,8 @@ func TestToolUsesExplicitMetadataAndRunsAgent(t *testing.T) {
 	if result.Content != "research result" || result.Value != "research result" {
 		t.Fatalf("result = %#v, want research result", result)
 	}
-	if len(model.requests) != 1 || len(model.requests[0].Tools) != 0 {
-		t.Fatalf("injected tools = %#v, want none", model.requests[0].Tools)
+	if len(model.requests) != 1 || len(model.requests[0].Tools) != 1 || model.requests[0].Tools[0].Function.Name != "available" {
+		t.Fatalf("injected tools = %#v, want all context tools except self", model.requests[0].Tools)
 	}
 }
 

@@ -216,6 +216,9 @@ func (model *writeRecoveryModel) Generate(_ context.Context, request llms.ModelR
 	if request.ResponseName == "grounded_plan_critique" {
 		return modelResponse(`{"passed":true,"summary":"document claim is grounded","supported_claims":[{"claim":"result.md was written","evidence_refs":["E1"]}],"unsupported_claims":[]}`), nil
 	}
+	if request.ResponseName == "evidence_grounded_plan_synthesis" {
+		return modelResponse(`{"answer_blocks":[{"text":"Verified documentation write completed.","evidence_refs":["[S1:E1]"]}]}`), nil
+	}
 	switch model.calls {
 	case 1:
 		return modelResponse(`{"summary":"write and verify","steps":[{"id":"write","title":"Write document","description":"Create result.md.","tool_ids":["write"],"deliverables":["result.md"],"acceptance_criteria":["result.md contains recovery-marker"],"verification_strategy":"content-match"}]}`), nil
@@ -225,8 +228,6 @@ func (model *writeRecoveryModel) Generate(_ context.Context, request llms.ModelR
 		}}}}}, nil
 	case 3:
 		return modelResponse("Created result.md with the recovery marker."), nil
-	case 5:
-		return modelResponse("Verified documentation write completed."), nil
 	default:
 		return modelResponse("unexpected extra model call"), nil
 	}
@@ -237,6 +238,9 @@ func (model *recoveryPlanModel) Generate(_ context.Context, request llms.ModelRe
 	if request.ResponseName == "grounded_plan_critique" {
 		return modelResponse(`{"passed":true,"summary":"analysis claim is grounded","supported_claims":[{"claim":"go.mod was inspected","evidence_refs":["E1"]}],"unsupported_claims":[]}`), nil
 	}
+	if request.ResponseName == "evidence_grounded_plan_synthesis" {
+		return modelResponse(`{"answer_blocks":[{"text":"Verified read-only analysis completed with recorded file evidence.","evidence_refs":["[S1:E1]"]}]}`), nil
+	}
 	switch model.calls {
 	case 1:
 		return modelResponse(`{"summary":"inspect the plan mode","steps":[{"id":"inspect","title":"Inspect implementation","description":"Read the plan-mode files and explain their verification flow.","tool_ids":["read"],"deliverables":["evidence-backed analysis"],"acceptance_criteria":["analysis cites an inspected file"],"verification_strategy":"no-op"}]}`), nil
@@ -246,8 +250,6 @@ func (model *recoveryPlanModel) Generate(_ context.Context, request llms.ModelRe
 		}}}}}, nil
 	case 3:
 		return modelResponse("The graph uses a verifier node and persistent runner; go.mod was inspected as read-only evidence."), nil
-	case 5:
-		return modelResponse("Verified read-only analysis completed with recorded file evidence."), nil
 	default:
 		return modelResponse("unexpected extra model call"), nil
 	}

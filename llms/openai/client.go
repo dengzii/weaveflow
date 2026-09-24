@@ -82,11 +82,7 @@ func newClient(opts ...Option) (*clientOptions, *openaiclient.Client, error) {
 }
 
 func environmentTokenAllowed(options *clientOptions) bool {
-	if options == nil || options.provider != ProviderOpenAI || options.apiType != APITypeOpenAI {
-		return false
-	}
-	baseURL := strings.TrimRight(strings.TrimSpace(options.baseURL), "/")
-	return strings.EqualFold(baseURL, defaultBaseURLForProvider(ProviderOpenAI))
+	return options != nil && options.provider == ProviderOpenAI && options.apiType == APITypeOpenAI
 }
 
 func defaultBaseURLForProvider(provider Provider) string {

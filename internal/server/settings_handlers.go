@@ -255,7 +255,7 @@ func (s *Server) resolveModelCredential(ctx context.Context, model graphModelSet
 			return value, nil
 		}
 	}
-	return "", fmt.Errorf("model %q requires a managed API key", modelID)
+	return "", fmt.Errorf("model %q requires an API key", modelID)
 }
 
 func (s *Server) isModelCredentialConfigured(model graphModelSettings) bool {
@@ -264,11 +264,7 @@ func (s *Server) isModelCredentialConfigured(model graphModelSettings) bool {
 }
 
 func processOpenAIKeyAllowed(model graphModelSettings) bool {
-	if strings.ToLower(strings.TrimSpace(model.Provider)) != string(openai.ProviderOpenAI) {
-		return false
-	}
-	baseURL := strings.TrimRight(strings.TrimSpace(model.BaseURL), "/")
-	return baseURL == "" || strings.EqualFold(baseURL, "https://api.openai.com/v1")
+	return strings.ToLower(strings.TrimSpace(model.Provider)) == string(openai.ProviderOpenAI)
 }
 
 func defaultToolPermissions() []string {

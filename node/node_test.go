@@ -242,7 +242,6 @@ func TestLLMTurnFinalizesWithoutToolsAfterMaxIterations(t *testing.T) {
 	ctx := core.WithTools(core.WithModel(context.Background(), model), availableTools)
 	target := NewLLMTurnNode(WithID("llm"))
 	target.ConversationPath = root
-	target.ToolIDs = []string{"echo"}
 
 	result, err := Execute(ctx, access.State(), target)
 	if err != nil {
@@ -296,7 +295,7 @@ func TestLLMTurnOnlyInjectsConfiguredTools(t *testing.T) {
 		toolIDs     []string
 		wantToolIDs []string
 	}{
-		{name: "no tool ids"},
+		{name: "no tool ids", wantToolIDs: []string{"echo", "other"}},
 		{name: "selected tool", toolIDs: []string{"echo"}, wantToolIDs: []string{"echo"}},
 	}
 

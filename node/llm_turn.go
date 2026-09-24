@@ -3,6 +3,7 @@ package node
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
@@ -96,7 +97,10 @@ func LLMTurnNodeTypeDefinition() registry.NodeTypeDefinition {
 				"type": "object",
 				"properties": dsl.JSONSchema{
 					"model_id": dsl.JSONSchema{"type": "string", "title": "Model ID"},
-					"tool_ids": dsl.JSONSchema{"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"}},
+					"tool_ids": dsl.JSONSchema{
+						"type": "array", "title": "Tools", "items": dsl.JSONSchema{"type": "string"},
+						"description": "Optional tool ID allowlist. When empty, all tools available in the runtime context are allowed.",
+					},
 					"system_prompt": dsl.JSONSchema{
 						"type":      "string",
 						"title":     "System Prompt",
@@ -162,10 +166,7 @@ func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 	if model == nil {
 		return fmt.Errorf("llm turn node: model %q not available", effectiveModelID(n.ModelID))
 	}
-	var nodeTools map[string]core.Tool
-	if len(n.ToolIDs) > 0 {
-		nodeTools = ctx.FilterTools(n.ToolIDs)
-	}
+	nodeTools := ctx.FilterTools(n.ToolIDs)
 
 	conversation, err := conversationcap.Bind(access, n.ConversationPath)
 	if err != nil {
@@ -176,15 +177,20 @@ func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 	}
 	messages := conversation.Messages()
 	promptMessages := trimLLMPromptMessages(messages, n.effectivePromptMaxChars())
-	forceFinalization := n.FinalizeAfterMaxIterations && len(n.ToolIDs) > 0 && conversation.IterationCount() >= conversation.MaxIterations()
+	forceFinalization := n.FinalizeAfterMaxIterations && len(nodeTools) > 0 && conversation.IterationCount() >= conversation.MaxIterations()
 	if forceFinalization {
 		nodeTools = nil
 		promptMessages = append(promptMessages, llms.TextParts(llms.ChatMessageTypeHuman, finalIterationPrompt))
 	}
 
-	var toolSets []llms.ToolDefinition
-	for _, tool := range nodeTools {
-		toolSets = append(toolSets, tool.Definition())
+	toolIDs := make([]string, 0, len(nodeTools))
+	for toolID := range nodeTools {
+		toolIDs = append(toolIDs, toolID)
+	}
+	sort.Strings(toolIDs)
+	toolSets := make([]llms.ToolDefinition, 0, len(toolIDs))
+	for _, toolID := range toolIDs {
+		toolSets = append(toolSets, nodeTools[toolID].Definition())
 	}
 	if payload, err := buildLLMPromptArtifact(promptMessages, toolSets, n.ConversationPath.String(), conversation.IterationCount(), conversation.MaxIterations()); err == nil {
 		_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "llm_turn.prompt", payload)
