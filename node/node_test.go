@@ -216,7 +216,7 @@ func TestLLMTurnContinuesAfterConversationMaxIterations(t *testing.T) {
 	}
 }
 
-func TestLLMTurnFinalizesWithoutToolsAfterMaxIterations(t *testing.T) {
+func TestLLMTurnFinalizesWithToolChoiceNoneAfterMaxIterations(t *testing.T) {
 	t.Parallel()
 
 	root := state.Scope("llm", "conversation")
@@ -247,8 +247,8 @@ func TestLLMTurnFinalizesWithoutToolsAfterMaxIterations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	if len(model.requests) != 1 || len(model.requests[0].Tools) != 0 {
-		t.Fatalf("last-iteration request tools = %#v", model.requests)
+	if len(model.requests) != 1 || len(model.requests[0].Tools) != 1 || model.requests[0].ToolChoice != "none" {
+		t.Fatalf("last-iteration request should keep tools with tool_choice none: %#v", model.requests)
 	}
 	requestText := extractText(model.requests[0].Messages[len(model.requests[0].Messages)-1])
 	if !strings.Contains(requestText, "exhausted its tool-iteration budget") {

@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	defaultContextReducerMaxMessages  = 24
+	defaultContextReducerMaxChars     = 160000
 	defaultContextReducerPreserveTail = 6
 	defaultContextReducerSummaryLabel = "Summary of earlier conversation:"
 	contextReducerSystemPrompt        = "" +
@@ -28,7 +28,7 @@ const (
 
 type ContextReducerNode struct {
 	Base
-	MaxMessages      int
+	MaxChars         int
 	PreserveSystem   bool
 	PreserveRecent   int
 	SummaryPrefix    string
@@ -41,7 +41,7 @@ func NewContextReducerNode(options ...Option) *ContextReducerNode {
 			Name:        NodeTypeContextReducer,
 			Description: "Compact older conversation context into a concise summary message.",
 		}),
-		MaxMessages:    defaultContextReducerMaxMessages,
+		MaxChars:       defaultContextReducerMaxChars,
 		PreserveSystem: true,
 		PreserveRecent: defaultContextReducerPreserveTail,
 		SummaryPrefix:  defaultContextReducerSummaryLabel,
@@ -68,8 +68,8 @@ func (n *ContextReducerNode) GraphNodeSpec() dsl.GraphNodeSpec {
 	nodeConfig := map[string]any{
 		"preserve_system": n.PreserveSystem,
 	}
-	if n.MaxMessages > 0 {
-		nodeConfig["max_messages"] = n.MaxMessages
+	if n.MaxChars > 0 {
+		nodeConfig["max_chars"] = n.MaxChars
 	}
 	if n.PreserveRecent >= 0 {
 		nodeConfig["preserve_recent"] = n.PreserveRecent
@@ -89,9 +89,9 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 			ConfigSchema: dsl.JSONSchema{
 				"type": "object",
 				"properties": dsl.JSONSchema{
-					"max_messages": dsl.JSONSchema{
-						"type": "integer", "title": "Max Messages", "minimum": 2,
-						"description": "Summarize older context when the conversation exceeds this message count.",
+					"max_chars": dsl.JSONSchema{
+						"type": "integer", "title": "Max Characters", "minimum": 1, "default": defaultContextReducerMaxChars,
+						"description": "Summarize older context only when the conversation exceeds this character budget. Keep it high: every reduction rewrites history and invalidates the provider prompt cache.",
 					},
 					"preserve_system": dsl.JSONSchema{
 						"type": "boolean", "title": "Preserve System Messages",
@@ -122,7 +122,7 @@ func ContextReducerNodeTypeDefinition() registry.NodeTypeDefinition {
 			}
 			reducerNode := NewContextReducerNode(WithID(spec.ID))
 			applyNodeMetadata(&reducerNode.Base, spec)
-			reducerNode.MaxMessages, _ = config.Int(spec.Config, "max_messages")
+			reducerNode.MaxChars, _ = config.Int(spec.Config, "max_chars")
 			if value, ok := config.Bool(spec.Config, "preserve_system"); ok {
 				reducerNode.PreserveSystem = value
 			}
@@ -151,7 +151,7 @@ func (n *ContextReducerNode) execute(ctx core.Context, access *state.Access) err
 		return err
 	}
 	messages := conversation.Messages()
-	if len(messages) == 0 || len(messages) <= n.effectiveMaxMessages() {
+	if len(messages) == 0 || promptMessagesCharCount(messages) <= n.effectiveMaxChars() {
 		return nil
 	}
 
@@ -160,7 +160,7 @@ func (n *ContextReducerNode) execute(ctx core.Context, access *state.Access) err
 		return nil
 	}
 
-	tailStart := n.reducerTailStart(body, len(preservedSystem))
+	tailStart := n.reducerTailStart(body)
 	if tailStart <= 0 {
 		return nil
 	}
@@ -186,7 +186,7 @@ func (n *ContextReducerNode) execute(ctx core.Context, access *state.Access) err
 
 	_, _ = fruntime.SaveJSONArtifactBestEffort(ctx, "context.reducer", map[string]any{
 		"conversation_path":     n.ConversationPath.String(),
-		"max_messages":          n.effectiveMaxMessages(),
+		"max_chars":             n.effectiveMaxChars(),
 		"preserve_system":       n.PreserveSystem,
 		"preserve_recent":       n.effectivePreserveRecent(),
 		"messages_before_count": len(messages),
@@ -233,32 +233,16 @@ func (n *ContextReducerNode) reduceMessages(ctx context.Context, model llms.Mode
 	return summary, nil
 }
 
-func (n *ContextReducerNode) reducerTailStart(messages []llms.MessageContent, preservedSystemCount int) int {
-	preserveRecent := n.effectivePreserveRecent()
-	if preserveRecent > len(messages) {
-		preserveRecent = len(messages)
-	}
-
-	maxTail := n.effectiveMaxMessages() - preservedSystemCount - 1
-	if maxTail < preserveRecent {
-		preserveRecent = maxTail
-	}
-	if preserveRecent < 0 {
-		preserveRecent = 0
-	}
-
-	start := len(messages) - preserveRecent
-	if start < 0 {
-		start = 0
-	}
-	return adjustReducerTailStart(messages, start)
+func (n *ContextReducerNode) reducerTailStart(messages []llms.MessageContent) int {
+	preserveRecent := min(n.effectivePreserveRecent(), len(messages))
+	return adjustReducerTailStart(messages, len(messages)-preserveRecent)
 }
 
-func (n *ContextReducerNode) effectiveMaxMessages() int {
-	if n == nil || n.MaxMessages <= 0 {
-		return defaultContextReducerMaxMessages
+func (n *ContextReducerNode) effectiveMaxChars() int {
+	if n == nil || n.MaxChars <= 0 {
+		return defaultContextReducerMaxChars
 	}
-	return n.MaxMessages
+	return n.MaxChars
 }
 
 func (n *ContextReducerNode) effectivePreserveRecent() int {

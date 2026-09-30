@@ -48,6 +48,7 @@ type ModelRequest struct {
 	Messages                  []MessageContent   `json:"-"`
 	Tools                     []ToolDefinition   `json:"tools,omitempty"`
 	ToolChoice                any                `json:"tool_choice,omitempty"`
+	CacheKey                  string             `json:"cache_key,omitempty"`
 	MaxTokens                 int                `json:"max_tokens,omitempty"`
 	Temperature               *float64           `json:"temperature,omitempty"`
 	TopP                      *float64           `json:"top_p,omitempty"`

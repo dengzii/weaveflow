@@ -265,7 +265,7 @@ func (o *LLM) generateChat(ctx context.Context, request llms.ModelRequest) (*llm
 		ServiceTier:            strings.TrimSpace(requestOptions.ServiceTier),
 		Store:                  requestOptions.Store,
 		Verbosity:              strings.TrimSpace(requestOptions.Verbosity),
-		PromptCacheKey:         strings.TrimSpace(requestOptions.PromptCacheKey),
+		PromptCacheKey:         o.promptCacheKey(request, requestOptions),
 		SafetyIdentifier:       strings.TrimSpace(requestOptions.SafetyIdentifier),
 		ExtraBody:              extraBody,
 	}
@@ -425,7 +425,7 @@ func (o *LLM) generateResponse(
 		ServiceTier:       strings.TrimSpace(requestOptions.ServiceTier),
 		Store:             requestOptions.Store,
 		Metadata:          apiMetadata,
-		PromptCacheKey:    strings.TrimSpace(requestOptions.PromptCacheKey),
+		PromptCacheKey:    o.promptCacheKey(modelRequest, requestOptions),
 		SafetyIdentifier:  strings.TrimSpace(requestOptions.SafetyIdentifier),
 		ExtraBody:         mergeExtraBody(providerExtraBody, o.client.ExtraBody, requestOptions.ExtraBody),
 	}
@@ -748,6 +748,22 @@ func providerReasoningOptions(provider Provider, effort string) (string, map[str
 	default:
 		return effort, nil
 	}
+}
+
+// promptCacheKey prefers an explicitly configured key and otherwise forwards the
+// request cache key to providers that route prompt caching by prompt_cache_key.
+func (o *LLM) promptCacheKey(request llms.ModelRequest, options RequestOptions) string {
+	if key := strings.TrimSpace(options.PromptCacheKey); key != "" {
+		return key
+	}
+	if !usesPromptCacheKey(o.provider) {
+		return ""
+	}
+	return strings.TrimSpace(request.CacheKey)
+}
+
+func usesPromptCacheKey(provider Provider) bool {
+	return provider == ProviderOpenAI || provider == ProviderAzure
 }
 
 func usesMaxTokens(provider Provider) bool {

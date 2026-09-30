@@ -123,6 +123,7 @@ func (runtime loopRunner) runLoop(ctx core.Context, conversation *conversationca
 			Mode:                      llms.ModelModeChat,
 			Messages:                  promptMessages,
 			Tools:                     toolSets,
+			CacheKey:                  basenode.LLMPromptCacheKey(modelCtx, runtime.identity.NodeID+"/"+runtime.identity.ConversationPath),
 			Thinking:                  runtime.effectiveReasoningEffort(),
 			ResponseName:              strings.TrimSpace(runtime.responseName),
 			ResponseSchema:            runtime.outputSchema.Clone(),

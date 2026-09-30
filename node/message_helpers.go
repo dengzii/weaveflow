@@ -1,11 +1,15 @@
 package node
 
 import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
 	conversationcap "github.com/dengzii/weaveflow/capability/conversation"
 	"github.com/dengzii/weaveflow/llms/parts"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 
 	"github.com/dengzii/weaveflow/llms"
 )
@@ -165,6 +169,9 @@ func messageHasToolCalls(message llms.MessageContent) bool {
 	return false
 }
 
+// trimLLMPromptMessages keeps the leading system messages and the first human
+// message, then drops older body messages at stable boundaries so the retained
+// prompt prefix stays byte-identical across turns until the next boundary jump.
 func trimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.MessageContent {
 	if len(messages) == 0 || maxChars <= 0 {
 		return cloneMessages(messages)
@@ -197,6 +204,59 @@ func trimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.
 		return prefix
 	}
 
+	start, ok := stablePromptTrimStart(body, maxChars-used)
+	if !ok {
+		start = fittingPromptTailStart(body, used, maxChars)
+	}
+
+	result := make([]llms.MessageContent, 0, len(prefix)+len(body[start:]))
+	result = append(result, prefix...)
+	result = append(result, cloneMessages(body[start:])...)
+	return result
+}
+
+// stablePromptTrimStart splits the body into segments of about half the budget,
+// with boundaries computed from the front so appending messages never moves an
+// existing boundary. It returns the earliest boundary whose suffix fits.
+func stablePromptTrimStart(body []llms.MessageContent, budget int) (int, bool) {
+	if budget <= 0 {
+		return 0, false
+	}
+	segmentChars := max(budget/2, 1)
+	boundaries := []int{0}
+	accumulated := 0
+	for i, message := range body {
+		if accumulated >= segmentChars && isPromptTrimBoundary(body, i) {
+			boundaries = append(boundaries, i)
+			accumulated = 0
+		}
+		accumulated += promptMessageCharCount(message)
+	}
+
+	suffixChars := make([]int, len(body)+1)
+	for i := len(body) - 1; i >= 0; i-- {
+		suffixChars[i] = suffixChars[i+1] + promptMessageCharCount(body[i])
+	}
+	for _, boundary := range boundaries {
+		if suffixChars[boundary] <= budget {
+			return boundary, true
+		}
+	}
+	return 0, false
+}
+
+// isPromptTrimBoundary reports whether the prompt may start at index without
+// separating tool results from the assistant message that requested them.
+func isPromptTrimBoundary(body []llms.MessageContent, index int) bool {
+	if index <= 0 || index >= len(body) {
+		return false
+	}
+	return body[index].Role != llms.ChatMessageTypeTool && !messageHasToolCalls(body[index-1])
+}
+
+// fittingPromptTailStart keeps as many recent messages as fit; it is the
+// fallback when a single oversized segment prevents a stable boundary.
+func fittingPromptTailStart(body []llms.MessageContent, used int, maxChars int) int {
 	start := len(body)
 	for i := len(body) - 1; i >= 0; i-- {
 		candidateCost := promptMessageCharCount(body[i])
@@ -213,19 +273,25 @@ func trimLLMPromptMessages(messages []llms.MessageContent, maxChars int) []llms.
 
 	if start > 0 && start < len(body) {
 		adjusted := adjustReducerTailStart(body, start)
-		candidate := append(cloneMessages(prefix), body[adjusted:]...)
-		if promptMessagesCharCount(candidate) <= maxChars {
+		if used+promptMessagesCharCount(body[adjusted:start]) <= maxChars {
 			start = adjusted
 		}
 	}
 	if start >= len(body) {
 		start = adjustReducerTailStart(body, len(body)-1)
 	}
+	return start
+}
 
-	result := make([]llms.MessageContent, 0, len(prefix)+len(body[start:]))
-	result = append(result, prefix...)
-	result = append(result, cloneMessages(body[start:])...)
-	return result
+// LLMPromptCacheKey returns a provider cache routing key scoped to one run's
+// conversation, so every turn of a growing conversation shares a cache.
+func LLMPromptCacheKey(ctx context.Context, conversationPath string) string {
+	metadata, ok := fruntime.RunnerMetadataFromContext(ctx)
+	if !ok || strings.TrimSpace(metadata.RunID) == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(metadata.RunID + "\n" + conversationPath))
+	return "wf-" + hex.EncodeToString(sum[:16])
 }
 
 // TrimLLMPromptMessages trims a conversation to the configured prompt character limit.

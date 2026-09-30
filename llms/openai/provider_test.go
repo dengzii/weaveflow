@@ -363,3 +363,20 @@ func newChatTestServer(t *testing.T, captured *map[string]any) *httptest.Server 
 		}`))
 	}))
 }
+
+func TestPromptCacheKeyForwardsRequestKeyToSupportedProviders(t *testing.T) {
+	t.Parallel()
+
+	request := llms.ModelRequest{CacheKey: " request-key "}
+	openAI := &LLM{provider: ProviderOpenAI}
+	if got := openAI.promptCacheKey(request, RequestOptions{}); got != "request-key" {
+		t.Fatalf("openai cache key = %q", got)
+	}
+	if got := openAI.promptCacheKey(request, RequestOptions{PromptCacheKey: "configured"}); got != "configured" {
+		t.Fatalf("configured cache key = %q", got)
+	}
+	deepSeek := &LLM{provider: ProviderDeepSeek}
+	if got := deepSeek.promptCacheKey(request, RequestOptions{}); got != "" {
+		t.Fatalf("deepseek cache key = %q, want empty", got)
+	}
+}

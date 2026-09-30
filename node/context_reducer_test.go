@@ -3,6 +3,7 @@ package node
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/dengzii/weaveflow/dsl"
 	"github.com/dengzii/weaveflow/llms"
 	"github.com/dengzii/weaveflow/registry"
+	fruntime "github.com/dengzii/weaveflow/runtime"
 	"github.com/dengzii/weaveflow/state"
 )
 
@@ -37,7 +39,7 @@ func TestContextReducerCompactsOlderMessages(t *testing.T) {
 	model := &scriptedModel{responses: []*llms.ModelResponse{{Choices: []*llms.ModelChoice{{Content: "- retained fact"}}}}}
 	target := NewContextReducerNode(WithID("reducer"))
 	target.ConversationPath = conversationPath
-	target.MaxMessages = 4
+	target.MaxChars = promptMessagesCharCount(messages) - 1
 	target.PreserveRecent = 2
 	target.SummaryPrefix = "Earlier context:"
 
@@ -99,7 +101,7 @@ func TestContextReducerSkipsConversationWithinLimit(t *testing.T) {
 	model := &scriptedModel{}
 	target := NewContextReducerNode(WithID("reducer"))
 	target.ConversationPath = conversationPath
-	target.MaxMessages = len(messages)
+	target.MaxChars = promptMessagesCharCount(messages)
 	result, err := Execute(core.WithModel(context.Background(), model), access.State(), target)
 	if err != nil {
 		t.Fatalf("execute context reducer: %v", err)
@@ -150,7 +152,7 @@ func TestContextReducerReportsModelFailures(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			target := NewContextReducerNode(WithID("reducer"))
 			target.ConversationPath = conversationPath
-			target.MaxMessages = 2
+			target.MaxChars = 1
 			target.PreserveRecent = 1
 			model := &scriptedModel{responses: []*llms.ModelResponse{test.response}}
 			_, err := Execute(core.WithModel(context.Background(), model), newState(t), target)
@@ -162,7 +164,7 @@ func TestContextReducerReportsModelFailures(t *testing.T) {
 
 	target := NewContextReducerNode(WithID("reducer"))
 	target.ConversationPath = conversationPath
-	target.MaxMessages = 2
+	target.MaxChars = 1
 	if _, err := Execute(context.Background(), newState(t), target); err == nil || !strings.Contains(err.Error(), "model service not available") {
 		t.Fatalf("missing model error = %v", err)
 	}
@@ -182,8 +184,8 @@ func TestContextReducerDefinitionBuildsConfiguredNode(t *testing.T) {
 	if spec.Type != NodeTypeContextReducer || spec.State["conversation"].Path != target.ConversationPath.String() {
 		t.Fatalf("graph node spec = %#v", spec)
 	}
-	if got := spec.Config["max_messages"]; got != defaultContextReducerMaxMessages {
-		t.Fatalf("max_messages config = %#v", got)
+	if got := spec.Config["max_chars"]; got != defaultContextReducerMaxChars {
+		t.Fatalf("max_chars config = %#v", got)
 	}
 
 	conversationPath := state.Scope("shared_reducer", "conversation")
@@ -192,7 +194,7 @@ func TestContextReducerDefinitionBuildsConfiguredNode(t *testing.T) {
 			ID:   "configured",
 			Name: "Configured reducer",
 			Config: map[string]any{
-				"max_messages":    10,
+				"max_chars":       10,
 				"preserve_system": false,
 				"preserve_recent": 3,
 				"summary_prefix":  "History:",
@@ -209,7 +211,7 @@ func TestContextReducerDefinitionBuildsConfiguredNode(t *testing.T) {
 	if reducer.Name() != "Configured reducer" || reducer.ConversationPath.String() != conversationPath.String() {
 		t.Fatalf("built reducer metadata = %#v", reducer)
 	}
-	if reducer.MaxMessages != 10 || reducer.PreserveSystem || reducer.PreserveRecent != 3 || reducer.SummaryPrefix != "History:" {
+	if reducer.MaxChars != 10 || reducer.PreserveSystem || reducer.PreserveRecent != 3 || reducer.SummaryPrefix != "History:" {
 		t.Fatalf("built reducer config = %#v", reducer)
 	}
 
@@ -309,12 +311,82 @@ func TestTrimLLMPromptMessagesPreservesPinnedContext(t *testing.T) {
 	}
 }
 
+func TestTrimLLMPromptMessagesKeepsStablePrefixWhileGrowing(t *testing.T) {
+	t.Parallel()
+
+	messages := []llms.MessageContent{
+		llms.TextParts(llms.ChatMessageTypeSystem, "rules"),
+		llms.TextParts(llms.ChatMessageTypeHuman, "original goal"),
+	}
+	maxChars := 4000
+	var previous []llms.MessageContent
+	steps, jumps := 0, 0
+	for turn := 0; turn < 120; turn++ {
+		messages = append(messages,
+			llms.TextParts(llms.ChatMessageTypeAI, fmt.Sprintf("answer %d %s", turn, strings.Repeat("a", 80))),
+			llms.TextParts(llms.ChatMessageTypeHuman, fmt.Sprintf("follow-up %d %s", turn, strings.Repeat("h", 80))),
+		)
+		trimmed := TrimLLMPromptMessages(messages, maxChars)
+		if got := promptMessagesCharCount(trimmed); got > maxChars {
+			t.Fatalf("turn %d prompt chars = %d, limit %d", turn, got, maxChars)
+		}
+		if ExtractText(trimmed[0]) != "rules" || ExtractText(trimmed[1]) != "original goal" {
+			t.Fatalf("turn %d lost pinned context: %#v", turn, trimmed[:2])
+		}
+		if len(previous) > 0 && len(trimmed) < len(messages) {
+			steps++
+			if !promptHasPrefix(trimmed, previous) {
+				jumps++
+			}
+		}
+		previous = trimmed
+	}
+	if steps == 0 {
+		t.Fatal("conversation never exceeded the prompt budget")
+	}
+	if jumps*5 > steps {
+		t.Fatalf("trimmed prompt prefix changed on %d of %d turns", jumps, steps)
+	}
+}
+
+func TestLLMPromptCacheKeyScopesRunConversation(t *testing.T) {
+	t.Parallel()
+
+	if got := LLMPromptCacheKey(context.Background(), "conversation"); got != "" {
+		t.Fatalf("cache key without run metadata = %q", got)
+	}
+	runCtx := fruntime.WithRunnerMetadata(context.Background(), fruntime.RunnerMetadata{RunID: "run-1"})
+	key := LLMPromptCacheKey(runCtx, "conversation")
+	if !strings.HasPrefix(key, "wf-") || key != LLMPromptCacheKey(runCtx, "conversation") {
+		t.Fatalf("cache key = %q", key)
+	}
+	if key == LLMPromptCacheKey(runCtx, "other") {
+		t.Fatal("cache key did not vary by conversation")
+	}
+	otherRun := fruntime.WithRunnerMetadata(context.Background(), fruntime.RunnerMetadata{RunID: "run-2"})
+	if key == LLMPromptCacheKey(otherRun, "conversation") {
+		t.Fatal("cache key did not vary by run")
+	}
+}
+
+func promptHasPrefix(messages, prefix []llms.MessageContent) bool {
+	if len(prefix) > len(messages) {
+		return false
+	}
+	for i := range prefix {
+		if messages[i].Role != prefix[i].Role || ExtractText(messages[i]) != ExtractText(prefix[i]) {
+			return false
+		}
+	}
+	return true
+}
+
 func TestContextReducerEffectiveDefaults(t *testing.T) {
 	t.Parallel()
 
 	var target *ContextReducerNode
-	if got := target.effectiveMaxMessages(); got != defaultContextReducerMaxMessages {
-		t.Fatalf("nil max messages = %d", got)
+	if got := target.effectiveMaxChars(); got != defaultContextReducerMaxChars {
+		t.Fatalf("nil max chars = %d", got)
 	}
 	if got := target.effectivePreserveRecent(); got != defaultContextReducerPreserveTail {
 		t.Fatalf("nil preserve recent = %d", got)
@@ -323,7 +395,7 @@ func TestContextReducerEffectiveDefaults(t *testing.T) {
 		t.Fatalf("nil summary prefix = %q", got)
 	}
 
-	target = &ContextReducerNode{MaxMessages: -1, PreserveRecent: -1, SummaryPrefix: "  "}
+	target = &ContextReducerNode{MaxChars: -1, PreserveRecent: -1, SummaryPrefix: "  "}
 	if got := target.renderSummary("  "); got != defaultContextReducerSummaryLabel {
 		t.Fatalf("empty rendered summary = %q", got)
 	}

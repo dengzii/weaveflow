@@ -178,8 +178,11 @@ func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 	messages := conversation.Messages()
 	promptMessages := trimLLMPromptMessages(messages, n.effectivePromptMaxChars())
 	forceFinalization := n.FinalizeAfterMaxIterations && len(nodeTools) > 0 && conversation.IterationCount() >= conversation.MaxIterations()
+	var toolChoice any
 	if forceFinalization {
-		nodeTools = nil
+		// Keep the tool definitions so the cached prompt prefix stays intact;
+		// tool_choice "none" disables calls for this final turn.
+		toolChoice = "none"
 		promptMessages = append(promptMessages, llms.TextParts(llms.ChatMessageTypeHuman, finalIterationPrompt))
 	}
 
@@ -200,11 +203,13 @@ func (n *LLMTurnNode) execute(ctx core.Context, access *state.Access) error {
 		ctx,
 		model,
 		llms.ModelRequest{
-			ModelID:  effectiveModelID(n.ModelID),
-			Mode:     llms.ModelModeChat,
-			Messages: promptMessages,
-			Tools:    toolSets,
-			Thinking: llms.ThinkingMode(n.effectiveReasoningEffort()),
+			ModelID:    effectiveModelID(n.ModelID),
+			Mode:       llms.ModelModeChat,
+			Messages:   promptMessages,
+			Tools:      toolSets,
+			ToolChoice: toolChoice,
+			CacheKey:   LLMPromptCacheKey(ctx, n.ConversationPath.String()),
+			Thinking:   llms.ThinkingMode(n.effectiveReasoningEffort()),
 		},
 	)
 	if err != nil {
